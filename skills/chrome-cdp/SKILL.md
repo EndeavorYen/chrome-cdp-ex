@@ -1,23 +1,20 @@
 ---
 name: chrome-cdp
-description: "Connect to the user's EXISTING Chrome browser to inspect, screenshot, or interact with pages they already have open. Use this skill (NOT Playwright) whenever the user wants to see, debug, or interact with their current browser session — including logged-in pages, open tabs, or live page state.\n\nTrigger when user says: 看瀏覽器、瀏覽器內容、查看網頁、截圖、screenshot、Chrome、inspect page、debug page、頁面上有什麼、瀏覽器畫面、看我的頁面、check the page、browser、看一下頁面、幫我看、console errors、網頁錯誤、check my tab、what's on the page、read the page、capture the screen。\n\nDo NOT use Playwright for these tasks — Playwright launches a new isolated browser without the user's login state, cookies, or open tabs. chrome-cdp connects to the browser the user is already running."
+description: "Your EYES into the user's live Chrome browser. This skill lets you SEE and INTERACT with the user's actual browser — their open tabs, logged-in sessions, and live page state. You MUST use this whenever the user's request involves browser content in ANY way.\n\nTRIGGER THIS SKILL when the user:\n- References pages they have open: '我開了頁面', 'I have X open', '瀏覽器上的', 'my tabs'\n- Asks you to look at, compare, or analyze anything in their browser: '比較頁面', '哪個比較好', '看看這個頁面', 'compare these pages', 'which looks better'\n- Mentions UI/visual analysis of live pages: 'dashboard', '設計品質', 'UI', 'layout', '好不好看', 'design quality'\n- Asks for screenshots or page inspection: 截圖, screenshot, inspect, debug, check the page\n- Refers to 'the page', 'the browser', 'my tab', '網頁', '頁面' in any context\n- Mentions console errors, page state, or anything requiring browser access\n\nCRITICAL: NEVER say '我無法看到你的瀏覽器' or ask users to paste screenshots. You CAN see their browser through this skill. Use `list` to discover open tabs, then `perceive` or `shot`/`scanshot` to see page content.\n\nDo NOT use Playwright — it launches an isolated browser without the user's login state, cookies, or open tabs."
 ---
 
 # Chrome CDP
 
-Connects to the user's **existing Chrome browser** via CDP WebSocket. No Puppeteer, no new browser instance — works with the tabs, login sessions, and page state the user already has open.
+## When invoked directly (`/chrome-cdp`)
 
-> **When to use chrome-cdp vs Playwright:**
->
-> | Scenario | Use |
-> |----------|-----|
-> | User wants to see/inspect their **current browser** | **chrome-cdp** (this skill) |
-> | User mentions their **open tabs**, **logged-in pages**, or **live page state** | **chrome-cdp** |
-> | User says "看瀏覽器", "screenshot", "check the page", "看一下" | **chrome-cdp** |
-> | User wants to **automate a fresh browser** for testing (no existing session) | Playwright |
-> | User wants to **navigate to a new URL from scratch** with no existing context | Playwright |
->
-> **Default to chrome-cdp** when the user refers to "the page", "the browser", or "my tab" — they almost always mean their existing session, not a fresh browser.
+**Take action immediately — do not just read this document.**
+
+1. Run `scripts/cdp.mjs list` to discover open tabs
+2. Show the user what tabs are available
+3. If the user's prior message references specific pages or content, match them to tabs and run `scripts/cdp.mjs perceive <target>` on the relevant tab(s)
+4. If no specific request, ask the user which tab to inspect
+
+Connects to the user's **existing Chrome browser** via CDP WebSocket. No Puppeteer, no new browser instance — works with the tabs, login sessions, and page state the user already has open. Only use Playwright when the user explicitly wants a fresh isolated browser for testing.
 
 ## Observation Strategy — Perceive First, Screenshot Last
 
@@ -182,8 +179,6 @@ scripts/cdp.mjs fullshot <target> [file]  # single full-page image (may be tiny 
 - **`scanshot`** — scrolls through and captures multiple viewport-sized images with 10% overlap. Use when you need pixel-level verification of an entire page.
 - **`fullshot`** — single image of entire page. **Do NOT use for analysis** — on long pages text becomes unreadably small. Only for non-AI consumption.
 
-> **Remember:** Always `perceive` first. Only use screenshots when structured text isn't sufficient (visual bugs, color verification, image content, layout rendering issues).
-
 ### Evaluate JavaScript
 
 ```bash
@@ -241,8 +236,6 @@ CSS px = screenshot image px / DPR
 
 ## Tips
 
-- **Do NOT use Playwright** (or any MCP browser tool) to inspect the user's existing browser. Playwright launches a separate isolated browser — it cannot see the user's open tabs, login sessions, or page state. Always use this skill's commands instead.
-- **Always `perceive` first** — understand the page structure before taking any action or screenshot.
 - Prefer `snap` over `html` for page structure — compact by default, use `snap --full` for complete tree.
 - Prefer `elshot` over `shot` when verifying a specific element — it's more reliable and avoids scroll/DPR issues.
 - Use `type` (not eval) to enter text in cross-origin iframes — `click`/`clickxy` to focus first, then `type`.
