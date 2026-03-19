@@ -249,11 +249,16 @@ function formatPageList(pages) {
   }).join('\n');
 }
 
-function shouldShowAxNode(node, compact = false) {
+function shouldShowAxNode(node, compact = false, parentNode = null) {
   const role = node.role?.value || '';
   const name = node.name?.value ?? '';
   const value = node.value?.value;
   if (compact && role === 'InlineTextBox') return false;
+  // In compact mode, filter StaticText that duplicates parent's name
+  if (compact && role === 'StaticText' && parentNode) {
+    const parentName = parentNode.name?.value ?? '';
+    if (parentName && parentName.includes(name)) return false;
+  }
   return role !== 'none' && role !== 'generic' && !(name === '' && (value === '' || value == null));
 }
 
@@ -299,12 +304,12 @@ async function snapshotStr(cdp, sid, compact = false) {
 
   const lines = [];
   const visited = new Set();
-  function visit(node, depth) {
+  function visit(node, depth, parentNode = null) {
     if (!node || visited.has(node.nodeId)) return;
     visited.add(node.nodeId);
-    if (shouldShowAxNode(node, compact)) lines.push(formatAxNode(node, depth));
+    if (shouldShowAxNode(node, compact, parentNode)) lines.push(formatAxNode(node, depth));
     for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
-      visit(child, depth + 1);
+      visit(child, depth + 1, node);
     }
   }
 
@@ -674,13 +679,35 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf) {
     childrenByParent.get(n.parentId).push(n);
   }
 
+  // Track table rows to cap output
+  const TABLE_ROW_LIMIT = 5;
+  const tableRowCounts = new Map(); // nodeId of table-like ancestor → count
+
   const treeLines = [];
   const visited = new Set();
-  function visit(node, depth) {
+  function visit(node, depth, parentNode = null, tableAncestorId = null) {
     if (!node || visited.has(node.nodeId)) return;
     visited.add(node.nodeId);
-    if (shouldShowAxNode(node, true)) {
-      const role = node.role?.value || '';
+
+    const role = node.role?.value || '';
+
+    // Detect table context: track row counts per table ancestor
+    if (role === 'table' || role === 'grid' || role === 'treegrid') {
+      tableAncestorId = node.nodeId;
+      tableRowCounts.set(tableAncestorId, 0);
+    }
+    if (tableAncestorId && role === 'row') {
+      const count = tableRowCounts.get(tableAncestorId) || 0;
+      tableRowCounts.set(tableAncestorId, count + 1);
+      if (count >= TABLE_ROW_LIMIT) {
+        if (count === TABLE_ROW_LIMIT) {
+          treeLines.push(formatAxNode({ role: { value: 'note' }, name: { value: '... more rows truncated' } }, depth));
+        }
+        return; // skip remaining rows and their children
+      }
+    }
+
+    if (shouldShowAxNode(node, true, parentNode)) {
       let line = formatAxNode(node, depth);
 
       // Enrich landmark/structural nodes with layout annotations
@@ -688,10 +715,8 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf) {
         const layout = consumeLayout(role);
         if (layout) {
           const parts = [];
-          // Dimensions (height always; width only if not full-width)
           if (layout.w) parts.push(`${layout.w}×${layout.h}px`);
           else if (layout.h >= 40) parts.push(`↕${layout.h}px`);
-          // Visual properties
           if (layout.bg) parts.push(`bg:${layout.bg}`);
           if (layout.font) parts.push(layout.font);
           if (layout.color) parts.push(`color:${layout.color}`);
@@ -701,7 +726,6 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf) {
             parts.push(d);
           }
           if (layout.opacity) parts.push(`opacity:${layout.opacity}`);
-          // Viewport visibility
           if (layout.vis === 'above') parts.push('↑above fold');
           else if (layout.vis === 'below') parts.push('↓below fold');
           if (parts.length > 0) line += '  ' + parts.join('  ');
@@ -710,7 +734,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf) {
       treeLines.push(line);
     }
     for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
-      visit(child, depth + 1);
+      visit(child, depth + 1, node, tableAncestorId);
     }
   }
   const roots = nodes.filter(n => !n.parentId || !nodesById.has(n.parentId));

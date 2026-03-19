@@ -28,9 +28,9 @@ Connects to the user's **existing Chrome browser** via CDP WebSocket. No Puppete
 > |------|---------|-------------|--------|
 > | 1. **Perceive** | `perceive` | **Default starting point** for any page inspection | Summary + AX tree + visual layout (text, ~200-400 tokens) |
 > | 2. **Targeted visual** | `elshot <selector>` | Need to verify visual rendering of a **specific element** | Clipped PNG of one element (auto scrolls, no DPR confusion) |
-> | 3. **Full visual** | `scanshot` | Need pixel-level verification of **entire page** (rare) | Multiple viewport-sized PNGs |
+> | 3. **Full visual** | `scanshot` | Last resort — pixel-level audit of **entire page** | Multiple viewport-sized PNGs (expensive!) |
 >
-> **DO NOT** start with `shot` or `scanshot`. Always start with `perceive` to understand the page structure and content. Only escalate to screenshots when you specifically need to verify visual appearance (colors, images, alignment, rendering bugs).
+> **DO NOT** start with `shot` or `scanshot`. Always start with `perceive` to understand the page structure and content. Only use `elshot` when you specifically need to verify visual appearance of a component. **`scanshot` should almost never be needed** — if you find yourself reaching for it, ask: "Can I answer this with `elshot` on 2-3 specific sections instead?"
 
 ### Why perceive-first is better
 
@@ -249,6 +249,13 @@ CSS px = screenshot image px / DPR
 1. `perceive <target>` — get complete page understanding (structure + layout + console health)
 2. If needed: `elshot <target> ".specific-element"` — verify visual rendering of a component
 3. If needed: `snap <target> --full` — deeper accessibility tree detail
+
+### Comparing pages or evaluating design quality
+1. `perceive` **both** pages — compare structure, information architecture, component organization
+2. `elshot` **specific sections** on each page for visual comparison — e.g., header area, status cards, data tables, navigation
+3. Analyze from perceive data: content hierarchy, data density, alert presentation, layout organization
+4. Analyze from elshot images: typography, color usage, spacing, visual polish
+5. **DO NOT use `scanshot`** for comparisons — `elshot` on 3-4 key sections per page gives better targeted comparison than 8+ full-page screenshots
 
 ### Debugging a broken page
 1. `perceive <target>` — check structure + console errors in one call
