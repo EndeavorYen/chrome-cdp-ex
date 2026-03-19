@@ -62,7 +62,7 @@ F39B10E2  Another Tab      https://other.site/path
 - **Empty output (exit 0)** = no tabs available. This is normal — either Chrome has no open tabs, or Chrome has not yet approved debugging. Tell the user: "Please open a tab in Chrome and approve the 'Allow debugging' dialog, then I'll retry." Do NOT suggest `--remote-debugging-port` restarts.
 - **Error output** = connection problem. Check prerequisites.
 
-**Screenshots**: `shot` and `fullshot` print the saved file path (default: `~/.cache/cdp/screenshot-<target>.png`). After taking a screenshot, use the **Read tool** to view the image file.
+**Screenshots**: `shot`, `scanshot`, and `fullshot` print saved file paths. After taking a screenshot, use the **Read tool** to view the image file. For long pages, prefer `scanshot` (multiple readable segments) over `fullshot` (single tiny image).
 
 ## Commands
 
@@ -77,11 +77,16 @@ scripts/cdp.mjs list
 ### Take a screenshot
 
 ```bash
-scripts/cdp.mjs shot <target> [file]    # default: screenshot-<target>.png
-scripts/cdp.mjs fullshot <target> [file] # full-page (beyond viewport)
+scripts/cdp.mjs shot     <target> [file]  # viewport screenshot
+scripts/cdp.mjs scanshot <target>         # segmented full-page (multiple viewport-sized images)
+scripts/cdp.mjs fullshot <target> [file]  # single full-page image (may be tiny on long pages)
 ```
 
-Captures the **viewport only** (`shot`) or **full page** (`fullshot`). Output includes the file path and DPR (see **Coordinates** below).
+- **`shot`** — viewport only. Use when you only need the currently visible area.
+- **`scanshot`** — **default choice for capturing a full page.** Scrolls through and captures multiple viewport-sized images with 10% overlap. Each segment is full-resolution and readable. Read each segment image with the Read tool for analysis.
+- **`fullshot`** — single image of entire page. **Do NOT use for analysis** — on long pages text becomes unreadably small. Only useful for generating a single file for non-AI consumption.
+
+> **IMPORTANT:** When asked to screenshot, capture, or look at a full page, **always use `scanshot`**, never `fullshot`. The segmented approach produces readable images that can be properly analyzed.
 
 ### Accessibility tree snapshot
 
@@ -167,9 +172,9 @@ CSS px = screenshot image px / DPR
 
 ### Visual bug investigation
 1. `summary <target>` — quick page overview
-2. `fullshot <target>` — capture entire page
-3. `styles <target> ".suspect"` — inspect layout properties
-4. `eval <target> "document.querySelector('.suspect').getBoundingClientRect()"` — exact position
+2. `scanshot <target>` — capture full page as readable segments
+3. Read each segment image to locate the issue
+4. `styles <target> ".suspect"` — inspect layout properties
 
 ## Source
 

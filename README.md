@@ -61,8 +61,9 @@ open   [url]                       # open new tab
 stop   [target]                    # stop daemon(s)
 
 # Observation
-shot    <target> [file]            # viewport screenshot
-fullshot <target> [file]           # full-page screenshot (beyond viewport)
+shot     <target> [file]           # viewport screenshot
+scanshot <target>                  # segmented full-page (readable viewport-sized images)
+fullshot <target> [file]           # single full-page image (tiny on long pages)
 snap    <target> [--full]          # accessibility tree (compact by default)
 html    <target> [selector]        # full HTML or scoped to CSS selector
 eval    <target> <expr>            # evaluate JS in page context

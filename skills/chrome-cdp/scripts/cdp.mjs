@@ -743,7 +743,56 @@ async function fullshotStr(cdp, sid, filePath, targetId) {
   const out = filePath || resolve(RUNTIME_DIR, `fullshot-${(targetId || 'unknown').slice(0, 8)}.png`);
   writeFileSync(out, Buffer.from(data, 'base64'));
 
-  return `${out}\nFull-page screenshot saved. Size: ${width}x${height} CSS px, DPR: ${dpr}`;
+  return `${out}\nFull-page screenshot saved. Size: ${width}x${height} CSS px, DPR: ${dpr}\nNote: large pages produce tiny text. Use 'scanshot' for readable segmented capture.`;
+}
+
+async function scanshotStr(cdp, sid, targetId) {
+  // Get viewport and page dimensions
+  const dims = await evalStr(cdp, sid, `JSON.stringify({
+    vw: window.innerWidth, vh: window.innerHeight,
+    scrollH: document.documentElement.scrollHeight,
+    scrollY: Math.round(window.scrollY)
+  })`);
+  const { vw, vh, scrollH, scrollY: originalY } = JSON.parse(dims);
+
+  // Calculate segments (overlap by 10% to avoid cutting content at boundaries)
+  const overlap = Math.round(vh * 0.1);
+  const step = vh - overlap;
+  const segments = [];
+  for (let y = 0; y < scrollH; y += step) {
+    segments.push(y);
+  }
+  // Ensure we don't have a tiny last segment — merge if < 30% viewport
+  if (segments.length > 1) {
+    const lastY = segments[segments.length - 1];
+    const lastH = scrollH - lastY;
+    if (lastH < vh * 0.3) segments.pop();
+  }
+
+  const files = [];
+  const prefix = (targetId || 'unknown').slice(0, 8);
+
+  for (let i = 0; i < segments.length; i++) {
+    const y = segments[i];
+    // Scroll to segment
+    await evalStr(cdp, sid, `window.scrollTo(0, ${y})`);
+    await sleep(150); // let rendering settle
+
+    const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, sid);
+    const out = resolve(RUNTIME_DIR, `scanshot-${prefix}-${i + 1}.png`);
+    writeFileSync(out, Buffer.from(data, 'base64'));
+    files.push(out);
+  }
+
+  // Restore original scroll position
+  await evalStr(cdp, sid, `window.scrollTo(0, ${originalY})`);
+
+  const lines = [`Captured ${files.length} segment(s) of ${vw}x${vh} viewport (page height: ${scrollH}px)`];
+  for (let i = 0; i < files.length; i++) {
+    lines.push(`  [${i + 1}/${files.length}] ${files[i]}`);
+  }
+  lines.push(`Use the Read tool to view each segment image.`);
+  return lines.join('\n');
 }
 
 async function stylesStr(cdp, sid, selector) {
@@ -978,6 +1027,7 @@ async function runDaemon(targetId) {
         case 'fill': result = await fillStr(cdp, sessionId, args[0], args[1]); break;
         case 'select': result = await selectStr(cdp, sessionId, args[0], args[1]); break;
         case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
+        case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
         case 'styles': result = await stylesStr(cdp, sessionId, args[0]); break;
         case 'cookies': result = await cookiesStr(cdp, sessionId); break;
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
@@ -1179,7 +1229,8 @@ Usage: cdp <command> [args]
                                     Optional interval in ms between clicks (default 1500)
   fill    <target> <selector> <txt> Clear field and type text (for form filling)
   select  <target> <selector> <val> Select an option in a <select> element by value
-  fullshot <target> [file]          Full-page screenshot (captures beyond viewport)
+  fullshot <target> [file]          Full-page screenshot (single image — may be hard to read)
+  scanshot <target>                 Segmented full-page capture (viewport-sized images, readable)
   styles  <target> <selector>       Get computed styles for element (filtered to meaningful props)
   cookies <target>                  List cookies for current page
   evalraw <target> <method> [json]  Send a raw CDP command; returns JSON result
@@ -1214,7 +1265,7 @@ DAEMON IPC (for advanced use / scripting)
     Request:  {"id":<number>, "cmd":"<command>", "args":["arg1","arg2",...]}
     Response: {"id":<number>, "ok":true,  "result":"<string>"}
            or {"id":<number>, "ok":false, "error":"<message>"}
-  Commands mirror the CLI: status, summary, console, snap, eval, shot, fullshot,
+  Commands mirror the CLI: status, summary, console, snap, eval, shot, fullshot, scanshot,
   html, nav, net, click, clickxy, hover, type, press, scroll, fill, select,
   waitfor, loadall, styles, cookies, evalraw, stop. Use evalraw to send arbitrary CDP methods.
   The socket disappears after 20 min of inactivity or when the tab closes.
@@ -1222,7 +1273,7 @@ DAEMON IPC (for advanced use / scripting)
 
 const NEEDS_TARGET = new Set([
   'snap','snapshot','eval','shot','screenshot','html','nav','navigate',
-  'net','network','click','clickxy','type','press','scroll','hover','waitfor','loadall','fill','select','fullshot','styles','cookies','evalraw','status','console','summary',
+  'net','network','click','clickxy','type','press','scroll','hover','waitfor','loadall','fill','select','fullshot','scanshot','styles','cookies','evalraw','status','console','summary',
 ]);
 
 async function main() {

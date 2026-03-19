@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased (merged fork)
+## Unreleased
+
+### Added
+
+- **`scanshot <target>`** — segmented full-page capture: scrolls through the page taking viewport-sized screenshots with 10% overlap. Each segment is full-resolution and readable by AI vision, unlike `fullshot` which produces a single tiny image on long pages.
+
+### Previous (merged fork)
 
 Merged local enhancements with upstream v1.0.2 changes.
 
