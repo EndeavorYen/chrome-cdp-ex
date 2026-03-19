@@ -7,7 +7,7 @@
 // the CDP session open. Chrome's "Allow debugging" modal fires once per
 // daemon (= once per tab). Daemons auto-exit after 20min idle.
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { resolve } from 'path';
 import { spawn } from 'child_process';
@@ -27,12 +27,20 @@ const RUNTIME_DIR = IS_WINDOWS
     ? resolve(process.env.XDG_RUNTIME_DIR, 'cdp')
     : resolve(homedir(), '.cache', 'cdp');
 try { mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 }); } catch {}
+const SOCK_PREFIX = resolve(RUNTIME_DIR, 'cdp-');
 const PAGES_CACHE = resolve(RUNTIME_DIR, 'pages.json');
 
+class RingBuffer {
+  constructor(capacity) { this.buf = []; this.capacity = capacity; this.seq = 0; }
+  push(entry) { entry._seq = ++this.seq; this.buf.push(entry); if (this.buf.length > this.capacity) this.buf.shift(); }
+  since(seq) { return this.buf.filter(e => e._seq > seq); }
+  all() { return [...this.buf]; }
+  latest() { return this.seq; }
+}
+
 function sockPath(targetId) {
-  return IS_WINDOWS
-    ? `\\\\.\\pipe\\cdp-${targetId}`
-    : resolve(RUNTIME_DIR, `cdp-${targetId}.sock`);
+  if (IS_WINDOWS) return `\\\\.\\pipe\\cdp-${targetId}`;
+  return `${SOCK_PREFIX}${targetId}.sock`;
 }
 
 function getWsUrl() {
@@ -48,16 +56,18 @@ function getWsUrl() {
     'vivaldi', 'vivaldi-snapshot',
     'BraveSoftware/Brave-Browser', 'microsoft-edge',
   ];
-  // Linux Flatpak: ~/.var/app/<app-id>/config/<name>/DevToolsActivePort
-  const flatpakBrowsers = [
-    ['org.chromium.Chromium', 'chromium'],
-    ['com.google.Chrome', 'google-chrome'],
-    ['com.brave.Browser', 'BraveSoftware/Brave-Browser'],
-    ['com.microsoft.Edge', 'microsoft-edge'],
-    ['com.vivaldi.Vivaldi', 'vivaldi'],
+  // Windows: %LOCALAPPDATA%\<name>\User Data\DevToolsActivePort
+  const winBrowsers = [
+    'Google\\Chrome', 'Google\\Chrome Beta', 'Google\\Chrome for Testing',
+    'Chromium', 'BraveSoftware\\Brave-Browser', 'Microsoft\\Edge',
   ];
+  const localAppData = process.env.LOCALAPPDATA || '';
   const candidates = [
     process.env.CDP_PORT_FILE,
+    ...winBrowsers.flatMap(b => [
+      resolve(localAppData, b, 'User Data', 'DevToolsActivePort'),
+      resolve(localAppData, b, 'User Data', 'Default', 'DevToolsActivePort'),
+    ]),
     ...macBrowsers.flatMap(b => [
       resolve(home, 'Library/Application Support', b, 'DevToolsActivePort'),
       resolve(home, 'Library/Application Support', b, 'Default/DevToolsActivePort'),
@@ -66,18 +76,17 @@ function getWsUrl() {
       resolve(home, '.config', b, 'DevToolsActivePort'),
       resolve(home, '.config', b, 'Default/DevToolsActivePort'),
     ]),
-    ...flatpakBrowsers.flatMap(([appId, name]) => [
+    // Linux Flatpak: ~/.var/app/<app-id>/config/<name>/DevToolsActivePort
+    ...([
+      ['org.chromium.Chromium', 'chromium'],
+      ['com.google.Chrome', 'google-chrome'],
+      ['com.brave.Browser', 'BraveSoftware/Brave-Browser'],
+      ['com.microsoft.Edge', 'microsoft-edge'],
+      ['com.vivaldi.Vivaldi', 'vivaldi'],
+    ]).flatMap(([appId, name]) => [
       resolve(home, '.var/app', appId, 'config', name, 'DevToolsActivePort'),
       resolve(home, '.var/app', appId, 'config', name, 'Default/DevToolsActivePort'),
     ]),
-    // Windows: %LOCALAPPDATA%/<name>/User Data/DevToolsActivePort
-    ...(IS_WINDOWS ? ['Google/Chrome', 'BraveSoftware/Brave-Browser', 'Microsoft/Edge'].flatMap(b => {
-      const base = process.env.LOCALAPPDATA || resolve(home, 'AppData/Local');
-      return [
-        resolve(base, b, 'User Data/DevToolsActivePort'),
-        resolve(base, b, 'User Data/Default/DevToolsActivePort'),
-      ];
-    }) : []),
   ].filter(Boolean);
   const portFile = candidates.find(p => existsSync(p));
   if (!portFile) throw new Error('No DevToolsActivePort found. Enable remote debugging at chrome://inspect/#remote-debugging');
@@ -89,6 +98,26 @@ function getWsUrl() {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+function listDaemonSockets() {
+  if (IS_WINDOWS) {
+    // Named pipes aren't in filesystem; probe pipes for known targets from pages cache
+    try {
+      const cached = JSON.parse(readFileSync(PAGES_CACHE, 'utf8'));
+      return (Array.isArray(cached) ? cached : cached.pages || []).map(p => ({
+        targetId: p.targetId,
+        socketPath: sockPath(p.targetId),
+      }));
+    } catch { return []; }
+  }
+  try {
+    return readdirSync(RUNTIME_DIR)
+      .filter(f => f.startsWith('cdp-') && f.endsWith('.sock'))
+      .map(f => ({
+        targetId: f.slice(4, -5),
+        socketPath: resolve(RUNTIME_DIR, f),
+      }));
+  } catch { return []; }
+}
 
 function resolvePrefix(prefix, candidates, noun = 'target', missingHint = '') {
   const upper = prefix.toUpperCase();
@@ -208,7 +237,7 @@ class CDP {
 
 async function getPages(cdp) {
   const { targetInfos } = await cdp.send('Target.getTargets');
-  return targetInfos.filter(t => t.type === 'page' && !t.url.startsWith('chrome://'));
+  return targetInfos.filter(t => t.type === 'page' && !t.url.startsWith('chrome://') && !t.url.startsWith('edge://'));
 }
 
 function formatPageList(pages) {
@@ -299,27 +328,12 @@ async function evalStr(cdp, sid, expression) {
 }
 
 async function shotStr(cdp, sid, filePath, targetId) {
-  // Get device scale factor so we can report coordinate mapping
   let dpr = 1;
   try {
-    const metrics = await cdp.send('Page.getLayoutMetrics', {}, sid);
-    dpr = metrics.visualViewport?.clientWidth
-      ? metrics.cssVisualViewport?.clientWidth
-        ? Math.round((metrics.visualViewport.clientWidth / metrics.cssVisualViewport.clientWidth) * 100) / 100
-        : 1
-      : 1;
-    // Simpler: deviceScaleFactor is on the root Page metrics
-    const { deviceScaleFactor } = await cdp.send('Emulation.getDeviceMetricsOverride', {}, sid).catch(() => ({}));
-    if (deviceScaleFactor) dpr = deviceScaleFactor;
+    const raw = await evalStr(cdp, sid, 'window.devicePixelRatio');
+    const parsed = parseFloat(raw);
+    if (parsed > 0) dpr = parsed;
   } catch {}
-  // Fallback: try to get DPR from JS
-  if (dpr === 1) {
-    try {
-      const raw = await evalStr(cdp, sid, 'window.devicePixelRatio');
-      const parsed = parseFloat(raw);
-      if (parsed > 0) dpr = parsed;
-    } catch {}
-  }
 
   const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, sid);
   const out = filePath || resolve(RUNTIME_DIR, `screenshot-${(targetId || 'unknown').slice(0, 8)}.png`);
@@ -402,6 +416,146 @@ async function netStr(cdp, sid) {
   ).join('\n');
 }
 
+async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq) {
+  let title = '', url = '';
+  try {
+    title = await evalStr(cdp, sid, 'document.title');
+    url = await evalStr(cdp, sid, 'window.location.href');
+  } catch {}
+
+  const lines = [];
+  lines.push(`URL: ${url}`);
+  lines.push(`Title: ${title}`);
+
+  const navs = navBuf.all();
+  if (navs.length > 0) {
+    const last = navs[navs.length - 1];
+    const ago = Math.round((Date.now() - last.ts) / 1000);
+    lines.push(`Navigations: ${navs.length} (last ${ago}s ago)`);
+  }
+
+  const newConsole = consoleBuf.since(lastReadSeq.console);
+  const newExceptions = exceptionBuf.since(lastReadSeq.exception);
+
+  if (newConsole.length > 0) {
+    lines.push(`Console (${newConsole.length} new):`);
+    for (const e of newConsole.slice(-20)) {
+      const loc = e.loc ? ` (${e.loc})` : '';
+      lines.push(`  [${e.level}] ${e.text.substring(0, 200)}${loc}`);
+    }
+    if (newConsole.length > 20) lines.push(`  ... and ${newConsole.length - 20} more (use 'console --all')`);
+  } else {
+    lines.push('Console: (no new entries)');
+  }
+
+  if (newExceptions.length > 0) {
+    lines.push(`Exceptions (${newExceptions.length} new):`);
+    for (const e of newExceptions.slice(-10)) {
+      const loc = e.loc ? ` at ${e.loc}` : '';
+      lines.push(`  ${e.msg.substring(0, 200)}${loc}`);
+    }
+  }
+
+  lastReadSeq.console = consoleBuf.latest();
+  lastReadSeq.exception = exceptionBuf.latest();
+
+  return lines.join('\n');
+}
+
+async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag) {
+  let entries;
+  let exceptions = [];
+  const showErrors = flag === '--errors';
+  const showAll = flag === '--all';
+
+  if (showAll) {
+    entries = consoleBuf.all();
+    exceptions = exceptionBuf.all();
+  } else if (showErrors) {
+    entries = consoleBuf.all().filter(e => e.level === 'error' || e.level === 'warning');
+    exceptions = exceptionBuf.all();
+  } else {
+    entries = consoleBuf.since(lastReadSeq.console);
+    exceptions = exceptionBuf.since(lastReadSeq.exception);
+    lastReadSeq.console = consoleBuf.latest();
+    lastReadSeq.exception = exceptionBuf.latest();
+  }
+
+  const lines = [];
+  if (entries.length === 0 && exceptions.length === 0) {
+    return showAll ? 'Console buffer is empty' : 'No new console entries';
+  }
+
+  for (const e of entries) {
+    const loc = e.loc ? ` (${e.loc})` : '';
+    lines.push(`[${e.level}] ${e.text.substring(0, 300)}${loc}`);
+  }
+  if (exceptions.length > 0) {
+    lines.push('--- Uncaught Exceptions ---');
+    for (const e of exceptions) {
+      const loc = e.loc ? ` at ${e.loc}` : '';
+      lines.push(`[exception] ${e.msg.substring(0, 300)}${loc}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
+  const expr = `
+    (function() {
+      const counts = {};
+      const interactive = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [tabindex]');
+      for (const el of interactive) {
+        const tag = el.tagName.toLowerCase();
+        const type = tag === 'input' ? 'input[' + (el.type || 'text') + ']' : tag;
+        counts[type] = (counts[type] || 0) + 1;
+      }
+      const focused = document.activeElement;
+      const focusDesc = focused && focused !== document.body
+        ? '<' + focused.tagName.toLowerCase() + (focused.id ? '#' + focused.id : '') + (focused.className ? '.' + focused.className.toString().split(' ')[0] : '') + '>'
+        : 'none';
+      return {
+        title: document.title,
+        url: window.location.href,
+        viewport: window.innerWidth + 'x' + window.innerHeight,
+        scrollY: Math.round(window.scrollY),
+        scrollMax: Math.round(document.documentElement.scrollHeight - window.innerHeight),
+        counts,
+        focused: focusDesc,
+      };
+    })()
+  `;
+  const result = await evalStr(cdp, sid, expr);
+  const r = JSON.parse(result);
+  const lines = [];
+  lines.push(`Title: ${r.title}`);
+  lines.push(`URL: ${r.url}`);
+  lines.push(`Viewport: ${r.viewport}`);
+
+  const countParts = Object.entries(r.counts).map(([k, v]) => `${v} ${k}`);
+  lines.push(`Interactive: ${countParts.length > 0 ? countParts.join(', ') : 'none found'}`);
+
+  lines.push(`Focused: ${r.focused}`);
+
+  if (r.scrollMax > 0) {
+    const pct = Math.round(r.scrollY / r.scrollMax * 100);
+    lines.push(`Scroll: ${r.scrollY} / ${r.scrollMax} max (${pct}%)`);
+  } else {
+    lines.push('Scroll: no scroll');
+  }
+
+  const errors = consoleBuf.all().filter(e => e.level === 'error').length;
+  const warnings = consoleBuf.all().filter(e => e.level === 'warning' || e.level === 'warn').length;
+  const exceptions = exceptionBuf.all().length;
+  const parts = [];
+  if (errors > 0) parts.push(`${errors} error${errors > 1 ? 's' : ''}`);
+  if (warnings > 0) parts.push(`${warnings} warning${warnings > 1 ? 's' : ''}`);
+  if (exceptions > 0) parts.push(`${exceptions} exception${exceptions > 1 ? 's' : ''}`);
+  lines.push(`Console: ${parts.length > 0 ? parts.join(', ') : 'clean'}`);
+
+  return lines.join('\n');
+}
+
 // Click element by CSS selector
 async function clickStr(cdp, sid, selector) {
   if (!selector) throw new Error('CSS selector required');
@@ -409,14 +563,19 @@ async function clickStr(cdp, sid, selector) {
     (function() {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
-      el.scrollIntoView({ block: 'center' });
-      el.click();
-      return { ok: true, tag: el.tagName, text: el.textContent.trim().substring(0, 80) };
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = el.getBoundingClientRect();
+      return { ok: true, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, tag: el.tagName, text: el.textContent.trim().substring(0, 80) };
     })()
   `;
   const result = await evalStr(cdp, sid, expr);
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(r.error);
+  const base = { x: r.x, y: r.y, button: 'left', clickCount: 1, modifiers: 0 };
+  await cdp.send('Input.dispatchMouseEvent', { ...base, type: 'mouseMoved' }, sid);
+  await cdp.send('Input.dispatchMouseEvent', { ...base, type: 'mousePressed' }, sid);
+  await sleep(50);
+  await cdp.send('Input.dispatchMouseEvent', { ...base, type: 'mouseReleased' }, sid);
   return `Clicked <${r.tag}> "${r.text}"`;
 }
 
@@ -440,27 +599,242 @@ async function typeStr(cdp, sid, text) {
   return `Typed ${text.length} characters`;
 }
 
+const KEY_MAP = {
+  enter:      { key: 'Enter',      code: 'Enter',      keyCode: 13 },
+  tab:        { key: 'Tab',        code: 'Tab',        keyCode: 9 },
+  escape:     { key: 'Escape',     code: 'Escape',     keyCode: 27 },
+  backspace:  { key: 'Backspace',  code: 'Backspace',  keyCode: 8 },
+  delete:     { key: 'Delete',     code: 'Delete',     keyCode: 46 },
+  space:      { key: ' ',          code: 'Space',      keyCode: 32 },
+  arrowup:    { key: 'ArrowUp',    code: 'ArrowUp',    keyCode: 38 },
+  arrowdown:  { key: 'ArrowDown',  code: 'ArrowDown',  keyCode: 40 },
+  arrowleft:  { key: 'ArrowLeft',  code: 'ArrowLeft',  keyCode: 37 },
+  arrowright: { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 },
+};
+
+async function pressStr(cdp, sid, keyName) {
+  if (!keyName) throw new Error('Key name required (Enter, Tab, Escape, Backspace, Space, Arrow*)');
+  const mapped = KEY_MAP[keyName.toLowerCase()];
+  if (!mapped) throw new Error(`Unknown key: ${keyName}. Supported: ${Object.keys(KEY_MAP).join(', ')}`);
+  const base = { key: mapped.key, code: mapped.code, windowsVirtualKeyCode: mapped.keyCode, nativeVirtualKeyCode: mapped.keyCode };
+  await cdp.send('Input.dispatchKeyEvent', { ...base, type: 'keyDown' }, sid);
+  await cdp.send('Input.dispatchKeyEvent', { ...base, type: 'keyUp' }, sid);
+  return `Pressed ${mapped.key}`;
+}
+
+async function scrollStr(cdp, sid, direction, amount) {
+  const px = parseInt(amount) || 500;
+  const dirMap = { down: [0, px], up: [0, -px], left: [-px, 0], right: [px, 0] };
+  let dx, dy;
+  if (dirMap[direction?.toLowerCase()]) {
+    [dx, dy] = dirMap[direction.toLowerCase()];
+  } else if (direction?.includes(',')) {
+    [dx, dy] = direction.split(',').map(Number);
+    if (isNaN(dx) || isNaN(dy)) throw new Error('Invalid coordinates. Use "down", "up", or "x,y"');
+  } else {
+    throw new Error('Direction required: down, up, left, right, or x,y');
+  }
+  const result = await evalStr(cdp, sid, `(window.scrollBy(${dx}, ${dy}), JSON.stringify({ x: Math.round(window.scrollX), y: Math.round(window.scrollY) }))`);
+  const pos = JSON.parse(result);
+  return `Scrolled by (${dx}, ${dy}). Position: (${pos.x}, ${pos.y})`;
+}
+
+async function hoverStr(cdp, sid, selector) {
+  if (!selector) throw new Error('CSS selector required');
+  const expr = `
+    (function() {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = el.getBoundingClientRect();
+      return { ok: true, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, tag: el.tagName };
+    })()
+  `;
+  const result = await evalStr(cdp, sid, expr);
+  const r = JSON.parse(result);
+  if (!r.ok) throw new Error(r.error);
+  await cdp.send('Input.dispatchMouseEvent', { x: r.x, y: r.y, type: 'mouseMoved', button: 'none', modifiers: 0 }, sid);
+  return `Hovering over <${r.tag}> at CSS (${Math.round(r.x)}, ${Math.round(r.y)})`;
+}
+
+async function waitForStr(cdp, sid, selector, timeoutMs = 10000) {
+  if (!selector) throw new Error('CSS selector required');
+  const timeout = Math.min(Math.max(parseInt(timeoutMs) || 10000, 500), 30000);
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const found = await evalStr(cdp, sid, `
+      (function() {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return null;
+        return { tag: el.tagName, text: el.textContent.trim().substring(0, 80) };
+      })()
+    `);
+    if (found !== 'null' && found !== '') {
+      const r = JSON.parse(found);
+      return `Found <${r.tag}> "${r.text}"`;
+    }
+    await sleep(200);
+  }
+  throw new Error(`Timeout: "${selector}" not found within ${timeout}ms`);
+}
+
+async function fillStr(cdp, sid, selector, text) {
+  if (!selector) throw new Error('CSS selector required');
+  if (text == null) throw new Error('Text required');
+  // Focus via JS (more reliable than mouse events for input focus) + get element info
+  const expr = `
+    (function() {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      el.focus();
+      el.value = '';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return { ok: true, tag: el.tagName };
+    })()
+  `;
+  const result = await evalStr(cdp, sid, expr);
+  const r = JSON.parse(result);
+  if (!r.ok) throw new Error(r.error);
+  // Insert text into the now-focused, cleared field
+  await cdp.send('Input.insertText', { text }, sid);
+  return `Filled <${r.tag}> with "${text.substring(0, 40)}${text.length > 40 ? '...' : ''}"`;
+}
+
+async function selectStr(cdp, sid, selector, value) {
+  if (!selector) throw new Error('CSS selector required');
+  if (value == null) throw new Error('Value required');
+  const expr = `
+    (function() {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+      if (el.tagName !== 'SELECT') return { ok: false, error: 'Not a <select>: ' + el.tagName };
+      el.value = ${JSON.stringify(value)};
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      const opt = el.options[el.selectedIndex];
+      return { ok: true, text: opt ? opt.textContent.trim() : value };
+    })()
+  `;
+  const result = await evalStr(cdp, sid, expr);
+  const r = JSON.parse(result);
+  if (!r.ok) throw new Error(r.error);
+  return `Selected "${r.text}"`;
+}
+
+async function fullshotStr(cdp, sid, filePath, targetId) {
+  let dpr = 1;
+  try {
+    const raw = await evalStr(cdp, sid, 'window.devicePixelRatio');
+    const parsed = parseFloat(raw);
+    if (parsed > 0) dpr = parsed;
+  } catch {}
+
+  const metrics = await cdp.send('Page.getLayoutMetrics', {}, sid);
+  const width = metrics.cssContentSize?.width || metrics.contentSize?.width || 1280;
+  const height = metrics.cssContentSize?.height || metrics.contentSize?.height || 800;
+
+  const { data } = await cdp.send('Page.captureScreenshot', {
+    format: 'png',
+    captureBeyondViewport: true,
+    clip: { x: 0, y: 0, width, height, scale: 1 },
+  }, sid);
+
+  const out = filePath || resolve(RUNTIME_DIR, `fullshot-${(targetId || 'unknown').slice(0, 8)}.png`);
+  writeFileSync(out, Buffer.from(data, 'base64'));
+
+  return `${out}\nFull-page screenshot saved. Size: ${width}x${height} CSS px, DPR: ${dpr}`;
+}
+
+async function stylesStr(cdp, sid, selector) {
+  if (!selector) throw new Error('CSS selector required');
+  const expr = `
+    (function() {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      const cs = window.getComputedStyle(el);
+      const props = {};
+      const keep = [
+        'display','visibility','opacity','position','top','right','bottom','left',
+        'width','height','min-width','min-height','max-width','max-height',
+        'margin','padding','border','box-sizing','overflow','z-index',
+        'flex','flex-direction','flex-wrap','align-items','justify-content','gap',
+        'grid-template-columns','grid-template-rows',
+        'color','background-color','background','font-size','font-weight','font-family',
+        'line-height','text-align','text-decoration','text-overflow','white-space',
+        'transform','transition','animation','cursor','pointer-events','user-select',
+        'box-shadow','border-radius','outline',
+      ];
+      const skip = new Set([
+        'none','normal','auto','0px','0','visible','static','content-box',
+        'start','baseline','inherit','default','clip','row','nowrap',
+        'rgb(0, 0, 0)','rgba(0, 0, 0, 0)',
+      ]);
+      const skipPatterns = [
+        /^0px /,              // 0px none rgb(...)  — default border etc.
+        /^rgba\\(0, ?0, ?0, ?0\\)/, // transparent backgrounds
+        /^0 [01]+ auto$/,     // flex: 0 1 auto
+        /none 0px$/,          // outline: rgb(...) none 0px — no outline
+        /^all$/,              // transition: all — browser default
+      ];
+      for (const p of keep) {
+        const v = cs.getPropertyValue(p);
+        if (!v || skip.has(v)) continue;
+        if (skipPatterns.some(re => re.test(v))) continue;
+        props[p] = v;
+      }
+      return { tag: el.tagName, id: el.id, cls: el.className?.toString().substring(0, 80), props };
+    })()
+  `;
+  const result = await evalStr(cdp, sid, expr);
+  if (result === 'null') throw new Error('Element not found: ' + selector);
+  const r = JSON.parse(result);
+  const header = '<' + r.tag + '>' + (r.id ? '#' + r.id : '') + (r.cls ? '.' + r.cls.split(' ').join('.') : '');
+  const lines = [header];
+  for (const [k, v] of Object.entries(r.props)) {
+    lines.push('  ' + k + ': ' + v);
+  }
+  return lines.join('\n');
+}
+
+async function cookiesStr(cdp, sid) {
+  const { cookies } = await cdp.send('Network.getCookies', {}, sid);
+  if (!cookies || cookies.length === 0) return 'No cookies';
+  // Dynamic column width based on actual cookie names
+  const nameW = Math.min(Math.max(...cookies.map(c => c.name.length)) + 2, 32);
+  const lines = [];
+  for (const c of cookies) {
+    const val = c.value.length > 30 ? c.value.substring(0, 30) + '...' : c.value;
+    const flags = [c.httpOnly && 'HttpOnly', c.secure && 'Secure', c.sameSite].filter(Boolean).join(' ');
+    const exp = c.expires > 0 ? new Date(c.expires * 1000).toISOString().slice(0, 19) : 'session';
+    lines.push(`${c.name.padEnd(nameW)} ${val.padEnd(34)} ${c.domain.padEnd(20)} ${exp.padEnd(20)} ${flags}`);
+  }
+  return lines.join('\n');
+}
+
 // Load-more: repeatedly click a button/selector until it disappears
 async function loadAllStr(cdp, sid, selector, intervalMs = 1500) {
   if (!selector) throw new Error('CSS selector required');
   let clicks = 0;
   const deadline = Date.now() + 5 * 60 * 1000; // 5-minute hard cap
   while (Date.now() < deadline) {
-    const exists = await evalStr(cdp, sid,
-      `!!document.querySelector(${JSON.stringify(selector)})`
-    );
-    if (exists !== 'true') break;
-    const clickExpr = `
+    const expr = `
       (function() {
         const el = document.querySelector(${JSON.stringify(selector)});
-        if (!el) return false;
-        el.scrollIntoView({ block: 'center' });
-        el.click();
-        return true;
+        if (!el) return null;
+        el.scrollIntoView({ block: 'center', inline: 'center' });
+        const rect = el.getBoundingClientRect();
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
       })()
     `;
-    const clicked = await evalStr(cdp, sid, clickExpr);
-    if (clicked !== 'true') break;
+    const result = await evalStr(cdp, sid, expr);
+    if (result === 'null' || result === '') break;
+    const r = JSON.parse(result);
+    const base = { x: r.x, y: r.y, button: 'left', clickCount: 1, modifiers: 0 };
+    await cdp.send('Input.dispatchMouseEvent', { ...base, type: 'mouseMoved' }, sid);
+    await cdp.send('Input.dispatchMouseEvent', { ...base, type: 'mousePressed' }, sid);
+    await sleep(50);
+    await cdp.send('Input.dispatchMouseEvent', { ...base, type: 'mouseReleased' }, sid);
     clicks++;
     await sleep(intervalMs);
   }
@@ -503,6 +877,41 @@ async function runDaemon(targetId) {
     cdp.close();
     process.exit(1);
   }
+
+  // --- Background observation ---
+  const consoleBuf = new RingBuffer(200);
+  const exceptionBuf = new RingBuffer(50);
+  const navBuf = new RingBuffer(10);
+  let lastReadSeq = { console: 0, exception: 0 };
+
+  // Enable domains for background collection
+  try { await cdp.send('Runtime.enable', {}, sessionId); } catch {}
+  try { await cdp.send('Page.enable', {}, sessionId); } catch {}
+
+  cdp.onEvent('Runtime.consoleAPICalled', (params) => {
+    const level = params.type || 'log';
+    const text = (params.args || []).map(a => a.value ?? a.description ?? JSON.stringify(a)).join(' ');
+    const stack = params.stackTrace?.callFrames?.[0];
+    const file = stack?.url?.split('/').pop() || '';
+    const loc = file && stack.lineNumber > 0 ? `${file}:${stack.lineNumber}` : '';
+    consoleBuf.push({ level, text, loc, ts: Date.now() });
+  });
+
+  cdp.onEvent('Runtime.exceptionThrown', (params) => {
+    const detail = params.exceptionDetails;
+    // exception.description has full message (e.g. "Error: foo"); text is just "Uncaught"
+    const msg = detail?.exception?.description || detail?.text || 'Unknown error';
+    const stack = detail?.stackTrace?.callFrames?.[0];
+    const file = stack?.url?.split('/').pop() || '';
+    const loc = file && stack.lineNumber > 0 ? `${file}:${stack.lineNumber}` : '';
+    exceptionBuf.push({ msg, loc, ts: Date.now() });
+  });
+
+  cdp.onEvent('Page.frameNavigated', (params) => {
+    if (!params.frame.parentId) { // main frame only
+      navBuf.push({ url: params.frame.url, ts: Date.now() });
+    }
+  });
 
   // Shutdown helpers
   let alive = true;
@@ -549,16 +958,28 @@ async function runDaemon(targetId) {
           result = JSON.stringify(pages);
           break;
         }
-        case 'snap': case 'snapshot': result = await snapshotStr(cdp, sessionId, true); break;
+        case 'snap': case 'snapshot': result = await snapshotStr(cdp, sessionId, args[0] !== '--full'); break;
         case 'eval': result = await evalStr(cdp, sessionId, args[0]); break;
         case 'shot': case 'screenshot': result = await shotStr(cdp, sessionId, args[0], targetId); break;
         case 'html': result = await htmlStr(cdp, sessionId, args[0]); break;
         case 'nav': case 'navigate': result = await navStr(cdp, sessionId, args[0]); break;
         case 'net': case 'network': result = await netStr(cdp, sessionId); break;
+        case 'status': result = await statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq); break;
+        case 'console': result = await consoleStr(consoleBuf, exceptionBuf, lastReadSeq, args[0]); break;
+        case 'summary': result = await summaryStr(cdp, sessionId, consoleBuf, exceptionBuf); break;
         case 'click': result = await clickStr(cdp, sessionId, args[0]); break;
         case 'clickxy': result = await clickXyStr(cdp, sessionId, args[0], args[1]); break;
         case 'type': result = await typeStr(cdp, sessionId, args[0]); break;
+        case 'press': result = await pressStr(cdp, sessionId, args[0]); break;
+        case 'scroll': result = await scrollStr(cdp, sessionId, args[0], args[1]); break;
+        case 'hover': result = await hoverStr(cdp, sessionId, args[0]); break;
+        case 'waitfor': result = await waitForStr(cdp, sessionId, args[0], args[1]); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
+        case 'fill': result = await fillStr(cdp, sessionId, args[0], args[1]); break;
+        case 'select': result = await selectStr(cdp, sessionId, args[0], args[1]); break;
+        case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
+        case 'styles': result = await stylesStr(cdp, sessionId, args[0]); break;
+        case 'cookies': result = await cookiesStr(cdp, sessionId); break;
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
         case 'stop': return { ok: true, result: '', stopAfter: true };
         default: return { ok: false, error: `Unknown command: ${cmd}` };
@@ -694,24 +1115,36 @@ function sendCommand(conn, req) {
   });
 }
 
+// Find any running daemon socket to reuse for list
+function findAnyDaemonSocket() {
+  return listDaemonSockets()[0]?.socketPath || null;
+}
+
 // ---------------------------------------------------------------------------
 // Stop daemons
 // ---------------------------------------------------------------------------
 
 async function stopDaemons(targetPrefix) {
-  if (!existsSync(PAGES_CACHE)) return;
-  const pages = JSON.parse(readFileSync(PAGES_CACHE, 'utf8'));
-  const targets = targetPrefix
-    ? [resolvePrefix(targetPrefix, pages.map(p => p.targetId), 'target')]
-    : pages.map(p => p.targetId);
+  const daemons = listDaemonSockets();
 
-  for (const targetId of targets) {
-    const sp = sockPath(targetId);
+  if (targetPrefix) {
+    const targetId = resolvePrefix(targetPrefix, daemons.map(d => d.targetId), 'daemon');
+    const daemon = daemons.find(d => d.targetId === targetId);
     try {
-      const conn = await connectToSocket(sp);
+      const conn = await connectToSocket(daemon.socketPath);
       await sendCommand(conn, { cmd: 'stop' });
     } catch {
-      if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
+      if (!IS_WINDOWS) try { unlinkSync(daemon.socketPath); } catch {}
+    }
+    return;
+  }
+
+  for (const daemon of daemons) {
+    try {
+      const conn = await connectToSocket(daemon.socketPath);
+      await sendCommand(conn, { cmd: 'stop' });
+    } catch {
+      if (!IS_WINDOWS) try { unlinkSync(daemon.socketPath); } catch {}
     }
   }
 }
@@ -725,18 +1158,30 @@ const USAGE = `cdp - lightweight Chrome DevTools Protocol CLI (no Puppeteer)
 Usage: cdp <command> [args]
 
   list                              List open pages (shows unique target prefixes)
-  snap  <target>                    Accessibility tree snapshot
+  snap  <target> [--full]           Accessibility tree snapshot (compact by default, --full for complete)
   eval  <target> <expr>             Evaluate JS expression
   shot  <target> [file]             Screenshot (default: screenshot-<target>.png in runtime dir); prints coordinate mapping
   html  <target> [selector]         Get HTML (full page or CSS selector)
   nav   <target> <url>              Navigate to URL and wait for load completion
+  status <target>                    Page state + new console/exception entries (primary debug entry point)
+  console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
+  summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
   net   <target>                    Network performance entries
   click   <target> <selector>       Click an element by CSS selector
   clickxy <target> <x> <y>          Click at CSS pixel coordinates (see coordinate note below)
   type    <target> <text>           Type text at current focus via Input.insertText
                                     Works in cross-origin iframes unlike eval-based approaches
+  press   <target> <key>           Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)
+  scroll  <target> <dir|x,y> [px]  Scroll page (down/up/left/right or x,y offset; default 500px)
+  hover   <target> <selector>       Hover over element (triggers :hover, tooltips, dropdowns)
+  waitfor <target> <selector> [ms]  Wait for element to appear (default 10000ms, max 30s)
   loadall <target> <selector> [ms]  Repeatedly click a "load more" button until it disappears
                                     Optional interval in ms between clicks (default 1500)
+  fill    <target> <selector> <txt> Clear field and type text (for form filling)
+  select  <target> <selector> <val> Select an option in a <select> element by value
+  fullshot <target> [file]          Full-page screenshot (captures beyond viewport)
+  styles  <target> <selector>       Get computed styles for element (filtered to meaningful props)
+  cookies <target>                  List cookies for current page
   evalraw <target> <method> [json]  Send a raw CDP command; returns JSON result
                                     e.g. evalraw <t> "DOM.getDocument" '{}'
   open  [url]                       Open a new tab (default: about:blank)
@@ -769,14 +1214,15 @@ DAEMON IPC (for advanced use / scripting)
     Request:  {"id":<number>, "cmd":"<command>", "args":["arg1","arg2",...]}
     Response: {"id":<number>, "ok":true,  "result":"<string>"}
            or {"id":<number>, "ok":false, "error":"<message>"}
-  Commands mirror the CLI: snap, eval, shot, html, nav, net, click, clickxy,
-  type, loadall, evalraw, stop. Use evalraw to send arbitrary CDP methods.
+  Commands mirror the CLI: status, summary, console, snap, eval, shot, fullshot,
+  html, nav, net, click, clickxy, hover, type, press, scroll, fill, select,
+  waitfor, loadall, styles, cookies, evalraw, stop. Use evalraw to send arbitrary CDP methods.
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
 const NEEDS_TARGET = new Set([
   'snap','snapshot','eval','shot','screenshot','html','nav','navigate',
-  'net','network','click','clickxy','type','loadall','evalraw',
+  'net','network','click','clickxy','type','press','scroll','hover','waitfor','loadall','fill','select','fullshot','styles','cookies','evalraw','status','console','summary',
 ]);
 
 async function main() {
@@ -789,14 +1235,27 @@ async function main() {
     console.log(USAGE); process.exit(0);
   }
 
+  // List — use existing daemon if available, otherwise direct
   if (cmd === 'list' || cmd === 'ls') {
-    const cdp = new CDP();
-    await cdp.connect(getWsUrl());
-    const pages = await getPages(cdp);
-    cdp.close();
+    let pages;
+    const existingSock = findAnyDaemonSocket();
+    if (existingSock) {
+      try {
+        const conn = await connectToSocket(existingSock);
+        const resp = await sendCommand(conn, { cmd: 'list_raw' });
+        if (resp.ok) pages = JSON.parse(resp.result);
+      } catch {}
+    }
+    if (!pages) {
+      // No daemon running — connect directly (will trigger one Allow)
+      const cdp = new CDP();
+      await cdp.connect(getWsUrl());
+      pages = await getPages(cdp);
+      cdp.close();
+    }
     writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
     console.log(formatPageList(pages));
-    setTimeout(() => process.exit(0), 100);
+    process.stdout.write('', () => process.exit(0));
     return;
   }
 
@@ -837,13 +1296,21 @@ async function main() {
     process.exit(1);
   }
 
-  // Resolve prefix → full targetId from pages cache
-  if (!existsSync(PAGES_CACHE)) {
-    console.error('No page list cached. Run "cdp list" first.');
-    process.exit(1);
+  // Resolve prefix → full targetId from cache or running daemon
+  let targetId;
+  const daemonTargetIds = listDaemonSockets().map(d => d.targetId);
+  const daemonMatches = daemonTargetIds.filter(id => id.toUpperCase().startsWith(targetPrefix.toUpperCase()));
+
+  if (daemonMatches.length > 0) {
+    targetId = resolvePrefix(targetPrefix, daemonTargetIds, 'daemon');
+  } else {
+    if (!existsSync(PAGES_CACHE)) {
+      console.error('No page list cached. Run "cdp list" first.');
+      process.exit(1);
+    }
+    const pages = JSON.parse(readFileSync(PAGES_CACHE, 'utf8'));
+    targetId = resolvePrefix(targetPrefix, pages.map(p => p.targetId), 'target', 'Run "cdp list".');
   }
-  const pages = JSON.parse(readFileSync(PAGES_CACHE, 'utf8'));
-  const targetId = resolvePrefix(targetPrefix, pages.map(p => p.targetId), 'target', 'Run "cdp list".');
 
   const conn = await getOrStartTabDaemon(targetId);
 
@@ -858,6 +1325,9 @@ async function main() {
     const text = cmdArgs.join(' ');
     if (!text) { console.error('Error: text required'); process.exit(1); }
     cmdArgs[0] = text;
+  } else if (cmd === 'fill') {
+    if (!cmdArgs[0]) { console.error('Error: selector required'); process.exit(1); }
+    if (cmdArgs.length > 2) cmdArgs[1] = cmdArgs.slice(1).join(' ');
   } else if (cmd === 'evalraw') {
     // args: [method, ...jsonParts] — join json parts in case of spaces
     if (!cmdArgs[0]) { console.error('Error: CDP method required'); process.exit(1); }
