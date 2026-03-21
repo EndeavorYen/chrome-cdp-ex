@@ -18,28 +18,15 @@ Connects to the user's **existing Chrome browser** via CDP WebSocket. No Puppete
 
 ## Observation Strategy — Perceive First, Screenshot Last
 
-> **CRITICAL — Read this before any page inspection.**
->
-> Use **structured text** (accessibility tree, layout metadata) as the primary way to understand pages. Screenshots are a **secondary verification tool**, not the default. This approach is more reliable, more token-efficient, and avoids common screenshot pitfalls (wrong scroll position, DPR mismatch, tiny text on long pages).
->
 > **Three-tier perception model:**
 >
 > | Tier | Command | When to use | Output |
 > |------|---------|-------------|--------|
-> | 1. **Perceive** | `perceive` | **Default starting point** for any page inspection | Summary + AX tree + visual layout (text, ~200-400 tokens) |
-> | 2. **Targeted visual** | `elshot <selector>` | Need to verify visual rendering of a **specific element** | Clipped PNG of one element (auto scrolls, no DPR confusion) |
+> | 1. **Perceive** | `perceive` | **Default starting point** for any page inspection | AX tree + layout + style hints (~200-400 tokens) |
+> | 2. **Targeted visual** | `elshot <selector>` | Verify visual rendering of a **specific element** | Clipped PNG of one element |
 > | 3. **Full visual** | `scanshot` | Last resort — pixel-level audit of **entire page** | Multiple viewport-sized PNGs (expensive!) |
 >
-> **DO NOT** start with `shot` or `scanshot`. Always start with `perceive` to understand the page structure and content. Only use `elshot` when you specifically need to verify visual appearance of a component. **`scanshot` should almost never be needed** — if you find yourself reaching for it, ask: "Can I answer this with `elshot` on 2-3 specific sections instead?"
-
-### Why perceive-first is better
-
-- **No scroll position errors** — `perceive` reads the DOM directly, not viewport pixels
-- **No DPR confusion** — text output doesn't need coordinate conversion
-- **Token-efficient** — ~200-400 tokens vs thousands for an image
-- **Semantically richer** — roles, labels, states, values (not just pixels)
-- **Spatial awareness** — layout section includes bounding boxes for structural elements
-- **Reliable for text content** — LLM reads text perfectly; vision can misread screenshots
+> Always start with `perceive`. See **"Verifying changes after actions"** below for when to use each tier.
 
 ### Observation workflow
 
@@ -50,6 +37,21 @@ Connects to the user's **existing Chrome browser** via CDP WebSocket. No Puppete
    OR elshot <target> <sel>   ← if you need visual verification of ONE element
 3. scanshot <target>          ← ONLY if you need full-page visual verification
 ```
+
+### Verifying changes after actions
+
+After modifying code or interacting with a page, choose your verification tool based on **what you need to confirm**:
+
+| What to verify | Tool | Why |
+|---|---|---|
+| Content/structure changed | `perceive` — AX tree shows new/changed nodes | 100% accurate text from DOM |
+| CSS styles applied (color, bold, bg) | `perceive` — style hints on table cells show `bg:rgb(...)`, `bold`, `color:rgb(...)` | Reads `getComputedStyle` directly — no pixel interpretation needed |
+| Element exists/visible | `perceive` — node presence + `↑above fold`/`↓below fold` | Structured, not pixel guessing |
+| Layout/spacing correct | `perceive` — `↕height`, `display`, `gap` on landmarks | Exact px values |
+| Visual polish/aesthetics | `elshot <selector>` on the specific component | Only for **subjective** visual quality that can't be expressed as structured data |
+| Animation/transition | `elshot <selector>` before and after | Only case truly needing pixel capture |
+
+**Key insight:** `perceive` now includes **style anomaly detection** on table cells. If a cell has a non-default background color, bold text, or unusual text color compared to its column siblings, perceive annotates it directly (e.g., `[cell] 70.0%  bg:rgb(255,200,200)  bold`). You don't need a screenshot to verify conditional styling.
 
 ## Prerequisites
 
@@ -119,6 +121,7 @@ scripts/cdp.mjs perceive <target>    # summary + accessibility tree + visual lay
 Returns a single **enriched accessibility tree** that combines semantic structure with inline visual annotations:
 - **Page header**: title, URL, viewport size, scroll position, console health, interactive element counts
 - **Enriched AX tree**: semantic roles and labels (from accessibility tree) with **inline layout annotations** on landmark/structural nodes — height, background color, font size, display mode, and viewport visibility (↑above fold / ↓below fold)
+- **Style anomaly hints**: on table cells, annotates non-default background colors, bold text, and unusual text colors compared to column siblings — e.g., `[cell] 70.0%  bg:rgb(255,200,200)  bold`
 
 Example output:
 ```
@@ -138,11 +141,19 @@ Console: 2 errors, 1 warning
     [region] Product Grid  grid  gap:20px
       [link] Product 1 — $29.99
       [link] Product 2 — $49.99
+    [table] Department Health  ↕400px
+      [row] header
+        [columnheader] Department
+        [columnheader] Failure Rate
+      [row]
+        [cell] LLM Technology  bold
+        [cell] 33.3%  bg:rgb(255,235,200)
+      ... more rows truncated
   [contentinfo]  ↕160px  bg:rgb(26, 26, 46)  ↓below fold
     [link] Privacy Policy
 ```
 
-Hierarchy comes from the accessibility tree (always correct). Layout annotations are added only to landmark/structural nodes (banner, navigation, main, heading, img, etc.) — not every element. This is **the most efficient way** to understand a page. Use it before any screenshots.
+Hierarchy comes from the accessibility tree (always correct). Layout annotations are added to landmark/structural nodes (banner, navigation, main, heading, img, etc.). **Style anomaly hints** are added to table cells that deviate from their column's baseline style — showing background colors, bold text, and text color differences. This is **the most efficient way** to understand a page. Use it before any screenshots.
 
 ### Accessibility tree snapshot
 
@@ -246,22 +257,20 @@ CSS px = screenshot image px / DPR
 ## Workflow Patterns
 
 ### Understanding a page (default workflow)
-1. `perceive <target>` — get complete page understanding (structure + layout + console health)
+1. `perceive <target>` — structure + layout + console health + style anomalies
 2. If needed: `elshot <target> ".specific-element"` — verify visual rendering of a component
 3. If needed: `snap <target> --full` — deeper accessibility tree detail
 
 ### Comparing pages or evaluating design quality
-1. `perceive` **both** pages — compare structure, information architecture, component organization
-2. `elshot` **specific sections** on each page for visual comparison — e.g., header area, status cards, data tables, navigation
-3. Analyze from perceive data: content hierarchy, data density, alert presentation, layout organization
-4. Analyze from elshot images: typography, color usage, spacing, visual polish
-5. **DO NOT use `scanshot`** for comparisons — `elshot` on 3-4 key sections per page gives better targeted comparison than 8+ full-page screenshots
+1. `perceive` **both** pages — compare structure, layout, style hints (colors, bold, font sizes)
+2. `elshot` **specific sections** only if perceive shows identical structure but you need subjective aesthetic comparison
+3. Analyze from perceive data: content hierarchy, data density, style anomalies, layout organization
 
 ### Debugging a broken page
-1. `perceive <target>` — check structure + console errors in one call
+1. `perceive <target>` — structure + console errors + style anomalies in one call
 2. `console <target> --errors` — detailed error messages + stack traces if needed
-3. `elshot <target> ".broken-element"` — visual verification of the problematic area
-4. `styles <target> ".broken-element"` — check computed styles
+3. Check perceive style hints for visual issues first; `elshot` only for subjective visual quality
+4. `styles <target> ".broken-element"` — full computed styles if needed
 
 ### Form automation
 1. `perceive <target>` — understand form structure and field names
@@ -271,10 +280,10 @@ CSS px = screenshot image px / DPR
 5. `waitfor <target> ".success-message"` — wait for result
 
 ### Visual bug investigation
-1. `perceive <target>` — understand page structure and layout positions
-2. `elshot <target> ".suspect"` — targeted screenshot of the suspicious element
-3. `styles <target> ".suspect"` — inspect computed CSS properties
-4. Only if needed: `scanshot <target>` — full page visual for broader context
+1. `perceive <target>` — structure + layout positions + style hints
+2. Check perceive for style anomalies (`bg:`, `bold`, `color:` annotations)
+3. `styles <target> ".suspect"` — full computed CSS if perceive hints aren't enough
+4. `elshot <target> ".suspect"` — only if you need to see the actual rendered pixels
 
 ## Source
 
