@@ -24,31 +24,33 @@ For each table in the page:
 
 1. Collect `getComputedStyle` for all visible `td`/`th` cells: `backgroundColor`, `color`, `fontWeight`
 2. Compute **baseline** per column (most common value among cells in that column)
+   - Cells with `colspan` are excluded from baseline computation (they span multiple columns and skew the majority)
+   - For small tables (< 4 data rows), skip baseline and report all non-default/non-transparent styles directly
 3. Mark cells that **deviate from baseline** with style hints:
    - `bg:rgb(...)` — background differs from column majority
    - `bold` — fontWeight > 400 when majority is normal
    - `color:rgb(...)` — text color differs from column majority
+4. Key each hint by **cell text content** (truncated to 50 chars), not positional index — this avoids DOM/AX tree ordering mismatches caused by `aria-hidden`, colspan, or ARIA grid patterns using `div[role="cell"]`
 
-For non-table elements (buttons, badges, alerts, status indicators):
-
-1. Scan elements matching: `[class*="badge"], [class*="tag"], [class*="status"], [class*="alert"], .ant-tag, .ant-badge`
-2. Report non-default `backgroundColor` and `color`
+Non-table visual annotations are deferred to a future iteration to keep initial scope tight. The table cell case covers the primary screenshot-overuse scenario.
 
 #### Data Flow
 
 ```
 Browser-side eval (existing perceive JS)
   └─ NEW: styleHints collector
-       ├─ Scan tables → per-cell anomaly map keyed by (tableIdx, rowIdx, cellIdx)
-       └─ Scan badges/tags → list of {selector, bg, color}
+       └─ Scan tables → per-cell anomaly map keyed by (tableIdx, cellText)
+            cellText = cell's textContent.trim().slice(0, 50)
   └─ Return styleHints alongside existing layoutMap
 
-Node-side AX tree renderer (visit function)
-  └─ When rendering [cell] nodes inside a table:
-       ├─ Track current tableIdx/rowIdx/cellIdx
-       └─ Look up styleHints → append "bg:rgb(...) bold" to the line
-  └─ For non-table: match by role or explicit AX properties
+Node-side AX tree renderer (visit function in perceiveStr)
+  └─ When rendering [cell] nodes inside a table context:
+       ├─ Extract cell text from AX node name/value
+       ├─ Look up styleHints[(tableIdx, cellText)]
+       └─ Append matching hints: "bg:rgb(...) bold color:rgb(...)"
 ```
+
+**Matching strategy detail:** The browser-side JS assigns each table an index (document order, 0-based). For each cell, it computes `cellText = td.textContent.trim().slice(0, 50)`. The hint key is `"${tableIdx}:${cellText}"`. On the Node side, `visit()` already tracks `tableAncestorId` — we add a `tableIdxMap` (Map of nodeId → index, incremented each time a new table role is encountered). When rendering a cell, the lookup key is `"${tableIdx}:${cellName}"` where `cellName` is the AX node's `name.value` (which matches textContent for table cells). If no match is found, the cell renders without hints — safe fallback.
 
 #### Output Example
 
@@ -102,9 +104,9 @@ The agent sees "33.3% has amber background, 70.0% has red background, first row 
 
 All changes in `skills/chrome-cdp/scripts/cdp.mjs`:
 
-1. **Browser-side eval in `perceiveStr`** (~line 575-647): Add styleHints collection after the existing layoutMap collection. Same eval block, returned alongside layoutMap in the JSON.
+1. **Browser-side eval in `perceiveStr`** (the large eval block inside `perceiveStr` that builds `layoutMap`): Add styleHints collection after the existing layoutMap collection. Same eval block, returned alongside layoutMap in the JSON.
 
-2. **`visit()` function** (~line 688-738): When rendering cell/row nodes inside a table context (already tracked via `tableAncestorId`), look up styleHints by index and append annotations to the line.
+2. **`visit()` helper inside `perceiveStr`**: When rendering cell/row nodes inside a table context (already tracked via `tableAncestorId`), add a `tableIdxMap` to track table indices, look up styleHints by `(tableIdx, cellText)`, and append annotations to the line.
 
 3. **No changes to `formatAxNode`** — style hints are appended in `visit()` after the normal line is built, same pattern as existing layout annotations.
 
@@ -173,6 +175,7 @@ Screenshot (`elshot`) should only appear when the agent needs to judge subjectiv
 
 ## Risks
 
-- **Style hint / AX tree mismatch**: The styleHints are indexed by table/row/cell position in DOM order, matched to AX tree nodes also in document order. If the AX tree reorders or skips cells (e.g., hidden cells), indices could misalign. Mitigation: use text content matching as fallback when index matching fails.
+- **Style hint / AX tree text mismatch**: Matching uses cell text content. AX node `name.value` usually matches `textContent.trim()` for table cells, but can diverge if the cell contains complex inner structure (e.g., nested spans with aria-label). Mitigation: if no styleHint match is found, the cell renders normally without hints — safe silent fallback, no incorrect annotations.
 - **Token bloat on style-heavy pages**: Pages with many conditionally-styled cells (e.g., a heatmap table) could generate many hints. Mitigation: the 100-entry cap and TABLE_ROW_LIMIT (5 rows) bound this.
-- **Baseline detection inaccuracy**: On small tables (2-3 rows), "majority" is less meaningful. Mitigation: for tables with < 4 data rows, skip baseline detection and report all non-default/non-transparent backgrounds directly.
+- **Baseline detection inaccuracy**: On small tables (< 4 data rows), "majority" is less meaningful. Mitigation: skip baseline detection for small tables and report all non-default/non-transparent styles directly.
+- **Duplicate cell text in same table**: Two cells with identical text (e.g., multiple "0%") would collide on the same key. Mitigation: append column index from the DOM as tiebreaker: key = `"${tableIdx}:${cellText}:${colIdx}"`. On the AX side, track cell position within the current row to reconstruct colIdx.
