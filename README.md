@@ -6,15 +6,29 @@
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
 
 **Every browser automation tool launches a clean, isolated browser.**
-**This one connects to yours.**
+**This one connects to yours — your tabs, your logins, your cookies, your page state.**
 
-Your AI agent sees the tabs you already have open, your logged-in accounts, your cookies, your page state. No separate browser instance. No re-login. No lost context.
+## One command. Complete page understanding.
 
-- **`perceive`** — structured page understanding in ~200 tokens. No screenshots, no vision model.
-- **`@ref` targeting** — `click @3`, `fill @7 "text"` — no CSS selectors, no coordinate math.
-- **Action feedback** — click/press/select auto-return a perceive diff of what changed.
-- **WSL2 → Windows** — the only CDP tool that crosses the WSL2 boundary.
-- **42 commands, 0 deps, 1 file** — form automation, network logging, cookies, console observation — all included.
+Other tools give the agent a screenshot and say "figure it out." Or dump a raw accessibility tree with no context. `perceive` gives the agent **everything it needs in one call:**
+
+```text
+$ cdp perceive abc1
+📍 My App (1280×720 scroll:0/2400) — https://app.example.com
+  [banner] ↕80px bg:rgb(26,26,46) ↑above fold
+    [nav] flex
+      @1 [link] "Home" (12,8 60×20)
+      @2 [link] "Settings" (80,8 70×20)
+  [main] ↕2920px
+    @3 [textbox] "Email" (200,350 200×30)
+    @4 [button] "Submit" (200,400 100×40)
+  [contentinfo] ↕160px ↓below fold
+Console: 2 errors | Interactive: 12 a, 3 button, 2 input
+```
+
+Structure. Layout. Styles. Scroll position. Console health. Interactive element count. Every `@ref` with bounding coordinates. **~800 tokens.** A Playwright snapshot of the same page? **~3,500 tokens** — and still no layout, no styles, no console, no coordinates.
+
+## Why agents choose this
 
 ```mermaid
 sequenceDiagram
@@ -22,33 +36,31 @@ sequenceDiagram
     participant Chrome
 
     Agent->>Chrome: perceive
-    Chrome-->>Agent: AX tree + @1 [link] "Home" + @2 [link] "Settings"<br/>+ @3 [textbox] "Email" + @4 [button] "Submit"
-
-    Agent->>Chrome: fill @3 "user@example.com"
-    Chrome-->>Agent: △ @3 [textbox] → value:"user@example.com"
+    Chrome-->>Agent: AX tree + layout + styles + @refs with coordinates<br/>+ console health + interactive counts
 
     Agent->>Chrome: click @4
     Chrome-->>Agent: △ [dialog] "Submitted successfully"<br/>△ @4 [button] → disabled
 ```
 
-No CSS selectors. No coordinate guessing. No second screenshot. The agent interacts by `@ref` and gets instant feedback on what changed.
+**One call to understand. One call to act. Zero calls to check what happened** — action feedback is automatic.
 
-<details>
-<summary><strong>How does this compare?</strong></summary>
+Compare that to other tools: `snapshot` → parse → `click` → `snapshot` again → diff manually → `console_messages` → ... That's 5+ round trips for what this tool does in 2.
 
-| Capability | This tool | Screenshot-based tools | Basic CDP wrappers |
+### The numbers
+
+| | `chrome-cdp-ex` | Playwright | Other CDP tools |
 |---|---|---|---|
-| **Page understanding** | Enriched AX tree with layout + style hints (~200 tokens) | Screenshot → vision model (slow, expensive) | Raw AX dump (noisy, no layout) |
-| **Element targeting** | `@ref` indices — `click @3`, `fill @7 "text"` | Coordinate guessing from screenshots | CSS selectors only |
-| **Action feedback** | Auto perceive diff after click/press/select | Take another screenshot and compare | Nothing — agent flies blind |
-| **Form automation** | `fill`, `select`, `press`, `waitfor`, `upload`, `dialog` | Manual JS injection | Not included |
-| **Background observation** | Console, exceptions, navigations in ring buffers | Not available | Not available |
-| **Input simulation** | Real CDP mouse events (mouseMoved → mousePressed → mouseReleased) | `el.click()` | `el.click()` |
-| **WSL2 → Windows** | Built-in support | Not supported | Not supported |
-| **Dependencies** | 0 | Playwright/Puppeteer + browser binary | Varies |
-| **Commands** | 42 | N/A (programmatic API) | ~14 |
+| **Calls to fully understand a page** | **1** (`perceive`) | 3+ (snapshot + console + viewport) | 2+ (snap + console) |
+| **Tokens per page snapshot** | **~800** (with layout + styles) | ~3,500 (no layout, no styles) | ~400 (no layout, no styles) |
+| **Calls to act and verify** | **1** (auto feedback) | 2+ (act + re-snapshot) | 2+ (act + re-snapshot) |
+| **`@ref` with coordinates** | **Yes** — `@3 (200,350 200×30)` | No — `ref=e376` (ID only) | No |
+| **Your real browser session** | **Yes** — tabs, cookies, logins | No — isolated Chromium | Varies |
+| **Background event collection** | **Yes** — console, errors, navigations | Only while connected | No |
+| **WSL2 → Windows** | **Yes** — built-in | No | No |
+| **Dependencies** | **0** | Playwright + Chromium binary | Varies |
+| **Commands** | **42** | N/A (programmatic API) | ~14 |
 
-</details>
+> Tested on the same GitHub repo page. Playwright via MCP `browser_snapshot`, gstack browse via `snapshot -i`, chrome-cdp-ex via `perceive`. [See the full PK breakdown.](https://github.com/EndeavorYen/chrome-cdp-ex)
 
 ## Quick Start
 
