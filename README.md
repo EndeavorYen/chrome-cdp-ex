@@ -8,6 +8,30 @@
 **Every browser automation tool launches a clean, isolated browser.**
 **This one connects to yours — your tabs, your logins, your cookies, your page state.**
 
+## The redesign experiment
+
+Same ugly page. Same prompt. 5 rounds. Three independent AI agents — each with a different browser observation tool. **The only variable: how much the tool reveals about the page's visual state.**
+
+| Before | After: `chrome-cdp` | After: Playwright | After: Other CDP |
+|--------|---------------------|-------------------|------------------|
+| ![before](experiment/round-0.png) | ![chrome-cdp result](experiment/final-A.png) | ![playwright result](experiment/final-B.png) | ![other cdp result](experiment/final-C.png) |
+
+The agent with `perceive` (layout + colors + spacing + coordinates) produced the most polished result — because it could **see** what needed fixing, not just read the source code. [**View the live comparison →**](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html)
+
+### The numbers
+
+| | `chrome-cdp-ex` | Playwright | Other CDP tools |
+|---|---|---|---|
+| **Calls to fully understand a page** | **1** (`perceive`) | 3+ (snapshot + console + viewport) | 2+ (snap + console) |
+| **Tokens per page snapshot** | **~800** (with layout + styles) | ~3,500 (no layout, no styles) | ~400 (no layout, no styles) |
+| **Calls to act and verify** | **1** (auto feedback) | 2+ (act + re-snapshot) | 2+ (act + re-snapshot) |
+| **`@ref` with coordinates** | **Yes** — `@3 (200,350 200×30)` | No — `ref=e376` (ID only) | No |
+| **Your real browser session** | **Yes** — tabs, cookies, logins | No — isolated Chromium | Varies |
+| **Background event collection** | **Yes** — console, errors, navigations | Only while connected | No |
+| **WSL2 → Windows** | **Yes** — built-in | No | No |
+| **Dependencies** | **0** | Playwright + Chromium binary | Varies |
+| **Commands** | **42** | N/A (programmatic API) | ~14 |
+
 ## One command. Complete page understanding.
 
 Other tools give the agent a screenshot and say "figure it out." Or dump a raw accessibility tree with no context. `perceive` gives the agent **everything it needs in one call:**
@@ -45,22 +69,6 @@ sequenceDiagram
 **One call to understand. One call to act. Zero calls to check what happened** — action feedback is automatic.
 
 Compare that to other tools: `snapshot` → parse → `click` → `snapshot` again → diff manually → `console_messages` → ... That's 5+ round trips for what this tool does in 2.
-
-### The numbers
-
-| | `chrome-cdp-ex` | Playwright | Other CDP tools |
-|---|---|---|---|
-| **Calls to fully understand a page** | **1** (`perceive`) | 3+ (snapshot + console + viewport) | 2+ (snap + console) |
-| **Tokens per page snapshot** | **~800** (with layout + styles) | ~3,500 (no layout, no styles) | ~400 (no layout, no styles) |
-| **Calls to act and verify** | **1** (auto feedback) | 2+ (act + re-snapshot) | 2+ (act + re-snapshot) |
-| **`@ref` with coordinates** | **Yes** — `@3 (200,350 200×30)` | No — `ref=e376` (ID only) | No |
-| **Your real browser session** | **Yes** — tabs, cookies, logins | No — isolated Chromium | Varies |
-| **Background event collection** | **Yes** — console, errors, navigations | Only while connected | No |
-| **WSL2 → Windows** | **Yes** — built-in | No | No |
-| **Dependencies** | **0** | Playwright + Chromium binary | Varies |
-| **Commands** | **42** | N/A (programmatic API) | ~14 |
-
-> Tested on the same GitHub repo page. Playwright via MCP `browser_snapshot`, gstack browse via `snapshot -i`, chrome-cdp-ex via `perceive`. [See the full PK breakdown.](https://github.com/EndeavorYen/chrome-cdp-ex)
 
 ## Quick Start
 

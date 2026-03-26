@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Experiment: Which tool sees better?</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #0a0a0a;
+    color: #e0e0e0;
+    line-height: 1.5;
+  }
+
+  header {
+    text-align: center;
+    padding: 48px 24px 32px;
+    max-width: 800px;
+    margin: 0 auto;
+  }
+  header h1 {
+    font-size: 36px;
+    color: #fff;
+    margin-bottom: 12px;
+    letter-spacing: -0.5px;
+  }
+  header h1 span { color: #3b82f6; }
+  header p {
+    font-size: 16px;
+    color: #888;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  .experiment-info {
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+    padding: 16px 24px 40px;
+    flex-wrap: wrap;
+  }
+  .experiment-info .stat {
+    text-align: center;
+  }
+  .experiment-info .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: #fff;
+  }
+  .experiment-info .stat-label {
+    font-size: 13px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  /* Tab navigation */
+  .tabs {
+    display: flex;
+    justify-content: center;
+    gap: 4px;
+    padding: 0 24px 24px;
+    flex-wrap: wrap;
+  }
+  .tab {
+    background: #1a1a1a;
+    border: 1px solid #333;
+    color: #999;
+    padding: 10px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-family: inherit;
+    transition: all 0.2s;
+  }
+  .tab:hover { border-color: #555; color: #ccc; }
+  .tab.active {
+    background: #3b82f6;
+    border-color: #3b82f6;
+    color: #fff;
+  }
+
+  /* View modes */
+  .view-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; padding: 0 24px 48px; max-width: 1400px; margin: 0 auto; }
+  .view-single { display: none; padding: 0 24px 48px; max-width: 1000px; margin: 0 auto; }
+  .view-single.active { display: block; }
+
+  .card {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .card-header {
+    padding: 16px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #222;
+  }
+  .card-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+  }
+  .card-badge {
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-before { background: #333; color: #888; }
+  .badge-cdp { background: #1d4ed8; color: #93c5fd; }
+  .badge-playwright { background: #065f46; color: #6ee7b7; }
+  .badge-browse { background: #7c2d12; color: #fdba74; }
+
+  .card iframe {
+    width: 100%;
+    height: 500px;
+    border: none;
+    background: #fff;
+  }
+  .card-footer {
+    padding: 12px 20px;
+    font-size: 13px;
+    color: #666;
+    border-top: 1px solid #222;
+  }
+
+  /* Single view */
+  .single-card iframe { height: 700px; }
+
+  /* Before arrow */
+  .arrow-row {
+    text-align: center;
+    padding: 24px;
+    font-size: 32px;
+    color: #333;
+  }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .view-grid { grid-template-columns: 1fr; }
+    header h1 { font-size: 28px; }
+  }
+
+  /* How it works */
+  .how-it-works {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 0 24px 48px;
+  }
+  .how-it-works h2 {
+    font-size: 22px;
+    color: #fff;
+    margin-bottom: 16px;
+    text-align: center;
+  }
+  .how-it-works table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  .how-it-works th {
+    text-align: left;
+    padding: 10px 16px;
+    border-bottom: 1px solid #333;
+    color: #888;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .how-it-works td {
+    padding: 10px 16px;
+    border-bottom: 1px solid #1a1a1a;
+    color: #ccc;
+  }
+  .how-it-works tr:last-child td { border-bottom: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Which tool <span>sees</span> better?</h1>
+  <p>Same ugly page. Same 5 rounds. Three AI agents, each with a different browser observation tool. The only variable: how much the tool reveals about the page's visual state.</p>
+</header>
+
+<div class="experiment-info">
+  <div class="stat">
+    <div class="stat-value">1</div>
+    <div class="stat-label">Starting Page</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">3</div>
+    <div class="stat-label">Tools Compared</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">5</div>
+    <div class="stat-label">Rounds Each</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">0</div>
+    <div class="stat-label">Human Hints</div>
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="tab active" onclick="showView('all')">All</button>
+  <button class="tab" onclick="showView('before')">Before</button>
+  <button class="tab" onclick="showView('cdp')">chrome-cdp</button>
+  <button class="tab" onclick="showView('playwright')">Playwright</button>
+  <button class="tab" onclick="showView('browse')">Tool C</button>
+</div>
+
+<!-- Grid view (all) -->
+<div class="view-grid" id="view-all">
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Before</div>
+      <span class="card-badge badge-before">Starting Point</span>
+    </div>
+    <iframe src="challenge.html"></iframe>
+    <div class="card-footer">20+ deliberate design problems: Comic Sans, invisible CTA, clashing colors, tiny text, no hierarchy</div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">After: chrome-cdp <code>perceive</code></div>
+      <span class="card-badge badge-cdp">Experiment A</span>
+    </div>
+    <iframe src="result-A.html"></iframe>
+    <div class="card-footer">perceive returns layout + style hints + contrast info + coordinates in ~800 tokens</div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">After: Playwright <code>snapshot</code></div>
+      <span class="card-badge badge-playwright">Experiment B</span>
+    </div>
+    <iframe src="result-B.html"></iframe>
+    <div class="card-footer">browser_snapshot returns YAML accessibility tree — no layout, no styles, no colors (~3,500 tokens)</div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">After: Tool C <code>snapshot</code></div>
+      <span class="card-badge badge-browse">Experiment C</span>
+    </div>
+    <iframe src="result-C.html"></iframe>
+    <div class="card-footer">Another CDP-based tool — snapshot returns accessibility tree with element refs, no layout or visual info (~400 tokens)</div>
+  </div>
+</div>
+
+<!-- Single views -->
+<div class="view-single" id="view-before">
+  <div class="card single-card">
+    <div class="card-header">
+      <div class="card-title">Before — The Starting Page</div>
+      <span class="card-badge badge-before">Starting Point</span>
+    </div>
+    <iframe src="challenge.html"></iframe>
+    <div class="card-footer">Comic Sans, dark purple background, invisible CTA button (text same color as bg), bright orange nav clashing with purple, tiny fonts everywhere (10-14px), dashed orange borders, randomly right-aligned pricing heading, oversized footer</div>
+  </div>
+</div>
+
+<div class="view-single" id="view-cdp">
+  <div class="card single-card">
+    <div class="card-header">
+      <div class="card-title">After: chrome-cdp <code>perceive</code></div>
+      <span class="card-badge badge-cdp">5 Rounds</span>
+    </div>
+    <iframe src="result-A.html"></iframe>
+    <div class="card-footer">The agent used <code>perceive</code> to get enriched AX tree with layout dimensions, style hints (colors, fonts, spacing), scroll position, and bounding coordinates — all in one call per round.</div>
+  </div>
+</div>
+
+<div class="view-single" id="view-playwright">
+  <div class="card single-card">
+    <div class="card-header">
+      <div class="card-title">After: Playwright <code>browser_snapshot</code></div>
+      <span class="card-badge badge-playwright">5 Rounds</span>
+    </div>
+    <iframe src="result-B.html"></iframe>
+    <div class="card-footer">The agent used <code>browser_snapshot</code> to get a YAML accessibility tree. No visual information (colors, fonts, spacing, layout) — the agent relied on reading HTML source to identify CSS issues.</div>
+  </div>
+</div>
+
+<div class="view-single" id="view-browse">
+  <div class="card single-card">
+    <div class="card-header">
+      <div class="card-title">After: Tool C <code>snapshot</code></div>
+      <span class="card-badge badge-browse">5 Rounds</span>
+    </div>
+    <iframe src="result-C.html"></iframe>
+    <div class="card-footer">The agent used another CDP tool's <code>snapshot</code> to get an accessibility tree with element references. No visual information — the agent relied on reading HTML source to identify CSS issues.</div>
+  </div>
+</div>
+
+<div class="how-it-works">
+  <h2>Experiment Design</h2>
+  <table>
+    <tr><th>Variable</th><th>Control</th></tr>
+    <tr><td>Starting file</td><td>Identical <code>challenge.html</code> — no hint comments in CSS</td></tr>
+    <tr><td>Agent</td><td>Independent Claude Code session per tool (no shared context)</td></tr>
+    <tr><td>Prompt</td><td>Same structure — only tool names differ</td></tr>
+    <tr><td>Rounds</td><td>Exactly 5 per agent</td></tr>
+    <tr><td>Source access</td><td>All agents can read HTML (fair — all have the same access)</td></tr>
+    <tr><td>Observation tool</td><td>The only variable — how much visual info the tool provides</td></tr>
+  </table>
+</div>
+
+<div class="how-it-works" style="padding-top: 16px;">
+  <h2>Observations</h2>
+  <table>
+    <tr><th style="width:160px">Tool</th><th>What the agent could see</th><th>Result quality</th></tr>
+    <tr>
+      <td><strong style="color:#93c5fd">chrome-cdp</strong></td>
+      <td><code>perceive</code> returns layout dimensions, background colors, font sizes, contrast hints, scroll position, and bounding coordinates — the agent knows <em>what things look like</em></td>
+      <td>Polished dark SaaS theme. Google Fonts, gradient hero text, SVG icons, differentiated CTA styles, social proof section, multi-column footer</td>
+    </tr>
+    <tr>
+      <td><strong style="color:#6ee7b7">Playwright</strong></td>
+      <td><code>browser_snapshot</code> returns YAML accessibility tree — element roles and names, but no colors, no spacing, no font sizes, no layout info</td>
+      <td>Clean white/blue theme. Added testimonial section, proper hierarchy. Professional but relied on reading CSS source to find visual issues</td>
+    </tr>
+    <tr>
+      <td><strong style="color:#fdba74">Tool C</strong></td>
+      <td><code>snapshot</code> returns accessibility tree with element refs — similar to Playwright but more compact (~400 tokens vs ~3,500)</td>
+      <td>Dark/white hybrid theme. Solid layout with icon placeholders, "Most Popular" badge. Clean but less refined detail</td>
+    </tr>
+  </table>
+  <p style="color:#666; font-size:13px; margin-top:16px; text-align:center;">
+    All three agents dramatically improved the page. The difference is in <em>how quickly</em> they found visual issues and <em>how much polish</em> they achieved — the agent with richer visual context made more nuanced design decisions.
+  </p>
+</div>
+
+<script>
+function showView(view) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+
+  document.getElementById('view-all').style.display = view === 'all' ? 'grid' : 'none';
+  document.querySelectorAll('.view-single').forEach(v => v.classList.remove('active'));
+
+  if (view !== 'all') {
+    document.getElementById('view-' + view).classList.add('active');
+  }
+}
+</script>
+
+</body>
+</html>

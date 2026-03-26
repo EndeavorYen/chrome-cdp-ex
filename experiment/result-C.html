@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TaskFlow — Project Management</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #f8f9fa;
+    color: #1e293b;
+    line-height: 1.6;
+  }
+
+  nav {
+    background: #0f172a;
+    padding: 16px 40px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  nav .logo {
+    font-size: 20px;
+    color: #ffffff;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+  nav .nav-links a {
+    color: #94a3b8;
+    text-decoration: none;
+    margin-left: 32px;
+    font-size: 15px;
+    transition: color 0.2s;
+  }
+
+  .hero {
+    padding: 96px 40px 80px;
+    text-align: center;
+    background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+    color: #ffffff;
+  }
+  .hero h1 {
+    font-size: 52px;
+    color: #ffffff;
+    margin-bottom: 20px;
+    font-weight: 800;
+    letter-spacing: -1.5px;
+    line-height: 1.15;
+  }
+  .hero p {
+    font-size: 18px;
+    max-width: 640px;
+    margin: 0 auto;
+    color: #94a3b8;
+    line-height: 1.7;
+  }
+  .hero button {
+    background: #3b82f6;
+    color: #ffffff;
+    border: none;
+    padding: 16px 36px;
+    font-size: 17px;
+    margin-top: 36px;
+    cursor: pointer;
+    border-radius: 8px;
+    font-weight: 600;
+    box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);
+    letter-spacing: 0.2px;
+  }
+
+  .section-title {
+    font-size: 30px;
+    font-weight: 800;
+    color: #0f172a;
+    text-align: center;
+    width: 100%;
+    margin-bottom: 8px;
+    letter-spacing: -0.5px;
+  }
+  .features {
+    display: flex;
+    gap: 24px;
+    padding: 72px 40px;
+    flex-wrap: wrap;
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  .feature-card {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 32px;
+    flex: 1;
+    min-width: 240px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .feature-icon {
+    font-size: 32px;
+    margin-bottom: 12px;
+    width: 56px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #eff6ff;
+    border-radius: 12px;
+    color: #3b82f6;
+  }
+  .feature-card h3 {
+    font-size: 20px;
+    color: #0f172a;
+    margin-bottom: 8px;
+    font-weight: 700;
+  }
+  .feature-card p {
+    font-size: 15px;
+    color: #64748b;
+    line-height: 1.6;
+  }
+
+  .pricing {
+    padding: 72px 40px 80px;
+    background: #f1f5f9;
+  }
+  .pricing h2 {
+    font-size: 32px;
+    color: #0f172a;
+    text-align: center;
+    margin-bottom: 40px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+  }
+  .pricing-cards {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  .pricing-card {
+    background: #ffffff;
+    padding: 36px 32px;
+    flex: 1;
+    min-width: 240px;
+    text-align: center;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .pricing-card h3 {
+    color: #64748b;
+    font-size: 16px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .pricing-subtitle {
+    text-align: center;
+    color: #64748b;
+    font-size: 16px;
+    margin-top: -24px;
+    margin-bottom: 40px;
+  }
+  .pricing-card .price {
+    font-size: 48px;
+    color: #0f172a;
+    margin: 12px 0;
+    font-weight: 800;
+  }
+  .pricing-card .price .period {
+    font-size: 18px;
+    color: #94a3b8;
+    font-weight: 500;
+  }
+  .pricing-card ul {
+    list-style: none;
+    text-align: left;
+    font-size: 15px;
+    color: #475569;
+    margin: 20px 0;
+  }
+  .pricing-card ul li {
+    padding: 8px 0;
+    border-bottom: 1px solid #f1f5f9;
+  }
+  .pricing-card ul li::before {
+    content: "\2713";
+    color: #22c55e;
+    font-weight: 700;
+    margin-right: 10px;
+  }
+  .pricing-card.featured {
+    border: 2px solid #3b82f6;
+    position: relative;
+    transform: scale(1.03);
+    box-shadow: 0 8px 32px rgba(59, 130, 246, 0.15);
+  }
+  .pricing-card.featured::before {
+    content: "Most Popular";
+    position: absolute;
+    top: -12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #3b82f6;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 16px;
+    border-radius: 20px;
+    letter-spacing: 0.5px;
+  }
+  .pricing-card button {
+    background: #3b82f6;
+    color: white;
+    border: none;
+    padding: 12px 28px;
+    margin-top: 16px;
+    font-size: 15px;
+    cursor: pointer;
+    border-radius: 8px;
+    font-weight: 600;
+    width: 100%;
+  }
+
+  .footer-brand {
+    font-size: 20px;
+    font-weight: 700;
+    color: #ffffff;
+    margin-bottom: 16px;
+  }
+  .footer-links {
+    margin-bottom: 24px;
+  }
+  .footer-links a {
+    color: #64748b;
+    text-decoration: none;
+    margin: 0 16px;
+    font-size: 14px;
+  }
+  footer {
+    background: #0f172a;
+    padding: 48px 40px;
+    text-align: center;
+    color: #64748b;
+    font-size: 14px;
+    border-top: 1px solid #1e293b;
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">taskflow</div>
+  <div class="nav-links">
+    <a href="#">Features</a>
+    <a href="#">Pricing</a>
+    <a href="#">About</a>
+    <a href="#">Contact</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <h1>Ship Projects Faster,<br>Together</h1>
+  <p>TaskFlow helps teams organize work and deliver on time — with boards, timelines, and automation that scale from startup to enterprise.</p>
+  <button>Get Started Free &rarr;</button>
+</section>
+
+<section class="features">
+  <h2 class="section-title">Everything you need to manage projects</h2>
+  <div class="feature-card">
+    <div class="feature-icon">&#9744;</div>
+    <h3>Board View</h3>
+    <p>Drag and drop tasks between columns to track progress visually.</p>
+  </div>
+  <div class="feature-card">
+    <div class="feature-icon">&#9202;</div>
+    <h3>Timeline</h3>
+    <p>See your project schedule with Gantt charts and milestone tracking.</p>
+  </div>
+  <div class="feature-card">
+    <div class="feature-icon">&#9889;</div>
+    <h3>Automation</h3>
+    <p>Set rules to automate repetitive tasks and save time every day.</p>
+  </div>
+</section>
+
+<section class="pricing">
+  <h2>Pricing</h2>
+  <p class="pricing-subtitle">Start free, upgrade when you're ready</p>
+  <div class="pricing-cards">
+    <div class="pricing-card">
+      <h3>Free</h3>
+      <div class="price">$0<span class="period">/mo</span></div>
+      <ul>
+        <li>5 projects</li>
+        <li>Basic board view</li>
+        <li>1 GB storage</li>
+      </ul>
+      <button>Get Started</button>
+    </div>
+    <div class="pricing-card featured">
+      <h3>Pro</h3>
+      <div class="price">$12<span class="period">/mo</span></div>
+      <ul>
+        <li>Unlimited projects</li>
+        <li>Timeline + Gantt</li>
+        <li>50 GB storage</li>
+        <li>Priority support</li>
+      </ul>
+      <button>Get Started</button>
+    </div>
+    <div class="pricing-card">
+      <h3>Enterprise</h3>
+      <div class="price">$49<span class="period">/mo</span></div>
+      <ul>
+        <li>Everything in Pro</li>
+        <li>SSO &amp; SAML</li>
+        <li>Unlimited storage</li>
+        <li>Dedicated support</li>
+        <li>Custom integrations</li>
+      </ul>
+      <button>Get Started</button>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="footer-brand">TaskFlow</div>
+  <div class="footer-links">
+    <a href="#">Features</a>
+    <a href="#">Pricing</a>
+    <a href="#">About</a>
+    <a href="#">Contact</a>
+  </div>
+  <p>&copy; 2026 TaskFlow. All rights reserved.</p>
+</footer>
+
+</body>
+</html>

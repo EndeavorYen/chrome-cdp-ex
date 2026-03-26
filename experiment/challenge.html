@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TaskFlow — Project Management</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: "Comic Sans MS", cursive;
+    background: #1a0a2e;
+    color: #6b5b7b;
+  }
+
+  nav {
+    background: #ff4500;
+    padding: 40px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  nav .logo {
+    font-size: 14px;
+    color: #ffff00;
+    font-weight: normal;
+  }
+  nav .nav-links a {
+    color: #1a0a2e;
+    text-decoration: underline;
+    margin-left: 8px;
+    font-size: 11px;
+  }
+
+  .hero {
+    padding: 20px;
+    text-align: left;
+  }
+  .hero h1 {
+    font-size: 18px;
+    color: #6b5b7b;
+    margin-bottom: 4px;
+  }
+  .hero p {
+    font-size: 16px;
+    max-width: none;
+    color: #6b5b7b;
+  }
+  .hero button {
+    background: #6b5b7b;
+    color: #6b5b7b;
+    border: none;
+    padding: 8px 12px;
+    font-size: 11px;
+    margin-top: 4px;
+    cursor: pointer;
+  }
+
+  .features {
+    display: flex;
+    gap: 2px;
+    padding: 10px 20px;
+    flex-wrap: wrap;
+  }
+  .feature-card {
+    background: #2a1a3e;
+    border: 3px dashed #ff4500;
+    padding: 8px;
+    flex: 1;
+    min-width: 200px;
+  }
+  .feature-card h3 {
+    font-size: 13px;
+    color: #ffff00;
+    margin-bottom: 2px;
+  }
+  .feature-card p {
+    font-size: 11px;
+  }
+
+  .pricing {
+    padding: 10px 20px;
+  }
+  .pricing h2 {
+    font-size: 14px;
+    color: #ff4500;
+    text-align: right;
+    margin-bottom: 4px;
+  }
+  .pricing-cards {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .pricing-card {
+    background: #0f0520;
+    padding: 10px;
+    flex: 1;
+    min-width: 180px;
+    text-align: center;
+  }
+  .pricing-card h3 {
+    color: #ff4500;
+    font-size: 12px;
+  }
+  .pricing-card .price {
+    font-size: 28px;
+    color: #ffff00;
+    margin: 2px 0;
+  }
+  .pricing-card ul {
+    list-style: none;
+    text-align: left;
+    font-size: 10px;
+  }
+  .pricing-card button {
+    background: #ff4500;
+    color: white;
+    border: none;
+    padding: 6px 10px;
+    margin-top: 4px;
+    font-size: 10px;
+    cursor: pointer;
+  }
+
+  footer {
+    background: #ff4500;
+    padding: 60px 20px;
+    text-align: center;
+    color: #1a0a2e;
+    font-size: 10px;
+    margin-top: 10px;
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">taskflow</div>
+  <div class="nav-links">
+    <a href="#">Features</a>
+    <a href="#">Pricing</a>
+    <a href="#">About</a>
+    <a href="#">Contact</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <h1>Project Management Tool</h1>
+  <p>TaskFlow helps teams organize their work and deliver projects on time. We have many features that make project management easier for everyone in your organization no matter what size your team is or what industry you work in because we believe everyone deserves great tools.</p>
+  <button>Start</button>
+</section>
+
+<section class="features">
+  <div class="feature-card">
+    <h3>Board View</h3>
+    <p>Drag and drop tasks between columns to track progress visually.</p>
+  </div>
+  <div class="feature-card">
+    <h3>Timeline</h3>
+    <p>See your project schedule with Gantt charts and milestone tracking.</p>
+  </div>
+  <div class="feature-card">
+    <h3>Automation</h3>
+    <p>Set rules to automate repetitive tasks and save time every day.</p>
+  </div>
+</section>
+
+<section class="pricing">
+  <h2>Pricing</h2>
+  <div class="pricing-cards">
+    <div class="pricing-card">
+      <h3>Free</h3>
+      <div class="price">$0</div>
+      <ul>
+        <li>5 projects</li>
+        <li>Basic board view</li>
+        <li>1 GB storage</li>
+      </ul>
+      <button>Get Started</button>
+    </div>
+    <div class="pricing-card">
+      <h3>Pro</h3>
+      <div class="price">$12</div>
+      <ul>
+        <li>Unlimited projects</li>
+        <li>Timeline + Gantt</li>
+        <li>50 GB storage</li>
+        <li>Priority support</li>
+      </ul>
+      <button>Get Started</button>
+    </div>
+    <div class="pricing-card">
+      <h3>Enterprise</h3>
+      <div class="price">$49</div>
+      <ul>
+        <li>Everything in Pro</li>
+        <li>SSO &amp; SAML</li>
+        <li>Unlimited storage</li>
+        <li>Dedicated support</li>
+        <li>Custom integrations</li>
+      </ul>
+      <button>Get Started</button>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>&copy; 2026 TaskFlow. All rights reserved.</p>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TaskFlow — Project Management</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f8f9fa;
+    color: #333;
+    line-height: 1.6;
+  }
+
+  nav {
+    background: #fff;
+    padding: 16px 48px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #e5e7eb;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  nav .logo {
+    font-size: 22px;
+    color: #2563eb;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+  }
+  nav .nav-links {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  nav .nav-links a {
+    color: #555;
+    text-decoration: none;
+    margin-left: 24px;
+    font-size: 15px;
+    font-weight: 500;
+    transition: color 0.2s;
+  }
+  nav .nav-links a:hover {
+    color: #2563eb;
+  }
+  nav .nav-links .nav-cta {
+    background: #2563eb;
+    color: #fff;
+    padding: 8px 20px;
+    border-radius: 8px;
+    font-weight: 600;
+    margin-left: 24px;
+  }
+  nav .nav-links .nav-cta:hover {
+    color: #fff;
+    background: #1d4ed8;
+  }
+
+  .hero {
+    padding: 100px 40px 80px;
+    text-align: center;
+    background: linear-gradient(135deg, #eff6ff 0%, #f8f9fa 50%, #f0fdf4 100%);
+  }
+  .hero h1 {
+    font-size: 52px;
+    color: #0f172a;
+    margin-bottom: 20px;
+    font-weight: 800;
+    letter-spacing: -1.5px;
+    line-height: 1.15;
+    max-width: 700px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .hero p {
+    font-size: 18px;
+    max-width: 560px;
+    margin: 0 auto 36px;
+    color: #64748b;
+    line-height: 1.7;
+  }
+  .hero .cta-group {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .hero button {
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    padding: 16px 40px;
+    font-size: 16px;
+    font-weight: 600;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.15s;
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3);
+  }
+  .hero button:hover {
+    background: #1d4ed8;
+    transform: translateY(-1px);
+  }
+  .hero .secondary-cta {
+    background: transparent;
+    color: #475569;
+    border: 1.5px solid #cbd5e1;
+    box-shadow: none;
+    padding: 16px 32px;
+  }
+  .hero .secondary-cta:hover {
+    background: #fff;
+    border-color: #94a3b8;
+    color: #1e293b;
+  }
+
+  .section-label {
+    text-align: center;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #2563eb;
+    margin-bottom: 12px;
+  }
+  .features {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 28px;
+    padding: 80px 48px 80px;
+    max-width: 1060px;
+    margin: 0 auto;
+  }
+  .features-header {
+    grid-column: 1 / -1;
+    text-align: center;
+    margin-bottom: 8px;
+  }
+  .features-header h2 {
+    font-size: 36px;
+    color: #0f172a;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+  }
+  .feature-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 16px;
+    padding: 36px 28px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    transition: box-shadow 0.2s, transform 0.2s;
+  }
+  .feature-card:hover {
+    box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    transform: translateY(-2px);
+  }
+  .feature-card .icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    margin-bottom: 16px;
+  }
+  .feature-card .icon.blue { background: #eff6ff; }
+  .feature-card .icon.green { background: #f0fdf4; }
+  .feature-card .icon.purple { background: #faf5ff; }
+  .feature-card h3 {
+    font-size: 19px;
+    color: #0f172a;
+    margin-bottom: 10px;
+    font-weight: 700;
+  }
+  .feature-card p {
+    font-size: 15px;
+    color: #64748b;
+    line-height: 1.65;
+  }
+
+  .testimonial {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 60px 48px 0;
+    text-align: center;
+  }
+  .testimonial blockquote {
+    font-size: 20px;
+    color: #334155;
+    font-style: italic;
+    line-height: 1.7;
+    margin-bottom: 16px;
+    position: relative;
+  }
+  .testimonial blockquote::before {
+    content: "\201C";
+    font-size: 60px;
+    color: #cbd5e1;
+    position: absolute;
+    top: -20px;
+    left: -10px;
+    line-height: 1;
+  }
+  .testimonial cite {
+    font-style: normal;
+    color: #64748b;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .pricing {
+    padding: 80px 48px;
+    max-width: 1060px;
+    margin: 0 auto;
+  }
+  .pricing h2 {
+    font-size: 36px;
+    color: #0f172a;
+    text-align: center;
+    margin-bottom: 12px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+  }
+  .pricing .subtitle {
+    text-align: center;
+    color: #64748b;
+    font-size: 17px;
+    margin-bottom: 48px;
+  }
+  .pricing-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 28px;
+    align-items: start;
+  }
+  .pricing-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 16px;
+    padding: 36px 28px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    transition: box-shadow 0.2s, transform 0.2s;
+  }
+  .pricing-card:hover {
+    box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    transform: translateY(-2px);
+  }
+  .pricing-card ul {
+    flex: 1;
+  }
+  .pricing-card.featured {
+    border: 2px solid #2563eb;
+    box-shadow: 0 8px 30px rgba(37, 99, 235, 0.12);
+    position: relative;
+  }
+  .pricing-card.featured .badge {
+    position: absolute;
+    top: -13px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #2563eb;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 4px 16px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .pricing-card h3 {
+    color: #64748b;
+    font-size: 14px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 4px;
+  }
+  .pricing-card .price {
+    font-size: 52px;
+    color: #0f172a;
+    margin: 8px 0 4px;
+    font-weight: 800;
+    letter-spacing: -2px;
+  }
+  .pricing-card .price-period {
+    font-size: 14px;
+    color: #94a3b8;
+    margin-bottom: 24px;
+  }
+  .pricing-card ul {
+    list-style: none;
+    text-align: left;
+    font-size: 15px;
+    color: #475569;
+    margin-bottom: 28px;
+  }
+  .pricing-card ul li {
+    padding: 8px 0;
+    border-bottom: 1px solid #f1f5f9;
+  }
+  .pricing-card ul li::before {
+    content: "\2713";
+    color: #22c55e;
+    font-weight: 700;
+    margin-right: 10px;
+  }
+  .pricing-card button {
+    background: #2563eb;
+    color: white;
+    border: none;
+    padding: 14px 32px;
+    font-size: 15px;
+    font-weight: 600;
+    border-radius: 10px;
+    cursor: pointer;
+    width: 100%;
+    transition: background 0.2s;
+  }
+  .pricing-card button:hover {
+    background: #1d4ed8;
+  }
+  .pricing-card button.outline {
+    background: transparent;
+    color: #2563eb;
+    border: 2px solid #2563eb;
+  }
+  .pricing-card button.outline:hover {
+    background: #eff6ff;
+  }
+
+  .trust-bar {
+    padding: 40px 48px;
+    text-align: center;
+    background: #fff;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  .trust-bar p {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #94a3b8;
+    font-weight: 600;
+    margin-bottom: 20px;
+  }
+  .trust-logos {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 48px;
+    flex-wrap: wrap;
+  }
+  .trust-logos span {
+    font-size: 18px;
+    font-weight: 700;
+    color: #cbd5e1;
+    letter-spacing: -0.5px;
+  }
+
+  .cta-banner {
+    background: linear-gradient(135deg, #1e40af 0%, #2563eb 50%, #3b82f6 100%);
+    padding: 72px 48px;
+    text-align: center;
+    margin-top: 20px;
+  }
+  .cta-banner h2 {
+    font-size: 36px;
+    color: #fff;
+    font-weight: 800;
+    margin-bottom: 12px;
+    letter-spacing: -0.5px;
+  }
+  .cta-banner p {
+    color: #bfdbfe;
+    font-size: 17px;
+    margin-bottom: 32px;
+  }
+  .cta-banner button {
+    background: #fff;
+    color: #1e40af;
+    border: none;
+    padding: 16px 40px;
+    font-size: 16px;
+    font-weight: 700;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: transform 0.15s;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+  }
+  .cta-banner button:hover {
+    transform: translateY(-1px);
+  }
+
+  footer {
+    background: #0f172a;
+    padding: 48px 48px 32px;
+    text-align: center;
+    color: #94a3b8;
+    font-size: 14px;
+  }
+  .footer-links {
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+  .footer-links a {
+    color: #94a3b8;
+    text-decoration: none;
+    font-size: 14px;
+    transition: color 0.2s;
+  }
+  .footer-links a:hover {
+    color: #e2e8f0;
+  }
+  .footer-brand {
+    font-size: 18px;
+    font-weight: 800;
+    color: #e2e8f0;
+    margin-bottom: 16px;
+    letter-spacing: -0.5px;
+  }
+  footer .copyright {
+    margin-top: 24px;
+    padding-top: 24px;
+    border-top: 1px solid #1e293b;
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">TaskFlow</div>
+  <div class="nav-links">
+    <a href="#">Features</a>
+    <a href="#">Pricing</a>
+    <a href="#">About</a>
+    <a href="#">Contact</a>
+    <a href="#" class="nav-cta">Get Started</a>
+  </div>
+</nav>
+
+<section class="hero">
+  <h1>Manage Projects with Clarity</h1>
+  <p>TaskFlow helps teams organize work, hit deadlines, and ship with confidence — no matter your team size or industry.</p>
+  <div class="cta-group">
+    <button>Start Free Trial</button>
+    <button class="secondary-cta">See How It Works</button>
+  </div>
+</section>
+
+<div class="trust-bar">
+  <p>Trusted by teams at</p>
+  <div class="trust-logos">
+    <span>Stripe</span>
+    <span>Vercel</span>
+    <span>Notion</span>
+    <span>Linear</span>
+    <span>Figma</span>
+  </div>
+</div>
+
+<section class="features">
+  <div class="features-header">
+    <p class="section-label">Features</p>
+    <h2>Everything you need to deliver</h2>
+  </div>
+  <div class="feature-card">
+    <div class="icon blue">&#9634;</div>
+    <h3>Board View</h3>
+    <p>Drag and drop tasks between columns to track progress visually.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon green">&#9776;</div>
+    <h3>Timeline</h3>
+    <p>See your project schedule with Gantt charts and milestone tracking.</p>
+  </div>
+  <div class="feature-card">
+    <div class="icon purple">&#9889;</div>
+    <h3>Automation</h3>
+    <p>Set rules to automate repetitive tasks and save time every day.</p>
+  </div>
+</section>
+
+<div class="testimonial">
+  <blockquote>TaskFlow transformed how our team plans sprints. We shipped 40% more features in the first quarter after switching.</blockquote>
+  <cite>Sarah Chen, VP Engineering at Acme Corp</cite>
+</div>
+
+<section class="pricing">
+  <p class="section-label">Pricing</p>
+  <h2>Plans that grow with you</h2>
+  <p class="subtitle">Simple, transparent pricing for teams of every size.</p>
+  <div class="pricing-cards">
+    <div class="pricing-card">
+      <h3>Free</h3>
+      <div class="price">$0</div>
+      <div class="price-period">forever</div>
+      <ul>
+        <li>5 projects</li>
+        <li>Basic board view</li>
+        <li>1 GB storage</li>
+      </ul>
+      <button class="outline">Get Started</button>
+    </div>
+    <div class="pricing-card featured">
+      <span class="badge">Most Popular</span>
+      <h3>Pro</h3>
+      <div class="price">$12</div>
+      <div class="price-period">per user / month</div>
+      <ul>
+        <li>Unlimited projects</li>
+        <li>Timeline + Gantt</li>
+        <li>50 GB storage</li>
+        <li>Priority support</li>
+      </ul>
+      <button>Get Started</button>
+    </div>
+    <div class="pricing-card">
+      <h3>Enterprise</h3>
+      <div class="price">$49</div>
+      <div class="price-period">per user / month</div>
+      <ul>
+        <li>Everything in Pro</li>
+        <li>SSO &amp; SAML</li>
+        <li>Unlimited storage</li>
+        <li>Dedicated support</li>
+        <li>Custom integrations</li>
+      </ul>
+      <button class="outline">Get Started</button>
+    </div>
+  </div>
+</section>
+
+<section class="cta-banner">
+  <h2>Ready to ship faster?</h2>
+  <p>Join thousands of teams already using TaskFlow to deliver on time.</p>
+  <button>Start Your Free Trial</button>
+</section>
+
+<footer>
+  <div class="footer-brand">TaskFlow</div>
+  <div class="footer-links">
+    <a href="#">Features</a>
+    <a href="#">Pricing</a>
+    <a href="#">About</a>
+    <a href="#">Blog</a>
+    <a href="#">Careers</a>
+    <a href="#">Contact</a>
+    <a href="#">Privacy</a>
+    <a href="#">Terms</a>
+  </div>
+  <p class="copyright">&copy; 2026 TaskFlow. All rights reserved.</p>
+</footer>
+
+</body>
+</html>

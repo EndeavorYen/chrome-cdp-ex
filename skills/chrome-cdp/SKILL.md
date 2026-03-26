@@ -293,7 +293,7 @@ scripts/cdp.mjs reload  <target>                       # reload current page
 scripts/cdp.mjs closetab <target>                      # close a browser tab
 scripts/cdp.mjs netlog  <target> [--clear]             # network request log (XHR/Fetch with status + timing)
 scripts/cdp.mjs evalraw <target> <method> [json]  # raw CDP command passthrough
-scripts/cdp.mjs open    [url]                  # open new tab (each triggers Allow prompt)
+scripts/cdp.mjs open    [url]                  # open new tab — AVOID: triggers Chrome "Allow debugging?" prompt. Prefer nav instead
 scripts/cdp.mjs stop    [target]               # stop daemon(s)
 ```
 
@@ -407,6 +407,8 @@ CSS px = screenshot image px / DPR
 
 ## Tips
 
+- **Prefer `nav` over `open`** — `open` creates a new tab that requires Chrome's "Allow debugging?" approval (user must click). `nav` reuses an already-approved tab — **no prompt, no waiting**. Only use `open` when the user explicitly needs multiple tabs open simultaneously.
+- After `open`, use the returned target ID directly (e.g. `Opened new tab: A7BA5C64`) — no need for another `list` call.
 - Prefer `snap` over `html` for page structure — compact by default, use `snap --full` for complete tree.
 - Prefer `elshot` over `shot` when verifying a specific element — it's more reliable and avoids scroll/DPR issues.
 - Use `type` (not eval) to enter text in cross-origin iframes — `click`/`clickxy` to focus first, then `type`.
@@ -415,6 +417,27 @@ CSS px = screenshot image px / DPR
 - **WSL2 gotcha**: Never improvise WSL2→Windows connectivity (localhost, gateway IP, port forwarding, launching Chrome from WSL). The only proven pattern: user starts Chrome on Windows, agent uses Windows-side Node.js to run the CDP script.
 
 ## Workflow Patterns
+
+### Navigating to a URL (prefer `nav` over `open`)
+
+When the user asks you to visit/open a URL:
+
+1. **If you already have a target ID** (from a prior `list` or command):
+   ```bash
+   scripts/cdp.mjs nav <target> <url>        # reuse existing tab — no Allow prompt!
+   scripts/cdp.mjs perceive <target>          # inspect the loaded page
+   ```
+
+2. **If no target ID yet**, run `list` first to find a reusable tab:
+   ```bash
+   scripts/cdp.mjs list                       # find an existing tab
+   scripts/cdp.mjs nav <target> <url>         # navigate it — no Allow prompt!
+   scripts/cdp.mjs perceive <target>          # inspect
+   ```
+
+3. **Only use `open` when the user needs multiple tabs** open at the same time (e.g. comparing two pages side by side). Each `open` triggers Chrome's "Allow debugging?" dialog which requires user interaction.
+
+> **Why this matters:** `nav` reuses an already-approved debugging session — instant, no user interaction needed. `open` creates a brand new tab that Chrome hasn't approved for debugging yet, forcing the user to click "Allow" every time. For most workflows, `nav` is strictly better.
 
 ### Understanding a page (default workflow)
 1. `perceive <target>` — structure + layout + console health + style anomalies + @refs
