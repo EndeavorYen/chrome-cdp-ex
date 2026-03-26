@@ -1,7 +1,8 @@
 # chrome-cdp
 
-[![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
+[![42 Commands](https://img.shields.io/badge/commands-42-orange)](skills/chrome-cdp/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp/scripts/cdp.mjs)
+[![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
 
 **Every browser automation tool launches a clean, isolated browser.**
@@ -9,22 +10,67 @@
 
 Your AI agent sees the tabs you already have open, your logged-in accounts, your cookies, your page state. No separate browser instance. No re-login. No lost context.
 
-## Why this matters
+## What makes this different
 
-- **Your real browser session** — connect to Chrome with all your login state, cookies, and open tabs intact. No puppeteered blank slate.
-- **Perceive-first observation** — `perceive` produces an enriched accessibility tree with layout annotations, style hints, and interactive element counts. One command gives complete page understanding without any screenshots.
-- **`@ref` workflow** — `perceive` assigns every interactive element a ref (`@1`, `@2`, `@3`...) with bounding coordinates. Then `click @3`, `fill @7 "text"`, `elshot @2` — no CSS selectors needed. Your agent interacts by reference, not by guessing.
-- **Zero dependencies** — single-file implementation (~2400 lines), pure Node.js built-ins only. No npm install.
+Most browser tools give the agent a screenshot and say "figure it out." This tool gives the agent a **structured understanding of the page** — every interactive element indexed, every action tracked, every change reported.
+
+| Capability | This tool | Screenshot-based tools | Basic CDP wrappers |
+|---|---|---|---|
+| **Page understanding** | Enriched accessibility tree with layout, style hints, scroll position | Screenshot → vision model (slow, lossy, expensive) | Raw accessibility dump (noisy, no layout) |
+| **Element targeting** | `@ref` indices — `click @3`, `fill @7 "text"` | Coordinate guessing from screenshots | CSS selectors only |
+| **Action feedback** | Automatic perceive diff after click/press/select | Take another screenshot and compare | Nothing — agent flies blind |
+| **Form automation** | `fill`, `select`, `press`, `waitfor`, `upload`, `dialog` | Manual JS injection | Not included |
+| **Background observation** | Console, exceptions, navigations buffered in ring buffers | Not available | Not available |
+| **Input simulation** | CDP mouse events (mouseMoved → mousePressed → mouseReleased) | Injected `el.click()` | Injected `el.click()` |
+| **WSL2 → Windows** | Built-in support (proven patterns) | Not supported | Not supported |
+| **Dependencies** | 0 (pure Node.js built-ins) | Playwright/Puppeteer + browser binary | Varies |
+| **Commands** | 42 | N/A (programmatic API) | ~14 |
+
+### The `@ref` workflow in action
+
+```
+$ cdp perceive abc1
+📍 My App (1280×720 scroll:0/2400) — https://app.example.com
+  [nav] h:48 bg:rgb(24,24,27)
+    @1 [link] "Home" (12,8 60×20)
+    @2 [link] "Settings" (80,8 70×20)
+  [main] ↓below fold
+    @3 [textbox] "Email" (200,350 200×30)
+    @4 [button] "Submit" (200,400 100×40)
+
+$ cdp fill abc1 @3 "user@example.com"
+  △ @3 [textbox] "Email" → value:"user@example.com"
+
+$ cdp click abc1 @4
+  △ [dialog] "Submitted successfully"
+  △ @4 [button] "Submit" → disabled
+```
+
+No CSS selectors. No coordinate guessing. No second screenshot. The agent sees the page structure, interacts by reference, and gets instant feedback on what changed.
 
 ## Quick Start
 
-**1. Install** — copy the `skills/chrome-cdp/` directory into your Claude Code plugins/skills folder.
+```bash
+git clone https://github.com/EndeavorYen/chrome-cdp-skill.git
+```
 
-**Requires:** Node.js 22+ (uses built-in WebSocket).
+Then load it in Claude Code:
 
-**2. Enable Chrome debugging** — navigate to `chrome://inspect/#remote-debugging` and toggle the switch. That's it — do **not** restart Chrome with `--remote-debugging-port`.
+```bash
+claude --plugin-dir ./chrome-cdp-skill
+```
 
-Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
+Or install globally (available in all projects):
+
+```bash
+cp -r chrome-cdp-skill/skills/chrome-cdp ~/.claude/skills/
+```
+
+### Enable Chrome debugging
+
+Navigate to `chrome://inspect/#remote-debugging` and toggle the switch. That's it — do **not** restart Chrome with `--remote-debugging-port`.
+
+**Requires:** Node.js 22+ (uses built-in WebSocket). Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
 
 <details>
 <summary><strong>Advanced Configuration</strong></summary>
@@ -171,17 +217,23 @@ evalraw <target> <method> [json]   # raw CDP command passthrough
 
 **Action feedback:** `click`, `clickxy`, `press` (Enter/Escape/Tab), and `select` automatically wait for DOM to settle and return a perceive diff showing what changed — no need to manually run `perceive --diff` after these actions.
 
-`<target>` is a unique targetId prefix from `list`. See [SKILL.md](skills/chrome-cdp/SKILL.md) for detailed usage, workflow patterns, coordinate system, and WSL2 instructions.
+`<target>` is a unique targetId prefix from `list`. See [SKILL.md](skills/chrome-cdp/SKILL.md) for detailed usage, workflow patterns, and coordinate system.
 
 <details>
-<summary><strong>WSL2 Support</strong></summary>
+<summary><strong>WSL2 → Windows Browser Control</strong></summary>
 
 This tool works across the WSL2 → Windows boundary — most CDP tools don't. The proven pattern:
 
-1. User starts Chrome on Windows and enables debugging at `chrome://inspect/#remote-debugging`
+1. Start Chrome **on Windows** and enable debugging at `chrome://inspect/#remote-debugging`
 2. Agent uses **Windows-side Node.js** to run the CDP script (WSL cannot connect to Windows localhost directly)
-3. Locate Node.js: `powershell.exe -NoProfile -Command "(Get-Command node -ErrorAction SilentlyContinue).Source"`
-4. Convert to WSL mount path and invoke: `"/mnt/c/.../node.exe" scripts/cdp.mjs list`
+3. Locate Node.js:
+   ```bash
+   powershell.exe -NoProfile -Command "(Get-Command node -ErrorAction SilentlyContinue).Source"
+   ```
+4. Convert to WSL mount path and invoke:
+   ```bash
+   "/mnt/c/.../node.exe" scripts/cdp.mjs list
+   ```
 
 See [SKILL.md](skills/chrome-cdp/SKILL.md) for full WSL2 setup instructions.
 
@@ -191,7 +243,7 @@ See [SKILL.md](skills/chrome-cdp/SKILL.md) for full WSL2 setup instructions.
 
 - **Original**: [pasky/chrome-cdp-skill](https://github.com/pasky/chrome-cdp-skill) by Petr Baudis — daemon-per-tab architecture and core CDP client
 - **Contributors**: [ynezz](https://github.com/ynezz) (Flatpak paths), [Jah-yee](https://github.com/Jah-yee), [Rolf Fredheim](https://github.com/rolfredheim)
-- **This fork**: Background observation, `@ref` system, perceive-first workflow, realistic input simulation, form automation, action feedback, WSL2 support, and 28 additional commands
+- **This fork**: `@ref` system, perceive-first workflow, action feedback, background observation, realistic input simulation, form automation, WSL2 support, and 28 additional commands
 
 ## License
 
