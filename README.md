@@ -1,4 +1,4 @@
-# chrome-cdp
+# chrome-cdp-ex
 
 [![42 Commands](https://img.shields.io/badge/commands-42-orange)](skills/chrome-cdp/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp/scripts/cdp.mjs)
@@ -10,25 +10,33 @@
 
 Your AI agent sees the tabs you already have open, your logged-in accounts, your cookies, your page state. No separate browser instance. No re-login. No lost context.
 
-## What makes this different
+---
 
-Most browser tools give the agent a screenshot and say "figure it out." This tool gives the agent a **structured understanding of the page** — every interactive element indexed, every action tracked, every change reported.
+### `perceive` — the agent reads the page like a human, not like OCR
 
-| Capability | This tool | Screenshot-based tools | Basic CDP wrappers |
-|---|---|---|---|
-| **Page understanding** | Enriched accessibility tree with layout, style hints, scroll position | Screenshot → vision model (slow, lossy, expensive) | Raw accessibility dump (noisy, no layout) |
-| **Element targeting** | `@ref` indices — `click @3`, `fill @7 "text"` | Coordinate guessing from screenshots | CSS selectors only |
-| **Action feedback** | Automatic perceive diff after click/press/select | Take another screenshot and compare | Nothing — agent flies blind |
-| **Form automation** | `fill`, `select`, `press`, `waitfor`, `upload`, `dialog` | Manual JS injection | Not included |
-| **Background observation** | Console, exceptions, navigations buffered in ring buffers | Not available | Not available |
-| **Input simulation** | CDP mouse events (mouseMoved → mousePressed → mouseReleased) | Injected `el.click()` | Injected `el.click()` |
-| **WSL2 → Windows** | Built-in support (proven patterns) | Not supported | Not supported |
-| **Dependencies** | 0 (pure Node.js built-ins) | Playwright/Puppeteer + browser binary | Varies |
-| **Commands** | 42 | N/A (programmatic API) | ~14 |
+One command returns a structured accessibility tree with layout annotations, style hints, scroll position, and interactive element counts. **~200 tokens** instead of an expensive vision model call on a screenshot.
 
-### The `@ref` workflow in action
+### `@ref` — interact by reference, not by guessing
 
-```
+`perceive` assigns every interactive element a stable index: `@1`, `@2`, `@3`... with bounding coordinates. Then: `click @3`, `fill @7 "text"`, `hover @12` — **no CSS selectors, no coordinate math.**
+
+### Action feedback — the agent sees what changed, instantly
+
+`click`, `press`, `select` automatically wait for DOM to settle and return a **perceive diff** — the agent knows exactly what happened without re-scanning the page.
+
+### WSL2 → Windows — the only CDP tool that crosses the boundary
+
+Control your **Windows Chrome from WSL2**. Built-in detection, proven patterns, documented setup.
+
+### 42 commands. Zero dependencies. One file.
+
+Single-file implementation (~2400 lines), pure Node.js built-ins. No `npm install`. Form automation, network logging, cookie management, full-page capture, background console observation — all included.
+
+---
+
+## See it in action
+
+```text
 $ cdp perceive abc1
 📍 My App (1280×720 scroll:0/2400) — https://app.example.com
   [nav] h:48 bg:rgb(24,24,27)
@@ -46,24 +54,41 @@ $ cdp click abc1 @4
   △ @4 [button] "Submit" → disabled
 ```
 
-No CSS selectors. No coordinate guessing. No second screenshot. The agent sees the page structure, interacts by reference, and gets instant feedback on what changed.
+Three commands. The agent perceived the page, filled a form field by `@ref`, clicked submit, and got instant feedback — all without a single screenshot or CSS selector.
+
+<details>
+<summary><strong>How does this compare?</strong></summary>
+
+| Capability | This tool | Screenshot-based tools | Basic CDP wrappers |
+|---|---|---|---|
+| **Page understanding** | Enriched AX tree with layout + style hints (~200 tokens) | Screenshot → vision model (slow, expensive) | Raw AX dump (noisy, no layout) |
+| **Element targeting** | `@ref` indices — `click @3`, `fill @7 "text"` | Coordinate guessing from screenshots | CSS selectors only |
+| **Action feedback** | Auto perceive diff after click/press/select | Take another screenshot and compare | Nothing — agent flies blind |
+| **Form automation** | `fill`, `select`, `press`, `waitfor`, `upload`, `dialog` | Manual JS injection | Not included |
+| **Background observation** | Console, exceptions, navigations in ring buffers | Not available | Not available |
+| **Input simulation** | Real CDP mouse events (mouseMoved → mousePressed → mouseReleased) | `el.click()` | `el.click()` |
+| **WSL2 → Windows** | Built-in support | Not supported | Not supported |
+| **Dependencies** | 0 | Playwright/Puppeteer + browser binary | Varies |
+| **Commands** | 42 | N/A (programmatic API) | ~14 |
+
+</details>
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/EndeavorYen/chrome-cdp-skill.git
+git clone https://github.com/EndeavorYen/chrome-cdp-ex.git
 ```
 
 Then load it in Claude Code:
 
 ```bash
-claude --plugin-dir ./chrome-cdp-skill
+claude --plugin-dir ./chrome-cdp-ex
 ```
 
 Or install globally (available in all projects):
 
 ```bash
-cp -r chrome-cdp-skill/skills/chrome-cdp ~/.claude/skills/
+cp -r chrome-cdp-ex/skills/chrome-cdp ~/.claude/skills/
 ```
 
 ### Enable Chrome debugging

@@ -1,4 +1,4 @@
-# CLAUDE.md — chrome-cdp-skill
+# CLAUDE.md — chrome-cdp-ex
 
 ## Problem-Solving Principles
 
