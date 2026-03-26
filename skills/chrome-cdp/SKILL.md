@@ -122,6 +122,7 @@ Returns a single **enriched accessibility tree** that combines semantic structur
 - **Page header**: title, URL, viewport size, scroll position, console health, interactive element counts
 - **Enriched AX tree**: semantic roles and labels (from accessibility tree) with **inline layout annotations** on landmark/structural nodes — height, background color, font size, display mode, and viewport visibility (↑above fold / ↓below fold)
 - **Style anomaly hints**: on table cells, annotates non-default background colors, bold text, and unusual text colors compared to column siblings — e.g., `[cell] 70.0%  bg:rgb(255,200,200)  bold`
+- **@ref indices**: every interactive element (link, button, input, etc.) gets an `@1`, `@2`... ref that can be used directly in `click`, `fill`, `hover`, and `elshot` — no CSS selector guessing needed
 
 Example output:
 ```
@@ -133,14 +134,15 @@ Console: 2 errors, 1 warning
 [WebArea] Example Store
   [banner]  ↕80px  bg:rgb(26, 26, 46)  ↑above fold
     [navigation] Main Menu
-      [link] Home
-      [link] Products
+      [link] Home  @1
+      [link] Products  @2
   [main]  ↕2920px
     [heading] Welcome to Our Store  36px 700
     [img] Hero Banner  ↕400px
     [region] Product Grid  grid  gap:20px
-      [link] Product 1 — $29.99
-      [link] Product 2 — $49.99
+      [link] Product 1 — $29.99  @3
+      [link] Product 2 — $49.99  @4
+    [button] Add to Cart  @5
     [table] Department Health  ↕400px
       [row] header
         [columnheader] Department
@@ -150,10 +152,20 @@ Console: 2 errors, 1 warning
         [cell] 33.3%  bg:rgb(255,235,200)
       ... more rows truncated
   [contentinfo]  ↕160px  bg:rgb(26, 26, 46)  ↓below fold
-    [link] Privacy Policy
+    [link] Privacy Policy  @6
 ```
 
+**@refs** are stable within a single perceive session. After navigation or DOM changes, run `perceive` again to refresh refs. Use `perceive --diff` to see only what changed.
+
 Hierarchy comes from the accessibility tree (always correct). Layout annotations are added to landmark/structural nodes (banner, navigation, main, heading, img, etc.). **Style anomaly hints** are added to table cells that deviate from their column's baseline style — showing background colors, bold text, and text color differences. This is **the most efficient way** to understand a page. Use it before any screenshots.
+
+### Perceive diff (track changes)
+
+```bash
+scripts/cdp.mjs perceive <target> --diff  # show only changes since last perceive
+```
+
+After performing an action (click, fill, etc.), use `perceive --diff` to see exactly what changed in the page structure. Shows added and removed AX tree lines. Much more token-efficient than a full re-perceive when verifying an action's effect.
 
 ### Accessibility tree snapshot
 
@@ -167,7 +179,8 @@ Use `snap` when you need just the accessibility tree without layout metadata (e.
 ### Element screenshot (targeted visual verification)
 
 ```bash
-scripts/cdp.mjs elshot <target> <selector>   # screenshot of a specific element
+scripts/cdp.mjs elshot <target> <selector>   # screenshot by CSS selector
+scripts/cdp.mjs elshot <target> @3           # screenshot by @ref from perceive
 ```
 
 - Automatically scrolls the element into view and clips the capture to its bounding box
@@ -177,6 +190,15 @@ scripts/cdp.mjs elshot <target> <selector>   # screenshot of a specific element
 - Use when you need to verify visual appearance of a specific component
 
 > **Prefer `elshot` over `shot`** when you need to visually verify a specific element. It's more reliable and captures exactly what you need.
+
+### Annotated screenshot (visual ref map)
+
+```bash
+scripts/cdp.mjs shot <target> --annotate   # viewport screenshot with @ref overlays
+scripts/cdp.mjs shot <target> -a           # shorthand
+```
+
+Overlays red bounding boxes and `@ref` labels on every interactive element. Requires `perceive` to be run first (to populate refs). Useful for bug reports, visual debugging, and understanding which ref corresponds to which visual element.
 
 ### Viewport & full-page screenshots
 
@@ -210,21 +232,29 @@ scripts/cdp.mjs console <target> [--all|--errors] # console buffer (default: unr
 
 > **Agent tip:** `perceive` already includes summary + console health. Use `status` or `console` only when you need to check for **new** console entries after an action.
 
+### Batch commands (reduce IPC overhead)
+
+```bash
+scripts/cdp.mjs batch <target> '[{"cmd":"click","args":["@3"]},{"cmd":"perceive","args":["--diff"]}]'
+```
+
+Executes multiple commands in a single IPC call. Returns a JSON array of results. Useful for form-filling workflows where you need to fill multiple fields and verify the result in one round trip.
+
 ### Other commands
 
 ```bash
 scripts/cdp.mjs html    <target> [selector]   # full page or element HTML
 scripts/cdp.mjs nav     <target> <url>         # navigate and wait for load
 scripts/cdp.mjs net     <target>               # resource timing entries
-scripts/cdp.mjs click   <target> <selector>    # click element by CSS selector
+scripts/cdp.mjs click   <target> <sel|@ref>    # click element by CSS selector or @ref
 scripts/cdp.mjs clickxy <target> <x> <y>       # click at CSS pixel coords
 scripts/cdp.mjs type    <target> <text>         # Input.insertText at current focus; works in cross-origin iframes unlike eval
 scripts/cdp.mjs press   <target> <key>         # press key (Enter, Tab, Escape, Backspace, Space, Arrow*)
 scripts/cdp.mjs scroll  <target> <dir|x,y> [px]  # scroll page (down/up/left/right; default 500px)
 scripts/cdp.mjs loadall <target> <selector> [ms]  # click "load more" until gone (default 1500ms between clicks)
-scripts/cdp.mjs hover   <target> <selector>          # hover element (triggers :hover, tooltips)
+scripts/cdp.mjs hover   <target> <sel|@ref>          # hover element (triggers :hover, tooltips)
 scripts/cdp.mjs waitfor <target> <selector> [ms]      # wait for element to appear (default 10s)
-scripts/cdp.mjs fill    <target> <selector> <text>     # clear field + type text (form filling)
+scripts/cdp.mjs fill    <target> <sel|@ref> <text>     # clear field + type text (form filling)
 scripts/cdp.mjs select  <target> <selector> <value>    # select <select> option by value
 scripts/cdp.mjs styles  <target> <selector>            # computed styles (meaningful props only)
 scripts/cdp.mjs cookies <target>                       # list cookies for current page
@@ -257,27 +287,17 @@ CSS px = screenshot image px / DPR
 ## Workflow Patterns
 
 ### Understanding a page (default workflow)
-1. `perceive <target>` — structure + layout + console health + style anomalies
-2. If needed: `elshot <target> ".specific-element"` — verify visual rendering of a component
-3. If needed: `snap <target> --full` — deeper accessibility tree detail
+1. `perceive <target>` — structure + layout + console health + style anomalies + @refs
+2. If needed: `elshot <target> @3` — verify visual rendering of a specific ref'd element
+3. If needed: `shot <target> --annotate` — visual map of all @refs overlaid on screenshot
+4. If needed: `snap <target> --full` — deeper accessibility tree detail
 
 ### Comparing pages or evaluating design quality
-<<<<<<< HEAD
 1. `perceive` **both** pages — compare structure, layout, style hints (colors, bold, font sizes)
 2. `elshot` **specific sections** only if perceive shows identical structure but you need subjective aesthetic comparison
 3. Analyze from perceive data: content hierarchy, data density, style anomalies, layout organization
-=======
-1. `perceive` **both** pages — compare structure, information architecture, component organization
-2. `elshot` **specific sections** on each page for visual comparison — e.g.:
-   - `elshot <t> "header"` or `elshot <t> "nav"` — navigation/header design
-   - `elshot <t> ".card"` or `elshot <t> ".ant-card:first-child"` — card component styling
-   - `elshot <t> "table"` — data table design
-   - `elshot <t> "footer"` — footer area
-3. Analyze from perceive data: content hierarchy, data density, alert presentation, layout organization
-4. Analyze from elshot images: typography, color usage, spacing, visual polish
-5. **DO NOT use `shot` + `scroll`** to manually scan pages — that's just slow scanshot. Use `elshot` with CSS selectors for each section you want to compare.
-6. **DO NOT use `scanshot`** for comparisons — `elshot` on 3-4 key sections per page gives better targeted comparison than 8+ full-page screenshots
->>>>>>> 022856e (fix: perceive truncated-row leak, icon noise, and shot+scroll guidance)
+4. **DO NOT use `shot` + `scroll`** to manually scan pages — that's just slow scanshot
+5. **DO NOT use `scanshot`** for comparisons — `elshot` on 3-4 key sections per page gives better targeted comparison
 
 ### Debugging a broken page
 1. `perceive <target>` — structure + console errors + style anomalies in one call
@@ -286,11 +306,15 @@ CSS px = screenshot image px / DPR
 4. `styles <target> ".broken-element"` — full computed styles if needed
 
 ### Form automation
-1. `perceive <target>` — understand form structure and field names
-2. `fill <target> "#email" "user@example.com"` — fill input
+1. `perceive <target>` — understand form structure and get @refs for fields
+2. `fill <target> @3 "user@example.com"` — fill input by @ref (or CSS selector)
 3. `select <target> "#country" "US"` — select dropdown
 4. `press <target> Enter` — submit
-5. `waitfor <target> ".success-message"` — wait for result
+5. `perceive <target> --diff` — see what changed after submission
+6. Or use `batch` for a single round trip:
+   ```bash
+   batch <target> '[{"cmd":"fill","args":["@3","user@example.com"]},{"cmd":"fill","args":["@4","password123"]},{"cmd":"click","args":["@5"]}]'
+   ```
 
 ### Visual bug investigation
 1. `perceive <target>` — structure + layout positions + style hints

@@ -321,7 +321,6 @@ async function snapshotStr(cdp, sid, compact = false) {
 }
 
 async function evalStr(cdp, sid, expression) {
-  await cdp.send('Runtime.enable', {}, sid);
   const result = await cdp.send('Runtime.evaluate', {
     expression, returnByValue: true, awaitPromise: true,
   }, sid);
@@ -381,14 +380,7 @@ async function waitForDocumentReady(cdp, sid, timeoutMs = NAVIGATION_TIMEOUT) {
 }
 
 async function navStr(cdp, sid, url) {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
-      throw new Error(`Only http/https URLs allowed, got: ${url}`);
-  } catch (e) {
-    if (e.message.startsWith('Only')) throw e;
-    throw new Error(`Invalid URL: ${url}`);
-  }
+  validateUrl(url);
   await cdp.send('Page.enable', {}, sid);
   const loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
   const result = await cdp.send('Page.navigate', { url }, sid);
@@ -567,8 +559,60 @@ const ENRICHED_ROLES = new Set([
   'region', 'article', 'alert',
 ]);
 
+// Roles that get @ref indices in perceive output (interactive elements)
+const INTERACTIVE_ROLES = new Set([
+  'link', 'button', 'menuitem', 'tab', 'checkbox', 'radio', 'switch',
+  'textbox', 'searchbox', 'combobox', 'spinbutton', 'slider',
+  'menuitemcheckbox', 'menuitemradio', 'option', 'treeitem',
+]);
+
+async function resolveRefNode(cdp, sid, refMap, ref) {
+  const num = parseInt(ref.slice(1));
+  if (isNaN(num) || !refMap.has(num)) {
+    throw new Error(`Unknown ref: ${ref}. Run "perceive" first to assign refs.`);
+  }
+  const backendNodeId = refMap.get(num);
+  const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }, sid);
+  return object.objectId;
+}
+
+async function resolveRef(cdp, sid, refMap, ref) {
+  const objectId = await resolveRefNode(cdp, sid, refMap, ref);
+  const result = await cdp.send('Runtime.callFunctionOn', {
+    objectId,
+    functionDeclaration: `function() {
+      this.scrollIntoView({ block: 'center', inline: 'center' });
+      const rect = this.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, w: rect.width, h: rect.height, tag: this.tagName, text: this.textContent.trim().substring(0, 80) };
+    }`,
+    returnByValue: true,
+  }, sid);
+  return result.result.value;
+}
+
+function isRef(s) { return /^@\d+$/.test(s); }
+
+function validateUrl(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { throw new Error(`Invalid URL: ${url}`); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Only http/https URLs allowed, got: ${parsed.protocol}`);
+  }
+  // Block cloud metadata endpoints (AWS/GCP/Azure IMDS)
+  const host = parsed.hostname;
+  const metadataIPs = ['169.254.169.254', '169.254.170.2', 'fd00:ec2::254'];
+  const metadataHosts = ['metadata.google.internal', 'metadata.gke.internal'];
+  if (metadataIPs.includes(host) || metadataHosts.includes(host)) {
+    throw new Error(`Blocked: cloud metadata endpoint (${host})`);
+  }
+  // Block link-local range (169.254.x.x)
+  if (/^169\.254\.\d+\.\d+$/.test(host)) {
+    throw new Error(`Blocked: link-local address (${host})`);
+  }
+}
+
 // Perceive: enriched accessibility tree with inline visual layout annotations
-async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf) {
+async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, diffMode = false) {
   // Get AX tree nodes and page metadata + layout map in parallel
   const [axResult, metaJson] = await Promise.all([
     cdp.send('Accessibility.getFullAXTree', {}, sid),
@@ -771,6 +815,10 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf) {
   const rowCellIdx = new Map(); // tableAncestorId → current cell index in current row
   const dataRowIdx = new Map(); // tableAncestorId → current data row index (excludes header rows)
 
+  // Clear and rebuild ref map
+  refMap.clear();
+  let refCounter = 0;
+
   const treeLines = [];
   const visited = new Set();
   // Mark an entire subtree as visited (prevents fallback loop from re-emitting truncated nodes)
@@ -832,6 +880,13 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf) {
     if (shouldShowAxNode(node, true, parentNode)) {
       let line = formatAxNode(node, depth);
 
+      // Assign @ref to interactive elements
+      if (INTERACTIVE_ROLES.has(role) && node.backendDOMNodeId) {
+        refCounter++;
+        refMap.set(refCounter, node.backendDOMNodeId);
+        line += `  @${refCounter}`;
+      }
+
       // Enrich landmark/structural nodes with layout annotations
       if (ENRICHED_ROLES.has(role)) {
         const layout = consumeLayout(role);
@@ -891,12 +946,64 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf) {
   lines.push('');
   lines.push(...treeLines);
 
-  return lines.join('\n');
+  const output = lines.join('\n');
+
+  // Diff mode: compare with previous perceive output
+  if (diffMode && lastPerceiveStore.output) {
+    const prev = lastPerceiveStore.output.split('\n');
+    const curr = output.split('\n');
+    const diffLines = [];
+    // Skip header lines (first 4), diff the tree
+    const headerEnd = 4;
+    const prevTree = prev.slice(headerEnd);
+    const currTree = curr.slice(headerEnd);
+    // Simple line-level diff
+    const prevSet = new Set(prevTree);
+    const currSet = new Set(currTree);
+    const removed = prevTree.filter(l => !currSet.has(l));
+    const added = currTree.filter(l => !prevSet.has(l));
+    if (removed.length === 0 && added.length === 0) {
+      diffLines.push('(no changes detected in AX tree)');
+    } else {
+      if (removed.length > 0) {
+        diffLines.push(`--- Removed (${removed.length}):`);
+        for (const l of removed.slice(0, 30)) diffLines.push(`- ${l}`);
+        if (removed.length > 30) diffLines.push(`  ... and ${removed.length - 30} more`);
+      }
+      if (added.length > 0) {
+        diffLines.push(`+++ Added (${added.length}):`);
+        for (const l of added.slice(0, 30)) diffLines.push(`+ ${l}`);
+        if (added.length > 30) diffLines.push(`  ... and ${added.length - 30} more`);
+      }
+    }
+    // Include current header + diff
+    lastPerceiveStore.output = output;
+    return curr.slice(0, headerEnd).join('\n') + '\n\n' + diffLines.join('\n');
+  }
+
+  lastPerceiveStore.output = output;
+  return output;
 }
 
-// Element screenshot: targeted capture of a specific element by CSS selector
-async function elshotStr(cdp, sid, selector, targetId) {
-  if (!selector) throw new Error('CSS selector required');
+// Element screenshot: targeted capture of a specific element by CSS selector or @ref
+async function elshotStr(cdp, sid, selector, targetId, refMap) {
+  if (!selector) throw new Error('CSS selector or @ref required');
+  if (isRef(selector)) {
+    const r = await resolveRef(cdp, sid, refMap, selector);
+    const pad = 8;
+    const clipX = Math.max(0, r.x - pad);
+    const clipY = Math.max(0, r.y - pad);
+    const clipW = r.w + pad * 2;
+    const clipH = r.h + pad * 2;
+    await sleep(100);
+    const { data } = await cdp.send('Page.captureScreenshot', {
+      format: 'png', clip: { x: clipX, y: clipY, width: clipW, height: clipH, scale: 1 }
+    }, sid);
+    const prefix = (targetId || 'unknown').slice(0, 8);
+    const out = resolve(RUNTIME_DIR, `elshot-${prefix}-ref${selector.slice(1)}.png`);
+    writeFileSync(out, Buffer.from(data, 'base64'));
+    return `${out}\nElement screenshot of <${r.tag}> "${r.text}" (${selector}) — ${Math.round(r.w)}×${Math.round(r.h)} CSS px`;
+  }
   // Scroll element into view and get its bounding rect
   const expr = `
     (function() {
@@ -958,9 +1065,14 @@ async function getDpr(cdp, sid) {
   return 1;
 }
 
-// Click element by CSS selector
-async function clickStr(cdp, sid, selector) {
-  if (!selector) throw new Error('CSS selector required');
+// Click element by CSS selector or @ref
+async function clickStr(cdp, sid, selector, refMap) {
+  if (!selector) throw new Error('CSS selector or @ref required');
+  if (isRef(selector)) {
+    const r = await resolveRef(cdp, sid, refMap, selector);
+    await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2);
+    return `Clicked <${r.tag}> "${r.text}" (${selector})`;
+  }
   const expr = `
     (function() {
       const el = document.querySelector(${JSON.stringify(selector)});
@@ -1033,8 +1145,14 @@ async function scrollStr(cdp, sid, direction, amount) {
   return `Scrolled by (${dx}, ${dy}). Position: (${pos.x}, ${pos.y})`;
 }
 
-async function hoverStr(cdp, sid, selector) {
-  if (!selector) throw new Error('CSS selector required');
+async function hoverStr(cdp, sid, selector, refMap) {
+  if (!selector) throw new Error('CSS selector or @ref required');
+  if (isRef(selector)) {
+    const r = await resolveRef(cdp, sid, refMap, selector);
+    const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    await cdp.send('Input.dispatchMouseEvent', { x: cx, y: cy, type: 'mouseMoved', button: 'none', modifiers: 0 }, sid);
+    return `Hovering over <${r.tag}> at CSS (${Math.round(cx)}, ${Math.round(cy)}) (${selector})`;
+  }
   const expr = `
     (function() {
       const el = document.querySelector(${JSON.stringify(selector)});
@@ -1072,9 +1190,19 @@ async function waitForStr(cdp, sid, selector, timeoutMs = 10000) {
   throw new Error(`Timeout: "${selector}" not found within ${timeout}ms`);
 }
 
-async function fillStr(cdp, sid, selector, text) {
-  if (!selector) throw new Error('CSS selector required');
+async function fillStr(cdp, sid, selector, text, refMap) {
+  if (!selector) throw new Error('CSS selector or @ref required');
   if (text == null) throw new Error('Text required');
+  if (isRef(selector)) {
+    const objectId = await resolveRefNode(cdp, sid, refMap, selector);
+    await cdp.send('Runtime.callFunctionOn', {
+      objectId,
+      functionDeclaration: `function() { this.scrollIntoView({block:'center'}); this.focus(); this.value=''; this.dispatchEvent(new Event('input',{bubbles:true})); }`,
+      returnByValue: true,
+    }, sid);
+    await cdp.send('Input.insertText', { text }, sid);
+    return `Filled ${selector} with "${text.substring(0, 40)}${text.length > 40 ? '...' : ''}"`;
+  }
   // Focus via JS (more reliable than mouse events for input focus) + get element info
   const expr = `
     (function() {
@@ -1282,6 +1410,60 @@ async function loadAllStr(cdp, sid, selector, intervalMs = 1500) {
   return `Clicked "${selector}" ${clicks} time(s) until it disappeared`;
 }
 
+async function annotshotStr(cdp, sid, targetId, refMap) {
+  if (refMap.size === 0) throw new Error('No refs available. Run "perceive" first.');
+
+  // Resolve all refs in parallel to get bounding rects
+  const refEntries = [...refMap.entries()];
+  const settled = await Promise.allSettled(refEntries.map(async ([num, backendNodeId]) => {
+    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }, sid);
+    const result = await cdp.send('Runtime.callFunctionOn', {
+      objectId: object.objectId,
+      functionDeclaration: `function() { const r = this.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; }`,
+      returnByValue: true,
+    }, sid);
+    return { num, ...result.result.value };
+  }));
+  const entries = settled.filter(s => s.status === 'fulfilled').map(s => s.value);
+
+  // Inject overlay + draw labels + screenshot + cleanup in try/finally
+  await evalStr(cdp, sid, `(function() {
+    const overlay = document.createElement('div');
+    overlay.id = '__cdp_annot_overlay__';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2147483647;';
+    document.body.appendChild(overlay);
+  })()`);
+
+  try {
+    await evalStr(cdp, sid, `(function() {
+      const overlay = document.getElementById('__cdp_annot_overlay__');
+      if (!overlay) return;
+      const entries = ${JSON.stringify(entries)};
+      for (const e of entries) {
+        const box = document.createElement('div');
+        box.style.cssText = 'position:fixed;border:2px solid red;pointer-events:none;' +
+          'left:' + e.x + 'px;top:' + e.y + 'px;width:' + e.w + 'px;height:' + e.h + 'px;';
+        const label = document.createElement('span');
+        label.textContent = '@' + e.num;
+        label.style.cssText = 'position:absolute;top:-16px;left:0;background:red;color:white;font:bold 11px monospace;padding:1px 3px;border-radius:2px;line-height:14px;';
+        box.appendChild(label);
+        overlay.appendChild(box);
+      }
+    })()`);
+
+    await sleep(100);
+
+    const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, sid);
+    const prefix = (targetId || 'unknown').slice(0, 8);
+    const out = resolve(RUNTIME_DIR, `annotshot-${prefix}.png`);
+    writeFileSync(out, Buffer.from(data, 'base64'));
+
+    return `${out}\nAnnotated screenshot with ${entries.length} ref labels. Use refs (@1, @2...) from perceive output to identify elements.`;
+  } finally {
+    await evalStr(cdp, sid, `(function() { const el = document.getElementById('__cdp_annot_overlay__'); if (el) el.remove(); })()`).catch(() => {});
+  }
+}
+
 // Send a raw CDP command and return the result as JSON
 async function evalRawStr(cdp, sid, method, paramsJson) {
   if (!method) throw new Error('CDP method required (e.g. "DOM.getDocument")');
@@ -1325,9 +1507,14 @@ async function runDaemon(targetId) {
   const navBuf = new RingBuffer(10);
   let lastReadSeq = { console: 0, exception: 0 };
 
-  // Enable domains for background collection
+  // --- Ref system & perceive diff state ---
+  const refMap = new Map();               // ref number → backendDOMNodeId
+  const lastPerceiveStore = { output: null }; // stores last perceive output for diff
+
+  // Enable domains for background collection and ref resolution
   try { await cdp.send('Runtime.enable', {}, sessionId); } catch {}
   try { await cdp.send('Page.enable', {}, sessionId); } catch {}
+  try { await cdp.send('DOM.enable', {}, sessionId); } catch {}
 
   cdp.onEvent('Runtime.consoleAPICalled', (params) => {
     const level = params.type || 'log';
@@ -1401,30 +1588,55 @@ async function runDaemon(targetId) {
         }
         case 'snap': case 'snapshot': result = await snapshotStr(cdp, sessionId, args[0] !== '--full'); break;
         case 'eval': result = await evalStr(cdp, sessionId, args[0]); break;
-        case 'shot': case 'screenshot': result = await shotStr(cdp, sessionId, args[0], targetId); break;
+        case 'shot': case 'screenshot': {
+          if (args[0] === '--annotate' || args[0] === '-a') {
+            result = await annotshotStr(cdp, sessionId, targetId, refMap);
+          } else {
+            result = await shotStr(cdp, sessionId, args[0], targetId);
+          }
+          break;
+        }
         case 'html': result = await htmlStr(cdp, sessionId, args[0]); break;
         case 'nav': case 'navigate': result = await navStr(cdp, sessionId, args[0]); break;
         case 'net': case 'network': result = await netStr(cdp, sessionId); break;
         case 'status': result = await statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq); break;
         case 'console': result = await consoleStr(consoleBuf, exceptionBuf, lastReadSeq, args[0]); break;
         case 'summary': result = await summaryStr(cdp, sessionId, consoleBuf, exceptionBuf); break;
-        case 'perceive': result = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf); break;
-        case 'elshot': result = await elshotStr(cdp, sessionId, args[0], targetId); break;
-        case 'click': result = await clickStr(cdp, sessionId, args[0]); break;
+        case 'perceive': {
+          const diffFlag = args.includes('--diff');
+          result = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, diffFlag);
+          break;
+        }
+        case 'elshot': result = await elshotStr(cdp, sessionId, args[0], targetId, refMap); break;
+        case 'click': result = await clickStr(cdp, sessionId, args[0], refMap); break;
         case 'clickxy': result = await clickXyStr(cdp, sessionId, args[0], args[1]); break;
         case 'type': result = await typeStr(cdp, sessionId, args[0]); break;
         case 'press': result = await pressStr(cdp, sessionId, args[0]); break;
         case 'scroll': result = await scrollStr(cdp, sessionId, args[0], args[1]); break;
-        case 'hover': result = await hoverStr(cdp, sessionId, args[0]); break;
+        case 'hover': result = await hoverStr(cdp, sessionId, args[0], refMap); break;
         case 'waitfor': result = await waitForStr(cdp, sessionId, args[0], args[1]); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
-        case 'fill': result = await fillStr(cdp, sessionId, args[0], args[1]); break;
+        case 'fill': result = await fillStr(cdp, sessionId, args[0], args[1], refMap); break;
         case 'select': result = await selectStr(cdp, sessionId, args[0], args[1]); break;
         case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
         case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
         case 'styles': result = await stylesStr(cdp, sessionId, args[0]); break;
         case 'cookies': result = await cookiesStr(cdp, sessionId); break;
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
+        case 'batch': {
+          let commands;
+          try { commands = JSON.parse(args[0]); } catch { return { ok: false, error: 'batch requires a JSON array: [{"cmd":"...", "args":[...]}, ...]' }; }
+          if (!Array.isArray(commands)) return { ok: false, error: 'batch argument must be a JSON array' };
+          const results = [];
+          for (const c of commands) {
+            if (c.cmd === 'batch') { results.push({ cmd: 'batch', ok: false, error: 'nested batch not allowed' }); continue; }
+            if (c.cmd === 'stop') { results.push({ cmd: 'stop', ok: false, error: 'stop not allowed inside batch' }); continue; }
+            const sub = await handleCommand({ cmd: c.cmd, args: c.args || [] });
+            results.push({ cmd: c.cmd, ok: sub.ok, result: sub.result, error: sub.error });
+          }
+          result = JSON.stringify(results, null, 2);
+          break;
+        }
         case 'stop': return { ok: true, result: '', stopAfter: true };
         default: return { ok: false, error: `Unknown command: ${cmd}` };
       }
@@ -1602,28 +1814,29 @@ const USAGE = `cdp - lightweight Chrome DevTools Protocol CLI (no Puppeteer)
 Usage: cdp <command> [args]
 
   list                              List open pages (shows unique target prefixes)
-  perceive <target>                 Full page perception: summary + accessibility tree + visual layout metadata (recommended starting point)
+  perceive <target> [--diff]         Full page perception with @ref indices on interactive elements
+                                    --diff: show only changes since last perceive
   snap  <target> [--full]           Accessibility tree snapshot (compact by default, --full for complete)
   eval  <target> <expr>             Evaluate JS expression
-  elshot <target> <selector>        Element screenshot: captures a specific element by CSS selector (auto scrolls + clips)
-  shot  <target> [file]             Viewport screenshot; prints coordinate mapping
+  elshot <target> <sel|@ref>        Element screenshot: captures element by CSS selector or @ref
+  shot  <target> [file|--annotate]  Viewport screenshot; --annotate (-a) overlays @ref labels
   html  <target> [selector]         Get HTML (full page or CSS selector)
   nav   <target> <url>              Navigate to URL and wait for load completion
   status <target>                    Page state + new console/exception entries (primary debug entry point)
   console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
   net   <target>                    Network performance entries
-  click   <target> <selector>       Click an element by CSS selector
+  click   <target> <sel|@ref>       Click element by CSS selector or @ref
   clickxy <target> <x> <y>          Click at CSS pixel coordinates (see coordinate note below)
   type    <target> <text>           Type text at current focus via Input.insertText
                                     Works in cross-origin iframes unlike eval-based approaches
   press   <target> <key>           Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)
   scroll  <target> <dir|x,y> [px]  Scroll page (down/up/left/right or x,y offset; default 500px)
-  hover   <target> <selector>       Hover over element (triggers :hover, tooltips, dropdowns)
+  hover   <target> <sel|@ref>       Hover over element (triggers :hover, tooltips, dropdowns)
   waitfor <target> <selector> [ms]  Wait for element to appear (default 10000ms, max 30s)
   loadall <target> <selector> [ms]  Repeatedly click a "load more" button until it disappears
                                     Optional interval in ms between clicks (default 1500)
-  fill    <target> <selector> <txt> Clear field and type text (for form filling)
+  fill    <target> <sel|@ref> <txt> Clear field and type text (for form filling)
   select  <target> <selector> <val> Select an option in a <select> element by value
   fullshot <target> [file]          Full-page screenshot (single image — may be hard to read)
   scanshot <target>                 Segmented full-page capture (viewport-sized images, readable)
@@ -1631,6 +1844,8 @@ Usage: cdp <command> [args]
   cookies <target>                  List cookies for current page
   evalraw <target> <method> [json]  Send a raw CDP command; returns JSON result
                                     e.g. evalraw <t> "DOM.getDocument" '{}'
+  batch <target> <json>             Execute multiple commands in one call (reduces IPC overhead)
+                                    JSON array: [{"cmd":"click","args":["@1"]},{"cmd":"perceive","args":["--diff"]}]
   open  [url]                       Open a new tab (default: about:blank)
                                     Note: each new tab triggers a fresh "Allow debugging?" prompt
   stop  [target]                    Stop daemon(s)
@@ -1663,13 +1878,13 @@ DAEMON IPC (for advanced use / scripting)
            or {"id":<number>, "ok":false, "error":"<message>"}
   Commands mirror the CLI: perceive, status, summary, console, snap, eval, shot, elshot,
   fullshot, scanshot, html, nav, net, click, clickxy, hover, type, press, scroll, fill,
-  select, waitfor, loadall, styles, cookies, evalraw, stop. Use evalraw to send arbitrary CDP methods.
+  select, waitfor, loadall, styles, cookies, evalraw, batch, stop. Use evalraw to send arbitrary CDP methods.
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
 const NEEDS_TARGET = new Set([
   'snap','snapshot','eval','shot','screenshot','html','nav','navigate',
-  'net','network','click','clickxy','type','press','scroll','hover','waitfor','loadall','fill','select','fullshot','scanshot','styles','cookies','evalraw','status','console','summary','perceive','elshot',
+  'net','network','click','clickxy','type','press','scroll','hover','waitfor','loadall','fill','select','fullshot','scanshot','styles','cookies','evalraw','status','console','summary','perceive','elshot','batch',
 ]);
 
 async function main() {
@@ -1709,6 +1924,7 @@ async function main() {
   // Open new tab
   if (cmd === 'open') {
     const url = args[0] || 'about:blank';
+    if (url !== 'about:blank') validateUrl(url);
     const cdp = new CDP();
     await cdp.connect(getWsUrl());
     const { targetId } = await cdp.send('Target.createTarget', { url });
@@ -1781,6 +1997,9 @@ async function main() {
     // args: [method, ...jsonParts] — join json parts in case of spaces
     if (!cmdArgs[0]) { console.error('Error: CDP method required'); process.exit(1); }
     if (cmdArgs.length > 2) cmdArgs[1] = cmdArgs.slice(1).join(' ');
+  } else if (cmd === 'batch') {
+    if (!cmdArgs[0]) { console.error('Error: JSON array required'); process.exit(1); }
+    cmdArgs[0] = cmdArgs.join(' '); // join in case of spaces in JSON
   }
 
   if ((cmd === 'nav' || cmd === 'navigate') && !cmdArgs[0]) {
