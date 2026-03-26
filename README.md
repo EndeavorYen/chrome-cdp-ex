@@ -1,32 +1,40 @@
-# chrome-cdp (enhanced fork)
+# chrome-cdp
 
-> Forked from [pasky/chrome-cdp-skill](https://github.com/pasky/chrome-cdp-skill) — extended with background observation, form automation, realistic input simulation, and WSL2 support.
+[![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
+[![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp/scripts/cdp.mjs)
+[![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
 
-Let your AI agent see and interact with your **live Chrome session** — the tabs you already have open, your logged-in accounts, your current page state. No browser automation framework, no separate browser instance, no re-login.
+**Every browser automation tool launches a clean, isolated browser.**
+**This one connects to yours.**
 
-## Installation
+Your AI agent sees the tabs you already have open, your logged-in accounts, your cookies, your page state. No separate browser instance. No re-login. No lost context.
 
-Copy the `skills/chrome-cdp/` directory wherever your agent loads skills from.
+## Why this matters
 
-**Requirements:** Node.js 22+ (uses built-in WebSocket). No npm install needed.
+- **Your real browser session** — connect to Chrome with all your login state, cookies, and open tabs intact. No puppeteered blank slate.
+- **Perceive-first observation** — `perceive` produces an enriched accessibility tree with layout annotations, style hints, and interactive element counts. One command gives complete page understanding without any screenshots.
+- **`@ref` workflow** — `perceive` assigns every interactive element a ref (`@1`, `@2`, `@3`...) with bounding coordinates. Then `click @3`, `fill @7 "text"`, `elshot @2` — no CSS selectors needed. Your agent interacts by reference, not by guessing.
+- **Zero dependencies** — single-file implementation (~2400 lines), pure Node.js built-ins only. No npm install.
 
-**Setup:** Navigate to `chrome://inspect/#remote-debugging` and toggle the switch. That's it — do **not** restart Chrome with `--remote-debugging-port`.
+## Quick Start
 
-Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows. Set `CDP_PORT_FILE` to override the DevToolsActivePort path, or `CDP_HOST` to override the Chrome host (default: `127.0.0.1`).
+**1. Install** — copy the `skills/chrome-cdp/` directory into your Claude Code plugins/skills folder.
 
-## What this fork adds
+**Requires:** Node.js 22+ (uses built-in WebSocket).
 
-The upstream is an excellent **observe-and-click** tool (12 commands). This fork extends it to **27 commands** with:
+**2. Enable Chrome debugging** — navigate to `chrome://inspect/#remote-debugging` and toggle the switch. That's it — do **not** restart Chrome with `--remote-debugging-port`.
 
-- **Perceive-first observation** — `perceive` produces an enriched accessibility tree with inline layout annotations (height, background color, font size, display mode, viewport visibility). One command gives the agent complete page understanding without any screenshots.
-- **Element-level screenshots** — `elshot` captures a specific element by CSS selector, auto-scrolling into view and clipping to its bounds. No DPR confusion, no wrong-scroll-position errors.
-- **Background console observation** — daemon passively buffers console output, exceptions, and navigations via `RingBuffer`; query anytime with `status` / `console` / `summary`
-- **Realistic click simulation** — uses CDP `Input.dispatchMouseEvent` (mouseMoved → mousePressed → mouseReleased) instead of `el.click()`, working with React, Vue, Angular, and Shadow DOM
-- **Form automation** — `fill`, `select`, `press`, `waitfor` for complete form workflows
-- **Page inspection** — `scanshot` (segmented full-page), `styles` (computed CSS), `cookies`, `hover`, `scroll`
-- **WSL2 support** — proven patterns for controlling Windows Chrome from WSL2 (see [SKILL.md](skills/chrome-cdp/SKILL.md))
+Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
 
-## Architecture
+<details>
+<summary><strong>Advanced Configuration</strong></summary>
+
+- `CDP_PORT_FILE` — override the DevToolsActivePort path
+- `CDP_HOST` — override the Chrome host (default: `127.0.0.1`)
+
+</details>
+
+## How It Works
 
 ```mermaid
 graph TB
@@ -54,55 +62,137 @@ graph TB
 
 Each tab gets its own daemon process that holds the CDP session open — Chrome's "Allow debugging" dialog fires **once per tab**, not once per command. Daemons auto-exit after 20 minutes of inactivity and passively collect console/exception/navigation events into ring buffers.
 
-## Commands
+## Commands (42 total)
+
+<details>
+<summary><strong>Discovery & Lifecycle</strong></summary>
 
 ```bash
-# Discovery & lifecycle
-list                               # list open tabs
-open   [url]                       # open new tab
+list                               # list open tabs (shows targetId prefixes)
+open   [url]                       # open new tab (default: about:blank)
 stop   [target]                    # stop daemon(s)
+closetab <target>                  # close a browser tab
+```
 
-# Perception (start here)
-perceive <target>                  # enriched AX tree with layout annotations (recommended)
+</details>
+
+<details>
+<summary><strong>Perception</strong> — start here</summary>
+
+```bash
+perceive <target> [flags]          # enriched AX tree with @ref indices + coordinates
+                                   #   --diff: show only changes since last perceive
+                                   #   -s <sel>: scope to CSS selector subtree
+                                   #   -i: interactive elements only
+                                   #   -d N: limit tree depth
+                                   #   -C: include non-ARIA clickable elements
 snap     <target> [--full]         # accessibility tree (compact by default)
 summary  <target>                  # token-efficient overview (~100 tokens)
 status   <target>                  # URL, title + new console/exception entries
 console  <target> [--all|--errors] # console buffer (default: unread only)
+text     <target>                  # clean text content (strips scripts/styles/SVG)
+table    <target> [selector]       # full table data extraction (tab-separated)
+```
 
-# Visual verification (only when needed)
-elshot   <target> <selector>       # element screenshot (auto scroll + clip, no DPR issues)
-shot     <target> [file]           # viewport screenshot
-scanshot <target>                  # segmented full-page (readable viewport-sized images)
-fullshot <target> [file]           # single full-page image (tiny on long pages)
+</details>
 
-# Inspection
+<details>
+<summary><strong>Visual Capture</strong></summary>
+
+```bash
+shot     <target> [file|--annotate] # viewport screenshot; --annotate overlays @ref labels
+elshot   <target> <sel|@ref>        # element screenshot (auto scroll + clip, no DPR issues)
+scanshot <target>                   # segmented full-page (readable viewport-sized images)
+fullshot <target> [file]            # single full-page image (may be tiny on long pages)
+```
+
+</details>
+
+<details>
+<summary><strong>Inspection</strong></summary>
+
+```bash
 html    <target> [selector]        # full HTML or scoped to CSS selector
 eval    <target> <expr>            # evaluate JS in page context
 styles  <target> <selector>        # computed styles (meaningful props only)
-net     <target>                   # network resource timing
+net     <target>                   # network performance entries
+netlog  <target> [--clear]         # network request log (XHR/Fetch with status + timing)
 cookies <target>                   # list cookies for current page
+cookieset <target> <cookie>        # set a cookie ("name=value; domain=...")
+cookiedel <target> <name>          # delete a cookie by name
+```
 
-# Interaction
-click   <target> <selector>        # click element (CDP mouse events)
+</details>
+
+<details>
+<summary><strong>Interaction</strong></summary>
+
+```bash
+click   <target> <sel|@ref>        # click element (CDP mouse events, not el.click())
 clickxy <target> <x> <y>           # click at CSS pixel coordinates
 type    <target> <text>            # type at focused element (cross-origin safe)
 press   <target> <key>             # press key (Enter, Tab, Escape, etc.)
 scroll  <target> <dir|x,y> [px]   # scroll (down/up/left/right; default 500px)
-hover   <target> <selector>        # hover (triggers :hover, tooltips)
-fill    <target> <selector> <text> # clear field + type (form filling)
+hover   <target> <sel|@ref>        # hover (triggers :hover, tooltips)
+fill    <target> <sel|@ref> <text> # clear field + type (form filling)
 select  <target> <selector> <val>  # select dropdown option by value
 waitfor <target> <selector> [ms]   # wait for element to appear (default 10s)
 loadall <target> <selector> [ms]   # click "load more" until gone
-evalraw <target> <method> [json]   # raw CDP command passthrough
+upload  <target> <selector> <paths> # upload file(s) to <input type="file">
+dialog  <target> [accept|dismiss]  # dialog history; set auto-accept or auto-dismiss
 ```
 
-`<target>` is a unique prefix of the targetId shown by `list`. See [SKILL.md](skills/chrome-cdp/SKILL.md) for detailed usage, workflow patterns, coordinate system, and WSL2 instructions.
+</details>
+
+<details>
+<summary><strong>Navigation & Viewport</strong></summary>
+
+```bash
+nav     <target> <url>             # navigate to URL and wait for load
+back    <target>                   # navigate back in browser history
+forward <target>                   # navigate forward
+reload  <target>                   # reload current page
+viewport <target> [WxH]           # show or set viewport size (e.g. 375x812)
+```
+
+</details>
+
+<details>
+<summary><strong>Advanced</strong></summary>
+
+```bash
+batch   <target> <json>            # execute multiple commands in one call
+                                   # [{"cmd":"click","args":["@1"]},{"cmd":"perceive","args":["--diff"]}]
+evalraw <target> <method> [json]   # raw CDP command passthrough
+                                   # e.g. evalraw <t> "DOM.getDocument" '{}'
+```
+
+</details>
+
+**Action feedback:** `click`, `clickxy`, `press` (Enter/Escape/Tab), and `select` automatically wait for DOM to settle and return a perceive diff showing what changed — no need to manually run `perceive --diff` after these actions.
+
+`<target>` is a unique targetId prefix from `list`. See [SKILL.md](skills/chrome-cdp/SKILL.md) for detailed usage, workflow patterns, coordinate system, and WSL2 instructions.
+
+<details>
+<summary><strong>WSL2 Support</strong></summary>
+
+This tool works across the WSL2 → Windows boundary — most CDP tools don't. The proven pattern:
+
+1. User starts Chrome on Windows and enables debugging at `chrome://inspect/#remote-debugging`
+2. Agent uses **Windows-side Node.js** to run the CDP script (WSL cannot connect to Windows localhost directly)
+3. Locate Node.js: `powershell.exe -NoProfile -Command "(Get-Command node -ErrorAction SilentlyContinue).Source"`
+4. Convert to WSL mount path and invoke: `"/mnt/c/.../node.exe" scripts/cdp.mjs list`
+
+See [SKILL.md](skills/chrome-cdp/SKILL.md) for full WSL2 setup instructions.
+
+</details>
 
 ## Credits
 
 - **Original**: [pasky/chrome-cdp-skill](https://github.com/pasky/chrome-cdp-skill) by Petr Baudis — daemon-per-tab architecture and core CDP client
-- **This fork**: Background observation, realistic input simulation, form automation, WSL2 support, and additional inspection commands
+- **Contributors**: [ynezz](https://github.com/ynezz) (Flatpak paths), [Jah-yee](https://github.com/Jah-yee), [Rolf Fredheim](https://github.com/rolfredheim)
+- **This fork**: Background observation, `@ref` system, perceive-first workflow, realistic input simulation, form automation, action feedback, WSL2 support, and 28 additional commands
 
 ## License
 
-MIT
+[MIT](LICENSE)

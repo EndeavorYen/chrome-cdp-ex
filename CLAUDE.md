@@ -13,7 +13,7 @@ These principles are **non-negotiable** and apply to every task in this reposito
 
 This is a **Claude Code plugin** that gives LLM agents direct access to the user's running Chrome browser via the Chrome DevTools Protocol (CDP). It connects to existing browser sessions (with login state, cookies, open tabs) — unlike Playwright which launches an isolated browser.
 
-- **Single-file implementation**: all logic lives in `skills/chrome-cdp/scripts/cdp.mjs` (~1500 lines, zero npm dependencies)
+- **Single-file implementation**: all logic lives in `skills/chrome-cdp/scripts/cdp.mjs` (~2400 lines, zero npm dependencies)
 - **Skill definition**: `skills/chrome-cdp/SKILL.md` — contains agent instructions, command reference, and workflow patterns
 - **Plugin manifest**: `.claude-plugin/plugin.json`
 - **Node.js 22+** required (uses built-in WebSocket)
@@ -41,5 +41,5 @@ Key design decisions:
 - Pure ESM (`import`/`export`), no CommonJS
 - No external dependencies — only Node.js built-ins
 - Functions follow `<name>Str(cdp, sid, ...args) → string` pattern for command implementations
-- New commands require registration in **4 places**: function definition, `handleCommand` switch, `NEEDS_TARGET` set, `USAGE` string
+- New commands require registration in **5 places**: function definition, `handleCommand` switch, `NEEDS_TARGET` set, `USAGE` string, `README.md` command reference
 - Shell-safe output — results are plain text strings, one per line
