@@ -396,6 +396,7 @@ describe('parsePerceiveArgs', () => {
     expect(opts).toEqual({
       diff: false,
       selector: null,
+      exclude: null,
       interactive: false,
       maxDepth: Infinity,
       cursorInteractive: false,
@@ -442,15 +443,30 @@ describe('parsePerceiveArgs', () => {
     expect(parsePerceiveArgs(['--cursor-interactive']).cursorInteractive).toBe(true);
   });
 
+  it('should parse -x with value', () => {
+    expect(parsePerceiveArgs(['-x', 'nav, aside']).exclude).toBe('nav, aside');
+  });
+
+  it('should parse --exclude with value', () => {
+    expect(parsePerceiveArgs(['--exclude', '[role=complementary]']).exclude).toBe('[role=complementary]');
+  });
+
   it('should handle all flags combined', () => {
-    const opts = parsePerceiveArgs(['--diff', '-i', '-s', 'form', '-d', '2', '-C']);
+    const opts = parsePerceiveArgs(['--diff', '-i', '-s', 'form', '-x', 'nav', '-d', '2', '-C']);
     expect(opts).toEqual({
       diff: true,
       interactive: true,
       selector: 'form',
+      exclude: 'nav',
       maxDepth: 2,
       cursorInteractive: true,
     });
+  });
+
+  it('should allow -s and -x together', () => {
+    const opts = parsePerceiveArgs(['-s', '#main', '-x', '.sidebar']);
+    expect(opts.selector).toBe('#main');
+    expect(opts.exclude).toBe('.sidebar');
   });
 });
 
@@ -1395,5 +1411,147 @@ describe('fillStr', () => {
     const cdp = createMockCDP({});
     await expect(fillStr(cdp, 'sid1', '#input', null, new Map()))
       .rejects.toThrow(/Text required/);
+  });
+});
+
+// =========================================================================
+// Exclude subtree filtering (unit test for the filtering logic)
+// =========================================================================
+
+describe('exclude subtree filtering', () => {
+  // Simulate the exclude logic from perceiveStr without CDP
+  function filterExcluded(axNodes, excludedBackendNodeIds) {
+    const excludedAxIds = new Set();
+    for (const n of axNodes) {
+      if (n.backendDOMNodeId && excludedBackendNodeIds.has(n.backendDOMNodeId))
+        excludedAxIds.add(n.nodeId);
+    }
+    if (excludedAxIds.size === 0) return axNodes;
+    const childMap = new Map();
+    for (const n of axNodes) {
+      if (n.parentId) {
+        if (!childMap.has(n.parentId)) childMap.set(n.parentId, []);
+        childMap.get(n.parentId).push(n.nodeId);
+      }
+    }
+    const queue = [...excludedAxIds];
+    while (queue.length) {
+      const id = queue.pop();
+      for (const child of (childMap.get(id) || [])) {
+        excludedAxIds.add(child);
+        queue.push(child);
+      }
+    }
+    return axNodes.filter(n => !excludedAxIds.has(n.nodeId));
+  }
+
+  const axNode = (id, role, name, opts = {}) => ({
+    nodeId: id,
+    role: { value: role },
+    name: { value: name },
+    ...(opts.parentId ? { parentId: opts.parentId } : {}),
+    ...(opts.backendDOMNodeId ? { backendDOMNodeId: opts.backendDOMNodeId } : {}),
+  });
+
+  it('should remove excluded node and all descendants', () => {
+    const nodes = [
+      axNode('root', 'WebArea', 'Page'),
+      axNode('nav', 'navigation', 'Nav', { parentId: 'root', backendDOMNodeId: 100 }),
+      axNode('link1', 'link', 'Home', { parentId: 'nav', backendDOMNodeId: 101 }),
+      axNode('link2', 'link', 'About', { parentId: 'nav', backendDOMNodeId: 102 }),
+      axNode('main', 'main', 'Content', { parentId: 'root', backendDOMNodeId: 200 }),
+      axNode('h1', 'heading', 'Title', { parentId: 'main' }),
+    ];
+    const excluded = new Set([100]); // exclude nav (backendDOMNodeId=100)
+    const filtered = filterExcluded(nodes, excluded);
+
+    expect(filtered.map(n => n.nodeId)).toEqual(['root', 'main', 'h1']);
+    expect(filtered.find(n => n.nodeId === 'nav')).toBeUndefined();
+    expect(filtered.find(n => n.nodeId === 'link1')).toBeUndefined();
+    expect(filtered.find(n => n.nodeId === 'link2')).toBeUndefined();
+  });
+
+  it('should handle multiple excluded roots', () => {
+    const nodes = [
+      axNode('root', 'WebArea', 'Page'),
+      axNode('nav', 'navigation', 'Nav', { parentId: 'root', backendDOMNodeId: 100 }),
+      axNode('aside', 'complementary', 'Sidebar', { parentId: 'root', backendDOMNodeId: 200 }),
+      axNode('main', 'main', 'Content', { parentId: 'root', backendDOMNodeId: 300 }),
+    ];
+    const excluded = new Set([100, 200]); // exclude nav and sidebar
+    const filtered = filterExcluded(nodes, excluded);
+
+    expect(filtered.map(n => n.nodeId)).toEqual(['root', 'main']);
+  });
+
+  it('should return all nodes when no backendDOMNodeId matches', () => {
+    const nodes = [
+      axNode('root', 'WebArea', 'Page'),
+      axNode('main', 'main', 'Content', { parentId: 'root', backendDOMNodeId: 300 }),
+    ];
+    const excluded = new Set([999]); // non-existent
+    const filtered = filterExcluded(nodes, excluded);
+
+    expect(filtered).toHaveLength(2);
+  });
+
+  it('should handle deeply nested exclusion', () => {
+    const nodes = [
+      axNode('root', 'WebArea', 'Page'),
+      axNode('nav', 'navigation', 'Nav', { parentId: 'root', backendDOMNodeId: 100 }),
+      axNode('list', 'list', '', { parentId: 'nav' }),
+      axNode('item1', 'listitem', 'Item 1', { parentId: 'list' }),
+      axNode('item2', 'listitem', 'Item 2', { parentId: 'list' }),
+      axNode('sublink', 'link', 'Sub', { parentId: 'item1' }),
+    ];
+    const excluded = new Set([100]); // exclude nav → should cascade to list, items, sublink
+    const filtered = filterExcluded(nodes, excluded);
+
+    expect(filtered.map(n => n.nodeId)).toEqual(['root']);
+  });
+});
+
+// =========================================================================
+// Diff compact: StaticText noise filtering
+// =========================================================================
+
+describe('diff compact filtering', () => {
+  const isTextOnly = l => /^\s*\[StaticText\]/.test(l);
+
+  it('should classify [StaticText] lines as text-only', () => {
+    expect(isTextOnly('  [StaticText] "Hello"')).toBe(true);
+    expect(isTextOnly('[StaticText] "World"')).toBe(true);
+    expect(isTextOnly('    [StaticText] "deeply indented"')).toBe(true);
+  });
+
+  it('should not classify structural lines as text-only', () => {
+    expect(isTextOnly('  [button] "Submit" @1')).toBe(false);
+    expect(isTextOnly('  [navigation] "Nav"')).toBe(false);
+    expect(isTextOnly('  [heading] "Title"')).toBe(false);
+    expect(isTextOnly('  [link] "Home" @2')).toBe(false);
+    expect(isTextOnly('  [textbox] "Search" @3')).toBe(false);
+  });
+
+  it('should separate structural from text-only changes', () => {
+    const removed = [
+      '  [StaticText] "old text 1"',
+      '  [button] "Old Button" @5',
+      '  [StaticText] "old text 2"',
+    ];
+    const added = [
+      '  [StaticText] "new text 1"',
+      '  [StaticText] "new text 2"',
+      '  [StaticText] "new text 3"',
+      '  [link] "New Link" @7',
+    ];
+    const removedStructural = removed.filter(l => !isTextOnly(l));
+    const addedStructural = added.filter(l => !isTextOnly(l));
+    const removedText = removed.length - removedStructural.length;
+    const addedText = added.length - addedStructural.length;
+
+    expect(removedStructural).toEqual(['  [button] "Old Button" @5']);
+    expect(addedStructural).toEqual(['  [link] "New Link" @7']);
+    expect(removedText).toBe(2);
+    expect(addedText).toBe(3);
   });
 });

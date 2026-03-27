@@ -638,11 +638,12 @@ function validateUrl(url) {
 // Perceive: enriched accessibility tree with inline visual layout annotations
 // Options parsed from args: --diff, --selector <sel>, --interactive/-i, --depth <N>, --cursor-interactive/-C
 function parsePerceiveArgs(args) {
-  const opts = { diff: false, selector: null, interactive: false, maxDepth: Infinity, cursorInteractive: false };
+  const opts = { diff: false, selector: null, exclude: null, interactive: false, maxDepth: Infinity, cursorInteractive: false };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--diff') opts.diff = true;
     else if (a === '-s' || a === '--selector') opts.selector = args[++i];
+    else if (a === '-x' || a === '--exclude') opts.exclude = args[++i];
     else if (a === '-i' || a === '--interactive') opts.interactive = true;
     else if (a === '-d' || a === '--depth') opts.maxDepth = parseInt(args[++i]) || Infinity;
     else if (a === '-C' || a === '--cursor-interactive') opts.cursorInteractive = true;
@@ -825,11 +826,14 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
 }
 
 async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}) {
-  const { diff: diffMode = false, selector: scopeSelector = null, interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false } = opts;
+  const { diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null, interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false } = opts;
   // Get AX tree nodes and page metadata + layout map in parallel
+  // Hoist DOM.getDocument so scope and exclude can share it
+  const needsDocument = scopeSelector || excludeSelector;
+  const docRootPromise = needsDocument ? cdp.send('DOM.getDocument', {}, sid) : null;
   const axPromise = scopeSelector
     ? (async () => {
-        const { root } = await cdp.send('DOM.getDocument', {}, sid);
+        const { root } = await docRootPromise;
         const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: scopeSelector }, sid);
         if (!nodeId) throw new Error(`Scope selector not found: ${scopeSelector}`);
         const { node } = await cdp.send('DOM.describeNode', { nodeId }, sid);
@@ -1039,7 +1043,48 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   }
   const exceptions = exceptionBuf.all().length;
 
-  const { treeLines, refNodeIds } = buildPerceiveTree(axResult.nodes, meta, refMap, { maxDepth, interactiveOnly });
+  // Exclude filtering: remove AX subtrees rooted at excluded DOM nodes
+  let axNodes = axResult.nodes;
+  if (excludeSelector) {
+    const { root } = await docRootPromise;
+    const excludedBackendNodeIds = new Set();
+    const exNodes = await cdp.send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: excludeSelector }, sid);
+    if (exNodes.nodeIds) {
+      const results = await Promise.allSettled(
+        exNodes.nodeIds.map(nid => cdp.send('DOM.describeNode', { nodeId: nid }, sid))
+      );
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value.node.backendNodeId)
+          excludedBackendNodeIds.add(r.value.node.backendNodeId);
+      }
+    }
+    if (excludedBackendNodeIds.size > 0) {
+      const excludedAxIds = new Set();
+      for (const n of axNodes) {
+        if (n.backendDOMNodeId && excludedBackendNodeIds.has(n.backendDOMNodeId)) excludedAxIds.add(n.nodeId);
+      }
+      if (excludedAxIds.size > 0) {
+        const childMap = new Map();
+        for (const n of axNodes) {
+          if (n.parentId) {
+            if (!childMap.has(n.parentId)) childMap.set(n.parentId, []);
+            childMap.get(n.parentId).push(n.nodeId);
+          }
+        }
+        const queue = [...excludedAxIds];
+        while (queue.length) {
+          const id = queue.pop();
+          for (const child of (childMap.get(id) || [])) {
+            excludedAxIds.add(child);
+            queue.push(child);
+          }
+        }
+        axNodes = axNodes.filter(n => !excludedAxIds.has(n.nodeId));
+      }
+    }
+  }
+
+  const { treeLines, refNodeIds } = buildPerceiveTree(axNodes, meta, refMap, { maxDepth, interactiveOnly });
 
   // === Batch-resolve @ref bounding rects (parallel, non-scrolling) ===
   const refRects = new Map(); // ref number → {x, y, w, h}
@@ -1108,23 +1153,36 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     const headerEnd = 4;
     const prevTree = prev.slice(headerEnd);
     const currTree = curr.slice(headerEnd);
-    // Simple line-level diff
+    // Line-level diff with StaticText noise filtering
     const prevSet = new Set(prevTree);
     const currSet = new Set(currTree);
     const removed = prevTree.filter(l => !currSet.has(l));
     const added = currTree.filter(l => !prevSet.has(l));
-    if (removed.length === 0 && added.length === 0) {
+    // Separate structural changes from text-only noise
+    const isTextOnly = l => /^\s*\[StaticText\]/.test(l);
+    const removedStructural = removed.filter(l => !isTextOnly(l));
+    const addedStructural = added.filter(l => !isTextOnly(l));
+    const removedText = removed.length - removedStructural.length;
+    const addedText = added.length - addedStructural.length;
+    if (removedStructural.length === 0 && addedStructural.length === 0 && removedText === 0 && addedText === 0) {
       diffLines.push('(no changes detected in AX tree)');
     } else {
-      if (removed.length > 0) {
-        diffLines.push(`--- Removed (${removed.length}):`);
-        for (const l of removed.slice(0, 30)) diffLines.push(`- ${l}`);
-        if (removed.length > 30) diffLines.push(`  ... and ${removed.length - 30} more`);
+      if (removedStructural.length > 0) {
+        diffLines.push(`--- Removed (${removedStructural.length}):`);
+        for (const l of removedStructural.slice(0, 20)) diffLines.push(`- ${l}`);
+        if (removedStructural.length > 20) diffLines.push(`  ... and ${removedStructural.length - 20} more`);
       }
-      if (added.length > 0) {
-        diffLines.push(`+++ Added (${added.length}):`);
-        for (const l of added.slice(0, 30)) diffLines.push(`+ ${l}`);
-        if (added.length > 30) diffLines.push(`  ... and ${added.length - 30} more`);
+      if (addedStructural.length > 0) {
+        diffLines.push(`+++ Added (${addedStructural.length}):`);
+        for (const l of addedStructural.slice(0, 20)) diffLines.push(`+ ${l}`);
+        if (addedStructural.length > 20) diffLines.push(`  ... and ${addedStructural.length - 20} more`);
+      }
+      // Summarize text-only changes in one line instead of listing each
+      if (removedText > 0 || addedText > 0) {
+        const parts = [];
+        if (removedText > 0) parts.push(`${removedText} removed`);
+        if (addedText > 0) parts.push(`${addedText} added`);
+        diffLines.push(`~~~ Text nodes updated (${parts.join(', ')})`);
       }
     }
     // Include current header + diff
@@ -1320,25 +1378,55 @@ async function hoverStr(cdp, sid, selector, refMap) {
   return `Hovering over <${r.tag}> at CSS (${Math.round(r.x)}, ${Math.round(r.y)})`;
 }
 
-async function waitForStr(cdp, sid, selector, timeoutMs = 10000) {
-  if (!selector) throw new Error('CSS selector required');
-  const timeout = Math.min(Math.max(parseInt(timeoutMs) || 10000, 500), 30000);
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    const found = await evalStr(cdp, sid, `
-      (function() {
-        const el = document.querySelector(${JSON.stringify(selector)});
-        if (!el) return null;
-        return { tag: el.tagName, text: el.textContent.trim().substring(0, 80) };
-      })()
-    `);
-    if (found !== 'null' && found !== '') {
-      const r = JSON.parse(found);
-      return `Found <${r.tag}> "${r.text}"`;
+async function waitForStr(cdp, sid, args) {
+  // Shared polling loop
+  async function poll(jsExpr, formatResult, interval, timeoutMs, label) {
+    const timeout = Math.min(Math.max(timeoutMs, 500), 300000);
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const found = await evalStr(cdp, sid, jsExpr);
+      if (found !== 'null' && found !== '') return formatResult(JSON.parse(found));
+      await sleep(interval);
     }
-    await sleep(200);
+    throw new Error(`Timeout: ${label} not found within ${timeout}ms`);
   }
-  throw new Error(`Timeout: "${selector}" not found within ${timeout}ms`);
+
+  // Parse args: waitfor <selector> [timeout] OR waitfor --text <text> [--scope <sel>] [timeout]
+  if (args[0] === '--text') {
+    const text = args[1];
+    if (!text) throw new Error('Text string required after --text');
+    let scope = 'body';
+    let timeoutMs = 30000;
+    for (let i = 2; i < args.length; i++) {
+      if (args[i] === '--scope' || args[i] === '-s') scope = args[++i];
+      else timeoutMs = parseInt(args[i]) || 30000;
+    }
+    return poll(
+      `(function() {
+        const el = document.querySelector(${JSON.stringify(scope)});
+        if (!el) return null;
+        const t = el.innerText;
+        const idx = t.indexOf(${JSON.stringify(text)});
+        if (idx === -1) return null;
+        return { len: t.length, snippet: t.substring(Math.max(0, idx - 20), idx + ${text.length} + 80).trim() };
+      })()`,
+      r => `Found text (page has ${r.len} chars): "...${r.snippet}..."`,
+      500, timeoutMs, `text "${text}"`
+    );
+  }
+  // CSS selector mode
+  const selector = args[0];
+  if (!selector) throw new Error('CSS selector or --text required');
+  const timeoutMs = parseInt(args[1]) || 10000;
+  return poll(
+    `(function() {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      return { tag: el.tagName, text: el.textContent.trim().substring(0, 80) };
+    })()`,
+    r => `Found <${r.tag}> "${r.text}"`,
+    200, timeoutMs, `"${selector}"`
+  );
 }
 
 async function fillStr(cdp, sid, selector, text, refMap) {
@@ -1724,9 +1812,12 @@ async function uploadStr(cdp, sid, selector, filePaths) {
 }
 
 // --- Clean text extraction ---
-async function textStr(cdp, sid) {
+async function textStr(cdp, sid, selector) {
+  const sel = selector || 'body';
   return evalStr(cdp, sid, `(function() {
-    const clone = document.body.cloneNode(true);
+    const root = document.querySelector(${JSON.stringify(sel)});
+    if (!root) return 'No element found matching ' + ${JSON.stringify(sel)};
+    const clone = root.cloneNode(true);
     for (const el of clone.querySelectorAll('script,style,noscript,svg,link,meta')) el.remove();
     return clone.textContent.replace(/[ \\t]+/g, ' ').replace(/(\\n\\s*){3,}/g, '\\n\\n').trim();
   })()`);
@@ -1988,7 +2079,7 @@ async function runDaemon(targetId) {
           break;
         }
         case 'hover': result = await hoverStr(cdp, sessionId, args[0], refMap); break;
-        case 'waitfor': result = await waitForStr(cdp, sessionId, args[0], args[1]); break;
+        case 'waitfor': result = await waitForStr(cdp, sessionId, args); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'fill': result = await fillStr(cdp, sessionId, args[0], args[1], refMap); break;
         case 'select': result = await actionFeedback(await selectStr(cdp, sessionId, args[0], args[1])); break;
@@ -2005,7 +2096,7 @@ async function runDaemon(targetId) {
           break;
         }
         case 'upload': result = await uploadStr(cdp, sessionId, args[0], args[1]); break;
-        case 'text': result = await textStr(cdp, sessionId); break;
+        case 'text': result = await textStr(cdp, sessionId, args[0]); break;
         case 'table': result = await tableStr(cdp, sessionId, args[0]); break;
         case 'back': result = await historyNavStr(cdp, sessionId, -1); break;
         case 'forward': result = await historyNavStr(cdp, sessionId, +1); break;
@@ -2243,7 +2334,8 @@ Usage: cdp <command> [args]
   press   <target> <key>           Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)
   scroll  <target> <dir|x,y> [px]  Scroll page (down/up/left/right or x,y offset; default 500px)
   hover   <target> <sel|@ref>       Hover over element (triggers :hover, tooltips, dropdowns)
-  waitfor <target> <selector> [ms]  Wait for element to appear (default 10000ms, max 30s)
+  waitfor <target> <selector> [ms]  Wait for element (default 10s, max 5min)
+  waitfor <target> --text "str" [--scope sel] [ms]  Wait for text to appear on page
   loadall <target> <selector> [ms]  Repeatedly click a "load more" button until it disappears
                                     Optional interval in ms between clicks (default 1500)
   fill    <target> <sel|@ref> <txt> Clear field and type text (for form filling)
@@ -2257,7 +2349,7 @@ Usage: cdp <command> [args]
   dialog  <target> [accept|dismiss] Show dialog history; set auto-accept (default) or auto-dismiss
   viewport <target> [WxH]           Show or set viewport size (e.g. 375x812, 1280x720)
   upload  <target> <selector> <paths>  Upload file(s) to <input type="file"> (comma-separated paths)
-  text    <target>                  Clean text content (strips scripts/styles/SVG)
+  text    <target> [selector]       Clean text content — optional CSS selector to scope
   table   <target> [selector]       Full table data extraction (tab-separated, no row limit)
   back    <target>                  Navigate back in browser history
   forward <target>                  Navigate forward in browser history
@@ -2396,7 +2488,9 @@ async function main() {
         const resp = await sendCommand(conn, { cmd: 'perceive', args: [] });
         conn.end();
         if (resp.ok && resp.result) console.log('---\n' + resp.result);
-      } catch {}
+      } catch (e) {
+        console.error(`Auto-perceive failed: ${e.message}`);
+      }
     } else {
       console.log('Timeout waiting for debugging approval. Tab created but daemon not connected.');
       console.log('Run a command against this tab to retry.');

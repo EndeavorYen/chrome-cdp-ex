@@ -118,6 +118,7 @@ All commands use `scripts/cdp.mjs`. The `<target>` is a **unique** targetId pref
 scripts/cdp.mjs perceive <target>              # full page perception with @ref indices + coordinates
 scripts/cdp.mjs perceive <target> --diff       # show only changes since last perceive
 scripts/cdp.mjs perceive <target> -s "#main"   # scope to CSS selector subtree
+scripts/cdp.mjs perceive <target> -x "nav, aside, [role=complementary]"  # exclude noisy regions
 scripts/cdp.mjs perceive <target> -i           # interactive elements only (compact)
 scripts/cdp.mjs perceive <target> -d 3         # limit tree depth to 3
 scripts/cdp.mjs perceive <target> -C           # include non-ARIA clickable elements (@c refs)
@@ -297,11 +298,13 @@ scripts/cdp.mjs press   <target> <key>         # press key (Enter/Escape/Tab aut
 scripts/cdp.mjs scroll  <target> <dir|x,y> [px]  # scroll page (auto-returns perceive diff)
 scripts/cdp.mjs loadall <target> <selector> [ms]  # click "load more" until gone (default 1500ms between clicks)
 scripts/cdp.mjs hover   <target> <sel|@ref>          # hover element (triggers :hover, tooltips)
-scripts/cdp.mjs waitfor <target> <selector> [ms]      # wait for element to appear (default 10s)
+scripts/cdp.mjs waitfor <target> <selector> [ms]      # wait for CSS selector to appear (max 5min)
+scripts/cdp.mjs waitfor <target> --text "str" [ms]   # wait for text to appear on page (max 5min)
+scripts/cdp.mjs waitfor <target> --text "str" --scope ".reply" 120000  # scoped text wait
 scripts/cdp.mjs fill    <target> <sel|@ref> <text>     # clear field + type text (form filling)
 scripts/cdp.mjs select  <target> <selector> <value>    # select option (auto-returns perceive diff)
 scripts/cdp.mjs styles  <target> <selector>            # computed styles (meaningful props only)
-scripts/cdp.mjs text    <target>                       # clean text content (strips scripts/styles/SVG)
+scripts/cdp.mjs text    <target> [selector]              # clean text — optional CSS selector to scope
 scripts/cdp.mjs table   <target> [selector]            # full table data (tab-separated, no row limit)
 scripts/cdp.mjs cookies <target>                       # list cookies for current page
 scripts/cdp.mjs cookieset <target> <cookie>            # set cookie: "name=value; domain=.example.com; secure"
@@ -362,10 +365,11 @@ scripts/cdp.mjs upload <target> "#file-input" /path/a.jpg,/path/b.jpg   # multip
 ### Text extraction
 
 ```bash
-scripts/cdp.mjs text <target>                 # clean readable text (strips scripts/styles/SVG)
+scripts/cdp.mjs text <target>                  # full page text (strips scripts/styles/SVG)
+scripts/cdp.mjs text <target> ".reply"         # scoped to CSS selector — much less noise
 ```
 
-Returns page content as plain text — useful for reading articles, searching for text, or comparing content without AX tree overhead.
+Returns page content as plain text. **Use the selector form** to extract specific sections (e.g. AI replies, article body) instead of drowning in sidebar/nav noise.
 
 ### Table data extraction
 
@@ -501,9 +505,27 @@ CSS px = screenshot image px / DPR
    Then `click <target> @7` to submit.
 
 ### Data extraction
-1. `text <target>` — get all readable text (for search or comparison)
+1. `text <target> [selector]` — get readable text (use selector to scope, e.g. `text <t> ".content"`)
 2. `table <target>` — get full table data (no 5-row truncation)
 3. `table <target> "#specific-table"` — extract specific table
+
+### Cross-tab parallel operations
+
+When you need to perform the same action across multiple tabs (e.g., send a prompt to 3 AI chatbots), use **parallel Bash calls** — each CDP command targets a different daemon, so they run concurrently:
+
+```bash
+# Three parallel fills + submits (run as separate Bash calls in one message)
+scripts/cdp.mjs fill FFCC @3 "What is 2+2?" && scripts/cdp.mjs press FFCC Enter
+scripts/cdp.mjs fill E701 @5 "What is 2+2?" && scripts/cdp.mjs press E701 Enter
+scripts/cdp.mjs fill D5D0 @2 "What is 2+2?" && scripts/cdp.mjs press D5D0 Enter
+```
+
+Then wait for all responses with parallel `waitfor --text`:
+```bash
+scripts/cdp.mjs waitfor FFCC --text "answer" 120000
+scripts/cdp.mjs waitfor E701 --text "answer" 120000
+scripts/cdp.mjs waitfor D5D0 --text "answer" 120000
+```
 
 ### Debugging API calls
 1. `perceive <target>` — check page state
