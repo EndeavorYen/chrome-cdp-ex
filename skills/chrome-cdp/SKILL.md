@@ -97,6 +97,13 @@ node ~/.claude/plugins/.../skills/chrome-cdp/scripts/cdp.mjs <command> [args]
 # WSL2 (use Windows Node.js):
 "$NODE_WIN" ~/.claude/plugins/.../skills/chrome-cdp/scripts/cdp.mjs <command> [args]
 ```
+
+**WSL2 efficiency tip**: Shell state doesn't persist between Bash calls. To avoid redefining `NODE_WIN` and `CDP` every time, **chain commands with `&&`** in a single Bash call:
+```bash
+N="/mnt/c/.../node.exe" C="/path/to/scripts/cdp.mjs" && "$N" "$C" fill FFCC @3 "prompt" && "$N" "$C" press FFCC Enter
+```
+Or define both vars at the start of each Bash call using short aliases.
+
 On first use, always start with `list` to verify connectivity and discover available tabs.
 
 **Interpreting `list` output**:
@@ -526,6 +533,39 @@ scripts/cdp.mjs waitfor FFCC --text "answer" 120000
 scripts/cdp.mjs waitfor E701 --text "answer" 120000
 scripts/cdp.mjs waitfor D5D0 --text "answer" 120000
 ```
+
+### Interacting with AI chatbots (ChatGPT, Gemini, Claude, etc.)
+
+This is a common workflow — sending prompts to AI chatbots and collecting responses.
+
+**Sending a prompt:**
+1. `perceive <target> -x "nav, aside"` — see input area without sidebar noise
+2. `fill <target> @ref "your prompt here"` — fill the input field
+3. `press <target> Enter` — submit (auto-returns perceive diff)
+
+**Waiting for the response (DO NOT use `sleep`):**
+```bash
+scripts/cdp.mjs waitfor <target> --text "some expected word" --scope "main" 120000
+```
+- Use `--text` with a word you expect in the answer (e.g., a keyword from the question)
+- Use `--scope` to limit search to the main content area (avoids matching sidebar text)
+- Timeout up to 120s for slow AI responses
+- If it times out, the AI likely failed — check with `perceive`, don't blindly retry
+
+**Extracting the response (DO NOT use full-page `text`):**
+```bash
+scripts/cdp.mjs text <target> "main"              # scope to main content area
+scripts/cdp.mjs text <target> "[data-message-author-role=assistant]"  # ChatGPT-specific
+scripts/cdp.mjs text <target> ".response-content"  # if you know the selector
+```
+- **Always scope `text` with a CSS selector** — full-page text drowns the answer in sidebar noise
+- Use `perceive -x "nav, aside"` first to discover the right selector for the response area
+
+**Multi-chatbot parallel workflow:**
+1. `open` first chatbot → `nav` to others (single-tab per site, minimize Allow dialogs)
+2. Send prompts via parallel Bash calls (each targets a different tab daemon)
+3. Wait for all responses via parallel `waitfor --text` calls
+4. Extract responses via parallel `text <target> <selector>` calls
 
 ### Debugging API calls
 1. `perceive <target>` — check page state

@@ -1191,6 +1191,10 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   }
 
   lastPerceiveStore.output = output;
+  // Hint when perceive returns many interactive elements without exclude
+  if (interactiveOnly && !excludeSelector && refNodeIds.length > 50) {
+    return output + `\n\n(Hint: ${refNodeIds.length} interactive elements found — most may be sidebar/nav noise. Use \`perceive -x "nav, aside"\` to exclude, or \`perceive -s "main"\` to scope.)`;
+  }
   return output;
 }
 
@@ -1418,15 +1422,19 @@ async function waitForStr(cdp, sid, args) {
   const selector = args[0];
   if (!selector) throw new Error('CSS selector or --text required');
   const timeoutMs = parseInt(args[1]) || 10000;
-  return poll(
-    `(function() {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) return null;
-      return { tag: el.tagName, text: el.textContent.trim().substring(0, 80) };
-    })()`,
-    r => `Found <${r.tag}> "${r.text}"`,
-    200, timeoutMs, `"${selector}"`
-  );
+  try {
+    return await poll(
+      `(function() {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return null;
+        return { tag: el.tagName, text: el.textContent.trim().substring(0, 80) };
+      })()`,
+      r => `Found <${r.tag}> "${r.text}"`,
+      200, timeoutMs, `"${selector}"`
+    );
+  } catch (e) {
+    throw new Error(e.message + ' — to wait for specific text content instead, use: waitfor --text "expected text" 120000');
+  }
 }
 
 async function fillStr(cdp, sid, selector, text, refMap) {
@@ -1814,13 +1822,17 @@ async function uploadStr(cdp, sid, selector, filePaths) {
 // --- Clean text extraction ---
 async function textStr(cdp, sid, selector) {
   const sel = selector || 'body';
-  return evalStr(cdp, sid, `(function() {
+  const result = await evalStr(cdp, sid, `(function() {
     const root = document.querySelector(${JSON.stringify(sel)});
     if (!root) return 'No element found matching ' + ${JSON.stringify(sel)};
     const clone = root.cloneNode(true);
     for (const el of clone.querySelectorAll('script,style,noscript,svg,link,meta')) el.remove();
     return clone.textContent.replace(/[ \\t]+/g, ' ').replace(/(\\n\\s*){3,}/g, '\\n\\n').trim();
   })()`);
+  if (!selector && result.length > 2000) {
+    return result + '\n\n(Hint: output is large — use `text <target> "main"` or `text <target> ".content"` to scope to a specific area)';
+  }
+  return result;
 }
 
 // --- Full table data extraction ---
