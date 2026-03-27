@@ -1382,7 +1382,7 @@ async function hoverStr(cdp, sid, selector, refMap) {
   return `Hovering over <${r.tag}> at CSS (${Math.round(r.x)}, ${Math.round(r.y)})`;
 }
 
-async function waitForStr(cdp, sid, args) {
+async function waitForStr(cdp, sid, args, refMap) {
   // Shared polling loop
   async function poll(jsExpr, formatResult, interval, timeoutMs, label) {
     const timeout = Math.min(Math.max(timeoutMs, 500), 300000);
@@ -1393,6 +1393,46 @@ async function waitForStr(cdp, sid, args) {
       await sleep(interval);
     }
     throw new Error(`Timeout: ${label} not found within ${timeout}ms`);
+  }
+
+  // --gone: wait for element to DISAPPEAR (e.g. stop button after streaming)
+  if (args[0] === '--gone') {
+    const selector = args[1];
+    if (!selector) throw new Error('CSS selector or @ref required after --gone');
+    const timeoutMs = parseInt(args[2]) || 30000;
+    const timeout = Math.min(Math.max(timeoutMs, 500), 300000);
+    const deadline = Date.now() + timeout;
+
+    // Resolve @ref to a JS check via backendNodeId
+    if (isRef(selector) && refMap) {
+      const num = parseInt(selector.slice(1));
+      const backendNodeId = refMap.get(num);
+      if (!backendNodeId) throw new Error(`Unknown ref: ${selector}. Run "perceive" first.`);
+      while (Date.now() < deadline) {
+        try {
+          const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }, sid);
+          // Node still exists — check if it's connected and visible
+          const res = await cdp.send('Runtime.callFunctionOn', {
+            objectId: object.objectId,
+            functionDeclaration: `function() { return this.isConnected && this.offsetParent !== null; }`,
+            returnByValue: true,
+          }, sid);
+          if (!res.result.value) return `Element ${selector} is gone (disconnected or hidden)`;
+        } catch {
+          return `Element ${selector} is gone (removed from DOM)`;
+        }
+        await sleep(300);
+      }
+      throw new Error(`Timeout: ${selector} still present after ${timeout}ms`);
+    }
+
+    // CSS selector mode
+    while (Date.now() < deadline) {
+      const found = await evalStr(cdp, sid, `document.querySelector(${JSON.stringify(selector)}) ? 'yes' : null`);
+      if (found === 'null' || found === '') return `Element "${selector}" is gone`;
+      await sleep(300);
+    }
+    throw new Error(`Timeout: "${selector}" still present after ${timeout}ms`);
   }
 
   // Parse args: waitfor <selector> [timeout] OR waitfor --text <text> [--scope <sel>] [timeout]
@@ -2091,7 +2131,7 @@ async function runDaemon(targetId) {
           break;
         }
         case 'hover': result = await hoverStr(cdp, sessionId, args[0], refMap); break;
-        case 'waitfor': result = await waitForStr(cdp, sessionId, args); break;
+        case 'waitfor': result = await waitForStr(cdp, sessionId, args, refMap); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'fill': result = await fillStr(cdp, sessionId, args[0], args[1], refMap); break;
         case 'select': result = await actionFeedback(await selectStr(cdp, sessionId, args[0], args[1])); break;
@@ -2347,6 +2387,7 @@ Usage: cdp <command> [args]
   scroll  <target> <dir|x,y> [px]  Scroll page (down/up/left/right or x,y offset; default 500px)
   hover   <target> <sel|@ref>       Hover over element (triggers :hover, tooltips, dropdowns)
   waitfor <target> <selector> [ms]  Wait for element (default 10s, max 5min)
+  waitfor <target> --gone <sel|@ref> [ms]  Wait for element to DISAPPEAR (streaming end)
   waitfor <target> --text "str" [--scope sel] [ms]  Wait for text to appear on page
   loadall <target> <selector> [ms]  Repeatedly click a "load more" button until it disappears
                                     Optional interval in ms between clicks (default 1500)
@@ -2603,6 +2644,6 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   RingBuffer, CDP, resolvePrefix, getDisplayPrefixLength, sockPath,
   shouldShowAxNode, formatAxNode, orderedAxChildren, isRef,
   validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
-  formatPageList, buildPerceiveTree, evalStr, navStr, clickStr, fillStr,
-  KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
+  formatPageList, buildPerceiveTree, evalStr, navStr, clickStr, fillStr, waitForStr,
+  KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES, isRef,
 } : undefined;

@@ -306,6 +306,7 @@ scripts/cdp.mjs scroll  <target> <dir|x,y> [px]  # scroll page (auto-returns per
 scripts/cdp.mjs loadall <target> <selector> [ms]  # click "load more" until gone (default 1500ms between clicks)
 scripts/cdp.mjs hover   <target> <sel|@ref>          # hover element (triggers :hover, tooltips)
 scripts/cdp.mjs waitfor <target> <selector> [ms]      # wait for CSS selector to appear (max 5min)
+scripts/cdp.mjs waitfor <target> --gone <sel|@ref> [ms]  # wait for element to DISAPPEAR (streaming end)
 scripts/cdp.mjs waitfor <target> --text "str" [ms]   # wait for text to appear on page (max 5min)
 scripts/cdp.mjs waitfor <target> --text "str" --scope ".reply" 120000  # scoped text wait
 scripts/cdp.mjs fill    <target> <sel|@ref> <text>     # clear field + type text (form filling)
@@ -536,35 +537,33 @@ scripts/cdp.mjs waitfor D5D0 --text "answer" 120000
 
 ### Interacting with AI chatbots (ChatGPT, Gemini, Claude, etc.)
 
-This is a common workflow — sending prompts to AI chatbots and collecting responses.
-
 **Sending a prompt:**
 1. `perceive <target> -x "nav, aside"` — see input area without sidebar noise
 2. `fill <target> @ref "your prompt here"` — fill the input field
-3. `press <target> Enter` — submit (auto-returns perceive diff)
+3. `click <target> @sendButton` or `press <target> Enter` — submit (auto-returns perceive diff)
 
 **Waiting for the response (DO NOT use `sleep`):**
+
+Read the perceive diff from step 3 — it shows what appeared (e.g., a stop button, loading spinner). Use `waitfor --gone` on that element:
 ```bash
-scripts/cdp.mjs waitfor <target> --text "some expected word" --scope "main" 120000
+# The diff showed: + [button] "Stop generating" @19
+scripts/cdp.mjs waitfor <target> --gone @19 120000    # wait for stop button to disappear = AI done
 ```
-- Use `--text` with a word you expect in the answer (e.g., a keyword from the question)
-- Use `--scope` to limit search to the main content area (avoids matching sidebar text)
-- Timeout up to 120s for slow AI responses
-- If it times out, the AI likely failed — check with `perceive`, don't blindly retry
+- `--gone` with `@ref` is the most reliable — zero keyword guessing, zero site-specific selectors
+- The perceive diff tells you exactly what to wait for
+- Fallback: `waitfor --text "keyword" --scope "main" 120000` if no obvious indicator
 
 **Extracting the response (DO NOT use full-page `text`):**
 ```bash
 scripts/cdp.mjs text <target> "main"              # scope to main content area
-scripts/cdp.mjs text <target> "[data-message-author-role=assistant]"  # ChatGPT-specific
-scripts/cdp.mjs text <target> ".response-content"  # if you know the selector
 ```
 - **Always scope `text` with a CSS selector** — full-page text drowns the answer in sidebar noise
-- Use `perceive -x "nav, aside"` first to discover the right selector for the response area
+- Use `perceive -x "nav, aside"` to discover the right selector if `"main"` is too broad
 
 **Multi-chatbot parallel workflow:**
 1. `open` first chatbot → `nav` to others (single-tab per site, minimize Allow dialogs)
 2. Send prompts via parallel Bash calls (each targets a different tab daemon)
-3. Wait for all responses via parallel `waitfor --text` calls
+3. Wait for all responses via parallel `waitfor --gone` or `waitfor --text` calls
 4. Extract responses via parallel `text <target> <selector>` calls
 
 ### Debugging API calls

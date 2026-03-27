@@ -8,7 +8,7 @@ const {
   RingBuffer, resolvePrefix, getDisplayPrefixLength, sockPath,
   shouldShowAxNode, formatAxNode, orderedAxChildren, isRef,
   validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
-  formatPageList, buildPerceiveTree, evalStr, navStr, clickStr, fillStr,
+  formatPageList, buildPerceiveTree, evalStr, navStr, clickStr, fillStr, waitForStr,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
 } = T;
 
@@ -1553,5 +1553,83 @@ describe('diff compact filtering', () => {
     expect(addedStructural).toEqual(['  [link] "New Link" @7']);
     expect(removedText).toBe(2);
     expect(addedText).toBe(3);
+  });
+});
+
+// =========================================================================
+// waitForStr --gone (with CDP mock)
+// =========================================================================
+
+describe('waitForStr --gone', () => {
+  it('should throw when no selector provided after --gone', async () => {
+    const cdp = createMockCDP({});
+    await expect(waitForStr(cdp, 'sid1', ['--gone'], new Map()))
+      .rejects.toThrow(/selector.*required.*--gone/i);
+  });
+
+  it('should return immediately when CSS selector element is already absent', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: 'null' } }),
+    });
+    const result = await waitForStr(cdp, 'sid1', ['--gone', '.stop-btn', '5000'], new Map());
+    expect(result).toMatch(/gone/i);
+  });
+
+  it('should return when CSS selector element disappears after polling', async () => {
+    let callCount = 0;
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => {
+        callCount++;
+        // Element present for first 2 calls, then gone
+        return { result: { value: callCount <= 2 ? '"yes"' : 'null' } };
+      },
+    });
+    const result = await waitForStr(cdp, 'sid1', ['--gone', '.loading', '5000'], new Map());
+    expect(result).toMatch(/gone/i);
+    expect(callCount).toBeGreaterThan(2);
+  });
+
+  it('should throw on timeout when CSS element never disappears', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: '"yes"' } }),
+    });
+    await expect(waitForStr(cdp, 'sid1', ['--gone', '.sticky', '500'], new Map()))
+      .rejects.toThrow(/still present/);
+  });
+
+  it('should throw for unknown @ref', async () => {
+    const cdp = createMockCDP({});
+    const refMap = new Map(); // empty — no refs
+    await expect(waitForStr(cdp, 'sid1', ['--gone', '@99', '500'], refMap))
+      .rejects.toThrow(/Unknown ref/);
+  });
+
+  it('should return when @ref element is removed from DOM (resolveNode throws)', async () => {
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => { throw new Error('Could not find node'); },
+    });
+    const refMap = new Map([[5, 12345]]); // ref @5 → backendNodeId 12345
+    const result = await waitForStr(cdp, 'sid1', ['--gone', '@5', '5000'], refMap);
+    expect(result).toMatch(/@5.*gone.*removed/i);
+  });
+
+  it('should return when @ref element becomes disconnected', async () => {
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
+      'Runtime.callFunctionOn': () => ({ result: { value: false } }), // isConnected=false
+    });
+    const refMap = new Map([[3, 99999]]);
+    const result = await waitForStr(cdp, 'sid1', ['--gone', '@3', '5000'], refMap);
+    expect(result).toMatch(/@3.*gone.*disconnected|hidden/i);
+  });
+
+  it('should timeout when @ref element stays present', async () => {
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
+      'Runtime.callFunctionOn': () => ({ result: { value: true } }), // still connected+visible
+    });
+    const refMap = new Map([[7, 77777]]);
+    await expect(waitForStr(cdp, 'sid1', ['--gone', '@7', '500'], refMap))
+      .rejects.toThrow(/@7.*still present/);
   });
 });
