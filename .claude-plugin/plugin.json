@@ -1,7 +1,7 @@
 {
   "name": "chrome-cdp-ex",
   "version": "2.1.0",
-  "description": "Give your AI agent eyes and hands on your live Chrome browser — screenshots, DOM inspection, form automation, console monitoring, all via CDP",
+  "description": "Give your AI agent eyes and hands on your live Chrome browser and Electron apps — screenshots, DOM inspection, form automation, console monitoring, all via CDP",
   "author": {
     "name": "EndeavorYen"
   },
