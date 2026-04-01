@@ -6,3 +6,6 @@ node_modules/
 # Misc
 coverage/
 .gstack/
+
+# OMC
+.omc

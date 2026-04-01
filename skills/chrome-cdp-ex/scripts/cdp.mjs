@@ -925,24 +925,10 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   return { treeLines, refNodeIds };
 }
 
-async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}) {
-  const { diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null, interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false } = opts;
-  // Get AX tree nodes and page metadata + layout map in parallel
-  // Hoist DOM.getDocument so scope and exclude can share it
-  const needsDocument = scopeSelector || excludeSelector;
-  const docRootPromise = needsDocument ? cdp.send('DOM.getDocument', {}, sid) : null;
-  const axPromise = scopeSelector
-    ? (async () => {
-        const { root } = await docRootPromise;
-        const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: scopeSelector }, sid);
-        if (!nodeId) throw new Error(`Scope selector not found: ${scopeSelector}`);
-        const { node } = await cdp.send('DOM.describeNode', { nodeId }, sid);
-        return cdp.send('Accessibility.getFullAXTree', { backendNodeId: node.backendNodeId }, sid);
-      })()
-    : cdp.send('Accessibility.getFullAXTree', {}, sid);
-  const [axResult, metaJson] = await Promise.all([
-    axPromise,
-    evalStr(cdp, sid, `(function() {
+// Browser-side script for perceiveStr — extracted for readability and testability.
+// Collects page metadata, layout map, style hints, and cursor-interactive elements.
+function perceivePageScript(cursorInteractive) {
+  return `(function() {
       const vw = window.innerWidth, vh = window.innerHeight;
       const scrollY = Math.round(window.scrollY);
       const scrollMax = Math.round(document.documentElement.scrollHeight - window.innerHeight);
@@ -1098,7 +1084,8 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
       if (${cursorInteractive}) {
         const ARIA_INTERACTIVE = new Set(['A','BUTTON','INPUT','SELECT','TEXTAREA']);
         const seen = new Set();
-        for (const el of document.querySelectorAll('*')) {
+        const candidates = document.querySelectorAll('div, span, li, td, tr, label, img, svg, i, p, section, article, [onclick], [tabindex]:not(a):not(button):not(input):not(select):not(textarea)');
+        for (const el of candidates) {
           if (ARIA_INTERACTIVE.has(el.tagName)) continue;
           if (el.getAttribute('role')) continue;
           if (el.closest('a, button, input, select, textarea, [role]')) continue;
@@ -1129,7 +1116,27 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
         vw, vh, scrollY, scrollMax,
         counts, focused: focusDesc, layoutMap, styleHints, cursorInteractives
       });
-    })()`)
+    })()`;
+}
+
+async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}) {
+  const { diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null, interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false } = opts;
+  // Get AX tree nodes and page metadata + layout map in parallel
+  // Hoist DOM.getDocument so scope and exclude can share it
+  const needsDocument = scopeSelector || excludeSelector;
+  const docRootPromise = needsDocument ? cdp.send('DOM.getDocument', {}, sid) : null;
+  const axPromise = scopeSelector
+    ? (async () => {
+        const { root } = await docRootPromise;
+        const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: scopeSelector }, sid);
+        if (!nodeId) throw new Error(`Scope selector not found: ${scopeSelector}`);
+        const { node } = await cdp.send('DOM.describeNode', { nodeId }, sid);
+        return cdp.send('Accessibility.getFullAXTree', { backendNodeId: node.backendNodeId }, sid);
+      })()
+    : cdp.send('Accessibility.getFullAXTree', {}, sid);
+  const [axResult, metaJson] = await Promise.all([
+    axPromise,
+    evalStr(cdp, sid, perceivePageScript(cursorInteractive))
   ]);
 
   const meta = JSON.parse(metaJson);
@@ -2032,6 +2039,7 @@ async function closetabStr(cdp, targetId) {
 // ---------------------------------------------------------------------------
 
 async function runDaemon(targetId) {
+  resetScreenshotTier();
   const sp = sockPath(targetId);
 
   const cdp = new CDP();
@@ -2744,11 +2752,20 @@ if (process.env.NODE_ENV !== 'test') {
   main().catch(e => { console.error(e.message); process.exit(1); });
 }
 export const __test__ = process.env.NODE_ENV === 'test' ? {
-  RingBuffer, CDP, resolvePrefix, getDisplayPrefixLength, sockPath,
-  shouldShowAxNode, formatAxNode, orderedAxChildren, isRef,
-  validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
-  formatPageList, buildPerceiveTree, evalStr, navStr, clickStr, fillStr, waitForStr,
-  KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES, isRef,
-  captureScreenshot, screencastFallback, snapshotStr,
+  // Data structures
+  RingBuffer, CDP,
+  // Utilities
+  resolvePrefix, getDisplayPrefixLength, sockPath, isRef, validateUrl,
+  // AX tree helpers
+  shouldShowAxNode, formatAxNode, orderedAxChildren,
+  // Perceive & snapshot
+  parsePerceiveArgs, buildPerceiveTree, perceivePageScript,
+  // Command implementations
+  formatPageList, dialogStr, netlogStr,
+  evalStr, navStr, clickStr, fillStr, waitForStr, snapshotStr,
+  // Screenshot
+  captureScreenshot, screencastFallback,
   resetScreenshotTier, getScreenshotTier, SCREENSHOT_TIMEOUT,
+  // Constants
+  KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
 } : undefined;
