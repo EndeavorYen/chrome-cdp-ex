@@ -1618,6 +1618,95 @@ describe('Perceive diff baseline', () => {
     expect(diff).toContain('+   [alert] Saved');
   });
 
+  it('builds a JSON diff model from an explicit baseline output', () => {
+    const previous = [
+      'Page: Example — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 1 button',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Example',
+      '  [button] Save  @1',
+    ].join('\n');
+    const current = [
+      'Page: Example — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 1 button',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Example',
+      '  [button] Save  @1',
+      '  [alert] Saved',
+    ].join('\n');
+
+    const model = T.buildPerceiveDiffModel(previous, current, {
+      mode: 'since-action',
+      targetPrefix: 'ABC12345',
+    });
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.perceive-diff.v1',
+      mode: 'since-action',
+      page: { title: 'Example', url: 'https://example.com' },
+      viewport: { width: 1280, height: 720, scrollY: 0, scrollMax: 0, coordinateSpace: 'viewport-css-px' },
+      summary: {
+        changed: true,
+        removed: 0,
+        added: 1,
+        textRemoved: 0,
+        textAdded: 0,
+      },
+      added: ['  [alert] Saved'],
+      removed: [],
+      textAddedSamples: [],
+      nextSteps: [
+        'cdp report ABC12345 --format json',
+        'cdp record-actions ABC12345 --format json',
+      ],
+    });
+  });
+
+  it('builds a JSON diff model for text-only changes with compact samples', () => {
+    const previous = [
+      'Page: Log — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: none',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[region] Event log',
+      '  [StaticText] old row',
+    ].join('\n');
+    const current = [
+      'Page: Log — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: none',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[region] Event log',
+      '  [StaticText] old row',
+      '  [StaticText] hmr panel ready',
+    ].join('\n');
+
+    const model = T.buildPerceiveDiffModel(previous, current, {
+      mode: 'diff',
+      targetPrefix: 'ABC12345',
+    });
+
+    expect(model.summary).toMatchObject({
+      changed: true,
+      added: 0,
+      removed: 0,
+      textAdded: 1,
+      textRemoved: 0,
+    });
+    expect(model.textAddedSamples).toEqual(['  [StaticText] hmr panel ready']);
+    expect(model.nextSteps).toEqual(['cdp report ABC12345 --format json']);
+  });
+
   it('keeps high-signal StaticText additions in action diffs', () => {
     const previous = [
       'Page: Checkout — https://example.com',

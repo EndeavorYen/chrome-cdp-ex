@@ -163,6 +163,7 @@ scripts/cdp.mjs perceive <target>              # full page perception with @ref 
 scripts/cdp.mjs perceive <target> --format json # versioned perception model for tool-calling agents
 scripts/cdp.mjs perceive <target> --diff       # show only changes since last perceive
 scripts/cdp.mjs perceive <target> --since-action # show changes caused by the last mutating command
+scripts/cdp.mjs perceive <target> --since-action --format json # versioned diff evidence for agents
 scripts/cdp.mjs perceive <target> --frame @f2  # perceive inside a frame; refs become @f2:1
 scripts/cdp.mjs perceive <target> -s "#main"   # scope to CSS selector subtree
 scripts/cdp.mjs perceive <target> -x "nav, aside, [role=complementary]"  # exclude noisy regions
@@ -222,7 +223,7 @@ scripts/cdp.mjs perceive <target> --diff  # show only changes since last perceiv
 scripts/cdp.mjs perceive <target> --since-action  # show changes since the last action baseline
 ```
 
-After performing an action (click, fill, etc.), prefer `perceive --since-action` when you need to re-check what that action changed; it compares the current page to the action's pre-dispatch baseline. Use `perceive --diff` when you specifically want changes since the last manual perceive. Both show added and removed AX tree lines and are much more token-efficient than a full re-perceive.
+After performing an action (click, fill, etc.), prefer `perceive --since-action` when you need to re-check what that action changed; it compares the current page to the action's pre-dispatch baseline. Add `--format json` when a script needs the versioned `chrome-cdp-ex.perceive-diff.v1` model. Use `perceive --diff` when you specifically want changes since the last manual perceive. Both show added and removed AX tree lines and are much more token-efficient than a full re-perceive.
 
 ### Accessibility tree snapshot (advanced — rarely needed)
 

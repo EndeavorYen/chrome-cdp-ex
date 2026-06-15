@@ -2955,10 +2955,39 @@ function filterAxNodesToBackendSubtree(axNodes, backendNodeIds) {
   return axNodes.filter(included);
 }
 
-function formatPerceiveDiffOutput(previousOutput, currentOutput) {
+function parsePerceiveHeader(output) {
+  const lines = String(output || '').split('\n');
+  const pageMatch = (lines[0] || '').match(/^Page: (.*) — (.*)$/);
+  const viewportMatch = (lines[1] || '').match(/^Viewport: (\d+)×(\d+) \| Scroll: (\d+)\/(\d+)/);
+  const consoleLine = lines.find(line => line.startsWith('Console: ')) || 'Console: clean';
+  const consoleHealth = { errors: 0, warnings: 0, exceptions: 0 };
+  for (const [key, pattern] of [
+    ['errors', /(\d+) errors?/],
+    ['warnings', /(\d+) warnings?/],
+    ['exceptions', /(\d+) exceptions?/],
+  ]) {
+    const match = consoleLine.match(pattern);
+    if (match) consoleHealth[key] = Number(match[1]);
+  }
+  return {
+    page: {
+      title: pageMatch ? pageMatch[1] : '',
+      url: pageMatch ? pageMatch[2] : '',
+    },
+    viewport: {
+      width: viewportMatch ? Number(viewportMatch[1]) : 0,
+      height: viewportMatch ? Number(viewportMatch[2]) : 0,
+      scrollY: viewportMatch ? Number(viewportMatch[3]) : 0,
+      scrollMax: viewportMatch ? Number(viewportMatch[4]) : 0,
+      coordinateSpace: 'viewport-css-px',
+    },
+    console: consoleHealth,
+  };
+}
+
+function computePerceiveDiff(previousOutput, currentOutput) {
   const prev = previousOutput.split('\n');
   const curr = currentOutput.split('\n');
-  const diffLines = [];
   // Skip header lines up to the first blank line. Frame-scoped perceive adds
   // a `Frame:` header, so avoid hard-coding the legacy 5-line header shape.
   const prevHeaderEnd = prev.findIndex(line => line === '');
@@ -2979,35 +3008,81 @@ function formatPerceiveDiffOutput(previousOutput, currentOutput) {
   const addedStructural = added.filter(l => !isCompactTextChange(l));
   const removedTextLines = removed.filter(isTextOnly);
   const addedTextLines = added.filter(isTextOnly);
-  const removedText = removedTextLines.length;
-  const addedText = addedTextLines.length;
-  if (removedStructural.length === 0 && addedStructural.length === 0 && removedText === 0 && addedText === 0) {
+  return {
+    headerLines: curr.slice(0, currHeaderEnd >= 0 ? currHeaderEnd : 5),
+    removedStructural,
+    addedStructural,
+    removedTextLines,
+    addedTextLines,
+  };
+}
+
+function buildPerceiveDiffModel(previousOutput, currentOutput, { mode = 'diff', targetPrefix = '' } = {}) {
+  const diff = computePerceiveDiff(previousOutput, currentOutput);
+  const target = targetPrefix || '<target>';
+  const removedText = diff.removedTextLines.length;
+  const addedText = diff.addedTextLines.length;
+  const changed = diff.removedStructural.length > 0 || diff.addedStructural.length > 0 || removedText > 0 || addedText > 0;
+  const nextSteps = mode === 'since-action'
+    ? [
+        `cdp report ${target} --format json`,
+        `cdp record-actions ${target} --format json`,
+      ]
+    : [
+        `cdp report ${target} --format json`,
+      ];
+  return {
+    schema: 'chrome-cdp-ex.perceive-diff.v1',
+    mode,
+    ...parsePerceiveHeader(currentOutput),
+    summary: {
+      changed,
+      removed: diff.removedStructural.length,
+      added: diff.addedStructural.length,
+      textRemoved: removedText,
+      textAdded: addedText,
+    },
+    removed: diff.removedStructural.slice(0, 20),
+    added: diff.addedStructural.slice(0, 20),
+    removedOmitted: Math.max(0, diff.removedStructural.length - 20),
+    addedOmitted: Math.max(0, diff.addedStructural.length - 20),
+    textRemovedSamples: diff.removedTextLines.slice(-3),
+    textAddedSamples: diff.addedTextLines.slice(-3),
+    nextSteps,
+  };
+}
+
+function formatPerceiveDiffOutput(previousOutput, currentOutput) {
+  const diff = computePerceiveDiff(previousOutput, currentOutput);
+  const diffLines = [];
+  const removedText = diff.removedTextLines.length;
+  const addedText = diff.addedTextLines.length;
+  if (diff.removedStructural.length === 0 && diff.addedStructural.length === 0 && removedText === 0 && addedText === 0) {
     diffLines.push('(no changes detected in AX tree)');
   } else {
-    if (removedStructural.length > 0) {
-      diffLines.push(`--- Removed (${removedStructural.length}):`);
-      for (const l of removedStructural.slice(0, 20)) diffLines.push(`- ${l}`);
-      if (removedStructural.length > 20) diffLines.push(`  ... and ${removedStructural.length - 20} more`);
+    if (diff.removedStructural.length > 0) {
+      diffLines.push(`--- Removed (${diff.removedStructural.length}):`);
+      for (const l of diff.removedStructural.slice(0, 20)) diffLines.push(`- ${l}`);
+      if (diff.removedStructural.length > 20) diffLines.push(`  ... and ${diff.removedStructural.length - 20} more`);
     }
-    if (addedStructural.length > 0) {
-      diffLines.push(`+++ Added (${addedStructural.length}):`);
-      for (const l of addedStructural.slice(0, 20)) diffLines.push(`+ ${l}`);
-      if (addedStructural.length > 20) diffLines.push(`  ... and ${addedStructural.length - 20} more`);
+    if (diff.addedStructural.length > 0) {
+      diffLines.push(`+++ Added (${diff.addedStructural.length}):`);
+      for (const l of diff.addedStructural.slice(0, 20)) diffLines.push(`+ ${l}`);
+      if (diff.addedStructural.length > 20) diffLines.push(`  ... and ${diff.addedStructural.length - 20} more`);
     }
     if (removedText > 0 || addedText > 0) {
       const parts = [];
       if (removedText > 0) parts.push(`${removedText} removed`);
       if (addedText > 0) parts.push(`${addedText} added`);
       diffLines.push(`~~~ Text nodes updated (${parts.join(', ')})`);
-      if (addedText > 0 && removedStructural.length === 0 && addedStructural.length === 0) {
-        const samples = addedTextLines.slice(-3);
+      if (addedText > 0 && diff.removedStructural.length === 0 && diff.addedStructural.length === 0) {
+        const samples = diff.addedTextLines.slice(-3);
         for (const l of samples) diffLines.push(`+ ${l}`);
         if (addedText > samples.length) diffLines.push(`  ... and ${addedText - samples.length} more text additions`);
       }
     }
   }
-  const headerEnd = currHeaderEnd >= 0 ? currHeaderEnd : 5;
-  return curr.slice(0, headerEnd).join('\n') + '\n\n' + diffLines.join('\n');
+  return diff.headerLines.join('\n') + '\n\n' + diffLines.join('\n');
 }
 
 // Format a single @ref bounding-rect annotation. Adds `position` only for
@@ -3652,18 +3727,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
 
 function perceptionModelFromText(output, refState = {}) {
   const lines = String(output || '').split('\n');
-  const pageMatch = (lines[0] || '').match(/^Page: (.*) — (.*)$/);
-  const viewportMatch = (lines[1] || '').match(/^Viewport: (\d+)×(\d+) \| Scroll: (\d+)\/(\d+)/);
-  const consoleLine = lines.find(line => line.startsWith('Console: ')) || 'Console: clean';
-  const consoleHealth = { errors: 0, warnings: 0, exceptions: 0 };
-  for (const [key, pattern] of [
-    ['errors', /(\d+) errors?/],
-    ['warnings', /(\d+) warnings?/],
-    ['exceptions', /(\d+) exceptions?/],
-  ]) {
-    const match = consoleLine.match(pattern);
-    if (match) consoleHealth[key] = Number(match[1]);
-  }
+  const header = parsePerceiveHeader(output);
 
   const nodes = [];
   for (const line of lines) {
@@ -3687,17 +3751,9 @@ function perceptionModelFromText(output, refState = {}) {
   }
 
   return createPerceptionModel({
-    page: {
-      title: pageMatch ? pageMatch[1] : '',
-      url: pageMatch ? pageMatch[2] : '',
-    },
-    viewport: {
-      width: viewportMatch ? Number(viewportMatch[1]) : 0,
-      height: viewportMatch ? Number(viewportMatch[2]) : 0,
-      scrollY: viewportMatch ? Number(viewportMatch[3]) : 0,
-      scrollMax: viewportMatch ? Number(viewportMatch[4]) : 0,
-    },
-    consoleHealth,
+    page: header.page,
+    viewport: header.viewport,
+    consoleHealth: header.console,
     refs: { generation: refState.generation || 0 },
     nodes,
     limits: {
@@ -3709,6 +3765,52 @@ function perceptionModelFromText(output, refState = {}) {
 async function perceiveModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
   const output = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts, refState);
   return perceptionModelFromText(output, refState || {});
+}
+
+async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
+  const mode = opts.sinceAction ? 'since-action' : 'diff';
+  const baseline = opts.sinceAction ? opts.diffBaseline : lastPerceiveStore.output;
+  const currentOutput = await perceiveStr(
+    cdp,
+    sid,
+    consoleBuf,
+    exceptionBuf,
+    refMap,
+    lastPerceiveStore,
+    { ...opts, sinceAction: false, diff: false, diffBaseline: null },
+    refState
+  );
+  if (!baseline) {
+    const header = parsePerceiveHeader(currentOutput);
+    const target = opts.targetPrefix || '<target>';
+    return {
+      schema: 'chrome-cdp-ex.perceive-diff.v1',
+      mode,
+      baselineAvailable: false,
+      ...header,
+      summary: {
+        changed: null,
+        removed: 0,
+        added: 0,
+        textRemoved: 0,
+        textAdded: 0,
+      },
+      removed: [],
+      added: [],
+      removedOmitted: 0,
+      addedOmitted: 0,
+      textRemovedSamples: [],
+      textAddedSamples: [],
+      nextSteps: [
+        `cdp perceive ${target} -C -d 8`,
+        `cdp report ${target} --format json`,
+      ],
+    };
+  }
+  return buildPerceiveDiffModel(baseline, currentOutput, {
+    mode,
+    targetPrefix: opts.targetPrefix || '',
+  });
 }
 
 // Element screenshot: targeted capture of a specific element by CSS selector or @ref
@@ -7601,13 +7703,13 @@ async function runDaemon(targetId) {
         case 'perceive': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
           const popts = parsePerceiveArgs(fopts.args);
+          popts.targetPrefix = targetPrefixForDisplay(targetId);
           if (popts.sinceAction) {
             popts.diffBaseline = session.lastAction?.baselineOutput || null;
-            if (fopts.format === 'json') {
-              throw new Error('perceive --since-action currently supports text output only; omit --format json.');
-            }
           }
-          result = fopts.format === 'json'
+          result = fopts.format === 'json' && (popts.sinceAction || popts.diff)
+            ? formatJson(await perceiveDiffModel(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
+            : fopts.format === 'json'
             ? formatPerceptionJson(await perceiveModel(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
             : await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState);
           break;
@@ -7940,9 +8042,10 @@ Usage: cdp <command> [args]
 
   list [--format json]              List open pages (shows unique target prefixes)
                                     JSON includes schema/pages/nextSteps for agents.
-  perceive <target> [flags]          Full page perception with @ref indices + coordinates
+  perceive <target> [flags] [--format json]  Full page perception with @ref indices + coordinates
                                     --diff: show only changes since last perceive
                                     --since-action: show changes caused by the last mutating command
+                                    JSON with --diff/--since-action returns chrome-cdp-ex.perceive-diff.v1
                                     --frame @fN / -F @fN: perceive inside an iframe; refs become @fN:M
                                     -s <sel> / --selector: scope to CSS selector subtree
                                     -i / --interactive: only show interactive elements
@@ -8590,8 +8693,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // AX tree helpers
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
-  parsePerceiveArgs, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
-  createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel,
+  parsePerceiveArgs, buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
+  createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,
   createActionResult, formatActionText, runActionWithFeedback,

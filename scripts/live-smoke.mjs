@@ -265,6 +265,17 @@ assertIncludes(sinceActionOut, 'Page:', 'perceive --since-action');
 if (!sinceActionOut.includes('+++ Added') && !sinceActionOut.includes('~~~ Text nodes updated')) {
   throw new Error(`perceive --since-action should show changes from the last action\nOutput:\n${sinceActionOut}`);
 }
+const sinceActionJson = step('perceive since-action json', () => run(['perceive', target, '--since-action', '--format', 'json']));
+const parsedSinceAction = JSON.parse(sinceActionJson);
+if (parsedSinceAction.schema !== 'chrome-cdp-ex.perceive-diff.v1' || parsedSinceAction.mode !== 'since-action') {
+  throw new Error(`perceive --since-action json schema mismatch:\n${sinceActionJson}`);
+}
+if (parsedSinceAction.summary?.changed !== true) {
+  throw new Error(`perceive --since-action json should report changed=true:\n${sinceActionJson}`);
+}
+if (!parsedSinceAction.nextSteps?.some(nextStep => nextStep.includes('report') && nextStep.includes('--format json'))) {
+  throw new Error(`perceive --since-action json should include report handoff next step:\n${sinceActionJson}`);
+}
 const sessionShotOut = step('session shot attachment', () => run(['shot', target, '--quiet']));
 const sessionShotPath = sessionShotOut.split('\n')[0];
 if (sessionShotOut.split('\n').length !== 1 || !sessionShotPath.endsWith('.png') || !existsSync(sessionShotPath)) {
