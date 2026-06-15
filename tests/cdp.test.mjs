@@ -20,7 +20,7 @@ const {
   decodeVLQ, mapLineToSource, stripVitePathQuery, mapStyleSource,
   formatBatchResults, parseFlowSteps, settleFlow, flowStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkBrowserPermission, checkFdLimit,
-  formatDoctorReport, runDoctorChecks, doctorStr,
+  doctorWizardSummary, formatDoctorReport, runDoctorChecks, doctorStr,
 } = T;
 
 // =========================================================================
@@ -4815,6 +4815,44 @@ describe('checkFdLimit', () => {
   });
 });
 
+describe('doctorWizardSummary', () => {
+  it('points to browser CDP setup when CDP is unreachable', () => {
+    const out = doctorWizardSummary([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'FAIL', label: 'CDP', detail: 'cannot reach 127.0.0.1:9222' },
+    ]).join('\n');
+
+    expect(out).toContain('Wizard:');
+    expect(out).toContain('Status: blocked at browser CDP');
+    expect(out).toContain('Current step: enable browser remote debugging');
+    expect(out).toContain('cdp doctor');
+  });
+
+  it('points to open when CDP is ready but no debuggable page exists', () => {
+    const out = doctorWizardSummary([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'WARN', label: 'Tabs', detail: 'no debuggable page targets', noTargets: true, targetPrefixes: [] },
+    ]).join('\n');
+
+    expect(out).toContain('Status: waiting for a debuggable page');
+    expect(out).toContain('Current step: cdp open https://example.com');
+  });
+
+  it('points to perceive when a target exists but browser permission is not confirmed', () => {
+    const out = doctorWizardSummary([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Tabs', detail: '1 debuggable page target', targetPrefixes: ['AABBCCDD'] },
+      { status: 'WARN', label: 'Permission', detail: 'browser debugging approval not confirmed', targetPrefixes: ['AABBCCDD'] },
+    ]).join('\n');
+
+    expect(out).toContain('Status: waiting for browser debugging approval');
+    expect(out).toContain('Current step: cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('click Allow');
+  });
+});
+
 describe('formatDoctorReport', () => {
   it('renders OK/WARN/FAIL labels and shows hints', () => {
     const out = formatDoctorReport([
@@ -4823,6 +4861,8 @@ describe('formatDoctorReport', () => {
       { status: 'FAIL', label: 'CDP', detail: 'cannot reach 127.0.0.1:9222', hint: 'enable debugging' },
     ]);
     expect(out).toContain('chrome-cdp-ex doctor');
+    expect(out).toContain('Wizard:');
+    expect(out).toContain('Status: blocked at browser CDP');
     expect(out).toContain('[OK  ] Node');
     expect(out).toContain('[WARN] Skill install');
     expect(out).toContain('[FAIL] CDP');

@@ -361,9 +361,9 @@ scripts/cdp.mjs doctor    # one-call diagnostics (no target needed)
 scripts/cdp.mjs ready     # alias
 ```
 
-`doctor` is the onboarding wizard. It checks Node 22+, the skill install path, daemon sockets, open-file limit, CDP reachability, debuggable page targets, and whether browser debugging approval is already confirmed. When ready, follow its printed path: `open` if no page exists, or `list` then `perceive <printed-prefix> -C -d 8`, click Allow if Chrome asks, `click`/`fill`, `perceive --since-action`, then `report`.
+`doctor` is the onboarding wizard. It starts with a `Wizard` summary showing current status, the next command, and the golden path. It then checks Node 22+, the skill install path, daemon sockets, open-file limit, CDP reachability, debuggable page targets, and whether browser debugging approval is already confirmed. When ready, follow its printed path: `open` if no page exists, or `list` then `perceive <printed-prefix> -C -d 8`, click Allow if Chrome asks, `click`/`fill`, `perceive --since-action`, then `report`.
 
-Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daemon socket state, open-file limit, CDP reachability (CDP_PORT or auto-discovered DevToolsActivePort), and debuggable tab inventory. Exits with code 1 if any check fails. Run this **first** when an agent is unsure whether the environment is wired up.
+Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daemon socket state, open-file limit, CDP reachability (CDP_PORT or auto-discovered DevToolsActivePort), debuggable tab inventory, and browser permission. Exits with code 1 if any check fails. Run this **first** when an agent is unsure whether the environment is wired up.
 
 ### Error handling
 

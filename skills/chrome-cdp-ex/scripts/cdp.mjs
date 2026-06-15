@@ -5427,6 +5427,42 @@ function checkBrowserPermission({ daemons = null, tabs = null } = {}) {
   };
 }
 
+function doctorWizardSummary(checks) {
+  const node = checks.find(c => c.label === 'Node');
+  const cdp = checks.find(c => c.label === 'CDP');
+  const daemon = checks.find(c => c.label === 'Daemons');
+  const tabs = checks.find(c => c.label === 'Tabs');
+  const permission = checks.find(c => c.label === 'Permission');
+  const target = permission?.targetPrefixes?.[0] || daemon?.targetPrefixes?.[0] || tabs?.targetPrefixes?.[0] || '<target>';
+  const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
+
+  let status = 'ready for live browser perception';
+  let currentStep = `cdp perceive ${target} -C -d 8`;
+  if (node?.status === 'FAIL') {
+    status = 'blocked at Node.js';
+    currentStep = 'install Node.js 22+ and rerun: cdp doctor';
+  } else if (cdp?.status === 'FAIL') {
+    status = 'blocked at browser CDP';
+    currentStep = 'enable browser remote debugging, then rerun: cdp doctor';
+  } else if (cdp?.status === 'WARN') {
+    status = 'waiting for stable browser CDP';
+    currentStep = 're-toggle browser remote debugging, then rerun: cdp doctor';
+  } else if (noTargets) {
+    status = 'waiting for a debuggable page';
+    currentStep = 'cdp open https://example.com';
+  } else if (permission?.status === 'WARN') {
+    status = 'waiting for browser debugging approval';
+    currentStep = `cdp perceive ${target} -C -d 8  # click Allow if Chrome asks`;
+  }
+
+  return [
+    'Wizard:',
+    `  Status: ${status}`,
+    `  Current step: ${currentStep}`,
+    '  Golden path: doctor -> list/open -> perceive -> click/fill -> since-action evidence -> report',
+  ];
+}
+
 function doctorNextSteps(checks) {
   const failures = checks.filter(c => c.status === 'FAIL');
   const cdp = checks.find(c => c.label === 'CDP');
@@ -5478,6 +5514,7 @@ function doctorNextSteps(checks) {
 
 function formatDoctorReport(checks) {
   const lines = ['chrome-cdp-ex doctor'];
+  lines.push(...doctorWizardSummary(checks), '', 'Checks:');
   for (const c of checks) {
     const tag = c.status.padEnd(4);
     lines.push(`  [${tag}] ${c.label}: ${c.detail}`);
@@ -6733,6 +6770,7 @@ Usage: cdp <command> [args]
   doctor / ready                    One-call diagnostics: Node version, skill install path,
                                     daemon socket state, fd limit, CDP_PORT/DevToolsActivePort reachability,
                                     debuggable tab inventory, browser permission, and onboarding next steps.
+                                    Starts with Wizard status + current command.
                                     No target required. Exits 1 if any check FAILs.
   keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)
   open  [url]                       Open a new tab (default: about:blank)
@@ -7251,6 +7289,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   formatBatchResults, parseFlowSteps, settleFlow, flowStr,
   formatCliError, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
+  doctorWizardSummary,
   doctorNextSteps, formatDoctorReport, runDoctorChecks, doctorStr,
   COMMANDS, NEEDS_TARGET,
 } : undefined;
