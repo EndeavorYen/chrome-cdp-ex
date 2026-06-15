@@ -135,6 +135,12 @@ const reportOut = step('session report', () => run(['report', target]));
 assertIncludes(reportOut, 'Session report:', 'report');
 assertIncludes(reportOut, 'Action timeline:', 'report');
 assertIncludes(reportOut, 'click #combat', 'report action timeline');
+const reportLogPath = reportOut.split('\n').find(line => line.startsWith('Log: '))?.slice(5).trim();
+if (!reportLogPath || !existsSync(reportLogPath)) throw new Error(`report log path should exist\nOutput:\n${reportOut}`);
+const reportLogEvents = readFileSync(reportLogPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+if (!reportLogEvents.some(event => event.kind === 'action' && event.action?.action === 'click')) {
+  throw new Error(`session log should contain a click action event\nLog:\n${readFileSync(reportLogPath, 'utf8')}`);
+}
 step('wait any-of', () => assertIncludes(run(['waitfor', target, '--any-of', '戰鬥勝利|戰敗|逃跑成功', '8000', '--scope', '#combat-log'], { timeout: 12000 }), '戰鬥勝利', 'waitfor --any-of'));
 step('wait selector stable', () => assertIncludes(run(['waitfor', target, '--selector-stable', '#combat-log', '500', '8000'], { timeout: 12000 }), 'stable', 'waitfor --selector-stable'));
 const shotOut = step('shot quiet', () => run(['shot', target, resolve(tmpdir(), 'chrome-cdp-ex-smoke.png'), '--quiet']));

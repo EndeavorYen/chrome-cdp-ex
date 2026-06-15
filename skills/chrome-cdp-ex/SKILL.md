@@ -296,11 +296,11 @@ The daemon buffers console output, exceptions, and action evidence in the backgr
 scripts/cdp.mjs status  <target> [--format json]                  # page state + new console/exception entries
 scripts/cdp.mjs summary <target> [--format json]                  # token-efficient page overview (~100 tokens)
 scripts/cdp.mjs console <target> [--all|--errors] [--format json] # console buffer (default: unread only)
-scripts/cdp.mjs report  <target>                                  # session action timeline + evidence summary
+scripts/cdp.mjs report  <target>                                  # session action timeline + evidence summary + JSONL log path
 ```
 
 > **Agent tip:** `perceive` already includes summary + console health. Use `status` or `console` only when you need to check for **new** console entries after an action.
-> Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session.
+> Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session and shows the per-target JSONL log path for post-mortem review.
 > Use `--format json` when another tool or agent needs a stable, parseable status, summary, or console payload.
 
 ### Batch commands (reduce IPC overhead)

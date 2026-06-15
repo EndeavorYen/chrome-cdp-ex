@@ -2,6 +2,7 @@
 // Run: npm test
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { readFileSync, rmSync } from 'fs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const {
@@ -389,22 +390,8 @@ describe('ActionResult', () => {
 // =========================================================================
 
 describe('Session report', () => {
-  it('formats an empty session report with a next action hint', () => {
-    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
-    state.createdAt = Date.parse('2026-06-16T00:00:00.000Z');
-
-    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
-
-    expect(out).toContain('Session report: ABC123');
-    expect(out).toContain('Uptime: 5s');
-    expect(out).toContain('Actions: 0');
-    expect(out).toContain('No actions recorded yet');
-  });
-
-  it('records action evidence and formats an action timeline', () => {
-    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
-    state.createdAt = Date.parse('2026-06-16T00:00:00.000Z');
-    const actionResult = T.createActionResult({
+  function sampleActionResult() {
+    return T.createActionResult({
       action: 'click',
       target: { input: '#combat', resolvedBy: 'selector', label: '#combat' },
       dispatch: { ok: true, method: 'click' },
@@ -422,6 +409,25 @@ describe('Session report', () => {
       },
       nextHint: 'Use perceive --since-action if more evidence is needed',
     });
+  }
+
+  it('formats an empty session report with a next action hint', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.createdAt = Date.parse('2026-06-16T00:00:00.000Z');
+
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(out).toContain('Session report: ABC123');
+    expect(out).toContain('Uptime: 5s');
+    expect(out).toContain('Log:');
+    expect(out).toContain('Actions: 0');
+    expect(out).toContain('No actions recorded yet');
+  });
+
+  it('records action evidence and formats an action timeline', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.createdAt = Date.parse('2026-06-16T00:00:00.000Z');
+    const actionResult = sampleActionResult();
 
     T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
     const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
@@ -432,6 +438,46 @@ describe('Session report', () => {
     expect(out).toContain('1. click #combat — ok in 123ms');
     expect(out).toContain('Effect: +++ Added (1):');
     expect(out).toContain('戰鬥勝利');
+  });
+
+  it('writes compact action events to the per-target session log', () => {
+    const logPath = `/tmp/cdp-session-log-${Date.now()}-${Math.random().toString(16).slice(2)}.log`;
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1', logPath });
+
+    try {
+      T.appendSessionActionLog(state, sampleActionResult(), { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+      const [line] = readFileSync(logPath, 'utf8').trim().split('\n');
+      const event = JSON.parse(line);
+
+      expect(event.schema).toBe('chrome-cdp-ex.session-event.v1');
+      expect(event.kind).toBe('action');
+      expect(event.targetId).toBe('ABC123');
+      expect(event.action.action).toBe('click');
+      expect(event.action.effectSummary).toBe('+++ Added (1):');
+      expect(event.action.effectSample).toContain('戰鬥勝利');
+      expect(event.action.domDiff).toBeUndefined();
+    } finally {
+      rmSync(logPath, { force: true });
+    }
+  });
+
+  it('initializes the per-target session log with a session-start event', () => {
+    const logPath = `/tmp/cdp-session-start-${Date.now()}-${Math.random().toString(16).slice(2)}.log`;
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1', logPath });
+
+    try {
+      T.initializeSessionLog(state, { ts: Date.parse('2026-06-16T00:00:00.000Z') });
+      const [line] = readFileSync(logPath, 'utf8').trim().split('\n');
+      const event = JSON.parse(line);
+
+      expect(event.schema).toBe('chrome-cdp-ex.session-event.v1');
+      expect(event.kind).toBe('session-start');
+      expect(event.targetId).toBe('ABC123');
+      expect(event.sessionId).toBe('sid-1');
+      expect(event.ts).toBe(Date.parse('2026-06-16T00:00:00.000Z'));
+    } finally {
+      rmSync(logPath, { force: true });
+    }
   });
 });
 

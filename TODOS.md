@@ -36,7 +36,7 @@
 - [x] Action evidence wrapper for mutating commands.
 - [x] Live smoke assertions for `fill`, `press`, `click`, and `inject` evidence.
 - [x] `perceive --since-action`.
-- [ ] Per-target daemon log file.
+- [x] Per-target daemon log file.
 - [ ] Session screenshot directory.
 - [ ] `record-actions`.
 - [x] `report <session>` action timeline.
@@ -58,7 +58,7 @@
 
 - [ ] Token-aware `perceive` truncation that scores nodes by interactivity and recency.
 - [ ] `eval --raw` flag to bypass the auto-`JSON.stringify` of object results.
-- [ ] Per-target daemon log file at `<runtime-dir>/cdp-<target>.log` for post-mortem.
+- [x] Per-target daemon log file at `<runtime-dir>/cdp-<target>.log` for post-mortem.
 - [ ] Session screenshot directory + report attachments.
 
 ## Distribution & Visibility

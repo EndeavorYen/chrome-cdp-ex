@@ -7,7 +7,7 @@
 // the CDP session open. Chrome's "Allow debugging" modal fires once per
 // daemon (= once per tab). Daemons auto-exit after 20min idle.
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync } from 'fs';
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync } from 'fs';
 import { homedir } from 'os';
 import { resolve, delimiter } from 'path';
 import { spawn } from 'child_process';
@@ -1068,6 +1068,48 @@ function summarizeActionDomDiff(domDiff) {
   return { summary, sample };
 }
 
+function sessionLogPath(targetId, runtimeDir = RUNTIME_DIR) {
+  const safeTarget = String(targetId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
+  return resolve(runtimeDir, `cdp-${safeTarget}.log`);
+}
+
+function appendSessionEventLog(session, event, { writer = appendFileSync } = {}) {
+  if (!session.logPath) return null;
+  const payload = {
+    schema: 'chrome-cdp-ex.session-event.v1',
+    targetId: session.targetId,
+    sessionId: session.sessionId,
+    ...event,
+  };
+  try {
+    writer(session.logPath, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
+    return payload;
+  } catch (e) {
+    if (!session.logErrors) session.logErrors = [];
+    session.logErrors.push({ ts: Date.now(), message: e.message });
+    return null;
+  }
+}
+
+function initializeSessionLog(session, { ts = session.createdAt || Date.now(), writer = writeFileSync } = {}) {
+  if (!session.logPath) return null;
+  const payload = {
+    schema: 'chrome-cdp-ex.session-event.v1',
+    kind: 'session-start',
+    ts,
+    targetId: session.targetId,
+    sessionId: session.sessionId,
+  };
+  try {
+    writer(session.logPath, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
+    return payload;
+  } catch (e) {
+    if (!session.logErrors) session.logErrors = [];
+    session.logErrors.push({ ts: Date.now(), message: e.message });
+    return null;
+  }
+}
+
 function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {}) {
   if (!session.actionLog) session.actionLog = [];
   const domDiff = actionResult.effects?.domDiff || '';
@@ -1086,6 +1128,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
   if (session.actionLog.length > MAX_ACTION_LOG_ENTRIES) {
     session.actionLog.splice(0, session.actionLog.length - MAX_ACTION_LOG_ENTRIES);
   }
+  appendSessionEventLog(session, { kind: 'action', ts, action: entry });
   return entry;
 }
 
@@ -1096,6 +1139,7 @@ function formatSessionReport(session, { now = Date.now() } = {}) {
     `Session report: ${session.targetId}`,
     `CDP session: ${session.sessionId}`,
     `Uptime: ${formatDuration(uptimeMs)}`,
+    `Log: ${session.logPath || '(disabled)'}`,
     `Actions: ${actionLog.length}`,
     `Screenshots: ${session.screenshots?.length || 0}`,
     `Records: ${session.records?.length || 0}`,
@@ -1119,11 +1163,13 @@ function formatSessionReport(session, { now = Date.now() } = {}) {
   return lines.join('\n');
 }
 
-function createSessionState({ targetId, sessionId }) {
+function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targetId) }) {
   return {
     targetId,
     sessionId,
     createdAt: Date.now(),
+    logPath,
+    logErrors: [],
     pageGeneration: 0,
     refGeneration: 0,
     refs: {
@@ -4138,6 +4184,7 @@ async function runDaemon(targetId) {
   }
 
   const session = createSessionState({ targetId, sessionId });
+  initializeSessionLog(session);
 
   // --- Background observation ---
   const consoleBuf = new RingBuffer(200);
@@ -4739,7 +4786,7 @@ Usage: cdp <command> [args]
                                     --runtime: include Performance.getMetrics counters
   console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
-  report <target>                   Session action timeline + evidence summary
+  report <target>                   Session action timeline + evidence summary + JSONL log path
   net   <target>                    Network performance entries
   click   <target> <sel|@ref>       Click element by CSS selector or @ref
                                     --js / -j: use HTMLElement.click() (JS fallback)
@@ -5184,7 +5231,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel,
   createSessionState, invalidateSessionRefs,
   createActionResult, formatActionText, runActionWithFeedback,
-  appendSessionActionLog, formatSessionReport,
+  appendSessionActionLog, appendSessionEventLog, initializeSessionLog, formatSessionReport,
   // Command implementations
   formatPageList, dialogStr, netlogStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,
