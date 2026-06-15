@@ -946,7 +946,7 @@ cdp perceive <t> -i --keep-refs --last 20   # keep all refs + last 20 text rows
 cdp perceive <t> -s ".combat-log" -d 6      # scope to the log subtree
 ```
 
-`--last N` truncates only static-text / paragraph rows; landmark and interactive `@ref` lines are always preserved.
+`--last N` truncates only static-text / paragraph rows; landmark and interactive `@ref` lines are always preserved. The truncation is priority-aware: high-signal text such as errors, failures, required/invalid validation, warnings, saved/success/submitted results is kept even if it is older than the last N rows. `perceive --since-action` applies the same priority so important new text appears as diff evidence instead of being collapsed into a generic text-count summary.
 
 ### Screenshot in scripts
 

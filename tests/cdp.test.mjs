@@ -790,6 +790,36 @@ describe('Perceive diff baseline', () => {
     expect(diff).toContain('+++ Added (1):');
     expect(diff).toContain('+   [alert] Saved');
   });
+
+  it('keeps high-signal StaticText additions in action diffs', () => {
+    const previous = [
+      'Page: Checkout — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 1 button',
+      'Console: clean',
+      'Coords: viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Checkout',
+    ].join('\n');
+    const current = [
+      'Page: Checkout — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 1 button',
+      'Console: clean',
+      'Coords: viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Checkout',
+      '  [StaticText] Payment failed: card number is required',
+      '  [StaticText] diagnostic noise',
+    ].join('\n');
+
+    const diff = T.formatPerceiveDiffOutput(previous, current);
+
+    expect(diff).toContain('+++ Added (1):');
+    expect(diff).toContain('+   [StaticText] Payment failed: card number is required');
+    expect(diff).toContain('~~~ Text nodes updated (1 added)');
+    expect(diff).not.toContain('diagnostic noise');
+  });
 });
 
 // =========================================================================
@@ -4876,6 +4906,28 @@ describe('buildPerceiveTree truncation controls', () => {
     expect(out).toMatch(/a/);
     expect(out).toMatch(/b/);
     expect(out).not.toMatch(/omitted/);
+  });
+
+  it('keeps high-signal error text even when it is older than --last', () => {
+    const nodes = [axNode('root', 'WebArea', 'Page')];
+    const childIds = [];
+    nodes.push(axNode('err', 'StaticText', 'Payment failed: card number is required', { parentId: 'root' }));
+    childIds.push('err');
+    for (let i = 0; i < 40; i++) {
+      const id = `noise${i}`;
+      nodes.push(axNode(id, 'StaticText', `event log line ${i}`, { parentId: 'root' }));
+      childIds.push(id);
+    }
+    nodes[0].childIds = childIds;
+
+    const refMap = new Map();
+    const { treeLines } = buildPerceiveTree(nodes, { layoutMap: {}, styleHints: {} }, refMap, { last: 3 });
+    const out = treeLines.join('\n');
+
+    expect(out).toContain('Payment failed: card number is required');
+    expect(out).not.toContain('event log line 0');
+    expect(out).toContain('event log line 39');
+    expect(out).toMatch(/earlier text node\(s\) omitted/);
   });
 });
 

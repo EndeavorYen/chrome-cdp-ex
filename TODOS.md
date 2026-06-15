@@ -47,7 +47,7 @@
 - [x] `doctor` onboarding wizard — checks Node, install path, daemon sockets, fd limit, CDP reachability, then prints next commands for `list/open -> perceive -> act -> since-action evidence -> report`.
 - [x] README "use / do not use / 5 success cases" rewrite. Priority: P1.
 - [x] Action failure classifier for overlay, wrong frame, navigation, DOM rewrite, and timeout. Priority: P1.
-- [ ] Token-aware `perceive` scoring for important controls, errors, changes, and new UI. Priority: P1.
+- [x] Token-aware `perceive` scoring for important controls, errors, changes, and new UI. Priority: P1.
 
 ### Feature Roadmap (medium effort)
 
@@ -65,7 +65,7 @@
 
 ### Polish backlog
 
-- [ ] Token-aware `perceive` truncation that scores nodes by interactivity and recency.
+- [ ] Adaptive `perceive` line/token budget beyond `--last`.
 - [ ] `eval --raw` flag to bypass the auto-`JSON.stringify` of object results.
 - [x] Per-target daemon log file at `<runtime-dir>/cdp-<target>.log` for post-mortem.
 - [x] Session screenshot directory + report attachments.

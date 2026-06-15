@@ -537,6 +537,12 @@ function formatAxNode(node, depth) {
   return line;
 }
 
+const PERCEIVE_PRIORITY_TEXT_RE = /\b(error|failed?|failure|invalid|required|warning|blocked|denied|unauthori[sz]ed|forbidden|saved|success|submitted|complete)\b/i;
+
+function isPriorityPerceiveTextLine(line) {
+  return PERCEIVE_PRIORITY_TEXT_RE.test(String(line || ''));
+}
+
 function orderedAxChildren(node, nodesById, childrenByParent) {
   const children = [];
   const seen = new Set();
@@ -1744,7 +1750,7 @@ function formatPerceiveDiffOutput(previousOutput, currentOutput) {
   const currSet = new Set(currTree);
   const removed = prevTree.filter(l => !currSet.has(l));
   const added = currTree.filter(l => !prevSet.has(l));
-  const isTextOnly = l => /^\s*\[StaticText\]/.test(l);
+  const isTextOnly = l => /^\s*\[StaticText\]/.test(l) && !isPriorityPerceiveTextLine(l);
   const removedStructural = removed.filter(l => !isTextOnly(l));
   const addedStructural = added.filter(l => !isTextOnly(l));
   const removedText = removed.length - removedStructural.length;
@@ -1965,13 +1971,16 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     // Walk backwards collecting the last N text lines while keeping all ref/structural lines
     const reversed = [];
     let textKept = 0;
+    let priorityKept = 0;
+    const priorityBudget = Math.max(last, 12);
     let textOmitted = 0;
     for (let i = outLines.length - 1; i >= 0; i--) {
       const ln = outLines[i];
       const isRef = refLineRe.test(ln);
       const isText = textRoleRe.test(ln) && !isRef;
       if (isText) {
-        if (textKept < last) { reversed.push(ln); textKept++; }
+        if (isPriorityPerceiveTextLine(ln) && priorityKept < priorityBudget) { reversed.push(ln); priorityKept++; }
+        else if (textKept < last) { reversed.push(ln); textKept++; }
         else { textOmitted++; }
       } else {
         reversed.push(ln);
@@ -6137,7 +6146,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseReplayArgs, parseReplayArtifact, replayStepFromAction, replayActionsStr,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,
-  formatUnknownRefError, resolveRefNode, formatRefRect,
+  formatUnknownRefError, resolveRefNode, formatRefRect, isPriorityPerceiveTextLine,
   parseTextArgs, textPageScript, textStr,
   parseShotArgs, shotStr,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan, spawnDebugBrowserStr,

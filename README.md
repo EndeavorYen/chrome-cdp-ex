@@ -378,7 +378,7 @@ perceive <target> [flags] [--format json] # enriched AX tree with @ref indices +
                                    #   -d N: limit tree depth
                                    #   -C: include non-ARIA clickable elements
                                    #   --keep-refs: preserve every @ref line under truncation
-                                   #   --last N: keep only the last N text/log rows
+                                   #   --last N: keep last text/log rows plus high-signal errors/results
                                    # Coords are viewport CSS pixels — same frame as clickxy.
                                    # Fixed/sticky elements get a ", fixed"/", sticky" tag.
 snap     <target> [--full]         # accessibility tree (compact by default)
