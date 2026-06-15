@@ -48,6 +48,7 @@
 - [x] README "use / do not use / 5 success cases" rewrite. Priority: P1.
 - [x] Action failure classifier for overlay, wrong frame, navigation, DOM rewrite, and timeout. Priority: P1.
 - [x] Token-aware `perceive` scoring for important controls, errors, changes, and new UI. Priority: P1.
+- [x] `overlay` / `overlays` detector — read-only dialog/overlay and target hit-test blocker diagnosis. Priority: P1.
 
 ### Feature Roadmap (medium effort)
 

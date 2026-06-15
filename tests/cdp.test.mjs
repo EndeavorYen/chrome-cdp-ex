@@ -244,6 +244,16 @@ describe('COMMANDS registry', () => {
       outputFormats: ['text', 'json'],
     }));
   });
+
+  it('registers overlay detector as a read-only target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'overlay',
+      aliases: ['overlays'],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
 });
 
 // =========================================================================
@@ -5047,6 +5057,109 @@ describe('dismissModalStr', () => {
     const keyEvents = cdp.calls.filter(c => c.method === 'Input.dispatchKeyEvent');
     expect(keyEvents.length).toBeGreaterThan(0);
     expect(evalCalls).toBeGreaterThan(0);
+  });
+});
+
+// =========================================================================
+// overlay detector
+// =========================================================================
+
+describe('overlay detector', () => {
+  it('builds a page-side script that scans dialogs and hit-test blockers', () => {
+    const script = T.overlayDetectorScript({ targetPoint: { input: '@4', x: 10, y: 20 } });
+    expect(script).toMatch(/elementFromPoint/);
+    expect(script).toMatch(/aria-modal/);
+    expect(script).toMatch(/role="dialog"/);
+    expect(script).toContain('"input":"@4"');
+  });
+
+  it('formats a clear page when no blocking overlay is visible', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: JSON.stringify({
+        schema: 'chrome-cdp-ex.overlays.v1',
+        viewport: { width: 800, height: 600 },
+        target: null,
+        overlayCount: 0,
+        blocking: false,
+        overlays: [],
+        nextCommand: null,
+      }) } }),
+    });
+
+    const out = await T.overlayStr(cdp, 'sid1', 'abc123', [], new Map(), {});
+    expect(out).toContain('Overlay detector: clear');
+    expect(out).toContain('No visible blocking overlays/dialogs detected.');
+    expect(out).toContain('Next: continue');
+  });
+
+  it('reports a blocking dialog and concrete dismissal command for a target ref', async () => {
+    const refMap = new Map([[4, 444]]);
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => ({ object: { objectId: 'target-button' } }),
+      'Runtime.callFunctionOn': () => ({ result: { value: {
+        x: 20,
+        y: 30,
+        w: 80,
+        h: 20,
+        tag: 'BUTTON',
+        text: 'Submit',
+      } } }),
+      'Runtime.evaluate': (params) => {
+        expect(params.expression).toContain('"input":"@4"');
+        expect(params.expression).toContain('"x":60');
+        expect(params.expression).toContain('"y":40');
+        return { result: { value: JSON.stringify({
+          schema: 'chrome-cdp-ex.overlays.v1',
+          viewport: { width: 800, height: 600 },
+          target: {
+            input: '@4',
+            x: 60,
+            y: 40,
+            descriptor: '<BUTTON> "Submit"',
+            blocked: true,
+            topElement: { kind: 'dialog', selector: '#motd', text: 'MOTD' },
+          },
+          overlayCount: 1,
+          blocking: true,
+          overlays: [{
+            kind: 'dialog',
+            selector: '#motd',
+            role: 'dialog',
+            label: 'MOTD',
+            text: 'Press any key',
+            pointerEvents: 'auto',
+            zIndex: '20',
+            rect: { x: 100, y: 90, w: 320, h: 180 },
+            coversTarget: true,
+            topAtCenter: true,
+          }],
+          nextCommand: 'cdp dismiss-modal abc123',
+        }) } };
+      },
+    });
+
+    const out = await T.overlayStr(cdp, 'sid1', 'abc123', ['@4'], refMap, {});
+    expect(out).toContain('Overlay detector: blocking');
+    expect(out).toContain('Target: @4 at (60,40) — blocked by [dialog] #motd "MOTD"');
+    expect(out).toContain('1. [dialog] #motd role=dialog z=20 pointer=auto rect=(100,90 320×180)');
+    expect(out).toContain('Next: cdp dismiss-modal abc123');
+  });
+
+  it('returns versioned overlay JSON for tool-calling agents', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: JSON.stringify({
+        schema: 'chrome-cdp-ex.overlays.v1',
+        viewport: { width: 800, height: 600 },
+        target: null,
+        overlayCount: 0,
+        blocking: false,
+        overlays: [],
+        nextCommand: null,
+      }) } }),
+    });
+
+    const out = await T.overlayStr(cdp, 'sid1', 'abc123', ['--format', 'json'], new Map(), {});
+    expect(JSON.parse(out).schema).toBe('chrome-cdp-ex.overlays.v1');
   });
 });
 

@@ -119,7 +119,12 @@ assertIncludes(frameOut, 'Frames:', 'frame');
 assertIncludes(frameOut, '@f2', 'frame child ref');
 assertIncludes(frameOut, 'smoke-child', 'frame child name');
 
+const overlayBlockedOut = step('overlay detector blocks modal', () => run(['overlay', target]));
+assertIncludes(overlayBlockedOut, 'Overlay detector: blocking', 'overlay blocking');
+assertIncludes(overlayBlockedOut, 'Next: cdp dismiss-modal', 'overlay dismissal hint');
 step('dismiss modal', () => assertIncludes(run(['dismiss-modal', target]), 'Dismissed modal', 'dismiss-modal'));
+const overlayClearOut = step('overlay detector clear', () => run(['overlay', target]));
+assertIncludes(overlayClearOut, 'Overlay detector: clear', 'overlay clear');
 const framePerceiveOut = step('frame-scoped perceive refs', () => run(['perceive', target, '--frame', '@f2', '-d', '4']));
 assertIncludes(framePerceiveOut, 'Frame: @f2', 'perceive --frame');
 assertIncludes(framePerceiveOut, 'Child action', 'perceive --frame child button');

@@ -299,6 +299,7 @@ scripts/cdp.mjs status  <target> [--format json]                  # page state +
 scripts/cdp.mjs summary <target> [--format json]                  # token-efficient page overview (~100 tokens)
 scripts/cdp.mjs console <target> [--all|--errors] [--format json] # console buffer (default: unread only)
 scripts/cdp.mjs frame   <target> [--format json]                  # frame tree with @fN refs (alias: frames)
+scripts/cdp.mjs overlay <target> [sel|@ref] [--format json]       # detect dialogs/overlays and hit-test blockers
 scripts/cdp.mjs report  <target>                                  # action timeline + evidence + screenshot attachments + JSONL log path
 scripts/cdp.mjs checkpoint <target> [--format json]                # capture URL, cookies, localStorage, and sessionStorage
 scripts/cdp.mjs restore <target> --file <path>                     # restore a checkpoint artifact; invalidates @refs
@@ -308,6 +309,7 @@ scripts/cdp.mjs replay <target> --file <path>                     # execute repl
 
 > **Agent tip:** `perceive` already includes summary + console health. Use `status` or `console` only when you need to check for **new** console entries after an action.
 > Use `frame`/`frames` when an action is classified as `wrong-frame` or the page contains iframes; it lists stable `@fN` frame refs. Then run `perceive <target> --frame @f2` to assign frame-local element refs such as `@f2:4`. `click`, `fill`, and `cascade` can use those refs directly.
+> Use `overlay <target>` when a click/fill feels blocked or action failure says `overlay`; use `overlay <target> @ref` to ask whether a specific target point is covered. If blocking is reported, run the printed `dismiss-modal` command before retrying.
 > Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session, lists session screenshot attachments, and shows the per-target JSONL log path for post-mortem review.
 > Use `checkpoint --format json` before risky stateful exploration, then `restore --file checkpoint.json` to return to the captured URL, cookies, localStorage, and sessionStorage. After restore, run `perceive` before using any `@ref`; refs from the prior page state are intentionally invalid.
 > Use `record-actions --format json` when a successful exploration should become a replay/export asset, then `replay --file artifact.json` to run replayable steps against a live page. Incomplete commands are marked with explicit missing fields instead of guessed. Password-like fill/type targets are redacted before action artifacts are written.
@@ -367,7 +369,7 @@ Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daem
 
 These commands **automatically wait for DOM to settle and return compact `ActionResult` evidence plus perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards. If you need to ask again what the last action changed, run `perceive --since-action`.
 
-If dispatch fails, read the classified `Action failure:` block instead of retrying blindly. Failures are grouped as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, or `selector`, and each one includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp perceive <target> -C -d 8`, or `cdp status <target>`. The failed action is also recorded in `report <target>` so long sessions keep the diagnosis.
+If dispatch fails, read the classified `Action failure:` block instead of retrying blindly. Failures are grouped as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, or `selector`, and each one includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp overlay <target> @ref`, `cdp perceive <target> -C -d 8`, or `cdp status <target>`. The failed action is also recorded in `report <target>` so long sessions keep the diagnosis.
 
 | Command | Auto-returns |
 |---------|-------------|

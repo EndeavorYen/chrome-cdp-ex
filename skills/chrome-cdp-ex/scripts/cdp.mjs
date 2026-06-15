@@ -1894,6 +1894,38 @@ async function frameViewportOffset(cdp, sid, frameEntry) {
   return { x, y };
 }
 
+async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState) {
+  const frameParsed = parseFrameRef(ref);
+  const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
+  const result = await cdp.send('Runtime.callFunctionOn', {
+    objectId,
+    functionDeclaration: `function() {
+      const rect = this.getBoundingClientRect();
+      const cs = (typeof getComputedStyle === 'function') ? getComputedStyle(this) : null;
+      return {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+        tag: this.tagName,
+        text: (this.textContent || '').trim().substring(0, 80),
+        position: cs ? cs.position : '',
+        pointerEvents: cs ? cs.pointerEvents : '',
+        visible: !!(rect.width && rect.height),
+      };
+    }`,
+    returnByValue: true,
+  }, sid);
+  const value = result.result.value || {};
+  if (frameParsed) {
+    const { entry } = frameScopedBackendNode(refState || {}, frameParsed);
+    const offset = await frameViewportOffset(cdp, sid, entry);
+    value.x = (Number(value.x) || 0) + offset.x;
+    value.y = (Number(value.y) || 0) + offset.y;
+  }
+  return value;
+}
+
 // Wait for DOM mutations to stop after an action (350ms of silence = settled)
 async function waitForSettle(cdp, sid, timeoutMs = 3000) {
   await evalStr(cdp, sid, `new Promise(resolve => {
@@ -5161,6 +5193,189 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   return lines.join('\n');
 }
 
+function overlayDetectorScript({ targetPoint = null } = {}) {
+  const targetJson = JSON.stringify(targetPoint || null);
+  return `(function() {
+    const targetPoint = ${targetJson};
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    function visible(el) {
+      if (!el || el.id === '__cdp_annot_overlay__') return false;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return false;
+      const r = el.getBoundingClientRect();
+      return r.width >= 2 && r.height >= 2 && r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
+    }
+    function selectorFor(el) {
+      if (!el) return '';
+      if (el.id) return '#' + CSS.escape(el.id);
+      const tag = el.tagName ? el.tagName.toLowerCase() : 'node';
+      const cls = typeof el.className === 'string' && el.className.trim()
+        ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).map(CSS.escape).join('.')
+        : '';
+      return tag + cls;
+    }
+    function shortText(el) {
+      return (el?.getAttribute?.('aria-label') || el?.textContent || '').trim().replace(/\\s+/g, ' ').substring(0, 80);
+    }
+    function pointInRect(point, rect) {
+      return !!point && point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+    }
+    function elementInfo(el, kind, target) {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      const cx = Math.min(Math.max(r.left + r.width / 2, 0), Math.max(vw - 1, 0));
+      const cy = Math.min(Math.max(r.top + r.height / 2, 0), Math.max(vh - 1, 0));
+      const topAtCenter = document.elementFromPoint(cx, cy);
+      const topAtTarget = target ? document.elementFromPoint(target.x, target.y) : null;
+      return {
+        kind,
+        selector: selectorFor(el),
+        role: el.getAttribute('role') || '',
+        label: el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || '',
+        text: shortText(el),
+        tag: el.tagName,
+        position: cs.position,
+        pointerEvents: cs.pointerEvents,
+        zIndex: cs.zIndex,
+        rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+        coversViewport: r.left <= 8 && r.top <= 8 && r.right >= vw - 8 && r.bottom >= vh - 8,
+        coversTarget: pointInRect(target, r),
+        topAtCenter: topAtCenter === el || el.contains(topAtCenter),
+        topAtTarget: topAtTarget === el || el.contains(topAtTarget),
+      };
+    }
+    function isDialog(el) {
+      return el.matches('[role="dialog"], dialog, [aria-modal="true"]');
+    }
+    const seen = new Set();
+    const overlays = [];
+    function add(el, kind) {
+      if (!visible(el) || seen.has(el)) return;
+      seen.add(el);
+      const info = elementInfo(el, kind, targetPoint);
+      const hasPointer = info.pointerEvents !== 'none';
+      const blocksTarget = !!targetPoint && info.coversTarget && hasPointer && (info.topAtTarget || isDialog(el));
+      const blocksPage = !targetPoint && hasPointer && (isDialog(el) || info.coversViewport);
+      if (isDialog(el) || blocksTarget || blocksPage) overlays.push({ ...info, blocking: blocksTarget || blocksPage || isDialog(el) });
+    }
+    for (const el of document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')) add(el, 'dialog');
+    for (const el of document.querySelectorAll('body *')) {
+      const cs = getComputedStyle(el);
+      if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+      add(el, el.getAttribute('aria-modal') === 'true' ? 'dialog' : 'overlay');
+      if (overlays.length >= 20) break;
+    }
+    overlays.sort((a, b) => {
+      const za = Number.parseInt(a.zIndex, 10);
+      const zb = Number.parseInt(b.zIndex, 10);
+      const zcmp = (Number.isFinite(zb) ? zb : 0) - (Number.isFinite(za) ? za : 0);
+      if (zcmp) return zcmp;
+      return (b.rect.w * b.rect.h) - (a.rect.w * a.rect.h);
+    });
+    const target = targetPoint ? { ...targetPoint, blocked: false, topElement: null } : null;
+    if (targetPoint) {
+      const top = document.elementFromPoint(targetPoint.x, targetPoint.y);
+      if (top) target.topElement = elementInfo(top, isDialog(top) ? 'dialog' : 'top-element', targetPoint);
+      const blocker = overlays.find(o => o.coversTarget && (o.topAtTarget || o.kind === 'dialog' || o.blocking));
+      if (blocker) {
+        target.blocked = true;
+        target.topElement = { kind: blocker.kind, selector: blocker.selector, text: blocker.label || blocker.text || blocker.tag };
+      }
+    }
+    const blocking = overlays.some(o => o.blocking) || !!target?.blocked;
+    return JSON.stringify({
+      schema: 'chrome-cdp-ex.overlays.v1',
+      viewport: { width: vw, height: vh },
+      target,
+      overlayCount: overlays.length,
+      blocking,
+      overlays: overlays.slice(0, 10),
+      nextCommand: null,
+    });
+  })()`;
+}
+
+function formatOverlayRect(rect = {}) {
+  return `(${Math.round(rect.x || 0)},${Math.round(rect.y || 0)} ${Math.round(rect.w || 0)}×${Math.round(rect.h || 0)})`;
+}
+
+function overlayElementLabel(element = {}) {
+  const selector = element.selector || '<unknown>';
+  const label = element.label || element.text || element.tag || '';
+  return `[${element.kind || 'overlay'}] ${selector}${label ? ` "${label}"` : ''}`;
+}
+
+function formatOverlayReport(model, targetId) {
+  const lines = [`Overlay detector: ${model.blocking ? 'blocking' : 'clear'}`];
+  if (model.target) {
+    const target = model.target;
+    const status = target.blocked && target.topElement
+      ? `blocked by ${overlayElementLabel(target.topElement)}`
+      : 'not blocked';
+    lines.push(`Target: ${target.input || '(point)'} at (${Math.round(target.x)},${Math.round(target.y)}) — ${status}`);
+  }
+  if (!model.overlays || model.overlays.length === 0) {
+    lines.push('No visible blocking overlays/dialogs detected.');
+  } else {
+    lines.push(`Overlays: ${model.overlays.length}`);
+    for (const [i, overlay] of model.overlays.entries()) {
+      const role = overlay.role ? ` role=${overlay.role}` : '';
+      const z = overlay.zIndex != null ? ` z=${overlay.zIndex}` : '';
+      const pointer = overlay.pointerEvents ? ` pointer=${overlay.pointerEvents}` : '';
+      const target = overlay.coversTarget ? ' covers-target' : '';
+      lines.push(`${i + 1}. [${overlay.kind || 'overlay'}] ${overlay.selector || '<unknown>'}${role}${z}${pointer} rect=${formatOverlayRect(overlay.rect)}${target}`);
+      const text = overlay.label || overlay.text;
+      if (text) lines.push(`   Text: ${text}`);
+    }
+  }
+  const next = model.blocking
+    ? (model.nextCommand || `cdp dismiss-modal ${targetId}`)
+    : 'continue; if click still fails, run `status` or `perceive --since-action` before retrying';
+  lines.push(`Next: ${next}`);
+  return lines.join('\n');
+}
+
+async function resolveOverlayTargetPoint(cdp, sid, targetArg, refMap, refState) {
+  if (!targetArg) return null;
+  if (isRef(targetArg)) {
+    const rect = await resolveRefRectNoScroll(cdp, sid, refMap, targetArg, refState);
+    return {
+      input: targetArg,
+      x: Math.round((Number(rect.x) || 0) + (Number(rect.w) || 0) / 2),
+      y: Math.round((Number(rect.y) || 0) + (Number(rect.h) || 0) / 2),
+      descriptor: `<${rect.tag || '?'}> "${rect.text || ''}"`,
+    };
+  }
+  const raw = await evalStr(cdp, sid, `(function() {
+    const el = document.querySelector(${JSON.stringify(targetArg)});
+    if (!el) return JSON.stringify({ ok: false, error: 'Element not found: ' + ${JSON.stringify(targetArg)} });
+    const rect = el.getBoundingClientRect();
+    return JSON.stringify({
+      ok: true,
+      input: ${JSON.stringify(targetArg)},
+      x: Math.round(rect.x + rect.width / 2),
+      y: Math.round(rect.y + rect.height / 2),
+      descriptor: '<' + el.tagName + '> "' + (el.textContent || '').trim().substring(0, 80) + '"'
+    });
+  })()`);
+  const parsed = JSON.parse(raw);
+  if (!parsed.ok) throw new Error(parsed.error);
+  delete parsed.ok;
+  return parsed;
+}
+
+async function overlayStr(cdp, sid, targetId, args = [], refMap = new Map(), refState = null) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const targetArg = fopts.args[0] || null;
+  const targetPoint = await resolveOverlayTargetPoint(cdp, sid, targetArg, refMap, refState);
+  const raw = await evalStr(cdp, sid, overlayDetectorScript({ targetPoint }));
+  const model = JSON.parse(raw);
+  if (model.blocking && !model.nextCommand) model.nextCommand = `cdp dismiss-modal ${targetId}`;
+  if (fopts.format === 'json') return formatJson(model);
+  return formatOverlayReport(model, targetId);
+}
+
 // ---------------------------------------------------------------------------
 // dismiss-modal: close common dialog/modal patterns without firing background
 // shortcuts. Reviewer feedback: pressing Space to close a "press any key" MOTD
@@ -5551,6 +5766,10 @@ async function runDaemon(targetId) {
           result = await framesStr(cdp, sessionId, { format: fopts.format });
           break;
         }
+        case 'overlay': case 'overlays': {
+          result = await overlayStr(cdp, sessionId, targetId, args, refMap, refState);
+          break;
+        }
         case 'report': {
           result = formatSessionReport(session);
           break;
@@ -5938,6 +6157,7 @@ Usage: cdp <command> [args]
   replay <target> --file <path>      Replay a record-actions JSON artifact against the live page
   replay <target> --json <json>      Replay an inline record-actions JSON artifact
   frame <target> [--format json]     List page frames with stable @fN refs (alias: frames)
+  overlay <target> [sel|@ref] [--format json]  Detect visible dialogs/overlays and target blockers
   net   <target>                    Network performance entries
   click   <target> <sel|@ref>       Click element by CSS selector or @ref
                                     --js / -j: use HTMLElement.click() (JS fallback)
@@ -6086,6 +6306,7 @@ const COMMANDS = Object.freeze([
   { name: 'console', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'summary', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'frame', aliases: ['frames'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'overlay', aliases: ['overlays'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'report', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'checkpoint', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'restore', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
@@ -6434,6 +6655,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseTextArgs, textPageScript, textStr,
   parseShotArgs, shotStr,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan, spawnDebugBrowserStr,
+  overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
   // Screenshot
   captureScreenshot, screencastFallback,
