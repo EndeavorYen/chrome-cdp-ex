@@ -28,6 +28,7 @@
 - [How It Works](#how-it-works)
 - [Commands (53 total)](#commands-53-total)
 - [WSL2 -> Windows Browser Control](#wsl2---windows-browser-control)
+- [Contributor Checks](#contributor-checks)
 - [Credits](#credits)
 - [License](#license)
 
@@ -530,6 +531,17 @@ Proven pattern:
    ```
 
 See [SKILL.md](skills/chrome-cdp-ex/SKILL.md) for full WSL2 setup instructions.
+
+## Contributor Checks
+
+Run these before changing command behavior or docs:
+
+```bash
+npm test
+npm run lint
+npm run check:docs
+npm run smoke:live
+```
 
 ## Credits
 

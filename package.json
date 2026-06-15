@@ -17,6 +17,7 @@
   "scripts": {
     "test": "NODE_ENV=test vitest run",
     "lint": "eslint .",
+    "check:docs": "node scripts/check-docs-contract.mjs",
     "smoke:live": "node scripts/live-smoke.mjs"
   },
   "devDependencies": {
