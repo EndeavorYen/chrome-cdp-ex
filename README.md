@@ -8,6 +8,10 @@
 > Most browser automation tools launch a clean, isolated browser.
 > `chrome-cdp-ex` connects to your real browser session: tabs, logins, cookies, and current page state.
 
+## Product direction
+
+`chrome-cdp-ex` is designed as a live-page perception and control layer for agents. Playwright is still the right tool for deterministic isolated tests; this project focuses on real browser sessions, low-token perception, layout/style awareness, CSS source tracing, and action feedback. See `docs/strategy/agent-browser-vision.md` for the product compass.
+
 ## Why this exists
 
 - **Perceive-first workflow:** one call gives structure, layout, styles, coordinates, and console health.

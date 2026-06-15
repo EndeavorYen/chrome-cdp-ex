@@ -18,6 +18,18 @@
 
 ## Backlog
 
+## Release 2.5
+
+- [ ] In-file command registry.
+- [ ] `--format text|json` parsing infrastructure.
+- [ ] `status --format json`.
+- [ ] `summary --format json`.
+- [ ] `console --format json`.
+- [ ] `perceive --format json`.
+- [ ] Initial `PerceptionModel`.
+- [ ] Explicit `SessionState`.
+- [ ] Docs contract checker.
+
 ### Feature Roadmap (medium effort)
 
 - [ ] `perceive --since-action` — diff from the last mutating action timestamp instead of the last manual `perceive`. Priority: P1.
