@@ -987,7 +987,7 @@ npm run benchmark:killer
 npm run benchmark:killer -- --json
 ```
 
-It launches a disposable debug browser against the local smoke page and measures `doctor -> list -> perceive -> act -> since-action evidence -> report`: command calls, total time, first useful observation time, estimated output tokens, useful observation tokens, auto-evidence actions, verification calls saved, and report timeline presence.
+It launches a disposable debug browser against the local smoke page and measures `doctor -> list -> perceive -> act -> since-action evidence -> report`: command calls, total time, first useful observation time, estimated output tokens, useful observation tokens, auto-evidence actions, verification calls saved, report timeline presence, and differentiator probes for modal/overlay detection, frame refs, and CSS source tracing success/time.
 
 ## Source
 

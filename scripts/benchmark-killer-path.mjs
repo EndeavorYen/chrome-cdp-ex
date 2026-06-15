@@ -43,6 +43,37 @@ function hasActionEvidence(step) {
       || /success but observation timed out/i.test(text));
 }
 
+function differentiatorProbe(steps, predicate) {
+  const matches = steps.filter(predicate);
+  const successful = matches.some(step => step.ok);
+  return {
+    success: successful,
+    durationMs: matches.reduce((sum, step) => sum + step.durationMs, 0),
+    commandCalls: matches.length,
+  };
+}
+
+function benchmarkDifferentiators(steps) {
+  const modalOverlay = differentiatorProbe(steps, (step) => {
+    const commandName = step.command?.[0] || step.name;
+    return commandName === 'overlay' && /Overlay detector:/i.test(step.outputText || '');
+  });
+  const frameRefs = differentiatorProbe(steps, (step) => {
+    const commandName = step.command?.[0] || step.name;
+    return (commandName === 'frame' || step.name === 'perceive-frame') && /@f\d+/i.test(step.outputText || '');
+  });
+  const cssTrace = differentiatorProbe(steps, (step) => {
+    const commandName = step.command?.[0] || step.name;
+    const text = step.outputText || '';
+    return commandName === 'cascade'
+      && !/No matching CSS rules/i.test(text)
+      && /(WIN|→|source|inline|sheet)/i.test(text);
+  });
+  const probes = [modalOverlay, frameRefs, cssTrace];
+  const successRate = probes.filter(probe => probe.success).length / probes.length;
+  return { modalOverlay, frameRefs, cssTrace, successRate };
+}
+
 export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, endedAt, target = '', steps = [] } = {}) {
   const normalizedSteps = steps.map((step) => {
     const text = outputText(step);
@@ -59,6 +90,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       estimatedTokens: estimateTokenCount(outputChars),
       hasUsefulObservation: hasUsefulObservation(step),
       hasActionEvidence: actionEvidence,
+      outputText: text,
     };
   });
 
@@ -89,12 +121,15 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       autoEvidenceActions: actionEvidenceSteps.length,
       verificationCallsSaved: actionEvidenceSteps.length,
       hasReportTimeline: /Session report:[\s\S]*Action timeline:/m.test(outputText(reportStep || {})),
+      differentiators: benchmarkDifferentiators(normalizedSteps),
     },
-    steps: normalizedSteps,
+    steps: normalizedSteps.map(({ outputText: _outputText, ...step }) => step),
   };
 }
 
 export function formatBenchmarkReport(summary) {
+  const differentiators = summary.metrics.differentiators || {};
+  const pct = Math.round((differentiators.successRate || 0) * 100);
   const lines = [
     `chrome-cdp-ex benchmark: ${summary.scenario}`,
     `Success: ${summary.success ? 'yes' : 'no'}${summary.failedStep ? ` (failed at ${summary.failedStep})` : ''}`,
@@ -108,6 +143,10 @@ export function formatBenchmarkReport(summary) {
     `Auto-evidence actions: ${summary.metrics.autoEvidenceActions}`,
     `Verification calls saved: ${summary.metrics.verificationCallsSaved}`,
     `Report timeline: ${summary.metrics.hasReportTimeline ? 'yes' : 'no'}`,
+    `Differentiator success rate: ${pct}%`,
+    `Modal/overlay: ${differentiators.modalOverlay?.success ? 'yes' : 'no'} (${differentiators.modalOverlay?.durationMs ?? 0} ms)`,
+    `Frame refs: ${differentiators.frameRefs?.success ? 'yes' : 'no'} (${differentiators.frameRefs?.durationMs ?? 0} ms)`,
+    `CSS trace: ${differentiators.cssTrace?.success ? 'yes' : 'no'} (${differentiators.cssTrace?.durationMs ?? 0} ms)`,
     '',
     'Steps:',
   ];
@@ -227,6 +266,9 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
     assertStep(runStep({ args: ['doctor'], env, steps }));
     assertStep(runStep({ args: ['list'], env, steps }));
     assertStep(runStep({ args: ['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20'], env, steps }));
+    assertStep(runStep({ args: ['overlay', target], env, steps }));
+    assertStep(runStep({ args: ['frame', target], env, steps }));
+    assertStep(runStep({ args: ['cascade', target, '#custom-clickable', 'cursor'], env, steps }));
     assertStep(runStep({ args: ['dismiss-modal', target], env, steps }));
     assertStep(runStep({ args: ['click', target, '#combat'], env, steps }));
     assertStep(runStep({ args: ['perceive', target, '--since-action'], env, steps }));

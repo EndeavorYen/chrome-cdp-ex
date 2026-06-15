@@ -28,10 +28,37 @@ describe('benchmark killer path helpers', () => {
         stderr: '',
       },
       {
+        name: 'overlay',
+        command: ['overlay', 'AABBCCDD'],
+        startedAt: 40,
+        endedAt: 55,
+        status: 0,
+        stdout: 'Overlay detector: blocking\nNext: cdp dismiss-modal AABBCCDD\n',
+        stderr: '',
+      },
+      {
+        name: 'frame',
+        command: ['frame', 'AABBCCDD'],
+        startedAt: 55,
+        endedAt: 75,
+        status: 0,
+        stdout: 'Frames:\n@f2 smoke-child http://example.test/child\n',
+        stderr: '',
+      },
+      {
+        name: 'cascade',
+        command: ['cascade', 'AABBCCDD', '#start', 'background-color'],
+        startedAt: 75,
+        endedAt: 100,
+        status: 0,
+        stdout: 'background-color:\n  WIN rgb(1, 2, 3) ← #start\n    → inline:12\n',
+        stderr: '',
+      },
+      {
         name: 'click',
         command: ['click', 'AABBCCDD', '#start'],
-        startedAt: 40,
-        endedAt: 70,
+        startedAt: 100,
+        endedAt: 130,
         status: 0,
         stdout: 'Clicked #start\n---\nclick: dispatched\nEffects:\n+++ Added\n[StaticText] Started\n',
         stderr: '',
@@ -39,8 +66,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'report',
         command: ['report', 'AABBCCDD'],
-        startedAt: 70,
-        endedAt: 100,
+        startedAt: 130,
+        endedAt: 160,
         status: 0,
         stdout: 'Session report: AABBCCDD\nActions: 1\n\nAction timeline:\n- click #start\n',
         stderr: '',
@@ -50,7 +77,7 @@ describe('benchmark killer path helpers', () => {
     const summary = summarizeBenchmarkRun({
       scenario: 'killer-path',
       startedAt: 0,
-      endedAt: 100,
+      endedAt: 160,
       target: 'AABBCCDD',
       steps,
     });
@@ -61,19 +88,25 @@ describe('benchmark killer path helpers', () => {
     expect(summary.scenario).toBe('killer-path');
     expect(summary.success).toBe(true);
     expect(summary.target).toBe('AABBCCDD');
-    expect(summary.metrics.totalMs).toBe(100);
-    expect(summary.metrics.commandCalls).toBe(4);
+    expect(summary.metrics.totalMs).toBe(160);
+    expect(summary.metrics.commandCalls).toBe(7);
     expect(summary.metrics.outputChars).toBe(outputChars);
     expect(summary.metrics.estimatedOutputTokens).toBe(estimateTokenCount(outputChars));
     expect(summary.metrics.firstUsefulObservationMs).toBe(40);
     expect(summary.metrics.autoEvidenceActions).toBe(1);
     expect(summary.metrics.verificationCallsSaved).toBe(1);
     expect(summary.metrics.hasReportTimeline).toBe(true);
-    expect(summary.steps[2]).toMatchObject({
+    expect(summary.metrics.differentiators).toMatchObject({
+      modalOverlay: { success: true, durationMs: 15, commandCalls: 1 },
+      frameRefs: { success: true, durationMs: 20, commandCalls: 1 },
+      cssTrace: { success: true, durationMs: 25, commandCalls: 1 },
+      successRate: 1,
+    });
+    expect(summary.steps[5]).toMatchObject({
       name: 'click',
       ok: true,
       durationMs: 30,
-      estimatedTokens: estimateTokenCount(steps[2].stdout.length),
+      estimatedTokens: estimateTokenCount(steps[5].stdout.length),
       hasActionEvidence: true,
     });
   });
@@ -104,6 +137,9 @@ describe('benchmark killer path helpers', () => {
       steps: [
         { name: 'doctor', command: ['doctor'], startedAt: 0, endedAt: 10, status: 0, stdout: 'Wizard:', stderr: '' },
         { name: 'perceive', command: ['perceive', 'AABB'], startedAt: 10, endedAt: 30, status: 0, stdout: 'Page:\n@1 Button', stderr: '' },
+        { name: 'overlay', command: ['overlay', 'AABB'], startedAt: 30, endedAt: 40, status: 0, stdout: 'Overlay detector: clear', stderr: '' },
+        { name: 'frame', command: ['frame', 'AABB'], startedAt: 40, endedAt: 50, status: 0, stdout: 'Frames:\n@f2 smoke-child', stderr: '' },
+        { name: 'cascade', command: ['cascade', 'AABB', '#go', 'color'], startedAt: 50, endedAt: 60, status: 0, stdout: 'color:\n  WIN red ← #go\n    → inline:1', stderr: '' },
         { name: 'click', command: ['click', 'AABB', '#go'], startedAt: 30, endedAt: 60, status: 0, stdout: 'Clicked\nclick: dispatched', stderr: '' },
         { name: 'report', command: ['report', 'AABB'], startedAt: 60, endedAt: 100, status: 0, stdout: 'Session report: AABB\nActions: 1\n\nAction timeline:', stderr: '' },
       ],
@@ -113,8 +149,12 @@ describe('benchmark killer path helpers', () => {
 
     expect(out).toContain('chrome-cdp-ex benchmark: killer-path');
     expect(out).toContain('Success: yes');
-    expect(out).toContain('Command calls: 4');
+    expect(out).toContain('Command calls: 7');
     expect(out).toContain('Estimated output tokens:');
+    expect(out).toContain('Differentiator success rate: 100%');
+    expect(out).toContain('CSS trace: yes');
+    expect(out).toContain('Frame refs: yes');
+    expect(out).toContain('Modal/overlay: yes');
     expect(out).toContain('Verification calls saved: 1');
     expect(out).toContain('doctor');
     expect(out).toContain('report');
