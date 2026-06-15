@@ -4476,13 +4476,69 @@ DAEMON IPC (for advanced use / scripting)
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
-const NEEDS_TARGET = new Set([
-  'snap','snapshot','eval','eval64','call','wait','keepalive','shot','screenshot','html','nav','navigate',
-  'net','network','click','clickxy','jsclick','type','press','scroll','hover','waitfor','loadall','fill','select','fullshot','scanshot','styles','cookies','cookieset','cookiedel','evalraw','status','console','summary','perceive','elshot','batch','dialog','viewport','upload',
-  'text','table','back','forward','reload','closetab','netlog',
-  'inject','cascade','record','flow','repeat',
-  'dismiss-modal','dismissmodal',
+const COMMANDS = Object.freeze([
+  { name: 'list', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text'] },
+  { name: 'open', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text'] },
+  { name: 'doctor', aliases: ['ready'], needsTarget: false, mutates: false, outputFormats: ['text'] },
+  { name: 'spawn-debug-browser', aliases: ['spawn'], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'stop', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'perceive', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'snap', aliases: ['snapshot'], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'eval', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'eval64', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'call', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'wait', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'keepalive', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'shot', aliases: ['screenshot'], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'html', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'nav', aliases: ['navigate'], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
+  { name: 'net', aliases: ['network'], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'status', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'console', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'summary', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'elshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'click', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'jsclick', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'clickxy', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'type', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'press', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'scroll', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'hover', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'waitfor', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'loadall', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'fill', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'select', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'fullshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'scanshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'styles', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'cookies', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'cookieset', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'cookiedel', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'evalraw', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'batch', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'dialog', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'viewport', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'upload', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
+  { name: 'text', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'table', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'back', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
+  { name: 'forward', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
+  { name: 'reload', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
+  { name: 'closetab', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'netlog', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'inject', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
+  { name: 'cascade', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'record', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'flow', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'repeat', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'dismiss-modal', aliases: ['dismissmodal'], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
 ]);
+
+const NEEDS_TARGET = new Set(
+  COMMANDS
+    .filter(command => command.needsTarget)
+    .flatMap(command => [command.name, ...command.aliases])
+);
 
 function parseTargetAndCommandArgs(cmd, args) {
   let targetPrefix = args[0];
@@ -4759,4 +4815,5 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   formatBatchResults, parseFlowSteps, settleFlow, flowStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability,
   formatDoctorReport, runDoctorChecks, doctorStr,
+  COMMANDS, NEEDS_TARGET,
 } : undefined;

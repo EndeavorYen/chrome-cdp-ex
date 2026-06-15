@@ -164,6 +164,39 @@ describe('getDisplayPrefixLength', () => {
 });
 
 // =========================================================================
+// COMMANDS registry
+// =========================================================================
+
+describe('COMMANDS registry', () => {
+  it('exports command metadata with unique names', () => {
+    const names = T.COMMANDS.map(c => c.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('generates target command requirements from registry metadata', () => {
+    const fromRegistry = new Set(
+      T.COMMANDS
+        .filter(c => c.needsTarget)
+        .flatMap(c => [c.name, ...(c.aliases || [])])
+    );
+    expect(fromRegistry).toEqual(T.NEEDS_TARGET);
+  });
+
+  it('marks mutating commands with a feedback policy or explicit none policy', () => {
+    const mutating = T.COMMANDS.filter(c => c.mutates);
+    expect(mutating.map(c => c.name).sort()).toEqual([
+      'back', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
+      'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav',
+      'open', 'press', 'reload', 'scroll', 'select', 'spawn-debug-browser',
+      'stop', 'type', 'upload', 'viewport',
+    ].sort());
+    for (const command of mutating) {
+      expect(command.feedbackPolicy).toMatch(/^(none|settle-diff|full-perceive|state-change|report-only)$/);
+    }
+  });
+});
+
+// =========================================================================
 // shouldShowAxNode
 // =========================================================================
 
