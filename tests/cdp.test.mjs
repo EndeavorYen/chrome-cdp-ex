@@ -422,6 +422,73 @@ describe('ActionResult', () => {
     expect(captured.action).toBe('click');
     expect(captured.effects.domDiff).toBe('button disabled');
   });
+
+  it('classifies action failures into recoverable next steps', () => {
+    const overlay = T.classifyActionFailure(
+      new Error('Element is not clickable at point (20, 30). Other element would receive the click'),
+      { action: 'click', target: { targetId: 'abc123', input: '@4', label: 'Submit' } }
+    );
+    expect(overlay.kind).toBe('overlay');
+    expect(overlay.nextCommand).toBe('cdp dismiss-modal abc123');
+    expect(overlay.hints.join('\n')).toContain('cdp jsclick abc123 @4');
+
+    const wrongFrame = T.classifyActionFailure(
+      new Error('No frame for given id found'),
+      { action: 'click', target: { targetId: 'abc123', input: '#pay' } }
+    );
+    expect(wrongFrame.kind).toBe('wrong-frame');
+    expect(wrongFrame.nextCommand).toBe('cdp perceive abc123 -C -d 8');
+
+    const navigation = T.classifyActionFailure(
+      new Error('Cannot find context with specified id'),
+      { action: 'fill', target: { targetId: 'abc123', input: '#email' } }
+    );
+    expect(navigation.kind).toBe('navigation');
+    expect(navigation.nextCommand).toBe('cdp perceive abc123 -C -d 8');
+
+    const domRewrite = T.classifyActionFailure(
+      new Error('No node with given id'),
+      { action: 'click', target: { targetId: 'abc123', input: '@9' } }
+    );
+    expect(domRewrite.kind).toBe('dom-rewrite');
+    expect(domRewrite.nextCommand).toBe('cdp perceive abc123 -C -d 8');
+
+    const timeout = T.classifyActionFailure(
+      new Error('Timeout: Runtime.callFunctionOn'),
+      { action: 'reload', target: { targetId: 'abc123', input: 'reload' } }
+    );
+    expect(timeout.kind).toBe('timeout');
+    expect(timeout.nextCommand).toBe('cdp status abc123');
+  });
+
+  it('formats action failures without losing the original browser error', () => {
+    const text = T.formatActionFailure(
+      new Error('Element not found: #save'),
+      { action: 'click', target: { targetId: 'abc123', input: '#save' } }
+    );
+    expect(text).toContain('Action failure: selector');
+    expect(text).toContain('Next: cdp perceive abc123 -C -d 8');
+    expect(text).toContain('Original: Element not found: #save');
+  });
+
+  it('records failed dispatches as action evidence before returning a classified error', async () => {
+    let captured = null;
+    await expect(T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'abc123', input: '@4', resolvedBy: 'ref', label: 'Submit' },
+      dispatch: async () => {
+        throw new Error('Element is not clickable at point (20, 30). Other element would receive the click');
+      },
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'not reached',
+      onActionResult: (result) => { captured = result; },
+    })).rejects.toThrow(/Action failure: overlay/);
+
+    expect(captured.action).toBe('click');
+    expect(captured.dispatch.ok).toBe(false);
+    expect(captured.effects.failure.kind).toBe('overlay');
+    expect(captured.nextHint).toBe('cdp dismiss-modal abc123');
+  });
 });
 
 // =========================================================================
@@ -478,6 +545,29 @@ describe('Session report', () => {
     expect(out).toContain('1. click #combat — ok in 123ms');
     expect(out).toContain('Effect: +++ Added (1):');
     expect(out).toContain('戰鬥勝利');
+  });
+
+  it('records classified action failures in the session report', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    const failure = T.classifyActionFailure(
+      new Error('No node with given id'),
+      { action: 'click', target: { targetId: 'ABC123', input: '@9' } }
+    );
+
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '@9', resolvedBy: 'ref', label: '@9' },
+      dispatch: { ok: false, method: 'click', error: failure.originalMessage },
+      settle: { ok: false, durationMs: 12 },
+      effects: { domDiff: null, console: [], network: [], navigation: null, failure },
+      nextHint: failure.nextCommand,
+    }), { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(out).toContain('1. click @9 — failed in 12ms');
+    expect(out).toContain('Failure: dom-rewrite');
+    expect(out).toContain('Next: cdp perceive ABC123 -C -d 8');
   });
 
   it('writes compact action events to the per-target session log', () => {

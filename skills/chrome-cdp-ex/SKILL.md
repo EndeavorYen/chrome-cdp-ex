@@ -364,6 +364,8 @@ Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daem
 
 These commands **automatically wait for DOM to settle and return compact `ActionResult` evidence plus perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards. If you need to ask again what the last action changed, run `perceive --since-action`.
 
+If dispatch fails, read the classified `Action failure:` block instead of retrying blindly. Failures are grouped as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, or `selector`, and each one includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp perceive <target> -C -d 8`, or `cdp status <target>`. The failed action is also recorded in `report <target>` so long sessions keep the diagnosis.
+
 | Command | Auto-returns |
 |---------|-------------|
 | `click`, `jsclick`, `clickxy`, `fill`, `type`, `press`, `select`, `scroll`, `inject`, `dismiss-modal` | action evidence + perceive diff |
