@@ -855,6 +855,211 @@ async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
   return lines.join('\n');
 }
 
+function parseDiffShotArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const opts = { format: fopts.format, thresholdRatio: 0, reset: false, keepBaseline: false };
+  for (let i = 0; i < fopts.args.length; i++) {
+    const token = fopts.args[i];
+    if (token === '--reset') opts.reset = true;
+    else if (token === '--keep-baseline') opts.keepBaseline = true;
+    else if (token === '--threshold') {
+      const raw = fopts.args[++i];
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) throw new Error('diff-shot --threshold requires a non-negative percent value');
+      opts.thresholdRatio = n / 100;
+    } else {
+      throw new Error(`diff-shot: unknown option ${token}`);
+    }
+  }
+  return opts;
+}
+
+function formatPercentRatio(value) {
+  const n = Number(value);
+  return `${((Number.isFinite(n) ? n : 0) * 100).toFixed(2)}%`;
+}
+
+function diffShotCompareScript(baselinePngBase64, currentPngBase64) {
+  return `
+(async () => {
+  const decode = (b64) => {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  };
+  const load = async (b64) => {
+    const blob = new Blob([decode(b64)], { type: 'image/png' });
+    if (typeof createImageBitmap === 'function') return await createImageBitmap(blob);
+    return await new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = (err) => { URL.revokeObjectURL(url); reject(err); };
+      img.src = url;
+    });
+  };
+  const [baseline, current] = await Promise.all([
+    load(${JSON.stringify(baselinePngBase64)}),
+    load(${JSON.stringify(currentPngBase64)}),
+  ]);
+  const width = Math.min(baseline.width, current.width);
+  const height = Math.min(baseline.height, current.height);
+  if (!width || !height) throw new Error('diff-shot: screenshot has empty dimensions');
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(baseline, 0, 0, width, height);
+  const baselineData = ctx.getImageData(0, 0, width, height);
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(current, 0, 0, width, height);
+  const currentData = ctx.getImageData(0, 0, width, height);
+  const diffData = ctx.createImageData(width, height);
+  let changedPixels = 0;
+  for (let i = 0; i < baselineData.data.length; i += 4) {
+    const dr = Math.abs(baselineData.data[i] - currentData.data[i]);
+    const dg = Math.abs(baselineData.data[i + 1] - currentData.data[i + 1]);
+    const db = Math.abs(baselineData.data[i + 2] - currentData.data[i + 2]);
+    const da = Math.abs(baselineData.data[i + 3] - currentData.data[i + 3]);
+    const changed = dr + dg + db + da > 0;
+    if (changed) changedPixels++;
+    if (changed) {
+      diffData.data[i] = 255;
+      diffData.data[i + 1] = 0;
+      diffData.data[i + 2] = 180;
+      diffData.data[i + 3] = 255;
+    } else {
+      const gray = Math.round((currentData.data[i] + currentData.data[i + 1] + currentData.data[i + 2]) / 3 * 0.35);
+      diffData.data[i] = gray;
+      diffData.data[i + 1] = gray;
+      diffData.data[i + 2] = gray;
+      diffData.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(diffData, 0, 0);
+  const diffPngBase64 = canvas.toDataURL('image/png').split(',')[1] || '';
+  const totalPixels = width * height;
+  return JSON.stringify({
+    width,
+    height,
+    baselineWidth: baseline.width,
+    baselineHeight: baseline.height,
+    currentWidth: current.width,
+    currentHeight: current.height,
+    changedPixels,
+    totalPixels,
+    changedRatio: totalPixels ? changedPixels / totalPixels : 0,
+    diffPngBase64,
+  });
+})()
+`;
+}
+
+function formatDiffShotResult(model = {}) {
+  const lines = [];
+  if (model.baselineCaptured) {
+    lines.push(`Diff-shot baseline captured: ${model.baselinePath}`);
+    if (model.fallback) lines.push('(screenshot fallback - Page.captureScreenshot timed out)');
+    lines.push(`Next: cdp diff-shot ${model.targetId}`);
+    lines.push('Pixel diff only: use perceive/cascade/report to explain semantic cause.');
+    return lines.join('\n');
+  }
+
+  lines.push(`Diff-shot: changed ${model.changedPixels || 0}/${model.totalPixels || 0} px (${formatPercentRatio(model.changedRatio)})`);
+  if (Number(model.thresholdRatio || 0) > 0) {
+    lines.push(`Threshold: ${formatPercentRatio(model.thresholdRatio)} (${model.exceedsThreshold ? 'exceeded' : 'within threshold'})`);
+  }
+  lines.push(`Baseline: ${model.baselinePath}`);
+  lines.push(`Current: ${model.currentPath}`);
+  lines.push(`Diff image: ${model.diffPath}`);
+  if (model.width && model.height) lines.push(`Compared: ${model.width}x${model.height} screenshot pixels`);
+  if (model.fallback) lines.push('(screenshot fallback - Page.captureScreenshot timed out)');
+  lines.push(model.advancedBaseline ? 'Baseline advanced to current capture.' : 'Baseline kept; pass without --keep-baseline to advance.');
+  lines.push('Pixel diff only: use perceive/cascade/report to explain semantic cause.');
+  return lines.join('\n');
+}
+
+function nextDiffShotArtifactPaths(session) {
+  if (!session.diffShot) session.diffShot = {};
+  const seq = Number(session.diffShot.seq || 0) + 1;
+  session.diffShot.seq = seq;
+  const dir = ensureSessionScreenshotDir(session) || session.screenshotDir || sessionScreenshotDir(session.targetId);
+  const padded = String(seq).padStart(3, '0');
+  return {
+    baselinePath: resolve(dir, `diff-shot-baseline-${padded}.png`),
+    currentPath: resolve(dir, `diff-shot-current-${padded}.png`),
+    diffPath: resolve(dir, `diff-shot-diff-${padded}.png`),
+  };
+}
+
+async function diffShotStr(cdp, sid, session, opts = {}) {
+  const shot = await captureScreenshot(cdp, sid, { format: 'png' });
+  const targetId = session.targetId;
+  const reset = opts.reset || !session.diffShot?.baselineData;
+  const paths = nextDiffShotArtifactPaths(session);
+  if (reset) {
+    writeFileSync(paths.baselinePath, Buffer.from(shot.data, 'base64'));
+    session.diffShot = {
+      ...(session.diffShot || {}),
+      baselineData: shot.data,
+      baselinePath: paths.baselinePath,
+    };
+    appendSessionScreenshot(session, { kind: 'diff-shot-baseline', path: paths.baselinePath, note: opts.reset ? 'reset baseline' : 'baseline' });
+    const model = {
+      schema: 'chrome-cdp-ex.diff-shot.v1',
+      targetId,
+      baselineCaptured: true,
+      baselinePath: paths.baselinePath,
+      currentPath: paths.baselinePath,
+      diffPath: null,
+      changedPixels: 0,
+      totalPixels: 0,
+      changedRatio: 0,
+      thresholdRatio: opts.thresholdRatio || 0,
+      exceedsThreshold: false,
+      advancedBaseline: true,
+      fallback: shot.fallback === true,
+    };
+    return opts.format === 'json' ? formatJson(model) : formatDiffShotResult(model);
+  }
+
+  writeFileSync(paths.currentPath, Buffer.from(shot.data, 'base64'));
+  const compareRaw = await evalStr(cdp, sid, diffShotCompareScript(session.diffShot.baselineData, shot.data));
+  const compare = JSON.parse(compareRaw);
+  writeFileSync(paths.diffPath, Buffer.from(compare.diffPngBase64, 'base64'));
+  appendSessionScreenshot(session, { kind: 'diff-shot-current', path: paths.currentPath, note: 'current capture' });
+  appendSessionScreenshot(session, { kind: 'diff-shot-diff', path: paths.diffPath, note: 'pixel diff' });
+  const priorBaselinePath = session.diffShot.baselinePath;
+  const advancedBaseline = !opts.keepBaseline;
+  if (advancedBaseline) {
+    session.diffShot.baselineData = shot.data;
+    session.diffShot.baselinePath = paths.currentPath;
+  }
+  const model = {
+    schema: 'chrome-cdp-ex.diff-shot.v1',
+    targetId,
+    baselineCaptured: false,
+    baselinePath: priorBaselinePath,
+    currentPath: paths.currentPath,
+    diffPath: paths.diffPath,
+    width: compare.width,
+    height: compare.height,
+    baselineWidth: compare.baselineWidth,
+    baselineHeight: compare.baselineHeight,
+    currentWidth: compare.currentWidth,
+    currentHeight: compare.currentHeight,
+    changedPixels: compare.changedPixels,
+    totalPixels: compare.totalPixels,
+    changedRatio: compare.changedRatio,
+    thresholdRatio: opts.thresholdRatio || 0,
+    exceedsThreshold: compare.changedRatio > Number(opts.thresholdRatio || 0),
+    advancedBaseline,
+    fallback: shot.fallback === true,
+  };
+  return opts.format === 'json' ? formatJson(model) : formatDiffShotResult(model);
+}
+
 async function htmlStr(cdp, sid, selector) {
   const expr = selector
     ? `document.querySelector(${JSON.stringify(selector)})?.outerHTML || 'Element not found'`
@@ -2006,6 +2211,7 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
     pendingRequests: new Map(),
     actionLog: [],
     screenshots: [],
+    diffShot: null,
     records: [],
     frames: [],
     injections: [],
@@ -6433,6 +6639,10 @@ async function runDaemon(targetId) {
           }
           break;
         }
+        case 'diff-shot': case 'diffshot': {
+          result = await diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args));
+          break;
+        }
         case 'html': result = await htmlStr(cdp, sessionId, args[0]); break;
         case 'nav': case 'navigate': {
           result = await actionFeedback(
@@ -6874,6 +7084,7 @@ Usage: cdp <command> [args]
   call  <target> <expr|fn>          Await expression/function result and print JSON when possible
   elshot <target> <sel|@ref>        Element screenshot: captures element by CSS selector or @ref
   shot  <target> [file|--annotate]  Viewport screenshot; --annotate (-a) overlays @ref labels
+  diff-shot <target> [--reset] [--threshold pct]  Compare current screenshot against last diff-shot baseline
   html  <target> [selector]         Get HTML (full page or CSS selector)
   nav   <target> <url>              Navigate to URL and wait for load completion
   status <target> [--runtime]        Page state + new console/exception entries (primary debug entry point)
@@ -7013,7 +7224,7 @@ DAEMON IPC (for advanced use / scripting)
     Request:  {"id":<number>, "cmd":"<command>", "args":["arg1","arg2",...]}
     Response: {"id":<number>, "ok":true,  "result":"<string>"}
            or {"id":<number>, "ok":false, "error":"<message>"}
-  Commands mirror the CLI: perceive, status, summary, console, frame, snap, eval, eval64, call, wait, keepalive, shot,
+  Commands mirror the CLI: perceive, status, summary, console, frame, snap, eval, eval64, call, wait, keepalive, shot, diff-shot,
   elshot, fullshot, scanshot, html, nav, net, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
@@ -7035,6 +7246,7 @@ const COMMANDS = Object.freeze([
   { name: 'wait', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'keepalive', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'shot', aliases: ['screenshot'], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'diff-shot', aliases: ['diffshot'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'html', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'nav', aliases: ['navigate'], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
   { name: 'net', aliases: ['network'], needsTarget: true, mutates: false, outputFormats: ['text'] },
@@ -7449,6 +7661,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   ensureSessionScreenshotDir, nextSessionScreenshotPath,
   buildRecordActionsModel, formatRecordActions,
   playwrightStepFromCommand, formatPlaywrightSpecFromRecordActions, formatExportPlaywright,
+  parseDiffShotArgs, diffShotCompareScript, formatDiffShotResult, diffShotStr,
   checkpointPageScript, sanitizeCheckpointCookies, checkpointModel, checkpointStr,
   parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs,
   checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,

@@ -265,12 +265,14 @@ Overlays red bounding boxes and `@ref` labels on every interactive element. Requ
 
 ```bash
 scripts/cdp.mjs shot     <target> [file]  # viewport screenshot
+scripts/cdp.mjs diff-shot <target> [--reset] [--threshold pct]  # viewport pixel diff against last baseline
 scripts/cdp.mjs scanshot <target>         # segmented full-page (multiple viewport-sized images)
 scripts/cdp.mjs fullshot <target> [file]  # single full-page image (may be tiny on long pages)
 ```
 
 - **`shot`** — viewport only. Use when you need the currently visible area as pixels.
 - If `[file]` is omitted, `shot` saves under the session screenshot directory and `report <target>` lists it as an attachment.
+- **`diff-shot`** — first call captures a viewport baseline; later calls save current + diff PNG artifacts and changed-pixel ratio. Use only when structured `perceive`/`cascade` evidence is not enough; it is pixel diff, not semantic diagnosis.
 - **`scanshot`** — scrolls through and captures multiple viewport-sized images with 10% overlap. Use when you need pixel-level verification of an entire page.
 - **`fullshot`** — single image of entire page. **Do NOT use for analysis** — on long pages text becomes unreadably small. Only for non-AI consumption.
 
@@ -305,6 +307,7 @@ scripts/cdp.mjs checkpoint <target> [--format json]                # capture URL
 scripts/cdp.mjs restore <target> --file <path>                     # restore a checkpoint artifact; invalidates @refs
 scripts/cdp.mjs record-actions <target> [--format json]           # export session action log as replay-oriented steps
 scripts/cdp.mjs export-playwright <target>                         # export current action log as a Playwright spec draft
+scripts/cdp.mjs diff-shot <target> [--reset] [--threshold pct]     # viewport pixel diff against last diff-shot baseline
 scripts/cdp.mjs replay <target> --file <path>                     # execute replayable steps from a record-actions artifact
 ```
 
@@ -313,7 +316,7 @@ scripts/cdp.mjs replay <target> --file <path>                     # execute repl
 > Use `overlay <target>` when a click/fill feels blocked or action failure says `overlay`; use `overlay <target> @ref` to ask whether a specific target point is covered. If blocking is reported, run the printed `dismiss-modal` command before retrying.
 > Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session, lists session screenshot attachments, and shows the per-target JSONL log path for post-mortem review.
 > Use `checkpoint --format json` before risky stateful exploration, then `restore --file checkpoint.json` to return to the captured URL, cookies, localStorage, and sessionStorage. After restore, run `perceive` before using any `@ref`; refs from the prior page state are intentionally invalid.
-> Use `record-actions --format json` when a successful exploration should become a replay/export asset, `export-playwright` when you want a reviewable Playwright spec draft from the portable subset, then `replay --file artifact.json` to run replayable steps against a live page. Incomplete commands are marked with explicit missing fields instead of guessed. Password-like fill/type targets are redacted before action artifacts are written.
+> Use `record-actions --format json` when a successful exploration should become a replay/export asset, `export-playwright` when you want a reviewable Playwright spec draft from the portable subset, `diff-shot` when a fallback visual pixel diff is needed, then `replay --file artifact.json` to run replayable steps against a live page. Incomplete commands are marked with explicit missing fields instead of guessed. Password-like fill/type targets are redacted before action artifacts are written.
 > Use `--format json` when another tool or agent needs a stable, parseable status, summary, console, or action-record payload.
 
 ### Batch commands (reduce IPC overhead)
@@ -660,7 +663,7 @@ CSS px = screenshot image px / DPR
 
 > **When to use `record` instead of `perceive --since-action` or `report`:**
 >
-> `perceive --since-action` shows WHAT the last action changed. `report` summarizes the action timeline so far. `record-actions` exports the actions as replay-oriented steps, `export-playwright` drafts a regression spec from the portable subset, and `replay` executes the replayable subset. `record` shows **WHEN things changed, in what order, and what caused what** during a focused observation window.
+> `perceive --since-action` shows WHAT the last action changed. `report` summarizes the action timeline so far. `record-actions` exports the actions as replay-oriented steps, `export-playwright` drafts a regression spec from the portable subset, `diff-shot` saves reviewable pixel-diff artifacts when visual fallback is needed, and `replay` executes the replayable subset. `record` shows **WHEN things changed, in what order, and what caused what** during a focused observation window.
 >
 > | Situation | Use `perceive --since-action` / `report` | Use `record` |
 > |-----------|------------------------------------------|--------------|

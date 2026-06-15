@@ -1,6 +1,6 @@
 # chrome-cdp-ex
 
-[![63 Commands](https://img.shields.io/badge/commands-63-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
+[![64 Commands](https://img.shields.io/badge/commands-64-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
@@ -41,7 +41,7 @@ Use Playwright instead when you need a clean, repeatable browser test from scrat
 | Action evidence after form input | `fill` or `click` returns dispatch, settle, and DOM diff so the agent can choose the next step. |
 | CSS source tracing | `cascade @ref background-color` shows the winning selector and source file/line to edit. |
 | Long-session debugging | `status`, `netlog`, screenshots, and `report` preserve evidence across a live tab session. |
-| Workflow capture and replay | `checkpoint`, `record-actions`, and `replay` turn exploration into a reusable debugging asset. |
+| Workflow capture and replay | `checkpoint`, `record-actions`, `export-playwright`, `diff-shot`, and `replay` turn exploration into reusable debugging and regression assets. |
 
 ## Why this exists
 
@@ -60,7 +60,7 @@ Use Playwright instead when you need a clean, repeatable browser test from scrat
 - [Five success cases](#five-success-cases)
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
-- [Commands (63 total)](#commands-63-total)
+- [Commands (64 total)](#commands-64-total)
 - [WSL2 -> Windows Browser Control](#wsl2---windows-browser-control)
 - [Dogfood Benchmark](#dogfood-benchmark)
 - [Contributor Checks](#contributor-checks)
@@ -94,7 +94,7 @@ The agent using `perceive` (layout + colors + spacing + coordinates) produced th
 | **Electron app support** | **Yes** - `CDP_PORT=9222` | No | No |
 | **WSL2 -> Windows** | **Yes** - built-in | No | No |
 | **Dependencies** | **0** | Playwright + Chromium binary | Varies |
-| **Commands** | **63** | N/A (programmatic API) | ~14 |
+| **Commands** | **64** | N/A (programmatic API) | ~14 |
 
 ## One command, complete page understanding
 
@@ -250,7 +250,7 @@ Output:
 1ED3DBAA  My App                                                  http://localhost:5173/#/menu
 ```
 
-All 63 commands work: `perceive`, `frame`, `overlay`, `click`, `fill`, `cascade`, `record`, `checkpoint`, `restore`, `record-actions`, `export-playwright`, `replay`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
+All 64 commands work: `perceive`, `frame`, `overlay`, `click`, `fill`, `cascade`, `record`, `checkpoint`, `restore`, `record-actions`, `export-playwright`, `diff-shot`, `replay`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
 
 </details>
 
@@ -293,7 +293,7 @@ Each tab gets its own daemon process that keeps the CDP session open.
 Chrome's "Allow debugging" dialog appears **once per tab**, not once per command.
 Daemons auto-exit after 20 minutes of inactivity and passively collect console/exception/navigation events into ring buffers.
 
-## Commands (63 total)
+## Commands (64 total)
 
 Tip: start with `perceive`, then use `click`/`fill`/`select`; use `status` or `console` when you need debugging context.
 
@@ -398,6 +398,7 @@ checkpoint <target> [--format json] # capture URL, cookies, localStorage, and se
 restore  <target> --file <path>    # restore a checkpoint artifact into the live page
 record-actions <target> [--format json] # export session action log as replay-oriented steps
 export-playwright <target>       # export current action log as a Playwright spec draft
+diff-shot <target> [--reset] [--threshold pct] # viewport pixel diff against last diff-shot baseline
 replay   <target> --file <path>    # replay a record-actions JSON artifact
 status   <target> [--runtime] [--format json]  # URL, title + new console/exception entries; --runtime adds Performance metrics
 console  <target> [--all|--errors] [--format json] # console buffer (default: unread only; preserves log/warn/error/debug levels)
@@ -423,6 +424,9 @@ shot     <target> [file] [--quiet|--verbose|--annotate]
                                    # --quiet  print ONLY the saved path
                                    # --verbose include the full coordinate-mapping tutorial
                                    # --annotate overlay @ref labels onto the screenshot
+diff-shot <target> [--reset] [--threshold pct] [--format json]
+                                   # first call captures a baseline; next calls save current + diff PNGs.
+                                   # Pixel diff only: use perceive/cascade/report to explain semantic cause.
 elshot   <target> <sel|@ref>        # element screenshot (auto scroll + clip, no DPR issues)
 scanshot <target>                   # segmented full-page (readable viewport-sized images)
 fullshot <target> [file]            # single full-page image (may be tiny on long pages)
@@ -512,6 +516,7 @@ checkpoint <target> [--format json] # save URL, cookies, localStorage, and sessi
 restore <target> --file <path>      # restore a checkpoint artifact; invalidates @refs
 record-actions <target> [--format json]  # export current action log as replay-oriented steps
 export-playwright <target>        # export current action log as a Playwright spec draft
+diff-shot <target>                # compare current viewport screenshot with last diff-shot baseline
 replay  <target> --file <path>      # execute replayable steps from a record-actions JSON artifact
 ```
 
@@ -550,7 +555,7 @@ evalraw <target> <method> [json]    # raw CDP command passthrough
 
 </details>
 
-**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. Each action snapshots console, exception, and network buffers before dispatch, then reports low-token deltas such as `Console: 1 entry (1 error)`, `Network: 1 request (1 failed)`, or `Network: 1 request (1 pending)` when the action triggers runtime errors, failed requests, or requests that have not settled yet. After any mutating command, `perceive --since-action` replays the page diff from that action's pre-dispatch baseline, so agents can ask "what changed because of the last action?" without guessing from the last manual perceive. Use `report <target>` after a multi-step flow to see the session action timeline, evidence summary, console/network diagnostics, classified failures, session screenshot attachments, and per-target JSONL log path. Use `checkpoint <target> --format json` before risky stateful exploration, then `restore <target> --file checkpoint.json` to return to the captured URL, cookies, localStorage, and sessionStorage; restore invalidates `@ref`s, so run `perceive` again before using refs. Use `record-actions <target> --format json` when the current session should become a replay/export asset, `export-playwright <target>` to draft a Playwright spec from the portable subset, then `replay <target> --file artifact.json` to run replayable steps against the live page. Commands that lack enough original input are marked with explicit missing fields instead of being silently guessed. Password-like fill/type targets are redacted before action artifacts are written. If an action fails before dispatch completes, the error is classified as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, or `selector` and includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp overlay <target> @ref`, `cdp perceive <target> -C -d 8`, or `cdp status <target>`. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` with any console/network diagnostics already captured, so agents should verify with `perceive --since-action`, `perceive --diff`, or `status` rather than retrying the action.
+**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. Each action snapshots console, exception, and network buffers before dispatch, then reports low-token deltas such as `Console: 1 entry (1 error)`, `Network: 1 request (1 failed)`, or `Network: 1 request (1 pending)` when the action triggers runtime errors, failed requests, or requests that have not settled yet. After any mutating command, `perceive --since-action` replays the page diff from that action's pre-dispatch baseline, so agents can ask "what changed because of the last action?" without guessing from the last manual perceive. Use `report <target>` after a multi-step flow to see the session action timeline, evidence summary, console/network diagnostics, classified failures, session screenshot attachments, and per-target JSONL log path. Use `checkpoint <target> --format json` before risky stateful exploration, then `restore <target> --file checkpoint.json` to return to the captured URL, cookies, localStorage, and sessionStorage; restore invalidates `@ref`s, so run `perceive` again before using refs. Use `record-actions <target> --format json` when the current session should become a replay/export asset, `export-playwright <target>` to draft a Playwright spec from the portable subset, `diff-shot <target>` when a fallback visual pixel diff is needed, then `replay <target> --file artifact.json` to run replayable steps against the live page. Commands that lack enough original input are marked with explicit missing fields instead of being silently guessed. Password-like fill/type targets are redacted before action artifacts are written. If an action fails before dispatch completes, the error is classified as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, or `selector` and includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp overlay <target> @ref`, `cdp perceive <target> -C -d 8`, or `cdp status <target>`. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` with any console/network diagnostics already captured, so agents should verify with `perceive --since-action`, `perceive --diff`, or `status` rather than retrying the action.
 
 Use `wait` instead of shell `sleep` when policy blocks long sleeps:
 

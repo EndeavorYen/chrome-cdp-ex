@@ -148,9 +148,23 @@ const frameClickOut = step('frame-scoped click evidence', () => run(['click', ta
 assertIncludes(frameClickOut, 'Clicked', 'click @f2:1');
 assertIncludes(frameClickOut, 'click: dispatched', 'frame click action evidence');
 assertIncludes(frameClickOut, 'child:clicked', 'frame click since-action evidence');
+const diffBaselineOut = step('diff-shot baseline', () => run(['diff-shot', target]));
+assertIncludes(diffBaselineOut, 'Diff-shot baseline captured', 'diff-shot baseline');
+assertIncludes(diffBaselineOut, 'Next: cdp diff-shot', 'diff-shot next step');
 const fillOut = step('fill action evidence', () => run(['fill', target, '#cmd', 'look trainer']));
 assertIncludes(fillOut, 'Filled', 'fill');
 assertIncludes(fillOut, 'fill: dispatched', 'fill action evidence');
+const diffShotOut = step('diff-shot fill diff', () => run(['diff-shot', target]));
+assertIncludes(diffShotOut, 'Diff-shot: changed', 'diff-shot diff');
+assertIncludes(diffShotOut, 'Diff image:', 'diff-shot artifact');
+const diffShotPath = diffShotOut.split('\n').find(line => line.startsWith('Diff image: '))?.slice('Diff image: '.length).trim();
+if (!diffShotPath || !existsSync(diffShotPath)) {
+  throw new Error(`diff-shot should save a diff PNG artifact\nOutput:\n${diffShotOut}`);
+}
+const changedMatch = diffShotOut.match(/changed\s+(\d+)\/(\d+)\s+px/);
+if (!changedMatch || Number(changedMatch[1]) <= 0 || Number(changedMatch[2]) <= 0) {
+  throw new Error(`diff-shot should report changed pixels after fill\nOutput:\n${diffShotOut}`);
+}
 const pressOut = step('press c', () => run(['press', target, 'c']));
 assertIncludes(pressOut, 'Pressed c', 'press c');
 assertIncludes(pressOut, 'press: dispatched', 'press action evidence');

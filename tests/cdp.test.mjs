@@ -228,6 +228,16 @@ describe('COMMANDS registry', () => {
     }));
   });
 
+  it('registers diff-shot as a target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'diff-shot',
+      aliases: ['diffshot'],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
   it('registers checkpoint and restore commands', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'checkpoint',
@@ -264,6 +274,73 @@ describe('COMMANDS registry', () => {
       mutates: false,
       outputFormats: ['text', 'json'],
     }));
+  });
+});
+
+describe('diff-shot', () => {
+  it('parses threshold, reset, and baseline options', () => {
+    expect(T.parseDiffShotArgs(['--threshold', '0.5', '--keep-baseline'])).toEqual({
+      format: 'text',
+      thresholdRatio: 0.005,
+      reset: false,
+      keepBaseline: true,
+    });
+    expect(T.parseDiffShotArgs(['--format', 'json', '--reset'])).toEqual({
+      format: 'json',
+      thresholdRatio: 0,
+      reset: true,
+      keepBaseline: false,
+    });
+  });
+
+  it('formats a first baseline capture with an executable next step', () => {
+    const out = T.formatDiffShotResult({
+      schema: 'chrome-cdp-ex.diff-shot.v1',
+      targetId: 'ABC123',
+      baselineCaptured: true,
+      baselinePath: '/tmp/base.png',
+      currentPath: '/tmp/base.png',
+      diffPath: null,
+      changedPixels: 0,
+      totalPixels: 0,
+      changedRatio: 0,
+      thresholdRatio: 0,
+      exceedsThreshold: false,
+      advancedBaseline: true,
+      fallback: false,
+    });
+
+    expect(out).toContain('Diff-shot baseline captured');
+    expect(out).toContain('/tmp/base.png');
+    expect(out).toContain('Next: cdp diff-shot ABC123');
+  });
+
+  it('formats a pixel diff with reviewable artifacts and honest scope', () => {
+    const out = T.formatDiffShotResult({
+      schema: 'chrome-cdp-ex.diff-shot.v1',
+      targetId: 'ABC123',
+      baselineCaptured: false,
+      baselinePath: '/tmp/base.png',
+      currentPath: '/tmp/current.png',
+      diffPath: '/tmp/diff.png',
+      width: 10,
+      height: 10,
+      changedPixels: 7,
+      totalPixels: 100,
+      changedRatio: 0.07,
+      thresholdRatio: 0.01,
+      exceedsThreshold: true,
+      advancedBaseline: true,
+      fallback: true,
+    });
+
+    expect(out).toContain('Diff-shot: changed 7/100 px (7.00%)');
+    expect(out).toContain('Threshold: 1.00% (exceeded)');
+    expect(out).toContain('Baseline: /tmp/base.png');
+    expect(out).toContain('Current: /tmp/current.png');
+    expect(out).toContain('Diff image: /tmp/diff.png');
+    expect(out).toContain('Pixel diff only');
+    expect(out).toContain('screenshot fallback');
   });
 });
 
