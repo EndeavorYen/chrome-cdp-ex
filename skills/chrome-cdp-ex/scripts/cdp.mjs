@@ -5231,7 +5231,7 @@ function checkFdLimit({ limit = detectFdLimit() } = {}) {
   };
 }
 
-async function checkCdpReachability({ env = process.env, fetcher = fetch, host = process.env.CDP_HOST || '127.0.0.1' } = {}) {
+async function checkCdpReachability({ env = process.env, fetcher = fetch, host = env.CDP_HOST || process.env.CDP_HOST || '127.0.0.1' } = {}) {
   const port = env.CDP_PORT;
   const tryFetch = async (p) => {
     const res = await fetcher(`http://${host}:${p}/json/version`, { signal: AbortSignal.timeout(3000) });
@@ -5251,21 +5251,25 @@ async function checkCdpReachability({ env = process.env, fetcher = fetch, host =
         return {
           status: 'WARN', label: 'CDP', detail: `port ${port}: no webSocketDebuggerUrl`,
           hint: 'Browser exposes /json/version but not the debugger WebSocket — toggle remote debugging again',
+          host,
+          port: String(port),
         };
       }
-      return { status: 'OK', label: 'CDP', detail: `${host}:${port} → ${describe(info)}` };
+      return { status: 'OK', label: 'CDP', detail: `${host}:${port} → ${describe(info)}`, host, port: String(port) };
     } catch (e) {
       return {
         status: 'FAIL', label: 'CDP', detail: `cannot reach ${host}:${port} (${e.message})`,
         hint: `start the app with --remote-debugging-port=${port}, or unset CDP_PORT to auto-discover Chrome`,
+        host,
+        port: String(port),
       };
     }
   }
   // Auto-discover via DevToolsActivePort (light reuse — avoids full ws connect)
   const home = homedir();
-  const localAppData = process.env.LOCALAPPDATA || '';
+  const localAppData = env.LOCALAPPDATA || process.env.LOCALAPPDATA || '';
   const tryPaths = [
-    process.env.CDP_PORT_FILE,
+    env.CDP_PORT_FILE,
     resolve(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
     resolve(home, 'Library/Application Support/Google/Chrome/Default/DevToolsActivePort'),
     resolve(home, '.config/google-chrome/DevToolsActivePort'),
@@ -5283,20 +5287,100 @@ async function checkCdpReachability({ env = process.env, fetcher = fetch, host =
   try {
     lines = readFileSync(found, 'utf8').trim().split('\n');
   } catch (e) {
-    return { status: 'WARN', label: 'CDP', detail: `cannot read ${found}: ${e.message}` };
+    return { status: 'WARN', label: 'CDP', detail: `cannot read ${found}: ${e.message}`, host };
   }
   if (lines.length < 2 || !lines[0]) {
-    return { status: 'WARN', label: 'CDP', detail: `invalid DevToolsActivePort at ${found}` };
+    return { status: 'WARN', label: 'CDP', detail: `invalid DevToolsActivePort at ${found}`, host };
   }
   const discoveredPort = lines[0];
   try {
     const info = await tryFetch(discoveredPort);
-    return { status: 'OK', label: 'CDP', detail: `${host}:${discoveredPort} → ${describe(info)} (auto-discovered)` };
+    return { status: 'OK', label: 'CDP', detail: `${host}:${discoveredPort} → ${describe(info)} (auto-discovered)`, host, port: String(discoveredPort) };
   } catch (e) {
     return {
       status: 'WARN', label: 'CDP',
       detail: `DevToolsActivePort points to ${discoveredPort} but /json/version unreachable: ${e.message}`,
       hint: 'Browser may have stopped — re-toggle chrome://inspect/#remote-debugging',
+      host,
+      port: String(discoveredPort),
+    };
+  }
+}
+
+function normalizeBrowserTargetInfo(target) {
+  return {
+    targetId: target.targetId || target.id || '',
+    type: target.type || '',
+    title: target.title || '',
+    url: target.url || '',
+  };
+}
+
+function isDebuggablePageTarget(target) {
+  return target.type === 'page'
+    && target.targetId
+    && !target.url.startsWith('chrome://')
+    && !target.url.startsWith('edge://')
+    && !target.url.startsWith('devtools://');
+}
+
+async function checkBrowserTargets({ cdp = null, env = process.env, fetcher = fetch, host = env.CDP_HOST || process.env.CDP_HOST || '127.0.0.1' } = {}) {
+  if (cdp?.status !== 'OK') {
+    return {
+      status: 'WARN',
+      label: 'Tabs',
+      detail: 'skipped until CDP is reachable',
+      hint: 'Fix CDP first, then rerun: cdp doctor',
+      targetPrefixes: [],
+    };
+  }
+  const port = cdp.port || env.CDP_PORT;
+  const cdpHost = cdp.host || host;
+  if (!port) {
+    return {
+      status: 'WARN',
+      label: 'Tabs',
+      detail: 'cannot list tabs without a CDP port',
+      hint: 'Rerun: cdp doctor, then use the printed CDP/open path.',
+      targetPrefixes: [],
+    };
+  }
+
+  try {
+    const res = await fetcher(`http://${cdpHost}:${port}/json/list`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const raw = await res.json();
+    const targets = Array.isArray(raw) ? raw.map(normalizeBrowserTargetInfo).filter(isDebuggablePageTarget) : [];
+    if (targets.length === 0) {
+      return {
+        status: 'WARN',
+        label: 'Tabs',
+        detail: 'no debuggable page targets',
+        hint: 'Create one with: cdp open https://example.com',
+        targetPrefixes: [],
+        noTargets: true,
+      };
+    }
+    const prefixLen = getDisplayPrefixLength(targets.map(target => target.targetId));
+    const targetPrefixes = targets.map(target => target.targetId.slice(0, prefixLen));
+    const labels = targets.slice(0, 3).map((target, index) => {
+      const title = target.title || (target.url === 'about:blank' ? '(blank tab)' : target.url || '(untitled)');
+      return `${targetPrefixes[index]} ${title}`.trim();
+    });
+    const suffix = targets.length > labels.length ? `, +${targets.length - labels.length} more` : '';
+    return {
+      status: 'OK',
+      label: 'Tabs',
+      detail: `${targets.length} debuggable page target${targets.length === 1 ? '' : 's'}: ${labels.join(', ')}${suffix}`,
+      targetPrefixes,
+    };
+  } catch (e) {
+    return {
+      status: 'WARN',
+      label: 'Tabs',
+      detail: `cannot list debuggable page targets (${e.message})`,
+      hint: 'Run: cdp list. If it is empty, run: cdp open https://example.com',
+      targetPrefixes: [],
     };
   }
 }
@@ -5307,7 +5391,9 @@ function doctorNextSteps(checks) {
   const node = checks.find(c => c.label === 'Node');
   const fd = checks.find(c => c.label === 'FD limit');
   const daemon = checks.find(c => c.label === 'Daemons');
-  const liveTarget = daemon?.targetPrefixes?.[0] || '<target>';
+  const tabs = checks.find(c => c.label === 'Tabs');
+  const liveTarget = daemon?.targetPrefixes?.[0] || tabs?.targetPrefixes?.[0] || '<target>';
+  const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
   const lines = ['', 'Next steps:'];
   if (node?.status === 'FAIL') {
     lines.push('  1. Install Node.js 22+ and rerun: cdp doctor');
@@ -5323,12 +5409,21 @@ function doctorNextSteps(checks) {
     lines.push('  1. Re-toggle browser remote debugging, or restart the app with CDP_PORT set.');
     lines.push('  2. If Chrome asks "Allow debugging?", click Allow, then rerun: cdp list');
   } else {
-    lines.push('  1. cdp list');
-    lines.push('  2. If list is empty: cdp open https://example.com');
-    lines.push(`  3. cdp perceive ${liveTarget} -C -d 8`);
-    lines.push(`  4. cdp click ${liveTarget} @ref  # or: cdp fill ${liveTarget} <selector> <text>`);
-    lines.push(`  5. cdp perceive ${liveTarget} --since-action`);
-    lines.push(`  6. cdp report ${liveTarget}`);
+    if (noTargets) {
+      lines.push('  1. cdp open https://example.com');
+      lines.push('  2. If Chrome asks "Allow debugging?", click Allow; open waits up to 60s.');
+      lines.push('  3. Use the target id printed by open: cdp perceive <target-from-open> -C -d 8');
+      lines.push('  4. cdp click <target-from-open> @ref  # or: cdp fill <target-from-open> <selector> <text>');
+      lines.push('  5. cdp perceive <target-from-open> --since-action');
+      lines.push('  6. cdp report <target-from-open>');
+    } else {
+      lines.push('  1. cdp list');
+      if (!tabs?.targetPrefixes?.length) lines.push('  2. If list is empty: cdp open https://example.com');
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '2' : '3'}. cdp perceive ${liveTarget} -C -d 8`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '3' : '4'}. cdp click ${liveTarget} @ref  # or: cdp fill ${liveTarget} <selector> <text>`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '4' : '5'}. cdp perceive ${liveTarget} --since-action`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '5' : '6'}. cdp report ${liveTarget}`);
+    }
   }
   if (fd?.status === 'WARN') {
     lines.push('  Note: for long sessions, use: ulimit -n 4096');
@@ -5363,7 +5458,9 @@ async function runDoctorChecks(opts = {}) {
   checks.push(checkSkillSymlink({ home: opts.home, fs }));
   checks.push(checkDaemonSockets({ list: opts.listDaemons }));
   checks.push(checkFdLimit({ limit: opts.fdLimit }));
-  checks.push(await checkCdpReachability({ env: opts.env, fetcher: opts.fetcher, host: opts.host }));
+  const cdp = await checkCdpReachability({ env: opts.env, fetcher: opts.fetcher, host: opts.host });
+  checks.push(cdp);
+  checks.push(await checkBrowserTargets({ cdp, env: opts.env, fetcher: opts.fetcher, host: opts.host }));
   return checks;
 }
 
@@ -6591,7 +6688,7 @@ Usage: cdp <command> [args]
                                     Example: repeat A7BA 5 press c
   doctor / ready                    One-call diagnostics: Node version, skill install path,
                                     daemon socket state, fd limit, CDP_PORT/DevToolsActivePort reachability,
-                                    and onboarding next steps.
+                                    debuggable tab inventory, and onboarding next steps.
                                     No target required. Exits 1 if any check FAILs.
   keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)
   open  [url]                       Open a new tab (default: about:blank)
@@ -7033,7 +7130,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, parseFlowSteps, settleFlow, flowStr,
-  checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability,
+  checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets,
   doctorNextSteps, formatDoctorReport, runDoctorChecks, doctorStr,
   COMMANDS, NEEDS_TARGET,
 } : undefined;

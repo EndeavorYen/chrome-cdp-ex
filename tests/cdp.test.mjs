@@ -18,7 +18,7 @@ const {
   resetScreenshotTier, getScreenshotTier, SCREENSHOT_TIMEOUT,
   decodeVLQ, mapLineToSource, stripVitePathQuery, mapStyleSource,
   formatBatchResults, parseFlowSteps, settleFlow, flowStr,
-  checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkFdLimit,
+  checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkFdLimit,
   formatDoctorReport, runDoctorChecks, doctorStr,
 } = T;
 
@@ -4641,6 +4641,55 @@ describe('checkCdpReachability', () => {
   });
 });
 
+describe('checkBrowserTargets', () => {
+  it('returns OK with target prefixes when debuggable page targets exist', async () => {
+    const fetcher = async () => ({
+      ok: true,
+      json: async () => ([
+        { type: 'page', id: 'AABBCCDDEEFF1122', title: 'Dashboard', url: 'https://app.example.com' },
+        { type: 'page', id: 'BBCCDDEEFF001122', title: 'Settings', url: 'https://app.example.com/settings' },
+        { type: 'other', id: 'ignored', title: 'Worker', url: 'https://app.example.com/worker' },
+      ]),
+    });
+
+    const r = await checkBrowserTargets({
+      cdp: { status: 'OK', host: '127.0.0.1', port: '9222' },
+      fetcher,
+    });
+
+    expect(r.status).toBe('OK');
+    expect(r.label).toBe('Tabs');
+    expect(r.detail).toContain('2 debuggable page targets');
+    expect(r.targetPrefixes[0]).toBe('AABBCCDD');
+    expect(r.targetPrefixes[1]).toBe('BBCCDDEE');
+  });
+
+  it('returns WARN with an open command when CDP is reachable but no pages exist', async () => {
+    const fetcher = async () => ({ ok: true, json: async () => [] });
+
+    const r = await checkBrowserTargets({
+      cdp: { status: 'OK', host: '127.0.0.1', port: '9222' },
+      fetcher,
+    });
+
+    expect(r.status).toBe('WARN');
+    expect(r.detail).toContain('no debuggable page targets');
+    expect(r.hint).toContain('cdp open https://example.com');
+  });
+
+  it('skips target inventory until CDP is reachable', async () => {
+    const fetcher = async () => { throw new Error('should not be called'); };
+
+    const r = await checkBrowserTargets({
+      cdp: { status: 'FAIL', detail: 'cannot reach 127.0.0.1:9999' },
+      fetcher,
+    });
+
+    expect(r.status).toBe('WARN');
+    expect(r.detail).toContain('skipped until CDP is reachable');
+  });
+});
+
 describe('checkFdLimit', () => {
   it('returns OK when the open-files limit is high enough for long sessions', () => {
     const r = checkFdLimit({ limit: 4096 });
@@ -4677,14 +4726,15 @@ describe('formatDoctorReport', () => {
   it('reports "Ready." when all checks are OK', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'Tabs', detail: '1 debuggable page target: Example', targetPrefixes: ['AABBCCDD'] },
       { status: 'OK', label: 'CDP', detail: 'reachable' },
     ]);
     expect(out).toContain('Ready.');
     expect(out).not.toContain('Not ready');
     expect(out).toContain('Next steps:');
     expect(out).toContain('cdp list');
-    expect(out).toContain('cdp perceive <target> -C -d 8');
-    expect(out).toContain('cdp report <target>');
+    expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('cdp report AABBCCDD');
   });
 
   it('reports "Mostly ready" when only WARNs present', () => {
@@ -4700,16 +4750,37 @@ describe('formatDoctorReport', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22' },
       { status: 'OK', label: 'Daemons', detail: '1 live: AABBCCDD', targetPrefixes: ['AABBCCDD'] },
+      { status: 'OK', label: 'Tabs', detail: '1 debuggable page target: ZZYYXXWW', targetPrefixes: ['ZZYYXXWW'] },
       { status: 'OK', label: 'CDP', detail: 'reachable' },
     ]);
 
     expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
   });
+
+  it('guides users to open a page when CDP is ready but no targets exist', () => {
+    const out = formatDoctorReport([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      {
+        status: 'WARN',
+        label: 'Tabs',
+        detail: 'no debuggable page targets',
+        hint: 'Create one with: cdp open https://example.com',
+      },
+    ]);
+
+    expect(out).toContain('Mostly ready');
+    expect(out).toContain('cdp open https://example.com');
+    expect(out).toContain('Use the target id printed by open');
+    expect(out).toContain('cdp report <target-from-open>');
+  });
 });
 
 describe('runDoctorChecks', () => {
   it('runs all checks and returns array of result objects', async () => {
-    const fetcher = async () => ({ ok: true, json: async () => ({ Browser: 'Chrome', webSocketDebuggerUrl: 'ws://x' }) });
+    const fetcher = async (url) => url.endsWith('/json/list')
+      ? { ok: true, json: async () => ([{ type: 'page', id: 'AABBCCDDEEFF', title: 'Example', url: 'https://example.com' }]) }
+      : { ok: true, json: async () => ({ Browser: 'Chrome', webSocketDebuggerUrl: 'ws://x' }) };
     const checks = await runDoctorChecks({
       nodeVersion: 'v22.10.0',
       home: '/tmp/no-such-home-here',
@@ -4720,18 +4791,21 @@ describe('runDoctorChecks', () => {
       fetcher,
     });
     expect(Array.isArray(checks)).toBe(true);
-    expect(checks).toHaveLength(5);
+    expect(checks).toHaveLength(6);
     expect(checks[0].label).toBe('Node');
     expect(checks[1].label).toBe('Skill install');
     expect(checks[2].label).toBe('Daemons');
     expect(checks[3].label).toBe('FD limit');
     expect(checks[4].label).toBe('CDP');
+    expect(checks[5].label).toBe('Tabs');
   });
 });
 
 describe('doctorStr', () => {
   it('returns formatted multi-line report including Ready./Not ready summary', async () => {
-    const fetcher = async () => ({ ok: true, json: async () => ({ Browser: 'Chrome/123', webSocketDebuggerUrl: 'ws://x' }) });
+    const fetcher = async (url) => url.endsWith('/json/list')
+      ? { ok: true, json: async () => ([{ type: 'page', id: 'AABBCCDDEEFF', title: 'Example', url: 'https://example.com' }]) }
+      : { ok: true, json: async () => ({ Browser: 'Chrome/123', webSocketDebuggerUrl: 'ws://x' }) };
     const out = await doctorStr({
       nodeVersion: 'v22.10.0',
       home: '/tmp/no-such-home',
@@ -4747,9 +4821,11 @@ describe('doctorStr', () => {
     expect(out).toMatch(/\[OK\s*\] Daemons/);
     expect(out).toMatch(/\[OK\s*\] FD limit/);
     expect(out).toMatch(/\[OK\s*\] CDP/);
+    expect(out).toMatch(/\[OK\s*\] Tabs/);
     expect(out).toContain('Mostly ready');
     expect(out).toContain('Next steps:');
     expect(out).toContain('cdp list');
+    expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
   });
 
   it('marks report as Not ready when CDP fails', async () => {

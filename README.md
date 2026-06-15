@@ -188,7 +188,7 @@ cp -r skills/chrome-cdp-ex ~/.claude/skills/
 node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 ```
 
-`doctor` checks Node 22+, install path, daemon state, open-file limit, and CDP reachability. It ends with copy-pasteable next steps. If CDP is not ready, use one of these paths:
+`doctor` checks Node 22+, install path, daemon state, open-file limit, CDP reachability, and whether there are debuggable page targets. It ends with copy-pasteable next steps: if no page is available it starts with `open`; if a target exists it prints the target prefix to use with `perceive`. If CDP is not ready, use one of these paths:
 
 - **Existing browser session (preferred):** open `chrome://inspect/#remote-debugging` (or `edge://inspect`) and toggle remote debugging on. Cleanest path; touches no profile state.
 - **Isolated debug profile (when the toggle path doesn't work):** `node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com`. Spawns the browser with `--remote-debugging-port` and a disposable `--user-data-dir`, leaving your main profile alone. Use `--exe /path/to/browser` for non-standard installs; Linux also falls back to common browser names on `$PATH`. Run `cdp doctor` first to confirm no port conflict.
@@ -197,6 +197,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 4. Follow the golden path.
 
 ```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 node skills/chrome-cdp-ex/scripts/cdp.mjs list
 node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com   # only if list is empty
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
