@@ -25,6 +25,7 @@ const DAEMON_ALLOW_DELAY = 300;
 const MIN_TARGET_PREFIX_LEN = 8;
 const MAX_ACTION_LOG_ENTRIES = 100;
 const MAX_SCREENSHOT_ENTRIES = 100;
+const MAX_NETWORK_MOCK_HITS = 50;
 const IS_WINDOWS = process.platform === 'win32';
 if (!IS_WINDOWS) process.umask(0o077);
 const RUNTIME_DIR = IS_WINDOWS
@@ -1859,6 +1860,7 @@ function formatSessionReport(session, { now = Date.now() } = {}) {
     `Screenshots: ${screenshots.length}`,
     `Records: ${session.records?.length || 0}`,
     `Network throttle: ${formatThrottleSummary(session.networkThrottle)}`,
+    `Network mocks: ${formatNetworkMocksSummary(session)}`,
     '',
     'Action timeline:',
   ];
@@ -2211,6 +2213,8 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
     buffers: {},
     pendingRequests: new Map(),
     networkThrottle: null,
+    networkMocks: [],
+    networkMockHits: [],
     actionLog: [],
     screenshots: [],
     diffShot: null,
@@ -4434,6 +4438,168 @@ function netlogStr(netReqBuf, flag) {
   return lines.join('\n');
 }
 
+function parseHttpStatus(value, label = '--status') {
+  const status = Number(value);
+  if (!Number.isInteger(status) || status < 100 || status > 599) {
+    throw new Error(`mock ${label} requires an HTTP status code from 100 to 599`);
+  }
+  return status;
+}
+
+function parseMockArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const tokens = fopts.args || [];
+  if (tokens.length === 0) return { mode: 'status', format: fopts.format };
+  const mode = String(tokens[0] || '').toLowerCase();
+  if (mode === 'clear' || mode === 'off' || mode === 'reset') {
+    if (tokens.length > 1) throw new Error(`mock ${tokens[0]} does not accept extra arguments`);
+    return { mode: 'clear', format: fopts.format };
+  }
+  if (mode !== 'add') {
+    throw new Error(`Unknown mock command: ${tokens[0]}. Use add, clear, or no args for status.`);
+  }
+  const urlPattern = tokens[1];
+  if (!urlPattern) throw new Error('mock add requires a URL pattern, e.g. **/api/items*');
+  const rule = {
+    id: `mock-${Date.now().toString(36)}`,
+    urlPattern,
+    method: null,
+    status: 200,
+    body: '',
+    contentType: 'text/plain; charset=utf-8',
+  };
+  for (let i = 2; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--status') rule.status = parseHttpStatus(tokens[++i], '--status');
+    else if (token === '--body') rule.body = tokens[++i] ?? '';
+    else if (token === '--content-type' || token === '--type') rule.contentType = tokens[++i] || rule.contentType;
+    else if (token === '--method') rule.method = String(tokens[++i] || '').toUpperCase();
+    else throw new Error(`mock add: unknown option ${token}`);
+  }
+  if (rule.method === '') rule.method = null;
+  return { mode: 'add', format: fopts.format, rule };
+}
+
+function wildcardToRegExp(pattern) {
+  const escaped = String(pattern || '').replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${escaped.replace(/\*/g, '.*').replace(/\?/g, '.')}$`);
+}
+
+function mockRuleMatches(rule, request = {}) {
+  if (!rule) return false;
+  if (rule.method && String(request.method || '').toUpperCase() !== rule.method) return false;
+  return wildcardToRegExp(rule.urlPattern).test(String(request.url || ''));
+}
+
+function findNetworkMockRule(session, request = {}) {
+  return (session.networkMocks || []).find(rule => mockRuleMatches(rule, request));
+}
+
+function formatNetworkMocksSummary(session = {}) {
+  const rules = session.networkMocks || [];
+  if (rules.length === 0) return 'off';
+  const first = rules[0];
+  const hits = (session.networkMockHits || []).filter(hit => hit.ruleId === first.id).length;
+  const suffix = rules.length > 1 ? ` (+${rules.length - 1} more)` : '';
+  return `${rules.length} rule${rules.length === 1 ? '' : 's'} — ${first.urlPattern} -> ${first.status} (${hits} hit${hits === 1 ? '' : 's'})${suffix}`;
+}
+
+function buildMockModel(session, parsed) {
+  const rules = session.networkMocks || [];
+  const hits = session.networkMockHits || [];
+  return {
+    schema: 'chrome-cdp-ex.mock.v1',
+    targetId: session.targetId,
+    mode: parsed.mode,
+    rules: rules.map(rule => ({
+      id: rule.id,
+      urlPattern: rule.urlPattern,
+      method: rule.method,
+      status: rule.status,
+      contentType: rule.contentType,
+      bodyBytes: Buffer.byteLength(rule.body || '', 'utf8'),
+      hits: hits.filter(hit => hit.ruleId === rule.id).length,
+    })),
+    recentHits: hits.slice(-10),
+  };
+}
+
+function formatMockText(model) {
+  if (!model.rules.length) {
+    return [
+      'Network mock: off',
+      `Next: cdp mock ${model.targetId} add "**/api/*" --status 503 --body '{"ok":false}' --content-type application/json`,
+    ].join('\n');
+  }
+  const lines = [`Network mock: ${model.rules.length} rule${model.rules.length === 1 ? '' : 's'}`];
+  for (const [i, rule] of model.rules.entries()) {
+    const method = rule.method ? `${rule.method} ` : '';
+    lines.push(`${i + 1}. ${method}${rule.urlPattern} -> ${rule.status} ${rule.contentType} (${rule.hits} hit${rule.hits === 1 ? '' : 's'})`);
+  }
+  if (model.recentHits.length) {
+    const hit = model.recentHits[model.recentHits.length - 1];
+    lines.push(`Last hit: ${hit.method} ${hit.url} -> ${hit.status}`);
+  }
+  lines.push(`Next: cdp mock ${model.targetId} clear`);
+  return lines.join('\n');
+}
+
+async function applyNetworkMocks(cdp, sid, session) {
+  const rules = session.networkMocks || [];
+  if (!rules.length) {
+    await cdp.send('Fetch.disable', {}, sid);
+    return;
+  }
+  await cdp.send('Fetch.enable', {
+    patterns: rules.map(rule => ({ urlPattern: rule.urlPattern, requestStage: 'Request' })),
+  }, sid);
+}
+
+async function handleMockRequestPaused(cdp, sid, session, params = {}) {
+  const request = params.request || {};
+  const rule = findNetworkMockRule(session, request);
+  if (!rule) {
+    await cdp.send('Fetch.continueRequest', { requestId: params.requestId }, sid);
+    return null;
+  }
+  await cdp.send('Fetch.fulfillRequest', {
+    requestId: params.requestId,
+    responseCode: rule.status,
+    responseHeaders: [{ name: 'content-type', value: rule.contentType }],
+    body: Buffer.from(rule.body || '', 'utf8').toString('base64'),
+  }, sid);
+  const hit = {
+    ruleId: rule.id,
+    method: request.method || '',
+    url: request.url || '',
+    status: rule.status,
+    ts: Date.now(),
+  };
+  session.networkMockHits.push(hit);
+  if (session.networkMockHits.length > MAX_NETWORK_MOCK_HITS) {
+    session.networkMockHits.splice(0, session.networkMockHits.length - MAX_NETWORK_MOCK_HITS);
+  }
+  return hit;
+}
+
+async function mockStr(cdp, sid, session, args = []) {
+  const parsed = parseMockArgs(args);
+  if (!Array.isArray(session.networkMocks)) session.networkMocks = [];
+  if (!Array.isArray(session.networkMockHits)) session.networkMockHits = [];
+  if (parsed.mode === 'add') {
+    session.networkMocks.push(parsed.rule);
+    await applyNetworkMocks(cdp, sid, session);
+    appendSessionEventLog(session, { kind: 'mock', ts: Date.now(), action: 'add', rule: parsed.rule });
+  } else if (parsed.mode === 'clear') {
+    session.networkMocks = [];
+    session.networkMockHits = [];
+    await applyNetworkMocks(cdp, sid, session);
+    appendSessionEventLog(session, { kind: 'mock', ts: Date.now(), action: 'clear' });
+  }
+  const model = buildMockModel(session, parsed);
+  return parsed.format === 'json' ? formatJson(model) : formatMockText(model);
+}
+
 const THROTTLE_PRESETS = Object.freeze({
   off: { profile: 'off', offline: false, latencyMs: 0, downloadKbps: null, uploadKbps: null },
   offline: { profile: 'offline', offline: true, latencyMs: 0, downloadKbps: 0, uploadKbps: 0 },
@@ -6601,6 +6767,12 @@ async function runDaemon(targetId) {
     });
   });
 
+  cdp.onEvent('Fetch.requestPaused', (params) => {
+    handleMockRequestPaused(cdp, sessionId, session, params).catch(() => {
+      cdp.send('Fetch.continueRequest', { requestId: params.requestId }, sessionId).catch(() => {});
+    });
+  });
+
   // --- Dialog handling (alert/confirm/prompt/beforeunload) ---
   const dialogBuf = new RingBuffer(20);
   session.buffers.dialog = dialogBuf;
@@ -6655,7 +6827,7 @@ async function runDaemon(targetId) {
   // Action feedback: wait for DOM to settle, then return structured evidence.
   const BATCH_BLOCKED = new Set(['batch', 'stop', 'repeat', 'flow']);
   // Commands that mutate shared state (refMap, lastPerceiveStore) — unsafe for parallel execution
-  const BATCH_NO_PARALLEL = new Set(['click', 'clickxy', 'jsclick', 'select', 'press', 'scroll', 'nav', 'navigate', 'back', 'forward', 'reload', 'viewport', 'fill', 'type', 'inject', 'perceive', 'snap', 'snapshot', 'dismiss-modal', 'dismissmodal']);
+  const BATCH_NO_PARALLEL = new Set(['click', 'clickxy', 'jsclick', 'select', 'press', 'scroll', 'nav', 'navigate', 'back', 'forward', 'reload', 'viewport', 'fill', 'type', 'inject', 'mock', 'network-mock', 'perceive', 'snap', 'snapshot', 'dismiss-modal', 'dismissmodal']);
   async function observeActionDiffForTarget(target = {}, baselineOutput = null) {
     const targetFrameRef = frameRefFromActionTarget(target);
     await waitForSettle(cdp, sessionId);
@@ -6778,6 +6950,7 @@ async function runDaemon(targetId) {
           break;
         }
         case 'net': case 'network': result = await netStr(cdp, sessionId); break;
+        case 'mock': case 'network-mock': result = await mockStr(cdp, sessionId, session, args); break;
         case 'throttle': case 'network-throttle': result = await throttleStr(cdp, sessionId, session, args); break;
         case 'status': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
@@ -7211,6 +7384,8 @@ Usage: cdp <command> [args]
   diff-shot <target> [--reset] [--threshold pct]  Compare current screenshot against last diff-shot baseline
   html  <target> [selector]         Get HTML (full page or CSS selector)
   nav   <target> <url>              Navigate to URL and wait for load completion
+  mock  <target> [add|clear]        Mock matching network requests in this live tab
+                                    add <urlPattern> --status code --body text [--content-type type]
   throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  Emulate network conditions for this tab
                                     custom --latency ms --download kbps --upload kbps
   status <target> [--runtime]        Page state + new console/exception entries (primary debug entry point)
@@ -7351,7 +7526,7 @@ DAEMON IPC (for advanced use / scripting)
     Response: {"id":<number>, "ok":true,  "result":"<string>"}
            or {"id":<number>, "ok":false, "error":"<message>"}
   Commands mirror the CLI: perceive, status, summary, console, frame, snap, eval, eval64, call, wait, keepalive, shot, diff-shot,
-  elshot, fullshot, scanshot, html, nav, net, throttle, click, jsclick, clickxy, hover, type, press,
+  elshot, fullshot, scanshot, html, nav, net, mock, throttle, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
   record, checkpoint, restore, record-actions, export-playwright, replay, report, evalraw, batch, flow, repeat, stop.
@@ -7376,6 +7551,7 @@ const COMMANDS = Object.freeze([
   { name: 'html', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'nav', aliases: ['navigate'], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
   { name: 'net', aliases: ['network'], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'mock', aliases: ['network-mock'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'throttle', aliases: ['network-throttle'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'status', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'console', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
@@ -7793,7 +7969,9 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs,
   checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,
   // Command implementations
-  formatPageList, dialogStr, netlogStr, parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
+  formatPageList, dialogStr, netlogStr,
+  parseMockArgs, formatNetworkMocksSummary, buildMockModel, formatMockText, mockStr, handleMockRequestPaused,
+  parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
   injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,
   parseFormatArgs, formatJson, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,

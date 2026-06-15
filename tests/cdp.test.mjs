@@ -190,7 +190,7 @@ describe('COMMANDS registry', () => {
       'back', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
       'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav',
       'open', 'press', 'reload', 'replay', 'restore', 'scroll', 'select', 'spawn-debug-browser',
-      'stop', 'throttle', 'type', 'upload', 'viewport',
+      'stop', 'mock', 'throttle', 'type', 'upload', 'viewport',
     ].sort());
     for (const command of mutating) {
       expect(command.feedbackPolicy).toMatch(/^(none|settle-diff|full-perceive|state-change|report-only)$/);
@@ -242,6 +242,17 @@ describe('COMMANDS registry', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'throttle',
       aliases: ['network-throttle'],
+      needsTarget: true,
+      mutates: true,
+      feedbackPolicy: 'report-only',
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers mock as a mutating target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'mock',
+      aliases: ['network-mock'],
       needsTarget: true,
       mutates: true,
       feedbackPolicy: 'report-only',
@@ -436,6 +447,87 @@ describe('throttle', () => {
     expect(report).toContain('120ms');
     expect(report).toContain('256 kbps down');
     expect(report).toContain('128 kbps up');
+  });
+});
+
+describe('network mock', () => {
+  it('parses status, clear, json, and static response rules', () => {
+    expect(T.parseMockArgs([])).toMatchObject({ mode: 'status', format: 'text' });
+    expect(T.parseMockArgs(['--format', 'json'])).toMatchObject({ mode: 'status', format: 'json' });
+    expect(T.parseMockArgs(['clear'])).toMatchObject({ mode: 'clear', format: 'text' });
+    expect(T.parseMockArgs(['clear', '--format', 'json'])).toMatchObject({ mode: 'clear', format: 'json' });
+    expect(T.parseMockArgs(['add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}', '--content-type', 'application/json'])).toMatchObject({
+      mode: 'add',
+      rule: {
+        urlPattern: '**/api/fail*',
+        status: 503,
+        body: '{"ok":false}',
+        contentType: 'application/json',
+      },
+    });
+  });
+
+  it('applies a mock through Fetch.enable and records session state', async () => {
+    const cdp = createMockCDP();
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    const out = await T.mockStr(cdp, 'sid-1', state, ['add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}', '--content-type', 'application/json']);
+
+    expect(cdp.calls.map(c => c.method)).toEqual(['Fetch.enable']);
+    expect(cdp.calls[0].params).toMatchObject({
+      patterns: [{ urlPattern: '**/api/fail*', requestStage: 'Request' }],
+    });
+    expect(state.networkMocks).toHaveLength(1);
+    expect(state.networkMocks[0]).toMatchObject({ urlPattern: '**/api/fail*', status: 503, contentType: 'application/json' });
+    expect(out).toContain('Network mock: 1 rule');
+    expect(out).toContain('**/api/fail* -> 503');
+    expect(out).toContain('Next: cdp mock ABC123 clear');
+  });
+
+  it('fulfills matched requests and continues unmatched requests', async () => {
+    const cdp = createMockCDP();
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    await T.mockStr(cdp, 'sid-1', state, ['add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}', '--content-type', 'application/json']);
+
+    await T.handleMockRequestPaused(cdp, 'sid-1', state, {
+      requestId: 'match-1',
+      request: { method: 'GET', url: 'https://example.com/api/fail?id=1' },
+    });
+    await T.handleMockRequestPaused(cdp, 'sid-1', state, {
+      requestId: 'miss-1',
+      request: { method: 'GET', url: 'https://example.com/api/ok' },
+    });
+
+    expect(cdp.calls.map(c => c.method)).toEqual([
+      'Fetch.enable',
+      'Fetch.fulfillRequest',
+      'Fetch.continueRequest',
+    ]);
+    expect(cdp.calls[1].params).toMatchObject({
+      requestId: 'match-1',
+      responseCode: 503,
+      responseHeaders: [{ name: 'content-type', value: 'application/json' }],
+    });
+    expect(Buffer.from(cdp.calls[1].params.body, 'base64').toString('utf8')).toBe('{"ok":false}');
+    expect(cdp.calls[2].params).toEqual({ requestId: 'miss-1' });
+    expect(state.networkMockHits).toHaveLength(1);
+    expect(state.networkMockHits[0]).toMatchObject({ url: 'https://example.com/api/fail?id=1', status: 503 });
+  });
+
+  it('clears mocks through Fetch.disable and reports in session reports', async () => {
+    const cdp = createMockCDP();
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    await T.mockStr(cdp, 'sid-1', state, ['add', '**/api/fail*', '--status', '503', '--body', 'down']);
+    const report = T.formatSessionReport(state, { now: state.createdAt + 5000 });
+    expect(report).toContain('Network mocks: 1 rule');
+    expect(report).toContain('**/api/fail* -> 503');
+
+    const out = await T.mockStr(cdp, 'sid-1', state, ['clear']);
+
+    expect(cdp.calls.map(c => c.method)).toEqual(['Fetch.enable', 'Fetch.disable']);
+    expect(state.networkMocks).toEqual([]);
+    expect(out).toContain('Network mock: off');
   });
 });
 

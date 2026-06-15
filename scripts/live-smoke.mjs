@@ -151,6 +151,21 @@ if (throttleStatus.schema !== 'chrome-cdp-ex.throttle.v1' || throttleStatus.prof
 const throttleOffOut = step('network throttle off', () => run(['throttle', target, 'off']));
 assertIncludes(throttleOffOut, 'Network throttle: off', 'throttle off');
 assertIncludes(throttleOffOut, 'Network conditions reset', 'throttle reset');
+const mockOut = step('network mock add', () => run(['mock', target, 'add', '**/api/mock*', '--status', '418', '--body', '{"ok":"mocked"}', '--content-type', 'application/json']));
+assertIncludes(mockOut, 'Network mock: 1 rule', 'mock add');
+assertIncludes(mockOut, '**/api/mock* -> 418', 'mock rule');
+const mockedFetchJson = step('network mock fulfilled fetch', () => run(['eval', target, 'JSON.stringify(await fetch("/api/mock").then(async r => ({status:r.status,type:r.headers.get("content-type"),text:await r.text()})))']));
+const mockedFetch = JSON.parse(mockedFetchJson);
+if (mockedFetch.status !== 418 || mockedFetch.text !== '{"ok":"mocked"}' || !mockedFetch.type.includes('application/json')) {
+  throw new Error(`mocked fetch mismatch:\n${mockedFetchJson}`);
+}
+const mockStatusJson = step('network mock json status', () => run(['mock', target, '--format', 'json']));
+const mockStatus = JSON.parse(mockStatusJson);
+if (mockStatus.schema !== 'chrome-cdp-ex.mock.v1' || mockStatus.rules?.[0]?.hits !== 1) {
+  throw new Error(`mock json status mismatch:\n${mockStatusJson}`);
+}
+const mockClearOut = step('network mock clear', () => run(['mock', target, 'clear']));
+assertIncludes(mockClearOut, 'Network mock: off', 'mock clear');
 const framePerceiveOut = step('frame-scoped perceive refs', () => run(['perceive', target, '--frame', '@f2', '-d', '4']));
 assertIncludes(framePerceiveOut, 'Frame: @f2', 'perceive --frame');
 assertIncludes(framePerceiveOut, 'Child action', 'perceive --frame child button');

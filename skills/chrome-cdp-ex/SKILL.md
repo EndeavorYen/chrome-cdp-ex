@@ -11,7 +11,7 @@ description: "Your EYES into the user's live Chrome browser and Electron apps. T
 2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`.
 3. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, top-level viewport CSS coordinates (fixed/sticky elements are tagged), console health.
 4. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
-5. **Verify/report:** read the automatic action evidence, then use `cdp perceive <target> --since-action` or `cdp report <target>` for handoff. If you used `cdp throttle`, confirm the report shows the intended profile and reset with `cdp throttle <target> off`.
+5. **Verify/report:** read the automatic action evidence, then use `cdp perceive <target> --since-action` or `cdp report <target>` for handoff. If you used `cdp mock` or `cdp throttle`, confirm the report shows the intended network state and reset with `cdp mock <target> clear` / `cdp throttle <target> off`.
 
 For long-session game / animation work also reach for `cdp waitfor <target> --any-of "win|lose|escape" 60000 --scope ".combat-log"` and `cdp waitfor <target> --selector-stable ".combat-log" 3000 60000`. To close MOTD-style modals safely without firing background shortcuts, use `cdp dismiss-modal <target>` (it prefers an explicit close button, falls back to Escape — never `press Space`).
 
@@ -471,6 +471,7 @@ scripts/cdp.mjs forward <target>                       # navigate forward in bro
 scripts/cdp.mjs reload  <target>                       # reload current page
 scripts/cdp.mjs closetab <target>                      # close a browser tab
 scripts/cdp.mjs netlog  <target> [--clear]             # network request log (XHR/Fetch with status + timing)
+scripts/cdp.mjs mock    <target> [add|clear]           # mock matching network requests in the live tab
 scripts/cdp.mjs throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  # emulate network conditions
 scripts/cdp.mjs evalraw <target> <method> [json]  # raw CDP command passthrough
 scripts/cdp.mjs record  <target> <ms>                    # record timeline for N ms (DOM + network + console events)
@@ -577,6 +578,16 @@ scripts/cdp.mjs netlog <target> --clear        # clear the log
 ```
 
 Tracks XHR, Fetch, and Document requests in the background with status codes, timing, and response sizes. Use for debugging API calls.
+
+### Network mocking
+
+```bash
+scripts/cdp.mjs mock <target> add "**/api/*" --status 503 --body '{"ok":false}' --content-type application/json
+scripts/cdp.mjs mock <target>               # show active rules and recent hits
+scripts/cdp.mjs mock <target> clear         # disable all mocks
+```
+
+`mock` uses CDP Fetch interception inside the live tab. Use it to reproduce API failure, empty-state, or alternate-response UI without editing backend code. Active rules and hit counts appear in `report <target>`. Clear mocks before handing the session back.
 
 ### Network throttling
 
@@ -778,10 +789,11 @@ scripts/cdp.mjs text <target> "main"              # scope to main content area
 ### Debugging API calls
 1. `perceive <target>` — check page state
 2. `netlog <target>` — see recent XHR/Fetch requests with status codes
-3. `throttle <target> slow-3g` or `throttle <target> offline` — reproduce slow-network or offline behavior when relevant
-4. `console <target> --errors` — check for errors
-5. If you need to see the full request→response→DOM update chain: `record <target> --action click @submitBtn` — captures the API call, its response, and resulting DOM mutations in one timeline
-6. `throttle <target> off` — reset before handing the session back
+3. `mock <target> add "**/api/*" --status 503 --body '{"ok":false}'` — reproduce API failure or alternate UI states when relevant
+4. `throttle <target> slow-3g` or `throttle <target> offline` — reproduce slow-network or offline behavior when relevant
+5. `console <target> --errors` — check for errors
+6. If you need to see the full request→response→DOM update chain: `record <target> --action click @submitBtn` — captures the API call, its response, and resulting DOM mutations in one timeline
+7. `mock <target> clear`; `throttle <target> off` — reset before handing the session back
 
 ### Performance investigation
 1. `nav <target> <url>` — navigate to the page
