@@ -12,6 +12,7 @@ const {
   formatPageList, buildPerceiveTree, perceivePageScript, injectStr, cascadeStr, recordStr, parseRecordArgs,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, navStr, clickStr, fillStr, fillReactStr, waitForStr,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, formatCliError,
+  formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   statusStr, clearObservationBuffers,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
   captureScreenshot, screencastFallback, snapshotStr,
@@ -2603,6 +2604,37 @@ describe('formatCliError', () => {
     const out = formatCliError('Action failure: overlay\nNext: cdp dismiss-modal AABBCCDD');
 
     expect(out).toBe('Action failure: overlay\nNext: cdp dismiss-modal AABBCCDD');
+  });
+});
+
+describe('open onboarding guidance', () => {
+  it('formats a ready continuation after open auto-perceives the page', () => {
+    const out = formatOpenReadyMessage('AABBCCDDEEFF', 'https://example.com');
+
+    expect(out).toContain('Tab ready');
+    expect(out).toContain('Target: AABBCCDD');
+    expect(out).toContain('Next: cdp click AABBCCDD @ref');
+    expect(out).toContain('Then: cdp perceive AABBCCDD --since-action');
+    expect(out).toContain('Report: cdp report AABBCCDD');
+  });
+
+  it('formats a timeout recovery when browser permission is not approved yet', () => {
+    const out = formatOpenTimeoutMessage('AABBCCDDEEFF');
+
+    expect(out).toContain('Timeout waiting for debugging approval');
+    expect(out).toContain('Target: AABBCCDD');
+    expect(out).toContain('Next: cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('click Allow');
+  });
+
+  it('formats auto-perceive failure with actionable recovery', () => {
+    const out = formatOpenAutoPerceiveFailure(
+      new Error('Connection closed before response. The daemon for this tab may have crashed.'),
+      'AABBCCDDEEFF'
+    );
+
+    expect(out).toContain('Auto-perceive failed');
+    expect(out).toContain('Next: cdp perceive AABBCCDD -C -d 8');
   });
 });
 

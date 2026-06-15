@@ -6869,6 +6869,40 @@ function formatCliError(err, { cmd = '', targetPrefix = '' } = {}) {
   return lines.join('\n');
 }
 
+function targetPrefixForDisplay(targetId) {
+  return String(targetId || '').slice(0, 8) || '<target>';
+}
+
+function formatOpenReadyMessage(targetId, url = '') {
+  const target = targetPrefixForDisplay(targetId);
+  const lines = [
+    'Tab ready — debugging approved.',
+    `Target: ${target}${url ? `  ${url}` : ''}`,
+    `Next: cdp click ${target} @ref  # choose a ref from the perception below`,
+    `Then: cdp perceive ${target} --since-action`,
+    `Report: cdp report ${target}`,
+  ];
+  return lines.join('\n');
+}
+
+function formatOpenTimeoutMessage(targetId) {
+  const target = targetPrefixForDisplay(targetId);
+  return [
+    'Timeout waiting for debugging approval. Tab created but daemon not connected.',
+    `Target: ${target}`,
+    'If Chrome asks "Allow debugging?", click Allow first.',
+    `Next: cdp perceive ${target} -C -d 8`,
+  ].join('\n');
+}
+
+function formatOpenAutoPerceiveFailure(err, targetId) {
+  const target = targetPrefixForDisplay(targetId);
+  return [
+    'Auto-perceive failed after the tab was attached.',
+    formatCliError(err, { cmd: 'perceive', targetPrefix: target }),
+  ].join('\n');
+}
+
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
 
@@ -6939,7 +6973,7 @@ async function main() {
       } catch {}
     }
     if (attached) {
-      console.log('Tab ready — debugging approved.');
+      console.log(formatOpenReadyMessage(targetId, url));
       // Auto-perceive: give agent immediate page understanding (matches nav behavior)
       try {
         const conn = await connectToSocket(sp);
@@ -6947,11 +6981,10 @@ async function main() {
         conn.end();
         if (resp.ok && resp.result) console.log('---\n' + resp.result);
       } catch (e) {
-        console.error(`Auto-perceive failed: ${e.message}`);
+        console.error(formatOpenAutoPerceiveFailure(e, targetId));
       }
     } else {
-      console.log('Timeout waiting for debugging approval. Tab created but daemon not connected.');
-      console.log('Run a command against this tab to retry.');
+      console.log(formatOpenTimeoutMessage(targetId));
     }
     return;
   }
@@ -7172,7 +7205,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, parseFlowSteps, settleFlow, flowStr,
-  formatCliError,
+  formatCliError, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets,
   doctorNextSteps, formatDoctorReport, runDoctorChecks, doctorStr,
   COMMANDS, NEEDS_TARGET,

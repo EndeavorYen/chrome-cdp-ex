@@ -206,6 +206,8 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
 node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 ```
 
+`open` prints the new target prefix plus `Next:`, `Then:`, and `Report:` continuation hints. If Chrome approval times out, it keeps the tab and prints the exact `perceive <target> -C -d 8` retry command.
+
 If a CLI command fails, read the printed `Next:` line first. Common setup, target, daemon, and CDP errors are formatted with a copy-pasteable recovery command instead of a stack trace.
 
 **Requires:** Node.js 22+ (uses built-in WebSocket). Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
@@ -355,7 +357,7 @@ cdp repeat <t> 3 click "button[data-act='attack']"
 
 ```bash
 list                               # list open tabs (shows targetId prefixes; about:blank is included as "(blank tab)")
-open   [url]                       # open new tab (default: about:blank)
+open   [url]                       # open new tab; prints Target/Next/Then/Report hints after attach
 spawn-debug-browser [edge|chrome|brave] [--port 9222] [--url URL] [--profile-dir DIR] [--exe PATH]
                                    # launch an isolated debug profile (disposable user-data-dir + remote-debugging-port)
                                    # `spawn` is a short alias

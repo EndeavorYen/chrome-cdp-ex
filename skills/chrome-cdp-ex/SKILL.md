@@ -149,7 +149,7 @@ When connected via `CDP_PORT` to an Electron app, a header line is shown:
 1ED3DBAA  Rexiano          http://localhost:5173/#/menu
 ```
 - Each line: `<8-char target ID>  <title>  <url>`. Use the target ID (e.g. `A7BA5C64`) for subsequent commands.
-- **Empty output (exit 0)** = no debuggable tabs available. Do NOT stop to ask the user for help. Instead, use `open <url>` to create a tab — this will auto-attach, wait for the user to click "Allow debugging?" in Chrome, and auto-perceive the page. Once `open` completes, you have the target ID and full page perception — proceed immediately. Do NOT suggest `--remote-debugging-port` restarts.
+- **Empty output (exit 0)** = no debuggable tabs available. Do NOT stop to ask the user for help. Instead, use `open <url>` to create a tab — this will auto-attach, wait for the user to click "Allow debugging?" in Chrome, auto-perceive the page, and print Target/Next/Then/Report continuation hints. Once `open` completes, follow those hints and proceed immediately. Do NOT suggest `--remote-debugging-port` restarts.
 - **Error output** = connection problem. Check prerequisites.
 
 ## Commands
@@ -604,7 +604,7 @@ CSS px = screenshot image px / DPR
 ## Tips
 
 - **Prefer `nav` over `open`** — `nav` reuses an already-approved tab (no prompt, no "Allow debugging?" dialog). Use `open` only when `list` is empty or the user explicitly needs multiple tabs. Even page comparisons work with a single tab — `nav` between URLs and compare perceive data from context.
-- `open` **auto-attaches + auto-perceives** — it waits up to 60s for Chrome's "Allow debugging?" approval, then returns the full page perception (same as `nav`). Do NOT stop to ask the user; just let the command run. After `open`, you have the target ID and page content — proceed immediately.
+- `open` **auto-attaches + auto-perceives** — it waits up to 60s for Chrome's "Allow debugging?" approval, then returns Target/Next/Then/Report hints plus the full page perception (same as `nav`). Do NOT stop to ask the user; just let the command run. After `open`, follow the printed continuation command immediately.
 - Prefer `snap` over `html` for page structure — compact by default, use `snap --full` for complete tree.
 - Prefer `elshot` over `shot` when verifying a specific element — it's more reliable and avoids scroll/DPR issues.
 - Use `type` (not eval) to enter text in cross-origin iframes — `click`/`clickxy` to focus first, then `type`.
