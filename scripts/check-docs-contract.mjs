@@ -27,5 +27,31 @@ if (!docs.readme.includes('Playwright is') || !docs.readme.includes('live-page p
   failures += 1;
 }
 
+const requiredReadmeSections = [
+  '## Use this when',
+  '## Do not use this when',
+  '## Five success cases',
+];
+for (const section of requiredReadmeSections) {
+  if (!docs.readme.includes(section)) {
+    console.error(`README is missing first-impression section: ${section}`);
+    failures += 1;
+  }
+}
+
+const requiredSuccessCases = [
+  'Logged-in dashboard inspection',
+  'Action evidence after form input',
+  'CSS source tracing',
+  'Long-session debugging',
+  'Workflow capture and replay',
+];
+for (const item of requiredSuccessCases) {
+  if (!docs.readme.includes(item)) {
+    console.error(`README is missing success case: ${item}`);
+    failures += 1;
+  }
+}
+
 if (failures > 0) process.exit(1);
 console.log(`Docs contract OK: ${T.COMMANDS.length} commands checked`);

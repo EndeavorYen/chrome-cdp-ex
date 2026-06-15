@@ -12,6 +12,37 @@
 
 `chrome-cdp-ex` is designed as a live-page perception and control layer for agents. Playwright is still the right tool for deterministic isolated tests; this project focuses on real browser sessions, low-token perception, layout/style awareness, CSS source tracing, and action feedback. See `docs/strategy/agent-browser-vision.md` for the product compass.
 
+## Use this when
+
+Use `chrome-cdp-ex` when the agent needs to understand or act inside a browser that already matters.
+
+- You need the user's real logged-in Chrome, Edge, Brave, Electron, or WSL2-to-Windows session.
+- You want one low-token page read before choosing what to click, fill, inspect, or debug.
+- You need action evidence: what changed after `click`, `fill`, `nav`, `inject`, or `reload`.
+- You need CSS source tracing from a visible element to the selector, stylesheet, and line.
+- You want long-session memory: console/network buffers, screenshots, reports, checkpoints, and replay.
+
+## Do not use this when
+
+Use Playwright instead when you need a clean, repeatable browser test from scratch.
+
+| Use Playwright for | Use `chrome-cdp-ex` for |
+|---|---|
+| CI suites in isolated browsers | Live user sessions and authenticated tabs |
+| Deterministic locators and assertions | Agent perception, diagnosis, and recovery |
+| Cross-browser test matrices | Chrome/CDP/Electron inspection |
+| Fresh state per test | Long-session debugging and handoff reports |
+
+## Five success cases
+
+| Case | What the agent does |
+|---|---|
+| Logged-in dashboard inspection | `doctor -> list -> perceive` reads the real dashboard without relogin or a copied screenshot. |
+| Action evidence after form input | `fill` or `click` returns dispatch, settle, and DOM diff so the agent can choose the next step. |
+| CSS source tracing | `cascade @ref background-color` shows the winning selector and source file/line to edit. |
+| Long-session debugging | `status`, `netlog`, screenshots, and `report` preserve evidence across a live tab session. |
+| Workflow capture and replay | `checkpoint`, `record-actions`, and `replay` turn exploration into a reusable debugging asset. |
+
 ## Why this exists
 
 - **Perceive-first workflow:** one call gives structure, layout, styles, coordinates, and console health.
@@ -24,6 +55,9 @@
 ## Contents
 
 - [The Redesign Experiment](#the-redesign-experiment)
+- [Use this when](#use-this-when)
+- [Do not use this when](#do-not-use-this-when)
+- [Five success cases](#five-success-cases)
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
 - [Commands (60 total)](#commands-60-total)

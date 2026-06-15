@@ -45,7 +45,7 @@
 ### Killer Path
 
 - [x] `doctor` onboarding wizard — checks Node, install path, daemon sockets, fd limit, CDP reachability, then prints next commands for `list/open -> perceive -> act -> since-action evidence -> report`.
-- [ ] README "use / do not use / 5 success cases" rewrite. Priority: P1.
+- [x] README "use / do not use / 5 success cases" rewrite. Priority: P1.
 - [ ] Action failure classifier for overlay, wrong frame, navigation, DOM rewrite, and timeout. Priority: P1.
 - [ ] Token-aware `perceive` scoring for important controls, errors, changes, and new UI. Priority: P1.
 
