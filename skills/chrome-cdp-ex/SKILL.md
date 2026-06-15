@@ -978,6 +978,17 @@ These get `@c1`, `@c2`… handles. Useful for SPAs that wrap clickable behaviour
 
 When Vite HMRs a route, `Page.frameNavigated` fires and the daemon clears its ref map automatically. The next `@ref` you try will produce the navigation-classified error. Just re-run `perceive` and continue.
 
+## Dogfood Benchmark
+
+Before making performance or adoption claims, run the live Killer Path benchmark:
+
+```bash
+npm run benchmark:killer
+npm run benchmark:killer -- --json
+```
+
+It launches a disposable debug browser against the local smoke page and measures `doctor -> list -> perceive -> act -> since-action evidence -> report`: command calls, total time, first useful observation time, estimated output tokens, useful observation tokens, auto-evidence actions, verification calls saved, and report timeline presence.
+
 ## Source
 
 **Upstream**: [pasky/chrome-cdp-skill](https://github.com/pasky/chrome-cdp-skill) (v1.0.1) — locally modified with Windows support, background observation, and additional commands.

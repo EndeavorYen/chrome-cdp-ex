@@ -62,6 +62,7 @@ Use Playwright instead when you need a clean, repeatable browser test from scrat
 - [How It Works](#how-it-works)
 - [Commands (62 total)](#commands-62-total)
 - [WSL2 -> Windows Browser Control](#wsl2---windows-browser-control)
+- [Dogfood Benchmark](#dogfood-benchmark)
 - [Contributor Checks](#contributor-checks)
 - [Credits](#credits)
 - [License](#license)
@@ -604,6 +605,17 @@ Proven pattern:
    ```
 
 See [SKILL.md](skills/chrome-cdp-ex/SKILL.md) for full WSL2 setup instructions.
+
+## Dogfood Benchmark
+
+Use the live benchmark before making performance or adoption claims:
+
+```bash
+npm run benchmark:killer
+npm run benchmark:killer -- --json
+```
+
+It launches a disposable debug browser against the local smoke page and measures the Killer Path: `doctor -> list -> perceive -> act -> since-action evidence -> report`. The JSON report includes command calls, total time, first useful observation time, estimated output tokens, useful observation tokens, auto-evidence actions, verification calls saved, and whether the session report timeline was produced.
 
 ## Contributor Checks
 
