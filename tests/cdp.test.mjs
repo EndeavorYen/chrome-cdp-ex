@@ -1237,6 +1237,45 @@ describe('Session report', () => {
     });
   });
 
+  it('includes reusable environment controls in record-actions artifacts', async () => {
+    const cdp = createMockCDP({
+      'Page.addScriptToEvaluateOnNewDocument': () => ({ identifier: 'clock-script-1' }),
+      'Runtime.evaluate': () => ({ result: { value: { ok: true } } }),
+    });
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    await T.mockStr(cdp, 'sid-1', state, ['add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}', '--content-type', 'application/json']);
+    await T.throttleStr(cdp, 'sid-1', state, ['custom', '--latency', '120', '--download', '256', '--upload', '128']);
+    await T.clockStr(cdp, 'sid-1', state, ['freeze', '--at', '2020-01-02T03:04:05.000Z']);
+
+    const model = T.buildRecordActionsModel(state);
+    const out = T.formatRecordActions(state);
+
+    expect(model.environmentCount).toBe(3);
+    expect(model.environment.map(entry => entry.type)).toEqual(['mock', 'throttle', 'clock']);
+    expect(model.environment[0]).toMatchObject({
+      index: 1,
+      type: 'mock',
+      action: 'add',
+      replayable: true,
+      command: ['mock', 'add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}', '--content-type', 'application/json'],
+    });
+    expect(model.environment[1]).toMatchObject({
+      index: 2,
+      type: 'throttle',
+      action: 'apply',
+      command: ['throttle', 'custom', '--latency', '120', '--download', '256', '--upload', '128'],
+    });
+    expect(model.environment[2]).toMatchObject({
+      index: 3,
+      type: 'clock',
+      action: 'apply',
+      command: ['clock', 'freeze', '--at', '2020-01-02T03:04:05.000Z'],
+    });
+    expect(out).toContain('Environment controls: 3');
+    expect(out).toContain('Env 1. mock add **/api/fail* --status 503 --body "{\\"ok\\":false}" --content-type application/json — replayable');
+  });
+
   it('formats record-actions text with replay drafts and honest gaps', () => {
     const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
     T.appendSessionActionLog(state, T.createActionResult({
@@ -1360,6 +1399,34 @@ describe('Session report', () => {
     expect(out).toContain('await page.locator("#combat").click();');
     expect(out).toContain('Not exported: click @1');
     expect(out).toContain('needs stable selector');
+  });
+
+  it('exports portable network mocks before Playwright action steps', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.environmentLog.push({
+      ts: Date.parse('2026-06-16T00:00:01.000Z'),
+      kind: 'mock',
+      action: 'add',
+      rule: {
+        urlPattern: '**/api/fail*',
+        status: 503,
+        body: '{"ok":false}',
+        contentType: 'application/json',
+      },
+    });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat', commandArgs: ['#combat'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: 'Page changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const out = T.formatExportPlaywright(state);
+
+    expect(out.indexOf('await page.route("**/api/fail*"')).toBeLessThan(out.indexOf('await page.locator("#combat").click();'));
+    expect(out).toContain('route.fulfill({ status: 503, contentType: "application/json", body: "{\\"ok\\":false}" })');
   });
 
   it('exports react fill actions without treating the flag as a selector', () => {
@@ -5004,6 +5071,37 @@ describe('replayActionsStr', () => {
       actions,
     };
   }
+
+  it('replays environment controls before recorded actions', async () => {
+    const calls = [];
+    const source = artifact([
+      { index: 1, action: 'click', command: ['click', '#combat'], replayable: true, needsInput: [] },
+    ]);
+    source.environmentCount = 3;
+    source.environment = [
+      { index: 1, type: 'mock', action: 'add', command: ['mock', 'add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}'], replayable: true, needsInput: [] },
+      { index: 2, type: 'throttle', action: 'apply', command: ['throttle', 'slow-3g'], replayable: true, needsInput: [] },
+      { index: 3, type: 'clock', action: 'apply', command: ['clock', 'freeze', '--at', '2020-01-02T03:04:05.000Z'], replayable: true, needsInput: [] },
+    ];
+
+    const out = await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step);
+        return { ok: true, result: `${step.cmd} ok` };
+      },
+    }, ['--json', JSON.stringify(source)]);
+
+    expect(calls).toEqual([
+      { cmd: 'mock', args: ['add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}'] },
+      { cmd: 'throttle', args: ['slow-3g'] },
+      { cmd: 'clock', args: ['freeze', '--at', '2020-01-02T03:04:05.000Z'] },
+      { cmd: 'click', args: ['#combat'] },
+    ]);
+    expect(out).toContain('Environment: 3 step(s)');
+    expect(out).toContain('[env 1/3] mock add **/api/fail* --status 503 --body "{\\"ok\\":false}"');
+    expect(out).toContain('[1/1] click #combat');
+    expect(out).toContain('Done: 4 ok, 0 failed, 0 skipped');
+  });
 
   it('runs replayable recorded commands sequentially', async () => {
     const calls = [];

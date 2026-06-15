@@ -24,6 +24,7 @@ const DAEMON_ALLOW_RETRIES = 200;  // For open --attach: 200 * 300ms = 60s
 const DAEMON_ALLOW_DELAY = 300;
 const MIN_TARGET_PREFIX_LEN = 8;
 const MAX_ACTION_LOG_ENTRIES = 100;
+const MAX_ENVIRONMENT_LOG_ENTRIES = 100;
 const MAX_SCREENSHOT_ENTRIES = 100;
 const MAX_NETWORK_MOCK_HITS = 50;
 const IS_WINDOWS = process.platform === 'win32';
@@ -1780,6 +1781,17 @@ function appendSessionEventLog(session, event, { writer = appendFileSync } = {})
   }
 }
 
+function appendSessionEnvironmentLog(session, event, { ts = Date.now() } = {}) {
+  if (!session.environmentLog) session.environmentLog = [];
+  const entry = { ...event, ts: event.ts ?? ts };
+  session.environmentLog.push(entry);
+  if (session.environmentLog.length > MAX_ENVIRONMENT_LOG_ENTRIES) {
+    session.environmentLog.splice(0, session.environmentLog.length - MAX_ENVIRONMENT_LOG_ENTRIES);
+  }
+  appendSessionEventLog(session, entry);
+  return entry;
+}
+
 function initializeSessionLog(session, { ts = session.createdAt || Date.now(), writer = writeFileSync } = {}) {
   if (!session.logPath) return null;
   const payload = {
@@ -1970,6 +1982,103 @@ function redactedCommandNeedsInput(action) {
   return ['input'];
 }
 
+function mockEnvironmentCommand(entry = {}) {
+  if (entry.action === 'clear') return ['mock', 'clear'];
+  const rule = entry.rule || {};
+  const command = ['mock', 'add', String(rule.urlPattern || '<urlPattern>'), '--status', String(rule.status ?? 200)];
+  if (rule.body != null && rule.body !== '') command.push('--body', String(rule.body));
+  if (rule.contentType) command.push('--content-type', String(rule.contentType));
+  if (rule.method) command.push('--method', String(rule.method));
+  return command;
+}
+
+function throttleEnvironmentCommand(entry = {}) {
+  const throttle = entry.throttle || {};
+  const profile = throttle.profile || 'off';
+  if (profile === 'custom') {
+    return [
+      'throttle', 'custom',
+      '--latency', String(throttle.latencyMs || 0),
+      '--download', String(throttle.downloadKbps ?? 0),
+      '--upload', String(throttle.uploadKbps ?? 0),
+    ];
+  }
+  return ['throttle', profile];
+}
+
+function clockEnvironmentCommand(entry = {}) {
+  if (entry.action === 'reset' || !entry.clock) return ['clock', 'reset'];
+  const clock = entry.clock || {};
+  if (clock.profile === 'freeze') return ['clock', 'freeze', '--at', new Date(clock.atMs).toISOString()];
+  if (clock.profile === 'offset') return ['clock', 'offset', '--ms', String(clock.offsetMs || 0)];
+  return ['clock', 'reset'];
+}
+
+function environmentCommandFromLogEntry(entry = {}) {
+  switch (entry.kind || entry.type) {
+    case 'mock':
+      return mockEnvironmentCommand(entry);
+    case 'throttle':
+      return throttleEnvironmentCommand(entry);
+    case 'clock':
+      return clockEnvironmentCommand(entry);
+    default:
+      return [];
+  }
+}
+
+function sanitizeEnvironmentDetails(entry = {}) {
+  if ((entry.kind || entry.type) === 'mock' && entry.rule) {
+    return {
+      rule: {
+        urlPattern: entry.rule.urlPattern,
+        method: entry.rule.method || null,
+        status: entry.rule.status,
+        contentType: entry.rule.contentType,
+        body: entry.rule.body || '',
+      },
+    };
+  }
+  if ((entry.kind || entry.type) === 'throttle' && entry.throttle) {
+    return {
+      throttle: {
+        profile: entry.throttle.profile || 'off',
+        offline: entry.throttle.offline === true,
+        latencyMs: entry.throttle.latencyMs || 0,
+        downloadKbps: entry.throttle.downloadKbps,
+        uploadKbps: entry.throttle.uploadKbps,
+      },
+    };
+  }
+  if ((entry.kind || entry.type) === 'clock' && entry.clock) {
+    return {
+      clock: {
+        profile: entry.clock.profile || 'real',
+        atMs: entry.clock.atMs ?? null,
+        offsetMs: entry.clock.offsetMs || 0,
+      },
+    };
+  }
+  return {};
+}
+
+function buildRecordEnvironmentModel(session) {
+  return (session.environmentLog || []).map((entry, index) => {
+    const command = environmentCommandFromLogEntry(entry);
+    const type = entry.type || entry.kind || 'environment';
+    return {
+      index: index + 1,
+      ts: entry.ts || null,
+      type,
+      action: entry.action || (type === 'throttle' ? 'apply' : 'set'),
+      command,
+      replayable: command.length > 0,
+      needsInput: command.length > 0 ? [] : ['review'],
+      ...sanitizeEnvironmentDetails(entry),
+    };
+  });
+}
+
 function buildRecordActionsModel(session) {
   const actions = (session.actionLog || []).map((entry, index) => {
     const inferred = inferRecordActionCommand(entry);
@@ -1998,11 +2107,14 @@ function buildRecordActionsModel(session) {
       },
     };
   });
+  const environment = buildRecordEnvironmentModel(session);
   return {
     schema: 'chrome-cdp-ex.record-actions.v1',
     targetId: session.targetId,
     sessionId: session.sessionId,
     source: 'session-action-log',
+    environmentCount: environment.length,
+    environment,
     actionCount: actions.length,
     actions,
   };
@@ -2023,6 +2135,14 @@ function formatRecordActions(session, { format = 'text' } = {}) {
     `Session: ${model.targetId}`,
     'Source: current daemon session action log',
   ];
+  if (model.environment.length) {
+    lines.push(`Environment controls: ${model.environmentCount}`);
+    for (const entry of model.environment) {
+      const status = entry.replayable ? 'replayable' : (entry.needsInput.length ? 'needs input' : 'review needed');
+      lines.push(`Env ${entry.index}. ${formatCommandLine(entry.command)} — ${status}`);
+      if (entry.needsInput.length) lines.push(`   Missing: ${entry.needsInput.join(', ')}`);
+    }
+  }
   if (model.actions.length === 0) {
     lines.push('No actions recorded yet. Run click/fill/press/nav/inject/reload, then record-actions again.');
     return lines.join('\n');
@@ -2147,8 +2267,65 @@ function playwrightStepFromCommand(action = {}) {
   }
 }
 
+function parseFlagArgs(args = []) {
+  const opts = {};
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (String(token || '').startsWith('--')) {
+      opts[token] = args[++i];
+    }
+  }
+  return opts;
+}
+
+function playwrightStepFromEnvironment(entry = {}) {
+  const command = Array.isArray(entry.command) ? entry.command.map(v => String(v)) : [];
+  const commandText = command.length ? formatCommandLine(command) : `${entry.type || 'environment'} <missing command>`;
+  const skip = (reason) => ({
+    lines: [
+      `// Environment not exported: ${commandText}`,
+      `// Reason: ${reason}`,
+    ],
+    exported: false,
+  });
+
+  if (!command.length || !command[0]) return skip('missing command');
+  if (command.includes('<redacted>')) return skip('redacted input');
+  const [cmd, mode, pattern, ...rest] = command;
+  if (cmd === 'mock' && mode === 'add') {
+    if (!pattern || pattern.startsWith('<')) return skip('missing URL pattern');
+    const flags = parseFlagArgs(rest);
+    const status = Number(flags['--status'] || 200);
+    const contentType = flags['--content-type'] || 'text/plain; charset=utf-8';
+    const body = flags['--body'] || '';
+    const method = flags['--method'];
+    if (method) {
+      return {
+        lines: [
+          `await page.route(${JSON.stringify(pattern)}, route => {`,
+          `  if (route.request().method() !== ${JSON.stringify(method)}) return route.continue();`,
+          `  return route.fulfill({ status: ${Number.isFinite(status) ? status : 200}, contentType: ${JSON.stringify(contentType)}, body: ${JSON.stringify(body)} });`,
+          '});',
+        ],
+        exported: true,
+      };
+    }
+    return {
+      lines: [
+        `await page.route(${JSON.stringify(pattern)}, route => route.fulfill({ status: ${Number.isFinite(status) ? status : 200}, contentType: ${JSON.stringify(contentType)}, body: ${JSON.stringify(body)} }));`,
+      ],
+      exported: true,
+    };
+  }
+  if (cmd === 'mock' && mode === 'clear') return skip('Playwright routes are test-scoped; review whether unroute is needed');
+  if (cmd === 'throttle') return skip('chrome-cdp-ex live network throttling has no portable exporter step yet');
+  if (cmd === 'clock') return skip('chrome-cdp-ex live clock override has no portable exporter step yet');
+  return skip(`unsupported environment command: ${cmd}`);
+}
+
 function formatPlaywrightSpecFromRecordActions(model, { title = 'chrome-cdp-ex exported workflow' } = {}) {
   const actions = Array.isArray(model?.actions) ? model.actions : [];
+  const environment = Array.isArray(model?.environment) ? model.environment : [];
   const lines = [
     "import { test } from '@playwright/test';",
     '',
@@ -2157,6 +2334,14 @@ function formatPlaywrightSpecFromRecordActions(model, { title = 'chrome-cdp-ex e
     '',
     `test(${singleQuotedJsString(title)}, async ({ page }) => {`,
   ];
+  let environmentExported = 0;
+  let environmentSkipped = 0;
+  for (const entry of environment) {
+    const step = playwrightStepFromEnvironment(entry);
+    if (step.exported) environmentExported++;
+    else environmentSkipped++;
+    for (const line of step.lines) lines.push(`  ${line}`);
+  }
   let exported = 0;
   let skipped = 0;
   for (const action of actions) {
@@ -2165,11 +2350,14 @@ function formatPlaywrightSpecFromRecordActions(model, { title = 'chrome-cdp-ex e
     else skipped++;
     for (const line of step.lines) lines.push(`  ${line}`);
   }
-  if (actions.length === 0) {
+  if (actions.length === 0 && environment.length === 0) {
     lines.push('  // No recorded actions yet. Run click/fill/nav, then export-playwright again.');
   }
   lines.push('});');
   lines.push('');
+  if (environment.length) {
+    lines.push(`// Environment exported ${environmentExported}/${environment.length} step(s); ${environmentSkipped} need review.`);
+  }
   lines.push(`// Exported ${exported}/${actions.length} step(s); ${skipped} need review.`);
   return lines.join('\n');
 }
@@ -2217,6 +2405,7 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
     networkMocks: [],
     networkMockHits: [],
     clock: null,
+    environmentLog: [],
     actionLog: [],
     screenshots: [],
     diffShot: null,
@@ -4591,12 +4780,12 @@ async function mockStr(cdp, sid, session, args = []) {
   if (parsed.mode === 'add') {
     session.networkMocks.push(parsed.rule);
     await applyNetworkMocks(cdp, sid, session);
-    appendSessionEventLog(session, { kind: 'mock', ts: Date.now(), action: 'add', rule: parsed.rule });
+    appendSessionEnvironmentLog(session, { kind: 'mock', ts: Date.now(), action: 'add', rule: parsed.rule });
   } else if (parsed.mode === 'clear') {
     session.networkMocks = [];
     session.networkMockHits = [];
     await applyNetworkMocks(cdp, sid, session);
-    appendSessionEventLog(session, { kind: 'mock', ts: Date.now(), action: 'clear' });
+    appendSessionEnvironmentLog(session, { kind: 'mock', ts: Date.now(), action: 'clear' });
   }
   const model = buildMockModel(session, parsed);
   return parsed.format === 'json' ? formatJson(model) : formatMockText(model);
@@ -4778,11 +4967,11 @@ async function clockStr(cdp, sid, session, args = []) {
       scriptIdentifier: added.identifier || null,
       appliedAt: Date.now(),
     };
-    appendSessionEventLog(session, { kind: 'clock', ts: session.clock.appliedAt, action: 'apply', clock: session.clock });
+    appendSessionEnvironmentLog(session, { kind: 'clock', ts: session.clock.appliedAt, action: 'apply', clock: session.clock });
   } else if (parsed.mode === 'reset') {
     await removeClockScriptIfNeeded(cdp, sid, session);
     await cdp.send('Runtime.evaluate', { expression: clockPageScript(parsed), returnByValue: true, awaitPromise: true }, sid);
-    appendSessionEventLog(session, { kind: 'clock', ts: Date.now(), action: 'reset' });
+    appendSessionEnvironmentLog(session, { kind: 'clock', ts: Date.now(), action: 'reset' });
     session.clock = null;
   }
   const model = buildClockModel(session, parsed);
@@ -4904,7 +5093,7 @@ async function throttleStr(cdp, sid, session, args = []) {
       cdpParams: parsed.cdpParams,
       appliedAt: Date.now(),
     };
-    appendSessionEventLog(session, { kind: 'throttle', ts: session.networkThrottle.appliedAt, throttle: session.networkThrottle });
+    appendSessionEnvironmentLog(session, { kind: 'throttle', ts: session.networkThrottle.appliedAt, action: 'apply', throttle: session.networkThrottle });
   }
   const model = throttleModel(session, parsed);
   return parsed.format === 'json' ? formatJson(model) : formatThrottleText(model);
@@ -5965,6 +6154,7 @@ function parseReplayArtifact(raw) {
     throw new Error(`replay: unsupported artifact schema ${artifact.schema || '(missing)'}`);
   }
   if (!Array.isArray(artifact.actions)) throw new Error('replay: artifact.actions must be an array');
+  if (artifact.environment != null && !Array.isArray(artifact.environment)) throw new Error('replay: artifact.environment must be an array when provided');
   return artifact;
 }
 
@@ -5992,37 +6182,52 @@ function replayStepFromAction(action = {}) {
 async function replayActionsStr({ run }, args) {
   const opts = parseReplayArgs(args);
   const actions = opts.artifact.actions;
+  const environment = Array.isArray(opts.artifact.environment) ? opts.artifact.environment : [];
   const total = actions.length;
   const lines = [
     `Replay: ${total} step(s)`,
     `Source: ${opts.source}`,
   ];
+  if (environment.length) lines.push(`Environment: ${environment.length} step(s)`);
   let okCount = 0, failCount = 0, skipCount = 0;
-  for (let i = 0; i < actions.length; i++) {
-    const action = actions[i];
-    const step = replayStepFromAction(action);
+  const runReplayStep = async (step, label, haltText) => {
     if (step.skip) {
       skipCount++;
-      lines.push(`[${i + 1}/${total}] skip ${step.commandText}`);
+      lines.push(`${label} skip ${step.commandText}`);
       if (step.reason) lines.push(`  Reason: ${step.reason}`);
       if (step.missing?.length) lines.push(`  Missing: ${step.missing.join(', ')}`);
-      continue;
+      return true;
     }
-    lines.push(`[${i + 1}/${total}] ${step.commandText}`);
+    lines.push(`${label} ${step.commandText}`);
     const result = await run({ cmd: step.cmd, args: step.args });
     if (result?.ok) {
       okCount++;
       const body = (result.result || '').toString().split('\n')[0].slice(0, 240);
       if (body) lines.push(`  ok: ${body}`);
       else lines.push('  ok');
-    } else {
-      failCount++;
-      lines.push(`  ✗ ${result?.error || 'unknown error'}`);
-      if (!opts.continueOnError) {
-        lines.push(`Replay halted at step ${i + 1}/${total} (use --continue to keep going).`);
-        break;
-      }
+      return true;
     }
+    failCount++;
+    lines.push(`  ✗ ${result?.error || 'unknown error'}`);
+    if (!opts.continueOnError) {
+      lines.push(`${haltText} (use --continue to keep going).`);
+      return false;
+    }
+    return true;
+  };
+  for (let i = 0; i < environment.length; i++) {
+    const step = replayStepFromAction(environment[i]);
+    const keepGoing = await runReplayStep(step, `[env ${i + 1}/${environment.length}]`, `Replay halted at environment step ${i + 1}/${environment.length}`);
+    if (!keepGoing) {
+      lines.push(`Done: ${okCount} ok, ${failCount} failed, ${skipCount} skipped`);
+      return lines.join('\n');
+    }
+  }
+  for (let i = 0; i < actions.length; i++) {
+    const action = actions[i];
+    const step = replayStepFromAction(action);
+    const keepGoing = await runReplayStep(step, `[${i + 1}/${total}]`, `Replay halted at step ${i + 1}/${total}`);
+    if (!keepGoing) break;
   }
   lines.push(`Done: ${okCount} ok, ${failCount} failed, ${skipCount} skipped`);
   return lines.join('\n');
@@ -7588,9 +7793,9 @@ Usage: cdp <command> [args]
   checkpoint <target> [--format json]  Capture URL, cookies, localStorage, and sessionStorage
   restore <target> --file <path>     Restore a checkpoint artifact into the live page
   restore <target> --json <json>     Restore an inline checkpoint JSON artifact
-  record-actions <target>           Export session action log as replay-oriented text or JSON
-  export-playwright <target>         Export current action log as a Playwright spec draft
-  replay <target> --file <path>      Replay a record-actions JSON artifact against the live page
+  record-actions <target>           Export action log + mock/clock/throttle environment as text or JSON
+  export-playwright <target>         Export current workflow as a Playwright spec draft
+  replay <target> --file <path>      Replay environment controls + actions against the live page
   replay <target> --json <json>      Replay an inline record-actions JSON artifact
   frame <target> [--format json]     List page frames with stable @fN refs (alias: frames)
   overlay <target> [sel|@ref] [--format json]  Detect visible dialogs/overlays and target blockers
@@ -8153,6 +8358,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
+  appendSessionEnvironmentLog, buildRecordEnvironmentModel,
   initializeSessionLog, formatSessionReport, sessionScreenshotDir,
   ensureSessionScreenshotDir, nextSessionScreenshotPath,
   buildRecordActionsModel, formatRecordActions,

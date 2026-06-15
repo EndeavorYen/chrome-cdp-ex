@@ -263,6 +263,13 @@ const recordActions = JSON.parse(recordActionsJson);
 if (recordActions.schema !== 'chrome-cdp-ex.record-actions.v1') {
   throw new Error(`record-actions json schema mismatch:\n${recordActionsJson}`);
 }
+if (!Array.isArray(recordActions.environment) || recordActions.environmentCount < 6) {
+  throw new Error(`record-actions should include reusable environment controls\nOutput:\n${recordActionsJson}`);
+}
+const environmentCommands = recordActions.environment.map(entry => entry.command?.join(' '));
+if (!environmentCommands.includes('throttle slow-3g') || !environmentCommands.some(command => command?.startsWith('mock add **/api/mock* --status 418')) || !environmentCommands.includes('clock freeze --at 2020-01-02T03:04:05.000Z')) {
+  throw new Error(`record-actions should capture throttle/mock/clock environment commands\nOutput:\n${recordActionsJson}`);
+}
 if (!recordActions.actions.some(action => action.action === 'fill' && action.command?.join(' ') === 'fill #cmd look trainer' && action.replayable)) {
   throw new Error(`record-actions should include replayable fill command\nOutput:\n${recordActionsJson}`);
 }
@@ -271,12 +278,15 @@ if (!recordActions.actions.some(action => action.action === 'click' && action.co
 }
 const playwrightExport = step('export playwright', () => run(['export-playwright', target]));
 assertIncludes(playwrightExport, "import { test } from '@playwright/test';", 'export-playwright import');
+assertIncludes(playwrightExport, 'await page.route("**/api/mock*"', 'export-playwright mock route');
 assertIncludes(playwrightExport, 'await page.locator("#cmd").fill("look trainer");', 'export-playwright fill');
 assertIncludes(playwrightExport, 'await page.locator("#combat").click();', 'export-playwright click');
 const replayArtifactPath = resolve(profileDir, 'record-actions.json');
 writeFileSync(replayArtifactPath, recordActionsJson);
 const replayOut = step('replay record-actions artifact', () => run(['replay', target, '--file', replayArtifactPath], { timeout: 30000 }));
 assertIncludes(replayOut, 'Replay:', 'replay');
+assertIncludes(replayOut, 'Environment:', 'replay environment');
+assertIncludes(replayOut, 'mock add **/api/mock*', 'replay mock environment');
 assertIncludes(replayOut, 'fill #cmd "look trainer"', 'replay fill');
 assertIncludes(replayOut, 'click #combat', 'replay click');
 assertIncludes(replayOut, 'Done:', 'replay summary');
