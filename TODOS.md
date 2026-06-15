@@ -38,13 +38,14 @@
 - [x] `perceive --since-action`.
 - [x] Per-target daemon log file.
 - [x] Session screenshot directory.
-- [ ] `record-actions`.
+- [x] `record-actions`.
 - [x] `report <session>` action timeline.
 
 ### Feature Roadmap (medium effort)
 
 - [x] `perceive --since-action` — diff from the last mutating action baseline instead of the last manual `perceive`. Priority: P1.
-- [ ] `record-actions` / `replay` — capture user manual actions for deterministic replay. Priority: P1.
+- [x] `record-actions` — export the current session action log as replay-oriented text/JSON. Priority: P1.
+- [ ] `replay` — execute a recorded action artifact against the live page. Priority: P1.
 - [ ] `checkpoint` / `restore` — save/restore page state (cookies, localStorage, URL) for stateful testing. Priority: P1.
 - [ ] `mock` / `throttle` / `clock` — request fixtures, network throttling, and `Date.now()` control. Priority: P2.
 - [ ] `summary --schema=json` — structured perceive output for LLM tool-calling. Priority: P2.

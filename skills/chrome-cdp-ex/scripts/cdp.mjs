@@ -1069,6 +1069,31 @@ function summarizeActionDomDiff(domDiff) {
   return { summary, sample };
 }
 
+const SENSITIVE_ACTION_TARGET_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn)\b/i;
+
+function isSensitiveActionTarget(action, target = {}) {
+  if (action !== 'fill' && action !== 'type') return false;
+  const probe = [
+    target.input,
+    target.label,
+    ...(Array.isArray(target.commandArgs) ? target.commandArgs.slice(0, 1) : []),
+  ].filter(Boolean).join(' ');
+  return SENSITIVE_ACTION_TARGET_RE.test(probe);
+}
+
+function sanitizeActionTargetForLog(action, target = null) {
+  if (!target || typeof target !== 'object') return target;
+  const sanitized = {
+    ...target,
+    commandArgs: Array.isArray(target.commandArgs) ? [...target.commandArgs] : target.commandArgs,
+  };
+  if (isSensitiveActionTarget(action, sanitized) && Array.isArray(sanitized.commandArgs) && sanitized.commandArgs.length > 1) {
+    sanitized.commandArgs = sanitized.commandArgs.map((arg, index) => index === 0 ? arg : '<redacted>');
+    sanitized.redacted = [...(sanitized.redacted || []), 'commandArgs'];
+  }
+  return sanitized;
+}
+
 function sessionLogPath(targetId, runtimeDir = RUNTIME_DIR) {
   const safeTarget = String(targetId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
   return resolve(runtimeDir, `cdp-${safeTarget}.log`);
@@ -1139,10 +1164,11 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
   if (!session.actionLog) session.actionLog = [];
   const domDiff = actionResult.effects?.domDiff || '';
   const { summary, sample } = summarizeActionDomDiff(domDiff);
+  const target = sanitizeActionTargetForLog(actionResult.action, actionResult.target || null);
   const entry = {
     ts,
     action: actionResult.action,
-    target: actionResult.target || null,
+    target,
     dispatch: actionResult.dispatch || null,
     settle: actionResult.settle || null,
     effectSummary: summary,
@@ -1210,6 +1236,146 @@ function formatSessionReport(session, { now = Date.now() } = {}) {
     }
   }
   lines.push('', 'Next: use `perceive --since-action` to re-check the last action, or continue from the timeline above.');
+  return lines.join('\n');
+}
+
+function commandArgsFromTarget(entry, fallbackArgs = []) {
+  const args = entry.target && Array.isArray(entry.target.commandArgs)
+    ? entry.target.commandArgs
+    : fallbackArgs;
+  return args.filter(v => v !== undefined && v !== null).map(v => String(v));
+}
+
+function inferRecordActionCommand(entry) {
+  const targetInput = entry.target?.input || '';
+  const commandName = entry.target?.commandName || entry.action;
+  const explicitArgs = entry.target && Array.isArray(entry.target.commandArgs);
+  if (explicitArgs) {
+    const args = commandArgsFromTarget(entry);
+    const needsInput = args.includes('<redacted>') ? redactedCommandNeedsInput(entry.action) : [];
+    return { command: [commandName, ...args], replayable: needsInput.length === 0, needsInput };
+  }
+
+  switch (entry.action) {
+    case 'click':
+    case 'jsclick':
+      return targetInput
+        ? { command: [entry.action, targetInput], replayable: true, needsInput: [] }
+        : { command: [entry.action, '<selector|@ref>'], replayable: false, needsInput: ['target'] };
+    case 'clickxy': {
+      const parts = targetInput.split(',').map(s => s.trim()).filter(Boolean);
+      return parts.length >= 2
+        ? { command: ['clickxy', parts[0], parts[1]], replayable: true, needsInput: [] }
+        : { command: ['clickxy', '<x>', '<y>'], replayable: false, needsInput: ['coordinates'] };
+    }
+    case 'press':
+    case 'scroll':
+    case 'nav':
+    case 'viewport':
+      return targetInput
+        ? { command: [entry.action, ...targetInput.split(/\s+/).filter(Boolean)], replayable: true, needsInput: [] }
+        : { command: [entry.action, '<input>'], replayable: false, needsInput: ['input'] };
+    case 'back':
+    case 'forward':
+    case 'reload':
+    case 'dismiss-modal':
+      return { command: [entry.action], replayable: true, needsInput: [] };
+    case 'fill':
+      return {
+        command: ['fill', targetInput || '<selector|@ref>', '<text>'],
+        replayable: false,
+        needsInput: targetInput ? ['text'] : ['target', 'text'],
+      };
+    case 'select':
+      return {
+        command: ['select', targetInput || '<selector>', '<value>'],
+        replayable: false,
+        needsInput: targetInput ? ['value'] : ['target', 'value'],
+      };
+    case 'type':
+      return { command: ['type', '<text>'], replayable: false, needsInput: ['text'] };
+    case 'inject':
+      return { command: ['inject', targetInput || '<type>', '<content>'], replayable: false, needsInput: ['content'] };
+    default:
+      return {
+        command: targetInput ? [entry.action, targetInput] : [entry.action],
+        replayable: false,
+        needsInput: ['review'],
+      };
+  }
+}
+
+function redactedCommandNeedsInput(action) {
+  if (action === 'fill' || action === 'type') return ['text'];
+  if (action === 'select') return ['value'];
+  if (action === 'inject') return ['content'];
+  return ['input'];
+}
+
+function buildRecordActionsModel(session) {
+  const actions = (session.actionLog || []).map((entry, index) => {
+    const inferred = inferRecordActionCommand(entry);
+    return {
+      index: index + 1,
+      ts: entry.ts,
+      action: entry.action,
+      target: entry.target || null,
+      command: inferred.command,
+      replayable: inferred.replayable,
+      needsInput: inferred.needsInput,
+      evidence: {
+        dispatchMethod: entry.dispatch?.method || null,
+        settleOk: entry.settle?.ok ?? null,
+        settleDurationMs: entry.settle?.durationMs ?? null,
+        effectSummary: entry.effectSummary || null,
+        effectSample: entry.effectSample || null,
+        nextHint: entry.nextHint || null,
+      },
+    };
+  });
+  return {
+    schema: 'chrome-cdp-ex.record-actions.v1',
+    targetId: session.targetId,
+    sessionId: session.sessionId,
+    source: 'session-action-log',
+    actionCount: actions.length,
+    actions,
+  };
+}
+
+function formatCommandLine(command) {
+  return (command || []).map(arg => {
+    const s = String(arg);
+    return /^[^\s"']+$/.test(s) ? s : JSON.stringify(s);
+  }).join(' ');
+}
+
+function formatRecordActions(session, { format = 'text' } = {}) {
+  const model = buildRecordActionsModel(session);
+  if (format === 'json') return formatJson(model);
+  const lines = [
+    `Recorded actions: ${model.actionCount}`,
+    `Session: ${model.targetId}`,
+    'Source: current daemon session action log',
+  ];
+  if (model.actions.length === 0) {
+    lines.push('No actions recorded yet. Run click/fill/press/nav/inject/reload, then record-actions again.');
+    return lines.join('\n');
+  }
+  for (const step of model.actions) {
+    const label = step.target?.label || step.target?.input || '';
+    const status = step.replayable ? 'replayable' : (step.needsInput.length ? 'needs input' : 'review needed');
+    lines.push(`${step.index}. ${step.action}${label ? ` ${label}` : ''} — ${status}`);
+    lines.push(`   Replay: ${formatCommandLine(step.command)}`);
+    if (step.needsInput.length) lines.push(`   Missing: ${step.needsInput.join(', ')}`);
+    if (step.evidence.settleOk !== null) {
+      const settle = step.evidence.settleOk ? 'ok' : 'not confirmed';
+      const duration = Number.isFinite(step.evidence.settleDurationMs) ? ` in ${step.evidence.settleDurationMs}ms` : '';
+      lines.push(`   Settle: ${settle}${duration}`);
+    }
+    if (step.evidence.effectSummary) lines.push(`   Evidence: ${step.evidence.effectSummary}`);
+    if (step.evidence.effectSample) lines.push(`   Sample: ${step.evidence.effectSample}`);
+  }
   return lines.join('\n');
 }
 
@@ -4460,7 +4626,7 @@ async function runDaemon(targetId) {
           result = await actionFeedback(
             'nav',
             () => navStr(cdp, sessionId, args[0]),
-            { input: args[0], resolvedBy: 'url', label: args[0] || '' },
+            { input: args[0], resolvedBy: 'url', label: args[0] || '', commandArgs: [args[0]] },
             'full-perceive',
             observeFullPerceive
           );
@@ -4514,6 +4680,11 @@ async function runDaemon(targetId) {
           result = formatSessionReport(session);
           break;
         }
+        case 'record-actions': case 'recordactions': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = formatRecordActions(session, { format: fopts.format });
+          break;
+        }
         case 'perceive': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
           const popts = parsePerceiveArgs(fopts.args);
@@ -4535,32 +4706,32 @@ async function runDaemon(targetId) {
           // Useful when overlays or weird hit testing block the realistic
           // mouse path; opt-in only so default behaviour is unchanged.
           if (args[0] === '--js' || args[0] === '-j') {
-            result = await actionFeedback('click', () => jsClickStr(cdp, sessionId, args[1], refMap, refState), { input: args[1], resolvedBy: 'selector-or-ref', label: args[1] || '' });
+            result = await actionFeedback('click', () => jsClickStr(cdp, sessionId, args[1], refMap, refState), { input: args[1], resolvedBy: 'selector-or-ref', label: args[1] || '', commandArgs: ['--js', args[1]] });
           } else {
-            result = await actionFeedback('click', () => clickStr(cdp, sessionId, args[0], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '' });
+            result = await actionFeedback('click', () => clickStr(cdp, sessionId, args[0], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '', commandArgs: [args[0]] });
           }
           break;
         }
-        case 'jsclick': result = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, args[0], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '' }); break;
-        case 'clickxy': result = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, args[0], args[1]), { input: `${args[0]},${args[1]}`, resolvedBy: 'coordinates', label: `${args[0]},${args[1]}` }); break;
-        case 'type': result = await actionFeedback('type', () => typeStr(cdp, sessionId, args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus' }); break;
+        case 'jsclick': result = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, args[0], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '', commandArgs: [args[0]] }); break;
+        case 'clickxy': result = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, args[0], args[1]), { input: `${args[0]},${args[1]}`, resolvedBy: 'coordinates', label: `${args[0]},${args[1]}`, commandArgs: [args[0], args[1]] }); break;
+        case 'type': result = await actionFeedback('type', () => typeStr(cdp, sessionId, args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [args[0]] }); break;
         case 'press': {
-          result = await actionFeedback('press', () => pressStr(cdp, sessionId, args[0]), { input: args[0], resolvedBy: 'key', label: args[0] || '' });
+          result = await actionFeedback('press', () => pressStr(cdp, sessionId, args[0]), { input: args[0], resolvedBy: 'key', label: args[0] || '', commandArgs: [args[0]] });
           break;
         }
         case 'scroll': {
-          result = await actionFeedback('scroll', () => scrollStr(cdp, sessionId, args[0], args[1]), { input: [args[0], args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: args[0] || 'scroll' });
+          result = await actionFeedback('scroll', () => scrollStr(cdp, sessionId, args[0], args[1]), { input: [args[0], args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: args[0] || 'scroll', commandArgs: [args[0], args[1]] });
           break;
         }
         case 'hover': result = await hoverStr(cdp, sessionId, args[0], refMap, refState); break;
         case 'waitfor': result = await waitForStr(cdp, sessionId, args, refMap, refState); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'fill': {
-          if (args[0] === '--react') result = await actionFeedback('fill', () => fillStr(cdp, sessionId, args[1], args[2], refMap, refState, { react: true }), { input: args[1], resolvedBy: 'selector-or-ref', label: args[1] || '' });
-          else result = await actionFeedback('fill', () => fillStr(cdp, sessionId, args[0], args[1], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '' });
+          if (args[0] === '--react') result = await actionFeedback('fill', () => fillStr(cdp, sessionId, args[1], args[2], refMap, refState, { react: true }), { input: args[1], resolvedBy: 'selector-or-ref', label: args[1] || '', commandArgs: ['--react', args[1], args[2]] });
+          else result = await actionFeedback('fill', () => fillStr(cdp, sessionId, args[0], args[1], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '', commandArgs: [args[0], args[1]] });
           break;
         }
-        case 'select': result = await actionFeedback('select', () => selectStr(cdp, sessionId, args[0], args[1]), { input: args[0], resolvedBy: 'selector', label: args[0] || '' }); break;
+        case 'select': result = await actionFeedback('select', () => selectStr(cdp, sessionId, args[0], args[1]), { input: args[0], resolvedBy: 'selector', label: args[0] || '', commandArgs: [args[0], args[1]] }); break;
         case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
         case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
         case 'styles': result = await stylesStr(cdp, sessionId, args[0]); break;
@@ -4569,29 +4740,29 @@ async function runDaemon(targetId) {
         case 'cookiedel': result = await cookieDelStr(cdp, sessionId, args[0]); break;
         case 'dialog': result = dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]); break;
         case 'viewport': {
-          if (args[0]) result = await actionFeedback('viewport', () => viewportStr(cdp, sessionId, args[0]), { input: args[0], resolvedBy: 'viewport', label: args[0] }); // auto-diff when resizing
+          if (args[0]) result = await actionFeedback('viewport', () => viewportStr(cdp, sessionId, args[0]), { input: args[0], resolvedBy: 'viewport', label: args[0], commandArgs: [args[0]] }); // auto-diff when resizing
           else result = await viewportStr(cdp, sessionId, args[0]);
           break;
         }
         case 'upload': result = await uploadStr(cdp, sessionId, args[0], args[1]); break;
         case 'text': result = await textStr(cdp, sessionId, args); break;
         case 'table': result = await tableStr(cdp, sessionId, args[0]); break;
-        case 'back': result = await actionFeedback('back', () => historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back' }, 'full-perceive', observeFullPerceive); break;
-        case 'forward': result = await actionFeedback('forward', () => historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward' }, 'full-perceive', observeFullPerceive); break;
+        case 'back': result = await actionFeedback('back', () => historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back', commandArgs: [] }, 'full-perceive', observeFullPerceive); break;
+        case 'forward': result = await actionFeedback('forward', () => historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward', commandArgs: [] }, 'full-perceive', observeFullPerceive); break;
         case 'reload': {
           result = await actionFeedback('reload', async () => {
             const reloadResult = await reloadStr(cdp, sessionId);
             clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
             return `${reloadResult} (console/exception/navigation buffers cleared)`;
-          }, { input: 'reload', resolvedBy: 'page', label: 'reload' }, 'full-perceive', observeFullPerceive);
+          }, { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'full-perceive', observeFullPerceive);
           break;
         }
         case 'closetab': result = await closetabStr(cdp, targetId); break;
         case 'netlog': result = netlogStr(netReqBuf, args[0]); break;
-        case 'inject': result = await actionFeedback('inject', () => injectStr(cdp, sessionId, args), { input: args[0] || '', resolvedBy: 'command', label: args[0] || 'inject' }, 'state-change'); break;
+        case 'inject': result = await actionFeedback('inject', () => injectStr(cdp, sessionId, args), { input: args[0] || '', resolvedBy: 'command', label: args[0] || 'inject', commandArgs: args }, 'state-change'); break;
         case 'record': result = await recordStr(cdp, sessionId, args, refMap); break;
         case 'cascade': result = await cascadeStr(cdp, sessionId, args[0], args[1], refMap, refState); break;
-        case 'dismiss-modal': case 'dismissmodal': result = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal' }); break;
+        case 'dismiss-modal': case 'dismissmodal': result = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }); break;
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
         case 'batch': {
           let commands;
@@ -4851,6 +5022,7 @@ Usage: cdp <command> [args]
   console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
   report <target>                   Session action timeline + evidence summary + JSONL log path
+  record-actions <target>           Export session action log as replay-oriented text or JSON
   net   <target>                    Network performance entries
   click   <target> <sel|@ref>       Click element by CSS selector or @ref
                                     --js / -j: use HTMLElement.click() (JS fallback)
@@ -4973,7 +5145,7 @@ DAEMON IPC (for advanced use / scripting)
   elshot, fullshot, scanshot, html, nav, net, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
-  record, report, evalraw, batch, flow, repeat, stop.
+  record, record-actions, report, evalraw, batch, flow, repeat, stop.
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
@@ -4998,6 +5170,7 @@ const COMMANDS = Object.freeze([
   { name: 'console', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'summary', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'report', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'record-actions', aliases: ['recordactions'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'elshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'click', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'jsclick', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
@@ -5298,6 +5471,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
   initializeSessionLog, formatSessionReport, sessionScreenshotDir,
   ensureSessionScreenshotDir, nextSessionScreenshotPath,
+  buildRecordActionsModel, formatRecordActions,
   // Command implementations
   formatPageList, dialogStr, netlogStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,

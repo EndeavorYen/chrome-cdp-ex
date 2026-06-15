@@ -195,6 +195,16 @@ describe('COMMANDS registry', () => {
       expect(command.feedbackPolicy).toMatch(/^(none|settle-diff|full-perceive|state-change|report-only)$/);
     }
   });
+
+  it('registers record-actions as a target command with text and json output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'record-actions',
+      aliases: ['recordactions'],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
 });
 
 // =========================================================================
@@ -512,6 +522,118 @@ describe('Session report', () => {
     expect(T.nextSessionScreenshotPath(state, 'shot')).toBe('/tmp/cdp-session-shots-ABC123/shot-001.png');
     T.appendSessionScreenshot(state, { kind: 'shot', path: '/tmp/cdp-session-shots-ABC123/shot-001.png' });
     expect(T.nextSessionScreenshotPath(state, 'shot')).toBe('/tmp/cdp-session-shots-ABC123/shot-002.png');
+  });
+
+  it('builds a record-actions JSON model from the session action log', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: {
+        input: '#combat',
+        resolvedBy: 'selector',
+        label: '#combat',
+        commandArgs: ['#combat'],
+      },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] 戰鬥勝利', console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    }), { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+
+    const model = T.buildRecordActionsModel(state);
+
+    expect(model.schema).toBe('chrome-cdp-ex.record-actions.v1');
+    expect(model.targetId).toBe('ABC123');
+    expect(model.actions).toHaveLength(1);
+    expect(model.actions[0]).toMatchObject({
+      index: 1,
+      action: 'click',
+      command: ['click', '#combat'],
+      replayable: true,
+      evidence: {
+        settleOk: true,
+        settleDurationMs: 123,
+        effectSummary: '+++ Added (1):',
+      },
+    });
+  });
+
+  it('formats record-actions text with replay drafts and honest gaps', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat', commandArgs: ['#combat'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] 戰鬥勝利', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'fill',
+      target: { input: '#cmd', resolvedBy: 'selector', label: '#cmd' },
+      dispatch: { ok: true, method: 'fill' },
+      settle: { ok: false, durationMs: 900 },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const out = T.formatRecordActions(state);
+
+    expect(out).toContain('Recorded actions: 2');
+    expect(out).toContain('1. click #combat — replayable');
+    expect(out).toContain('Replay: click #combat');
+    expect(out).toContain('Evidence: +++ Added (1):');
+    expect(out).toContain('2. fill #cmd — needs input');
+    expect(out).toContain('Replay: fill #cmd <text>');
+  });
+
+  it('formats record-actions JSON for scripting', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'nav',
+      target: { input: 'https://example.com', resolvedBy: 'url', label: 'https://example.com', commandArgs: ['https://example.com'] },
+      dispatch: { ok: true, method: 'nav' },
+      settle: { ok: true, durationMs: 300 },
+      effects: { domDiff: 'Page changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const parsed = JSON.parse(T.formatRecordActions(state, { format: 'json' }));
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.record-actions.v1');
+    expect(parsed.actions[0].command).toEqual(['nav', 'https://example.com']);
+  });
+
+  it('redacts sensitive fill values before recording action artifacts', () => {
+    const logPath = `/tmp/cdp-sensitive-action-${Date.now()}-${Math.random().toString(16).slice(2)}.log`;
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1', logPath });
+
+    try {
+      T.appendSessionActionLog(state, T.createActionResult({
+        action: 'fill',
+        target: {
+          input: '#password',
+          resolvedBy: 'selector',
+          label: '#password',
+          commandArgs: ['#password', 'secret123'],
+        },
+        dispatch: { ok: true, method: 'fill' },
+        settle: { ok: true, durationMs: 50 },
+        effects: { domDiff: 'value changed', console: [], network: [], navigation: null },
+        nextHint: null,
+      }));
+
+      const model = T.buildRecordActionsModel(state);
+      const logText = readFileSync(logPath, 'utf8');
+
+      expect(model.actions[0].command).toEqual(['fill', '#password', '<redacted>']);
+      expect(model.actions[0].replayable).toBe(false);
+      expect(model.actions[0].needsInput).toEqual(['text']);
+      expect(logText).not.toContain('secret123');
+      expect(logText).toContain('<redacted>');
+    } finally {
+      rmSync(logPath, { force: true });
+    }
   });
 });
 

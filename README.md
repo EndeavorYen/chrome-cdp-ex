@@ -193,7 +193,7 @@ Output:
 1ED3DBAA  My App                                                  http://localhost:5173/#/menu
 ```
 
-All 56 commands work: `perceive`, `click`, `fill`, `cascade`, `record`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
+All 57 commands work: `perceive`, `click`, `fill`, `cascade`, `record`, `record-actions`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
 
 </details>
 
@@ -333,6 +333,7 @@ perceive <target> [flags] [--format json] # enriched AX tree with @ref indices +
 snap     <target> [--full]         # accessibility tree (compact by default)
 summary  <target> [--format json]  # token-efficient overview (~100 tokens)
 report   <target>                  # session action timeline + evidence summary + screenshots + JSONL log path
+record-actions <target> [--format json] # export session action log as replay-oriented steps
 status   <target> [--runtime] [--format json]  # URL, title + new console/exception entries; --runtime adds Performance metrics
 console  <target> [--all|--errors] [--format json] # console buffer (default: unread only; preserves log/warn/error/debug levels)
 text     <target>                            # clean text content (strips scripts/styles/SVG)
@@ -442,6 +443,7 @@ record  <target> --action click @5  # record cause → effect around an action;
                                     # (cap: 5s without network activity, 10s with)
 record  <target> --until "dom stable"|"network idle"  # record until quiet (max 30s)
 report  <target>                    # current daemon session action timeline + JSONL log path
+record-actions <target> [--format json]  # export current action log as replay-oriented steps
 ```
 
 `inject` returns an ID (`inject-1`, `inject-2`...) for targeted removal. URLs are validated (blocks `data:`, `file:`, cloud metadata).
@@ -479,7 +481,7 @@ evalraw <target> <method> [json]    # raw CDP command passthrough
 
 </details>
 
-**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. After any mutating command, `perceive --since-action` replays the page diff from that action's pre-dispatch baseline, so agents can ask "what changed because of the last action?" without guessing from the last manual perceive. Use `report <target>` after a multi-step flow to see the session action timeline, evidence summary, session screenshot attachments, and per-target JSONL log path. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` instead of a pure timeout, so agents should verify with `perceive --since-action`, `perceive --diff`, or `status` rather than retrying the action.
+**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. After any mutating command, `perceive --since-action` replays the page diff from that action's pre-dispatch baseline, so agents can ask "what changed because of the last action?" without guessing from the last manual perceive. Use `report <target>` after a multi-step flow to see the session action timeline, evidence summary, session screenshot attachments, and per-target JSONL log path. Use `record-actions <target> --format json` when the current session should become a replay/export asset; commands that lack enough original input are marked with explicit missing fields instead of being silently guessed. Password-like fill/type targets are redacted before action artifacts are written. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` instead of a pure timeout, so agents should verify with `perceive --since-action`, `perceive --diff`, or `status` rather than retrying the action.
 
 Use `wait` instead of shell `sleep` when policy blocks long sleeps:
 

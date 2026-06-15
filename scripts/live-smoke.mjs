@@ -152,6 +152,17 @@ if (!reportLogEvents.some(event => event.kind === 'action' && event.action?.acti
 if (!reportLogEvents.some(event => event.kind === 'screenshot' && event.screenshot?.path === sessionShotPath)) {
   throw new Error(`session log should contain the screenshot event\nLog:\n${readFileSync(reportLogPath, 'utf8')}`);
 }
+const recordActionsJson = step('record-actions json', () => run(['record-actions', target, '--format', 'json']));
+const recordActions = JSON.parse(recordActionsJson);
+if (recordActions.schema !== 'chrome-cdp-ex.record-actions.v1') {
+  throw new Error(`record-actions json schema mismatch:\n${recordActionsJson}`);
+}
+if (!recordActions.actions.some(action => action.action === 'fill' && action.command?.join(' ') === 'fill #cmd look trainer' && action.replayable)) {
+  throw new Error(`record-actions should include replayable fill command\nOutput:\n${recordActionsJson}`);
+}
+if (!recordActions.actions.some(action => action.action === 'click' && action.command?.join(' ') === 'click #combat' && action.replayable)) {
+  throw new Error(`record-actions should include replayable click command\nOutput:\n${recordActionsJson}`);
+}
 step('wait any-of', () => assertIncludes(run(['waitfor', target, '--any-of', '戰鬥勝利|戰敗|逃跑成功', '8000', '--scope', '#combat-log'], { timeout: 12000 }), '戰鬥勝利', 'waitfor --any-of'));
 step('wait selector stable', () => assertIncludes(run(['waitfor', target, '--selector-stable', '#combat-log', '500', '8000'], { timeout: 12000 }), 'stable', 'waitfor --selector-stable'));
 const shotOut = step('shot quiet', () => run(['shot', target, resolve(tmpdir(), 'chrome-cdp-ex-smoke.png'), '--quiet']));
