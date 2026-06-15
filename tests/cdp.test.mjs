@@ -207,6 +207,16 @@ describe('COMMANDS registry', () => {
     }));
   });
 
+  it('registers report as a target command with text and json output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'report',
+      aliases: [],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
   it('registers doctor as a targetless command with text and json output', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'doctor',
@@ -1108,6 +1118,69 @@ describe('Session report', () => {
     expect(out).toContain('1. click #combat — ok in 123ms');
     expect(out).toContain('Effect: +++ Added (1):');
     expect(out).toContain('戰鬥勝利');
+  });
+
+  it('builds a JSON report model for agent handoff', () => {
+    const state = T.createSessionState({
+      targetId: 'ABC123456789',
+      sessionId: 'sid-1',
+      logPath: '/tmp/chrome-cdp-ex/session-ABC12345.jsonl',
+      screenshotDir: '/tmp/chrome-cdp-ex/screens-ABC12345',
+    });
+    state.createdAt = Date.parse('2026-06-16T00:00:00.000Z');
+    T.appendSessionActionLog(state, sampleActionResult(), {
+      ts: Date.parse('2026-06-16T00:00:03.000Z'),
+    });
+    T.appendSessionScreenshot(state, {
+      kind: 'shot',
+      path: '/tmp/chrome-cdp-ex/screens-ABC12345/shot-001.png',
+      note: 'after combat',
+      ts: Date.parse('2026-06-16T00:00:04.000Z'),
+    });
+
+    const model = T.buildSessionReportModel(state, {
+      now: Date.parse('2026-06-16T00:00:05.000Z'),
+    });
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.report.v1',
+      targetId: 'ABC123456789',
+      targetPrefix: 'ABC12345',
+      sessionId: 'sid-1',
+      uptimeMs: 5000,
+      counts: { actions: 1, screenshots: 1, records: 0 },
+      paths: {
+        log: '/tmp/chrome-cdp-ex/session-ABC12345.jsonl',
+        screenshotDir: '/tmp/chrome-cdp-ex/screens-ABC12345',
+      },
+      actions: [
+        {
+          index: 1,
+          action: 'click',
+          status: 'ok',
+          target: { input: '#combat', label: '#combat' },
+          evidence: {
+            settleDurationMs: 123,
+            effectSummary: '+++ Added (1):',
+            effectSample: '+   [alert] 戰鬥勝利',
+          },
+          nextHint: 'Use perceive --since-action if more evidence is needed',
+        },
+      ],
+      screenshots: [
+        {
+          index: 1,
+          kind: 'shot',
+          path: '/tmp/chrome-cdp-ex/screens-ABC12345/shot-001.png',
+          note: 'after combat',
+        },
+      ],
+      nextSteps: [
+        'cdp perceive ABC12345 --since-action',
+        'cdp record-actions ABC12345 --format json',
+        'cdp export-playwright ABC12345',
+      ],
+    });
   });
 
   it('records compact console and network deltas in session reports', () => {

@@ -11,7 +11,7 @@ description: "Your EYES into the user's live Chrome browser and Electron apps. T
 2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`.
 3. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, top-level viewport CSS coordinates (fixed/sticky elements are tagged), console health.
 4. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
-5. **Verify/report:** read the automatic action evidence, then use `cdp perceive <target> --since-action` or `cdp report <target>` for handoff. If you used `cdp mock`, `cdp clock`, or `cdp throttle`, confirm the report shows the intended environment state and reset with `cdp mock <target> clear` / `cdp clock <target> reset` / `cdp throttle <target> off`.
+5. **Verify/report:** read the automatic action evidence, then use `cdp perceive <target> --since-action` or `cdp report <target>` for handoff; use `cdp report <target> --format json` when a script needs the versioned session memory model. If you used `cdp mock`, `cdp clock`, or `cdp throttle`, confirm the report shows the intended environment state and reset with `cdp mock <target> clear` / `cdp clock <target> reset` / `cdp throttle <target> off`.
 
 For long-session game / animation work also reach for `cdp waitfor <target> --any-of "win|lose|escape" 60000 --scope ".combat-log"` and `cdp waitfor <target> --selector-stable ".combat-log" 3000 60000`. To close MOTD-style modals safely without firing background shortcuts, use `cdp dismiss-modal <target>` (it prefers an explicit close button, falls back to Escape — never `press Space`).
 
@@ -302,7 +302,7 @@ scripts/cdp.mjs summary <target> [--format json]                  # token-effici
 scripts/cdp.mjs console <target> [--all|--errors] [--format json] # console buffer (default: unread only)
 scripts/cdp.mjs frame   <target> [--format json]                  # frame tree with @fN refs (alias: frames)
 scripts/cdp.mjs overlay <target> [sel|@ref] [--format json]       # detect dialogs/overlays and hit-test blockers
-scripts/cdp.mjs report  <target>                                  # action timeline + evidence + screenshot attachments + JSONL log path
+scripts/cdp.mjs report  <target> [--format json]                  # action timeline + evidence + screenshot attachments + JSONL log path
 scripts/cdp.mjs checkpoint <target> [--format json]                # capture URL, cookies, localStorage, and sessionStorage
 scripts/cdp.mjs restore <target> --file <path>                     # restore a checkpoint artifact; invalidates @refs
 scripts/cdp.mjs record-actions <target> [--format json]           # export action log + mock/clock/throttle environment steps

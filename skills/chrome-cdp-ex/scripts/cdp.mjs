@@ -1907,7 +1907,84 @@ function appendSessionScreenshot(session, { kind = 'shot', path = null, note = '
   return entry;
 }
 
-function formatSessionReport(session, { now = Date.now() } = {}) {
+function buildSessionReportModel(session, { now = Date.now() } = {}) {
+  const actionLog = session.actionLog || [];
+  const screenshots = session.screenshots || [];
+  const uptimeMs = Math.max(0, now - (session.createdAt || now));
+  const target = targetPrefixForDisplay(session.targetId);
+  const actions = actionLog.map((entry, index) => {
+    const status = entry.dispatch?.ok === false ? 'failed' : (entry.settle?.ok ? 'ok' : 'not-confirmed');
+    return {
+      index: index + 1,
+      ts: entry.ts || null,
+      action: entry.action,
+      status,
+      target: entry.target || null,
+      dispatch: entry.dispatch || null,
+      settle: entry.settle || null,
+      evidence: {
+        dispatchMethod: entry.dispatch?.method || null,
+        settleOk: entry.settle?.ok ?? null,
+        settleDurationMs: entry.settle?.durationMs ?? null,
+        effectSummary: entry.effectSummary || null,
+        effectSample: entry.effectSample || null,
+        consoleSummary: entry.consoleSummary || null,
+        consoleSample: entry.consoleSample || null,
+        exceptionSummary: entry.exceptionSummary || null,
+        exceptionSample: entry.exceptionSample || null,
+        networkSummary: entry.networkSummary || null,
+        networkSample: entry.networkSample || null,
+        failure: entry.failure || null,
+      },
+      nextHint: entry.nextHint || null,
+    };
+  });
+  return {
+    schema: 'chrome-cdp-ex.report.v1',
+    targetId: session.targetId,
+    targetPrefix: target,
+    sessionId: session.sessionId,
+    createdAt: session.createdAt || null,
+    now,
+    uptimeMs,
+    paths: {
+      log: session.logPath || null,
+      screenshotDir: session.screenshotDir || null,
+    },
+    counts: {
+      actions: actionLog.length,
+      screenshots: screenshots.length,
+      records: session.records?.length || 0,
+    },
+    environment: {
+      networkThrottleSummary: formatThrottleSummary(session.networkThrottle),
+      networkMocksSummary: formatNetworkMocksSummary(session),
+      clockSummary: formatClockSummary(session.clock),
+      controls: buildRecordEnvironmentModel(session),
+    },
+    actions,
+    screenshots: screenshots.map((entry, index) => ({
+      index: index + 1,
+      ts: entry.ts || null,
+      kind: entry.kind || 'shot',
+      path: entry.path || null,
+      note: entry.note || '',
+    })),
+    nextSteps: actionLog.length > 0
+      ? [
+          `cdp perceive ${target} --since-action`,
+          `cdp record-actions ${target} --format json`,
+          `cdp export-playwright ${target}`,
+        ]
+      : [
+          `cdp perceive ${target} -C -d 8`,
+          `cdp click ${target} @ref  # choose a ref from perceive`,
+        ],
+  };
+}
+
+function formatSessionReport(session, { now = Date.now(), format = 'text' } = {}) {
+  if (format === 'json') return formatJson(buildSessionReportModel(session, { now }));
   const actionLog = session.actionLog || [];
   const screenshots = session.screenshots || [];
   const uptimeMs = Math.max(0, now - (session.createdAt || now));
@@ -7501,7 +7578,9 @@ async function runDaemon(targetId) {
           break;
         }
         case 'report': {
-          result = formatSessionReport(session);
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          if (fopts.args.length) throw new Error(`report: unknown argument ${fopts.args[0]}`);
+          result = formatSessionReport(session, { format: fopts.format });
           break;
         }
         case 'checkpoint': {
@@ -7891,7 +7970,7 @@ Usage: cdp <command> [args]
                                     --runtime: include Performance.getMetrics counters
   console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
-  report <target>                   Session action timeline + evidence summary + JSONL log path
+  report <target> [--format json]   Session action timeline + evidence summary + JSONL log path
   checkpoint <target> [--format json]  Capture URL, cookies, localStorage, and sessionStorage
   restore <target> --file <path>     Restore a checkpoint artifact into the live page
   restore <target> --json <json>     Restore an inline checkpoint JSON artifact
@@ -8059,7 +8138,7 @@ const COMMANDS = Object.freeze([
   { name: 'summary', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'frame', aliases: ['frames'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'overlay', aliases: ['overlays'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'report', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'report', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'checkpoint', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'restore', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'record-actions', aliases: ['recordactions'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
@@ -8520,7 +8599,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
   appendSessionEnvironmentLog, buildRecordEnvironmentModel,
-  initializeSessionLog, formatSessionReport, sessionScreenshotDir,
+  initializeSessionLog, buildSessionReportModel, formatSessionReport, sessionScreenshotDir,
   ensureSessionScreenshotDir, nextSessionScreenshotPath,
   buildRecordActionsModel, formatRecordActions,
   playwrightStepFromCommand, formatPlaywrightSpecFromRecordActions, formatExportPlaywright,

@@ -279,6 +279,23 @@ assertIncludes(reportOut, 'Attachments:', 'report attachments');
 assertIncludes(reportOut, sessionShotPath, 'report screenshot attachment');
 const reportLogPath = reportOut.split('\n').find(line => line.startsWith('Log: '))?.slice(5).trim();
 if (!reportLogPath || !existsSync(reportLogPath)) throw new Error(`report log path should exist\nOutput:\n${reportOut}`);
+const reportJson = step('session report json', () => run(['report', target, '--format', 'json']));
+const parsedReport = JSON.parse(reportJson);
+if (parsedReport.schema !== 'chrome-cdp-ex.report.v1' || parsedReport.targetPrefix !== target) {
+  throw new Error(`report json schema/target mismatch:\n${reportJson}`);
+}
+if (parsedReport.counts?.actions < 1 || parsedReport.counts?.screenshots < 1) {
+  throw new Error(`report json should include action and screenshot counts:\n${reportJson}`);
+}
+if (!parsedReport.actions?.some(action => action.action === 'click' && action.evidence?.effectSummary)) {
+  throw new Error(`report json should include action evidence timeline:\n${reportJson}`);
+}
+if (!parsedReport.screenshots?.some(shot => shot.path === sessionShotPath)) {
+  throw new Error(`report json should include screenshot attachment:\n${reportJson}`);
+}
+if (parsedReport.paths?.log !== reportLogPath || !parsedReport.nextSteps?.some(nextStep => nextStep.includes('record-actions'))) {
+  throw new Error(`report json should include log path and handoff next steps:\n${reportJson}`);
+}
 const reportLogEvents = readFileSync(reportLogPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
 if (!reportLogEvents.some(event => event.kind === 'action' && event.action?.action === 'click')) {
   throw new Error(`session log should contain a click action event\nLog:\n${readFileSync(reportLogPath, 'utf8')}`);
