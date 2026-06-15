@@ -206,6 +206,8 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
 node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 ```
 
+If a CLI command fails, read the printed `Next:` line first. Common setup, target, daemon, and CDP errors are formatted with a copy-pasteable recovery command instead of a stack trace.
+
 **Requires:** Node.js 22+ (uses built-in WebSocket). Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
 
 <details>

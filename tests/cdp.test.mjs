@@ -11,7 +11,7 @@ const {
   validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
   formatPageList, buildPerceiveTree, perceivePageScript, injectStr, cascadeStr, recordStr, parseRecordArgs,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, navStr, clickStr, fillStr, fillReactStr, waitForStr,
-  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,
+  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, formatCliError,
   statusStr, clearObservationBuffers,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
   captureScreenshot, screencastFallback, snapshotStr,
@@ -2562,6 +2562,47 @@ describe('wait helpers', () => {
       targetPrefix: '12345678',
       cmdArgs: ['30000'],
     });
+  });
+});
+
+describe('formatCliError', () => {
+  it('adds an executable doctor next step when CDP is unreachable', () => {
+    const out = formatCliError(new Error('Cannot reach CDP on 127.0.0.1:9222 — is the app running with --remote-debugging-port=9222?'));
+
+    expect(out).toContain('Error: Cannot reach CDP on 127.0.0.1:9222');
+    expect(out).toContain('Next: cdp doctor');
+  });
+
+  it('turns target resolution failures into list/open guidance', () => {
+    const out = formatCliError(new Error('No target matching prefix "abc". Run "cdp list".'));
+
+    expect(out).toContain('Error: No target matching prefix "abc". Run "cdp list".');
+    expect(out).toContain('Next: cdp list');
+    expect(out).toContain('cdp open https://example.com');
+  });
+
+  it('turns ambiguous prefixes into a longer-prefix next step', () => {
+    const out = formatCliError(new Error('Ambiguous prefix "AABB" — matches 2 targets. Use more characters.'));
+
+    expect(out).toContain('Error: Ambiguous prefix "AABB"');
+    expect(out).toContain('Next: cdp list');
+    expect(out).toContain('copy a longer target prefix');
+  });
+
+  it('turns daemon disconnects into a restartable perceive command', () => {
+    const out = formatCliError(
+      new Error('Connection closed before response. The daemon for this tab may have crashed or exited.'),
+      { targetPrefix: 'AABBCCDD' }
+    );
+
+    expect(out).toContain('Error: Connection closed before response');
+    expect(out).toContain('Next: cdp perceive AABBCCDD -C -d 8');
+  });
+
+  it('preserves already-classified action failures', () => {
+    const out = formatCliError('Action failure: overlay\nNext: cdp dismiss-modal AABBCCDD');
+
+    expect(out).toBe('Action failure: overlay\nNext: cdp dismiss-modal AABBCCDD');
   });
 });
 

@@ -82,6 +82,13 @@ function run(args, opts = {}) {
   }
   return (res.stdout || '').trim();
 }
+function runFailure(args, opts = {}) {
+  const res = spawnSync(process.execPath, [cdp, ...args], { cwd: repoRoot, env, encoding: 'utf8', timeout: opts.timeout || 20000 });
+  if (res.status === 0) {
+    throw new Error(`cdp ${args.join(' ')} should have failed\nSTDOUT:\n${res.stdout}\nSTDERR:\n${res.stderr}`);
+  }
+  return `${res.stdout || ''}${res.stderr || ''}`.trim();
+}
 function assertIncludes(text, needle, label) {
   if (!text.includes(needle)) throw new Error(`${label} missing ${JSON.stringify(needle)}\nOutput:\n${text}`);
 }
@@ -111,6 +118,9 @@ assertIncludes(doctorOut, 'chrome-cdp-ex doctor', 'doctor');
 assertIncludes(doctorOut, 'FD limit', 'doctor fd limit');
 assertIncludes(doctorOut, 'Next steps:', 'doctor next steps');
 assertIncludes(doctorOut, 'cdp list', 'doctor golden path');
+const cliErrorOut = step('actionable cli error', () => runFailure(['perceive']));
+assertIncludes(cliErrorOut, 'Error: target ID required', 'targetless perceive error');
+assertIncludes(cliErrorOut, 'Next: cdp list', 'targetless perceive next step');
 const perceive = step('perceive keep refs', () => run(['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20']));
 assertIncludes(perceive, 'Coords: top-level viewport CSS px', 'perceive');
 assertIncludes(perceive, 'fixed', 'perceive fixed annotation');

@@ -365,6 +365,10 @@ scripts/cdp.mjs ready     # alias
 
 Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daemon socket state, open-file limit, CDP reachability (CDP_PORT or auto-discovered DevToolsActivePort), and debuggable tab inventory. Exits with code 1 if any check fails. Run this **first** when an agent is unsure whether the environment is wired up.
 
+### Error handling
+
+When a CLI command fails, read and follow the printed `Next:` line before retrying. Setup, target, daemon, and CDP errors are formatted as actionable recovery commands such as `cdp doctor`, `cdp list`, `cdp open https://example.com`, or `cdp perceive <target> -C -d 8`.
+
 ### Action feedback (automatic)
 
 These commands **automatically wait for DOM to settle and return compact `ActionResult` evidence plus perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards. Action feedback also snapshots console, exception, and network buffers before dispatch, then reports low-token deltas like `Console: 1 entry (1 error)`, `Network: 1 request (1 failed)`, or `Network: 1 request (1 pending)` when the action caused runtime failures, request failures, or requests that have not settled yet. If you need to ask again what the last action changed, run `perceive --since-action`.
