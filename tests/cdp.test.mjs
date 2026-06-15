@@ -190,7 +190,7 @@ describe('COMMANDS registry', () => {
       'back', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
       'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav',
       'open', 'press', 'reload', 'replay', 'restore', 'scroll', 'select', 'spawn-debug-browser',
-      'stop', 'type', 'upload', 'viewport',
+      'stop', 'throttle', 'type', 'upload', 'viewport',
     ].sort());
     for (const command of mutating) {
       expect(command.feedbackPolicy).toMatch(/^(none|settle-diff|full-perceive|state-change|report-only)$/);
@@ -234,6 +234,17 @@ describe('COMMANDS registry', () => {
       aliases: ['diffshot'],
       needsTarget: true,
       mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers throttle as a mutating target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'throttle',
+      aliases: ['network-throttle'],
+      needsTarget: true,
+      mutates: true,
+      feedbackPolicy: 'report-only',
       outputFormats: ['text', 'json'],
     }));
   });
@@ -341,6 +352,90 @@ describe('diff-shot', () => {
     expect(out).toContain('Diff image: /tmp/diff.png');
     expect(out).toContain('Pixel diff only');
     expect(out).toContain('screenshot fallback');
+  });
+});
+
+describe('throttle', () => {
+  it('parses presets and custom network profiles into CDP payloads', () => {
+    expect(T.parseThrottleArgs(['slow-3g'])).toMatchObject({
+      format: 'text',
+      profile: 'slow-3g',
+      offline: false,
+      latencyMs: 400,
+      downloadKbps: 400,
+      uploadKbps: 400,
+      cdpParams: {
+        offline: false,
+        latency: 400,
+        downloadThroughput: 50000,
+        uploadThroughput: 50000,
+      },
+    });
+    expect(T.parseThrottleArgs(['custom', '--latency', '120', '--download', '256', '--upload', '128'])).toMatchObject({
+      profile: 'custom',
+      latencyMs: 120,
+      downloadKbps: 256,
+      uploadKbps: 128,
+      cdpParams: {
+        offline: false,
+        latency: 120,
+        downloadThroughput: 32000,
+        uploadThroughput: 16000,
+      },
+    });
+  });
+
+  it('parses off and status modes', () => {
+    expect(T.parseThrottleArgs([])).toMatchObject({ mode: 'status', format: 'text' });
+    expect(T.parseThrottleArgs(['--format', 'json'])).toMatchObject({ mode: 'status', format: 'json' });
+    expect(T.parseThrottleArgs(['off'])).toMatchObject({
+      mode: 'apply',
+      profile: 'off',
+      cdpParams: {
+        offline: false,
+        latency: 0,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+      },
+    });
+  });
+
+  it('rejects unknown profiles and stray preset arguments', () => {
+    expect(() => T.parseThrottleArgs(['slow-3g', '--latency', '99'])).toThrow(/does not accept extra arguments/);
+    expect(() => T.parseThrottleArgs(['custom', '--download', '256'])).toThrow(/requires --download .* --upload/);
+    expect(() => T.parseThrottleArgs(['dialup'])).toThrow(/Unknown throttle profile/);
+  });
+
+  it('applies network throttling through CDP and records session state', async () => {
+    const cdp = createMockCDP();
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    const out = await T.throttleStr(cdp, 'sid-1', state, ['slow-3g']);
+
+    expect(cdp.calls.map(c => c.method)).toEqual(['Network.enable', 'Network.emulateNetworkConditions']);
+    expect(cdp.calls[1].params).toMatchObject({
+      offline: false,
+      latency: 400,
+      downloadThroughput: 50000,
+      uploadThroughput: 50000,
+    });
+    expect(state.networkThrottle).toMatchObject({ profile: 'slow-3g', latencyMs: 400, downloadKbps: 400, uploadKbps: 400 });
+    expect(out).toContain('Network throttle: slow-3g');
+    expect(out).toContain('latency 400ms');
+    expect(out).toContain('Next: cdp throttle ABC123 off');
+  });
+
+  it('reports current throttle state in session reports', async () => {
+    const cdp = createMockCDP();
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    await T.throttleStr(cdp, 'sid-1', state, ['custom', '--latency', '120', '--download', '256', '--upload', '128']);
+    const report = T.formatSessionReport(state, { now: state.createdAt + 5000 });
+
+    expect(report).toContain('Network throttle: custom');
+    expect(report).toContain('120ms');
+    expect(report).toContain('256 kbps down');
+    expect(report).toContain('128 kbps up');
   });
 });
 

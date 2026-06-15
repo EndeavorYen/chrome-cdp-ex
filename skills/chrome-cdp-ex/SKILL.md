@@ -11,7 +11,7 @@ description: "Your EYES into the user's live Chrome browser and Electron apps. T
 2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`.
 3. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, top-level viewport CSS coordinates (fixed/sticky elements are tagged), console health.
 4. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
-5. **Verify/report:** read the automatic action evidence, then use `cdp perceive <target> --since-action` or `cdp report <target>` for handoff.
+5. **Verify/report:** read the automatic action evidence, then use `cdp perceive <target> --since-action` or `cdp report <target>` for handoff. If you used `cdp throttle`, confirm the report shows the intended profile and reset with `cdp throttle <target> off`.
 
 For long-session game / animation work also reach for `cdp waitfor <target> --any-of "win|lose|escape" 60000 --scope ".combat-log"` and `cdp waitfor <target> --selector-stable ".combat-log" 3000 60000`. To close MOTD-style modals safely without firing background shortcuts, use `cdp dismiss-modal <target>` (it prefers an explicit close button, falls back to Escape — never `press Space`).
 
@@ -471,6 +471,7 @@ scripts/cdp.mjs forward <target>                       # navigate forward in bro
 scripts/cdp.mjs reload  <target>                       # reload current page
 scripts/cdp.mjs closetab <target>                      # close a browser tab
 scripts/cdp.mjs netlog  <target> [--clear]             # network request log (XHR/Fetch with status + timing)
+scripts/cdp.mjs throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  # emulate network conditions
 scripts/cdp.mjs evalraw <target> <method> [json]  # raw CDP command passthrough
 scripts/cdp.mjs record  <target> <ms>                    # record timeline for N ms (DOM + network + console events)
 scripts/cdp.mjs record  <target> --until "dom stable"    # record until DOM settles (max 30s)
@@ -576,6 +577,18 @@ scripts/cdp.mjs netlog <target> --clear        # clear the log
 ```
 
 Tracks XHR, Fetch, and Document requests in the background with status codes, timing, and response sizes. Use for debugging API calls.
+
+### Network throttling
+
+```bash
+scripts/cdp.mjs throttle <target> slow-3g       # emulate a slow mobile network
+scripts/cdp.mjs throttle <target> offline       # reproduce offline/error states
+scripts/cdp.mjs throttle <target> custom --latency 120 --download 256 --upload 128
+scripts/cdp.mjs throttle <target>               # show the current profile
+scripts/cdp.mjs throttle <target> off           # reset network conditions
+```
+
+`throttle` changes the live tab's CDP network conditions and records the profile in `report <target>`. Reset to `off` after a focused experiment so later steps do not inherit a slow or offline session.
 
 ### Cursor-interactive elements (`perceive -C`)
 
@@ -765,14 +778,18 @@ scripts/cdp.mjs text <target> "main"              # scope to main content area
 ### Debugging API calls
 1. `perceive <target>` — check page state
 2. `netlog <target>` — see recent XHR/Fetch requests with status codes
-3. `console <target> --errors` — check for errors
-4. If you need to see the full request→response→DOM update chain: `record <target> --action click @submitBtn` — captures the API call, its response, and resulting DOM mutations in one timeline
+3. `throttle <target> slow-3g` or `throttle <target> offline` — reproduce slow-network or offline behavior when relevant
+4. `console <target> --errors` — check for errors
+5. If you need to see the full request→response→DOM update chain: `record <target> --action click @submitBtn` — captures the API call, its response, and resulting DOM mutations in one timeline
+6. `throttle <target> off` — reset before handing the session back
 
 ### Performance investigation
 1. `nav <target> <url>` — navigate to the page
-2. `record <target> --until "dom stable"` — capture the full load lifecycle
-3. Read the timeline: which API calls are slow? When do DOM mutations peak? When does the page settle?
-4. For specific interactions: `record <target> --action click @ref` — measure cause-to-effect latency
+2. `throttle <target> fast-3g|slow-3g` — make network-sensitive loading deterministic when needed
+3. `record <target> --until "dom stable"` — capture the full load lifecycle
+4. Read the timeline: which API calls are slow? When do DOM mutations peak? When does the page settle?
+5. For specific interactions: `record <target> --action click @ref` — measure cause-to-effect latency
+6. `throttle <target> off` — reset the live tab
 
 ### Responsive testing
 1. `perceive <target>` — baseline at current viewport

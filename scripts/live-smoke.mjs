@@ -140,6 +140,17 @@ assertIncludes(overlayBlockedOut, 'Next: cdp dismiss-modal', 'overlay dismissal 
 step('dismiss modal', () => assertIncludes(run(['dismiss-modal', target]), 'Dismissed modal', 'dismiss-modal'));
 const overlayClearOut = step('overlay detector clear', () => run(['overlay', target]));
 assertIncludes(overlayClearOut, 'Overlay detector: clear', 'overlay clear');
+const throttleOut = step('network throttle slow-3g', () => run(['throttle', target, 'slow-3g']));
+assertIncludes(throttleOut, 'Network throttle: slow-3g', 'throttle');
+assertIncludes(throttleOut, 'Next: cdp throttle', 'throttle reset hint');
+const throttleStatusJson = step('network throttle json status', () => run(['throttle', target, '--format', 'json']));
+const throttleStatus = JSON.parse(throttleStatusJson);
+if (throttleStatus.schema !== 'chrome-cdp-ex.throttle.v1' || throttleStatus.profile !== 'slow-3g') {
+  throw new Error(`throttle json status mismatch:\n${throttleStatusJson}`);
+}
+const throttleOffOut = step('network throttle off', () => run(['throttle', target, 'off']));
+assertIncludes(throttleOffOut, 'Network throttle: off', 'throttle off');
+assertIncludes(throttleOffOut, 'Network conditions reset', 'throttle reset');
 const framePerceiveOut = step('frame-scoped perceive refs', () => run(['perceive', target, '--frame', '@f2', '-d', '4']));
 assertIncludes(framePerceiveOut, 'Frame: @f2', 'perceive --frame');
 assertIncludes(framePerceiveOut, 'Child action', 'perceive --frame child button');

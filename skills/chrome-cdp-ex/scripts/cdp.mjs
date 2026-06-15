@@ -1858,6 +1858,7 @@ function formatSessionReport(session, { now = Date.now() } = {}) {
     `Actions: ${actionLog.length}`,
     `Screenshots: ${screenshots.length}`,
     `Records: ${session.records?.length || 0}`,
+    `Network throttle: ${formatThrottleSummary(session.networkThrottle)}`,
     '',
     'Action timeline:',
   ];
@@ -2209,6 +2210,7 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
     lastAction: null,
     buffers: {},
     pendingRequests: new Map(),
+    networkThrottle: null,
     actionLog: [],
     screenshots: [],
     diffShot: null,
@@ -4430,6 +4432,127 @@ function netlogStr(netReqBuf, flag) {
     lines.push(`  ${e.method} ${e.url} → ${e.status} (${e.duration}ms, ${size}) ${ago}s ago`);
   }
   return lines.join('\n');
+}
+
+const THROTTLE_PRESETS = Object.freeze({
+  off: { profile: 'off', offline: false, latencyMs: 0, downloadKbps: null, uploadKbps: null },
+  offline: { profile: 'offline', offline: true, latencyMs: 0, downloadKbps: 0, uploadKbps: 0 },
+  'slow-3g': { profile: 'slow-3g', offline: false, latencyMs: 400, downloadKbps: 400, uploadKbps: 400 },
+  'fast-3g': { profile: 'fast-3g', offline: false, latencyMs: 150, downloadKbps: 1600, uploadKbps: 750 },
+  lte: { profile: 'lte', offline: false, latencyMs: 40, downloadKbps: 12000, uploadKbps: 12000 },
+});
+
+function kbpsToBytesPerSecond(kbps) {
+  const n = Number(kbps);
+  return Number.isFinite(n) ? Math.round(n * 1000 / 8) : -1;
+}
+
+function throttleCdpParams(profile) {
+  if (profile.profile === 'off') {
+    return { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 };
+  }
+  return {
+    offline: profile.offline === true,
+    latency: Number(profile.latencyMs || 0),
+    downloadThroughput: profile.offline ? 0 : kbpsToBytesPerSecond(profile.downloadKbps),
+    uploadThroughput: profile.offline ? 0 : kbpsToBytesPerSecond(profile.uploadKbps),
+  };
+}
+
+function parseNonNegativeNumber(value, label) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`throttle ${label} requires a non-negative number`);
+  return n;
+}
+
+function parseThrottleArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const tokens = fopts.args || [];
+  if (tokens.length === 0) return { mode: 'status', format: fopts.format };
+  let profileName = String(tokens[0] || '').toLowerCase();
+  if (profileName === 'reset' || profileName === 'none') profileName = 'off';
+  let profile;
+  if (profileName === 'custom') {
+    const custom = { profile: 'custom', offline: false, latencyMs: 0, downloadKbps: null, uploadKbps: null };
+    for (let i = 1; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token === '--latency') custom.latencyMs = parseNonNegativeNumber(tokens[++i], '--latency');
+      else if (token === '--download' || token === '--down') custom.downloadKbps = parseNonNegativeNumber(tokens[++i], token);
+      else if (token === '--upload' || token === '--up') custom.uploadKbps = parseNonNegativeNumber(tokens[++i], token);
+      else throw new Error(`throttle custom: unknown option ${token}`);
+    }
+    if (custom.downloadKbps == null || custom.uploadKbps == null) {
+      throw new Error('throttle custom requires --download <kbps> and --upload <kbps>');
+    }
+    profile = custom;
+  } else {
+    profile = THROTTLE_PRESETS[profileName];
+    if (!profile) {
+      throw new Error(`Unknown throttle profile: ${tokens[0]}. Use off, offline, slow-3g, fast-3g, lte, or custom.`);
+    }
+    if (tokens.length > 1) {
+      throw new Error(`throttle ${tokens[0]} does not accept extra arguments. Use custom --latency <ms> --download <kbps> --upload <kbps>.`);
+    }
+    profile = { ...profile };
+  }
+  const cdpParams = throttleCdpParams(profile);
+  return { mode: 'apply', format: fopts.format, ...profile, cdpParams };
+}
+
+function formatThrottleSummary(profile = null) {
+  if (!profile || profile.profile === 'off') return 'off';
+  if (profile.offline) return 'offline';
+  return `${profile.profile} — latency ${profile.latencyMs}ms, ${profile.downloadKbps} kbps down, ${profile.uploadKbps} kbps up`;
+}
+
+function throttleModel(session, parsed) {
+  const current = parsed.mode === 'status'
+    ? (session.networkThrottle || { profile: 'off', offline: false, latencyMs: 0, downloadKbps: null, uploadKbps: null })
+    : parsed;
+  return {
+    schema: 'chrome-cdp-ex.throttle.v1',
+    targetId: session.targetId,
+    mode: parsed.mode,
+    profile: current.profile || 'off',
+    offline: current.offline === true,
+    latencyMs: current.latencyMs || 0,
+    downloadKbps: current.downloadKbps,
+    uploadKbps: current.uploadKbps,
+    cdpParams: current.cdpParams || throttleCdpParams(current),
+  };
+}
+
+function formatThrottleText(model) {
+  const lines = [`Network throttle: ${formatThrottleSummary(model)}`];
+  if (model.mode === 'status') {
+    lines.push(`Next: cdp throttle ${model.targetId} slow-3g  # apply a preset`);
+  } else if (model.profile === 'off') {
+    lines.push('Network conditions reset to browser defaults.');
+    lines.push(`Next: cdp throttle ${model.targetId} slow-3g  # re-apply a preset`);
+  } else {
+    lines.push(`Next: cdp throttle ${model.targetId} off`);
+  }
+  return lines.join('\n');
+}
+
+async function throttleStr(cdp, sid, session, args = []) {
+  const parsed = parseThrottleArgs(args);
+  if (parsed.mode === 'apply') {
+    await cdp.send('Network.enable', {}, sid);
+    await cdp.send('Network.emulateNetworkConditions', parsed.cdpParams, sid);
+    session.networkThrottle = {
+      profile: parsed.profile,
+      offline: parsed.offline,
+      latencyMs: parsed.latencyMs,
+      downloadKbps: parsed.downloadKbps,
+      uploadKbps: parsed.uploadKbps,
+      cdpParams: parsed.cdpParams,
+      appliedAt: Date.now(),
+    };
+    appendSessionEventLog(session, { kind: 'throttle', ts: session.networkThrottle.appliedAt, throttle: session.networkThrottle });
+  }
+  const model = throttleModel(session, parsed);
+  return parsed.format === 'json' ? formatJson(model) : formatThrottleText(model);
 }
 
 function clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq }) {
@@ -6655,6 +6778,7 @@ async function runDaemon(targetId) {
           break;
         }
         case 'net': case 'network': result = await netStr(cdp, sessionId); break;
+        case 'throttle': case 'network-throttle': result = await throttleStr(cdp, sessionId, session, args); break;
         case 'status': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
           if (fopts.format === 'json') {
@@ -7087,6 +7211,8 @@ Usage: cdp <command> [args]
   diff-shot <target> [--reset] [--threshold pct]  Compare current screenshot against last diff-shot baseline
   html  <target> [selector]         Get HTML (full page or CSS selector)
   nav   <target> <url>              Navigate to URL and wait for load completion
+  throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  Emulate network conditions for this tab
+                                    custom --latency ms --download kbps --upload kbps
   status <target> [--runtime]        Page state + new console/exception entries (primary debug entry point)
                                     --runtime: include Performance.getMetrics counters
   console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
@@ -7225,7 +7351,7 @@ DAEMON IPC (for advanced use / scripting)
     Response: {"id":<number>, "ok":true,  "result":"<string>"}
            or {"id":<number>, "ok":false, "error":"<message>"}
   Commands mirror the CLI: perceive, status, summary, console, frame, snap, eval, eval64, call, wait, keepalive, shot, diff-shot,
-  elshot, fullshot, scanshot, html, nav, net, click, jsclick, clickxy, hover, type, press,
+  elshot, fullshot, scanshot, html, nav, net, throttle, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
   record, checkpoint, restore, record-actions, export-playwright, replay, report, evalraw, batch, flow, repeat, stop.
@@ -7250,6 +7376,7 @@ const COMMANDS = Object.freeze([
   { name: 'html', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'nav', aliases: ['navigate'], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
   { name: 'net', aliases: ['network'], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'throttle', aliases: ['network-throttle'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'status', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'console', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'summary', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
@@ -7666,7 +7793,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs,
   checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,
   // Command implementations
-  formatPageList, dialogStr, netlogStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
+  formatPageList, dialogStr, netlogStr, parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
+  injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,
   parseFormatArgs, formatJson, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, formatCallResult, evalBase64Decode,
