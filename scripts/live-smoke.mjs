@@ -131,15 +131,26 @@ assertIncludes(sinceActionOut, 'Page:', 'perceive --since-action');
 if (!sinceActionOut.includes('+++ Added') && !sinceActionOut.includes('~~~ Text nodes updated')) {
   throw new Error(`perceive --since-action should show changes from the last action\nOutput:\n${sinceActionOut}`);
 }
+const sessionShotOut = step('session shot attachment', () => run(['shot', target, '--quiet']));
+const sessionShotPath = sessionShotOut.split('\n')[0];
+if (sessionShotOut.split('\n').length !== 1 || !sessionShotPath.endsWith('.png') || !existsSync(sessionShotPath)) {
+  throw new Error(`session shot --quiet should print an existing PNG path, got:\n${sessionShotOut}`);
+}
 const reportOut = step('session report', () => run(['report', target]));
 assertIncludes(reportOut, 'Session report:', 'report');
 assertIncludes(reportOut, 'Action timeline:', 'report');
 assertIncludes(reportOut, 'click #combat', 'report action timeline');
+assertIncludes(reportOut, 'Screenshot dir:', 'report screenshot dir');
+assertIncludes(reportOut, 'Attachments:', 'report attachments');
+assertIncludes(reportOut, sessionShotPath, 'report screenshot attachment');
 const reportLogPath = reportOut.split('\n').find(line => line.startsWith('Log: '))?.slice(5).trim();
 if (!reportLogPath || !existsSync(reportLogPath)) throw new Error(`report log path should exist\nOutput:\n${reportOut}`);
 const reportLogEvents = readFileSync(reportLogPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
 if (!reportLogEvents.some(event => event.kind === 'action' && event.action?.action === 'click')) {
   throw new Error(`session log should contain a click action event\nLog:\n${readFileSync(reportLogPath, 'utf8')}`);
+}
+if (!reportLogEvents.some(event => event.kind === 'screenshot' && event.screenshot?.path === sessionShotPath)) {
+  throw new Error(`session log should contain the screenshot event\nLog:\n${readFileSync(reportLogPath, 'utf8')}`);
 }
 step('wait any-of', () => assertIncludes(run(['waitfor', target, '--any-of', '戰鬥勝利|戰敗|逃跑成功', '8000', '--scope', '#combat-log'], { timeout: 12000 }), '戰鬥勝利', 'waitfor --any-of'));
 step('wait selector stable', () => assertIncludes(run(['waitfor', target, '--selector-stable', '#combat-log', '500', '8000'], { timeout: 12000 }), 'stable', 'waitfor --selector-stable'));

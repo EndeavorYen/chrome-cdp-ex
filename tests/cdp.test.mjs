@@ -421,6 +421,7 @@ describe('Session report', () => {
     expect(out).toContain('Uptime: 5s');
     expect(out).toContain('Log:');
     expect(out).toContain('Actions: 0');
+    expect(out).toContain('Screenshot dir:');
     expect(out).toContain('No actions recorded yet');
   });
 
@@ -478,6 +479,39 @@ describe('Session report', () => {
     } finally {
       rmSync(logPath, { force: true });
     }
+  });
+
+  it('registers screenshot attachments and shows them in the report', () => {
+    const state = T.createSessionState({
+      targetId: 'ABC123',
+      sessionId: 'sid-1',
+      screenshotDir: '/tmp/cdp-session-shots-ABC123',
+    });
+    const entry = T.appendSessionScreenshot(state, {
+      kind: 'shot',
+      path: '/tmp/cdp-session-shots-ABC123/shot-001.png',
+      note: 'viewport',
+      ts: Date.parse('2026-06-16T00:00:04.000Z'),
+    });
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(entry.path).toBe('/tmp/cdp-session-shots-ABC123/shot-001.png');
+    expect(state.screenshots).toHaveLength(1);
+    expect(out).toContain('Screenshots: 1');
+    expect(out).toContain('Attachments:');
+    expect(out).toContain('shot — /tmp/cdp-session-shots-ABC123/shot-001.png');
+  });
+
+  it('builds default screenshot paths inside the session screenshot directory', () => {
+    const state = T.createSessionState({
+      targetId: 'ABC123',
+      sessionId: 'sid-1',
+      screenshotDir: '/tmp/cdp-session-shots-ABC123',
+    });
+
+    expect(T.nextSessionScreenshotPath(state, 'shot')).toBe('/tmp/cdp-session-shots-ABC123/shot-001.png');
+    T.appendSessionScreenshot(state, { kind: 'shot', path: '/tmp/cdp-session-shots-ABC123/shot-001.png' });
+    expect(T.nextSessionScreenshotPath(state, 'shot')).toBe('/tmp/cdp-session-shots-ABC123/shot-002.png');
   });
 });
 

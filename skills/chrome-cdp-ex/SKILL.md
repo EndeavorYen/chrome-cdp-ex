@@ -269,6 +269,7 @@ scripts/cdp.mjs fullshot <target> [file]  # single full-page image (may be tiny 
 ```
 
 - **`shot`** — viewport only. Use when you need the currently visible area as pixels.
+- If `[file]` is omitted, `shot` saves under the session screenshot directory and `report <target>` lists it as an attachment.
 - **`scanshot`** — scrolls through and captures multiple viewport-sized images with 10% overlap. Use when you need pixel-level verification of an entire page.
 - **`fullshot`** — single image of entire page. **Do NOT use for analysis** — on long pages text becomes unreadably small. Only for non-AI consumption.
 
@@ -296,11 +297,11 @@ The daemon buffers console output, exceptions, and action evidence in the backgr
 scripts/cdp.mjs status  <target> [--format json]                  # page state + new console/exception entries
 scripts/cdp.mjs summary <target> [--format json]                  # token-efficient page overview (~100 tokens)
 scripts/cdp.mjs console <target> [--all|--errors] [--format json] # console buffer (default: unread only)
-scripts/cdp.mjs report  <target>                                  # session action timeline + evidence summary + JSONL log path
+scripts/cdp.mjs report  <target>                                  # action timeline + evidence + screenshot attachments + JSONL log path
 ```
 
 > **Agent tip:** `perceive` already includes summary + console health. Use `status` or `console` only when you need to check for **new** console entries after an action.
-> Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session and shows the per-target JSONL log path for post-mortem review.
+> Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session, lists session screenshot attachments, and shows the per-target JSONL log path for post-mortem review.
 > Use `--format json` when another tool or agent needs a stable, parseable status, summary, or console payload.
 
 ### Batch commands (reduce IPC overhead)

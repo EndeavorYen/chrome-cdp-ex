@@ -24,6 +24,7 @@ const DAEMON_ALLOW_RETRIES = 200;  // For open --attach: 200 * 300ms = 60s
 const DAEMON_ALLOW_DELAY = 300;
 const MIN_TARGET_PREFIX_LEN = 8;
 const MAX_ACTION_LOG_ENTRIES = 100;
+const MAX_SCREENSHOT_ENTRIES = 100;
 const IS_WINDOWS = process.platform === 'win32';
 if (!IS_WINDOWS) process.umask(0o077);
 const RUNTIME_DIR = IS_WINDOWS
@@ -1073,6 +1074,30 @@ function sessionLogPath(targetId, runtimeDir = RUNTIME_DIR) {
   return resolve(runtimeDir, `cdp-${safeTarget}.log`);
 }
 
+function sessionScreenshotDir(targetId, runtimeDir = RUNTIME_DIR) {
+  const safeTarget = String(targetId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
+  return resolve(runtimeDir, `cdp-${safeTarget}-screenshots`);
+}
+
+function nextSessionScreenshotPath(session, kind = 'shot') {
+  const safeKind = String(kind || 'shot').replace(/[^A-Za-z0-9_.-]/g, '_');
+  const dir = session.screenshotDir || sessionScreenshotDir(session.targetId);
+  const seq = String((session.screenshots?.length || 0) + 1).padStart(3, '0');
+  return resolve(dir, `${safeKind}-${seq}.png`);
+}
+
+function ensureSessionScreenshotDir(session) {
+  if (!session.screenshotDir) return null;
+  try {
+    mkdirSync(session.screenshotDir, { recursive: true, mode: 0o700 });
+    return session.screenshotDir;
+  } catch (e) {
+    if (!session.logErrors) session.logErrors = [];
+    session.logErrors.push({ ts: Date.now(), message: `screenshot-dir: ${e.message}` });
+    return null;
+  }
+}
+
 function appendSessionEventLog(session, event, { writer = appendFileSync } = {}) {
   if (!session.logPath) return null;
   const payload = {
@@ -1132,43 +1157,69 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
   return entry;
 }
 
+function appendSessionScreenshot(session, { kind = 'shot', path = null, note = '', ts = Date.now() } = {}) {
+  if (!session.screenshots) session.screenshots = [];
+  const entry = {
+    ts,
+    kind,
+    path: path || nextSessionScreenshotPath(session, kind),
+    note,
+  };
+  session.screenshots.push(entry);
+  if (session.screenshots.length > MAX_SCREENSHOT_ENTRIES) {
+    session.screenshots.splice(0, session.screenshots.length - MAX_SCREENSHOT_ENTRIES);
+  }
+  appendSessionEventLog(session, { kind: 'screenshot', ts, screenshot: entry });
+  return entry;
+}
+
 function formatSessionReport(session, { now = Date.now() } = {}) {
   const actionLog = session.actionLog || [];
+  const screenshots = session.screenshots || [];
   const uptimeMs = Math.max(0, now - (session.createdAt || now));
   const lines = [
     `Session report: ${session.targetId}`,
     `CDP session: ${session.sessionId}`,
     `Uptime: ${formatDuration(uptimeMs)}`,
     `Log: ${session.logPath || '(disabled)'}`,
+    `Screenshot dir: ${session.screenshotDir || '(disabled)'}`,
     `Actions: ${actionLog.length}`,
-    `Screenshots: ${session.screenshots?.length || 0}`,
+    `Screenshots: ${screenshots.length}`,
     `Records: ${session.records?.length || 0}`,
     '',
     'Action timeline:',
   ];
   if (actionLog.length === 0) {
     lines.push('No actions recorded yet. Run click/fill/press/nav/inject/reload, then report again.');
-    return lines.join('\n');
+  } else {
+    for (const [i, entry] of actionLog.entries()) {
+      const label = entry.target?.label || entry.target?.input || '';
+      const settleStatus = entry.settle?.ok ? 'ok' : 'not confirmed';
+      const settleDuration = Number.isFinite(entry.settle?.durationMs) ? ` in ${entry.settle.durationMs}ms` : '';
+      lines.push(`${i + 1}. ${entry.action}${label ? ` ${label}` : ''} — ${settleStatus}${settleDuration}`);
+      if (entry.dispatch?.method) lines.push(`   Dispatch: ${entry.dispatch.method}`);
+      if (entry.effectSummary) lines.push(`   Effect: ${entry.effectSummary}`);
+      if (entry.effectSample) lines.push(`   Sample: ${entry.effectSample}`);
+    }
   }
-  for (const [i, entry] of actionLog.entries()) {
-    const label = entry.target?.label || entry.target?.input || '';
-    const settleStatus = entry.settle?.ok ? 'ok' : 'not confirmed';
-    const settleDuration = Number.isFinite(entry.settle?.durationMs) ? ` in ${entry.settle.durationMs}ms` : '';
-    lines.push(`${i + 1}. ${entry.action}${label ? ` ${label}` : ''} — ${settleStatus}${settleDuration}`);
-    if (entry.dispatch?.method) lines.push(`   Dispatch: ${entry.dispatch.method}`);
-    if (entry.effectSummary) lines.push(`   Effect: ${entry.effectSummary}`);
-    if (entry.effectSample) lines.push(`   Sample: ${entry.effectSample}`);
+  if (screenshots.length > 0) {
+    lines.push('', 'Attachments:');
+    for (const [i, entry] of screenshots.entries()) {
+      const note = entry.note ? ` (${entry.note})` : '';
+      lines.push(`${i + 1}. ${entry.kind || 'shot'} — ${entry.path}${note}`);
+    }
   }
   lines.push('', 'Next: use `perceive --since-action` to re-check the last action, or continue from the timeline above.');
   return lines.join('\n');
 }
 
-function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targetId) }) {
+function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targetId), screenshotDir = sessionScreenshotDir(targetId) }) {
   return {
     targetId,
     sessionId,
     createdAt: Date.now(),
     logPath,
+    screenshotDir,
     logErrors: [],
     pageGeneration: 0,
     refGeneration: 0,
@@ -4185,6 +4236,7 @@ async function runDaemon(targetId) {
 
   const session = createSessionState({ targetId, sessionId });
   initializeSessionLog(session);
+  ensureSessionScreenshotDir(session);
 
   // --- Background observation ---
   const consoleBuf = new RingBuffer(200);
@@ -4385,9 +4437,21 @@ async function runDaemon(targetId) {
         case 'shot': case 'screenshot': {
           if (args[0] === '--annotate' || args[0] === '-a') {
             result = await annotshotStr(cdp, sessionId, targetId, refMap);
+            appendSessionScreenshot(session, {
+              kind: 'annotshot',
+              path: result.split('\n')[0],
+              note: 'annotated refs',
+            });
           } else {
             const sopts = parseShotArgs(args);
-            result = await shotStr(cdp, sessionId, sopts.filePath, targetId, { quiet: sopts.quiet, verbose: sopts.verbose });
+            const filePath = sopts.filePath || nextSessionScreenshotPath(session, 'shot');
+            if (!sopts.filePath) ensureSessionScreenshotDir(session);
+            result = await shotStr(cdp, sessionId, filePath, targetId, { quiet: sopts.quiet, verbose: sopts.verbose });
+            appendSessionScreenshot(session, {
+              kind: 'shot',
+              path: result.split('\n')[0],
+              note: sopts.filePath ? 'custom path' : 'session screenshot',
+            });
           }
           break;
         }
@@ -5231,7 +5295,9 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel,
   createSessionState, invalidateSessionRefs,
   createActionResult, formatActionText, runActionWithFeedback,
-  appendSessionActionLog, appendSessionEventLog, initializeSessionLog, formatSessionReport,
+  appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
+  initializeSessionLog, formatSessionReport, sessionScreenshotDir,
+  ensureSessionScreenshotDir, nextSessionScreenshotPath,
   // Command implementations
   formatPageList, dialogStr, netlogStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,

@@ -332,7 +332,7 @@ perceive <target> [flags] [--format json] # enriched AX tree with @ref indices +
                                    # Fixed/sticky elements get a ", fixed"/", sticky" tag.
 snap     <target> [--full]         # accessibility tree (compact by default)
 summary  <target> [--format json]  # token-efficient overview (~100 tokens)
-report   <target>                  # session action timeline + evidence summary + JSONL log path
+report   <target>                  # session action timeline + evidence summary + screenshots + JSONL log path
 status   <target> [--runtime] [--format json]  # URL, title + new console/exception entries; --runtime adds Performance metrics
 console  <target> [--all|--errors] [--format json] # console buffer (default: unread only; preserves log/warn/error/debug levels)
 text     <target>                            # clean text content (strips scripts/styles/SVG)
@@ -352,6 +352,8 @@ table    <target> [selector]       # full table data extraction (tab-separated)
 shot     <target> [file] [--quiet|--verbose|--annotate]
                                    # viewport screenshot. By default the saved path is on the
                                    # FIRST line of stdout (good for `head -1`), followed by a short DPR hint.
+                                   # If [file] is omitted, the screenshot is saved under the
+                                   # session screenshot dir and appears in `report <target>`.
                                    # --quiet  print ONLY the saved path
                                    # --verbose include the full coordinate-mapping tutorial
                                    # --annotate overlay @ref labels onto the screenshot
@@ -477,7 +479,7 @@ evalraw <target> <method> [json]    # raw CDP command passthrough
 
 </details>
 
-**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. After any mutating command, `perceive --since-action` replays the page diff from that action's pre-dispatch baseline, so agents can ask "what changed because of the last action?" without guessing from the last manual perceive. Use `report <target>` after a multi-step flow to see the session action timeline, evidence summary, and per-target JSONL log path. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` instead of a pure timeout, so agents should verify with `perceive --since-action`, `perceive --diff`, or `status` rather than retrying the action.
+**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. After any mutating command, `perceive --since-action` replays the page diff from that action's pre-dispatch baseline, so agents can ask "what changed because of the last action?" without guessing from the last manual perceive. Use `report <target>` after a multi-step flow to see the session action timeline, evidence summary, session screenshot attachments, and per-target JSONL log path. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` instead of a pure timeout, so agents should verify with `perceive --since-action`, `perceive --diff`, or `status` rather than retrying the action.
 
 Use `wait` instead of shell `sleep` when policy blocks long sleeps:
 
