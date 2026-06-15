@@ -85,6 +85,8 @@ Exit criteria:
 - Report includes action timeline, DOM diffs, console/network deltas, and screenshots where captured.
 - Live smoke asserts action evidence for click, fill, press, nav, inject, and reload.
 
+Status note (2026-06-16): ActionResult now captures post-dispatch console, exception, and network deltas from daemon buffers; action text, session reports, session JSONL logs, and record-actions artifacts include compact diagnostic summaries.
+
 ### Release 2.7: Modern Web App Coverage
 
 Product value: the tool works reliably on iframe-heavy, component-heavy, authenticated, HMR-heavy web apps.

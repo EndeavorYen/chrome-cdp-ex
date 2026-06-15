@@ -51,6 +51,11 @@ server = createServer((req, res) => {
     res.end(readFileSync(page));
     return;
   }
+  if (req.url?.startsWith('/api/fail')) {
+    res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+    res.end('{"ok":false,"error":"smoke diagnostic"}');
+    return;
+  }
   res.writeHead(404);
   res.end('not found');
 });
@@ -147,6 +152,15 @@ step('text fallback', () => assertIncludes(run(['text', target, '[role="region"]
 const clickOut = step('combat click', () => run(['click', target, '#combat']));
 assertIncludes(clickOut, 'Clicked', 'click #combat');
 assertIncludes(clickOut, 'click: dispatched', 'click action evidence');
+const diagnosticOut = step('diagnostic action evidence', () => run(['click', target, '#diagnostic']));
+assertIncludes(diagnosticOut, 'Clicked', 'click #diagnostic');
+assertIncludes(diagnosticOut, 'Console: 2 entries (1 error, 1 warning)', 'diagnostic console evidence');
+assertIncludes(diagnosticOut, 'Console sample: [error] diagnostic error', 'diagnostic console sample');
+assertIncludes(diagnosticOut, 'Network: 1 request', 'diagnostic network evidence');
+assertIncludes(diagnosticOut, 'Network sample: POST /api/fail ->', 'diagnostic network sample');
+if (!diagnosticOut.includes('Network: 1 request (1 failed)') && !diagnosticOut.includes('Network: 1 request (1 pending)')) {
+  throw new Error(`diagnostic network evidence should classify the request as failed or pending\nOutput:\n${diagnosticOut}`);
+}
 const sinceActionOut = step('perceive since-action', () => run(['perceive', target, '--since-action']));
 assertIncludes(sinceActionOut, 'Page:', 'perceive --since-action');
 if (!sinceActionOut.includes('+++ Added') && !sinceActionOut.includes('~~~ Text nodes updated')) {

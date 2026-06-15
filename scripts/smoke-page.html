@@ -25,6 +25,7 @@
     <p>This page simulates 3y-Mud-style logs, modal dismissal, fixed controls, and keyboard shortcuts.</p>
     <input id="cmd" aria-label="command input" placeholder="look 訓練師">
     <button id="combat">Run combat</button>
+    <button id="diagnostic">Run diagnostic</button>
     <div id="custom-clickable" onclick="appendLog('custom clickable used')">Custom clickable div</div>
     <section role="region" aria-label="事件紀錄">
       <h2>事件紀錄</h2>
@@ -58,6 +59,17 @@
       setTimeout(() => appendLog('第 1 回合'), 120);
       setTimeout(() => appendLog('戰鬥勝利'), 260);
       console.log('combat complete');
+    });
+    document.getElementById('diagnostic').addEventListener('click', async () => {
+      appendLog('diagnostic started');
+      console.warn('diagnostic warning');
+      console.error('diagnostic error');
+      try {
+        const response = await fetch('/api/fail', { method: 'POST' });
+        await response.text();
+      } finally {
+        appendLog('diagnostic requested');
+      }
     });
     document.getElementById('close-modal').addEventListener('click', () => {
       document.getElementById('motd').hidden = true;

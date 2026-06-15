@@ -1173,6 +1173,10 @@ function formatPerceptionJson(model) {
   return formatJson(model);
 }
 
+const MAX_ACTION_DELTA_ENTRIES = 5;
+const SENSITIVE_QUERY_KEY_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn)\b/i;
+const NOISY_ACTION_NETWORK_TYPES = new Set(['Image', 'Stylesheet', 'Script', 'Font', 'Media', 'WebSocket']);
+
 function createActionResult({ action, target, dispatch, settle, effects, nextHint }) {
   return {
     schema: 'chrome-cdp-ex.action.v1',
@@ -1185,7 +1189,223 @@ function createActionResult({ action, target, dispatch, settle, effects, nextHin
   };
 }
 
+function createActionObservationBaseline({ consoleBuf = null, exceptionBuf = null, netReqBuf = null } = {}) {
+  return {
+    console: typeof consoleBuf?.latest === 'function' ? consoleBuf.latest() : 0,
+    exception: typeof exceptionBuf?.latest === 'function' ? exceptionBuf.latest() : 0,
+    network: typeof netReqBuf?.latest === 'function' ? netReqBuf.latest() : 0,
+  };
+}
+
+function compactActionText(value, max = 220) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function compactActionUrl(value) {
+  const raw = compactActionText(value, 240);
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    const params = new URLSearchParams(url.search);
+    for (const key of [...params.keys()]) {
+      if (SENSITIVE_QUERY_KEY_RE.test(key)) params.set(key, '<redacted>');
+    }
+    const query = params.toString();
+    return compactActionText(`${url.pathname}${query ? `?${query}` : ''}${url.hash || ''}`, 180);
+  } catch {
+    return compactActionText(raw, 180);
+  }
+}
+
+function compactConsoleDeltaEntry(entry = {}) {
+  return {
+    level: compactActionText(entry.level || 'log', 30),
+    text: compactActionText(entry.text || entry.msg || entry.message || ''),
+    loc: compactActionText(entry.loc || '', 120),
+  };
+}
+
+function compactExceptionDeltaEntry(entry = {}) {
+  return {
+    message: compactActionText(entry.msg || entry.message || entry.text || 'Unknown exception'),
+    loc: compactActionText(entry.loc || '', 120),
+  };
+}
+
+function isNetworkFailure(entry = {}) {
+  if (entry.failed === true || entry.errorText) return true;
+  const status = Number(entry.status);
+  return Number.isFinite(status) && status >= 400;
+}
+
+function shouldTrackActionNetworkRequest(type) {
+  return !NOISY_ACTION_NETWORK_TYPES.has(String(type || ''));
+}
+
+function compactNetworkDeltaEntry(entry = {}) {
+  const status = entry.pending ? 'pending' : (entry.errorText ? 'failed' : entry.status);
+  return {
+    method: compactActionText(entry.method || 'GET', 20).toUpperCase(),
+    url: compactActionUrl(entry.url || ''),
+    status,
+    type: compactActionText(entry.type || '', 40),
+    duration: Number.isFinite(entry.duration) ? entry.duration : null,
+    errorText: entry.errorText ? compactActionText(entry.errorText, 120) : null,
+    pending: entry.pending === true,
+  };
+}
+
+function buildActionObservationDelta({ consoleBuf = null, exceptionBuf = null, netReqBuf = null } = {}, baseline = {}) {
+  const consoleEntries = typeof consoleBuf?.since === 'function' ? consoleBuf.since(baseline.console || 0) : [];
+  const exceptionEntries = typeof exceptionBuf?.since === 'function' ? exceptionBuf.since(baseline.exception || 0) : [];
+  const networkEntries = typeof netReqBuf?.since === 'function' ? netReqBuf.since(baseline.network || 0) : [];
+  const consoleCompact = consoleEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(compactConsoleDeltaEntry);
+  const exceptionCompact = exceptionEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(compactExceptionDeltaEntry);
+  const networkCompact = networkEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(compactNetworkDeltaEntry);
+  return {
+    console: {
+      count: consoleEntries.length,
+      errors: consoleEntries.filter(entry => ['error', 'assert'].includes(String(entry.level || '').toLowerCase())).length,
+      warnings: consoleEntries.filter(entry => ['warning', 'warn'].includes(String(entry.level || '').toLowerCase())).length,
+      entries: consoleCompact,
+    },
+    exceptions: {
+      count: exceptionEntries.length,
+      entries: exceptionCompact,
+    },
+    network: {
+      count: networkEntries.length,
+      failures: networkEntries.filter(isNetworkFailure).length,
+      pending: networkEntries.filter(entry => entry.pending === true).length,
+      entries: networkCompact,
+    },
+  };
+}
+
+function numericDeltaCount(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeConsoleDelta(delta = {}) {
+  const entries = (delta.entries || []).slice(-MAX_ACTION_DELTA_ENTRIES).map(compactConsoleDeltaEntry);
+  return {
+    count: numericDeltaCount(delta.count, entries.length),
+    errors: numericDeltaCount(delta.errors, entries.filter(entry => ['error', 'assert'].includes(String(entry.level || '').toLowerCase())).length),
+    warnings: numericDeltaCount(delta.warnings, entries.filter(entry => ['warning', 'warn'].includes(String(entry.level || '').toLowerCase())).length),
+    entries,
+  };
+}
+
+function normalizeExceptionDelta(delta = {}) {
+  const entries = (delta.entries || []).slice(-MAX_ACTION_DELTA_ENTRIES).map(compactExceptionDeltaEntry);
+  return {
+    count: numericDeltaCount(delta.count, entries.length),
+    entries,
+  };
+}
+
+function normalizeNetworkDelta(delta = {}) {
+  const entries = (delta.entries || []).slice(-MAX_ACTION_DELTA_ENTRIES).map(compactNetworkDeltaEntry);
+  return {
+    count: numericDeltaCount(delta.count, entries.length),
+    failures: numericDeltaCount(delta.failures, entries.filter(isNetworkFailure).length),
+    pending: numericDeltaCount(delta.pending, entries.filter(entry => entry.pending === true).length),
+    entries,
+  };
+}
+
+function applyActionObservationDelta(actionResult, delta = {}) {
+  if (!actionResult.effects) actionResult.effects = {};
+  const consoleDelta = normalizeConsoleDelta(delta.console || {});
+  const exceptionDelta = normalizeExceptionDelta(delta.exceptions || {});
+  const networkDelta = normalizeNetworkDelta(delta.network || {});
+  actionResult.effects.consoleDelta = consoleDelta;
+  actionResult.effects.exceptionDelta = exceptionDelta;
+  actionResult.effects.networkDelta = networkDelta;
+  actionResult.effects.console = consoleDelta.entries || [];
+  actionResult.effects.exceptions = exceptionDelta.entries || [];
+  actionResult.effects.network = networkDelta.entries || [];
+  return actionResult;
+}
+
+function countLabel(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function formatConsoleDeltaSample(entry) {
+  if (!entry) return null;
+  const level = entry.level || 'log';
+  const loc = entry.loc ? ` @ ${entry.loc}` : '';
+  return `[${level}] ${entry.text || '(empty)'}${loc}`;
+}
+
+function formatExceptionDeltaSample(entry) {
+  if (!entry) return null;
+  const loc = entry.loc ? ` @ ${entry.loc}` : '';
+  return `${entry.message || 'Unknown exception'}${loc}`;
+}
+
+function formatNetworkDeltaSample(entry) {
+  if (!entry) return null;
+  const status = entry.errorText || entry.status || 'pending';
+  const duration = Number.isFinite(entry.duration) ? ` in ${entry.duration}ms` : '';
+  return `${entry.method || 'GET'} ${entry.url || '(unknown URL)'} -> ${status}${duration}`;
+}
+
+function summarizeActionConsoleDelta(delta = {}) {
+  const count = Number(delta.count || 0);
+  if (count === 0) return { summary: null, sample: null };
+  const parts = [];
+  if (delta.errors) parts.push(countLabel(delta.errors, 'error'));
+  if (delta.warnings) parts.push(countLabel(delta.warnings, 'warning'));
+  const summary = `Console: ${countLabel(count, 'entry', 'entries')}${parts.length ? ` (${parts.join(', ')})` : ''}`;
+  const prioritized = [...(delta.entries || [])].find(entry => ['error', 'assert'].includes(String(entry.level || '').toLowerCase()))
+    || [...(delta.entries || [])].find(entry => ['warning', 'warn'].includes(String(entry.level || '').toLowerCase()))
+    || (delta.entries || [])[0];
+  return { summary, sample: formatConsoleDeltaSample(prioritized) };
+}
+
+function summarizeActionExceptionDelta(delta = {}) {
+  const count = Number(delta.count || 0);
+  if (count === 0) return { summary: null, sample: null };
+  return {
+    summary: `Exception: ${count} thrown`,
+    sample: formatExceptionDeltaSample((delta.entries || [])[0]),
+  };
+}
+
+function summarizeActionNetworkDelta(delta = {}) {
+  const count = Number(delta.count || 0);
+  if (count === 0) return { summary: null, sample: null };
+  const failures = Number(delta.failures || 0);
+  const pending = Number(delta.pending || 0);
+  const parts = [];
+  if (failures) parts.push(countLabel(failures, 'failed', 'failed'));
+  if (pending) parts.push(countLabel(pending, 'pending', 'pending'));
+  const summary = `Network: ${countLabel(count, 'request')}${parts.length ? ` (${parts.join(', ')})` : ''}`;
+  const prioritized = [...(delta.entries || [])].find(isNetworkFailure) || (delta.entries || [])[0];
+  return { summary, sample: formatNetworkDeltaSample(prioritized) };
+}
+
+function summarizeActionObservationEffects(effects = {}) {
+  const consoleSummary = summarizeActionConsoleDelta(effects.consoleDelta);
+  const exceptionSummary = summarizeActionExceptionDelta(effects.exceptionDelta);
+  const networkSummary = summarizeActionNetworkDelta(effects.networkDelta);
+  return {
+    consoleSummary: consoleSummary.summary,
+    consoleSample: consoleSummary.sample,
+    exceptionSummary: exceptionSummary.summary,
+    exceptionSample: exceptionSummary.sample,
+    networkSummary: networkSummary.summary,
+    networkSample: networkSummary.sample,
+  };
+}
+
 function formatActionText(result) {
+  const diagnostics = summarizeActionObservationEffects(result.effects || {});
   const lines = [
     `${result.action}: ${result.dispatch.ok ? 'dispatched' : 'failed'} via ${result.dispatch.method}`,
   ];
@@ -1195,12 +1415,24 @@ function formatActionText(result) {
     const duration = result.settle.durationMs ? ` in ${result.settle.durationMs}ms` : '';
     lines.push(`Settle: ${result.settle.ok ? 'ok' : 'not confirmed'}${duration}`);
   }
+  if (diagnostics.consoleSummary) lines.push(diagnostics.consoleSummary);
+  if (diagnostics.consoleSample) lines.push(`Console sample: ${diagnostics.consoleSample}`);
+  if (diagnostics.exceptionSummary) lines.push(diagnostics.exceptionSummary);
+  if (diagnostics.exceptionSample) lines.push(`Exception sample: ${diagnostics.exceptionSample}`);
+  if (diagnostics.networkSummary) lines.push(diagnostics.networkSummary);
+  if (diagnostics.networkSample) lines.push(`Network sample: ${diagnostics.networkSample}`);
   if (result.effects?.domDiff) lines.push('---', result.effects.domDiff);
   if (result.nextHint) lines.push(`Hint: ${result.nextHint}`);
   return lines.join('\n');
 }
 
-async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --since-action if more evidence is needed', onActionResult = null }) {
+function finalizeActionResult(result, { enrichActionResult = null, onActionResult = null } = {}) {
+  if (enrichActionResult) enrichActionResult(result);
+  if (onActionResult) onActionResult(result);
+  return result;
+}
+
+async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --since-action if more evidence is needed', enrichActionResult = null, onActionResult = null }) {
   const startedAt = Date.now();
   let dispatchText;
   try {
@@ -1215,10 +1447,22 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       effects: { domDiff: null, console: [], network: [], navigation: null, failure },
       nextHint: failure.nextCommand,
     });
-    if (onActionResult) onActionResult(result);
+    finalizeActionResult(result, { enrichActionResult, onActionResult });
     throw new Error(formatActionFailure(e, { action, target }));
   }
-  if (feedbackPolicy === 'none' || feedbackPolicy === 'report-only') return dispatchText;
+  if (feedbackPolicy === 'none' || feedbackPolicy === 'report-only') {
+    const result = createActionResult({
+      action,
+      target: target || { input: '', resolvedBy: 'command', label: '' },
+      dispatch: { ok: true, method: dispatchMethod },
+      settle: { ok: true, durationMs: Date.now() - startedAt },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint: feedbackPolicy === 'report-only' ? nextHint : null,
+    });
+    finalizeActionResult(result, { enrichActionResult, onActionResult });
+    if (feedbackPolicy === 'none') return dispatchText;
+    return `${dispatchText}\n---\n${formatActionText(result)}`;
+  }
   try {
     const domDiff = await observe();
     const result = createActionResult({
@@ -1229,21 +1473,20 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       effects: { domDiff, console: [], network: [], navigation: null },
       nextHint,
     });
-    if (onActionResult) onActionResult(result);
+    finalizeActionResult(result, { enrichActionResult, onActionResult });
     return `${dispatchText}\n---\n${formatActionText(result)}`;
   } catch (e) {
     if (!isTimeoutError(e)) throw e;
-    if (onActionResult) {
-      onActionResult(createActionResult({
-        action,
-        target: target || { input: '', resolvedBy: 'command', label: '' },
-        dispatch: { ok: true, method: dispatchMethod },
-        settle: { ok: false, durationMs: Date.now() - startedAt },
-        effects: { domDiff: null, console: [], network: [], navigation: null },
-        nextHint,
-      }));
-    }
-    return `${dispatchText}\n---\n(success but observation timed out after action dispatch: ${e.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
+    const result = createActionResult({
+      action,
+      target: target || { input: '', resolvedBy: 'command', label: '' },
+      dispatch: { ok: true, method: dispatchMethod },
+      settle: { ok: false, durationMs: Date.now() - startedAt },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint,
+    });
+    finalizeActionResult(result, { enrichActionResult, onActionResult });
+    return `${dispatchText}\n---\n${formatActionText(result)}\n(success but observation timed out after action dispatch: ${e.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
   }
 }
 
@@ -1354,6 +1597,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
   if (!session.actionLog) session.actionLog = [];
   const domDiff = actionResult.effects?.domDiff || '';
   const { summary, sample } = summarizeActionDomDiff(domDiff);
+  const diagnostics = summarizeActionObservationEffects(actionResult.effects || {});
   const target = sanitizeActionTargetForLog(actionResult.action, actionResult.target || null);
   const entry = {
     ts,
@@ -1363,6 +1607,12 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
     settle: actionResult.settle || null,
     effectSummary: summary,
     effectSample: sample,
+    consoleSummary: diagnostics.consoleSummary,
+    consoleSample: diagnostics.consoleSample,
+    exceptionSummary: diagnostics.exceptionSummary,
+    exceptionSample: diagnostics.exceptionSample,
+    networkSummary: diagnostics.networkSummary,
+    networkSample: diagnostics.networkSample,
     failure: actionResult.effects?.failure || null,
     nextHint: actionResult.nextHint || null,
   };
@@ -1418,6 +1668,12 @@ function formatSessionReport(session, { now = Date.now() } = {}) {
       if (entry.failure?.kind) lines.push(`   Failure: ${entry.failure.kind} — ${entry.failure.reason}`);
       if (entry.effectSummary) lines.push(`   Effect: ${entry.effectSummary}`);
       if (entry.effectSample) lines.push(`   Sample: ${entry.effectSample}`);
+      if (entry.consoleSummary) lines.push(`   ${entry.consoleSummary}`);
+      if (entry.consoleSample) lines.push(`   Console sample: ${entry.consoleSample}`);
+      if (entry.exceptionSummary) lines.push(`   ${entry.exceptionSummary}`);
+      if (entry.exceptionSample) lines.push(`   Exception sample: ${entry.exceptionSample}`);
+      if (entry.networkSummary) lines.push(`   ${entry.networkSummary}`);
+      if (entry.networkSample) lines.push(`   Network sample: ${entry.networkSample}`);
       if (entry.nextHint) lines.push(`   Next: ${entry.nextHint}`);
     }
   }
@@ -1522,6 +1778,12 @@ function buildRecordActionsModel(session) {
         settleDurationMs: entry.settle?.durationMs ?? null,
         effectSummary: entry.effectSummary || null,
         effectSample: entry.effectSample || null,
+        consoleSummary: entry.consoleSummary || null,
+        consoleSample: entry.consoleSample || null,
+        exceptionSummary: entry.exceptionSummary || null,
+        exceptionSample: entry.exceptionSample || null,
+        networkSummary: entry.networkSummary || null,
+        networkSample: entry.networkSample || null,
         failure: entry.failure || null,
         nextHint: entry.nextHint || null,
       },
@@ -1569,6 +1831,12 @@ function formatRecordActions(session, { format = 'text' } = {}) {
     }
     if (step.evidence.effectSummary) lines.push(`   Evidence: ${step.evidence.effectSummary}`);
     if (step.evidence.effectSample) lines.push(`   Sample: ${step.evidence.effectSample}`);
+    if (step.evidence.consoleSummary) lines.push(`   ${step.evidence.consoleSummary}`);
+    if (step.evidence.consoleSample) lines.push(`   Console sample: ${step.evidence.consoleSample}`);
+    if (step.evidence.exceptionSummary) lines.push(`   ${step.evidence.exceptionSummary}`);
+    if (step.evidence.exceptionSample) lines.push(`   Exception sample: ${step.evidence.exceptionSample}`);
+    if (step.evidence.networkSummary) lines.push(`   ${step.evidence.networkSummary}`);
+    if (step.evidence.networkSample) lines.push(`   Network sample: ${step.evidence.networkSample}`);
   }
   return lines.join('\n');
 }
@@ -3761,7 +4029,7 @@ function dialogStr(dialogBuf, dialogAutoAcceptRef, flag) {
 function netlogStr(netReqBuf, flag) {
   if (flag === '--clear') { netReqBuf.clear(); return 'Network log cleared'; }
   const entries = netReqBuf.all();
-  if (entries.length === 0) return 'No network requests captured (tracking XHR/Fetch/Document only)';
+  if (entries.length === 0) return 'No network requests captured (tracking action-relevant requests; static assets are skipped)';
   const lines = [`Network requests (${entries.length}):`];
   for (const e of entries) {
     const ago = Math.round((Date.now() - e.ts) / 1000);
@@ -3781,6 +4049,42 @@ function clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, 
     lastReadSeq.console = consoleBuf?.latest?.() || 0;
     lastReadSeq.exception = exceptionBuf?.latest?.() || 0;
   }
+}
+
+async function waitForActionNetworkQuiet(pendingReqs, { quietMs = 150, timeoutMs = 1000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let quietSince = pendingReqs?.size ? 0 : Date.now();
+  while (Date.now() < deadline) {
+    if (pendingReqs?.size) {
+      quietSince = 0;
+    } else {
+      if (!quietSince) quietSince = Date.now();
+      if (Date.now() - quietSince >= quietMs) return true;
+    }
+    await sleep(50);
+  }
+  return !pendingReqs?.size;
+}
+
+function appendPendingActionNetworkEntries(pendingReqs, netReqBuf, sinceTs, { now = Date.now() } = {}) {
+  if (!pendingReqs || !netReqBuf) return 0;
+  let count = 0;
+  for (const req of pendingReqs.values()) {
+    if (!req || req.actionEvidenceReported || req.ts < sinceTs) continue;
+    req.actionEvidenceReported = true;
+    netReqBuf.push({
+      method: req.method,
+      url: req.url,
+      status: 'pending',
+      type: req.type,
+      duration: now - req.ts,
+      size: 0,
+      pending: true,
+      ts: req.ts,
+    });
+    count += 1;
+  }
+  return count;
 }
 
 async function viewportStr(cdp, sid, size) {
@@ -5479,6 +5783,7 @@ async function runDaemon(targetId) {
   const navBuf = new RingBuffer(10);
   const netReqBuf = new RingBuffer(100); // network request/response pairs
   const pendingReqs = session.pendingRequests; // requestId → {method, url, ts}
+  const networkStatusByRequest = new Map(); // requestId → statusCode from ExtraInfo that arrived first
   let lastReadSeq = { console: 0, exception: 0 };
 
   // --- Ref system & perceive diff state ---
@@ -5528,33 +5833,78 @@ async function runDaemon(targetId) {
   });
 
   // --- Network request/response tracking ---
+  function appendNetworkResponse(requestId, req, { status = null, type = req.type, size = 0, failed = false, errorText = null } = {}) {
+    pendingReqs.delete(requestId);
+    netReqBuf.push({
+      method: req.method,
+      url: req.url,
+      status,
+      type,
+      duration: Date.now() - req.ts,
+      size,
+      ...(failed ? { failed: true } : {}),
+      ...(errorText ? { errorText } : {}),
+      ts: req.ts,
+    });
+  }
+
   cdp.onEvent('Network.requestWillBeSent', (params) => {
-    // Only track XHR/Fetch, skip images/scripts/stylesheets for noise reduction
-    if (params.type === 'XHR' || params.type === 'Fetch' || params.type === 'Document') {
-      pendingReqs.set(params.requestId, {
+    // Track action-relevant traffic while skipping static asset noise.
+    if (shouldTrackActionNetworkRequest(params.type)) {
+      const req = {
         method: params.request.method,
         url: params.request.url.substring(0, 200),
+        type: params.type,
         ts: Date.now(),
-      });
+      };
+      if (networkStatusByRequest.has(params.requestId)) {
+        const status = networkStatusByRequest.get(params.requestId);
+        networkStatusByRequest.delete(params.requestId);
+        appendNetworkResponse(params.requestId, req, { status });
+      } else {
+        pendingReqs.set(params.requestId, req);
+      }
     }
   });
   cdp.onEvent('Network.responseReceived', (params) => {
     const req = pendingReqs.get(params.requestId);
     if (!req) return;
-    pendingReqs.delete(params.requestId);
-    netReqBuf.push({
-      method: req.method,
-      url: req.url,
+    appendNetworkResponse(params.requestId, req, {
       status: params.response.status,
       type: params.type,
-      duration: Date.now() - req.ts,
       size: params.response.encodedDataLength || 0,
-      ts: req.ts,
+    });
+  });
+
+  cdp.onEvent('Network.responseReceivedExtraInfo', (params) => {
+    const req = pendingReqs.get(params.requestId);
+    if (!Number.isFinite(Number(params.statusCode))) return;
+    const status = Number(params.statusCode);
+    if (!req) {
+      networkStatusByRequest.set(params.requestId, status);
+      return;
+    }
+    appendNetworkResponse(params.requestId, req, { status });
+  });
+
+  cdp.onEvent('Network.loadingFinished', (params) => {
+    const req = pendingReqs.get(params.requestId);
+    if (!req) return;
+    appendNetworkResponse(params.requestId, req, {
+      status: null,
+      size: params.encodedDataLength || 0,
     });
   });
 
   cdp.onEvent('Network.loadingFailed', (params) => {
-    pendingReqs.delete(params.requestId);
+    const req = pendingReqs.get(params.requestId);
+    if (!req) return;
+    appendNetworkResponse(params.requestId, req, {
+      status: null,
+      type: params.type,
+      failed: true,
+      errorText: params.errorText || 'loadingFailed',
+    });
   });
 
   // --- Dialog handling (alert/confirm/prompt/beforeunload) ---
@@ -5638,14 +5988,26 @@ async function runDaemon(targetId) {
       ? { ...target, targetId }
       : { input: String(target || ''), label: String(target || ''), targetId };
     const baselineOutput = baselineOutputForActionTarget(refState, lastPerceiveStore.output, actionTarget);
+    const observationBaseline = createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf });
+    const actionStartedAt = Date.now();
     const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput));
-    session.lastAction = { action, target: actionTarget, feedbackPolicy, ts: Date.now(), baselineOutput };
+    const observeThenFlush = async () => {
+      const text = await observeAfterAction();
+      await waitForActionNetworkQuiet(pendingReqs);
+      appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
+      return text;
+    };
+    session.lastAction = { action, target: actionTarget, feedbackPolicy, ts: actionStartedAt, baselineOutput };
     return runActionWithFeedback({
       action,
       target: actionTarget,
       dispatch,
       feedbackPolicy,
-      observe: observeAfterAction,
+      observe: observeThenFlush,
+      enrichActionResult: (actionResult) => applyActionObservationDelta(actionResult, buildActionObservationDelta(
+        { consoleBuf, exceptionBuf, netReqBuf },
+        observationBaseline
+      )),
       onActionResult: (actionResult) => appendSessionActionLog(session, actionResult, { ts: session.lastAction.ts }),
     });
   }
@@ -6245,6 +6607,9 @@ Usage: cdp <command> [args]
 ACTION FEEDBACK
   click, clickxy, press (Enter/Escape/Tab), select, scroll, and viewport (when
   resizing) automatically wait for DOM to settle and return a perceive diff.
+  Each mutating action also snapshots console/exception/network buffers before
+  dispatch and reports compact deltas such as console errors, failed requests,
+  or requests still pending after the action observation window.
   If that post-action observation times out after the action was sent, the
   command reports success with "observation timed out" instead of a pure timeout.
   nav automatically returns a full perceive of the loaded page.
@@ -6630,6 +6995,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,
   createActionResult, formatActionText, runActionWithFeedback,
+  createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
+  summarizeActionObservationEffects, shouldTrackActionNetworkRequest,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
   initializeSessionLog, formatSessionReport, sessionScreenshotDir,
   ensureSessionScreenshotDir, nextSessionScreenshotPath,

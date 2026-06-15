@@ -425,6 +425,77 @@ describe('ActionResult', () => {
     expect(text).toMatch(/value changed/);
   });
 
+  it('builds and formats console, exception, and network deltas since action dispatch', () => {
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    const netReqBuf = new RingBuffer(10);
+    consoleBuf.push({ level: 'log', text: 'before action', loc: 'app.js:1', ts: 1 });
+    netReqBuf.push({ method: 'GET', url: 'https://example.com/before', status: 200, duration: 9, ts: 1 });
+    const baseline = T.createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf });
+
+    consoleBuf.push({ level: 'warning', text: 'deprecated API', loc: 'app.js:10', ts: 2 });
+    consoleBuf.push({ level: 'error', text: 'save failed', loc: 'app.js:11', ts: 3 });
+    exceptionBuf.push({ msg: 'Error: render exploded', loc: 'app.js:12', ts: 4 });
+    netReqBuf.push({ method: 'GET', url: 'https://example.com/ok', status: 200, duration: 12, ts: 5 });
+    netReqBuf.push({ method: 'POST', url: 'https://example.com/api/save?draft=1', status: 500, duration: 31, ts: 6 });
+
+    const delta = T.buildActionObservationDelta({ consoleBuf, exceptionBuf, netReqBuf }, baseline);
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 150 },
+      effects: { domDiff: 'Saved banner appeared', console: [], network: [], navigation: null },
+      nextHint: null,
+    }), delta);
+    const text = T.formatActionText(result);
+
+    expect(delta.console).toMatchObject({ count: 2, errors: 1, warnings: 1 });
+    expect(delta.exceptions).toMatchObject({ count: 1 });
+    expect(delta.network).toMatchObject({ count: 2, failures: 1 });
+    expect(text).toContain('Console: 2 entries (1 error, 1 warning)');
+    expect(text).toContain('Console sample: [error] save failed @ app.js:11');
+    expect(text).toContain('Exception: 1 thrown');
+    expect(text).toContain('Network: 2 requests (1 failed)');
+    expect(text).toContain('Network sample: POST /api/save?draft=1 -> 500 in 31ms');
+  });
+
+  it('tracks action-relevant network request types while skipping static assets', () => {
+    expect(T.shouldTrackActionNetworkRequest('Fetch')).toBe(true);
+    expect(T.shouldTrackActionNetworkRequest('XHR')).toBe(true);
+    expect(T.shouldTrackActionNetworkRequest('Document')).toBe(true);
+    expect(T.shouldTrackActionNetworkRequest('Other')).toBe(true);
+    expect(T.shouldTrackActionNetworkRequest(undefined)).toBe(true);
+    expect(T.shouldTrackActionNetworkRequest('Image')).toBe(false);
+    expect(T.shouldTrackActionNetworkRequest('Script')).toBe(false);
+    expect(T.shouldTrackActionNetworkRequest('Stylesheet')).toBe(false);
+  });
+
+  it('formats pending network requests as action evidence', () => {
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { input: '#diagnostic', resolvedBy: 'selector', label: 'Diagnostic' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 1400 },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint: null,
+    }), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 0,
+        pending: 1,
+        entries: [{ method: 'POST', url: 'https://example.com/api/fail', status: 'pending', duration: 1404, pending: true }],
+      },
+    });
+
+    const text = T.formatActionText(result);
+
+    expect(text).toContain('Network: 1 request (1 pending)');
+    expect(text).toContain('Network sample: POST /api/fail -> pending in 1404ms');
+  });
+
   it('wraps dispatch output with observed action evidence', async () => {
     let captured = null;
     const text = await T.runActionWithFeedback({
@@ -441,6 +512,83 @@ describe('ActionResult', () => {
     expect(text).toMatch(/button disabled/);
     expect(captured.action).toBe('click');
     expect(captured.effects.domDiff).toBe('button disabled');
+  });
+
+  it('enriches action feedback before formatting and logging', async () => {
+    const delta = {
+      console: {
+        count: 1,
+        errors: 1,
+        warnings: 0,
+        entries: [{ level: 'error', text: 'submit failed', loc: 'checkout.js:20' }],
+      },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        entries: [{ method: 'POST', url: 'https://example.com/api/checkout', status: 503, duration: 44 }],
+      },
+    };
+    let captured = null;
+
+    const text = await T.runActionWithFeedback({
+      action: 'click',
+      target: { input: '#submit', resolvedBy: 'selector', label: 'Submit' },
+      dispatch: async () => 'Clicked #submit',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'checkout error banner',
+      enrichActionResult: (result) => T.applyActionObservationDelta(result, delta),
+      onActionResult: (result) => { captured = result; },
+    });
+
+    expect(text).toContain('Console: 1 entry (1 error)');
+    expect(text).toContain('Network sample: POST /api/checkout -> 503 in 44ms');
+    expect(captured.effects.consoleDelta.errors).toBe(1);
+    expect(captured.effects.networkDelta.failures).toBe(1);
+  });
+
+  it('records report-only actions as action evidence without a DOM observation', async () => {
+    let captured = null;
+
+    const text = await T.runActionWithFeedback({
+      action: 'restore',
+      target: { input: 'checkpoint', resolvedBy: 'artifact', label: 'checkpoint' },
+      dispatch: async () => 'Restored checkpoint',
+      feedbackPolicy: 'report-only',
+      observe: async () => 'not reached',
+      onActionResult: (result) => { captured = result; },
+    });
+
+    expect(text).toContain('Restored checkpoint');
+    expect(text).toContain('restore: dispatched');
+    expect(captured.effects.domDiff).toBeNull();
+    expect(captured.settle.ok).toBe(true);
+  });
+
+  it('returns timeout evidence with diagnostics when post-action observation times out', async () => {
+    const err = new Error('Timeout: post-action perceive');
+    err.name = 'TimeoutError';
+    const delta = {
+      console: { count: 1, errors: 0, warnings: 1, entries: [{ level: 'warning', text: 'slow rerender', loc: '' }] },
+      exceptions: { count: 0, entries: [] },
+      network: { count: 0, failures: 0, entries: [] },
+    };
+    let captured = null;
+
+    const text = await T.runActionWithFeedback({
+      action: 'click',
+      target: { input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: async () => 'Clicked #save',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => { throw err; },
+      enrichActionResult: (result) => T.applyActionObservationDelta(result, delta),
+      onActionResult: (result) => { captured = result; },
+    });
+
+    expect(text).toContain('success but observation timed out');
+    expect(text).toContain('Console: 1 entry (1 warning)');
+    expect(captured.settle.ok).toBe(false);
+    expect(captured.effects.consoleDelta.warnings).toBe(1);
   });
 
   it('classifies action failures into recoverable next steps', () => {
@@ -565,6 +713,34 @@ describe('Session report', () => {
     expect(out).toContain('1. click #combat — ok in 123ms');
     expect(out).toContain('Effect: +++ Added (1):');
     expect(out).toContain('戰鬥勝利');
+  });
+
+  it('records compact console and network deltas in session reports', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    const actionResult = T.applyActionObservationDelta(sampleActionResult(), {
+      console: {
+        count: 1,
+        errors: 1,
+        warnings: 0,
+        entries: [{ level: 'error', text: 'combat failed', loc: 'game.js:44' }],
+      },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        entries: [{ method: 'POST', url: 'https://example.com/api/combat', status: 500, duration: 27 }],
+      },
+    });
+
+    T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(out).toContain('Console: 1 entry (1 error)');
+    expect(out).toContain('Console sample: [error] combat failed @ game.js:44');
+    expect(out).toContain('Network: 1 request (1 failed)');
+    expect(out).toContain('Network sample: POST /api/combat -> 500 in 27ms');
+    expect(state.actionLog[0].consoleSummary).toBe('Console: 1 entry (1 error)');
+    expect(state.actionLog[0].networkSummary).toBe('Network: 1 request (1 failed)');
   });
 
   it('records classified action failures in the session report', () => {
@@ -724,6 +900,39 @@ describe('Session report', () => {
     expect(out).toContain('Evidence: +++ Added (1):');
     expect(out).toContain('2. fill #cmd — needs input');
     expect(out).toContain('Replay: fill #cmd <text>');
+  });
+
+  it('includes diagnostic evidence in record-actions artifacts', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat', commandArgs: ['#combat'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] 戰鬥勝利', console: [], network: [], navigation: null },
+      nextHint: null,
+    }), {
+      console: {
+        count: 1,
+        errors: 0,
+        warnings: 1,
+        entries: [{ level: 'warning', text: 'animation fallback used', loc: '' }],
+      },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        entries: [{ method: 'POST', url: 'https://example.com/api/combat', status: 500, duration: 27 }],
+      },
+    }));
+
+    const model = T.buildRecordActionsModel(state);
+    const out = T.formatRecordActions(state);
+
+    expect(model.actions[0].evidence.consoleSummary).toBe('Console: 1 entry (1 warning)');
+    expect(model.actions[0].evidence.networkSummary).toBe('Network: 1 request (1 failed)');
+    expect(out).toContain('Console: 1 entry (1 warning)');
+    expect(out).toContain('Network sample: POST /api/combat -> 500 in 27ms');
   });
 
   it('formats record-actions JSON for scripting', () => {
