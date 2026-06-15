@@ -30,6 +30,17 @@
 - [x] Explicit `SessionState`.
 - [x] Docs contract checker.
 
+### Release 2.6
+
+- [x] Standard `ActionResult`.
+- [x] Action evidence wrapper for mutating commands.
+- [x] Live smoke assertions for `fill`, `press`, `click`, and `inject` evidence.
+- [ ] `perceive --since-action`.
+- [ ] Per-target daemon log file.
+- [ ] Session screenshot directory.
+- [ ] `record-actions`.
+- [ ] `report <session>`.
+
 ### Feature Roadmap (medium effort)
 
 - [ ] `perceive --since-action` — diff from the last mutating action timestamp instead of the last manual `perceive`. Priority: P1.

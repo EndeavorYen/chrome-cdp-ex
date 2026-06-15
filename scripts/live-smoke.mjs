@@ -112,10 +112,20 @@ if (parsedPerceive.schema !== 'chrome-cdp-ex.perceive.v1') throw new Error(`perc
 if (parsedPerceive.viewport.coordinateSpace !== 'viewport-css-px') throw new Error(`perceive json coordinateSpace mismatch:\n${perceiveJson}`);
 
 step('dismiss modal', () => assertIncludes(run(['dismiss-modal', target]), 'Dismissed modal', 'dismiss-modal'));
-step('press c', () => assertIncludes(run(['press', target, 'c']), 'Pressed c', 'press c'));
+const fillOut = step('fill action evidence', () => run(['fill', target, '#cmd', 'look trainer']));
+assertIncludes(fillOut, 'Filled', 'fill');
+assertIncludes(fillOut, 'fill: dispatched', 'fill action evidence');
+const pressOut = step('press c', () => run(['press', target, 'c']));
+assertIncludes(pressOut, 'Pressed c', 'press c');
+assertIncludes(pressOut, 'press: dispatched', 'press action evidence');
+const injectOut = step('inject action evidence', () => run(['inject', target, '--css', 'body { outline: 1px solid rgb(1, 2, 3); }']));
+assertIncludes(injectOut, 'inject-', 'inject');
+assertIncludes(injectOut, 'inject: dispatched', 'inject action evidence');
 step('text auto', () => assertIncludes(run(['text', target, '--auto']), 'chrome-cdp-ex long-session smoke', 'text --auto'));
 step('text fallback', () => assertIncludes(run(['text', target, '[role="region"][aria-label*="事件"], [class*=MainStage], main']), '歷史訊息', 'text fallback'));
-step('combat click', () => assertIncludes(run(['click', target, '#combat']), 'Clicked', 'click #combat'));
+const clickOut = step('combat click', () => run(['click', target, '#combat']));
+assertIncludes(clickOut, 'Clicked', 'click #combat');
+assertIncludes(clickOut, 'click: dispatched', 'click action evidence');
 step('wait any-of', () => assertIncludes(run(['waitfor', target, '--any-of', '戰鬥勝利|戰敗|逃跑成功', '8000', '--scope', '#combat-log'], { timeout: 12000 }), '戰鬥勝利', 'waitfor --any-of'));
 step('wait selector stable', () => assertIncludes(run(['waitfor', target, '--selector-stable', '#combat-log', '500', '8000'], { timeout: 12000 }), 'stable', 'waitfor --selector-stable'));
 const shotOut = step('shot quiet', () => run(['shot', target, resolve(tmpdir(), 'chrome-cdp-ex-smoke.png'), '--quiet']));

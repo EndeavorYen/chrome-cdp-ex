@@ -474,7 +474,7 @@ evalraw <target> <method> [json]    # raw CDP command passthrough
 
 </details>
 
-**Action feedback:** `click`, `clickxy`, `press` (Enter/Escape/Tab), `select`, `scroll`, and viewport resizing automatically wait for DOM to settle and return a `perceive` diff showing what changed. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` instead of a pure timeout, so agents should verify with `perceive --diff` or `status` rather than retrying the click.
+**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` instead of a pure timeout, so agents should verify with `perceive --diff` or `status` rather than retrying the action.
 
 Use `wait` instead of shell `sleep` when policy blocks long sleeps:
 

@@ -997,6 +997,53 @@ function formatPerceptionJson(model) {
   return formatJson(model);
 }
 
+function createActionResult({ action, target, dispatch, settle, effects, nextHint }) {
+  return {
+    schema: 'chrome-cdp-ex.action.v1',
+    action,
+    target,
+    dispatch,
+    settle,
+    effects,
+    nextHint,
+  };
+}
+
+function formatActionText(result) {
+  const lines = [
+    `${result.action}: ${result.dispatch.ok ? 'dispatched' : 'failed'} via ${result.dispatch.method}`,
+  ];
+  if (result.target?.label) lines.push(`Target: ${result.target.label}`);
+  if (result.settle) {
+    const duration = result.settle.durationMs ? ` in ${result.settle.durationMs}ms` : '';
+    lines.push(`Settle: ${result.settle.ok ? 'ok' : 'not confirmed'}${duration}`);
+  }
+  if (result.effects?.domDiff) lines.push('---', result.effects.domDiff);
+  if (result.nextHint) lines.push(`Hint: ${result.nextHint}`);
+  return lines.join('\n');
+}
+
+async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --diff if more evidence is needed' }) {
+  const startedAt = Date.now();
+  const dispatchText = await dispatch();
+  if (feedbackPolicy === 'none' || feedbackPolicy === 'report-only') return dispatchText;
+  try {
+    const domDiff = await observe();
+    const result = createActionResult({
+      action,
+      target: target || { input: '', resolvedBy: 'command', label: '' },
+      dispatch: { ok: true, method: dispatchMethod },
+      settle: { ok: true, durationMs: Date.now() - startedAt },
+      effects: { domDiff, console: [], network: [], navigation: null },
+      nextHint,
+    });
+    return `${dispatchText}\n---\n${formatActionText(result)}`;
+  } catch (e) {
+    if (!isTimeoutError(e)) throw e;
+    return `${dispatchText}\n---\n(success but observation timed out after action dispatch: ${e.message}. The action was already sent; run \`perceive --diff\` or \`status\` to refresh.)`;
+  }
+}
+
 function createSessionState({ targetId, sessionId }) {
   return {
     targetId,
@@ -4135,29 +4182,27 @@ async function runDaemon(targetId) {
     return `Daemon keepalive extended for ${ms}ms (until ${new Date(keepaliveUntil).toISOString()})`;
   }
 
-  // Action feedback: wait for DOM to settle, then return perceive diff
-  const OBSERVE_KEYS = new Set(['enter', 'escape', 'tab']);
+  // Action feedback: wait for DOM to settle, then return structured evidence.
   const BATCH_BLOCKED = new Set(['batch', 'stop', 'repeat', 'flow']);
   // Commands that mutate shared state (refMap, lastPerceiveStore) — unsafe for parallel execution
-  const BATCH_NO_PARALLEL = new Set(['click', 'clickxy', 'jsclick', 'select', 'press', 'scroll', 'nav', 'navigate', 'viewport', 'perceive', 'snap', 'snapshot', 'dismiss-modal', 'dismissmodal']);
-  async function actionFeedback(actionResult) {
-    try {
-      await waitForSettle(cdp, sessionId);
-    } catch (e) {
-      if (isTimeoutError(e, ['Runtime.evaluate'])) {
-        return actionResult + `\n---\n(success but observation timed out after action dispatch: ${e.message}. The action was already sent; run \`perceive --diff\` or \`status\` to refresh.)`;
-      }
-      throw e;
-    }
-    try {
-      const diff = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, { diff: true }, refState);
-      return actionResult + '\n---\n' + diff;
-    } catch (e) {
-      if (isTimeoutError(e)) {
-        return actionResult + `\n---\n(success but observation timed out after action dispatch: ${e.message}. The action was already sent; run \`perceive --diff\` or \`status\` to refresh.)`;
-      }
-      throw e;
-    }
+  const BATCH_NO_PARALLEL = new Set(['click', 'clickxy', 'jsclick', 'select', 'press', 'scroll', 'nav', 'navigate', 'back', 'forward', 'reload', 'viewport', 'fill', 'type', 'inject', 'perceive', 'snap', 'snapshot', 'dismiss-modal', 'dismissmodal']);
+  async function observeActionDiff() {
+    await waitForSettle(cdp, sessionId);
+    return perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, { diff: true }, refState);
+  }
+  async function observeFullPerceive() {
+    await waitForSettle(cdp, sessionId);
+    return perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {}, refState);
+  }
+  async function actionFeedback(action, actionResult, target = {}, feedbackPolicy = 'settle-diff', observe = observeActionDiff) {
+    session.lastAction = { action, target, feedbackPolicy, ts: Date.now() };
+    return runActionWithFeedback({
+      action,
+      target,
+      dispatch: async () => actionResult,
+      feedbackPolicy,
+      observe,
+    });
   }
 
   // Handle a command
@@ -4206,14 +4251,13 @@ async function runDaemon(targetId) {
         }
         case 'html': result = await htmlStr(cdp, sessionId, args[0]); break;
         case 'nav': case 'navigate': {
-          const navResult = await navStr(cdp, sessionId, args[0]);
-          try {
-            const p = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {}, refState);
-            result = navResult + '\n---\n' + p;
-          } catch (e) {
-            if (!isTimeoutError(e)) throw e;
-            result = navResult + `\n---\n(success but observation timed out after navigation: ${e.message}. Run \`perceive\` or \`status\` to refresh.)`;
-          }
+          result = await actionFeedback(
+            'nav',
+            await navStr(cdp, sessionId, args[0]),
+            { input: args[0], resolvedBy: 'url', label: args[0] || '' },
+            'full-perceive',
+            observeFullPerceive
+          );
           break;
         }
         case 'net': case 'network': result = await netStr(cdp, sessionId); break;
@@ -4275,40 +4319,32 @@ async function runDaemon(targetId) {
           // Useful when overlays or weird hit testing block the realistic
           // mouse path; opt-in only so default behaviour is unchanged.
           if (args[0] === '--js' || args[0] === '-j') {
-            result = await actionFeedback(await jsClickStr(cdp, sessionId, args[1], refMap, refState));
+            result = await actionFeedback('click', await jsClickStr(cdp, sessionId, args[1], refMap, refState), { input: args[1], resolvedBy: 'selector-or-ref', label: args[1] || '' });
           } else {
-            result = await actionFeedback(await clickStr(cdp, sessionId, args[0], refMap, refState));
+            result = await actionFeedback('click', await clickStr(cdp, sessionId, args[0], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '' });
           }
           break;
         }
-        case 'jsclick': result = await actionFeedback(await jsClickStr(cdp, sessionId, args[0], refMap, refState)); break;
-        case 'clickxy': result = await actionFeedback(await clickXyStr(cdp, sessionId, args[0], args[1])); break;
-        case 'type': result = await typeStr(cdp, sessionId, args[0]); break;
+        case 'jsclick': result = await actionFeedback('jsclick', await jsClickStr(cdp, sessionId, args[0], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '' }); break;
+        case 'clickxy': result = await actionFeedback('clickxy', await clickXyStr(cdp, sessionId, args[0], args[1]), { input: `${args[0]},${args[1]}`, resolvedBy: 'coordinates', label: `${args[0]},${args[1]}` }); break;
+        case 'type': result = await actionFeedback('type', await typeStr(cdp, sessionId, args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus' }); break;
         case 'press': {
-          result = await pressStr(cdp, sessionId, args[0]);
-          if (OBSERVE_KEYS.has(args[0]?.toLowerCase())) result = await actionFeedback(result);
+          result = await actionFeedback('press', await pressStr(cdp, sessionId, args[0]), { input: args[0], resolvedBy: 'key', label: args[0] || '' });
           break;
         }
         case 'scroll': {
-          const scrollResult = await scrollStr(cdp, sessionId, args[0], args[1]);
-          try {
-            const diff = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, { diff: true }, refState);
-            result = scrollResult + '\n---\n' + diff;
-          } catch (e) {
-            if (!isTimeoutError(e)) throw e;
-            result = scrollResult + `\n---\n(success but observation timed out after action dispatch: ${e.message}. The scroll was already sent; run \`perceive --diff\` or \`status\` to refresh.)`;
-          }
+          result = await actionFeedback('scroll', await scrollStr(cdp, sessionId, args[0], args[1]), { input: [args[0], args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: args[0] || 'scroll' });
           break;
         }
         case 'hover': result = await hoverStr(cdp, sessionId, args[0], refMap, refState); break;
         case 'waitfor': result = await waitForStr(cdp, sessionId, args, refMap, refState); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'fill': {
-          if (args[0] === '--react') result = await fillStr(cdp, sessionId, args[1], args[2], refMap, refState, { react: true });
-          else result = await fillStr(cdp, sessionId, args[0], args[1], refMap, refState);
+          if (args[0] === '--react') result = await actionFeedback('fill', await fillStr(cdp, sessionId, args[1], args[2], refMap, refState, { react: true }), { input: args[1], resolvedBy: 'selector-or-ref', label: args[1] || '' });
+          else result = await actionFeedback('fill', await fillStr(cdp, sessionId, args[0], args[1], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '' });
           break;
         }
-        case 'select': result = await actionFeedback(await selectStr(cdp, sessionId, args[0], args[1])); break;
+        case 'select': result = await actionFeedback('select', await selectStr(cdp, sessionId, args[0], args[1]), { input: args[0], resolvedBy: 'selector', label: args[0] || '' }); break;
         case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
         case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
         case 'styles': result = await stylesStr(cdp, sessionId, args[0]); break;
@@ -4318,26 +4354,26 @@ async function runDaemon(targetId) {
         case 'dialog': result = dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]); break;
         case 'viewport': {
           result = await viewportStr(cdp, sessionId, args[0]);
-          if (args[0]) result = await actionFeedback(result); // auto-diff when resizing
+          if (args[0]) result = await actionFeedback('viewport', result, { input: args[0], resolvedBy: 'viewport', label: args[0] }); // auto-diff when resizing
           break;
         }
         case 'upload': result = await uploadStr(cdp, sessionId, args[0], args[1]); break;
         case 'text': result = await textStr(cdp, sessionId, args); break;
         case 'table': result = await tableStr(cdp, sessionId, args[0]); break;
-        case 'back': result = await historyNavStr(cdp, sessionId, -1); break;
-        case 'forward': result = await historyNavStr(cdp, sessionId, +1); break;
+        case 'back': result = await actionFeedback('back', await historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back' }, 'full-perceive', observeFullPerceive); break;
+        case 'forward': result = await actionFeedback('forward', await historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward' }, 'full-perceive', observeFullPerceive); break;
         case 'reload': {
-          result = await reloadStr(cdp, sessionId);
+          const reloadResult = await reloadStr(cdp, sessionId);
           clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
-          result += ' (console/exception/navigation buffers cleared)';
+          result = await actionFeedback('reload', `${reloadResult} (console/exception/navigation buffers cleared)`, { input: 'reload', resolvedBy: 'page', label: 'reload' }, 'full-perceive', observeFullPerceive);
           break;
         }
         case 'closetab': result = await closetabStr(cdp, targetId); break;
         case 'netlog': result = netlogStr(netReqBuf, args[0]); break;
-        case 'inject': result = await injectStr(cdp, sessionId, args); break;
+        case 'inject': result = await actionFeedback('inject', await injectStr(cdp, sessionId, args), { input: args[0] || '', resolvedBy: 'command', label: args[0] || 'inject' }, 'state-change'); break;
         case 'record': result = await recordStr(cdp, sessionId, args, refMap); break;
         case 'cascade': result = await cascadeStr(cdp, sessionId, args[0], args[1], refMap, refState); break;
-        case 'dismiss-modal': case 'dismissmodal': result = await actionFeedback(await dismissModalStr(cdp, sessionId)); break;
+        case 'dismiss-modal': case 'dismissmodal': result = await actionFeedback('dismiss-modal', await dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal' }); break;
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
         case 'batch': {
           let commands;
@@ -5036,6 +5072,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parsePerceiveArgs, buildPerceiveTree, perceivePageScript,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel,
   createSessionState, invalidateSessionRefs,
+  createActionResult, formatActionText, runActionWithFeedback,
   // Command implementations
   formatPageList, dialogStr, netlogStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,

@@ -319,7 +319,7 @@ scripts/cdp.mjs batch <target> --compact 'click @7 | console --errors'   # one l
 Executes multiple commands in a single IPC call. Default output is a JSON array of results.
 
 - **Pipe syntax**: commands separated by `|`, args separated by spaces. Auto-detected when input doesn't start with `[`.
-- **`--parallel`**: runs all commands concurrently via `Promise.all`. Safe for: `elshot`, `fill`, `eval`, `html`, `text`, `table`, `styles`, `cookies`. Rejected for commands that auto-perceive (`click`, `scroll`, `nav`, `perceive`, etc.) since they mutate shared state.
+- **`--parallel`**: runs all commands concurrently via `Promise.all`. Safe for: `elshot`, `eval`, `html`, `text`, `table`, `styles`, `cookies`. Rejected for commands that auto-perceive (`click`, `fill`, `scroll`, `nav`, `perceive`, etc.) since they mutate shared state.
 - **`--plain`**: human-readable per-step output. Each step gets a `[i/N] cmd args` header followed by indented result text. Use when an agent doesn't need to parse the result programmatically.
 - **`--compact`**: one line per step (`[i] cmd: <first line of result>`). Useful for quick visual scans.
 
@@ -349,15 +349,14 @@ Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daem
 
 ### Action feedback (automatic)
 
-These commands **automatically wait for DOM to settle and return perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards:
+These commands **automatically wait for DOM to settle and return compact `ActionResult` evidence plus perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards:
 
 | Command | Auto-returns |
 |---------|-------------|
-| `click`, `clickxy`, `select` | perceive diff |
-| `press` (Enter/Escape/Tab) | perceive diff |
-| `scroll` | perceive diff |
-| `viewport` (when resizing) | perceive diff |
-| `nav` | **full perceive** (new page, not a diff) |
+| `click`, `jsclick`, `clickxy`, `fill`, `type`, `press`, `select`, `scroll`, `inject`, `dismiss-modal` | action evidence + perceive diff |
+| `back`, `forward`, `reload` | action evidence + full perceive |
+| `viewport` (when resizing) | action evidence + perceive diff |
+| `nav` | action evidence + **full perceive** (new page, not a diff) |
 
 Example:
 ```

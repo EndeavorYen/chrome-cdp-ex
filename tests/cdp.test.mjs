@@ -333,6 +333,53 @@ describe('SessionState', () => {
 });
 
 // =========================================================================
+// ActionResult
+// =========================================================================
+
+describe('ActionResult', () => {
+  it('creates versioned action evidence', () => {
+    const result = T.createActionResult({
+      action: 'click',
+      target: { input: '@4', resolvedBy: 'ref', label: 'Submit' },
+      dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
+      settle: { ok: true, durationMs: 120 },
+      effects: { domDiff: 'button disabled', console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --diff if more evidence is needed',
+    });
+    expect(result.schema).toBe('chrome-cdp-ex.action.v1');
+    expect(result.action).toBe('click');
+    expect(result.dispatch.ok).toBe(true);
+  });
+
+  it('formats action evidence as compact text', () => {
+    const text = T.formatActionText(T.createActionResult({
+      action: 'fill',
+      target: { input: '#email', resolvedBy: 'selector', label: 'Email' },
+      dispatch: { ok: true, method: 'Input.insertText' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: 'value changed', console: [], network: [], navigation: null },
+      nextHint: 'Continue with the next form field',
+    }));
+    expect(text).toMatch(/fill/i);
+    expect(text).toMatch(/value changed/);
+  });
+
+  it('wraps dispatch output with observed action evidence', async () => {
+    const text = await T.runActionWithFeedback({
+      action: 'click',
+      target: { input: '@4', resolvedBy: 'ref', label: 'Submit' },
+      dispatch: async () => 'Clicked @4',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'button disabled',
+    });
+
+    expect(text).toMatch(/Clicked @4/);
+    expect(text).toMatch(/click: dispatched/);
+    expect(text).toMatch(/button disabled/);
+  });
+});
+
+// =========================================================================
 // shouldShowAxNode
 // =========================================================================
 
