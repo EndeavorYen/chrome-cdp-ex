@@ -278,6 +278,39 @@ describe('structured status and console models', () => {
 });
 
 // =========================================================================
+// Perception model
+// =========================================================================
+
+describe('PerceptionModel', () => {
+  it('builds a versioned model with page, viewport, console, refs, and nodes', () => {
+    const model = T.createPerceptionModel({
+      page: { title: 'Example', url: 'https://example.com' },
+      viewport: { width: 1280, height: 720, scrollY: 0, scrollMax: 1000 },
+      consoleHealth: { errors: 1, warnings: 2, exceptions: 0 },
+      refs: { generation: 3 },
+      nodes: [{ ref: '@1', role: 'button', name: 'Submit', rect: { x: 10, y: 20, width: 80, height: 30 } }],
+      limits: { truncated: false },
+    });
+
+    expect(model.schema).toBe('chrome-cdp-ex.perceive.v1');
+    expect(model.viewport.coordinateSpace).toBe('viewport-css-px');
+    expect(model.nodes[0].ref).toBe('@1');
+  });
+
+  it('formats perception JSON as parseable output', () => {
+    const model = T.createPerceptionModel({
+      page: { title: 'Example', url: 'https://example.com' },
+      viewport: { width: 1280, height: 720, scrollY: 0, scrollMax: 1000 },
+      consoleHealth: { errors: 0, warnings: 0, exceptions: 0 },
+      refs: { generation: 1 },
+      nodes: [],
+      limits: { truncated: false },
+    });
+    expect(JSON.parse(T.formatPerceptionJson(model)).schema).toBe('chrome-cdp-ex.perceive.v1');
+  });
+});
+
+// =========================================================================
 // shouldShowAxNode
 // =========================================================================
 

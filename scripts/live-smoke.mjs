@@ -106,6 +106,10 @@ const perceive = step('perceive keep refs', () => run(['perceive', target, '-C',
 assertIncludes(perceive, 'Coords: viewport CSS px', 'perceive');
 assertIncludes(perceive, 'fixed', 'perceive fixed annotation');
 assertIncludes(perceive, '@', 'perceive refs');
+const perceiveJson = step('perceive json', () => run(['perceive', target, '--format', 'json']));
+const parsedPerceive = JSON.parse(perceiveJson);
+if (parsedPerceive.schema !== 'chrome-cdp-ex.perceive.v1') throw new Error(`perceive json schema mismatch:\n${perceiveJson}`);
+if (parsedPerceive.viewport.coordinateSpace !== 'viewport-css-px') throw new Error(`perceive json coordinateSpace mismatch:\n${perceiveJson}`);
 
 step('dismiss modal', () => assertIncludes(run(['dismiss-modal', target]), 'Dismissed modal', 'dismiss-modal'));
 step('press c', () => assertIncludes(run(['press', target, 'c']), 'Pressed c', 'press c'));

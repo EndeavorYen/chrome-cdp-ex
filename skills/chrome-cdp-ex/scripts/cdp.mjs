@@ -975,6 +975,28 @@ async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
   return formatSummaryText(await summaryModel(cdp, sid, consoleBuf, exceptionBuf));
 }
 
+function createPerceptionModel({ page, viewport, consoleHealth, refs, nodes, limits }) {
+  return {
+    schema: 'chrome-cdp-ex.perceive.v1',
+    page,
+    viewport: {
+      ...viewport,
+      coordinateSpace: 'viewport-css-px',
+    },
+    console: consoleHealth,
+    refs: {
+      generation: refs.generation,
+      validity: 'until-navigation-or-dom-rewrite',
+    },
+    nodes,
+    limits,
+  };
+}
+
+function formatPerceptionJson(model) {
+  return formatJson(model);
+}
+
 // Roles that get visual layout annotations in perceive output
 const ENRICHED_ROLES = new Set([
   'banner', 'navigation', 'main', 'contentinfo', 'complementary',
@@ -1724,6 +1746,67 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     return output + `\n\n(Hint: ${refNodeIds.length} interactive elements found — most may be sidebar/nav noise. Use \`perceive -x "nav, aside"\` to exclude, or \`perceive -s "main"\` to scope.)`;
   }
   return output;
+}
+
+function perceptionModelFromText(output, refState = {}) {
+  const lines = String(output || '').split('\n');
+  const pageMatch = (lines[0] || '').match(/^Page: (.*) — (.*)$/);
+  const viewportMatch = (lines[1] || '').match(/^Viewport: (\d+)×(\d+) \| Scroll: (\d+)\/(\d+)/);
+  const consoleLine = lines.find(line => line.startsWith('Console: ')) || 'Console: clean';
+  const consoleHealth = { errors: 0, warnings: 0, exceptions: 0 };
+  for (const [key, pattern] of [
+    ['errors', /(\d+) errors?/],
+    ['warnings', /(\d+) warnings?/],
+    ['exceptions', /(\d+) exceptions?/],
+  ]) {
+    const match = consoleLine.match(pattern);
+    if (match) consoleHealth[key] = Number(match[1]);
+  }
+
+  const nodes = [];
+  for (const line of lines) {
+    const refMatch = line.match(/\[(\w+)\]\s+(.+?)\s+@(\d+)(?:\s+\((-?\d+),(-?\d+) (\d+)×(\d+)(?:, [^)]+)?\))?$/);
+    if (!refMatch) continue;
+    const [, role, rawName, ref, x, y, width, height] = refMatch;
+    const node = {
+      ref: `@${ref}`,
+      role,
+      name: rawName.trim(),
+    };
+    if (x !== undefined) {
+      node.rect = {
+        x: Number(x),
+        y: Number(y),
+        width: Number(width),
+        height: Number(height),
+      };
+    }
+    nodes.push(node);
+  }
+
+  return createPerceptionModel({
+    page: {
+      title: pageMatch ? pageMatch[1] : '',
+      url: pageMatch ? pageMatch[2] : '',
+    },
+    viewport: {
+      width: viewportMatch ? Number(viewportMatch[1]) : 0,
+      height: viewportMatch ? Number(viewportMatch[2]) : 0,
+      scrollY: viewportMatch ? Number(viewportMatch[3]) : 0,
+      scrollMax: viewportMatch ? Number(viewportMatch[4]) : 0,
+    },
+    consoleHealth,
+    refs: { generation: refState.generation || 0 },
+    nodes,
+    limits: {
+      truncated: output.includes('truncated'),
+    },
+  });
+}
+
+async function perceiveModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
+  const output = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts, refState);
+  return perceptionModelFromText(output, refState || {});
 }
 
 // Element screenshot: targeted capture of a specific element by CSS selector or @ref
@@ -4143,8 +4226,11 @@ async function runDaemon(targetId) {
           break;
         }
         case 'perceive': {
-          const popts = parsePerceiveArgs(args);
-          result = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState);
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const popts = parsePerceiveArgs(fopts.args);
+          result = fopts.format === 'json'
+            ? formatPerceptionJson(await perceiveModel(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
+            : await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState);
           break;
         }
         case 'elshot': result = await elshotStr(cdp, sessionId, args[0], targetId, refMap, refState); break;
@@ -4913,6 +4999,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
   parsePerceiveArgs, buildPerceiveTree, perceivePageScript,
+  createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel,
   // Command implementations
   formatPageList, dialogStr, netlogStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,

@@ -318,7 +318,7 @@ doctor / ready                     # one-call diagnostics (no target needed)
 <summary><strong>Perception</strong> - start here</summary>
 
 ```bash
-perceive <target> [flags]          # enriched AX tree with @ref indices + viewport CSS coordinates
+perceive <target> [flags] [--format json] # enriched AX tree with @ref indices + viewport CSS coordinates
                                    #   --diff: show only changes since last perceive
                                    #   -s <sel>: scope to CSS selector subtree
                                    #   -i: interactive elements only

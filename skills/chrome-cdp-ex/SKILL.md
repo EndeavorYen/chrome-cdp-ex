@@ -160,6 +160,7 @@ All commands use `scripts/cdp.mjs`. The `<target>` is a **unique** targetId pref
 
 ```bash
 scripts/cdp.mjs perceive <target>              # full page perception with @ref indices + coordinates
+scripts/cdp.mjs perceive <target> --format json # versioned perception model for tool-calling agents
 scripts/cdp.mjs perceive <target> --diff       # show only changes since last perceive
 scripts/cdp.mjs perceive <target> -s "#main"   # scope to CSS selector subtree
 scripts/cdp.mjs perceive <target> -x "nav, aside, [role=complementary]"  # exclude noisy regions
