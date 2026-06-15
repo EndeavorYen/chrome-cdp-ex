@@ -329,9 +329,9 @@ perceive <target> [flags]          # enriched AX tree with @ref indices + viewpo
                                    # Coords are viewport CSS pixels — same frame as clickxy.
                                    # Fixed/sticky elements get a ", fixed"/", sticky" tag.
 snap     <target> [--full]         # accessibility tree (compact by default)
-summary  <target>                  # token-efficient overview (~100 tokens)
-status   <target> [--runtime]      # URL, title + new console/exception entries; --runtime adds Performance metrics
-console  <target> [--all|--errors] # console buffer (default: unread only; preserves log/warn/error/debug levels)
+summary  <target> [--format json]  # token-efficient overview (~100 tokens)
+status   <target> [--runtime] [--format json]  # URL, title + new console/exception entries; --runtime adds Performance metrics
+console  <target> [--all|--errors] [--format json] # console buffer (default: unread only; preserves log/warn/error/debug levels)
 text     <target>                            # clean text content (strips scripts/styles/SVG)
 text     <target> "main, [role=main], #app .main"   # fallback chain — first match wins
 text     <target> --auto                     # heuristic main-content extraction (no nav/aside/footer)

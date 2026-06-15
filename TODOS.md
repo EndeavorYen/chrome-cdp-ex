@@ -20,11 +20,11 @@
 
 ### Release 2.5
 
-- [ ] In-file command registry.
-- [ ] `--format text|json` parsing infrastructure.
-- [ ] `status --format json`.
-- [ ] `summary --format json`.
-- [ ] `console --format json`.
+- [x] In-file command registry.
+- [x] `--format text|json` parsing infrastructure.
+- [x] `status --format json`.
+- [x] `summary --format json`.
+- [x] `console --format json`.
 - [ ] `perceive --format json`.
 - [ ] Initial `PerceptionModel`.
 - [ ] Explicit `SessionState`.

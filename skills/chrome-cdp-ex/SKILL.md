@@ -290,12 +290,13 @@ scripts/cdp.mjs eval64 <target> <base64>       # alias for `eval --b64`
 The daemon buffers console output and exceptions in the background from the moment it starts. Use these commands to query the buffer.
 
 ```bash
-scripts/cdp.mjs status  <target>                  # page state + new console/exception entries
-scripts/cdp.mjs summary <target>                  # token-efficient page overview (~100 tokens)
-scripts/cdp.mjs console <target> [--all|--errors] # console buffer (default: unread only)
+scripts/cdp.mjs status  <target> [--format json]                  # page state + new console/exception entries
+scripts/cdp.mjs summary <target> [--format json]                  # token-efficient page overview (~100 tokens)
+scripts/cdp.mjs console <target> [--all|--errors] [--format json] # console buffer (default: unread only)
 ```
 
 > **Agent tip:** `perceive` already includes summary + console health. Use `status` or `console` only when you need to check for **new** console entries after an action.
+> Use `--format json` when another tool or agent needs a stable, parseable status, summary, or console payload.
 
 ### Batch commands (reduce IPC overhead)
 

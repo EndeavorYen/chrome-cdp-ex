@@ -197,6 +197,87 @@ describe('COMMANDS registry', () => {
 });
 
 // =========================================================================
+// Output formats
+// =========================================================================
+
+describe('parseFormatArgs', () => {
+  it('defaults to text format', () => {
+    expect(T.parseFormatArgs(['--runtime'])).toEqual({
+      format: 'text',
+      args: ['--runtime'],
+    });
+  });
+
+  it('parses --format json and removes the option from command args', () => {
+    expect(T.parseFormatArgs(['--runtime', '--format', 'json'])).toEqual({
+      format: 'json',
+      args: ['--runtime'],
+    });
+  });
+
+  it('rejects unknown formats', () => {
+    expect(() => T.parseFormatArgs(['--format', 'xml'], ['text', 'json'])).toThrow(/format must be text or json/);
+  });
+
+  it('serializes JSON models with indentation', () => {
+    expect(T.formatJson({ schema: 'x', ok: true })).toBe('{\n  "schema": "x",\n  "ok": true\n}');
+  });
+});
+
+describe('structured status and console models', () => {
+  it('builds a versioned console model using new entries by default', () => {
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    consoleBuf.push({ level: 'log', text: 'old' });
+    consoleBuf.push({ level: 'error', text: 'new' });
+    exceptionBuf.push({ msg: 'boom' });
+    const model = T.buildConsoleModel(consoleBuf, exceptionBuf, { console: 1, exception: 0 }, undefined);
+
+    expect(model.schema).toBe('chrome-cdp-ex.console.v1');
+    expect(model.mode).toBe('new');
+    expect(model.entries.map(e => e.text)).toEqual(['new']);
+    expect(model.exceptions.map(e => e.msg)).toEqual(['boom']);
+  });
+
+  it('builds a versioned console model for --all', () => {
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    consoleBuf.push({ level: 'log', text: 'first' });
+    consoleBuf.push({ level: 'warn', text: 'second' });
+    const model = T.buildConsoleModel(consoleBuf, exceptionBuf, { console: 2, exception: 0 }, '--all');
+
+    expect(model.mode).toBe('all');
+    expect(model.entries.map(e => e.text)).toEqual(['first', 'second']);
+  });
+
+  it('builds a versioned status model with page and unread buffers', () => {
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    const navBuf = new RingBuffer(10);
+    consoleBuf.push({ level: 'error', text: 'old' });
+    consoleBuf.push({ level: 'warning', text: 'new' });
+    exceptionBuf.push({ msg: 'boom' });
+    navBuf.push({ url: 'https://example.com/next', ts: 123 });
+
+    const model = T.buildStatusModel({
+      targetId: 'ABC123',
+      page: { title: 'Example', url: 'https://example.com' },
+      consoleBuf,
+      exceptionBuf,
+      navBuf,
+      lastReadSeq: { console: 1, exception: 0, nav: 0 },
+    });
+
+    expect(model.schema).toBe('chrome-cdp-ex.status.v1');
+    expect(model.targetId).toBe('ABC123');
+    expect(model.page.title).toBe('Example');
+    expect(model.console.map(e => e.text)).toEqual(['new']);
+    expect(model.exceptions.map(e => e.msg)).toEqual(['boom']);
+    expect(model.navigation.map(e => e.url)).toEqual(['https://example.com/next']);
+  });
+});
+
+// =========================================================================
 // shouldShowAxNode
 // =========================================================================
 

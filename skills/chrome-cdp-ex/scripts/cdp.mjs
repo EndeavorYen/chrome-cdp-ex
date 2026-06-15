@@ -151,6 +151,27 @@ function formatDuration(ms) {
   return `${Number.isInteger(h) ? h : h.toFixed(1)}h`;
 }
 
+function parseFormatArgs(args, allowed = ['text', 'json']) {
+  const next = [];
+  let format = 'text';
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--format') {
+      const value = args[++i];
+      if (!allowed.includes(value)) {
+        throw new Error(`format must be ${allowed.join(' or ')}`);
+      }
+      format = value;
+    } else {
+      next.push(args[i]);
+    }
+  }
+  return { format, args: next };
+}
+
+function formatJson(model) {
+  return JSON.stringify(model, null, 2);
+}
+
 async function waitStr(msArg) {
   const ms = parseDelayMs(msArg, { name: 'wait duration', max: 60 * 60 * 1000 });
   const deadline = Date.now() + ms;
@@ -739,13 +760,55 @@ async function runtimeMetricsStr(cdp, sid) {
   return lines.join('\n');
 }
 
-async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq, opts = {}) {
+async function pageInfoModel(cdp, sid) {
   let title = '', url = '';
   try {
     const info = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ title: document.title, url: window.location.href })'));
     title = info.title;
     url = info.url;
   } catch {}
+  return { title, url };
+}
+
+function buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag) {
+  const showErrors = flag === '--errors';
+  const showAll = flag === '--all';
+  let entries;
+  let exceptions = [];
+
+  if (showAll) {
+    entries = consoleBuf.all();
+    exceptions = exceptionBuf.all();
+  } else if (showErrors) {
+    entries = consoleBuf.all().filter(e => e.level === 'error' || e.level === 'warning');
+    exceptions = exceptionBuf.all();
+  } else {
+    entries = consoleBuf.since(lastReadSeq.console);
+    exceptions = exceptionBuf.since(lastReadSeq.exception);
+  }
+
+  return {
+    schema: 'chrome-cdp-ex.console.v1',
+    mode: showAll ? 'all' : showErrors ? 'errors' : 'new',
+    entries,
+    exceptions,
+  };
+}
+
+function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, lastReadSeq, runtime = null }) {
+  return {
+    schema: 'chrome-cdp-ex.status.v1',
+    targetId,
+    page,
+    console: consoleBuf.since(lastReadSeq.console),
+    exceptions: exceptionBuf.since(lastReadSeq.exception),
+    navigation: navBuf.since(lastReadSeq.nav || 0),
+    runtime,
+  };
+}
+
+async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq, opts = {}) {
+  const { title, url } = await pageInfoModel(cdp, sid);
 
   const lines = [];
   lines.push(`URL: ${url}`);
@@ -832,7 +895,7 @@ async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag) {
   return lines.join('\n');
 }
 
-async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
+async function summaryModel(cdp, sid, consoleBuf, exceptionBuf) {
   const expr = `
     (function() {
       const counts = {};
@@ -859,23 +922,6 @@ async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
   `;
   const result = await evalStr(cdp, sid, expr);
   const r = JSON.parse(result);
-  const lines = [];
-  lines.push(`Title: ${r.title}`);
-  lines.push(`URL: ${r.url}`);
-  lines.push(`Viewport: ${r.viewport}`);
-
-  const countParts = Object.entries(r.counts).map(([k, v]) => `${v} ${k}`);
-  lines.push(`Interactive: ${countParts.length > 0 ? countParts.join(', ') : 'none found'}`);
-
-  lines.push(`Focused: ${r.focused}`);
-
-  if (r.scrollMax > 0) {
-    const pct = Math.round(r.scrollY / r.scrollMax * 100);
-    lines.push(`Scroll: ${r.scrollY} / ${r.scrollMax} max (${pct}%)`);
-  } else {
-    lines.push('Scroll: no scroll');
-  }
-
   const allConsole = consoleBuf.all();
   let errors = 0, warnings = 0;
   for (const e of allConsole) {
@@ -883,13 +929,50 @@ async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
     else if (e.level === 'warning' || e.level === 'warn') warnings++;
   }
   const exceptions = exceptionBuf.all().length;
+
+  return {
+    schema: 'chrome-cdp-ex.summary.v1',
+    page: { title: r.title, url: r.url },
+    viewport: {
+      size: r.viewport,
+      scrollY: r.scrollY,
+      scrollMax: r.scrollMax,
+    },
+    interactive: r.counts,
+    focused: r.focused,
+    console: { errors, warnings, exceptions },
+  };
+}
+
+function formatSummaryText(model) {
+  const lines = [];
+  lines.push(`Title: ${model.page.title}`);
+  lines.push(`URL: ${model.page.url}`);
+  lines.push(`Viewport: ${model.viewport.size}`);
+
+  const countParts = Object.entries(model.interactive).map(([k, v]) => `${v} ${k}`);
+  lines.push(`Interactive: ${countParts.length > 0 ? countParts.join(', ') : 'none found'}`);
+
+  lines.push(`Focused: ${model.focused}`);
+
+  if (model.viewport.scrollMax > 0) {
+    const pct = Math.round(model.viewport.scrollY / model.viewport.scrollMax * 100);
+    lines.push(`Scroll: ${model.viewport.scrollY} / ${model.viewport.scrollMax} max (${pct}%)`);
+  } else {
+    lines.push('Scroll: no scroll');
+  }
+
   const parts = [];
-  if (errors > 0) parts.push(`${errors} error${errors > 1 ? 's' : ''}`);
-  if (warnings > 0) parts.push(`${warnings} warning${warnings > 1 ? 's' : ''}`);
-  if (exceptions > 0) parts.push(`${exceptions} exception${exceptions > 1 ? 's' : ''}`);
+  if (model.console.errors > 0) parts.push(`${model.console.errors} error${model.console.errors > 1 ? 's' : ''}`);
+  if (model.console.warnings > 0) parts.push(`${model.console.warnings} warning${model.console.warnings > 1 ? 's' : ''}`);
+  if (model.console.exceptions > 0) parts.push(`${model.console.exceptions} exception${model.console.exceptions > 1 ? 's' : ''}`);
   lines.push(`Console: ${parts.length > 0 ? parts.join(', ') : 'clean'}`);
 
   return lines.join('\n');
+}
+
+async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
+  return formatSummaryText(await summaryModel(cdp, sid, consoleBuf, exceptionBuf));
 }
 
 // Roles that get visual layout annotations in perceive output
@@ -4016,9 +4099,49 @@ async function runDaemon(targetId) {
           break;
         }
         case 'net': case 'network': result = await netStr(cdp, sessionId); break;
-        case 'status': result = await statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq, { runtime: args.includes('--runtime') }); break;
-        case 'console': result = await consoleStr(consoleBuf, exceptionBuf, lastReadSeq, args[0]); break;
-        case 'summary': result = await summaryStr(cdp, sessionId, consoleBuf, exceptionBuf); break;
+        case 'status': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          if (fopts.format === 'json') {
+            const runtime = fopts.args.includes('--runtime')
+              ? await runtimeMetricsStr(cdp, sessionId).catch(e => ({ unavailable: e.message }))
+              : null;
+            result = formatJson(buildStatusModel({
+              targetId,
+              page: await pageInfoModel(cdp, sessionId),
+              consoleBuf,
+              exceptionBuf,
+              navBuf,
+              lastReadSeq,
+              runtime,
+            }));
+            lastReadSeq.console = consoleBuf.latest();
+            lastReadSeq.exception = exceptionBuf.latest();
+          } else {
+            result = await statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq, { runtime: fopts.args.includes('--runtime') });
+          }
+          break;
+        }
+        case 'console': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          if (fopts.format === 'json') {
+            const flag = fopts.args[0];
+            result = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag));
+            if (flag !== '--all' && flag !== '--errors') {
+              lastReadSeq.console = consoleBuf.latest();
+              lastReadSeq.exception = exceptionBuf.latest();
+            }
+          } else {
+            result = await consoleStr(consoleBuf, exceptionBuf, lastReadSeq, fopts.args[0]);
+          }
+          break;
+        }
+        case 'summary': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = fopts.format === 'json'
+            ? formatJson(await summaryModel(cdp, sessionId, consoleBuf, exceptionBuf))
+            : await summaryStr(cdp, sessionId, consoleBuf, exceptionBuf);
+          break;
+        }
         case 'perceive': {
           const popts = parsePerceiveArgs(args);
           result = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState);
@@ -4793,6 +4916,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Command implementations
   formatPageList, dialogStr, netlogStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,
+  parseFormatArgs, formatJson, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, formatCallResult, evalBase64Decode,
   navStr, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
