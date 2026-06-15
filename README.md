@@ -1,6 +1,6 @@
 # chrome-cdp-ex
 
-[![60 Commands](https://img.shields.io/badge/commands-60-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
+[![61 Commands](https://img.shields.io/badge/commands-61-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
@@ -60,7 +60,7 @@ Use Playwright instead when you need a clean, repeatable browser test from scrat
 - [Five success cases](#five-success-cases)
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
-- [Commands (60 total)](#commands-60-total)
+- [Commands (61 total)](#commands-61-total)
 - [WSL2 -> Windows Browser Control](#wsl2---windows-browser-control)
 - [Contributor Checks](#contributor-checks)
 - [Credits](#credits)
@@ -244,7 +244,7 @@ Output:
 1ED3DBAA  My App                                                  http://localhost:5173/#/menu
 ```
 
-All 60 commands work: `perceive`, `click`, `fill`, `cascade`, `record`, `checkpoint`, `restore`, `record-actions`, `replay`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
+All 61 commands work: `perceive`, `frame`, `click`, `fill`, `cascade`, `record`, `checkpoint`, `restore`, `record-actions`, `replay`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
 
 </details>
 
@@ -287,7 +287,7 @@ Each tab gets its own daemon process that keeps the CDP session open.
 Chrome's "Allow debugging" dialog appears **once per tab**, not once per command.
 Daemons auto-exit after 20 minutes of inactivity and passively collect console/exception/navigation events into ring buffers.
 
-## Commands (60 total)
+## Commands (61 total)
 
 Tip: start with `perceive`, then use `click`/`fill`/`select`; use `status` or `console` when you need debugging context.
 
@@ -383,6 +383,7 @@ perceive <target> [flags] [--format json] # enriched AX tree with @ref indices +
                                    # Fixed/sticky elements get a ", fixed"/", sticky" tag.
 snap     <target> [--full]         # accessibility tree (compact by default)
 summary  <target> [--format json]  # token-efficient overview (~100 tokens)
+frame    <target> [--format json]  # frame tree with @fN refs (alias: frames)
 report   <target>                  # session action timeline + evidence summary + screenshots + JSONL log path
 checkpoint <target> [--format json] # capture URL, cookies, localStorage, and sessionStorage
 restore  <target> --file <path>    # restore a checkpoint artifact into the live page

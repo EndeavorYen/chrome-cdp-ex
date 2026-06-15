@@ -1679,6 +1679,79 @@ async function resolveRef(cdp, sid, refMap, ref, refState) {
 
 function isRef(s) { return /^@\d+$/.test(s); }
 
+function parseFrameRef(s) {
+  const m = String(s || '').match(/^@f(\d+):(\d+)$/);
+  if (!m) return null;
+  const frameIndex = Number(m[1]);
+  const refIndex = Number(m[2]);
+  if (!Number.isSafeInteger(frameIndex) || frameIndex < 1 || !Number.isSafeInteger(refIndex) || refIndex < 1) return null;
+  return {
+    frameRef: `@f${frameIndex}`,
+    frameIndex,
+    ref: `@${refIndex}`,
+    refIndex,
+  };
+}
+
+function flattenFrameTree(frameTree, { startIndex = 1 } = {}) {
+  const frames = [];
+  function visit(node, depth = 0, parentRef = null) {
+    if (!node?.frame) return;
+    const ref = `@f${startIndex + frames.length}`;
+    const frame = node.frame;
+    frames.push({
+      ref,
+      index: startIndex + frames.length,
+      id: frame.id || '',
+      parentId: frame.parentId || null,
+      parentRef,
+      depth,
+      name: frame.name || '',
+      url: frame.url || '',
+      securityOrigin: frame.securityOrigin || '',
+      unreachableUrl: frame.unreachableUrl || '',
+      mimeType: frame.mimeType || '',
+    });
+    for (const child of node.childFrames || []) visit(child, depth + 1, ref);
+  }
+  visit(frameTree);
+  return frames;
+}
+
+function formatFrameTreeText(frames = []) {
+  const lines = [`Frames: ${frames.length}`];
+  if (frames.length === 0) {
+    lines.push('No frames reported by Page.getFrameTree.');
+    return lines.join('\n');
+  }
+  for (const frame of frames) {
+    const indent = '  '.repeat(Math.min(frame.depth || 0, 8));
+    const label = frame.name || '(anonymous)';
+    const parent = frame.parentRef ? ` parent:${frame.parentRef}` : '';
+    const origin = frame.securityOrigin ? ` origin:${frame.securityOrigin}` : '';
+    const url = frame.url || frame.unreachableUrl || '(no url)';
+    lines.push(`${indent}${frame.ref} ${label} ${frame.id}${parent} ${url}${origin}`);
+  }
+  lines.push('Hint: use frame refs to diagnose wrong-frame errors; element refs inside frames will use @fN:M syntax.');
+  return lines.join('\n');
+}
+
+async function framesModel(cdp, sid) {
+  const result = await cdp.send('Page.getFrameTree', {}, sid);
+  const frames = flattenFrameTree(result.frameTree);
+  return {
+    schema: 'chrome-cdp-ex.frames.v1',
+    frameCount: frames.length,
+    frames,
+  };
+}
+
+async function framesStr(cdp, sid, { format = 'text' } = {}) {
+  const model = await framesModel(cdp, sid);
+  if (format === 'json') return formatJson(model);
+  return formatFrameTreeText(model.frames);
+}
+
 // Wait for DOM mutations to stop after an action (350ms of silence = settled)
 async function waitForSettle(cdp, sid, timeoutMs = 3000) {
   await evalStr(cdp, sid, `new Promise(resolve => {
@@ -5273,6 +5346,11 @@ async function runDaemon(targetId) {
             : await summaryStr(cdp, sessionId, consoleBuf, exceptionBuf);
           break;
         }
+        case 'frame': case 'frames': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await framesStr(cdp, sessionId, { format: fopts.format });
+          break;
+        }
         case 'report': {
           result = formatSessionReport(session);
           break;
@@ -5658,6 +5736,7 @@ Usage: cdp <command> [args]
   record-actions <target>           Export session action log as replay-oriented text or JSON
   replay <target> --file <path>      Replay a record-actions JSON artifact against the live page
   replay <target> --json <json>      Replay an inline record-actions JSON artifact
+  frame <target> [--format json]     List page frames with stable @fN refs (alias: frames)
   net   <target>                    Network performance entries
   click   <target> <sel|@ref>       Click element by CSS selector or @ref
                                     --js / -j: use HTMLElement.click() (JS fallback)
@@ -5777,7 +5856,7 @@ DAEMON IPC (for advanced use / scripting)
     Request:  {"id":<number>, "cmd":"<command>", "args":["arg1","arg2",...]}
     Response: {"id":<number>, "ok":true,  "result":"<string>"}
            or {"id":<number>, "ok":false, "error":"<message>"}
-  Commands mirror the CLI: perceive, status, summary, console, snap, eval, eval64, call, wait, keepalive, shot,
+  Commands mirror the CLI: perceive, status, summary, console, frame, snap, eval, eval64, call, wait, keepalive, shot,
   elshot, fullshot, scanshot, html, nav, net, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
@@ -5805,6 +5884,7 @@ const COMMANDS = Object.freeze([
   { name: 'status', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'console', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'summary', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'frame', aliases: ['frames'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'report', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'checkpoint', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'restore', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
@@ -6147,6 +6227,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,
   formatUnknownRefError, resolveRefNode, formatRefRect, isPriorityPerceiveTextLine,
+  parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
   parseTextArgs, textPageScript, textStr,
   parseShotArgs, shotStr,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan, spawnDebugBrowserStr,

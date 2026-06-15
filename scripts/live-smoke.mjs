@@ -114,6 +114,10 @@ const perceiveJson = step('perceive json', () => run(['perceive', target, '--for
 const parsedPerceive = JSON.parse(perceiveJson);
 if (parsedPerceive.schema !== 'chrome-cdp-ex.perceive.v1') throw new Error(`perceive json schema mismatch:\n${perceiveJson}`);
 if (parsedPerceive.viewport.coordinateSpace !== 'viewport-css-px') throw new Error(`perceive json coordinateSpace mismatch:\n${perceiveJson}`);
+const frameOut = step('frame tree refs', () => run(['frame', target]));
+assertIncludes(frameOut, 'Frames:', 'frame');
+assertIncludes(frameOut, '@f2', 'frame child ref');
+assertIncludes(frameOut, 'smoke-child', 'frame child name');
 
 step('dismiss modal', () => assertIncludes(run(['dismiss-modal', target]), 'Dismissed modal', 'dismiss-modal'));
 const fillOut = step('fill action evidence', () => run(['fill', target, '#cmd', 'look trainer']));

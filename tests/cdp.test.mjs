@@ -234,6 +234,16 @@ describe('COMMANDS registry', () => {
       outputFormats: ['text'],
     }));
   });
+
+  it('registers frame listing as a target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'frame',
+      aliases: ['frames'],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
 });
 
 // =========================================================================
@@ -1803,6 +1813,79 @@ function createMockCDP(handlers = {}) {
     },
   };
 }
+
+// =========================================================================
+// frame tree helpers
+// =========================================================================
+
+describe('frame tree helpers', () => {
+  const sampleTree = {
+    frame: { id: 'main-frame', url: 'https://app.example.com/', name: 'top' },
+    childFrames: [
+      {
+        frame: {
+          id: 'checkout-frame',
+          parentId: 'main-frame',
+          url: 'https://pay.example.com/checkout',
+          name: 'checkout',
+          securityOrigin: 'https://pay.example.com',
+        },
+      },
+      {
+        frame: {
+          id: 'ads-frame',
+          parentId: 'main-frame',
+          url: 'about:blank',
+          name: '',
+        },
+        childFrames: [
+          {
+            frame: {
+              id: 'nested-frame',
+              parentId: 'ads-frame',
+              url: 'https://widgets.example.com/picker',
+              name: 'picker',
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  it('parses frame-scoped refs like @f2:4', () => {
+    expect(T.parseFrameRef('@f2:4')).toEqual({ frameRef: '@f2', frameIndex: 2, ref: '@4', refIndex: 4 });
+    expect(T.parseFrameRef('@4')).toBeNull();
+    expect(T.parseFrameRef('@f2')).toBeNull();
+  });
+
+  it('flattens frame trees into stable @f refs', () => {
+    const frames = T.flattenFrameTree(sampleTree);
+    expect(frames).toEqual([
+      expect.objectContaining({ ref: '@f1', id: 'main-frame', parentRef: null, depth: 0 }),
+      expect.objectContaining({ ref: '@f2', id: 'checkout-frame', parentRef: '@f1', depth: 1 }),
+      expect.objectContaining({ ref: '@f3', id: 'ads-frame', parentRef: '@f1', depth: 1 }),
+      expect.objectContaining({ ref: '@f4', id: 'nested-frame', parentRef: '@f3', depth: 2 }),
+    ]);
+  });
+
+  it('formats frame refs with url and parent context', () => {
+    const out = T.formatFrameTreeText(T.flattenFrameTree(sampleTree));
+    expect(out).toContain('Frames: 4');
+    expect(out).toContain('@f1 top main-frame https://app.example.com/');
+    expect(out).toContain('@f2 checkout checkout-frame parent:@f1 https://pay.example.com/checkout');
+    expect(out).toContain('@f4 picker nested-frame parent:@f3 https://widgets.example.com/picker');
+  });
+
+  it('reads Page.getFrameTree from the target session', async () => {
+    const cdp = createMockCDP({
+      'Page.getFrameTree': () => ({ frameTree: sampleTree }),
+    });
+    const out = await T.framesStr(cdp, 'sid1');
+    expect(out).toContain('Frames: 4');
+    expect(out).toContain('@f2 checkout checkout-frame');
+    expect(cdp.calls[0]).toMatchObject({ method: 'Page.getFrameTree', sessionId: 'sid1' });
+  });
+});
 
 // =========================================================================
 // checkpoint / restore — page state artifact
