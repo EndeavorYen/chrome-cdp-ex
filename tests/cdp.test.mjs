@@ -188,7 +188,7 @@ describe('COMMANDS registry', () => {
     expect(mutating.map(c => c.name).sort()).toEqual([
       'back', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
       'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav',
-      'open', 'press', 'reload', 'scroll', 'select', 'spawn-debug-browser',
+      'open', 'press', 'reload', 'replay', 'scroll', 'select', 'spawn-debug-browser',
       'stop', 'type', 'upload', 'viewport',
     ].sort());
     for (const command of mutating) {
@@ -203,6 +203,17 @@ describe('COMMANDS registry', () => {
       needsTarget: true,
       mutates: false,
       outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers replay as a mutating target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'replay',
+      aliases: [],
+      needsTarget: true,
+      mutates: true,
+      feedbackPolicy: 'report-only',
+      outputFormats: ['text'],
     }));
   });
 });
@@ -3685,6 +3696,87 @@ describe('flowStr', () => {
     // Should have one numbered head per step
     const heads = out.split('\n').filter(l => /^\[\d+\/\d+\]/.test(l));
     expect(heads).toHaveLength(3);
+  });
+});
+
+// =========================================================================
+// replayActionsStr — execute record-actions artifacts
+// =========================================================================
+
+describe('replayActionsStr', () => {
+  function artifact(actions) {
+    return {
+      schema: 'chrome-cdp-ex.record-actions.v1',
+      targetId: 'ABC123',
+      sessionId: 'sid-1',
+      source: 'test',
+      actionCount: actions.length,
+      actions,
+    };
+  }
+
+  it('runs replayable recorded commands sequentially', async () => {
+    const calls = [];
+    const source = artifact([
+      { index: 1, action: 'fill', command: ['fill', '#cmd', 'look trainer'], replayable: true, needsInput: [] },
+      { index: 2, action: 'click', command: ['click', '#combat'], replayable: true, needsInput: [] },
+    ]);
+
+    const out = await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step);
+        return { ok: true, result: `${step.cmd} ok` };
+      },
+    }, ['--json', JSON.stringify(source)]);
+
+    expect(calls).toEqual([
+      { cmd: 'fill', args: ['#cmd', 'look trainer'] },
+      { cmd: 'click', args: ['#combat'] },
+    ]);
+    expect(out).toContain('Replay: 2 step(s)');
+    expect(out).toContain('[1/2] fill #cmd "look trainer"');
+    expect(out).toContain('fill ok');
+    expect(out).toContain('[2/2] click #combat');
+    expect(out).toContain('Done: 2 ok, 0 failed, 0 skipped');
+  });
+
+  it('skips non-replayable recorded actions with explicit missing input', async () => {
+    const calls = [];
+    const source = artifact([
+      { index: 1, action: 'fill', command: ['fill', '#password', '<redacted>'], replayable: false, needsInput: ['text'] },
+    ]);
+
+    const out = await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step);
+        return { ok: true, result: 'should not run' };
+      },
+    }, ['--json', JSON.stringify(source)]);
+
+    expect(calls).toEqual([]);
+    expect(out).toContain('[1/1] skip fill #password <redacted>');
+    expect(out).toContain('Missing: text');
+    expect(out).toContain('Done: 0 ok, 0 failed, 1 skipped');
+  });
+
+  it('halts on the first failed replay step by default', async () => {
+    const calls = [];
+    const source = artifact([
+      { index: 1, action: 'click', command: ['click', '#missing'], replayable: true, needsInput: [] },
+      { index: 2, action: 'click', command: ['click', '#later'], replayable: true, needsInput: [] },
+    ]);
+
+    const out = await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step.cmd);
+        return { ok: false, error: 'Element not found' };
+      },
+    }, ['--json', JSON.stringify(source)]);
+
+    expect(calls).toEqual(['click']);
+    expect(out).toContain('Element not found');
+    expect(out).toContain('Replay halted at step 1/2');
+    expect(out).toContain('Done: 0 ok, 1 failed, 0 skipped');
   });
 });
 

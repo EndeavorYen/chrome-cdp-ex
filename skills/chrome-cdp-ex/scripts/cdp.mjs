@@ -4043,6 +4043,124 @@ async function flowStr({ run, settle }, input) {
   return lines.join('\n');
 }
 
+// --- Replay: execute record-actions artifacts ---
+const REPLAY_BLOCKED = new Set(['replay', 'record-actions', 'recordactions', 'batch', 'flow', 'repeat', 'stop']);
+
+function parseReplayArgs(args, { reader = readFileSync } = {}) {
+  const tokens = (args || []).filter(a => a !== undefined && a !== null);
+  const opts = { continueOnError: false, artifact: null, source: 'inline JSON' };
+  const positional = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--continue' || token === '-c') {
+      opts.continueOnError = true;
+    } else if (token === '--json') {
+      const raw = tokens.slice(i + 1).join(' ').trim();
+      if (!raw) throw new Error('replay --json requires a record-actions JSON payload');
+      opts.artifact = parseReplayArtifact(raw);
+      opts.source = 'inline JSON';
+      break;
+    } else if (token === '--file' || token === '-f') {
+      const filePath = tokens[++i];
+      if (!filePath) throw new Error('replay --file requires a path to a record-actions JSON artifact');
+      opts.artifact = parseReplayArtifact(reader(filePath, 'utf8'));
+      opts.source = filePath;
+    } else {
+      positional.push(token);
+    }
+  }
+  if (!opts.artifact) {
+    const raw = positional.join(' ').trim();
+    if (!raw) throw new Error('replay requires --json <record-actions-json> or --file <path>');
+    if (raw.startsWith('{') || raw.startsWith('[')) {
+      opts.artifact = parseReplayArtifact(raw);
+      opts.source = 'inline JSON';
+    } else {
+      opts.artifact = parseReplayArtifact(reader(positional[0], 'utf8'));
+      opts.source = positional[0];
+    }
+  }
+  return opts;
+}
+
+function parseReplayArtifact(raw) {
+  let artifact;
+  try {
+    artifact = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (e) {
+    throw new Error(`replay: invalid JSON artifact (${e.message})`);
+  }
+  if (Array.isArray(artifact)) {
+    artifact = { schema: 'chrome-cdp-ex.record-actions.v1', actions: artifact };
+  }
+  if (!artifact || typeof artifact !== 'object') throw new Error('replay: artifact must be a record-actions JSON object');
+  if (artifact.schema !== 'chrome-cdp-ex.record-actions.v1') {
+    throw new Error(`replay: unsupported artifact schema ${artifact.schema || '(missing)'}`);
+  }
+  if (!Array.isArray(artifact.actions)) throw new Error('replay: artifact.actions must be an array');
+  return artifact;
+}
+
+function replayStepFromAction(action = {}) {
+  const command = Array.isArray(action.command) ? action.command.map(v => String(v)) : [];
+  const commandText = command.length ? formatCommandLine(command) : `${action.action || 'action'} <missing command>`;
+  if (action.replayable !== true) {
+    const missing = Array.isArray(action.needsInput) && action.needsInput.length
+      ? action.needsInput
+      : ['review'];
+    return { skip: true, commandText, missing, reason: 'not replayable' };
+  }
+  if (!command.length || !command[0]) {
+    return { skip: true, commandText, missing: ['command'], reason: 'missing command' };
+  }
+  if (command.includes('<redacted>')) {
+    return { skip: true, commandText, missing: redactedCommandNeedsInput(action.action || command[0]), reason: 'redacted input' };
+  }
+  if (REPLAY_BLOCKED.has(command[0])) {
+    return { skip: true, commandText, missing: ['safe command'], reason: `blocked command: ${command[0]}` };
+  }
+  return { cmd: command[0], args: command.slice(1), commandText };
+}
+
+async function replayActionsStr({ run }, args) {
+  const opts = parseReplayArgs(args);
+  const actions = opts.artifact.actions;
+  const total = actions.length;
+  const lines = [
+    `Replay: ${total} step(s)`,
+    `Source: ${opts.source}`,
+  ];
+  let okCount = 0, failCount = 0, skipCount = 0;
+  for (let i = 0; i < actions.length; i++) {
+    const action = actions[i];
+    const step = replayStepFromAction(action);
+    if (step.skip) {
+      skipCount++;
+      lines.push(`[${i + 1}/${total}] skip ${step.commandText}`);
+      if (step.reason) lines.push(`  Reason: ${step.reason}`);
+      if (step.missing?.length) lines.push(`  Missing: ${step.missing.join(', ')}`);
+      continue;
+    }
+    lines.push(`[${i + 1}/${total}] ${step.commandText}`);
+    const result = await run({ cmd: step.cmd, args: step.args });
+    if (result?.ok) {
+      okCount++;
+      const body = (result.result || '').toString().split('\n')[0].slice(0, 240);
+      if (body) lines.push(`  ok: ${body}`);
+      else lines.push('  ok');
+    } else {
+      failCount++;
+      lines.push(`  ✗ ${result?.error || 'unknown error'}`);
+      if (!opts.continueOnError) {
+        lines.push(`Replay halted at step ${i + 1}/${total} (use --continue to keep going).`);
+        break;
+      }
+    }
+  }
+  lines.push(`Done: ${okCount} ok, ${failCount} failed, ${skipCount} skipped`);
+  return lines.join('\n');
+}
+
 // --- Doctor: one-call diagnostics ---
 function checkNode(version = process.version) {
   const major = parseInt(String(version).replace(/^v/, '').split('.')[0]) || 0;
@@ -4815,6 +4933,12 @@ async function runDaemon(targetId) {
           }, args);
           break;
         }
+        case 'replay': {
+          result = await replayActionsStr({
+            run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] }),
+          }, args);
+          break;
+        }
         case 'stop': return { ok: true, result: '', stopAfter: true };
         default: return { ok: false, error: `Unknown command: ${cmd}` };
       }
@@ -5023,6 +5147,8 @@ Usage: cdp <command> [args]
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
   report <target>                   Session action timeline + evidence summary + JSONL log path
   record-actions <target>           Export session action log as replay-oriented text or JSON
+  replay <target> --file <path>      Replay a record-actions JSON artifact against the live page
+  replay <target> --json <json>      Replay an inline record-actions JSON artifact
   net   <target>                    Network performance entries
   click   <target> <sel|@ref>       Click element by CSS selector or @ref
                                     --js / -j: use HTMLElement.click() (JS fallback)
@@ -5145,7 +5271,7 @@ DAEMON IPC (for advanced use / scripting)
   elshot, fullshot, scanshot, html, nav, net, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
-  record, record-actions, report, evalraw, batch, flow, repeat, stop.
+  record, record-actions, replay, report, evalraw, batch, flow, repeat, stop.
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
@@ -5171,6 +5297,7 @@ const COMMANDS = Object.freeze([
   { name: 'summary', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'report', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'record-actions', aliases: ['recordactions'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'replay', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'elshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'click', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'jsclick', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
@@ -5435,6 +5562,16 @@ async function main() {
     if (!cmdArgs[0]) { console.error('Error: flow steps required (semicolon-separated). Example: flow <target> "click @1; wait dom stable; summary"'); process.exit(1); }
     // Preserve multi-word/unquoted step recipes as one daemon argument.
     cmdArgs.splice(0, cmdArgs.length, cmdArgs.join(' '));
+  } else if (cmd === 'replay') {
+    const jsonIndex = cmdArgs.findIndex(a => a === '--json');
+    if (jsonIndex !== -1) {
+      const jsonPayload = cmdArgs.slice(jsonIndex + 1).join(' ').trim();
+      if (!jsonPayload) { console.error('Error: replay --json requires a record-actions JSON payload'); process.exit(1); }
+      cmdArgs.splice(jsonIndex + 1, cmdArgs.length - jsonIndex - 1, jsonPayload);
+    } else if (!cmdArgs[0]) {
+      console.error('Error: replay requires --file <path> or --json <record-actions-json>');
+      process.exit(1);
+    }
   }
 
   if ((cmd === 'nav' || cmd === 'navigate') && !cmdArgs[0]) {
@@ -5480,6 +5617,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   navStr, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parseRepeatArgs, repeatStr,
+  parseReplayArgs, parseReplayArtifact, replayStepFromAction, replayActionsStr,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,
   formatUnknownRefError, resolveRefNode, formatRefRect,

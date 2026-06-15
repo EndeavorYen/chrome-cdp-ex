@@ -299,11 +299,12 @@ scripts/cdp.mjs summary <target> [--format json]                  # token-effici
 scripts/cdp.mjs console <target> [--all|--errors] [--format json] # console buffer (default: unread only)
 scripts/cdp.mjs report  <target>                                  # action timeline + evidence + screenshot attachments + JSONL log path
 scripts/cdp.mjs record-actions <target> [--format json]           # export session action log as replay-oriented steps
+scripts/cdp.mjs replay <target> --file <path>                     # execute replayable steps from a record-actions artifact
 ```
 
 > **Agent tip:** `perceive` already includes summary + console health. Use `status` or `console` only when you need to check for **new** console entries after an action.
 > Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session, lists session screenshot attachments, and shows the per-target JSONL log path for post-mortem review.
-> Use `record-actions --format json` when a successful exploration should become a replay/export asset; incomplete commands are marked with explicit missing fields instead of guessed. Password-like fill/type targets are redacted before action artifacts are written.
+> Use `record-actions --format json` when a successful exploration should become a replay/export asset, then `replay --file artifact.json` to run replayable steps against a live page. Incomplete commands are marked with explicit missing fields instead of guessed. Password-like fill/type targets are redacted before action artifacts are written.
 > Use `--format json` when another tool or agent needs a stable, parseable status, summary, console, or action-record payload.
 
 ### Batch commands (reduce IPC overhead)
@@ -640,7 +641,7 @@ CSS px = screenshot image px / DPR
 
 > **When to use `record` instead of `perceive --since-action` or `report`:**
 >
-> `perceive --since-action` shows WHAT the last action changed. `report` summarizes the action timeline so far. `record-actions` exports the actions as replay-oriented steps. `record` shows **WHEN things changed, in what order, and what caused what** during a focused observation window.
+> `perceive --since-action` shows WHAT the last action changed. `report` summarizes the action timeline so far. `record-actions` exports the actions as replay-oriented steps, and `replay` executes the replayable subset. `record` shows **WHEN things changed, in what order, and what caused what** during a focused observation window.
 >
 > | Situation | Use `perceive --since-action` / `report` | Use `record` |
 > |-----------|------------------------------------------|--------------|

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createServer } from 'http';
-import { readFileSync, mkdtempSync, rmSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -163,6 +163,13 @@ if (!recordActions.actions.some(action => action.action === 'fill' && action.com
 if (!recordActions.actions.some(action => action.action === 'click' && action.command?.join(' ') === 'click #combat' && action.replayable)) {
   throw new Error(`record-actions should include replayable click command\nOutput:\n${recordActionsJson}`);
 }
+const replayArtifactPath = resolve(profileDir, 'record-actions.json');
+writeFileSync(replayArtifactPath, recordActionsJson);
+const replayOut = step('replay record-actions artifact', () => run(['replay', target, '--file', replayArtifactPath], { timeout: 30000 }));
+assertIncludes(replayOut, 'Replay:', 'replay');
+assertIncludes(replayOut, 'fill #cmd "look trainer"', 'replay fill');
+assertIncludes(replayOut, 'click #combat', 'replay click');
+assertIncludes(replayOut, 'Done:', 'replay summary');
 step('wait any-of', () => assertIncludes(run(['waitfor', target, '--any-of', '戰鬥勝利|戰敗|逃跑成功', '8000', '--scope', '#combat-log'], { timeout: 12000 }), '戰鬥勝利', 'waitfor --any-of'));
 step('wait selector stable', () => assertIncludes(run(['waitfor', target, '--selector-stable', '#combat-log', '500', '8000'], { timeout: 12000 }), 'stable', 'waitfor --selector-stable'));
 const shotOut = step('shot quiet', () => run(['shot', target, resolve(tmpdir(), 'chrome-cdp-ex-smoke.png'), '--quiet']));
