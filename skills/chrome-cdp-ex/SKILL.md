@@ -298,12 +298,15 @@ scripts/cdp.mjs status  <target> [--format json]                  # page state +
 scripts/cdp.mjs summary <target> [--format json]                  # token-efficient page overview (~100 tokens)
 scripts/cdp.mjs console <target> [--all|--errors] [--format json] # console buffer (default: unread only)
 scripts/cdp.mjs report  <target>                                  # action timeline + evidence + screenshot attachments + JSONL log path
+scripts/cdp.mjs checkpoint <target> [--format json]                # capture URL, cookies, localStorage, and sessionStorage
+scripts/cdp.mjs restore <target> --file <path>                     # restore a checkpoint artifact; invalidates @refs
 scripts/cdp.mjs record-actions <target> [--format json]           # export session action log as replay-oriented steps
 scripts/cdp.mjs replay <target> --file <path>                     # execute replayable steps from a record-actions artifact
 ```
 
 > **Agent tip:** `perceive` already includes summary + console health. Use `status` or `console` only when you need to check for **new** console entries after an action.
 > Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session, lists session screenshot attachments, and shows the per-target JSONL log path for post-mortem review.
+> Use `checkpoint --format json` before risky stateful exploration, then `restore --file checkpoint.json` to return to the captured URL, cookies, localStorage, and sessionStorage. After restore, run `perceive` before using any `@ref`; refs from the prior page state are intentionally invalid.
 > Use `record-actions --format json` when a successful exploration should become a replay/export asset, then `replay --file artifact.json` to run replayable steps against a live page. Incomplete commands are marked with explicit missing fields instead of guessed. Password-like fill/type targets are redacted before action artifacts are written.
 > Use `--format json` when another tool or agent needs a stable, parseable status, summary, console, or action-record payload.
 
@@ -458,6 +461,8 @@ scripts/cdp.mjs record  <target> --until "network idle"  # record until no pendi
 scripts/cdp.mjs record  <target> --action click @5       # record while performing an action — auto-settles
                                                            # (DOM/network quiet, capped at 5s if no network, 10s otherwise).
                                                            # Add an explicit duration or --until to override the auto-settle default.
+scripts/cdp.mjs checkpoint <target> --format json          # page state artifact for workflow replay/debugging
+scripts/cdp.mjs restore <target> --file checkpoint.json    # restores URL/cookies/storage and clears old refs
 scripts/cdp.mjs flow    <target> "<steps>"               # sequential runner; semicolon-separated steps
                                                            # e.g. flow A7BA "click @1; wait dom stable; summary; console --errors"
                                                            # wait aliases: "wait dom stable", "wait network idle"

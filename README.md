@@ -193,7 +193,7 @@ Output:
 1ED3DBAA  My App                                                  http://localhost:5173/#/menu
 ```
 
-All 58 commands work: `perceive`, `click`, `fill`, `cascade`, `record`, `record-actions`, `replay`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
+All 60 commands work: `perceive`, `click`, `fill`, `cascade`, `record`, `checkpoint`, `restore`, `record-actions`, `replay`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
 
 </details>
 
@@ -333,6 +333,8 @@ perceive <target> [flags] [--format json] # enriched AX tree with @ref indices +
 snap     <target> [--full]         # accessibility tree (compact by default)
 summary  <target> [--format json]  # token-efficient overview (~100 tokens)
 report   <target>                  # session action timeline + evidence summary + screenshots + JSONL log path
+checkpoint <target> [--format json] # capture URL, cookies, localStorage, and sessionStorage
+restore  <target> --file <path>    # restore a checkpoint artifact into the live page
 record-actions <target> [--format json] # export session action log as replay-oriented steps
 replay   <target> --file <path>    # replay a record-actions JSON artifact
 status   <target> [--runtime] [--format json]  # URL, title + new console/exception entries; --runtime adds Performance metrics
@@ -444,6 +446,8 @@ record  <target> --action click @5  # record cause → effect around an action;
                                     # (cap: 5s without network activity, 10s with)
 record  <target> --until "dom stable"|"network idle"  # record until quiet (max 30s)
 report  <target>                    # current daemon session action timeline + JSONL log path
+checkpoint <target> [--format json] # save URL, cookies, localStorage, and sessionStorage as an artifact
+restore <target> --file <path>      # restore a checkpoint artifact; invalidates @refs
 record-actions <target> [--format json]  # export current action log as replay-oriented steps
 replay  <target> --file <path>      # execute replayable steps from a record-actions JSON artifact
 ```
@@ -483,7 +487,7 @@ evalraw <target> <method> [json]    # raw CDP command passthrough
 
 </details>
 
-**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. After any mutating command, `perceive --since-action` replays the page diff from that action's pre-dispatch baseline, so agents can ask "what changed because of the last action?" without guessing from the last manual perceive. Use `report <target>` after a multi-step flow to see the session action timeline, evidence summary, session screenshot attachments, and per-target JSONL log path. Use `record-actions <target> --format json` when the current session should become a replay/export asset, then `replay <target> --file artifact.json` to run replayable steps against the live page. Commands that lack enough original input are marked with explicit missing fields instead of being silently guessed. Password-like fill/type targets are redacted before action artifacts are written. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` instead of a pure timeout, so agents should verify with `perceive --since-action`, `perceive --diff`, or `status` rather than retrying the action.
+**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. After any mutating command, `perceive --since-action` replays the page diff from that action's pre-dispatch baseline, so agents can ask "what changed because of the last action?" without guessing from the last manual perceive. Use `report <target>` after a multi-step flow to see the session action timeline, evidence summary, session screenshot attachments, and per-target JSONL log path. Use `checkpoint <target> --format json` before risky stateful exploration, then `restore <target> --file checkpoint.json` to return to the captured URL, cookies, localStorage, and sessionStorage; restore invalidates `@ref`s, so run `perceive` again before using refs. Use `record-actions <target> --format json` when the current session should become a replay/export asset, then `replay <target> --file artifact.json` to run replayable steps against the live page. Commands that lack enough original input are marked with explicit missing fields instead of being silently guessed. Password-like fill/type targets are redacted before action artifacts are written. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` instead of a pure timeout, so agents should verify with `perceive --since-action`, `perceive --diff`, or `status` rather than retrying the action.
 
 Use `wait` instead of shell `sleep` when policy blocks long sleeps:
 

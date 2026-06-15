@@ -174,6 +174,30 @@ step('wait any-of', () => assertIncludes(run(['waitfor', target, '--any-of', 'æˆ
 step('wait selector stable', () => assertIncludes(run(['waitfor', target, '--selector-stable', '#combat-log', '500', '8000'], { timeout: 12000 }), 'stable', 'waitfor --selector-stable'));
 const shotOut = step('shot quiet', () => run(['shot', target, resolve(tmpdir(), 'chrome-cdp-ex-smoke.png'), '--quiet']));
 if (shotOut.split('\n').length !== 1 || !shotOut.endsWith('.png')) throw new Error(`shot --quiet should print only path, got:\n${shotOut}`);
+step('prepare checkpoint state', () => run(['eval', target, 'localStorage.setItem("cdpSmokeCheckpoint","local-ok"); sessionStorage.setItem("cdpSmokeCheckpoint","session-ok"); "ok"']));
+const checkpointJson = step('checkpoint json', () => run(['checkpoint', target, '--format', 'json']));
+const checkpoint = JSON.parse(checkpointJson);
+if (checkpoint.schema !== 'chrome-cdp-ex.checkpoint.v1') {
+  throw new Error(`checkpoint json schema mismatch:\n${checkpointJson}`);
+}
+if (checkpoint.page.url !== url) throw new Error(`checkpoint should capture current URL ${url}\nOutput:\n${checkpointJson}`);
+if (checkpoint.storage?.localStorage?.cdpSmokeCheckpoint !== 'local-ok') {
+  throw new Error(`checkpoint should capture localStorage state\nOutput:\n${checkpointJson}`);
+}
+if (checkpoint.storage?.sessionStorage?.cdpSmokeCheckpoint !== 'session-ok') {
+  throw new Error(`checkpoint should capture sessionStorage state\nOutput:\n${checkpointJson}`);
+}
+const checkpointPath = resolve(profileDir, 'checkpoint.json');
+writeFileSync(checkpointPath, checkpointJson);
+step('mutate checkpoint state before restore', () => run(['eval', target, 'localStorage.setItem("cdpSmokeCheckpoint","mutated"); sessionStorage.setItem("cdpSmokeCheckpoint","mutated"); "ok"']));
+const restoreOut = step('restore checkpoint artifact', () => run(['restore', target, '--file', checkpointPath], { timeout: 30000 }));
+assertIncludes(restoreOut, 'Restored checkpoint', 'restore');
+assertIncludes(restoreOut, 'cookies:', 'restore cookie summary');
+const restoredStorageJson = step('verify restored storage', () => run(['eval', target, 'JSON.stringify({local:localStorage.getItem("cdpSmokeCheckpoint"),session:sessionStorage.getItem("cdpSmokeCheckpoint")})']));
+const restoredStorage = JSON.parse(restoredStorageJson);
+if (restoredStorage.local !== 'local-ok' || restoredStorage.session !== 'session-ok') {
+  throw new Error(`restore should reinstate checkpoint storage\nOutput:\n${restoredStorageJson}`);
+}
 
 console.log(`Live smoke passed using ${browserName} on CDP_PORT=${port}`);
 console.log(results.join('\n'));

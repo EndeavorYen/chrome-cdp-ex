@@ -2965,6 +2965,212 @@ async function cookiesStr(cdp, sid) {
   return lines.join('\n');
 }
 
+// Checkpoint/restore: serialize the minimum browser state needed to resume a
+// real-page exploration flow without pretending to snapshot the whole browser.
+function checkpointPageScript() {
+  return `(function() {
+    function dumpStorage(storage) {
+      const out = {};
+      for (let i = 0; i < storage.length; i++) {
+        const key = storage.key(i);
+        out[key] = storage.getItem(key);
+      }
+      return out;
+    }
+    return JSON.stringify({
+      url: location.href,
+      title: document.title,
+      origin: location.origin,
+      localStorage: dumpStorage(localStorage),
+      sessionStorage: dumpStorage(sessionStorage)
+    });
+  })()`;
+}
+
+function sanitizeCheckpointCookies(cookies = []) {
+  return cookies.map(cookie => {
+    const out = {};
+    for (const key of ['name', 'value', 'domain', 'path', 'secure', 'httpOnly', 'sameSite']) {
+      if (cookie[key] !== undefined) out[key] = cookie[key];
+    }
+    if (Number.isFinite(cookie.expires) && cookie.expires > 0) out.expires = cookie.expires;
+    return out;
+  }).filter(cookie => cookie.name);
+}
+
+async function checkpointModel(cdp, sid, { now = Date.now() } = {}) {
+  const raw = await evalStr(cdp, sid, checkpointPageScript());
+  let pageState;
+  try {
+    pageState = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`checkpoint: failed to read page state (${e.message})`);
+  }
+  let cookies = [];
+  try {
+    const res = await cdp.send('Network.getCookies', {}, sid);
+    cookies = sanitizeCheckpointCookies(res.cookies || []);
+  } catch {}
+  return {
+    schema: 'chrome-cdp-ex.checkpoint.v1',
+    ts: now,
+    page: {
+      url: pageState.url || '',
+      title: pageState.title || '',
+      origin: pageState.origin || '',
+    },
+    storage: {
+      localStorage: pageState.localStorage || {},
+      sessionStorage: pageState.sessionStorage || {},
+    },
+    cookies,
+  };
+}
+
+async function checkpointStr(cdp, sid, { format = 'text', now = Date.now() } = {}) {
+  const model = await checkpointModel(cdp, sid, { now });
+  if (format === 'json') return formatJson(model);
+  const localCount = Object.keys(model.storage.localStorage || {}).length;
+  const sessionCount = Object.keys(model.storage.sessionStorage || {}).length;
+  return [
+    'Checkpoint captured',
+    `URL: ${model.page.url}`,
+    `Storage: local ${localCount}, session ${sessionCount}`,
+    `Cookies: ${model.cookies.length}`,
+    'Next: save `checkpoint --format json` output and restore with `restore --file <path>`.',
+  ].join('\n');
+}
+
+function parseCheckpointArtifact(raw) {
+  let artifact;
+  try {
+    artifact = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (e) {
+    throw new Error(`restore: invalid checkpoint JSON (${e.message})`);
+  }
+  if (!artifact || typeof artifact !== 'object') throw new Error('restore: checkpoint artifact must be a JSON object');
+  if (artifact.schema !== 'chrome-cdp-ex.checkpoint.v1') {
+    throw new Error(`restore: unsupported checkpoint schema ${artifact.schema || '(missing)'}`);
+  }
+  if (!artifact.page?.url) throw new Error('restore: checkpoint.page.url is required');
+  validateUrl(artifact.page.url);
+  return artifact;
+}
+
+function parseRestoreArgs(args, { reader = readFileSync } = {}) {
+  const tokens = (args || []).filter(a => a !== undefined && a !== null);
+  const positional = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--json') {
+      const raw = tokens.slice(i + 1).join(' ').trim();
+      if (!raw) throw new Error('restore --json requires a checkpoint JSON payload');
+      return { artifact: parseCheckpointArtifact(raw), source: 'inline JSON' };
+    }
+    if (token === '--file' || token === '-f') {
+      const filePath = tokens[++i];
+      if (!filePath) throw new Error('restore --file requires a checkpoint JSON path');
+      return { artifact: parseCheckpointArtifact(reader(filePath, 'utf8')), source: filePath };
+    }
+    positional.push(token);
+  }
+  const raw = positional.join(' ').trim();
+  if (!raw) throw new Error('restore requires --file <path> or --json <checkpoint-json>');
+  if (raw.startsWith('{')) return { artifact: parseCheckpointArtifact(raw), source: 'inline JSON' };
+  return { artifact: parseCheckpointArtifact(reader(positional[0], 'utf8')), source: positional[0] };
+}
+
+function redactRestoreCommandArgs(args = []) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    out.push(arg);
+    if (arg === '--json') {
+      out.push('[checkpoint-json-redacted]');
+      break;
+    }
+    if (arg === '--file' || arg === '-f') {
+      if (args[i + 1]) out.push(args[++i]);
+    }
+  }
+  return out.length ? out : ['restore'];
+}
+
+function checkpointCookieToSetCookieParams(cookie, url) {
+  const params = { url };
+  for (const key of ['name', 'value', 'domain', 'path', 'secure', 'httpOnly', 'sameSite', 'expires']) {
+    if (cookie[key] !== undefined) params[key] = cookie[key];
+  }
+  return params;
+}
+
+function restoreStorageScript(storage = {}) {
+  const local = storage.localStorage || {};
+  const session = storage.sessionStorage || {};
+  return `(function() {
+    const localItems = ${JSON.stringify(local)};
+    const sessionItems = ${JSON.stringify(session)};
+    localStorage.clear();
+    for (const [key, value] of Object.entries(localItems)) localStorage.setItem(key, value);
+    sessionStorage.clear();
+    for (const [key, value] of Object.entries(sessionItems)) sessionStorage.setItem(key, value);
+    return JSON.stringify({ localStorage: Object.keys(localItems).length, sessionStorage: Object.keys(sessionItems).length });
+  })()`;
+}
+
+async function navigateForRestore(cdp, sid, url) {
+  await cdp.send('Page.enable', {}, sid).catch(() => {});
+  let loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
+  try {
+    const nav = await cdp.send('Page.navigate', { url }, sid, 5000);
+    if (nav.errorText) {
+      loadEvent.cancel();
+      throw new Error(nav.errorText);
+    }
+    if (nav.loaderId) {
+      await loadEvent.promise;
+    } else {
+      loadEvent.cancel();
+    }
+    return 'Page.navigate';
+  } catch (e) {
+    loadEvent.cancel();
+    if (!isTimeoutError(e, ['Page.navigate'])) throw e;
+    loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
+    await evalStr(cdp, sid, `(function() { location.assign(${JSON.stringify(url)}); return 'navigating'; })()`);
+    await loadEvent.promise.catch(() => {});
+    return 'location.assign fallback';
+  }
+}
+
+async function restoreCheckpointStr(cdp, sid, args) {
+  const { artifact } = parseRestoreArgs(args);
+  const url = artifact.page.url;
+  const cookies = sanitizeCheckpointCookies(artifact.cookies || []);
+  let cookieSet = 0;
+  for (const cookie of cookies) {
+    const result = await cdp.send('Network.setCookie', checkpointCookieToSetCookieParams(cookie, url), sid);
+    if (result && result.success === false) throw new Error(`restore: failed to set cookie ${cookie.name}`);
+    cookieSet++;
+  }
+
+  let currentUrl = null;
+  try { currentUrl = await evalStr(cdp, sid, 'location.href'); } catch {}
+  const navigationMethod = currentUrl === url
+    ? 'already at checkpoint URL'
+    : await navigateForRestore(cdp, sid, url);
+  await evalStr(cdp, sid, restoreStorageScript(artifact.storage || {}));
+
+  const localCount = Object.keys(artifact.storage?.localStorage || {}).length;
+  const sessionCount = Object.keys(artifact.storage?.sessionStorage || {}).length;
+  return [
+    `Restored checkpoint: ${url}`,
+    `Navigation: ${navigationMethod}`,
+    `Storage: local ${localCount}, session ${sessionCount}; cookies: ${cookieSet}`,
+    'Refs were invalidated; run `perceive` before using @refs again.',
+  ].join('\n');
+}
+
 // Load-more: repeatedly click a button/selector until it disappears
 async function loadAllStr(cdp, sid, selector, intervalMs = 1500) {
   if (!selector) throw new Error('CSS selector required');
@@ -4798,6 +5004,12 @@ async function runDaemon(targetId) {
           result = formatSessionReport(session);
           break;
         }
+        case 'checkpoint': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await checkpointStr(cdp, sessionId, { format: fopts.format });
+          appendSessionEventLog(session, { kind: 'checkpoint', url: result.includes('URL: ') ? result.split('URL: ')[1]?.split('\n')[0] : undefined });
+          break;
+        }
         case 'record-actions': case 'recordactions': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
           result = formatRecordActions(session, { format: fopts.format });
@@ -4937,6 +5149,22 @@ async function runDaemon(targetId) {
           result = await replayActionsStr({
             run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] }),
           }, args);
+          break;
+        }
+        case 'restore': {
+          const safeCommandArgs = redactRestoreCommandArgs(args);
+          result = await actionFeedback(
+            'restore',
+            async () => {
+              const restoreResult = await restoreCheckpointStr(cdp, sessionId, args);
+              clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
+              session.pageGeneration += 1;
+              invalidateSessionRefs(session, 'navigation');
+              return restoreResult;
+            },
+            { input: 'checkpoint', resolvedBy: 'artifact', label: 'checkpoint', commandArgs: safeCommandArgs },
+            'report-only'
+          );
           break;
         }
         case 'stop': return { ok: true, result: '', stopAfter: true };
@@ -5146,6 +5374,9 @@ Usage: cdp <command> [args]
   console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
   report <target>                   Session action timeline + evidence summary + JSONL log path
+  checkpoint <target> [--format json]  Capture URL, cookies, localStorage, and sessionStorage
+  restore <target> --file <path>     Restore a checkpoint artifact into the live page
+  restore <target> --json <json>     Restore an inline checkpoint JSON artifact
   record-actions <target>           Export session action log as replay-oriented text or JSON
   replay <target> --file <path>      Replay a record-actions JSON artifact against the live page
   replay <target> --json <json>      Replay an inline record-actions JSON artifact
@@ -5271,7 +5502,7 @@ DAEMON IPC (for advanced use / scripting)
   elshot, fullshot, scanshot, html, nav, net, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
-  record, record-actions, replay, report, evalraw, batch, flow, repeat, stop.
+  record, checkpoint, restore, record-actions, replay, report, evalraw, batch, flow, repeat, stop.
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
@@ -5296,6 +5527,8 @@ const COMMANDS = Object.freeze([
   { name: 'console', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'summary', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'report', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'checkpoint', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'restore', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'record-actions', aliases: ['recordactions'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'replay', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'elshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
@@ -5572,6 +5805,16 @@ async function main() {
       console.error('Error: replay requires --file <path> or --json <record-actions-json>');
       process.exit(1);
     }
+  } else if (cmd === 'restore') {
+    const jsonIndex = cmdArgs.findIndex(a => a === '--json');
+    if (jsonIndex !== -1) {
+      const jsonPayload = cmdArgs.slice(jsonIndex + 1).join(' ').trim();
+      if (!jsonPayload) { console.error('Error: restore --json requires a checkpoint JSON payload'); process.exit(1); }
+      cmdArgs.splice(jsonIndex + 1, cmdArgs.length - jsonIndex - 1, jsonPayload);
+    } else if (!cmdArgs[0]) {
+      console.error('Error: restore requires --file <path> or --json <checkpoint-json>');
+      process.exit(1);
+    }
   }
 
   if ((cmd === 'nav' || cmd === 'navigate') && !cmdArgs[0]) {
@@ -5609,6 +5852,9 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   initializeSessionLog, formatSessionReport, sessionScreenshotDir,
   ensureSessionScreenshotDir, nextSessionScreenshotPath,
   buildRecordActionsModel, formatRecordActions,
+  checkpointPageScript, sanitizeCheckpointCookies, checkpointModel, checkpointStr,
+  parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs,
+  checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,
   // Command implementations
   formatPageList, dialogStr, netlogStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,

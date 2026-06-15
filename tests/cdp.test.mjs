@@ -188,7 +188,7 @@ describe('COMMANDS registry', () => {
     expect(mutating.map(c => c.name).sort()).toEqual([
       'back', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
       'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav',
-      'open', 'press', 'reload', 'replay', 'scroll', 'select', 'spawn-debug-browser',
+      'open', 'press', 'reload', 'replay', 'restore', 'scroll', 'select', 'spawn-debug-browser',
       'stop', 'type', 'upload', 'viewport',
     ].sort());
     for (const command of mutating) {
@@ -209,6 +209,24 @@ describe('COMMANDS registry', () => {
   it('registers replay as a mutating target command', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'replay',
+      aliases: [],
+      needsTarget: true,
+      mutates: true,
+      feedbackPolicy: 'report-only',
+      outputFormats: ['text'],
+    }));
+  });
+
+  it('registers checkpoint and restore commands', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'checkpoint',
+      aliases: [],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'restore',
       aliases: [],
       needsTarget: true,
       mutates: true,
@@ -1665,6 +1683,139 @@ function createMockCDP(handlers = {}) {
     },
   };
 }
+
+// =========================================================================
+// checkpoint / restore — page state artifact
+// =========================================================================
+
+describe('checkpoint / restore', () => {
+  it('captures URL, storage, and cookies as a checkpoint model', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({
+        result: {
+          value: JSON.stringify({
+            url: 'https://example.com/app',
+            title: 'App',
+            origin: 'https://example.com',
+            localStorage: { theme: 'dark' },
+            sessionStorage: { wizard: '2' },
+          }),
+        },
+      }),
+      'Network.getCookies': () => ({
+        cookies: [{
+          name: 'sid',
+          value: 'abc',
+          domain: 'example.com',
+          path: '/',
+          secure: true,
+          httpOnly: true,
+          sameSite: 'Lax',
+          expires: -1,
+        }],
+      }),
+    });
+
+    const model = await T.checkpointModel(cdp, 'sid-1', { now: 12345 });
+
+    expect(model.schema).toBe('chrome-cdp-ex.checkpoint.v1');
+    expect(model.page).toEqual({
+      url: 'https://example.com/app',
+      title: 'App',
+      origin: 'https://example.com',
+    });
+    expect(model.storage.localStorage).toEqual({ theme: 'dark' });
+    expect(model.storage.sessionStorage).toEqual({ wizard: '2' });
+    expect(model.cookies).toHaveLength(1);
+    expect(model.cookies[0]).toMatchObject({ name: 'sid', value: 'abc', domain: 'example.com' });
+  });
+
+  it('formats checkpoint JSON for artifact files', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({
+        result: { value: JSON.stringify({ url: 'https://example.com/app', title: 'App', origin: 'https://example.com', localStorage: {}, sessionStorage: {} }) },
+      }),
+      'Network.getCookies': () => ({ cookies: [] }),
+    });
+
+    const parsed = JSON.parse(await T.checkpointStr(cdp, 'sid-1', { format: 'json', now: 12345 }));
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.checkpoint.v1');
+    expect(parsed.page.url).toBe('https://example.com/app');
+  });
+
+  it('restores cookies, URL, and storage from a checkpoint artifact', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: 'restored' } }),
+      'Network.setCookie': () => ({ success: true }),
+      'Page.navigate': () => ({ loaderId: 'loader-1' }),
+      'Runtime.callFunctionOn': () => ({ result: { value: 'complete' } }),
+      'event:Page.loadEventFired': () => ({}),
+    });
+    const checkpoint = {
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      page: { url: 'https://example.com/app', title: 'App', origin: 'https://example.com' },
+      storage: {
+        localStorage: { theme: 'dark' },
+        sessionStorage: { wizard: '2' },
+      },
+      cookies: [{ name: 'sid', value: 'abc', domain: 'example.com', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }],
+    };
+
+    const out = await T.restoreCheckpointStr(cdp, 'sid-1', ['--json', JSON.stringify(checkpoint)]);
+
+    expect(out).toContain('Restored checkpoint');
+    expect(out).toContain('cookies: 1');
+    expect(cdp.calls.some(c => c.method === 'Network.setCookie' && c.params.name === 'sid' && c.params.url === 'https://example.com/app')).toBe(true);
+    expect(cdp.calls.some(c => c.method === 'Page.navigate' && c.params.url === 'https://example.com/app')).toBe(true);
+    const storageCall = cdp.calls.find(c => c.method === 'Runtime.evaluate' && c.params.expression.includes('localStorage.setItem'));
+    expect(storageCall.params.expression).toContain('"theme"');
+    expect(storageCall.params.expression).toContain('"wizard"');
+  });
+
+  it('falls back to page-side navigation when Page.navigate times out', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: 'restored' } }),
+      'Page.navigate': () => { throw new Error('Timeout: Page.navigate'); },
+      'event:Page.loadEventFired': () => ({}),
+    });
+    const checkpoint = {
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      page: { url: 'https://example.com/app', title: 'App', origin: 'https://example.com' },
+      storage: { localStorage: { theme: 'dark' }, sessionStorage: {} },
+      cookies: [],
+    };
+
+    const out = await T.restoreCheckpointStr(cdp, 'sid-1', ['--json', JSON.stringify(checkpoint)]);
+
+    expect(out).toContain('Restored checkpoint');
+    expect(cdp.calls.some(c => c.method === 'Runtime.evaluate' && c.params.expression.includes('location.assign'))).toBe(true);
+    expect(cdp.calls.some(c => c.method === 'Runtime.evaluate' && c.params.expression.includes('localStorage.setItem'))).toBe(true);
+  });
+
+  it('skips navigation when already at the checkpoint URL', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        if (params.expression === 'location.href') return { result: { value: 'https://example.com/app' } };
+        return { result: { value: 'restored' } };
+      },
+      'Page.navigate': () => { throw new Error('Page.navigate should not be called'); },
+    });
+    const checkpoint = {
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      page: { url: 'https://example.com/app', title: 'App', origin: 'https://example.com' },
+      storage: { localStorage: { theme: 'dark' }, sessionStorage: {} },
+      cookies: [],
+    };
+
+    const out = await T.restoreCheckpointStr(cdp, 'sid-1', ['--json', JSON.stringify(checkpoint)]);
+
+    expect(out).toContain('Restored checkpoint');
+    expect(out).toContain('already at checkpoint URL');
+    expect(cdp.calls.some(c => c.method === 'Page.navigate')).toBe(false);
+    expect(cdp.calls.some(c => c.method === 'Runtime.evaluate' && c.params.expression.includes('localStorage.setItem'))).toBe(true);
+  });
+});
 
 // =========================================================================
 // evalStr (with CDP mock)
