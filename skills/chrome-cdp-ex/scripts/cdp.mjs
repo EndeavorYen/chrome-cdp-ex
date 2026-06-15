@@ -7976,7 +7976,8 @@ Usage: cdp <command> [args]
                                     Starts with Wizard status + current command; JSON includes wizard/checks/nextSteps.
                                     No target required. Exits 1 if any check FAILs.
   keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)
-  open  [url]                       Open a new tab (default: about:blank)
+  open  [url] [--format json]       Open a new tab (default: about:blank)
+                                    JSON includes schema/target/approval/nextSteps for agents.
                                     Note: each new tab triggers a fresh "Allow debugging?" prompt
   spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH]
                                     Launch an isolated debug profile (browser: edge|chrome|brave; default edge, port 9222).
@@ -8034,7 +8035,7 @@ DAEMON IPC (for advanced use / scripting)
 
 const COMMANDS = Object.freeze([
   { name: 'list', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'open', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text'] },
+  { name: 'open', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
   { name: 'doctor', aliases: ['ready'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'spawn-debug-browser', aliases: ['spawn'], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'stop', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
@@ -8175,6 +8176,34 @@ function formatOpenReadyMessage(targetId, url = '') {
   return lines.join('\n');
 }
 
+function buildOpenModel({ targetId, url = '', attached = false, autoPerceive = null } = {}) {
+  const target = targetPrefixForDisplay(targetId);
+  const approved = attached === true;
+  const defaultAutoPerceive = approved
+    ? { attempted: false, ok: false, reason: 'not-run' }
+    : { attempted: false, ok: false, reason: 'not-attached' };
+  const nextSteps = approved
+    ? [
+        `cdp perceive ${target} -C -d 8`,
+        `cdp click ${target} @ref  # choose a ref from perceive`,
+        `cdp perceive ${target} --since-action`,
+        `cdp report ${target}`,
+      ]
+    : [
+        `cdp perceive ${target} -C -d 8`,
+      ];
+  return {
+    schema: 'chrome-cdp-ex.open.v1',
+    targetId,
+    targetPrefix: target,
+    url,
+    attached: approved,
+    approval: approved ? 'approved' : 'pending',
+    autoPerceive: autoPerceive || defaultAutoPerceive,
+    nextSteps,
+  };
+}
+
 function formatOpenTimeoutMessage(targetId) {
   const target = targetPrefixForDisplay(targetId);
   return [
@@ -8234,7 +8263,12 @@ async function main() {
 
   // Open new tab
   if (cmd === 'open') {
-    const url = args[0] || 'about:blank';
+    const fopts = parseFormatArgs(args, ['text', 'json']);
+    if (fopts.args.length > 1) {
+      console.error(formatCliError(`open: unknown argument ${fopts.args[1]}`, { cmd }));
+      process.exit(1);
+    }
+    const url = fopts.args[0] || 'about:blank';
     if (url !== 'about:blank') validateUrl(url);
     const cdp = new CDP();
     await cdp.connect(await getWsUrl());
@@ -8246,10 +8280,14 @@ async function main() {
     }
     cdp.close();
     writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
-    console.log(`Opened new tab: ${targetId.slice(0, 8)}  ${url}`);
+    if (fopts.format === 'text') {
+      console.log(`Opened new tab: ${targetId.slice(0, 8)}  ${url}`);
+    }
 
     // Auto-attach: start daemon and wait for user to click "Allow debugging?"
-    console.log('Waiting for "Allow debugging?" approval in Chrome... (up to 60s)');
+    if (fopts.format === 'text') {
+      console.log('Waiting for "Allow debugging?" approval in Chrome... (up to 60s)');
+    }
     const sp = sockPath(targetId);
     if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
     const child = spawn(process.execPath, [process.argv[1], '_daemon', targetId], {
@@ -8266,6 +8304,17 @@ async function main() {
         attached = true;
         break;
       } catch {}
+    }
+    if (fopts.format === 'json') {
+      console.log(formatJson(buildOpenModel({
+        targetId,
+        url,
+        attached,
+        autoPerceive: attached
+          ? { attempted: false, ok: false, reason: 'json-output' }
+          : { attempted: false, ok: false, reason: 'not-attached' },
+      })));
+      return;
     }
     if (attached) {
       console.log(formatOpenReadyMessage(targetId, url));
@@ -8512,7 +8561,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, parseFlowSteps, settleFlow, flowStr,
-  formatCliError, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  formatCliError, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   doctorWizardModel, doctorWizardSummary,
   doctorNextSteps, doctorStatusSummary, buildDoctorModel, formatDoctorOutput,

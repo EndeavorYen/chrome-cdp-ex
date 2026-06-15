@@ -136,7 +136,7 @@ N="/mnt/c/.../node.exe" C="/path/to/scripts/cdp.mjs" && "$N" "$C" fill FFCC @3 "
 ```
 Or define both vars at the start of each Bash call using short aliases.
 
-On first use, always start with `list` to verify connectivity and discover available tabs. Use `list --format json` when an agent needs stable target prefixes, page metadata, and executable `nextSteps` without parsing the human table.
+On first use, always start with `list` to verify connectivity and discover available tabs. Use `list --format json` when an agent needs stable target prefixes, page metadata, and executable `nextSteps` without parsing the human table. Use `open --format json` when no page is available and the agent needs a clean `chrome-cdp-ex.open.v1` handoff with target prefix, approval state, and next commands.
 
 **Interpreting `list` output**:
 ```
@@ -149,7 +149,7 @@ When connected via `CDP_PORT` to an Electron app, a header line is shown:
 1ED3DBAA  Rexiano          http://localhost:5173/#/menu
 ```
 - Each line: `<8-char target ID>  <title>  <url>`. Use the target ID (e.g. `A7BA5C64`) for subsequent commands.
-- **Empty output (exit 0)** = no debuggable tabs available. Do NOT stop to ask the user for help. Instead, use `open <url>` to create a tab — this will auto-attach, wait for the user to click "Allow debugging?" in Chrome, auto-perceive the page, and print Target/Next/Then/Report continuation hints. Once `open` completes, follow those hints and proceed immediately. Do NOT suggest `--remote-debugging-port` restarts.
+- **Empty output (exit 0)** = no debuggable tabs available. Do NOT stop to ask the user for help. Instead, use `open <url>` to create a tab — this will auto-attach, wait for the user to click "Allow debugging?" in Chrome, auto-perceive the page, and print Target/Next/Then/Report continuation hints. Use `open <url> --format json` when a script needs the structured target handoff instead of human guidance. Once `open` completes, follow those hints and proceed immediately. Do NOT suggest `--remote-debugging-port` restarts.
 - **Error output** = connection problem. Check prerequisites.
 
 ## Commands
@@ -490,7 +490,7 @@ scripts/cdp.mjs flow    <target> "<steps>"               # sequential runner; se
 scripts/cdp.mjs doctor [--format json]         # one-call diagnostics (Node, install, daemon state, CDP, permission)
 scripts/cdp.mjs ready [--format json]          # alias of doctor; exits 1 if any check FAILs
 scripts/cdp.mjs list    [--format json]        # discover tabs; JSON gives schema/pages/nextSteps for agents
-scripts/cdp.mjs open    [url]                  # open new tab + auto-attach + auto-perceive (waits up to 60s for approval)
+scripts/cdp.mjs open    [url] [--format json]  # open new tab + auto-attach; text mode auto-perceives after approval
 scripts/cdp.mjs keepalive <target> <ms>        # keep a tab daemon alive for long background work
 scripts/cdp.mjs stop    [target]               # stop daemon(s)
 ```

@@ -200,14 +200,14 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 node skills/chrome-cdp-ex/scripts/cdp.mjs list
-node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com   # only if list is empty
+node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com   # only if list is empty; add --format json for scripts
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
 node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref        # or fill <target> <selector> <text>
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
 node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 ```
 
-`open` prints the new target prefix plus `Next:`, `Then:`, and `Report:` continuation hints. If Chrome approval times out, it keeps the tab and prints the exact `perceive <target> -C -d 8` retry command.
+`open` prints the new target prefix plus `Next:`, `Then:`, and `Report:` continuation hints. If Chrome approval times out, it keeps the tab and prints the exact `perceive <target> -C -d 8` retry command. Use `open --format json` when an agent or script needs the versioned `chrome-cdp-ex.open.v1` handoff payload with target prefix, approval state, auto-perceive status, and executable `nextSteps`.
 Use `list --format json` when an agent or script needs target IDs, stable prefixes, blank-tab labels, and executable `nextSteps` without parsing the human table.
 
 If a CLI command fails, read the printed `Next:` line first. Common setup, target, daemon, and CDP errors are formatted with a copy-pasteable recovery command instead of a stack trace.
@@ -360,7 +360,7 @@ cdp repeat <t> 3 click "button[data-act='attack']"
 ```bash
 list [--format json]               # list open tabs (targetId prefixes; about:blank is "(blank tab)")
                                    # JSON gives schema/pages/nextSteps for agents
-open   [url]                       # open new tab; prints Target/Next/Then/Report hints after attach
+open   [url] [--format json]       # open new tab; JSON gives target/approval/nextSteps handoff
 spawn-debug-browser [edge|chrome|brave] [--port 9222] [--url URL] [--profile-dir DIR] [--exe PATH]
                                    # launch an isolated debug profile (disposable user-data-dir + remote-debugging-port)
                                    # `spawn` is a short alias

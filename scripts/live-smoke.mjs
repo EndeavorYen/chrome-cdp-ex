@@ -134,6 +134,18 @@ if (parsedDoctor.schema !== 'chrome-cdp-ex.doctor.v1' || !Array.isArray(parsedDo
 if (!parsedDoctor.wizard?.goldenPath?.includes('perceive') || !parsedDoctor.nextSteps.some(step => step.startsWith('cdp perceive'))) {
   throw new Error(`doctor json should include golden path and executable perceive next step:\n${doctorJson}`);
 }
+const openJson = step('open json', () => run(['open', 'about:blank', '--format', 'json'], { timeout: 70000 }));
+const parsedOpen = JSON.parse(openJson);
+if (parsedOpen.schema !== 'chrome-cdp-ex.open.v1' || !parsedOpen.targetPrefix || parsedOpen.url !== 'about:blank') {
+  throw new Error(`open json schema/target mismatch:\n${openJson}`);
+}
+if (parsedOpen.attached !== true || parsedOpen.approval !== 'approved') {
+  throw new Error(`open json should attach in the smoke debug browser:\n${openJson}`);
+}
+if (!parsedOpen.nextSteps?.some(nextStep => nextStep.startsWith(`cdp perceive ${parsedOpen.targetPrefix}`))) {
+  throw new Error(`open json should include executable perceive next step:\n${openJson}`);
+}
+step('close open json tab', () => run(['closetab', parsedOpen.targetPrefix]));
 const cliErrorOut = step('actionable cli error', () => runFailure(['perceive']));
 assertIncludes(cliErrorOut, 'Error: target ID required', 'targetless perceive error');
 assertIncludes(cliErrorOut, 'Next: cdp list', 'targetless perceive next step');

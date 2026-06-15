@@ -227,6 +227,17 @@ describe('COMMANDS registry', () => {
     }));
   });
 
+  it('registers open as a targetless command with text and json output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'open',
+      aliases: [],
+      needsTarget: false,
+      mutates: true,
+      feedbackPolicy: 'full-perceive',
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
   it('registers replay as a mutating target command', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'replay',
@@ -3270,6 +3281,31 @@ describe('open onboarding guidance', () => {
     expect(out).toContain('Report: cdp report AABBCCDD');
   });
 
+  it('builds a JSON model for a ready opened tab', () => {
+    const model = T.buildOpenModel({
+      targetId: 'AABBCCDDEEFF',
+      url: 'https://example.com',
+      attached: true,
+      autoPerceive: { attempted: true, ok: true },
+    });
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.open.v1',
+      targetId: 'AABBCCDDEEFF',
+      targetPrefix: 'AABBCCDD',
+      url: 'https://example.com',
+      attached: true,
+      approval: 'approved',
+      autoPerceive: { attempted: true, ok: true },
+      nextSteps: [
+        'cdp perceive AABBCCDD -C -d 8',
+        'cdp click AABBCCDD @ref  # choose a ref from perceive',
+        'cdp perceive AABBCCDD --since-action',
+        'cdp report AABBCCDD',
+      ],
+    });
+  });
+
   it('formats a timeout recovery when browser permission is not approved yet', () => {
     const out = formatOpenTimeoutMessage('AABBCCDDEEFF');
 
@@ -3277,6 +3313,27 @@ describe('open onboarding guidance', () => {
     expect(out).toContain('Target: AABBCCDD');
     expect(out).toContain('Next: cdp perceive AABBCCDD -C -d 8');
     expect(out).toContain('click Allow');
+  });
+
+  it('builds a JSON model for an opened tab that still needs approval', () => {
+    const model = T.buildOpenModel({
+      targetId: 'AABBCCDDEEFF',
+      url: 'about:blank',
+      attached: false,
+      autoPerceive: { attempted: false, ok: false, reason: 'not-attached' },
+    });
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.open.v1',
+      targetPrefix: 'AABBCCDD',
+      url: 'about:blank',
+      attached: false,
+      approval: 'pending',
+      autoPerceive: { attempted: false, ok: false, reason: 'not-attached' },
+      nextSteps: [
+        'cdp perceive AABBCCDD -C -d 8',
+      ],
+    });
   });
 
   it('formats auto-perceive failure with actionable recovery', () => {
