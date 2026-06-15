@@ -136,7 +136,7 @@ N="/mnt/c/.../node.exe" C="/path/to/scripts/cdp.mjs" && "$N" "$C" fill FFCC @3 "
 ```
 Or define both vars at the start of each Bash call using short aliases.
 
-On first use, always start with `list` to verify connectivity and discover available tabs.
+On first use, always start with `list` to verify connectivity and discover available tabs. Use `list --format json` when an agent needs stable target prefixes, page metadata, and executable `nextSteps` without parsing the human table.
 
 **Interpreting `list` output**:
 ```
@@ -489,6 +489,7 @@ scripts/cdp.mjs flow    <target> "<steps>"               # sequential runner; se
                                                            # halts on the first failing step; output is readable, not JSON
 scripts/cdp.mjs doctor [--format json]         # one-call diagnostics (Node, install, daemon state, CDP, permission)
 scripts/cdp.mjs ready [--format json]          # alias of doctor; exits 1 if any check FAILs
+scripts/cdp.mjs list    [--format json]        # discover tabs; JSON gives schema/pages/nextSteps for agents
 scripts/cdp.mjs open    [url]                  # open new tab + auto-attach + auto-perceive (waits up to 60s for approval)
 scripts/cdp.mjs keepalive <target> <ms>        # keep a tab daemon alive for long background work
 scripts/cdp.mjs stop    [target]               # stop daemon(s)

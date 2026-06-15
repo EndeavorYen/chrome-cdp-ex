@@ -208,6 +208,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 ```
 
 `open` prints the new target prefix plus `Next:`, `Then:`, and `Report:` continuation hints. If Chrome approval times out, it keeps the tab and prints the exact `perceive <target> -C -d 8` retry command.
+Use `list --format json` when an agent or script needs target IDs, stable prefixes, blank-tab labels, and executable `nextSteps` without parsing the human table.
 
 If a CLI command fails, read the printed `Next:` line first. Common setup, target, daemon, and CDP errors are formatted with a copy-pasteable recovery command instead of a stack trace.
 
@@ -357,7 +358,8 @@ cdp repeat <t> 3 click "button[data-act='attack']"
 <summary><strong>Discovery & Lifecycle</strong></summary>
 
 ```bash
-list                               # list open tabs (shows targetId prefixes; about:blank is included as "(blank tab)")
+list [--format json]               # list open tabs (targetId prefixes; about:blank is "(blank tab)")
+                                   # JSON gives schema/pages/nextSteps for agents
 open   [url]                       # open new tab; prints Target/Next/Then/Report hints after attach
 spawn-debug-browser [edge|chrome|brave] [--port 9222] [--url URL] [--profile-dir DIR] [--exe PATH]
                                    # launch an isolated debug profile (disposable user-data-dir + remote-debugging-port)

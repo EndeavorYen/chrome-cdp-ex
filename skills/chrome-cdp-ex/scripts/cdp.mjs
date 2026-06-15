@@ -515,6 +515,55 @@ function formatPageList(pages, browserInfo = null) {
   return lines.join('\n');
 }
 
+function pageListBrowserModel(browserInfo = null) {
+  if (!browserInfo) return null;
+  const ua = browserInfo['User-Agent'] || '';
+  const electron = ua.match(/Electron\/([\d.]+)/)?.[1] || null;
+  return {
+    product: browserInfo.Browser || browserInfo.product || null,
+    userAgent: ua || null,
+    electron,
+  };
+}
+
+function buildPageListModel(pages = [], browserInfo = null) {
+  const prefixLength = getDisplayPrefixLength(pages.map(p => p.targetId || ''));
+  const modelPages = pages.map((p, index) => {
+    const isBlank = !p.url || p.url === 'about:blank';
+    return {
+      index: index + 1,
+      targetId: p.targetId || '',
+      targetPrefix: String(p.targetId || '').slice(0, prefixLength),
+      type: p.type || 'page',
+      title: isBlank ? '(blank tab)' : (p.title || ''),
+      url: p.url || '',
+      isBlank,
+    };
+  });
+  const first = modelPages[0];
+  const nextSteps = first
+    ? [
+        `cdp perceive ${first.targetPrefix} -C -d 8`,
+        `cdp click ${first.targetPrefix} @ref  # choose a ref from perceive`,
+        `cdp perceive ${first.targetPrefix} --since-action`,
+        `cdp report ${first.targetPrefix}`,
+      ]
+    : ['cdp open https://example.com'];
+  return {
+    schema: 'chrome-cdp-ex.list.v1',
+    targetCount: modelPages.length,
+    prefixLength,
+    browser: pageListBrowserModel(browserInfo),
+    pages: modelPages,
+    nextSteps,
+  };
+}
+
+function formatPageListOutput(pages, browserInfo = null, { format = 'text' } = {}) {
+  if (format === 'json') return formatJson(buildPageListModel(pages, browserInfo));
+  return formatPageList(pages, browserInfo);
+}
+
 function shouldShowAxNode(node, compact = false, parentNode = null) {
   const role = node.role?.value || '';
   const name = node.name?.value ?? '';
@@ -7810,7 +7859,8 @@ const USAGE = `cdp - lightweight Chrome DevTools Protocol CLI (no Puppeteer)
 
 Usage: cdp <command> [args]
 
-  list                              List open pages (shows unique target prefixes)
+  list [--format json]              List open pages (shows unique target prefixes)
+                                    JSON includes schema/pages/nextSteps for agents.
   perceive <target> [flags]          Full page perception with @ref indices + coordinates
                                     --diff: show only changes since last perceive
                                     --since-action: show changes caused by the last mutating command
@@ -7983,7 +8033,7 @@ DAEMON IPC (for advanced use / scripting)
 `;
 
 const COMMANDS = Object.freeze([
-  { name: 'list', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text'] },
+  { name: 'list', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'open', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text'] },
   { name: 'doctor', aliases: ['ready'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'spawn-debug-browser', aliases: ['spawn'], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
@@ -8155,6 +8205,11 @@ async function main() {
 
   // List — use existing daemon if available, otherwise direct
   if (cmd === 'list' || cmd === 'ls') {
+    const fopts = parseFormatArgs(args, ['text', 'json']);
+    if (fopts.args.length) {
+      console.error(formatCliError(`list: unknown argument ${fopts.args[0]}`, { cmd }));
+      process.exit(1);
+    }
     let pages;
     const existingSock = findAnyDaemonSocket();
     if (existingSock) {
@@ -8172,7 +8227,7 @@ async function main() {
       cdp.close();
     }
     writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
-    console.log(formatPageList(pages, _browserInfo));
+    console.log(formatPageListOutput(pages, _browserInfo, { format: fopts.format }));
     process.stdout.write('', () => process.exit(0));
     return;
   }
@@ -8425,7 +8480,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs,
   checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,
   // Command implementations
-  formatPageList, dialogStr, netlogStr,
+  formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr,
   parseMockArgs, formatNetworkMocksSummary, buildMockModel, formatMockText, mockStr, handleMockRequestPaused,
   parseClockArgs, clockPageScript, formatClockSummary, buildClockModel, formatClockText, clockStr,
   parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,

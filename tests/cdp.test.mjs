@@ -217,6 +217,16 @@ describe('COMMANDS registry', () => {
     }));
   });
 
+  it('registers list as a targetless command with text and json output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'list',
+      aliases: [],
+      needsTarget: false,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
   it('registers replay as a mutating target command', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'replay',
@@ -2061,6 +2071,53 @@ describe('netlogStr', () => {
 describe('formatPageList', () => {
   it('should return empty string for no pages', () => {
     expect(formatPageList([])).toBe('');
+  });
+
+  it('builds a versioned list JSON model with stable prefixes and next steps', () => {
+    const model = T.buildPageListModel([
+      { targetId: 'AABBCCDD11223344', type: 'page', title: 'Dashboard', url: 'https://example.com/app' },
+      { targetId: 'AABBCCDD55667788', type: 'page', title: '', url: 'about:blank' },
+    ], {
+      Browser: 'Chrome/123',
+      'User-Agent': 'Mozilla/5.0 Electron/33.4.11',
+    });
+
+    expect(model.schema).toBe('chrome-cdp-ex.list.v1');
+    expect(model.targetCount).toBe(2);
+    expect(model.prefixLength).toBeGreaterThan(8);
+    expect(model.browser).toMatchObject({ product: 'Chrome/123', electron: '33.4.11' });
+    expect(model.pages[0]).toMatchObject({
+      index: 1,
+      targetId: 'AABBCCDD11223344',
+      title: 'Dashboard',
+      url: 'https://example.com/app',
+      isBlank: false,
+    });
+    expect(model.pages[0].targetPrefix.length).toBe(model.prefixLength);
+    expect(model.pages[1]).toMatchObject({
+      index: 2,
+      title: '(blank tab)',
+      url: 'about:blank',
+      isBlank: true,
+    });
+    expect(model.nextSteps).toEqual([
+      `cdp perceive ${model.pages[0].targetPrefix} -C -d 8`,
+      `cdp click ${model.pages[0].targetPrefix} @ref  # choose a ref from perceive`,
+      `cdp perceive ${model.pages[0].targetPrefix} --since-action`,
+      `cdp report ${model.pages[0].targetPrefix}`,
+    ]);
+  });
+
+  it('builds an empty list JSON model with an open next step', () => {
+    const model = T.buildPageListModel([]);
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.list.v1',
+      targetCount: 0,
+      prefixLength: 8,
+      pages: [],
+      nextSteps: ['cdp open https://example.com'],
+    });
   });
 
   it('should format page with id prefix, title, url', () => {

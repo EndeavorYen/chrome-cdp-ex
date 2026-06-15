@@ -113,6 +113,14 @@ function step(name, fn) {
   return out;
 }
 
+const listJson = step('list json', () => run(['list', '--format', 'json']));
+const parsedList = JSON.parse(listJson);
+if (parsedList.schema !== 'chrome-cdp-ex.list.v1' || !Array.isArray(parsedList.pages) || !parsedList.pages.some(page => page.targetPrefix === target)) {
+  throw new Error(`list json should include the smoke target prefix\nOutput:\n${listJson}`);
+}
+if (!parsedList.nextSteps?.some(step => step.startsWith(`cdp perceive ${target}`))) {
+  throw new Error(`list json should include executable perceive next step\nOutput:\n${listJson}`);
+}
 const doctorOut = step('doctor onboarding', () => run(['doctor']));
 assertIncludes(doctorOut, 'chrome-cdp-ex doctor', 'doctor');
 assertIncludes(doctorOut, 'FD limit', 'doctor fd limit');
