@@ -189,7 +189,7 @@ cp -r skills/chrome-cdp-ex ~/.claude/skills/
 node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 ```
 
-`doctor` starts with a `Wizard` summary: current onboarding status, the next command to run, and the golden path. It then checks Node 22+, install path, daemon state, open-file limit, CDP reachability, debuggable page targets, and whether browser debugging approval is already confirmed. If no page is available it starts with `open`; if a target exists it prints the target prefix to use with `perceive`; if approval is not confirmed it tells you where Chrome may ask for "Allow debugging?". If CDP is not ready, use one of these paths:
+`doctor` starts with a `Wizard` summary: current onboarding status, the next command to run, and the golden path. It then checks Node 22+, install path, daemon state, open-file limit, CDP reachability, debuggable page targets, and whether browser debugging approval is already confirmed. Use `doctor --format json` when an agent or script needs the same onboarding status, checks, and next commands as a versioned `chrome-cdp-ex.doctor.v1` payload. If no page is available it starts with `open`; if a target exists it prints the target prefix to use with `perceive`; if approval is not confirmed it tells you where Chrome may ask for "Allow debugging?". If CDP is not ready, use one of these paths:
 
 - **Existing browser session (preferred):** open `chrome://inspect/#remote-debugging` (or `edge://inspect`) and toggle remote debugging on. Cleanest path; touches no profile state.
 - **Isolated debug profile (when the toggle path doesn't work):** `node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com`. Spawns the browser with `--remote-debugging-port` and a disposable `--user-data-dir`, leaving your main profile alone. Use `--exe /path/to/browser` for non-standard installs; Linux also falls back to common browser names on `$PATH`. Run `cdp doctor` first to confirm no port conflict.
@@ -365,9 +365,9 @@ spawn-debug-browser [edge|chrome|brave] [--port 9222] [--url URL] [--profile-dir
 stop   [target]                    # stop daemon(s)
 closetab <target>                  # close a browser tab
 keepalive <target> <ms>            # extend a tab daemon lifetime for long background work
-doctor / ready                     # one-call diagnostics (no target needed)
+doctor / ready [--format json]     # one-call diagnostics (no target needed)
                                    # checks: Node 22+, install, daemon sockets, fd limit, CDP reachability, browser permission
-                                   # prints OK/WARN/FAIL plus Next steps; exits 1 if any check FAILs
+                                   # prints OK/WARN/FAIL plus Next steps; JSON gives schema/checks/wizard/nextSteps
 ```
 
 </details>

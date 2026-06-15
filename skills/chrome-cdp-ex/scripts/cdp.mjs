@@ -6504,6 +6504,16 @@ function checkBrowserPermission({ daemons = null, tabs = null } = {}) {
 }
 
 function doctorWizardSummary(checks) {
+  const wizard = doctorWizardModel(checks);
+  return [
+    'Wizard:',
+    `  Status: ${wizard.status}`,
+    `  Current step: ${wizard.currentStep}`,
+    `  Golden path: ${wizard.goldenPath.join(' -> ')}`,
+  ];
+}
+
+function doctorWizardModel(checks) {
   const node = checks.find(c => c.label === 'Node');
   const cdp = checks.find(c => c.label === 'CDP');
   const daemon = checks.find(c => c.label === 'Daemons');
@@ -6531,12 +6541,11 @@ function doctorWizardSummary(checks) {
     currentStep = `cdp perceive ${target} -C -d 8  # click Allow if Chrome asks`;
   }
 
-  return [
-    'Wizard:',
-    `  Status: ${status}`,
-    `  Current step: ${currentStep}`,
-    '  Golden path: doctor -> list/open -> perceive -> click/fill -> since-action evidence -> report',
-  ];
+  return {
+    status,
+    currentStep,
+    goldenPath: ['doctor', 'list/open', 'perceive', 'click/fill', 'since-action evidence', 'report'],
+  };
 }
 
 function doctorNextSteps(checks) {
@@ -6605,6 +6614,49 @@ function formatDoctorReport(checks) {
   return lines.join('\n');
 }
 
+function doctorStatusSummary(checks) {
+  const failures = checks.filter(c => c.status === 'FAIL').length;
+  const warnings = checks.filter(c => c.status === 'WARN').length;
+  return {
+    status: failures > 0 ? 'not-ready' : (warnings > 0 ? 'mostly-ready' : 'ready'),
+    ready: failures === 0 && warnings === 0,
+    failures,
+    warnings,
+  };
+}
+
+function stripDoctorStepPrefix(line) {
+  return String(line || '')
+    .trim()
+    .replace(/^\d+\.\s*/, '')
+    .replace(/^Then run:\s*/i, '')
+    .replace(/^If list is empty:\s*/i, '')
+    .replace(/^Use the target id printed by open:\s*/i, '')
+    .trim();
+}
+
+function doctorNextStepCommands(checks) {
+  return doctorNextSteps(checks)
+    .map(stripDoctorStepPrefix)
+    .filter(line => line.startsWith('cdp '));
+}
+
+function buildDoctorModel(checks) {
+  const summary = doctorStatusSummary(checks);
+  return {
+    schema: 'chrome-cdp-ex.doctor.v1',
+    ...summary,
+    wizard: doctorWizardModel(checks),
+    checks: checks.map(check => ({ ...check })),
+    nextSteps: doctorNextStepCommands(checks),
+  };
+}
+
+function formatDoctorOutput(checks, { format = 'text' } = {}) {
+  if (format === 'json') return formatJson(buildDoctorModel(checks));
+  return formatDoctorReport(checks);
+}
+
 async function runDoctorChecks(opts = {}) {
   const safeLstat = (p) => { try { return lstatSync(p); } catch { return null; } };
   const fs = opts.fs || { existsSync, lstatSync: safeLstat };
@@ -6623,7 +6675,7 @@ async function runDoctorChecks(opts = {}) {
 
 async function doctorStr(opts = {}) {
   const checks = await runDoctorChecks(opts);
-  return formatDoctorReport(checks);
+  return formatDoctorOutput(checks, { format: opts.format || 'text' });
 }
 
 // ---------------------------------------------------------------------------
@@ -7868,10 +7920,10 @@ Usage: cdp <command> [args]
                                     retry-style probes, or short keypress sequences. Re-perceive
                                     between iterations if the DOM changes — refs are not auto-remapped.
                                     Example: repeat A7BA 5 press c
-  doctor / ready                    One-call diagnostics: Node version, skill install path,
+  doctor / ready [--format json]    One-call diagnostics: Node version, skill install path,
                                     daemon socket state, fd limit, CDP_PORT/DevToolsActivePort reachability,
                                     debuggable tab inventory, browser permission, and onboarding next steps.
-                                    Starts with Wizard status + current command.
+                                    Starts with Wizard status + current command; JSON includes wizard/checks/nextSteps.
                                     No target required. Exits 1 if any check FAILs.
   keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)
   open  [url]                       Open a new tab (default: about:blank)
@@ -7933,7 +7985,7 @@ DAEMON IPC (for advanced use / scripting)
 const COMMANDS = Object.freeze([
   { name: 'list', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text'] },
   { name: 'open', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text'] },
-  { name: 'doctor', aliases: ['ready'], needsTarget: false, mutates: false, outputFormats: ['text'] },
+  { name: 'doctor', aliases: ['ready'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'spawn-debug-browser', aliases: ['spawn'], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'stop', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'perceive', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
@@ -8185,9 +8237,14 @@ async function main() {
 
   // Doctor / ready — one-call diagnostics, no target needed
   if (cmd === 'doctor' || cmd === 'ready') {
-    const out = await doctorStr();
-    console.log(out);
-    process.exit(out.includes('Not ready') ? 1 : 0);
+    const fopts = parseFormatArgs(args, ['text', 'json']);
+    if (fopts.args.length) {
+      console.error(formatCliError(`doctor: unknown argument ${fopts.args[0]}`, { cmd }));
+      process.exit(1);
+    }
+    const checks = await runDoctorChecks();
+    console.log(formatDoctorOutput(checks, { format: fopts.format }));
+    process.exit(checks.some(check => check.status === 'FAIL') ? 1 : 0);
   }
 
   // spawn-debug-browser / spawn — launch isolated debug profile (no target)
@@ -8402,7 +8459,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   formatBatchResults, parseFlowSteps, settleFlow, flowStr,
   formatCliError, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
-  doctorWizardSummary,
-  doctorNextSteps, formatDoctorReport, runDoctorChecks, doctorStr,
+  doctorWizardModel, doctorWizardSummary,
+  doctorNextSteps, doctorStatusSummary, buildDoctorModel, formatDoctorOutput,
+  formatDoctorReport, runDoctorChecks, doctorStr,
   COMMANDS, NEEDS_TARGET,
 } : undefined;

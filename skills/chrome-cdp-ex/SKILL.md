@@ -361,11 +361,11 @@ Runs the steps in order, halting on the first failure. Output is a readable step
 ### Doctor / readiness check
 
 ```bash
-scripts/cdp.mjs doctor    # one-call diagnostics (no target needed)
+scripts/cdp.mjs doctor [--format json] # one-call diagnostics (no target needed)
 scripts/cdp.mjs ready     # alias
 ```
 
-`doctor` is the onboarding wizard. It starts with a `Wizard` summary showing current status, the next command, and the golden path. It then checks Node 22+, the skill install path, daemon sockets, open-file limit, CDP reachability, debuggable page targets, and whether browser debugging approval is already confirmed. When ready, follow its printed path: `open` if no page exists, or `list` then `perceive <printed-prefix> -C -d 8`, click Allow if Chrome asks, `click`/`fill`, `perceive --since-action`, then `report`.
+`doctor` is the onboarding wizard. It starts with a `Wizard` summary showing current status, the next command, and the golden path. It then checks Node 22+, the skill install path, daemon sockets, open-file limit, CDP reachability, debuggable page targets, and whether browser debugging approval is already confirmed. Use `doctor --format json` when an agent needs a stable `chrome-cdp-ex.doctor.v1` payload with `wizard`, `checks`, and executable `nextSteps`. When ready, follow its printed path: `open` if no page exists, or `list` then `perceive <printed-prefix> -C -d 8`, click Allow if Chrome asks, `click`/`fill`, `perceive --since-action`, then `report`.
 
 Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daemon socket state, open-file limit, CDP reachability (CDP_PORT or auto-discovered DevToolsActivePort), debuggable tab inventory, and browser permission. Exits with code 1 if any check fails. Run this **first** when an agent is unsure whether the environment is wired up.
 
@@ -487,8 +487,8 @@ scripts/cdp.mjs flow    <target> "<steps>"               # sequential runner; se
                                                            # e.g. flow A7BA "click @1; wait dom stable; summary; console --errors"
                                                            # wait aliases: "wait dom stable", "wait network idle"
                                                            # halts on the first failing step; output is readable, not JSON
-scripts/cdp.mjs doctor                          # one-call diagnostics (Node, install, daemon state, CDP, permission)
-scripts/cdp.mjs ready                           # alias of doctor; exits 1 if any check FAILs
+scripts/cdp.mjs doctor [--format json]         # one-call diagnostics (Node, install, daemon state, CDP, permission)
+scripts/cdp.mjs ready [--format json]          # alias of doctor; exits 1 if any check FAILs
 scripts/cdp.mjs open    [url]                  # open new tab + auto-attach + auto-perceive (waits up to 60s for approval)
 scripts/cdp.mjs keepalive <target> <ms>        # keep a tab daemon alive for long background work
 scripts/cdp.mjs stop    [target]               # stop daemon(s)

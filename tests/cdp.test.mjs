@@ -207,6 +207,16 @@ describe('COMMANDS registry', () => {
     }));
   });
 
+  it('registers doctor as a targetless command with text and json output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'doctor',
+      aliases: ['ready'],
+      needsTarget: false,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
   it('registers replay as a mutating target command', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'replay',
@@ -5612,6 +5622,44 @@ describe('doctorStr', () => {
     });
     expect(out).toContain('Not ready');
     expect(out).toMatch(/\[FAIL\] CDP/);
+  });
+
+  it('returns a versioned JSON onboarding model for agents', async () => {
+    const fetcher = async (url) => url.endsWith('/json/list')
+      ? { ok: true, json: async () => ([{ type: 'page', id: 'AABBCCDDEEFF', title: 'Example', url: 'https://example.com' }]) }
+      : { ok: true, json: async () => ({ Browser: 'Chrome/123', webSocketDebuggerUrl: 'ws://x' }) };
+    const out = await doctorStr({
+      format: 'json',
+      nodeVersion: 'v22.10.0',
+      home: '/tmp/no-such-home',
+      fs: { existsSync: () => false, lstatSync: null },
+      listDaemons: () => [],
+      fdLimit: 4096,
+      env: { CDP_PORT: '9222' },
+      fetcher,
+    });
+
+    const model = JSON.parse(out);
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.doctor.v1',
+      status: 'mostly-ready',
+      ready: false,
+      failures: 0,
+      warnings: 2,
+    });
+    expect(model.wizard).toMatchObject({
+      status: 'waiting for browser debugging approval',
+      currentStep: 'cdp perceive AABBCCDD -C -d 8  # click Allow if Chrome asks',
+    });
+    expect(model.wizard.goldenPath).toEqual(['doctor', 'list/open', 'perceive', 'click/fill', 'since-action evidence', 'report']);
+    expect(model.checks.map(check => check.label)).toEqual([
+      'Node', 'Skill install', 'Daemons', 'FD limit', 'CDP', 'Tabs', 'Permission',
+    ]);
+    expect(model.nextSteps).toEqual(expect.arrayContaining([
+      'cdp list',
+      'cdp perceive AABBCCDD -C -d 8',
+      'cdp report AABBCCDD',
+    ]));
   });
 });
 

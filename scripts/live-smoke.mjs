@@ -118,6 +118,14 @@ assertIncludes(doctorOut, 'chrome-cdp-ex doctor', 'doctor');
 assertIncludes(doctorOut, 'FD limit', 'doctor fd limit');
 assertIncludes(doctorOut, 'Next steps:', 'doctor next steps');
 assertIncludes(doctorOut, 'cdp list', 'doctor golden path');
+const doctorJson = step('doctor onboarding json', () => run(['doctor', '--format', 'json']));
+const parsedDoctor = JSON.parse(doctorJson);
+if (parsedDoctor.schema !== 'chrome-cdp-ex.doctor.v1' || !Array.isArray(parsedDoctor.checks) || !Array.isArray(parsedDoctor.nextSteps)) {
+  throw new Error(`doctor json schema mismatch:\n${doctorJson}`);
+}
+if (!parsedDoctor.wizard?.goldenPath?.includes('perceive') || !parsedDoctor.nextSteps.some(step => step.startsWith('cdp perceive'))) {
+  throw new Error(`doctor json should include golden path and executable perceive next step:\n${doctorJson}`);
+}
 const cliErrorOut = step('actionable cli error', () => runFailure(['perceive']));
 assertIncludes(cliErrorOut, 'Error: target ID required', 'targetless perceive error');
 assertIncludes(cliErrorOut, 'Next: cdp list', 'targetless perceive next step');
