@@ -131,6 +131,10 @@ assertIncludes(sinceActionOut, 'Page:', 'perceive --since-action');
 if (!sinceActionOut.includes('+++ Added') && !sinceActionOut.includes('~~~ Text nodes updated')) {
   throw new Error(`perceive --since-action should show changes from the last action\nOutput:\n${sinceActionOut}`);
 }
+const reportOut = step('session report', () => run(['report', target]));
+assertIncludes(reportOut, 'Session report:', 'report');
+assertIncludes(reportOut, 'Action timeline:', 'report');
+assertIncludes(reportOut, 'click #combat', 'report action timeline');
 step('wait any-of', () => assertIncludes(run(['waitfor', target, '--any-of', '戰鬥勝利|戰敗|逃跑成功', '8000', '--scope', '#combat-log'], { timeout: 12000 }), '戰鬥勝利', 'waitfor --any-of'));
 step('wait selector stable', () => assertIncludes(run(['waitfor', target, '--selector-stable', '#combat-log', '500', '8000'], { timeout: 12000 }), 'stable', 'waitfor --selector-stable'));
 const shotOut = step('shot quiet', () => run(['shot', target, resolve(tmpdir(), 'chrome-cdp-ex-smoke.png'), '--quiet']));

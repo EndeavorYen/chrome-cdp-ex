@@ -23,6 +23,7 @@ const DAEMON_CONNECT_DELAY = 300;
 const DAEMON_ALLOW_RETRIES = 200;  // For open --attach: 200 * 300ms = 60s
 const DAEMON_ALLOW_DELAY = 300;
 const MIN_TARGET_PREFIX_LEN = 8;
+const MAX_ACTION_LOG_ENTRIES = 100;
 const IS_WINDOWS = process.platform === 'win32';
 if (!IS_WINDOWS) process.umask(0o077);
 const RUNTIME_DIR = IS_WINDOWS
@@ -1023,7 +1024,7 @@ function formatActionText(result) {
   return lines.join('\n');
 }
 
-async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --since-action if more evidence is needed' }) {
+async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --since-action if more evidence is needed', onActionResult = null }) {
   const startedAt = Date.now();
   const dispatchText = await dispatch();
   if (feedbackPolicy === 'none' || feedbackPolicy === 'report-only') return dispatchText;
@@ -1037,17 +1038,92 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       effects: { domDiff, console: [], network: [], navigation: null },
       nextHint,
     });
+    if (onActionResult) onActionResult(result);
     return `${dispatchText}\n---\n${formatActionText(result)}`;
   } catch (e) {
     if (!isTimeoutError(e)) throw e;
+    if (onActionResult) {
+      onActionResult(createActionResult({
+        action,
+        target: target || { input: '', resolvedBy: 'command', label: '' },
+        dispatch: { ok: true, method: dispatchMethod },
+        settle: { ok: false, durationMs: Date.now() - startedAt },
+        effects: { domDiff: null, console: [], network: [], navigation: null },
+        nextHint,
+      }));
+    }
     return `${dispatchText}\n---\n(success but observation timed out after action dispatch: ${e.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
   }
+}
+
+function summarizeActionDomDiff(domDiff) {
+  const lines = String(domDiff || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const summary = lines.find(l =>
+    l.startsWith('+++ Added') ||
+    l.startsWith('--- Removed') ||
+    l.startsWith('~~~ Text nodes updated') ||
+    l.includes('no changes detected')
+  ) || null;
+  const sample = lines.find(l => /^[+-]\s/.test(l)) || null;
+  return { summary, sample };
+}
+
+function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {}) {
+  if (!session.actionLog) session.actionLog = [];
+  const domDiff = actionResult.effects?.domDiff || '';
+  const { summary, sample } = summarizeActionDomDiff(domDiff);
+  const entry = {
+    ts,
+    action: actionResult.action,
+    target: actionResult.target || null,
+    dispatch: actionResult.dispatch || null,
+    settle: actionResult.settle || null,
+    effectSummary: summary,
+    effectSample: sample,
+    nextHint: actionResult.nextHint || null,
+  };
+  session.actionLog.push(entry);
+  if (session.actionLog.length > MAX_ACTION_LOG_ENTRIES) {
+    session.actionLog.splice(0, session.actionLog.length - MAX_ACTION_LOG_ENTRIES);
+  }
+  return entry;
+}
+
+function formatSessionReport(session, { now = Date.now() } = {}) {
+  const actionLog = session.actionLog || [];
+  const uptimeMs = Math.max(0, now - (session.createdAt || now));
+  const lines = [
+    `Session report: ${session.targetId}`,
+    `CDP session: ${session.sessionId}`,
+    `Uptime: ${formatDuration(uptimeMs)}`,
+    `Actions: ${actionLog.length}`,
+    `Screenshots: ${session.screenshots?.length || 0}`,
+    `Records: ${session.records?.length || 0}`,
+    '',
+    'Action timeline:',
+  ];
+  if (actionLog.length === 0) {
+    lines.push('No actions recorded yet. Run click/fill/press/nav/inject/reload, then report again.');
+    return lines.join('\n');
+  }
+  for (const [i, entry] of actionLog.entries()) {
+    const label = entry.target?.label || entry.target?.input || '';
+    const settleStatus = entry.settle?.ok ? 'ok' : 'not confirmed';
+    const settleDuration = Number.isFinite(entry.settle?.durationMs) ? ` in ${entry.settle.durationMs}ms` : '';
+    lines.push(`${i + 1}. ${entry.action}${label ? ` ${label}` : ''} — ${settleStatus}${settleDuration}`);
+    if (entry.dispatch?.method) lines.push(`   Dispatch: ${entry.dispatch.method}`);
+    if (entry.effectSummary) lines.push(`   Effect: ${entry.effectSummary}`);
+    if (entry.effectSample) lines.push(`   Sample: ${entry.effectSample}`);
+  }
+  lines.push('', 'Next: use `perceive --since-action` to re-check the last action, or continue from the timeline above.');
+  return lines.join('\n');
 }
 
 function createSessionState({ targetId, sessionId }) {
   return {
     targetId,
     sessionId,
+    createdAt: Date.now(),
     pageGeneration: 0,
     refGeneration: 0,
     refs: {
@@ -1061,6 +1137,7 @@ function createSessionState({ targetId, sessionId }) {
     lastAction: null,
     buffers: {},
     pendingRequests: new Map(),
+    actionLog: [],
     screenshots: [],
     records: [],
     frames: [],
@@ -4219,6 +4296,7 @@ async function runDaemon(targetId) {
       dispatch,
       feedbackPolicy,
       observe,
+      onActionResult: (actionResult) => appendSessionActionLog(session, actionResult, { ts: session.lastAction.ts }),
     });
   }
 
@@ -4319,6 +4397,10 @@ async function runDaemon(targetId) {
           result = fopts.format === 'json'
             ? formatJson(await summaryModel(cdp, sessionId, consoleBuf, exceptionBuf))
             : await summaryStr(cdp, sessionId, consoleBuf, exceptionBuf);
+          break;
+        }
+        case 'report': {
+          result = formatSessionReport(session);
           break;
         }
         case 'perceive': {
@@ -4657,6 +4739,7 @@ Usage: cdp <command> [args]
                                     --runtime: include Performance.getMetrics counters
   console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
+  report <target>                   Session action timeline + evidence summary
   net   <target>                    Network performance entries
   click   <target> <sel|@ref>       Click element by CSS selector or @ref
                                     --js / -j: use HTMLElement.click() (JS fallback)
@@ -4779,7 +4862,7 @@ DAEMON IPC (for advanced use / scripting)
   elshot, fullshot, scanshot, html, nav, net, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
-  record, evalraw, batch, flow, repeat, stop.
+  record, report, evalraw, batch, flow, repeat, stop.
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
@@ -4803,6 +4886,7 @@ const COMMANDS = Object.freeze([
   { name: 'status', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'console', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'summary', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'report', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'elshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'click', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'jsclick', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
@@ -5100,6 +5184,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel,
   createSessionState, invalidateSessionRefs,
   createActionResult, formatActionText, runActionWithFeedback,
+  appendSessionActionLog, formatSessionReport,
   // Command implementations
   formatPageList, dialogStr, netlogStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,

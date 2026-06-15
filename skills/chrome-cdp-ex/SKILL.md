@@ -288,17 +288,19 @@ scripts/cdp.mjs eval64 <target> <base64>       # alias for `eval --b64`
 > `eval --b64`. The decoder validates the payload, so corrupt input fails loudly instead of
 > silently evaluating a fragment.
 
-### Page status & console
+### Page status, console, and session report
 
-The daemon buffers console output and exceptions in the background from the moment it starts. Use these commands to query the buffer.
+The daemon buffers console output, exceptions, and action evidence in the background from the moment it starts. Use these commands to query the buffer or summarize the session.
 
 ```bash
 scripts/cdp.mjs status  <target> [--format json]                  # page state + new console/exception entries
 scripts/cdp.mjs summary <target> [--format json]                  # token-efficient page overview (~100 tokens)
 scripts/cdp.mjs console <target> [--all|--errors] [--format json] # console buffer (default: unread only)
+scripts/cdp.mjs report  <target>                                  # session action timeline + evidence summary
 ```
 
 > **Agent tip:** `perceive` already includes summary + console health. Use `status` or `console` only when you need to check for **new** console entries after an action.
+> Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session.
 > Use `--format json` when another tool or agent needs a stable, parseable status, summary, or console payload.
 
 ### Batch commands (reduce IPC overhead)
@@ -633,12 +635,12 @@ CSS px = screenshot image px / DPR
 
 ### Temporal observation (understanding cause and effect)
 
-> **When to use `record` instead of `perceive --diff`:**
+> **When to use `record` instead of `perceive --since-action` or `report`:**
 >
-> `perceive --diff` shows WHAT changed. `record` shows **WHEN things changed, in what order, and what caused what.**
+> `perceive --since-action` shows WHAT the last action changed. `report` summarizes the action timeline so far. `record` shows **WHEN things changed, in what order, and what caused what** during a focused observation window.
 >
-> | Situation | Use `perceive --diff` | Use `record` |
-> |-----------|----------------------|--------------|
+> | Situation | Use `perceive --since-action` / `report` | Use `record` |
+> |-----------|------------------------------------------|--------------|
 > | Clicked a button, need to see result | ✅ auto-returned by `click` | Not needed |
 > | Clicked Submit, page loads for 3s, need to know what happened during those 3s | ❌ only shows final state | ✅ `record --action click @5` |
 > | Page is slow after navigation, need to know why | ❌ snapshot after the fact | ✅ `record <target> 5000` |

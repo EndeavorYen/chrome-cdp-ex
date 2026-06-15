@@ -39,7 +39,7 @@
 - [ ] Per-target daemon log file.
 - [ ] Session screenshot directory.
 - [ ] `record-actions`.
-- [ ] `report <session>`.
+- [x] `report <session>` action timeline.
 
 ### Feature Roadmap (medium effort)
 
@@ -59,7 +59,7 @@
 - [ ] Token-aware `perceive` truncation that scores nodes by interactivity and recency.
 - [ ] `eval --raw` flag to bypass the auto-`JSON.stringify` of object results.
 - [ ] Per-target daemon log file at `<runtime-dir>/cdp-<target>.log` for post-mortem.
-- [ ] Session screenshot directory + `cdp report <session>` command.
+- [ ] Session screenshot directory + report attachments.
 
 ## Distribution & Visibility
 

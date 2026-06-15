@@ -321,6 +321,7 @@ describe('SessionState', () => {
     expect(state.sessionId).toBe('sid-1');
     expect(state.refs.map).toBeInstanceOf(Map);
     expect(state.refs.invalidationReason).toBe('daemon-start');
+    expect(state.actionLog).toEqual([]);
   });
 
   it('invalidates refs on navigation', () => {
@@ -365,17 +366,72 @@ describe('ActionResult', () => {
   });
 
   it('wraps dispatch output with observed action evidence', async () => {
+    let captured = null;
     const text = await T.runActionWithFeedback({
       action: 'click',
       target: { input: '@4', resolvedBy: 'ref', label: 'Submit' },
       dispatch: async () => 'Clicked @4',
       feedbackPolicy: 'settle-diff',
       observe: async () => 'button disabled',
+      onActionResult: (result) => { captured = result; },
     });
 
     expect(text).toMatch(/Clicked @4/);
     expect(text).toMatch(/click: dispatched/);
     expect(text).toMatch(/button disabled/);
+    expect(captured.action).toBe('click');
+    expect(captured.effects.domDiff).toBe('button disabled');
+  });
+});
+
+// =========================================================================
+// Session report
+// =========================================================================
+
+describe('Session report', () => {
+  it('formats an empty session report with a next action hint', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.createdAt = Date.parse('2026-06-16T00:00:00.000Z');
+
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(out).toContain('Session report: ABC123');
+    expect(out).toContain('Uptime: 5s');
+    expect(out).toContain('Actions: 0');
+    expect(out).toContain('No actions recorded yet');
+  });
+
+  it('records action evidence and formats an action timeline', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.createdAt = Date.parse('2026-06-16T00:00:00.000Z');
+    const actionResult = T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: {
+        domDiff: [
+          'Page: Smoke — http://127.0.0.1/',
+          '',
+          '+++ Added (1):',
+          '+   [alert] 戰鬥勝利',
+        ].join('\n'),
+        console: [],
+        network: [],
+        navigation: null,
+      },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+
+    T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(state.actionLog).toHaveLength(1);
+    expect(out).toContain('Actions: 1');
+    expect(out).toContain('Action timeline:');
+    expect(out).toContain('1. click #combat — ok in 123ms');
+    expect(out).toContain('Effect: +++ Added (1):');
+    expect(out).toContain('戰鬥勝利');
   });
 });
 

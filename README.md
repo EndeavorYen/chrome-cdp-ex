@@ -193,7 +193,7 @@ Output:
 1ED3DBAA  My App                                                  http://localhost:5173/#/menu
 ```
 
-All 50 commands work: `perceive`, `click`, `fill`, `cascade`, `record`, `inject`, `flow`, `repeat`, `doctor`, and more.
+All 56 commands work: `perceive`, `click`, `fill`, `cascade`, `record`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
 
 </details>
 
@@ -321,6 +321,7 @@ doctor / ready                     # one-call diagnostics (no target needed)
 ```bash
 perceive <target> [flags] [--format json] # enriched AX tree with @ref indices + viewport CSS coordinates
                                    #   --diff: show only changes since last perceive
+                                   #   --since-action: show changes caused by the last mutating command
                                    #   -s <sel>: scope to CSS selector subtree
                                    #   -i: interactive elements only
                                    #   -d N: limit tree depth
@@ -331,6 +332,7 @@ perceive <target> [flags] [--format json] # enriched AX tree with @ref indices +
                                    # Fixed/sticky elements get a ", fixed"/", sticky" tag.
 snap     <target> [--full]         # accessibility tree (compact by default)
 summary  <target> [--format json]  # token-efficient overview (~100 tokens)
+report   <target>                  # session action timeline + evidence summary
 status   <target> [--runtime] [--format json]  # URL, title + new console/exception entries; --runtime adds Performance metrics
 console  <target> [--all|--errors] [--format json] # console buffer (default: unread only; preserves log/warn/error/debug levels)
 text     <target>                            # clean text content (strips scripts/styles/SVG)
@@ -437,6 +439,7 @@ record  <target> --action click @5  # record cause → effect around an action;
                                     # auto-settles when no duration/--until given
                                     # (cap: 5s without network activity, 10s with)
 record  <target> --until "dom stable"|"network idle"  # record until quiet (max 30s)
+report  <target>                    # current daemon session action timeline
 ```
 
 `inject` returns an ID (`inject-1`, `inject-2`...) for targeted removal. URLs are validated (blocks `data:`, `file:`, cloud metadata).
@@ -474,7 +477,7 @@ evalraw <target> <method> [json]    # raw CDP command passthrough
 
 </details>
 
-**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. After any mutating command, `perceive --since-action` replays the page diff from that action's pre-dispatch baseline, so agents can ask "what changed because of the last action?" without guessing from the last manual perceive. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` instead of a pure timeout, so agents should verify with `perceive --since-action`, `perceive --diff`, or `status` rather than retrying the action.
+**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. After any mutating command, `perceive --since-action` replays the page diff from that action's pre-dispatch baseline, so agents can ask "what changed because of the last action?" without guessing from the last manual perceive. Use `report <target>` after a multi-step flow to see the session action timeline and evidence summary. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` instead of a pure timeout, so agents should verify with `perceive --since-action`, `perceive --diff`, or `status` rather than retrying the action.
 
 Use `wait` instead of shell `sleep` when policy blocks long sleeps:
 
