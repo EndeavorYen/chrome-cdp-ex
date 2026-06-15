@@ -272,7 +272,8 @@ describe('COMMANDS registry', () => {
     expect(mutating.map(c => c.name).sort()).toEqual([
       'back', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
       'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav',
-      'press', 'reload', 'scroll', 'select', 'type', 'upload', 'viewport',
+      'open', 'press', 'reload', 'scroll', 'select', 'spawn-debug-browser',
+      'stop', 'type', 'upload', 'viewport',
     ].sort());
     for (const command of mutating) {
       expect(command.feedbackPolicy).toMatch(/^(none|settle-diff|full-perceive|state-change|report-only)$/);
