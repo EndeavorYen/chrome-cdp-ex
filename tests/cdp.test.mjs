@@ -19,7 +19,7 @@ const {
   resetScreenshotTier, getScreenshotTier, SCREENSHOT_TIMEOUT,
   decodeVLQ, mapLineToSource, stripVitePathQuery, mapStyleSource,
   formatBatchResults, parseFlowSteps, settleFlow, flowStr,
-  checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkFdLimit,
+  checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkBrowserPermission, checkFdLimit,
   formatDoctorReport, runDoctorChecks, doctorStr,
 } = T;
 
@@ -4763,6 +4763,43 @@ describe('checkBrowserTargets', () => {
   });
 });
 
+describe('checkBrowserPermission', () => {
+  it('returns OK when a live tab daemon proves browser debugging approval', () => {
+    const r = checkBrowserPermission({
+      daemons: { status: 'OK', label: 'Daemons', detail: '1 live: AABBCCDD', targetPrefixes: ['AABBCCDD'] },
+      tabs: { status: 'OK', label: 'Tabs', detail: '1 debuggable page target', targetPrefixes: ['AABBCCDD'] },
+    });
+
+    expect(r.status).toBe('OK');
+    expect(r.label).toBe('Permission');
+    expect(r.detail).toContain('approved');
+    expect(r.detail).toContain('AABBCCDD');
+  });
+
+  it('warns with a perceive retry when tabs exist but no daemon is approved yet', () => {
+    const r = checkBrowserPermission({
+      daemons: { status: 'OK', label: 'Daemons', detail: 'no live tab daemons', targetPrefixes: [] },
+      tabs: { status: 'OK', label: 'Tabs', detail: '1 debuggable page target', targetPrefixes: ['AABBCCDD'] },
+    });
+
+    expect(r.status).toBe('WARN');
+    expect(r.detail).toContain('not confirmed');
+    expect(r.hint).toContain('cdp perceive AABBCCDD -C -d 8');
+    expect(r.hint).toContain('click Allow');
+  });
+
+  it('guides users to open a tab before permission can be confirmed', () => {
+    const r = checkBrowserPermission({
+      daemons: { status: 'OK', label: 'Daemons', detail: 'no live tab daemons', targetPrefixes: [] },
+      tabs: { status: 'WARN', label: 'Tabs', detail: 'no debuggable page targets', targetPrefixes: [], noTargets: true },
+    });
+
+    expect(r.status).toBe('WARN');
+    expect(r.detail).toContain('no target');
+    expect(r.hint).toContain('cdp open https://example.com');
+  });
+});
+
 describe('checkFdLimit', () => {
   it('returns OK when the open-files limit is high enough for long sessions', () => {
     const r = checkFdLimit({ limit: 4096 });
@@ -4800,6 +4837,7 @@ describe('formatDoctorReport', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22' },
       { status: 'OK', label: 'Tabs', detail: '1 debuggable page target: Example', targetPrefixes: ['AABBCCDD'] },
+      { status: 'OK', label: 'Permission', detail: 'debugging approved for AABBCCDD', targetPrefixes: ['AABBCCDD'] },
       { status: 'OK', label: 'CDP', detail: 'reachable' },
     ]);
     expect(out).toContain('Ready.');
@@ -4824,6 +4862,7 @@ describe('formatDoctorReport', () => {
       { status: 'OK', label: 'Node', detail: 'v22' },
       { status: 'OK', label: 'Daemons', detail: '1 live: AABBCCDD', targetPrefixes: ['AABBCCDD'] },
       { status: 'OK', label: 'Tabs', detail: '1 debuggable page target: ZZYYXXWW', targetPrefixes: ['ZZYYXXWW'] },
+      { status: 'OK', label: 'Permission', detail: 'debugging approved for AABBCCDD', targetPrefixes: ['AABBCCDD'] },
       { status: 'OK', label: 'CDP', detail: 'reachable' },
     ]);
 
@@ -4864,13 +4903,14 @@ describe('runDoctorChecks', () => {
       fetcher,
     });
     expect(Array.isArray(checks)).toBe(true);
-    expect(checks).toHaveLength(6);
+    expect(checks).toHaveLength(7);
     expect(checks[0].label).toBe('Node');
     expect(checks[1].label).toBe('Skill install');
     expect(checks[2].label).toBe('Daemons');
     expect(checks[3].label).toBe('FD limit');
     expect(checks[4].label).toBe('CDP');
     expect(checks[5].label).toBe('Tabs');
+    expect(checks[6].label).toBe('Permission');
   });
 });
 
@@ -4895,10 +4935,12 @@ describe('doctorStr', () => {
     expect(out).toMatch(/\[OK\s*\] FD limit/);
     expect(out).toMatch(/\[OK\s*\] CDP/);
     expect(out).toMatch(/\[OK\s*\] Tabs/);
+    expect(out).toMatch(/\[WARN\] Permission/);
     expect(out).toContain('Mostly ready');
     expect(out).toContain('Next steps:');
     expect(out).toContain('cdp list');
     expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('click Allow');
   });
 
   it('marks report as Not ready when CDP fails', async () => {

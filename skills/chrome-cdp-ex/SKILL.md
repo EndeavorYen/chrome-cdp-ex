@@ -7,7 +7,7 @@ description: "Your EYES into the user's live Chrome browser and Electron apps. T
 
 ## TL;DR — 90% workflow
 
-1. **Readiness:** `cdp doctor` — checks Node, install path, daemon state, fd limit, CDP reachability, and prints the next command to run.
+1. **Readiness:** `cdp doctor` — checks Node, install path, daemon state, fd limit, CDP reachability, browser debugging permission, and prints the next command to run.
 2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`.
 3. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, top-level viewport CSS coordinates (fixed/sticky elements are tagged), console health.
 4. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
@@ -361,7 +361,7 @@ scripts/cdp.mjs doctor    # one-call diagnostics (no target needed)
 scripts/cdp.mjs ready     # alias
 ```
 
-`doctor` is the onboarding wizard. It checks Node 22+, the skill install path, daemon sockets, open-file limit, CDP reachability, and whether there are debuggable page targets. When ready, follow its printed path: `open` if no page exists, or `list` then `perceive <printed-prefix> -C -d 8`, `click`/`fill`, `perceive --since-action`, then `report`.
+`doctor` is the onboarding wizard. It checks Node 22+, the skill install path, daemon sockets, open-file limit, CDP reachability, debuggable page targets, and whether browser debugging approval is already confirmed. When ready, follow its printed path: `open` if no page exists, or `list` then `perceive <printed-prefix> -C -d 8`, click Allow if Chrome asks, `click`/`fill`, `perceive --since-action`, then `report`.
 
 Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daemon socket state, open-file limit, CDP reachability (CDP_PORT or auto-discovered DevToolsActivePort), and debuggable tab inventory. Exits with code 1 if any check fails. Run this **first** when an agent is unsure whether the environment is wired up.
 
@@ -480,7 +480,7 @@ scripts/cdp.mjs flow    <target> "<steps>"               # sequential runner; se
                                                            # e.g. flow A7BA "click @1; wait dom stable; summary; console --errors"
                                                            # wait aliases: "wait dom stable", "wait network idle"
                                                            # halts on the first failing step; output is readable, not JSON
-scripts/cdp.mjs doctor                          # one-call diagnostics (Node, skill install, daemon state, CDP reachability)
+scripts/cdp.mjs doctor                          # one-call diagnostics (Node, install, daemon state, CDP, permission)
 scripts/cdp.mjs ready                           # alias of doctor; exits 1 if any check FAILs
 scripts/cdp.mjs open    [url]                  # open new tab + auto-attach + auto-perceive (waits up to 60s for approval)
 scripts/cdp.mjs keepalive <target> <ms>        # keep a tab daemon alive for long background work

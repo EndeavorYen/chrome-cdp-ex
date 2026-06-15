@@ -5385,6 +5385,48 @@ async function checkBrowserTargets({ cdp = null, env = process.env, fetcher = fe
   }
 }
 
+function checkBrowserPermission({ daemons = null, tabs = null } = {}) {
+  const daemonPrefixes = daemons?.targetPrefixes || [];
+  if (daemonPrefixes.length > 0) {
+    return {
+      status: 'OK',
+      label: 'Permission',
+      detail: `debugging approved for ${daemonPrefixes.join(', ')}`,
+      targetPrefixes: daemonPrefixes,
+    };
+  }
+
+  const tabPrefixes = tabs?.targetPrefixes || [];
+  if (tabPrefixes.length > 0) {
+    const target = tabPrefixes[0];
+    return {
+      status: 'WARN',
+      label: 'Permission',
+      detail: `browser debugging approval not confirmed for ${target}`,
+      hint: `Run: cdp perceive ${target} -C -d 8; if Chrome asks "Allow debugging?", click Allow`,
+      targetPrefixes: tabPrefixes,
+    };
+  }
+
+  if (tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '')) {
+    return {
+      status: 'WARN',
+      label: 'Permission',
+      detail: 'no target available to request browser debugging approval',
+      hint: 'Run: cdp open https://example.com; if Chrome asks "Allow debugging?", click Allow',
+      targetPrefixes: [],
+    };
+  }
+
+  return {
+    status: 'WARN',
+    label: 'Permission',
+    detail: 'skipped until CDP and tabs are reachable',
+    hint: 'Fix CDP/tabs first, then rerun: cdp doctor',
+    targetPrefixes: [],
+  };
+}
+
 function doctorNextSteps(checks) {
   const failures = checks.filter(c => c.status === 'FAIL');
   const cdp = checks.find(c => c.label === 'CDP');
@@ -5460,7 +5502,9 @@ async function runDoctorChecks(opts = {}) {
   checks.push(checkFdLimit({ limit: opts.fdLimit }));
   const cdp = await checkCdpReachability({ env: opts.env, fetcher: opts.fetcher, host: opts.host });
   checks.push(cdp);
-  checks.push(await checkBrowserTargets({ cdp, env: opts.env, fetcher: opts.fetcher, host: opts.host }));
+  const tabs = await checkBrowserTargets({ cdp, env: opts.env, fetcher: opts.fetcher, host: opts.host });
+  checks.push(tabs);
+  checks.push(checkBrowserPermission({ daemons: checks.find(c => c.label === 'Daemons'), tabs }));
   return checks;
 }
 
@@ -6688,7 +6732,7 @@ Usage: cdp <command> [args]
                                     Example: repeat A7BA 5 press c
   doctor / ready                    One-call diagnostics: Node version, skill install path,
                                     daemon socket state, fd limit, CDP_PORT/DevToolsActivePort reachability,
-                                    debuggable tab inventory, and onboarding next steps.
+                                    debuggable tab inventory, browser permission, and onboarding next steps.
                                     No target required. Exits 1 if any check FAILs.
   keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)
   open  [url]                       Open a new tab (default: about:blank)
@@ -7206,7 +7250,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Batch / flow / doctor
   formatBatchResults, parseFlowSteps, settleFlow, flowStr,
   formatCliError, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
-  checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets,
+  checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   doctorNextSteps, formatDoctorReport, runDoctorChecks, doctorStr,
   COMMANDS, NEEDS_TARGET,
 } : undefined;
