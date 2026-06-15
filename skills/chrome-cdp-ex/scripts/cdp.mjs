@@ -997,6 +997,42 @@ function formatPerceptionJson(model) {
   return formatJson(model);
 }
 
+function createSessionState({ targetId, sessionId }) {
+  return {
+    targetId,
+    sessionId,
+    pageGeneration: 0,
+    refGeneration: 0,
+    refs: {
+      map: new Map(),
+      generation: 0,
+      lastPerceiveAt: 0,
+      invalidatedAt: Date.now(),
+      invalidationReason: 'daemon-start',
+    },
+    lastPerceive: { output: null, model: null },
+    lastAction: null,
+    buffers: {},
+    pendingRequests: new Map(),
+    screenshots: [],
+    records: [],
+    frames: [],
+    injections: [],
+    privacy: {
+      redactCookies: true,
+      redactStorage: true,
+      redactAuthorizationHeaders: true,
+    },
+  };
+}
+
+function invalidateSessionRefs(session, reason) {
+  session.refs.map.clear();
+  session.refs.invalidatedAt = Date.now();
+  session.refs.invalidationReason = reason;
+  session.refGeneration += 1;
+}
+
 // Roles that get visual layout annotations in perceive output
 const ENRICHED_ROLES = new Set([
   'banner', 'navigation', 'main', 'contentinfo', 'complementary',
@@ -3962,26 +3998,25 @@ async function runDaemon(targetId) {
     process.exit(1);
   }
 
+  const session = createSessionState({ targetId, sessionId });
+
   // --- Background observation ---
   const consoleBuf = new RingBuffer(200);
   const exceptionBuf = new RingBuffer(50);
   const navBuf = new RingBuffer(10);
   const netReqBuf = new RingBuffer(100); // network request/response pairs
-  const pendingReqs = new Map(); // requestId → {method, url, ts}
+  const pendingReqs = session.pendingRequests; // requestId → {method, url, ts}
   let lastReadSeq = { console: 0, exception: 0 };
 
   // --- Ref system & perceive diff state ---
-  const refMap = new Map();               // ref number → backendDOMNodeId
-  const lastPerceiveStore = { output: null }; // stores last perceive output for diff
-  // Ref lifecycle tracking — used to explain stale @ref errors.
-  // generation increments on every successful perceive; invalidationReason is
-  // set to 'navigation' on top-level frame nav, and 'daemon-start' until the
-  // first perceive runs.
-  const refState = {
-    generation: 0,
-    lastPerceiveAt: 0,
-    invalidatedAt: Date.now(),
-    invalidationReason: 'daemon-start',
+  const refMap = session.refs.map;              // ref number → backendDOMNodeId
+  const lastPerceiveStore = session.lastPerceive; // stores last perceive output for diff
+  const refState = session.refs;                // ref lifecycle for stale @ref errors
+  session.buffers = {
+    console: consoleBuf,
+    exception: exceptionBuf,
+    navigation: navBuf,
+    network: netReqBuf,
   };
 
   // Enable domains for background collection and ref resolution
@@ -4014,9 +4049,8 @@ async function runDaemon(targetId) {
     if (!params.frame.parentId) { // main frame only
       navBuf.push({ url: params.frame.url, ts: Date.now() });
       // Top-level navigation (or Vite HMR full reload) invalidates all @refs.
-      refMap.clear();
-      refState.invalidatedAt = Date.now();
-      refState.invalidationReason = 'navigation';
+      session.pageGeneration += 1;
+      invalidateSessionRefs(session, 'navigation');
     }
   });
 
@@ -4052,6 +4086,7 @@ async function runDaemon(targetId) {
 
   // --- Dialog handling (alert/confirm/prompt/beforeunload) ---
   const dialogBuf = new RingBuffer(20);
+  session.buffers.dialog = dialogBuf;
   const dialogAutoAcceptRef = { value: true }; // auto-dismiss by default to prevent page lockups
   cdp.onEvent('Page.javascriptDialogOpening', (params) => {
     dialogBuf.push({ type: params.type, message: params.message, ts: Date.now() });
@@ -5000,6 +5035,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Perceive & snapshot
   parsePerceiveArgs, buildPerceiveTree, perceivePageScript,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel,
+  createSessionState, invalidateSessionRefs,
   // Command implementations
   formatPageList, dialogStr, netlogStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,

@@ -27,7 +27,7 @@
 - [x] `console --format json`.
 - [x] `perceive --format json`.
 - [x] Initial `PerceptionModel`.
-- [ ] Explicit `SessionState`.
+- [x] Explicit `SessionState`.
 - [ ] Docs contract checker.
 
 ### Feature Roadmap (medium effort)

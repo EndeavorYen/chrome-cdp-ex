@@ -311,6 +311,28 @@ describe('PerceptionModel', () => {
 });
 
 // =========================================================================
+// SessionState
+// =========================================================================
+
+describe('SessionState', () => {
+  it('creates explicit daemon session state', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    expect(state.targetId).toBe('ABC123');
+    expect(state.sessionId).toBe('sid-1');
+    expect(state.refs.map).toBeInstanceOf(Map);
+    expect(state.refs.invalidationReason).toBe('daemon-start');
+  });
+
+  it('invalidates refs on navigation', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.refs.map.set(1, 42);
+    T.invalidateSessionRefs(state, 'navigation');
+    expect(state.refs.map.size).toBe(0);
+    expect(state.refs.invalidationReason).toBe('navigation');
+  });
+});
+
+// =========================================================================
 // shouldShowAxNode
 // =========================================================================
 
