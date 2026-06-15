@@ -1841,6 +1841,148 @@ function formatRecordActions(session, { format = 'text' } = {}) {
   return lines.join('\n');
 }
 
+function isPlaywrightPortableSelector(value) {
+  const selector = String(value || '').trim();
+  return selector && !selector.startsWith('@') && !selector.startsWith('<') && selector !== '<redacted>';
+}
+
+function playwrightStepFromCommand(action = {}) {
+  const command = Array.isArray(action.command) ? action.command.map(v => String(v)) : [];
+  const commandText = command.length ? formatCommandLine(command) : `${action.action || 'action'} <missing command>`;
+  const skip = (reason) => ({
+    lines: [
+      `// Not exported: ${commandText}`,
+      `// Reason: ${reason}`,
+    ],
+    exported: false,
+  });
+
+  if (action.replayable !== true) {
+    const missing = Array.isArray(action.needsInput) && action.needsInput.length
+      ? action.needsInput.join(', ')
+      : 'review';
+    return skip(`not replayable; missing ${missing}`);
+  }
+  if (!command.length || !command[0]) return skip('missing command');
+  if (command.includes('<redacted>')) return skip('redacted input');
+
+  const [cmd, ...args] = command;
+  switch (cmd) {
+    case 'nav':
+    case 'navigate':
+      return args[0]
+        ? { lines: [`await page.goto(${JSON.stringify(args[0])});`], exported: true }
+        : skip('missing URL');
+    case 'click':
+    case 'jsclick': {
+      const selector = args[0] === '--js' || args[0] === '-j' ? args[1] : args[0];
+      if (!isPlaywrightPortableSelector(selector)) return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
+      return { lines: [`await page.locator(${JSON.stringify(selector)}).click();`], exported: true };
+    }
+    case 'fill': {
+      const usesReactFill = args[0] === '--react';
+      const selector = usesReactFill ? args[1] : args[0];
+      const text = usesReactFill ? args[2] : args[1];
+      if (!isPlaywrightPortableSelector(selector)) return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
+      if (text == null || text === '<redacted>') return skip('missing fill text');
+      return { lines: [`await page.locator(${JSON.stringify(selector)}).fill(${JSON.stringify(text)});`], exported: true };
+    }
+    case 'select': {
+      const [selector, value] = args;
+      if (!isPlaywrightPortableSelector(selector)) return skip('needs stable selector');
+      if (value == null) return skip('missing select value');
+      return { lines: [`await page.locator(${JSON.stringify(selector)}).selectOption(${JSON.stringify(value)});`], exported: true };
+    }
+    case 'type':
+      return args[0]
+        ? { lines: [`await page.keyboard.type(${JSON.stringify(args[0])});`], exported: true }
+        : skip('missing text');
+    case 'press':
+      return args[0]
+        ? { lines: [`await page.keyboard.press(${JSON.stringify(args[0])});`], exported: true }
+        : skip('missing key');
+    case 'clickxy': {
+      const x = Number(args[0]);
+      const y = Number(args[1]);
+      return Number.isFinite(x) && Number.isFinite(y)
+        ? { lines: [`await page.mouse.click(${x}, ${y});`, '// Coordinate click: review before committing as a regression test.'], exported: true }
+        : skip('missing coordinates');
+    }
+    case 'scroll': {
+      const direction = args[0] || '';
+      const amount = Number(args[1] || 500);
+      const dirMap = { down: [0, amount], up: [0, -amount], left: [-amount, 0], right: [amount, 0] };
+      let xy = dirMap[direction.toLowerCase()];
+      if (!xy && direction.includes(',')) xy = direction.split(',').map(Number);
+      return xy && xy.every(Number.isFinite)
+        ? { lines: [`await page.mouse.wheel(${xy[0]}, ${xy[1]});`], exported: true }
+        : skip('unsupported scroll arguments');
+    }
+    case 'viewport': {
+      const match = String(args[0] || '').match(/^(\d+)[x×](\d+)$/);
+      return match
+        ? { lines: [`await page.setViewportSize({ width: ${Number(match[1])}, height: ${Number(match[2])} });`], exported: true }
+        : skip('unsupported viewport format');
+    }
+    case 'reload':
+      return { lines: ['await page.reload();'], exported: true };
+    case 'back':
+      return { lines: ['await page.goBack();'], exported: true };
+    case 'forward':
+      return { lines: ['await page.goForward();'], exported: true };
+    case 'dismiss-modal':
+    case 'dismissmodal':
+      return { lines: ['await page.keyboard.press("Escape");', '// Review: chrome-cdp-ex may have clicked a specific close button instead.'], exported: true };
+    default:
+      return skip(`unsupported command: ${cmd}`);
+  }
+}
+
+function formatPlaywrightSpecFromRecordActions(model, { title = 'chrome-cdp-ex exported workflow' } = {}) {
+  const actions = Array.isArray(model?.actions) ? model.actions : [];
+  const lines = [
+    "import { test } from '@playwright/test';",
+    '',
+    '// Generated from chrome-cdp-ex record-actions.',
+    '// Review selectors, assertions, auth state, and skipped steps before committing.',
+    '',
+    `test(${singleQuotedJsString(title)}, async ({ page }) => {`,
+  ];
+  let exported = 0;
+  let skipped = 0;
+  for (const action of actions) {
+    const step = playwrightStepFromCommand(action);
+    if (step.exported) exported++;
+    else skipped++;
+    for (const line of step.lines) lines.push(`  ${line}`);
+  }
+  if (actions.length === 0) {
+    lines.push('  // No recorded actions yet. Run click/fill/nav, then export-playwright again.');
+  }
+  lines.push('});');
+  lines.push('');
+  lines.push(`// Exported ${exported}/${actions.length} step(s); ${skipped} need review.`);
+  return lines.join('\n');
+}
+
+function parseExportPlaywrightArgs(args = []) {
+  const opts = { title: 'chrome-cdp-ex exported workflow' };
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--title') {
+      opts.title = args[++i] || opts.title;
+    }
+  }
+  return opts;
+}
+
+function singleQuotedJsString(value) {
+  return `'${String(value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n')}'`;
+}
+
+function formatExportPlaywright(session, opts = {}) {
+  return formatPlaywrightSpecFromRecordActions(buildRecordActionsModel(session), opts);
+}
+
 function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targetId), screenshotDir = sessionScreenshotDir(targetId) }) {
   return {
     targetId,
@@ -6370,6 +6512,10 @@ async function runDaemon(targetId) {
           result = formatRecordActions(session, { format: fopts.format });
           break;
         }
+        case 'export-playwright': case 'export-pw': {
+          result = formatExportPlaywright(session, parseExportPlaywrightArgs(args));
+          break;
+        }
         case 'perceive': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
           const popts = parsePerceiveArgs(fopts.args);
@@ -6739,6 +6885,7 @@ Usage: cdp <command> [args]
   restore <target> --file <path>     Restore a checkpoint artifact into the live page
   restore <target> --json <json>     Restore an inline checkpoint JSON artifact
   record-actions <target>           Export session action log as replay-oriented text or JSON
+  export-playwright <target>         Export current action log as a Playwright spec draft
   replay <target> --file <path>      Replay a record-actions JSON artifact against the live page
   replay <target> --json <json>      Replay an inline record-actions JSON artifact
   frame <target> [--format json]     List page frames with stable @fN refs (alias: frames)
@@ -6870,7 +7017,7 @@ DAEMON IPC (for advanced use / scripting)
   elshot, fullshot, scanshot, html, nav, net, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
-  record, checkpoint, restore, record-actions, replay, report, evalraw, batch, flow, repeat, stop.
+  record, checkpoint, restore, record-actions, export-playwright, replay, report, evalraw, batch, flow, repeat, stop.
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
@@ -6900,6 +7047,7 @@ const COMMANDS = Object.freeze([
   { name: 'checkpoint', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'restore', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'record-actions', aliases: ['recordactions'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'export-playwright', aliases: ['export-pw'], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'replay', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'elshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'click', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
@@ -7300,6 +7448,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   initializeSessionLog, formatSessionReport, sessionScreenshotDir,
   ensureSessionScreenshotDir, nextSessionScreenshotPath,
   buildRecordActionsModel, formatRecordActions,
+  playwrightStepFromCommand, formatPlaywrightSpecFromRecordActions, formatExportPlaywright,
   checkpointPageScript, sanitizeCheckpointCookies, checkpointModel, checkpointStr,
   parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs,
   checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,

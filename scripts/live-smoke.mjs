@@ -208,6 +208,10 @@ if (!recordActions.actions.some(action => action.action === 'fill' && action.com
 if (!recordActions.actions.some(action => action.action === 'click' && action.command?.join(' ') === 'click #combat' && action.replayable)) {
   throw new Error(`record-actions should include replayable click command\nOutput:\n${recordActionsJson}`);
 }
+const playwrightExport = step('export playwright', () => run(['export-playwright', target]));
+assertIncludes(playwrightExport, "import { test } from '@playwright/test';", 'export-playwright import');
+assertIncludes(playwrightExport, 'await page.locator("#cmd").fill("look trainer");', 'export-playwright fill');
+assertIncludes(playwrightExport, 'await page.locator("#combat").click();', 'export-playwright click');
 const replayArtifactPath = resolve(profileDir, 'record-actions.json');
 writeFileSync(replayArtifactPath, recordActionsJson);
 const replayOut = step('replay record-actions artifact', () => run(['replay', target, '--file', replayArtifactPath], { timeout: 30000 }));

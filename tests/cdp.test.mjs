@@ -218,6 +218,16 @@ describe('COMMANDS registry', () => {
     }));
   });
 
+  it('registers export-playwright as a target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'export-playwright',
+      aliases: ['export-pw'],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text'],
+    }));
+  });
+
   it('registers checkpoint and restore commands', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'checkpoint',
@@ -951,6 +961,69 @@ describe('Session report', () => {
 
     expect(parsed.schema).toBe('chrome-cdp-ex.record-actions.v1');
     expect(parsed.actions[0].command).toEqual(['nav', 'https://example.com']);
+  });
+
+  it('exports replayable actions as a Playwright spec with honest gaps', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'nav',
+      target: { input: 'https://example.com/dashboard', resolvedBy: 'url', label: 'dashboard', commandArgs: ['https://example.com/dashboard'] },
+      dispatch: { ok: true, method: 'nav' },
+      settle: { ok: true, durationMs: 300 },
+      effects: { domDiff: 'Page changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'fill',
+      target: { input: '#cmd', resolvedBy: 'selector', label: '#cmd', commandArgs: ['#cmd', 'look trainer'] },
+      dispatch: { ok: true, method: 'fill' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: 'value changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat', commandArgs: ['#combat'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '~~~ Text nodes updated (1 added)\n+   [StaticText] 戰鬥勝利', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '@1', resolvedBy: 'ref', label: '@1', commandArgs: ['@1'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 60 },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const out = T.formatExportPlaywright(state);
+
+    expect(out).toContain("import { test } from '@playwright/test';");
+    expect(out).toContain("test('chrome-cdp-ex exported workflow'");
+    expect(out).toContain('await page.goto("https://example.com/dashboard");');
+    expect(out).toContain('await page.locator("#cmd").fill("look trainer");');
+    expect(out).toContain('await page.locator("#combat").click();');
+    expect(out).toContain('Not exported: click @1');
+    expect(out).toContain('needs stable selector');
+  });
+
+  it('exports react fill actions without treating the flag as a selector', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'fill',
+      target: { input: '#cmd', resolvedBy: 'selector', label: '#cmd', commandArgs: ['--react', '#cmd', 'look trainer'] },
+      dispatch: { ok: true, method: 'fill' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: 'value changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const out = T.formatExportPlaywright(state);
+
+    expect(out).toContain('await page.locator("#cmd").fill("look trainer");');
+    expect(out).not.toContain('page.locator("--react")');
   });
 
   it('redacts sensitive fill values before recording action artifacts', () => {
