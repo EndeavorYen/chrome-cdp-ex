@@ -18,7 +18,7 @@
 
 ## Backlog
 
-## Release 2.5
+### Release 2.5
 
 - [ ] In-file command registry.
 - [ ] `--format text|json` parsing infrastructure.
