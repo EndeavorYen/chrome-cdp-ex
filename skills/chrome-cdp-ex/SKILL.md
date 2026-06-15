@@ -11,7 +11,7 @@ description: "Your EYES into the user's live Chrome browser and Electron apps. T
 2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`.
 3. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, top-level viewport CSS coordinates (fixed/sticky elements are tagged), console health.
 4. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
-5. **Verify/report:** read the automatic action evidence, then use `cdp perceive <target> --since-action` or `cdp report <target>` for handoff. If you used `cdp mock` or `cdp throttle`, confirm the report shows the intended network state and reset with `cdp mock <target> clear` / `cdp throttle <target> off`.
+5. **Verify/report:** read the automatic action evidence, then use `cdp perceive <target> --since-action` or `cdp report <target>` for handoff. If you used `cdp mock`, `cdp clock`, or `cdp throttle`, confirm the report shows the intended environment state and reset with `cdp mock <target> clear` / `cdp clock <target> reset` / `cdp throttle <target> off`.
 
 For long-session game / animation work also reach for `cdp waitfor <target> --any-of "win|lose|escape" 60000 --scope ".combat-log"` and `cdp waitfor <target> --selector-stable ".combat-log" 3000 60000`. To close MOTD-style modals safely without firing background shortcuts, use `cdp dismiss-modal <target>` (it prefers an explicit close button, falls back to Escape — never `press Space`).
 
@@ -472,6 +472,7 @@ scripts/cdp.mjs reload  <target>                       # reload current page
 scripts/cdp.mjs closetab <target>                      # close a browser tab
 scripts/cdp.mjs netlog  <target> [--clear]             # network request log (XHR/Fetch with status + timing)
 scripts/cdp.mjs mock    <target> [add|clear]           # mock matching network requests in the live tab
+scripts/cdp.mjs clock   <target> [freeze|offset|reset] # override Date/time in the live tab
 scripts/cdp.mjs throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  # emulate network conditions
 scripts/cdp.mjs evalraw <target> <method> [json]  # raw CDP command passthrough
 scripts/cdp.mjs record  <target> <ms>                    # record timeline for N ms (DOM + network + console events)
@@ -588,6 +589,17 @@ scripts/cdp.mjs mock <target> clear         # disable all mocks
 ```
 
 `mock` uses CDP Fetch interception inside the live tab. Use it to reproduce API failure, empty-state, or alternate-response UI without editing backend code. Active rules and hit counts appear in `report <target>`. Clear mocks before handing the session back.
+
+### Clock control
+
+```bash
+scripts/cdp.mjs clock <target> freeze --at 2020-01-02T03:04:05.000Z
+scripts/cdp.mjs clock <target> offset --ms 3600000
+scripts/cdp.mjs clock <target>               # show active clock override
+scripts/cdp.mjs clock <target> reset         # restore real time
+```
+
+`clock` overrides `Date` in the current page and future navigations for the tab daemon. Use `freeze` for fixed-date UI, trial-expiry banners, and deterministic screenshots; use `offset` for expiry, retry, and backoff flows that should keep time moving. Active clock state appears in `report <target>`. Reset before handing the session back.
 
 ### Network throttling
 
@@ -790,10 +802,11 @@ scripts/cdp.mjs text <target> "main"              # scope to main content area
 1. `perceive <target>` — check page state
 2. `netlog <target>` — see recent XHR/Fetch requests with status codes
 3. `mock <target> add "**/api/*" --status 503 --body '{"ok":false}'` — reproduce API failure or alternate UI states when relevant
-4. `throttle <target> slow-3g` or `throttle <target> offline` — reproduce slow-network or offline behavior when relevant
-5. `console <target> --errors` — check for errors
-6. If you need to see the full request→response→DOM update chain: `record <target> --action click @submitBtn` — captures the API call, its response, and resulting DOM mutations in one timeline
-7. `mock <target> clear`; `throttle <target> off` — reset before handing the session back
+4. `clock <target> freeze --at 2020-01-02T03:04:05.000Z` or `clock <target> offset --ms 3600000` — reproduce time-sensitive UI when relevant
+5. `throttle <target> slow-3g` or `throttle <target> offline` — reproduce slow-network or offline behavior when relevant
+6. `console <target> --errors` — check for errors
+7. If you need to see the full request→response→DOM update chain: `record <target> --action click @submitBtn` — captures the API call, its response, and resulting DOM mutations in one timeline
+8. `mock <target> clear`; `clock <target> reset`; `throttle <target> off` — reset before handing the session back
 
 ### Performance investigation
 1. `nav <target> <url>` — navigate to the page

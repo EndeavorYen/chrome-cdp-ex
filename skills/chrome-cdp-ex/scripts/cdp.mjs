@@ -1861,6 +1861,7 @@ function formatSessionReport(session, { now = Date.now() } = {}) {
     `Records: ${session.records?.length || 0}`,
     `Network throttle: ${formatThrottleSummary(session.networkThrottle)}`,
     `Network mocks: ${formatNetworkMocksSummary(session)}`,
+    `Clock: ${formatClockSummary(session.clock)}`,
     '',
     'Action timeline:',
   ];
@@ -2215,6 +2216,7 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
     networkThrottle: null,
     networkMocks: [],
     networkMockHits: [],
+    clock: null,
     actionLog: [],
     screenshots: [],
     diffShot: null,
@@ -4600,6 +4602,193 @@ async function mockStr(cdp, sid, session, args = []) {
   return parsed.format === 'json' ? formatJson(model) : formatMockText(model);
 }
 
+function parseClockTimestamp(value) {
+  if (value == null || value === '') throw new Error('clock freeze requires --at <date|epoch-ms>');
+  const numeric = Number(value);
+  const atMs = Number.isFinite(numeric) ? numeric : Date.parse(String(value));
+  if (!Number.isFinite(atMs)) throw new Error('clock freeze --at requires a valid date or epoch milliseconds');
+  return atMs;
+}
+
+function parseClockOffsetMs(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms)) throw new Error('clock offset --ms requires a finite millisecond value');
+  return ms;
+}
+
+function parseClockArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const tokens = fopts.args || [];
+  if (tokens.length === 0) return { mode: 'status', format: fopts.format };
+  const cmd = String(tokens[0] || '').toLowerCase();
+  if (cmd === 'reset' || cmd === 'off' || cmd === 'real') {
+    if (tokens.length > 1) throw new Error(`clock ${tokens[0]} does not accept extra arguments`);
+    return { mode: 'reset', format: fopts.format, profile: 'real' };
+  }
+  if (cmd === 'freeze') {
+    let atMs = null;
+    for (let i = 1; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token === '--at') atMs = parseClockTimestamp(tokens[++i]);
+      else throw new Error(`clock freeze: unknown option ${token}`);
+    }
+    if (atMs == null) throw new Error('clock freeze requires --at <date|epoch-ms>');
+    return { mode: 'apply', format: fopts.format, profile: 'freeze', atMs };
+  }
+  if (cmd === 'offset') {
+    let offsetMs = null;
+    for (let i = 1; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token === '--ms') offsetMs = parseClockOffsetMs(tokens[++i]);
+      else if (token === '--seconds') offsetMs = parseClockOffsetMs(tokens[++i]) * 1000;
+      else throw new Error(`clock offset: unknown option ${token}`);
+    }
+    if (offsetMs == null) throw new Error('clock offset requires --ms <milliseconds>');
+    return { mode: 'apply', format: fopts.format, profile: 'offset', offsetMs };
+  }
+  throw new Error(`Unknown clock command: ${tokens[0]}. Use freeze, offset, reset, or no args for status.`);
+}
+
+function clockPageScript(config) {
+  return `(${function installCdpClock(cfg) {
+    const g = globalThis;
+    const existing = g.__cdpClockOriginals;
+    const originals = existing || {
+      Date: g.Date,
+      performanceNow: g.performance && typeof g.performance.now === 'function'
+        ? g.performance.now.bind(g.performance)
+        : null,
+    };
+    if (!existing) {
+      Object.defineProperty(g, '__cdpClockOriginals', {
+        value: originals,
+        configurable: true,
+        writable: true,
+      });
+    }
+
+    if (cfg.profile === 'real' || cfg.mode === 'reset') {
+      if (originals.Date) g.Date = originals.Date;
+      if (g.performance && originals.performanceNow) {
+        try {
+          Object.defineProperty(g.performance, 'now', {
+            value: originals.performanceNow,
+            configurable: true,
+          });
+        } catch {}
+      }
+      try { delete g.__cdpClock; } catch {}
+      return { ok: true, profile: 'real', now: originals.Date.now() };
+    }
+
+    const OriginalDate = originals.Date;
+    const profile = cfg.profile;
+    const atMs = Number(cfg.atMs);
+    const offsetMs = Number(cfg.offsetMs || 0);
+    const installedAtPerfMs = originals.performanceNow ? originals.performanceNow() : 0;
+    const currentNow = () => profile === 'freeze' ? atMs : OriginalDate.now() + offsetMs;
+
+    function MockDate(...args) {
+      if (this instanceof MockDate) {
+        return args.length ? new OriginalDate(...args) : new OriginalDate(currentNow());
+      }
+      return new OriginalDate(currentNow()).toString();
+    }
+    Object.setPrototypeOf(MockDate, OriginalDate);
+    MockDate.prototype = OriginalDate.prototype;
+    MockDate.now = currentNow;
+    MockDate.parse = OriginalDate.parse.bind(OriginalDate);
+    MockDate.UTC = OriginalDate.UTC.bind(OriginalDate);
+    try { Object.defineProperty(MockDate, 'name', { value: 'Date', configurable: true }); } catch {}
+    g.Date = MockDate;
+
+    if (g.performance && originals.performanceNow) {
+      try {
+        Object.defineProperty(g.performance, 'now', {
+          value: () => profile === 'freeze' ? installedAtPerfMs : originals.performanceNow() + offsetMs,
+          configurable: true,
+        });
+      } catch {}
+    }
+
+    const now = currentNow();
+    g.__cdpClock = {
+      profile,
+      atMs: profile === 'freeze' ? atMs : null,
+      offsetMs: profile === 'offset' ? offsetMs : 0,
+      iso: new OriginalDate(now).toISOString(),
+    };
+    return { ok: true, ...g.__cdpClock, now };
+  }.toString()})(${JSON.stringify(config)});`;
+}
+
+function formatSignedMs(ms) {
+  return `${ms >= 0 ? '+' : ''}${ms}ms`;
+}
+
+function formatClockSummary(clock = null) {
+  if (!clock || clock.profile === 'real') return 'real time';
+  if (clock.profile === 'freeze') return `frozen at ${new Date(clock.atMs).toISOString()}`;
+  if (clock.profile === 'offset') return `offset ${formatSignedMs(clock.offsetMs || 0)}`;
+  return 'real time';
+}
+
+function buildClockModel(session, parsed) {
+  const clock = parsed.mode === 'status' ? session.clock : (session.clock || null);
+  return {
+    schema: 'chrome-cdp-ex.clock.v1',
+    targetId: session.targetId,
+    mode: parsed.mode,
+    profile: clock?.profile || 'real',
+    atMs: clock?.atMs ?? null,
+    offsetMs: clock?.offsetMs ?? 0,
+    scriptIdentifier: clock?.scriptIdentifier || null,
+  };
+}
+
+function formatClockText(model) {
+  const lines = [`Clock: ${formatClockSummary(model)}`];
+  if (model.profile === 'real') {
+    lines.push(`Next: cdp clock ${model.targetId} freeze --at 2020-01-02T03:04:05.000Z`);
+    lines.push(`Next: cdp clock ${model.targetId} offset --ms 3600000`);
+  } else {
+    lines.push(`Next: cdp clock ${model.targetId} reset`);
+  }
+  return lines.join('\n');
+}
+
+async function removeClockScriptIfNeeded(cdp, sid, session) {
+  const identifier = session.clock?.scriptIdentifier;
+  if (identifier) {
+    await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier }, sid);
+  }
+}
+
+async function clockStr(cdp, sid, session, args = []) {
+  const parsed = parseClockArgs(args);
+  if (parsed.mode === 'apply') {
+    await removeClockScriptIfNeeded(cdp, sid, session);
+    const source = clockPageScript(parsed);
+    const added = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source }, sid);
+    await cdp.send('Runtime.evaluate', { expression: source, returnByValue: true, awaitPromise: true }, sid);
+    session.clock = {
+      profile: parsed.profile,
+      atMs: parsed.profile === 'freeze' ? parsed.atMs : null,
+      offsetMs: parsed.profile === 'offset' ? parsed.offsetMs : 0,
+      scriptIdentifier: added.identifier || null,
+      appliedAt: Date.now(),
+    };
+    appendSessionEventLog(session, { kind: 'clock', ts: session.clock.appliedAt, action: 'apply', clock: session.clock });
+  } else if (parsed.mode === 'reset') {
+    await removeClockScriptIfNeeded(cdp, sid, session);
+    await cdp.send('Runtime.evaluate', { expression: clockPageScript(parsed), returnByValue: true, awaitPromise: true }, sid);
+    appendSessionEventLog(session, { kind: 'clock', ts: Date.now(), action: 'reset' });
+    session.clock = null;
+  }
+  const model = buildClockModel(session, parsed);
+  return parsed.format === 'json' ? formatJson(model) : formatClockText(model);
+}
+
 const THROTTLE_PRESETS = Object.freeze({
   off: { profile: 'off', offline: false, latencyMs: 0, downloadKbps: null, uploadKbps: null },
   offline: { profile: 'offline', offline: true, latencyMs: 0, downloadKbps: 0, uploadKbps: 0 },
@@ -6827,7 +7016,7 @@ async function runDaemon(targetId) {
   // Action feedback: wait for DOM to settle, then return structured evidence.
   const BATCH_BLOCKED = new Set(['batch', 'stop', 'repeat', 'flow']);
   // Commands that mutate shared state (refMap, lastPerceiveStore) — unsafe for parallel execution
-  const BATCH_NO_PARALLEL = new Set(['click', 'clickxy', 'jsclick', 'select', 'press', 'scroll', 'nav', 'navigate', 'back', 'forward', 'reload', 'viewport', 'fill', 'type', 'inject', 'mock', 'network-mock', 'perceive', 'snap', 'snapshot', 'dismiss-modal', 'dismissmodal']);
+  const BATCH_NO_PARALLEL = new Set(['click', 'clickxy', 'jsclick', 'select', 'press', 'scroll', 'nav', 'navigate', 'back', 'forward', 'reload', 'viewport', 'fill', 'type', 'inject', 'mock', 'network-mock', 'clock', 'time-travel', 'perceive', 'snap', 'snapshot', 'dismiss-modal', 'dismissmodal']);
   async function observeActionDiffForTarget(target = {}, baselineOutput = null) {
     const targetFrameRef = frameRefFromActionTarget(target);
     await waitForSettle(cdp, sessionId);
@@ -6951,6 +7140,7 @@ async function runDaemon(targetId) {
         }
         case 'net': case 'network': result = await netStr(cdp, sessionId); break;
         case 'mock': case 'network-mock': result = await mockStr(cdp, sessionId, session, args); break;
+        case 'clock': case 'time-travel': result = await clockStr(cdp, sessionId, session, args); break;
         case 'throttle': case 'network-throttle': result = await throttleStr(cdp, sessionId, session, args); break;
         case 'status': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
@@ -7386,6 +7576,8 @@ Usage: cdp <command> [args]
   nav   <target> <url>              Navigate to URL and wait for load completion
   mock  <target> [add|clear]        Mock matching network requests in this live tab
                                     add <urlPattern> --status code --body text [--content-type type]
+  clock <target> [freeze|offset|reset]  Override Date/time in this live tab
+                                    freeze --at date-or-epoch-ms | offset --ms delta
   throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  Emulate network conditions for this tab
                                     custom --latency ms --download kbps --upload kbps
   status <target> [--runtime]        Page state + new console/exception entries (primary debug entry point)
@@ -7526,7 +7718,7 @@ DAEMON IPC (for advanced use / scripting)
     Response: {"id":<number>, "ok":true,  "result":"<string>"}
            or {"id":<number>, "ok":false, "error":"<message>"}
   Commands mirror the CLI: perceive, status, summary, console, frame, snap, eval, eval64, call, wait, keepalive, shot, diff-shot,
-  elshot, fullshot, scanshot, html, nav, net, mock, throttle, click, jsclick, clickxy, hover, type, press,
+  elshot, fullshot, scanshot, html, nav, net, mock, clock, throttle, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
   record, checkpoint, restore, record-actions, export-playwright, replay, report, evalraw, batch, flow, repeat, stop.
@@ -7552,6 +7744,7 @@ const COMMANDS = Object.freeze([
   { name: 'nav', aliases: ['navigate'], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
   { name: 'net', aliases: ['network'], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'mock', aliases: ['network-mock'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
+  { name: 'clock', aliases: ['time-travel'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'throttle', aliases: ['network-throttle'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'status', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'console', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
@@ -7971,6 +8164,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Command implementations
   formatPageList, dialogStr, netlogStr,
   parseMockArgs, formatNetworkMocksSummary, buildMockModel, formatMockText, mockStr, handleMockRequestPaused,
+  parseClockArgs, clockPageScript, formatClockSummary, buildClockModel, formatClockText, clockStr,
   parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
   injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,

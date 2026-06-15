@@ -166,6 +166,27 @@ if (mockStatus.schema !== 'chrome-cdp-ex.mock.v1' || mockStatus.rules?.[0]?.hits
 }
 const mockClearOut = step('network mock clear', () => run(['mock', target, 'clear']));
 assertIncludes(mockClearOut, 'Network mock: off', 'mock clear');
+const clockFreezeOut = step('clock freeze', () => run(['clock', target, 'freeze', '--at', '2020-01-02T03:04:05.000Z']));
+assertIncludes(clockFreezeOut, 'Clock: frozen at 2020-01-02T03:04:05.000Z', 'clock freeze');
+const frozenClockJson = step('clock freeze Date.now', () => run(['eval', target, 'JSON.stringify({now:Date.now(),iso:new Date().toISOString()})']));
+const frozenClock = JSON.parse(frozenClockJson);
+if (frozenClock.now !== 1577934245000 || frozenClock.iso !== '2020-01-02T03:04:05.000Z') {
+  throw new Error(`frozen clock mismatch:\n${frozenClockJson}`);
+}
+const clockStatusJson = step('clock json status', () => run(['clock', target, '--format', 'json']));
+const clockStatus = JSON.parse(clockStatusJson);
+if (clockStatus.schema !== 'chrome-cdp-ex.clock.v1' || clockStatus.profile !== 'freeze' || clockStatus.atMs !== 1577934245000) {
+  throw new Error(`clock json status mismatch:\n${clockStatusJson}`);
+}
+const clockOffsetOut = step('clock offset', () => run(['clock', target, 'offset', '--ms', '3600000']));
+assertIncludes(clockOffsetOut, 'Clock: offset +3600000ms', 'clock offset');
+const offsetClockJson = step('clock offset Date.now', () => run(['eval', target, 'JSON.stringify({delta: Date.now() - window.__cdpClockOriginals.Date.now()})']));
+const offsetClock = JSON.parse(offsetClockJson);
+if (offsetClock.delta < 3599000 || offsetClock.delta > 3601000) {
+  throw new Error(`clock offset should be about 3600000ms\nOutput:\n${offsetClockJson}`);
+}
+const clockResetOut = step('clock reset', () => run(['clock', target, 'reset']));
+assertIncludes(clockResetOut, 'Clock: real time', 'clock reset');
 const framePerceiveOut = step('frame-scoped perceive refs', () => run(['perceive', target, '--frame', '@f2', '-d', '4']));
 assertIncludes(framePerceiveOut, 'Frame: @f2', 'perceive --frame');
 assertIncludes(framePerceiveOut, 'Child action', 'perceive --frame child button');

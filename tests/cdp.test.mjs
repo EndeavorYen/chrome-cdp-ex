@@ -188,7 +188,7 @@ describe('COMMANDS registry', () => {
     const mutating = T.COMMANDS.filter(c => c.mutates);
     expect(mutating.map(c => c.name).sort()).toEqual([
       'back', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
-      'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav',
+      'clock', 'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav',
       'open', 'press', 'reload', 'replay', 'restore', 'scroll', 'select', 'spawn-debug-browser',
       'stop', 'mock', 'throttle', 'type', 'upload', 'viewport',
     ].sort());
@@ -253,6 +253,17 @@ describe('COMMANDS registry', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'mock',
       aliases: ['network-mock'],
+      needsTarget: true,
+      mutates: true,
+      feedbackPolicy: 'report-only',
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers clock as a mutating target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'clock',
+      aliases: ['time-travel'],
       needsTarget: true,
       mutates: true,
       feedbackPolicy: 'report-only',
@@ -528,6 +539,84 @@ describe('network mock', () => {
     expect(cdp.calls.map(c => c.method)).toEqual(['Fetch.enable', 'Fetch.disable']);
     expect(state.networkMocks).toEqual([]);
     expect(out).toContain('Network mock: off');
+  });
+});
+
+describe('clock', () => {
+  it('parses status, freeze, offset, and reset modes', () => {
+    expect(T.parseClockArgs([])).toMatchObject({ mode: 'status', format: 'text' });
+    expect(T.parseClockArgs(['--format', 'json'])).toMatchObject({ mode: 'status', format: 'json' });
+    expect(T.parseClockArgs(['freeze', '--at', '2020-01-02T03:04:05.000Z'])).toMatchObject({
+      mode: 'apply',
+      profile: 'freeze',
+      atMs: 1577934245000,
+    });
+    expect(T.parseClockArgs(['offset', '--ms', '3600000'])).toMatchObject({
+      mode: 'apply',
+      profile: 'offset',
+      offsetMs: 3600000,
+    });
+    expect(T.parseClockArgs(['reset'])).toMatchObject({ mode: 'reset', profile: 'real' });
+  });
+
+  it('rejects invalid clock arguments', () => {
+    expect(() => T.parseClockArgs(['freeze'])).toThrow(/requires --at/);
+    expect(() => T.parseClockArgs(['freeze', '--at', 'not-a-date'])).toThrow(/valid date/);
+    expect(() => T.parseClockArgs(['offset', '--ms', 'nan'])).toThrow(/finite millisecond/);
+    expect(() => T.parseClockArgs(['dial'])).toThrow(/Unknown clock command/);
+  });
+
+  it('installs a frozen clock for current and future page contexts', async () => {
+    const cdp = createMockCDP({
+      'Page.addScriptToEvaluateOnNewDocument': () => ({ identifier: 'clock-script-1' }),
+      'Runtime.evaluate': () => ({ result: { value: { ok: true } } }),
+    });
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    const out = await T.clockStr(cdp, 'sid-1', state, ['freeze', '--at', '2020-01-02T03:04:05.000Z']);
+
+    expect(cdp.calls.map(c => c.method)).toEqual(['Page.addScriptToEvaluateOnNewDocument', 'Runtime.evaluate']);
+    expect(cdp.calls[0].params.source).toContain('__cdpClockOriginals');
+    expect(cdp.calls[0].params.source).toContain('1577934245000');
+    expect(cdp.calls[1].params.expression).toContain('__cdpClockOriginals');
+    expect(state.clock).toMatchObject({ profile: 'freeze', atMs: 1577934245000, scriptIdentifier: 'clock-script-1' });
+    expect(out).toContain('Clock: frozen at 2020-01-02T03:04:05.000Z');
+    expect(out).toContain('Next: cdp clock ABC123 reset');
+  });
+
+  it('installs an offset clock and reports it in session reports', async () => {
+    const cdp = createMockCDP({
+      'Page.addScriptToEvaluateOnNewDocument': () => ({ identifier: 'clock-script-2' }),
+      'Runtime.evaluate': () => ({ result: { value: { ok: true } } }),
+    });
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    await T.clockStr(cdp, 'sid-1', state, ['offset', '--ms', '3600000']);
+    const report = T.formatSessionReport(state, { now: state.createdAt + 5000 });
+
+    expect(state.clock).toMatchObject({ profile: 'offset', offsetMs: 3600000 });
+    expect(report).toContain('Clock: offset +3600000ms');
+  });
+
+  it('resets the installed clock script and restores real time', async () => {
+    const cdp = createMockCDP({
+      'Page.addScriptToEvaluateOnNewDocument': () => ({ identifier: 'clock-script-1' }),
+      'Runtime.evaluate': () => ({ result: { value: { ok: true } } }),
+    });
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    await T.clockStr(cdp, 'sid-1', state, ['freeze', '--at', '2020-01-02T03:04:05.000Z']);
+
+    const out = await T.clockStr(cdp, 'sid-1', state, ['reset']);
+
+    expect(cdp.calls.map(c => c.method)).toEqual([
+      'Page.addScriptToEvaluateOnNewDocument',
+      'Runtime.evaluate',
+      'Page.removeScriptToEvaluateOnNewDocument',
+      'Runtime.evaluate',
+    ]);
+    expect(cdp.calls[2].params).toEqual({ identifier: 'clock-script-1' });
+    expect(state.clock).toBe(null);
+    expect(out).toContain('Clock: real time');
   });
 });
 

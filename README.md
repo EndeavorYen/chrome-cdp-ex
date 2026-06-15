@@ -1,6 +1,6 @@
 # chrome-cdp-ex
 
-[![66 Commands](https://img.shields.io/badge/commands-66-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
+[![67 Commands](https://img.shields.io/badge/commands-67-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
@@ -20,7 +20,7 @@ Use `chrome-cdp-ex` when the agent needs to understand or act inside a browser t
 - You want one low-token page read before choosing what to click, fill, inspect, or debug.
 - You need action evidence: what changed after `click`, `fill`, `nav`, `inject`, or `reload`.
 - You need CSS source tracing from a visible element to the selector, stylesheet, and line.
-- You want long-session memory: console/network buffers, network mocks, screenshots, reports, checkpoints, throttled network profiles, and replay.
+- You want long-session memory: console/network buffers, network mocks, clock control, screenshots, reports, checkpoints, throttled network profiles, and replay.
 
 ## Do not use this when
 
@@ -40,7 +40,7 @@ Use Playwright instead when you need a clean, repeatable browser test from scrat
 | Logged-in dashboard inspection | `doctor -> list -> perceive` reads the real dashboard without relogin or a copied screenshot. |
 | Action evidence after form input | `fill` or `click` returns dispatch, settle, and DOM diff so the agent can choose the next step. |
 | CSS source tracing | `cascade @ref background-color` shows the winning selector and source file/line to edit. |
-| Long-session debugging | `status`, `netlog`, `mock`, `throttle`, screenshots, and `report` preserve evidence across a live tab session. |
+| Long-session debugging | `status`, `netlog`, `mock`, `clock`, `throttle`, screenshots, and `report` preserve evidence across a live tab session. |
 | Workflow capture and replay | `checkpoint`, `record-actions`, `export-playwright`, `diff-shot`, and `replay` turn exploration into reusable debugging and regression assets. |
 
 ## Why this exists
@@ -60,7 +60,7 @@ Use Playwright instead when you need a clean, repeatable browser test from scrat
 - [Five success cases](#five-success-cases)
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
-- [Commands (66 total)](#commands-66-total)
+- [Commands (67 total)](#commands-67-total)
 - [WSL2 -> Windows Browser Control](#wsl2---windows-browser-control)
 - [Dogfood Benchmark](#dogfood-benchmark)
 - [Contributor Checks](#contributor-checks)
@@ -94,7 +94,7 @@ The agent using `perceive` (layout + colors + spacing + coordinates) produced th
 | **Electron app support** | **Yes** - `CDP_PORT=9222` | No | No |
 | **WSL2 -> Windows** | **Yes** - built-in | No | No |
 | **Dependencies** | **0** | Playwright + Chromium binary | Varies |
-| **Commands** | **66** | N/A (programmatic API) | ~14 |
+| **Commands** | **67** | N/A (programmatic API) | ~14 |
 
 ## One command, complete page understanding
 
@@ -250,7 +250,7 @@ Output:
 1ED3DBAA  My App                                                  http://localhost:5173/#/menu
 ```
 
-All 66 commands work: `perceive`, `frame`, `overlay`, `click`, `fill`, `cascade`, `record`, `checkpoint`, `restore`, `record-actions`, `export-playwright`, `diff-shot`, `replay`, `mock`, `throttle`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
+All 67 commands work: `perceive`, `frame`, `overlay`, `click`, `fill`, `cascade`, `record`, `checkpoint`, `restore`, `record-actions`, `export-playwright`, `diff-shot`, `replay`, `mock`, `clock`, `throttle`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
 
 </details>
 
@@ -293,7 +293,7 @@ Each tab gets its own daemon process that keeps the CDP session open.
 Chrome's "Allow debugging" dialog appears **once per tab**, not once per command.
 Daemons auto-exit after 20 minutes of inactivity and passively collect console/exception/navigation events into ring buffers.
 
-## Commands (66 total)
+## Commands (67 total)
 
 Tip: start with `perceive`, then use `click`/`fill`/`select`; use `status` or `console` when you need debugging context.
 
@@ -401,6 +401,7 @@ export-playwright <target>       # export current action log as a Playwright spe
 diff-shot <target> [--reset] [--threshold pct] # viewport pixel diff against last diff-shot baseline
 replay   <target> --file <path>    # replay a record-actions JSON artifact
 mock     <target> [add|clear]      # mock matching network requests in this live tab
+clock    <target> [freeze|offset|reset] # override Date/time in this live tab
 throttle <target> [off|offline|slow-3g|fast-3g|lte|custom] # emulate network conditions for this tab
 status   <target> [--runtime] [--format json]  # URL, title + new console/exception entries; --runtime adds Performance metrics
 console  <target> [--all|--errors] [--format json] # console buffer (default: unread only; preserves log/warn/error/debug levels)
@@ -451,6 +452,9 @@ netlog    <target> [--clear]        # network request log (XHR/Fetch with status
 mock      <target> add "**/api/*" --status 503 --body '{"ok":false}' --content-type application/json
 mock      <target>                  # show active mock rules and recent hits
 mock      <target> clear            # disable all network mocks
+clock     <target> freeze --at 2020-01-02T03:04:05.000Z
+clock     <target> offset --ms 3600000
+clock     <target> reset
 throttle  <target> slow-3g|fast-3g|lte|offline|off
 throttle  <target> custom --latency 120 --download 256 --upload 128
 cookies   <target>                  # list cookies for current page
@@ -562,7 +566,7 @@ evalraw <target> <method> [json]    # raw CDP command passthrough
 
 </details>
 
-**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. Each action snapshots console, exception, and network buffers before dispatch, then reports low-token deltas such as `Console: 1 entry (1 error)`, `Network: 1 request (1 failed)`, or `Network: 1 request (1 pending)` when the action triggers runtime errors, failed requests, or requests that have not settled yet. After any mutating command, `perceive --since-action` replays the page diff from that action's pre-dispatch baseline, so agents can ask "what changed because of the last action?" without guessing from the last manual perceive. Use `report <target>` after a multi-step flow to see the session action timeline, evidence summary, console/network diagnostics, classified failures, session screenshot attachments, and per-target JSONL log path. Use `checkpoint <target> --format json` before risky stateful exploration, then `restore <target> --file checkpoint.json` to return to the captured URL, cookies, localStorage, and sessionStorage; restore invalidates `@ref`s, so run `perceive` again before using refs. Use `record-actions <target> --format json` when the current session should become a replay/export asset, `export-playwright <target>` to draft a Playwright spec from the portable subset, `diff-shot <target>` when a fallback visual pixel diff is needed, `mock <target> add "**/api/*" --status 503 --body '{"ok":false}'` and `throttle <target> slow-3g|offline|off` to keep network-sensitive debugging reproducible, then `replay <target> --file artifact.json` to run replayable steps against the live page. `report <target>` shows the current mock and throttle profiles so long sessions do not forget a modified tab; reset with `mock <target> clear` and `throttle <target> off` after the experiment. Commands that lack enough original input are marked with explicit missing fields instead of being silently guessed. Password-like fill/type targets are redacted before action artifacts are written. If an action fails before dispatch completes, the error is classified as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, or `selector` and includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp overlay <target> @ref`, `cdp perceive <target> -C -d 8`, or `cdp status <target>`. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` with any console/network diagnostics already captured, so agents should verify with `perceive --since-action`, `perceive --diff`, or `status` rather than retrying the action.
+**Action feedback:** mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, and `dismiss-modal` now return compact `ActionResult` evidence plus a `perceive` diff or full perceive when appropriate. Each action snapshots console, exception, and network buffers before dispatch, then reports low-token deltas such as `Console: 1 entry (1 error)`, `Network: 1 request (1 failed)`, or `Network: 1 request (1 pending)` when the action triggers runtime errors, failed requests, or requests that have not settled yet. After any mutating command, `perceive --since-action` replays the page diff from that action's pre-dispatch baseline, so agents can ask "what changed because of the last action?" without guessing from the last manual perceive. Use `report <target>` after a multi-step flow to see the session action timeline, evidence summary, console/network diagnostics, classified failures, session screenshot attachments, and per-target JSONL log path. Use `checkpoint <target> --format json` before risky stateful exploration, then `restore <target> --file checkpoint.json` to return to the captured URL, cookies, localStorage, and sessionStorage; restore invalidates `@ref`s, so run `perceive` again before using refs. Use `record-actions <target> --format json` when the current session should become a replay/export asset, `export-playwright <target>` to draft a Playwright spec from the portable subset, `diff-shot <target>` when a fallback visual pixel diff is needed, `mock <target> add "**/api/*" --status 503 --body '{"ok":false}'`, `clock <target> freeze --at ...`, and `throttle <target> slow-3g|offline|off` to keep network- and time-sensitive debugging reproducible, then `replay <target> --file artifact.json` to run replayable steps against the live page. `report <target>` shows the current mock, clock, and throttle profiles so long sessions do not forget a modified tab; reset with `mock <target> clear`, `clock <target> reset`, and `throttle <target> off` after the experiment. Commands that lack enough original input are marked with explicit missing fields instead of being silently guessed. Password-like fill/type targets are redacted before action artifacts are written. If an action fails before dispatch completes, the error is classified as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, or `selector` and includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp overlay <target> @ref`, `cdp perceive <target> -C -d 8`, or `cdp status <target>`. If the action was sent but the post-action observation times out during a React rerender or navigation churn, the command reports `success but observation timed out` with any console/network diagnostics already captured, so agents should verify with `perceive --since-action`, `perceive --diff`, or `status` rather than retrying the action.
 
 Use `wait` instead of shell `sleep` when policy blocks long sleeps:
 
