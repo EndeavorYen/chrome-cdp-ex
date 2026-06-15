@@ -60,7 +60,7 @@
 - [ ] `tab-group` / `broadcast` — multi-tab coordination. Priority: P2.
 - [ ] `diff-shot` — visual regression diff between baseline + current. Priority: P2.
 - [x] `frame` / `frames` — list CDP frame tree with stable `@fN` refs and parse `@fN:M` syntax. Priority: P1.
-- [ ] Frame-scoped perception/action refs — observe and act inside iframe-local refs such as `@f2:4`. Priority: P1.
+- [x] Frame-scoped perception/action refs — `perceive --frame @fN` emits `@fN:M` refs; `click`, `fill`, and `cascade` can resolve them. Priority: P1.
 - [ ] `components` — React/Vue component tree + state inspection. Priority: P2.
 - [ ] `emulate` — dark/light mode emulation. Priority: P2.
 

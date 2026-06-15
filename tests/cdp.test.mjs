@@ -777,7 +777,7 @@ describe('Perceive diff baseline', () => {
       'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
       'Interactive: 1 button',
       'Console: clean',
-      'Coords: viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
       '',
       '[WebArea] Example',
       '  [button] Save  @1',
@@ -787,7 +787,7 @@ describe('Perceive diff baseline', () => {
       'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
       'Interactive: 1 button',
       'Console: clean',
-      'Coords: viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
       '',
       '[WebArea] Example',
       '  [button] Save  @1',
@@ -807,7 +807,7 @@ describe('Perceive diff baseline', () => {
       'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
       'Interactive: 1 button',
       'Console: clean',
-      'Coords: viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
       '',
       '[WebArea] Checkout',
     ].join('\n');
@@ -816,7 +816,7 @@ describe('Perceive diff baseline', () => {
       'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
       'Interactive: 1 button',
       'Console: clean',
-      'Coords: viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
       '',
       '[WebArea] Checkout',
       '  [StaticText] Payment failed: card number is required',
@@ -1081,6 +1081,7 @@ describe('parsePerceiveArgs', () => {
       keepRefs: false,
       last: null,
       sinceAction: false,
+      frameRef: null,
     });
   });
 
@@ -1148,6 +1149,7 @@ describe('parsePerceiveArgs', () => {
       keepRefs: false,
       last: null,
       sinceAction: false,
+      frameRef: null,
     });
   });
 
@@ -1858,6 +1860,27 @@ describe('frame tree helpers', () => {
     expect(T.parseFrameRef('@f2')).toBeNull();
   });
 
+  it('parses perceive --frame refs', () => {
+    expect(parsePerceiveArgs(['--frame', '@f2']).frameRef).toBe('@f2');
+    expect(parsePerceiveArgs(['-F', '@f3']).frameRef).toBe('@f3');
+  });
+
+  it('extracts a frame ref from frame-scoped action targets', () => {
+    expect(T.frameRefFromActionTarget({ input: '@f2:4' })).toBe('@f2');
+    expect(T.frameRefFromActionTarget({ label: '@f3:9' })).toBe('@f3');
+    expect(T.frameRefFromActionTarget({ input: '@4' })).toBeNull();
+  });
+
+  it('uses the last frame perceive output as the baseline for frame-scoped actions', () => {
+    const refState = {
+      frameLastOutputs: new Map([['@f2', 'Frame: @f2\nold child state']]),
+    };
+    expect(T.baselineOutputForActionTarget(refState, 'main page output', { input: '@f2:4' }))
+      .toBe('Frame: @f2\nold child state');
+    expect(T.baselineOutputForActionTarget(refState, 'main page output', { input: '@4' }))
+      .toBe('main page output');
+  });
+
   it('flattens frame trees into stable @f refs', () => {
     const frames = T.flattenFrameTree(sampleTree);
     expect(frames).toEqual([
@@ -1884,6 +1907,109 @@ describe('frame tree helpers', () => {
     expect(out).toContain('Frames: 4');
     expect(out).toContain('@f2 checkout checkout-frame');
     expect(cdp.calls[0]).toMatchObject({ method: 'Page.getFrameTree', sessionId: 'sid1' });
+  });
+
+  it('perceives a frame and qualifies element refs with the frame ref', async () => {
+    const cdp = createMockCDP({
+      'Page.getFrameTree': () => ({ frameTree: sampleTree }),
+      'Page.createIsolatedWorld': (params) => {
+        expect(params.frameId).toBe('checkout-frame');
+        return { executionContextId: 42 };
+      },
+      'Runtime.evaluate': (params) => {
+        expect(params.contextId).toBe(42);
+        return { result: { value: JSON.stringify({
+          title: 'Checkout',
+          url: 'https://pay.example.com/checkout',
+          vw: 320,
+          vh: 240,
+          scrollY: 0,
+          scrollMax: 0,
+          counts: { button: 1 },
+          focused: 'none',
+          layoutMap: {},
+          styleHints: {},
+          cursorInteractives: [],
+        }) } };
+      },
+      'Accessibility.getFullAXTree': (params) => {
+        expect(params.frameId).toBe('checkout-frame');
+        return { nodes: [
+          { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Checkout' }, childIds: ['2'] },
+          { nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: 'Pay now' }, backendDOMNodeId: 222 },
+        ] };
+      },
+      'DOM.resolveNode': (params) => {
+        if (params.backendNodeId === 222) return { object: { objectId: 'button-object' } };
+        if (params.backendNodeId === 333) return { object: { objectId: 'frame-owner' } };
+        throw new Error(`unexpected backend node ${params.backendNodeId}`);
+      },
+      'Runtime.callFunctionOn': (params) => {
+        if (params.objectId === 'button-object') return { result: { value: { x: 12, y: 20, w: 80, h: 24, position: '' } } };
+        if (params.objectId === 'frame-owner') return { result: { value: { x: 50, y: 40, w: 300, h: 200 } } };
+        throw new Error(`unexpected object ${params.objectId}`);
+      },
+      'DOM.getFrameOwner': (params) => {
+        expect(params.frameId).toBe('checkout-frame');
+        return { backendNodeId: 333 };
+      },
+    });
+    const refState = {};
+    const out = await T.perceiveStr(
+      cdp,
+      'sid1',
+      new RingBuffer(5),
+      new RingBuffer(5),
+      new Map(),
+      { output: null, model: null },
+      { frameRef: '@f2' },
+      refState
+    );
+
+    expect(out).toContain('Frame: @f2 checkout checkout-frame https://pay.example.com/checkout');
+    expect(out).toContain('[button] Pay now  @f2:1  (62,60 80×24)');
+    expect(refState.frameRefs.get('@f2').refs.get(1)).toBe(222);
+    expect(refState.frameLastOutputs.get('@f2')).toContain('[button] Pay now  @f2:1');
+  });
+
+  it('clicks frame-scoped refs using top-level viewport coordinates', async () => {
+    const refState = {
+      frameRefs: new Map([
+        ['@f2', {
+          frameRef: '@f2',
+          frameId: 'checkout-frame',
+          parentId: 'main-frame',
+          refs: new Map([[1, 222]]),
+        }],
+      ]),
+    };
+    const cdp = createMockCDP({
+      'DOM.resolveNode': (params) => {
+        if (params.backendNodeId === 222) return { object: { objectId: 'child-button' } };
+        if (params.backendNodeId === 333) return { object: { objectId: 'frame-owner' } };
+        throw new Error(`unexpected backend node ${params.backendNodeId}`);
+      },
+      'Runtime.callFunctionOn': (params) => {
+        if (params.objectId === 'child-button') {
+          return { result: { value: { x: 10, y: 5, w: 100, h: 20, tag: 'BUTTON', text: 'Pay now' } } };
+        }
+        if (params.objectId === 'frame-owner') {
+          return { result: { value: { x: 50, y: 40, w: 300, h: 200 } } };
+        }
+        throw new Error(`unexpected object ${params.objectId}`);
+      },
+      'DOM.getFrameOwner': (params) => {
+        expect(params.frameId).toBe('checkout-frame');
+        return { backendNodeId: 333 };
+      },
+      'Input.dispatchMouseEvent': () => ({}),
+    });
+
+    const out = await T.clickStr(cdp, 'sid1', '@f2:1', new Map(), refState);
+    expect(out).toContain('Clicked <BUTTON> "Pay now" (@f2:1)');
+    const pressed = cdp.calls.find(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mousePressed');
+    expect(pressed.params.x).toBe(110);
+    expect(pressed.params.y).toBe(55);
   });
 });
 

@@ -9,7 +9,7 @@ description: "Your EYES into the user's live Chrome browser and Electron apps. T
 
 1. **Readiness:** `cdp doctor` — checks Node, install path, daemon state, fd limit, CDP reachability, and prints the next command to run.
 2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`.
-3. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, viewport CSS coordinates (fixed/sticky elements are tagged), console health.
+3. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, top-level viewport CSS coordinates (fixed/sticky elements are tagged), console health.
 4. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
 5. **Verify/report:** read the automatic action evidence, then use `cdp perceive <target> --since-action` or `cdp report <target>` for handoff.
 
@@ -163,6 +163,7 @@ scripts/cdp.mjs perceive <target>              # full page perception with @ref 
 scripts/cdp.mjs perceive <target> --format json # versioned perception model for tool-calling agents
 scripts/cdp.mjs perceive <target> --diff       # show only changes since last perceive
 scripts/cdp.mjs perceive <target> --since-action # show changes caused by the last mutating command
+scripts/cdp.mjs perceive <target> --frame @f2  # perceive inside a frame; refs become @f2:1
 scripts/cdp.mjs perceive <target> -s "#main"   # scope to CSS selector subtree
 scripts/cdp.mjs perceive <target> -x "nav, aside, [role=complementary]"  # exclude noisy regions
 scripts/cdp.mjs perceive <target> -i           # interactive elements only (compact)
@@ -306,7 +307,7 @@ scripts/cdp.mjs replay <target> --file <path>                     # execute repl
 ```
 
 > **Agent tip:** `perceive` already includes summary + console health. Use `status` or `console` only when you need to check for **new** console entries after an action.
-> Use `frame`/`frames` when an action is classified as `wrong-frame` or the page contains iframes; it lists stable `@fN` frame refs and prepares future frame-local element refs such as `@f2:4`.
+> Use `frame`/`frames` when an action is classified as `wrong-frame` or the page contains iframes; it lists stable `@fN` frame refs. Then run `perceive <target> --frame @f2` to assign frame-local element refs such as `@f2:4`. `click`, `fill`, and `cascade` can use those refs directly.
 > Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session, lists session screenshot attachments, and shows the per-target JSONL log path for post-mortem review.
 > Use `checkpoint --format json` before risky stateful exploration, then `restore --file checkpoint.json` to return to the captured URL, cookies, localStorage, and sessionStorage. After restore, run `perceive` before using any `@ref`; refs from the prior page state are intentionally invalid.
 > Use `record-actions --format json` when a successful exploration should become a replay/export asset, then `replay --file artifact.json` to run replayable steps against a live page. Incomplete commands are marked with explicit missing fields instead of guessed. Password-like fill/type targets are redacted before action artifacts are written.

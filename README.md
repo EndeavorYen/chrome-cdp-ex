@@ -370,20 +370,22 @@ doctor / ready                     # one-call diagnostics (no target needed)
 <summary><strong>Perception</strong> - start here</summary>
 
 ```bash
-perceive <target> [flags] [--format json] # enriched AX tree with @ref indices + viewport CSS coordinates
+perceive <target> [flags] [--format json] # enriched AX tree with @ref indices + top-level viewport CSS coordinates
                                    #   --diff: show only changes since last perceive
                                    #   --since-action: show changes caused by the last mutating command
+                                   #   --frame @fN: perceive inside an iframe; refs become @fN:M
                                    #   -s <sel>: scope to CSS selector subtree
                                    #   -i: interactive elements only
                                    #   -d N: limit tree depth
                                    #   -C: include non-ARIA clickable elements
                                    #   --keep-refs: preserve every @ref line under truncation
                                    #   --last N: keep last text/log rows plus high-signal errors/results
-                                   # Coords are viewport CSS pixels — same frame as clickxy.
+                                   # Coords are top-level viewport CSS pixels — same space as clickxy.
                                    # Fixed/sticky elements get a ", fixed"/", sticky" tag.
 snap     <target> [--full]         # accessibility tree (compact by default)
 summary  <target> [--format json]  # token-efficient overview (~100 tokens)
 frame    <target> [--format json]  # frame tree with @fN refs (alias: frames)
+perceive <target> --frame @f2      # observe iframe contents; click/fill/cascade can use @f2:1 refs
 report   <target>                  # session action timeline + evidence summary + screenshots + JSONL log path
 checkpoint <target> [--format json] # capture URL, cookies, localStorage, and sessionStorage
 restore  <target> --file <path>    # restore a checkpoint artifact into the live page

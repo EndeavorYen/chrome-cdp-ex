@@ -33,7 +33,7 @@
     <iframe
       title="Smoke child frame"
       name="smoke-child"
-      srcdoc="<main><h2>Smoke child frame</h2><button id='child-action'>Child action</button></main>">
+      srcdoc="<main><h2>Smoke child frame</h2><button id='child-action'>Child action</button><p id='child-status'>child:none</p><script>document.getElementById('child-action').addEventListener('click',()=>{document.getElementById('child-status').textContent='success: child:clicked';});</script></main>">
     </iframe>
   </main>
   <aside class="sidebar">

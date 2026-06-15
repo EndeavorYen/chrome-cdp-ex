@@ -649,7 +649,7 @@ function evalBase64Decode(b64) {
   return decoded;
 }
 
-async function evalStr(cdp, sid, expression, autoWrap = false) {
+async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
   // Auto-wrap: if expression contains `await`, wrap in async IIFE
   let expr = expression;
   if (autoWrap && /\bawait\b/.test(expr)) {
@@ -658,9 +658,12 @@ async function evalStr(cdp, sid, expression, autoWrap = false) {
       ? `(async()=>{${expr}})()`
       : `(async()=>(${expr}))()`;
   }
-  const result = await cdp.send('Runtime.evaluate', {
+  const params = {
     expression: expr, returnByValue: true, awaitPromise: true,
-  }, sid);
+  };
+  if (options.contextId != null) params.contextId = options.contextId;
+  if (options.uniqueContextId != null) params.uniqueContextId = options.uniqueContextId;
+  const result = await cdp.send('Runtime.evaluate', params, sid);
   if (result.exceptionDetails) {
     throw new Error(result.exceptionDetails.text || result.exceptionDetails.exception?.description);
   }
@@ -1606,6 +1609,8 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
 
 function invalidateSessionRefs(session, reason) {
   session.refs.map.clear();
+  if (session.refs.frameRefs instanceof Map) session.refs.frameRefs.clear();
+  if (session.refs.frameLastOutputs instanceof Map) session.refs.frameLastOutputs.clear();
   session.refs.invalidatedAt = Date.now();
   session.refs.invalidationReason = reason;
   session.refGeneration += 1;
@@ -1642,11 +1647,21 @@ function formatUnknownRefError(ref, state = {}) {
 }
 
 async function resolveRefNode(cdp, sid, refMap, ref, refState) {
-  const num = parseInt(ref.slice(1));
-  if (isNaN(num) || !refMap.has(num)) {
-    throw new Error(formatUnknownRefError(ref, refState || {}));
+  const frameParsed = parseFrameRef(ref);
+  let num = null;
+  let frameEntry = null;
+  let backendNodeId;
+  if (frameParsed) {
+    const scoped = frameScopedBackendNode(refState || {}, frameParsed);
+    frameEntry = scoped.entry;
+    backendNodeId = scoped.backendNodeId;
+  } else {
+    num = parseInt(ref.slice(1));
+    if (isNaN(num) || !refMap.has(num)) {
+      throw new Error(formatUnknownRefError(ref, refState || {}));
+    }
+    backendNodeId = refMap.get(num);
   }
-  const backendNodeId = refMap.get(num);
   try {
     const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }, sid);
     return object.objectId;
@@ -1658,12 +1673,14 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState) {
       refState.invalidatedAt = Date.now();
       refState.invalidationReason = 'dom-mutation';
     }
-    refMap.delete(num);
+    if (frameParsed) frameEntry?.refs?.delete(frameParsed.refIndex);
+    else refMap.delete(num);
     throw new Error(formatUnknownRefError(ref, refState || {}) + ` Original CDP error: ${e.message}`);
   }
 }
 
 async function resolveRef(cdp, sid, refMap, ref, refState) {
+  const frameParsed = parseFrameRef(ref);
   const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
   const result = await cdp.send('Runtime.callFunctionOn', {
     objectId,
@@ -1674,10 +1691,25 @@ async function resolveRef(cdp, sid, refMap, ref, refState) {
     }`,
     returnByValue: true,
   }, sid);
-  return result.result.value;
+  const value = result.result.value || {};
+  if (frameParsed) {
+    const { entry } = frameScopedBackendNode(refState || {}, frameParsed);
+    const offset = await frameViewportOffset(cdp, sid, entry);
+    value.x = (Number(value.x) || 0) + offset.x;
+    value.y = (Number(value.y) || 0) + offset.y;
+  }
+  return value;
 }
 
-function isRef(s) { return /^@\d+$/.test(s); }
+function isRef(s) { return /^@\d+$/.test(s) || /^@f\d+:\d+$/.test(s); }
+
+function parseFrameOnlyRef(s) {
+  const m = String(s || '').match(/^@f(\d+)$/);
+  if (!m) return null;
+  const frameIndex = Number(m[1]);
+  if (!Number.isSafeInteger(frameIndex) || frameIndex < 1) return null;
+  return { frameRef: `@f${frameIndex}`, frameIndex };
+}
 
 function parseFrameRef(s) {
   const m = String(s || '').match(/^@f(\d+):(\d+)$/);
@@ -1752,6 +1784,116 @@ async function framesStr(cdp, sid, { format = 'text' } = {}) {
   return formatFrameTreeText(model.frames);
 }
 
+async function resolveFrameRef(cdp, sid, frameRef) {
+  const parsed = parseFrameOnlyRef(frameRef);
+  if (!parsed) throw new Error(`Frame ref required (example: @f2), got: ${frameRef || '(empty)'}`);
+  const model = await framesModel(cdp, sid);
+  const frame = model.frames[parsed.frameIndex - 1];
+  if (!frame || frame.ref !== parsed.frameRef) {
+    throw new Error(`Unknown frame: ${parsed.frameRef}. Run "frame" to refresh the frame tree, then use a listed @fN ref.`);
+  }
+  return { frame, frames: model.frames };
+}
+
+async function createFrameExecutionContext(cdp, sid, frameId) {
+  const res = await cdp.send('Page.createIsolatedWorld', {
+    frameId,
+    worldName: 'chrome-cdp-ex',
+    grantUniveralAccess: false,
+  }, sid);
+  return res.executionContextId;
+}
+
+function storeFrameScopedRefs(refState, frame, frames, scopedRefMap) {
+  if (!refState || !frame) return;
+  if (!(refState.frameRefs instanceof Map)) refState.frameRefs = new Map();
+  refState.frameRefs.set(frame.ref, {
+    frameRef: frame.ref,
+    frameIndex: frame.index,
+    frameId: frame.id,
+    parentId: frame.parentId || null,
+    parentRef: frame.parentRef || null,
+    name: frame.name || '',
+    url: frame.url || '',
+    refs: new Map(scopedRefMap),
+    frames: frames || [],
+  });
+}
+
+function frameScopedRefEntry(refState, parsed) {
+  const store = refState?.frameRefs;
+  if (!(store instanceof Map)) return null;
+  return store.get(parsed.frameRef) || null;
+}
+
+function frameScopedBackendNode(refState, parsed) {
+  const entry = frameScopedRefEntry(refState, parsed);
+  if (!entry) {
+    throw new Error(`Unknown frame ref: ${parsed.frameRef}. Run "frame", then "perceive --frame ${parsed.frameRef}" to assign iframe-local refs.`);
+  }
+  if (!(entry.refs instanceof Map) || !entry.refs.has(parsed.refIndex)) {
+    throw new Error(`Unknown ref: ${parsed.frameRef}:${parsed.refIndex}. Run "perceive --frame ${parsed.frameRef}" to refresh refs inside that frame.`);
+  }
+  return { entry, backendNodeId: entry.refs.get(parsed.refIndex) };
+}
+
+function qualifyFrameRefsInLines(lines, frameRef) {
+  return lines.map(line => line.replace(/@(\d+)(?=\s*(?:\(|$))/, `${frameRef}:$1`));
+}
+
+function frameRefFromActionTarget(target = {}) {
+  for (const value of [target.input, target.label, target.selector]) {
+    const parsed = parseFrameRef(value);
+    if (parsed) return parsed.frameRef;
+  }
+  return null;
+}
+
+function rememberFramePerceiveOutput(refState, frameRef, output) {
+  if (!refState || !frameRef) return;
+  if (!(refState.frameLastOutputs instanceof Map)) refState.frameLastOutputs = new Map();
+  refState.frameLastOutputs.set(frameRef, output);
+}
+
+function baselineOutputForActionTarget(refState, fallbackOutput, target = {}) {
+  const targetFrameRef = frameRefFromActionTarget(target);
+  if (targetFrameRef && refState?.frameLastOutputs instanceof Map && refState.frameLastOutputs.has(targetFrameRef)) {
+    return refState.frameLastOutputs.get(targetFrameRef);
+  }
+  return fallbackOutput;
+}
+
+async function frameViewportOffset(cdp, sid, frameEntry) {
+  if (!frameEntry?.frameId || !frameEntry.parentId) return { x: 0, y: 0 };
+  let x = 0;
+  let y = 0;
+  let current = frameEntry;
+  for (let guard = 0; current?.frameId && current.parentId && guard < 8; guard++) {
+    const owner = await cdp.send('DOM.getFrameOwner', { frameId: current.frameId }, sid);
+    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId: owner.backendNodeId }, sid);
+    const res = await cdp.send('Runtime.callFunctionOn', {
+      objectId: object.objectId,
+      functionDeclaration: `function() {
+        const r = this.getBoundingClientRect();
+        return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+      }`,
+      returnByValue: true,
+    }, sid);
+    const rect = res.result.value || {};
+    x += Number(rect.x) || 0;
+    y += Number(rect.y) || 0;
+    const parent = (current.frames || []).find(frame => frame.id === current.parentId);
+    if (!parent) break;
+    current = {
+      ...parent,
+      frameRef: parent.ref,
+      frameId: parent.id,
+      frames: current.frames || [],
+    };
+  }
+  return { x, y };
+}
+
 // Wait for DOM mutations to stop after an action (350ms of silence = settled)
 async function waitForSettle(cdp, sid, timeoutMs = 3000) {
   await evalStr(cdp, sid, `new Promise(resolve => {
@@ -1790,12 +1932,13 @@ function parsePerceiveArgs(args) {
   const opts = {
     diff: false, selector: null, exclude: null,
     interactive: false, maxDepth: Infinity, cursorInteractive: false,
-    keepRefs: false, last: null, sinceAction: false,
+    keepRefs: false, last: null, sinceAction: false, frameRef: null,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--diff') opts.diff = true;
     else if (a === '--since-action') opts.sinceAction = true;
+    else if (a === '-F' || a === '--frame') opts.frameRef = args[++i] || null;
     else if (a === '-s' || a === '--selector') opts.selector = args[++i];
     else if (a === '-x' || a === '--exclude') opts.exclude = args[++i];
     else if (a === '-i' || a === '--interactive') opts.interactive = true;
@@ -1814,10 +1957,14 @@ function formatPerceiveDiffOutput(previousOutput, currentOutput) {
   const prev = previousOutput.split('\n');
   const curr = currentOutput.split('\n');
   const diffLines = [];
-  // Skip header lines (first 5: Page, Viewport, Interactive, Console, Coords), diff the tree.
-  const headerEnd = 5;
-  const prevTree = prev.slice(headerEnd);
-  const currTree = curr.slice(headerEnd);
+  // Skip header lines up to the first blank line. Frame-scoped perceive adds
+  // a `Frame:` header, so avoid hard-coding the legacy 5-line header shape.
+  const prevHeaderEnd = prev.findIndex(line => line === '');
+  const currHeaderEnd = curr.findIndex(line => line === '');
+  const prevTreeStart = prevHeaderEnd >= 0 ? prevHeaderEnd + 1 : 5;
+  const currTreeStart = currHeaderEnd >= 0 ? currHeaderEnd + 1 : 5;
+  const prevTree = prev.slice(prevTreeStart);
+  const currTree = curr.slice(currTreeStart);
   // Line-level diff with StaticText noise filtering.
   const prevSet = new Set(prevTree);
   const currSet = new Set(currTree);
@@ -1848,6 +1995,7 @@ function formatPerceiveDiffOutput(previousOutput, currentOutput) {
       diffLines.push(`~~~ Text nodes updated (${parts.join(', ')})`);
     }
   }
+  const headerEnd = currHeaderEnd >= 0 ? currHeaderEnd : 5;
   return curr.slice(0, headerEnd).join('\n') + '\n\n' + diffLines.join('\n');
 }
 
@@ -2272,12 +2420,21 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null,
     interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false,
     keepRefs = false, last = null, sinceAction = false, diffBaseline = null,
+    frameRef = null,
   } = opts;
+  const frameContext = frameRef ? await resolveFrameRef(cdp, sid, frameRef) : null;
+  const frame = frameContext?.frame || null;
+  const frameExecutionContextId = frame ? await createFrameExecutionContext(cdp, sid, frame.id) : null;
+  if (frame && (scopeSelector || excludeSelector)) {
+    throw new Error('perceive --frame does not yet support --selector/--exclude; run frame-scoped perceive first, then use the listed @fN:M refs.');
+  }
   // Get AX tree nodes and page metadata + layout map in parallel
   // Hoist DOM.getDocument so scope and exclude can share it
-  const needsDocument = scopeSelector || excludeSelector;
+  const needsDocument = !frame && (scopeSelector || excludeSelector);
   const docRootPromise = needsDocument ? cdp.send('DOM.getDocument', {}, sid) : null;
-  const axPromise = scopeSelector
+  const axPromise = frame
+    ? cdp.send('Accessibility.getFullAXTree', { frameId: frame.id }, sid)
+    : scopeSelector
     ? (async () => {
         const { root } = await docRootPromise;
         const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: scopeSelector }, sid);
@@ -2288,7 +2445,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     : cdp.send('Accessibility.getFullAXTree', {}, sid);
   const [axResult, metaJson] = await Promise.all([
     axPromise,
-    evalStr(cdp, sid, perceivePageScript(cursorInteractive))
+    evalStr(cdp, sid, perceivePageScript(cursorInteractive), false, frameExecutionContextId != null ? { contextId: frameExecutionContextId } : {})
   ]);
 
   const meta = JSON.parse(metaJson);
@@ -2343,13 +2500,25 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     }
   }
 
-  const { treeLines, refNodeIds } = buildPerceiveTree(axNodes, meta, refMap, { maxDepth, interactiveOnly, keepRefs, last });
+  const activeRefMap = frame ? new Map() : refMap;
+  const builtTree = buildPerceiveTree(axNodes, meta, activeRefMap, { maxDepth, interactiveOnly, keepRefs, last });
+  let treeLines = builtTree.treeLines;
+  const { refNodeIds } = builtTree;
+  if (frame) storeFrameScopedRefs(refState, frame, frameContext.frames, activeRefMap);
 
   // === Batch-resolve @ref bounding rects (parallel, non-scrolling) ===
   // Now also returns `position` (computed style) so fixed/sticky elements get
   // a clear annotation — agents previously saw negative document-relative Ys
   // and assumed elements were off-screen.
   const refRects = new Map(); // ref number → {x, y, w, h, position?}
+  const frameOffset = frame
+    ? await frameViewportOffset(cdp, sid, {
+        ...frame,
+        frameRef: frame.ref,
+        frameId: frame.id,
+        frames: frameContext.frames,
+      })
+    : { x: 0, y: 0 };
   if (refNodeIds.length > 0) {
     const results = await Promise.allSettled(refNodeIds.map(async ({ ref, backendDOMNodeId }) => {
       const { object } = await cdp.send('DOM.resolveNode', { backendNodeId: backendDOMNodeId }, sid);
@@ -2368,14 +2537,19 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
         }`,
         returnByValue: true,
       }, sid);
-      return { ref, rect: res.result.value };
+      const rect = res.result.value || {};
+      if (frame) {
+        rect.x = (Number(rect.x) || 0) + frameOffset.x;
+        rect.y = (Number(rect.y) || 0) + frameOffset.y;
+      }
+      return { ref, rect };
     }));
     for (const r of results) {
       if (r.status === 'fulfilled') refRects.set(r.value.ref, r.value.rect);
     }
   }
 
-  // Inject @ref coordinates into treeLines (viewport CSS pixels; same frame as clickxy)
+  // Inject @ref coordinates into treeLines (top-level viewport CSS pixels; same space as clickxy)
   for (let i = 0; i < treeLines.length; i++) {
     const m = treeLines[i].match(/@(\d+)$/);
     if (m) {
@@ -2383,6 +2557,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
       if (rect) treeLines[i] += `  ${formatRefRect(rect)}`;
     }
   }
+  if (frame) treeLines = qualifyFrameRefsInLines(treeLines, frame.ref);
 
   // === Cursor-interactive @c refs ===
   let cRefCounter = 0;
@@ -2398,6 +2573,11 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   // === Assemble output ===
   const lines = [];
   lines.push(`Page: ${meta.title} — ${meta.url}`);
+  if (frame) {
+    const label = frame.name || '(anonymous)';
+    const url = frame.url || frame.unreachableUrl || '(no url)';
+    lines.push(`Frame: ${frame.ref} ${label} ${frame.id} ${url}`);
+  }
 
   const scrollPct = meta.scrollMax > 0 ? Math.round(meta.scrollY / meta.scrollMax * 100) : 0;
   lines.push(`Viewport: ${meta.vw}×${meta.vh} | Scroll: ${meta.scrollY}/${meta.scrollMax > 0 ? meta.scrollMax : 0} (${scrollPct}%) | Focused: ${meta.focused}`);
@@ -2410,10 +2590,10 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   if (warnings > 0) healthParts.push(`${warnings} warning${warnings > 1 ? 's' : ''}`);
   if (exceptions > 0) healthParts.push(`${exceptions} exception${exceptions > 1 ? 's' : ''}`);
   lines.push(`Console: ${healthParts.length > 0 ? healthParts.join(', ') : 'clean'}`);
-  // Coordinate frame hint — viewport CSS pixels match clickxy/Input events.
+  // Coordinate hint — top-level viewport CSS pixels match clickxy/Input events.
   // Fixed/sticky elements include a "fixed"/"sticky" tag so agents do not
   // misread negative scroll-relative Ys as off-screen.
-  lines.push(`Coords: viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)`);
+  lines.push(`Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)`);
 
   lines.push('');
   lines.push(...treeLines);
@@ -2422,6 +2602,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
 
   const markPerceived = () => {
     lastPerceiveStore.output = output;
+    if (frame) rememberFramePerceiveOutput(refState, frame.ref, output);
     // Mark refs as freshly assigned (clears 'navigation'/'daemon-start' state).
     if (refState && typeof refState === 'object') {
       refState.generation = (refState.generation || 0) + 1;
@@ -2470,11 +2651,11 @@ function perceptionModelFromText(output, refState = {}) {
 
   const nodes = [];
   for (const line of lines) {
-    const refMatch = line.match(/\[(\w+)\]\s+(.+?)\s+@(\d+)(?:\s+\((-?\d+),(-?\d+) (\d+)×(\d+)(?:, [^)]+)?\))?$/);
+    const refMatch = line.match(/\[(\w+)\]\s+(.+?)\s+(@f\d+:\d+|@\d+)(?:\s+\((-?\d+),(-?\d+) (\d+)×(\d+)(?:, [^)]+)?\))?$/);
     if (!refMatch) continue;
     const [, role, rawName, ref, x, y, width, height] = refMatch;
     const node = {
-      ref: `@${ref}`,
+      ref,
       role,
       name: rawName.trim(),
     };
@@ -4197,9 +4378,15 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState) {
   // Resolve element to DOM nodeId
   let nodeId;
   if (isRef(selector)) {
-    const num = parseInt(selector.slice(1));
-    const backendNodeId = refMap.get(num);
-    if (!backendNodeId) throw new Error(formatUnknownRefError(selector, refState || {}));
+    const frameParsed = parseFrameRef(selector);
+    let backendNodeId;
+    if (frameParsed) {
+      backendNodeId = frameScopedBackendNode(refState || {}, frameParsed).backendNodeId;
+    } else {
+      const num = parseInt(selector.slice(1));
+      backendNodeId = refMap.get(num);
+      if (!backendNodeId) throw new Error(formatUnknownRefError(selector, refState || {}));
+    }
     const { nodeIds } = await cdp.send('DOM.pushNodesByBackendIdsToFrontend',
       { backendNodeIds: [backendNodeId] }, sid);
     nodeId = nodeIds[0];
@@ -5210,27 +5397,40 @@ async function runDaemon(targetId) {
   const BATCH_BLOCKED = new Set(['batch', 'stop', 'repeat', 'flow']);
   // Commands that mutate shared state (refMap, lastPerceiveStore) — unsafe for parallel execution
   const BATCH_NO_PARALLEL = new Set(['click', 'clickxy', 'jsclick', 'select', 'press', 'scroll', 'nav', 'navigate', 'back', 'forward', 'reload', 'viewport', 'fill', 'type', 'inject', 'perceive', 'snap', 'snapshot', 'dismiss-modal', 'dismissmodal']);
-  async function observeActionDiff() {
+  async function observeActionDiffForTarget(target = {}, baselineOutput = null) {
+    const targetFrameRef = frameRefFromActionTarget(target);
     await waitForSettle(cdp, sessionId);
-    return perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, { diff: true }, refState);
+    return perceiveStr(
+      cdp,
+      sessionId,
+      consoleBuf,
+      exceptionBuf,
+      refMap,
+      lastPerceiveStore,
+      targetFrameRef
+        ? { sinceAction: true, diffBaseline: baselineOutput, frameRef: targetFrameRef }
+        : { sinceAction: true, diffBaseline: baselineOutput },
+      refState
+    );
   }
   async function observeFullPerceive() {
     await waitForSettle(cdp, sessionId);
     return perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {}, refState);
   }
-  async function actionFeedback(action, actionDispatch, target = {}, feedbackPolicy = 'settle-diff', observe = observeActionDiff) {
-    const baselineOutput = lastPerceiveStore.output;
+  async function actionFeedback(action, actionDispatch, target = {}, feedbackPolicy = 'settle-diff', observe = null) {
     const dispatch = typeof actionDispatch === 'function' ? actionDispatch : async () => actionDispatch;
     const actionTarget = target && typeof target === 'object'
       ? { ...target, targetId }
       : { input: String(target || ''), label: String(target || ''), targetId };
+    const baselineOutput = baselineOutputForActionTarget(refState, lastPerceiveStore.output, actionTarget);
+    const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput));
     session.lastAction = { action, target: actionTarget, feedbackPolicy, ts: Date.now(), baselineOutput };
     return runActionWithFeedback({
       action,
       target: actionTarget,
       dispatch,
       feedbackPolicy,
-      observe,
+      observe: observeAfterAction,
       onActionResult: (actionResult) => appendSessionActionLog(session, actionResult, { ts: session.lastAction.ts }),
     });
   }
@@ -5710,6 +5910,7 @@ Usage: cdp <command> [args]
   perceive <target> [flags]          Full page perception with @ref indices + coordinates
                                     --diff: show only changes since last perceive
                                     --since-action: show changes caused by the last mutating command
+                                    --frame @fN / -F @fN: perceive inside an iframe; refs become @fN:M
                                     -s <sel> / --selector: scope to CSS selector subtree
                                     -i / --interactive: only show interactive elements
                                     -d N / --depth N: limit tree depth
@@ -6203,7 +6404,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // AX tree helpers
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
-  parsePerceiveArgs, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript,
+  parsePerceiveArgs, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel,
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,
@@ -6227,7 +6428,9 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,
   formatUnknownRefError, resolveRefNode, formatRefRect, isPriorityPerceiveTextLine,
-  parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
+  parseFrameOnlyRef, parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
+  resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
+  rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr,
   parseShotArgs, shotStr,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan, spawnDebugBrowserStr,
