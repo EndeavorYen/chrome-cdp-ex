@@ -64,10 +64,20 @@ describe('benchmark killer path helpers', () => {
         stderr: '',
       },
       {
+        name: 'stale-ref',
+        command: ['click', 'AABBCCDD', '@1'],
+        startedAt: 130,
+        endedAt: 150,
+        status: 1,
+        expectedFailure: true,
+        stdout: '',
+        stderr: 'Action failure: stale-ref\nReason: The @ref no longer maps to the current DOM.\nNext: cdp perceive AABBCCDD -C -d 8\n',
+      },
+      {
         name: 'report',
         command: ['report', 'AABBCCDD'],
-        startedAt: 130,
-        endedAt: 160,
+        startedAt: 150,
+        endedAt: 180,
         status: 0,
         stdout: 'Session report: AABBCCDD\nActions: 1\n\nAction timeline:\n- click #start\n',
         stderr: '',
@@ -77,7 +87,7 @@ describe('benchmark killer path helpers', () => {
     const summary = summarizeBenchmarkRun({
       scenario: 'killer-path',
       startedAt: 0,
-      endedAt: 160,
+      endedAt: 180,
       target: 'AABBCCDD',
       steps,
     });
@@ -88,8 +98,8 @@ describe('benchmark killer path helpers', () => {
     expect(summary.scenario).toBe('killer-path');
     expect(summary.success).toBe(true);
     expect(summary.target).toBe('AABBCCDD');
-    expect(summary.metrics.totalMs).toBe(160);
-    expect(summary.metrics.commandCalls).toBe(7);
+    expect(summary.metrics.totalMs).toBe(180);
+    expect(summary.metrics.commandCalls).toBe(8);
     expect(summary.metrics.outputChars).toBe(outputChars);
     expect(summary.metrics.estimatedOutputTokens).toBe(estimateTokenCount(outputChars));
     expect(summary.metrics.firstUsefulObservationMs).toBe(40);
@@ -102,12 +112,23 @@ describe('benchmark killer path helpers', () => {
       cssTrace: { success: true, durationMs: 25, commandCalls: 1 },
       successRate: 1,
     });
+    expect(summary.metrics.staleRefRecovery).toMatchObject({
+      success: true,
+      durationMs: 20,
+      commandCalls: 1,
+      rate: 1,
+    });
     expect(summary.steps[5]).toMatchObject({
       name: 'click',
       ok: true,
       durationMs: 30,
       estimatedTokens: estimateTokenCount(steps[5].stdout.length),
       hasActionEvidence: true,
+    });
+    expect(summary.steps[6]).toMatchObject({
+      name: 'stale-ref',
+      ok: true,
+      expectedFailure: true,
     });
   });
 
@@ -141,7 +162,8 @@ describe('benchmark killer path helpers', () => {
         { name: 'frame', command: ['frame', 'AABB'], startedAt: 40, endedAt: 50, status: 0, stdout: 'Frames:\n@f2 smoke-child', stderr: '' },
         { name: 'cascade', command: ['cascade', 'AABB', '#go', 'color'], startedAt: 50, endedAt: 60, status: 0, stdout: 'color:\n  WIN red ← #go\n    → inline:1', stderr: '' },
         { name: 'click', command: ['click', 'AABB', '#go'], startedAt: 30, endedAt: 60, status: 0, stdout: 'Clicked\nclick: dispatched', stderr: '' },
-        { name: 'report', command: ['report', 'AABB'], startedAt: 60, endedAt: 100, status: 0, stdout: 'Session report: AABB\nActions: 1\n\nAction timeline:', stderr: '' },
+        { name: 'stale-ref', command: ['click', 'AABB', '@1'], startedAt: 60, endedAt: 75, status: 1, expectedFailure: true, stdout: '', stderr: 'Action failure: stale-ref\nNext: cdp perceive AABB -C -d 8' },
+        { name: 'report', command: ['report', 'AABB'], startedAt: 75, endedAt: 100, status: 0, stdout: 'Session report: AABB\nActions: 1\n\nAction timeline:', stderr: '' },
       ],
     });
 
@@ -149,12 +171,13 @@ describe('benchmark killer path helpers', () => {
 
     expect(out).toContain('chrome-cdp-ex benchmark: killer-path');
     expect(out).toContain('Success: yes');
-    expect(out).toContain('Command calls: 7');
+    expect(out).toContain('Command calls: 8');
     expect(out).toContain('Estimated output tokens:');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('CSS trace: yes');
     expect(out).toContain('Frame refs: yes');
     expect(out).toContain('Modal/overlay: yes');
+    expect(out).toContain('Stale-ref recovery: yes');
     expect(out).toContain('Verification calls saved: 1');
     expect(out).toContain('doctor');
     expect(out).toContain('report');

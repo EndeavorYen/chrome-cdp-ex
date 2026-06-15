@@ -74,17 +74,31 @@ function benchmarkDifferentiators(steps) {
   return { modalOverlay, frameRefs, cssTrace, successRate };
 }
 
+function benchmarkStaleRefRecovery(steps) {
+  const probes = steps.filter(step => step.expectedFailure && /stale-ref|Unknown ref|Refs were (cleared|invalidated)/i.test(step.outputText || ''));
+  const recovered = probes.filter(step => /Next:\s*cdp perceive|Run "?perceive"?|Refresh refs/i.test(step.outputText || ''));
+  return {
+    success: probes.length > 0 && recovered.length === probes.length,
+    durationMs: probes.reduce((sum, step) => sum + step.durationMs, 0),
+    commandCalls: probes.length,
+    recovered: recovered.length,
+    rate: probes.length > 0 ? recovered.length / probes.length : 0,
+  };
+}
+
 export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, endedAt, target = '', steps = [] } = {}) {
   const normalizedSteps = steps.map((step) => {
     const text = outputText(step);
     const outputChars = text.length;
     const actionEvidence = hasActionEvidence(step);
+    const expectedFailure = Boolean(step.expectedFailure);
     return {
       name: step.name,
       command: step.command || [],
       commandText: `cdp ${(step.command || []).join(' ')}`.trim(),
-      ok: step.status === 0,
+      ok: step.status === 0 || expectedFailure,
       status: step.status,
+      expectedFailure,
       durationMs: Math.max(0, (step.endedAt ?? step.startedAt ?? 0) - (step.startedAt ?? 0)),
       outputChars,
       estimatedTokens: estimateTokenCount(outputChars),
@@ -97,7 +111,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
   const firstObservation = normalizedSteps.find(step => step.ok && step.hasUsefulObservation);
   const failed = normalizedSteps.find(step => !step.ok);
   const outputChars = normalizedSteps.reduce((sum, step) => sum + step.outputChars, 0);
-  const actionEvidenceSteps = normalizedSteps.filter(step => step.hasActionEvidence);
+  const actionEvidenceSteps = normalizedSteps.filter(step => step.hasActionEvidence && !step.expectedFailure);
   const usefulObservationTokens = normalizedSteps
     .filter(step => step.hasUsefulObservation || step.hasActionEvidence)
     .reduce((sum, step) => sum + step.estimatedTokens, 0);
@@ -122,6 +136,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       verificationCallsSaved: actionEvidenceSteps.length,
       hasReportTimeline: /Session report:[\s\S]*Action timeline:/m.test(outputText(reportStep || {})),
       differentiators: benchmarkDifferentiators(normalizedSteps),
+      staleRefRecovery: benchmarkStaleRefRecovery(normalizedSteps),
     },
     steps: normalizedSteps.map(({ outputText: _outputText, ...step }) => step),
   };
@@ -147,12 +162,17 @@ export function formatBenchmarkReport(summary) {
     `Modal/overlay: ${differentiators.modalOverlay?.success ? 'yes' : 'no'} (${differentiators.modalOverlay?.durationMs ?? 0} ms)`,
     `Frame refs: ${differentiators.frameRefs?.success ? 'yes' : 'no'} (${differentiators.frameRefs?.durationMs ?? 0} ms)`,
     `CSS trace: ${differentiators.cssTrace?.success ? 'yes' : 'no'} (${differentiators.cssTrace?.durationMs ?? 0} ms)`,
+    `Stale-ref recovery: ${summary.metrics.staleRefRecovery?.success ? 'yes' : 'no'} (${summary.metrics.staleRefRecovery?.recovered ?? 0}/${summary.metrics.staleRefRecovery?.commandCalls ?? 0})`,
     '',
     'Steps:',
   ];
   for (const step of summary.steps) {
-    const evidence = step.hasActionEvidence ? ', evidence' : '';
-    lines.push(`  ${step.ok ? 'OK  ' : 'FAIL'} ${step.name}: ${step.durationMs} ms, ${step.estimatedTokens} tokens${evidence}`);
+    const details = [
+      step.hasActionEvidence ? 'evidence' : '',
+      step.expectedFailure ? 'expected failure' : '',
+    ].filter(Boolean).join(', ');
+    const suffix = details ? `, ${details}` : '';
+    lines.push(`  ${step.ok ? 'OK  ' : 'FAIL'} ${step.name}: ${step.durationMs} ms, ${step.estimatedTokens} tokens${suffix}`);
   }
   return lines.join('\n');
 }
@@ -168,7 +188,7 @@ function browserCandidates() {
   ].filter(([p]) => existsSync(p));
 }
 
-function runStep({ args, env, steps, name = args[0], timeout = 20000 }) {
+function runStep({ args, env, steps, name = args[0], timeout = 20000, expectedFailure = false }) {
   const startedAt = Date.now();
   const res = spawnSync(process.execPath, [cdp, ...args], {
     cwd: repoRoot,
@@ -183,6 +203,7 @@ function runStep({ args, env, steps, name = args[0], timeout = 20000 }) {
     startedAt,
     endedAt,
     status: res.status ?? 1,
+    expectedFailure,
     stdout: res.stdout || '',
     stderr: res.stderr || '',
   };
@@ -195,6 +216,17 @@ function assertStep(step) {
     throw new Error(`cdp ${step.command.join(' ')} failed\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
   }
   return step.stdout.trim();
+}
+
+function assertExpectedFailure(step, pattern) {
+  if (step.status === 0) {
+    throw new Error(`cdp ${step.command.join(' ')} should have failed\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
+  }
+  const text = outputText(step);
+  if (pattern && !pattern.test(text)) {
+    throw new Error(`cdp ${step.command.join(' ')} failed without expected recovery evidence\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
+  }
+  return text.trim();
 }
 
 export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BENCH_PORT || 9334), serverPort = Number(process.env.CDP_BENCH_HTTP_PORT || 41738), json = false } = {}) {
@@ -273,6 +305,13 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
     assertStep(runStep({ args: ['click', target, '#combat'], env, steps }));
     assertStep(runStep({ args: ['perceive', target, '--since-action'], env, steps }));
     assertStep(runStep({ args: ['report', target], env, steps }));
+    assertStep(runStep({ args: ['perceive', target, '-s', '#cmd', '-d', '4'], env, steps, name: 'stale-ref-setup' }));
+    assertStep(runStep({ args: ['eval', target, 'location.reload(); "reload-dispatched"'], env, steps, name: 'stale-ref-mutate' }));
+    assertStep(runStep({ args: ['wait', target, '1000'], env, steps, name: 'stale-ref-wait', timeout: 5000 }));
+    assertExpectedFailure(
+      runStep({ args: ['click', target, '@1'], env, steps, name: 'stale-ref', expectedFailure: true }),
+      /Action failure: stale-ref|Unknown ref|Refs were (cleared|invalidated)|Next:\s*cdp perceive/i
+    );
 
     const summary = summarizeBenchmarkRun({
       scenario: 'killer-path',
