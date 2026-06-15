@@ -126,6 +126,11 @@ step('text fallback', () => assertIncludes(run(['text', target, '[role="region"]
 const clickOut = step('combat click', () => run(['click', target, '#combat']));
 assertIncludes(clickOut, 'Clicked', 'click #combat');
 assertIncludes(clickOut, 'click: dispatched', 'click action evidence');
+const sinceActionOut = step('perceive since-action', () => run(['perceive', target, '--since-action']));
+assertIncludes(sinceActionOut, 'Page:', 'perceive --since-action');
+if (!sinceActionOut.includes('+++ Added') && !sinceActionOut.includes('~~~ Text nodes updated')) {
+  throw new Error(`perceive --since-action should show changes from the last action\nOutput:\n${sinceActionOut}`);
+}
 step('wait any-of', () => assertIncludes(run(['waitfor', target, '--any-of', '戰鬥勝利|戰敗|逃跑成功', '8000', '--scope', '#combat-log'], { timeout: 12000 }), '戰鬥勝利', 'waitfor --any-of'));
 step('wait selector stable', () => assertIncludes(run(['waitfor', target, '--selector-stable', '#combat-log', '500', '8000'], { timeout: 12000 }), 'stable', 'waitfor --selector-stable'));
 const shotOut = step('shot quiet', () => run(['shot', target, resolve(tmpdir(), 'chrome-cdp-ex-smoke.png'), '--quiet']));

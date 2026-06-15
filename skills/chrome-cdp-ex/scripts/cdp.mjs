@@ -1023,7 +1023,7 @@ function formatActionText(result) {
   return lines.join('\n');
 }
 
-async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --diff if more evidence is needed' }) {
+async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --since-action if more evidence is needed' }) {
   const startedAt = Date.now();
   const dispatchText = await dispatch();
   if (feedbackPolicy === 'none' || feedbackPolicy === 'report-only') return dispatchText;
@@ -1040,7 +1040,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
     return `${dispatchText}\n---\n${formatActionText(result)}`;
   } catch (e) {
     if (!isTimeoutError(e)) throw e;
-    return `${dispatchText}\n---\n(success but observation timed out after action dispatch: ${e.message}. The action was already sent; run \`perceive --diff\` or \`status\` to refresh.)`;
+    return `${dispatchText}\n---\n(success but observation timed out after action dispatch: ${e.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
   }
 }
 
@@ -1186,11 +1186,12 @@ function parsePerceiveArgs(args) {
   const opts = {
     diff: false, selector: null, exclude: null,
     interactive: false, maxDepth: Infinity, cursorInteractive: false,
-    keepRefs: false, last: null,
+    keepRefs: false, last: null, sinceAction: false,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--diff') opts.diff = true;
+    else if (a === '--since-action') opts.sinceAction = true;
     else if (a === '-s' || a === '--selector') opts.selector = args[++i];
     else if (a === '-x' || a === '--exclude') opts.exclude = args[++i];
     else if (a === '-i' || a === '--interactive') opts.interactive = true;
@@ -1203,6 +1204,47 @@ function parsePerceiveArgs(args) {
     }
   }
   return opts;
+}
+
+function formatPerceiveDiffOutput(previousOutput, currentOutput) {
+  const prev = previousOutput.split('\n');
+  const curr = currentOutput.split('\n');
+  const diffLines = [];
+  // Skip header lines (first 5: Page, Viewport, Interactive, Console, Coords), diff the tree.
+  const headerEnd = 5;
+  const prevTree = prev.slice(headerEnd);
+  const currTree = curr.slice(headerEnd);
+  // Line-level diff with StaticText noise filtering.
+  const prevSet = new Set(prevTree);
+  const currSet = new Set(currTree);
+  const removed = prevTree.filter(l => !currSet.has(l));
+  const added = currTree.filter(l => !prevSet.has(l));
+  const isTextOnly = l => /^\s*\[StaticText\]/.test(l);
+  const removedStructural = removed.filter(l => !isTextOnly(l));
+  const addedStructural = added.filter(l => !isTextOnly(l));
+  const removedText = removed.length - removedStructural.length;
+  const addedText = added.length - addedStructural.length;
+  if (removedStructural.length === 0 && addedStructural.length === 0 && removedText === 0 && addedText === 0) {
+    diffLines.push('(no changes detected in AX tree)');
+  } else {
+    if (removedStructural.length > 0) {
+      diffLines.push(`--- Removed (${removedStructural.length}):`);
+      for (const l of removedStructural.slice(0, 20)) diffLines.push(`- ${l}`);
+      if (removedStructural.length > 20) diffLines.push(`  ... and ${removedStructural.length - 20} more`);
+    }
+    if (addedStructural.length > 0) {
+      diffLines.push(`+++ Added (${addedStructural.length}):`);
+      for (const l of addedStructural.slice(0, 20)) diffLines.push(`+ ${l}`);
+      if (addedStructural.length > 20) diffLines.push(`  ... and ${addedStructural.length - 20} more`);
+    }
+    if (removedText > 0 || addedText > 0) {
+      const parts = [];
+      if (removedText > 0) parts.push(`${removedText} removed`);
+      if (addedText > 0) parts.push(`${addedText} added`);
+      diffLines.push(`~~~ Text nodes updated (${parts.join(', ')})`);
+    }
+  }
+  return curr.slice(0, headerEnd).join('\n') + '\n\n' + diffLines.join('\n');
 }
 
 // Format a single @ref bounding-rect annotation. Adds `position` only for
@@ -1622,7 +1664,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   const {
     diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null,
     interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false,
-    keepRefs = false, last = null,
+    keepRefs = false, last = null, sinceAction = false, diffBaseline = null,
   } = opts;
   // Get AX tree nodes and page metadata + layout map in parallel
   // Hoist DOM.getDocument so scope and exclude can share it
@@ -1771,59 +1813,32 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
 
   const output = lines.join('\n');
 
-  // Diff mode: compare with previous perceive output
-  if (diffMode && lastPerceiveStore.output) {
-    const prev = lastPerceiveStore.output.split('\n');
-    const curr = output.split('\n');
-    const diffLines = [];
-    // Skip header lines (first 5: Page, Viewport, Interactive, Console, Coords), diff the tree
-    const headerEnd = 5;
-    const prevTree = prev.slice(headerEnd);
-    const currTree = curr.slice(headerEnd);
-    // Line-level diff with StaticText noise filtering
-    const prevSet = new Set(prevTree);
-    const currSet = new Set(currTree);
-    const removed = prevTree.filter(l => !currSet.has(l));
-    const added = currTree.filter(l => !prevSet.has(l));
-    // Separate structural changes from text-only noise
-    const isTextOnly = l => /^\s*\[StaticText\]/.test(l);
-    const removedStructural = removed.filter(l => !isTextOnly(l));
-    const addedStructural = added.filter(l => !isTextOnly(l));
-    const removedText = removed.length - removedStructural.length;
-    const addedText = added.length - addedStructural.length;
-    if (removedStructural.length === 0 && addedStructural.length === 0 && removedText === 0 && addedText === 0) {
-      diffLines.push('(no changes detected in AX tree)');
-    } else {
-      if (removedStructural.length > 0) {
-        diffLines.push(`--- Removed (${removedStructural.length}):`);
-        for (const l of removedStructural.slice(0, 20)) diffLines.push(`- ${l}`);
-        if (removedStructural.length > 20) diffLines.push(`  ... and ${removedStructural.length - 20} more`);
-      }
-      if (addedStructural.length > 0) {
-        diffLines.push(`+++ Added (${addedStructural.length}):`);
-        for (const l of addedStructural.slice(0, 20)) diffLines.push(`+ ${l}`);
-        if (addedStructural.length > 20) diffLines.push(`  ... and ${addedStructural.length - 20} more`);
-      }
-      // Summarize text-only changes in one line instead of listing each
-      if (removedText > 0 || addedText > 0) {
-        const parts = [];
-        if (removedText > 0) parts.push(`${removedText} removed`);
-        if (addedText > 0) parts.push(`${addedText} added`);
-        diffLines.push(`~~~ Text nodes updated (${parts.join(', ')})`);
-      }
-    }
-    // Include current header + diff
+  const markPerceived = () => {
     lastPerceiveStore.output = output;
-    return curr.slice(0, headerEnd).join('\n') + '\n\n' + diffLines.join('\n');
+    // Mark refs as freshly assigned (clears 'navigation'/'daemon-start' state).
+    if (refState && typeof refState === 'object') {
+      refState.generation = (refState.generation || 0) + 1;
+      refState.lastPerceiveAt = Date.now();
+      refState.invalidationReason = null;
+    }
+  };
+
+  if (sinceAction) {
+    markPerceived();
+    if (!diffBaseline) {
+      return output + '\n\n(no action baseline available; run `perceive` before a mutating command, or use `perceive --diff` after a normal perceive.)';
+    }
+    return formatPerceiveDiffOutput(diffBaseline, output);
   }
 
-  lastPerceiveStore.output = output;
-  // Mark refs as freshly assigned (clears 'navigation'/'daemon-start' state).
-  if (refState && typeof refState === 'object') {
-    refState.generation = (refState.generation || 0) + 1;
-    refState.lastPerceiveAt = Date.now();
-    refState.invalidationReason = null;
+  // Diff mode: compare with previous perceive output.
+  if (diffMode && lastPerceiveStore.output) {
+    const previousOutput = lastPerceiveStore.output;
+    markPerceived();
+    return formatPerceiveDiffOutput(previousOutput, output);
   }
+
+  markPerceived();
   // Hint when perceive returns many interactive elements without exclude
   if (interactiveOnly && !excludeSelector && refNodeIds.length > 50) {
     return output + `\n\n(Hint: ${refNodeIds.length} interactive elements found — most may be sidebar/nav noise. Use \`perceive -x "nav, aside"\` to exclude, or \`perceive -s "main"\` to scope.)`;
@@ -4194,12 +4209,14 @@ async function runDaemon(targetId) {
     await waitForSettle(cdp, sessionId);
     return perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {}, refState);
   }
-  async function actionFeedback(action, actionResult, target = {}, feedbackPolicy = 'settle-diff', observe = observeActionDiff) {
-    session.lastAction = { action, target, feedbackPolicy, ts: Date.now() };
+  async function actionFeedback(action, actionDispatch, target = {}, feedbackPolicy = 'settle-diff', observe = observeActionDiff) {
+    const baselineOutput = lastPerceiveStore.output;
+    const dispatch = typeof actionDispatch === 'function' ? actionDispatch : async () => actionDispatch;
+    session.lastAction = { action, target, feedbackPolicy, ts: Date.now(), baselineOutput };
     return runActionWithFeedback({
       action,
       target,
-      dispatch: async () => actionResult,
+      dispatch,
       feedbackPolicy,
       observe,
     });
@@ -4253,7 +4270,7 @@ async function runDaemon(targetId) {
         case 'nav': case 'navigate': {
           result = await actionFeedback(
             'nav',
-            await navStr(cdp, sessionId, args[0]),
+            () => navStr(cdp, sessionId, args[0]),
             { input: args[0], resolvedBy: 'url', label: args[0] || '' },
             'full-perceive',
             observeFullPerceive
@@ -4307,6 +4324,12 @@ async function runDaemon(targetId) {
         case 'perceive': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
           const popts = parsePerceiveArgs(fopts.args);
+          if (popts.sinceAction) {
+            popts.diffBaseline = session.lastAction?.baselineOutput || null;
+            if (fopts.format === 'json') {
+              throw new Error('perceive --since-action currently supports text output only; omit --format json.');
+            }
+          }
           result = fopts.format === 'json'
             ? formatPerceptionJson(await perceiveModel(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
             : await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState);
@@ -4319,32 +4342,32 @@ async function runDaemon(targetId) {
           // Useful when overlays or weird hit testing block the realistic
           // mouse path; opt-in only so default behaviour is unchanged.
           if (args[0] === '--js' || args[0] === '-j') {
-            result = await actionFeedback('click', await jsClickStr(cdp, sessionId, args[1], refMap, refState), { input: args[1], resolvedBy: 'selector-or-ref', label: args[1] || '' });
+            result = await actionFeedback('click', () => jsClickStr(cdp, sessionId, args[1], refMap, refState), { input: args[1], resolvedBy: 'selector-or-ref', label: args[1] || '' });
           } else {
-            result = await actionFeedback('click', await clickStr(cdp, sessionId, args[0], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '' });
+            result = await actionFeedback('click', () => clickStr(cdp, sessionId, args[0], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '' });
           }
           break;
         }
-        case 'jsclick': result = await actionFeedback('jsclick', await jsClickStr(cdp, sessionId, args[0], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '' }); break;
-        case 'clickxy': result = await actionFeedback('clickxy', await clickXyStr(cdp, sessionId, args[0], args[1]), { input: `${args[0]},${args[1]}`, resolvedBy: 'coordinates', label: `${args[0]},${args[1]}` }); break;
-        case 'type': result = await actionFeedback('type', await typeStr(cdp, sessionId, args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus' }); break;
+        case 'jsclick': result = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, args[0], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '' }); break;
+        case 'clickxy': result = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, args[0], args[1]), { input: `${args[0]},${args[1]}`, resolvedBy: 'coordinates', label: `${args[0]},${args[1]}` }); break;
+        case 'type': result = await actionFeedback('type', () => typeStr(cdp, sessionId, args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus' }); break;
         case 'press': {
-          result = await actionFeedback('press', await pressStr(cdp, sessionId, args[0]), { input: args[0], resolvedBy: 'key', label: args[0] || '' });
+          result = await actionFeedback('press', () => pressStr(cdp, sessionId, args[0]), { input: args[0], resolvedBy: 'key', label: args[0] || '' });
           break;
         }
         case 'scroll': {
-          result = await actionFeedback('scroll', await scrollStr(cdp, sessionId, args[0], args[1]), { input: [args[0], args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: args[0] || 'scroll' });
+          result = await actionFeedback('scroll', () => scrollStr(cdp, sessionId, args[0], args[1]), { input: [args[0], args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: args[0] || 'scroll' });
           break;
         }
         case 'hover': result = await hoverStr(cdp, sessionId, args[0], refMap, refState); break;
         case 'waitfor': result = await waitForStr(cdp, sessionId, args, refMap, refState); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'fill': {
-          if (args[0] === '--react') result = await actionFeedback('fill', await fillStr(cdp, sessionId, args[1], args[2], refMap, refState, { react: true }), { input: args[1], resolvedBy: 'selector-or-ref', label: args[1] || '' });
-          else result = await actionFeedback('fill', await fillStr(cdp, sessionId, args[0], args[1], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '' });
+          if (args[0] === '--react') result = await actionFeedback('fill', () => fillStr(cdp, sessionId, args[1], args[2], refMap, refState, { react: true }), { input: args[1], resolvedBy: 'selector-or-ref', label: args[1] || '' });
+          else result = await actionFeedback('fill', () => fillStr(cdp, sessionId, args[0], args[1], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '' });
           break;
         }
-        case 'select': result = await actionFeedback('select', await selectStr(cdp, sessionId, args[0], args[1]), { input: args[0], resolvedBy: 'selector', label: args[0] || '' }); break;
+        case 'select': result = await actionFeedback('select', () => selectStr(cdp, sessionId, args[0], args[1]), { input: args[0], resolvedBy: 'selector', label: args[0] || '' }); break;
         case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
         case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
         case 'styles': result = await stylesStr(cdp, sessionId, args[0]); break;
@@ -4353,27 +4376,29 @@ async function runDaemon(targetId) {
         case 'cookiedel': result = await cookieDelStr(cdp, sessionId, args[0]); break;
         case 'dialog': result = dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]); break;
         case 'viewport': {
-          result = await viewportStr(cdp, sessionId, args[0]);
-          if (args[0]) result = await actionFeedback('viewport', result, { input: args[0], resolvedBy: 'viewport', label: args[0] }); // auto-diff when resizing
+          if (args[0]) result = await actionFeedback('viewport', () => viewportStr(cdp, sessionId, args[0]), { input: args[0], resolvedBy: 'viewport', label: args[0] }); // auto-diff when resizing
+          else result = await viewportStr(cdp, sessionId, args[0]);
           break;
         }
         case 'upload': result = await uploadStr(cdp, sessionId, args[0], args[1]); break;
         case 'text': result = await textStr(cdp, sessionId, args); break;
         case 'table': result = await tableStr(cdp, sessionId, args[0]); break;
-        case 'back': result = await actionFeedback('back', await historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back' }, 'full-perceive', observeFullPerceive); break;
-        case 'forward': result = await actionFeedback('forward', await historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward' }, 'full-perceive', observeFullPerceive); break;
+        case 'back': result = await actionFeedback('back', () => historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back' }, 'full-perceive', observeFullPerceive); break;
+        case 'forward': result = await actionFeedback('forward', () => historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward' }, 'full-perceive', observeFullPerceive); break;
         case 'reload': {
-          const reloadResult = await reloadStr(cdp, sessionId);
-          clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
-          result = await actionFeedback('reload', `${reloadResult} (console/exception/navigation buffers cleared)`, { input: 'reload', resolvedBy: 'page', label: 'reload' }, 'full-perceive', observeFullPerceive);
+          result = await actionFeedback('reload', async () => {
+            const reloadResult = await reloadStr(cdp, sessionId);
+            clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
+            return `${reloadResult} (console/exception/navigation buffers cleared)`;
+          }, { input: 'reload', resolvedBy: 'page', label: 'reload' }, 'full-perceive', observeFullPerceive);
           break;
         }
         case 'closetab': result = await closetabStr(cdp, targetId); break;
         case 'netlog': result = netlogStr(netReqBuf, args[0]); break;
-        case 'inject': result = await actionFeedback('inject', await injectStr(cdp, sessionId, args), { input: args[0] || '', resolvedBy: 'command', label: args[0] || 'inject' }, 'state-change'); break;
+        case 'inject': result = await actionFeedback('inject', () => injectStr(cdp, sessionId, args), { input: args[0] || '', resolvedBy: 'command', label: args[0] || 'inject' }, 'state-change'); break;
         case 'record': result = await recordStr(cdp, sessionId, args, refMap); break;
         case 'cascade': result = await cascadeStr(cdp, sessionId, args[0], args[1], refMap, refState); break;
-        case 'dismiss-modal': case 'dismissmodal': result = await actionFeedback('dismiss-modal', await dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal' }); break;
+        case 'dismiss-modal': case 'dismissmodal': result = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal' }); break;
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
         case 'batch': {
           let commands;
@@ -4612,6 +4637,7 @@ Usage: cdp <command> [args]
   list                              List open pages (shows unique target prefixes)
   perceive <target> [flags]          Full page perception with @ref indices + coordinates
                                     --diff: show only changes since last perceive
+                                    --since-action: show changes caused by the last mutating command
                                     -s <sel> / --selector: scope to CSS selector subtree
                                     -i / --interactive: only show interactive elements
                                     -d N / --depth N: limit tree depth
@@ -4721,6 +4747,7 @@ ACTION FEEDBACK
   command reports success with "observation timed out" instead of a pure timeout.
   nav automatically returns a full perceive of the loaded page.
   No need to manually run perceive or perceive --diff after these actions.
+  To re-check what the last action changed, run perceive --since-action.
 
 <target> is a unique targetId prefix from "cdp list". If a prefix is ambiguous,
 use more characters.
@@ -5069,7 +5096,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // AX tree helpers
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
-  parsePerceiveArgs, buildPerceiveTree, perceivePageScript,
+  parsePerceiveArgs, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel,
   createSessionState, invalidateSessionRefs,
   createActionResult, formatActionText, runActionWithFeedback,

@@ -35,7 +35,7 @@
 - [x] Standard `ActionResult`.
 - [x] Action evidence wrapper for mutating commands.
 - [x] Live smoke assertions for `fill`, `press`, `click`, and `inject` evidence.
-- [ ] `perceive --since-action`.
+- [x] `perceive --since-action`.
 - [ ] Per-target daemon log file.
 - [ ] Session screenshot directory.
 - [ ] `record-actions`.
@@ -43,7 +43,7 @@
 
 ### Feature Roadmap (medium effort)
 
-- [ ] `perceive --since-action` — diff from the last mutating action timestamp instead of the last manual `perceive`. Priority: P1.
+- [x] `perceive --since-action` — diff from the last mutating action baseline instead of the last manual `perceive`. Priority: P1.
 - [ ] `record-actions` / `replay` — capture user manual actions for deterministic replay. Priority: P1.
 - [ ] `checkpoint` / `restore` — save/restore page state (cookies, localStorage, URL) for stateful testing. Priority: P1.
 - [ ] `mock` / `throttle` / `clock` — request fixtures, network throttling, and `Date.now()` control. Priority: P2.

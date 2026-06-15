@@ -344,7 +344,7 @@ describe('ActionResult', () => {
       dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
       settle: { ok: true, durationMs: 120 },
       effects: { domDiff: 'button disabled', console: [], network: [], navigation: null },
-      nextHint: 'Use perceive --diff if more evidence is needed',
+      nextHint: 'Use perceive --since-action if more evidence is needed',
     });
     expect(result.schema).toBe('chrome-cdp-ex.action.v1');
     expect(result.action).toBe('click');
@@ -376,6 +376,42 @@ describe('ActionResult', () => {
     expect(text).toMatch(/Clicked @4/);
     expect(text).toMatch(/click: dispatched/);
     expect(text).toMatch(/button disabled/);
+  });
+});
+
+// =========================================================================
+// Perceive diff baseline
+// =========================================================================
+
+describe('Perceive diff baseline', () => {
+  it('formats a diff from an explicit baseline output', () => {
+    const previous = [
+      'Page: Example — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 1 button',
+      'Console: clean',
+      'Coords: viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Example',
+      '  [button] Save  @1',
+    ].join('\n');
+    const current = [
+      'Page: Example — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 1 button',
+      'Console: clean',
+      'Coords: viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Example',
+      '  [button] Save  @1',
+      '  [alert] Saved',
+    ].join('\n');
+
+    const diff = T.formatPerceiveDiffOutput(previous, current);
+
+    expect(diff).toContain('Page: Example');
+    expect(diff).toContain('+++ Added (1):');
+    expect(diff).toContain('+   [alert] Saved');
   });
 });
 
@@ -627,11 +663,16 @@ describe('parsePerceiveArgs', () => {
       cursorInteractive: false,
       keepRefs: false,
       last: null,
+      sinceAction: false,
     });
   });
 
   it('should parse --diff', () => {
     expect(parsePerceiveArgs(['--diff']).diff).toBe(true);
+  });
+
+  it('should parse --since-action', () => {
+    expect(parsePerceiveArgs(['--since-action']).sinceAction).toBe(true);
   });
 
   it('should parse -s with value', () => {
@@ -689,6 +730,7 @@ describe('parsePerceiveArgs', () => {
       cursorInteractive: true,
       keepRefs: false,
       last: null,
+      sinceAction: false,
     });
   });
 

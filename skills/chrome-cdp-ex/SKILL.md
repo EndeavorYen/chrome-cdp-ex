@@ -162,6 +162,7 @@ All commands use `scripts/cdp.mjs`. The `<target>` is a **unique** targetId pref
 scripts/cdp.mjs perceive <target>              # full page perception with @ref indices + coordinates
 scripts/cdp.mjs perceive <target> --format json # versioned perception model for tool-calling agents
 scripts/cdp.mjs perceive <target> --diff       # show only changes since last perceive
+scripts/cdp.mjs perceive <target> --since-action # show changes caused by the last mutating command
 scripts/cdp.mjs perceive <target> -s "#main"   # scope to CSS selector subtree
 scripts/cdp.mjs perceive <target> -x "nav, aside, [role=complementary]"  # exclude noisy regions
 scripts/cdp.mjs perceive <target> -i           # interactive elements only (compact)
@@ -217,9 +218,10 @@ Hierarchy comes from the accessibility tree (always correct). Layout annotations
 
 ```bash
 scripts/cdp.mjs perceive <target> --diff  # show only changes since last perceive
+scripts/cdp.mjs perceive <target> --since-action  # show changes since the last action baseline
 ```
 
-After performing an action (click, fill, etc.), use `perceive --diff` to see exactly what changed in the page structure. Shows added and removed AX tree lines. Much more token-efficient than a full re-perceive when verifying an action's effect.
+After performing an action (click, fill, etc.), prefer `perceive --since-action` when you need to re-check what that action changed; it compares the current page to the action's pre-dispatch baseline. Use `perceive --diff` when you specifically want changes since the last manual perceive. Both show added and removed AX tree lines and are much more token-efficient than a full re-perceive.
 
 ### Accessibility tree snapshot (advanced — rarely needed)
 
@@ -327,7 +329,7 @@ Executes multiple commands in a single IPC call. Default output is a JSON array 
 
 ```bash
 scripts/cdp.mjs flow <target> "click @1; wait dom stable; summary; console --errors"
-scripts/cdp.mjs flow <target> "fill @3 hello; click @7; wait network idle; perceive --diff"
+scripts/cdp.mjs flow <target> "fill @3 hello; click @7; wait network idle; perceive --since-action"
 ```
 
 Runs the steps in order, halting on the first failure. Output is a readable step-by-step layout (not a JSON blob), so you can diff a failing pipeline at a glance.
@@ -349,7 +351,7 @@ Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daem
 
 ### Action feedback (automatic)
 
-These commands **automatically wait for DOM to settle and return compact `ActionResult` evidence plus perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards:
+These commands **automatically wait for DOM to settle and return compact `ActionResult` evidence plus perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards. If you need to ask again what the last action changed, run `perceive --since-action`.
 
 | Command | Auto-returns |
 |---------|-------------|
