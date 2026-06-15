@@ -69,9 +69,16 @@ function benchmarkDifferentiators(steps) {
       && !/No matching CSS rules/i.test(text)
       && /(WIN|→|source|inline|sheet)/i.test(text);
   });
-  const probes = [modalOverlay, frameRefs, cssTrace];
+  const hmrDomUpdate = differentiatorProbe(steps, (step) => {
+    const commandName = step.command?.[0] || step.name;
+    const text = step.outputText || '';
+    return (step.name === 'hmr-diff' || (commandName === 'perceive' && step.command?.includes('--diff')))
+      && /hmr panel ready|spa|hot update/i.test(text)
+      && /\+\+\+ Added|~~~ Text nodes updated|@/m.test(text);
+  });
+  const probes = [modalOverlay, frameRefs, cssTrace, hmrDomUpdate];
   const successRate = probes.filter(probe => probe.success).length / probes.length;
-  return { modalOverlay, frameRefs, cssTrace, successRate };
+  return { modalOverlay, frameRefs, cssTrace, hmrDomUpdate, successRate };
 }
 
 function benchmarkStaleRefRecovery(steps) {
@@ -162,6 +169,7 @@ export function formatBenchmarkReport(summary) {
     `Modal/overlay: ${differentiators.modalOverlay?.success ? 'yes' : 'no'} (${differentiators.modalOverlay?.durationMs ?? 0} ms)`,
     `Frame refs: ${differentiators.frameRefs?.success ? 'yes' : 'no'} (${differentiators.frameRefs?.durationMs ?? 0} ms)`,
     `CSS trace: ${differentiators.cssTrace?.success ? 'yes' : 'no'} (${differentiators.cssTrace?.durationMs ?? 0} ms)`,
+    `HMR/SPA diff: ${differentiators.hmrDomUpdate?.success ? 'yes' : 'no'} (${differentiators.hmrDomUpdate?.durationMs ?? 0} ms)`,
     `Stale-ref recovery: ${summary.metrics.staleRefRecovery?.success ? 'yes' : 'no'} (${summary.metrics.staleRefRecovery?.recovered ?? 0}/${summary.metrics.staleRefRecovery?.commandCalls ?? 0})`,
     '',
     'Steps:',
@@ -305,6 +313,18 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
     assertStep(runStep({ args: ['click', target, '#combat'], env, steps }));
     assertStep(runStep({ args: ['perceive', target, '--since-action'], env, steps }));
     assertStep(runStep({ args: ['report', target], env, steps }));
+    assertStep(runStep({ args: ['perceive', target, '-s', '#combat-log', '-d', '6', '--last', '20'], env, steps, name: 'hmr-baseline' }));
+    assertStep(runStep({
+      args: [
+        'eval',
+        target,
+        '(() => { if (typeof appendLog === "function") { appendLog("hmr panel ready"); return "hmr-added"; } const log = document.querySelector("#combat-log"); const el = document.createElement("p"); el.id = "hmr-panel"; el.textContent = "hmr panel ready"; log?.appendChild(el); if (log) log.scrollTop = log.scrollHeight; return "hmr-added"; })()',
+      ],
+      env,
+      steps,
+      name: 'hmr-mutate',
+    }));
+    assertStep(runStep({ args: ['perceive', target, '--diff', '-s', '#combat-log', '-d', '6', '--last', '20'], env, steps, name: 'hmr-diff' }));
     assertStep(runStep({ args: ['perceive', target, '-s', '#cmd', '-d', '4'], env, steps, name: 'stale-ref-setup' }));
     assertStep(runStep({ args: ['eval', target, 'location.reload(); "reload-dispatched"'], env, steps, name: 'stale-ref-mutate' }));
     assertStep(runStep({ args: ['wait', target, '1000'], env, steps, name: 'stale-ref-wait', timeout: 5000 }));

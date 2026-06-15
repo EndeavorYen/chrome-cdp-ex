@@ -1050,6 +1050,37 @@ describe('Perceive diff baseline', () => {
     expect(diff).toContain('~~~ Text nodes updated (1 added)');
     expect(diff).not.toContain('diagnostic noise');
   });
+
+  it('includes compact samples for low-signal StaticText additions', () => {
+    const previous = [
+      'Page: Log — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: none',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[region] Event log',
+      '  [StaticText] old row',
+      '  ... 10 earlier text node(s) omitted (--last 20)',
+    ].join('\n');
+    const current = [
+      'Page: Log — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: none',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[region] Event log',
+      '  [StaticText] old row',
+      '  [StaticText] hmr panel ready',
+      '  ... 11 earlier text node(s) omitted (--last 20)',
+    ].join('\n');
+
+    const diff = T.formatPerceiveDiffOutput(previous, current);
+
+    expect(diff).toContain('~~~ Text nodes updated (1 added)');
+    expect(diff).toContain('+   [StaticText] hmr panel ready');
+  });
 });
 
 // =========================================================================
@@ -1377,6 +1408,67 @@ describe('parsePerceiveArgs', () => {
     const opts = parsePerceiveArgs(['-s', '#main', '-x', '.sidebar']);
     expect(opts.selector).toBe('#main');
     expect(opts.exclude).toBe('.sidebar');
+  });
+});
+
+describe('perceiveStr selector scope', () => {
+  it('scopes perception to DOM subtree descendants for long live logs', async () => {
+    const pageMeta = JSON.stringify({
+      title: 'Scoped Log',
+      url: 'https://example.test/log',
+      vw: 800,
+      vh: 600,
+      scrollY: 0,
+      scrollMax: 0,
+      focused: 'none',
+      counts: {},
+      layoutMap: {},
+      styleHints: {},
+      cursorInteractives: [],
+    });
+    const fullAxTree = [
+      { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Scoped Log' }, backendDOMNodeId: 100 },
+      { nodeId: '2', parentId: '1', role: { value: 'StaticText' }, name: { value: 'Sticky toolbar' }, backendDOMNodeId: 200 },
+      { nodeId: '3', parentId: '1', role: { value: 'region' }, name: { value: 'Event log' }, backendDOMNodeId: 300 },
+      { nodeId: '4', parentId: '3', role: { value: 'StaticText' }, name: { value: 'old log row' } },
+      { nodeId: '5', parentId: '3', role: { value: 'StaticText' }, name: { value: 'hmr panel ready' } },
+      { nodeId: '6', parentId: '1', role: { value: 'button' }, name: { value: 'Run diagnostic' }, backendDOMNodeId: 400 },
+    ];
+    const unscopedSkeleton = fullAxTree.filter(node => node.nodeId !== '4' && node.nodeId !== '5');
+    const cdp = createMockCDP({
+      'DOM.getDocument': () => ({ root: { nodeId: 10 } }),
+      'DOM.querySelector': (_params) => ({ nodeId: 30 }),
+      'DOM.describeNode': () => ({
+        node: {
+          nodeId: 30,
+          backendNodeId: 300,
+          children: [
+            { nodeId: 31, backendNodeId: 301 },
+            { nodeId: 32, backendNodeId: 302 },
+          ],
+        },
+      }),
+      'Accessibility.getFullAXTree': (params) => ({
+        nodes: params.backendNodeId ? unscopedSkeleton : fullAxTree,
+      }),
+      'Runtime.evaluate': () => ({ result: { value: pageMeta } }),
+      'DOM.resolveNode': () => ({ object: { objectId: 'button-object' } }),
+      'Runtime.callFunctionOn': () => ({ result: { value: { x: 0, y: 0, w: 1, h: 1 } } }),
+    });
+
+    const out = await T.perceiveStr(
+      cdp,
+      'sid1',
+      new RingBuffer(10),
+      new RingBuffer(10),
+      new Map(),
+      { output: null },
+      { selector: '#combat-log', last: 20 },
+    );
+
+    expect(out).toContain('hmr panel ready');
+    expect(out).not.toContain('Sticky toolbar');
+    expect(out).not.toContain('Run diagnostic');
   });
 });
 

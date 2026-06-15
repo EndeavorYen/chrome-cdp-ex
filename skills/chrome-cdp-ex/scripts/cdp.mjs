@@ -2253,6 +2253,37 @@ function parsePerceiveArgs(args) {
   return opts;
 }
 
+function collectDomBackendNodeIds(node, out = new Set()) {
+  if (!node || typeof node !== 'object') return out;
+  const backendNodeId = node.backendNodeId ?? node.backendDOMNodeId;
+  if (backendNodeId != null) out.add(backendNodeId);
+  for (const key of ['children', 'shadowRoots', 'pseudoElements', 'distributedNodes']) {
+    for (const child of node[key] || []) collectDomBackendNodeIds(child, out);
+  }
+  if (node.contentDocument) collectDomBackendNodeIds(node.contentDocument, out);
+  if (node.templateContent) collectDomBackendNodeIds(node.templateContent, out);
+  return out;
+}
+
+function filterAxNodesToBackendSubtree(axNodes, backendNodeIds) {
+  if (!backendNodeIds || backendNodeIds.size === 0) return axNodes;
+  const nodesById = new Map(axNodes.map(n => [n.nodeId, n]));
+  const includeCache = new Map();
+  function included(node) {
+    if (!node) return false;
+    if (includeCache.has(node.nodeId)) return includeCache.get(node.nodeId);
+    let value = false;
+    if (node.backendDOMNodeId != null && backendNodeIds.has(node.backendDOMNodeId)) {
+      value = true;
+    } else if (node.parentId) {
+      value = included(nodesById.get(node.parentId));
+    }
+    includeCache.set(node.nodeId, value);
+    return value;
+  }
+  return axNodes.filter(included);
+}
+
 function formatPerceiveDiffOutput(previousOutput, currentOutput) {
   const prev = previousOutput.split('\n');
   const curr = currentOutput.split('\n');
@@ -2271,10 +2302,14 @@ function formatPerceiveDiffOutput(previousOutput, currentOutput) {
   const removed = prevTree.filter(l => !currSet.has(l));
   const added = currTree.filter(l => !prevSet.has(l));
   const isTextOnly = l => /^\s*\[StaticText\]/.test(l) && !isPriorityPerceiveTextLine(l);
-  const removedStructural = removed.filter(l => !isTextOnly(l));
-  const addedStructural = added.filter(l => !isTextOnly(l));
-  const removedText = removed.length - removedStructural.length;
-  const addedText = added.length - addedStructural.length;
+  const isTextSummary = l => /^\s*\.\.\. \d+ earlier text node\(s\) omitted \(--last \d+\)/.test(l);
+  const isCompactTextChange = l => isTextOnly(l) || isTextSummary(l);
+  const removedStructural = removed.filter(l => !isCompactTextChange(l));
+  const addedStructural = added.filter(l => !isCompactTextChange(l));
+  const removedTextLines = removed.filter(isTextOnly);
+  const addedTextLines = added.filter(isTextOnly);
+  const removedText = removedTextLines.length;
+  const addedText = addedTextLines.length;
   if (removedStructural.length === 0 && addedStructural.length === 0 && removedText === 0 && addedText === 0) {
     diffLines.push('(no changes detected in AX tree)');
   } else {
@@ -2293,6 +2328,11 @@ function formatPerceiveDiffOutput(previousOutput, currentOutput) {
       if (removedText > 0) parts.push(`${removedText} removed`);
       if (addedText > 0) parts.push(`${addedText} added`);
       diffLines.push(`~~~ Text nodes updated (${parts.join(', ')})`);
+      if (addedText > 0 && removedStructural.length === 0 && addedStructural.length === 0) {
+        const samples = addedTextLines.slice(-3);
+        for (const l of samples) diffLines.push(`+ ${l}`);
+        if (addedText > samples.length) diffLines.push(`  ... and ${addedText - samples.length} more text additions`);
+      }
     }
   }
   const headerEnd = currHeaderEnd >= 0 ? currHeaderEnd : 5;
@@ -2732,6 +2772,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   // Hoist DOM.getDocument so scope and exclude can share it
   const needsDocument = !frame && (scopeSelector || excludeSelector);
   const docRootPromise = needsDocument ? cdp.send('DOM.getDocument', {}, sid) : null;
+  let scopeBackendNodeIds = null;
   const axPromise = frame
     ? cdp.send('Accessibility.getFullAXTree', { frameId: frame.id }, sid)
     : scopeSelector
@@ -2739,8 +2780,9 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
         const { root } = await docRootPromise;
         const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: scopeSelector }, sid);
         if (!nodeId) throw new Error(`Scope selector not found: ${scopeSelector}`);
-        const { node } = await cdp.send('DOM.describeNode', { nodeId }, sid);
-        return cdp.send('Accessibility.getFullAXTree', { backendNodeId: node.backendNodeId }, sid);
+        const { node } = await cdp.send('DOM.describeNode', { nodeId, depth: -1, pierce: true }, sid);
+        scopeBackendNodeIds = collectDomBackendNodeIds(node);
+        return cdp.send('Accessibility.getFullAXTree', {}, sid);
       })()
     : cdp.send('Accessibility.getFullAXTree', {}, sid);
   const [axResult, metaJson] = await Promise.all([
@@ -2761,6 +2803,9 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
 
   // Exclude filtering: remove AX subtrees rooted at excluded DOM nodes
   let axNodes = axResult.nodes;
+  if (scopeBackendNodeIds) {
+    axNodes = filterAxNodesToBackendSubtree(axNodes, scopeBackendNodeIds);
+  }
   if (excludeSelector) {
     const { root } = await docRootPromise;
     const excludedBackendNodeIds = new Set();
