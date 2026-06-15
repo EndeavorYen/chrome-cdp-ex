@@ -1,6 +1,6 @@
 # chrome-cdp-ex
 
-[![53 Commands](https://img.shields.io/badge/commands-53-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
+[![60 Commands](https://img.shields.io/badge/commands-60-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
@@ -26,7 +26,7 @@
 - [The Redesign Experiment](#the-redesign-experiment)
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
-- [Commands (53 total)](#commands-53-total)
+- [Commands (60 total)](#commands-60-total)
 - [WSL2 -> Windows Browser Control](#wsl2---windows-browser-control)
 - [Contributor Checks](#contributor-checks)
 - [Credits](#credits)
@@ -59,7 +59,7 @@ The agent using `perceive` (layout + colors + spacing + coordinates) produced th
 | **Electron app support** | **Yes** - `CDP_PORT=9222` | No | No |
 | **WSL2 -> Windows** | **Yes** - built-in | No | No |
 | **Dependencies** | **0** | Playwright + Chromium binary | Varies |
-| **Commands** | **50** | N/A (programmatic API) | ~14 |
+| **Commands** | **60** | N/A (programmatic API) | ~14 |
 
 ## One command, complete page understanding
 
@@ -148,11 +148,28 @@ mkdir -p ~/.claude/skills
 cp -r skills/chrome-cdp-ex ~/.claude/skills/
 ```
 
-3. Connect — pick whichever path fits your machine:
+3. Run the onboarding check.
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
+```
+
+`doctor` checks Node 22+, install path, daemon state, open-file limit, and CDP reachability. It ends with copy-pasteable next steps. If CDP is not ready, use one of these paths:
 
 - **Existing browser session (preferred):** open `chrome://inspect/#remote-debugging` (or `edge://inspect`) and toggle remote debugging on. Cleanest path; touches no profile state.
 - **Isolated debug profile (when the toggle path doesn't work):** `node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com`. Spawns the browser with `--remote-debugging-port` and a disposable `--user-data-dir`, leaving your main profile alone. Use `--exe /path/to/browser` for non-standard installs; Linux also falls back to common browser names on `$PATH`. Run `cdp doctor` first to confirm no port conflict.
 - **Electron app:** start it with `--remote-debugging-port=<port>` and run with `CDP_PORT=<port>`.
+
+4. Follow the golden path.
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs list
+node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com   # only if list is empty
+node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
+node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref        # or fill <target> <selector> <text>
+node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
+node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
+```
 
 **Requires:** Node.js 22+ (uses built-in WebSocket). Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
 
@@ -236,7 +253,7 @@ Each tab gets its own daemon process that keeps the CDP session open.
 Chrome's "Allow debugging" dialog appears **once per tab**, not once per command.
 Daemons auto-exit after 20 minutes of inactivity and passively collect console/exception/navigation events into ring buffers.
 
-## Commands (53 total)
+## Commands (60 total)
 
 Tip: start with `perceive`, then use `click`/`fill`/`select`; use `status` or `console` when you need debugging context.
 
@@ -309,8 +326,8 @@ stop   [target]                    # stop daemon(s)
 closetab <target>                  # close a browser tab
 keepalive <target> <ms>            # extend a tab daemon lifetime for long background work
 doctor / ready                     # one-call diagnostics (no target needed)
-                                   # checks: Node 22+, skill install, daemon sockets, CDP reachability
-                                   # prints OK/WARN/FAIL with hints; exits 1 if any check FAILs
+                                   # checks: Node 22+, install, daemon sockets, fd limit, CDP reachability
+                                   # prints OK/WARN/FAIL plus Next steps; exits 1 if any check FAILs
 ```
 
 </details>

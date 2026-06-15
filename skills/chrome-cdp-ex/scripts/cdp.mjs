@@ -10,7 +10,7 @@
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync } from 'fs';
 import { homedir } from 'os';
 import { resolve, delimiter } from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import net from 'net';
 
 const TIMEOUT = 15000;
@@ -4396,12 +4396,48 @@ function checkSkillSymlink({ home = homedir(), fs = { existsSync, lstatSync: nul
 function checkDaemonSockets({ list = listDaemonSockets } = {}) {
   const daemons = list();
   if (!daemons || daemons.length === 0) {
-    return { status: 'OK', label: 'Daemons', detail: 'no live tab daemons' };
+    return { status: 'OK', label: 'Daemons', detail: 'no live tab daemons', targetPrefixes: [] };
   }
   const ids = daemons.map(d => (d.targetId || '').slice(0, 8)).filter(Boolean);
   return {
     status: 'OK', label: 'Daemons',
     detail: `${daemons.length} live: ${ids.join(', ')}`,
+    targetPrefixes: ids,
+  };
+}
+
+function detectFdLimit({ runner = spawnSync } = {}) {
+  if (IS_WINDOWS) return null;
+  try {
+    const res = runner('/bin/sh', ['-lc', 'ulimit -n'], { encoding: 'utf8', timeout: 1000 });
+    if (res.status !== 0) return null;
+    const raw = String(res.stdout || '').trim();
+    if (raw === 'unlimited') return Number.POSITIVE_INFINITY;
+    const limit = Number(raw);
+    return Number.isFinite(limit) ? limit : null;
+  } catch {
+    return null;
+  }
+}
+
+function checkFdLimit({ limit = detectFdLimit() } = {}) {
+  if (limit == null) {
+    return {
+      status: 'WARN',
+      label: 'FD limit',
+      detail: 'open-files limit unavailable',
+      hint: 'If you see "Too many open files", rerun commands with: ulimit -n 4096',
+    };
+  }
+  if (limit >= 1024) {
+    const text = limit === Number.POSITIVE_INFINITY ? 'unlimited' : String(limit);
+    return { status: 'OK', label: 'FD limit', detail: `${text} open files` };
+  }
+  return {
+    status: 'WARN',
+    label: 'FD limit',
+    detail: `${limit} open files (low for long browser sessions)`,
+    hint: 'Raise for this shell with: ulimit -n 4096',
   };
 }
 
@@ -4475,6 +4511,44 @@ async function checkCdpReachability({ env = process.env, fetcher = fetch, host =
   }
 }
 
+function doctorNextSteps(checks) {
+  const failures = checks.filter(c => c.status === 'FAIL');
+  const cdp = checks.find(c => c.label === 'CDP');
+  const node = checks.find(c => c.label === 'Node');
+  const fd = checks.find(c => c.label === 'FD limit');
+  const daemon = checks.find(c => c.label === 'Daemons');
+  const liveTarget = daemon?.targetPrefixes?.[0] || '<target>';
+  const lines = ['', 'Next steps:'];
+  if (node?.status === 'FAIL') {
+    lines.push('  1. Install Node.js 22+ and rerun: cdp doctor');
+    return lines;
+  }
+  if (cdp?.status === 'FAIL') {
+    lines.push('  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
+    lines.push('  2. Isolated profile: cdp spawn-debug-browser edge --port 9222 --url https://example.com');
+    lines.push('  3. Then run: cdp list');
+    return lines;
+  }
+  if (cdp?.status === 'WARN') {
+    lines.push('  1. Re-toggle browser remote debugging, or restart the app with CDP_PORT set.');
+    lines.push('  2. If Chrome asks "Allow debugging?", click Allow, then rerun: cdp list');
+  } else {
+    lines.push('  1. cdp list');
+    lines.push('  2. If list is empty: cdp open https://example.com');
+    lines.push(`  3. cdp perceive ${liveTarget} -C -d 8`);
+    lines.push(`  4. cdp click ${liveTarget} @ref  # or: cdp fill ${liveTarget} <selector> <text>`);
+    lines.push(`  5. cdp perceive ${liveTarget} --since-action`);
+    lines.push(`  6. cdp report ${liveTarget}`);
+  }
+  if (fd?.status === 'WARN') {
+    lines.push('  Note: for long sessions, use: ulimit -n 4096');
+  }
+  if (failures.length === 0) {
+    lines.push('  Goal: doctor -> list/open -> perceive -> click/fill -> since-action evidence -> report');
+  }
+  return lines;
+}
+
 function formatDoctorReport(checks) {
   const lines = ['chrome-cdp-ex doctor'];
   for (const c of checks) {
@@ -4487,6 +4561,7 @@ function formatDoctorReport(checks) {
   if (fails === 0 && warns === 0) lines.push('Ready.');
   else if (fails === 0) lines.push(`Mostly ready (${warns} warning${warns > 1 ? 's' : ''}).`);
   else lines.push(`Not ready: ${fails} failure${fails > 1 ? 's' : ''}${warns ? `, ${warns} warning${warns > 1 ? 's' : ''}` : ''}.`);
+  lines.push(...doctorNextSteps(checks));
   return lines.join('\n');
 }
 
@@ -4497,6 +4572,7 @@ async function runDoctorChecks(opts = {}) {
   checks.push(checkNode(opts.nodeVersion));
   checks.push(checkSkillSymlink({ home: opts.home, fs }));
   checks.push(checkDaemonSockets({ list: opts.listDaemons }));
+  checks.push(checkFdLimit({ limit: opts.fdLimit }));
   checks.push(await checkCdpReachability({ env: opts.env, fetcher: opts.fetcher, host: opts.host }));
   return checks;
 }
@@ -5450,7 +5526,8 @@ Usage: cdp <command> [args]
                                     between iterations if the DOM changes — refs are not auto-remapped.
                                     Example: repeat A7BA 5 press c
   doctor / ready                    One-call diagnostics: Node version, skill install path,
-                                    daemon socket state, CDP_PORT/DevToolsActivePort reachability.
+                                    daemon socket state, fd limit, CDP_PORT/DevToolsActivePort reachability,
+                                    and onboarding next steps.
                                     No target required. Exits 1 if any check FAILs.
   keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)
   open  [url]                       Open a new tab (default: about:blank)
@@ -5880,7 +5957,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, parseFlowSteps, settleFlow, flowStr,
-  checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability,
-  formatDoctorReport, runDoctorChecks, doctorStr,
+  checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability,
+  doctorNextSteps, formatDoctorReport, runDoctorChecks, doctorStr,
   COMMANDS, NEEDS_TARGET,
 } : undefined;

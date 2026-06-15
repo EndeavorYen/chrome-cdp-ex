@@ -7,11 +7,11 @@ description: "Your EYES into the user's live Chrome browser and Electron apps. T
 
 ## TL;DR — 90% workflow
 
-1. **Discover tabs:** `cdp list`. If empty / no CDP available, run `cdp doctor` and either toggle remote debugging in Chrome's UI **or, with user consent, run `cdp spawn-debug-browser edge --port 9222 --url <url>`** — that launches an isolated debug profile that does not touch the user's main browser session.
-2. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, viewport CSS coordinates (fixed/sticky elements are tagged), console health.
-3. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
-4. **Extract content:** `cdp text <target> --auto` (heuristic main-content extraction) or `cdp text <target> "main, [role=main], #app .main"` (fallback chain).
-5. **Visual evidence:** `cdp shot <target> /tmp/x.png --quiet` (saved path on first line) or `cdp shot <target> --annotate` for a labeled @ref overlay.
+1. **Readiness:** `cdp doctor` — checks Node, install path, daemon state, fd limit, CDP reachability, and prints the next command to run.
+2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`.
+3. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, viewport CSS coordinates (fixed/sticky elements are tagged), console health.
+4. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
+5. **Verify/report:** read the automatic action evidence, then use `cdp perceive <target> --since-action` or `cdp report <target>` for handoff.
 
 For long-session game / animation work also reach for `cdp waitfor <target> --any-of "win|lose|escape" 60000 --scope ".combat-log"` and `cdp waitfor <target> --selector-stable ".combat-log" 3000 60000`. To close MOTD-style modals safely without firing background shortcuts, use `cdp dismiss-modal <target>` (it prefers an explicit close button, falls back to Escape — never `press Space`).
 
@@ -356,7 +356,9 @@ scripts/cdp.mjs doctor    # one-call diagnostics (no target needed)
 scripts/cdp.mjs ready     # alias
 ```
 
-Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daemon socket state, and CDP reachability (CDP_PORT or auto-discovered DevToolsActivePort). Exits with code 1 if any check fails. Run this **first** when an agent is unsure whether the environment is wired up.
+`doctor` is the onboarding wizard. It checks Node 22+, the skill install path, daemon sockets, open-file limit, and CDP reachability. When ready, follow its printed path: `list` or `open`, `perceive -C -d 8`, `click`/`fill`, `perceive --since-action`, then `report`.
+
+Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daemon socket state, open-file limit, and CDP reachability (CDP_PORT or auto-discovered DevToolsActivePort). Exits with code 1 if any check fails. Run this **first** when an agent is unsure whether the environment is wired up.
 
 ### Action feedback (automatic)
 

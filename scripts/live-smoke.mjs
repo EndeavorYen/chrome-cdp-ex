@@ -101,7 +101,11 @@ function step(name, fn) {
   return out;
 }
 
-step('doctor', () => assertIncludes(run(['doctor']), 'chrome-cdp-ex doctor', 'doctor'));
+const doctorOut = step('doctor onboarding', () => run(['doctor']));
+assertIncludes(doctorOut, 'chrome-cdp-ex doctor', 'doctor');
+assertIncludes(doctorOut, 'FD limit', 'doctor fd limit');
+assertIncludes(doctorOut, 'Next steps:', 'doctor next steps');
+assertIncludes(doctorOut, 'cdp list', 'doctor golden path');
 const perceive = step('perceive keep refs', () => run(['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20']));
 assertIncludes(perceive, 'Coords: viewport CSS px', 'perceive');
 assertIncludes(perceive, 'fixed', 'perceive fixed annotation');

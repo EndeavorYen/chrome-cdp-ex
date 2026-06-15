@@ -18,7 +18,7 @@ const {
   resetScreenshotTier, getScreenshotTier, SCREENSHOT_TIMEOUT,
   decodeVLQ, mapLineToSource, stripVitePathQuery, mapStyleSource,
   formatBatchResults, parseFlowSteps, settleFlow, flowStr,
-  checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability,
+  checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkFdLimit,
   formatDoctorReport, runDoctorChecks, doctorStr,
 } = T;
 
@@ -4093,6 +4093,21 @@ describe('checkCdpReachability', () => {
   });
 });
 
+describe('checkFdLimit', () => {
+  it('returns OK when the open-files limit is high enough for long sessions', () => {
+    const r = checkFdLimit({ limit: 4096 });
+    expect(r.status).toBe('OK');
+    expect(r.detail).toContain('4096');
+  });
+
+  it('returns WARN with a concrete command when the open-files limit is low', () => {
+    const r = checkFdLimit({ limit: 256 });
+    expect(r.status).toBe('WARN');
+    expect(r.detail).toContain('256');
+    expect(r.hint).toContain('ulimit -n 4096');
+  });
+});
+
 describe('formatDoctorReport', () => {
   it('renders OK/WARN/FAIL labels and shows hints', () => {
     const out = formatDoctorReport([
@@ -4107,6 +4122,8 @@ describe('formatDoctorReport', () => {
     expect(out).toContain('hint: cp -r ...');
     expect(out).toContain('hint: enable debugging');
     expect(out).toContain('Not ready');
+    expect(out).toContain('Next steps:');
+    expect(out).toContain('cdp spawn-debug-browser edge --port 9222 --url https://example.com');
   });
 
   it('reports "Ready." when all checks are OK', () => {
@@ -4116,6 +4133,10 @@ describe('formatDoctorReport', () => {
     ]);
     expect(out).toContain('Ready.');
     expect(out).not.toContain('Not ready');
+    expect(out).toContain('Next steps:');
+    expect(out).toContain('cdp list');
+    expect(out).toContain('cdp perceive <target> -C -d 8');
+    expect(out).toContain('cdp report <target>');
   });
 
   it('reports "Mostly ready" when only WARNs present', () => {
@@ -4125,6 +4146,16 @@ describe('formatDoctorReport', () => {
     ]);
     expect(out).toContain('Mostly ready');
     expect(out).toContain('1 warning');
+  });
+
+  it('uses live daemon prefixes in the ready golden path when available', () => {
+    const out = formatDoctorReport([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'Daemons', detail: '1 live: AABBCCDD', targetPrefixes: ['AABBCCDD'] },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+    ]);
+
+    expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
   });
 });
 
@@ -4136,15 +4167,17 @@ describe('runDoctorChecks', () => {
       home: '/tmp/no-such-home-here',
       fs: { existsSync: () => false, lstatSync: null },
       listDaemons: () => [],
+      fdLimit: 4096,
       env: { CDP_PORT: '9222' },
       fetcher,
     });
     expect(Array.isArray(checks)).toBe(true);
-    expect(checks).toHaveLength(4);
+    expect(checks).toHaveLength(5);
     expect(checks[0].label).toBe('Node');
     expect(checks[1].label).toBe('Skill install');
     expect(checks[2].label).toBe('Daemons');
-    expect(checks[3].label).toBe('CDP');
+    expect(checks[3].label).toBe('FD limit');
+    expect(checks[4].label).toBe('CDP');
   });
 });
 
@@ -4156,6 +4189,7 @@ describe('doctorStr', () => {
       home: '/tmp/no-such-home',
       fs: { existsSync: () => false, lstatSync: null },
       listDaemons: () => [],
+      fdLimit: 4096,
       env: { CDP_PORT: '9222' },
       fetcher,
     });
@@ -4163,8 +4197,11 @@ describe('doctorStr', () => {
     expect(out).toMatch(/\[OK\s*\] Node/);
     expect(out).toMatch(/\[WARN\] Skill install/);
     expect(out).toMatch(/\[OK\s*\] Daemons/);
+    expect(out).toMatch(/\[OK\s*\] FD limit/);
     expect(out).toMatch(/\[OK\s*\] CDP/);
     expect(out).toContain('Mostly ready');
+    expect(out).toContain('Next steps:');
+    expect(out).toContain('cdp list');
   });
 
   it('marks report as Not ready when CDP fails', async () => {
@@ -4174,6 +4211,7 @@ describe('doctorStr', () => {
       home: '/tmp/x',
       fs: { existsSync: () => true, lstatSync: () => ({ isSymbolicLink: () => true }) },
       listDaemons: () => [],
+      fdLimit: 4096,
       env: { CDP_PORT: '9999' },
       fetcher,
     });
