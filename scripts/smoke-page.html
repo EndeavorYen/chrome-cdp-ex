@@ -25,11 +25,20 @@
     <p>This page simulates 3y-Mud-style logs, modal dismissal, fixed controls, and keyboard shortcuts.</p>
     <input id="cmd" aria-label="command input" placeholder="look 訓練師">
     <button id="combat">Run combat</button>
+    <button id="diagnostic">Run diagnostic</button>
+    <button id="noop">No visible change</button>
+    <label>Upload evidence <input id="upload-file" aria-label="upload evidence" type="file"></label>
+    <p id="upload-status" role="status">upload:none</p>
     <div id="custom-clickable" onclick="appendLog('custom clickable used')">Custom clickable div</div>
     <section role="region" aria-label="事件紀錄">
       <h2>事件紀錄</h2>
       <div id="combat-log"></div>
     </section>
+    <iframe
+      title="Smoke child frame"
+      name="smoke-child"
+      srcdoc="<main><h2>Smoke child frame</h2><button id='child-action'>Child action</button><p id='child-status'>child:none</p><script>document.getElementById('child-action').addEventListener('click',()=>{document.getElementById('child-status').textContent='success: child:clicked';});</script></main>">
+    </iframe>
   </main>
   <aside class="sidebar">
     <button id="character">角色 (C)</button>
@@ -53,6 +62,25 @@
       setTimeout(() => appendLog('第 1 回合'), 120);
       setTimeout(() => appendLog('戰鬥勝利'), 260);
       console.log('combat complete');
+    });
+    document.getElementById('diagnostic').addEventListener('click', async () => {
+      appendLog('diagnostic started');
+      console.warn('diagnostic warning');
+      console.error('diagnostic error');
+      try {
+        const response = await fetch('/api/fail', { method: 'POST' });
+        await response.text();
+      } finally {
+        appendLog('diagnostic requested');
+      }
+    });
+    document.getElementById('noop').addEventListener('click', () => {
+      document.getElementById('noop').blur();
+    });
+    document.getElementById('upload-file').addEventListener('change', (e) => {
+      const names = Array.from(e.target.files || []).map(file => file.name).join(', ') || 'none';
+      document.getElementById('upload-status').textContent = 'upload:' + names;
+      appendLog('upload selected ' + names);
     });
     document.getElementById('close-modal').addEventListener('click', () => {
       document.getElementById('motd').hidden = true;

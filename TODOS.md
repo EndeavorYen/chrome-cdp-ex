@@ -18,25 +18,59 @@
 
 ## Backlog
 
+### Release 2.5
+
+- [x] In-file command registry.
+- [x] `--format text|json` parsing infrastructure.
+- [x] `status --format json`.
+- [x] `summary --format json`.
+- [x] `console --format json`.
+- [x] `perceive --format json`.
+- [x] Initial `PerceptionModel`.
+- [x] Explicit `SessionState`.
+- [x] Docs contract checker.
+
+### Release 2.6
+
+- [x] Standard `ActionResult`.
+- [x] Action evidence wrapper for mutating commands.
+- [x] Live smoke assertions for `fill`, `press`, `click`, and `inject` evidence.
+- [x] `perceive --since-action`.
+- [x] Per-target daemon log file.
+- [x] Session screenshot directory.
+- [x] `record-actions`.
+- [x] `replay`.
+- [x] `report <session>` action timeline.
+
+### Killer Path
+
+- [x] `doctor` onboarding wizard — checks Node, install path, daemon sockets, fd limit, CDP reachability, then prints next commands for `list/open -> perceive -> act -> since-action evidence -> report`.
+- [x] README "use / do not use / 5 success cases" rewrite. Priority: P1.
+- [x] Action failure classifier for overlay, wrong frame, navigation, DOM rewrite, and timeout. Priority: P1.
+- [x] Token-aware `perceive` scoring for important controls, errors, changes, and new UI. Priority: P1.
+- [x] `overlay` / `overlays` detector — read-only dialog/overlay and target hit-test blocker diagnosis. Priority: P1.
+
 ### Feature Roadmap (medium effort)
 
-- [ ] `perceive --since-action` — diff from the last mutating action timestamp instead of the last manual `perceive`. Priority: P1.
-- [ ] `record-actions` / `replay` — capture user manual actions for deterministic replay. Priority: P1.
-- [ ] `checkpoint` / `restore` — save/restore page state (cookies, localStorage, URL) for stateful testing. Priority: P1.
-- [ ] `mock` / `throttle` / `clock` — request fixtures, network throttling, and `Date.now()` control. Priority: P2.
-- [ ] `summary --schema=json` — structured perceive output for LLM tool-calling. Priority: P2.
+- [x] `perceive --since-action` — diff from the last mutating action baseline instead of the last manual `perceive`. Priority: P1.
+- [x] `record-actions` — export the current session action log as replay-oriented text/JSON. Priority: P1.
+- [x] `replay` — execute a recorded action artifact against the live page. Priority: P1.
+- [x] `checkpoint` / `restore` — save/restore page state (cookies, localStorage, sessionStorage, URL) for stateful testing. Priority: P1.
+- [x] `mock` / `throttle` / `clock` — request fixtures, network throttling, and `Date.now()` control. Priority: P2.
+- [x] `summary --format json` — structured summary output for LLM tool-calling. Priority: P2.
 - [ ] `tab-group` / `broadcast` — multi-tab coordination. Priority: P2.
-- [ ] `diff-shot` — visual regression diff between baseline + current. Priority: P2.
-- [ ] `frame` — cross-origin iframe listing and observation. Priority: P1.
+- [x] `diff-shot` — visual regression diff between baseline + current. Priority: P2.
+- [x] `frame` / `frames` — list CDP frame tree with stable `@fN` refs and parse `@fN:M` syntax. Priority: P1.
+- [x] Frame-scoped perception/action refs — `perceive --frame @fN` emits `@fN:M` refs; `click`, `fill`, and `cascade` can resolve them. Priority: P1.
 - [ ] `components` — React/Vue component tree + state inspection. Priority: P2.
 - [ ] `emulate` — dark/light mode emulation. Priority: P2.
 
 ### Polish backlog
 
-- [ ] Token-aware `perceive` truncation that scores nodes by interactivity and recency.
+- [ ] Adaptive `perceive` line/token budget beyond `--last`.
 - [ ] `eval --raw` flag to bypass the auto-`JSON.stringify` of object results.
-- [ ] Per-target daemon log file at `<runtime-dir>/cdp-<target>.log` for post-mortem.
-- [ ] Session screenshot directory + `cdp report <session>` command.
+- [x] Per-target daemon log file at `<runtime-dir>/cdp-<target>.log` for post-mortem.
+- [x] Session screenshot directory + report attachments.
 
 ## Distribution & Visibility
 

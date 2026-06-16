@@ -17,7 +17,12 @@
   "scripts": {
     "test": "NODE_ENV=test vitest run",
     "lint": "eslint .",
-    "smoke:live": "node scripts/live-smoke.mjs"
+    "check:docs": "node scripts/check-docs-contract.mjs",
+    "smoke:live": "node scripts/live-smoke.mjs",
+    "benchmark:killer": "node scripts/benchmark-killer-path.mjs",
+    "benchmark:generic-cdp": "node scripts/benchmark-generic-cdp-baseline.mjs",
+    "benchmark:playwright": "node scripts/benchmark-playwright-baseline.mjs",
+    "benchmark:baseline": "node scripts/benchmark-baseline-builder.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

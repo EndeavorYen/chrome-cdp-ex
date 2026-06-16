@@ -2,6 +2,7 @@
 // Run: npm test
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { readFileSync, rmSync } from 'fs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const {
@@ -9,16 +10,17 @@ const {
   shouldShowAxNode, formatAxNode, orderedAxChildren, isRef,
   validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
   formatPageList, buildPerceiveTree, perceivePageScript, injectStr, cascadeStr, recordStr, parseRecordArgs,
-  evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, navStr, clickStr, fillStr, fillReactStr, waitForStr,
-  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,
+  evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, fillStr, fillReactStr, waitForStr,
+  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs, formatCliError,
+  formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   statusStr, clearObservationBuffers,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
   captureScreenshot, screencastFallback, snapshotStr,
   resetScreenshotTier, getScreenshotTier, SCREENSHOT_TIMEOUT,
   decodeVLQ, mapLineToSource, stripVitePathQuery, mapStyleSource,
-  formatBatchResults, parseFlowSteps, settleFlow, flowStr,
-  checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability,
-  formatDoctorReport, runDoctorChecks, doctorStr,
+  formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr, autoActionJsonArgs,
+  checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkBrowserPermission, checkFdLimit,
+  doctorWizardSummary, formatDoctorReport, runDoctorChecks, doctorStr, helpStr,
 } = T;
 
 // =========================================================================
@@ -160,6 +162,2483 @@ describe('getDisplayPrefixLength', () => {
 
   it('should handle single ID', () => {
     expect(getDisplayPrefixLength(['ABCD1234'])).toBe(8);
+  });
+});
+
+// =========================================================================
+// COMMANDS registry
+// =========================================================================
+
+describe('COMMANDS registry', () => {
+  it('exports command metadata with unique names', () => {
+    const names = T.COMMANDS.map(c => c.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('generates target command requirements from registry metadata', () => {
+    const fromRegistry = new Set(
+      T.COMMANDS
+        .filter(c => c.needsTarget)
+        .flatMap(c => [c.name, ...(c.aliases || [])])
+    );
+    expect(fromRegistry).toEqual(T.NEEDS_TARGET);
+  });
+
+  it('marks mutating commands with a feedback policy or explicit none policy', () => {
+    const mutating = T.COMMANDS.filter(c => c.mutates);
+    expect(mutating.map(c => c.name).sort()).toEqual([
+      'back', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
+      'clock', 'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav',
+      'open', 'press', 'reload', 'replay', 'restore', 'scroll', 'select', 'spawn-debug-browser',
+      'stop', 'mock', 'throttle', 'type', 'upload', 'viewport',
+    ].sort());
+    for (const command of mutating) {
+      expect(command.feedbackPolicy).toMatch(/^(none|settle-diff|full-perceive|state-change|report-only)$/);
+    }
+  });
+
+  it('treats mutating commands as unsafe for parallel batch execution', () => {
+    const missing = T.COMMANDS
+      .filter(command => command.mutates)
+      .flatMap(command => [command.name, ...(command.aliases || [])])
+      .filter(name => !T.isBatchParallelUnsafeCommand(name));
+
+    expect(missing).toEqual([]);
+    expect(T.isBatchParallelUnsafeCommand('perceive')).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('snap')).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('snapshot')).toBe(true);
+  });
+
+  it('keeps read-only extraction commands safe for parallel batch execution', () => {
+    for (const name of ['elshot', 'html', 'text', 'table', 'styles', 'cookies', 'summary', 'console', 'status']) {
+      expect(T.isBatchParallelUnsafeCommand(name)).toBe(false);
+    }
+  });
+
+  it('registers record-actions as a target command with text and json output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'record-actions',
+      aliases: ['recordactions'],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers report as a target command with text and json output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'report',
+      aliases: [],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers doctor as a targetless command with text and json output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'doctor',
+      aliases: ['ready'],
+      needsTarget: false,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers help as a targetless command with text output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'help',
+      aliases: [],
+      needsTarget: false,
+      mutates: false,
+      outputFormats: ['text'],
+    }));
+  });
+
+  it('registers list as a targetless command with text and json output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'list',
+      aliases: [],
+      needsTarget: false,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers open as a targetless command with text and json output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'open',
+      aliases: [],
+      needsTarget: false,
+      mutates: true,
+      feedbackPolicy: 'full-perceive',
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers replay as a mutating target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'replay',
+      aliases: [],
+      needsTarget: true,
+      mutates: true,
+      feedbackPolicy: 'report-only',
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers batch structured JSON handoff as a target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'batch',
+      aliases: [],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers flow structured JSON handoff as a target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'flow',
+      aliases: [],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers export-playwright as a target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'export-playwright',
+      aliases: ['export-pw'],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers diff-shot as a target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'diff-shot',
+      aliases: ['diffshot'],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers cascade structured JSON handoff as a target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'cascade',
+      aliases: [],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers throttle as a mutating target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'throttle',
+      aliases: ['network-throttle'],
+      needsTarget: true,
+      mutates: true,
+      feedbackPolicy: 'report-only',
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers mock as a mutating target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'mock',
+      aliases: ['network-mock'],
+      needsTarget: true,
+      mutates: true,
+      feedbackPolicy: 'report-only',
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers clock as a mutating target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'clock',
+      aliases: ['time-travel'],
+      needsTarget: true,
+      mutates: true,
+      feedbackPolicy: 'report-only',
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers checkpoint and restore commands', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'checkpoint',
+      aliases: [],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'restore',
+      aliases: [],
+      needsTarget: true,
+      mutates: true,
+      feedbackPolicy: 'report-only',
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers frame listing as a target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'frame',
+      aliases: ['frames'],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('registers overlay detector as a read-only target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'overlay',
+      aliases: ['overlays'],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+});
+
+describe('helpStr', () => {
+  it('returns the CLI usage with the golden path commands', () => {
+    const out = helpStr();
+
+    expect(out).toContain('Usage: cdp <command> [args]');
+    expect(out).toContain('doctor / ready');
+    expect(out).toContain('list [--format json]');
+    expect(out).toContain('perceive <target>');
+    expect(out).toContain('report <target>');
+  });
+});
+
+describe('diff-shot', () => {
+  it('parses threshold, reset, and baseline options', () => {
+    expect(T.parseDiffShotArgs(['--threshold', '0.5', '--keep-baseline'])).toEqual({
+      format: 'text',
+      thresholdRatio: 0.005,
+      reset: false,
+      keepBaseline: true,
+    });
+    expect(T.parseDiffShotArgs(['--format', 'json', '--reset'])).toEqual({
+      format: 'json',
+      thresholdRatio: 0,
+      reset: true,
+      keepBaseline: false,
+    });
+  });
+
+  it('formats a first baseline capture with an executable next step', () => {
+    const out = T.formatDiffShotResult({
+      schema: 'chrome-cdp-ex.diff-shot.v1',
+      targetId: 'ABC123',
+      baselineCaptured: true,
+      baselinePath: '/tmp/base.png',
+      currentPath: '/tmp/base.png',
+      diffPath: null,
+      changedPixels: 0,
+      totalPixels: 0,
+      changedRatio: 0,
+      thresholdRatio: 0,
+      exceedsThreshold: false,
+      advancedBaseline: true,
+      fallback: false,
+    });
+
+    expect(out).toContain('Diff-shot baseline captured');
+    expect(out).toContain('/tmp/base.png');
+    expect(out).toContain('Next: cdp diff-shot ABC123');
+  });
+
+  it('formats a pixel diff with reviewable artifacts and honest scope', () => {
+    const out = T.formatDiffShotResult({
+      schema: 'chrome-cdp-ex.diff-shot.v1',
+      targetId: 'ABC123',
+      baselineCaptured: false,
+      baselinePath: '/tmp/base.png',
+      currentPath: '/tmp/current.png',
+      diffPath: '/tmp/diff.png',
+      width: 10,
+      height: 10,
+      changedPixels: 7,
+      totalPixels: 100,
+      changedRatio: 0.07,
+      thresholdRatio: 0.01,
+      exceedsThreshold: true,
+      advancedBaseline: true,
+      fallback: true,
+    });
+
+    expect(out).toContain('Diff-shot: changed 7/100 px (7.00%)');
+    expect(out).toContain('Threshold: 1.00% (exceeded)');
+    expect(out).toContain('Baseline: /tmp/base.png');
+    expect(out).toContain('Current: /tmp/current.png');
+    expect(out).toContain('Diff image: /tmp/diff.png');
+    expect(out).toContain('Pixel diff only');
+    expect(out).toContain('screenshot fallback');
+  });
+});
+
+describe('throttle', () => {
+  it('parses presets and custom network profiles into CDP payloads', () => {
+    expect(T.parseThrottleArgs(['slow-3g'])).toMatchObject({
+      format: 'text',
+      profile: 'slow-3g',
+      offline: false,
+      latencyMs: 400,
+      downloadKbps: 400,
+      uploadKbps: 400,
+      cdpParams: {
+        offline: false,
+        latency: 400,
+        downloadThroughput: 50000,
+        uploadThroughput: 50000,
+      },
+    });
+    expect(T.parseThrottleArgs(['custom', '--latency', '120', '--download', '256', '--upload', '128'])).toMatchObject({
+      profile: 'custom',
+      latencyMs: 120,
+      downloadKbps: 256,
+      uploadKbps: 128,
+      cdpParams: {
+        offline: false,
+        latency: 120,
+        downloadThroughput: 32000,
+        uploadThroughput: 16000,
+      },
+    });
+  });
+
+  it('parses off and status modes', () => {
+    expect(T.parseThrottleArgs([])).toMatchObject({ mode: 'status', format: 'text' });
+    expect(T.parseThrottleArgs(['--format', 'json'])).toMatchObject({ mode: 'status', format: 'json' });
+    expect(T.parseThrottleArgs(['off'])).toMatchObject({
+      mode: 'apply',
+      profile: 'off',
+      cdpParams: {
+        offline: false,
+        latency: 0,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+      },
+    });
+  });
+
+  it('rejects unknown profiles and stray preset arguments', () => {
+    expect(() => T.parseThrottleArgs(['slow-3g', '--latency', '99'])).toThrow(/does not accept extra arguments/);
+    expect(() => T.parseThrottleArgs(['custom', '--download', '256'])).toThrow(/requires --download .* --upload/);
+    expect(() => T.parseThrottleArgs(['dialup'])).toThrow(/Unknown throttle profile/);
+  });
+
+  it('applies network throttling through CDP and records session state', async () => {
+    const cdp = createMockCDP();
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    const out = await T.throttleStr(cdp, 'sid-1', state, ['slow-3g']);
+
+    expect(cdp.calls.map(c => c.method)).toEqual(['Network.enable', 'Network.emulateNetworkConditions']);
+    expect(cdp.calls[1].params).toMatchObject({
+      offline: false,
+      latency: 400,
+      downloadThroughput: 50000,
+      uploadThroughput: 50000,
+    });
+    expect(state.networkThrottle).toMatchObject({ profile: 'slow-3g', latencyMs: 400, downloadKbps: 400, uploadKbps: 400 });
+    expect(out).toContain('Network throttle: slow-3g');
+    expect(out).toContain('latency 400ms');
+    expect(out).toContain('Next: cdp throttle ABC123 off');
+  });
+
+  it('reports current throttle state in session reports', async () => {
+    const cdp = createMockCDP();
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    await T.throttleStr(cdp, 'sid-1', state, ['custom', '--latency', '120', '--download', '256', '--upload', '128']);
+    const report = T.formatSessionReport(state, { now: state.createdAt + 5000 });
+
+    expect(report).toContain('Network throttle: custom');
+    expect(report).toContain('120ms');
+    expect(report).toContain('256 kbps down');
+    expect(report).toContain('128 kbps up');
+  });
+});
+
+describe('network mock', () => {
+  it('parses status, clear, json, and static response rules', () => {
+    expect(T.parseMockArgs([])).toMatchObject({ mode: 'status', format: 'text' });
+    expect(T.parseMockArgs(['--format', 'json'])).toMatchObject({ mode: 'status', format: 'json' });
+    expect(T.parseMockArgs(['clear'])).toMatchObject({ mode: 'clear', format: 'text' });
+    expect(T.parseMockArgs(['clear', '--format', 'json'])).toMatchObject({ mode: 'clear', format: 'json' });
+    expect(T.parseMockArgs(['add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}', '--content-type', 'application/json'])).toMatchObject({
+      mode: 'add',
+      rule: {
+        urlPattern: '**/api/fail*',
+        status: 503,
+        body: '{"ok":false}',
+        contentType: 'application/json',
+      },
+    });
+  });
+
+  it('applies a mock through Fetch.enable and records session state', async () => {
+    const cdp = createMockCDP();
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    const out = await T.mockStr(cdp, 'sid-1', state, ['add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}', '--content-type', 'application/json']);
+
+    expect(cdp.calls.map(c => c.method)).toEqual(['Fetch.enable']);
+    expect(cdp.calls[0].params).toMatchObject({
+      patterns: [{ urlPattern: '**/api/fail*', requestStage: 'Request' }],
+    });
+    expect(state.networkMocks).toHaveLength(1);
+    expect(state.networkMocks[0]).toMatchObject({ urlPattern: '**/api/fail*', status: 503, contentType: 'application/json' });
+    expect(out).toContain('Network mock: 1 rule');
+    expect(out).toContain('**/api/fail* -> 503');
+    expect(out).toContain('Next: cdp mock ABC123 clear');
+  });
+
+  it('fulfills matched requests and continues unmatched requests', async () => {
+    const cdp = createMockCDP();
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    await T.mockStr(cdp, 'sid-1', state, ['add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}', '--content-type', 'application/json']);
+
+    await T.handleMockRequestPaused(cdp, 'sid-1', state, {
+      requestId: 'match-1',
+      request: { method: 'GET', url: 'https://example.com/api/fail?id=1' },
+    });
+    await T.handleMockRequestPaused(cdp, 'sid-1', state, {
+      requestId: 'miss-1',
+      request: { method: 'GET', url: 'https://example.com/api/ok' },
+    });
+
+    expect(cdp.calls.map(c => c.method)).toEqual([
+      'Fetch.enable',
+      'Fetch.fulfillRequest',
+      'Fetch.continueRequest',
+    ]);
+    expect(cdp.calls[1].params).toMatchObject({
+      requestId: 'match-1',
+      responseCode: 503,
+      responseHeaders: [{ name: 'content-type', value: 'application/json' }],
+    });
+    expect(Buffer.from(cdp.calls[1].params.body, 'base64').toString('utf8')).toBe('{"ok":false}');
+    expect(cdp.calls[2].params).toEqual({ requestId: 'miss-1' });
+    expect(state.networkMockHits).toHaveLength(1);
+    expect(state.networkMockHits[0]).toMatchObject({ url: 'https://example.com/api/fail?id=1', status: 503 });
+  });
+
+  it('clears mocks through Fetch.disable and reports in session reports', async () => {
+    const cdp = createMockCDP();
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    await T.mockStr(cdp, 'sid-1', state, ['add', '**/api/fail*', '--status', '503', '--body', 'down']);
+    const report = T.formatSessionReport(state, { now: state.createdAt + 5000 });
+    expect(report).toContain('Network mocks: 1 rule');
+    expect(report).toContain('**/api/fail* -> 503');
+
+    const out = await T.mockStr(cdp, 'sid-1', state, ['clear']);
+
+    expect(cdp.calls.map(c => c.method)).toEqual(['Fetch.enable', 'Fetch.disable']);
+    expect(state.networkMocks).toEqual([]);
+    expect(out).toContain('Network mock: off');
+  });
+});
+
+describe('clock', () => {
+  it('parses status, freeze, offset, and reset modes', () => {
+    expect(T.parseClockArgs([])).toMatchObject({ mode: 'status', format: 'text' });
+    expect(T.parseClockArgs(['--format', 'json'])).toMatchObject({ mode: 'status', format: 'json' });
+    expect(T.parseClockArgs(['freeze', '--at', '2020-01-02T03:04:05.000Z'])).toMatchObject({
+      mode: 'apply',
+      profile: 'freeze',
+      atMs: 1577934245000,
+    });
+    expect(T.parseClockArgs(['offset', '--ms', '3600000'])).toMatchObject({
+      mode: 'apply',
+      profile: 'offset',
+      offsetMs: 3600000,
+    });
+    expect(T.parseClockArgs(['reset'])).toMatchObject({ mode: 'reset', profile: 'real' });
+  });
+
+  it('rejects invalid clock arguments', () => {
+    expect(() => T.parseClockArgs(['freeze'])).toThrow(/requires --at/);
+    expect(() => T.parseClockArgs(['freeze', '--at', 'not-a-date'])).toThrow(/valid date/);
+    expect(() => T.parseClockArgs(['offset', '--ms', 'nan'])).toThrow(/finite millisecond/);
+    expect(() => T.parseClockArgs(['dial'])).toThrow(/Unknown clock command/);
+  });
+
+  it('installs a frozen clock for current and future page contexts', async () => {
+    const cdp = createMockCDP({
+      'Page.addScriptToEvaluateOnNewDocument': () => ({ identifier: 'clock-script-1' }),
+      'Runtime.evaluate': () => ({ result: { value: { ok: true } } }),
+    });
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    const out = await T.clockStr(cdp, 'sid-1', state, ['freeze', '--at', '2020-01-02T03:04:05.000Z']);
+
+    expect(cdp.calls.map(c => c.method)).toEqual(['Page.addScriptToEvaluateOnNewDocument', 'Runtime.evaluate']);
+    expect(cdp.calls[0].params.source).toContain('__cdpClockOriginals');
+    expect(cdp.calls[0].params.source).toContain('1577934245000');
+    expect(cdp.calls[1].params.expression).toContain('__cdpClockOriginals');
+    expect(state.clock).toMatchObject({ profile: 'freeze', atMs: 1577934245000, scriptIdentifier: 'clock-script-1' });
+    expect(out).toContain('Clock: frozen at 2020-01-02T03:04:05.000Z');
+    expect(out).toContain('Next: cdp clock ABC123 reset');
+  });
+
+  it('installs an offset clock and reports it in session reports', async () => {
+    const cdp = createMockCDP({
+      'Page.addScriptToEvaluateOnNewDocument': () => ({ identifier: 'clock-script-2' }),
+      'Runtime.evaluate': () => ({ result: { value: { ok: true } } }),
+    });
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    await T.clockStr(cdp, 'sid-1', state, ['offset', '--ms', '3600000']);
+    const report = T.formatSessionReport(state, { now: state.createdAt + 5000 });
+
+    expect(state.clock).toMatchObject({ profile: 'offset', offsetMs: 3600000 });
+    expect(report).toContain('Clock: offset +3600000ms');
+  });
+
+  it('resets the installed clock script and restores real time', async () => {
+    const cdp = createMockCDP({
+      'Page.addScriptToEvaluateOnNewDocument': () => ({ identifier: 'clock-script-1' }),
+      'Runtime.evaluate': () => ({ result: { value: { ok: true } } }),
+    });
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    await T.clockStr(cdp, 'sid-1', state, ['freeze', '--at', '2020-01-02T03:04:05.000Z']);
+
+    const out = await T.clockStr(cdp, 'sid-1', state, ['reset']);
+
+    expect(cdp.calls.map(c => c.method)).toEqual([
+      'Page.addScriptToEvaluateOnNewDocument',
+      'Runtime.evaluate',
+      'Page.removeScriptToEvaluateOnNewDocument',
+      'Runtime.evaluate',
+    ]);
+    expect(cdp.calls[2].params).toEqual({ identifier: 'clock-script-1' });
+    expect(state.clock).toBe(null);
+    expect(out).toContain('Clock: real time');
+  });
+});
+
+// =========================================================================
+// Output formats
+// =========================================================================
+
+describe('parseFormatArgs', () => {
+  it('defaults to text format', () => {
+    expect(T.parseFormatArgs(['--runtime'])).toEqual({
+      format: 'text',
+      args: ['--runtime'],
+    });
+  });
+
+  it('parses --format json and removes the option from command args', () => {
+    expect(T.parseFormatArgs(['--runtime', '--format', 'json'])).toEqual({
+      format: 'json',
+      args: ['--runtime'],
+    });
+  });
+
+  it('rejects unknown formats', () => {
+    expect(() => T.parseFormatArgs(['--format', 'xml'], ['text', 'json'])).toThrow(/format must be text or json/);
+  });
+
+  it('serializes JSON models with indentation', () => {
+    expect(T.formatJson({ schema: 'x', ok: true })).toBe('{\n  "schema": "x",\n  "ok": true\n}');
+  });
+
+  it('preserves trailing --format json when joining fill and type text args', () => {
+    expect(normalizeTargetCommandArgs('fill', ['#cmd', 'look', 'merchant', '--format', 'json'])).toEqual([
+      '#cmd',
+      'look merchant',
+      '--format',
+      'json',
+    ]);
+    expect(normalizeTargetCommandArgs('fill', ['--react', '#cmd', 'look', 'merchant', '--format', 'json'])).toEqual([
+      '--react',
+      '#cmd',
+      'look merchant',
+      '--format',
+      'json',
+    ]);
+    expect(normalizeTargetCommandArgs('type', ['hello', 'world', '--format', 'json'])).toEqual([
+      'hello world',
+      '--format',
+      'json',
+    ]);
+  });
+});
+
+describe('parseReportArgs', () => {
+  it('defaults to a bounded latest-action report window', () => {
+    expect(T.parseReportArgs([])).toEqual({
+      lastActions: 20,
+      args: [],
+    });
+  });
+
+  it('parses --last with a positive integer', () => {
+    expect(T.parseReportArgs(['--last', '5'])).toEqual({
+      lastActions: 5,
+      args: [],
+    });
+  });
+
+  it('parses --all as an unbounded report window', () => {
+    expect(T.parseReportArgs(['--all', '--verbose'])).toEqual({
+      lastActions: null,
+      args: ['--verbose'],
+    });
+  });
+
+  it('rejects missing or invalid --last values', () => {
+    expect(() => T.parseReportArgs(['--last'])).toThrow(/--last requires a positive integer/);
+    expect(() => T.parseReportArgs(['--last', '0'])).toThrow(/--last requires a positive integer/);
+    expect(() => T.parseReportArgs(['--last', '1.5'])).toThrow(/--last requires a positive integer/);
+    expect(() => T.parseReportArgs(['--last', 'nope'])).toThrow(/--last requires a positive integer/);
+  });
+});
+
+describe('structured status and console models', () => {
+  it('builds a versioned console model using new entries by default', () => {
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    consoleBuf.push({ level: 'log', text: 'old' });
+    consoleBuf.push({ level: 'error', text: 'new' });
+    exceptionBuf.push({ msg: 'boom' });
+    const model = T.buildConsoleModel(consoleBuf, exceptionBuf, { console: 1, exception: 0 }, undefined);
+
+    expect(model.schema).toBe('chrome-cdp-ex.console.v1');
+    expect(model.mode).toBe('new');
+    expect(model.entries.map(e => e.text)).toEqual(['new']);
+    expect(model.exceptions.map(e => e.msg)).toEqual(['boom']);
+  });
+
+  it('builds a versioned console model for --all', () => {
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    consoleBuf.push({ level: 'log', text: 'first' });
+    consoleBuf.push({ level: 'warn', text: 'second' });
+    const model = T.buildConsoleModel(consoleBuf, exceptionBuf, { console: 2, exception: 0 }, '--all');
+
+    expect(model.mode).toBe('all');
+    expect(model.entries.map(e => e.text)).toEqual(['first', 'second']);
+  });
+
+  it('builds a versioned status model with page and unread buffers', () => {
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    const navBuf = new RingBuffer(10);
+    consoleBuf.push({ level: 'error', text: 'old' });
+    consoleBuf.push({ level: 'warning', text: 'new' });
+    exceptionBuf.push({ msg: 'boom' });
+    navBuf.push({ url: 'https://example.com/next', ts: 123 });
+
+    const model = T.buildStatusModel({
+      targetId: 'ABC123',
+      page: { title: 'Example', url: 'https://example.com' },
+      consoleBuf,
+      exceptionBuf,
+      navBuf,
+      lastReadSeq: { console: 1, exception: 0, nav: 0 },
+    });
+
+    expect(model.schema).toBe('chrome-cdp-ex.status.v1');
+    expect(model.targetId).toBe('ABC123');
+    expect(model.page.title).toBe('Example');
+    expect(model.console.map(e => e.text)).toEqual(['new']);
+    expect(model.exceptions.map(e => e.msg)).toEqual(['boom']);
+    expect(model.navigation.map(e => e.url)).toEqual(['https://example.com/next']);
+  });
+});
+
+// =========================================================================
+// Perception model
+// =========================================================================
+
+describe('PerceptionModel', () => {
+  it('builds a versioned model with page, viewport, console, refs, and nodes', () => {
+    const model = T.createPerceptionModel({
+      targetPrefix: 'ABC12345',
+      page: { title: 'Example', url: 'https://example.com' },
+      viewport: { width: 1280, height: 720, scrollY: 0, scrollMax: 1000 },
+      consoleHealth: { errors: 1, warnings: 2, exceptions: 0 },
+      refs: { generation: 3 },
+      nodes: [{ ref: '@1', role: 'button', name: 'Submit', rect: { x: 10, y: 20, width: 80, height: 30 } }],
+      limits: { truncated: false },
+    });
+
+    expect(model.schema).toBe('chrome-cdp-ex.perceive.v1');
+    expect(model.viewport.coordinateSpace).toBe('viewport-css-px');
+    expect(model.nodes[0].ref).toBe('@1');
+    expect(model.recommendation).toMatchObject({
+      source: 'golden-path',
+      stage: 'act',
+      targetPrefix: 'ABC12345',
+      run: 'cdp click ABC12345 @1',
+      after: 'cdp perceive ABC12345 --since-action',
+      report: 'cdp report ABC12345',
+      requiresUserAction: false,
+      consentRequired: false,
+    });
+    expect(model.recommendation.reason).toContain('first interactive ref');
+    expect(model.nextSteps).toEqual(model.recommendation.commands);
+  });
+
+  it('formats perception JSON as parseable output', () => {
+    const model = T.createPerceptionModel({
+      page: { title: 'Example', url: 'https://example.com' },
+      viewport: { width: 1280, height: 720, scrollY: 0, scrollMax: 1000 },
+      consoleHealth: { errors: 0, warnings: 0, exceptions: 0 },
+      refs: { generation: 1 },
+      nodes: [],
+      limits: { truncated: false },
+    });
+    expect(JSON.parse(T.formatPerceptionJson(model)).schema).toBe('chrome-cdp-ex.perceive.v1');
+  });
+});
+
+// =========================================================================
+// SessionState
+// =========================================================================
+
+describe('SessionState', () => {
+  it('creates explicit daemon session state', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    expect(state.targetId).toBe('ABC123');
+    expect(state.sessionId).toBe('sid-1');
+    expect(state.refs.map).toBeInstanceOf(Map);
+    expect(state.refs.invalidationReason).toBe('daemon-start');
+    expect(state.actionLog).toEqual([]);
+  });
+
+  it('invalidates refs on navigation', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.refs.map.set(1, 42);
+    T.invalidateSessionRefs(state, 'navigation');
+    expect(state.refs.map.size).toBe(0);
+    expect(state.refs.invalidationReason).toBe('navigation');
+  });
+});
+
+// =========================================================================
+// ActionResult
+// =========================================================================
+
+describe('ActionResult', () => {
+  it('creates versioned action evidence', () => {
+    const result = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '@4', resolvedBy: 'ref', label: 'Submit' },
+      dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
+      settle: { ok: true, durationMs: 120 },
+      effects: { domDiff: 'button disabled', console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    expect(result.schema).toBe('chrome-cdp-ex.action.v1');
+    expect(result.action).toBe('click');
+    expect(result.dispatch.ok).toBe(true);
+    expect(result.outcome).toMatchObject({
+      schema: 'chrome-cdp-ex.action-outcome.v1',
+      status: 'changed',
+      changed: true,
+      needsAttention: false,
+      evidence: 'dom',
+    });
+    expect(result.verdict).toMatchObject({
+      schema: 'chrome-cdp-ex.action-verdict.v1',
+      status: 'continue',
+      confidence: 'medium',
+      canContinue: true,
+      needsRecovery: false,
+      source: 'outcome',
+      primaryNextStep: 'cdp report ABC123 --format json',
+      nextSteps: [
+        'cdp report ABC123 --format json',
+        'cdp record-actions ABC123 --format json',
+      ],
+    });
+    expect(result.recommendation).toMatchObject({
+      source: 'action-evidence',
+      strategy: 'continue-from-evidence',
+      action: 'click',
+      targetPrefix: 'ABC123',
+      commands: [
+        'cdp report ABC123 --format json',
+        'cdp record-actions ABC123 --format json',
+      ],
+      optionalCommands: ['cdp perceive ABC123 --since-action'],
+    });
+    expect(result.nextSteps).toEqual([
+      'cdp report ABC123 --format json',
+      'cdp record-actions ABC123 --format json',
+    ]);
+  });
+
+  it('classifies no-change action outcomes without treating the diff text as a DOM change', () => {
+    const result = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#refresh', resolvedBy: 'selector', label: 'Refresh' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 90 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+
+    expect(result.outcome).toMatchObject({
+      schema: 'chrome-cdp-ex.action-outcome.v1',
+      status: 'no-change',
+      changed: false,
+      needsAttention: true,
+      evidence: 'dom',
+    });
+    expect(result.recommendation).toMatchObject({
+      source: 'action-outcome',
+      strategy: 'investigate-no-change',
+      outcomeStatus: 'no-change',
+      verifyCommand: 'cdp perceive ABC123 -C -d 8',
+      commands: [
+        'cdp overlay ABC123 "#refresh" --format json',
+        'cdp frame ABC123 --format json',
+        'cdp perceive ABC123 -C -d 8',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(result.nextSteps).toEqual([
+      'cdp overlay ABC123 "#refresh" --format json',
+      'cdp frame ABC123 --format json',
+      'cdp perceive ABC123 -C -d 8',
+      'cdp report ABC123 --format json',
+    ]);
+    expect(result.verdict).toMatchObject({
+      schema: 'chrome-cdp-ex.action-verdict.v1',
+      status: 'investigate',
+      confidence: 'medium',
+      canContinue: false,
+      needsRecovery: true,
+      source: 'outcome',
+      primaryNextStep: 'cdp overlay ABC123 "#refresh" --format json',
+      nextSteps: [
+        'cdp overlay ABC123 "#refresh" --format json',
+        'cdp frame ABC123 --format json',
+        'cdp perceive ABC123 -C -d 8',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(result.effects.diagnosis).toBeUndefined();
+    expect(T.formatActionText(result)).toContain('Verdict: investigate');
+    expect(T.formatActionText(result)).toContain('Next: cdp overlay ABC123 "#refresh" --format json');
+  });
+
+  it('formats action evidence as compact text', () => {
+    const text = T.formatActionText(T.createActionResult({
+      action: 'fill',
+      target: { input: '#email', resolvedBy: 'selector', label: 'Email' },
+      dispatch: { ok: true, method: 'Input.insertText' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: 'value changed', console: [], network: [], navigation: null },
+      nextHint: 'Continue with the next form field',
+    }));
+    expect(text).toMatch(/fill/i);
+    expect(text).toContain('Outcome: changed');
+    expect(text).toMatch(/value changed/);
+  });
+
+  it('builds and formats console, exception, and network deltas since action dispatch', () => {
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    const netReqBuf = new RingBuffer(10);
+    consoleBuf.push({ level: 'log', text: 'before action', loc: 'app.js:1', ts: 1 });
+    netReqBuf.push({ method: 'GET', url: 'https://example.com/before', status: 200, duration: 9, ts: 1 });
+    const baseline = T.createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf });
+
+    consoleBuf.push({ level: 'warning', text: 'deprecated API', loc: 'app.js:10', ts: 2 });
+    consoleBuf.push({ level: 'error', text: 'save failed', loc: 'app.js:11', ts: 3 });
+    exceptionBuf.push({ msg: 'Error: render exploded', loc: 'app.js:12', ts: 4 });
+    netReqBuf.push({ method: 'GET', url: 'https://example.com/ok', status: 200, duration: 12, ts: 5 });
+    netReqBuf.push({ method: 'POST', url: 'https://example.com/api/save?draft=1', status: 500, duration: 31, ts: 6 });
+
+    const delta = T.buildActionObservationDelta({ consoleBuf, exceptionBuf, netReqBuf }, baseline);
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 150 },
+      effects: { domDiff: 'Saved banner appeared', console: [], network: [], navigation: null },
+      nextHint: null,
+    }), delta);
+    const text = T.formatActionText(result);
+
+    expect(delta.console).toMatchObject({ count: 2, errors: 1, warnings: 1 });
+    expect(delta.exceptions).toMatchObject({ count: 1 });
+    expect(delta.network).toMatchObject({ count: 2, failures: 1 });
+    expect(text).toContain('Console: 2 entries (1 error, 1 warning)');
+    expect(text).toContain('Console sample: [error] save failed @ app.js:11');
+    expect(text).toContain('Exception: 1 thrown');
+    expect(text).toContain('Network: 2 requests (1 failed)');
+    expect(text).toContain('Network sample: POST /api/save?draft=1 -> 500 in 31ms');
+  });
+
+  it('tracks action-relevant network request types while skipping static assets', () => {
+    expect(T.shouldTrackActionNetworkRequest('Fetch')).toBe(true);
+    expect(T.shouldTrackActionNetworkRequest('XHR')).toBe(true);
+    expect(T.shouldTrackActionNetworkRequest('Document')).toBe(true);
+    expect(T.shouldTrackActionNetworkRequest('Other')).toBe(true);
+    expect(T.shouldTrackActionNetworkRequest(undefined)).toBe(true);
+    expect(T.shouldTrackActionNetworkRequest('Image')).toBe(false);
+    expect(T.shouldTrackActionNetworkRequest('Script')).toBe(false);
+    expect(T.shouldTrackActionNetworkRequest('Stylesheet')).toBe(false);
+  });
+
+  it('formats pending network requests as action evidence', () => {
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { input: '#diagnostic', resolvedBy: 'selector', label: 'Diagnostic' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 1400 },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint: null,
+    }), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 0,
+        pending: 1,
+        entries: [{ method: 'POST', url: 'https://example.com/api/fail', status: 'pending', duration: 1404, pending: true }],
+      },
+    });
+
+    const text = T.formatActionText(result);
+
+    expect(text).toContain('Network: 1 request (1 pending)');
+    expect(text).toContain('Network sample: POST /api/fail -> pending in 1404ms');
+  });
+
+  it('wraps dispatch output with observed action evidence', async () => {
+    let captured = null;
+    const text = await T.runActionWithFeedback({
+      action: 'click',
+      target: { input: '@4', resolvedBy: 'ref', label: 'Submit' },
+      dispatch: async () => 'Clicked @4',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'button disabled',
+      onActionResult: (result) => { captured = result; },
+    });
+
+    expect(text).toMatch(/Clicked @4/);
+    expect(text).toMatch(/click: dispatched/);
+    expect(text).toMatch(/button disabled/);
+    expect(captured.action).toBe('click');
+    expect(captured.effects.domDiff).toBe('button disabled');
+  });
+
+  it('formats observed action evidence as JSON without dispatch text noise', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { input: '#submit', resolvedBy: 'selector', label: 'Submit' },
+      dispatch: async () => 'Clicked #submit',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'checkout banner appeared',
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.action.v1',
+      action: 'click',
+      target: { input: '#submit', label: 'Submit' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true },
+      effects: { domDiff: 'checkout banner appeared' },
+      outcome: { status: 'changed', changed: true, needsAttention: false },
+      verdict: {
+        status: 'continue',
+        canContinue: true,
+        needsRecovery: false,
+      },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    expect(out).not.toContain('Clicked #submit');
+  });
+
+  it('compacts long DOM diff evidence in JSON action handoffs', async () => {
+    const longDiff = [
+      'Page: Very Large App',
+      '+++ Added (1):',
+      ...Array.from({ length: 180 }, (_, index) => `+   [StaticText] low signal row ${index}`),
+      '+   [status] Saved successfully',
+      'TAIL-SHOULD-NOT-BE-SERIALIZED',
+    ].join('\n');
+
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: async () => 'Clicked #save',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => longDiff,
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.effects.domDiffChars).toBe(longDiff.length);
+    expect(parsed.effects.domDiffTruncated).toBe(true);
+    expect(parsed.effects.domDiffSummary).toBe('+++ Added (1):');
+    expect(parsed.effects.domDiffSample).toBe('+   [status] Saved successfully');
+    expect(parsed.effects.domDiff).toContain('+++ Added (1):');
+    expect(parsed.effects.domDiff).toContain('[status] Saved successfully');
+    expect(parsed.effects.domDiff.length).toBeLessThan(900);
+    expect(out).not.toContain('TAIL-SHOULD-NOT-BE-SERIALIZED');
+  });
+
+  it('enriches action feedback before formatting and logging', async () => {
+    const delta = {
+      console: {
+        count: 1,
+        errors: 1,
+        warnings: 0,
+        entries: [{ level: 'error', text: 'submit failed', loc: 'checkout.js:20' }],
+      },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        entries: [{ method: 'POST', url: 'https://example.com/api/checkout', status: 503, duration: 44 }],
+      },
+    };
+    let captured = null;
+
+    const text = await T.runActionWithFeedback({
+      action: 'click',
+      target: { input: '#submit', resolvedBy: 'selector', label: 'Submit' },
+      dispatch: async () => 'Clicked #submit',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'checkout error banner',
+      enrichActionResult: (result) => T.applyActionObservationDelta(result, delta),
+      onActionResult: (result) => { captured = result; },
+    });
+
+    expect(text).toContain('Console: 1 entry (1 error)');
+    expect(text).toContain('Network sample: POST /api/checkout -> 503 in 44ms');
+    expect(captured.effects.consoleDelta.errors).toBe(1);
+    expect(captured.effects.networkDelta.failures).toBe(1);
+  });
+
+  it('adds a structured diagnosis when action evidence shows runtime trouble', async () => {
+    const delta = {
+      console: {
+        count: 1,
+        errors: 0,
+        warnings: 1,
+        entries: [{ level: 'warning', text: 'slow endpoint', loc: 'app.js:21' }],
+      },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        pending: 0,
+        entries: [{ method: 'POST', url: 'https://example.com/api/save', status: 500, duration: 44 }],
+      },
+    };
+
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: async () => 'Clicked #save',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'error banner appeared',
+      enrichActionResult: (result) => T.applyActionObservationDelta(result, delta),
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.effects.diagnosis).toMatchObject({
+      schema: 'chrome-cdp-ex.action-diagnosis.v1',
+      status: 'attention',
+      kind: 'network-failure',
+      confidence: 'high',
+      source: 'network',
+      nextCommand: 'cdp netlog ABC123',
+      recovery: {
+        schema: 'chrome-cdp-ex.recovery-policy.v1',
+        strategy: 'inspect-network',
+        priority: 'high',
+        verifyCommand: 'cdp perceive ABC123 --since-action',
+        commands: [
+          { command: 'cdp netlog ABC123' },
+          { command: 'cdp perceive ABC123 --since-action' },
+          { command: 'cdp report ABC123 --format json' },
+        ],
+      },
+      signals: {
+        dispatchOk: true,
+        settleOk: true,
+        domChanged: true,
+        consoleWarnings: 1,
+        networkFailures: 1,
+      },
+    });
+    expect(parsed.outcome).toMatchObject({
+      status: 'attention',
+      changed: true,
+      needsAttention: true,
+      evidence: 'network',
+    });
+    expect(parsed.verdict).toMatchObject({
+      schema: 'chrome-cdp-ex.action-verdict.v1',
+      status: 'recover',
+      confidence: 'high',
+      canContinue: false,
+      needsRecovery: true,
+      source: 'diagnosis',
+      primaryNextStep: 'cdp netlog ABC123',
+      nextSteps: [
+        'cdp netlog ABC123',
+        'cdp perceive ABC123 --since-action',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(T.formatActionText(parsed)).toContain('Diagnosis: network-failure');
+    expect(T.formatActionText(parsed)).toContain('Verdict: recover');
+    expect(T.formatActionText(parsed)).toContain('Next: cdp netlog ABC123');
+    expect(parsed.recommendation).toMatchObject({
+      source: 'action-diagnosis',
+      strategy: 'inspect-network',
+      diagnosisKind: 'network-failure',
+      commands: [
+        'cdp netlog ABC123',
+        'cdp perceive ABC123 --since-action',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(parsed.nextSteps).toEqual([
+      'cdp netlog ABC123',
+      'cdp perceive ABC123 --since-action',
+      'cdp report ABC123 --format json',
+    ]);
+  });
+
+  it('records report-only actions as action evidence without a DOM observation', async () => {
+    let captured = null;
+
+    const text = await T.runActionWithFeedback({
+      action: 'restore',
+      target: { input: 'checkpoint', resolvedBy: 'artifact', label: 'checkpoint' },
+      dispatch: async () => 'Restored checkpoint',
+      feedbackPolicy: 'report-only',
+      observe: async () => 'not reached',
+      onActionResult: (result) => { captured = result; },
+    });
+
+    expect(text).toContain('Restored checkpoint');
+    expect(text).toContain('restore: dispatched');
+    expect(captured.effects.domDiff).toBeNull();
+    expect(captured.settle.ok).toBe(true);
+  });
+
+  it('returns timeout evidence with diagnostics when post-action observation times out', async () => {
+    const err = new Error('Timeout: post-action perceive');
+    err.name = 'TimeoutError';
+    const delta = {
+      console: { count: 1, errors: 0, warnings: 1, entries: [{ level: 'warning', text: 'slow rerender', loc: '' }] },
+      exceptions: { count: 0, entries: [] },
+      network: { count: 0, failures: 0, entries: [] },
+    };
+    let captured = null;
+
+    const text = await T.runActionWithFeedback({
+      action: 'click',
+      target: { input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: async () => 'Clicked #save',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => { throw err; },
+      enrichActionResult: (result) => T.applyActionObservationDelta(result, delta),
+      onActionResult: (result) => { captured = result; },
+    });
+
+    expect(text).toContain('success but observation timed out');
+    expect(text).toContain('Console: 1 entry (1 warning)');
+    expect(captured.settle.ok).toBe(false);
+    expect(captured.outcome).toMatchObject({
+      status: 'timeout',
+      needsAttention: true,
+      evidence: 'settle',
+    });
+    expect(captured.effects.consoleDelta.warnings).toBe(1);
+  });
+
+  it('classifies action failures into recoverable next steps', () => {
+    const overlay = T.classifyActionFailure(
+      new Error('Element is not clickable at point (20, 30). Other element would receive the click'),
+      { action: 'click', target: { targetId: 'abc123', input: '@4', label: 'Submit' } }
+    );
+    expect(overlay.kind).toBe('overlay');
+    expect(overlay.nextCommand).toBe('cdp dismiss-modal abc123');
+    expect(overlay.hints.join('\n')).toContain('cdp jsclick abc123 @4');
+
+    const wrongFrame = T.classifyActionFailure(
+      new Error('No frame for given id found'),
+      { action: 'click', target: { targetId: 'abc123', input: '#pay' } }
+    );
+    expect(wrongFrame.kind).toBe('wrong-frame');
+    expect(wrongFrame.nextCommand).toBe('cdp perceive abc123 -C -d 8');
+
+    const navigation = T.classifyActionFailure(
+      new Error('Cannot find context with specified id'),
+      { action: 'fill', target: { targetId: 'abc123', input: '#email' } }
+    );
+    expect(navigation.kind).toBe('navigation');
+    expect(navigation.nextCommand).toBe('cdp perceive abc123 -C -d 8');
+
+    const domRewrite = T.classifyActionFailure(
+      new Error('No node with given id'),
+      { action: 'click', target: { targetId: 'abc123', input: '@9' } }
+    );
+    expect(domRewrite.kind).toBe('dom-rewrite');
+    expect(domRewrite.nextCommand).toBe('cdp perceive abc123 -C -d 8');
+
+    const timeout = T.classifyActionFailure(
+      new Error('Timeout: Runtime.callFunctionOn'),
+      { action: 'reload', target: { targetId: 'abc123', input: 'reload' } }
+    );
+    expect(timeout.kind).toBe('timeout');
+    expect(timeout.nextCommand).toBe('cdp status abc123');
+  });
+
+  it('maps wrong-frame diagnoses to frame-aware recovery commands', () => {
+    const recovery = T.buildActionRecoveryPlan({
+      status: 'blocked',
+      kind: 'wrong-frame',
+      nextCommand: 'cdp perceive ABC123 -C -d 8',
+    }, { targetId: 'ABC123' });
+
+    expect(recovery).toMatchObject({
+      schema: 'chrome-cdp-ex.recovery-policy.v1',
+      strategy: 'refresh-frame-context',
+      priority: 'high',
+      commands: [
+        { command: 'cdp frame ABC123 --format json' },
+        { command: 'cdp perceive ABC123 -C -d 8' },
+      ],
+      verifyCommand: 'cdp perceive ABC123 -C -d 8',
+    });
+  });
+
+  it('formats action failures without losing the original browser error', () => {
+    const text = T.formatActionFailure(
+      new Error('Element not found: #save'),
+      { action: 'click', target: { targetId: 'abc123', input: '#save' } }
+    );
+    expect(text).toContain('Action failure: selector');
+    expect(text).toContain('Next: cdp perceive abc123 -C -d 8');
+    expect(text).toContain('Original: Element not found: #save');
+  });
+
+  it('records failed dispatches as action evidence before returning a classified error', async () => {
+    let captured = null;
+    await expect(T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'abc123', input: '@4', resolvedBy: 'ref', label: 'Submit' },
+      dispatch: async () => {
+        throw new Error('Element is not clickable at point (20, 30). Other element would receive the click');
+      },
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'not reached',
+      onActionResult: (result) => { captured = result; },
+    })).rejects.toThrow(/Action failure: overlay/);
+
+    expect(captured.action).toBe('click');
+    expect(captured.dispatch.ok).toBe(false);
+    expect(captured.effects.failure.kind).toBe('overlay');
+    expect(captured.nextHint).toBe('cdp dismiss-modal abc123');
+  });
+
+  it('returns classified failed dispatch evidence as JSON for agents', async () => {
+    let captured = null;
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'abc123', input: '@4', resolvedBy: 'ref', label: 'Submit' },
+      dispatch: async () => {
+        throw new Error('Element is not clickable at point (20, 30). Other element would receive the click');
+      },
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'not reached',
+      format: 'json',
+      onActionResult: (result) => { captured = result; },
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.action.v1',
+      action: 'click',
+      target: { input: '@4', label: 'Submit' },
+      dispatch: {
+        ok: false,
+        method: 'click',
+        error: 'Element is not clickable at point (20, 30). Other element would receive the click',
+      },
+      settle: { ok: false },
+      effects: {
+        domDiff: null,
+        failure: {
+          kind: 'overlay',
+          nextCommand: 'cdp dismiss-modal abc123',
+        },
+        diagnosis: {
+          status: 'blocked',
+          kind: 'overlay',
+          source: 'dispatch',
+          nextCommand: 'cdp dismiss-modal abc123',
+          recovery: {
+            strategy: 'clear-overlay',
+            commands: [
+              { command: 'cdp overlay abc123 @4 --format json' },
+              { command: 'cdp dismiss-modal abc123' },
+              { command: 'cdp perceive abc123 -C -d 8' },
+            ],
+            avoid: ['retrying the same click before clearing or re-checking the overlay'],
+          },
+        },
+      },
+      verdict: {
+        status: 'blocked',
+        confidence: 'high',
+        canContinue: false,
+        needsRecovery: true,
+        source: 'diagnosis',
+        primaryNextStep: 'cdp overlay abc123 @4 --format json',
+      },
+      nextHint: 'cdp dismiss-modal abc123',
+    });
+    expect(captured.effects.failure.kind).toBe('overlay');
+    expect(out).not.toContain('Action failure: overlay');
+  });
+});
+
+// =========================================================================
+// Session report
+// =========================================================================
+
+describe('Session report', () => {
+  function sampleActionResult() {
+    return T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#combat', resolvedBy: 'selector', label: '#combat' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: {
+        domDiff: [
+          'Page: Smoke — http://127.0.0.1/',
+          '',
+          '+++ Added (1):',
+          '+   [alert] 戰鬥勝利',
+        ].join('\n'),
+        console: [],
+        network: [],
+        navigation: null,
+      },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+  }
+
+  it('formats an empty session report with a next action hint', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.createdAt = Date.parse('2026-06-16T00:00:00.000Z');
+
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(out).toContain('Session report: ABC123');
+    expect(out).toContain('Uptime: 5s');
+    expect(out).toContain('Log:');
+    expect(out).toContain('Actions: 0');
+    expect(out).toContain('Screenshot dir:');
+    expect(out).toContain('No actions recorded yet');
+  });
+
+  it('records action evidence and formats an action timeline', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.createdAt = Date.parse('2026-06-16T00:00:00.000Z');
+    const actionResult = sampleActionResult();
+
+    T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(state.actionLog).toHaveLength(1);
+    expect(out).toContain('Actions: 1');
+    expect(out).toContain('Action timeline:');
+    expect(out).toContain('1. click #combat — ok in 123ms');
+    expect(out).toContain('Outcome: changed — Observed page change after action.');
+    expect(out).toContain('Verdict: continue');
+    expect(out).toContain('Effect: +++ Added (1):');
+    expect(out).toContain('戰鬥勝利');
+  });
+
+  it('builds a JSON report model for agent handoff', () => {
+    const state = T.createSessionState({
+      targetId: 'ABC123456789',
+      sessionId: 'sid-1',
+      logPath: '/tmp/chrome-cdp-ex/session-ABC12345.jsonl',
+      screenshotDir: '/tmp/chrome-cdp-ex/screens-ABC12345',
+    });
+    state.createdAt = Date.parse('2026-06-16T00:00:00.000Z');
+    T.appendSessionActionLog(state, sampleActionResult(), {
+      ts: Date.parse('2026-06-16T00:00:03.000Z'),
+    });
+    T.appendSessionScreenshot(state, {
+      kind: 'shot',
+      path: '/tmp/chrome-cdp-ex/screens-ABC12345/shot-001.png',
+      note: 'after combat',
+      ts: Date.parse('2026-06-16T00:00:04.000Z'),
+    });
+
+    const model = T.buildSessionReportModel(state, {
+      now: Date.parse('2026-06-16T00:00:05.000Z'),
+    });
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.report.v1',
+      targetId: 'ABC123456789',
+      targetPrefix: 'ABC12345',
+      sessionId: 'sid-1',
+      uptimeMs: 5000,
+      counts: { actions: 1, screenshots: 1, records: 0 },
+      latestAction: {
+        index: 1,
+        action: 'click',
+        status: 'ok',
+        outcomeStatus: 'changed',
+        verdictStatus: 'continue',
+        canContinue: true,
+        needsRecovery: false,
+        effectSummary: '+++ Added (1):',
+        effectSample: '+   [alert] 戰鬥勝利',
+        diagnosisKind: 'dom-changed',
+        nextHint: 'Use perceive --since-action if more evidence is needed',
+      },
+      paths: {
+        log: '/tmp/chrome-cdp-ex/session-ABC12345.jsonl',
+        screenshotDir: '/tmp/chrome-cdp-ex/screens-ABC12345',
+      },
+      actions: [
+        {
+          index: 1,
+          action: 'click',
+          status: 'ok',
+          outcome: {
+            schema: 'chrome-cdp-ex.action-outcome.v1',
+            status: 'changed',
+            changed: true,
+            needsAttention: false,
+          },
+          verdict: {
+            schema: 'chrome-cdp-ex.action-verdict.v1',
+            status: 'continue',
+            canContinue: true,
+            needsRecovery: false,
+          },
+          target: { input: '#combat', label: '#combat' },
+          evidence: {
+            settleDurationMs: 123,
+            effectSummary: '+++ Added (1):',
+            effectSample: '+   [alert] 戰鬥勝利',
+          },
+          nextHint: 'Use perceive --since-action if more evidence is needed',
+        },
+      ],
+      screenshots: [
+        {
+          index: 1,
+          kind: 'shot',
+          path: '/tmp/chrome-cdp-ex/screens-ABC12345/shot-001.png',
+          note: 'after combat',
+        },
+      ],
+      nextSteps: [
+        'cdp perceive ABC12345 --since-action',
+        'cdp record-actions ABC12345 --format json',
+        'cdp export-playwright ABC12345',
+      ],
+    });
+  });
+
+  it('bounds JSON report action timeline to the latest actions by default', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    for (let index = 1; index <= 25; index++) {
+      T.appendSessionActionLog(state, T.createActionResult({
+        action: 'click',
+        target: { targetId: 'ABC123', input: `#btn-${index}`, resolvedBy: 'selector', label: `#btn-${index}` },
+        dispatch: { ok: true, method: 'click' },
+        settle: { ok: true, durationMs: index },
+        effects: { domDiff: `+++ Added (1):\n+   [status] Saved ${index}`, console: [], network: [], navigation: null },
+        nextHint: null,
+      }), { ts: Date.parse('2026-06-16T00:00:00.000Z') + index });
+    }
+
+    const model = T.buildSessionReportModel(state, { now: Date.parse('2026-06-16T00:00:30.000Z') });
+
+    expect(model.counts.actions).toBe(25);
+    expect(model.timelineWindow).toEqual({
+      total: 25,
+      shown: 20,
+      omitted: 5,
+      startIndex: 6,
+      endIndex: 25,
+      limit: 20,
+    });
+    expect(model.actions).toHaveLength(20);
+    expect(model.actions[0]).toMatchObject({ index: 6, action: 'click', target: { input: '#btn-6' } });
+    expect(model.actions[19]).toMatchObject({ index: 25, action: 'click', target: { input: '#btn-25' } });
+    expect(model.latestAction).toMatchObject({ index: 25, effectSample: '+   [status] Saved 25' });
+  });
+
+  it('formats only the requested latest report actions in text mode', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    for (let index = 1; index <= 5; index++) {
+      T.appendSessionActionLog(state, T.createActionResult({
+        action: 'click',
+        target: { targetId: 'ABC123', input: `#btn-${index}`, resolvedBy: 'selector', label: `#btn-${index}` },
+        dispatch: { ok: true, method: 'click' },
+        settle: { ok: true, durationMs: index },
+        effects: { domDiff: `+++ Added (1):\n+   [status] Saved ${index}`, console: [], network: [], navigation: null },
+        nextHint: null,
+      }), { ts: Date.parse('2026-06-16T00:00:00.000Z') + index });
+    }
+
+    const out = T.formatSessionReport(state, {
+      now: Date.parse('2026-06-16T00:00:30.000Z'),
+      lastActions: 2,
+    });
+
+    expect(out).toContain('Actions: 5 (showing last 2, 3 omitted)');
+    expect(out).not.toContain('1. click #btn-1');
+    expect(out).not.toContain('2. click #btn-2');
+    expect(out).not.toContain('3. click #btn-3');
+    expect(out).toContain('4. click #btn-4');
+    expect(out).toContain('5. click #btn-5');
+    expect(out).toContain('Use report --all or inspect the JSONL log for the full action history.');
+  });
+
+  it('records compact console and network deltas in session reports', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    const actionResult = T.applyActionObservationDelta(sampleActionResult(), {
+      console: {
+        count: 1,
+        errors: 1,
+        warnings: 0,
+        entries: [{ level: 'error', text: 'combat failed', loc: 'game.js:44' }],
+      },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        entries: [{ method: 'POST', url: 'https://example.com/api/combat', status: 500, duration: 27 }],
+      },
+    });
+
+    T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(out).toContain('Console: 1 entry (1 error)');
+    expect(out).toContain('Console sample: [error] combat failed @ game.js:44');
+    expect(out).toContain('Network: 1 request (1 failed)');
+    expect(out).toContain('Network sample: POST /api/combat -> 500 in 27ms');
+    expect(out).toContain('Diagnosis: network-failure');
+    expect(out).toContain('Recovery: inspect-network');
+    expect(state.actionLog[0].consoleSummary).toBe('Console: 1 entry (1 error)');
+    expect(state.actionLog[0].networkSummary).toBe('Network: 1 request (1 failed)');
+    expect(state.actionLog[0].diagnosis).toMatchObject({
+      kind: 'network-failure',
+      nextCommand: 'cdp netlog ABC123',
+    });
+  });
+
+  it('prioritizes latest diagnosis recovery commands in JSON report next steps', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    const actionResult = T.applyActionObservationDelta(sampleActionResult(), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        pending: 0,
+        entries: [{ method: 'POST', url: 'https://example.com/api/combat', status: 500, duration: 27 }],
+      },
+    });
+
+    T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+    const model = T.buildSessionReportModel(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(model.nextSteps).toEqual([
+      'cdp netlog ABC123',
+      'cdp perceive ABC123 --since-action',
+      'cdp report ABC123 --format json',
+      'cdp record-actions ABC123 --format json',
+      'cdp export-playwright ABC123',
+    ]);
+    expect(model.recommendation).toMatchObject({
+      source: 'latest-action-diagnosis',
+      strategy: 'inspect-network',
+      actionIndex: 1,
+      diagnosisKind: 'network-failure',
+      verifyCommand: 'cdp perceive ABC123 --since-action',
+    });
+  });
+
+  it('prioritizes latest no-change outcome recovery in JSON report next steps', () => {
+    const state = T.createSessionState({ targetId: 'ABC123456789', sessionId: 'sid-1' });
+    const actionResult = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123456789', input: '#refresh', resolvedBy: 'selector', label: '#refresh' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 90 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+
+    T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+    const model = T.buildSessionReportModel(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(model.recommendation).toMatchObject({
+      source: 'latest-action-outcome',
+      strategy: 'investigate-no-change',
+      actionIndex: 1,
+      action: 'click',
+      outcomeStatus: 'no-change',
+      verifyCommand: 'cdp perceive ABC12345 -C -d 8',
+      commands: [
+        'cdp overlay ABC12345 "#refresh" --format json',
+        'cdp frame ABC12345 --format json',
+        'cdp perceive ABC12345 -C -d 8',
+        'cdp report ABC12345 --format json',
+      ],
+    });
+    expect(model.nextSteps).toEqual([
+      'cdp overlay ABC12345 "#refresh" --format json',
+      'cdp frame ABC12345 --format json',
+      'cdp perceive ABC12345 -C -d 8',
+      'cdp report ABC12345 --format json',
+      'cdp record-actions ABC12345 --format json',
+      'cdp export-playwright ABC12345',
+    ]);
+    expect(out).toContain('Outcome: no-change');
+    expect(out).toContain('Strategy: investigate-no-change');
+    expect(out).toContain('Run: cdp overlay ABC12345 "#refresh" --format json');
+  });
+
+  it('normalizes report diagnosis recovery commands to the target prefix', () => {
+    const state = T.createSessionState({ targetId: 'ABC123456789', sessionId: 'sid-1' });
+    const actionResult = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123456789', input: '#combat', resolvedBy: 'selector', label: '#combat' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] 戰鬥勝利', console: [], network: [], navigation: null },
+      nextHint: null,
+    }), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        pending: 0,
+        entries: [{ method: 'POST', url: 'https://example.com/api/combat', status: 500, duration: 27 }],
+      },
+    });
+
+    T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+    const model = T.buildSessionReportModel(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(model.recommendation.commands).toEqual([
+      'cdp netlog ABC12345',
+      'cdp perceive ABC12345 --since-action',
+      'cdp report ABC12345 --format json',
+    ]);
+    expect(model.nextSteps).toEqual([
+      'cdp netlog ABC12345',
+      'cdp perceive ABC12345 --since-action',
+      'cdp report ABC12345 --format json',
+      'cdp record-actions ABC12345 --format json',
+      'cdp export-playwright ABC12345',
+    ]);
+    expect(out).toContain('Run: cdp netlog ABC12345');
+    expect(out).not.toContain('cdp netlog ABC123456789');
+  });
+
+  it('prints report recommendation and executable next steps in text mode', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    const actionResult = T.applyActionObservationDelta(sampleActionResult(), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        pending: 0,
+        entries: [{ method: 'POST', url: 'https://example.com/api/combat', status: 500, duration: 27 }],
+      },
+    });
+
+    T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(out).toContain('Recommendation:');
+    expect(out).toContain('Source: latest-action-diagnosis');
+    expect(out).toContain('Strategy: inspect-network');
+    expect(out).toContain('Run: cdp netlog ABC123');
+    expect(out).toContain('Verify: cdp perceive ABC123 --since-action');
+    expect(out).toContain('Next steps:');
+    expect(out).toContain('1. cdp netlog ABC123');
+    expect(out).toContain('2. cdp perceive ABC123 --since-action');
+    expect(out).toContain('3. cdp report ABC123 --format json');
+    expect(out).toContain('4. cdp record-actions ABC123 --format json');
+    expect(out).toContain('5. cdp export-playwright ABC123');
+  });
+
+  it('records classified action failures in the session report', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    const failure = T.classifyActionFailure(
+      new Error('No node with given id'),
+      { action: 'click', target: { targetId: 'ABC123', input: '@9' } }
+    );
+
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '@9', resolvedBy: 'ref', label: '@9' },
+      dispatch: { ok: false, method: 'click', error: failure.originalMessage },
+      settle: { ok: false, durationMs: 12 },
+      effects: { domDiff: null, console: [], network: [], navigation: null, failure },
+      nextHint: failure.nextCommand,
+    }), { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(out).toContain('1. click @9 — failed in 12ms');
+    expect(out).toContain('Failure: dom-rewrite');
+    expect(out).toContain('Next: cdp perceive ABC123 -C -d 8');
+  });
+
+  it('writes compact action events to the per-target session log', () => {
+    const logPath = `/tmp/cdp-session-log-${Date.now()}-${Math.random().toString(16).slice(2)}.log`;
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1', logPath });
+
+    try {
+      T.appendSessionActionLog(state, sampleActionResult(), { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+      const [line] = readFileSync(logPath, 'utf8').trim().split('\n');
+      const event = JSON.parse(line);
+
+      expect(event.schema).toBe('chrome-cdp-ex.session-event.v1');
+      expect(event.kind).toBe('action');
+      expect(event.targetId).toBe('ABC123');
+      expect(event.action.action).toBe('click');
+      expect(event.action.effectSummary).toBe('+++ Added (1):');
+      expect(event.action.effectSample).toContain('戰鬥勝利');
+      expect(event.action.domDiff).toBeUndefined();
+    } finally {
+      rmSync(logPath, { force: true });
+    }
+  });
+
+  it('initializes the per-target session log with a session-start event', () => {
+    const logPath = `/tmp/cdp-session-start-${Date.now()}-${Math.random().toString(16).slice(2)}.log`;
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1', logPath });
+
+    try {
+      T.initializeSessionLog(state, { ts: Date.parse('2026-06-16T00:00:00.000Z') });
+      const [line] = readFileSync(logPath, 'utf8').trim().split('\n');
+      const event = JSON.parse(line);
+
+      expect(event.schema).toBe('chrome-cdp-ex.session-event.v1');
+      expect(event.kind).toBe('session-start');
+      expect(event.targetId).toBe('ABC123');
+      expect(event.sessionId).toBe('sid-1');
+      expect(event.ts).toBe(Date.parse('2026-06-16T00:00:00.000Z'));
+    } finally {
+      rmSync(logPath, { force: true });
+    }
+  });
+
+  it('registers screenshot attachments and shows them in the report', () => {
+    const state = T.createSessionState({
+      targetId: 'ABC123',
+      sessionId: 'sid-1',
+      screenshotDir: '/tmp/cdp-session-shots-ABC123',
+    });
+    const entry = T.appendSessionScreenshot(state, {
+      kind: 'shot',
+      path: '/tmp/cdp-session-shots-ABC123/shot-001.png',
+      note: 'viewport',
+      ts: Date.parse('2026-06-16T00:00:04.000Z'),
+    });
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(entry.path).toBe('/tmp/cdp-session-shots-ABC123/shot-001.png');
+    expect(state.screenshots).toHaveLength(1);
+    expect(out).toContain('Screenshots: 1');
+    expect(out).toContain('Attachments:');
+    expect(out).toContain('shot — /tmp/cdp-session-shots-ABC123/shot-001.png');
+  });
+
+  it('builds default screenshot paths inside the session screenshot directory', () => {
+    const state = T.createSessionState({
+      targetId: 'ABC123',
+      sessionId: 'sid-1',
+      screenshotDir: '/tmp/cdp-session-shots-ABC123',
+    });
+
+    expect(T.nextSessionScreenshotPath(state, 'shot')).toBe('/tmp/cdp-session-shots-ABC123/shot-001.png');
+    T.appendSessionScreenshot(state, { kind: 'shot', path: '/tmp/cdp-session-shots-ABC123/shot-001.png' });
+    expect(T.nextSessionScreenshotPath(state, 'shot')).toBe('/tmp/cdp-session-shots-ABC123/shot-002.png');
+  });
+
+  it('builds a record-actions JSON model from the session action log', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: {
+        input: '#combat',
+        resolvedBy: 'selector',
+        label: '#combat',
+        commandArgs: ['#combat'],
+      },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] 戰鬥勝利', console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    }), { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+
+    const model = T.buildRecordActionsModel(state);
+
+    expect(model.schema).toBe('chrome-cdp-ex.record-actions.v1');
+    expect(model.targetId).toBe('ABC123');
+    expect(model.actions).toHaveLength(1);
+    expect(model.actions[0]).toMatchObject({
+      index: 1,
+      action: 'click',
+      command: ['click', '#combat'],
+      replayable: true,
+      evidence: {
+        settleOk: true,
+        settleDurationMs: 123,
+        effectSummary: '+++ Added (1):',
+        verdict: {
+          schema: 'chrome-cdp-ex.action-verdict.v1',
+          status: 'continue',
+          canContinue: true,
+          needsRecovery: false,
+        },
+      },
+    });
+  });
+
+  it('includes reusable environment controls in record-actions artifacts', async () => {
+    const cdp = createMockCDP({
+      'Page.addScriptToEvaluateOnNewDocument': () => ({ identifier: 'clock-script-1' }),
+      'Runtime.evaluate': () => ({ result: { value: { ok: true } } }),
+    });
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+
+    await T.mockStr(cdp, 'sid-1', state, ['add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}', '--content-type', 'application/json']);
+    await T.throttleStr(cdp, 'sid-1', state, ['custom', '--latency', '120', '--download', '256', '--upload', '128']);
+    await T.clockStr(cdp, 'sid-1', state, ['freeze', '--at', '2020-01-02T03:04:05.000Z']);
+
+    const model = T.buildRecordActionsModel(state);
+    const out = T.formatRecordActions(state);
+
+    expect(model.environmentCount).toBe(3);
+    expect(model.environment.map(entry => entry.type)).toEqual(['mock', 'throttle', 'clock']);
+    expect(model.environment[0]).toMatchObject({
+      index: 1,
+      type: 'mock',
+      action: 'add',
+      replayable: true,
+      command: ['mock', 'add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}', '--content-type', 'application/json'],
+    });
+    expect(model.environment[1]).toMatchObject({
+      index: 2,
+      type: 'throttle',
+      action: 'apply',
+      command: ['throttle', 'custom', '--latency', '120', '--download', '256', '--upload', '128'],
+    });
+    expect(model.environment[2]).toMatchObject({
+      index: 3,
+      type: 'clock',
+      action: 'apply',
+      command: ['clock', 'freeze', '--at', '2020-01-02T03:04:05.000Z'],
+    });
+    expect(out).toContain('Environment controls: 3');
+    expect(out).toContain('Env 1. mock add **/api/fail* --status 503 --body "{\\"ok\\":false}" --content-type application/json — replayable');
+  });
+
+  it('formats record-actions text with replay drafts and honest gaps', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat', commandArgs: ['#combat'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] 戰鬥勝利', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'fill',
+      target: { input: '#cmd', resolvedBy: 'selector', label: '#cmd' },
+      dispatch: { ok: true, method: 'fill' },
+      settle: { ok: false, durationMs: 900 },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const out = T.formatRecordActions(state);
+
+    expect(out).toContain('Recorded actions: 2');
+    expect(out).toContain('1. click #combat — replayable');
+    expect(out).toContain('Replay: click #combat');
+    expect(out).toContain('Evidence: +++ Added (1):');
+    expect(out).toContain('Verdict: continue');
+    expect(out).toContain('2. fill #cmd — needs input');
+    expect(out).toContain('Replay: fill #cmd <text>');
+  });
+
+  it('includes diagnostic evidence in record-actions artifacts', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat', commandArgs: ['#combat'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] 戰鬥勝利', console: [], network: [], navigation: null },
+      nextHint: null,
+    }), {
+      console: {
+        count: 1,
+        errors: 0,
+        warnings: 1,
+        entries: [{ level: 'warning', text: 'animation fallback used', loc: '' }],
+      },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        entries: [{ method: 'POST', url: 'https://example.com/api/combat', status: 500, duration: 27 }],
+      },
+    }));
+
+    const model = T.buildRecordActionsModel(state);
+    const out = T.formatRecordActions(state);
+
+    expect(model.actions[0].evidence.consoleSummary).toBe('Console: 1 entry (1 warning)');
+    expect(model.actions[0].evidence.networkSummary).toBe('Network: 1 request (1 failed)');
+    expect(out).toContain('Console: 1 entry (1 warning)');
+    expect(out).toContain('Network sample: POST /api/combat -> 500 in 27ms');
+  });
+
+  it('keeps failed dispatches as diagnostic evidence but not replayable steps', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    const failure = T.classifyActionFailure(
+      new Error('Element not found: #missing'),
+      { action: 'click', target: { targetId: 'ABC123', input: '#missing' } }
+    );
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: {
+        input: '#missing',
+        resolvedBy: 'selector',
+        label: '#missing',
+        commandArgs: ['#missing'],
+      },
+      dispatch: { ok: false, method: 'click', error: failure.originalMessage },
+      settle: { ok: false, durationMs: 12 },
+      effects: { domDiff: null, console: [], network: [], navigation: null, failure },
+      nextHint: failure.nextCommand,
+    }));
+
+    const model = T.buildRecordActionsModel(state);
+    const out = T.formatRecordActions(state);
+
+    expect(model.actions[0]).toMatchObject({
+      action: 'click',
+      command: ['click', '#missing'],
+      replayable: false,
+      needsInput: ['successful-dispatch'],
+      evidence: {
+        failure: { kind: 'selector' },
+        nextHint: 'cdp perceive ABC123 -C -d 8',
+      },
+    });
+    expect(out).toContain('1. click #missing — needs input');
+    expect(out).toContain('Missing: successful-dispatch');
+    expect(out).toContain('Failure: selector');
+  });
+
+  it('formats record-actions JSON for scripting', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'nav',
+      target: { input: 'https://example.com', resolvedBy: 'url', label: 'https://example.com', commandArgs: ['https://example.com'] },
+      dispatch: { ok: true, method: 'nav' },
+      settle: { ok: true, durationMs: 300 },
+      effects: { domDiff: 'Page changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const parsed = JSON.parse(T.formatRecordActions(state, { format: 'json' }));
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.record-actions.v1');
+    expect(parsed.actions[0].command).toEqual(['nav', 'https://example.com']);
+  });
+
+  it('exports replayable actions as a Playwright spec with honest gaps', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'nav',
+      target: { input: 'https://example.com/dashboard', resolvedBy: 'url', label: 'dashboard', commandArgs: ['https://example.com/dashboard'] },
+      dispatch: { ok: true, method: 'nav' },
+      settle: { ok: true, durationMs: 300 },
+      effects: { domDiff: 'Page changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'fill',
+      target: { input: '#cmd', resolvedBy: 'selector', label: '#cmd', commandArgs: ['#cmd', 'look trainer'] },
+      dispatch: { ok: true, method: 'fill' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: 'value changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat', commandArgs: ['#combat'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '~~~ Text nodes updated (1 added)\n+   [StaticText] 戰鬥勝利', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '@1', resolvedBy: 'ref', label: '@1', commandArgs: ['@1'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 60 },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const out = T.formatExportPlaywright(state);
+
+    expect(out).toContain("import { test, expect } from '@playwright/test';");
+    expect(out).toContain("test('chrome-cdp-ex exported workflow'");
+    expect(out).toContain('await page.goto("https://example.com/dashboard");');
+    expect(out).toContain('await page.locator("#cmd").fill("look trainer");');
+    expect(out).toContain('await page.locator("#combat").click();');
+    expect(out).toContain('await expect(page.getByText("戰鬥勝利")).toBeVisible();');
+    expect(out).toContain('Not exported: click @1');
+    expect(out).toContain('needs stable selector');
+  });
+
+  it('exports a structured Playwright handoff with spec and review counts', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.environmentLog.push({
+      ts: Date.parse('2026-06-16T00:00:01.000Z'),
+      kind: 'mock',
+      action: 'add',
+      rule: {
+        urlPattern: '**/api/fail*',
+        status: 503,
+        body: '{"ok":false}',
+        contentType: 'application/json',
+      },
+    });
+    state.environmentLog.push({
+      ts: Date.parse('2026-06-16T00:00:02.000Z'),
+      kind: 'clock',
+      action: 'apply',
+      clock: { profile: 'freeze', atMs: Date.parse('2020-01-02T03:04:05.000Z'), offsetMs: 0 },
+    });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'nav',
+      target: { input: 'https://example.com/dashboard', resolvedBy: 'url', label: 'dashboard', commandArgs: ['https://example.com/dashboard'] },
+      dispatch: { ok: true, method: 'nav' },
+      settle: { ok: true, durationMs: 300 },
+      effects: { domDiff: 'Page changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat', commandArgs: ['#combat'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] 戰鬥勝利', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '@1', resolvedBy: 'ref', label: '@1', commandArgs: ['@1'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 60 },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const parsed = JSON.parse(T.formatExportPlaywright(state, { format: 'json', title: 'exported smoke' }));
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.export-playwright.v1',
+      targetId: 'ABC123',
+      sessionId: 'sid-1',
+      title: 'exported smoke',
+      counts: {
+        environment: 2,
+        environmentExported: 1,
+        environmentSkipped: 1,
+        actions: 3,
+        actionsExported: 2,
+        actionsSkipped: 1,
+        assertions: 1,
+      },
+      nextSteps: [
+        'Review skipped steps and auth state before committing the Playwright spec.',
+        'cdp record-actions ABC123 --format json',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(parsed.spec).toContain("test('exported smoke'");
+    expect(parsed.spec).toContain('await page.route("**/api/fail*"');
+    expect(parsed.spec).toContain('await page.goto("https://example.com/dashboard");');
+    expect(parsed.spec).toContain('await expect(page.getByText("戰鬥勝利")).toBeVisible();');
+    expect(parsed.review).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'environment', index: 2, exported: false, reason: 'chrome-cdp-ex live clock override has no portable exporter step yet' }),
+      expect.objectContaining({ phase: 'action', index: 3, exported: false, reason: 'needs stable selector; chrome-cdp-ex @refs are session-local' }),
+    ]));
+  });
+
+  it('exports observed text additions as Playwright assertions', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#save', resolvedBy: 'selector', label: '#save', commandArgs: ['#save'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] Saved successfully', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const out = T.formatExportPlaywright(state);
+
+    expect(out).toContain("import { test, expect } from '@playwright/test';");
+    expect(out).toContain('await page.locator("#save").click();');
+    expect(out).toContain('await expect(page.getByText("Saved successfully")).toBeVisible();');
+    expect(out.indexOf('await page.locator("#save").click();')).toBeLessThan(
+      out.indexOf('await expect(page.getByText("Saved successfully")).toBeVisible();')
+    );
+  });
+
+  it('prefers high-signal observed text when exporting Playwright assertions', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat', commandArgs: ['#combat'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: {
+        domDiff: [
+          '~~~ Text nodes updated (3 added)',
+          '+   [StaticText] 戰鬥開始',
+          '+   [StaticText] 攻擊命中',
+          '+   [StaticText] 戰鬥勝利',
+        ].join('\n'),
+        console: [],
+        network: [],
+        navigation: null,
+      },
+      nextHint: null,
+    }));
+
+    const out = T.formatExportPlaywright(state);
+
+    expect(out).toContain('await expect(page.getByText("戰鬥勝利")).toBeVisible();');
+    expect(out).not.toContain('await expect(page.getByText("戰鬥開始")).toBeVisible();');
+  });
+
+  it('exports portable network mocks before Playwright action steps', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.environmentLog.push({
+      ts: Date.parse('2026-06-16T00:00:01.000Z'),
+      kind: 'mock',
+      action: 'add',
+      rule: {
+        urlPattern: '**/api/fail*',
+        status: 503,
+        body: '{"ok":false}',
+        contentType: 'application/json',
+      },
+    });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat', commandArgs: ['#combat'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: 'Page changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const out = T.formatExportPlaywright(state);
+
+    expect(out.indexOf('await page.route("**/api/fail*"')).toBeLessThan(out.indexOf('await page.locator("#combat").click();'));
+    expect(out).toContain('route.fulfill({ status: 503, contentType: "application/json", body: "{\\"ok\\":false}" })');
+  });
+
+  it('exports react fill actions without treating the flag as a selector', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'fill',
+      target: { input: '#cmd', resolvedBy: 'selector', label: '#cmd', commandArgs: ['--react', '#cmd', 'look trainer'] },
+      dispatch: { ok: true, method: 'fill' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: 'value changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const out = T.formatExportPlaywright(state);
+
+    expect(out).toContain('await page.locator("#cmd").fill("look trainer");');
+    expect(out).not.toContain('page.locator("--react")');
+  });
+
+  it('redacts sensitive fill values before recording action artifacts', () => {
+    const logPath = `/tmp/cdp-sensitive-action-${Date.now()}-${Math.random().toString(16).slice(2)}.log`;
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1', logPath });
+
+    try {
+      T.appendSessionActionLog(state, T.createActionResult({
+        action: 'fill',
+        target: {
+          input: '#password',
+          resolvedBy: 'selector',
+          label: '#password',
+          commandArgs: ['#password', 'secret123'],
+        },
+        dispatch: { ok: true, method: 'fill' },
+        settle: { ok: true, durationMs: 50 },
+        effects: { domDiff: 'value changed', console: [], network: [], navigation: null },
+        nextHint: null,
+      }));
+
+      const model = T.buildRecordActionsModel(state);
+      const logText = readFileSync(logPath, 'utf8');
+
+      expect(model.actions[0].command).toEqual(['fill', '#password', '<redacted>']);
+      expect(model.actions[0].replayable).toBe(false);
+      expect(model.actions[0].needsInput).toEqual(['text']);
+      expect(logText).not.toContain('secret123');
+      expect(logText).toContain('<redacted>');
+    } finally {
+      rmSync(logPath, { force: true });
+    }
+  });
+});
+
+// =========================================================================
+// Perceive diff baseline
+// =========================================================================
+
+describe('Perceive diff baseline', () => {
+  it('formats a diff from an explicit baseline output', () => {
+    const previous = [
+      'Page: Example — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 1 button',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Example',
+      '  [button] Save  @1',
+    ].join('\n');
+    const current = [
+      'Page: Example — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 1 button',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Example',
+      '  [button] Save  @1',
+      '  [alert] Saved',
+    ].join('\n');
+
+    const diff = T.formatPerceiveDiffOutput(previous, current);
+
+    expect(diff).toContain('Page: Example');
+    expect(diff).toContain('+++ Added (1):');
+    expect(diff).toContain('+   [alert] Saved');
+  });
+
+  it('builds a JSON diff model from an explicit baseline output', () => {
+    const previous = [
+      'Page: Example — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 1 button',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Example',
+      '  [button] Save  @1',
+    ].join('\n');
+    const current = [
+      'Page: Example — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 1 button',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Example',
+      '  [button] Save  @1',
+      '  [alert] Saved',
+    ].join('\n');
+
+    const model = T.buildPerceiveDiffModel(previous, current, {
+      mode: 'since-action',
+      targetPrefix: 'ABC12345',
+    });
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.perceive-diff.v1',
+      mode: 'since-action',
+      page: { title: 'Example', url: 'https://example.com' },
+      viewport: { width: 1280, height: 720, scrollY: 0, scrollMax: 0, coordinateSpace: 'viewport-css-px' },
+      summary: {
+        changed: true,
+        removed: 0,
+        added: 1,
+        textRemoved: 0,
+        textAdded: 0,
+      },
+      added: ['  [alert] Saved'],
+      removed: [],
+      textAddedSamples: [],
+      recommendation: {
+        source: 'perceive-diff',
+        mode: 'since-action',
+        commands: [
+          'cdp report ABC12345 --format json',
+          'cdp record-actions ABC12345 --format json',
+        ],
+      },
+      nextSteps: [
+        'cdp report ABC12345 --format json',
+        'cdp record-actions ABC12345 --format json',
+      ],
+    });
+  });
+
+  it('builds a JSON diff model for text-only changes with compact samples', () => {
+    const previous = [
+      'Page: Log — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: none',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[region] Event log',
+      '  [StaticText] old row',
+    ].join('\n');
+    const current = [
+      'Page: Log — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: none',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[region] Event log',
+      '  [StaticText] old row',
+      '  [StaticText] hmr panel ready',
+    ].join('\n');
+
+    const model = T.buildPerceiveDiffModel(previous, current, {
+      mode: 'diff',
+      targetPrefix: 'ABC12345',
+    });
+
+    expect(model.summary).toMatchObject({
+      changed: true,
+      added: 0,
+      removed: 0,
+      textAdded: 1,
+      textRemoved: 0,
+    });
+    expect(model.textAddedSamples).toEqual(['  [StaticText] hmr panel ready']);
+    expect(model.nextSteps).toEqual(['cdp report ABC12345 --format json']);
+  });
+
+  it('keeps high-signal StaticText additions in action diffs', () => {
+    const previous = [
+      'Page: Checkout — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 1 button',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Checkout',
+    ].join('\n');
+    const current = [
+      'Page: Checkout — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 1 button',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Checkout',
+      '  [StaticText] Payment failed: card number is required',
+      '  [StaticText] diagnostic noise',
+    ].join('\n');
+
+    const diff = T.formatPerceiveDiffOutput(previous, current);
+
+    expect(diff).toContain('+++ Added (1):');
+    expect(diff).toContain('+   [StaticText] Payment failed: card number is required');
+    expect(diff).toContain('~~~ Text nodes updated (1 added)');
+    expect(diff).not.toContain('diagnostic noise');
+  });
+
+  it('includes compact samples for low-signal StaticText additions', () => {
+    const previous = [
+      'Page: Log — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: none',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[region] Event log',
+      '  [StaticText] old row',
+      '  ... 10 earlier text node(s) omitted (--last 20)',
+    ].join('\n');
+    const current = [
+      'Page: Log — https://example.com',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: none',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[region] Event log',
+      '  [StaticText] old row',
+      '  [StaticText] hmr panel ready',
+      '  ... 11 earlier text node(s) omitted (--last 20)',
+    ].join('\n');
+
+    const diff = T.formatPerceiveDiffOutput(previous, current);
+
+    expect(diff).toContain('~~~ Text nodes updated (1 added)');
+    expect(diff).toContain('+   [StaticText] hmr panel ready');
   });
 });
 
@@ -411,11 +2890,17 @@ describe('parsePerceiveArgs', () => {
       cursorInteractive: false,
       keepRefs: false,
       last: null,
+      sinceAction: false,
+      frameRef: null,
     });
   });
 
   it('should parse --diff', () => {
     expect(parsePerceiveArgs(['--diff']).diff).toBe(true);
+  });
+
+  it('should parse --since-action', () => {
+    expect(parsePerceiveArgs(['--since-action']).sinceAction).toBe(true);
   });
 
   it('should parse -s with value', () => {
@@ -473,6 +2958,8 @@ describe('parsePerceiveArgs', () => {
       cursorInteractive: true,
       keepRefs: false,
       last: null,
+      sinceAction: false,
+      frameRef: null,
     });
   });
 
@@ -480,6 +2967,67 @@ describe('parsePerceiveArgs', () => {
     const opts = parsePerceiveArgs(['-s', '#main', '-x', '.sidebar']);
     expect(opts.selector).toBe('#main');
     expect(opts.exclude).toBe('.sidebar');
+  });
+});
+
+describe('perceiveStr selector scope', () => {
+  it('scopes perception to DOM subtree descendants for long live logs', async () => {
+    const pageMeta = JSON.stringify({
+      title: 'Scoped Log',
+      url: 'https://example.test/log',
+      vw: 800,
+      vh: 600,
+      scrollY: 0,
+      scrollMax: 0,
+      focused: 'none',
+      counts: {},
+      layoutMap: {},
+      styleHints: {},
+      cursorInteractives: [],
+    });
+    const fullAxTree = [
+      { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Scoped Log' }, backendDOMNodeId: 100 },
+      { nodeId: '2', parentId: '1', role: { value: 'StaticText' }, name: { value: 'Sticky toolbar' }, backendDOMNodeId: 200 },
+      { nodeId: '3', parentId: '1', role: { value: 'region' }, name: { value: 'Event log' }, backendDOMNodeId: 300 },
+      { nodeId: '4', parentId: '3', role: { value: 'StaticText' }, name: { value: 'old log row' } },
+      { nodeId: '5', parentId: '3', role: { value: 'StaticText' }, name: { value: 'hmr panel ready' } },
+      { nodeId: '6', parentId: '1', role: { value: 'button' }, name: { value: 'Run diagnostic' }, backendDOMNodeId: 400 },
+    ];
+    const unscopedSkeleton = fullAxTree.filter(node => node.nodeId !== '4' && node.nodeId !== '5');
+    const cdp = createMockCDP({
+      'DOM.getDocument': () => ({ root: { nodeId: 10 } }),
+      'DOM.querySelector': (_params) => ({ nodeId: 30 }),
+      'DOM.describeNode': () => ({
+        node: {
+          nodeId: 30,
+          backendNodeId: 300,
+          children: [
+            { nodeId: 31, backendNodeId: 301 },
+            { nodeId: 32, backendNodeId: 302 },
+          ],
+        },
+      }),
+      'Accessibility.getFullAXTree': (params) => ({
+        nodes: params.backendNodeId ? unscopedSkeleton : fullAxTree,
+      }),
+      'Runtime.evaluate': () => ({ result: { value: pageMeta } }),
+      'DOM.resolveNode': () => ({ object: { objectId: 'button-object' } }),
+      'Runtime.callFunctionOn': () => ({ result: { value: { x: 0, y: 0, w: 1, h: 1 } } }),
+    });
+
+    const out = await T.perceiveStr(
+      cdp,
+      'sid1',
+      new RingBuffer(10),
+      new RingBuffer(10),
+      new Map(),
+      { output: null },
+      { selector: '#combat-log', last: 20 },
+    );
+
+    expect(out).toContain('hmr panel ready');
+    expect(out).not.toContain('Sticky toolbar');
+    expect(out).not.toContain('Run diagnostic');
   });
 });
 
@@ -569,6 +3117,74 @@ describe('netlogStr', () => {
 describe('formatPageList', () => {
   it('should return empty string for no pages', () => {
     expect(formatPageList([])).toBe('');
+  });
+
+  it('builds a versioned list JSON model with stable prefixes and next steps', () => {
+    const model = T.buildPageListModel([
+      { targetId: 'AABBCCDD11223344', type: 'page', title: 'Dashboard', url: 'https://example.com/app' },
+      { targetId: 'AABBCCDD55667788', type: 'page', title: '', url: 'about:blank' },
+    ], {
+      Browser: 'Chrome/123',
+      'User-Agent': 'Mozilla/5.0 Electron/33.4.11',
+    });
+
+    expect(model.schema).toBe('chrome-cdp-ex.list.v1');
+    expect(model.targetCount).toBe(2);
+    expect(model.prefixLength).toBeGreaterThan(8);
+    expect(model.browser).toMatchObject({ product: 'Chrome/123', electron: '33.4.11' });
+    expect(model.pages[0]).toMatchObject({
+      index: 1,
+      targetId: 'AABBCCDD11223344',
+      title: 'Dashboard',
+      url: 'https://example.com/app',
+      isBlank: false,
+    });
+    expect(model.pages[0].targetPrefix.length).toBe(model.prefixLength);
+    expect(model.pages[1]).toMatchObject({
+      index: 2,
+      title: '(blank tab)',
+      url: 'about:blank',
+      isBlank: true,
+    });
+    expect(model.nextSteps).toEqual([
+      `cdp perceive ${model.pages[0].targetPrefix} -C -d 8`,
+      `cdp click ${model.pages[0].targetPrefix} @ref  # choose a ref from perceive`,
+      `cdp perceive ${model.pages[0].targetPrefix} --since-action`,
+      `cdp report ${model.pages[0].targetPrefix}`,
+    ]);
+    expect(model.recommendation).toMatchObject({
+      source: 'golden-path',
+      stage: 'perceive',
+      targetPrefix: model.pages[0].targetPrefix,
+      run: `cdp perceive ${model.pages[0].targetPrefix} -C -d 8`,
+      after: `cdp click ${model.pages[0].targetPrefix} @ref  # choose a ref from perceive`,
+      evidence: `cdp perceive ${model.pages[0].targetPrefix} --since-action`,
+      report: `cdp report ${model.pages[0].targetPrefix}`,
+      requiresUserAction: false,
+      consentRequired: false,
+    });
+    expect(model.recommendation.commands).toEqual(model.nextSteps);
+  });
+
+  it('builds an empty list JSON model with an open next step', () => {
+    const model = T.buildPageListModel([]);
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.list.v1',
+      targetCount: 0,
+      prefixLength: 8,
+      pages: [],
+      nextSteps: ['cdp open https://example.com'],
+    });
+    expect(model.recommendation).toMatchObject({
+      source: 'golden-path',
+      stage: 'open-page',
+      targetPrefix: null,
+      run: 'cdp open https://example.com',
+      after: 'cdp perceive <target-from-open> -C -d 8',
+      requiresUserAction: false,
+      consentRequired: false,
+    });
   });
 
   it('should format page with id prefix, title, url', () => {
@@ -1121,8 +3737,8 @@ function createMockCDP(handlers = {}) {
   const calls = [];
   return {
     calls,
-    send(method, params = {}, sessionId) {
-      calls.push({ method, params, sessionId });
+    send(method, params = {}, sessionId, timeout) {
+      calls.push({ method, params, sessionId, timeout });
       if (handlers[method]) return Promise.resolve(handlers[method](params, sessionId));
       return Promise.resolve({});
     },
@@ -1138,6 +3754,351 @@ function createMockCDP(handlers = {}) {
     },
   };
 }
+
+// =========================================================================
+// frame tree helpers
+// =========================================================================
+
+describe('frame tree helpers', () => {
+  const sampleTree = {
+    frame: { id: 'main-frame', url: 'https://app.example.com/', name: 'top' },
+    childFrames: [
+      {
+        frame: {
+          id: 'checkout-frame',
+          parentId: 'main-frame',
+          url: 'https://pay.example.com/checkout',
+          name: 'checkout',
+          securityOrigin: 'https://pay.example.com',
+        },
+      },
+      {
+        frame: {
+          id: 'ads-frame',
+          parentId: 'main-frame',
+          url: 'about:blank',
+          name: '',
+        },
+        childFrames: [
+          {
+            frame: {
+              id: 'nested-frame',
+              parentId: 'ads-frame',
+              url: 'https://widgets.example.com/picker',
+              name: 'picker',
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  it('parses frame-scoped refs like @f2:4', () => {
+    expect(T.parseFrameRef('@f2:4')).toEqual({ frameRef: '@f2', frameIndex: 2, ref: '@4', refIndex: 4 });
+    expect(T.parseFrameRef('@4')).toBeNull();
+    expect(T.parseFrameRef('@f2')).toBeNull();
+  });
+
+  it('parses perceive --frame refs', () => {
+    expect(parsePerceiveArgs(['--frame', '@f2']).frameRef).toBe('@f2');
+    expect(parsePerceiveArgs(['-F', '@f3']).frameRef).toBe('@f3');
+  });
+
+  it('extracts a frame ref from frame-scoped action targets', () => {
+    expect(T.frameRefFromActionTarget({ input: '@f2:4' })).toBe('@f2');
+    expect(T.frameRefFromActionTarget({ label: '@f3:9' })).toBe('@f3');
+    expect(T.frameRefFromActionTarget({ input: '@4' })).toBeNull();
+  });
+
+  it('uses the last frame perceive output as the baseline for frame-scoped actions', () => {
+    const refState = {
+      frameLastOutputs: new Map([['@f2', 'Frame: @f2\nold child state']]),
+    };
+    expect(T.baselineOutputForActionTarget(refState, 'main page output', { input: '@f2:4' }))
+      .toBe('Frame: @f2\nold child state');
+    expect(T.baselineOutputForActionTarget(refState, 'main page output', { input: '@4' }))
+      .toBe('main page output');
+  });
+
+  it('flattens frame trees into stable @f refs', () => {
+    const frames = T.flattenFrameTree(sampleTree);
+    expect(frames).toEqual([
+      expect.objectContaining({ ref: '@f1', id: 'main-frame', parentRef: null, depth: 0 }),
+      expect.objectContaining({ ref: '@f2', id: 'checkout-frame', parentRef: '@f1', depth: 1 }),
+      expect.objectContaining({ ref: '@f3', id: 'ads-frame', parentRef: '@f1', depth: 1 }),
+      expect.objectContaining({ ref: '@f4', id: 'nested-frame', parentRef: '@f3', depth: 2 }),
+    ]);
+  });
+
+  it('formats frame refs with url and parent context', () => {
+    const out = T.formatFrameTreeText(T.flattenFrameTree(sampleTree));
+    expect(out).toContain('Frames: 4');
+    expect(out).toContain('@f1 top main-frame https://app.example.com/');
+    expect(out).toContain('@f2 checkout checkout-frame parent:@f1 https://pay.example.com/checkout');
+    expect(out).toContain('@f4 picker nested-frame parent:@f3 https://widgets.example.com/picker');
+  });
+
+  it('reads Page.getFrameTree from the target session', async () => {
+    const cdp = createMockCDP({
+      'Page.getFrameTree': () => ({ frameTree: sampleTree }),
+    });
+    const out = await T.framesStr(cdp, 'sid1');
+    expect(out).toContain('Frames: 4');
+    expect(out).toContain('@f2 checkout checkout-frame');
+    expect(cdp.calls[0]).toMatchObject({ method: 'Page.getFrameTree', sessionId: 'sid1' });
+  });
+
+  it('perceives a frame and qualifies element refs with the frame ref', async () => {
+    const cdp = createMockCDP({
+      'Page.getFrameTree': () => ({ frameTree: sampleTree }),
+      'Page.createIsolatedWorld': (params) => {
+        expect(params.frameId).toBe('checkout-frame');
+        return { executionContextId: 42 };
+      },
+      'Runtime.evaluate': (params) => {
+        expect(params.contextId).toBe(42);
+        return { result: { value: JSON.stringify({
+          title: 'Checkout',
+          url: 'https://pay.example.com/checkout',
+          vw: 320,
+          vh: 240,
+          scrollY: 0,
+          scrollMax: 0,
+          counts: { button: 1 },
+          focused: 'none',
+          layoutMap: {},
+          styleHints: {},
+          cursorInteractives: [],
+        }) } };
+      },
+      'Accessibility.getFullAXTree': (params) => {
+        expect(params.frameId).toBe('checkout-frame');
+        return { nodes: [
+          { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Checkout' }, childIds: ['2'] },
+          { nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: 'Pay now' }, backendDOMNodeId: 222 },
+        ] };
+      },
+      'DOM.resolveNode': (params) => {
+        if (params.backendNodeId === 222) return { object: { objectId: 'button-object' } };
+        if (params.backendNodeId === 333) return { object: { objectId: 'frame-owner' } };
+        throw new Error(`unexpected backend node ${params.backendNodeId}`);
+      },
+      'Runtime.callFunctionOn': (params) => {
+        if (params.objectId === 'button-object') return { result: { value: { x: 12, y: 20, w: 80, h: 24, position: '' } } };
+        if (params.objectId === 'frame-owner') return { result: { value: { x: 50, y: 40, w: 300, h: 200 } } };
+        throw new Error(`unexpected object ${params.objectId}`);
+      },
+      'DOM.getFrameOwner': (params) => {
+        expect(params.frameId).toBe('checkout-frame');
+        return { backendNodeId: 333 };
+      },
+    });
+    const refState = {};
+    const out = await T.perceiveStr(
+      cdp,
+      'sid1',
+      new RingBuffer(5),
+      new RingBuffer(5),
+      new Map(),
+      { output: null, model: null },
+      { frameRef: '@f2' },
+      refState
+    );
+
+    expect(out).toContain('Frame: @f2 checkout checkout-frame https://pay.example.com/checkout');
+    expect(out).toContain('[button] Pay now  @f2:1  (62,60 80×24)');
+    expect(refState.frameRefs.get('@f2').refs.get(1)).toBe(222);
+    expect(refState.frameLastOutputs.get('@f2')).toContain('[button] Pay now  @f2:1');
+  });
+
+  it('clicks frame-scoped refs using top-level viewport coordinates', async () => {
+    const refState = {
+      frameRefs: new Map([
+        ['@f2', {
+          frameRef: '@f2',
+          frameId: 'checkout-frame',
+          parentId: 'main-frame',
+          refs: new Map([[1, 222]]),
+        }],
+      ]),
+    };
+    const cdp = createMockCDP({
+      'DOM.resolveNode': (params) => {
+        if (params.backendNodeId === 222) return { object: { objectId: 'child-button' } };
+        if (params.backendNodeId === 333) return { object: { objectId: 'frame-owner' } };
+        throw new Error(`unexpected backend node ${params.backendNodeId}`);
+      },
+      'Runtime.callFunctionOn': (params) => {
+        if (params.objectId === 'child-button') {
+          return { result: { value: { x: 10, y: 5, w: 100, h: 20, tag: 'BUTTON', text: 'Pay now' } } };
+        }
+        if (params.objectId === 'frame-owner') {
+          return { result: { value: { x: 50, y: 40, w: 300, h: 200 } } };
+        }
+        throw new Error(`unexpected object ${params.objectId}`);
+      },
+      'DOM.getFrameOwner': (params) => {
+        expect(params.frameId).toBe('checkout-frame');
+        return { backendNodeId: 333 };
+      },
+      'Input.dispatchMouseEvent': () => ({}),
+    });
+
+    const out = await T.clickStr(cdp, 'sid1', '@f2:1', new Map(), refState);
+    expect(out).toContain('Clicked <BUTTON> "Pay now" (@f2:1)');
+    const pressed = cdp.calls.find(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mousePressed');
+    expect(pressed.params.x).toBe(110);
+    expect(pressed.params.y).toBe(55);
+  });
+});
+
+// =========================================================================
+// checkpoint / restore — page state artifact
+// =========================================================================
+
+describe('checkpoint / restore', () => {
+  it('captures URL, storage, and cookies as a checkpoint model', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({
+        result: {
+          value: JSON.stringify({
+            url: 'https://example.com/app',
+            title: 'App',
+            origin: 'https://example.com',
+            localStorage: { theme: 'dark' },
+            sessionStorage: { wizard: '2' },
+          }),
+        },
+      }),
+      'Network.getCookies': () => ({
+        cookies: [{
+          name: 'sid',
+          value: 'abc',
+          domain: 'example.com',
+          path: '/',
+          secure: true,
+          httpOnly: true,
+          sameSite: 'Lax',
+          expires: -1,
+        }],
+      }),
+    });
+
+    const model = await T.checkpointModel(cdp, 'sid-1', { now: 12345 });
+
+    expect(model.schema).toBe('chrome-cdp-ex.checkpoint.v1');
+    expect(model.page).toEqual({
+      url: 'https://example.com/app',
+      title: 'App',
+      origin: 'https://example.com',
+    });
+    expect(model.storage.localStorage).toEqual({ theme: 'dark' });
+    expect(model.storage.sessionStorage).toEqual({ wizard: '2' });
+    expect(model.cookies).toHaveLength(1);
+    expect(model.cookies[0]).toMatchObject({ name: 'sid', value: 'abc', domain: 'example.com' });
+  });
+
+  it('formats checkpoint JSON for artifact files', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({
+        result: { value: JSON.stringify({ url: 'https://example.com/app', title: 'App', origin: 'https://example.com', localStorage: {}, sessionStorage: {} }) },
+      }),
+      'Network.getCookies': () => ({ cookies: [] }),
+    });
+
+    const parsed = JSON.parse(await T.checkpointStr(cdp, 'sid-1', { format: 'json', now: 12345 }));
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.checkpoint.v1');
+    expect(parsed.page.url).toBe('https://example.com/app');
+  });
+
+  it('parses restore format separately from checkpoint artifact input', () => {
+    const checkpoint = {
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      page: { url: 'https://example.com/app', title: 'App', origin: 'https://example.com' },
+      storage: { localStorage: {}, sessionStorage: {} },
+      cookies: [],
+    };
+
+    const parsed = T.parseRestoreArgs(['--format', 'json', '--json', JSON.stringify(checkpoint)]);
+
+    expect(parsed.format).toBe('json');
+    expect(parsed.source).toBe('inline JSON');
+    expect(parsed.artifact.page.url).toBe('https://example.com/app');
+  });
+
+  it('restores cookies, URL, and storage from a checkpoint artifact', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: 'restored' } }),
+      'Network.setCookie': () => ({ success: true }),
+      'Page.navigate': () => ({ loaderId: 'loader-1' }),
+      'Runtime.callFunctionOn': () => ({ result: { value: 'complete' } }),
+      'event:Page.loadEventFired': () => ({}),
+    });
+    const checkpoint = {
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      page: { url: 'https://example.com/app', title: 'App', origin: 'https://example.com' },
+      storage: {
+        localStorage: { theme: 'dark' },
+        sessionStorage: { wizard: '2' },
+      },
+      cookies: [{ name: 'sid', value: 'abc', domain: 'example.com', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }],
+    };
+
+    const out = await T.restoreCheckpointStr(cdp, 'sid-1', ['--json', JSON.stringify(checkpoint)]);
+
+    expect(out).toContain('Restored checkpoint');
+    expect(out).toContain('cookies: 1');
+    expect(cdp.calls.some(c => c.method === 'Network.setCookie' && c.params.name === 'sid' && c.params.url === 'https://example.com/app')).toBe(true);
+    expect(cdp.calls.some(c => c.method === 'Page.navigate' && c.params.url === 'https://example.com/app')).toBe(true);
+    const storageCall = cdp.calls.find(c => c.method === 'Runtime.evaluate' && c.params.expression.includes('localStorage.setItem'));
+    expect(storageCall.params.expression).toContain('"theme"');
+    expect(storageCall.params.expression).toContain('"wizard"');
+  });
+
+  it('falls back to page-side navigation when Page.navigate times out', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: 'restored' } }),
+      'Page.navigate': () => { throw new Error('Timeout: Page.navigate'); },
+      'event:Page.loadEventFired': () => ({}),
+    });
+    const checkpoint = {
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      page: { url: 'https://example.com/app', title: 'App', origin: 'https://example.com' },
+      storage: { localStorage: { theme: 'dark' }, sessionStorage: {} },
+      cookies: [],
+    };
+
+    const out = await T.restoreCheckpointStr(cdp, 'sid-1', ['--json', JSON.stringify(checkpoint)]);
+
+    expect(out).toContain('Restored checkpoint');
+    expect(cdp.calls.some(c => c.method === 'Runtime.evaluate' && c.params.expression.includes('location.assign'))).toBe(true);
+    expect(cdp.calls.some(c => c.method === 'Runtime.evaluate' && c.params.expression.includes('localStorage.setItem'))).toBe(true);
+  });
+
+  it('skips navigation when already at the checkpoint URL', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        if (params.expression === 'location.href') return { result: { value: 'https://example.com/app' } };
+        return { result: { value: 'restored' } };
+      },
+      'Page.navigate': () => { throw new Error('Page.navigate should not be called'); },
+    });
+    const checkpoint = {
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      page: { url: 'https://example.com/app', title: 'App', origin: 'https://example.com' },
+      storage: { localStorage: { theme: 'dark' }, sessionStorage: {} },
+      cookies: [],
+    };
+
+    const out = await T.restoreCheckpointStr(cdp, 'sid-1', ['--json', JSON.stringify(checkpoint)]);
+
+    expect(out).toContain('Restored checkpoint');
+    expect(out).toContain('already at checkpoint URL');
+    expect(cdp.calls.some(c => c.method === 'Page.navigate')).toBe(false);
+    expect(cdp.calls.some(c => c.method === 'Runtime.evaluate' && c.params.expression.includes('localStorage.setItem'))).toBe(true);
+  });
+});
 
 // =========================================================================
 // evalStr (with CDP mock)
@@ -1339,7 +4300,339 @@ describe('wait helpers', () => {
   });
 });
 
+describe('formatCliError', () => {
+  it('adds an executable doctor next step when CDP is unreachable', () => {
+    const out = formatCliError(new Error('Cannot reach CDP on 127.0.0.1:9222 — is the app running with --remote-debugging-port=9222?'));
+
+    expect(out).toContain('Error: Cannot reach CDP on 127.0.0.1:9222');
+    expect(out).toContain('Recovery:');
+    expect(out).toContain('Kind: browser-cdp');
+    expect(out).toContain('Strategy: run-doctor');
+    expect(out).toContain('Run: cdp doctor');
+    expect(out).toContain('Next: cdp doctor');
+  });
+
+  it('turns target resolution failures into list/open guidance', () => {
+    const out = formatCliError(new Error('No target matching prefix "abc". Run "cdp list".'));
+
+    expect(out).toContain('Error: No target matching prefix "abc". Run "cdp list".');
+    expect(out).toContain('Recovery:');
+    expect(out).toContain('Kind: target-resolution');
+    expect(out).toContain('Strategy: rediscover-target');
+    expect(out).toContain('Run: cdp list  # if empty: cdp open https://example.com');
+    expect(out).toContain('Then: cdp open https://example.com');
+    expect(out).toContain('Next: cdp list');
+    expect(out).toContain('cdp open https://example.com');
+  });
+
+  it('turns ambiguous prefixes into a longer-prefix next step', () => {
+    const out = formatCliError(new Error('Ambiguous prefix "AABB" — matches 2 targets. Use more characters.'));
+
+    expect(out).toContain('Error: Ambiguous prefix "AABB"');
+    expect(out).toContain('Next: cdp list');
+    expect(out).toContain('copy a longer target prefix');
+  });
+
+  it('turns daemon disconnects into a restartable perceive command', () => {
+    const out = formatCliError(
+      new Error('Connection closed before response. The daemon for this tab may have crashed or exited.'),
+      { targetPrefix: 'AABBCCDD' }
+    );
+
+    expect(out).toContain('Error: Connection closed before response');
+    expect(out).toContain('Recovery:');
+    expect(out).toContain('Kind: daemon-disconnect');
+    expect(out).toContain('Strategy: restart-tab-daemon');
+    expect(out).toContain('Run: cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('Next: cdp perceive AABBCCDD -C -d 8');
+  });
+
+  it('turns EMFILE errors into fd-limit recovery commands', () => {
+    const out = formatCliError(
+      new Error('EMFILE: too many open files, open "/tmp/cdp.sock"'),
+      { platform: 'darwin' }
+    );
+
+    expect(out).toContain('Error: EMFILE: too many open files');
+    expect(out).toContain('Kind: fd-limit');
+    expect(out).toContain('Strategy: raise-open-files-limit');
+    expect(out).toContain('Run: ulimit -n 4096');
+    expect(out).toContain('Then: sudo launchctl limit maxfiles 65536 200000');
+    expect(out).toContain('Next: ulimit -n 4096');
+  });
+
+  it('preserves already-classified action failures', () => {
+    const out = formatCliError('Action failure: overlay\nNext: cdp dismiss-modal AABBCCDD');
+
+    expect(out).toBe('Action failure: overlay\nNext: cdp dismiss-modal AABBCCDD');
+  });
+
+  it('builds a structured JSON handoff for top-level CLI errors', () => {
+    const model = T.buildCliErrorModel(new Error('target ID required. Run "cdp list" first.'), { cmd: 'perceive' });
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.cli-error.v1',
+      ok: false,
+      command: 'perceive',
+      error: {
+        message: 'target ID required. Run "cdp list" first.',
+      },
+      recovery: {
+        kind: 'target-resolution',
+        strategy: 'rediscover-target',
+        run: 'cdp list  # if empty: cdp open https://example.com',
+        then: 'cdp open https://example.com',
+      },
+      nextSteps: [
+        'cdp list  # if empty: cdp open https://example.com',
+        'cdp open https://example.com',
+      ],
+    });
+  });
+
+  it('formats top-level CLI errors as parseable JSON when requested', () => {
+    const out = formatCliError(
+      new Error('Connection closed before response. The daemon for this tab may have crashed or exited.'),
+      { cmd: 'perceive', targetPrefix: 'AABBCCDD', format: 'json' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.cli-error.v1');
+    expect(parsed.recovery.kind).toBe('daemon-disconnect');
+    expect(parsed.recovery.run).toBe('cdp perceive AABBCCDD -C -d 8');
+    expect(parsed.nextSteps).toEqual(['cdp perceive AABBCCDD -C -d 8']);
+    expect(out).not.toContain('Recovery:');
+  });
+
+  it('formats EMFILE CLI errors as structured fd-limit JSON when requested', () => {
+    const out = formatCliError(
+      new Error('too many open files'),
+      { format: 'json', platform: 'darwin' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.cli-error.v1',
+      ok: false,
+      recovery: {
+        kind: 'fd-limit',
+        strategy: 'raise-open-files-limit',
+        run: 'ulimit -n 4096',
+        then: 'sudo launchctl limit maxfiles 65536 200000',
+        commands: [
+          {
+            scope: 'current-shell',
+            command: 'ulimit -n 4096',
+          },
+          {
+            scope: 'macos-login-session',
+            command: 'sudo launchctl limit maxfiles 65536 200000',
+            requiresAdmin: true,
+          },
+        ],
+      },
+      nextSteps: [
+        'ulimit -n 4096',
+        'sudo launchctl limit maxfiles 65536 200000',
+      ],
+    });
+  });
+
+  it('classifies missing action arguments as usage recovery instead of target status', () => {
+    const out = formatCliError(new Error('selector required'), {
+      cmd: 'fill',
+      targetPrefix: 'AABBCCDD',
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.cli-error.v1',
+      ok: false,
+      command: 'fill',
+      targetPrefix: 'AABBCCDD',
+      recovery: {
+        kind: 'usage',
+        strategy: 'provide-required-argument',
+        run: 'cdp fill AABBCCDD <selector|@ref> <text>',
+      },
+      nextSteps: ['cdp fill AABBCCDD <selector|@ref> <text>'],
+    });
+  });
+
+  it('classifies missing nav URLs as a concrete navigation recovery', () => {
+    const out = formatCliError(new Error('URL required'), {
+      cmd: 'nav',
+      targetPrefix: 'AABBCCDD',
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.recovery.kind).toBe('navigation');
+    expect(parsed.recovery.strategy).toBe('provide-url');
+    expect(parsed.recovery.run).toBe('cdp nav AABBCCDD https://example.com');
+    expect(parsed.nextSteps).toEqual(['cdp nav AABBCCDD https://example.com']);
+  });
+});
+
+describe('open onboarding guidance', () => {
+  it('parses bounded attach waiting for JSON/open automation', () => {
+    expect(T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', '0', '--format', 'json'])).toEqual({
+      url: 'https://example.com',
+      format: 'json',
+      attachTimeoutMs: 0,
+      readyTimeoutMs: 0,
+      readySelector: null,
+    });
+    expect(T.parseOpenArgs(['--attach-timeout-ms=1200', '--ready-timeout-ms', '2500', '--ready-selector', '#app'])).toEqual({
+      url: 'about:blank',
+      format: 'text',
+      attachTimeoutMs: 1200,
+      readyTimeoutMs: 2500,
+      readySelector: '#app',
+    });
+    expect(() => T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', 'nope'])).toThrow('open: --attach-timeout-ms must be a non-negative integer');
+    expect(() => T.parseOpenArgs(['https://example.com', '--ready-timeout-ms', 'nope'])).toThrow('open: --ready-timeout-ms must be a non-negative integer');
+    expect(() => T.parseOpenArgs(['https://example.com', '--ready-selector'])).toThrow('open: --ready-selector requires a CSS selector');
+  });
+
+  it('builds page-side navigation for open onboarding', () => {
+    const script = T.openNavigationScript('https://example.com/path?x="quoted"');
+
+    expect(script).toContain('location.assign("https://example.com/path?x=\\"quoted\\"")');
+    expect(script).toContain('return JSON.stringify');
+    expect(script).toContain('location.assign');
+  });
+
+  it('formats a ready continuation after open auto-perceives the page', () => {
+    const out = formatOpenReadyMessage('AABBCCDDEEFF', 'https://example.com');
+
+    expect(out).toContain('Tab ready');
+    expect(out).toContain('Target: AABBCCDD');
+    expect(out).toContain('Next: cdp click AABBCCDD @ref');
+    expect(out).toContain('Then: cdp perceive AABBCCDD --since-action');
+    expect(out).toContain('Report: cdp report AABBCCDD');
+  });
+
+  it('builds a JSON model for a ready opened tab', () => {
+    const model = T.buildOpenModel({
+      targetId: 'AABBCCDDEEFF',
+      url: 'https://example.com',
+      attached: true,
+      autoPerceive: { attempted: true, ok: true },
+    });
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.open.v1',
+      targetId: 'AABBCCDDEEFF',
+      targetPrefix: 'AABBCCDD',
+      url: 'https://example.com',
+      attached: true,
+      approval: 'approved',
+      autoPerceive: { attempted: true, ok: true },
+      nextSteps: [
+        'cdp click AABBCCDD @ref  # choose a ref from the perception below',
+        'cdp perceive AABBCCDD --since-action',
+        'cdp report AABBCCDD',
+      ],
+    });
+    expect(model.recommendation).toMatchObject({
+      source: 'golden-path',
+      stage: 'act',
+      targetPrefix: 'AABBCCDD',
+      run: 'cdp click AABBCCDD @ref  # choose a ref from the perception below',
+      after: 'cdp perceive AABBCCDD --since-action',
+      report: 'cdp report AABBCCDD',
+      requiresUserAction: false,
+      consentRequired: false,
+    });
+    expect(model.recommendation.commands).toEqual([
+      'cdp click AABBCCDD @ref  # choose a ref from the perception below',
+      'cdp perceive AABBCCDD --since-action',
+      'cdp report AABBCCDD',
+    ]);
+    expect(model.nextSteps).toEqual(model.recommendation.commands);
+  });
+
+  it('recommends perceive when open JSON skipped auto-perceive output', () => {
+    const model = T.buildOpenModel({
+      targetId: 'AABBCCDDEEFF',
+      url: 'about:blank',
+      attached: true,
+      autoPerceive: { attempted: false, ok: false, reason: 'json-output' },
+    });
+
+    expect(model.recommendation).toMatchObject({
+      source: 'golden-path',
+      stage: 'perceive',
+      targetPrefix: 'AABBCCDD',
+      run: 'cdp perceive AABBCCDD -C -d 8',
+      after: 'cdp click AABBCCDD @ref  # choose a ref from perceive',
+    });
+  });
+
+  it('formats a timeout recovery when browser permission is not approved yet', () => {
+    const out = formatOpenTimeoutMessage('AABBCCDDEEFF');
+
+    expect(out).toContain('Timeout waiting for debugging approval');
+    expect(out).toContain('Target: AABBCCDD');
+    expect(out).toContain('Next: cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('click Allow');
+  });
+
+  it('builds a JSON model for an opened tab that still needs approval', () => {
+    const model = T.buildOpenModel({
+      targetId: 'AABBCCDDEEFF',
+      url: 'about:blank',
+      attached: false,
+      autoPerceive: { attempted: false, ok: false, reason: 'not-attached' },
+    });
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.open.v1',
+      targetPrefix: 'AABBCCDD',
+      url: 'about:blank',
+      attached: false,
+      approval: 'pending',
+      autoPerceive: { attempted: false, ok: false, reason: 'not-attached' },
+      nextSteps: [
+        'cdp perceive AABBCCDD -C -d 8',
+      ],
+    });
+    expect(model.recommendation).toMatchObject({
+      source: 'golden-path',
+      stage: 'browser-permission',
+      targetPrefix: 'AABBCCDD',
+      run: 'cdp perceive AABBCCDD -C -d 8',
+      ask: 'Click Allow if Chrome asks.',
+      requiresUserAction: true,
+      consentRequired: false,
+    });
+  });
+
+  it('formats auto-perceive failure with actionable recovery', () => {
+    const out = formatOpenAutoPerceiveFailure(
+      new Error('Connection closed before response. The daemon for this tab may have crashed.'),
+      'AABBCCDDEEFF'
+    );
+
+    expect(out).toContain('Auto-perceive failed');
+    expect(out).toContain('Next: cdp perceive AABBCCDD -C -d 8');
+  });
+});
+
 describe('status --runtime and buffer reset', () => {
+  it('uses a sub-second page info timeout so status stays responsive after reload churn', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: JSON.stringify({ title: 'T', url: 'https://example.test/' }) } }),
+    });
+
+    await statusStr(cdp, 'sid1', new RingBuffer(10), new RingBuffer(10), new RingBuffer(10), { console: 0, exception: 0 });
+
+    const evaluateCall = cdp.calls.find(call => call.method === 'Runtime.evaluate');
+    expect(evaluateCall.timeout).toBeLessThanOrEqual(500);
+  });
+
   it('includes Performance.getMetrics counters only when requested', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': () => ({ result: { value: JSON.stringify({ title: 'T', url: 'https://example.test/' }) } }),
@@ -1419,6 +4712,173 @@ describe('navStr', () => {
     const cdp = createMockCDP({});
     await expect(navStr(cdp, 'sid1', 'http://169.254.169.254/'))
       .rejects.toThrow(/metadata/i);
+  });
+});
+
+// =========================================================================
+// reloadStr (with CDP mock)
+// =========================================================================
+
+describe('reloadStr', () => {
+  it('enables Page events before reloading', async () => {
+    const cdp = createMockCDP({
+      'Page.enable': () => ({}),
+      'Page.reload': () => ({}),
+      'event:Page.loadEventFired': () => ({}),
+    });
+
+    const result = await reloadStr(cdp, 'sid1');
+
+    expect(result).toBe('Page reloaded');
+    expect(cdp.calls.map(call => call.method).slice(0, 2)).toEqual(['Page.enable', 'Page.reload']);
+  });
+
+  it('falls back to document readiness when reload load event is absent', async () => {
+    const calls = [];
+    let loadEventTimeout;
+    let reloadDispatchTimeout;
+    const cdp = {
+      calls,
+      send(method, params = {}, sessionId, timeout) {
+        calls.push({ method, params, sessionId });
+        if (method === 'Page.reload') reloadDispatchTimeout = timeout;
+        if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: 'complete' } });
+        return Promise.resolve({});
+      },
+      waitForEvent(_method, timeout) {
+        loadEventTimeout = timeout;
+        return {
+          promise: new Promise(() => {}),
+          cancel() {},
+        };
+      },
+    };
+
+    const result = await Promise.race([
+      reloadStr(cdp, 'sid1'),
+      new Promise(resolve => setTimeout(() => resolve('timed-out'), 50)),
+    ]);
+
+    expect(result).toBe('Page reloaded');
+    expect(reloadDispatchTimeout).toBeLessThanOrEqual(2000);
+    expect(loadEventTimeout).toBeLessThanOrEqual(5000);
+    expect(calls.map(call => call.method)).toEqual(['Page.enable', 'Page.reload', 'Runtime.evaluate']);
+  });
+
+  it('bounds reload dispatch and readiness probes for live-session latency', async () => {
+    const calls = [];
+    let loadEventTimeout;
+    let reloadDispatchTimeout;
+    const cdp = {
+      calls,
+      send(method, params = {}, sessionId, timeout) {
+        calls.push({ method, params, sessionId, timeout });
+        if (method === 'Page.reload') reloadDispatchTimeout = timeout;
+        if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: 'complete' } });
+        return Promise.resolve({});
+      },
+      waitForEvent(_method, timeout) {
+        loadEventTimeout = timeout;
+        return {
+          promise: new Promise(() => {}),
+          cancel() {},
+        };
+      },
+    };
+
+    await expect(reloadStr(cdp, 'sid1')).resolves.toBe('Page reloaded');
+
+    const readyProbe = calls.find(call => call.method === 'Runtime.evaluate');
+    expect(reloadDispatchTimeout).toBeLessThanOrEqual(1000);
+    expect(loadEventTimeout).toBeLessThanOrEqual(1000);
+    expect(readyProbe.timeout).toBeLessThanOrEqual(500);
+  });
+
+  it('continues after a Page.reload dispatch timeout', async () => {
+    const cdp = {
+      calls: [],
+      send(method, params = {}, sessionId) {
+        cdp.calls.push({ method, params, sessionId });
+        if (method === 'Page.reload') return Promise.reject(new Error('Timeout: Page.reload'));
+        if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: 'complete' } });
+        return Promise.resolve({});
+      },
+      waitForEvent() {
+        return {
+          promise: new Promise(() => {}),
+          cancel() {},
+        };
+      },
+    };
+
+    await expect(reloadStr(cdp, 'sid1')).resolves.toBe('Page reloaded');
+    expect(cdp.calls.map(call => call.method)).toEqual(['Page.enable', 'Page.reload', 'Runtime.evaluate']);
+  });
+
+  it('observes reload completion with a short lightweight page probe', async () => {
+    let evaluateTimeout;
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params, _sid) => {
+        evaluateTimeout = cdp.calls.at(-1)?.timeout;
+        expect(params.expression).toContain('document.readyState');
+        return {
+          result: {
+            value: JSON.stringify({
+              title: 'Smoke',
+              url: 'https://example.test/app',
+              readyState: 'complete',
+            }),
+          },
+        };
+      },
+    });
+
+    const out = await observeReloadPage(cdp, 'sid1');
+
+    expect(evaluateTimeout).toBeLessThanOrEqual(2000);
+    expect(out).toContain('Reload observation');
+    expect(out).toContain('Page: Smoke');
+    expect(out).toContain('URL: https://example.test/app');
+    expect(out).toContain('Ready state: complete');
+  });
+
+  it('invalidates refs immediately after reload action dispatch', async () => {
+    const cdp = createMockCDP({
+      'Page.enable': () => ({}),
+      'Page.reload': () => ({}),
+      'event:Page.loadEventFired': () => ({}),
+    });
+    const session = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid1' });
+    session.refs.map.set(1, 101);
+    session.refs.generation = 1;
+    session.refs.invalidationReason = null;
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    const navBuf = new RingBuffer(10);
+    const netReqBuf = new RingBuffer(10);
+    const pendingReqs = new Map([['r1', { url: '/api' }]]);
+    const lastReadSeq = { console: 0, exception: 0, nav: 0 };
+    consoleBuf.push({ text: 'before reload' });
+    navBuf.push({ url: 'https://example.test/before' });
+
+    const out = await reloadActionDispatch({
+      cdp,
+      sessionId: 'sid1',
+      session,
+      consoleBuf,
+      exceptionBuf,
+      navBuf,
+      netReqBuf,
+      pendingReqs,
+      lastReadSeq,
+    });
+
+    expect(out).toContain('Page reloaded');
+    expect(session.refs.map.size).toBe(0);
+    expect(session.refs.invalidationReason).toBe('navigation');
+    expect(pendingReqs.size).toBe(0);
+    expect(consoleBuf.all()).toEqual([]);
+    expect(navBuf.all()).toEqual([]);
   });
 });
 
@@ -2364,6 +5824,76 @@ describe('cascadeStr', () => {
     expect(result).toContain('base.css:28');
   });
 
+  it('returns structured JSON with winning CSS source for agents', async () => {
+    const cdp = makeCascadeCDP(
+      [
+        {
+          rule: {
+            selectorList: { text: '.btn-primary' },
+            origin: 'regular',
+            style: {
+              styleSheetId: 'components.css',
+              range: { startLine: 141 },
+              cssProperties: [{ name: 'background-color', value: '#2563eb' }],
+            },
+          },
+        },
+        {
+          rule: {
+            selectorList: { text: 'button' },
+            origin: 'regular',
+            style: {
+              styleSheetId: 'base.css',
+              range: { startLine: 27 },
+              cssProperties: [{ name: 'background-color', value: '#e5e7eb' }],
+            },
+          },
+        },
+      ],
+      [{ name: 'background-color', value: '#2563eb' }],
+    );
+    const result = await cascadeStr(cdp, 'sid1', '.btn', 'background-color', new Map(), null, { format: 'json' });
+    const model = JSON.parse(result);
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.cascade.v1',
+      input: { selector: '.btn', property: 'background-color' },
+      propertyCount: 1,
+      properties: [
+        {
+          name: 'background-color',
+          computedValue: '#2563eb',
+          winner: {
+            selector: '.btn-primary',
+            value: '#2563eb',
+            source: 'components.css:142',
+          },
+          rules: [
+            {
+              selector: '.btn-primary',
+              value: '#2563eb',
+              source: 'components.css:142',
+              winner: true,
+              overridden: false,
+            },
+            {
+              selector: 'button',
+              value: '#e5e7eb',
+              source: 'base.css:28',
+              winner: false,
+              overridden: true,
+            },
+          ],
+        },
+      ],
+    });
+    expect(model.editTarget).toMatchObject({
+      property: 'background-color',
+      selector: '.btn-primary',
+      source: 'components.css:142',
+    });
+  });
+
   it('should show inherited properties', async () => {
     const cdp = makeCascadeCDP(
       [],
@@ -3051,6 +6581,168 @@ describe('formatBatchResults', () => {
     const out = formatBatchResults([{ cmd: 'press', ok: true, result: '' }], 'compact');
     expect(out).toContain('[1] press: ok');
   });
+
+  it('formats structured JSON with failed step recovery hints for agents', () => {
+    const out = formatBatchResults(results, 'model', {
+      targetId: 'ABC123',
+      mode: 'sequential',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.batch.v1',
+      targetId: 'ABC123',
+      mode: 'sequential',
+      counts: {
+        steps: 3,
+        ok: 2,
+        failed: 1,
+      },
+      failedStep: {
+        index: 3,
+        cmd: 'fill',
+        ok: false,
+        error: 'Element not found: #x',
+      },
+      nextSteps: ['cdp status ABC123'],
+    });
+    expect(parsed.steps[0]).toMatchObject({
+      index: 1,
+      cmd: 'click',
+      ok: true,
+      resultPreview: 'Clicked <button> "Submit"',
+    });
+  });
+
+  it('extracts classified action failure next steps from structured batch JSON', () => {
+    const out = formatBatchResults([{
+      cmd: 'click',
+      ok: false,
+      error: [
+        'Action failure: overlay',
+        'Reason: overlay blocked the target',
+        'Next: cdp dismiss-modal ABC123',
+        'Original: Other element would receive the click',
+      ].join('\n'),
+    }], 'model', { targetId: 'ABC123' });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.failedStep).toMatchObject({
+      cmd: 'click',
+      failureKind: 'overlay',
+      nextCommand: 'cdp dismiss-modal ABC123',
+    });
+    expect(parsed.nextSteps).toEqual(['cdp dismiss-modal ABC123']);
+  });
+
+  it('surfaces attention diagnoses from successful action JSON steps', () => {
+    const action = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 120 },
+      effects: { domDiff: 'error banner appeared', console: [], network: [], navigation: null },
+      nextHint: null,
+    }), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        pending: 0,
+        entries: [{ method: 'POST', url: 'https://example.com/api/save', status: 500, duration: 44 }],
+      },
+    });
+    const out = formatBatchResults([{ cmd: 'click', ok: true, result: T.formatJson(action) }], 'model', { targetId: 'ABC123' });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.counts).toMatchObject({ steps: 1, ok: 1, failed: 0, attention: 1 });
+    expect(parsed.steps[0]).toMatchObject({
+      cmd: 'click',
+      ok: true,
+      diagnosis: {
+        status: 'attention',
+        kind: 'network-failure',
+        nextCommand: 'cdp netlog ABC123',
+      },
+    });
+    expect(parsed.nextSteps).toEqual([
+      'cdp netlog ABC123',
+      'cdp perceive ABC123 --since-action',
+      'cdp report ABC123 --format json',
+    ]);
+  });
+
+  it('surfaces investigate verdicts from successful action JSON steps', () => {
+    const action = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#noop', resolvedBy: 'selector', label: '#noop' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 90 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+      nextHint: null,
+    });
+    const out = formatBatchResults([{ cmd: 'click', ok: true, result: T.formatJson(action) }], 'model', { targetId: 'ABC123' });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.counts).toMatchObject({ steps: 1, ok: 1, failed: 0, attention: 1 });
+    expect(parsed.steps[0]).toMatchObject({
+      cmd: 'click',
+      ok: true,
+      verdict: {
+        status: 'investigate',
+        canContinue: false,
+        needsRecovery: true,
+        primaryNextStep: 'cdp overlay ABC123 "#noop" --format json',
+      },
+    });
+    expect(parsed.nextSteps).toEqual([
+      'cdp overlay ABC123 "#noop" --format json',
+      'cdp frame ABC123 --format json',
+      'cdp perceive ABC123 -C -d 8',
+      'cdp report ABC123 --format json',
+    ]);
+  });
+});
+
+describe('parseBatchArgs', () => {
+  it('keeps legacy JSON array output by default', () => {
+    expect(parseBatchArgs(['click #ok | summary'])).toMatchObject({
+      parallel: false,
+      output: 'legacy-json',
+      commands: [
+        { cmd: 'click', args: ['#ok'] },
+        { cmd: 'summary', args: [] },
+      ],
+    });
+  });
+
+  it('parses explicit --format json as structured batch output', () => {
+    expect(parseBatchArgs(['--format', 'json', 'click #ok | click #missing'])).toMatchObject({
+      output: 'model',
+      commands: [
+        { cmd: 'click', args: ['#ok'] },
+        { cmd: 'click', args: ['#missing'] },
+      ],
+    });
+  });
+
+  it('preserves plain and compact text modes', () => {
+    expect(parseBatchArgs(['--plain', 'click #ok']).output).toBe('plain');
+    expect(parseBatchArgs(['--compact', 'click #ok']).output).toBe('compact');
+  });
+
+  it('auto-adds action JSON format for parent JSON handoff', () => {
+    expect(autoActionJsonArgs('click', ['#noop'], true)).toEqual(['#noop', '--format', 'json']);
+  });
+
+  it('respects explicit subcommand format options', () => {
+    expect(autoActionJsonArgs('click', ['#noop', '--format', 'text'], true)).toEqual(['#noop', '--format', 'text']);
+  });
+
+  it('does not add action JSON format to read-only commands', () => {
+    expect(autoActionJsonArgs('summary', [], true)).toEqual([]);
+  });
 });
 
 // =========================================================================
@@ -3169,6 +6861,396 @@ describe('flowStr', () => {
     // Should have one numbered head per step
     const heads = out.split('\n').filter(l => /^\[\d+\/\d+\]/.test(l));
     expect(heads).toHaveLength(3);
+  });
+
+  it('returns structured JSON failure handoff for command failures', async () => {
+    const seen = [];
+    const run = async (step) => {
+      seen.push(step.cmd);
+      if (step.cmd === 'click') {
+        return {
+          ok: false,
+          error: [
+            'Action failure: selector',
+            'Reason: No current element matched the requested selector/ref.',
+            'Next: cdp perceive ABC123 -C -d 8',
+            'Original: Element not found: #missing',
+          ].join('\n'),
+        };
+      }
+      return { ok: true, result: `did ${step.cmd}` };
+    };
+    const out = await flowStr(
+      { run, settle: async () => '' },
+      'summary; click #missing; status',
+      { format: 'json', targetId: 'ABC123' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(seen).toEqual(['summary', 'click']);
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.flow.v1',
+      targetId: 'ABC123',
+      halted: true,
+      counts: { steps: 3, ok: 1, failed: 1, skipped: 1 },
+      failedStep: {
+        index: 2,
+        kind: 'command',
+        cmd: 'click',
+        ok: false,
+        failureKind: 'selector',
+        nextCommand: 'cdp perceive ABC123 -C -d 8',
+      },
+      nextSteps: ['cdp perceive ABC123 -C -d 8'],
+    });
+    expect(parsed.steps[0]).toMatchObject({ index: 1, cmd: 'summary', ok: true, resultPreview: 'did summary' });
+    expect(parsed.steps[2]).toMatchObject({ index: 3, cmd: 'status', skipped: true });
+  });
+
+  it('halts on failed action JSON steps', async () => {
+    const action = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#missing', resolvedBy: 'selector', label: '#missing' },
+      dispatch: { ok: false, method: 'click', error: 'Element not found: #missing' },
+      settle: { ok: false, durationMs: 12 },
+      effects: {
+        domDiff: null,
+        console: [],
+        network: [],
+        navigation: null,
+        failure: {
+          kind: 'selector',
+          reason: 'No current element matched the requested selector/ref.',
+          nextCommand: 'cdp perceive ABC123 -C -d 8',
+          originalMessage: 'Element not found: #missing',
+        },
+      },
+      nextHint: 'cdp perceive ABC123 -C -d 8',
+    });
+    const seen = [];
+    const out = await flowStr(
+      {
+        run: async (step) => {
+          seen.push(step.cmd);
+          return step.cmd === 'click'
+            ? { ok: true, result: T.formatJson(action) }
+            : { ok: true, result: `did ${step.cmd}` };
+        },
+        settle: async () => '',
+      },
+      'summary; click #missing; status',
+      { format: 'json', targetId: 'ABC123' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(seen).toEqual(['summary', 'click']);
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.flow.v1',
+      halted: true,
+      counts: { steps: 3, ok: 1, failed: 1, skipped: 1, attention: 0 },
+      failedStep: {
+        index: 2,
+        cmd: 'click',
+        ok: false,
+        failureKind: 'selector',
+        nextCommand: 'cdp perceive ABC123 -C -d 8',
+        verdict: {
+          status: 'blocked',
+          needsRecovery: true,
+          primaryNextStep: 'cdp perceive ABC123 -C -d 8',
+        },
+      },
+      nextSteps: [
+        'cdp perceive ABC123 -C -d 8',
+        'cdp status ABC123',
+      ],
+    });
+    expect(parsed.steps[2]).toMatchObject({ index: 3, cmd: 'status', skipped: true });
+  });
+
+  it('returns structured JSON failure handoff for wait failures', async () => {
+    const out = await flowStr(
+      { run: async () => ({ ok: true, result: 'ok' }), settle: async () => { throw new Error('Unknown wait: "paint idle"'); } },
+      'wait paint idle; summary',
+      { format: 'json', targetId: 'ABC123' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.flow.v1',
+      halted: true,
+      failedStep: {
+        index: 1,
+        kind: 'wait',
+        wait: 'paint idle',
+        ok: false,
+        error: 'Unknown wait: "paint idle"',
+      },
+      nextSteps: ['cdp status ABC123'],
+    });
+  });
+
+  it('surfaces attention diagnoses from successful action JSON steps', async () => {
+    const action = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 120 },
+      effects: { domDiff: 'error banner appeared', console: [], network: [], navigation: null },
+      nextHint: null,
+    }), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        pending: 0,
+        entries: [{ method: 'POST', url: 'https://example.com/api/save', status: 500, duration: 44 }],
+      },
+    });
+    const out = await flowStr(
+      { run: async (step) => ({ ok: true, result: step.cmd === 'click' ? T.formatJson(action) : 'ok' }), settle: async () => '' },
+      'click #save; summary',
+      { format: 'json', targetId: 'ABC123' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.flow.v1',
+      halted: false,
+      counts: { steps: 2, ok: 2, failed: 0, skipped: 0, attention: 1 },
+      nextSteps: [
+        'cdp netlog ABC123',
+        'cdp perceive ABC123 --since-action',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(parsed.steps[0]).toMatchObject({
+      cmd: 'click',
+      ok: true,
+      diagnosis: {
+        status: 'attention',
+        kind: 'network-failure',
+        nextCommand: 'cdp netlog ABC123',
+      },
+    });
+  });
+
+  it('surfaces investigate verdicts from successful action JSON steps', async () => {
+    const action = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#noop', resolvedBy: 'selector', label: '#noop' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 90 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+      nextHint: null,
+    });
+    const out = await flowStr(
+      { run: async (step) => ({ ok: true, result: step.cmd === 'click' ? T.formatJson(action) : 'ok' }), settle: async () => '' },
+      'click #noop; summary',
+      { format: 'json', targetId: 'ABC123' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.flow.v1',
+      halted: false,
+      counts: { steps: 2, ok: 2, failed: 0, skipped: 0, attention: 1 },
+      nextSteps: [
+        'cdp overlay ABC123 "#noop" --format json',
+        'cdp frame ABC123 --format json',
+        'cdp perceive ABC123 -C -d 8',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(parsed.steps[0]).toMatchObject({
+      cmd: 'click',
+      ok: true,
+      verdict: {
+        status: 'investigate',
+        canContinue: false,
+        needsRecovery: true,
+        primaryNextStep: 'cdp overlay ABC123 "#noop" --format json',
+      },
+    });
+  });
+});
+
+// =========================================================================
+// replayActionsStr — execute record-actions artifacts
+// =========================================================================
+
+describe('replayActionsStr', () => {
+  function artifact(actions) {
+    return {
+      schema: 'chrome-cdp-ex.record-actions.v1',
+      targetId: 'ABC123',
+      sessionId: 'sid-1',
+      source: 'test',
+      actionCount: actions.length,
+      actions,
+    };
+  }
+
+  it('replays environment controls before recorded actions', async () => {
+    const calls = [];
+    const source = artifact([
+      { index: 1, action: 'click', command: ['click', '#combat'], replayable: true, needsInput: [] },
+    ]);
+    source.environmentCount = 3;
+    source.environment = [
+      { index: 1, type: 'mock', action: 'add', command: ['mock', 'add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}'], replayable: true, needsInput: [] },
+      { index: 2, type: 'throttle', action: 'apply', command: ['throttle', 'slow-3g'], replayable: true, needsInput: [] },
+      { index: 3, type: 'clock', action: 'apply', command: ['clock', 'freeze', '--at', '2020-01-02T03:04:05.000Z'], replayable: true, needsInput: [] },
+    ];
+
+    const out = await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step);
+        return { ok: true, result: `${step.cmd} ok` };
+      },
+    }, ['--json', JSON.stringify(source)]);
+
+    expect(calls).toEqual([
+      { cmd: 'mock', args: ['add', '**/api/fail*', '--status', '503', '--body', '{"ok":false}'] },
+      { cmd: 'throttle', args: ['slow-3g'] },
+      { cmd: 'clock', args: ['freeze', '--at', '2020-01-02T03:04:05.000Z'] },
+      { cmd: 'click', args: ['#combat'] },
+    ]);
+    expect(out).toContain('Environment: 3 step(s)');
+    expect(out).toContain('[env 1/3] mock add **/api/fail* --status 503 --body "{\\"ok\\":false}"');
+    expect(out).toContain('[1/1] click #combat');
+    expect(out).toContain('Done: 4 ok, 0 failed, 0 skipped');
+  });
+
+  it('runs replayable recorded commands sequentially', async () => {
+    const calls = [];
+    const source = artifact([
+      { index: 1, action: 'fill', command: ['fill', '#cmd', 'look trainer'], replayable: true, needsInput: [] },
+      { index: 2, action: 'click', command: ['click', '#combat'], replayable: true, needsInput: [] },
+    ]);
+
+    const out = await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step);
+        return { ok: true, result: `${step.cmd} ok` };
+      },
+    }, ['--json', JSON.stringify(source)]);
+
+    expect(calls).toEqual([
+      { cmd: 'fill', args: ['#cmd', 'look trainer'] },
+      { cmd: 'click', args: ['#combat'] },
+    ]);
+    expect(out).toContain('Replay: 2 step(s)');
+    expect(out).toContain('[1/2] fill #cmd "look trainer"');
+    expect(out).toContain('fill ok');
+    expect(out).toContain('[2/2] click #combat');
+    expect(out).toContain('Done: 2 ok, 0 failed, 0 skipped');
+  });
+
+  it('skips non-replayable recorded actions with explicit missing input', async () => {
+    const calls = [];
+    const source = artifact([
+      { index: 1, action: 'fill', command: ['fill', '#password', '<redacted>'], replayable: false, needsInput: ['text'] },
+    ]);
+
+    const out = await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step);
+        return { ok: true, result: 'should not run' };
+      },
+    }, ['--json', JSON.stringify(source)]);
+
+    expect(calls).toEqual([]);
+    expect(out).toContain('[1/1] skip fill #password <redacted>');
+    expect(out).toContain('Missing: text');
+    expect(out).toContain('Done: 0 ok, 0 failed, 1 skipped');
+  });
+
+  it('halts on the first failed replay step by default', async () => {
+    const calls = [];
+    const source = artifact([
+      { index: 1, action: 'click', command: ['click', '#missing'], replayable: true, needsInput: [] },
+      { index: 2, action: 'click', command: ['click', '#later'], replayable: true, needsInput: [] },
+    ]);
+
+    const out = await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step.cmd);
+        return { ok: false, error: 'Element not found' };
+      },
+    }, ['--json', JSON.stringify(source)]);
+
+    expect(calls).toEqual(['click']);
+    expect(out).toContain('Element not found');
+    expect(out).toContain('Replay halted at step 1/2');
+    expect(out).toContain('Done: 0 ok, 1 failed, 0 skipped');
+  });
+
+  it('returns structured JSON handoff with counts and failed step', async () => {
+    const calls = [];
+    const source = artifact([
+      { index: 1, action: 'fill', command: ['fill', '#cmd', 'look trainer'], replayable: true, needsInput: [] },
+      { index: 2, action: 'click', command: ['click', '#missing'], replayable: true, needsInput: [] },
+      { index: 3, action: 'click', command: ['click', '#later'], replayable: true, needsInput: [] },
+    ]);
+    source.environmentCount = 1;
+    source.environment = [
+      { index: 1, type: 'mock', action: 'add', command: ['mock', 'add', '**/api/fail*', '--status', '503'], replayable: true, needsInput: [] },
+    ];
+
+    const out = await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step);
+        if (step.cmd === 'click') return { ok: false, error: 'Element not found: #missing' };
+        return { ok: true, result: `${step.cmd} ok\nsecond line` };
+      },
+    }, ['--format', 'json', '--json', JSON.stringify(source)]);
+    const parsed = JSON.parse(out);
+
+    expect(calls).toEqual([
+      { cmd: 'mock', args: ['add', '**/api/fail*', '--status', '503'] },
+      { cmd: 'fill', args: ['#cmd', 'look trainer'] },
+      { cmd: 'click', args: ['#missing'] },
+    ]);
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.replay.v1',
+      source: 'inline JSON',
+      sourceTargetId: 'ABC123',
+      halted: true,
+      counts: {
+        environment: 1,
+        actions: 3,
+        ok: 2,
+        failed: 1,
+        skipped: 0,
+        total: 4,
+      },
+      failedStep: {
+        phase: 'action',
+        index: 2,
+        commandText: 'click #missing',
+        error: 'Element not found: #missing',
+      },
+      nextSteps: [
+        'cdp perceive ABC123 -C -d 8',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(parsed.steps).toHaveLength(3);
+    expect(parsed.steps[0]).toMatchObject({
+      phase: 'environment',
+      index: 1,
+      ok: true,
+      command: ['mock', 'add', '**/api/fail*', '--status', '503'],
+      resultPreview: 'mock ok',
+    });
+    expect(parsed.steps[2]).toMatchObject({
+      phase: 'action',
+      index: 2,
+      ok: false,
+      command: ['click', '#missing'],
+    });
   });
 });
 
@@ -3334,6 +7416,170 @@ describe('checkCdpReachability', () => {
   });
 });
 
+describe('checkBrowserTargets', () => {
+  it('returns OK with target prefixes when debuggable page targets exist', async () => {
+    const fetcher = async () => ({
+      ok: true,
+      json: async () => ([
+        { type: 'page', id: 'AABBCCDDEEFF1122', title: 'Dashboard', url: 'https://app.example.com' },
+        { type: 'page', id: 'BBCCDDEEFF001122', title: 'Settings', url: 'https://app.example.com/settings' },
+        { type: 'other', id: 'ignored', title: 'Worker', url: 'https://app.example.com/worker' },
+      ]),
+    });
+
+    const r = await checkBrowserTargets({
+      cdp: { status: 'OK', host: '127.0.0.1', port: '9222' },
+      fetcher,
+    });
+
+    expect(r.status).toBe('OK');
+    expect(r.label).toBe('Tabs');
+    expect(r.detail).toContain('2 debuggable page targets');
+    expect(r.targetPrefixes[0]).toBe('AABBCCDD');
+    expect(r.targetPrefixes[1]).toBe('BBCCDDEE');
+  });
+
+  it('returns WARN with an open command when CDP is reachable but no pages exist', async () => {
+    const fetcher = async () => ({ ok: true, json: async () => [] });
+
+    const r = await checkBrowserTargets({
+      cdp: { status: 'OK', host: '127.0.0.1', port: '9222' },
+      fetcher,
+    });
+
+    expect(r.status).toBe('WARN');
+    expect(r.detail).toContain('no debuggable page targets');
+    expect(r.hint).toContain('cdp open https://example.com');
+  });
+
+  it('skips target inventory until CDP is reachable', async () => {
+    const fetcher = async () => { throw new Error('should not be called'); };
+
+    const r = await checkBrowserTargets({
+      cdp: { status: 'FAIL', detail: 'cannot reach 127.0.0.1:9999' },
+      fetcher,
+    });
+
+    expect(r.status).toBe('WARN');
+    expect(r.detail).toContain('skipped until CDP is reachable');
+  });
+});
+
+describe('checkBrowserPermission', () => {
+  it('returns OK when a live tab daemon proves browser debugging approval', () => {
+    const r = checkBrowserPermission({
+      daemons: { status: 'OK', label: 'Daemons', detail: '1 live: AABBCCDD', targetPrefixes: ['AABBCCDD'] },
+      tabs: { status: 'OK', label: 'Tabs', detail: '1 debuggable page target', targetPrefixes: ['AABBCCDD'] },
+    });
+
+    expect(r.status).toBe('OK');
+    expect(r.label).toBe('Permission');
+    expect(r.detail).toContain('approved');
+    expect(r.detail).toContain('AABBCCDD');
+  });
+
+  it('warns with a perceive retry when tabs exist but no daemon is approved yet', () => {
+    const r = checkBrowserPermission({
+      daemons: { status: 'OK', label: 'Daemons', detail: 'no live tab daemons', targetPrefixes: [] },
+      tabs: { status: 'OK', label: 'Tabs', detail: '1 debuggable page target', targetPrefixes: ['AABBCCDD'] },
+    });
+
+    expect(r.status).toBe('WARN');
+    expect(r.detail).toContain('not confirmed');
+    expect(r.hint).toContain('cdp perceive AABBCCDD -C -d 8');
+    expect(r.hint).toContain('click Allow');
+  });
+
+  it('guides users to open a tab before permission can be confirmed', () => {
+    const r = checkBrowserPermission({
+      daemons: { status: 'OK', label: 'Daemons', detail: 'no live tab daemons', targetPrefixes: [] },
+      tabs: { status: 'WARN', label: 'Tabs', detail: 'no debuggable page targets', targetPrefixes: [], noTargets: true },
+    });
+
+    expect(r.status).toBe('WARN');
+    expect(r.detail).toContain('no target');
+    expect(r.hint).toContain('cdp open https://example.com');
+  });
+});
+
+describe('checkFdLimit', () => {
+  it('returns OK when the open-files limit is high enough for long sessions', () => {
+    const r = checkFdLimit({ limit: 4096 });
+    expect(r.status).toBe('OK');
+    expect(r.detail).toContain('4096');
+  });
+
+  it('returns WARN with a concrete command when the open-files limit is low', () => {
+    const r = checkFdLimit({ limit: 256, platform: 'darwin' });
+    expect(r.status).toBe('WARN');
+    expect(r.detail).toContain('256');
+    expect(r.hint).toContain('ulimit -n 4096');
+    expect(r.recovery).toMatchObject({
+      schema: 'chrome-cdp-ex.fd-limit-recovery.v1',
+      strategy: 'raise-open-files-limit',
+      commands: [
+        {
+          scope: 'current-shell',
+          command: 'ulimit -n 4096',
+        },
+        {
+          scope: 'macos-login-session',
+          command: 'sudo launchctl limit maxfiles 65536 200000',
+          requiresAdmin: true,
+        },
+      ],
+    });
+  });
+
+  it('returns WARN with fd recovery commands when the limit is unavailable', () => {
+    const r = checkFdLimit({ limit: null, platform: 'darwin' });
+    expect(r.status).toBe('WARN');
+    expect(r.detail).toContain('unavailable');
+    expect(r.recovery?.commands.map(command => command.command)).toEqual([
+      'ulimit -n 4096',
+      'sudo launchctl limit maxfiles 65536 200000',
+    ]);
+  });
+});
+
+describe('doctorWizardSummary', () => {
+  it('points to browser CDP setup when CDP is unreachable', () => {
+    const out = doctorWizardSummary([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'FAIL', label: 'CDP', detail: 'cannot reach 127.0.0.1:9222' },
+    ]).join('\n');
+
+    expect(out).toContain('Wizard:');
+    expect(out).toContain('Status: blocked at browser CDP');
+    expect(out).toContain('Current step: enable browser remote debugging');
+    expect(out).toContain('cdp doctor');
+  });
+
+  it('points to open when CDP is ready but no debuggable page exists', () => {
+    const out = doctorWizardSummary([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'WARN', label: 'Tabs', detail: 'no debuggable page targets', noTargets: true, targetPrefixes: [] },
+    ]).join('\n');
+
+    expect(out).toContain('Status: waiting for a debuggable page');
+    expect(out).toContain('Current step: cdp open https://example.com');
+  });
+
+  it('points to perceive when a target exists but browser permission is not confirmed', () => {
+    const out = doctorWizardSummary([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Tabs', detail: '1 debuggable page target', targetPrefixes: ['AABBCCDD'] },
+      { status: 'WARN', label: 'Permission', detail: 'browser debugging approval not confirmed', targetPrefixes: ['AABBCCDD'] },
+    ]).join('\n');
+
+    expect(out).toContain('Status: waiting for browser debugging approval');
+    expect(out).toContain('Current step: cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('click Allow');
+  });
+});
+
 describe('formatDoctorReport', () => {
   it('renders OK/WARN/FAIL labels and shows hints', () => {
     const out = formatDoctorReport([
@@ -3342,21 +7588,31 @@ describe('formatDoctorReport', () => {
       { status: 'FAIL', label: 'CDP', detail: 'cannot reach 127.0.0.1:9222', hint: 'enable debugging' },
     ]);
     expect(out).toContain('chrome-cdp-ex doctor');
+    expect(out).toContain('Wizard:');
+    expect(out).toContain('Status: blocked at browser CDP');
     expect(out).toContain('[OK  ] Node');
     expect(out).toContain('[WARN] Skill install');
     expect(out).toContain('[FAIL] CDP');
     expect(out).toContain('hint: cp -r ...');
     expect(out).toContain('hint: enable debugging');
     expect(out).toContain('Not ready');
+    expect(out).toContain('Next steps:');
+    expect(out).toContain('cdp spawn-debug-browser edge --port 9222 --url https://example.com');
   });
 
   it('reports "Ready." when all checks are OK', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'Tabs', detail: '1 debuggable page target: Example', targetPrefixes: ['AABBCCDD'] },
+      { status: 'OK', label: 'Permission', detail: 'debugging approved for AABBCCDD', targetPrefixes: ['AABBCCDD'] },
       { status: 'OK', label: 'CDP', detail: 'reachable' },
     ]);
     expect(out).toContain('Ready.');
     expect(out).not.toContain('Not ready');
+    expect(out).toContain('Next steps:');
+    expect(out).toContain('cdp list');
+    expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('cdp report AABBCCDD');
   });
 
   it('reports "Mostly ready" when only WARNs present', () => {
@@ -3367,36 +7623,75 @@ describe('formatDoctorReport', () => {
     expect(out).toContain('Mostly ready');
     expect(out).toContain('1 warning');
   });
+
+  it('uses live daemon prefixes in the ready golden path when available', () => {
+    const out = formatDoctorReport([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'Daemons', detail: '1 live: AABBCCDD', targetPrefixes: ['AABBCCDD'] },
+      { status: 'OK', label: 'Tabs', detail: '1 debuggable page target: ZZYYXXWW', targetPrefixes: ['ZZYYXXWW'] },
+      { status: 'OK', label: 'Permission', detail: 'debugging approved for AABBCCDD', targetPrefixes: ['AABBCCDD'] },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+    ]);
+
+    expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
+  });
+
+  it('guides users to open a page when CDP is ready but no targets exist', () => {
+    const out = formatDoctorReport([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      {
+        status: 'WARN',
+        label: 'Tabs',
+        detail: 'no debuggable page targets',
+        hint: 'Create one with: cdp open https://example.com',
+      },
+    ]);
+
+    expect(out).toContain('Mostly ready');
+    expect(out).toContain('cdp open https://example.com');
+    expect(out).toContain('Use the target id printed by open');
+    expect(out).toContain('cdp report <target-from-open>');
+  });
 });
 
 describe('runDoctorChecks', () => {
   it('runs all checks and returns array of result objects', async () => {
-    const fetcher = async () => ({ ok: true, json: async () => ({ Browser: 'Chrome', webSocketDebuggerUrl: 'ws://x' }) });
+    const fetcher = async (url) => url.endsWith('/json/list')
+      ? { ok: true, json: async () => ([{ type: 'page', id: 'AABBCCDDEEFF', title: 'Example', url: 'https://example.com' }]) }
+      : { ok: true, json: async () => ({ Browser: 'Chrome', webSocketDebuggerUrl: 'ws://x' }) };
     const checks = await runDoctorChecks({
       nodeVersion: 'v22.10.0',
       home: '/tmp/no-such-home-here',
       fs: { existsSync: () => false, lstatSync: null },
       listDaemons: () => [],
+      fdLimit: 4096,
       env: { CDP_PORT: '9222' },
       fetcher,
     });
     expect(Array.isArray(checks)).toBe(true);
-    expect(checks).toHaveLength(4);
+    expect(checks).toHaveLength(7);
     expect(checks[0].label).toBe('Node');
     expect(checks[1].label).toBe('Skill install');
     expect(checks[2].label).toBe('Daemons');
-    expect(checks[3].label).toBe('CDP');
+    expect(checks[3].label).toBe('FD limit');
+    expect(checks[4].label).toBe('CDP');
+    expect(checks[5].label).toBe('Tabs');
+    expect(checks[6].label).toBe('Permission');
   });
 });
 
 describe('doctorStr', () => {
   it('returns formatted multi-line report including Ready./Not ready summary', async () => {
-    const fetcher = async () => ({ ok: true, json: async () => ({ Browser: 'Chrome/123', webSocketDebuggerUrl: 'ws://x' }) });
+    const fetcher = async (url) => url.endsWith('/json/list')
+      ? { ok: true, json: async () => ([{ type: 'page', id: 'AABBCCDDEEFF', title: 'Example', url: 'https://example.com' }]) }
+      : { ok: true, json: async () => ({ Browser: 'Chrome/123', webSocketDebuggerUrl: 'ws://x' }) };
     const out = await doctorStr({
       nodeVersion: 'v22.10.0',
       home: '/tmp/no-such-home',
       fs: { existsSync: () => false, lstatSync: null },
       listDaemons: () => [],
+      fdLimit: 4096,
       env: { CDP_PORT: '9222' },
       fetcher,
     });
@@ -3404,8 +7699,15 @@ describe('doctorStr', () => {
     expect(out).toMatch(/\[OK\s*\] Node/);
     expect(out).toMatch(/\[WARN\] Skill install/);
     expect(out).toMatch(/\[OK\s*\] Daemons/);
+    expect(out).toMatch(/\[OK\s*\] FD limit/);
     expect(out).toMatch(/\[OK\s*\] CDP/);
+    expect(out).toMatch(/\[OK\s*\] Tabs/);
+    expect(out).toMatch(/\[WARN\] Permission/);
     expect(out).toContain('Mostly ready');
+    expect(out).toContain('Next steps:');
+    expect(out).toContain('cdp list');
+    expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('click Allow');
   });
 
   it('marks report as Not ready when CDP fails', async () => {
@@ -3415,11 +7717,152 @@ describe('doctorStr', () => {
       home: '/tmp/x',
       fs: { existsSync: () => true, lstatSync: () => ({ isSymbolicLink: () => true }) },
       listDaemons: () => [],
+      fdLimit: 4096,
       env: { CDP_PORT: '9999' },
       fetcher,
     });
     expect(out).toContain('Not ready');
     expect(out).toMatch(/\[FAIL\] CDP/);
+  });
+
+  it('returns a versioned JSON onboarding model for agents', async () => {
+    const fetcher = async (url) => url.endsWith('/json/list')
+      ? { ok: true, json: async () => ([{ type: 'page', id: 'AABBCCDDEEFF', title: 'Example', url: 'https://example.com' }]) }
+      : { ok: true, json: async () => ({ Browser: 'Chrome/123', webSocketDebuggerUrl: 'ws://x' }) };
+    const out = await doctorStr({
+      format: 'json',
+      nodeVersion: 'v22.10.0',
+      home: '/tmp/no-such-home',
+      fs: { existsSync: () => false, lstatSync: null },
+      listDaemons: () => [],
+      fdLimit: 4096,
+      env: { CDP_PORT: '9222' },
+      fetcher,
+    });
+
+    const model = JSON.parse(out);
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.doctor.v1',
+      status: 'mostly-ready',
+      ready: false,
+      failures: 0,
+      warnings: 2,
+    });
+    expect(model.wizard).toMatchObject({
+      status: 'waiting for browser debugging approval',
+      currentStep: 'cdp perceive AABBCCDD -C -d 8  # click Allow if Chrome asks',
+    });
+    expect(model.wizard.goldenPath).toEqual(['doctor', 'list/open', 'perceive', 'click/fill', 'since-action evidence', 'report']);
+    expect(model.wizard.commands).toEqual([
+      'cdp list',
+      'cdp perceive AABBCCDD -C -d 8',
+      'cdp click AABBCCDD @ref  # or: cdp fill AABBCCDD <selector> <text>',
+      'cdp perceive AABBCCDD --since-action',
+      'cdp report AABBCCDD',
+    ]);
+    expect(model.checks.map(check => check.label)).toEqual([
+      'Node', 'Skill install', 'Daemons', 'FD limit', 'CDP', 'Tabs', 'Permission',
+    ]);
+    expect(model.nextSteps).toEqual(expect.arrayContaining([
+      'cdp list',
+      'cdp perceive AABBCCDD -C -d 8',
+      'cdp report AABBCCDD',
+    ]));
+    expect(model.recommendation).toMatchObject({
+      source: 'doctor-onboarding',
+      stage: 'browser-permission',
+      run: 'cdp perceive AABBCCDD -C -d 8',
+      requiresUserAction: true,
+      consentRequired: false,
+      after: 'cdp click AABBCCDD @ref  # or: cdp fill AABBCCDD <selector> <text>',
+    });
+    expect(model.recommendation.ask).toContain('Allow');
+  });
+
+  it('returns a consent-aware recommendation when browser CDP is blocked', async () => {
+    const fetcher = async () => { throw new Error('ECONNREFUSED'); };
+    const out = await doctorStr({
+      format: 'json',
+      nodeVersion: 'v22.10.0',
+      home: '/tmp/x',
+      fs: { existsSync: () => true, lstatSync: () => ({ isSymbolicLink: () => true }) },
+      listDaemons: () => [],
+      fdLimit: 256,
+      platform: 'darwin',
+      env: { CDP_PORT: '9999' },
+      fetcher,
+    });
+
+    const model = JSON.parse(out);
+    expect(model.recommendation).toMatchObject({
+      source: 'doctor-onboarding',
+      stage: 'browser-cdp',
+      run: 'cdp spawn-debug-browser edge --port 9222 --url https://example.com',
+      after: 'cdp list',
+      requiresUserAction: true,
+      consentRequired: true,
+    });
+    expect(model.recommendation.ask).toContain('chrome://inspect/#remote-debugging');
+    expect(model.recommendation.reason).toContain('cannot reach');
+    expect(model.recommendation.warnings).toEqual([
+      {
+        label: 'FD limit',
+        command: 'ulimit -n 4096',
+        reason: '256 open files (low for long browser sessions)',
+        commands: [
+          {
+            scope: 'current-shell',
+            command: 'ulimit -n 4096',
+            reason: 'Raise the open-files limit for this terminal before starting long chrome-cdp-ex sessions.',
+            requiresAdmin: false,
+          },
+          {
+            scope: 'macos-login-session',
+            command: 'sudo launchctl limit maxfiles 65536 200000',
+            reason: 'Raise the macOS launchd limit for GUI apps and future shells; rerun doctor afterwards.',
+            requiresAdmin: true,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('prints shell and macOS fd-limit recovery commands for low limits', async () => {
+    const fetcher = async () => { throw new Error('ECONNREFUSED'); };
+    const out = await doctorStr({
+      nodeVersion: 'v22.10.0',
+      home: '/tmp/x',
+      fs: { existsSync: () => true, lstatSync: () => ({ isSymbolicLink: () => true }) },
+      listDaemons: () => [],
+      fdLimit: 256,
+      platform: 'darwin',
+      env: { CDP_PORT: '9999' },
+      fetcher,
+    });
+
+    expect(out).toContain('Long session note: ulimit -n 4096');
+    expect(out).toContain('Long session note: sudo launchctl limit maxfiles 65536 200000');
+    expect(out).toContain('requires admin');
+  });
+
+  it('prints the recommendation before detailed doctor checks', async () => {
+    const fetcher = async (url) => url.endsWith('/json/list')
+      ? { ok: true, json: async () => ([{ type: 'page', id: 'AABBCCDDEEFF', title: 'Example', url: 'https://example.com' }]) }
+      : { ok: true, json: async () => ({ Browser: 'Chrome/123', webSocketDebuggerUrl: 'ws://x' }) };
+    const out = await doctorStr({
+      nodeVersion: 'v22.10.0',
+      home: '/tmp/no-such-home',
+      fs: { existsSync: () => false, lstatSync: null },
+      listDaemons: () => [],
+      fdLimit: 4096,
+      env: { CDP_PORT: '9222' },
+      fetcher,
+    });
+
+    expect(out).toContain('Recommendation:');
+    expect(out).toContain('Run: cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('Ask: Click Allow if Chrome asks.');
+    expect(out.indexOf('Recommendation:')).toBeLessThan(out.indexOf('Checks:'));
   });
 });
 
@@ -3519,6 +7962,19 @@ describe('formatUnknownRefError', () => {
 
 describe('resolveRefNode stale backend handling', () => {
   const { resolveRefNode } = T;
+
+  it('resolves backend refs with a short timeout so stale refs fail fast', async () => {
+    const refMap = new Map([[31, 12345]]);
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => ({ object: { objectId: 'node-31' } }),
+    });
+
+    await expect(resolveRefNode(cdp, 'sid', refMap, '@31', { generation: 1 }))
+      .resolves.toBe('node-31');
+
+    const resolveCall = cdp.calls.find(call => call.method === 'DOM.resolveNode');
+    expect(resolveCall.timeout).toBeLessThanOrEqual(2000);
+  });
 
   it('classifies DOM-mutation stale refs when backend node resolution fails', async () => {
     const refMap = new Map([[31, 12345]]);
@@ -3925,6 +8381,109 @@ describe('dismissModalStr', () => {
 });
 
 // =========================================================================
+// overlay detector
+// =========================================================================
+
+describe('overlay detector', () => {
+  it('builds a page-side script that scans dialogs and hit-test blockers', () => {
+    const script = T.overlayDetectorScript({ targetPoint: { input: '@4', x: 10, y: 20 } });
+    expect(script).toMatch(/elementFromPoint/);
+    expect(script).toMatch(/aria-modal/);
+    expect(script).toMatch(/role="dialog"/);
+    expect(script).toContain('"input":"@4"');
+  });
+
+  it('formats a clear page when no blocking overlay is visible', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: JSON.stringify({
+        schema: 'chrome-cdp-ex.overlays.v1',
+        viewport: { width: 800, height: 600 },
+        target: null,
+        overlayCount: 0,
+        blocking: false,
+        overlays: [],
+        nextCommand: null,
+      }) } }),
+    });
+
+    const out = await T.overlayStr(cdp, 'sid1', 'abc123', [], new Map(), {});
+    expect(out).toContain('Overlay detector: clear');
+    expect(out).toContain('No visible blocking overlays/dialogs detected.');
+    expect(out).toContain('Next: continue');
+  });
+
+  it('reports a blocking dialog and concrete dismissal command for a target ref', async () => {
+    const refMap = new Map([[4, 444]]);
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => ({ object: { objectId: 'target-button' } }),
+      'Runtime.callFunctionOn': () => ({ result: { value: {
+        x: 20,
+        y: 30,
+        w: 80,
+        h: 20,
+        tag: 'BUTTON',
+        text: 'Submit',
+      } } }),
+      'Runtime.evaluate': (params) => {
+        expect(params.expression).toContain('"input":"@4"');
+        expect(params.expression).toContain('"x":60');
+        expect(params.expression).toContain('"y":40');
+        return { result: { value: JSON.stringify({
+          schema: 'chrome-cdp-ex.overlays.v1',
+          viewport: { width: 800, height: 600 },
+          target: {
+            input: '@4',
+            x: 60,
+            y: 40,
+            descriptor: '<BUTTON> "Submit"',
+            blocked: true,
+            topElement: { kind: 'dialog', selector: '#motd', text: 'MOTD' },
+          },
+          overlayCount: 1,
+          blocking: true,
+          overlays: [{
+            kind: 'dialog',
+            selector: '#motd',
+            role: 'dialog',
+            label: 'MOTD',
+            text: 'Press any key',
+            pointerEvents: 'auto',
+            zIndex: '20',
+            rect: { x: 100, y: 90, w: 320, h: 180 },
+            coversTarget: true,
+            topAtCenter: true,
+          }],
+          nextCommand: 'cdp dismiss-modal abc123',
+        }) } };
+      },
+    });
+
+    const out = await T.overlayStr(cdp, 'sid1', 'abc123', ['@4'], refMap, {});
+    expect(out).toContain('Overlay detector: blocking');
+    expect(out).toContain('Target: @4 at (60,40) — blocked by [dialog] #motd "MOTD"');
+    expect(out).toContain('1. [dialog] #motd role=dialog z=20 pointer=auto rect=(100,90 320×180)');
+    expect(out).toContain('Next: cdp dismiss-modal abc123');
+  });
+
+  it('returns versioned overlay JSON for tool-calling agents', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: JSON.stringify({
+        schema: 'chrome-cdp-ex.overlays.v1',
+        viewport: { width: 800, height: 600 },
+        target: null,
+        overlayCount: 0,
+        blocking: false,
+        overlays: [],
+        nextCommand: null,
+      }) } }),
+    });
+
+    const out = await T.overlayStr(cdp, 'sid1', 'abc123', ['--format', 'json'], new Map(), {});
+    expect(JSON.parse(out).schema).toBe('chrome-cdp-ex.overlays.v1');
+  });
+});
+
+// =========================================================================
 // formatPageList — about:blank labelling (P2 polish)
 // =========================================================================
 
@@ -3989,6 +8548,28 @@ describe('buildPerceiveTree truncation controls', () => {
     expect(out).toMatch(/a/);
     expect(out).toMatch(/b/);
     expect(out).not.toMatch(/omitted/);
+  });
+
+  it('keeps high-signal error text even when it is older than --last', () => {
+    const nodes = [axNode('root', 'WebArea', 'Page')];
+    const childIds = [];
+    nodes.push(axNode('err', 'StaticText', 'Payment failed: card number is required', { parentId: 'root' }));
+    childIds.push('err');
+    for (let i = 0; i < 40; i++) {
+      const id = `noise${i}`;
+      nodes.push(axNode(id, 'StaticText', `event log line ${i}`, { parentId: 'root' }));
+      childIds.push(id);
+    }
+    nodes[0].childIds = childIds;
+
+    const refMap = new Map();
+    const { treeLines } = buildPerceiveTree(nodes, { layoutMap: {}, styleHints: {} }, refMap, { last: 3 });
+    const out = treeLines.join('\n');
+
+    expect(out).toContain('Payment failed: card number is required');
+    expect(out).not.toContain('event log line 0');
+    expect(out).toContain('event log line 39');
+    expect(out).toMatch(/earlier text node\(s\) omitted/);
   });
 });
 

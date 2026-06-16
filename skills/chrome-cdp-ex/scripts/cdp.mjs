@@ -7,22 +7,35 @@
 // the CDP session open. Chrome's "Allow debugging" modal fires once per
 // daemon (= once per tab). Daemons auto-exit after 20min idle.
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync } from 'fs';
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync } from 'fs';
 import { homedir } from 'os';
 import { resolve, delimiter } from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import net from 'net';
 
 const TIMEOUT = 15000;
 const SCREENSHOT_TIMEOUT = 30000;
 const NAVIGATION_TIMEOUT = 30000;
+const RELOAD_EVENT_TIMEOUT = 1000;
+const RELOAD_DISPATCH_TIMEOUT = 1000;
+const RELOAD_READY_TIMEOUT = 1000;
+const RELOAD_READY_PROBE_TIMEOUT = 500;
+const RELOAD_OBSERVE_TIMEOUT = 2000;
+const STATUS_PAGE_INFO_TIMEOUT = 500;
+const REF_RESOLVE_TIMEOUT = 2000;
 const IDLE_TIMEOUT = 20 * 60 * 1000;
 const FIRE_AND_FORGET_KEEPALIVE = 60 * 60 * 1000;
 const DAEMON_CONNECT_RETRIES = 20;
 const DAEMON_CONNECT_DELAY = 300;
 const DAEMON_ALLOW_RETRIES = 200;  // For open --attach: 200 * 300ms = 60s
 const DAEMON_ALLOW_DELAY = 300;
+const DEFAULT_OPEN_ATTACH_TIMEOUT_MS = DAEMON_ALLOW_RETRIES * DAEMON_ALLOW_DELAY;
+const DEFAULT_OPEN_READY_TIMEOUT_MS = 5000;
 const MIN_TARGET_PREFIX_LEN = 8;
+const MAX_ACTION_LOG_ENTRIES = 100;
+const MAX_ENVIRONMENT_LOG_ENTRIES = 100;
+const MAX_SCREENSHOT_ENTRIES = 100;
+const MAX_NETWORK_MOCK_HITS = 50;
 const IS_WINDOWS = process.platform === 'win32';
 if (!IS_WINDOWS) process.umask(0o077);
 const RUNTIME_DIR = IS_WINDOWS
@@ -132,6 +145,181 @@ function isTimeoutError(err, methods = []) {
   return methods.length === 0 || methods.some(method => msg.includes(method));
 }
 
+function actionFailureMessage(err) {
+  return err?.message || String(err || '');
+}
+
+function actionFailureTargetId(target = {}) {
+  return target?.targetId || target?.id || target?.target || '<target>';
+}
+
+function actionFailureInput(target = {}) {
+  return target?.input || target?.label || target?.selector || '';
+}
+
+function actionTargetCommandId(target = {}) {
+  return actionFailureTargetId(target);
+}
+
+function actionTargetCommandPrefix(target = {}) {
+  const id = String(actionTargetCommandId(target) || '');
+  if (!id || id === '<target>') return '<target>';
+  return id.slice(0, 8);
+}
+
+function classifyActionFailure(err, { action = 'action', target = {} } = {}) {
+  const originalMessage = actionFailureMessage(err);
+  const lower = originalMessage.toLowerCase();
+  const targetId = actionFailureTargetId(target);
+  const input = actionFailureInput(target);
+  const perceiveCommand = `cdp perceive ${targetId} -C -d 8`;
+  const statusCommand = `cdp status ${targetId}`;
+  const base = {
+    schema: 'chrome-cdp-ex.action-failure.v1',
+    action,
+    target: target || null,
+    originalMessage,
+    kind: 'unknown',
+    reason: 'The browser rejected the action for a reason chrome-cdp-ex does not classify yet.',
+    nextCommand: perceiveCommand,
+    hints: [`Refresh page perception with \`${perceiveCommand}\`, then choose the next action from fresh refs.`],
+  };
+
+  if (lower.includes('unknown ref') || lower.includes('refs were cleared') || lower.includes('refs were invalidated')) {
+    return {
+      ...base,
+      kind: 'stale-ref',
+      reason: 'The @ref no longer maps to the current DOM.',
+      nextCommand: perceiveCommand,
+      hints: [
+        `Refresh refs with \`${perceiveCommand}\`.`,
+        'Use a stable CSS selector instead of @ref for long loops or replayable workflows.',
+      ],
+    };
+  }
+
+  if (
+    lower.includes('other element would receive') ||
+    lower.includes('click intercepted') ||
+    lower.includes('intercepted by another element') ||
+    lower.includes('hit test') ||
+    lower.includes('not clickable at point')
+  ) {
+    const jsClick = input ? `cdp jsclick ${targetId} ${input}` : null;
+    return {
+      ...base,
+      kind: 'overlay',
+      reason: 'A visible overlay or hit-test interception blocked the realistic mouse action.',
+      nextCommand: `cdp dismiss-modal ${targetId}`,
+      hints: [
+        `Close obvious dialogs or overlays with \`cdp dismiss-modal ${targetId}\`.`,
+        `Refresh refs after the overlay changes with \`${perceiveCommand}\`.`,
+        ...(jsClick ? [`If the overlay is intentional and the target is still correct, try \`${jsClick}\`.`] : []),
+      ],
+    };
+  }
+
+  if (
+    lower.includes('no frame for given id') ||
+    lower.includes('frame was detached') ||
+    lower.includes('target frame detached') ||
+    lower.includes('wrong frame')
+  ) {
+    return {
+      ...base,
+      kind: 'wrong-frame',
+      reason: 'The action targeted a frame or execution context that is no longer current.',
+      nextCommand: perceiveCommand,
+      hints: [
+        `Refresh page and frame context with \`${perceiveCommand}\`.`,
+        'If the control is inside an iframe, prefer a fresh perceive/coordinate target until frame-scoped refs are available.',
+      ],
+    };
+  }
+
+  if (
+    lower.includes('cannot find context') ||
+    lower.includes('execution context was destroyed') ||
+    lower.includes('inspected target navigated') ||
+    lower.includes('target closed')
+  ) {
+    return {
+      ...base,
+      kind: 'navigation',
+      reason: 'The page navigated, reloaded, or recreated its JavaScript context during the action.',
+      nextCommand: perceiveCommand,
+      hints: [
+        `Refresh the current page state with \`${perceiveCommand}\`.`,
+        `Use \`cdp status ${targetId}\` if navigation or console failures may explain the change.`,
+      ],
+    };
+  }
+
+  if (
+    lower.includes('no node with given id') ||
+    lower.includes('could not find node') ||
+    lower.includes('node is detached from document') ||
+    lower.includes('cannot find node with given id')
+  ) {
+    return {
+      ...base,
+      kind: 'dom-rewrite',
+      reason: 'The DOM node disappeared or was rewritten after it was resolved.',
+      nextCommand: perceiveCommand,
+      hints: [
+        `Refresh refs with \`${perceiveCommand}\`.`,
+        'For React/Vue rerenders or HMR, prefer a stable CSS selector over an old @ref.',
+      ],
+    };
+  }
+
+  if (isTimeoutError(err) || lower.includes('timed out') || lower.includes('timeout')) {
+    return {
+      ...base,
+      kind: 'timeout',
+      reason: 'The action or its CDP acknowledgement exceeded the timeout window.',
+      nextCommand: statusCommand,
+      hints: [
+        `Check whether the tab is still responsive with \`${statusCommand}\`.`,
+        `If the action may have dispatched, run \`cdp perceive ${targetId} --since-action\` before retrying.`,
+      ],
+    };
+  }
+
+  if (
+    lower.includes('element not found') ||
+    lower.includes('could not resolve selector') ||
+    lower.includes('failed to find element')
+  ) {
+    return {
+      ...base,
+      kind: 'selector',
+      reason: 'No current element matched the requested selector/ref.',
+      nextCommand: perceiveCommand,
+      hints: [
+        `Refresh available controls with \`${perceiveCommand}\`.`,
+        'Check whether the element is below the fold, inside a modal, or renamed by the framework.',
+      ],
+    };
+  }
+
+  return base;
+}
+
+function formatActionFailure(err, context = {}) {
+  const message = actionFailureMessage(err);
+  if (message.startsWith('Action failure:')) return message;
+  const failure = classifyActionFailure(err, context);
+  const lines = [
+    `Action failure: ${failure.kind}`,
+    `Reason: ${failure.reason}`,
+    `Next: ${failure.nextCommand}`,
+  ];
+  for (const hint of failure.hints || []) lines.push(`Hint: ${hint}`);
+  lines.push(`Original: ${failure.originalMessage}`);
+  return lines.join('\n');
+}
+
 function parseDelayMs(value, { name = 'ms', min = 1, max = 24 * 60 * 60 * 1000 } = {}) {
   const raw = String(value ?? '').trim();
   if (!/^\d+$/.test(raw)) throw new Error(`${name} must be a positive integer in milliseconds`);
@@ -149,6 +337,27 @@ function formatDuration(ms) {
   if (m < 60) return `${Number.isInteger(m) ? m : m.toFixed(1)}m`;
   const h = m / 60;
   return `${Number.isInteger(h) ? h : h.toFixed(1)}h`;
+}
+
+function parseFormatArgs(args, allowed = ['text', 'json']) {
+  const next = [];
+  let format = 'text';
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--format') {
+      const value = args[++i];
+      if (!allowed.includes(value)) {
+        throw new Error(`format must be ${allowed.join(' or ')}`);
+      }
+      format = value;
+    } else {
+      next.push(args[i]);
+    }
+  }
+  return { format, args: next };
+}
+
+function formatJson(model) {
+  return JSON.stringify(model, null, 2);
 }
 
 async function waitStr(msArg) {
@@ -236,11 +445,21 @@ class CDP {
   send(method, params = {}, sessionId, timeoutMs = TIMEOUT) {
     const id = ++this.#id;
     return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      let timer;
+      this.#pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
       const msg = { id, method, params };
       if (sessionId) msg.sessionId = sessionId;
       this.#ws.send(JSON.stringify(msg));
-      setTimeout(() => {
+      timer = setTimeout(() => {
         if (this.#pending.has(id)) {
           this.#pending.delete(id);
           reject(new Error(`Timeout: ${method}`));
@@ -325,6 +544,134 @@ function formatPageList(pages, browserInfo = null) {
   return lines.join('\n');
 }
 
+function pageListBrowserModel(browserInfo = null) {
+  if (!browserInfo) return null;
+  const ua = browserInfo['User-Agent'] || '';
+  const electron = ua.match(/Electron\/([\d.]+)/)?.[1] || null;
+  return {
+    product: browserInfo.Browser || browserInfo.product || null,
+    userAgent: ua || null,
+    electron,
+  };
+}
+
+function buildGoldenPathRecommendation({
+  stage,
+  targetPrefix = null,
+  run = null,
+  ask = null,
+  after = null,
+  evidence = null,
+  report = null,
+  reason = null,
+  commands = null,
+  requiresUserAction = false,
+  consentRequired = false,
+} = {}) {
+  return {
+    source: 'golden-path',
+    stage,
+    targetPrefix,
+    run,
+    ask,
+    after,
+    evidence,
+    report,
+    requiresUserAction,
+    consentRequired,
+    reason,
+    commands: commands || uniqueNextStepCommands([run, after, evidence, report]),
+  };
+}
+
+function goldenPathOpenPageRecommendation() {
+  return buildGoldenPathRecommendation({
+    stage: 'open-page',
+    run: 'cdp open https://example.com',
+    after: 'cdp perceive <target-from-open> -C -d 8',
+    reason: 'no debuggable page targets are available yet',
+    commands: ['cdp open https://example.com'],
+  });
+}
+
+function goldenPathPerceiveRecommendation(targetPrefix) {
+  return buildGoldenPathRecommendation({
+    stage: 'perceive',
+    targetPrefix,
+    run: `cdp perceive ${targetPrefix} -C -d 8`,
+    after: `cdp click ${targetPrefix} @ref  # choose a ref from perceive`,
+    evidence: `cdp perceive ${targetPrefix} --since-action`,
+    report: `cdp report ${targetPrefix}`,
+    reason: 'observe the real page before choosing an action target',
+  });
+}
+
+function goldenPathActRecommendation(targetPrefix, { ref = '@ref', fromPerceptionBelow = false } = {}) {
+  const refText = ref === '@ref'
+    ? `cdp click ${targetPrefix} @ref  # choose a ref from ${fromPerceptionBelow ? 'the perception below' : 'perceive'}`
+    : `cdp click ${targetPrefix} ${ref}`;
+  return buildGoldenPathRecommendation({
+    stage: 'act',
+    targetPrefix,
+    run: refText,
+    after: `cdp perceive ${targetPrefix} --since-action`,
+    report: `cdp report ${targetPrefix}`,
+    reason: ref === '@ref'
+      ? 'perception is ready; choose an interactive ref and act'
+      : `use the first interactive ref ${ref} from perception, then verify action evidence`,
+  });
+}
+
+function goldenPathBrowserPermissionRecommendation(targetPrefix) {
+  return buildGoldenPathRecommendation({
+    stage: 'browser-permission',
+    targetPrefix,
+    run: `cdp perceive ${targetPrefix} -C -d 8`,
+    ask: 'Click Allow if Chrome asks.',
+    after: `cdp click ${targetPrefix} @ref  # choose a ref from perceive`,
+    evidence: `cdp perceive ${targetPrefix} --since-action`,
+    report: `cdp report ${targetPrefix}`,
+    requiresUserAction: true,
+    reason: 'browser debugging approval is not confirmed yet',
+    commands: [`cdp perceive ${targetPrefix} -C -d 8`],
+  });
+}
+
+function buildPageListModel(pages = [], browserInfo = null) {
+  const prefixLength = getDisplayPrefixLength(pages.map(p => p.targetId || ''));
+  const modelPages = pages.map((p, index) => {
+    const isBlank = !p.url || p.url === 'about:blank';
+    return {
+      index: index + 1,
+      targetId: p.targetId || '',
+      targetPrefix: String(p.targetId || '').slice(0, prefixLength),
+      type: p.type || 'page',
+      title: isBlank ? '(blank tab)' : (p.title || ''),
+      url: p.url || '',
+      isBlank,
+    };
+  });
+  const first = modelPages[0];
+  const recommendation = first
+    ? goldenPathPerceiveRecommendation(first.targetPrefix)
+    : goldenPathOpenPageRecommendation();
+  const nextSteps = recommendation.commands;
+  return {
+    schema: 'chrome-cdp-ex.list.v1',
+    targetCount: modelPages.length,
+    prefixLength,
+    browser: pageListBrowserModel(browserInfo),
+    pages: modelPages,
+    recommendation,
+    nextSteps,
+  };
+}
+
+function formatPageListOutput(pages, browserInfo = null, { format = 'text' } = {}) {
+  if (format === 'json') return formatJson(buildPageListModel(pages, browserInfo));
+  return formatPageList(pages, browserInfo);
+}
+
 function shouldShowAxNode(node, compact = false, parentNode = null) {
   const role = node.role?.value || '';
   const name = node.name?.value ?? '';
@@ -347,6 +694,12 @@ function formatAxNode(node, depth) {
   if (name !== '') line += ` ${name}`;
   if (!(value === '' || value == null)) line += ` = ${JSON.stringify(value)}`;
   return line;
+}
+
+const PERCEIVE_PRIORITY_TEXT_RE = /\b(error|failed?|failure|invalid|required|warning|blocked|denied|unauthori[sz]ed|forbidden|saved|success|submitted|complete)\b/i;
+
+function isPriorityPerceiveTextLine(line) {
+  return PERCEIVE_PRIORITY_TEXT_RE.test(String(line || ''));
 }
 
 function orderedAxChildren(node, nodesById, childrenByParent) {
@@ -455,7 +808,7 @@ function evalBase64Decode(b64) {
   return decoded;
 }
 
-async function evalStr(cdp, sid, expression, autoWrap = false) {
+async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
   // Auto-wrap: if expression contains `await`, wrap in async IIFE
   let expr = expression;
   if (autoWrap && /\bawait\b/.test(expr)) {
@@ -464,9 +817,12 @@ async function evalStr(cdp, sid, expression, autoWrap = false) {
       ? `(async()=>{${expr}})()`
       : `(async()=>(${expr}))()`;
   }
-  const result = await cdp.send('Runtime.evaluate', {
+  const params = {
     expression: expr, returnByValue: true, awaitPromise: true,
-  }, sid);
+  };
+  if (options.contextId != null) params.contextId = options.contextId;
+  if (options.uniqueContextId != null) params.uniqueContextId = options.uniqueContextId;
+  const result = await cdp.send('Runtime.evaluate', params, sid, options.timeoutMs);
   if (result.exceptionDetails) {
     throw new Error(result.exceptionDetails.text || result.exceptionDetails.exception?.description);
   }
@@ -658,6 +1014,211 @@ async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
   return lines.join('\n');
 }
 
+function parseDiffShotArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const opts = { format: fopts.format, thresholdRatio: 0, reset: false, keepBaseline: false };
+  for (let i = 0; i < fopts.args.length; i++) {
+    const token = fopts.args[i];
+    if (token === '--reset') opts.reset = true;
+    else if (token === '--keep-baseline') opts.keepBaseline = true;
+    else if (token === '--threshold') {
+      const raw = fopts.args[++i];
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) throw new Error('diff-shot --threshold requires a non-negative percent value');
+      opts.thresholdRatio = n / 100;
+    } else {
+      throw new Error(`diff-shot: unknown option ${token}`);
+    }
+  }
+  return opts;
+}
+
+function formatPercentRatio(value) {
+  const n = Number(value);
+  return `${((Number.isFinite(n) ? n : 0) * 100).toFixed(2)}%`;
+}
+
+function diffShotCompareScript(baselinePngBase64, currentPngBase64) {
+  return `
+(async () => {
+  const decode = (b64) => {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  };
+  const load = async (b64) => {
+    const blob = new Blob([decode(b64)], { type: 'image/png' });
+    if (typeof createImageBitmap === 'function') return await createImageBitmap(blob);
+    return await new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = (err) => { URL.revokeObjectURL(url); reject(err); };
+      img.src = url;
+    });
+  };
+  const [baseline, current] = await Promise.all([
+    load(${JSON.stringify(baselinePngBase64)}),
+    load(${JSON.stringify(currentPngBase64)}),
+  ]);
+  const width = Math.min(baseline.width, current.width);
+  const height = Math.min(baseline.height, current.height);
+  if (!width || !height) throw new Error('diff-shot: screenshot has empty dimensions');
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(baseline, 0, 0, width, height);
+  const baselineData = ctx.getImageData(0, 0, width, height);
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(current, 0, 0, width, height);
+  const currentData = ctx.getImageData(0, 0, width, height);
+  const diffData = ctx.createImageData(width, height);
+  let changedPixels = 0;
+  for (let i = 0; i < baselineData.data.length; i += 4) {
+    const dr = Math.abs(baselineData.data[i] - currentData.data[i]);
+    const dg = Math.abs(baselineData.data[i + 1] - currentData.data[i + 1]);
+    const db = Math.abs(baselineData.data[i + 2] - currentData.data[i + 2]);
+    const da = Math.abs(baselineData.data[i + 3] - currentData.data[i + 3]);
+    const changed = dr + dg + db + da > 0;
+    if (changed) changedPixels++;
+    if (changed) {
+      diffData.data[i] = 255;
+      diffData.data[i + 1] = 0;
+      diffData.data[i + 2] = 180;
+      diffData.data[i + 3] = 255;
+    } else {
+      const gray = Math.round((currentData.data[i] + currentData.data[i + 1] + currentData.data[i + 2]) / 3 * 0.35);
+      diffData.data[i] = gray;
+      diffData.data[i + 1] = gray;
+      diffData.data[i + 2] = gray;
+      diffData.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(diffData, 0, 0);
+  const diffPngBase64 = canvas.toDataURL('image/png').split(',')[1] || '';
+  const totalPixels = width * height;
+  return JSON.stringify({
+    width,
+    height,
+    baselineWidth: baseline.width,
+    baselineHeight: baseline.height,
+    currentWidth: current.width,
+    currentHeight: current.height,
+    changedPixels,
+    totalPixels,
+    changedRatio: totalPixels ? changedPixels / totalPixels : 0,
+    diffPngBase64,
+  });
+})()
+`;
+}
+
+function formatDiffShotResult(model = {}) {
+  const lines = [];
+  if (model.baselineCaptured) {
+    lines.push(`Diff-shot baseline captured: ${model.baselinePath}`);
+    if (model.fallback) lines.push('(screenshot fallback - Page.captureScreenshot timed out)');
+    lines.push(`Next: cdp diff-shot ${model.targetId}`);
+    lines.push('Pixel diff only: use perceive/cascade/report to explain semantic cause.');
+    return lines.join('\n');
+  }
+
+  lines.push(`Diff-shot: changed ${model.changedPixels || 0}/${model.totalPixels || 0} px (${formatPercentRatio(model.changedRatio)})`);
+  if (Number(model.thresholdRatio || 0) > 0) {
+    lines.push(`Threshold: ${formatPercentRatio(model.thresholdRatio)} (${model.exceedsThreshold ? 'exceeded' : 'within threshold'})`);
+  }
+  lines.push(`Baseline: ${model.baselinePath}`);
+  lines.push(`Current: ${model.currentPath}`);
+  lines.push(`Diff image: ${model.diffPath}`);
+  if (model.width && model.height) lines.push(`Compared: ${model.width}x${model.height} screenshot pixels`);
+  if (model.fallback) lines.push('(screenshot fallback - Page.captureScreenshot timed out)');
+  lines.push(model.advancedBaseline ? 'Baseline advanced to current capture.' : 'Baseline kept; pass without --keep-baseline to advance.');
+  lines.push('Pixel diff only: use perceive/cascade/report to explain semantic cause.');
+  return lines.join('\n');
+}
+
+function nextDiffShotArtifactPaths(session) {
+  if (!session.diffShot) session.diffShot = {};
+  const seq = Number(session.diffShot.seq || 0) + 1;
+  session.diffShot.seq = seq;
+  const dir = ensureSessionScreenshotDir(session) || session.screenshotDir || sessionScreenshotDir(session.targetId);
+  const padded = String(seq).padStart(3, '0');
+  return {
+    baselinePath: resolve(dir, `diff-shot-baseline-${padded}.png`),
+    currentPath: resolve(dir, `diff-shot-current-${padded}.png`),
+    diffPath: resolve(dir, `diff-shot-diff-${padded}.png`),
+  };
+}
+
+async function diffShotStr(cdp, sid, session, opts = {}) {
+  const shot = await captureScreenshot(cdp, sid, { format: 'png' });
+  const targetId = session.targetId;
+  const reset = opts.reset || !session.diffShot?.baselineData;
+  const paths = nextDiffShotArtifactPaths(session);
+  if (reset) {
+    writeFileSync(paths.baselinePath, Buffer.from(shot.data, 'base64'));
+    session.diffShot = {
+      ...(session.diffShot || {}),
+      baselineData: shot.data,
+      baselinePath: paths.baselinePath,
+    };
+    appendSessionScreenshot(session, { kind: 'diff-shot-baseline', path: paths.baselinePath, note: opts.reset ? 'reset baseline' : 'baseline' });
+    const model = {
+      schema: 'chrome-cdp-ex.diff-shot.v1',
+      targetId,
+      baselineCaptured: true,
+      baselinePath: paths.baselinePath,
+      currentPath: paths.baselinePath,
+      diffPath: null,
+      changedPixels: 0,
+      totalPixels: 0,
+      changedRatio: 0,
+      thresholdRatio: opts.thresholdRatio || 0,
+      exceedsThreshold: false,
+      advancedBaseline: true,
+      fallback: shot.fallback === true,
+    };
+    return opts.format === 'json' ? formatJson(model) : formatDiffShotResult(model);
+  }
+
+  writeFileSync(paths.currentPath, Buffer.from(shot.data, 'base64'));
+  const compareRaw = await evalStr(cdp, sid, diffShotCompareScript(session.diffShot.baselineData, shot.data));
+  const compare = JSON.parse(compareRaw);
+  writeFileSync(paths.diffPath, Buffer.from(compare.diffPngBase64, 'base64'));
+  appendSessionScreenshot(session, { kind: 'diff-shot-current', path: paths.currentPath, note: 'current capture' });
+  appendSessionScreenshot(session, { kind: 'diff-shot-diff', path: paths.diffPath, note: 'pixel diff' });
+  const priorBaselinePath = session.diffShot.baselinePath;
+  const advancedBaseline = !opts.keepBaseline;
+  if (advancedBaseline) {
+    session.diffShot.baselineData = shot.data;
+    session.diffShot.baselinePath = paths.currentPath;
+  }
+  const model = {
+    schema: 'chrome-cdp-ex.diff-shot.v1',
+    targetId,
+    baselineCaptured: false,
+    baselinePath: priorBaselinePath,
+    currentPath: paths.currentPath,
+    diffPath: paths.diffPath,
+    width: compare.width,
+    height: compare.height,
+    baselineWidth: compare.baselineWidth,
+    baselineHeight: compare.baselineHeight,
+    currentWidth: compare.currentWidth,
+    currentHeight: compare.currentHeight,
+    changedPixels: compare.changedPixels,
+    totalPixels: compare.totalPixels,
+    changedRatio: compare.changedRatio,
+    thresholdRatio: opts.thresholdRatio || 0,
+    exceedsThreshold: compare.changedRatio > Number(opts.thresholdRatio || 0),
+    advancedBaseline,
+    fallback: shot.fallback === true,
+  };
+  return opts.format === 'json' ? formatJson(model) : formatDiffShotResult(model);
+}
+
 async function htmlStr(cdp, sid, selector) {
   const expr = selector
     ? `document.querySelector(${JSON.stringify(selector)})?.outerHTML || 'Element not found'`
@@ -665,13 +1226,13 @@ async function htmlStr(cdp, sid, selector) {
   return evalStr(cdp, sid, expr);
 }
 
-async function waitForDocumentReady(cdp, sid, timeoutMs = NAVIGATION_TIMEOUT) {
+async function waitForDocumentReady(cdp, sid, timeoutMs = NAVIGATION_TIMEOUT, options = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastState = '';
   let lastError;
   while (Date.now() < deadline) {
     try {
-      const state = await evalStr(cdp, sid, 'document.readyState');
+      const state = await evalStr(cdp, sid, 'document.readyState', false, { timeoutMs: options.probeTimeoutMs });
       lastState = state;
       if (state === 'complete') return;
     } catch (e) {
@@ -739,13 +1300,55 @@ async function runtimeMetricsStr(cdp, sid) {
   return lines.join('\n');
 }
 
-async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq, opts = {}) {
+async function pageInfoModel(cdp, sid) {
   let title = '', url = '';
   try {
-    const info = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ title: document.title, url: window.location.href })'));
+    const info = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ title: document.title, url: window.location.href })', false, { timeoutMs: STATUS_PAGE_INFO_TIMEOUT }));
     title = info.title;
     url = info.url;
   } catch {}
+  return { title, url };
+}
+
+function buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag) {
+  const showErrors = flag === '--errors';
+  const showAll = flag === '--all';
+  let entries;
+  let exceptions = [];
+
+  if (showAll) {
+    entries = consoleBuf.all();
+    exceptions = exceptionBuf.all();
+  } else if (showErrors) {
+    entries = consoleBuf.all().filter(e => e.level === 'error' || e.level === 'warning');
+    exceptions = exceptionBuf.all();
+  } else {
+    entries = consoleBuf.since(lastReadSeq.console);
+    exceptions = exceptionBuf.since(lastReadSeq.exception);
+  }
+
+  return {
+    schema: 'chrome-cdp-ex.console.v1',
+    mode: showAll ? 'all' : showErrors ? 'errors' : 'new',
+    entries,
+    exceptions,
+  };
+}
+
+function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, lastReadSeq, runtime = null }) {
+  return {
+    schema: 'chrome-cdp-ex.status.v1',
+    targetId,
+    page,
+    console: consoleBuf.since(lastReadSeq.console),
+    exceptions: exceptionBuf.since(lastReadSeq.exception),
+    navigation: navBuf.since(lastReadSeq.nav || 0),
+    runtime,
+  };
+}
+
+async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq, opts = {}) {
+  const { title, url } = await pageInfoModel(cdp, sid);
 
   const lines = [];
   lines.push(`URL: ${url}`);
@@ -832,7 +1435,7 @@ async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag) {
   return lines.join('\n');
 }
 
-async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
+async function summaryModel(cdp, sid, consoleBuf, exceptionBuf) {
   const expr = `
     (function() {
       const counts = {};
@@ -859,23 +1462,6 @@ async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
   `;
   const result = await evalStr(cdp, sid, expr);
   const r = JSON.parse(result);
-  const lines = [];
-  lines.push(`Title: ${r.title}`);
-  lines.push(`URL: ${r.url}`);
-  lines.push(`Viewport: ${r.viewport}`);
-
-  const countParts = Object.entries(r.counts).map(([k, v]) => `${v} ${k}`);
-  lines.push(`Interactive: ${countParts.length > 0 ? countParts.join(', ') : 'none found'}`);
-
-  lines.push(`Focused: ${r.focused}`);
-
-  if (r.scrollMax > 0) {
-    const pct = Math.round(r.scrollY / r.scrollMax * 100);
-    lines.push(`Scroll: ${r.scrollY} / ${r.scrollMax} max (${pct}%)`);
-  } else {
-    lines.push('Scroll: no scroll');
-  }
-
   const allConsole = consoleBuf.all();
   let errors = 0, warnings = 0;
   for (const e of allConsole) {
@@ -883,13 +1469,2105 @@ async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
     else if (e.level === 'warning' || e.level === 'warn') warnings++;
   }
   const exceptions = exceptionBuf.all().length;
+
+  return {
+    schema: 'chrome-cdp-ex.summary.v1',
+    page: { title: r.title, url: r.url },
+    viewport: {
+      size: r.viewport,
+      scrollY: r.scrollY,
+      scrollMax: r.scrollMax,
+    },
+    interactive: r.counts,
+    focused: r.focused,
+    console: { errors, warnings, exceptions },
+  };
+}
+
+function formatSummaryText(model) {
+  const lines = [];
+  lines.push(`Title: ${model.page.title}`);
+  lines.push(`URL: ${model.page.url}`);
+  lines.push(`Viewport: ${model.viewport.size}`);
+
+  const countParts = Object.entries(model.interactive).map(([k, v]) => `${v} ${k}`);
+  lines.push(`Interactive: ${countParts.length > 0 ? countParts.join(', ') : 'none found'}`);
+
+  lines.push(`Focused: ${model.focused}`);
+
+  if (model.viewport.scrollMax > 0) {
+    const pct = Math.round(model.viewport.scrollY / model.viewport.scrollMax * 100);
+    lines.push(`Scroll: ${model.viewport.scrollY} / ${model.viewport.scrollMax} max (${pct}%)`);
+  } else {
+    lines.push('Scroll: no scroll');
+  }
+
   const parts = [];
-  if (errors > 0) parts.push(`${errors} error${errors > 1 ? 's' : ''}`);
-  if (warnings > 0) parts.push(`${warnings} warning${warnings > 1 ? 's' : ''}`);
-  if (exceptions > 0) parts.push(`${exceptions} exception${exceptions > 1 ? 's' : ''}`);
+  if (model.console.errors > 0) parts.push(`${model.console.errors} error${model.console.errors > 1 ? 's' : ''}`);
+  if (model.console.warnings > 0) parts.push(`${model.console.warnings} warning${model.console.warnings > 1 ? 's' : ''}`);
+  if (model.console.exceptions > 0) parts.push(`${model.console.exceptions} exception${model.console.exceptions > 1 ? 's' : ''}`);
   lines.push(`Console: ${parts.length > 0 ? parts.join(', ') : 'clean'}`);
 
   return lines.join('\n');
+}
+
+async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
+  return formatSummaryText(await summaryModel(cdp, sid, consoleBuf, exceptionBuf));
+}
+
+function createPerceptionModel({ targetPrefix = '<target>', page, viewport, consoleHealth, refs, nodes, limits }) {
+  const firstRef = nodes?.find(node => node.ref)?.ref || '@ref';
+  const recommendation = goldenPathActRecommendation(targetPrefix, { ref: firstRef });
+  return {
+    schema: 'chrome-cdp-ex.perceive.v1',
+    targetPrefix,
+    page,
+    viewport: {
+      ...viewport,
+      coordinateSpace: 'viewport-css-px',
+    },
+    console: consoleHealth,
+    refs: {
+      generation: refs.generation,
+      validity: 'until-navigation-or-dom-rewrite',
+    },
+    nodes,
+    limits,
+    recommendation,
+    nextSteps: recommendation.commands,
+  };
+}
+
+function formatPerceptionJson(model) {
+  return formatJson(model);
+}
+
+const MAX_ACTION_DELTA_ENTRIES = 5;
+const MAX_ACTION_JSON_DOM_DIFF_CHARS = 800;
+const DEFAULT_REPORT_ACTION_LIMIT = 20;
+const SENSITIVE_QUERY_KEY_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn)\b/i;
+const NOISY_ACTION_NETWORK_TYPES = new Set(['Image', 'Stylesheet', 'Script', 'Font', 'Media', 'WebSocket']);
+
+function createActionResult({ action, target, dispatch, settle, effects, nextHint }) {
+  return applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis({
+    schema: 'chrome-cdp-ex.action.v1',
+    action,
+    target,
+    dispatch,
+    settle,
+    effects,
+    nextHint,
+  }))));
+}
+
+function createActionObservationBaseline({ consoleBuf = null, exceptionBuf = null, netReqBuf = null } = {}) {
+  return {
+    console: typeof consoleBuf?.latest === 'function' ? consoleBuf.latest() : 0,
+    exception: typeof exceptionBuf?.latest === 'function' ? exceptionBuf.latest() : 0,
+    network: typeof netReqBuf?.latest === 'function' ? netReqBuf.latest() : 0,
+  };
+}
+
+function compactActionText(value, max = 220) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function compactActionUrl(value) {
+  const raw = compactActionText(value, 240);
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    const params = new URLSearchParams(url.search);
+    for (const key of [...params.keys()]) {
+      if (SENSITIVE_QUERY_KEY_RE.test(key)) params.set(key, '<redacted>');
+    }
+    const query = params.toString();
+    return compactActionText(`${url.pathname}${query ? `?${query}` : ''}${url.hash || ''}`, 180);
+  } catch {
+    return compactActionText(raw, 180);
+  }
+}
+
+function compactConsoleDeltaEntry(entry = {}) {
+  return {
+    level: compactActionText(entry.level || 'log', 30),
+    text: compactActionText(entry.text || entry.msg || entry.message || ''),
+    loc: compactActionText(entry.loc || '', 120),
+  };
+}
+
+function compactExceptionDeltaEntry(entry = {}) {
+  return {
+    message: compactActionText(entry.msg || entry.message || entry.text || 'Unknown exception'),
+    loc: compactActionText(entry.loc || '', 120),
+  };
+}
+
+function isNetworkFailure(entry = {}) {
+  if (entry.failed === true || entry.errorText) return true;
+  const status = Number(entry.status);
+  return Number.isFinite(status) && status >= 400;
+}
+
+function shouldTrackActionNetworkRequest(type) {
+  return !NOISY_ACTION_NETWORK_TYPES.has(String(type || ''));
+}
+
+function compactNetworkDeltaEntry(entry = {}) {
+  const status = entry.pending ? 'pending' : (entry.errorText ? 'failed' : entry.status);
+  return {
+    method: compactActionText(entry.method || 'GET', 20).toUpperCase(),
+    url: compactActionUrl(entry.url || ''),
+    status,
+    type: compactActionText(entry.type || '', 40),
+    duration: Number.isFinite(entry.duration) ? entry.duration : null,
+    errorText: entry.errorText ? compactActionText(entry.errorText, 120) : null,
+    pending: entry.pending === true,
+  };
+}
+
+function buildActionObservationDelta({ consoleBuf = null, exceptionBuf = null, netReqBuf = null } = {}, baseline = {}) {
+  const consoleEntries = typeof consoleBuf?.since === 'function' ? consoleBuf.since(baseline.console || 0) : [];
+  const exceptionEntries = typeof exceptionBuf?.since === 'function' ? exceptionBuf.since(baseline.exception || 0) : [];
+  const networkEntries = typeof netReqBuf?.since === 'function' ? netReqBuf.since(baseline.network || 0) : [];
+  const consoleCompact = consoleEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(compactConsoleDeltaEntry);
+  const exceptionCompact = exceptionEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(compactExceptionDeltaEntry);
+  const networkCompact = networkEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(compactNetworkDeltaEntry);
+  return {
+    console: {
+      count: consoleEntries.length,
+      errors: consoleEntries.filter(entry => ['error', 'assert'].includes(String(entry.level || '').toLowerCase())).length,
+      warnings: consoleEntries.filter(entry => ['warning', 'warn'].includes(String(entry.level || '').toLowerCase())).length,
+      entries: consoleCompact,
+    },
+    exceptions: {
+      count: exceptionEntries.length,
+      entries: exceptionCompact,
+    },
+    network: {
+      count: networkEntries.length,
+      failures: networkEntries.filter(isNetworkFailure).length,
+      pending: networkEntries.filter(entry => entry.pending === true).length,
+      entries: networkCompact,
+    },
+  };
+}
+
+function numericDeltaCount(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeConsoleDelta(delta = {}) {
+  const entries = (delta.entries || []).slice(-MAX_ACTION_DELTA_ENTRIES).map(compactConsoleDeltaEntry);
+  return {
+    count: numericDeltaCount(delta.count, entries.length),
+    errors: numericDeltaCount(delta.errors, entries.filter(entry => ['error', 'assert'].includes(String(entry.level || '').toLowerCase())).length),
+    warnings: numericDeltaCount(delta.warnings, entries.filter(entry => ['warning', 'warn'].includes(String(entry.level || '').toLowerCase())).length),
+    entries,
+  };
+}
+
+function normalizeExceptionDelta(delta = {}) {
+  const entries = (delta.entries || []).slice(-MAX_ACTION_DELTA_ENTRIES).map(compactExceptionDeltaEntry);
+  return {
+    count: numericDeltaCount(delta.count, entries.length),
+    entries,
+  };
+}
+
+function normalizeNetworkDelta(delta = {}) {
+  const entries = (delta.entries || []).slice(-MAX_ACTION_DELTA_ENTRIES).map(compactNetworkDeltaEntry);
+  return {
+    count: numericDeltaCount(delta.count, entries.length),
+    failures: numericDeltaCount(delta.failures, entries.filter(isNetworkFailure).length),
+    pending: numericDeltaCount(delta.pending, entries.filter(entry => entry.pending === true).length),
+    entries,
+  };
+}
+
+function actionDomDiffShowsChange(domDiff) {
+  const text = String(domDiff || '').trim();
+  if (!text) return false;
+  return !/no changes detected/i.test(text);
+}
+
+function actionHasDomObservation(actionResult = {}) {
+  return Object.prototype.hasOwnProperty.call(actionResult.effects || {}, 'domDiff')
+    && actionResult.effects.domDiff !== null
+    && actionResult.effects.domDiff !== undefined;
+}
+
+function buildActionOutcome(actionResult = {}) {
+  const effects = actionResult.effects || {};
+  const diagnosis = effects.diagnosis || null;
+  const domObserved = actionHasDomObservation(actionResult);
+  const changed = actionDomDiffShowsChange(effects.domDiff);
+  const base = {
+    schema: 'chrome-cdp-ex.action-outcome.v1',
+    changed: domObserved ? changed : null,
+    needsAttention: false,
+  };
+
+  if (actionResult.dispatch?.ok === false || effects.failure?.kind) {
+    return {
+      ...base,
+      status: 'failed',
+      changed: false,
+      needsAttention: true,
+      evidence: 'dispatch',
+      reason: effects.failure?.reason || 'Action failed before dispatch completed.',
+    };
+  }
+
+  if (actionResult.dispatch?.ok === true && actionResult.settle?.ok === false) {
+    return {
+      ...base,
+      status: 'timeout',
+      needsAttention: true,
+      evidence: 'settle',
+      reason: 'Action dispatched, but post-action observation timed out.',
+    };
+  }
+
+  if (diagnosis && diagnosis.status !== 'ok') {
+    return {
+      ...base,
+      status: 'attention',
+      needsAttention: true,
+      evidence: diagnosis.source || 'diagnosis',
+      reason: diagnosis.reason || 'Action needs follow-up.',
+    };
+  }
+
+  if (changed) {
+    return {
+      ...base,
+      status: 'changed',
+      changed: true,
+      evidence: 'dom',
+      reason: 'Observed page change after action.',
+    };
+  }
+
+  if (domObserved) {
+    return {
+      ...base,
+      status: 'no-change',
+      changed: false,
+      needsAttention: true,
+      evidence: 'dom',
+      reason: 'No visible AX tree change observed after action.',
+    };
+  }
+
+  return {
+    ...base,
+    status: 'dispatched',
+    evidence: 'dispatch',
+    reason: 'Action dispatched; no DOM observation was captured for this command.',
+  };
+}
+
+function applyActionOutcome(actionResult) {
+  actionResult.outcome = buildActionOutcome(actionResult);
+  return actionResult;
+}
+
+function applyActionObservationDelta(actionResult, delta = {}) {
+  if (!actionResult.effects) actionResult.effects = {};
+  const consoleDelta = normalizeConsoleDelta(delta.console || {});
+  const exceptionDelta = normalizeExceptionDelta(delta.exceptions || {});
+  const networkDelta = normalizeNetworkDelta(delta.network || {});
+  actionResult.effects.consoleDelta = consoleDelta;
+  actionResult.effects.exceptionDelta = exceptionDelta;
+  actionResult.effects.networkDelta = networkDelta;
+  actionResult.effects.console = consoleDelta.entries || [];
+  actionResult.effects.exceptions = exceptionDelta.entries || [];
+  actionResult.effects.network = networkDelta.entries || [];
+  return applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(actionResult))));
+}
+
+function recoveryCommandArg(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (/^@[a-z0-9:]+$/i.test(text)) return text;
+  if (text.startsWith('#')) return JSON.stringify(text);
+  if (/^[^\s"'`\\$]+$/.test(text)) return text;
+  return JSON.stringify(text);
+}
+
+function recoveryCommand(command, reason) {
+  return { command, reason };
+}
+
+function uniqueRecoveryCommands(commands = []) {
+  const seen = new Set();
+  const out = [];
+  for (const entry of commands) {
+    if (!entry?.command || seen.has(entry.command)) continue;
+    seen.add(entry.command);
+    out.push(entry);
+  }
+  return out;
+}
+
+function buildNoChangeOutcomeRecommendation({
+  action = null,
+  actionIndex = null,
+  target = '<target>',
+  targetInput = '',
+  source = 'action-outcome',
+} = {}) {
+  const input = recoveryCommandArg(targetInput);
+  const overlayCommand = input ? `cdp overlay ${target} ${input} --format json` : `cdp overlay ${target} --format json`;
+  const perceiveCommand = `cdp perceive ${target} -C -d 8`;
+  return {
+    source,
+    actionIndex,
+    action,
+    outcomeStatus: 'no-change',
+    strategy: 'investigate-no-change',
+    priority: 'medium',
+    reason: 'The action dispatched but produced no visible AX tree change; check blockers, frame context, or refreshed refs before retrying.',
+    verifyCommand: perceiveCommand,
+    commands: uniqueNextStepCommands([
+      overlayCommand,
+      `cdp frame ${target} --format json`,
+      perceiveCommand,
+      `cdp report ${target} --format json`,
+    ]),
+  };
+}
+
+function buildActionRecoveryPlan(diagnosis = {}, { targetId = '<target>', targetInput = '' } = {}) {
+  const target = targetId || '<target>';
+  const input = recoveryCommandArg(targetInput);
+  const perceiveCommand = `cdp perceive ${target} -C -d 8`;
+  const sinceActionCommand = `cdp perceive ${target} --since-action`;
+  const statusCommand = `cdp status ${target}`;
+  const reportCommand = `cdp report ${target} --format json`;
+  const netlogCommand = `cdp netlog ${target}`;
+  const consoleCommand = `cdp console ${target} --errors`;
+  const frameCommand = `cdp frame ${target} --format json`;
+  const overlayCommand = input ? `cdp overlay ${target} ${input} --format json` : `cdp overlay ${target} --format json`;
+  const dismissCommand = `cdp dismiss-modal ${target}`;
+  const nextCommand = diagnosis.nextCommand || null;
+  const base = {
+    schema: 'chrome-cdp-ex.recovery-policy.v1',
+    strategy: 'refresh-perception',
+    priority: diagnosis.status === 'blocked' ? 'high' : 'medium',
+    commands: [],
+    verifyCommand: perceiveCommand,
+    avoid: [],
+  };
+
+  switch (diagnosis.kind) {
+    case 'network-failure':
+    case 'network-pending':
+      return {
+        ...base,
+        strategy: 'inspect-network',
+        priority: diagnosis.kind === 'network-failure' ? 'high' : 'medium',
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(netlogCommand, 'Inspect failed or pending requests caused by the action.'),
+          recoveryCommand(sinceActionCommand, 'Verify what the action changed before retrying.'),
+          recoveryCommand(reportCommand, 'Preserve the action timeline and diagnostics for handoff.'),
+        ]),
+        verifyCommand: sinceActionCommand,
+        avoid: ['retrying the same action before checking network state'],
+      };
+    case 'exception':
+    case 'console-error':
+      return {
+        ...base,
+        strategy: 'inspect-runtime-errors',
+        priority: 'high',
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(consoleCommand, 'Inspect page errors triggered by the action.'),
+          recoveryCommand(sinceActionCommand, 'Verify visible UI changes from the action.'),
+          recoveryCommand(reportCommand, 'Preserve the action timeline and diagnostics for handoff.'),
+        ]),
+        verifyCommand: sinceActionCommand,
+      };
+    case 'overlay':
+      return {
+        ...base,
+        strategy: 'clear-overlay',
+        priority: 'high',
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(overlayCommand, 'Confirm which overlay or dialog blocks the target.'),
+          recoveryCommand(nextCommand || dismissCommand, 'Dismiss the blocking modal or overlay safely.'),
+          recoveryCommand(perceiveCommand, 'Refresh refs after the overlay changes.'),
+        ]),
+        verifyCommand: perceiveCommand,
+        avoid: ['retrying the same click before clearing or re-checking the overlay'],
+      };
+    case 'wrong-frame':
+      return {
+        ...base,
+        strategy: 'refresh-frame-context',
+        priority: 'high',
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(frameCommand, 'List frames and choose the correct frame context.'),
+          recoveryCommand(nextCommand || perceiveCommand, 'Refresh page perception before using refs again.'),
+        ]),
+        verifyCommand: nextCommand || perceiveCommand,
+        avoid: ['retrying top-level refs when the control may be inside an iframe'],
+      };
+    case 'stale-ref':
+    case 'dom-rewrite':
+    case 'navigation':
+    case 'selector':
+      return {
+        ...base,
+        strategy: 'refresh-perception',
+        priority: diagnosis.kind === 'selector' ? 'medium' : 'high',
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(nextCommand || perceiveCommand, 'Refresh current controls and refs.'),
+          recoveryCommand(statusCommand, 'Check navigation, console, and target health if the page changed.'),
+        ]),
+        verifyCommand: nextCommand || perceiveCommand,
+        avoid: ['retrying stale @refs before refreshing perception'],
+      };
+    case 'timeout':
+    case 'observation-timeout':
+      return {
+        ...base,
+        strategy: 'check-tab-health',
+        priority: 'medium',
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(nextCommand || statusCommand, 'Check whether the tab and CDP session are still responsive.'),
+          recoveryCommand(sinceActionCommand, 'If dispatch may have happened, inspect the last-action diff.'),
+          recoveryCommand(reportCommand, 'Preserve any partial diagnostics already captured.'),
+        ]),
+        verifyCommand: statusCommand,
+      };
+    default:
+      return {
+        ...base,
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(nextCommand || perceiveCommand, 'Refresh perception before choosing the next action.'),
+        ]),
+        verifyCommand: nextCommand || perceiveCommand,
+      };
+  }
+}
+
+function actionDiagnosisSignals(actionResult = {}) {
+  const effects = actionResult.effects || {};
+  const consoleDelta = normalizeConsoleDelta(effects.consoleDelta || {});
+  const exceptionDelta = normalizeExceptionDelta(effects.exceptionDelta || {});
+  const networkDelta = normalizeNetworkDelta(effects.networkDelta || {});
+  return {
+    dispatchOk: actionResult.dispatch?.ok !== false,
+    settleOk: actionResult.settle?.ok ?? null,
+    domChanged: actionDomDiffShowsChange(effects.domDiff),
+    consoleErrors: consoleDelta.errors,
+    consoleWarnings: consoleDelta.warnings,
+    exceptions: exceptionDelta.count,
+    networkFailures: networkDelta.failures,
+    networkPending: networkDelta.pending,
+  };
+}
+
+function createActionDiagnosis(actionResult = {}) {
+  const effects = actionResult.effects || {};
+  const targetId = actionTargetCommandId(actionResult.target || {});
+  const targetInput = actionFailureInput(actionResult.target || effects.failure?.target || {});
+  const signals = actionDiagnosisSignals(actionResult);
+  const finish = (diagnosis) => ({
+    ...diagnosis,
+    recovery: buildActionRecoveryPlan(diagnosis, { targetId, targetInput }),
+  });
+  const base = {
+    schema: 'chrome-cdp-ex.action-diagnosis.v1',
+    status: 'ok',
+    kind: 'ok',
+    confidence: 'medium',
+    source: 'action',
+    reason: 'Action dispatched without captured runtime failures.',
+    nextCommand: actionResult.nextHint || null,
+    signals,
+  };
+
+  if (effects.failure?.kind) {
+    return finish({
+      ...base,
+      status: 'blocked',
+      kind: effects.failure.kind,
+      confidence: 'high',
+      source: 'dispatch',
+      reason: effects.failure.reason || 'The action failed before dispatch completed.',
+      nextCommand: effects.failure.nextCommand || actionResult.nextHint || `cdp status ${targetId}`,
+    });
+  }
+
+  if (signals.exceptions > 0) {
+    return finish({
+      ...base,
+      status: 'attention',
+      kind: 'exception',
+      confidence: 'high',
+      source: 'exception',
+      reason: 'The action triggered one or more page exceptions.',
+      nextCommand: `cdp console ${targetId} --errors`,
+    });
+  }
+
+  if (signals.networkFailures > 0) {
+    return finish({
+      ...base,
+      status: 'attention',
+      kind: 'network-failure',
+      confidence: 'high',
+      source: 'network',
+      reason: 'The action triggered one or more failed network requests.',
+      nextCommand: `cdp netlog ${targetId}`,
+    });
+  }
+
+  if (signals.networkPending > 0) {
+    return finish({
+      ...base,
+      status: 'attention',
+      kind: 'network-pending',
+      confidence: 'medium',
+      source: 'network',
+      reason: 'The action left network requests pending after the settle window.',
+      nextCommand: `cdp netlog ${targetId}`,
+    });
+  }
+
+  if (signals.consoleErrors > 0) {
+    return finish({
+      ...base,
+      status: 'attention',
+      kind: 'console-error',
+      confidence: 'high',
+      source: 'console',
+      reason: 'The action triggered one or more console errors.',
+      nextCommand: `cdp console ${targetId} --errors`,
+    });
+  }
+
+  if (actionResult.dispatch?.ok === true && actionResult.settle?.ok === false) {
+    return finish({
+      ...base,
+      status: 'attention',
+      kind: 'observation-timeout',
+      confidence: 'medium',
+      source: 'settle',
+      reason: 'The action was dispatched, but post-action observation did not finish cleanly.',
+      nextCommand: `cdp perceive ${targetId} --since-action`,
+    });
+  }
+
+  if (signals.domChanged) {
+    return finish({
+      ...base,
+      status: 'ok',
+      kind: 'dom-changed',
+      confidence: 'medium',
+      source: 'dom',
+      reason: 'The action dispatched and changed the perceived DOM.',
+      nextCommand: actionResult.nextHint || `cdp perceive ${targetId} --since-action`,
+    });
+  }
+
+  return base;
+}
+
+function applyActionDiagnosis(actionResult) {
+  if (!actionResult.effects) actionResult.effects = {};
+  const diagnosis = createActionDiagnosis(actionResult);
+  if (diagnosis.status === 'ok' && diagnosis.kind === 'ok') delete actionResult.effects.diagnosis;
+  else actionResult.effects.diagnosis = diagnosis;
+  return actionResult;
+}
+
+function buildActionRecommendation(actionResult = {}) {
+  const target = actionTargetCommandPrefix(actionResult.target || {});
+  const diagnosis = actionResult.effects?.diagnosis || null;
+  if (diagnosis && diagnosis.status !== 'ok') {
+    const commands = recoveryCommandsFromDiagnosis(diagnosis);
+    return {
+      source: 'action-diagnosis',
+      action: actionResult.action || null,
+      targetPrefix: target,
+      diagnosisKind: diagnosis.kind || null,
+      strategy: diagnosis.recovery?.strategy || diagnosis.kind || 'recover-action',
+      priority: diagnosis.recovery?.priority || (diagnosis.status === 'blocked' ? 'high' : 'medium'),
+      verifyCommand: diagnosis.recovery?.verifyCommand || diagnosis.nextCommand || null,
+      commands,
+    };
+  }
+  const outcome = actionResult.outcome || buildActionOutcome(actionResult);
+  if (outcome.status === 'no-change') {
+    return buildNoChangeOutcomeRecommendation({
+      action: actionResult.action || null,
+      target,
+      targetInput: actionFailureInput(actionResult.target || {}),
+    });
+  }
+
+  return {
+    source: 'action-evidence',
+    action: actionResult.action || null,
+    targetPrefix: target,
+    strategy: actionResult.effects?.domDiff ? 'continue-from-evidence' : 'continue-or-handoff',
+    priority: 'medium',
+    reason: actionResult.effects?.domDiff
+      ? 'The action already includes observed page evidence; continue from that evidence without an extra verify call.'
+      : 'The action dispatched without captured runtime trouble; use report or record-actions when handing off.',
+    commands: uniqueNextStepCommands([
+      `cdp report ${target} --format json`,
+      `cdp record-actions ${target} --format json`,
+    ]),
+    optionalCommands: uniqueNextStepCommands([
+      `cdp perceive ${target} --since-action`,
+    ]),
+  };
+}
+
+function applyActionRecommendation(actionResult) {
+  const recommendation = buildActionRecommendation(actionResult);
+  actionResult.recommendation = recommendation;
+  actionResult.nextSteps = uniqueNextStepCommands(recommendation.commands || []);
+  return actionResult;
+}
+
+function buildActionVerdict(actionResult = {}) {
+  const diagnosis = actionResult.effects?.diagnosis || null;
+  const outcome = actionResult.outcome || buildActionOutcome(actionResult);
+  const recommendation = actionResult.recommendation || {};
+  const nextSteps = uniqueNextStepCommands(recommendation.commands || []);
+  const primaryNextStep = nextSteps[0] || recommendation.verifyCommand || actionResult.nextHint || null;
+  const base = {
+    schema: 'chrome-cdp-ex.action-verdict.v1',
+    source: diagnosis && diagnosis.status !== 'ok' ? 'diagnosis' : 'outcome',
+    primaryNextStep,
+    nextSteps,
+    reason: diagnosis && diagnosis.status !== 'ok'
+      ? diagnosis.reason || outcome.reason || null
+      : outcome.reason || recommendation.reason || null,
+  };
+
+  if (diagnosis && diagnosis.status !== 'ok') {
+    const blocked = diagnosis.status === 'blocked' || outcome.status === 'failed';
+    return {
+      ...base,
+      status: blocked ? 'blocked' : 'recover',
+      confidence: diagnosis.confidence || (blocked ? 'high' : 'medium'),
+      canContinue: false,
+      needsRecovery: true,
+    };
+  }
+
+  switch (outcome.status) {
+    case 'changed':
+      return {
+        ...base,
+        status: 'continue',
+        confidence: 'medium',
+        canContinue: true,
+        needsRecovery: false,
+      };
+    case 'no-change':
+      return {
+        ...base,
+        status: 'investigate',
+        confidence: 'medium',
+        canContinue: false,
+        needsRecovery: true,
+      };
+    case 'failed':
+      return {
+        ...base,
+        status: 'blocked',
+        confidence: 'high',
+        canContinue: false,
+        needsRecovery: true,
+      };
+    case 'timeout':
+      return {
+        ...base,
+        status: 'verify',
+        confidence: 'low',
+        canContinue: false,
+        needsRecovery: true,
+      };
+    case 'attention':
+      return {
+        ...base,
+        status: 'recover',
+        confidence: 'medium',
+        canContinue: false,
+        needsRecovery: true,
+      };
+    case 'dispatched':
+    default:
+      return {
+        ...base,
+        status: 'verify',
+        confidence: 'low',
+        canContinue: false,
+        needsRecovery: false,
+      };
+  }
+}
+
+function applyActionVerdict(actionResult) {
+  actionResult.verdict = buildActionVerdict(actionResult);
+  return actionResult;
+}
+
+function countLabel(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function formatConsoleDeltaSample(entry) {
+  if (!entry) return null;
+  const level = entry.level || 'log';
+  const loc = entry.loc ? ` @ ${entry.loc}` : '';
+  return `[${level}] ${entry.text || '(empty)'}${loc}`;
+}
+
+function formatExceptionDeltaSample(entry) {
+  if (!entry) return null;
+  const loc = entry.loc ? ` @ ${entry.loc}` : '';
+  return `${entry.message || 'Unknown exception'}${loc}`;
+}
+
+function formatNetworkDeltaSample(entry) {
+  if (!entry) return null;
+  const status = entry.errorText || entry.status || 'pending';
+  const duration = Number.isFinite(entry.duration) ? ` in ${entry.duration}ms` : '';
+  return `${entry.method || 'GET'} ${entry.url || '(unknown URL)'} -> ${status}${duration}`;
+}
+
+function summarizeActionConsoleDelta(delta = {}) {
+  const count = Number(delta.count || 0);
+  if (count === 0) return { summary: null, sample: null };
+  const parts = [];
+  if (delta.errors) parts.push(countLabel(delta.errors, 'error'));
+  if (delta.warnings) parts.push(countLabel(delta.warnings, 'warning'));
+  const summary = `Console: ${countLabel(count, 'entry', 'entries')}${parts.length ? ` (${parts.join(', ')})` : ''}`;
+  const prioritized = [...(delta.entries || [])].find(entry => ['error', 'assert'].includes(String(entry.level || '').toLowerCase()))
+    || [...(delta.entries || [])].find(entry => ['warning', 'warn'].includes(String(entry.level || '').toLowerCase()))
+    || (delta.entries || [])[0];
+  return { summary, sample: formatConsoleDeltaSample(prioritized) };
+}
+
+function summarizeActionExceptionDelta(delta = {}) {
+  const count = Number(delta.count || 0);
+  if (count === 0) return { summary: null, sample: null };
+  return {
+    summary: `Exception: ${count} thrown`,
+    sample: formatExceptionDeltaSample((delta.entries || [])[0]),
+  };
+}
+
+function summarizeActionNetworkDelta(delta = {}) {
+  const count = Number(delta.count || 0);
+  if (count === 0) return { summary: null, sample: null };
+  const failures = Number(delta.failures || 0);
+  const pending = Number(delta.pending || 0);
+  const parts = [];
+  if (failures) parts.push(countLabel(failures, 'failed', 'failed'));
+  if (pending) parts.push(countLabel(pending, 'pending', 'pending'));
+  const summary = `Network: ${countLabel(count, 'request')}${parts.length ? ` (${parts.join(', ')})` : ''}`;
+  const prioritized = [...(delta.entries || [])].find(isNetworkFailure) || (delta.entries || [])[0];
+  return { summary, sample: formatNetworkDeltaSample(prioritized) };
+}
+
+function summarizeActionObservationEffects(effects = {}) {
+  const consoleSummary = summarizeActionConsoleDelta(effects.consoleDelta);
+  const exceptionSummary = summarizeActionExceptionDelta(effects.exceptionDelta);
+  const networkSummary = summarizeActionNetworkDelta(effects.networkDelta);
+  return {
+    consoleSummary: consoleSummary.summary,
+    consoleSample: consoleSummary.sample,
+    exceptionSummary: exceptionSummary.summary,
+    exceptionSample: exceptionSummary.sample,
+    networkSummary: networkSummary.summary,
+    networkSample: networkSummary.sample,
+  };
+}
+
+function formatActionText(result) {
+  const diagnostics = summarizeActionObservationEffects(result.effects || {});
+  const diagnosis = result.effects?.diagnosis || null;
+  const lines = [
+    `${result.action}: ${result.dispatch.ok ? 'dispatched' : 'failed'} via ${result.dispatch.method}`,
+  ];
+  if (result.target?.label) lines.push(`Target: ${result.target.label}`);
+  if (result.outcome?.status) lines.push(`Outcome: ${result.outcome.status}${result.outcome.reason ? ` — ${result.outcome.reason}` : ''}`);
+  if (result.effects?.failure?.kind) lines.push(`Failure: ${result.effects.failure.kind}`);
+  if (diagnosis && diagnosis.status !== 'ok') {
+    lines.push(`Diagnosis: ${diagnosis.kind}${diagnosis.reason ? ` — ${diagnosis.reason}` : ''}`);
+  }
+  if (result.verdict?.status) {
+    lines.push(`Verdict: ${result.verdict.status}${result.verdict.reason ? ` — ${result.verdict.reason}` : ''}`);
+  }
+  if (result.settle) {
+    const duration = result.settle.durationMs ? ` in ${result.settle.durationMs}ms` : '';
+    lines.push(`Settle: ${result.settle.ok ? 'ok' : 'not confirmed'}${duration}`);
+  }
+  if (diagnostics.consoleSummary) lines.push(diagnostics.consoleSummary);
+  if (diagnostics.consoleSample) lines.push(`Console sample: ${diagnostics.consoleSample}`);
+  if (diagnostics.exceptionSummary) lines.push(diagnostics.exceptionSummary);
+  if (diagnostics.exceptionSample) lines.push(`Exception sample: ${diagnostics.exceptionSample}`);
+  if (diagnostics.networkSummary) lines.push(diagnostics.networkSummary);
+  if (diagnostics.networkSample) lines.push(`Network sample: ${diagnostics.networkSample}`);
+  if (result.effects?.domDiff) lines.push('---', result.effects.domDiff);
+  if (diagnosis?.nextCommand && diagnosis.status !== 'ok') lines.push(`Next: ${diagnosis.nextCommand}`);
+  if (!diagnosis?.nextCommand && result.outcome?.status === 'no-change' && result.recommendation?.commands?.[0]) {
+    lines.push(`Next: ${result.recommendation.commands[0]}`);
+  }
+  if (result.nextHint) lines.push(`Hint: ${result.nextHint}`);
+  return lines.join('\n');
+}
+
+function finalizeActionResult(result, { enrichActionResult = null, onActionResult = null } = {}) {
+  if (enrichActionResult) enrichActionResult(result);
+  applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(result))));
+  if (onActionResult) onActionResult(result);
+  return result;
+}
+
+function formatActionResultOutput(result, { format = 'text', dispatchText = '', timeoutError = null } = {}) {
+  if (format === 'json') return formatJson(compactActionResultForJson(result));
+  const text = dispatchText ? `${dispatchText}\n---\n${formatActionText(result)}` : formatActionText(result);
+  if (!timeoutError) return text;
+  return `${text}\n(success but observation timed out after action dispatch: ${timeoutError.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
+}
+
+async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --since-action if more evidence is needed', enrichActionResult = null, onActionResult = null, format = 'text' }) {
+  const startedAt = Date.now();
+  let dispatchText;
+  try {
+    dispatchText = await dispatch();
+  } catch (e) {
+    const failure = classifyActionFailure(e, { action, target });
+    const result = createActionResult({
+      action,
+      target: target || { input: '', resolvedBy: 'command', label: '' },
+      dispatch: { ok: false, method: dispatchMethod, error: failure.originalMessage },
+      settle: { ok: false, durationMs: Date.now() - startedAt },
+      effects: { domDiff: null, console: [], network: [], navigation: null, failure },
+      nextHint: failure.nextCommand,
+    });
+    finalizeActionResult(result, { enrichActionResult, onActionResult });
+    if (format === 'json') return formatActionResultOutput(result, { format });
+    throw new Error(formatActionFailure(e, { action, target }));
+  }
+  if (feedbackPolicy === 'none' || feedbackPolicy === 'report-only') {
+    const result = createActionResult({
+      action,
+      target: target || { input: '', resolvedBy: 'command', label: '' },
+      dispatch: { ok: true, method: dispatchMethod },
+      settle: { ok: true, durationMs: Date.now() - startedAt },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint: feedbackPolicy === 'report-only' ? nextHint : null,
+    });
+    finalizeActionResult(result, { enrichActionResult, onActionResult });
+    if (feedbackPolicy === 'none') return dispatchText;
+    return formatActionResultOutput(result, { format, dispatchText });
+  }
+  try {
+    const domDiff = await observe();
+    const result = createActionResult({
+      action,
+      target: target || { input: '', resolvedBy: 'command', label: '' },
+      dispatch: { ok: true, method: dispatchMethod },
+      settle: { ok: true, durationMs: Date.now() - startedAt },
+      effects: { domDiff, console: [], network: [], navigation: null },
+      nextHint,
+    });
+    finalizeActionResult(result, { enrichActionResult, onActionResult });
+    return formatActionResultOutput(result, { format, dispatchText });
+  } catch (e) {
+    if (!isTimeoutError(e)) throw e;
+    const result = createActionResult({
+      action,
+      target: target || { input: '', resolvedBy: 'command', label: '' },
+      dispatch: { ok: true, method: dispatchMethod },
+      settle: { ok: false, durationMs: Date.now() - startedAt },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint,
+    });
+    finalizeActionResult(result, { enrichActionResult, onActionResult });
+    return formatActionResultOutput(result, { format, dispatchText, timeoutError: e });
+  }
+}
+
+const HIGH_SIGNAL_ACTION_TEXT_RE = /\b(saved|success|succeeded|complete|completed|done|created|updated|deleted|failed|failure|error|warning|invalid|required)\b|成功|勝利|完成|已儲存|儲存|失敗|錯誤|警告|無效|必填/i;
+
+function actionDomDiffSampleScore(line = '') {
+  const trimmed = String(line || '').trim();
+  let score = 0;
+  if (trimmed.startsWith('+')) score += 2;
+  if (/^\+\s+\[(alert|status|statustext|statictext|heading)\]/i.test(trimmed)) score += 2;
+  if (HIGH_SIGNAL_ACTION_TEXT_RE.test(trimmed)) score += 4;
+  if (/^-\s/.test(trimmed)) score -= 2;
+  return score;
+}
+
+function chooseActionDomDiffSample(lines = []) {
+  const samples = lines.filter(l => /^[+-]\s/.test(l));
+  if (!samples.length) return null;
+  return samples
+    .map((line, index) => ({ line, index, score: actionDomDiffSampleScore(line) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)[0].line;
+}
+
+function summarizeActionDomDiff(domDiff) {
+  const lines = String(domDiff || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const summary = lines.find(l =>
+    l.startsWith('+++ Added') ||
+    l.startsWith('--- Removed') ||
+    l.startsWith('~~~ Text nodes updated') ||
+    l.includes('no changes detected')
+  ) || null;
+  const sample = chooseActionDomDiffSample(lines);
+  return { summary, sample };
+}
+
+function compactActionResultForJson(result) {
+  const compact = JSON.parse(JSON.stringify(result));
+  const effects = compact.effects || {};
+  if (typeof effects.domDiff !== 'string') return compact;
+
+  const original = effects.domDiff;
+  const { summary, sample } = summarizeActionDomDiff(original);
+  effects.domDiffChars = original.length;
+  effects.domDiffSummary = summary;
+  effects.domDiffSample = sample;
+  effects.domDiffTruncated = original.length > MAX_ACTION_JSON_DOM_DIFF_CHARS;
+  if (effects.domDiffTruncated) {
+    effects.domDiff = [summary, sample].filter(Boolean).join('\n')
+      || compactActionText(original, MAX_ACTION_JSON_DOM_DIFF_CHARS);
+  }
+  return compact;
+}
+
+const SENSITIVE_ACTION_TARGET_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn)\b/i;
+
+function isSensitiveActionTarget(action, target = {}) {
+  if (action !== 'fill' && action !== 'type') return false;
+  const probe = [
+    target.input,
+    target.label,
+    ...(Array.isArray(target.commandArgs) ? target.commandArgs.slice(0, 1) : []),
+  ].filter(Boolean).join(' ');
+  return SENSITIVE_ACTION_TARGET_RE.test(probe);
+}
+
+function sanitizeActionTargetForLog(action, target = null) {
+  if (!target || typeof target !== 'object') return target;
+  const sanitized = {
+    ...target,
+    commandArgs: Array.isArray(target.commandArgs) ? [...target.commandArgs] : target.commandArgs,
+  };
+  if (isSensitiveActionTarget(action, sanitized) && Array.isArray(sanitized.commandArgs) && sanitized.commandArgs.length > 1) {
+    sanitized.commandArgs = sanitized.commandArgs.map((arg, index) => index === 0 ? arg : '<redacted>');
+    sanitized.redacted = [...(sanitized.redacted || []), 'commandArgs'];
+  }
+  return sanitized;
+}
+
+function sessionLogPath(targetId, runtimeDir = RUNTIME_DIR) {
+  const safeTarget = String(targetId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
+  return resolve(runtimeDir, `cdp-${safeTarget}.log`);
+}
+
+function sessionScreenshotDir(targetId, runtimeDir = RUNTIME_DIR) {
+  const safeTarget = String(targetId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
+  return resolve(runtimeDir, `cdp-${safeTarget}-screenshots`);
+}
+
+function nextSessionScreenshotPath(session, kind = 'shot') {
+  const safeKind = String(kind || 'shot').replace(/[^A-Za-z0-9_.-]/g, '_');
+  const dir = session.screenshotDir || sessionScreenshotDir(session.targetId);
+  const seq = String((session.screenshots?.length || 0) + 1).padStart(3, '0');
+  return resolve(dir, `${safeKind}-${seq}.png`);
+}
+
+function ensureSessionScreenshotDir(session) {
+  if (!session.screenshotDir) return null;
+  try {
+    mkdirSync(session.screenshotDir, { recursive: true, mode: 0o700 });
+    return session.screenshotDir;
+  } catch (e) {
+    if (!session.logErrors) session.logErrors = [];
+    session.logErrors.push({ ts: Date.now(), message: `screenshot-dir: ${e.message}` });
+    return null;
+  }
+}
+
+function appendSessionEventLog(session, event, { writer = appendFileSync } = {}) {
+  if (!session.logPath) return null;
+  const payload = {
+    schema: 'chrome-cdp-ex.session-event.v1',
+    targetId: session.targetId,
+    sessionId: session.sessionId,
+    ...event,
+  };
+  try {
+    writer(session.logPath, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
+    return payload;
+  } catch (e) {
+    if (!session.logErrors) session.logErrors = [];
+    session.logErrors.push({ ts: Date.now(), message: e.message });
+    return null;
+  }
+}
+
+function appendSessionEnvironmentLog(session, event, { ts = Date.now() } = {}) {
+  if (!session.environmentLog) session.environmentLog = [];
+  const entry = { ...event, ts: event.ts ?? ts };
+  session.environmentLog.push(entry);
+  if (session.environmentLog.length > MAX_ENVIRONMENT_LOG_ENTRIES) {
+    session.environmentLog.splice(0, session.environmentLog.length - MAX_ENVIRONMENT_LOG_ENTRIES);
+  }
+  appendSessionEventLog(session, entry);
+  return entry;
+}
+
+function initializeSessionLog(session, { ts = session.createdAt || Date.now(), writer = writeFileSync } = {}) {
+  if (!session.logPath) return null;
+  const payload = {
+    schema: 'chrome-cdp-ex.session-event.v1',
+    kind: 'session-start',
+    ts,
+    targetId: session.targetId,
+    sessionId: session.sessionId,
+  };
+  try {
+    writer(session.logPath, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
+    return payload;
+  } catch (e) {
+    if (!session.logErrors) session.logErrors = [];
+    session.logErrors.push({ ts: Date.now(), message: e.message });
+    return null;
+  }
+}
+
+function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {}) {
+  if (!session.actionLog) session.actionLog = [];
+  const domDiff = actionResult.effects?.domDiff || '';
+  const { summary, sample } = summarizeActionDomDiff(domDiff);
+  const diagnostics = summarizeActionObservationEffects(actionResult.effects || {});
+  const target = sanitizeActionTargetForLog(actionResult.action, actionResult.target || null);
+  const entry = {
+    ts,
+    action: actionResult.action,
+    target,
+    dispatch: actionResult.dispatch || null,
+    settle: actionResult.settle || null,
+    effectSummary: summary,
+    effectSample: sample,
+    consoleSummary: diagnostics.consoleSummary,
+    consoleSample: diagnostics.consoleSample,
+    exceptionSummary: diagnostics.exceptionSummary,
+    exceptionSample: diagnostics.exceptionSample,
+    networkSummary: diagnostics.networkSummary,
+    networkSample: diagnostics.networkSample,
+    failure: actionResult.effects?.failure || null,
+    diagnosis: actionResult.effects?.diagnosis || null,
+    outcome: actionResult.outcome || buildActionOutcome(actionResult),
+    verdict: actionResult.verdict || buildActionVerdict(actionResult),
+    nextHint: actionResult.nextHint || null,
+  };
+  session.actionLog.push(entry);
+  if (session.actionLog.length > MAX_ACTION_LOG_ENTRIES) {
+    session.actionLog.splice(0, session.actionLog.length - MAX_ACTION_LOG_ENTRIES);
+  }
+  appendSessionEventLog(session, { kind: 'action', ts, action: entry });
+  return entry;
+}
+
+function appendSessionScreenshot(session, { kind = 'shot', path = null, note = '', ts = Date.now() } = {}) {
+  if (!session.screenshots) session.screenshots = [];
+  const entry = {
+    ts,
+    kind,
+    path: path || nextSessionScreenshotPath(session, kind),
+    note,
+  };
+  session.screenshots.push(entry);
+  if (session.screenshots.length > MAX_SCREENSHOT_ENTRIES) {
+    session.screenshots.splice(0, session.screenshots.length - MAX_SCREENSHOT_ENTRIES);
+  }
+  appendSessionEventLog(session, { kind: 'screenshot', ts, screenshot: entry });
+  return entry;
+}
+
+function uniqueNextStepCommands(commands = []) {
+  const out = [];
+  for (const command of commands) {
+    if (!command || out.includes(command)) continue;
+    out.push(command);
+  }
+  return out;
+}
+
+function escapeRegExpLiteral(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeReportTargetCommand(command, fromTarget, toTarget) {
+  if (!command || !fromTarget || !toTarget || fromTarget === toTarget) return command;
+  const re = new RegExp(`^(cdp\\s+\\S+\\s+)${escapeRegExpLiteral(fromTarget)}(?=$|\\s)`);
+  return String(command).replace(re, `$1${toTarget}`);
+}
+
+function normalizeReportTargetCommands(commands = [], fromTarget, toTarget) {
+  return uniqueNextStepCommands(commands.map(command => normalizeReportTargetCommand(command, fromTarget, toTarget)));
+}
+
+function defaultReportNextSteps(target, hasActions) {
+  return hasActions
+    ? [
+        `cdp perceive ${target} --since-action`,
+        `cdp record-actions ${target} --format json`,
+        `cdp export-playwright ${target}`,
+      ]
+    : [
+        `cdp perceive ${target} -C -d 8`,
+        `cdp click ${target} @ref  # choose a ref from perceive`,
+      ];
+}
+
+function buildReportRecommendation(actionLog = [], target, fullTarget = target) {
+  for (let i = actionLog.length - 1; i >= 0; i--) {
+    const entry = actionLog[i];
+    const diagnosis = entry?.diagnosis || null;
+    if (!diagnosis || diagnosis.status === 'ok') continue;
+    const recovery = diagnosis.recovery || null;
+    const sourceTarget = actionTargetCommandId(entry.target || {}) || fullTarget;
+    const commands = normalizeReportTargetCommands(recoveryCommandsFromDiagnosis(diagnosis), sourceTarget, target);
+    const verifyCommand = normalizeReportTargetCommand(recovery?.verifyCommand || diagnosis.nextCommand || null, sourceTarget, target);
+    return {
+      source: 'latest-action-diagnosis',
+      actionIndex: i + 1,
+      action: entry.action || null,
+      diagnosisKind: diagnosis.kind || null,
+      strategy: recovery?.strategy || null,
+      priority: recovery?.priority || null,
+      verifyCommand,
+      commands,
+    };
+  }
+  for (let i = actionLog.length - 1; i >= 0; i--) {
+    const entry = actionLog[i];
+    if (entry?.outcome?.status !== 'no-change') continue;
+    const sourceTarget = actionTargetCommandId(entry.target || {}) || fullTarget;
+    const recommendation = buildNoChangeOutcomeRecommendation({
+      source: 'latest-action-outcome',
+      actionIndex: i + 1,
+      action: entry.action || null,
+      target: sourceTarget,
+      targetInput: actionFailureInput(entry.target || {}),
+    });
+    return {
+      ...recommendation,
+      verifyCommand: normalizeReportTargetCommand(recommendation.verifyCommand || null, sourceTarget, target),
+      commands: normalizeReportTargetCommands(recommendation.commands || [], sourceTarget, target),
+    };
+  }
+  return {
+    source: actionLog.length > 0 ? 'session-continuation' : 'onboarding',
+    actionIndex: null,
+    action: null,
+    diagnosisKind: null,
+    strategy: actionLog.length > 0 ? 'continue-or-export' : 'perceive-first',
+    priority: 'medium',
+    verifyCommand: actionLog.length > 0 ? `cdp perceive ${target} --since-action` : `cdp perceive ${target} -C -d 8`,
+    commands: defaultReportNextSteps(target, actionLog.length > 0),
+  };
+}
+
+function formatReportRecommendationLines(recommendation = {}) {
+  const commands = recommendation.commands || [];
+  const run = commands[0] || recommendation.verifyCommand || null;
+  const lines = ['Recommendation:'];
+  if (recommendation.source) lines.push(`  Source: ${recommendation.source}`);
+  if (recommendation.actionIndex != null) lines.push(`  Action: #${recommendation.actionIndex}${recommendation.action ? ` ${recommendation.action}` : ''}`);
+  if (recommendation.diagnosisKind) lines.push(`  Diagnosis: ${recommendation.diagnosisKind}`);
+  if (recommendation.outcomeStatus) lines.push(`  Outcome: ${recommendation.outcomeStatus}`);
+  if (recommendation.strategy) lines.push(`  Strategy: ${recommendation.strategy}`);
+  if (recommendation.priority) lines.push(`  Priority: ${recommendation.priority}`);
+  if (run) lines.push(`  Run: ${run}`);
+  if (recommendation.verifyCommand) lines.push(`  Verify: ${recommendation.verifyCommand}`);
+  return lines;
+}
+
+function formatReportNextStepLines(nextSteps = []) {
+  const lines = ['Next steps:'];
+  if (!nextSteps.length) {
+    lines.push('  1. cdp perceive <target> -C -d 8');
+    return lines;
+  }
+  for (const [index, command] of nextSteps.entries()) {
+    lines.push(`  ${index + 1}. ${command}`);
+  }
+  return lines;
+}
+
+function reportActionStatus(entry = {}) {
+  return entry.dispatch?.ok === false ? 'failed' : (entry.settle?.ok ? 'ok' : 'not-confirmed');
+}
+
+function buildLatestReportActionSummary(actionLog = []) {
+  if (!actionLog.length) return null;
+  const index = actionLog.length;
+  const entry = actionLog[index - 1] || {};
+  return {
+    index,
+    ts: entry.ts || null,
+    action: entry.action || null,
+    status: reportActionStatus(entry),
+    outcomeStatus: entry.outcome?.status || null,
+    verdictStatus: entry.verdict?.status || null,
+    canContinue: entry.verdict?.canContinue ?? null,
+    needsRecovery: entry.verdict?.needsRecovery ?? null,
+    effectSummary: entry.effectSummary || null,
+    effectSample: entry.effectSample || null,
+    consoleSummary: entry.consoleSummary || null,
+    networkSummary: entry.networkSummary || null,
+    diagnosisKind: entry.diagnosis?.kind || null,
+    nextHint: entry.nextHint || null,
+  };
+}
+
+function parseReportArgs(args = []) {
+  let lastActions = DEFAULT_REPORT_ACTION_LIMIT;
+  const rest = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--all') {
+      lastActions = null;
+    } else if (arg === '--last') {
+      const raw = args[++i];
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) throw new Error('report: --last requires a positive integer');
+      lastActions = n;
+    } else {
+      rest.push(arg);
+    }
+  }
+  return { lastActions, args: rest };
+}
+
+function reportActionTimelineWindow(actionLog = [], lastActions = DEFAULT_REPORT_ACTION_LIMIT) {
+  const total = actionLog.length;
+  const limit = lastActions == null ? null : Math.max(1, Math.floor(Number(lastActions) || DEFAULT_REPORT_ACTION_LIMIT));
+  const startOffset = limit == null || total <= limit ? 0 : total - limit;
+  const entries = actionLog.slice(startOffset);
+  return {
+    entries,
+    total,
+    shown: entries.length,
+    omitted: startOffset,
+    startIndex: entries.length ? startOffset + 1 : null,
+    endIndex: entries.length ? total : null,
+    limit,
+  };
+}
+
+function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFAULT_REPORT_ACTION_LIMIT } = {}) {
+  const actionLog = session.actionLog || [];
+  const screenshots = session.screenshots || [];
+  const timelineWindow = reportActionTimelineWindow(actionLog, lastActions);
+  const uptimeMs = Math.max(0, now - (session.createdAt || now));
+  const target = targetPrefixForDisplay(session.targetId);
+  const actions = timelineWindow.entries.map((entry, offset) => {
+    const index = (timelineWindow.startIndex || 1) + offset;
+    return {
+      index,
+      ts: entry.ts || null,
+      action: entry.action,
+      status: reportActionStatus(entry),
+      outcome: entry.outcome || null,
+      verdict: entry.verdict || null,
+      target: entry.target || null,
+      dispatch: entry.dispatch || null,
+      settle: entry.settle || null,
+      evidence: {
+        dispatchMethod: entry.dispatch?.method || null,
+        settleOk: entry.settle?.ok ?? null,
+        settleDurationMs: entry.settle?.durationMs ?? null,
+        effectSummary: entry.effectSummary || null,
+        effectSample: entry.effectSample || null,
+        consoleSummary: entry.consoleSummary || null,
+        consoleSample: entry.consoleSample || null,
+        exceptionSummary: entry.exceptionSummary || null,
+        exceptionSample: entry.exceptionSample || null,
+        networkSummary: entry.networkSummary || null,
+        networkSample: entry.networkSample || null,
+        failure: entry.failure || null,
+        diagnosis: entry.diagnosis || null,
+      },
+      nextHint: entry.nextHint || null,
+    };
+  });
+  const recommendation = buildReportRecommendation(actionLog, target, session.targetId);
+  const nextSteps = uniqueNextStepCommands([
+    ...(recommendation.commands || []),
+    ...(actionLog.length > 0 ? [
+      `cdp record-actions ${target} --format json`,
+      `cdp export-playwright ${target}`,
+    ] : []),
+  ]);
+  return {
+    schema: 'chrome-cdp-ex.report.v1',
+    targetId: session.targetId,
+    targetPrefix: target,
+    sessionId: session.sessionId,
+    createdAt: session.createdAt || null,
+    now,
+    uptimeMs,
+    paths: {
+      log: session.logPath || null,
+      screenshotDir: session.screenshotDir || null,
+    },
+    counts: {
+      actions: actionLog.length,
+      screenshots: screenshots.length,
+      records: session.records?.length || 0,
+    },
+    timelineWindow: {
+      total: timelineWindow.total,
+      shown: timelineWindow.shown,
+      omitted: timelineWindow.omitted,
+      startIndex: timelineWindow.startIndex,
+      endIndex: timelineWindow.endIndex,
+      limit: timelineWindow.limit,
+    },
+    latestAction: buildLatestReportActionSummary(actionLog),
+    environment: {
+      networkThrottleSummary: formatThrottleSummary(session.networkThrottle),
+      networkMocksSummary: formatNetworkMocksSummary(session),
+      clockSummary: formatClockSummary(session.clock),
+      controls: buildRecordEnvironmentModel(session),
+    },
+    actions,
+    screenshots: screenshots.map((entry, index) => ({
+      index: index + 1,
+      ts: entry.ts || null,
+      kind: entry.kind || 'shot',
+      path: entry.path || null,
+      note: entry.note || '',
+    })),
+    recommendation,
+    nextSteps: nextSteps.length ? nextSteps : defaultReportNextSteps(target, actionLog.length > 0),
+  };
+}
+
+function formatSessionReport(session, { now = Date.now(), format = 'text', lastActions = DEFAULT_REPORT_ACTION_LIMIT } = {}) {
+  if (format === 'json') return formatJson(buildSessionReportModel(session, { now, lastActions }));
+  const model = buildSessionReportModel(session, { now, lastActions });
+  const actionLog = session.actionLog || [];
+  const timelineWindow = reportActionTimelineWindow(actionLog, lastActions);
+  const screenshots = session.screenshots || [];
+  const uptimeMs = Math.max(0, now - (session.createdAt || now));
+  const actionCountLine = timelineWindow.omitted > 0
+    ? `Actions: ${actionLog.length} (showing last ${timelineWindow.shown}, ${timelineWindow.omitted} omitted)`
+    : `Actions: ${actionLog.length}`;
+  const lines = [
+    `Session report: ${session.targetId}`,
+    `CDP session: ${session.sessionId}`,
+    `Uptime: ${formatDuration(uptimeMs)}`,
+    `Log: ${session.logPath || '(disabled)'}`,
+    `Screenshot dir: ${session.screenshotDir || '(disabled)'}`,
+    actionCountLine,
+    `Screenshots: ${screenshots.length}`,
+    `Records: ${session.records?.length || 0}`,
+    `Network throttle: ${formatThrottleSummary(session.networkThrottle)}`,
+    `Network mocks: ${formatNetworkMocksSummary(session)}`,
+    `Clock: ${formatClockSummary(session.clock)}`,
+    '',
+    'Action timeline:',
+  ];
+  if (actionLog.length === 0) {
+    lines.push('No actions recorded yet. Run click/fill/press/nav/inject/reload, then report again.');
+  } else {
+    if (timelineWindow.omitted > 0) {
+      lines.push(`Showing actions ${timelineWindow.startIndex}-${timelineWindow.endIndex}. Use report --all or inspect the JSONL log for the full action history.`);
+    }
+    for (const [offset, entry] of timelineWindow.entries.entries()) {
+      const i = (timelineWindow.startIndex || 1) + offset;
+      const label = entry.target?.label || entry.target?.input || '';
+      const settleStatus = entry.dispatch?.ok === false ? 'failed' : (entry.settle?.ok ? 'ok' : 'not confirmed');
+      const settleDuration = Number.isFinite(entry.settle?.durationMs) ? ` in ${entry.settle.durationMs}ms` : '';
+      const sourceTarget = actionTargetCommandId(entry.target || {}) || session.targetId;
+      lines.push(`${i}. ${entry.action}${label ? ` ${label}` : ''} — ${settleStatus}${settleDuration}`);
+      if (entry.dispatch?.method) lines.push(`   Dispatch: ${entry.dispatch.method}`);
+      if (entry.outcome?.status) lines.push(`   Outcome: ${entry.outcome.status}${entry.outcome.reason ? ` — ${entry.outcome.reason}` : ''}`);
+      if (entry.verdict?.status) lines.push(`   Verdict: ${entry.verdict.status}${entry.verdict.reason ? ` — ${entry.verdict.reason}` : ''}`);
+      if (entry.failure?.kind) lines.push(`   Failure: ${entry.failure.kind} — ${entry.failure.reason}`);
+      if (entry.diagnosis?.kind && entry.diagnosis.status !== 'ok') {
+        lines.push(`   Diagnosis: ${entry.diagnosis.kind} — ${entry.diagnosis.reason}`);
+      }
+      if (entry.diagnosis?.recovery?.strategy && entry.diagnosis.status !== 'ok') {
+        lines.push(`   Recovery: ${entry.diagnosis.recovery.strategy}`);
+      }
+      if (entry.effectSummary) lines.push(`   Effect: ${entry.effectSummary}`);
+      if (entry.effectSample) lines.push(`   Sample: ${entry.effectSample}`);
+      if (entry.consoleSummary) lines.push(`   ${entry.consoleSummary}`);
+      if (entry.consoleSample) lines.push(`   Console sample: ${entry.consoleSample}`);
+      if (entry.exceptionSummary) lines.push(`   ${entry.exceptionSummary}`);
+      if (entry.exceptionSample) lines.push(`   Exception sample: ${entry.exceptionSample}`);
+      if (entry.networkSummary) lines.push(`   ${entry.networkSummary}`);
+      if (entry.networkSample) lines.push(`   Network sample: ${entry.networkSample}`);
+      if (entry.diagnosis?.nextCommand && entry.diagnosis.status !== 'ok') {
+        lines.push(`   Diagnostic next: ${normalizeReportTargetCommand(entry.diagnosis.nextCommand, sourceTarget, model.targetPrefix)}`);
+      }
+      if (entry.nextHint) lines.push(`   Next: ${normalizeReportTargetCommand(entry.nextHint, sourceTarget, model.targetPrefix)}`);
+    }
+  }
+  if (screenshots.length > 0) {
+    lines.push('', 'Attachments:');
+    for (const [i, entry] of screenshots.entries()) {
+      const note = entry.note ? ` (${entry.note})` : '';
+      lines.push(`${i + 1}. ${entry.kind || 'shot'} — ${entry.path}${note}`);
+    }
+  }
+  lines.push('', ...formatReportRecommendationLines(model.recommendation));
+  lines.push('', ...formatReportNextStepLines(model.nextSteps));
+  return lines.join('\n');
+}
+
+function commandArgsFromTarget(entry, fallbackArgs = []) {
+  const args = entry.target && Array.isArray(entry.target.commandArgs)
+    ? entry.target.commandArgs
+    : fallbackArgs;
+  return args.filter(v => v !== undefined && v !== null).map(v => String(v));
+}
+
+function inferRecordActionCommand(entry) {
+  const targetInput = entry.target?.input || '';
+  const commandName = entry.target?.commandName || entry.action;
+  const explicitArgs = entry.target && Array.isArray(entry.target.commandArgs);
+  if (explicitArgs) {
+    const args = commandArgsFromTarget(entry);
+    const needsInput = args.includes('<redacted>') ? redactedCommandNeedsInput(entry.action) : [];
+    return { command: [commandName, ...args], replayable: needsInput.length === 0, needsInput };
+  }
+
+  switch (entry.action) {
+    case 'click':
+    case 'jsclick':
+      return targetInput
+        ? { command: [entry.action, targetInput], replayable: true, needsInput: [] }
+        : { command: [entry.action, '<selector|@ref>'], replayable: false, needsInput: ['target'] };
+    case 'clickxy': {
+      const parts = targetInput.split(',').map(s => s.trim()).filter(Boolean);
+      return parts.length >= 2
+        ? { command: ['clickxy', parts[0], parts[1]], replayable: true, needsInput: [] }
+        : { command: ['clickxy', '<x>', '<y>'], replayable: false, needsInput: ['coordinates'] };
+    }
+    case 'press':
+    case 'scroll':
+    case 'nav':
+    case 'viewport':
+      return targetInput
+        ? { command: [entry.action, ...targetInput.split(/\s+/).filter(Boolean)], replayable: true, needsInput: [] }
+        : { command: [entry.action, '<input>'], replayable: false, needsInput: ['input'] };
+    case 'back':
+    case 'forward':
+    case 'reload':
+    case 'dismiss-modal':
+      return { command: [entry.action], replayable: true, needsInput: [] };
+    case 'fill':
+      return {
+        command: ['fill', targetInput || '<selector|@ref>', '<text>'],
+        replayable: false,
+        needsInput: targetInput ? ['text'] : ['target', 'text'],
+      };
+    case 'select':
+      return {
+        command: ['select', targetInput || '<selector>', '<value>'],
+        replayable: false,
+        needsInput: targetInput ? ['value'] : ['target', 'value'],
+      };
+    case 'type':
+      return { command: ['type', '<text>'], replayable: false, needsInput: ['text'] };
+    case 'inject':
+      return { command: ['inject', targetInput || '<type>', '<content>'], replayable: false, needsInput: ['content'] };
+    default:
+      return {
+        command: targetInput ? [entry.action, targetInput] : [entry.action],
+        replayable: false,
+        needsInput: ['review'],
+      };
+  }
+}
+
+function redactedCommandNeedsInput(action) {
+  if (action === 'fill' || action === 'type') return ['text'];
+  if (action === 'select') return ['value'];
+  if (action === 'inject') return ['content'];
+  return ['input'];
+}
+
+function mockEnvironmentCommand(entry = {}) {
+  if (entry.action === 'clear') return ['mock', 'clear'];
+  const rule = entry.rule || {};
+  const command = ['mock', 'add', String(rule.urlPattern || '<urlPattern>'), '--status', String(rule.status ?? 200)];
+  if (rule.body != null && rule.body !== '') command.push('--body', String(rule.body));
+  if (rule.contentType) command.push('--content-type', String(rule.contentType));
+  if (rule.method) command.push('--method', String(rule.method));
+  return command;
+}
+
+function throttleEnvironmentCommand(entry = {}) {
+  const throttle = entry.throttle || {};
+  const profile = throttle.profile || 'off';
+  if (profile === 'custom') {
+    return [
+      'throttle', 'custom',
+      '--latency', String(throttle.latencyMs || 0),
+      '--download', String(throttle.downloadKbps ?? 0),
+      '--upload', String(throttle.uploadKbps ?? 0),
+    ];
+  }
+  return ['throttle', profile];
+}
+
+function clockEnvironmentCommand(entry = {}) {
+  if (entry.action === 'reset' || !entry.clock) return ['clock', 'reset'];
+  const clock = entry.clock || {};
+  if (clock.profile === 'freeze') return ['clock', 'freeze', '--at', new Date(clock.atMs).toISOString()];
+  if (clock.profile === 'offset') return ['clock', 'offset', '--ms', String(clock.offsetMs || 0)];
+  return ['clock', 'reset'];
+}
+
+function environmentCommandFromLogEntry(entry = {}) {
+  switch (entry.kind || entry.type) {
+    case 'mock':
+      return mockEnvironmentCommand(entry);
+    case 'throttle':
+      return throttleEnvironmentCommand(entry);
+    case 'clock':
+      return clockEnvironmentCommand(entry);
+    default:
+      return [];
+  }
+}
+
+function sanitizeEnvironmentDetails(entry = {}) {
+  if ((entry.kind || entry.type) === 'mock' && entry.rule) {
+    return {
+      rule: {
+        urlPattern: entry.rule.urlPattern,
+        method: entry.rule.method || null,
+        status: entry.rule.status,
+        contentType: entry.rule.contentType,
+        body: entry.rule.body || '',
+      },
+    };
+  }
+  if ((entry.kind || entry.type) === 'throttle' && entry.throttle) {
+    return {
+      throttle: {
+        profile: entry.throttle.profile || 'off',
+        offline: entry.throttle.offline === true,
+        latencyMs: entry.throttle.latencyMs || 0,
+        downloadKbps: entry.throttle.downloadKbps,
+        uploadKbps: entry.throttle.uploadKbps,
+      },
+    };
+  }
+  if ((entry.kind || entry.type) === 'clock' && entry.clock) {
+    return {
+      clock: {
+        profile: entry.clock.profile || 'real',
+        atMs: entry.clock.atMs ?? null,
+        offsetMs: entry.clock.offsetMs || 0,
+      },
+    };
+  }
+  return {};
+}
+
+function buildRecordEnvironmentModel(session) {
+  return (session.environmentLog || []).map((entry, index) => {
+    const command = environmentCommandFromLogEntry(entry);
+    const type = entry.type || entry.kind || 'environment';
+    return {
+      index: index + 1,
+      ts: entry.ts || null,
+      type,
+      action: entry.action || (type === 'throttle' ? 'apply' : 'set'),
+      command,
+      replayable: command.length > 0,
+      needsInput: command.length > 0 ? [] : ['review'],
+      ...sanitizeEnvironmentDetails(entry),
+    };
+  });
+}
+
+function buildRecordActionsModel(session) {
+  const actions = (session.actionLog || []).map((entry, index) => {
+    const inferred = inferRecordActionCommand(entry);
+    const dispatchFailed = entry.dispatch?.ok === false;
+    const needsInput = dispatchFailed
+      ? [...new Set([...inferred.needsInput, 'successful-dispatch'])]
+      : inferred.needsInput;
+    return {
+      index: index + 1,
+      ts: entry.ts,
+      action: entry.action,
+      target: entry.target || null,
+      command: inferred.command,
+      replayable: dispatchFailed ? false : inferred.replayable,
+      needsInput,
+      evidence: {
+        dispatchMethod: entry.dispatch?.method || null,
+        settleOk: entry.settle?.ok ?? null,
+        settleDurationMs: entry.settle?.durationMs ?? null,
+        effectSummary: entry.effectSummary || null,
+        effectSample: entry.effectSample || null,
+        consoleSummary: entry.consoleSummary || null,
+        consoleSample: entry.consoleSample || null,
+        exceptionSummary: entry.exceptionSummary || null,
+        exceptionSample: entry.exceptionSample || null,
+        networkSummary: entry.networkSummary || null,
+        networkSample: entry.networkSample || null,
+        failure: entry.failure || null,
+        diagnosis: entry.diagnosis || null,
+        outcome: entry.outcome || null,
+        verdict: entry.verdict || null,
+        nextHint: entry.nextHint || null,
+      },
+    };
+  });
+  const environment = buildRecordEnvironmentModel(session);
+  return {
+    schema: 'chrome-cdp-ex.record-actions.v1',
+    targetId: session.targetId,
+    sessionId: session.sessionId,
+    source: 'session-action-log',
+    environmentCount: environment.length,
+    environment,
+    actionCount: actions.length,
+    actions,
+  };
+}
+
+function formatCommandLine(command) {
+  return (command || []).map(arg => {
+    const s = String(arg);
+    return /^[^\s"']+$/.test(s) ? s : JSON.stringify(s);
+  }).join(' ');
+}
+
+function formatRecordActions(session, { format = 'text' } = {}) {
+  const model = buildRecordActionsModel(session);
+  if (format === 'json') return formatJson(model);
+  const lines = [
+    `Recorded actions: ${model.actionCount}`,
+    `Session: ${model.targetId}`,
+    'Source: current daemon session action log',
+  ];
+  if (model.environment.length) {
+    lines.push(`Environment controls: ${model.environmentCount}`);
+    for (const entry of model.environment) {
+      const status = entry.replayable ? 'replayable' : (entry.needsInput.length ? 'needs input' : 'review needed');
+      lines.push(`Env ${entry.index}. ${formatCommandLine(entry.command)} — ${status}`);
+      if (entry.needsInput.length) lines.push(`   Missing: ${entry.needsInput.join(', ')}`);
+    }
+  }
+  if (model.actions.length === 0) {
+    lines.push('No actions recorded yet. Run click/fill/press/nav/inject/reload, then record-actions again.');
+    return lines.join('\n');
+  }
+  for (const step of model.actions) {
+    const label = step.target?.label || step.target?.input || '';
+    const status = step.replayable ? 'replayable' : (step.needsInput.length ? 'needs input' : 'review needed');
+    lines.push(`${step.index}. ${step.action}${label ? ` ${label}` : ''} — ${status}`);
+    lines.push(`   Replay: ${formatCommandLine(step.command)}`);
+    if (step.needsInput.length) lines.push(`   Missing: ${step.needsInput.join(', ')}`);
+    if (step.evidence.settleOk !== null) {
+      const settle = step.evidence.settleOk ? 'ok' : 'not confirmed';
+      const duration = Number.isFinite(step.evidence.settleDurationMs) ? ` in ${step.evidence.settleDurationMs}ms` : '';
+      lines.push(`   Settle: ${settle}${duration}`);
+    }
+    if (step.evidence.effectSummary) lines.push(`   Evidence: ${step.evidence.effectSummary}`);
+    if (step.evidence.effectSample) lines.push(`   Sample: ${step.evidence.effectSample}`);
+    if (step.evidence.outcome?.status) lines.push(`   Outcome: ${step.evidence.outcome.status}`);
+    if (step.evidence.verdict?.status) lines.push(`   Verdict: ${step.evidence.verdict.status}`);
+    if (step.evidence.failure?.kind) lines.push(`   Failure: ${step.evidence.failure.kind}`);
+    if (step.evidence.failure?.reason) lines.push(`   Reason: ${step.evidence.failure.reason}`);
+    if (step.evidence.nextHint) lines.push(`   Next: ${step.evidence.nextHint}`);
+    if (step.evidence.consoleSummary) lines.push(`   ${step.evidence.consoleSummary}`);
+    if (step.evidence.consoleSample) lines.push(`   Console sample: ${step.evidence.consoleSample}`);
+    if (step.evidence.exceptionSummary) lines.push(`   ${step.evidence.exceptionSummary}`);
+    if (step.evidence.exceptionSample) lines.push(`   Exception sample: ${step.evidence.exceptionSample}`);
+    if (step.evidence.networkSummary) lines.push(`   ${step.evidence.networkSummary}`);
+    if (step.evidence.networkSample) lines.push(`   Network sample: ${step.evidence.networkSample}`);
+  }
+  return lines.join('\n');
+}
+
+function isPlaywrightPortableSelector(value) {
+  const selector = String(value || '').trim();
+  return selector && !selector.startsWith('@') && !selector.startsWith('<') && selector !== '<redacted>';
+}
+
+const PLAYWRIGHT_ASSERTION_TEXT_ROLES = new Set(['alert', 'status', 'statustext', 'statictext', 'heading']);
+
+function cleanObservedTextForPlaywrightAssertion(text) {
+  return String(text || '')
+    .replace(/\s+@f?\d+(?::\d+)?\b.*$/u, '')
+    .replace(/\s+\(-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?\s+\d+(?:\.\d+)?[×x]\d+(?:\.\d+)?.*$/u, '')
+    .replace(/\s{2,}.*/u, '')
+    .trim();
+}
+
+function observedTextAssertionFromEffectSample(sample) {
+  const line = String(sample || '').trim();
+  const match = line.match(/^\+\s+\[([^\]]+)\]\s+(.+)$/u);
+  if (!match) return null;
+  const role = match[1].replace(/\s+/g, '').toLowerCase();
+  if (!PLAYWRIGHT_ASSERTION_TEXT_ROLES.has(role)) return null;
+  const text = cleanObservedTextForPlaywrightAssertion(match[2]);
+  if (!text || text.length < 2 || text.length > 160) return null;
+  return text;
+}
+
+function playwrightAssertionLinesFromEvidence(evidence = {}) {
+  const text = observedTextAssertionFromEffectSample(evidence.effectSample);
+  if (!text) return [];
+  return [`await expect(page.getByText(${JSON.stringify(text)})).toBeVisible();`];
+}
+
+function playwrightStepFromCommand(action = {}) {
+  const command = Array.isArray(action.command) ? action.command.map(v => String(v)) : [];
+  const commandText = command.length ? formatCommandLine(command) : `${action.action || 'action'} <missing command>`;
+  const skip = (reason) => ({
+    lines: [
+      `// Not exported: ${commandText}`,
+      `// Reason: ${reason}`,
+    ],
+    exported: false,
+  });
+  const finish = (lines) => ({
+    lines: [...lines, ...playwrightAssertionLinesFromEvidence(action.evidence || {})],
+    exported: true,
+  });
+
+  if (action.replayable !== true) {
+    const missing = Array.isArray(action.needsInput) && action.needsInput.length
+      ? action.needsInput.join(', ')
+      : 'review';
+    return skip(`not replayable; missing ${missing}`);
+  }
+  if (!command.length || !command[0]) return skip('missing command');
+  if (command.includes('<redacted>')) return skip('redacted input');
+
+  const [cmd, ...args] = command;
+  switch (cmd) {
+    case 'nav':
+    case 'navigate':
+      return args[0]
+        ? finish([`await page.goto(${JSON.stringify(args[0])});`])
+        : skip('missing URL');
+    case 'click':
+    case 'jsclick': {
+      const selector = args[0] === '--js' || args[0] === '-j' ? args[1] : args[0];
+      if (!isPlaywrightPortableSelector(selector)) return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
+      return finish([`await page.locator(${JSON.stringify(selector)}).click();`]);
+    }
+    case 'fill': {
+      const usesReactFill = args[0] === '--react';
+      const selector = usesReactFill ? args[1] : args[0];
+      const text = usesReactFill ? args[2] : args[1];
+      if (!isPlaywrightPortableSelector(selector)) return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
+      if (text == null || text === '<redacted>') return skip('missing fill text');
+      return finish([`await page.locator(${JSON.stringify(selector)}).fill(${JSON.stringify(text)});`]);
+    }
+    case 'select': {
+      const [selector, value] = args;
+      if (!isPlaywrightPortableSelector(selector)) return skip('needs stable selector');
+      if (value == null) return skip('missing select value');
+      return finish([`await page.locator(${JSON.stringify(selector)}).selectOption(${JSON.stringify(value)});`]);
+    }
+    case 'type':
+      return args[0]
+        ? finish([`await page.keyboard.type(${JSON.stringify(args[0])});`])
+        : skip('missing text');
+    case 'press':
+      return args[0]
+        ? finish([`await page.keyboard.press(${JSON.stringify(args[0])});`])
+        : skip('missing key');
+    case 'clickxy': {
+      const x = Number(args[0]);
+      const y = Number(args[1]);
+      return Number.isFinite(x) && Number.isFinite(y)
+        ? finish([`await page.mouse.click(${x}, ${y});`, '// Coordinate click: review before committing as a regression test.'])
+        : skip('missing coordinates');
+    }
+    case 'scroll': {
+      const direction = args[0] || '';
+      const amount = Number(args[1] || 500);
+      const dirMap = { down: [0, amount], up: [0, -amount], left: [-amount, 0], right: [amount, 0] };
+      let xy = dirMap[direction.toLowerCase()];
+      if (!xy && direction.includes(',')) xy = direction.split(',').map(Number);
+      return xy && xy.every(Number.isFinite)
+        ? finish([`await page.mouse.wheel(${xy[0]}, ${xy[1]});`])
+        : skip('unsupported scroll arguments');
+    }
+    case 'viewport': {
+      const match = String(args[0] || '').match(/^(\d+)[x×](\d+)$/);
+      return match
+        ? finish([`await page.setViewportSize({ width: ${Number(match[1])}, height: ${Number(match[2])} });`])
+        : skip('unsupported viewport format');
+    }
+    case 'reload':
+      return finish(['await page.reload();']);
+    case 'back':
+      return finish(['await page.goBack();']);
+    case 'forward':
+      return finish(['await page.goForward();']);
+    case 'dismiss-modal':
+    case 'dismissmodal':
+      return finish(['await page.keyboard.press("Escape");', '// Review: chrome-cdp-ex may have clicked a specific close button instead.']);
+    default:
+      return skip(`unsupported command: ${cmd}`);
+  }
+}
+
+function parseFlagArgs(args = []) {
+  const opts = {};
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (String(token || '').startsWith('--')) {
+      opts[token] = args[++i];
+    }
+  }
+  return opts;
+}
+
+function playwrightStepFromEnvironment(entry = {}) {
+  const command = Array.isArray(entry.command) ? entry.command.map(v => String(v)) : [];
+  const commandText = command.length ? formatCommandLine(command) : `${entry.type || 'environment'} <missing command>`;
+  const skip = (reason) => ({
+    lines: [
+      `// Environment not exported: ${commandText}`,
+      `// Reason: ${reason}`,
+    ],
+    exported: false,
+  });
+
+  if (!command.length || !command[0]) return skip('missing command');
+  if (command.includes('<redacted>')) return skip('redacted input');
+  const [cmd, mode, pattern, ...rest] = command;
+  if (cmd === 'mock' && mode === 'add') {
+    if (!pattern || pattern.startsWith('<')) return skip('missing URL pattern');
+    const flags = parseFlagArgs(rest);
+    const status = Number(flags['--status'] || 200);
+    const contentType = flags['--content-type'] || 'text/plain; charset=utf-8';
+    const body = flags['--body'] || '';
+    const method = flags['--method'];
+    if (method) {
+      return {
+        lines: [
+          `await page.route(${JSON.stringify(pattern)}, route => {`,
+          `  if (route.request().method() !== ${JSON.stringify(method)}) return route.continue();`,
+          `  return route.fulfill({ status: ${Number.isFinite(status) ? status : 200}, contentType: ${JSON.stringify(contentType)}, body: ${JSON.stringify(body)} });`,
+          '});',
+        ],
+        exported: true,
+      };
+    }
+    return {
+      lines: [
+        `await page.route(${JSON.stringify(pattern)}, route => route.fulfill({ status: ${Number.isFinite(status) ? status : 200}, contentType: ${JSON.stringify(contentType)}, body: ${JSON.stringify(body)} }));`,
+      ],
+      exported: true,
+    };
+  }
+  if (cmd === 'mock' && mode === 'clear') return skip('Playwright routes are test-scoped; review whether unroute is needed');
+  if (cmd === 'throttle') return skip('chrome-cdp-ex live network throttling has no portable exporter step yet');
+  if (cmd === 'clock') return skip('chrome-cdp-ex live clock override has no portable exporter step yet');
+  return skip(`unsupported environment command: ${cmd}`);
+}
+
+function formatPlaywrightSpecFromRecordActions(model, { title = 'chrome-cdp-ex exported workflow' } = {}) {
+  const actions = Array.isArray(model?.actions) ? model.actions : [];
+  const environment = Array.isArray(model?.environment) ? model.environment : [];
+  const environmentSteps = environment.map(entry => playwrightStepFromEnvironment(entry));
+  const actionSteps = actions.map(action => playwrightStepFromCommand(action));
+  const hasAssertions = actionSteps.some(step => step.lines.some(line => /\bexpect\(/.test(line)));
+  const lines = [
+    `import { test${hasAssertions ? ', expect' : ''} } from '@playwright/test';`,
+    '',
+    '// Generated from chrome-cdp-ex record-actions.',
+    '// Review selectors, assertions, auth state, and skipped steps before committing.',
+    '',
+    `test(${singleQuotedJsString(title)}, async ({ page }) => {`,
+  ];
+  let environmentExported = 0;
+  let environmentSkipped = 0;
+  for (const step of environmentSteps) {
+    if (step.exported) environmentExported++;
+    else environmentSkipped++;
+    for (const line of step.lines) lines.push(`  ${line}`);
+  }
+  let exported = 0;
+  let skipped = 0;
+  for (const step of actionSteps) {
+    if (step.exported) exported++;
+    else skipped++;
+    for (const line of step.lines) lines.push(`  ${line}`);
+  }
+  if (actions.length === 0 && environment.length === 0) {
+    lines.push('  // No recorded actions yet. Run click/fill/nav, then export-playwright again.');
+  }
+  lines.push('});');
+  lines.push('');
+  if (environment.length) {
+    lines.push(`// Environment exported ${environmentExported}/${environment.length} step(s); ${environmentSkipped} need review.`);
+  }
+  lines.push(`// Exported ${exported}/${actions.length} step(s); ${skipped} need review.`);
+  return lines.join('\n');
+}
+
+function parseExportPlaywrightArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const opts = { title: 'chrome-cdp-ex exported workflow', format: fopts.format };
+  for (let i = 0; i < fopts.args.length; i++) {
+    if (fopts.args[i] === '--title') {
+      opts.title = fopts.args[++i] || opts.title;
+    }
+  }
+  return opts;
+}
+
+function singleQuotedJsString(value) {
+  return `'${String(value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n')}'`;
+}
+
+function playwrightExportReviewEntry(phase, index, sourceEntry = {}, step = {}) {
+  const command = Array.isArray(sourceEntry.command) ? sourceEntry.command.map(v => String(v)) : [];
+  const reasonLine = (step.lines || []).find(line => line.startsWith('// Reason: '));
+  return {
+    phase,
+    index,
+    exported: step.exported === true,
+    command,
+    commandText: command.length ? formatCommandLine(command) : null,
+    reason: reasonLine ? reasonLine.slice('// Reason: '.length) : null,
+  };
+}
+
+function buildExportPlaywrightModel(recordActionsModel, opts = {}) {
+  const actions = Array.isArray(recordActionsModel?.actions) ? recordActionsModel.actions : [];
+  const environment = Array.isArray(recordActionsModel?.environment) ? recordActionsModel.environment : [];
+  const environmentSteps = environment.map(entry => playwrightStepFromEnvironment(entry));
+  const actionSteps = actions.map(action => playwrightStepFromCommand(action));
+  const environmentExported = environmentSteps.filter(step => step.exported).length;
+  const actionsExported = actionSteps.filter(step => step.exported).length;
+  const assertions = actionSteps.reduce((count, step) => (
+    count + (step.lines || []).filter(line => /\bexpect\(/.test(line)).length
+  ), 0);
+  const review = [
+    ...environmentSteps.map((step, i) => playwrightExportReviewEntry('environment', i + 1, environment[i], step)),
+    ...actionSteps.map((step, i) => playwrightExportReviewEntry('action', i + 1, actions[i], step)),
+  ].filter(entry => !entry.exported);
+  const targetId = recordActionsModel?.targetId || '<target>';
+  const skipped = review.length;
+  const nextSteps = skipped > 0
+    ? [
+        'Review skipped steps and auth state before committing the Playwright spec.',
+        `cdp record-actions ${targetId} --format json`,
+        `cdp report ${targetId} --format json`,
+      ]
+    : [
+        'Review auth state and selectors before committing the Playwright spec.',
+        `cdp report ${targetId} --format json`,
+      ];
+
+  return {
+    schema: 'chrome-cdp-ex.export-playwright.v1',
+    targetId: recordActionsModel?.targetId || null,
+    sessionId: recordActionsModel?.sessionId || null,
+    source: 'record-actions',
+    title: opts.title || 'chrome-cdp-ex exported workflow',
+    counts: {
+      environment: environment.length,
+      environmentExported,
+      environmentSkipped: environment.length - environmentExported,
+      actions: actions.length,
+      actionsExported,
+      actionsSkipped: actions.length - actionsExported,
+      assertions,
+    },
+    spec: formatPlaywrightSpecFromRecordActions(recordActionsModel, opts),
+    review,
+    nextSteps,
+  };
+}
+
+function formatExportPlaywright(session, opts = {}) {
+  const model = buildRecordActionsModel(session);
+  if (opts.format === 'json') return formatJson(buildExportPlaywrightModel(model, opts));
+  return formatPlaywrightSpecFromRecordActions(model, opts);
+}
+
+function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targetId), screenshotDir = sessionScreenshotDir(targetId) }) {
+  return {
+    targetId,
+    sessionId,
+    createdAt: Date.now(),
+    logPath,
+    screenshotDir,
+    logErrors: [],
+    pageGeneration: 0,
+    refGeneration: 0,
+    refs: {
+      map: new Map(),
+      generation: 0,
+      lastPerceiveAt: 0,
+      invalidatedAt: Date.now(),
+      invalidationReason: 'daemon-start',
+    },
+    lastPerceive: { output: null, model: null },
+    lastAction: null,
+    buffers: {},
+    pendingRequests: new Map(),
+    networkThrottle: null,
+    networkMocks: [],
+    networkMockHits: [],
+    clock: null,
+    environmentLog: [],
+    actionLog: [],
+    screenshots: [],
+    diffShot: null,
+    records: [],
+    frames: [],
+    injections: [],
+    privacy: {
+      redactCookies: true,
+      redactStorage: true,
+      redactAuthorizationHeaders: true,
+    },
+  };
+}
+
+function invalidateSessionRefs(session, reason) {
+  session.refs.map.clear();
+  if (session.refs.frameRefs instanceof Map) session.refs.frameRefs.clear();
+  if (session.refs.frameLastOutputs instanceof Map) session.refs.frameLastOutputs.clear();
+  session.refs.invalidatedAt = Date.now();
+  session.refs.invalidationReason = reason;
+  session.refGeneration += 1;
 }
 
 // Roles that get visual layout annotations in perceive output
@@ -923,13 +3601,23 @@ function formatUnknownRefError(ref, state = {}) {
 }
 
 async function resolveRefNode(cdp, sid, refMap, ref, refState) {
-  const num = parseInt(ref.slice(1));
-  if (isNaN(num) || !refMap.has(num)) {
-    throw new Error(formatUnknownRefError(ref, refState || {}));
+  const frameParsed = parseFrameRef(ref);
+  let num = null;
+  let frameEntry = null;
+  let backendNodeId;
+  if (frameParsed) {
+    const scoped = frameScopedBackendNode(refState || {}, frameParsed);
+    frameEntry = scoped.entry;
+    backendNodeId = scoped.backendNodeId;
+  } else {
+    num = parseInt(ref.slice(1));
+    if (isNaN(num) || !refMap.has(num)) {
+      throw new Error(formatUnknownRefError(ref, refState || {}));
+    }
+    backendNodeId = refMap.get(num);
   }
-  const backendNodeId = refMap.get(num);
   try {
-    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }, sid);
+    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }, sid, REF_RESOLVE_TIMEOUT);
     return object.objectId;
   } catch (e) {
     // The ref existed in this daemon, but the backend node can no longer be
@@ -939,12 +3627,14 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState) {
       refState.invalidatedAt = Date.now();
       refState.invalidationReason = 'dom-mutation';
     }
-    refMap.delete(num);
+    if (frameParsed) frameEntry?.refs?.delete(frameParsed.refIndex);
+    else refMap.delete(num);
     throw new Error(formatUnknownRefError(ref, refState || {}) + ` Original CDP error: ${e.message}`);
   }
 }
 
 async function resolveRef(cdp, sid, refMap, ref, refState) {
+  const frameParsed = parseFrameRef(ref);
   const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
   const result = await cdp.send('Runtime.callFunctionOn', {
     objectId,
@@ -955,10 +3645,240 @@ async function resolveRef(cdp, sid, refMap, ref, refState) {
     }`,
     returnByValue: true,
   }, sid);
-  return result.result.value;
+  const value = result.result.value || {};
+  if (frameParsed) {
+    const { entry } = frameScopedBackendNode(refState || {}, frameParsed);
+    const offset = await frameViewportOffset(cdp, sid, entry);
+    value.x = (Number(value.x) || 0) + offset.x;
+    value.y = (Number(value.y) || 0) + offset.y;
+  }
+  return value;
 }
 
-function isRef(s) { return /^@\d+$/.test(s); }
+function isRef(s) { return /^@\d+$/.test(s) || /^@f\d+:\d+$/.test(s); }
+
+function parseFrameOnlyRef(s) {
+  const m = String(s || '').match(/^@f(\d+)$/);
+  if (!m) return null;
+  const frameIndex = Number(m[1]);
+  if (!Number.isSafeInteger(frameIndex) || frameIndex < 1) return null;
+  return { frameRef: `@f${frameIndex}`, frameIndex };
+}
+
+function parseFrameRef(s) {
+  const m = String(s || '').match(/^@f(\d+):(\d+)$/);
+  if (!m) return null;
+  const frameIndex = Number(m[1]);
+  const refIndex = Number(m[2]);
+  if (!Number.isSafeInteger(frameIndex) || frameIndex < 1 || !Number.isSafeInteger(refIndex) || refIndex < 1) return null;
+  return {
+    frameRef: `@f${frameIndex}`,
+    frameIndex,
+    ref: `@${refIndex}`,
+    refIndex,
+  };
+}
+
+function flattenFrameTree(frameTree, { startIndex = 1 } = {}) {
+  const frames = [];
+  function visit(node, depth = 0, parentRef = null) {
+    if (!node?.frame) return;
+    const ref = `@f${startIndex + frames.length}`;
+    const frame = node.frame;
+    frames.push({
+      ref,
+      index: startIndex + frames.length,
+      id: frame.id || '',
+      parentId: frame.parentId || null,
+      parentRef,
+      depth,
+      name: frame.name || '',
+      url: frame.url || '',
+      securityOrigin: frame.securityOrigin || '',
+      unreachableUrl: frame.unreachableUrl || '',
+      mimeType: frame.mimeType || '',
+    });
+    for (const child of node.childFrames || []) visit(child, depth + 1, ref);
+  }
+  visit(frameTree);
+  return frames;
+}
+
+function formatFrameTreeText(frames = []) {
+  const lines = [`Frames: ${frames.length}`];
+  if (frames.length === 0) {
+    lines.push('No frames reported by Page.getFrameTree.');
+    return lines.join('\n');
+  }
+  for (const frame of frames) {
+    const indent = '  '.repeat(Math.min(frame.depth || 0, 8));
+    const label = frame.name || '(anonymous)';
+    const parent = frame.parentRef ? ` parent:${frame.parentRef}` : '';
+    const origin = frame.securityOrigin ? ` origin:${frame.securityOrigin}` : '';
+    const url = frame.url || frame.unreachableUrl || '(no url)';
+    lines.push(`${indent}${frame.ref} ${label} ${frame.id}${parent} ${url}${origin}`);
+  }
+  lines.push('Hint: use frame refs to diagnose wrong-frame errors; element refs inside frames will use @fN:M syntax.');
+  return lines.join('\n');
+}
+
+async function framesModel(cdp, sid) {
+  const result = await cdp.send('Page.getFrameTree', {}, sid);
+  const frames = flattenFrameTree(result.frameTree);
+  return {
+    schema: 'chrome-cdp-ex.frames.v1',
+    frameCount: frames.length,
+    frames,
+  };
+}
+
+async function framesStr(cdp, sid, { format = 'text' } = {}) {
+  const model = await framesModel(cdp, sid);
+  if (format === 'json') return formatJson(model);
+  return formatFrameTreeText(model.frames);
+}
+
+async function resolveFrameRef(cdp, sid, frameRef) {
+  const parsed = parseFrameOnlyRef(frameRef);
+  if (!parsed) throw new Error(`Frame ref required (example: @f2), got: ${frameRef || '(empty)'}`);
+  const model = await framesModel(cdp, sid);
+  const frame = model.frames[parsed.frameIndex - 1];
+  if (!frame || frame.ref !== parsed.frameRef) {
+    throw new Error(`Unknown frame: ${parsed.frameRef}. Run "frame" to refresh the frame tree, then use a listed @fN ref.`);
+  }
+  return { frame, frames: model.frames };
+}
+
+async function createFrameExecutionContext(cdp, sid, frameId) {
+  const res = await cdp.send('Page.createIsolatedWorld', {
+    frameId,
+    worldName: 'chrome-cdp-ex',
+    grantUniveralAccess: false,
+  }, sid);
+  return res.executionContextId;
+}
+
+function storeFrameScopedRefs(refState, frame, frames, scopedRefMap) {
+  if (!refState || !frame) return;
+  if (!(refState.frameRefs instanceof Map)) refState.frameRefs = new Map();
+  refState.frameRefs.set(frame.ref, {
+    frameRef: frame.ref,
+    frameIndex: frame.index,
+    frameId: frame.id,
+    parentId: frame.parentId || null,
+    parentRef: frame.parentRef || null,
+    name: frame.name || '',
+    url: frame.url || '',
+    refs: new Map(scopedRefMap),
+    frames: frames || [],
+  });
+}
+
+function frameScopedRefEntry(refState, parsed) {
+  const store = refState?.frameRefs;
+  if (!(store instanceof Map)) return null;
+  return store.get(parsed.frameRef) || null;
+}
+
+function frameScopedBackendNode(refState, parsed) {
+  const entry = frameScopedRefEntry(refState, parsed);
+  if (!entry) {
+    throw new Error(`Unknown frame ref: ${parsed.frameRef}. Run "frame", then "perceive --frame ${parsed.frameRef}" to assign iframe-local refs.`);
+  }
+  if (!(entry.refs instanceof Map) || !entry.refs.has(parsed.refIndex)) {
+    throw new Error(`Unknown ref: ${parsed.frameRef}:${parsed.refIndex}. Run "perceive --frame ${parsed.frameRef}" to refresh refs inside that frame.`);
+  }
+  return { entry, backendNodeId: entry.refs.get(parsed.refIndex) };
+}
+
+function qualifyFrameRefsInLines(lines, frameRef) {
+  return lines.map(line => line.replace(/@(\d+)(?=\s*(?:\(|$))/, `${frameRef}:$1`));
+}
+
+function frameRefFromActionTarget(target = {}) {
+  for (const value of [target.input, target.label, target.selector]) {
+    const parsed = parseFrameRef(value);
+    if (parsed) return parsed.frameRef;
+  }
+  return null;
+}
+
+function rememberFramePerceiveOutput(refState, frameRef, output) {
+  if (!refState || !frameRef) return;
+  if (!(refState.frameLastOutputs instanceof Map)) refState.frameLastOutputs = new Map();
+  refState.frameLastOutputs.set(frameRef, output);
+}
+
+function baselineOutputForActionTarget(refState, fallbackOutput, target = {}) {
+  const targetFrameRef = frameRefFromActionTarget(target);
+  if (targetFrameRef && refState?.frameLastOutputs instanceof Map && refState.frameLastOutputs.has(targetFrameRef)) {
+    return refState.frameLastOutputs.get(targetFrameRef);
+  }
+  return fallbackOutput;
+}
+
+async function frameViewportOffset(cdp, sid, frameEntry) {
+  if (!frameEntry?.frameId || !frameEntry.parentId) return { x: 0, y: 0 };
+  let x = 0;
+  let y = 0;
+  let current = frameEntry;
+  for (let guard = 0; current?.frameId && current.parentId && guard < 8; guard++) {
+    const owner = await cdp.send('DOM.getFrameOwner', { frameId: current.frameId }, sid);
+    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId: owner.backendNodeId }, sid);
+    const res = await cdp.send('Runtime.callFunctionOn', {
+      objectId: object.objectId,
+      functionDeclaration: `function() {
+        const r = this.getBoundingClientRect();
+        return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+      }`,
+      returnByValue: true,
+    }, sid);
+    const rect = res.result.value || {};
+    x += Number(rect.x) || 0;
+    y += Number(rect.y) || 0;
+    const parent = (current.frames || []).find(frame => frame.id === current.parentId);
+    if (!parent) break;
+    current = {
+      ...parent,
+      frameRef: parent.ref,
+      frameId: parent.id,
+      frames: current.frames || [],
+    };
+  }
+  return { x, y };
+}
+
+async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState) {
+  const frameParsed = parseFrameRef(ref);
+  const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
+  const result = await cdp.send('Runtime.callFunctionOn', {
+    objectId,
+    functionDeclaration: `function() {
+      const rect = this.getBoundingClientRect();
+      const cs = (typeof getComputedStyle === 'function') ? getComputedStyle(this) : null;
+      return {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+        tag: this.tagName,
+        text: (this.textContent || '').trim().substring(0, 80),
+        position: cs ? cs.position : '',
+        pointerEvents: cs ? cs.pointerEvents : '',
+        visible: !!(rect.width && rect.height),
+      };
+    }`,
+    returnByValue: true,
+  }, sid);
+  const value = result.result.value || {};
+  if (frameParsed) {
+    const { entry } = frameScopedBackendNode(refState || {}, frameParsed);
+    const offset = await frameViewportOffset(cdp, sid, entry);
+    value.x = (Number(value.x) || 0) + offset.x;
+    value.y = (Number(value.y) || 0) + offset.y;
+  }
+  return value;
+}
 
 // Wait for DOM mutations to stop after an action (350ms of silence = settled)
 async function waitForSettle(cdp, sid, timeoutMs = 3000) {
@@ -998,11 +3918,13 @@ function parsePerceiveArgs(args) {
   const opts = {
     diff: false, selector: null, exclude: null,
     interactive: false, maxDepth: Infinity, cursorInteractive: false,
-    keepRefs: false, last: null,
+    keepRefs: false, last: null, sinceAction: false, frameRef: null,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--diff') opts.diff = true;
+    else if (a === '--since-action') opts.sinceAction = true;
+    else if (a === '-F' || a === '--frame') opts.frameRef = args[++i] || null;
     else if (a === '-s' || a === '--selector') opts.selector = args[++i];
     else if (a === '-x' || a === '--exclude') opts.exclude = args[++i];
     else if (a === '-i' || a === '--interactive') opts.interactive = true;
@@ -1015,6 +3937,184 @@ function parsePerceiveArgs(args) {
     }
   }
   return opts;
+}
+
+function collectDomBackendNodeIds(node, out = new Set()) {
+  if (!node || typeof node !== 'object') return out;
+  const backendNodeId = node.backendNodeId ?? node.backendDOMNodeId;
+  if (backendNodeId != null) out.add(backendNodeId);
+  for (const key of ['children', 'shadowRoots', 'pseudoElements', 'distributedNodes']) {
+    for (const child of node[key] || []) collectDomBackendNodeIds(child, out);
+  }
+  if (node.contentDocument) collectDomBackendNodeIds(node.contentDocument, out);
+  if (node.templateContent) collectDomBackendNodeIds(node.templateContent, out);
+  return out;
+}
+
+function filterAxNodesToBackendSubtree(axNodes, backendNodeIds) {
+  if (!backendNodeIds || backendNodeIds.size === 0) return axNodes;
+  const nodesById = new Map(axNodes.map(n => [n.nodeId, n]));
+  const includeCache = new Map();
+  function included(node) {
+    if (!node) return false;
+    if (includeCache.has(node.nodeId)) return includeCache.get(node.nodeId);
+    let value = false;
+    if (node.backendDOMNodeId != null && backendNodeIds.has(node.backendDOMNodeId)) {
+      value = true;
+    } else if (node.parentId) {
+      value = included(nodesById.get(node.parentId));
+    }
+    includeCache.set(node.nodeId, value);
+    return value;
+  }
+  return axNodes.filter(included);
+}
+
+function parsePerceiveHeader(output) {
+  const lines = String(output || '').split('\n');
+  const pageMatch = (lines[0] || '').match(/^Page: (.*) — (.*)$/);
+  const viewportMatch = (lines[1] || '').match(/^Viewport: (\d+)×(\d+) \| Scroll: (\d+)\/(\d+)/);
+  const consoleLine = lines.find(line => line.startsWith('Console: ')) || 'Console: clean';
+  const consoleHealth = { errors: 0, warnings: 0, exceptions: 0 };
+  for (const [key, pattern] of [
+    ['errors', /(\d+) errors?/],
+    ['warnings', /(\d+) warnings?/],
+    ['exceptions', /(\d+) exceptions?/],
+  ]) {
+    const match = consoleLine.match(pattern);
+    if (match) consoleHealth[key] = Number(match[1]);
+  }
+  return {
+    page: {
+      title: pageMatch ? pageMatch[1] : '',
+      url: pageMatch ? pageMatch[2] : '',
+    },
+    viewport: {
+      width: viewportMatch ? Number(viewportMatch[1]) : 0,
+      height: viewportMatch ? Number(viewportMatch[2]) : 0,
+      scrollY: viewportMatch ? Number(viewportMatch[3]) : 0,
+      scrollMax: viewportMatch ? Number(viewportMatch[4]) : 0,
+      coordinateSpace: 'viewport-css-px',
+    },
+    console: consoleHealth,
+  };
+}
+
+function computePerceiveDiff(previousOutput, currentOutput) {
+  const prev = previousOutput.split('\n');
+  const curr = currentOutput.split('\n');
+  // Skip header lines up to the first blank line. Frame-scoped perceive adds
+  // a `Frame:` header, so avoid hard-coding the legacy 5-line header shape.
+  const prevHeaderEnd = prev.findIndex(line => line === '');
+  const currHeaderEnd = curr.findIndex(line => line === '');
+  const prevTreeStart = prevHeaderEnd >= 0 ? prevHeaderEnd + 1 : 5;
+  const currTreeStart = currHeaderEnd >= 0 ? currHeaderEnd + 1 : 5;
+  const prevTree = prev.slice(prevTreeStart);
+  const currTree = curr.slice(currTreeStart);
+  // Line-level diff with StaticText noise filtering.
+  const prevSet = new Set(prevTree);
+  const currSet = new Set(currTree);
+  const removed = prevTree.filter(l => !currSet.has(l));
+  const added = currTree.filter(l => !prevSet.has(l));
+  const isTextOnly = l => /^\s*\[StaticText\]/.test(l) && !isPriorityPerceiveTextLine(l);
+  const isTextSummary = l => /^\s*\.\.\. \d+ earlier text node\(s\) omitted \(--last \d+\)/.test(l);
+  const isCompactTextChange = l => isTextOnly(l) || isTextSummary(l);
+  const removedStructural = removed.filter(l => !isCompactTextChange(l));
+  const addedStructural = added.filter(l => !isCompactTextChange(l));
+  const removedTextLines = removed.filter(isTextOnly);
+  const addedTextLines = added.filter(isTextOnly);
+  return {
+    headerLines: curr.slice(0, currHeaderEnd >= 0 ? currHeaderEnd : 5),
+    removedStructural,
+    addedStructural,
+    removedTextLines,
+    addedTextLines,
+  };
+}
+
+function buildPerceiveDiffRecommendation({ mode, changed, baselineAvailable = true, nextSteps = [] }) {
+  const source = 'perceive-diff';
+  const reason = !baselineAvailable
+    ? 'No previous perceive baseline is available; capture a fresh perception before relying on diffs.'
+    : changed
+    ? 'The page changed; preserve the diff and action timeline before continuing.'
+    : 'No page change was detected; use the report timeline or a fresh perceive before retrying the action.';
+  return {
+    source,
+    mode,
+    reason,
+    commands: nextSteps,
+    verifyCommand: nextSteps[0] || null,
+  };
+}
+
+function buildPerceiveDiffModel(previousOutput, currentOutput, { mode = 'diff', targetPrefix = '' } = {}) {
+  const diff = computePerceiveDiff(previousOutput, currentOutput);
+  const target = targetPrefix || '<target>';
+  const removedText = diff.removedTextLines.length;
+  const addedText = diff.addedTextLines.length;
+  const changed = diff.removedStructural.length > 0 || diff.addedStructural.length > 0 || removedText > 0 || addedText > 0;
+  const nextSteps = mode === 'since-action'
+    ? [
+        `cdp report ${target} --format json`,
+        `cdp record-actions ${target} --format json`,
+      ]
+    : [
+        `cdp report ${target} --format json`,
+      ];
+  return {
+    schema: 'chrome-cdp-ex.perceive-diff.v1',
+    mode,
+    ...parsePerceiveHeader(currentOutput),
+    summary: {
+      changed,
+      removed: diff.removedStructural.length,
+      added: diff.addedStructural.length,
+      textRemoved: removedText,
+      textAdded: addedText,
+    },
+    removed: diff.removedStructural.slice(0, 20),
+    added: diff.addedStructural.slice(0, 20),
+    removedOmitted: Math.max(0, diff.removedStructural.length - 20),
+    addedOmitted: Math.max(0, diff.addedStructural.length - 20),
+    textRemovedSamples: diff.removedTextLines.slice(-3),
+    textAddedSamples: diff.addedTextLines.slice(-3),
+    recommendation: buildPerceiveDiffRecommendation({ mode, changed, nextSteps }),
+    nextSteps,
+  };
+}
+
+function formatPerceiveDiffOutput(previousOutput, currentOutput) {
+  const diff = computePerceiveDiff(previousOutput, currentOutput);
+  const diffLines = [];
+  const removedText = diff.removedTextLines.length;
+  const addedText = diff.addedTextLines.length;
+  if (diff.removedStructural.length === 0 && diff.addedStructural.length === 0 && removedText === 0 && addedText === 0) {
+    diffLines.push('(no changes detected in AX tree)');
+  } else {
+    if (diff.removedStructural.length > 0) {
+      diffLines.push(`--- Removed (${diff.removedStructural.length}):`);
+      for (const l of diff.removedStructural.slice(0, 20)) diffLines.push(`- ${l}`);
+      if (diff.removedStructural.length > 20) diffLines.push(`  ... and ${diff.removedStructural.length - 20} more`);
+    }
+    if (diff.addedStructural.length > 0) {
+      diffLines.push(`+++ Added (${diff.addedStructural.length}):`);
+      for (const l of diff.addedStructural.slice(0, 20)) diffLines.push(`+ ${l}`);
+      if (diff.addedStructural.length > 20) diffLines.push(`  ... and ${diff.addedStructural.length - 20} more`);
+    }
+    if (removedText > 0 || addedText > 0) {
+      const parts = [];
+      if (removedText > 0) parts.push(`${removedText} removed`);
+      if (addedText > 0) parts.push(`${addedText} added`);
+      diffLines.push(`~~~ Text nodes updated (${parts.join(', ')})`);
+      if (addedText > 0 && diff.removedStructural.length === 0 && diff.addedStructural.length === 0) {
+        const samples = diff.addedTextLines.slice(-3);
+        for (const l of samples) diffLines.push(`+ ${l}`);
+        if (addedText > samples.length) diffLines.push(`  ... and ${addedText - samples.length} more text additions`);
+      }
+    }
+  }
+  return diff.headerLines.join('\n') + '\n\n' + diffLines.join('\n');
 }
 
 // Format a single @ref bounding-rect annotation. Adds `position` only for
@@ -1210,13 +4310,16 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     // Walk backwards collecting the last N text lines while keeping all ref/structural lines
     const reversed = [];
     let textKept = 0;
+    let priorityKept = 0;
+    const priorityBudget = Math.max(last, 12);
     let textOmitted = 0;
     for (let i = outLines.length - 1; i >= 0; i--) {
       const ln = outLines[i];
       const isRef = refLineRe.test(ln);
       const isText = textRoleRe.test(ln) && !isRef;
       if (isText) {
-        if (textKept < last) { reversed.push(ln); textKept++; }
+        if (isPriorityPerceiveTextLine(ln) && priorityKept < priorityBudget) { reversed.push(ln); priorityKept++; }
+        else if (textKept < last) { reversed.push(ln); textKept++; }
         else { textOmitted++; }
       } else {
         reversed.push(ln);
@@ -1434,24 +4537,35 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   const {
     diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null,
     interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false,
-    keepRefs = false, last = null,
+    keepRefs = false, last = null, sinceAction = false, diffBaseline = null,
+    frameRef = null,
   } = opts;
+  const frameContext = frameRef ? await resolveFrameRef(cdp, sid, frameRef) : null;
+  const frame = frameContext?.frame || null;
+  const frameExecutionContextId = frame ? await createFrameExecutionContext(cdp, sid, frame.id) : null;
+  if (frame && (scopeSelector || excludeSelector)) {
+    throw new Error('perceive --frame does not yet support --selector/--exclude; run frame-scoped perceive first, then use the listed @fN:M refs.');
+  }
   // Get AX tree nodes and page metadata + layout map in parallel
   // Hoist DOM.getDocument so scope and exclude can share it
-  const needsDocument = scopeSelector || excludeSelector;
+  const needsDocument = !frame && (scopeSelector || excludeSelector);
   const docRootPromise = needsDocument ? cdp.send('DOM.getDocument', {}, sid) : null;
-  const axPromise = scopeSelector
+  let scopeBackendNodeIds = null;
+  const axPromise = frame
+    ? cdp.send('Accessibility.getFullAXTree', { frameId: frame.id }, sid)
+    : scopeSelector
     ? (async () => {
         const { root } = await docRootPromise;
         const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: scopeSelector }, sid);
         if (!nodeId) throw new Error(`Scope selector not found: ${scopeSelector}`);
-        const { node } = await cdp.send('DOM.describeNode', { nodeId }, sid);
-        return cdp.send('Accessibility.getFullAXTree', { backendNodeId: node.backendNodeId }, sid);
+        const { node } = await cdp.send('DOM.describeNode', { nodeId, depth: -1, pierce: true }, sid);
+        scopeBackendNodeIds = collectDomBackendNodeIds(node);
+        return cdp.send('Accessibility.getFullAXTree', {}, sid);
       })()
     : cdp.send('Accessibility.getFullAXTree', {}, sid);
   const [axResult, metaJson] = await Promise.all([
     axPromise,
-    evalStr(cdp, sid, perceivePageScript(cursorInteractive))
+    evalStr(cdp, sid, perceivePageScript(cursorInteractive), false, frameExecutionContextId != null ? { contextId: frameExecutionContextId } : {})
   ]);
 
   const meta = JSON.parse(metaJson);
@@ -1467,6 +4581,9 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
 
   // Exclude filtering: remove AX subtrees rooted at excluded DOM nodes
   let axNodes = axResult.nodes;
+  if (scopeBackendNodeIds) {
+    axNodes = filterAxNodesToBackendSubtree(axNodes, scopeBackendNodeIds);
+  }
   if (excludeSelector) {
     const { root } = await docRootPromise;
     const excludedBackendNodeIds = new Set();
@@ -1506,13 +4623,25 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     }
   }
 
-  const { treeLines, refNodeIds } = buildPerceiveTree(axNodes, meta, refMap, { maxDepth, interactiveOnly, keepRefs, last });
+  const activeRefMap = frame ? new Map() : refMap;
+  const builtTree = buildPerceiveTree(axNodes, meta, activeRefMap, { maxDepth, interactiveOnly, keepRefs, last });
+  let treeLines = builtTree.treeLines;
+  const { refNodeIds } = builtTree;
+  if (frame) storeFrameScopedRefs(refState, frame, frameContext.frames, activeRefMap);
 
   // === Batch-resolve @ref bounding rects (parallel, non-scrolling) ===
   // Now also returns `position` (computed style) so fixed/sticky elements get
   // a clear annotation — agents previously saw negative document-relative Ys
   // and assumed elements were off-screen.
   const refRects = new Map(); // ref number → {x, y, w, h, position?}
+  const frameOffset = frame
+    ? await frameViewportOffset(cdp, sid, {
+        ...frame,
+        frameRef: frame.ref,
+        frameId: frame.id,
+        frames: frameContext.frames,
+      })
+    : { x: 0, y: 0 };
   if (refNodeIds.length > 0) {
     const results = await Promise.allSettled(refNodeIds.map(async ({ ref, backendDOMNodeId }) => {
       const { object } = await cdp.send('DOM.resolveNode', { backendNodeId: backendDOMNodeId }, sid);
@@ -1531,14 +4660,19 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
         }`,
         returnByValue: true,
       }, sid);
-      return { ref, rect: res.result.value };
+      const rect = res.result.value || {};
+      if (frame) {
+        rect.x = (Number(rect.x) || 0) + frameOffset.x;
+        rect.y = (Number(rect.y) || 0) + frameOffset.y;
+      }
+      return { ref, rect };
     }));
     for (const r of results) {
       if (r.status === 'fulfilled') refRects.set(r.value.ref, r.value.rect);
     }
   }
 
-  // Inject @ref coordinates into treeLines (viewport CSS pixels; same frame as clickxy)
+  // Inject @ref coordinates into treeLines (top-level viewport CSS pixels; same space as clickxy)
   for (let i = 0; i < treeLines.length; i++) {
     const m = treeLines[i].match(/@(\d+)$/);
     if (m) {
@@ -1546,6 +4680,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
       if (rect) treeLines[i] += `  ${formatRefRect(rect)}`;
     }
   }
+  if (frame) treeLines = qualifyFrameRefsInLines(treeLines, frame.ref);
 
   // === Cursor-interactive @c refs ===
   let cRefCounter = 0;
@@ -1561,6 +4696,11 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   // === Assemble output ===
   const lines = [];
   lines.push(`Page: ${meta.title} — ${meta.url}`);
+  if (frame) {
+    const label = frame.name || '(anonymous)';
+    const url = frame.url || frame.unreachableUrl || '(no url)';
+    lines.push(`Frame: ${frame.ref} ${label} ${frame.id} ${url}`);
+  }
 
   const scrollPct = meta.scrollMax > 0 ? Math.round(meta.scrollY / meta.scrollMax * 100) : 0;
   lines.push(`Viewport: ${meta.vw}×${meta.vh} | Scroll: ${meta.scrollY}/${meta.scrollMax > 0 ? meta.scrollMax : 0} (${scrollPct}%) | Focused: ${meta.focused}`);
@@ -1573,74 +4713,144 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   if (warnings > 0) healthParts.push(`${warnings} warning${warnings > 1 ? 's' : ''}`);
   if (exceptions > 0) healthParts.push(`${exceptions} exception${exceptions > 1 ? 's' : ''}`);
   lines.push(`Console: ${healthParts.length > 0 ? healthParts.join(', ') : 'clean'}`);
-  // Coordinate frame hint — viewport CSS pixels match clickxy/Input events.
+  // Coordinate hint — top-level viewport CSS pixels match clickxy/Input events.
   // Fixed/sticky elements include a "fixed"/"sticky" tag so agents do not
   // misread negative scroll-relative Ys as off-screen.
-  lines.push(`Coords: viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)`);
+  lines.push(`Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)`);
 
   lines.push('');
   lines.push(...treeLines);
 
   const output = lines.join('\n');
 
-  // Diff mode: compare with previous perceive output
-  if (diffMode && lastPerceiveStore.output) {
-    const prev = lastPerceiveStore.output.split('\n');
-    const curr = output.split('\n');
-    const diffLines = [];
-    // Skip header lines (first 5: Page, Viewport, Interactive, Console, Coords), diff the tree
-    const headerEnd = 5;
-    const prevTree = prev.slice(headerEnd);
-    const currTree = curr.slice(headerEnd);
-    // Line-level diff with StaticText noise filtering
-    const prevSet = new Set(prevTree);
-    const currSet = new Set(currTree);
-    const removed = prevTree.filter(l => !currSet.has(l));
-    const added = currTree.filter(l => !prevSet.has(l));
-    // Separate structural changes from text-only noise
-    const isTextOnly = l => /^\s*\[StaticText\]/.test(l);
-    const removedStructural = removed.filter(l => !isTextOnly(l));
-    const addedStructural = added.filter(l => !isTextOnly(l));
-    const removedText = removed.length - removedStructural.length;
-    const addedText = added.length - addedStructural.length;
-    if (removedStructural.length === 0 && addedStructural.length === 0 && removedText === 0 && addedText === 0) {
-      diffLines.push('(no changes detected in AX tree)');
-    } else {
-      if (removedStructural.length > 0) {
-        diffLines.push(`--- Removed (${removedStructural.length}):`);
-        for (const l of removedStructural.slice(0, 20)) diffLines.push(`- ${l}`);
-        if (removedStructural.length > 20) diffLines.push(`  ... and ${removedStructural.length - 20} more`);
-      }
-      if (addedStructural.length > 0) {
-        diffLines.push(`+++ Added (${addedStructural.length}):`);
-        for (const l of addedStructural.slice(0, 20)) diffLines.push(`+ ${l}`);
-        if (addedStructural.length > 20) diffLines.push(`  ... and ${addedStructural.length - 20} more`);
-      }
-      // Summarize text-only changes in one line instead of listing each
-      if (removedText > 0 || addedText > 0) {
-        const parts = [];
-        if (removedText > 0) parts.push(`${removedText} removed`);
-        if (addedText > 0) parts.push(`${addedText} added`);
-        diffLines.push(`~~~ Text nodes updated (${parts.join(', ')})`);
-      }
-    }
-    // Include current header + diff
+  const markPerceived = () => {
     lastPerceiveStore.output = output;
-    return curr.slice(0, headerEnd).join('\n') + '\n\n' + diffLines.join('\n');
+    if (frame) rememberFramePerceiveOutput(refState, frame.ref, output);
+    // Mark refs as freshly assigned (clears 'navigation'/'daemon-start' state).
+    if (refState && typeof refState === 'object') {
+      refState.generation = (refState.generation || 0) + 1;
+      refState.lastPerceiveAt = Date.now();
+      refState.invalidationReason = null;
+    }
+  };
+
+  if (sinceAction) {
+    markPerceived();
+    if (!diffBaseline) {
+      return output + '\n\n(no action baseline available; run `perceive` before a mutating command, or use `perceive --diff` after a normal perceive.)';
+    }
+    return formatPerceiveDiffOutput(diffBaseline, output);
   }
 
-  lastPerceiveStore.output = output;
-  // Mark refs as freshly assigned (clears 'navigation'/'daemon-start' state).
-  if (refState && typeof refState === 'object') {
-    refState.generation = (refState.generation || 0) + 1;
-    refState.lastPerceiveAt = Date.now();
-    refState.invalidationReason = null;
+  // Diff mode: compare with previous perceive output.
+  if (diffMode && lastPerceiveStore.output) {
+    const previousOutput = lastPerceiveStore.output;
+    markPerceived();
+    return formatPerceiveDiffOutput(previousOutput, output);
   }
+
+  markPerceived();
   // Hint when perceive returns many interactive elements without exclude
   if (interactiveOnly && !excludeSelector && refNodeIds.length > 50) {
     return output + `\n\n(Hint: ${refNodeIds.length} interactive elements found — most may be sidebar/nav noise. Use \`perceive -x "nav, aside"\` to exclude, or \`perceive -s "main"\` to scope.)`;
   }
   return output;
+}
+
+function perceptionModelFromText(output, refState = {}, targetPrefix = '<target>') {
+  const lines = String(output || '').split('\n');
+  const header = parsePerceiveHeader(output);
+
+  const nodes = [];
+  for (const line of lines) {
+    const refMatch = line.match(/\[(\w+)\]\s+(.+?)\s+(@f\d+:\d+|@\d+)(?:\s+\((-?\d+),(-?\d+) (\d+)×(\d+)(?:, [^)]+)?\))?$/);
+    if (!refMatch) continue;
+    const [, role, rawName, ref, x, y, width, height] = refMatch;
+    const node = {
+      ref,
+      role,
+      name: rawName.trim(),
+    };
+    if (x !== undefined) {
+      node.rect = {
+        x: Number(x),
+        y: Number(y),
+        width: Number(width),
+        height: Number(height),
+      };
+    }
+    nodes.push(node);
+  }
+
+  return createPerceptionModel({
+    targetPrefix,
+    page: header.page,
+    viewport: header.viewport,
+    consoleHealth: header.console,
+    refs: { generation: refState.generation || 0 },
+    nodes,
+    limits: {
+      truncated: output.includes('truncated'),
+    },
+  });
+}
+
+async function perceiveModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
+  const output = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts, refState);
+  return perceptionModelFromText(output, refState || {}, opts.targetPrefix || '<target>');
+}
+
+async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
+  const mode = opts.sinceAction ? 'since-action' : 'diff';
+  const baseline = opts.sinceAction ? opts.diffBaseline : lastPerceiveStore.output;
+  const currentOutput = await perceiveStr(
+    cdp,
+    sid,
+    consoleBuf,
+    exceptionBuf,
+    refMap,
+    lastPerceiveStore,
+    { ...opts, sinceAction: false, diff: false, diffBaseline: null },
+    refState
+  );
+  if (!baseline) {
+    const header = parsePerceiveHeader(currentOutput);
+    const target = opts.targetPrefix || '<target>';
+    const nextSteps = [
+      `cdp perceive ${target} -C -d 8`,
+      `cdp report ${target} --format json`,
+    ];
+    return {
+      schema: 'chrome-cdp-ex.perceive-diff.v1',
+      mode,
+      baselineAvailable: false,
+      ...header,
+      summary: {
+        changed: null,
+        removed: 0,
+        added: 0,
+        textRemoved: 0,
+        textAdded: 0,
+      },
+      removed: [],
+      added: [],
+      removedOmitted: 0,
+      addedOmitted: 0,
+      textRemovedSamples: [],
+      textAddedSamples: [],
+      recommendation: buildPerceiveDiffRecommendation({
+        mode,
+        changed: null,
+        baselineAvailable: false,
+        nextSteps,
+      }),
+      nextSteps,
+    };
+  }
+  return buildPerceiveDiffModel(baseline, currentOutput, {
+    mode,
+    targetPrefix: opts.targetPrefix || '',
+  });
 }
 
 // Element screenshot: targeted capture of a specific element by CSS selector or @ref
@@ -2361,6 +5571,214 @@ async function cookiesStr(cdp, sid) {
   return lines.join('\n');
 }
 
+// Checkpoint/restore: serialize the minimum browser state needed to resume a
+// real-page exploration flow without pretending to snapshot the whole browser.
+function checkpointPageScript() {
+  return `(function() {
+    function dumpStorage(storage) {
+      const out = {};
+      for (let i = 0; i < storage.length; i++) {
+        const key = storage.key(i);
+        out[key] = storage.getItem(key);
+      }
+      return out;
+    }
+    return JSON.stringify({
+      url: location.href,
+      title: document.title,
+      origin: location.origin,
+      localStorage: dumpStorage(localStorage),
+      sessionStorage: dumpStorage(sessionStorage)
+    });
+  })()`;
+}
+
+function sanitizeCheckpointCookies(cookies = []) {
+  return cookies.map(cookie => {
+    const out = {};
+    for (const key of ['name', 'value', 'domain', 'path', 'secure', 'httpOnly', 'sameSite']) {
+      if (cookie[key] !== undefined) out[key] = cookie[key];
+    }
+    if (Number.isFinite(cookie.expires) && cookie.expires > 0) out.expires = cookie.expires;
+    return out;
+  }).filter(cookie => cookie.name);
+}
+
+async function checkpointModel(cdp, sid, { now = Date.now() } = {}) {
+  const raw = await evalStr(cdp, sid, checkpointPageScript());
+  let pageState;
+  try {
+    pageState = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`checkpoint: failed to read page state (${e.message})`);
+  }
+  let cookies = [];
+  try {
+    const res = await cdp.send('Network.getCookies', {}, sid);
+    cookies = sanitizeCheckpointCookies(res.cookies || []);
+  } catch {}
+  return {
+    schema: 'chrome-cdp-ex.checkpoint.v1',
+    ts: now,
+    page: {
+      url: pageState.url || '',
+      title: pageState.title || '',
+      origin: pageState.origin || '',
+    },
+    storage: {
+      localStorage: pageState.localStorage || {},
+      sessionStorage: pageState.sessionStorage || {},
+    },
+    cookies,
+  };
+}
+
+async function checkpointStr(cdp, sid, { format = 'text', now = Date.now() } = {}) {
+  const model = await checkpointModel(cdp, sid, { now });
+  if (format === 'json') return formatJson(model);
+  const localCount = Object.keys(model.storage.localStorage || {}).length;
+  const sessionCount = Object.keys(model.storage.sessionStorage || {}).length;
+  return [
+    'Checkpoint captured',
+    `URL: ${model.page.url}`,
+    `Storage: local ${localCount}, session ${sessionCount}`,
+    `Cookies: ${model.cookies.length}`,
+    'Next: save `checkpoint --format json` output and restore with `restore --file <path>`.',
+  ].join('\n');
+}
+
+function parseCheckpointArtifact(raw) {
+  let artifact;
+  try {
+    artifact = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (e) {
+    throw new Error(`restore: invalid checkpoint JSON (${e.message})`);
+  }
+  if (!artifact || typeof artifact !== 'object') throw new Error('restore: checkpoint artifact must be a JSON object');
+  if (artifact.schema !== 'chrome-cdp-ex.checkpoint.v1') {
+    throw new Error(`restore: unsupported checkpoint schema ${artifact.schema || '(missing)'}`);
+  }
+  if (!artifact.page?.url) throw new Error('restore: checkpoint.page.url is required');
+  validateUrl(artifact.page.url);
+  return artifact;
+}
+
+function parseRestoreArgs(args, { reader = readFileSync } = {}) {
+  const fopts = parseFormatArgs((args || []).filter(a => a !== undefined && a !== null), ['text', 'json']);
+  const tokens = fopts.args;
+  const positional = [];
+  const finish = (result) => ({ ...result, format: fopts.format });
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--json') {
+      const raw = tokens.slice(i + 1).join(' ').trim();
+      if (!raw) throw new Error('restore --json requires a checkpoint JSON payload');
+      return finish({ artifact: parseCheckpointArtifact(raw), source: 'inline JSON' });
+    }
+    if (token === '--file' || token === '-f') {
+      const filePath = tokens[++i];
+      if (!filePath) throw new Error('restore --file requires a checkpoint JSON path');
+      return finish({ artifact: parseCheckpointArtifact(reader(filePath, 'utf8')), source: filePath });
+    }
+    positional.push(token);
+  }
+  const raw = positional.join(' ').trim();
+  if (!raw) throw new Error('restore requires --file <path> or --json <checkpoint-json>');
+  if (raw.startsWith('{')) return finish({ artifact: parseCheckpointArtifact(raw), source: 'inline JSON' });
+  return finish({ artifact: parseCheckpointArtifact(reader(positional[0], 'utf8')), source: positional[0] });
+}
+
+function redactRestoreCommandArgs(args = []) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    out.push(arg);
+    if (arg === '--json') {
+      out.push('[checkpoint-json-redacted]');
+      break;
+    }
+    if (arg === '--file' || arg === '-f') {
+      if (args[i + 1]) out.push(args[++i]);
+    }
+  }
+  return out.length ? out : ['restore'];
+}
+
+function checkpointCookieToSetCookieParams(cookie, url) {
+  const params = { url };
+  for (const key of ['name', 'value', 'domain', 'path', 'secure', 'httpOnly', 'sameSite', 'expires']) {
+    if (cookie[key] !== undefined) params[key] = cookie[key];
+  }
+  return params;
+}
+
+function restoreStorageScript(storage = {}) {
+  const local = storage.localStorage || {};
+  const session = storage.sessionStorage || {};
+  return `(function() {
+    const localItems = ${JSON.stringify(local)};
+    const sessionItems = ${JSON.stringify(session)};
+    localStorage.clear();
+    for (const [key, value] of Object.entries(localItems)) localStorage.setItem(key, value);
+    sessionStorage.clear();
+    for (const [key, value] of Object.entries(sessionItems)) sessionStorage.setItem(key, value);
+    return JSON.stringify({ localStorage: Object.keys(localItems).length, sessionStorage: Object.keys(sessionItems).length });
+  })()`;
+}
+
+async function navigateForRestore(cdp, sid, url) {
+  await cdp.send('Page.enable', {}, sid).catch(() => {});
+  let loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
+  try {
+    const nav = await cdp.send('Page.navigate', { url }, sid, 5000);
+    if (nav.errorText) {
+      loadEvent.cancel();
+      throw new Error(nav.errorText);
+    }
+    if (nav.loaderId) {
+      await loadEvent.promise;
+    } else {
+      loadEvent.cancel();
+    }
+    return 'Page.navigate';
+  } catch (e) {
+    loadEvent.cancel();
+    if (!isTimeoutError(e, ['Page.navigate'])) throw e;
+    loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
+    await evalStr(cdp, sid, `(function() { location.assign(${JSON.stringify(url)}); return 'navigating'; })()`);
+    await loadEvent.promise.catch(() => {});
+    return 'location.assign fallback';
+  }
+}
+
+async function restoreCheckpointStr(cdp, sid, args) {
+  const { artifact } = parseRestoreArgs(args);
+  const url = artifact.page.url;
+  const cookies = sanitizeCheckpointCookies(artifact.cookies || []);
+  let cookieSet = 0;
+  for (const cookie of cookies) {
+    const result = await cdp.send('Network.setCookie', checkpointCookieToSetCookieParams(cookie, url), sid);
+    if (result && result.success === false) throw new Error(`restore: failed to set cookie ${cookie.name}`);
+    cookieSet++;
+  }
+
+  let currentUrl = null;
+  try { currentUrl = await evalStr(cdp, sid, 'location.href'); } catch {}
+  const navigationMethod = currentUrl === url
+    ? 'already at checkpoint URL'
+    : await navigateForRestore(cdp, sid, url);
+  await evalStr(cdp, sid, restoreStorageScript(artifact.storage || {}));
+
+  const localCount = Object.keys(artifact.storage?.localStorage || {}).length;
+  const sessionCount = Object.keys(artifact.storage?.sessionStorage || {}).length;
+  return [
+    `Restored checkpoint: ${url}`,
+    `Navigation: ${navigationMethod}`,
+    `Storage: local ${localCount}, session ${sessionCount}; cookies: ${cookieSet}`,
+    'Refs were invalidated; run `perceive` before using @refs again.',
+  ].join('\n');
+}
+
 // Load-more: repeatedly click a button/selector until it disappears
 async function loadAllStr(cdp, sid, selector, intervalMs = 1500) {
   if (!selector) throw new Error('CSS selector required');
@@ -2471,7 +5889,7 @@ function dialogStr(dialogBuf, dialogAutoAcceptRef, flag) {
 function netlogStr(netReqBuf, flag) {
   if (flag === '--clear') { netReqBuf.clear(); return 'Network log cleared'; }
   const entries = netReqBuf.all();
-  if (entries.length === 0) return 'No network requests captured (tracking XHR/Fetch/Document only)';
+  if (entries.length === 0) return 'No network requests captured (tracking action-relevant requests; static assets are skipped)';
   const lines = [`Network requests (${entries.length}):`];
   for (const e of entries) {
     const ago = Math.round((Date.now() - e.ts) / 1000);
@@ -2479,6 +5897,476 @@ function netlogStr(netReqBuf, flag) {
     lines.push(`  ${e.method} ${e.url} → ${e.status} (${e.duration}ms, ${size}) ${ago}s ago`);
   }
   return lines.join('\n');
+}
+
+function parseHttpStatus(value, label = '--status') {
+  const status = Number(value);
+  if (!Number.isInteger(status) || status < 100 || status > 599) {
+    throw new Error(`mock ${label} requires an HTTP status code from 100 to 599`);
+  }
+  return status;
+}
+
+function parseMockArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const tokens = fopts.args || [];
+  if (tokens.length === 0) return { mode: 'status', format: fopts.format };
+  const mode = String(tokens[0] || '').toLowerCase();
+  if (mode === 'clear' || mode === 'off' || mode === 'reset') {
+    if (tokens.length > 1) throw new Error(`mock ${tokens[0]} does not accept extra arguments`);
+    return { mode: 'clear', format: fopts.format };
+  }
+  if (mode !== 'add') {
+    throw new Error(`Unknown mock command: ${tokens[0]}. Use add, clear, or no args for status.`);
+  }
+  const urlPattern = tokens[1];
+  if (!urlPattern) throw new Error('mock add requires a URL pattern, e.g. **/api/items*');
+  const rule = {
+    id: `mock-${Date.now().toString(36)}`,
+    urlPattern,
+    method: null,
+    status: 200,
+    body: '',
+    contentType: 'text/plain; charset=utf-8',
+  };
+  for (let i = 2; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--status') rule.status = parseHttpStatus(tokens[++i], '--status');
+    else if (token === '--body') rule.body = tokens[++i] ?? '';
+    else if (token === '--content-type' || token === '--type') rule.contentType = tokens[++i] || rule.contentType;
+    else if (token === '--method') rule.method = String(tokens[++i] || '').toUpperCase();
+    else throw new Error(`mock add: unknown option ${token}`);
+  }
+  if (rule.method === '') rule.method = null;
+  return { mode: 'add', format: fopts.format, rule };
+}
+
+function wildcardToRegExp(pattern) {
+  const escaped = String(pattern || '').replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^${escaped.replace(/\*/g, '.*').replace(/\?/g, '.')}$`);
+}
+
+function mockRuleMatches(rule, request = {}) {
+  if (!rule) return false;
+  if (rule.method && String(request.method || '').toUpperCase() !== rule.method) return false;
+  return wildcardToRegExp(rule.urlPattern).test(String(request.url || ''));
+}
+
+function findNetworkMockRule(session, request = {}) {
+  return (session.networkMocks || []).find(rule => mockRuleMatches(rule, request));
+}
+
+function formatNetworkMocksSummary(session = {}) {
+  const rules = session.networkMocks || [];
+  if (rules.length === 0) return 'off';
+  const first = rules[0];
+  const hits = (session.networkMockHits || []).filter(hit => hit.ruleId === first.id).length;
+  const suffix = rules.length > 1 ? ` (+${rules.length - 1} more)` : '';
+  return `${rules.length} rule${rules.length === 1 ? '' : 's'} — ${first.urlPattern} -> ${first.status} (${hits} hit${hits === 1 ? '' : 's'})${suffix}`;
+}
+
+function buildMockModel(session, parsed) {
+  const rules = session.networkMocks || [];
+  const hits = session.networkMockHits || [];
+  return {
+    schema: 'chrome-cdp-ex.mock.v1',
+    targetId: session.targetId,
+    mode: parsed.mode,
+    rules: rules.map(rule => ({
+      id: rule.id,
+      urlPattern: rule.urlPattern,
+      method: rule.method,
+      status: rule.status,
+      contentType: rule.contentType,
+      bodyBytes: Buffer.byteLength(rule.body || '', 'utf8'),
+      hits: hits.filter(hit => hit.ruleId === rule.id).length,
+    })),
+    recentHits: hits.slice(-10),
+  };
+}
+
+function formatMockText(model) {
+  if (!model.rules.length) {
+    return [
+      'Network mock: off',
+      `Next: cdp mock ${model.targetId} add "**/api/*" --status 503 --body '{"ok":false}' --content-type application/json`,
+    ].join('\n');
+  }
+  const lines = [`Network mock: ${model.rules.length} rule${model.rules.length === 1 ? '' : 's'}`];
+  for (const [i, rule] of model.rules.entries()) {
+    const method = rule.method ? `${rule.method} ` : '';
+    lines.push(`${i + 1}. ${method}${rule.urlPattern} -> ${rule.status} ${rule.contentType} (${rule.hits} hit${rule.hits === 1 ? '' : 's'})`);
+  }
+  if (model.recentHits.length) {
+    const hit = model.recentHits[model.recentHits.length - 1];
+    lines.push(`Last hit: ${hit.method} ${hit.url} -> ${hit.status}`);
+  }
+  lines.push(`Next: cdp mock ${model.targetId} clear`);
+  return lines.join('\n');
+}
+
+async function applyNetworkMocks(cdp, sid, session) {
+  const rules = session.networkMocks || [];
+  if (!rules.length) {
+    await cdp.send('Fetch.disable', {}, sid);
+    return;
+  }
+  await cdp.send('Fetch.enable', {
+    patterns: rules.map(rule => ({ urlPattern: rule.urlPattern, requestStage: 'Request' })),
+  }, sid);
+}
+
+async function handleMockRequestPaused(cdp, sid, session, params = {}) {
+  const request = params.request || {};
+  const rule = findNetworkMockRule(session, request);
+  if (!rule) {
+    await cdp.send('Fetch.continueRequest', { requestId: params.requestId }, sid);
+    return null;
+  }
+  await cdp.send('Fetch.fulfillRequest', {
+    requestId: params.requestId,
+    responseCode: rule.status,
+    responseHeaders: [{ name: 'content-type', value: rule.contentType }],
+    body: Buffer.from(rule.body || '', 'utf8').toString('base64'),
+  }, sid);
+  const hit = {
+    ruleId: rule.id,
+    method: request.method || '',
+    url: request.url || '',
+    status: rule.status,
+    ts: Date.now(),
+  };
+  session.networkMockHits.push(hit);
+  if (session.networkMockHits.length > MAX_NETWORK_MOCK_HITS) {
+    session.networkMockHits.splice(0, session.networkMockHits.length - MAX_NETWORK_MOCK_HITS);
+  }
+  return hit;
+}
+
+async function mockStr(cdp, sid, session, args = []) {
+  const parsed = parseMockArgs(args);
+  if (!Array.isArray(session.networkMocks)) session.networkMocks = [];
+  if (!Array.isArray(session.networkMockHits)) session.networkMockHits = [];
+  if (parsed.mode === 'add') {
+    session.networkMocks.push(parsed.rule);
+    await applyNetworkMocks(cdp, sid, session);
+    appendSessionEnvironmentLog(session, { kind: 'mock', ts: Date.now(), action: 'add', rule: parsed.rule });
+  } else if (parsed.mode === 'clear') {
+    session.networkMocks = [];
+    session.networkMockHits = [];
+    await applyNetworkMocks(cdp, sid, session);
+    appendSessionEnvironmentLog(session, { kind: 'mock', ts: Date.now(), action: 'clear' });
+  }
+  const model = buildMockModel(session, parsed);
+  return parsed.format === 'json' ? formatJson(model) : formatMockText(model);
+}
+
+function parseClockTimestamp(value) {
+  if (value == null || value === '') throw new Error('clock freeze requires --at <date|epoch-ms>');
+  const numeric = Number(value);
+  const atMs = Number.isFinite(numeric) ? numeric : Date.parse(String(value));
+  if (!Number.isFinite(atMs)) throw new Error('clock freeze --at requires a valid date or epoch milliseconds');
+  return atMs;
+}
+
+function parseClockOffsetMs(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms)) throw new Error('clock offset --ms requires a finite millisecond value');
+  return ms;
+}
+
+function parseClockArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const tokens = fopts.args || [];
+  if (tokens.length === 0) return { mode: 'status', format: fopts.format };
+  const cmd = String(tokens[0] || '').toLowerCase();
+  if (cmd === 'reset' || cmd === 'off' || cmd === 'real') {
+    if (tokens.length > 1) throw new Error(`clock ${tokens[0]} does not accept extra arguments`);
+    return { mode: 'reset', format: fopts.format, profile: 'real' };
+  }
+  if (cmd === 'freeze') {
+    let atMs = null;
+    for (let i = 1; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token === '--at') atMs = parseClockTimestamp(tokens[++i]);
+      else throw new Error(`clock freeze: unknown option ${token}`);
+    }
+    if (atMs == null) throw new Error('clock freeze requires --at <date|epoch-ms>');
+    return { mode: 'apply', format: fopts.format, profile: 'freeze', atMs };
+  }
+  if (cmd === 'offset') {
+    let offsetMs = null;
+    for (let i = 1; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token === '--ms') offsetMs = parseClockOffsetMs(tokens[++i]);
+      else if (token === '--seconds') offsetMs = parseClockOffsetMs(tokens[++i]) * 1000;
+      else throw new Error(`clock offset: unknown option ${token}`);
+    }
+    if (offsetMs == null) throw new Error('clock offset requires --ms <milliseconds>');
+    return { mode: 'apply', format: fopts.format, profile: 'offset', offsetMs };
+  }
+  throw new Error(`Unknown clock command: ${tokens[0]}. Use freeze, offset, reset, or no args for status.`);
+}
+
+function clockPageScript(config) {
+  return `(${function installCdpClock(cfg) {
+    const g = globalThis;
+    const existing = g.__cdpClockOriginals;
+    const originals = existing || {
+      Date: g.Date,
+      performanceNow: g.performance && typeof g.performance.now === 'function'
+        ? g.performance.now.bind(g.performance)
+        : null,
+    };
+    if (!existing) {
+      Object.defineProperty(g, '__cdpClockOriginals', {
+        value: originals,
+        configurable: true,
+        writable: true,
+      });
+    }
+
+    if (cfg.profile === 'real' || cfg.mode === 'reset') {
+      if (originals.Date) g.Date = originals.Date;
+      if (g.performance && originals.performanceNow) {
+        try {
+          Object.defineProperty(g.performance, 'now', {
+            value: originals.performanceNow,
+            configurable: true,
+          });
+        } catch {}
+      }
+      try { delete g.__cdpClock; } catch {}
+      return { ok: true, profile: 'real', now: originals.Date.now() };
+    }
+
+    const OriginalDate = originals.Date;
+    const profile = cfg.profile;
+    const atMs = Number(cfg.atMs);
+    const offsetMs = Number(cfg.offsetMs || 0);
+    const installedAtPerfMs = originals.performanceNow ? originals.performanceNow() : 0;
+    const currentNow = () => profile === 'freeze' ? atMs : OriginalDate.now() + offsetMs;
+
+    function MockDate(...args) {
+      if (this instanceof MockDate) {
+        return args.length ? new OriginalDate(...args) : new OriginalDate(currentNow());
+      }
+      return new OriginalDate(currentNow()).toString();
+    }
+    Object.setPrototypeOf(MockDate, OriginalDate);
+    MockDate.prototype = OriginalDate.prototype;
+    MockDate.now = currentNow;
+    MockDate.parse = OriginalDate.parse.bind(OriginalDate);
+    MockDate.UTC = OriginalDate.UTC.bind(OriginalDate);
+    try { Object.defineProperty(MockDate, 'name', { value: 'Date', configurable: true }); } catch {}
+    g.Date = MockDate;
+
+    if (g.performance && originals.performanceNow) {
+      try {
+        Object.defineProperty(g.performance, 'now', {
+          value: () => profile === 'freeze' ? installedAtPerfMs : originals.performanceNow() + offsetMs,
+          configurable: true,
+        });
+      } catch {}
+    }
+
+    const now = currentNow();
+    g.__cdpClock = {
+      profile,
+      atMs: profile === 'freeze' ? atMs : null,
+      offsetMs: profile === 'offset' ? offsetMs : 0,
+      iso: new OriginalDate(now).toISOString(),
+    };
+    return { ok: true, ...g.__cdpClock, now };
+  }.toString()})(${JSON.stringify(config)});`;
+}
+
+function formatSignedMs(ms) {
+  return `${ms >= 0 ? '+' : ''}${ms}ms`;
+}
+
+function formatClockSummary(clock = null) {
+  if (!clock || clock.profile === 'real') return 'real time';
+  if (clock.profile === 'freeze') return `frozen at ${new Date(clock.atMs).toISOString()}`;
+  if (clock.profile === 'offset') return `offset ${formatSignedMs(clock.offsetMs || 0)}`;
+  return 'real time';
+}
+
+function buildClockModel(session, parsed) {
+  const clock = parsed.mode === 'status' ? session.clock : (session.clock || null);
+  return {
+    schema: 'chrome-cdp-ex.clock.v1',
+    targetId: session.targetId,
+    mode: parsed.mode,
+    profile: clock?.profile || 'real',
+    atMs: clock?.atMs ?? null,
+    offsetMs: clock?.offsetMs ?? 0,
+    scriptIdentifier: clock?.scriptIdentifier || null,
+  };
+}
+
+function formatClockText(model) {
+  const lines = [`Clock: ${formatClockSummary(model)}`];
+  if (model.profile === 'real') {
+    lines.push(`Next: cdp clock ${model.targetId} freeze --at 2020-01-02T03:04:05.000Z`);
+    lines.push(`Next: cdp clock ${model.targetId} offset --ms 3600000`);
+  } else {
+    lines.push(`Next: cdp clock ${model.targetId} reset`);
+  }
+  return lines.join('\n');
+}
+
+async function removeClockScriptIfNeeded(cdp, sid, session) {
+  const identifier = session.clock?.scriptIdentifier;
+  if (identifier) {
+    await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier }, sid);
+  }
+}
+
+async function clockStr(cdp, sid, session, args = []) {
+  const parsed = parseClockArgs(args);
+  if (parsed.mode === 'apply') {
+    await removeClockScriptIfNeeded(cdp, sid, session);
+    const source = clockPageScript(parsed);
+    const added = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source }, sid);
+    await cdp.send('Runtime.evaluate', { expression: source, returnByValue: true, awaitPromise: true }, sid);
+    session.clock = {
+      profile: parsed.profile,
+      atMs: parsed.profile === 'freeze' ? parsed.atMs : null,
+      offsetMs: parsed.profile === 'offset' ? parsed.offsetMs : 0,
+      scriptIdentifier: added.identifier || null,
+      appliedAt: Date.now(),
+    };
+    appendSessionEnvironmentLog(session, { kind: 'clock', ts: session.clock.appliedAt, action: 'apply', clock: session.clock });
+  } else if (parsed.mode === 'reset') {
+    await removeClockScriptIfNeeded(cdp, sid, session);
+    await cdp.send('Runtime.evaluate', { expression: clockPageScript(parsed), returnByValue: true, awaitPromise: true }, sid);
+    appendSessionEnvironmentLog(session, { kind: 'clock', ts: Date.now(), action: 'reset' });
+    session.clock = null;
+  }
+  const model = buildClockModel(session, parsed);
+  return parsed.format === 'json' ? formatJson(model) : formatClockText(model);
+}
+
+const THROTTLE_PRESETS = Object.freeze({
+  off: { profile: 'off', offline: false, latencyMs: 0, downloadKbps: null, uploadKbps: null },
+  offline: { profile: 'offline', offline: true, latencyMs: 0, downloadKbps: 0, uploadKbps: 0 },
+  'slow-3g': { profile: 'slow-3g', offline: false, latencyMs: 400, downloadKbps: 400, uploadKbps: 400 },
+  'fast-3g': { profile: 'fast-3g', offline: false, latencyMs: 150, downloadKbps: 1600, uploadKbps: 750 },
+  lte: { profile: 'lte', offline: false, latencyMs: 40, downloadKbps: 12000, uploadKbps: 12000 },
+});
+
+function kbpsToBytesPerSecond(kbps) {
+  const n = Number(kbps);
+  return Number.isFinite(n) ? Math.round(n * 1000 / 8) : -1;
+}
+
+function throttleCdpParams(profile) {
+  if (profile.profile === 'off') {
+    return { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 };
+  }
+  return {
+    offline: profile.offline === true,
+    latency: Number(profile.latencyMs || 0),
+    downloadThroughput: profile.offline ? 0 : kbpsToBytesPerSecond(profile.downloadKbps),
+    uploadThroughput: profile.offline ? 0 : kbpsToBytesPerSecond(profile.uploadKbps),
+  };
+}
+
+function parseNonNegativeNumber(value, label) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`throttle ${label} requires a non-negative number`);
+  return n;
+}
+
+function parseThrottleArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const tokens = fopts.args || [];
+  if (tokens.length === 0) return { mode: 'status', format: fopts.format };
+  let profileName = String(tokens[0] || '').toLowerCase();
+  if (profileName === 'reset' || profileName === 'none') profileName = 'off';
+  let profile;
+  if (profileName === 'custom') {
+    const custom = { profile: 'custom', offline: false, latencyMs: 0, downloadKbps: null, uploadKbps: null };
+    for (let i = 1; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token === '--latency') custom.latencyMs = parseNonNegativeNumber(tokens[++i], '--latency');
+      else if (token === '--download' || token === '--down') custom.downloadKbps = parseNonNegativeNumber(tokens[++i], token);
+      else if (token === '--upload' || token === '--up') custom.uploadKbps = parseNonNegativeNumber(tokens[++i], token);
+      else throw new Error(`throttle custom: unknown option ${token}`);
+    }
+    if (custom.downloadKbps == null || custom.uploadKbps == null) {
+      throw new Error('throttle custom requires --download <kbps> and --upload <kbps>');
+    }
+    profile = custom;
+  } else {
+    profile = THROTTLE_PRESETS[profileName];
+    if (!profile) {
+      throw new Error(`Unknown throttle profile: ${tokens[0]}. Use off, offline, slow-3g, fast-3g, lte, or custom.`);
+    }
+    if (tokens.length > 1) {
+      throw new Error(`throttle ${tokens[0]} does not accept extra arguments. Use custom --latency <ms> --download <kbps> --upload <kbps>.`);
+    }
+    profile = { ...profile };
+  }
+  const cdpParams = throttleCdpParams(profile);
+  return { mode: 'apply', format: fopts.format, ...profile, cdpParams };
+}
+
+function formatThrottleSummary(profile = null) {
+  if (!profile || profile.profile === 'off') return 'off';
+  if (profile.offline) return 'offline';
+  return `${profile.profile} — latency ${profile.latencyMs}ms, ${profile.downloadKbps} kbps down, ${profile.uploadKbps} kbps up`;
+}
+
+function throttleModel(session, parsed) {
+  const current = parsed.mode === 'status'
+    ? (session.networkThrottle || { profile: 'off', offline: false, latencyMs: 0, downloadKbps: null, uploadKbps: null })
+    : parsed;
+  return {
+    schema: 'chrome-cdp-ex.throttle.v1',
+    targetId: session.targetId,
+    mode: parsed.mode,
+    profile: current.profile || 'off',
+    offline: current.offline === true,
+    latencyMs: current.latencyMs || 0,
+    downloadKbps: current.downloadKbps,
+    uploadKbps: current.uploadKbps,
+    cdpParams: current.cdpParams || throttleCdpParams(current),
+  };
+}
+
+function formatThrottleText(model) {
+  const lines = [`Network throttle: ${formatThrottleSummary(model)}`];
+  if (model.mode === 'status') {
+    lines.push(`Next: cdp throttle ${model.targetId} slow-3g  # apply a preset`);
+  } else if (model.profile === 'off') {
+    lines.push('Network conditions reset to browser defaults.');
+    lines.push(`Next: cdp throttle ${model.targetId} slow-3g  # re-apply a preset`);
+  } else {
+    lines.push(`Next: cdp throttle ${model.targetId} off`);
+  }
+  return lines.join('\n');
+}
+
+async function throttleStr(cdp, sid, session, args = []) {
+  const parsed = parseThrottleArgs(args);
+  if (parsed.mode === 'apply') {
+    await cdp.send('Network.enable', {}, sid);
+    await cdp.send('Network.emulateNetworkConditions', parsed.cdpParams, sid);
+    session.networkThrottle = {
+      profile: parsed.profile,
+      offline: parsed.offline,
+      latencyMs: parsed.latencyMs,
+      downloadKbps: parsed.downloadKbps,
+      uploadKbps: parsed.uploadKbps,
+      cdpParams: parsed.cdpParams,
+      appliedAt: Date.now(),
+    };
+    appendSessionEnvironmentLog(session, { kind: 'throttle', ts: session.networkThrottle.appliedAt, action: 'apply', throttle: session.networkThrottle });
+  }
+  const model = throttleModel(session, parsed);
+  return parsed.format === 'json' ? formatJson(model) : formatThrottleText(model);
 }
 
 function clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq }) {
@@ -2491,6 +6379,42 @@ function clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, 
     lastReadSeq.console = consoleBuf?.latest?.() || 0;
     lastReadSeq.exception = exceptionBuf?.latest?.() || 0;
   }
+}
+
+async function waitForActionNetworkQuiet(pendingReqs, { quietMs = 150, timeoutMs = 1000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let quietSince = pendingReqs?.size ? 0 : Date.now();
+  while (Date.now() < deadline) {
+    if (pendingReqs?.size) {
+      quietSince = 0;
+    } else {
+      if (!quietSince) quietSince = Date.now();
+      if (Date.now() - quietSince >= quietMs) return true;
+    }
+    await sleep(50);
+  }
+  return !pendingReqs?.size;
+}
+
+function appendPendingActionNetworkEntries(pendingReqs, netReqBuf, sinceTs, { now = Date.now() } = {}) {
+  if (!pendingReqs || !netReqBuf) return 0;
+  let count = 0;
+  for (const req of pendingReqs.values()) {
+    if (!req || req.actionEvidenceReported || req.ts < sinceTs) continue;
+    req.actionEvidenceReported = true;
+    netReqBuf.push({
+      method: req.method,
+      url: req.url,
+      status: 'pending',
+      type: req.type,
+      duration: now - req.ts,
+      size: 0,
+      pending: true,
+      ts: req.ts,
+    });
+    count += 1;
+  }
+  return count;
 }
 
 async function viewportStr(cdp, sid, size) {
@@ -2742,10 +6666,55 @@ async function historyNavStr(cdp, sid, direction) {
 }
 
 async function reloadStr(cdp, sid) {
-  const loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
-  await cdp.send('Page.reload', {}, sid);
-  try { await loadEvent.promise; } catch {}
+  await cdp.send('Page.enable', {}, sid);
+  const loadEvent = cdp.waitForEvent('Page.loadEventFired', RELOAD_EVENT_TIMEOUT);
+  try {
+    await cdp.send('Page.reload', {}, sid, RELOAD_DISPATCH_TIMEOUT);
+  } catch (e) {
+    if (!isTimeoutError(e, ['Page.reload'])) throw e;
+  }
+  try {
+    await Promise.race([
+      loadEvent.promise,
+      waitForDocumentReady(cdp, sid, RELOAD_READY_TIMEOUT, { probeTimeoutMs: RELOAD_READY_PROBE_TIMEOUT }),
+    ]);
+  } catch {
+    // Some embedded/live targets do not reliably emit Page.loadEventFired after
+    // reload. Action feedback still performs a bounded post-reload observation.
+  } finally {
+    loadEvent.cancel?.();
+  }
   return 'Page reloaded';
+}
+
+async function observeReloadPage(cdp, sid) {
+  const result = await cdp.send('Runtime.evaluate', {
+    expression: `JSON.stringify({
+      title: document.title || '',
+      url: window.location.href || '',
+      readyState: document.readyState || ''
+    })`,
+    returnByValue: true,
+    awaitPromise: true,
+  }, sid, RELOAD_OBSERVE_TIMEOUT);
+  if (result.exceptionDetails) {
+    throw new Error(result.exceptionDetails.text || result.exceptionDetails.exception?.description);
+  }
+  const value = result.result?.value;
+  const parsed = typeof value === 'string' ? JSON.parse(value) : (value || {});
+  return [
+    'Reload observation:',
+    `Page: ${parsed.title || '(untitled)'}`,
+    `URL: ${parsed.url || '(unknown)'}`,
+    `Ready state: ${parsed.readyState || '(unknown)'}`,
+  ].join('\n');
+}
+
+async function reloadActionDispatch({ cdp, sessionId, session, consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq }) {
+  const reloadResult = await reloadStr(cdp, sessionId);
+  clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
+  invalidateSessionRefs(session, 'navigation');
+  return `${reloadResult} (console/exception/navigation buffers cleared)`;
 }
 
 // --- Inject: live CSS/JS injection with tracking ---
@@ -3108,7 +7077,7 @@ async function resolveStyleSource(cdp, sid, rule) {
   return mapStyleSource(header?.text || '', sheetId, genLine0);
 }
 
-async function cascadeStr(cdp, sid, selector, property, refMap, refState) {
+async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts = {}) {
   if (!selector) throw new Error('CSS selector or @ref required');
 
   // CSS.getMatchedStylesForNode requires these domains/document state. Enable
@@ -3120,9 +7089,15 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState) {
   // Resolve element to DOM nodeId
   let nodeId;
   if (isRef(selector)) {
-    const num = parseInt(selector.slice(1));
-    const backendNodeId = refMap.get(num);
-    if (!backendNodeId) throw new Error(formatUnknownRefError(selector, refState || {}));
+    const frameParsed = parseFrameRef(selector);
+    let backendNodeId;
+    if (frameParsed) {
+      backendNodeId = frameScopedBackendNode(refState || {}, frameParsed).backendNodeId;
+    } else {
+      const num = parseInt(selector.slice(1));
+      backendNodeId = refMap.get(num);
+      if (!backendNodeId) throw new Error(formatUnknownRefError(selector, refState || {}));
+    }
     const { nodeIds } = await cdp.send('DOM.pushNodesByBackendIdsToFrontend',
       { backendNodeIds: [backendNodeId] }, sid);
     nodeId = nodeIds[0];
@@ -3209,10 +7184,40 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState) {
       m.rule.style?.cssProperties?.some(p => !p.disabled && p.value && INHERITABLE_PROPS.has(p.name))));
 
   if (propRules.size === 0 && !hasInherited && !property) {
+    if (opts.format === 'json') {
+      return formatJson({
+        schema: 'chrome-cdp-ex.cascade.v1',
+        input: { selector, property: null },
+        propertyCount: 0,
+        properties: [],
+        inherited: [],
+        editTarget: null,
+        message: 'No matching CSS rules found for this element',
+      });
+    }
     return 'No matching CSS rules found for this element';
   }
   if (propRules.size === 0 && !hasInherited && property) {
     const computed = computedMap.get(property);
+    if (opts.format === 'json') {
+      return formatJson({
+        schema: 'chrome-cdp-ex.cascade.v1',
+        input: { selector, property },
+        propertyCount: computed ? 1 : 0,
+        properties: computed ? [{
+          name: property,
+          computedValue: computed,
+          winner: null,
+          rules: [],
+          note: 'computed, no explicit rule found',
+        }] : [],
+        inherited: [],
+        editTarget: null,
+        message: computed
+          ? `${property}: ${computed} (computed, no explicit rule found)`
+          : `Property "${property}" not found on this element`,
+      });
+    }
     return computed
       ? `${property}: ${computed} (computed, no explicit rule found)`
       : `Property "${property}" not found on this element`;
@@ -3220,24 +7225,49 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState) {
 
   // Format output
   const lines = [];
+  const properties = [];
   for (const [prop, rules] of propRules) {
     const computedVal = computedMap.get(prop);
     if (!computedVal) continue;
 
     lines.push(`${prop}: ${computedVal}`);
+    const ruleModels = [];
+    let winner = null;
     for (const r of rules) {
       const isWinner = normalizeCssValue(r.value) === normalizeCssValue(computedVal);
       const mark = isWinner ? '✓' : '✗';
       const note = isWinner ? '' : '  [overridden]';
+      const ruleModel = {
+        selector: r.selector,
+        value: r.value,
+        source: r.source,
+        origin: r.origin || null,
+        winner: isWinner,
+        overridden: !isWinner,
+      };
+      ruleModels.push(ruleModel);
+      if (isWinner && !winner) winner = {
+        selector: r.selector,
+        value: r.value,
+        source: r.source,
+        origin: r.origin || null,
+      };
       lines.push(`  ${mark} ${r.selector} { ${prop}: ${r.value} }${note}`);
       lines.push(`    → ${r.source}`);
     }
+    properties.push({
+      name: prop,
+      computedValue: computedVal,
+      winner,
+      rules: ruleModels,
+    });
     lines.push('');
   }
 
   // Inherited properties
   const inherited = matched.inherited || [];
   const inheritedLines = [];
+  const inheritedModels = [];
   for (const inh of inherited) {
     for (const match of inh.matchedCSSRules || []) {
       const rule = match.rule;
@@ -3248,6 +7278,13 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState) {
         const selectorText = rule.selectorList?.text || '?';
         const source = await resolveStyleSource(cdp, sid, rule);
         inheritedLines.push(`  ${prop.name}: ${prop.value}  ← ${selectorText}  → ${source}`);
+        inheritedModels.push({
+          name: prop.name,
+          value: prop.value,
+          selector: selectorText,
+          source,
+          origin: rule.origin || null,
+        });
       }
     }
   }
@@ -3264,6 +7301,41 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState) {
     }
   }
 
+  if (opts.format === 'json') {
+    const editProperty = property
+      ? properties.find(entry => entry.name === property)
+      : properties.find(entry => entry.winner);
+    const editTarget = editProperty?.winner
+      ? {
+        property: editProperty.name,
+        selector: editProperty.winner.selector,
+        value: editProperty.winner.value,
+        source: editProperty.winner.source,
+        origin: editProperty.winner.origin || null,
+      }
+      : null;
+    return formatJson({
+      schema: 'chrome-cdp-ex.cascade.v1',
+      input: { selector, property: property || null },
+      propertyCount: properties.length,
+      properties,
+      inherited: inheritedModels,
+      editTarget,
+      recommendation: editTarget
+        ? {
+          source: 'cascade',
+          strategy: 'edit-winning-source',
+          property: editTarget.property,
+          selector: editTarget.selector,
+          sourceLocation: editTarget.source,
+        }
+        : {
+          source: 'cascade',
+          strategy: 'inspect-computed-style',
+        },
+    });
+  }
+
   return lines.join('\n').trim() || 'No matching CSS rules found';
 }
 
@@ -3274,7 +7346,217 @@ async function closetabStr(cdp, targetId) {
 }
 
 // --- Batch result formatting ---
-function formatBatchResults(results, format = 'json') {
+function firstNonEmptyLine(value, limit = 240) {
+  const line = String(value ?? '').split('\n').map(s => s.trim()).find(Boolean) || '';
+  return line.length > limit ? `${line.slice(0, limit - 1)}…` : line;
+}
+
+function maybeParseJson(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return null;
+  try { return JSON.parse(trimmed); } catch { return null; }
+}
+
+function extractLabeledLine(text, label) {
+  const re = new RegExp(`^${label}:\\s*(.+)$`, 'm');
+  return String(text || '').match(re)?.[1]?.trim() || null;
+}
+
+function compactActionDiagnosisModel(diagnosis = null) {
+  if (!diagnosis || typeof diagnosis !== 'object') return null;
+  return {
+    schema: diagnosis.schema || 'chrome-cdp-ex.action-diagnosis.v1',
+    status: diagnosis.status || 'ok',
+    kind: diagnosis.kind || 'ok',
+    confidence: diagnosis.confidence || 'medium',
+    source: diagnosis.source || 'action',
+    reason: diagnosis.reason || '',
+    nextCommand: diagnosis.nextCommand || null,
+    recovery: diagnosis.recovery || null,
+    signals: diagnosis.signals || {},
+  };
+}
+
+function compactActionVerdictModel(verdict = null) {
+  if (!verdict || typeof verdict !== 'object') return null;
+  const nextSteps = Array.isArray(verdict.nextSteps) ? verdict.nextSteps.filter(Boolean) : [];
+  return {
+    schema: verdict.schema || 'chrome-cdp-ex.action-verdict.v1',
+    status: verdict.status || 'verify',
+    source: verdict.source || 'outcome',
+    confidence: verdict.confidence || 'medium',
+    canContinue: verdict.canContinue === true,
+    needsRecovery: verdict.needsRecovery === true,
+    primaryNextStep: verdict.primaryNextStep || null,
+    nextSteps,
+    reason: verdict.reason || null,
+  };
+}
+
+function diagnosisFromActionModel(actionModel = null) {
+  if (actionModel?.schema !== 'chrome-cdp-ex.action.v1') return null;
+  return compactActionDiagnosisModel(actionModel.effects?.diagnosis || null);
+}
+
+function verdictFromActionModel(actionModel = null) {
+  if (actionModel?.schema !== 'chrome-cdp-ex.action.v1') return null;
+  return compactActionVerdictModel(actionModel.verdict || null);
+}
+
+function isAttentionDiagnosis(diagnosis = null) {
+  return diagnosis?.status === 'attention';
+}
+
+function isAttentionVerdict(verdict = null) {
+  if (!verdict || typeof verdict !== 'object') return false;
+  if (verdict.needsRecovery === true) return true;
+  return ['investigate', 'recover', 'blocked'].includes(verdict.status);
+}
+
+function recoveryCommandsFromDiagnosis(diagnosis = null) {
+  const commands = diagnosis?.recovery?.commands;
+  if (Array.isArray(commands) && commands.length) {
+    return commands.map(entry => entry?.command).filter(Boolean);
+  }
+  return diagnosis?.nextCommand ? [diagnosis.nextCommand] : [];
+}
+
+function recoveryCommandsFromVerdict(verdict = null) {
+  const commands = Array.isArray(verdict?.nextSteps) ? verdict.nextSteps.filter(Boolean) : [];
+  if (commands.length) return commands;
+  return verdict?.primaryNextStep ? [verdict.primaryNextStep] : [];
+}
+
+function commandMeta(cmd) {
+  return COMMANDS.find(command => command.name === cmd || (command.aliases || []).includes(cmd)) || null;
+}
+
+function commandReturnsActionJson(cmd) {
+  const meta = commandMeta(cmd);
+  return meta?.mutates === true
+    && meta.feedbackPolicy
+    && Array.isArray(meta.outputFormats)
+    && meta.outputFormats.includes('json');
+}
+
+const BATCH_PARALLEL_READ_STATE_COMMANDS = new Set(['perceive', 'snap', 'snapshot']);
+
+function isBatchParallelUnsafeCommand(cmd) {
+  const meta = commandMeta(cmd);
+  if (meta?.mutates === true) return true;
+  return BATCH_PARALLEL_READ_STATE_COMMANDS.has(cmd);
+}
+
+function argsHaveFormatOption(args = []) {
+  return Array.isArray(args) && args.includes('--format');
+}
+
+function autoActionJsonArgs(cmd, args = [], enabled = false) {
+  const normalizedArgs = Array.isArray(args) ? args : [];
+  if (!enabled || !commandReturnsActionJson(cmd) || argsHaveFormatOption(normalizedArgs)) return normalizedArgs;
+  return [...normalizedArgs, '--format', 'json'];
+}
+
+function batchStepModel(result = {}, index = 0) {
+  const actionModel = maybeParseJson(result.result);
+  const actionFailure = actionModel?.schema === 'chrome-cdp-ex.action.v1' && actionModel.dispatch?.ok === false;
+  const diagnosis = diagnosisFromActionModel(actionModel);
+  const verdict = verdictFromActionModel(actionModel);
+  const errorText = result.error || (actionFailure ? actionModel.dispatch?.error : null) || '';
+  const ok = result.ok === true && !actionFailure;
+  const failureKind = actionFailure
+    ? actionModel.effects?.failure?.kind || null
+    : extractLabeledLine(errorText, 'Action failure');
+  const nextCommand = actionFailure
+    ? actionModel.nextHint || actionModel.effects?.failure?.nextCommand || null
+    : extractLabeledLine(errorText, 'Next');
+  const step = {
+    index: index + 1,
+    cmd: result.cmd || '',
+    ok,
+  };
+  if (ok) {
+    step.resultPreview = firstNonEmptyLine(result.result);
+  } else {
+    step.error = errorText || 'unknown error';
+    if (failureKind) step.failureKind = failureKind;
+    if (nextCommand) step.nextCommand = nextCommand;
+  }
+  if (diagnosis) step.diagnosis = diagnosis;
+  if (verdict) step.verdict = verdict;
+  return step;
+}
+
+function buildBatchResultModel(results = [], { targetId = null, mode = 'sequential' } = {}) {
+  const steps = results.map((result, index) => batchStepModel(result, index));
+  const failedSteps = steps.filter(step => !step.ok);
+  const diagnosisAttentionSteps = steps.filter(step => step.ok && isAttentionDiagnosis(step.diagnosis));
+  const verdictAttentionSteps = steps.filter(step => step.ok && isAttentionVerdict(step.verdict));
+  const attentionSteps = [...new Set([...diagnosisAttentionSteps, ...verdictAttentionSteps])];
+  const nextSteps = [];
+  const pushNext = (command) => {
+    if (command && !nextSteps.includes(command)) nextSteps.push(command);
+  };
+  for (const step of failedSteps) {
+    for (const command of recoveryCommandsFromDiagnosis(step.diagnosis)) pushNext(command);
+    for (const command of recoveryCommandsFromVerdict(step.verdict)) pushNext(command);
+    pushNext(step.nextCommand);
+  }
+  for (const step of attentionSteps) {
+    for (const command of recoveryCommandsFromDiagnosis(step.diagnosis)) pushNext(command);
+    for (const command of recoveryCommandsFromVerdict(step.verdict)) pushNext(command);
+  }
+  if (failedSteps.length && nextSteps.length === 0) {
+    nextSteps.push(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
+  }
+  return {
+    schema: 'chrome-cdp-ex.batch.v1',
+    targetId,
+    mode,
+    counts: {
+      steps: steps.length,
+      ok: steps.length - failedSteps.length,
+      failed: failedSteps.length,
+      attention: attentionSteps.length,
+    },
+    steps,
+    failedStep: failedSteps[0] || null,
+    nextSteps,
+  };
+}
+
+function parseBatchArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const tokens = fopts.args;
+  const parallel = tokens.includes('--parallel');
+  const plain = tokens.includes('--plain');
+  const compact = tokens.includes('--compact');
+  const input = tokens.filter(a => a !== '--parallel' && a !== '--plain' && a !== '--compact').join(' ') || '';
+  let commands;
+  if (input.startsWith('[')) {
+    try { commands = JSON.parse(input); } catch { throw new Error('batch: invalid JSON array'); }
+    if (!Array.isArray(commands)) throw new Error('batch argument must be a JSON array');
+  } else {
+    commands = input.split('|').map(segment => {
+      const parts = segment.trim().split(/\s+/);
+      return { cmd: parts[0], args: parts.slice(1) };
+    }).filter(c => c.cmd);
+  }
+  return {
+    commands,
+    parallel,
+    output: fopts.format === 'json' ? 'model' : (plain ? 'plain' : compact ? 'compact' : 'legacy-json'),
+  };
+}
+
+function formatBatchResults(results, format = 'json', options = {}) {
+  if (format && typeof format === 'object') {
+    return formatJson(buildBatchResultModel(results, format));
+  }
+  if (format === 'model') {
+    return formatJson(buildBatchResultModel(results, options));
+  }
   if (format === 'plain') {
     const lines = [];
     for (let i = 0; i < results.length; i++) {
@@ -3384,6 +7666,89 @@ function parseFlowSteps(input) {
   });
 }
 
+function flowStepModel(step = {}, index = 0, state = {}) {
+  const base = {
+    index: index + 1,
+    kind: step.kind || 'command',
+    ok: state.ok === true,
+  };
+  if (step.kind === 'wait') base.wait = step.what || '';
+  else {
+    base.cmd = step.cmd || '';
+    base.args = Array.isArray(step.args) ? step.args : [];
+  }
+  if (state.skipped) {
+    base.ok = false;
+    base.skipped = true;
+    return base;
+  }
+  if (base.ok) {
+    const actionModel = maybeParseJson(state.result);
+    const actionFailure = actionModel?.schema === 'chrome-cdp-ex.action.v1' && actionModel.dispatch?.ok === false;
+    const diagnosis = diagnosisFromActionModel(actionModel);
+    const verdict = verdictFromActionModel(actionModel);
+    base.resultPreview = firstNonEmptyLine(state.result);
+    if (diagnosis) base.diagnosis = diagnosis;
+    if (verdict) base.verdict = verdict;
+    if (actionFailure) {
+      base.ok = false;
+      base.error = actionModel.dispatch?.error || 'Action dispatch failed';
+      if (actionModel.effects?.failure?.kind) base.failureKind = actionModel.effects.failure.kind;
+      if (actionModel.nextHint || actionModel.effects?.failure?.nextCommand) {
+        base.nextCommand = actionModel.nextHint || actionModel.effects.failure.nextCommand;
+      }
+    }
+    return base;
+  }
+  const errorText = String(state.error || 'unknown error');
+  base.error = errorText;
+  const failureKind = extractLabeledLine(errorText, 'Action failure');
+  const nextCommand = extractLabeledLine(errorText, 'Next');
+  if (failureKind) base.failureKind = failureKind;
+  if (nextCommand) base.nextCommand = nextCommand;
+  return base;
+}
+
+function buildFlowResultModel({ targetId = null, input = '', steps = [], stepResults = [] } = {}) {
+  const failedStep = stepResults.find(step => step.ok === false && step.skipped !== true) || null;
+  const skipped = stepResults.filter(step => step.skipped === true).length;
+  const failed = failedStep ? 1 : 0;
+  const ok = stepResults.filter(step => step.ok === true).length;
+  const diagnosisAttentionSteps = stepResults.filter(step => step.ok && isAttentionDiagnosis(step.diagnosis));
+  const verdictAttentionSteps = stepResults.filter(step => step.ok && isAttentionVerdict(step.verdict));
+  const attentionSteps = [...new Set([...diagnosisAttentionSteps, ...verdictAttentionSteps])];
+  const nextSteps = [];
+  const pushNext = (command) => {
+    if (command && !nextSteps.includes(command)) nextSteps.push(command);
+  };
+  if (failedStep) {
+    for (const command of recoveryCommandsFromDiagnosis(failedStep.diagnosis)) pushNext(command);
+    for (const command of recoveryCommandsFromVerdict(failedStep.verdict)) pushNext(command);
+    pushNext(failedStep.nextCommand);
+  }
+  if (failedStep && nextSteps.length === 0) pushNext(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
+  for (const step of attentionSteps) {
+    for (const command of recoveryCommandsFromDiagnosis(step.diagnosis)) pushNext(command);
+    for (const command of recoveryCommandsFromVerdict(step.verdict)) pushNext(command);
+  }
+  return {
+    schema: 'chrome-cdp-ex.flow.v1',
+    targetId,
+    input,
+    halted: !!failedStep,
+    counts: {
+      steps: steps.length,
+      ok,
+      failed,
+      skipped,
+      attention: attentionSteps.length,
+    },
+    steps: stepResults,
+    failedStep,
+    nextSteps,
+  };
+}
+
 async function settleFlow(cdp, sid, what, pendingReqs, opts = {}) {
   const max = opts.maxMs || 10000;
   const quiet = opts.quietMs || 500;
@@ -3405,10 +7770,20 @@ async function settleFlow(cdp, sid, what, pendingReqs, opts = {}) {
   throw new Error(`Unknown wait: "${what}". Use "dom stable" or "network idle".`);
 }
 
-async function flowStr({ run, settle }, input) {
+async function flowStr({ run, settle }, input, { format = 'text', targetId = null } = {}) {
   const steps = parseFlowSteps(input);
   if (steps.length === 0) throw new Error('flow: no steps. Example: flow <target> "click @1; wait dom stable; summary"');
   const lines = [`Flow: ${steps.length} step(s)`];
+  const stepResults = [];
+  const finish = () => {
+    if (format === 'json') return formatJson(buildFlowResultModel({ targetId, input, steps, stepResults }));
+    return lines.join('\n');
+  };
+  const markSkippedAfter = (startIndex) => {
+    for (let j = startIndex; j < steps.length; j++) {
+      stepResults.push(flowStepModel(steps[j], j, { skipped: true }));
+    }
+  };
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const head = step.kind === 'wait'
@@ -3422,21 +7797,219 @@ async function flowStr({ run, settle }, input) {
       } else {
         const r = await run(step);
         if (!r.ok) {
+          stepResults.push(flowStepModel(step, i, { ok: false, error: r.error }));
+          markSkippedAfter(i + 1);
           lines.push(`  ✗ ${r.error}`);
           lines.push(`Flow halted at step ${i + 1}/${steps.length}`);
-          return lines.join('\n');
+          return finish();
         }
         body = r.result ?? '';
       }
+      const stepModel = flowStepModel(step, i, { ok: true, result: body });
+      stepResults.push(stepModel);
       const text = (body || '').toString();
       if (text) for (const ln of text.split('\n')) lines.push('  ' + ln);
+      if (!stepModel.ok) {
+        markSkippedAfter(i + 1);
+        lines.push(`Flow halted at step ${i + 1}/${steps.length}`);
+        return finish();
+      }
     } catch (e) {
+      stepResults.push(flowStepModel(step, i, { ok: false, error: e.message }));
+      markSkippedAfter(i + 1);
       lines.push(`  ✗ ${e.message}`);
       lines.push(`Flow halted at step ${i + 1}/${steps.length}`);
-      return lines.join('\n');
+      return finish();
     }
   }
-  return lines.join('\n');
+  return finish();
+}
+
+// --- Replay: execute record-actions artifacts ---
+const REPLAY_BLOCKED = new Set(['replay', 'record-actions', 'recordactions', 'batch', 'flow', 'repeat', 'stop']);
+
+function parseReplayArgs(args, { reader = readFileSync } = {}) {
+  const fopts = parseFormatArgs((args || []).filter(a => a !== undefined && a !== null), ['text', 'json']);
+  const tokens = fopts.args;
+  const opts = { continueOnError: false, artifact: null, source: 'inline JSON', format: fopts.format };
+  const positional = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--continue' || token === '-c') {
+      opts.continueOnError = true;
+    } else if (token === '--json') {
+      const raw = tokens.slice(i + 1).join(' ').trim();
+      if (!raw) throw new Error('replay --json requires a record-actions JSON payload');
+      opts.artifact = parseReplayArtifact(raw);
+      opts.source = 'inline JSON';
+      break;
+    } else if (token === '--file' || token === '-f') {
+      const filePath = tokens[++i];
+      if (!filePath) throw new Error('replay --file requires a path to a record-actions JSON artifact');
+      opts.artifact = parseReplayArtifact(reader(filePath, 'utf8'));
+      opts.source = filePath;
+    } else {
+      positional.push(token);
+    }
+  }
+  if (!opts.artifact) {
+    const raw = positional.join(' ').trim();
+    if (!raw) throw new Error('replay requires --json <record-actions-json> or --file <path>');
+    if (raw.startsWith('{') || raw.startsWith('[')) {
+      opts.artifact = parseReplayArtifact(raw);
+      opts.source = 'inline JSON';
+    } else {
+      opts.artifact = parseReplayArtifact(reader(positional[0], 'utf8'));
+      opts.source = positional[0];
+    }
+  }
+  return opts;
+}
+
+function parseReplayArtifact(raw) {
+  let artifact;
+  try {
+    artifact = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch (e) {
+    throw new Error(`replay: invalid JSON artifact (${e.message})`);
+  }
+  if (Array.isArray(artifact)) {
+    artifact = { schema: 'chrome-cdp-ex.record-actions.v1', actions: artifact };
+  }
+  if (!artifact || typeof artifact !== 'object') throw new Error('replay: artifact must be a record-actions JSON object');
+  if (artifact.schema !== 'chrome-cdp-ex.record-actions.v1') {
+    throw new Error(`replay: unsupported artifact schema ${artifact.schema || '(missing)'}`);
+  }
+  if (!Array.isArray(artifact.actions)) throw new Error('replay: artifact.actions must be an array');
+  if (artifact.environment != null && !Array.isArray(artifact.environment)) throw new Error('replay: artifact.environment must be an array when provided');
+  return artifact;
+}
+
+function replayStepFromAction(action = {}) {
+  const command = Array.isArray(action.command) ? action.command.map(v => String(v)) : [];
+  const commandText = command.length ? formatCommandLine(command) : `${action.action || 'action'} <missing command>`;
+  if (action.replayable !== true) {
+    const missing = Array.isArray(action.needsInput) && action.needsInput.length
+      ? action.needsInput
+      : ['review'];
+    return { skip: true, command, commandText, missing, reason: 'not replayable' };
+  }
+  if (!command.length || !command[0]) {
+    return { skip: true, command, commandText, missing: ['command'], reason: 'missing command' };
+  }
+  if (command.includes('<redacted>')) {
+    return { skip: true, command, commandText, missing: redactedCommandNeedsInput(action.action || command[0]), reason: 'redacted input' };
+  }
+  if (REPLAY_BLOCKED.has(command[0])) {
+    return { skip: true, command, commandText, missing: ['safe command'], reason: `blocked command: ${command[0]}` };
+  }
+  return { cmd: command[0], args: command.slice(1), command, commandText };
+}
+
+function replayRecoveryNextSteps(targetId) {
+  const target = targetId || '<target>';
+  return [
+    `cdp perceive ${target} -C -d 8`,
+    `cdp report ${target} --format json`,
+  ];
+}
+
+async function replayActionsStr({ run }, args) {
+  const opts = parseReplayArgs(args);
+  const actions = opts.artifact.actions;
+  const environment = Array.isArray(opts.artifact.environment) ? opts.artifact.environment : [];
+  const total = actions.length;
+  const model = {
+    schema: 'chrome-cdp-ex.replay.v1',
+    source: opts.source,
+    sourceTargetId: opts.artifact.targetId || null,
+    sourceSessionId: opts.artifact.sessionId || null,
+    continueOnError: opts.continueOnError,
+    halted: false,
+    counts: {
+      environment: environment.length,
+      actions: total,
+      total: environment.length + total,
+      ok: 0,
+      failed: 0,
+      skipped: 0,
+    },
+    steps: [],
+    failedStep: null,
+    nextSteps: [],
+  };
+  const lines = [
+    `Replay: ${total} step(s)`,
+    `Source: ${opts.source}`,
+  ];
+  if (environment.length) lines.push(`Environment: ${environment.length} step(s)`);
+  const finish = () => {
+    lines.push(`Done: ${model.counts.ok} ok, ${model.counts.failed} failed, ${model.counts.skipped} skipped`);
+    if (model.failedStep) model.nextSteps = replayRecoveryNextSteps(model.sourceTargetId);
+    return opts.format === 'json' ? formatJson(model) : lines.join('\n');
+  };
+  const recordStep = (phase, index, totalCount, step, details) => {
+    const entry = {
+      phase,
+      index,
+      total: totalCount,
+      command: step.command || [],
+      commandText: step.commandText,
+      ok: details.ok === true,
+      skipped: details.skipped === true,
+    };
+    if (details.resultPreview) entry.resultPreview = details.resultPreview;
+    if (details.error) entry.error = details.error;
+    if (step.reason) entry.reason = step.reason;
+    if (step.missing?.length) entry.missing = step.missing;
+    model.steps.push(entry);
+    return entry;
+  };
+  const runReplayStep = async (step, phase, index, totalCount, label, haltText) => {
+    if (step.skip) {
+      model.counts.skipped++;
+      lines.push(`${label} skip ${step.commandText}`);
+      if (step.reason) lines.push(`  Reason: ${step.reason}`);
+      if (step.missing?.length) lines.push(`  Missing: ${step.missing.join(', ')}`);
+      recordStep(phase, index, totalCount, step, { skipped: true });
+      return true;
+    }
+    lines.push(`${label} ${step.commandText}`);
+    const result = await run({ cmd: step.cmd, args: step.args });
+    if (result?.ok) {
+      model.counts.ok++;
+      const body = (result.result || '').toString().split('\n')[0].slice(0, 240);
+      if (body) lines.push(`  ok: ${body}`);
+      else lines.push('  ok');
+      recordStep(phase, index, totalCount, step, { ok: true, resultPreview: body || null });
+      return true;
+    }
+    model.counts.failed++;
+    const error = result?.error || 'unknown error';
+    lines.push(`  ✗ ${error}`);
+    const failedStep = recordStep(phase, index, totalCount, step, { ok: false, error });
+    if (!model.failedStep) model.failedStep = failedStep;
+    if (!opts.continueOnError) {
+      model.halted = true;
+      lines.push(`${haltText} (use --continue to keep going).`);
+      return false;
+    }
+    return true;
+  };
+  for (let i = 0; i < environment.length; i++) {
+    const step = replayStepFromAction(environment[i]);
+    const keepGoing = await runReplayStep(step, 'environment', i + 1, environment.length, `[env ${i + 1}/${environment.length}]`, `Replay halted at environment step ${i + 1}/${environment.length}`);
+    if (!keepGoing) {
+      return finish();
+    }
+  }
+  for (let i = 0; i < actions.length; i++) {
+    const action = actions[i];
+    const step = replayStepFromAction(action);
+    const keepGoing = await runReplayStep(step, 'action', i + 1, total, `[${i + 1}/${total}]`, `Replay halted at step ${i + 1}/${total}`);
+    if (!keepGoing) break;
+  }
+  return finish();
 }
 
 // --- Doctor: one-call diagnostics ---
@@ -3468,16 +8041,79 @@ function checkSkillSymlink({ home = homedir(), fs = { existsSync, lstatSync: nul
 function checkDaemonSockets({ list = listDaemonSockets } = {}) {
   const daemons = list();
   if (!daemons || daemons.length === 0) {
-    return { status: 'OK', label: 'Daemons', detail: 'no live tab daemons' };
+    return { status: 'OK', label: 'Daemons', detail: 'no live tab daemons', targetPrefixes: [] };
   }
   const ids = daemons.map(d => (d.targetId || '').slice(0, 8)).filter(Boolean);
   return {
     status: 'OK', label: 'Daemons',
     detail: `${daemons.length} live: ${ids.join(', ')}`,
+    targetPrefixes: ids,
   };
 }
 
-async function checkCdpReachability({ env = process.env, fetcher = fetch, host = process.env.CDP_HOST || '127.0.0.1' } = {}) {
+function detectFdLimit({ runner = spawnSync } = {}) {
+  if (IS_WINDOWS) return null;
+  try {
+    const res = runner('/bin/sh', ['-lc', 'ulimit -n'], { encoding: 'utf8', timeout: 1000 });
+    if (res.status !== 0) return null;
+    const raw = String(res.stdout || '').trim();
+    if (raw === 'unlimited') return Number.POSITIVE_INFINITY;
+    const limit = Number(raw);
+    return Number.isFinite(limit) ? limit : null;
+  } catch {
+    return null;
+  }
+}
+
+function fdLimitRecovery({ platform = process.platform } = {}) {
+  const commands = [
+    {
+      scope: 'current-shell',
+      command: 'ulimit -n 4096',
+      reason: 'Raise the open-files limit for this terminal before starting long chrome-cdp-ex sessions.',
+      requiresAdmin: false,
+    },
+  ];
+  if (platform === 'darwin') {
+    commands.push({
+      scope: 'macos-login-session',
+      command: 'sudo launchctl limit maxfiles 65536 200000',
+      reason: 'Raise the macOS launchd limit for GUI apps and future shells; rerun doctor afterwards.',
+      requiresAdmin: true,
+    });
+  }
+  return {
+    schema: 'chrome-cdp-ex.fd-limit-recovery.v1',
+    strategy: 'raise-open-files-limit',
+    commands,
+  };
+}
+
+function checkFdLimit({ limit = detectFdLimit(), platform = process.platform } = {}) {
+  const recovery = fdLimitRecovery({ platform });
+  if (limit == null) {
+    return {
+      status: 'WARN',
+      label: 'FD limit',
+      detail: 'open-files limit unavailable',
+      hint: 'If you see "Too many open files", rerun commands with: ulimit -n 4096',
+      recovery,
+    };
+  }
+  if (limit >= 1024) {
+    const text = limit === Number.POSITIVE_INFINITY ? 'unlimited' : String(limit);
+    return { status: 'OK', label: 'FD limit', detail: `${text} open files` };
+  }
+  return {
+    status: 'WARN',
+    label: 'FD limit',
+    detail: `${limit} open files (low for long browser sessions)`,
+    hint: 'Raise for this shell with: ulimit -n 4096',
+    recovery,
+  };
+}
+
+async function checkCdpReachability({ env = process.env, fetcher = fetch, host = env.CDP_HOST || process.env.CDP_HOST || '127.0.0.1' } = {}) {
   const port = env.CDP_PORT;
   const tryFetch = async (p) => {
     const res = await fetcher(`http://${host}:${p}/json/version`, { signal: AbortSignal.timeout(3000) });
@@ -3497,21 +8133,25 @@ async function checkCdpReachability({ env = process.env, fetcher = fetch, host =
         return {
           status: 'WARN', label: 'CDP', detail: `port ${port}: no webSocketDebuggerUrl`,
           hint: 'Browser exposes /json/version but not the debugger WebSocket — toggle remote debugging again',
+          host,
+          port: String(port),
         };
       }
-      return { status: 'OK', label: 'CDP', detail: `${host}:${port} → ${describe(info)}` };
+      return { status: 'OK', label: 'CDP', detail: `${host}:${port} → ${describe(info)}`, host, port: String(port) };
     } catch (e) {
       return {
         status: 'FAIL', label: 'CDP', detail: `cannot reach ${host}:${port} (${e.message})`,
         hint: `start the app with --remote-debugging-port=${port}, or unset CDP_PORT to auto-discover Chrome`,
+        host,
+        port: String(port),
       };
     }
   }
   // Auto-discover via DevToolsActivePort (light reuse — avoids full ws connect)
   const home = homedir();
-  const localAppData = process.env.LOCALAPPDATA || '';
+  const localAppData = env.LOCALAPPDATA || process.env.LOCALAPPDATA || '';
   const tryPaths = [
-    process.env.CDP_PORT_FILE,
+    env.CDP_PORT_FILE,
     resolve(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
     resolve(home, 'Library/Application Support/Google/Chrome/Default/DevToolsActivePort'),
     resolve(home, '.config/google-chrome/DevToolsActivePort'),
@@ -3529,26 +8169,362 @@ async function checkCdpReachability({ env = process.env, fetcher = fetch, host =
   try {
     lines = readFileSync(found, 'utf8').trim().split('\n');
   } catch (e) {
-    return { status: 'WARN', label: 'CDP', detail: `cannot read ${found}: ${e.message}` };
+    return { status: 'WARN', label: 'CDP', detail: `cannot read ${found}: ${e.message}`, host };
   }
   if (lines.length < 2 || !lines[0]) {
-    return { status: 'WARN', label: 'CDP', detail: `invalid DevToolsActivePort at ${found}` };
+    return { status: 'WARN', label: 'CDP', detail: `invalid DevToolsActivePort at ${found}`, host };
   }
   const discoveredPort = lines[0];
   try {
     const info = await tryFetch(discoveredPort);
-    return { status: 'OK', label: 'CDP', detail: `${host}:${discoveredPort} → ${describe(info)} (auto-discovered)` };
+    return { status: 'OK', label: 'CDP', detail: `${host}:${discoveredPort} → ${describe(info)} (auto-discovered)`, host, port: String(discoveredPort) };
   } catch (e) {
     return {
       status: 'WARN', label: 'CDP',
       detail: `DevToolsActivePort points to ${discoveredPort} but /json/version unreachable: ${e.message}`,
       hint: 'Browser may have stopped — re-toggle chrome://inspect/#remote-debugging',
+      host,
+      port: String(discoveredPort),
     };
   }
 }
 
+function normalizeBrowserTargetInfo(target) {
+  return {
+    targetId: target.targetId || target.id || '',
+    type: target.type || '',
+    title: target.title || '',
+    url: target.url || '',
+  };
+}
+
+function isDebuggablePageTarget(target) {
+  return target.type === 'page'
+    && target.targetId
+    && !target.url.startsWith('chrome://')
+    && !target.url.startsWith('edge://')
+    && !target.url.startsWith('devtools://');
+}
+
+async function checkBrowserTargets({ cdp = null, env = process.env, fetcher = fetch, host = env.CDP_HOST || process.env.CDP_HOST || '127.0.0.1' } = {}) {
+  if (cdp?.status !== 'OK') {
+    return {
+      status: 'WARN',
+      label: 'Tabs',
+      detail: 'skipped until CDP is reachable',
+      hint: 'Fix CDP first, then rerun: cdp doctor',
+      targetPrefixes: [],
+    };
+  }
+  const port = cdp.port || env.CDP_PORT;
+  const cdpHost = cdp.host || host;
+  if (!port) {
+    return {
+      status: 'WARN',
+      label: 'Tabs',
+      detail: 'cannot list tabs without a CDP port',
+      hint: 'Rerun: cdp doctor, then use the printed CDP/open path.',
+      targetPrefixes: [],
+    };
+  }
+
+  try {
+    const res = await fetcher(`http://${cdpHost}:${port}/json/list`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const raw = await res.json();
+    const targets = Array.isArray(raw) ? raw.map(normalizeBrowserTargetInfo).filter(isDebuggablePageTarget) : [];
+    if (targets.length === 0) {
+      return {
+        status: 'WARN',
+        label: 'Tabs',
+        detail: 'no debuggable page targets',
+        hint: 'Create one with: cdp open https://example.com',
+        targetPrefixes: [],
+        noTargets: true,
+      };
+    }
+    const prefixLen = getDisplayPrefixLength(targets.map(target => target.targetId));
+    const targetPrefixes = targets.map(target => target.targetId.slice(0, prefixLen));
+    const labels = targets.slice(0, 3).map((target, index) => {
+      const title = target.title || (target.url === 'about:blank' ? '(blank tab)' : target.url || '(untitled)');
+      return `${targetPrefixes[index]} ${title}`.trim();
+    });
+    const suffix = targets.length > labels.length ? `, +${targets.length - labels.length} more` : '';
+    return {
+      status: 'OK',
+      label: 'Tabs',
+      detail: `${targets.length} debuggable page target${targets.length === 1 ? '' : 's'}: ${labels.join(', ')}${suffix}`,
+      targetPrefixes,
+    };
+  } catch (e) {
+    return {
+      status: 'WARN',
+      label: 'Tabs',
+      detail: `cannot list debuggable page targets (${e.message})`,
+      hint: 'Run: cdp list. If it is empty, run: cdp open https://example.com',
+      targetPrefixes: [],
+    };
+  }
+}
+
+function checkBrowserPermission({ daemons = null, tabs = null } = {}) {
+  const daemonPrefixes = daemons?.targetPrefixes || [];
+  if (daemonPrefixes.length > 0) {
+    return {
+      status: 'OK',
+      label: 'Permission',
+      detail: `debugging approved for ${daemonPrefixes.join(', ')}`,
+      targetPrefixes: daemonPrefixes,
+    };
+  }
+
+  const tabPrefixes = tabs?.targetPrefixes || [];
+  if (tabPrefixes.length > 0) {
+    const target = tabPrefixes[0];
+    return {
+      status: 'WARN',
+      label: 'Permission',
+      detail: `browser debugging approval not confirmed for ${target}`,
+      hint: `Run: cdp perceive ${target} -C -d 8; if Chrome asks "Allow debugging?", click Allow`,
+      targetPrefixes: tabPrefixes,
+    };
+  }
+
+  if (tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '')) {
+    return {
+      status: 'WARN',
+      label: 'Permission',
+      detail: 'no target available to request browser debugging approval',
+      hint: 'Run: cdp open https://example.com; if Chrome asks "Allow debugging?", click Allow',
+      targetPrefixes: [],
+    };
+  }
+
+  return {
+    status: 'WARN',
+    label: 'Permission',
+    detail: 'skipped until CDP and tabs are reachable',
+    hint: 'Fix CDP/tabs first, then rerun: cdp doctor',
+    targetPrefixes: [],
+  };
+}
+
+function doctorWizardSummary(checks) {
+  const wizard = doctorWizardModel(checks);
+  return [
+    'Wizard:',
+    `  Status: ${wizard.status}`,
+    `  Current step: ${wizard.currentStep}`,
+    `  Golden path: ${wizard.goldenPath.join(' -> ')}`,
+  ];
+}
+
+function doctorWizardModel(checks) {
+  const node = checks.find(c => c.label === 'Node');
+  const cdp = checks.find(c => c.label === 'CDP');
+  const daemon = checks.find(c => c.label === 'Daemons');
+  const tabs = checks.find(c => c.label === 'Tabs');
+  const permission = checks.find(c => c.label === 'Permission');
+  const target = permission?.targetPrefixes?.[0] || daemon?.targetPrefixes?.[0] || tabs?.targetPrefixes?.[0] || '<target>';
+  const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
+
+  let status = 'ready for live browser perception';
+  let currentStep = `cdp perceive ${target} -C -d 8`;
+  if (node?.status === 'FAIL') {
+    status = 'blocked at Node.js';
+    currentStep = 'install Node.js 22+ and rerun: cdp doctor';
+  } else if (cdp?.status === 'FAIL') {
+    status = 'blocked at browser CDP';
+    currentStep = 'enable browser remote debugging, then rerun: cdp doctor';
+  } else if (cdp?.status === 'WARN') {
+    status = 'waiting for stable browser CDP';
+    currentStep = 're-toggle browser remote debugging, then rerun: cdp doctor';
+  } else if (noTargets) {
+    status = 'waiting for a debuggable page';
+    currentStep = 'cdp open https://example.com';
+  } else if (permission?.status === 'WARN') {
+    status = 'waiting for browser debugging approval';
+    currentStep = `cdp perceive ${target} -C -d 8  # click Allow if Chrome asks`;
+  }
+
+  return {
+    status,
+    currentStep,
+    goldenPath: ['doctor', 'list/open', 'perceive', 'click/fill', 'since-action evidence', 'report'],
+    commands: doctorNextStepCommands(checks),
+  };
+}
+
+function doctorWarningCommands(checks) {
+  const fd = checks.find(c => c.label === 'FD limit');
+  const warnings = [];
+  if (fd?.status === 'WARN') {
+    const commands = Array.isArray(fd.recovery?.commands) && fd.recovery.commands.length
+      ? fd.recovery.commands
+      : [{ scope: 'current-shell', command: 'ulimit -n 4096', reason: fd.detail || 'open-files limit is low for long browser sessions', requiresAdmin: false }];
+    warnings.push({
+      label: 'FD limit',
+      command: commands[0].command,
+      reason: fd.detail || 'open-files limit is low for long browser sessions',
+      commands,
+    });
+  }
+  return warnings;
+}
+
+function doctorRecommendationModel(checks) {
+  const node = checks.find(c => c.label === 'Node');
+  const cdp = checks.find(c => c.label === 'CDP');
+  const daemon = checks.find(c => c.label === 'Daemons');
+  const tabs = checks.find(c => c.label === 'Tabs');
+  const permission = checks.find(c => c.label === 'Permission');
+  const target = permission?.targetPrefixes?.[0] || daemon?.targetPrefixes?.[0] || tabs?.targetPrefixes?.[0] || '<target>';
+  const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
+  const base = {
+    source: 'doctor-onboarding',
+    stage: 'perceive',
+    run: `cdp perceive ${target} -C -d 8`,
+    ask: null,
+    after: `cdp click ${target} @ref  # or: cdp fill ${target} <selector> <text>`,
+    requiresUserAction: false,
+    consentRequired: false,
+    reason: 'ready for live browser perception',
+    commands: doctorNextStepCommands(checks),
+    warnings: doctorWarningCommands(checks),
+  };
+
+  if (node?.status === 'FAIL') {
+    return {
+      ...base,
+      stage: 'node',
+      run: null,
+      ask: 'Install Node.js 22+.',
+      after: 'cdp doctor',
+      requiresUserAction: true,
+      reason: node.detail || null,
+    };
+  }
+  if (cdp?.status === 'FAIL') {
+    return {
+      ...base,
+      stage: 'browser-cdp',
+      run: 'cdp spawn-debug-browser edge --port 9222 --url https://example.com',
+      ask: 'Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: cdp doctor.',
+      after: 'cdp list',
+      requiresUserAction: true,
+      consentRequired: true,
+      reason: cdp.detail || null,
+    };
+  }
+  if (cdp?.status === 'WARN') {
+    return {
+      ...base,
+      stage: 'browser-cdp',
+      run: 'cdp doctor',
+      ask: 'Re-toggle browser remote debugging, or restart the app with CDP_PORT set.',
+      after: 'cdp list',
+      requiresUserAction: true,
+      reason: cdp.detail || null,
+    };
+  }
+  if (noTargets) {
+    return {
+      ...base,
+      stage: 'open-page',
+      run: 'cdp open https://example.com',
+      ask: null,
+      after: 'cdp perceive <target-from-open> -C -d 8',
+      reason: tabs?.detail || null,
+    };
+  }
+  if (permission?.status === 'WARN') {
+    return {
+      ...base,
+      stage: 'browser-permission',
+      run: `cdp perceive ${target} -C -d 8`,
+      ask: 'Click Allow if Chrome asks.',
+      after: `cdp click ${target} @ref  # or: cdp fill ${target} <selector> <text>`,
+      requiresUserAction: true,
+      reason: permission.detail || null,
+    };
+  }
+  return base;
+}
+
+function doctorRecommendationLines(checks) {
+  const recommendation = doctorRecommendationModel(checks);
+  const lines = ['Recommendation:'];
+  if (recommendation.run) {
+    const consent = recommendation.consentRequired ? '  (ask user first)' : '';
+    lines.push(`  Run: ${recommendation.run}${consent}`);
+  }
+  if (recommendation.ask) lines.push(`  Ask: ${recommendation.ask}`);
+  if (recommendation.after) lines.push(`  Then: ${recommendation.after}`);
+  for (const warning of recommendation.warnings || []) {
+    const commands = Array.isArray(warning.commands) && warning.commands.length
+      ? warning.commands
+      : [{ command: warning.command, reason: warning.reason, requiresAdmin: false }];
+    for (const command of commands) {
+      if (!command.command) continue;
+      const admin = command.requiresAdmin ? ' (requires admin)' : '';
+      lines.push(`  Long session note: ${command.command}${admin}  # ${command.reason || warning.reason}`);
+    }
+  }
+  return lines;
+}
+
+function doctorNextSteps(checks) {
+  const failures = checks.filter(c => c.status === 'FAIL');
+  const cdp = checks.find(c => c.label === 'CDP');
+  const node = checks.find(c => c.label === 'Node');
+  const fd = checks.find(c => c.label === 'FD limit');
+  const daemon = checks.find(c => c.label === 'Daemons');
+  const tabs = checks.find(c => c.label === 'Tabs');
+  const liveTarget = daemon?.targetPrefixes?.[0] || tabs?.targetPrefixes?.[0] || '<target>';
+  const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
+  const lines = ['', 'Next steps:'];
+  if (node?.status === 'FAIL') {
+    lines.push('  1. Install Node.js 22+ and rerun: cdp doctor');
+    return lines;
+  }
+  if (cdp?.status === 'FAIL') {
+    lines.push('  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
+    lines.push('  2. Isolated profile: cdp spawn-debug-browser edge --port 9222 --url https://example.com');
+    lines.push('  3. Then run: cdp list');
+    return lines;
+  }
+  if (cdp?.status === 'WARN') {
+    lines.push('  1. Re-toggle browser remote debugging, or restart the app with CDP_PORT set.');
+    lines.push('  2. If Chrome asks "Allow debugging?", click Allow, then rerun: cdp list');
+  } else {
+    if (noTargets) {
+      lines.push('  1. cdp open https://example.com');
+      lines.push('  2. If Chrome asks "Allow debugging?", click Allow; open waits up to 60s.');
+      lines.push('  3. Use the target id printed by open: cdp perceive <target-from-open> -C -d 8');
+      lines.push('  4. cdp click <target-from-open> @ref  # or: cdp fill <target-from-open> <selector> <text>');
+      lines.push('  5. cdp perceive <target-from-open> --since-action');
+      lines.push('  6. cdp report <target-from-open>');
+    } else {
+      lines.push('  1. cdp list');
+      if (!tabs?.targetPrefixes?.length) lines.push('  2. If list is empty: cdp open https://example.com');
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '2' : '3'}. cdp perceive ${liveTarget} -C -d 8`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '3' : '4'}. cdp click ${liveTarget} @ref  # or: cdp fill ${liveTarget} <selector> <text>`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '4' : '5'}. cdp perceive ${liveTarget} --since-action`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '5' : '6'}. cdp report ${liveTarget}`);
+    }
+  }
+  if (fd?.status === 'WARN') {
+    lines.push('  Note: for long sessions, use: ulimit -n 4096');
+  }
+  if (failures.length === 0) {
+    lines.push('  Goal: doctor -> list/open -> perceive -> click/fill -> since-action evidence -> report');
+  }
+  return lines;
+}
+
 function formatDoctorReport(checks) {
   const lines = ['chrome-cdp-ex doctor'];
+  lines.push(...doctorWizardSummary(checks), '', ...doctorRecommendationLines(checks), '', 'Checks:');
   for (const c of checks) {
     const tag = c.status.padEnd(4);
     lines.push(`  [${tag}] ${c.label}: ${c.detail}`);
@@ -3559,7 +8535,52 @@ function formatDoctorReport(checks) {
   if (fails === 0 && warns === 0) lines.push('Ready.');
   else if (fails === 0) lines.push(`Mostly ready (${warns} warning${warns > 1 ? 's' : ''}).`);
   else lines.push(`Not ready: ${fails} failure${fails > 1 ? 's' : ''}${warns ? `, ${warns} warning${warns > 1 ? 's' : ''}` : ''}.`);
+  lines.push(...doctorNextSteps(checks));
   return lines.join('\n');
+}
+
+function doctorStatusSummary(checks) {
+  const failures = checks.filter(c => c.status === 'FAIL').length;
+  const warnings = checks.filter(c => c.status === 'WARN').length;
+  return {
+    status: failures > 0 ? 'not-ready' : (warnings > 0 ? 'mostly-ready' : 'ready'),
+    ready: failures === 0 && warnings === 0,
+    failures,
+    warnings,
+  };
+}
+
+function stripDoctorStepPrefix(line) {
+  return String(line || '')
+    .trim()
+    .replace(/^\d+\.\s*/, '')
+    .replace(/^Then run:\s*/i, '')
+    .replace(/^If list is empty:\s*/i, '')
+    .replace(/^Use the target id printed by open:\s*/i, '')
+    .trim();
+}
+
+function doctorNextStepCommands(checks) {
+  return doctorNextSteps(checks)
+    .map(stripDoctorStepPrefix)
+    .filter(line => line.startsWith('cdp '));
+}
+
+function buildDoctorModel(checks) {
+  const summary = doctorStatusSummary(checks);
+  return {
+    schema: 'chrome-cdp-ex.doctor.v1',
+    ...summary,
+    wizard: doctorWizardModel(checks),
+    recommendation: doctorRecommendationModel(checks),
+    checks: checks.map(check => ({ ...check })),
+    nextSteps: doctorNextStepCommands(checks),
+  };
+}
+
+function formatDoctorOutput(checks, { format = 'text' } = {}) {
+  if (format === 'json') return formatJson(buildDoctorModel(checks));
+  return formatDoctorReport(checks);
 }
 
 async function runDoctorChecks(opts = {}) {
@@ -3569,13 +8590,18 @@ async function runDoctorChecks(opts = {}) {
   checks.push(checkNode(opts.nodeVersion));
   checks.push(checkSkillSymlink({ home: opts.home, fs }));
   checks.push(checkDaemonSockets({ list: opts.listDaemons }));
-  checks.push(await checkCdpReachability({ env: opts.env, fetcher: opts.fetcher, host: opts.host }));
+  checks.push(checkFdLimit({ limit: opts.fdLimit, platform: opts.platform }));
+  const cdp = await checkCdpReachability({ env: opts.env, fetcher: opts.fetcher, host: opts.host });
+  checks.push(cdp);
+  const tabs = await checkBrowserTargets({ cdp, env: opts.env, fetcher: opts.fetcher, host: opts.host });
+  checks.push(tabs);
+  checks.push(checkBrowserPermission({ daemons: checks.find(c => c.label === 'Daemons'), tabs }));
   return checks;
 }
 
 async function doctorStr(opts = {}) {
   const checks = await runDoctorChecks(opts);
-  return formatDoctorReport(checks);
+  return formatDoctorOutput(checks, { format: opts.format || 'text' });
 }
 
 // ---------------------------------------------------------------------------
@@ -3703,6 +8729,189 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   return lines.join('\n');
 }
 
+function overlayDetectorScript({ targetPoint = null } = {}) {
+  const targetJson = JSON.stringify(targetPoint || null);
+  return `(function() {
+    const targetPoint = ${targetJson};
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    function visible(el) {
+      if (!el || el.id === '__cdp_annot_overlay__') return false;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return false;
+      const r = el.getBoundingClientRect();
+      return r.width >= 2 && r.height >= 2 && r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
+    }
+    function selectorFor(el) {
+      if (!el) return '';
+      if (el.id) return '#' + CSS.escape(el.id);
+      const tag = el.tagName ? el.tagName.toLowerCase() : 'node';
+      const cls = typeof el.className === 'string' && el.className.trim()
+        ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).map(CSS.escape).join('.')
+        : '';
+      return tag + cls;
+    }
+    function shortText(el) {
+      return (el?.getAttribute?.('aria-label') || el?.textContent || '').trim().replace(/\\s+/g, ' ').substring(0, 80);
+    }
+    function pointInRect(point, rect) {
+      return !!point && point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom;
+    }
+    function elementInfo(el, kind, target) {
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      const cx = Math.min(Math.max(r.left + r.width / 2, 0), Math.max(vw - 1, 0));
+      const cy = Math.min(Math.max(r.top + r.height / 2, 0), Math.max(vh - 1, 0));
+      const topAtCenter = document.elementFromPoint(cx, cy);
+      const topAtTarget = target ? document.elementFromPoint(target.x, target.y) : null;
+      return {
+        kind,
+        selector: selectorFor(el),
+        role: el.getAttribute('role') || '',
+        label: el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || '',
+        text: shortText(el),
+        tag: el.tagName,
+        position: cs.position,
+        pointerEvents: cs.pointerEvents,
+        zIndex: cs.zIndex,
+        rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+        coversViewport: r.left <= 8 && r.top <= 8 && r.right >= vw - 8 && r.bottom >= vh - 8,
+        coversTarget: pointInRect(target, r),
+        topAtCenter: topAtCenter === el || el.contains(topAtCenter),
+        topAtTarget: topAtTarget === el || el.contains(topAtTarget),
+      };
+    }
+    function isDialog(el) {
+      return el.matches('[role="dialog"], dialog, [aria-modal="true"]');
+    }
+    const seen = new Set();
+    const overlays = [];
+    function add(el, kind) {
+      if (!visible(el) || seen.has(el)) return;
+      seen.add(el);
+      const info = elementInfo(el, kind, targetPoint);
+      const hasPointer = info.pointerEvents !== 'none';
+      const blocksTarget = !!targetPoint && info.coversTarget && hasPointer && (info.topAtTarget || isDialog(el));
+      const blocksPage = !targetPoint && hasPointer && (isDialog(el) || info.coversViewport);
+      if (isDialog(el) || blocksTarget || blocksPage) overlays.push({ ...info, blocking: blocksTarget || blocksPage || isDialog(el) });
+    }
+    for (const el of document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')) add(el, 'dialog');
+    for (const el of document.querySelectorAll('body *')) {
+      const cs = getComputedStyle(el);
+      if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
+      add(el, el.getAttribute('aria-modal') === 'true' ? 'dialog' : 'overlay');
+      if (overlays.length >= 20) break;
+    }
+    overlays.sort((a, b) => {
+      const za = Number.parseInt(a.zIndex, 10);
+      const zb = Number.parseInt(b.zIndex, 10);
+      const zcmp = (Number.isFinite(zb) ? zb : 0) - (Number.isFinite(za) ? za : 0);
+      if (zcmp) return zcmp;
+      return (b.rect.w * b.rect.h) - (a.rect.w * a.rect.h);
+    });
+    const target = targetPoint ? { ...targetPoint, blocked: false, topElement: null } : null;
+    if (targetPoint) {
+      const top = document.elementFromPoint(targetPoint.x, targetPoint.y);
+      if (top) target.topElement = elementInfo(top, isDialog(top) ? 'dialog' : 'top-element', targetPoint);
+      const blocker = overlays.find(o => o.coversTarget && (o.topAtTarget || o.kind === 'dialog' || o.blocking));
+      if (blocker) {
+        target.blocked = true;
+        target.topElement = { kind: blocker.kind, selector: blocker.selector, text: blocker.label || blocker.text || blocker.tag };
+      }
+    }
+    const blocking = overlays.some(o => o.blocking) || !!target?.blocked;
+    return JSON.stringify({
+      schema: 'chrome-cdp-ex.overlays.v1',
+      viewport: { width: vw, height: vh },
+      target,
+      overlayCount: overlays.length,
+      blocking,
+      overlays: overlays.slice(0, 10),
+      nextCommand: null,
+    });
+  })()`;
+}
+
+function formatOverlayRect(rect = {}) {
+  return `(${Math.round(rect.x || 0)},${Math.round(rect.y || 0)} ${Math.round(rect.w || 0)}×${Math.round(rect.h || 0)})`;
+}
+
+function overlayElementLabel(element = {}) {
+  const selector = element.selector || '<unknown>';
+  const label = element.label || element.text || element.tag || '';
+  return `[${element.kind || 'overlay'}] ${selector}${label ? ` "${label}"` : ''}`;
+}
+
+function formatOverlayReport(model, targetId) {
+  const lines = [`Overlay detector: ${model.blocking ? 'blocking' : 'clear'}`];
+  if (model.target) {
+    const target = model.target;
+    const status = target.blocked && target.topElement
+      ? `blocked by ${overlayElementLabel(target.topElement)}`
+      : 'not blocked';
+    lines.push(`Target: ${target.input || '(point)'} at (${Math.round(target.x)},${Math.round(target.y)}) — ${status}`);
+  }
+  if (!model.overlays || model.overlays.length === 0) {
+    lines.push('No visible blocking overlays/dialogs detected.');
+  } else {
+    lines.push(`Overlays: ${model.overlays.length}`);
+    for (const [i, overlay] of model.overlays.entries()) {
+      const role = overlay.role ? ` role=${overlay.role}` : '';
+      const z = overlay.zIndex != null ? ` z=${overlay.zIndex}` : '';
+      const pointer = overlay.pointerEvents ? ` pointer=${overlay.pointerEvents}` : '';
+      const target = overlay.coversTarget ? ' covers-target' : '';
+      lines.push(`${i + 1}. [${overlay.kind || 'overlay'}] ${overlay.selector || '<unknown>'}${role}${z}${pointer} rect=${formatOverlayRect(overlay.rect)}${target}`);
+      const text = overlay.label || overlay.text;
+      if (text) lines.push(`   Text: ${text}`);
+    }
+  }
+  const next = model.blocking
+    ? (model.nextCommand || `cdp dismiss-modal ${targetId}`)
+    : 'continue; if click still fails, run `status` or `perceive --since-action` before retrying';
+  lines.push(`Next: ${next}`);
+  return lines.join('\n');
+}
+
+async function resolveOverlayTargetPoint(cdp, sid, targetArg, refMap, refState) {
+  if (!targetArg) return null;
+  if (isRef(targetArg)) {
+    const rect = await resolveRefRectNoScroll(cdp, sid, refMap, targetArg, refState);
+    return {
+      input: targetArg,
+      x: Math.round((Number(rect.x) || 0) + (Number(rect.w) || 0) / 2),
+      y: Math.round((Number(rect.y) || 0) + (Number(rect.h) || 0) / 2),
+      descriptor: `<${rect.tag || '?'}> "${rect.text || ''}"`,
+    };
+  }
+  const raw = await evalStr(cdp, sid, `(function() {
+    const el = document.querySelector(${JSON.stringify(targetArg)});
+    if (!el) return JSON.stringify({ ok: false, error: 'Element not found: ' + ${JSON.stringify(targetArg)} });
+    const rect = el.getBoundingClientRect();
+    return JSON.stringify({
+      ok: true,
+      input: ${JSON.stringify(targetArg)},
+      x: Math.round(rect.x + rect.width / 2),
+      y: Math.round(rect.y + rect.height / 2),
+      descriptor: '<' + el.tagName + '> "' + (el.textContent || '').trim().substring(0, 80) + '"'
+    });
+  })()`);
+  const parsed = JSON.parse(raw);
+  if (!parsed.ok) throw new Error(parsed.error);
+  delete parsed.ok;
+  return parsed;
+}
+
+async function overlayStr(cdp, sid, targetId, args = [], refMap = new Map(), refState = null) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const targetArg = fopts.args[0] || null;
+  const targetPoint = await resolveOverlayTargetPoint(cdp, sid, targetArg, refMap, refState);
+  const raw = await evalStr(cdp, sid, overlayDetectorScript({ targetPoint }));
+  const model = JSON.parse(raw);
+  if (model.blocking && !model.nextCommand) model.nextCommand = `cdp dismiss-modal ${targetId}`;
+  if (fopts.format === 'json') return formatJson(model);
+  return formatOverlayReport(model, targetId);
+}
+
 // ---------------------------------------------------------------------------
 // dismiss-modal: close common dialog/modal patterns without firing background
 // shortcuts. Reviewer feedback: pressing Space to close a "press any key" MOTD
@@ -3796,26 +9005,28 @@ async function runDaemon(targetId) {
     process.exit(1);
   }
 
+  const session = createSessionState({ targetId, sessionId });
+  initializeSessionLog(session);
+  ensureSessionScreenshotDir(session);
+
   // --- Background observation ---
   const consoleBuf = new RingBuffer(200);
   const exceptionBuf = new RingBuffer(50);
   const navBuf = new RingBuffer(10);
   const netReqBuf = new RingBuffer(100); // network request/response pairs
-  const pendingReqs = new Map(); // requestId → {method, url, ts}
+  const pendingReqs = session.pendingRequests; // requestId → {method, url, ts}
+  const networkStatusByRequest = new Map(); // requestId → statusCode from ExtraInfo that arrived first
   let lastReadSeq = { console: 0, exception: 0 };
 
   // --- Ref system & perceive diff state ---
-  const refMap = new Map();               // ref number → backendDOMNodeId
-  const lastPerceiveStore = { output: null }; // stores last perceive output for diff
-  // Ref lifecycle tracking — used to explain stale @ref errors.
-  // generation increments on every successful perceive; invalidationReason is
-  // set to 'navigation' on top-level frame nav, and 'daemon-start' until the
-  // first perceive runs.
-  const refState = {
-    generation: 0,
-    lastPerceiveAt: 0,
-    invalidatedAt: Date.now(),
-    invalidationReason: 'daemon-start',
+  const refMap = session.refs.map;              // ref number → backendDOMNodeId
+  const lastPerceiveStore = session.lastPerceive; // stores last perceive output for diff
+  const refState = session.refs;                // ref lifecycle for stale @ref errors
+  session.buffers = {
+    console: consoleBuf,
+    exception: exceptionBuf,
+    navigation: navBuf,
+    network: netReqBuf,
   };
 
   // Enable domains for background collection and ref resolution
@@ -3848,44 +9059,95 @@ async function runDaemon(targetId) {
     if (!params.frame.parentId) { // main frame only
       navBuf.push({ url: params.frame.url, ts: Date.now() });
       // Top-level navigation (or Vite HMR full reload) invalidates all @refs.
-      refMap.clear();
-      refState.invalidatedAt = Date.now();
-      refState.invalidationReason = 'navigation';
+      session.pageGeneration += 1;
+      invalidateSessionRefs(session, 'navigation');
     }
   });
 
   // --- Network request/response tracking ---
+  function appendNetworkResponse(requestId, req, { status = null, type = req.type, size = 0, failed = false, errorText = null } = {}) {
+    pendingReqs.delete(requestId);
+    netReqBuf.push({
+      method: req.method,
+      url: req.url,
+      status,
+      type,
+      duration: Date.now() - req.ts,
+      size,
+      ...(failed ? { failed: true } : {}),
+      ...(errorText ? { errorText } : {}),
+      ts: req.ts,
+    });
+  }
+
   cdp.onEvent('Network.requestWillBeSent', (params) => {
-    // Only track XHR/Fetch, skip images/scripts/stylesheets for noise reduction
-    if (params.type === 'XHR' || params.type === 'Fetch' || params.type === 'Document') {
-      pendingReqs.set(params.requestId, {
+    // Track action-relevant traffic while skipping static asset noise.
+    if (shouldTrackActionNetworkRequest(params.type)) {
+      const req = {
         method: params.request.method,
         url: params.request.url.substring(0, 200),
+        type: params.type,
         ts: Date.now(),
-      });
+      };
+      if (networkStatusByRequest.has(params.requestId)) {
+        const status = networkStatusByRequest.get(params.requestId);
+        networkStatusByRequest.delete(params.requestId);
+        appendNetworkResponse(params.requestId, req, { status });
+      } else {
+        pendingReqs.set(params.requestId, req);
+      }
     }
   });
   cdp.onEvent('Network.responseReceived', (params) => {
     const req = pendingReqs.get(params.requestId);
     if (!req) return;
-    pendingReqs.delete(params.requestId);
-    netReqBuf.push({
-      method: req.method,
-      url: req.url,
+    appendNetworkResponse(params.requestId, req, {
       status: params.response.status,
       type: params.type,
-      duration: Date.now() - req.ts,
       size: params.response.encodedDataLength || 0,
-      ts: req.ts,
+    });
+  });
+
+  cdp.onEvent('Network.responseReceivedExtraInfo', (params) => {
+    const req = pendingReqs.get(params.requestId);
+    if (!Number.isFinite(Number(params.statusCode))) return;
+    const status = Number(params.statusCode);
+    if (!req) {
+      networkStatusByRequest.set(params.requestId, status);
+      return;
+    }
+    appendNetworkResponse(params.requestId, req, { status });
+  });
+
+  cdp.onEvent('Network.loadingFinished', (params) => {
+    const req = pendingReqs.get(params.requestId);
+    if (!req) return;
+    appendNetworkResponse(params.requestId, req, {
+      status: null,
+      size: params.encodedDataLength || 0,
     });
   });
 
   cdp.onEvent('Network.loadingFailed', (params) => {
-    pendingReqs.delete(params.requestId);
+    const req = pendingReqs.get(params.requestId);
+    if (!req) return;
+    appendNetworkResponse(params.requestId, req, {
+      status: null,
+      type: params.type,
+      failed: true,
+      errorText: params.errorText || 'loadingFailed',
+    });
+  });
+
+  cdp.onEvent('Fetch.requestPaused', (params) => {
+    handleMockRequestPaused(cdp, sessionId, session, params).catch(() => {
+      cdp.send('Fetch.continueRequest', { requestId: params.requestId }, sessionId).catch(() => {});
+    });
   });
 
   // --- Dialog handling (alert/confirm/prompt/beforeunload) ---
   const dialogBuf = new RingBuffer(20);
+  session.buffers.dialog = dialogBuf;
   const dialogAutoAcceptRef = { value: true }; // auto-dismiss by default to prevent page lockups
   cdp.onEvent('Page.javascriptDialogOpening', (params) => {
     dialogBuf.push({ type: params.type, message: params.message, ts: Date.now() });
@@ -3934,29 +9196,57 @@ async function runDaemon(targetId) {
     return `Daemon keepalive extended for ${ms}ms (until ${new Date(keepaliveUntil).toISOString()})`;
   }
 
-  // Action feedback: wait for DOM to settle, then return perceive diff
-  const OBSERVE_KEYS = new Set(['enter', 'escape', 'tab']);
+  // Action feedback: wait for DOM to settle, then return structured evidence.
   const BATCH_BLOCKED = new Set(['batch', 'stop', 'repeat', 'flow']);
-  // Commands that mutate shared state (refMap, lastPerceiveStore) — unsafe for parallel execution
-  const BATCH_NO_PARALLEL = new Set(['click', 'clickxy', 'jsclick', 'select', 'press', 'scroll', 'nav', 'navigate', 'viewport', 'perceive', 'snap', 'snapshot', 'dismiss-modal', 'dismissmodal']);
-  async function actionFeedback(actionResult) {
-    try {
-      await waitForSettle(cdp, sessionId);
-    } catch (e) {
-      if (isTimeoutError(e, ['Runtime.evaluate'])) {
-        return actionResult + `\n---\n(success but observation timed out after action dispatch: ${e.message}. The action was already sent; run \`perceive --diff\` or \`status\` to refresh.)`;
-      }
-      throw e;
-    }
-    try {
-      const diff = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, { diff: true }, refState);
-      return actionResult + '\n---\n' + diff;
-    } catch (e) {
-      if (isTimeoutError(e)) {
-        return actionResult + `\n---\n(success but observation timed out after action dispatch: ${e.message}. The action was already sent; run \`perceive --diff\` or \`status\` to refresh.)`;
-      }
-      throw e;
-    }
+  async function observeActionDiffForTarget(target = {}, baselineOutput = null) {
+    const targetFrameRef = frameRefFromActionTarget(target);
+    await waitForSettle(cdp, sessionId);
+    return perceiveStr(
+      cdp,
+      sessionId,
+      consoleBuf,
+      exceptionBuf,
+      refMap,
+      lastPerceiveStore,
+      targetFrameRef
+        ? { sinceAction: true, diffBaseline: baselineOutput, frameRef: targetFrameRef }
+        : { sinceAction: true, diffBaseline: baselineOutput },
+      refState
+    );
+  }
+  async function observeFullPerceive() {
+    await waitForSettle(cdp, sessionId);
+    return perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {}, refState);
+  }
+  async function actionFeedback(action, actionDispatch, target = {}, feedbackPolicy = 'settle-diff', observe = null, format = 'text') {
+    const dispatch = typeof actionDispatch === 'function' ? actionDispatch : async () => actionDispatch;
+    const actionTarget = target && typeof target === 'object'
+      ? { ...target, targetId }
+      : { input: String(target || ''), label: String(target || ''), targetId };
+    const baselineOutput = baselineOutputForActionTarget(refState, lastPerceiveStore.output, actionTarget);
+    const observationBaseline = createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf });
+    const actionStartedAt = Date.now();
+    const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput));
+    const observeThenFlush = async () => {
+      const text = await observeAfterAction();
+      await waitForActionNetworkQuiet(pendingReqs);
+      appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
+      return text;
+    };
+    session.lastAction = { action, target: actionTarget, feedbackPolicy, ts: actionStartedAt, baselineOutput };
+    return runActionWithFeedback({
+      action,
+      target: actionTarget,
+      dispatch,
+      feedbackPolicy,
+      observe: observeThenFlush,
+      enrichActionResult: (actionResult) => applyActionObservationDelta(actionResult, buildActionObservationDelta(
+        { consoleBuf, exceptionBuf, netReqBuf },
+        observationBaseline
+      )),
+      onActionResult: (actionResult) => appendSessionActionLog(session, actionResult, { ts: session.lastAction.ts }),
+      format,
+    });
   }
 
   // Handle a command
@@ -3997,74 +9287,188 @@ async function runDaemon(targetId) {
         case 'shot': case 'screenshot': {
           if (args[0] === '--annotate' || args[0] === '-a') {
             result = await annotshotStr(cdp, sessionId, targetId, refMap);
+            appendSessionScreenshot(session, {
+              kind: 'annotshot',
+              path: result.split('\n')[0],
+              note: 'annotated refs',
+            });
           } else {
             const sopts = parseShotArgs(args);
-            result = await shotStr(cdp, sessionId, sopts.filePath, targetId, { quiet: sopts.quiet, verbose: sopts.verbose });
+            const filePath = sopts.filePath || nextSessionScreenshotPath(session, 'shot');
+            if (!sopts.filePath) ensureSessionScreenshotDir(session);
+            result = await shotStr(cdp, sessionId, filePath, targetId, { quiet: sopts.quiet, verbose: sopts.verbose });
+            appendSessionScreenshot(session, {
+              kind: 'shot',
+              path: result.split('\n')[0],
+              note: sopts.filePath ? 'custom path' : 'session screenshot',
+            });
           }
+          break;
+        }
+        case 'diff-shot': case 'diffshot': {
+          result = await diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args));
           break;
         }
         case 'html': result = await htmlStr(cdp, sessionId, args[0]); break;
         case 'nav': case 'navigate': {
-          const navResult = await navStr(cdp, sessionId, args[0]);
-          try {
-            const p = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {}, refState);
-            result = navResult + '\n---\n' + p;
-          } catch (e) {
-            if (!isTimeoutError(e)) throw e;
-            result = navResult + `\n---\n(success but observation timed out after navigation: ${e.message}. Run \`perceive\` or \`status\` to refresh.)`;
-          }
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback(
+            'nav',
+            () => navStr(cdp, sessionId, fopts.args[0]),
+            { input: fopts.args[0], resolvedBy: 'url', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] },
+            'full-perceive',
+            observeFullPerceive,
+            fopts.format
+          );
           break;
         }
         case 'net': case 'network': result = await netStr(cdp, sessionId); break;
-        case 'status': result = await statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq, { runtime: args.includes('--runtime') }); break;
-        case 'console': result = await consoleStr(consoleBuf, exceptionBuf, lastReadSeq, args[0]); break;
-        case 'summary': result = await summaryStr(cdp, sessionId, consoleBuf, exceptionBuf); break;
+        case 'mock': case 'network-mock': result = await mockStr(cdp, sessionId, session, args); break;
+        case 'clock': case 'time-travel': result = await clockStr(cdp, sessionId, session, args); break;
+        case 'throttle': case 'network-throttle': result = await throttleStr(cdp, sessionId, session, args); break;
+        case 'status': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          if (fopts.format === 'json') {
+            const runtime = fopts.args.includes('--runtime')
+              ? await runtimeMetricsStr(cdp, sessionId).catch(e => ({ unavailable: e.message }))
+              : null;
+            result = formatJson(buildStatusModel({
+              targetId,
+              page: await pageInfoModel(cdp, sessionId),
+              consoleBuf,
+              exceptionBuf,
+              navBuf,
+              lastReadSeq,
+              runtime,
+            }));
+            lastReadSeq.console = consoleBuf.latest();
+            lastReadSeq.exception = exceptionBuf.latest();
+          } else {
+            result = await statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq, { runtime: fopts.args.includes('--runtime') });
+          }
+          break;
+        }
+        case 'console': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          if (fopts.format === 'json') {
+            const flag = fopts.args[0];
+            result = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag));
+            if (flag !== '--all' && flag !== '--errors') {
+              lastReadSeq.console = consoleBuf.latest();
+              lastReadSeq.exception = exceptionBuf.latest();
+            }
+          } else {
+            result = await consoleStr(consoleBuf, exceptionBuf, lastReadSeq, fopts.args[0]);
+          }
+          break;
+        }
+        case 'summary': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = fopts.format === 'json'
+            ? formatJson(await summaryModel(cdp, sessionId, consoleBuf, exceptionBuf))
+            : await summaryStr(cdp, sessionId, consoleBuf, exceptionBuf);
+          break;
+        }
+        case 'frame': case 'frames': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await framesStr(cdp, sessionId, { format: fopts.format });
+          break;
+        }
+        case 'overlay': case 'overlays': {
+          result = await overlayStr(cdp, sessionId, targetId, args, refMap, refState);
+          break;
+        }
+        case 'report': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const ropts = parseReportArgs(fopts.args);
+          if (ropts.args.length) throw new Error(`report: unknown argument ${ropts.args[0]}`);
+          result = formatSessionReport(session, { format: fopts.format, lastActions: ropts.lastActions });
+          break;
+        }
+        case 'checkpoint': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await checkpointStr(cdp, sessionId, { format: fopts.format });
+          appendSessionEventLog(session, { kind: 'checkpoint', url: result.includes('URL: ') ? result.split('URL: ')[1]?.split('\n')[0] : undefined });
+          break;
+        }
+        case 'record-actions': case 'recordactions': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = formatRecordActions(session, { format: fopts.format });
+          break;
+        }
+        case 'export-playwright': case 'export-pw': {
+          result = formatExportPlaywright(session, parseExportPlaywrightArgs(args));
+          break;
+        }
         case 'perceive': {
-          const popts = parsePerceiveArgs(args);
-          result = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState);
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const popts = parsePerceiveArgs(fopts.args);
+          popts.targetPrefix = targetPrefixForDisplay(targetId);
+          if (popts.sinceAction) {
+            popts.diffBaseline = session.lastAction?.baselineOutput || null;
+          }
+          result = fopts.format === 'json' && (popts.sinceAction || popts.diff)
+            ? formatJson(await perceiveDiffModel(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
+            : fopts.format === 'json'
+            ? formatPerceptionJson(await perceiveModel(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
+            : await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState);
           break;
         }
         case 'elshot': result = await elshotStr(cdp, sessionId, args[0], targetId, refMap, refState); break;
         case 'click': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const cargs = fopts.args;
           // `click --js <selector|@ref>` switches to the JS-fallback path that
           // calls HTMLElement.click() instead of dispatching CDP mouse events.
           // Useful when overlays or weird hit testing block the realistic
           // mouse path; opt-in only so default behaviour is unchanged.
-          if (args[0] === '--js' || args[0] === '-j') {
-            result = await actionFeedback(await jsClickStr(cdp, sessionId, args[1], refMap, refState));
+          if (cargs[0] === '--js' || cargs[0] === '-j') {
+            result = await actionFeedback('click', () => jsClickStr(cdp, sessionId, cargs[1], refMap, refState), { input: cargs[1], resolvedBy: 'selector-or-ref', label: cargs[1] || '', commandArgs: ['--js', cargs[1]] }, 'settle-diff', null, fopts.format);
           } else {
-            result = await actionFeedback(await clickStr(cdp, sessionId, args[0], refMap, refState));
+            result = await actionFeedback('click', () => clickStr(cdp, sessionId, cargs[0], refMap, refState), { input: cargs[0], resolvedBy: 'selector-or-ref', label: cargs[0] || '', commandArgs: [cargs[0]] }, 'settle-diff', null, fopts.format);
           }
           break;
         }
-        case 'jsclick': result = await actionFeedback(await jsClickStr(cdp, sessionId, args[0], refMap, refState)); break;
-        case 'clickxy': result = await actionFeedback(await clickXyStr(cdp, sessionId, args[0], args[1])); break;
-        case 'type': result = await typeStr(cdp, sessionId, args[0]); break;
+        case 'jsclick': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, fopts.args[0], refMap, refState), { input: fopts.args[0], resolvedBy: 'selector-or-ref', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts.format);
+          break;
+        }
+        case 'clickxy': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: `${fopts.args[0]},${fopts.args[1]}`, resolvedBy: 'coordinates', label: `${fopts.args[0]},${fopts.args[1]}`, commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts.format);
+          break;
+        }
+        case 'type': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('type', () => typeStr(cdp, sessionId, fopts.args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts.format);
+          break;
+        }
         case 'press': {
-          result = await pressStr(cdp, sessionId, args[0]);
-          if (OBSERVE_KEYS.has(args[0]?.toLowerCase())) result = await actionFeedback(result);
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts.format);
           break;
         }
         case 'scroll': {
-          const scrollResult = await scrollStr(cdp, sessionId, args[0], args[1]);
-          try {
-            const diff = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, { diff: true }, refState);
-            result = scrollResult + '\n---\n' + diff;
-          } catch (e) {
-            if (!isTimeoutError(e)) throw e;
-            result = scrollResult + `\n---\n(success but observation timed out after action dispatch: ${e.message}. The scroll was already sent; run \`perceive --diff\` or \`status\` to refresh.)`;
-          }
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('scroll', () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: [fopts.args[0], fopts.args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: fopts.args[0] || 'scroll', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts.format);
           break;
         }
         case 'hover': result = await hoverStr(cdp, sessionId, args[0], refMap, refState); break;
         case 'waitfor': result = await waitForStr(cdp, sessionId, args, refMap, refState); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'fill': {
-          if (args[0] === '--react') result = await fillStr(cdp, sessionId, args[1], args[2], refMap, refState, { react: true });
-          else result = await fillStr(cdp, sessionId, args[0], args[1], refMap, refState);
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const fargs = fopts.args;
+          if (fargs[0] === '--react') result = await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[1], fargs[2], refMap, refState, { react: true }), { input: fargs[1], resolvedBy: 'selector-or-ref', label: fargs[1] || '', commandArgs: ['--react', fargs[1], fargs[2]] }, 'settle-diff', null, fopts.format);
+          else result = await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[0], fargs[1], refMap, refState), { input: fargs[0], resolvedBy: 'selector-or-ref', label: fargs[0] || '', commandArgs: [fargs[0], fargs[1]] }, 'settle-diff', null, fopts.format);
           break;
         }
-        case 'select': result = await actionFeedback(await selectStr(cdp, sessionId, args[0], args[1])); break;
+        case 'select': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('select', () => selectStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts.format);
+          break;
+        }
         case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
         case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
         case 'styles': result = await stylesStr(cdp, sessionId, args[0]); break;
@@ -4073,52 +9477,80 @@ async function runDaemon(targetId) {
         case 'cookiedel': result = await cookieDelStr(cdp, sessionId, args[0]); break;
         case 'dialog': result = dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]); break;
         case 'viewport': {
-          result = await viewportStr(cdp, sessionId, args[0]);
-          if (args[0]) result = await actionFeedback(result); // auto-diff when resizing
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          if (fopts.args[0]) result = await actionFeedback('viewport', () => viewportStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'viewport', label: fopts.args[0], commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts.format); // auto-diff when resizing
+          else result = await viewportStr(cdp, sessionId, args[0]);
           break;
         }
-        case 'upload': result = await uploadStr(cdp, sessionId, args[0], args[1]); break;
+        case 'upload': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('upload', () => uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'state-change', null, fopts.format);
+          break;
+        }
         case 'text': result = await textStr(cdp, sessionId, args); break;
         case 'table': result = await tableStr(cdp, sessionId, args[0]); break;
-        case 'back': result = await historyNavStr(cdp, sessionId, -1); break;
-        case 'forward': result = await historyNavStr(cdp, sessionId, +1); break;
+        case 'back': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('back', () => historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts.format);
+          break;
+        }
+        case 'forward': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('forward', () => historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts.format);
+          break;
+        }
         case 'reload': {
-          result = await reloadStr(cdp, sessionId);
-          clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
-          result += ' (console/exception/navigation buffers cleared)';
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('reload', () => reloadActionDispatch({
+            cdp,
+            sessionId,
+            session,
+            consoleBuf,
+            exceptionBuf,
+            navBuf,
+            netReqBuf,
+            pendingReqs,
+            lastReadSeq,
+          }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts.format);
           break;
         }
         case 'closetab': result = await closetabStr(cdp, targetId); break;
         case 'netlog': result = netlogStr(netReqBuf, args[0]); break;
-        case 'inject': result = await injectStr(cdp, sessionId, args); break;
+        case 'inject': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('inject', () => injectStr(cdp, sessionId, fopts.args), { input: fopts.args[0] || '', resolvedBy: 'command', label: fopts.args[0] || 'inject', commandArgs: fopts.args }, 'state-change', null, fopts.format);
+          break;
+        }
         case 'record': result = await recordStr(cdp, sessionId, args, refMap); break;
-        case 'cascade': result = await cascadeStr(cdp, sessionId, args[0], args[1], refMap, refState); break;
-        case 'dismiss-modal': case 'dismissmodal': result = await actionFeedback(await dismissModalStr(cdp, sessionId)); break;
+        case 'cascade': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await cascadeStr(cdp, sessionId, fopts.args[0], fopts.args[1], refMap, refState, { format: fopts.format });
+          break;
+        }
+        case 'dismiss-modal': case 'dismissmodal': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }, 'settle-diff', null, fopts.format);
+          break;
+        }
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
         case 'batch': {
-          let commands;
-          const parallel = args.includes('--parallel');
-          const plain = args.includes('--plain');
-          const compact = args.includes('--compact');
-          const input = args.filter(a => a !== '--parallel' && a !== '--plain' && a !== '--compact').join(' ') || '';
-          if (input.startsWith('[')) {
-            try { commands = JSON.parse(input); } catch { return { ok: false, error: 'batch: invalid JSON array' }; }
-            if (!Array.isArray(commands)) return { ok: false, error: 'batch argument must be a JSON array' };
-          } else {
-            commands = input.split('|').map(segment => {
-              const parts = segment.trim().split(/\s+/);
-              return { cmd: parts[0], args: parts.slice(1) };
-            }).filter(c => c.cmd);
+          let parsedBatch;
+          try {
+            parsedBatch = parseBatchArgs(args);
+          } catch (e) {
+            return { ok: false, error: e.message };
           }
+          const { commands, parallel } = parsedBatch;
           if (!commands.length) return { ok: false, error: 'batch: no commands provided' };
           const blocked = commands.filter(c => BATCH_BLOCKED.has(c.cmd));
           if (blocked.length) return { ok: false, error: `batch: ${blocked.map(c => c.cmd).join(', ')} not allowed inside batch` };
           if (parallel) {
-            const unsafe = commands.filter(c => BATCH_NO_PARALLEL.has(c.cmd));
+            const unsafe = commands.filter(c => isBatchParallelUnsafeCommand(c.cmd));
             if (unsafe.length) return { ok: false, error: `batch --parallel: ${[...new Set(unsafe.map(c => c.cmd))].join(', ')} mutate shared state — use sequential batch` };
           }
+          const autoActionJson = parsedBatch.output === 'model';
           const runOne = async (c) => {
-            const sub = await handleCommand({ cmd: c.cmd, args: c.args || [] });
+            const sub = await handleCommand({ cmd: c.cmd, args: autoActionJsonArgs(c.cmd, c.args || [], autoActionJson) });
             return { cmd: c.cmd, ok: sub.ok, result: sub.result, error: sub.error };
           };
           let results;
@@ -4128,16 +9560,17 @@ async function runDaemon(targetId) {
             results = [];
             for (const c of commands) results.push(await runOne(c));
           }
-          const fmt = plain ? 'plain' : compact ? 'compact' : 'json';
-          result = formatBatchResults(results, fmt);
+          const fmt = parsedBatch.output === 'legacy-json' ? 'json' : parsedBatch.output;
+          result = formatBatchResults(results, fmt, { targetId, mode: parallel ? 'parallel' : 'sequential' });
           break;
         }
         case 'flow': {
-          const input = args.join(' ');
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const input = fopts.args.join(' ');
           result = await flowStr({
-            run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] }),
+            run: (step) => handleCommand({ cmd: step.cmd, args: autoActionJsonArgs(step.cmd, step.args || [], fopts.format === 'json') }),
             settle: (what) => settleFlow(cdp, sessionId, what, pendingReqs),
-          }, input);
+          }, input, { format: fopts.format, targetId });
           break;
         }
         case 'repeat': {
@@ -4146,19 +9579,49 @@ async function runDaemon(targetId) {
           }, args);
           break;
         }
+        case 'replay': {
+          result = await replayActionsStr({
+            run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] }),
+          }, args);
+          break;
+        }
+        case 'restore': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const safeCommandArgs = redactRestoreCommandArgs(fopts.args);
+          result = await actionFeedback(
+            'restore',
+            async () => {
+              const restoreResult = await restoreCheckpointStr(cdp, sessionId, fopts.args);
+              clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
+              session.pageGeneration += 1;
+              invalidateSessionRefs(session, 'navigation');
+              return restoreResult;
+            },
+            { input: 'checkpoint', resolvedBy: 'artifact', label: 'checkpoint', commandArgs: safeCommandArgs },
+            'report-only',
+            null,
+            fopts.format
+          );
+          break;
+        }
         case 'stop': return { ok: true, result: '', stopAfter: true };
         default: return { ok: false, error: `Unknown command: ${cmd}` };
       }
       return { ok: true, result: result ?? '' };
     } catch (e) {
-      let error = e.message;
-      // Enhance common errors with actionable hints
-      if (error.includes('No node with given id') || error.includes('Could not find node'))
-        error += ' — element may have been removed from DOM. Run "perceive" to refresh refs.';
-      else if (error.includes('Cannot find context'))
-        error += ' — page may have navigated. Run "perceive" on the current page.';
-      else if (error.includes('Element not found'))
-        error += ' — check your selector or run "perceive" to see available elements.';
+      const rawError = actionFailureMessage(e);
+      const commandMeta = COMMANDS.find(command => command.name === cmd || (command.aliases || []).includes(cmd));
+      const isMutatingCommand = commandMeta?.mutates === true;
+      const alreadyClassified = rawError.startsWith('Action failure:');
+      const lastAction = session.lastAction || {};
+      const context = {
+        action: isMutatingCommand && lastAction.action ? lastAction.action : cmd,
+        target: isMutatingCommand && lastAction.target ? lastAction.target : { targetId, input: args?.[0], label: args?.[0] },
+      };
+      const failure = classifyActionFailure(e, context);
+      const error = alreadyClassified || (isMutatingCommand && failure.kind !== 'unknown')
+        ? formatActionFailure(e, context)
+        : rawError;
       return { ok: false, error };
     }
   }
@@ -4205,11 +9668,28 @@ async function runDaemon(targetId) {
 // CLI ↔ daemon communication
 // ---------------------------------------------------------------------------
 
-function connectToSocket(sp) {
+function connectToSocket(sp, { timeoutMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const conn = net.connect(sp);
-    conn.on('connect', () => resolve(conn));
-    conn.on('error', reject);
+    const settle = (fn) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      conn.off('connect', onConnect);
+      conn.off('error', onError);
+      fn();
+    };
+    const onConnect = () => settle(() => resolve(conn));
+    const onError = (error) => settle(() => reject(error));
+    const timer = setTimeout(() => {
+      settle(() => {
+        conn.destroy();
+        reject(new Error(`Timed out connecting to daemon socket: ${sp}`));
+      });
+    }, timeoutMs);
+    conn.on('connect', onConnect);
+    conn.on('error', onError);
   });
 }
 
@@ -4239,6 +9719,9 @@ async function getOrStartTabDaemon(targetId) {
 const IPC_TIMEOUT = 120000; // 2 minutes — generous for slow commands like scanshot
 
 function ipcTimeoutForRequest(req) {
+  if (Number.isFinite(req?.timeoutMs) && req.timeoutMs > 0) {
+    return Math.min(Math.max(100, Math.trunc(req.timeoutMs)), IPC_TIMEOUT);
+  }
   if (req?.cmd !== 'wait') return IPC_TIMEOUT;
   try {
     const waitMs = parseDelayMs(req.args?.[0], { name: 'wait duration', max: 60 * 60 * 1000 });
@@ -4329,9 +9812,15 @@ const USAGE = `cdp - lightweight Chrome DevTools Protocol CLI (no Puppeteer)
 
 Usage: cdp <command> [args]
 
-  list                              List open pages (shows unique target prefixes)
-  perceive <target> [flags]          Full page perception with @ref indices + coordinates
+  help                              Show this command reference (same as --help)
+  list [--format json]              List open pages (shows unique target prefixes)
+                                    JSON includes schema/pages/recommendation/nextSteps for agents.
+  perceive <target> [flags] [--format json]  Full page perception with @ref indices + coordinates
                                     --diff: show only changes since last perceive
+                                    --since-action: show changes caused by the last mutating command
+                                    JSON includes structured refs plus recommendation/nextSteps.
+                                    JSON with --diff/--since-action returns chrome-cdp-ex.perceive-diff.v1
+                                    --frame @fN / -F @fN: perceive inside an iframe; refs become @fN:M
                                     -s <sel> / --selector: scope to CSS selector subtree
                                     -i / --interactive: only show interactive elements
                                     -d N / --depth N: limit tree depth
@@ -4345,22 +9834,39 @@ Usage: cdp <command> [args]
   call  <target> <expr|fn>          Await expression/function result and print JSON when possible
   elshot <target> <sel|@ref>        Element screenshot: captures element by CSS selector or @ref
   shot  <target> [file|--annotate]  Viewport screenshot; --annotate (-a) overlays @ref labels
+  diff-shot <target> [--reset] [--threshold pct]  Compare current screenshot against last diff-shot baseline
   html  <target> [selector]         Get HTML (full page or CSS selector)
-  nav   <target> <url>              Navigate to URL and wait for load completion
+  nav   <target> <url> [--format json]  Navigate to URL and wait for load completion
+  mock  <target> [add|clear]        Mock matching network requests in this live tab
+                                    add <urlPattern> --status code --body text [--content-type type]
+  clock <target> [freeze|offset|reset]  Override Date/time in this live tab
+                                    freeze --at date-or-epoch-ms | offset --ms delta
+  throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  Emulate network conditions for this tab
+                                    custom --latency ms --download kbps --upload kbps
   status <target> [--runtime]        Page state + new console/exception entries (primary debug entry point)
                                     --runtime: include Performance.getMetrics counters
   console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
+  report <target> [--last N|--all] [--format json]  Session action timeline + evidence summary + JSONL log path
+  checkpoint <target> [--format json]  Capture URL, cookies, localStorage, and sessionStorage
+  restore <target> --file <path> [--format json]  Restore a checkpoint artifact into the live page
+  restore <target> --json <json> [--format json]  Restore an inline checkpoint JSON artifact
+  record-actions <target>           Export action log + mock/clock/throttle environment as text or JSON
+  export-playwright <target> [--format json]  Export current workflow as a Playwright spec draft or JSON handoff
+  replay <target> --file <path> [--format json]  Replay environment controls + actions against the live page
+  replay <target> --json <json> [--format json]  Replay an inline record-actions JSON artifact
+  frame <target> [--format json]     List page frames with stable @fN refs (alias: frames)
+  overlay <target> [sel|@ref] [--format json]  Detect visible dialogs/overlays and target blockers
   net   <target>                    Network performance entries
-  click   <target> <sel|@ref>       Click element by CSS selector or @ref
+  click   <target> <sel|@ref> [--format json]  Click element by CSS selector or @ref
                                     --js / -j: use HTMLElement.click() (JS fallback)
   jsclick <target> <sel|@ref>       JS-only click: el.click() instead of CDP mouse events
                                     Use when overlays or hit-testing block the realistic mouse path.
-  clickxy <target> <x> <y>          Click at CSS pixel coordinates (see coordinate note below)
-  type    <target> <text>           Type text at current focus via Input.insertText
+  clickxy <target> <x> <y> [--format json]  Click at CSS pixel coordinates (see coordinate note below)
+  type    <target> <text> [--format json]  Type text at current focus via Input.insertText
                                     Works in cross-origin iframes unlike eval-based approaches
-  press   <target> <key>           Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)
-  scroll  <target> <dir|x,y> [px]  Scroll page (down/up/left/right or x,y offset; default 500px)
+  press   <target> <key> [--format json]  Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)
+  scroll  <target> <dir|x,y> [px] [--format json]  Scroll page (down/up/left/right or x,y offset; default 500px)
   hover   <target> <sel|@ref>       Hover over element (triggers :hover, tooltips, dropdowns)
   waitfor <target> <selector> [ms]  Wait for element (default 10s, max 5min)
   waitfor <target> --gone <sel|@ref> [ms]  Wait for element to DISAPPEAR (streaming end)
@@ -4368,9 +9874,9 @@ Usage: cdp <command> [args]
   loadall <target> <selector> [ms]  Repeatedly click a "load more" button until it disappears
                                     Optional interval in ms between clicks (default 1500)
   wait    <target> <ms>             Delay inside cdp (also: cdp wait <ms> [target])
-  fill    <target> <sel|@ref> <txt> Clear field and type text (for form filling)
+  fill    <target> <sel|@ref> <txt> [--format json] Clear field and type text (for form filling)
                                     --react: native value setter + input/change events
-  select  <target> <selector> <val> Select an option in a <select> element by value
+  select  <target> <selector> <val> [--format json] Select an option in a <select> element by value
   fullshot <target> [file]          Full-page screenshot (single image — may be hard to read)
   scanshot <target>                 Segmented full-page capture (viewport-sized images, readable)
   styles  <target> <selector>       Get computed styles for element (filtered to meaningful props)
@@ -4379,7 +9885,7 @@ Usage: cdp <command> [args]
   cookiedel <target> <name>         Delete a cookie by name
   dialog  <target> [accept|dismiss] Show dialog history; set auto-accept (default) or auto-dismiss
   viewport <target> [WxH]           Show or set viewport size (e.g. 375x812, 1280x720)
-  upload  <target> <selector> <paths>  Upload file(s) to <input type="file"> (comma-separated paths)
+  upload  <target> <selector> <paths> [--format json]  Upload file(s) to <input type="file"> (comma-separated paths)
   text    <target> [selector]       Clean visible text — optional CSS selector to scope
                                     --root auto|default|<sel>: scope to #root/[data-reactroot]/main/body or selector
   table   <target> [selector]       Full table data extraction (tab-separated, no row limit)
@@ -4393,23 +9899,24 @@ Usage: cdp <command> [args]
                                     --css-file <url> Inject <link rel="stylesheet">
                                     --js-file <url>  Inject <script src> and wait for load
                                     --remove [id]    Remove injected element(s) (all, or by id)
-  cascade <target> <sel|@ref> [prop] CSS origin tracing — shows which rules apply, source file + line
-                                    Optional: filter to one property (e.g. "background-color")
+  cascade <target> <sel|@ref> [prop] [--format json] CSS origin tracing — shows which rules apply, source file + line
+                                    Optional: filter to one property (e.g. "background-color"); JSON returns chrome-cdp-ex.cascade.v1
   record <target> [ms]              Record a short timeline of DOM/console/network/navigation events
   record <target> --action click @5 Record events around an action (click/press/fill/select/type/scroll/nav)
   record <target> --until "dom stable"|"network idle"  Record until page quiets (max 30s)
   evalraw <target> <method> [json]  Send a raw CDP command; returns JSON result
                                     e.g. evalraw <t> "DOM.getDocument" '{}'
-  batch <target> <cmds> [--parallel] Execute multiple commands in one call (reduces IPC overhead)
+  batch <target> <cmds> [--parallel] [--format json] Execute multiple commands in one call
+                                    --format json returns chrome-cdp-ex.batch.v1 failure handoff
                                     Pipe syntax: 'fill @3 hello | fill @5 world | click @7'
                                     JSON syntax: '[{"cmd":"click","args":["@1"]},{"cmd":"perceive","args":["--diff"]}]'
-                                    --parallel  Run commands concurrently (for independent ops like multiple elshots)
+                                    --parallel  Run read-only/extraction commands concurrently (mutating commands are rejected)
                                     --plain     Human-readable per-step output (default: pretty JSON)
                                     --compact   One line per step (head + first line of result)
-  flow  <target> "<steps>"          Sequential runner. Steps separated by ";".
+  flow  <target> "<steps>" [--format json]  Sequential runner. Steps separated by ";".
                                     Each step is a normal command (e.g. "click @1") or a wait alias:
                                     "wait dom stable" / "wait network idle" — uses settle helper.
-                                    Halts on the first failing step. Output is readable, not JSON.
+                                    Halts on the first failing step; JSON returns chrome-cdp-ex.flow.v1.
                                     Example: flow A7BA "click @1; wait dom stable; summary; console --errors"
   repeat <target> <N> <cmd> [args]  Run a command up to N times (cap 50). Fail-fast by default.
                                     --continue / -c: keep going through errors and report tally.
@@ -4420,11 +9927,18 @@ Usage: cdp <command> [args]
                                     retry-style probes, or short keypress sequences. Re-perceive
                                     between iterations if the DOM changes — refs are not auto-remapped.
                                     Example: repeat A7BA 5 press c
-  doctor / ready                    One-call diagnostics: Node version, skill install path,
-                                    daemon socket state, CDP_PORT/DevToolsActivePort reachability.
+  doctor / ready [--format json]    One-call diagnostics: Node version, skill install path,
+                                    daemon socket state, fd limit, CDP_PORT/DevToolsActivePort reachability,
+                                    debuggable tab inventory, browser permission, Recommendation, and onboarding next steps.
+                                    Starts with Wizard status + current command; JSON includes wizard/checks/recommendation/nextSteps.
                                     No target required. Exits 1 if any check FAILs.
   keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)
-  open  [url]                       Open a new tab (default: about:blank)
+  open  [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--format json]
+                                    Open a new tab (default: about:blank)
+                                    JSON includes schema/target/approval/recommendation/nextSteps for agents.
+                                    --attach-timeout-ms 0 returns the target handoff without waiting.
+                                    --ready-timeout-ms bounds document.readyState waiting after attach.
+                                    --ready-selector also waits for a CSS selector before returning.
                                     Note: each new tab triggers a fresh "Allow debugging?" prompt
   spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH]
                                     Launch an isolated debug profile (browser: edge|chrome|brave; default edge, port 9222).
@@ -4435,12 +9949,18 @@ Usage: cdp <command> [args]
   stop  [target]                    Stop daemon(s)
 
 ACTION FEEDBACK
-  click, clickxy, press (Enter/Escape/Tab), select, scroll, and viewport (when
-  resizing) automatically wait for DOM to settle and return a perceive diff.
+  click, jsclick, clickxy, fill, type, press, select, scroll, upload, inject,
+  dismiss-modal, and viewport (when resizing) automatically wait for DOM to
+  settle and return compact action evidence plus a perceive diff.
+  back, forward, and nav return action evidence plus a full perceive.
+  reload returns action evidence plus a bounded lightweight page observation.
+  Each mutating action also snapshots console/exception/network buffers before
+  dispatch and reports compact deltas such as console errors, failed requests,
+  or requests still pending after the action observation window.
   If that post-action observation times out after the action was sent, the
   command reports success with "observation timed out" instead of a pure timeout.
-  nav automatically returns a full perceive of the loaded page.
   No need to manually run perceive or perceive --diff after these actions.
+  To re-check what the last action changed, run perceive --since-action.
 
 <target> is a unique targetId prefix from "cdp list". If a prefix is ambiguous,
 use more characters.
@@ -4468,21 +9988,94 @@ DAEMON IPC (for advanced use / scripting)
     Request:  {"id":<number>, "cmd":"<command>", "args":["arg1","arg2",...]}
     Response: {"id":<number>, "ok":true,  "result":"<string>"}
            or {"id":<number>, "ok":false, "error":"<message>"}
-  Commands mirror the CLI: perceive, status, summary, console, snap, eval, eval64, call, wait, keepalive, shot,
-  elshot, fullshot, scanshot, html, nav, net, click, jsclick, clickxy, hover, type, press,
+  Commands mirror the CLI: perceive, status, summary, console, frame, snap, eval, eval64, call, wait, keepalive, shot, diff-shot,
+  elshot, fullshot, scanshot, html, nav, net, mock, clock, throttle, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
-  record, evalraw, batch, flow, repeat, stop.
+  record, checkpoint, restore, record-actions, export-playwright, replay, report, evalraw, batch, flow, repeat, stop.
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
-const NEEDS_TARGET = new Set([
-  'snap','snapshot','eval','eval64','call','wait','keepalive','shot','screenshot','html','nav','navigate',
-  'net','network','click','clickxy','jsclick','type','press','scroll','hover','waitfor','loadall','fill','select','fullshot','scanshot','styles','cookies','cookieset','cookiedel','evalraw','status','console','summary','perceive','elshot','batch','dialog','viewport','upload',
-  'text','table','back','forward','reload','closetab','netlog',
-  'inject','cascade','record','flow','repeat',
-  'dismiss-modal','dismissmodal',
+function helpStr() {
+  return USAGE;
+}
+
+const COMMANDS = Object.freeze([
+  { name: 'help', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text'] },
+  { name: 'list', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'open', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
+  { name: 'doctor', aliases: ['ready'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'spawn-debug-browser', aliases: ['spawn'], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'stop', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'perceive', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'snap', aliases: ['snapshot'], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'eval', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'eval64', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'call', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'wait', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'keepalive', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'shot', aliases: ['screenshot'], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'diff-shot', aliases: ['diffshot'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'html', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'nav', aliases: ['navigate'], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
+  { name: 'net', aliases: ['network'], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'mock', aliases: ['network-mock'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
+  { name: 'clock', aliases: ['time-travel'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
+  { name: 'throttle', aliases: ['network-throttle'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
+  { name: 'status', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'console', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'summary', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'frame', aliases: ['frames'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'overlay', aliases: ['overlays'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'report', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'checkpoint', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'restore', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
+  { name: 'record-actions', aliases: ['recordactions'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'export-playwright', aliases: ['export-pw'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'replay', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
+  { name: 'elshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'click', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'jsclick', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'clickxy', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'type', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'press', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'scroll', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'hover', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'waitfor', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'loadall', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'fill', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'select', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'fullshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'scanshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'styles', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'cookies', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'cookieset', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'cookiedel', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'evalraw', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'batch', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'dialog', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'viewport', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'upload', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
+  { name: 'text', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'table', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'back', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
+  { name: 'forward', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
+  { name: 'reload', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
+  { name: 'closetab', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'netlog', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'inject', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
+  { name: 'cascade', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'record', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'flow', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'repeat', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'dismiss-modal', aliases: ['dismissmodal'], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
 ]);
+
+const NEEDS_TARGET = new Set(
+  COMMANDS
+    .filter(command => command.needsTarget)
+    .flatMap(command => [command.name, ...command.aliases])
+);
 
 function parseTargetAndCommandArgs(cmd, args) {
   let targetPrefix = args[0];
@@ -4494,6 +10087,505 @@ function parseTargetAndCommandArgs(cmd, args) {
   return { targetPrefix, cmdArgs };
 }
 
+function detectCliErrorFormat(args = []) {
+  try {
+    return parseFormatArgs(args, ['text', 'json']).format;
+  } catch {
+    return 'text';
+  }
+}
+
+function targetCommandCliErrorFormat(targetPrefix, cmdArgs = [], originalArgs = []) {
+  const targetLooksLikeFlag = targetPrefix && String(targetPrefix).startsWith('--');
+  return detectCliErrorFormat(targetLooksLikeFlag ? originalArgs : cmdArgs);
+}
+
+function formatArgSuffix(format) {
+  return format && format !== 'text' ? ['--format', format] : [];
+}
+
+function normalizeTargetCommandArgs(cmd, cmdArgs = []) {
+  const args = [...cmdArgs];
+  if (cmd === 'type') {
+    const fopts = parseFormatArgs(args, ['text', 'json']);
+    return [fopts.args.join(' '), ...formatArgSuffix(fopts.format)];
+  }
+  if (cmd === 'fill') {
+    if (args[0] === '--react') {
+      const fopts = parseFormatArgs(args.slice(2), ['text', 'json']);
+      return ['--react', args[1], fopts.args.join(' '), ...formatArgSuffix(fopts.format)];
+    }
+    const fopts = parseFormatArgs(args.slice(1), ['text', 'json']);
+    return [args[0], fopts.args.join(' '), ...formatArgSuffix(fopts.format)];
+  }
+  return args;
+}
+
+function commandUsageTemplate(cmd = '', targetPrefix = '') {
+  const target = targetPrefix || '<target>';
+  switch (cmd) {
+    case 'nav':
+    case 'navigate':
+      return `cdp nav ${target} https://example.com`;
+    case 'click':
+    case 'jsclick':
+      return `cdp ${cmd} ${target} <selector|@ref>`;
+    case 'clickxy':
+      return `cdp clickxy ${target} <x> <y>`;
+    case 'fill':
+      return `cdp fill ${target} <selector|@ref> <text>`;
+    case 'type':
+      return `cdp type ${target} <text>`;
+    case 'press':
+      return `cdp press ${target} <key>`;
+    case 'select':
+      return `cdp select ${target} <selector> <value>`;
+    case 'elshot':
+      return `cdp elshot ${target} <selector|@ref>`;
+    case 'eval':
+      return `cdp eval ${target} <expression>`;
+    case 'eval64':
+      return `cdp eval64 ${target} <base64-expression>`;
+    case 'call':
+      return `cdp call ${target} <async-function-expression>`;
+    case 'evalraw':
+      return `cdp evalraw ${target} <CDP.method> [json]`;
+    case 'cookieset':
+      return `cdp cookieset ${target} "name=value; domain=.example.com"`;
+    case 'cookiedel':
+      return `cdp cookiedel ${target} <name>`;
+    case 'upload':
+      return `cdp upload ${target} <selector> <file-path>`;
+    case 'batch':
+      return `cdp batch ${target} "fill @3 hello | click @5"`;
+    case 'flow':
+      return `cdp flow ${target} "click @1; wait dom stable; summary"`;
+    case 'replay':
+      return `cdp replay ${target} --file <record-actions.json>`;
+    case 'restore':
+      return `cdp restore ${target} --file <checkpoint.json>`;
+    case 'inject':
+      return `cdp inject ${target} --css "body { outline: 1px solid red }"`;
+    default:
+      return `cdp ${cmd || '<command>'}${targetPrefix ? ` ${target}` : ''} <required-args>`;
+  }
+}
+
+function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform = process.platform } = {}) {
+  const lower = String(message || '').toLowerCase();
+  const target = targetPrefix || '<target>';
+  if (lower.includes('emfile') || lower.includes('too many open files')) {
+    const recovery = fdLimitRecovery({ platform });
+    const commands = recovery.commands || [];
+    return {
+      kind: 'fd-limit',
+      strategy: recovery.strategy,
+      run: commands[0]?.command || 'ulimit -n 4096',
+      then: commands[1]?.command || null,
+      reason: 'The process ran out of file descriptors while managing Chrome, sockets, screenshots, or session files.',
+      commands,
+    };
+  }
+  if (
+    lower.includes('cannot reach cdp') ||
+    lower.includes('no devtoolsactiveport') ||
+    lower.includes('websocket error') ||
+    lower.includes('remote-debugging-port')
+  ) {
+    return {
+      kind: 'browser-cdp',
+      strategy: 'run-doctor',
+      run: 'cdp doctor',
+      reason: 'Chrome is not reachable through the configured debugging endpoint.',
+    };
+  }
+  if (
+    lower.includes('target id required') ||
+    lower.includes('no page list cached') ||
+    lower.includes('no target matching prefix')
+  ) {
+    return {
+      kind: 'target-resolution',
+      strategy: 'rediscover-target',
+      run: 'cdp list  # if empty: cdp open https://example.com',
+      then: 'cdp open https://example.com',
+      reason: 'The requested tab target could not be resolved from the current page list.',
+    };
+  }
+  if (lower.includes('ambiguous prefix')) {
+    return {
+      kind: 'target-resolution',
+      strategy: 'choose-longer-prefix',
+      run: 'cdp list  # copy a longer target prefix',
+      reason: 'More than one tab matches the provided target prefix.',
+    };
+  }
+  if (
+    lower.includes('connection closed before response') ||
+    lower.includes('daemon failed to start') ||
+    lower.includes('ipc timeout')
+  ) {
+    return {
+      kind: 'daemon-disconnect',
+      strategy: 'restart-tab-daemon',
+      run: `cdp perceive ${target} -C -d 8`,
+      reason: 'The per-tab daemon did not return a usable response.',
+    };
+  }
+  if (lower.includes('unknown command')) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help',
+      reason: 'The command name does not match the registered CLI commands.',
+    };
+  }
+  if ((cmd === 'nav' || cmd === 'navigate') && lower.includes('url required')) {
+    return {
+      kind: 'navigation',
+      strategy: 'provide-url',
+      run: `cdp nav ${target} https://example.com`,
+      reason: 'Navigation commands need an explicit http or https URL.',
+    };
+  }
+  if (cmd && lower.includes('required')) {
+    return {
+      kind: 'usage',
+      strategy: 'provide-required-argument',
+      run: commandUsageTemplate(cmd, targetPrefix),
+      reason: 'The command is missing required input; provide the required argument instead of retrying unchanged.',
+    };
+  }
+  return targetPrefix
+    ? {
+        kind: 'unknown',
+        strategy: 'inspect-status',
+        run: `cdp status ${targetPrefix}`,
+        reason: 'The failure was not classified; inspect the target status before retrying.',
+      }
+    : {
+        kind: 'unknown',
+        strategy: 'run-doctor',
+        run: 'cdp doctor',
+        reason: 'The failure was not classified; check browser setup and available targets.',
+      };
+}
+
+function formatCliErrorRecovery(recovery) {
+  const lines = [
+    'Recovery:',
+    `  Kind: ${recovery.kind}`,
+    `  Strategy: ${recovery.strategy}`,
+    `  Run: ${recovery.run}`,
+  ];
+  if (recovery.then) lines.push(`  Then: ${recovery.then}`);
+  if (recovery.reason) lines.push(`  Reason: ${recovery.reason}`);
+  return lines;
+}
+
+function cliErrorMessage(err) {
+  return String(err?.message || err || '').trim() || 'unknown failure';
+}
+
+function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = process.platform } = {}) {
+  const message = cliErrorMessage(err);
+  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform });
+  const nextSteps = [];
+  const commandSteps = Array.isArray(recovery.commands) && recovery.commands.length
+    ? recovery.commands.map(command => command?.command).filter(Boolean)
+    : [recovery.run, recovery.then];
+  for (const step of commandSteps) {
+    if (step && !nextSteps.includes(step)) nextSteps.push(step);
+  }
+  return {
+    schema: 'chrome-cdp-ex.cli-error.v1',
+    ok: false,
+    command: cmd || null,
+    targetPrefix: targetPrefix || null,
+    error: { message },
+    recovery,
+    nextSteps,
+  };
+}
+
+function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', platform = process.platform } = {}) {
+  if (format === 'json') return formatJson(buildCliErrorModel(err, { cmd, targetPrefix, platform }));
+  const message = String(err?.message || err || '').trim();
+  if (!message) {
+    const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix, platform });
+    return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), `Next: ${recovery.run}`].join('\n');
+  }
+  if (message.startsWith('Action failure:')) return message;
+  const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
+  if (/^Next:/m.test(message)) return lines.join('\n');
+
+  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform });
+  lines.push(...formatCliErrorRecovery(recovery));
+  lines.push(`Next: ${recovery.run}`);
+  return lines.join('\n');
+}
+
+function exitCliError(err, { cmd = '', targetPrefix = '', format = 'text', platform = process.platform } = {}) {
+  console.error(formatCliError(err, { cmd, targetPrefix, format, platform }));
+  process.exit(1);
+}
+
+function argsWithoutFormat(args = []) {
+  try {
+    return parseFormatArgs(args, ['text', 'json']).args;
+  } catch {
+    return args;
+  }
+}
+
+function targetPrefixForDisplay(targetId) {
+  return String(targetId || '').slice(0, 8) || '<target>';
+}
+
+function parseNonNegativeInteger(value, label) {
+  const raw = String(value ?? '').trim();
+  if (!/^\d+$/.test(raw)) throw new Error(`${label} must be a non-negative integer`);
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${label} must be a non-negative integer`);
+  return parsed;
+}
+
+function parseOpenArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const positional = [];
+  let attachTimeoutMs = DEFAULT_OPEN_ATTACH_TIMEOUT_MS;
+  let readyTimeoutMs = null;
+  let readySelector = null;
+  for (let i = 0; i < fopts.args.length; i++) {
+    const token = fopts.args[i];
+    if (token === '--attach-timeout-ms') {
+      attachTimeoutMs = parseNonNegativeInteger(fopts.args[++i], 'open: --attach-timeout-ms');
+    } else if (String(token).startsWith('--attach-timeout-ms=')) {
+      attachTimeoutMs = parseNonNegativeInteger(String(token).slice('--attach-timeout-ms='.length), 'open: --attach-timeout-ms');
+    } else if (token === '--ready-timeout-ms') {
+      readyTimeoutMs = parseNonNegativeInteger(fopts.args[++i], 'open: --ready-timeout-ms');
+    } else if (String(token).startsWith('--ready-timeout-ms=')) {
+      readyTimeoutMs = parseNonNegativeInteger(String(token).slice('--ready-timeout-ms='.length), 'open: --ready-timeout-ms');
+    } else if (token === '--ready-selector') {
+      readySelector = fopts.args[++i];
+      if (!readySelector) throw new Error('open: --ready-selector requires a CSS selector');
+    } else if (String(token).startsWith('--ready-selector=')) {
+      readySelector = String(token).slice('--ready-selector='.length);
+      if (!readySelector) throw new Error('open: --ready-selector requires a CSS selector');
+    } else if (String(token).startsWith('-')) {
+      throw new Error(`open: unknown argument ${token}`);
+    } else {
+      positional.push(token);
+    }
+  }
+  if (positional.length > 1) throw new Error(`open: unknown argument ${positional[1]}`);
+  return {
+    url: positional[0] || 'about:blank',
+    format: fopts.format,
+    attachTimeoutMs,
+    readyTimeoutMs: readyTimeoutMs ?? (attachTimeoutMs > 0 ? DEFAULT_OPEN_READY_TIMEOUT_MS : 0),
+    readySelector,
+  };
+}
+
+async function waitForOpenReady(sp, { timeoutMs = DEFAULT_OPEN_READY_TIMEOUT_MS, url = '', selector = null } = {}) {
+  const timeout = Math.min(Math.max(timeoutMs, 0), 300000);
+  if (timeout <= 0) {
+    return { attempted: false, ok: false, reason: 'disabled', href: null, readyState: null, selector, selectorFound: false, timeoutMs: timeout };
+  }
+  const deadline = Date.now() + timeout;
+  let lastState = null;
+  while (true) {
+    let conn = null;
+    try {
+      conn = await connectToSocket(sp, { timeoutMs: Math.min(1000, Math.max(1, deadline - Date.now())) });
+      const probeTimeoutMs = Math.min(1000, Math.max(100, deadline - Date.now()));
+      const resp = await sendCommand(conn, {
+        cmd: 'eval',
+        args: [`JSON.stringify({ href: location.href, readyState: document.readyState, selectorFound: ${selector ? `Boolean(document.querySelector(${JSON.stringify(selector)}))` : 'true'} })`],
+        timeoutMs: probeTimeoutMs,
+      });
+      if (resp.ok) {
+        try {
+          lastState = JSON.parse(resp.result || '{}');
+        } catch {
+          lastState = { href: null, readyState: String(resp.result || '').trim() || null };
+        }
+      }
+      const readyState = lastState?.readyState || null;
+      const href = lastState?.href || null;
+      const selectorReady = lastState?.selectorFound === true;
+      const urlReady = !url || url === 'about:blank' || href === url;
+      if (resp.ok && urlReady && selectorReady && /^(interactive|complete)$/.test(readyState || '')) {
+        return { attempted: true, ok: true, href, readyState, selector, selectorFound: true, timeoutMs: timeout };
+      }
+    } catch (e) {
+      lastState = { error: e.message || String(e) };
+    } finally {
+      try { conn?.end(); } catch {}
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await sleep(Math.min(100, remainingMs));
+  }
+  return { attempted: true, ok: false, href: lastState?.href || null, readyState: lastState?.readyState || null, selector, selectorFound: lastState?.selectorFound === true, error: lastState?.error || null, timeoutMs: timeout };
+}
+
+function openNavigationScript(url) {
+  return `(function() {
+    location.assign(${JSON.stringify(url)});
+    return JSON.stringify({ method: 'location.assign', target: ${JSON.stringify(url)} });
+  })()`;
+}
+
+async function waitForOpenTargetUrl(targetId, url, timeoutMs = 1000) {
+  if (!url || url === 'about:blank') return { ok: true, href: 'about:blank' };
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let lastHref = null;
+  let lastError = null;
+  while (Date.now() <= deadline) {
+    const cdp = new CDP();
+    try {
+      await cdp.connect(await getWsUrl());
+      const { targetInfos } = await cdp.send('Target.getTargets', {}, undefined, Math.min(1000, Math.max(100, deadline - Date.now() + 100)));
+      const target = (targetInfos || []).find(t => t.targetId === targetId);
+      lastHref = target?.url || null;
+      if (lastHref === url) return { ok: true, href: lastHref };
+    } catch (e) {
+      lastError = e.message || String(e);
+    } finally {
+      try { cdp.close(); } catch {}
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await sleep(Math.min(100, remainingMs));
+  }
+  return { ok: false, href: lastHref, error: lastError };
+}
+
+async function navigateOpenTarget(targetId, sp, url) {
+  if (!url || url === 'about:blank') return { attempted: false, ok: true, reason: 'about:blank' };
+  const attempts = [];
+  const initialUrl = await waitForOpenTargetUrl(targetId, url, 1500);
+  if (initialUrl.ok) {
+    return { attempted: true, ok: true, method: 'Target.createTarget', href: initialUrl.href, error: null };
+  }
+  const cdp = new CDP();
+  try {
+    await cdp.connect(await getWsUrl());
+    await cdp.send('Target.activateTarget', { targetId }, undefined, 5000).catch(() => {});
+    const attached = await cdp.send('Target.attachToTarget', { targetId, flatten: true }, undefined, 5000);
+    const sid = attached.sessionId;
+    await cdp.send('Page.enable', {}, sid, 2000).catch(() => {});
+    try {
+      const nav = await cdp.send('Page.navigate', { url }, sid, 5000);
+      if (nav?.errorText) throw new Error(nav.errorText);
+      return { attempted: true, ok: true, method: 'Page.navigate', error: null };
+    } catch (e) {
+      attempts.push({ method: 'Page.navigate', error: e.message || String(e) });
+    }
+    try {
+      await cdp.send('Runtime.evaluate', {
+        expression: openNavigationScript(url),
+        returnByValue: false,
+        awaitPromise: false,
+      }, sid, 5000);
+      return { attempted: true, ok: true, method: 'Runtime.evaluate location.assign', error: null, attempts };
+    } catch (e) {
+      attempts.push({ method: 'Runtime.evaluate location.assign', error: e.message || String(e) });
+    }
+  } catch (e) {
+    attempts.push({ method: 'direct-cdp', error: e.message || String(e) });
+  } finally {
+    try { cdp.close(); } catch {}
+  }
+
+  const afterDirectUrl = await waitForOpenTargetUrl(targetId, url, 1500);
+  if (afterDirectUrl.ok) {
+    return { attempted: true, ok: true, method: 'Target.url-observed', href: afterDirectUrl.href, attempts, error: null };
+  }
+
+  let conn = null;
+  try {
+    conn = await connectToSocket(sp);
+    const resp = await sendCommand(conn, { cmd: 'eval', args: [openNavigationScript(url)] });
+    return {
+      attempted: true,
+      ok: resp.ok === true,
+      method: 'daemon eval location.assign',
+      attempts,
+      error: resp.ok ? null : (resp.error || 'navigation failed'),
+    };
+  } catch (e) {
+    attempts.push({ method: 'daemon eval location.assign', error: e.message || String(e) });
+    const afterDaemonUrl = await waitForOpenTargetUrl(targetId, url, 1500);
+    if (afterDaemonUrl.ok) {
+      return { attempted: true, ok: true, method: 'Target.url-observed', href: afterDaemonUrl.href, attempts, error: null };
+    }
+    return { attempted: true, ok: false, method: 'daemon eval location.assign', attempts, error: e.message || String(e) };
+  } finally {
+    try { conn?.end(); } catch {}
+  }
+}
+
+function formatOpenReadyMessage(targetId, url = '') {
+  const target = targetPrefixForDisplay(targetId);
+  const lines = [
+    'Tab ready — debugging approved.',
+    `Target: ${target}${url ? `  ${url}` : ''}`,
+    `Next: cdp click ${target} @ref  # choose a ref from the perception below`,
+    `Then: cdp perceive ${target} --since-action`,
+    `Report: cdp report ${target}`,
+  ];
+  return lines.join('\n');
+}
+
+function buildOpenModel({ targetId, url = '', attached = false, autoPerceive = null, ready = null, navigation = null } = {}) {
+  const target = targetPrefixForDisplay(targetId);
+  const approved = attached === true;
+  const defaultAutoPerceive = approved
+    ? { attempted: false, ok: false, reason: 'not-run' }
+    : { attempted: false, ok: false, reason: 'not-attached' };
+  const autoPerceiveModel = autoPerceive || defaultAutoPerceive;
+  const recommendation = approved && autoPerceiveModel.ok
+    ? goldenPathActRecommendation(target, { fromPerceptionBelow: true })
+    : approved
+    ? goldenPathPerceiveRecommendation(target)
+    : goldenPathBrowserPermissionRecommendation(target);
+  const nextSteps = recommendation.commands;
+  return {
+    schema: 'chrome-cdp-ex.open.v1',
+    targetId,
+    targetPrefix: target,
+    url,
+    attached: approved,
+    approval: approved ? 'approved' : 'pending',
+    navigation,
+    ready,
+    autoPerceive: autoPerceiveModel,
+    recommendation,
+    nextSteps,
+  };
+}
+
+function formatOpenTimeoutMessage(targetId) {
+  const target = targetPrefixForDisplay(targetId);
+  return [
+    'Timeout waiting for debugging approval. Tab created but daemon not connected.',
+    `Target: ${target}`,
+    'If Chrome asks "Allow debugging?", click Allow first.',
+    `Next: cdp perceive ${target} -C -d 8`,
+  ].join('\n');
+}
+
+function formatOpenAutoPerceiveFailure(err, targetId) {
+  const target = targetPrefixForDisplay(targetId);
+  return [
+    'Auto-perceive failed after the tab was attached.',
+    formatCliError(err, { cmd: 'perceive', targetPrefix: target }),
+  ].join('\n');
+}
+
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
 
@@ -4501,11 +10593,16 @@ async function main() {
   if (cmd === '_daemon') { await runDaemon(args[0]); return; }
 
   if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
-    console.log(USAGE); process.exit(0);
+    console.log(helpStr()); process.exit(0);
   }
 
   // List — use existing daemon if available, otherwise direct
   if (cmd === 'list' || cmd === 'ls') {
+    const fopts = parseFormatArgs(args, ['text', 'json']);
+    if (fopts.args.length) {
+      console.error(formatCliError(`list: unknown argument ${fopts.args[0]}`, { cmd, format: fopts.format }));
+      process.exit(1);
+    }
     let pages;
     const existingSock = findAnyDaemonSocket();
     if (existingSock) {
@@ -4523,18 +10620,19 @@ async function main() {
       cdp.close();
     }
     writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
-    console.log(formatPageList(pages, _browserInfo));
+    console.log(formatPageListOutput(pages, _browserInfo, { format: fopts.format }));
     process.stdout.write('', () => process.exit(0));
     return;
   }
 
   // Open new tab
   if (cmd === 'open') {
-    const url = args[0] || 'about:blank';
+    const opts = parseOpenArgs(args);
+    const url = opts.url;
     if (url !== 'about:blank') validateUrl(url);
     const cdp = new CDP();
     await cdp.connect(await getWsUrl());
-    const { targetId } = await cdp.send('Target.createTarget', { url });
+    const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
     // Refresh cache; new tab may not appear in getTargets immediately, so add it manually
     const pages = await getPages(cdp);
     if (!pages.some(p => p.targetId === targetId)) {
@@ -4542,10 +10640,14 @@ async function main() {
     }
     cdp.close();
     writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
-    console.log(`Opened new tab: ${targetId.slice(0, 8)}  ${url}`);
+    if (opts.format === 'text') {
+      console.log(`Opened new tab: ${targetId.slice(0, 8)}  ${url}`);
+    }
 
     // Auto-attach: start daemon and wait for user to click "Allow debugging?"
-    console.log('Waiting for "Allow debugging?" approval in Chrome... (up to 60s)');
+    if (opts.format === 'text') {
+      console.log(`Waiting for "Allow debugging?" approval in Chrome... (up to ${formatDuration(opts.attachTimeoutMs)})`);
+    }
     const sp = sockPath(targetId);
     if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
     const child = spawn(process.execPath, [process.argv[1], '_daemon', targetId], {
@@ -4554,17 +10656,38 @@ async function main() {
     });
     child.unref();
     let attached = false;
-    for (let i = 0; i < DAEMON_ALLOW_RETRIES; i++) {
-      await sleep(DAEMON_ALLOW_DELAY);
+    const attachDeadline = Date.now() + opts.attachTimeoutMs;
+    while (Date.now() < attachDeadline) {
+      const remainingMs = attachDeadline - Date.now();
       try {
-        const conn = await connectToSocket(sp);
+        const conn = await connectToSocket(sp, { timeoutMs: Math.min(DAEMON_ALLOW_DELAY, Math.max(1, remainingMs)) });
         conn.end();
         attached = true;
         break;
       } catch {}
+      await sleep(Math.min(DAEMON_ALLOW_DELAY, remainingMs));
+    }
+    const navigation = attached
+      ? await navigateOpenTarget(targetId, sp, url)
+      : { attempted: false, ok: false, reason: 'not-attached' };
+    const ready = attached
+      ? await waitForOpenReady(sp, { timeoutMs: opts.readyTimeoutMs, url, selector: opts.readySelector })
+      : { attempted: false, ok: false, reason: 'not-attached', timeoutMs: opts.readyTimeoutMs };
+    if (opts.format === 'json') {
+      console.log(formatJson(buildOpenModel({
+        targetId,
+        url,
+        attached,
+        navigation,
+        ready,
+        autoPerceive: attached
+          ? { attempted: false, ok: false, reason: 'json-output' }
+          : { attempted: false, ok: false, reason: 'not-attached' },
+      })));
+      return;
     }
     if (attached) {
-      console.log('Tab ready — debugging approved.');
+      console.log(formatOpenReadyMessage(targetId, url));
       // Auto-perceive: give agent immediate page understanding (matches nav behavior)
       try {
         const conn = await connectToSocket(sp);
@@ -4572,11 +10695,10 @@ async function main() {
         conn.end();
         if (resp.ok && resp.result) console.log('---\n' + resp.result);
       } catch (e) {
-        console.error(`Auto-perceive failed: ${e.message}`);
+        console.error(formatOpenAutoPerceiveFailure(e, targetId));
       }
     } else {
-      console.log('Timeout waiting for debugging approval. Tab created but daemon not connected.');
-      console.log('Run a command against this tab to retry.');
+      console.log(formatOpenTimeoutMessage(targetId));
     }
     return;
   }
@@ -4589,9 +10711,14 @@ async function main() {
 
   // Doctor / ready — one-call diagnostics, no target needed
   if (cmd === 'doctor' || cmd === 'ready') {
-    const out = await doctorStr();
-    console.log(out);
-    process.exit(out.includes('Not ready') ? 1 : 0);
+    const fopts = parseFormatArgs(args, ['text', 'json']);
+    if (fopts.args.length) {
+      console.error(formatCliError(`doctor: unknown argument ${fopts.args[0]}`, { cmd, format: fopts.format }));
+      process.exit(1);
+    }
+    const checks = await runDoctorChecks();
+    console.log(formatDoctorOutput(checks, { format: fopts.format }));
+    process.exit(checks.some(check => check.status === 'FAIL') ? 1 : 0);
   }
 
   // spawn-debug-browser / spawn — launch isolated debug profile (no target)
@@ -4601,7 +10728,7 @@ async function main() {
       console.log(out);
       process.exit(0);
     } catch (e) {
-      console.error('Error:', e.message);
+      console.error(formatCliError(e, { cmd }));
       process.exit(1);
     }
   }
@@ -4614,14 +10741,30 @@ async function main() {
 
   // Page commands — need target prefix
   if (!NEEDS_TARGET.has(cmd)) {
-    console.error(`Unknown command: ${cmd}\n`);
-    console.log(USAGE);
+    const cliErrorFormat = detectCliErrorFormat(args);
+    console.error(formatCliError(`Unknown command: ${cmd}`, { cmd, format: cliErrorFormat }));
+    if (cliErrorFormat === 'text') {
+      console.error('');
+      console.log(helpStr());
+    }
     process.exit(1);
   }
 
   let { targetPrefix, cmdArgs } = parseTargetAndCommandArgs(cmd, args);
+  let cliErrorFormat = targetCommandCliErrorFormat(targetPrefix, cmdArgs, args);
+  if (targetPrefix && String(targetPrefix).startsWith('--')) {
+    try {
+      const fopts = parseFormatArgs(args, ['text', 'json']);
+      cliErrorFormat = fopts.format;
+      targetPrefix = fopts.args[0];
+      cmdArgs = fopts.args.slice(1);
+    } catch (e) {
+      console.error(formatCliError(e, { cmd }));
+      process.exit(1);
+    }
+  }
   if (!targetPrefix) {
-    console.error('Error: target ID required. Run "cdp list" first.');
+    console.error(formatCliError('target ID required. Run "cdp list" first.', { cmd, format: cliErrorFormat }));
     process.exit(1);
   }
 
@@ -4634,7 +10777,7 @@ async function main() {
     targetId = resolvePrefix(targetPrefix, daemonTargetIds, 'daemon');
   } else {
     if (!existsSync(PAGES_CACHE)) {
-      console.error('No page list cached. Run "cdp list" first.');
+      console.error(formatCliError('No page list cached. Run "cdp list" first.', { cmd, targetPrefix, format: cliErrorFormat }));
       process.exit(1);
     }
     const pages = JSON.parse(readFileSync(PAGES_CACHE, 'utf8'));
@@ -4653,62 +10796,81 @@ async function main() {
       const b64 = cmdArgs.slice(b64Index + 1)
         .filter(a => a !== '--fire-and-forget' && a !== '--faf')
         .join('').trim();
-      if (!b64) { console.error('Error: base64 expression required'); process.exit(1); }
+      if (!b64) exitCliError('base64 expression required', { cmd, targetPrefix, format: cliErrorFormat });
       cmdArgs.splice(0, cmdArgs.length, ...(fire ? ['--fire-and-forget'] : []), '--b64', b64);
     } else {
       const expr = cmdArgs.filter(a => a !== '--fire-and-forget' && a !== '--faf').join(' ');
-      if (!expr) { console.error('Error: expression required'); process.exit(1); }
+      if (!expr) exitCliError('expression required', { cmd, targetPrefix, format: cliErrorFormat });
       cmdArgs.splice(0, cmdArgs.length, ...(fire ? ['--fire-and-forget'] : []), expr);
     }
   } else if (cmd === 'eval64') {
     const b64 = cmdArgs.join('').trim();
-    if (!b64) { console.error('Error: base64 expression required'); process.exit(1); }
+    if (!b64) exitCliError('base64 expression required', { cmd, targetPrefix, format: cliErrorFormat });
     cmdArgs.splice(0, cmdArgs.length, b64);
   } else if (cmd === 'call') {
     const expr = cmdArgs.join(' ');
-    if (!expr) { console.error('Error: expression required'); process.exit(1); }
+    if (!expr) exitCliError('expression required', { cmd, targetPrefix, format: cliErrorFormat });
     cmdArgs.splice(0, cmdArgs.length, expr);
   } else if (cmd === 'elshot') {
-    if (!cmdArgs[0]) { console.error('Error: CSS selector required'); process.exit(1); }
+    const checkArgs = argsWithoutFormat(cmdArgs);
+    if (!checkArgs[0]) exitCliError('CSS selector required', { cmd, targetPrefix, format: cliErrorFormat });
   } else if (cmd === 'type') {
-    // Join all remaining args as text (allows spaces)
-    const text = cmdArgs.join(' ');
-    if (!text) { console.error('Error: text required'); process.exit(1); }
-    cmdArgs[0] = text;
+    const checkArgs = argsWithoutFormat(cmdArgs);
+    if (!checkArgs[0]) exitCliError('text required', { cmd, targetPrefix, format: cliErrorFormat });
+    cmdArgs = normalizeTargetCommandArgs(cmd, cmdArgs);
   } else if (cmd === 'fill') {
-    if (cmdArgs[0] === '--react') {
-      if (!cmdArgs[1]) { console.error('Error: selector required'); process.exit(1); }
-      const text = cmdArgs.slice(2).join(' ');
-      if (!text) { console.error('Error: text required'); process.exit(1); }
-      cmdArgs.splice(0, cmdArgs.length, '--react', cmdArgs[1], text);
+    const checkArgs = argsWithoutFormat(cmdArgs);
+    if (checkArgs[0] === '--react') {
+      if (!checkArgs[1]) exitCliError('selector required', { cmd, targetPrefix, format: cliErrorFormat });
+      if (!checkArgs[2]) exitCliError('text required', { cmd, targetPrefix, format: cliErrorFormat });
     } else {
-      if (!cmdArgs[0]) { console.error('Error: selector required'); process.exit(1); }
-      if (cmdArgs.length > 2) cmdArgs[1] = cmdArgs.slice(1).join(' ');
+      if (!checkArgs[0]) exitCliError('selector required', { cmd, targetPrefix, format: cliErrorFormat });
+      if (!checkArgs[1]) exitCliError('text required', { cmd, targetPrefix, format: cliErrorFormat });
     }
+    cmdArgs = normalizeTargetCommandArgs(cmd, cmdArgs);
   } else if (cmd === 'evalraw') {
     // args: [method, ...jsonParts] — join json parts in case of spaces
-    if (!cmdArgs[0]) { console.error('Error: CDP method required'); process.exit(1); }
+    if (!cmdArgs[0]) exitCliError('CDP method required', { cmd, targetPrefix, format: cliErrorFormat });
     if (cmdArgs.length > 2) cmdArgs[1] = cmdArgs.slice(1).join(' ');
   } else if (cmd === 'cookieset') {
-    if (!cmdArgs[0]) { console.error('Error: cookie string required (e.g. "name=value; domain=.example.com")'); process.exit(1); }
+    if (!cmdArgs[0]) exitCliError('cookie string required (e.g. "name=value; domain=.example.com")', { cmd, targetPrefix, format: cliErrorFormat });
     cmdArgs[0] = cmdArgs.join(' '); // join in case of spaces in cookie string
   } else if (cmd === 'cookiedel') {
-    if (!cmdArgs[0]) { console.error('Error: cookie name required'); process.exit(1); }
+    if (!cmdArgs[0]) exitCliError('cookie name required', { cmd, targetPrefix, format: cliErrorFormat });
   } else if (cmd === 'upload') {
-    if (!cmdArgs[0] || !cmdArgs[1]) { console.error('Error: selector and file path(s) required'); process.exit(1); }
+    if (!cmdArgs[0] || !cmdArgs[1]) exitCliError('selector and file path(s) required', { cmd, targetPrefix, format: cliErrorFormat });
     // args[0] = selector, args[1] = comma-separated file paths (no join needed)
   } else if (cmd === 'batch') {
     const filtered = cmdArgs.filter(a => a !== '--parallel' && a !== '--plain' && a !== '--compact');
-    if (!filtered[0]) { console.error('Error: commands required (pipe syntax or JSON array)'); process.exit(1); }
+    if (!filtered[0]) exitCliError('commands required (pipe syntax or JSON array)', { cmd, targetPrefix, format: cliErrorFormat });
   } else if (cmd === 'flow') {
-    if (!cmdArgs[0]) { console.error('Error: flow steps required (semicolon-separated). Example: flow <target> "click @1; wait dom stable; summary"'); process.exit(1); }
+    const fopts = parseFormatArgs(cmdArgs, ['text', 'json']);
+    if (!fopts.args[0]) exitCliError('flow steps required (semicolon-separated). Example: flow <target> "click @1; wait dom stable; summary"', { cmd, targetPrefix, format: cliErrorFormat });
     // Preserve multi-word/unquoted step recipes as one daemon argument.
-    cmdArgs.splice(0, cmdArgs.length, cmdArgs.join(' '));
+    cmdArgs.splice(0, cmdArgs.length, ...formatArgSuffix(fopts.format), fopts.args.join(' '));
+  } else if (cmd === 'replay') {
+    const jsonIndex = cmdArgs.findIndex(a => a === '--json');
+    if (jsonIndex !== -1) {
+      const jsonPayload = cmdArgs.slice(jsonIndex + 1).join(' ').trim();
+      if (!jsonPayload) exitCliError('replay --json requires a record-actions JSON payload', { cmd, targetPrefix, format: cliErrorFormat });
+      cmdArgs.splice(jsonIndex + 1, cmdArgs.length - jsonIndex - 1, jsonPayload);
+    } else if (!cmdArgs[0]) {
+      exitCliError('replay requires --file <path> or --json <record-actions-json>', { cmd, targetPrefix, format: cliErrorFormat });
+    }
+  } else if (cmd === 'restore') {
+    const jsonIndex = cmdArgs.findIndex(a => a === '--json');
+    if (jsonIndex !== -1) {
+      const jsonPayload = cmdArgs.slice(jsonIndex + 1).join(' ').trim();
+      if (!jsonPayload) exitCliError('restore --json requires a checkpoint JSON payload', { cmd, targetPrefix, format: cliErrorFormat });
+      cmdArgs.splice(jsonIndex + 1, cmdArgs.length - jsonIndex - 1, jsonPayload);
+    } else if (!cmdArgs[0]) {
+      exitCliError('restore requires --file <path> or --json <checkpoint-json>', { cmd, targetPrefix, format: cliErrorFormat });
+    }
   }
 
-  if ((cmd === 'nav' || cmd === 'navigate') && !cmdArgs[0]) {
-    console.error('Error: URL required');
-    process.exit(1);
+  if (cmd === 'nav' || cmd === 'navigate') {
+    const checkArgs = argsWithoutFormat(cmdArgs);
+    if (!checkArgs[0]) exitCliError('URL required', { cmd, targetPrefix, format: cliErrorFormat });
   }
 
   const response = await sendCommand(conn, { cmd, args: cmdArgs });
@@ -4716,14 +10878,18 @@ async function main() {
   if (response.ok) {
     if (response.result) console.log(response.result);
   } else {
-    console.error('Error:', response.error);
+    console.error(formatCliError(response.error, { cmd, targetPrefix, format: cliErrorFormat }));
     process.exitCode = 1;
   }
 }
 
 // Test exports — only available when NODE_ENV=test to avoid side effects
 if (process.env.NODE_ENV !== 'test') {
-  main().catch(e => { console.error(e.message); process.exit(1); });
+  main().catch(e => {
+    const [cmd, ...args] = process.argv.slice(2);
+    console.error(formatCliError(e, { cmd, format: detectCliErrorFormat(args) }));
+    process.exit(1);
+  });
 }
 export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Data structures
@@ -4733,20 +10899,48 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // AX tree helpers
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
-  parsePerceiveArgs, buildPerceiveTree, perceivePageScript,
+  parsePerceiveArgs, buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
+  createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
+  createSessionState, invalidateSessionRefs,
+  classifyActionFailure, formatActionFailure,
+  buildActionRecoveryPlan,
+  createActionResult, formatActionText, runActionWithFeedback,
+  createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
+  summarizeActionObservationEffects, shouldTrackActionNetworkRequest,
+  appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
+  appendSessionEnvironmentLog, buildRecordEnvironmentModel,
+  initializeSessionLog, parseReportArgs, buildSessionReportModel, formatSessionReport, sessionScreenshotDir,
+  ensureSessionScreenshotDir, nextSessionScreenshotPath,
+  buildRecordActionsModel, formatRecordActions,
+  playwrightStepFromCommand, formatPlaywrightSpecFromRecordActions, formatExportPlaywright,
+  parseDiffShotArgs, diffShotCompareScript, formatDiffShotResult, diffShotStr,
+  checkpointPageScript, sanitizeCheckpointCookies, checkpointModel, checkpointStr,
+  parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs,
+  checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,
   // Command implementations
-  formatPageList, dialogStr, netlogStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
-  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,
+  formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr,
+  parseMockArgs, formatNetworkMocksSummary, buildMockModel, formatMockText, mockStr, handleMockRequestPaused,
+  parseClockArgs, clockPageScript, formatClockSummary, buildClockModel, formatClockText, clockStr,
+  parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
+  injectStr, cascadeStr, recordStr, parseRecordArgs,
+  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
+  parseFormatArgs, formatJson, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, formatCallResult, evalBase64Decode,
-  navStr, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
-  parseRepeatArgs, repeatStr,
+  parseRepeatArgs, repeatStr, autoActionJsonArgs,
+  isBatchParallelUnsafeCommand,
+  parseReplayArgs, parseReplayArtifact, replayStepFromAction, replayActionsStr,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,
-  formatUnknownRefError, resolveRefNode, formatRefRect,
+  formatUnknownRefError, resolveRefNode, formatRefRect, isPriorityPerceiveTextLine,
+  parseFrameOnlyRef, parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
+  resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
+  rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr,
   parseShotArgs, shotStr,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan, spawnDebugBrowserStr,
+  overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
   // Screenshot
   captureScreenshot, screencastFallback,
@@ -4756,7 +10950,12 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Cascade source mapping
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
-  formatBatchResults, parseFlowSteps, settleFlow, flowStr,
-  checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability,
+  formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
+  formatCliError, buildCliErrorModel, parseOpenArgs, openNavigationScript, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  helpStr,
+  checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
+  doctorWizardModel, doctorWizardSummary,
+  doctorNextSteps, doctorStatusSummary, buildDoctorModel, formatDoctorOutput,
   formatDoctorReport, runDoctorChecks, doctorStr,
+  COMMANDS, NEEDS_TARGET,
 } : undefined;

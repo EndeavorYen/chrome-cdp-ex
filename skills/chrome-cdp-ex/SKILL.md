@@ -7,11 +7,11 @@ description: "Your EYES into the user's live Chrome browser and Electron apps. T
 
 ## TL;DR — 90% workflow
 
-1. **Discover tabs:** `cdp list`. If empty / no CDP available, run `cdp doctor` and either toggle remote debugging in Chrome's UI **or, with user consent, run `cdp spawn-debug-browser edge --port 9222 --url <url>`** — that launches an isolated debug profile that does not touch the user's main browser session.
-2. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, viewport CSS coordinates (fixed/sticky elements are tagged), console health.
-3. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
-4. **Extract content:** `cdp text <target> --auto` (heuristic main-content extraction) or `cdp text <target> "main, [role=main], #app .main"` (fallback chain).
-5. **Visual evidence:** `cdp shot <target> /tmp/x.png --quiet` (saved path on first line) or `cdp shot <target> --annotate` for a labeled @ref overlay.
+1. **Readiness:** `cdp doctor` — checks Node, install path, daemon state, fd limit, CDP reachability, browser debugging permission, and prints the next command to run.
+2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`.
+3. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, top-level viewport CSS coordinates (fixed/sticky elements are tagged), console health.
+4. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
+5. **Verify/report:** read the automatic action evidence, then use `cdp perceive <target> --since-action` or `cdp report <target>` for handoff; use `cdp report <target> --format json` when a script needs the versioned session memory model. Report handoffs show the latest 20 actions by default; add `--last N` for a smaller window or `--all` when you intentionally need the full timeline. If you used `cdp mock`, `cdp clock`, or `cdp throttle`, confirm the report shows the intended environment state and reset with `cdp mock <target> clear` / `cdp clock <target> reset` / `cdp throttle <target> off`.
 
 For long-session game / animation work also reach for `cdp waitfor <target> --any-of "win|lose|escape" 60000 --scope ".combat-log"` and `cdp waitfor <target> --selector-stable ".combat-log" 3000 60000`. To close MOTD-style modals safely without firing background shortcuts, use `cdp dismiss-modal <target>` (it prefers an explicit close button, falls back to Escape — never `press Space`).
 
@@ -136,7 +136,7 @@ N="/mnt/c/.../node.exe" C="/path/to/scripts/cdp.mjs" && "$N" "$C" fill FFCC @3 "
 ```
 Or define both vars at the start of each Bash call using short aliases.
 
-On first use, always start with `list` to verify connectivity and discover available tabs.
+On first use, always start with `list` to verify connectivity and discover available tabs. Use `list --format json` when an agent needs stable target prefixes, page metadata, a golden-path `recommendation`, and executable `nextSteps` without parsing the human table. Use `open --format json` when no page is available and the agent needs a clean `chrome-cdp-ex.open.v1` handoff with target prefix, approval state, recommendation, and next commands. Use `perceive --format json` when the next agent should continue from structured refs into `click/fill -> perceive --since-action -> report`.
 
 **Interpreting `list` output**:
 ```
@@ -149,18 +149,26 @@ When connected via `CDP_PORT` to an Electron app, a header line is shown:
 1ED3DBAA  Rexiano          http://localhost:5173/#/menu
 ```
 - Each line: `<8-char target ID>  <title>  <url>`. Use the target ID (e.g. `A7BA5C64`) for subsequent commands.
-- **Empty output (exit 0)** = no debuggable tabs available. Do NOT stop to ask the user for help. Instead, use `open <url>` to create a tab — this will auto-attach, wait for the user to click "Allow debugging?" in Chrome, and auto-perceive the page. Once `open` completes, you have the target ID and full page perception — proceed immediately. Do NOT suggest `--remote-debugging-port` restarts.
+- **Empty output (exit 0)** = no debuggable tabs available. Do NOT stop to ask the user for help. Instead, use `open <url>` to create a tab — this will auto-attach, wait for the user to click "Allow debugging?" in Chrome, auto-perceive the page, and print Target/Next/Then/Report continuation hints. Use `open <url> --format json` when a script needs the structured target handoff instead of human guidance; add `--attach-timeout-ms 0` only when automation needs the tab target immediately and will run `perceive`/retry itself. Use `--ready-timeout-ms <ms>` and `--ready-selector <sel>` when automation needs a bounded app-shell wait after attach. Once `open` completes, follow those hints and proceed immediately. Do NOT suggest `--remote-debugging-port` restarts.
 - **Error output** = connection problem. Check prerequisites.
 
 ## Commands
 
 All commands use `scripts/cdp.mjs`. The `<target>` is a **unique** targetId prefix from `list` (e.g. `A7BA5C64`). The CLI rejects ambiguous prefixes.
 
+```bash
+scripts/cdp.mjs help                         # show the command reference
+```
+
 ### Perceive page (recommended starting point)
 
 ```bash
 scripts/cdp.mjs perceive <target>              # full page perception with @ref indices + coordinates
+scripts/cdp.mjs perceive <target> --format json # versioned perception model for tool-calling agents
 scripts/cdp.mjs perceive <target> --diff       # show only changes since last perceive
+scripts/cdp.mjs perceive <target> --since-action # show changes caused by the last mutating command
+scripts/cdp.mjs perceive <target> --since-action --format json # versioned diff evidence for agents
+scripts/cdp.mjs perceive <target> --frame @f2  # perceive inside a frame; refs become @f2:1
 scripts/cdp.mjs perceive <target> -s "#main"   # scope to CSS selector subtree
 scripts/cdp.mjs perceive <target> -x "nav, aside, [role=complementary]"  # exclude noisy regions
 scripts/cdp.mjs perceive <target> -i           # interactive elements only (compact)
@@ -216,9 +224,10 @@ Hierarchy comes from the accessibility tree (always correct). Layout annotations
 
 ```bash
 scripts/cdp.mjs perceive <target> --diff  # show only changes since last perceive
+scripts/cdp.mjs perceive <target> --since-action  # show changes since the last action baseline
 ```
 
-After performing an action (click, fill, etc.), use `perceive --diff` to see exactly what changed in the page structure. Shows added and removed AX tree lines. Much more token-efficient than a full re-perceive when verifying an action's effect.
+After performing an action (click, fill, etc.), prefer `perceive --since-action` when you need to re-check what that action changed; it compares the current page to the action's pre-dispatch baseline. Add `--format json` when a script needs the versioned `chrome-cdp-ex.perceive-diff.v1` model. Use `perceive --diff` when you specifically want changes since the last manual perceive. Both show added and removed AX tree lines and are much more token-efficient than a full re-perceive.
 
 ### Accessibility tree snapshot (advanced — rarely needed)
 
@@ -261,11 +270,14 @@ Overlays red bounding boxes and `@ref` labels on every interactive element. Requ
 
 ```bash
 scripts/cdp.mjs shot     <target> [file]  # viewport screenshot
+scripts/cdp.mjs diff-shot <target> [--reset] [--threshold pct]  # viewport pixel diff against last baseline
 scripts/cdp.mjs scanshot <target>         # segmented full-page (multiple viewport-sized images)
 scripts/cdp.mjs fullshot <target> [file]  # single full-page image (may be tiny on long pages)
 ```
 
 - **`shot`** — viewport only. Use when you need the currently visible area as pixels.
+- If `[file]` is omitted, `shot` saves under the session screenshot directory and `report <target>` lists it as an attachment.
+- **`diff-shot`** — first call captures a viewport baseline; later calls save current + diff PNG artifacts and changed-pixel ratio. Use only when structured `perceive`/`cascade` evidence is not enough; it is pixel diff, not semantic diagnosis.
 - **`scanshot`** — scrolls through and captures multiple viewport-sized images with 10% overlap. Use when you need pixel-level verification of an entire page.
 - **`fullshot`** — single image of entire page. **Do NOT use for analysis** — on long pages text becomes unreadably small. Only for non-AI consumption.
 
@@ -285,23 +297,39 @@ scripts/cdp.mjs eval64 <target> <base64>       # alias for `eval --b64`
 > `eval --b64`. The decoder validates the payload, so corrupt input fails loudly instead of
 > silently evaluating a fragment.
 
-### Page status & console
+### Page status, console, and session report
 
-The daemon buffers console output and exceptions in the background from the moment it starts. Use these commands to query the buffer.
+The daemon buffers console output, exceptions, and action evidence in the background from the moment it starts. Use these commands to query the buffer or summarize the session.
 
 ```bash
-scripts/cdp.mjs status  <target>                  # page state + new console/exception entries
-scripts/cdp.mjs summary <target>                  # token-efficient page overview (~100 tokens)
-scripts/cdp.mjs console <target> [--all|--errors] # console buffer (default: unread only)
+scripts/cdp.mjs status  <target> [--format json]                  # page state + new console/exception entries
+scripts/cdp.mjs summary <target> [--format json]                  # token-efficient page overview (~100 tokens)
+scripts/cdp.mjs console <target> [--all|--errors] [--format json] # console buffer (default: unread only)
+scripts/cdp.mjs frame   <target> [--format json]                  # frame tree with @fN refs (alias: frames)
+scripts/cdp.mjs overlay <target> [sel|@ref] [--format json]       # detect dialogs/overlays and hit-test blockers
+scripts/cdp.mjs report  <target> [--format json]                  # action timeline + evidence + screenshot attachments + JSONL log path
+scripts/cdp.mjs checkpoint <target> [--format json]                # capture URL, cookies, localStorage, and sessionStorage
+scripts/cdp.mjs restore <target> --file <path> [--format json]     # restore a checkpoint artifact; invalidates @refs
+scripts/cdp.mjs record-actions <target> [--format json]           # export action log + mock/clock/throttle environment steps
+scripts/cdp.mjs export-playwright <target> [--format json]         # export workflow as a Playwright spec draft or JSON handoff
+scripts/cdp.mjs diff-shot <target> [--reset] [--threshold pct]     # viewport pixel diff against last diff-shot baseline
+scripts/cdp.mjs replay <target> --file <path> [--format json]     # execute replayable steps from a record-actions artifact
 ```
 
 > **Agent tip:** `perceive` already includes summary + console health. Use `status` or `console` only when you need to check for **new** console entries after an action.
+> Use `frame`/`frames` when an action is classified as `wrong-frame` or the page contains iframes; it lists stable `@fN` frame refs. Then run `perceive <target> --frame @f2` to assign frame-local element refs such as `@f2:4`. `click`, `fill`, and `cascade` can use those refs directly.
+> Use `overlay <target>` when a click/fill feels blocked or action failure says `overlay`; use `overlay <target> @ref` to ask whether a specific target point is covered. If blocking is reported, run the printed `dismiss-modal` command before retrying.
+> Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session, lists session screenshot attachments, and shows the per-target JSONL log path for post-mortem review.
+> Use `checkpoint --format json` before risky stateful exploration, then `restore --file checkpoint.json --format json` to return to the captured URL, cookies, localStorage, and sessionStorage with a versioned action-evidence handoff. After restore, run `perceive` before using any `@ref`; refs from the prior page state are intentionally invalid.
+> Use `record-actions --format json` when a successful exploration should become a replay/export asset; it includes replayable `mock`, `clock`, and `throttle` environment controls before action steps, and each action preserves outcome, verdict, and diagnostics while failed dispatches stay as diagnostic evidence and are marked non-replayable. Use `export-playwright` when you want a reviewable Playwright spec draft from the portable subset, with portable network mocks converted to `page.route`, clear action-evidence text additions converted to initial `expect(page.getByText(...)).toBeVisible()` assertions, and non-portable live controls left as review comments. Add `export-playwright --format json` when another agent needs the generated spec plus exported/skipped counts, assertion counts, review notes, and next-step commands without parsing source text. Use `diff-shot` when a fallback visual pixel diff is needed, then `replay --file artifact.json --format json` to apply environment controls first and get a versioned replay handoff with ok/failed/skipped counts, failed step, and recovery next steps. Incomplete commands are marked with explicit missing fields instead of guessed. Password-like fill/type targets are redacted before action artifacts are written.
+> Use `--format json` when another tool or agent needs a stable, parseable status, summary, console, or action-record payload.
 
 ### Batch commands (reduce IPC overhead)
 
 ```bash
 # Pipe syntax (preferred — concise, easy to write):
 scripts/cdp.mjs batch <target> 'fill @3 hello | fill @5 world | click @7'
+scripts/cdp.mjs batch <target> --format json 'click #ok | click #missing' # chrome-cdp-ex.batch.v1 action verdict/failure handoff
 
 # JSON syntax (still supported):
 scripts/cdp.mjs batch <target> '[{"cmd":"fill","args":["@3","hello"]},{"cmd":"click","args":["@7"]}]'
@@ -317,7 +345,7 @@ scripts/cdp.mjs batch <target> --compact 'click @7 | console --errors'   # one l
 Executes multiple commands in a single IPC call. Default output is a JSON array of results.
 
 - **Pipe syntax**: commands separated by `|`, args separated by spaces. Auto-detected when input doesn't start with `[`.
-- **`--parallel`**: runs all commands concurrently via `Promise.all`. Safe for: `elshot`, `fill`, `eval`, `html`, `text`, `table`, `styles`, `cookies`. Rejected for commands that auto-perceive (`click`, `scroll`, `nav`, `perceive`, etc.) since they mutate shared state.
+- **`--parallel`**: runs all commands concurrently via `Promise.all`. Safe for: `elshot`, `eval`, `html`, `text`, `table`, `styles`, `cookies`. Rejected for commands that auto-perceive or mutate action/session state (`click`, `fill`, `upload`, `scroll`, `nav`, `perceive`, etc.); use sequential `batch` or `flow` for those.
 - **`--plain`**: human-readable per-step output. Each step gets a `[i/N] cmd args` header followed by indented result text. Use when an agent doesn't need to parse the result programmatically.
 - **`--compact`**: one line per step (`[i] cmd: <first line of result>`). Useful for quick visual scans.
 
@@ -325,37 +353,48 @@ Executes multiple commands in a single IPC call. Default output is a JSON array 
 
 ```bash
 scripts/cdp.mjs flow <target> "click @1; wait dom stable; summary; console --errors"
-scripts/cdp.mjs flow <target> "fill @3 hello; click @7; wait network idle; perceive --diff"
+scripts/cdp.mjs flow <target> "fill @3 hello; click @7; wait network idle; perceive --since-action"
+scripts/cdp.mjs flow <target> --format json "summary; click #missing; status" # chrome-cdp-ex.flow.v1 action verdict/failure handoff
 ```
 
-Runs the steps in order, halting on the first failure. Output is a readable step-by-step layout (not a JSON blob), so you can diff a failing pipeline at a glance.
+Runs the steps in order, halting on the first failure. Text output is a readable step-by-step layout, so you can diff a failing pipeline at a glance. Add `--format json` when another agent or script needs `chrome-cdp-ex.flow.v1` with per-step status/verdict, attention counts for successful action verdicts such as `no-change`, the failed step, skipped downstream steps, classified `Action failure` kind when available, and executable `nextSteps`.
 
 - Each step is either a normal command (`click @1`, `summary`, `console --errors`, …) or a wait alias.
 - Wait aliases use the same settle helper as `record --until`:
   - `wait dom stable` — wait for DOM mutations to quiet for 500ms (max ~10s).
   - `wait network idle` — wait until pending XHR/Fetch/Document requests drain.
-- Use `flow` for short pipelines that read top-to-bottom; use `batch` when you need parallelism or programmatic JSON.
+- Use `flow` for short pipelines that read top-to-bottom or need ordered failure handoff; use `batch` when you need parallelism or multiple independent command results.
 
 ### Doctor / readiness check
 
 ```bash
-scripts/cdp.mjs doctor    # one-call diagnostics (no target needed)
+scripts/cdp.mjs doctor [--format json] # one-call diagnostics (no target needed)
 scripts/cdp.mjs ready     # alias
 ```
 
-Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daemon socket state, and CDP reachability (CDP_PORT or auto-discovered DevToolsActivePort). Exits with code 1 if any check fails. Run this **first** when an agent is unsure whether the environment is wired up.
+`doctor` is the onboarding wizard. It starts with a `Wizard` summary showing current status, the next command, and the golden path, then a `Recommendation` block with `Run`, `Ask`, and `Then` lines so agents do not have to infer the next move from checks. It then checks Node 22+, the skill install path, daemon sockets, open-file limit, CDP reachability, debuggable page targets, and whether browser debugging approval is already confirmed. Use `doctor --format json` when an agent needs a stable `chrome-cdp-ex.doctor.v1` payload with `wizard`, consent-aware `recommendation`, `checks`, and executable `nextSteps`; `recommendation` includes `run`, `ask`, `after`, `requiresUserAction`, `consentRequired`, and warning commands such as `ulimit -n 4096`. Low open-file limits include structured recovery for the current shell and, on macOS, the login session / GUI app limit (`sudo launchctl limit maxfiles 65536 200000`, requires admin). When ready, follow its printed path: `open` if no page exists, or `list` then `perceive <printed-prefix> -C -d 8`, click Allow if Chrome asks, `click`/`fill`, `perceive --since-action`, then `report`.
+
+Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daemon socket state, open-file limit, CDP reachability (CDP_PORT or auto-discovered DevToolsActivePort), debuggable tab inventory, and browser permission. Exits with code 1 if any check fails. Run this **first** when an agent is unsure whether the environment is wired up.
+
+### Error handling
+
+When a CLI command fails, read the printed `Recovery:` block before retrying. `Kind` names the failure class, `Strategy` says how to recover, `Run` is the primary command, and `Then` appears when a follow-up is useful. The legacy `Next:` line remains the shortest copy-pasteable command. Add `--format json` when a script needs the versioned `chrome-cdp-ex.cli-error.v1` handoff with `recovery` and `nextSteps` instead of human text. Setup, target, daemon, CDP, and `EMFILE` / "Too many open files" errors are formatted this way instead of dumping a stack trace; fd-limit recovery includes the shell `ulimit -n 4096` command and, on macOS, the `sudo launchctl limit maxfiles 65536 200000` login-session command.
 
 ### Action feedback (automatic)
 
-These commands **automatically wait for DOM to settle and return perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards:
+These commands **automatically wait for DOM to settle and return compact `ActionResult` evidence plus perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards. `reload` uses a bounded lightweight title/url/ready-state observation instead of a full AX-tree perceive, so live sessions do not hang after navigation churn. Add `--format json` to action commands when a script needs the versioned `chrome-cdp-ex.action.v1` evidence model without human dispatch text; action JSON includes top-level `outcome` (`changed`, `no-change`, `attention`, `failed`, `timeout`, or `dispatched`), `verdict` (`continue`, `investigate`, `recover`, `blocked`, or `verify`), `recommendation`, and `nextSteps` so agents can decide whether to continue, recover, hand off to `report --format json`, or capture `record-actions --format json` without parsing `nextHint`. Long DOM observations in action JSON are compacted to `effects.domDiffSummary`, `effects.domDiffSample`, `effects.domDiffChars`, and `effects.domDiffTruncated`, keeping the useful signal without dumping a full page tree into the action handoff. A dispatched `no-change` outcome is not normal success: follow its `investigate-no-change` recommendation to inspect `overlay`, `frame`, a fresh `perceive`, and `report` before retrying. Dispatch failures are returned as the same JSON model with `dispatch.ok=false`, `effects.failure.kind`, and an executable `nextHint`; when a diagnosis exists, `recommendation.source` becomes `action-diagnosis` and `nextSteps` are promoted from the diagnosis recovery policy. When an action needs attention, JSON also includes `effects.diagnosis` (`chrome-cdp-ex.action-diagnosis.v1`) with `status`, `kind`, `reason`, `signals`, and `nextCommand`; kinds include `network-failure`, `network-pending`, `exception`, `console-error`, `observation-timeout`, and classified dispatch failures such as `overlay` or `stale-ref`. Each diagnosis also carries `recovery` (`chrome-cdp-ex.recovery-policy.v1`) with a strategy, priority, ordered commands, verification command, and avoid list; prefer those commands when scripting Smart Eye recovery. `report <target>` prints a text `Recommendation` / `Next steps` handoff after the timeline and each action's outcome/verdict; `report <target> --format json` promotes the latest diagnosis recovery policy, or the latest `no-change` outcome when no harder diagnosis is present, into `recommendation` and `nextSteps`, then appends `record-actions` / `export-playwright` handoff commands for workflow capture. Use `batch <target> --format json ...` when combining several steps in one call; it returns `chrome-cdp-ex.batch.v1` with per-step status/verdict, attention counts for successful action verdicts such as `no-change`, the first failed step, classified `Action failure` kind, and executable `nextSteps`. Use `flow <target> --format json "summary; click #missing; status"` when ordered pipelines need the same handoff shape plus skipped downstream steps and successful action verdict attention. Action feedback also snapshots console, exception, and network buffers before dispatch, then reports low-token deltas like `Console: 1 entry (1 error)`, `Network: 1 request (1 failed)`, or `Network: 1 request (1 pending)` when the action caused runtime failures, request failures, or requests that have not settled yet. If you need to ask again what the last action changed, run `perceive --since-action`.
+
+`upload` returns ActionResult evidence after setting files, so form previews, validation messages, or upload queues can appear in `perceive --since-action` and `report`.
+
+If dispatch fails, read the classified `Action failure:` block instead of retrying blindly. Failures are grouped as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, or `selector`, and each one includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp overlay <target> @ref`, `cdp perceive <target> -C -d 8`, or `cdp status <target>`. The failed action is also recorded in `report <target>` so long sessions keep the diagnosis; successful actions record DOM, console, exception, and network evidence for later `record-actions` export.
 
 | Command | Auto-returns |
 |---------|-------------|
-| `click`, `clickxy`, `select` | perceive diff |
-| `press` (Enter/Escape/Tab) | perceive diff |
-| `scroll` | perceive diff |
-| `viewport` (when resizing) | perceive diff |
-| `nav` | **full perceive** (new page, not a diff) |
+| `click`, `jsclick`, `clickxy`, `fill`, `type`, `press`, `select`, `scroll`, `upload`, `inject`, `dismiss-modal` | action evidence + perceive diff |
+| `back`, `forward` | action evidence + full perceive |
+| `reload` | action evidence + bounded lightweight page observation |
+| `viewport` (when resizing) | action evidence + perceive diff |
+| `nav` | action evidence + **full perceive** (new page, not a diff) |
 
 Example:
 ```
@@ -390,6 +429,7 @@ Use for live CSS prototyping, theme testing, or loading external libraries.
 scripts/cdp.mjs cascade <target> ".btn-primary"                  # full cascade for element
 scripts/cdp.mjs cascade <target> @3                               # cascade for @ref element
 scripts/cdp.mjs cascade <target> ".btn-primary" background-color  # filter to one property
+scripts/cdp.mjs cascade <target> ".btn-primary" background-color --format json # structured edit handoff
 ```
 
 Shows the full CSS cascade with source file + line number:
@@ -405,19 +445,19 @@ Inherited:
   color: #1f2937  ← body  → base.css:12
 ```
 
-Use `cascade` when you need to answer "which file do I edit to change this style?" — the source location tells you exactly where to go. Inline `style=""` attributes are shown with highest priority.
+Use `cascade` when you need to answer "which file do I edit to change this style?" — the source location tells you exactly where to go. Add `--format json` when another agent needs `chrome-cdp-ex.cascade.v1` with winning rule sources, `editTarget`, and an edit recommendation. Inline `style=""` attributes are shown with highest priority.
 
 ### Other commands
 
 ```bash
 scripts/cdp.mjs html    <target> [selector]   # full page or element HTML
-scripts/cdp.mjs nav     <target> <url>         # navigate and wait for load
+scripts/cdp.mjs nav     <target> <url> [--format json] # navigate and wait for load
 scripts/cdp.mjs net     <target>               # resource timing entries
-scripts/cdp.mjs click   <target> <sel|@ref>    # click (auto-returns perceive diff)
-scripts/cdp.mjs clickxy <target> <x> <y>       # click at CSS pixel coords (auto-returns perceive diff)
-scripts/cdp.mjs type    <target> <text>         # Input.insertText at current focus; works in cross-origin iframes
-scripts/cdp.mjs press   <target> <key>         # press key (Enter/Escape/Tab auto-return perceive diff)
-scripts/cdp.mjs scroll  <target> <dir|x,y> [px]  # scroll page (auto-returns perceive diff)
+scripts/cdp.mjs click   <target> <sel|@ref> [--format json] # click (auto-returns perceive diff)
+scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel coords (auto-returns perceive diff)
+scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
+scripts/cdp.mjs press   <target> <key> [--format json] # press key (Enter/Escape/Tab auto-return perceive diff)
+scripts/cdp.mjs scroll  <target> <dir|x,y> [px] [--format json] # scroll page (auto-returns perceive diff)
 scripts/cdp.mjs loadall <target> <selector> [ms]  # click "load more" until gone (default 1500ms between clicks)
 scripts/cdp.mjs hover   <target> <sel|@ref>          # hover element (triggers :hover, tooltips)
 scripts/cdp.mjs waitfor <target> <selector> [ms]      # wait for CSS selector to appear (max 5min)
@@ -425,9 +465,9 @@ scripts/cdp.mjs waitfor <target> --gone <sel|@ref> [ms]  # wait for element to D
 scripts/cdp.mjs waitfor <target> --text "str" [ms]   # wait for text to appear on page (max 5min)
 scripts/cdp.mjs waitfor <target> --text "str" --scope ".reply" 120000  # scoped text wait
 scripts/cdp.mjs wait    <target> 30000                 # agent-safe delay; use instead of shell sleep
-scripts/cdp.mjs fill    <target> <sel|@ref> <text>     # clear field + type text (form filling)
-scripts/cdp.mjs fill    <target> --react <sel|@ref> <text>  # React-controlled input value setter + input/change events
-scripts/cdp.mjs select  <target> <selector> <value>    # select option (auto-returns perceive diff)
+scripts/cdp.mjs fill    <target> <sel|@ref> <text> [--format json] # clear field + type text
+scripts/cdp.mjs fill    <target> --react <sel|@ref> <text> [--format json] # React-controlled input value setter + input/change events
+scripts/cdp.mjs select  <target> <selector> <value> [--format json] # select option (auto-returns perceive diff)
 scripts/cdp.mjs styles  <target> <selector>            # computed styles (meaningful props only)
 scripts/cdp.mjs text    <target> [selector]              # clean text — optional CSS selector to scope
 scripts/cdp.mjs table   <target> [selector]            # full table data (tab-separated, no row limit)
@@ -436,12 +476,15 @@ scripts/cdp.mjs cookieset <target> <cookie>            # set cookie: "name=value
 scripts/cdp.mjs cookiedel <target> <name>              # delete cookie by name
 scripts/cdp.mjs dialog  <target> [accept|dismiss]      # show dialog history; set auto-accept or auto-dismiss
 scripts/cdp.mjs viewport <target> [WxH]               # show or set viewport (e.g. 375x812)
-scripts/cdp.mjs upload  <target> <selector> <paths>    # upload file(s) to input[type=file]
+scripts/cdp.mjs upload  <target> <selector> <paths> [--format json] # upload file(s) to input[type=file]
 scripts/cdp.mjs back    <target>                       # navigate back in browser history
 scripts/cdp.mjs forward <target>                       # navigate forward in browser history
 scripts/cdp.mjs reload  <target>                       # reload current page
 scripts/cdp.mjs closetab <target>                      # close a browser tab
 scripts/cdp.mjs netlog  <target> [--clear]             # network request log (XHR/Fetch with status + timing)
+scripts/cdp.mjs mock    <target> [add|clear]           # mock matching network requests in the live tab
+scripts/cdp.mjs clock   <target> [freeze|offset|reset] # override Date/time in the live tab
+scripts/cdp.mjs throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  # emulate network conditions
 scripts/cdp.mjs evalraw <target> <method> [json]  # raw CDP command passthrough
 scripts/cdp.mjs record  <target> <ms>                    # record timeline for N ms (DOM + network + console events)
 scripts/cdp.mjs record  <target> --until "dom stable"    # record until DOM settles (max 30s)
@@ -449,13 +492,16 @@ scripts/cdp.mjs record  <target> --until "network idle"  # record until no pendi
 scripts/cdp.mjs record  <target> --action click @5       # record while performing an action — auto-settles
                                                            # (DOM/network quiet, capped at 5s if no network, 10s otherwise).
                                                            # Add an explicit duration or --until to override the auto-settle default.
-scripts/cdp.mjs flow    <target> "<steps>"               # sequential runner; semicolon-separated steps
+scripts/cdp.mjs checkpoint <target> --format json          # page state artifact for workflow replay/debugging
+scripts/cdp.mjs restore <target> --file checkpoint.json --format json # restores URL/cookies/storage and clears old refs
+scripts/cdp.mjs flow    <target> "<steps>" [--format json] # sequential runner; semicolon-separated steps
                                                            # e.g. flow A7BA "click @1; wait dom stable; summary; console --errors"
                                                            # wait aliases: "wait dom stable", "wait network idle"
-                                                           # halts on the first failing step; output is readable, not JSON
-scripts/cdp.mjs doctor                          # one-call diagnostics (Node, skill install, daemon state, CDP reachability)
-scripts/cdp.mjs ready                           # alias of doctor; exits 1 if any check FAILs
-scripts/cdp.mjs open    [url]                  # open new tab + auto-attach + auto-perceive (waits up to 60s for approval)
+                                                           # halts on the first failing step; JSON returns chrome-cdp-ex.flow.v1
+scripts/cdp.mjs doctor [--format json]         # one-call diagnostics (Node, install, daemon state, CDP, permission)
+scripts/cdp.mjs ready [--format json]          # alias of doctor; exits 1 if any check FAILs
+scripts/cdp.mjs list    [--format json]        # discover tabs; JSON gives schema/pages/recommendation/nextSteps
+scripts/cdp.mjs open    [url] [--format json]  # open new tab + auto-attach; JSON gives approval/recommendation/nextSteps
 scripts/cdp.mjs keepalive <target> <ms>        # keep a tab daemon alive for long background work
 scripts/cdp.mjs stop    [target]               # stop daemon(s)
 ```
@@ -496,9 +542,11 @@ scripts/cdp.mjs cookiedel <target> session_id                          # delete 
 Upload files to `<input type="file">` elements.
 
 ```bash
-scripts/cdp.mjs upload <target> "#file-input" /path/to/file.pdf
+scripts/cdp.mjs upload <target> "#file-input" /path/to/file.pdf [--format json]
 scripts/cdp.mjs upload <target> "#file-input" /path/a.jpg,/path/b.jpg   # multiple files (comma-separated)
 ```
+
+`upload` returns ActionResult evidence after setting files, so form previews, validation messages, or upload queues can appear in `perceive --since-action` and `report`.
 
 ### Text extraction
 
@@ -546,6 +594,39 @@ scripts/cdp.mjs netlog <target> --clear        # clear the log
 
 Tracks XHR, Fetch, and Document requests in the background with status codes, timing, and response sizes. Use for debugging API calls.
 
+### Network mocking
+
+```bash
+scripts/cdp.mjs mock <target> add "**/api/*" --status 503 --body '{"ok":false}' --content-type application/json
+scripts/cdp.mjs mock <target>               # show active rules and recent hits
+scripts/cdp.mjs mock <target> clear         # disable all mocks
+```
+
+`mock` uses CDP Fetch interception inside the live tab. Use it to reproduce API failure, empty-state, or alternate-response UI without editing backend code. Active rules and hit counts appear in `report <target>`. Clear mocks before handing the session back.
+
+### Clock control
+
+```bash
+scripts/cdp.mjs clock <target> freeze --at 2020-01-02T03:04:05.000Z
+scripts/cdp.mjs clock <target> offset --ms 3600000
+scripts/cdp.mjs clock <target>               # show active clock override
+scripts/cdp.mjs clock <target> reset         # restore real time
+```
+
+`clock` overrides `Date` in the current page and future navigations for the tab daemon. Use `freeze` for fixed-date UI, trial-expiry banners, and deterministic screenshots; use `offset` for expiry, retry, and backoff flows that should keep time moving. Active clock state appears in `report <target>`. Reset before handing the session back.
+
+### Network throttling
+
+```bash
+scripts/cdp.mjs throttle <target> slow-3g       # emulate a slow mobile network
+scripts/cdp.mjs throttle <target> offline       # reproduce offline/error states
+scripts/cdp.mjs throttle <target> custom --latency 120 --download 256 --upload 128
+scripts/cdp.mjs throttle <target>               # show the current profile
+scripts/cdp.mjs throttle <target> off           # reset network conditions
+```
+
+`throttle` changes the live tab's CDP network conditions and records the profile in `report <target>`. Reset to `off` after a focused experiment so later steps do not inherit a slow or offline session.
+
 ### Cursor-interactive elements (`perceive -C`)
 
 ```bash
@@ -577,7 +658,7 @@ CSS px = screenshot image px / DPR
 ## Tips
 
 - **Prefer `nav` over `open`** — `nav` reuses an already-approved tab (no prompt, no "Allow debugging?" dialog). Use `open` only when `list` is empty or the user explicitly needs multiple tabs. Even page comparisons work with a single tab — `nav` between URLs and compare perceive data from context.
-- `open` **auto-attaches + auto-perceives** — it waits up to 60s for Chrome's "Allow debugging?" approval, then returns the full page perception (same as `nav`). Do NOT stop to ask the user; just let the command run. After `open`, you have the target ID and page content — proceed immediately.
+- `open` **auto-attaches + auto-perceives** — it waits up to 60s for Chrome's "Allow debugging?" approval, then returns Target/Next/Then/Report hints plus the full page perception (same as `nav`). Do NOT stop to ask the user; just let the command run. After `open`, follow the printed continuation command immediately.
 - Prefer `snap` over `html` for page structure — compact by default, use `snap --full` for complete tree.
 - Prefer `elshot` over `shot` when verifying a specific element — it's more reliable and avoids scroll/DPR issues.
 - Use `type` (not eval) to enter text in cross-origin iframes — `click`/`clickxy` to focus first, then `type`.
@@ -630,12 +711,12 @@ CSS px = screenshot image px / DPR
 
 ### Temporal observation (understanding cause and effect)
 
-> **When to use `record` instead of `perceive --diff`:**
+> **When to use `record` instead of `perceive --since-action` or `report`:**
 >
-> `perceive --diff` shows WHAT changed. `record` shows **WHEN things changed, in what order, and what caused what.**
+> `perceive --since-action` shows WHAT the last action changed. `report` summarizes the action timeline so far. `record-actions` exports replay-oriented environment controls plus action steps, `export-playwright` drafts a regression spec from the portable subset, `export-playwright --format json` wraps that spec with review counts for agent handoff, `diff-shot` saves reviewable pixel-diff artifacts when visual fallback is needed, and `replay` applies the environment controls before executing the replayable action subset. `record` shows **WHEN things changed, in what order, and what caused what** during a focused observation window.
 >
-> | Situation | Use `perceive --diff` | Use `record` |
-> |-----------|----------------------|--------------|
+> | Situation | Use `perceive --since-action` / `report` | Use `record` |
+> |-----------|------------------------------------------|--------------|
 > | Clicked a button, need to see result | ✅ auto-returned by `click` | Not needed |
 > | Clicked Submit, page loads for 3s, need to know what happened during those 3s | ❌ only shows final state | ✅ `record --action click @5` |
 > | Page is slow after navigation, need to know why | ❌ snapshot after the fact | ✅ `record <target> 5000` |
@@ -671,9 +752,9 @@ scripts/cdp.mjs record <target> 5000
    batch <target> 'fill @3 user@example.com | fill @5 password123 | click @7'
    ```
 3. The final `click` auto-returns perceive diff showing the result
-4. For parallel fills (independent fields), add `--parallel`:
+4. Keep form fills sequential. They update focus, refs, action evidence, and the last-action baseline:
    ```bash
-   batch <target> --parallel 'fill @3 user@example.com | fill @5 password123'
+   batch <target> 'fill @3 user@example.com | fill @5 password123'
    ```
    Then `click <target> @7` to submit.
 
@@ -734,14 +815,20 @@ scripts/cdp.mjs text <target> "main"              # scope to main content area
 ### Debugging API calls
 1. `perceive <target>` — check page state
 2. `netlog <target>` — see recent XHR/Fetch requests with status codes
-3. `console <target> --errors` — check for errors
-4. If you need to see the full request→response→DOM update chain: `record <target> --action click @submitBtn` — captures the API call, its response, and resulting DOM mutations in one timeline
+3. `mock <target> add "**/api/*" --status 503 --body '{"ok":false}'` — reproduce API failure or alternate UI states when relevant
+4. `clock <target> freeze --at 2020-01-02T03:04:05.000Z` or `clock <target> offset --ms 3600000` — reproduce time-sensitive UI when relevant
+5. `throttle <target> slow-3g` or `throttle <target> offline` — reproduce slow-network or offline behavior when relevant
+6. `console <target> --errors` — check for errors
+7. If you need to see the full request→response→DOM update chain: `record <target> --action click @submitBtn` — captures the API call, its response, and resulting DOM mutations in one timeline
+8. `mock <target> clear`; `clock <target> reset`; `throttle <target> off` — reset before handing the session back
 
 ### Performance investigation
 1. `nav <target> <url>` — navigate to the page
-2. `record <target> --until "dom stable"` — capture the full load lifecycle
-3. Read the timeline: which API calls are slow? When do DOM mutations peak? When does the page settle?
-4. For specific interactions: `record <target> --action click @ref` — measure cause-to-effect latency
+2. `throttle <target> fast-3g|slow-3g` — make network-sensitive loading deterministic when needed
+3. `record <target> --until "dom stable"` — capture the full load lifecycle
+4. Read the timeline: which API calls are slow? When do DOM mutations peak? When does the page settle?
+5. For specific interactions: `record <target> --action click @ref` — measure cause-to-effect latency
+6. `throttle <target> off` — reset the live tab
 
 ### Responsive testing
 1. `perceive <target>` — baseline at current viewport
@@ -928,7 +1015,7 @@ cdp perceive <t> -i --keep-refs --last 20   # keep all refs + last 20 text rows
 cdp perceive <t> -s ".combat-log" -d 6      # scope to the log subtree
 ```
 
-`--last N` truncates only static-text / paragraph rows; landmark and interactive `@ref` lines are always preserved.
+`--last N` truncates only static-text / paragraph rows; landmark and interactive `@ref` lines are always preserved. The truncation is priority-aware: high-signal text such as errors, failures, required/invalid validation, warnings, saved/success/submitted results is kept even if it is older than the last N rows. `perceive --since-action` applies the same priority so important new text appears as diff evidence instead of being collapsed into a generic text-count summary.
 
 ### Screenshot in scripts
 
@@ -950,6 +1037,32 @@ These get `@c1`, `@c2`… handles. Useful for SPAs that wrap clickable behaviour
 ### Vite / HMR
 
 When Vite HMRs a route, `Page.frameNavigated` fires and the daemon clears its ref map automatically. The next `@ref` you try will produce the navigation-classified error. Just re-run `perceive` and continue.
+
+## Dogfood Benchmark
+
+Before making performance or adoption claims, run the live Killer Path benchmark:
+
+```bash
+npm run benchmark:killer
+npm run benchmark:killer -- --json
+npm run benchmark:killer -- --stability-ms 1200000
+npm run benchmark:generic-cdp -- --out generic-cdp-raw.json
+npm run benchmark:playwright -- --out playwright-raw.json
+npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json
+npm run benchmark:killer -- --comparison-baselines ./baselines.json
+```
+
+It launches a disposable debug browser against the local smoke page and measures `doctor -> open -> perceive -> act -> since-action evidence -> report`: command calls, total time, first useful observation time, first action evidence time, golden path completion time, estimated output tokens, useful observation tokens, auto-evidence actions, observed action evidence coverage, observed JSON action evidence completeness, failed-step CLI recovery coverage, observed JSON handoff `nextSteps` coverage, observed JSON handoff `recommendation` coverage, doctor onboarding coverage, JSON report `latestAction` coverage, JSON report `timelineWindow` coverage, verification calls saved, report timeline presence, stale-ref recovery, session stability sample, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time. The live benchmark marks `cascade --format json` as a coverage probe for the CSS tracing handoff without charging the single-path command budget. The useful observation token budget counts page perception/diff outputs, not action/report JSON evidence payloads. The default stability sample is 1000ms; use `--stability-ms` for 20-60 minute dogfood windows.
+
+The report includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires a successful run, at most 23 command calls, first useful observation within 5 seconds, golden path completion within 2 minutes, useful observation tokens at or below 3000, at least one auto-evidence action, 100% evidence coverage for every observed mutating command, 100% JSON action evidence completeness with action, target, dispatch, settle, effects deltas, outcome, and verdict, 100% executable recovery coverage for failed steps, 100% top-level `nextSteps` coverage for observed JSON handoffs, 100% `recommendation` coverage for observed JSON handoffs, 100% doctor onboarding coverage with wizard current step, golden path, and readiness checks, a report timeline, 100% `latestAction` coverage for JSON report handoffs with actions, 100% `timelineWindow` coverage for JSON report handoffs with actions, 100% JSON differentiator handoff coverage, 100% differentiator probe success, 100% stale-ref recovery, and a passing session stability sample. Do not make adoption or comparison claims from a failed gate; fix the failed criterion first.
+
+JSON output also includes `chrome-cdp-ex.benchmark-comparison.v1`. Pass `--comparison-baselines` with measured Playwright/generic-CDP baselines before publishing comparison claims; otherwise the built-in heuristic baseline is only a planning aid and must not be presented as external measurement.
+
+To replace the heuristic comparison with measured competitor runs, either pass `--comparison-baselines` a `chrome-cdp-ex.comparison-baselines.v1` file directly, or normalize one or more raw harness result files with `npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json`. Raw result files use `{"schema":"chrome-cdp-ex.raw-baseline-results.v1","source":"measured-local-baseline","runs":[{"id":"playwright","label":"Measured Playwright harness","commandCalls":24,"usefulObservationTokens":4200,"verificationCallsSaved":0,"differentiatorSuccessRate":0.5}]}`.
+
+`npm run benchmark:generic-cdp -- --out generic-cdp-raw.json` launches the same smoke page in a disposable browser and measures a naive raw-CDP path using `/json`, `Runtime.evaluate`, and WebSocket calls. You can also import an external transcript with `npm run benchmark:generic-cdp -- --from-steps steps.json --out generic-cdp-raw.json`. Feed the resulting raw file into `benchmark:baseline`, then into `benchmark:killer`, to make generic-CDP comparisons measured instead of heuristic. Measured baselines can carry capability metrics too; comparison reports surface gaps such as missing action evidence, report timelines, stale-ref recovery, or session stability so cheap-but-thin baselines do not look equivalent.
+
+`npm run benchmark:playwright -- --out playwright-raw.json` measures a Playwright Chromium path against the same smoke page when the local environment has the `playwright` package available. If Playwright is not installed in the project, use `npm run benchmark:playwright -- --from-steps playwright-steps.json --out playwright-raw.json` to normalize an external Playwright transcript without adding a dependency.
 
 ## Source
 
