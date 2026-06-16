@@ -229,6 +229,17 @@ assertIncludes(diffBaselineOut, 'Next: cdp diff-shot', 'diff-shot next step');
 const fillOut = step('fill action evidence', () => run(['fill', target, '#cmd', 'look trainer']));
 assertIncludes(fillOut, 'Filled', 'fill');
 assertIncludes(fillOut, 'fill: dispatched', 'fill action evidence');
+const fillJsonOut = step('fill action json evidence', () => run(['fill', target, '#cmd', 'look merchant', '--format', 'json']));
+const parsedFillAction = JSON.parse(fillJsonOut);
+if (parsedFillAction.schema !== 'chrome-cdp-ex.action.v1' || parsedFillAction.action !== 'fill') {
+  throw new Error(`fill --format json should return action evidence JSON:\n${fillJsonOut}`);
+}
+if (parsedFillAction.dispatch?.ok !== true || parsedFillAction.settle?.ok !== true) {
+  throw new Error(`fill --format json should report dispatched and settled action:\n${fillJsonOut}`);
+}
+if (!parsedFillAction.effects || !('domDiff' in parsedFillAction.effects)) {
+  throw new Error(`fill --format json should include observed effects:\n${fillJsonOut}`);
+}
 const diffShotOut = step('diff-shot fill diff', () => run(['diff-shot', target]));
 assertIncludes(diffShotOut, 'Diff-shot: changed', 'diff-shot diff');
 assertIncludes(diffShotOut, 'Diff image:', 'diff-shot artifact');

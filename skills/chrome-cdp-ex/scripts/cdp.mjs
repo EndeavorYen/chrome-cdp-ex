@@ -1688,7 +1688,14 @@ function finalizeActionResult(result, { enrichActionResult = null, onActionResul
   return result;
 }
 
-async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --since-action if more evidence is needed', enrichActionResult = null, onActionResult = null }) {
+function formatActionResultOutput(result, { format = 'text', dispatchText = '', timeoutError = null } = {}) {
+  if (format === 'json') return formatJson(result);
+  const text = dispatchText ? `${dispatchText}\n---\n${formatActionText(result)}` : formatActionText(result);
+  if (!timeoutError) return text;
+  return `${text}\n(success but observation timed out after action dispatch: ${timeoutError.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
+}
+
+async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --since-action if more evidence is needed', enrichActionResult = null, onActionResult = null, format = 'text' }) {
   const startedAt = Date.now();
   let dispatchText;
   try {
@@ -1717,7 +1724,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
     });
     finalizeActionResult(result, { enrichActionResult, onActionResult });
     if (feedbackPolicy === 'none') return dispatchText;
-    return `${dispatchText}\n---\n${formatActionText(result)}`;
+    return formatActionResultOutput(result, { format, dispatchText });
   }
   try {
     const domDiff = await observe();
@@ -1730,7 +1737,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       nextHint,
     });
     finalizeActionResult(result, { enrichActionResult, onActionResult });
-    return `${dispatchText}\n---\n${formatActionText(result)}`;
+    return formatActionResultOutput(result, { format, dispatchText });
   } catch (e) {
     if (!isTimeoutError(e)) throw e;
     const result = createActionResult({
@@ -1742,7 +1749,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       nextHint,
     });
     finalizeActionResult(result, { enrichActionResult, onActionResult });
-    return `${dispatchText}\n---\n${formatActionText(result)}\n(success but observation timed out after action dispatch: ${e.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
+    return formatActionResultOutput(result, { format, dispatchText, timeoutError: e });
   }
 }
 
@@ -7522,7 +7529,7 @@ async function runDaemon(targetId) {
     await waitForSettle(cdp, sessionId);
     return perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {}, refState);
   }
-  async function actionFeedback(action, actionDispatch, target = {}, feedbackPolicy = 'settle-diff', observe = null) {
+  async function actionFeedback(action, actionDispatch, target = {}, feedbackPolicy = 'settle-diff', observe = null, format = 'text') {
     const dispatch = typeof actionDispatch === 'function' ? actionDispatch : async () => actionDispatch;
     const actionTarget = target && typeof target === 'object'
       ? { ...target, targetId }
@@ -7549,6 +7556,7 @@ async function runDaemon(targetId) {
         observationBaseline
       )),
       onActionResult: (actionResult) => appendSessionActionLog(session, actionResult, { ts: session.lastAction.ts }),
+      format,
     });
   }
 
@@ -7614,12 +7622,14 @@ async function runDaemon(targetId) {
         }
         case 'html': result = await htmlStr(cdp, sessionId, args[0]); break;
         case 'nav': case 'navigate': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
           result = await actionFeedback(
             'nav',
-            () => navStr(cdp, sessionId, args[0]),
-            { input: args[0], resolvedBy: 'url', label: args[0] || '', commandArgs: [args[0]] },
+            () => navStr(cdp, sessionId, fopts.args[0]),
+            { input: fopts.args[0], resolvedBy: 'url', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] },
             'full-perceive',
-            observeFullPerceive
+            observeFullPerceive,
+            fopts.format
           );
           break;
         }
@@ -7716,37 +7726,59 @@ async function runDaemon(targetId) {
         }
         case 'elshot': result = await elshotStr(cdp, sessionId, args[0], targetId, refMap, refState); break;
         case 'click': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const cargs = fopts.args;
           // `click --js <selector|@ref>` switches to the JS-fallback path that
           // calls HTMLElement.click() instead of dispatching CDP mouse events.
           // Useful when overlays or weird hit testing block the realistic
           // mouse path; opt-in only so default behaviour is unchanged.
-          if (args[0] === '--js' || args[0] === '-j') {
-            result = await actionFeedback('click', () => jsClickStr(cdp, sessionId, args[1], refMap, refState), { input: args[1], resolvedBy: 'selector-or-ref', label: args[1] || '', commandArgs: ['--js', args[1]] });
+          if (cargs[0] === '--js' || cargs[0] === '-j') {
+            result = await actionFeedback('click', () => jsClickStr(cdp, sessionId, cargs[1], refMap, refState), { input: cargs[1], resolvedBy: 'selector-or-ref', label: cargs[1] || '', commandArgs: ['--js', cargs[1]] }, 'settle-diff', null, fopts.format);
           } else {
-            result = await actionFeedback('click', () => clickStr(cdp, sessionId, args[0], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '', commandArgs: [args[0]] });
+            result = await actionFeedback('click', () => clickStr(cdp, sessionId, cargs[0], refMap, refState), { input: cargs[0], resolvedBy: 'selector-or-ref', label: cargs[0] || '', commandArgs: [cargs[0]] }, 'settle-diff', null, fopts.format);
           }
           break;
         }
-        case 'jsclick': result = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, args[0], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '', commandArgs: [args[0]] }); break;
-        case 'clickxy': result = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, args[0], args[1]), { input: `${args[0]},${args[1]}`, resolvedBy: 'coordinates', label: `${args[0]},${args[1]}`, commandArgs: [args[0], args[1]] }); break;
-        case 'type': result = await actionFeedback('type', () => typeStr(cdp, sessionId, args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [args[0]] }); break;
+        case 'jsclick': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, fopts.args[0], refMap, refState), { input: fopts.args[0], resolvedBy: 'selector-or-ref', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts.format);
+          break;
+        }
+        case 'clickxy': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: `${fopts.args[0]},${fopts.args[1]}`, resolvedBy: 'coordinates', label: `${fopts.args[0]},${fopts.args[1]}`, commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts.format);
+          break;
+        }
+        case 'type': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('type', () => typeStr(cdp, sessionId, fopts.args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts.format);
+          break;
+        }
         case 'press': {
-          result = await actionFeedback('press', () => pressStr(cdp, sessionId, args[0]), { input: args[0], resolvedBy: 'key', label: args[0] || '', commandArgs: [args[0]] });
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts.format);
           break;
         }
         case 'scroll': {
-          result = await actionFeedback('scroll', () => scrollStr(cdp, sessionId, args[0], args[1]), { input: [args[0], args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: args[0] || 'scroll', commandArgs: [args[0], args[1]] });
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('scroll', () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: [fopts.args[0], fopts.args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: fopts.args[0] || 'scroll', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts.format);
           break;
         }
         case 'hover': result = await hoverStr(cdp, sessionId, args[0], refMap, refState); break;
         case 'waitfor': result = await waitForStr(cdp, sessionId, args, refMap, refState); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'fill': {
-          if (args[0] === '--react') result = await actionFeedback('fill', () => fillStr(cdp, sessionId, args[1], args[2], refMap, refState, { react: true }), { input: args[1], resolvedBy: 'selector-or-ref', label: args[1] || '', commandArgs: ['--react', args[1], args[2]] });
-          else result = await actionFeedback('fill', () => fillStr(cdp, sessionId, args[0], args[1], refMap, refState), { input: args[0], resolvedBy: 'selector-or-ref', label: args[0] || '', commandArgs: [args[0], args[1]] });
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const fargs = fopts.args;
+          if (fargs[0] === '--react') result = await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[1], fargs[2], refMap, refState, { react: true }), { input: fargs[1], resolvedBy: 'selector-or-ref', label: fargs[1] || '', commandArgs: ['--react', fargs[1], fargs[2]] }, 'settle-diff', null, fopts.format);
+          else result = await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[0], fargs[1], refMap, refState), { input: fargs[0], resolvedBy: 'selector-or-ref', label: fargs[0] || '', commandArgs: [fargs[0], fargs[1]] }, 'settle-diff', null, fopts.format);
           break;
         }
-        case 'select': result = await actionFeedback('select', () => selectStr(cdp, sessionId, args[0], args[1]), { input: args[0], resolvedBy: 'selector', label: args[0] || '', commandArgs: [args[0], args[1]] }); break;
+        case 'select': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('select', () => selectStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts.format);
+          break;
+        }
         case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
         case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
         case 'styles': result = await stylesStr(cdp, sessionId, args[0]); break;
@@ -7755,29 +7787,47 @@ async function runDaemon(targetId) {
         case 'cookiedel': result = await cookieDelStr(cdp, sessionId, args[0]); break;
         case 'dialog': result = dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]); break;
         case 'viewport': {
-          if (args[0]) result = await actionFeedback('viewport', () => viewportStr(cdp, sessionId, args[0]), { input: args[0], resolvedBy: 'viewport', label: args[0], commandArgs: [args[0]] }); // auto-diff when resizing
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          if (fopts.args[0]) result = await actionFeedback('viewport', () => viewportStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'viewport', label: fopts.args[0], commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts.format); // auto-diff when resizing
           else result = await viewportStr(cdp, sessionId, args[0]);
           break;
         }
         case 'upload': result = await uploadStr(cdp, sessionId, args[0], args[1]); break;
         case 'text': result = await textStr(cdp, sessionId, args); break;
         case 'table': result = await tableStr(cdp, sessionId, args[0]); break;
-        case 'back': result = await actionFeedback('back', () => historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back', commandArgs: [] }, 'full-perceive', observeFullPerceive); break;
-        case 'forward': result = await actionFeedback('forward', () => historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward', commandArgs: [] }, 'full-perceive', observeFullPerceive); break;
+        case 'back': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('back', () => historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts.format);
+          break;
+        }
+        case 'forward': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('forward', () => historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts.format);
+          break;
+        }
         case 'reload': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
           result = await actionFeedback('reload', async () => {
             const reloadResult = await reloadStr(cdp, sessionId);
             clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
             return `${reloadResult} (console/exception/navigation buffers cleared)`;
-          }, { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'full-perceive', observeFullPerceive);
+          }, { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts.format);
           break;
         }
         case 'closetab': result = await closetabStr(cdp, targetId); break;
         case 'netlog': result = netlogStr(netReqBuf, args[0]); break;
-        case 'inject': result = await actionFeedback('inject', () => injectStr(cdp, sessionId, args), { input: args[0] || '', resolvedBy: 'command', label: args[0] || 'inject', commandArgs: args }, 'state-change'); break;
+        case 'inject': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('inject', () => injectStr(cdp, sessionId, fopts.args), { input: fopts.args[0] || '', resolvedBy: 'command', label: fopts.args[0] || 'inject', commandArgs: fopts.args }, 'state-change', null, fopts.format);
+          break;
+        }
         case 'record': result = await recordStr(cdp, sessionId, args, refMap); break;
         case 'cascade': result = await cascadeStr(cdp, sessionId, args[0], args[1], refMap, refState); break;
-        case 'dismiss-modal': case 'dismissmodal': result = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }); break;
+        case 'dismiss-modal': case 'dismissmodal': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }, 'settle-diff', null, fopts.format);
+          break;
+        }
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
         case 'batch': {
           let commands;
@@ -8062,7 +8112,7 @@ Usage: cdp <command> [args]
   shot  <target> [file|--annotate]  Viewport screenshot; --annotate (-a) overlays @ref labels
   diff-shot <target> [--reset] [--threshold pct]  Compare current screenshot against last diff-shot baseline
   html  <target> [selector]         Get HTML (full page or CSS selector)
-  nav   <target> <url>              Navigate to URL and wait for load completion
+  nav   <target> <url> [--format json]  Navigate to URL and wait for load completion
   mock  <target> [add|clear]        Mock matching network requests in this live tab
                                     add <urlPattern> --status code --body text [--content-type type]
   clock <target> [freeze|offset|reset]  Override Date/time in this live tab
@@ -8084,15 +8134,15 @@ Usage: cdp <command> [args]
   frame <target> [--format json]     List page frames with stable @fN refs (alias: frames)
   overlay <target> [sel|@ref] [--format json]  Detect visible dialogs/overlays and target blockers
   net   <target>                    Network performance entries
-  click   <target> <sel|@ref>       Click element by CSS selector or @ref
+  click   <target> <sel|@ref> [--format json]  Click element by CSS selector or @ref
                                     --js / -j: use HTMLElement.click() (JS fallback)
   jsclick <target> <sel|@ref>       JS-only click: el.click() instead of CDP mouse events
                                     Use when overlays or hit-testing block the realistic mouse path.
-  clickxy <target> <x> <y>          Click at CSS pixel coordinates (see coordinate note below)
-  type    <target> <text>           Type text at current focus via Input.insertText
+  clickxy <target> <x> <y> [--format json]  Click at CSS pixel coordinates (see coordinate note below)
+  type    <target> <text> [--format json]  Type text at current focus via Input.insertText
                                     Works in cross-origin iframes unlike eval-based approaches
-  press   <target> <key>           Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)
-  scroll  <target> <dir|x,y> [px]  Scroll page (down/up/left/right or x,y offset; default 500px)
+  press   <target> <key> [--format json]  Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)
+  scroll  <target> <dir|x,y> [px] [--format json]  Scroll page (down/up/left/right or x,y offset; default 500px)
   hover   <target> <sel|@ref>       Hover over element (triggers :hover, tooltips, dropdowns)
   waitfor <target> <selector> [ms]  Wait for element (default 10s, max 5min)
   waitfor <target> --gone <sel|@ref> [ms]  Wait for element to DISAPPEAR (streaming end)
@@ -8100,9 +8150,9 @@ Usage: cdp <command> [args]
   loadall <target> <selector> [ms]  Repeatedly click a "load more" button until it disappears
                                     Optional interval in ms between clicks (default 1500)
   wait    <target> <ms>             Delay inside cdp (also: cdp wait <ms> [target])
-  fill    <target> <sel|@ref> <txt> Clear field and type text (for form filling)
+  fill    <target> <sel|@ref> <txt> [--format json] Clear field and type text (for form filling)
                                     --react: native value setter + input/change events
-  select  <target> <selector> <val> Select an option in a <select> element by value
+  select  <target> <selector> <val> [--format json] Select an option in a <select> element by value
   fullshot <target> [file]          Full-page screenshot (single image — may be hard to read)
   scanshot <target>                 Segmented full-page capture (viewport-sized images, readable)
   styles  <target> <selector>       Get computed styles for element (filtered to meaningful props)

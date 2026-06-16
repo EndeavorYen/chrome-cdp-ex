@@ -919,6 +919,29 @@ describe('ActionResult', () => {
     expect(captured.effects.domDiff).toBe('button disabled');
   });
 
+  it('formats observed action evidence as JSON without dispatch text noise', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { input: '#submit', resolvedBy: 'selector', label: 'Submit' },
+      dispatch: async () => 'Clicked #submit',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'checkout banner appeared',
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.action.v1',
+      action: 'click',
+      target: { input: '#submit', label: 'Submit' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true },
+      effects: { domDiff: 'checkout banner appeared' },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    expect(out).not.toContain('Clicked #submit');
+  });
+
   it('enriches action feedback before formatting and logging', async () => {
     const delta = {
       console: {

@@ -376,7 +376,7 @@ When a CLI command fails, read and follow the printed `Next:` line before retryi
 
 ### Action feedback (automatic)
 
-These commands **automatically wait for DOM to settle and return compact `ActionResult` evidence plus perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards. Action feedback also snapshots console, exception, and network buffers before dispatch, then reports low-token deltas like `Console: 1 entry (1 error)`, `Network: 1 request (1 failed)`, or `Network: 1 request (1 pending)` when the action caused runtime failures, request failures, or requests that have not settled yet. If you need to ask again what the last action changed, run `perceive --since-action`.
+These commands **automatically wait for DOM to settle and return compact `ActionResult` evidence plus perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards. Add `--format json` to action commands when a script needs the versioned `chrome-cdp-ex.action.v1` evidence model without human dispatch text. Action feedback also snapshots console, exception, and network buffers before dispatch, then reports low-token deltas like `Console: 1 entry (1 error)`, `Network: 1 request (1 failed)`, or `Network: 1 request (1 pending)` when the action caused runtime failures, request failures, or requests that have not settled yet. If you need to ask again what the last action changed, run `perceive --since-action`.
 
 If dispatch fails, read the classified `Action failure:` block instead of retrying blindly. Failures are grouped as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, or `selector`, and each one includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp overlay <target> @ref`, `cdp perceive <target> -C -d 8`, or `cdp status <target>`. The failed action is also recorded in `report <target>` so long sessions keep the diagnosis; successful actions record DOM, console, exception, and network evidence for later `record-actions` export.
 
@@ -441,13 +441,13 @@ Use `cascade` when you need to answer "which file do I edit to change this style
 
 ```bash
 scripts/cdp.mjs html    <target> [selector]   # full page or element HTML
-scripts/cdp.mjs nav     <target> <url>         # navigate and wait for load
+scripts/cdp.mjs nav     <target> <url> [--format json] # navigate and wait for load
 scripts/cdp.mjs net     <target>               # resource timing entries
-scripts/cdp.mjs click   <target> <sel|@ref>    # click (auto-returns perceive diff)
-scripts/cdp.mjs clickxy <target> <x> <y>       # click at CSS pixel coords (auto-returns perceive diff)
-scripts/cdp.mjs type    <target> <text>         # Input.insertText at current focus; works in cross-origin iframes
-scripts/cdp.mjs press   <target> <key>         # press key (Enter/Escape/Tab auto-return perceive diff)
-scripts/cdp.mjs scroll  <target> <dir|x,y> [px]  # scroll page (auto-returns perceive diff)
+scripts/cdp.mjs click   <target> <sel|@ref> [--format json] # click (auto-returns perceive diff)
+scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel coords (auto-returns perceive diff)
+scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
+scripts/cdp.mjs press   <target> <key> [--format json] # press key (Enter/Escape/Tab auto-return perceive diff)
+scripts/cdp.mjs scroll  <target> <dir|x,y> [px] [--format json] # scroll page (auto-returns perceive diff)
 scripts/cdp.mjs loadall <target> <selector> [ms]  # click "load more" until gone (default 1500ms between clicks)
 scripts/cdp.mjs hover   <target> <sel|@ref>          # hover element (triggers :hover, tooltips)
 scripts/cdp.mjs waitfor <target> <selector> [ms]      # wait for CSS selector to appear (max 5min)
@@ -455,9 +455,9 @@ scripts/cdp.mjs waitfor <target> --gone <sel|@ref> [ms]  # wait for element to D
 scripts/cdp.mjs waitfor <target> --text "str" [ms]   # wait for text to appear on page (max 5min)
 scripts/cdp.mjs waitfor <target> --text "str" --scope ".reply" 120000  # scoped text wait
 scripts/cdp.mjs wait    <target> 30000                 # agent-safe delay; use instead of shell sleep
-scripts/cdp.mjs fill    <target> <sel|@ref> <text>     # clear field + type text (form filling)
-scripts/cdp.mjs fill    <target> --react <sel|@ref> <text>  # React-controlled input value setter + input/change events
-scripts/cdp.mjs select  <target> <selector> <value>    # select option (auto-returns perceive diff)
+scripts/cdp.mjs fill    <target> <sel|@ref> <text> [--format json] # clear field + type text
+scripts/cdp.mjs fill    <target> --react <sel|@ref> <text> [--format json] # React-controlled input value setter + input/change events
+scripts/cdp.mjs select  <target> <selector> <value> [--format json] # select option (auto-returns perceive diff)
 scripts/cdp.mjs styles  <target> <selector>            # computed styles (meaningful props only)
 scripts/cdp.mjs text    <target> [selector]              # clean text — optional CSS selector to scope
 scripts/cdp.mjs table   <target> [selector]            # full table data (tab-separated, no row limit)
