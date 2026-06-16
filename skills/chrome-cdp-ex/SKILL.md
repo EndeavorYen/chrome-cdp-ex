@@ -1045,6 +1045,7 @@ npm run benchmark:killer
 npm run benchmark:killer -- --json
 npm run benchmark:killer -- --stability-ms 1200000
 npm run benchmark:generic-cdp -- --out generic-cdp-raw.json
+npm run benchmark:playwright -- --out playwright-raw.json
 npm run benchmark:baseline -- raw-results.json --out baselines.json
 npm run benchmark:killer -- --comparison-baselines ./baselines.json
 ```
@@ -1058,6 +1059,8 @@ JSON output also includes `chrome-cdp-ex.benchmark-comparison.v1`: a conservativ
 To replace the heuristic comparison with measured competitor runs, either pass `--comparison-baselines` a `chrome-cdp-ex.comparison-baselines.v1` file directly, or normalize raw harness results with `npm run benchmark:baseline -- raw-results.json --out baselines.json`. Raw result files use `{"schema":"chrome-cdp-ex.raw-baseline-results.v1","source":"measured-local-baseline","runs":[{"id":"playwright","label":"Measured Playwright harness","commandCalls":24,"usefulObservationTokens":4200,"verificationCallsSaved":0,"differentiatorSuccessRate":0.5}]}`.
 
 `npm run benchmark:generic-cdp -- --out generic-cdp-raw.json` launches the same smoke page in a disposable browser and measures a naive raw-CDP path using `/json`, `Runtime.evaluate`, and WebSocket calls. You can also import an external transcript with `npm run benchmark:generic-cdp -- --from-steps steps.json --out generic-cdp-raw.json`. Feed the resulting raw file into `benchmark:baseline`, then into `benchmark:killer`, to make generic-CDP comparisons measured instead of heuristic. Measured baselines can carry capability metrics too; comparison reports surface gaps such as missing action evidence, report timelines, stale-ref recovery, or session stability so cheap-but-thin baselines do not look equivalent.
+
+`npm run benchmark:playwright -- --out playwright-raw.json` measures a Playwright Chromium path against the same smoke page when the local environment has the `playwright` package available. If Playwright is not installed in the project, use `npm run benchmark:playwright -- --from-steps playwright-steps.json --out playwright-raw.json` to normalize an external Playwright transcript without adding a dependency.
 
 ## Source
 
