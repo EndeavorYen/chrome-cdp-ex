@@ -269,6 +269,16 @@ describe('COMMANDS registry', () => {
     }));
   });
 
+  it('registers flow structured JSON handoff as a target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'flow',
+      aliases: [],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
   it('registers export-playwright as a target command', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'export-playwright',
@@ -5550,6 +5560,72 @@ describe('flowStr', () => {
     // Should have one numbered head per step
     const heads = out.split('\n').filter(l => /^\[\d+\/\d+\]/.test(l));
     expect(heads).toHaveLength(3);
+  });
+
+  it('returns structured JSON failure handoff for command failures', async () => {
+    const seen = [];
+    const run = async (step) => {
+      seen.push(step.cmd);
+      if (step.cmd === 'click') {
+        return {
+          ok: false,
+          error: [
+            'Action failure: selector',
+            'Reason: No current element matched the requested selector/ref.',
+            'Next: cdp perceive ABC123 -C -d 8',
+            'Original: Element not found: #missing',
+          ].join('\n'),
+        };
+      }
+      return { ok: true, result: `did ${step.cmd}` };
+    };
+    const out = await flowStr(
+      { run, settle: async () => '' },
+      'summary; click #missing; status',
+      { format: 'json', targetId: 'ABC123' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(seen).toEqual(['summary', 'click']);
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.flow.v1',
+      targetId: 'ABC123',
+      halted: true,
+      counts: { steps: 3, ok: 1, failed: 1, skipped: 1 },
+      failedStep: {
+        index: 2,
+        kind: 'command',
+        cmd: 'click',
+        ok: false,
+        failureKind: 'selector',
+        nextCommand: 'cdp perceive ABC123 -C -d 8',
+      },
+      nextSteps: ['cdp perceive ABC123 -C -d 8'],
+    });
+    expect(parsed.steps[0]).toMatchObject({ index: 1, cmd: 'summary', ok: true, resultPreview: 'did summary' });
+    expect(parsed.steps[2]).toMatchObject({ index: 3, cmd: 'status', skipped: true });
+  });
+
+  it('returns structured JSON failure handoff for wait failures', async () => {
+    const out = await flowStr(
+      { run: async () => ({ ok: true, result: 'ok' }), settle: async () => { throw new Error('Unknown wait: "paint idle"'); } },
+      'wait paint idle; summary',
+      { format: 'json', targetId: 'ABC123' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.flow.v1',
+      halted: true,
+      failedStep: {
+        index: 1,
+        kind: 'wait',
+        wait: 'paint idle',
+        ok: false,
+        error: 'Unknown wait: "paint idle"',
+      },
+      nextSteps: ['cdp status ABC123'],
+    });
   });
 });
 

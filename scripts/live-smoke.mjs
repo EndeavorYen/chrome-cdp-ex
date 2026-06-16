@@ -309,6 +309,17 @@ if (parsedBatch.failedStep?.cmd !== 'click' || parsedBatch.failedStep?.failureKi
 if (!parsedBatch.nextSteps?.some(nextStep => nextStep.includes('cdp perceive'))) {
   throw new Error(`batch --format json should include an executable recovery next step:\n${batchJsonOut}`);
 }
+const flowJsonOut = step('flow json failure handoff', () => run(['flow', target, '--format', 'json', 'summary; click #missing-flow-json-smoke; status']));
+const parsedFlow = JSON.parse(flowJsonOut);
+if (parsedFlow.schema !== 'chrome-cdp-ex.flow.v1' || parsedFlow.counts?.failed !== 1 || parsedFlow.counts?.skipped !== 1) {
+  throw new Error(`flow --format json should return structured failure handoff:\n${flowJsonOut}`);
+}
+if (parsedFlow.failedStep?.cmd !== 'click' || parsedFlow.failedStep?.failureKind !== 'selector') {
+  throw new Error(`flow --format json should identify the failed step and failure kind:\n${flowJsonOut}`);
+}
+if (!parsedFlow.nextSteps?.some(nextStep => nextStep.includes('cdp perceive'))) {
+  throw new Error(`flow --format json should include an executable recovery next step:\n${flowJsonOut}`);
+}
 const sessionShotOut = step('session shot attachment', () => run(['shot', target, '--quiet']));
 const sessionShotPath = sessionShotOut.split('\n')[0];
 if (sessionShotOut.split('\n').length !== 1 || !sessionShotPath.endsWith('.png') || !existsSync(sessionShotPath)) {

@@ -350,15 +350,16 @@ Executes multiple commands in a single IPC call. Default output is a JSON array 
 ```bash
 scripts/cdp.mjs flow <target> "click @1; wait dom stable; summary; console --errors"
 scripts/cdp.mjs flow <target> "fill @3 hello; click @7; wait network idle; perceive --since-action"
+scripts/cdp.mjs flow <target> --format json "summary; click #missing; status" # chrome-cdp-ex.flow.v1 failure handoff
 ```
 
-Runs the steps in order, halting on the first failure. Output is a readable step-by-step layout (not a JSON blob), so you can diff a failing pipeline at a glance.
+Runs the steps in order, halting on the first failure. Text output is a readable step-by-step layout, so you can diff a failing pipeline at a glance. Add `--format json` when another agent or script needs `chrome-cdp-ex.flow.v1` with per-step status, the failed step, skipped downstream steps, classified `Action failure` kind when available, and executable `nextSteps`.
 
 - Each step is either a normal command (`click @1`, `summary`, `console --errors`, …) or a wait alias.
 - Wait aliases use the same settle helper as `record --until`:
   - `wait dom stable` — wait for DOM mutations to quiet for 500ms (max ~10s).
   - `wait network idle` — wait until pending XHR/Fetch/Document requests drain.
-- Use `flow` for short pipelines that read top-to-bottom; use `batch` when you need parallelism or programmatic JSON.
+- Use `flow` for short pipelines that read top-to-bottom or need ordered failure handoff; use `batch` when you need parallelism or multiple independent command results.
 
 ### Doctor / readiness check
 
@@ -377,7 +378,7 @@ When a CLI command fails, read and follow the printed `Next:` line before retryi
 
 ### Action feedback (automatic)
 
-These commands **automatically wait for DOM to settle and return compact `ActionResult` evidence plus perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards. Add `--format json` to action commands when a script needs the versioned `chrome-cdp-ex.action.v1` evidence model without human dispatch text; dispatch failures are returned as the same JSON model with `dispatch.ok=false`, `effects.failure.kind`, and an executable `nextHint`. Use `batch <target> --format json ...` when combining several steps in one call; it returns `chrome-cdp-ex.batch.v1` with per-step status, the first failed step, classified `Action failure` kind, and executable `nextSteps`. Action feedback also snapshots console, exception, and network buffers before dispatch, then reports low-token deltas like `Console: 1 entry (1 error)`, `Network: 1 request (1 failed)`, or `Network: 1 request (1 pending)` when the action caused runtime failures, request failures, or requests that have not settled yet. If you need to ask again what the last action changed, run `perceive --since-action`.
+These commands **automatically wait for DOM to settle and return compact `ActionResult` evidence plus perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards. Add `--format json` to action commands when a script needs the versioned `chrome-cdp-ex.action.v1` evidence model without human dispatch text; dispatch failures are returned as the same JSON model with `dispatch.ok=false`, `effects.failure.kind`, and an executable `nextHint`. Use `batch <target> --format json ...` when combining several steps in one call; it returns `chrome-cdp-ex.batch.v1` with per-step status, the first failed step, classified `Action failure` kind, and executable `nextSteps`. Use `flow <target> --format json "summary; click #missing; status"` when ordered pipelines need the same handoff shape plus skipped downstream steps. Action feedback also snapshots console, exception, and network buffers before dispatch, then reports low-token deltas like `Console: 1 entry (1 error)`, `Network: 1 request (1 failed)`, or `Network: 1 request (1 pending)` when the action caused runtime failures, request failures, or requests that have not settled yet. If you need to ask again what the last action changed, run `perceive --since-action`.
 
 If dispatch fails, read the classified `Action failure:` block instead of retrying blindly. Failures are grouped as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, or `selector`, and each one includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp overlay <target> @ref`, `cdp perceive <target> -C -d 8`, or `cdp status <target>`. The failed action is also recorded in `report <target>` so long sessions keep the diagnosis; successful actions record DOM, console, exception, and network evidence for later `record-actions` export.
 
@@ -485,10 +486,10 @@ scripts/cdp.mjs record  <target> --action click @5       # record while performi
                                                            # Add an explicit duration or --until to override the auto-settle default.
 scripts/cdp.mjs checkpoint <target> --format json          # page state artifact for workflow replay/debugging
 scripts/cdp.mjs restore <target> --file checkpoint.json    # restores URL/cookies/storage and clears old refs
-scripts/cdp.mjs flow    <target> "<steps>"               # sequential runner; semicolon-separated steps
+scripts/cdp.mjs flow    <target> "<steps>" [--format json] # sequential runner; semicolon-separated steps
                                                            # e.g. flow A7BA "click @1; wait dom stable; summary; console --errors"
                                                            # wait aliases: "wait dom stable", "wait network idle"
-                                                           # halts on the first failing step; output is readable, not JSON
+                                                           # halts on the first failing step; JSON returns chrome-cdp-ex.flow.v1
 scripts/cdp.mjs doctor [--format json]         # one-call diagnostics (Node, install, daemon state, CDP, permission)
 scripts/cdp.mjs ready [--format json]          # alias of doctor; exits 1 if any check FAILs
 scripts/cdp.mjs list    [--format json]        # discover tabs; JSON gives schema/pages/nextSteps for agents

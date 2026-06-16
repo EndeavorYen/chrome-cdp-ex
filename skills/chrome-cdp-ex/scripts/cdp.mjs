@@ -6382,6 +6382,60 @@ function parseFlowSteps(input) {
   });
 }
 
+function flowStepModel(step = {}, index = 0, state = {}) {
+  const base = {
+    index: index + 1,
+    kind: step.kind || 'command',
+    ok: state.ok === true,
+  };
+  if (step.kind === 'wait') base.wait = step.what || '';
+  else {
+    base.cmd = step.cmd || '';
+    base.args = Array.isArray(step.args) ? step.args : [];
+  }
+  if (state.skipped) {
+    base.ok = false;
+    base.skipped = true;
+    return base;
+  }
+  if (base.ok) {
+    base.resultPreview = firstNonEmptyLine(state.result);
+    return base;
+  }
+  const errorText = String(state.error || 'unknown error');
+  base.error = errorText;
+  const failureKind = extractLabeledLine(errorText, 'Action failure');
+  const nextCommand = extractLabeledLine(errorText, 'Next');
+  if (failureKind) base.failureKind = failureKind;
+  if (nextCommand) base.nextCommand = nextCommand;
+  return base;
+}
+
+function buildFlowResultModel({ targetId = null, input = '', steps = [], stepResults = [] } = {}) {
+  const failedStep = stepResults.find(step => step.ok === false && step.skipped !== true) || null;
+  const skipped = stepResults.filter(step => step.skipped === true).length;
+  const failed = failedStep ? 1 : 0;
+  const ok = stepResults.filter(step => step.ok === true).length;
+  const nextSteps = failedStep?.nextCommand
+    ? [failedStep.nextCommand]
+    : (failedStep ? [targetId ? `cdp status ${targetId}` : 'cdp status <target>'] : []);
+  return {
+    schema: 'chrome-cdp-ex.flow.v1',
+    targetId,
+    input,
+    halted: !!failedStep,
+    counts: {
+      steps: steps.length,
+      ok,
+      failed,
+      skipped,
+    },
+    steps: stepResults,
+    failedStep,
+    nextSteps,
+  };
+}
+
 async function settleFlow(cdp, sid, what, pendingReqs, opts = {}) {
   const max = opts.maxMs || 10000;
   const quiet = opts.quietMs || 500;
@@ -6403,10 +6457,20 @@ async function settleFlow(cdp, sid, what, pendingReqs, opts = {}) {
   throw new Error(`Unknown wait: "${what}". Use "dom stable" or "network idle".`);
 }
 
-async function flowStr({ run, settle }, input) {
+async function flowStr({ run, settle }, input, { format = 'text', targetId = null } = {}) {
   const steps = parseFlowSteps(input);
   if (steps.length === 0) throw new Error('flow: no steps. Example: flow <target> "click @1; wait dom stable; summary"');
   const lines = [`Flow: ${steps.length} step(s)`];
+  const stepResults = [];
+  const finish = () => {
+    if (format === 'json') return formatJson(buildFlowResultModel({ targetId, input, steps, stepResults }));
+    return lines.join('\n');
+  };
+  const markSkippedAfter = (startIndex) => {
+    for (let j = startIndex; j < steps.length; j++) {
+      stepResults.push(flowStepModel(steps[j], j, { skipped: true }));
+    }
+  };
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const head = step.kind === 'wait'
@@ -6420,21 +6484,26 @@ async function flowStr({ run, settle }, input) {
       } else {
         const r = await run(step);
         if (!r.ok) {
+          stepResults.push(flowStepModel(step, i, { ok: false, error: r.error }));
+          markSkippedAfter(i + 1);
           lines.push(`  ✗ ${r.error}`);
           lines.push(`Flow halted at step ${i + 1}/${steps.length}`);
-          return lines.join('\n');
+          return finish();
         }
         body = r.result ?? '';
       }
+      stepResults.push(flowStepModel(step, i, { ok: true, result: body }));
       const text = (body || '').toString();
       if (text) for (const ln of text.split('\n')) lines.push('  ' + ln);
     } catch (e) {
+      stepResults.push(flowStepModel(step, i, { ok: false, error: e.message }));
+      markSkippedAfter(i + 1);
       lines.push(`  ✗ ${e.message}`);
       lines.push(`Flow halted at step ${i + 1}/${steps.length}`);
-      return lines.join('\n');
+      return finish();
     }
   }
-  return lines.join('\n');
+  return finish();
 }
 
 // --- Replay: execute record-actions artifacts ---
@@ -7963,11 +8032,12 @@ async function runDaemon(targetId) {
           break;
         }
         case 'flow': {
-          const input = args.join(' ');
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const input = fopts.args.join(' ');
           result = await flowStr({
             run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] }),
             settle: (what) => settleFlow(cdp, sessionId, what, pendingReqs),
-          }, input);
+          }, input, { format: fopts.format, targetId });
           break;
         }
         case 'repeat': {
@@ -8285,10 +8355,10 @@ Usage: cdp <command> [args]
                                     --parallel  Run commands concurrently (for independent ops like multiple elshots)
                                     --plain     Human-readable per-step output (default: pretty JSON)
                                     --compact   One line per step (head + first line of result)
-  flow  <target> "<steps>"          Sequential runner. Steps separated by ";".
+  flow  <target> "<steps>" [--format json]  Sequential runner. Steps separated by ";".
                                     Each step is a normal command (e.g. "click @1") or a wait alias:
                                     "wait dom stable" / "wait network idle" — uses settle helper.
-                                    Halts on the first failing step. Output is readable, not JSON.
+                                    Halts on the first failing step; JSON returns chrome-cdp-ex.flow.v1.
                                     Example: flow A7BA "click @1; wait dom stable; summary; console --errors"
   repeat <target> <N> <cmd> [args]  Run a command up to N times (cap 50). Fail-fast by default.
                                     --continue / -c: keep going through errors and report tally.
@@ -8427,7 +8497,7 @@ const COMMANDS = Object.freeze([
   { name: 'inject', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
   { name: 'cascade', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'record', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'flow', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'flow', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'repeat', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'dismiss-modal', aliases: ['dismissmodal'], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
 ]);
@@ -8806,9 +8876,10 @@ async function main() {
     const filtered = cmdArgs.filter(a => a !== '--parallel' && a !== '--plain' && a !== '--compact');
     if (!filtered[0]) { console.error('Error: commands required (pipe syntax or JSON array)'); process.exit(1); }
   } else if (cmd === 'flow') {
-    if (!cmdArgs[0]) { console.error('Error: flow steps required (semicolon-separated). Example: flow <target> "click @1; wait dom stable; summary"'); process.exit(1); }
+    const fopts = parseFormatArgs(cmdArgs, ['text', 'json']);
+    if (!fopts.args[0]) { console.error('Error: flow steps required (semicolon-separated). Example: flow <target> "click @1; wait dom stable; summary"'); process.exit(1); }
     // Preserve multi-word/unquoted step recipes as one daemon argument.
-    cmdArgs.splice(0, cmdArgs.length, cmdArgs.join(' '));
+    cmdArgs.splice(0, cmdArgs.length, ...formatArgSuffix(fopts.format), fopts.args.join(' '));
   } else if (cmd === 'replay') {
     const jsonIndex = cmdArgs.findIndex(a => a === '--json');
     if (jsonIndex !== -1) {
