@@ -121,6 +121,49 @@ function benchmarkStaleRefRecovery(steps) {
   };
 }
 
+function isExecutableRecoveryCommand(value = '') {
+  return /^(cdp\s+\S+|ulimit\s+-n\s+\d+|sudo\s+\S+|CDP_PORT=\S+\s+)/.test(String(value || '').trim());
+}
+
+function stepHasExecutableRecovery(step = {}) {
+  const model = stepModel(step) || parseJsonOutput(step.outputText);
+  if (Array.isArray(model?.nextSteps) && model.nextSteps.some(isExecutableRecoveryCommand)) return true;
+  if (isExecutableRecoveryCommand(model?.recovery?.run)) return true;
+  if (isExecutableRecoveryCommand(model?.recovery?.then)) return true;
+  const text = step.outputText || outputText(step);
+  const labeledCommands = [];
+  for (const match of text.matchAll(/^\s*(?:Next|Run|Then):\s*(.+)$/gmi)) {
+    labeledCommands.push(match[1]);
+  }
+  return labeledCommands.some(isExecutableRecoveryCommand);
+}
+
+function benchmarkCliRecoveryCoverage(steps) {
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    if (step.status === 0) continue;
+    total += 1;
+    if (stepHasExecutableRecovery(step)) {
+      covered += 1;
+    } else {
+      missing.push({
+        name: step.name,
+        commandText: step.commandText,
+        status: step.status,
+        expectedFailure: step.expectedFailure,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    rate: total > 0 ? covered / total : null,
+  };
+}
+
 function benchmarkSessionStability(steps) {
   const probes = steps.filter(step => /^stability-/.test(step.name || ''));
   const failed = probes.find(step => !step.ok);
@@ -459,6 +502,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   autoEvidenceActionsMin: 1,
   observedActionEvidenceCoverageRateMin: 1,
   actionEvidenceCompletenessCoverageRateMin: 1,
+  cliRecoveryCoverageRateMin: 1,
   handoffNextStepsCoverageRateMin: 1,
   handoffRecommendationCoverageRateMin: 1,
   doctorOnboardingCoverageRateMin: 1,
@@ -573,6 +617,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '>=',
       limit: limits.actionEvidenceCompletenessCoverageRateMin,
       recommendation: 'Action JSON evidence must include action, target, dispatch, settle, effects deltas, outcome, and verdict so agents can decide without another perceive.',
+    }),
+    gateCriterion({
+      name: 'cli-recovery-coverage',
+      actual: metrics.cliRecoveryCoverage?.rate ?? 1,
+      operator: '>=',
+      limit: limits.cliRecoveryCoverageRateMin,
+      recommendation: 'Every failed benchmark step must expose an executable recovery command through Next:, Run:, or JSON nextSteps.',
     }),
     gateCriterion({
       name: 'handoff-next-steps-coverage',
@@ -821,6 +872,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       autoEvidenceActions: actionEvidenceSteps.length,
       actionEvidenceCoverage: benchmarkActionEvidenceCoverage(normalizedSteps),
       actionEvidenceCompletenessCoverage: benchmarkActionEvidenceCompletenessCoverage(normalizedSteps),
+      cliRecoveryCoverage: benchmarkCliRecoveryCoverage(normalizedSteps),
       handoffNextStepsCoverage: benchmarkHandoffNextStepsCoverage(normalizedSteps),
       handoffRecommendationCoverage: benchmarkHandoffRecommendationCoverage(normalizedSteps),
       doctorOnboardingCoverage: benchmarkDoctorOnboardingCoverage(normalizedSteps),
@@ -865,6 +917,7 @@ export function formatBenchmarkReport(summary) {
     `Auto-evidence actions: ${summary.metrics.autoEvidenceActions}`,
     `Action evidence coverage: ${summary.metrics.actionEvidenceCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionEvidenceCoverage.rate * 100)}%`} (${summary.metrics.actionEvidenceCoverage?.covered ?? 0}/${summary.metrics.actionEvidenceCoverage?.total ?? 0})`,
     `Action evidence completeness: ${summary.metrics.actionEvidenceCompletenessCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionEvidenceCompletenessCoverage.rate * 100)}%`} (${summary.metrics.actionEvidenceCompletenessCoverage?.covered ?? 0}/${summary.metrics.actionEvidenceCompletenessCoverage?.total ?? 0})`,
+    `CLI recovery coverage: ${summary.metrics.cliRecoveryCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.cliRecoveryCoverage.rate * 100)}%`} (${summary.metrics.cliRecoveryCoverage?.covered ?? 0}/${summary.metrics.cliRecoveryCoverage?.total ?? 0})`,
     `Handoff nextSteps coverage: ${summary.metrics.handoffNextStepsCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffNextStepsCoverage.rate * 100)}%`} (${summary.metrics.handoffNextStepsCoverage?.covered ?? 0}/${summary.metrics.handoffNextStepsCoverage?.total ?? 0})`,
     `Handoff recommendation coverage: ${summary.metrics.handoffRecommendationCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffRecommendationCoverage.rate * 100)}%`} (${summary.metrics.handoffRecommendationCoverage?.covered ?? 0}/${summary.metrics.handoffRecommendationCoverage?.total ?? 0})`,
     `Doctor onboarding coverage: ${summary.metrics.doctorOnboardingCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.doctorOnboardingCoverage.rate * 100)}%`} (${summary.metrics.doctorOnboardingCoverage?.covered ?? 0}/${summary.metrics.doctorOnboardingCoverage?.total ?? 0})`,

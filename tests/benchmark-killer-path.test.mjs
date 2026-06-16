@@ -341,8 +341,9 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Doctor onboarding coverage: n/a (0/0)');
     expect(out).toContain('Report latestAction coverage: n/a (0/0)');
     expect(out).toContain('Report timelineWindow coverage: n/a (0/0)');
+    expect(out).toContain('CLI recovery coverage: 100% (1/1)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 17/17 pass');
+    expect(out).toContain('Gate checks: 18/18 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -396,6 +397,46 @@ describe('benchmark killer path helpers', () => {
         passed: false,
         actual: 0.8,
         recommendation: 'Every mutating command exercised by the benchmark must return action evidence.',
+      }),
+    ]));
+  });
+
+  it('fails the gate when a failed step lacks an executable recovery command', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'cli-recovery-coverage',
+      startedAt: 0,
+      endedAt: 20,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'click',
+          command: ['click', 'AABBCCDD', '@404'],
+          startedAt: 0,
+          endedAt: 20,
+          status: 1,
+          stdout: '',
+          stderr: 'Error: Unknown ref @404',
+        },
+      ],
+    });
+
+    expect(summary.metrics.cliRecoveryCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'click',
+          commandText: 'cdp click AABBCCDD @404',
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'cli-recovery-coverage',
+        passed: false,
+        actual: 0,
+        recommendation: 'Every failed benchmark step must expose an executable recovery command through Next:, Run:, or JSON nextSteps.',
       }),
     ]));
   });
