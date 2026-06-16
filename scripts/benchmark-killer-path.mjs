@@ -25,22 +25,37 @@ function outputText(step) {
   return `${step.stdout || ''}${step.stderr || ''}`;
 }
 
+function stepModel(step = {}) {
+  return step.model || null;
+}
+
+function hasReportTimeline(step) {
+  const model = stepModel(step);
+  if (model?.schema === 'chrome-cdp-ex.report.v1') return Array.isArray(model.actions);
+  return /Session report:[\s\S]*Action timeline:/m.test(step.outputText || outputText(step));
+}
+
 function hasUsefulObservation(step) {
-  const text = outputText(step);
+  const text = step.outputText || outputText(step);
+  const model = stepModel(step);
+  if (model?.schema === 'chrome-cdp-ex.perceive.v1') return true;
+  if (model?.schema === 'chrome-cdp-ex.report.v1') return hasReportTimeline(step);
   return step.name === 'perceive'
     || step.name === 'report'
     || /^Page:/m.test(text)
     || /Coords: top-level viewport CSS px/.test(text)
-    || /Session report:[\s\S]*Action timeline:/m.test(text);
+    || hasReportTimeline(step);
 }
 
 function hasActionEvidence(step) {
-  const text = outputText(step);
+  const text = step.outputText || outputText(step);
+  const model = stepModel(step);
   const commandName = normalizeActionCommandName(step.command?.[0] || step.name);
-  return MUTATING_COMMANDS.has(commandName)
-    && (/^[a-z-]+: dispatched/m.test(text)
+  return Boolean(MUTATING_COMMANDS.has(commandName)
+    && ((model?.schema === 'chrome-cdp-ex.action.v1' && (model.dispatch || model.outcome || model.verdict))
+      || /^[a-z-]+: dispatched/m.test(text)
       || /Action failure:/m.test(text)
-      || /success but observation timed out/i.test(text));
+      || /success but observation timed out/i.test(text)));
 }
 
 function normalizeActionCommandName(value = '') {
@@ -112,7 +127,7 @@ function benchmarkSessionStability(steps) {
   const reportOk = probes.some(step => (
     step.name === 'stability-report'
     && step.ok
-    && /Session report:[\s\S]*Action timeline:/m.test(step.outputText || '')
+    && hasReportTimeline(step)
   ));
   return {
     enabled: probes.length > 0,
@@ -174,7 +189,7 @@ function benchmarkHandoffNextStepsCoverage(steps) {
   let total = 0;
   let covered = 0;
   for (const step of steps) {
-    const model = parseJsonOutput(step.outputText);
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
     if (!model?.schema || !/^chrome-cdp-ex\.(doctor|list|open|perceive|action|report)\.v1$/.test(model.schema)) continue;
     total += 1;
     const hasNextSteps = Array.isArray(model.nextSteps) && model.nextSteps.some(value => /^cdp\s+\S+/.test(String(value || '')));
@@ -194,6 +209,13 @@ function benchmarkHandoffNextStepsCoverage(steps) {
     missing,
     rate: total > 0 ? covered / total : null,
   };
+}
+
+function countsTowardUsefulObservationTokens(step) {
+  const model = stepModel(step);
+  const commandName = step.command?.[0] || step.name;
+  if (commandName === 'report' || model?.schema === 'chrome-cdp-ex.report.v1') return false;
+  return step.hasUsefulObservation || step.hasActionEvidence;
 }
 
 const DEFAULT_GATE_LIMITS = Object.freeze({
@@ -467,8 +489,10 @@ export function buildBenchmarkComparison(summary, baselineSet = DEFAULT_COMPARIS
 export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, endedAt, target = '', steps = [], comparisonBaselineSet = DEFAULT_COMPARISON_BASELINE_SET } = {}) {
   const normalizedSteps = steps.map((step) => {
     const text = outputText(step);
+    const model = parseJsonOutput(text);
     const outputChars = text.length;
-    const actionEvidence = hasActionEvidence(step);
+    const baseStep = { ...step, outputText: text, model };
+    const actionEvidence = hasActionEvidence(baseStep);
     const expectedFailure = Boolean(step.expectedFailure);
     return {
       name: step.name,
@@ -477,12 +501,15 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       ok: step.status === 0 || expectedFailure,
       status: step.status,
       expectedFailure,
+      startedAt: step.startedAt,
+      endedAt: step.endedAt,
       durationMs: Math.max(0, (step.endedAt ?? step.startedAt ?? 0) - (step.startedAt ?? 0)),
       outputChars,
       estimatedTokens: estimateTokenCount(outputChars),
-      hasUsefulObservation: hasUsefulObservation(step),
+      hasUsefulObservation: hasUsefulObservation(baseStep),
       hasActionEvidence: actionEvidence,
       outputText: text,
+      model,
     };
   });
 
@@ -491,10 +518,10 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
   const outputChars = normalizedSteps.reduce((sum, step) => sum + step.outputChars, 0);
   const actionEvidenceSteps = normalizedSteps.filter(step => step.hasActionEvidence && !step.expectedFailure);
   const usefulObservationTokens = normalizedSteps
-    .filter(step => step.hasUsefulObservation || step.hasActionEvidence)
+    .filter(countsTowardUsefulObservationTokens)
     .reduce((sum, step) => sum + step.estimatedTokens, 0);
   const reportIndex = steps.findIndex(step => step.name === 'report');
-  const reportStep = reportIndex >= 0 ? steps[reportIndex] : null;
+  const reportStep = reportIndex >= 0 ? normalizedSteps[reportIndex] : null;
   const firstActionEvidence = actionEvidenceSteps[0] || null;
 
   const summary = {
@@ -512,7 +539,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       firstActionEvidenceMs: firstActionEvidence
         ? Math.max(0, (steps[normalizedSteps.indexOf(firstActionEvidence)]?.endedAt ?? endedAt ?? 0) - (startedAt ?? 0))
         : null,
-      goldenPathMs: reportStep && /Session report:[\s\S]*Action timeline:/m.test(outputText(reportStep || {}))
+      goldenPathMs: reportStep && hasReportTimeline(reportStep)
         ? Math.max(0, (reportStep.endedAt ?? endedAt ?? 0) - (startedAt ?? 0))
         : null,
       outputChars,
@@ -522,12 +549,12 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       actionEvidenceCoverage: benchmarkActionEvidenceCoverage(normalizedSteps),
       handoffNextStepsCoverage: benchmarkHandoffNextStepsCoverage(normalizedSteps),
       verificationCallsSaved: actionEvidenceSteps.length,
-      hasReportTimeline: /Session report:[\s\S]*Action timeline:/m.test(outputText(reportStep || {})),
+      hasReportTimeline: hasReportTimeline(reportStep || {}),
       differentiators: benchmarkDifferentiators(normalizedSteps),
       staleRefRecovery: benchmarkStaleRefRecovery(normalizedSteps),
       sessionStability: benchmarkSessionStability(normalizedSteps),
     },
-    steps: normalizedSteps.map(({ outputText: _outputText, ...step }) => step),
+    steps: normalizedSteps.map(({ outputText: _outputText, model: _model, ...step }) => step),
   };
   summary.gate = buildBenchmarkGate(summary);
   summary.comparison = buildBenchmarkComparison(summary, comparisonBaselineSet);
@@ -642,16 +669,16 @@ function runStep({ args, env, steps, name = args[0], timeout = 20000, expectedFa
 export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000 } = {}) {
   const hmrMutationScript = '(() => { if (typeof appendLog === "function") { appendLog("hmr panel ready"); return "hmr-added"; } const log = document.querySelector("#combat-log"); const el = document.createElement("p"); el.id = "hmr-panel"; el.textContent = "hmr panel ready"; log?.appendChild(el); if (log) log.scrollTop = log.scrollHeight; return "hmr-added"; })()';
   const plan = [
-    { args: ['doctor'] },
-    { args: ['list'] },
-    { args: ['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20'] },
+    { args: ['doctor', '--format', 'json'] },
+    { args: ['list', '--format', 'json'] },
+    { args: ['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20', '--format', 'json'] },
     { args: ['overlay', target] },
     { args: ['frame', target] },
     { args: ['cascade', target, '#custom-clickable', 'cursor'] },
     { args: ['dismiss-modal', target] },
-    { args: ['click', target, '#combat'] },
+    { args: ['click', target, '#combat', '--format', 'json'] },
     { args: ['perceive', target, '--since-action'] },
-    { args: ['report', target] },
+    { args: ['report', target, '--format', 'json'] },
     { args: ['perceive', target, '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-baseline' },
     { args: ['eval', target, hmrMutationScript], name: 'hmr-mutate' },
     { args: ['perceive', target, '--diff', '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-diff' },

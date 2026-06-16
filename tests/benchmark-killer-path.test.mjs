@@ -480,6 +480,93 @@ describe('benchmark killer path helpers', () => {
     ]));
   });
 
+  it('treats versioned JSON action and report handoffs as benchmark evidence', () => {
+    const perceiveJson = JSON.stringify({
+      schema: 'chrome-cdp-ex.perceive.v1',
+      page: { title: 'Smoke' },
+      nodes: [{ ref: '@1', role: 'button', name: 'Start' }],
+      nextSteps: ['cdp click AABBCCDD @1 --format json'],
+    });
+    const actionJson = JSON.stringify({
+      schema: 'chrome-cdp-ex.action.v1',
+      dispatch: { ok: true },
+      outcome: { status: 'changed' },
+      nextSteps: ['cdp report AABBCCDD --format json'],
+    });
+    const summary = summarizeBenchmarkRun({
+      scenario: 'json-handoff-killer-path',
+      startedAt: 0,
+      endedAt: 60,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'doctor',
+          command: ['doctor', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.doctor.v1',
+            nextSteps: ['cdp list --format json'],
+          }),
+          stderr: '',
+        },
+        {
+          name: 'perceive',
+          command: ['perceive', 'AABBCCDD', '-C', '-d', '8', '--format', 'json'],
+          startedAt: 10,
+          endedAt: 25,
+          status: 0,
+          stdout: perceiveJson,
+          stderr: '',
+        },
+        {
+          name: 'click',
+          command: ['click', 'AABBCCDD', '@1', '--format', 'json'],
+          startedAt: 25,
+          endedAt: 40,
+          status: 0,
+          stdout: actionJson,
+          stderr: '',
+        },
+        {
+          name: 'report',
+          command: ['report', 'AABBCCDD', '--format', 'json'],
+          startedAt: 40,
+          endedAt: 60,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.report.v1',
+            actions: [{ index: 1, action: 'click' }],
+            nextSteps: ['cdp record-actions AABBCCDD --format json'],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.firstUsefulObservationMs).toBe(25);
+    expect(summary.metrics.firstActionEvidenceMs).toBe(40);
+    expect(summary.metrics.goldenPathMs).toBe(60);
+    expect(summary.metrics.hasReportTimeline).toBe(true);
+    expect(summary.metrics.usefulObservationTokens).toBe(
+      estimateTokenCount(perceiveJson.length) + estimateTokenCount(actionJson.length),
+    );
+    expect(summary.metrics.actionEvidenceCoverage).toMatchObject({
+      total: 1,
+      covered: 1,
+      missing: [],
+      rate: 1,
+    });
+    expect(summary.metrics.handoffNextStepsCoverage).toMatchObject({
+      total: 4,
+      covered: 4,
+      missing: [],
+      rate: 1,
+    });
+    expect(summary.steps[2].hasActionEvidence).toBe(true);
+  });
+
   it('parses JSON mode and stability window options', () => {
     expect(parseBenchmarkArgs(['--json', '--stability-ms', '1200000', '--comparison-baselines', '/tmp/baselines.json'])).toEqual({
       json: true,
@@ -508,6 +595,11 @@ describe('benchmark killer path helpers', () => {
       'reload',
       'report',
     ]));
+    expect(plan.find(step => step.args[0] === 'doctor')?.args).toEqual(['doctor', '--format', 'json']);
+    expect(plan.find(step => step.args[0] === 'list')?.args).toEqual(['list', '--format', 'json']);
+    expect(plan.find(step => step.args[0] === 'perceive')?.args).toContain('--format');
+    expect(plan.find(step => step.args[0] === 'click')?.args).toContain('--format');
+    expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--format', 'json']);
     expect(plan.length).toBeLessThanOrEqual(20);
   });
 
