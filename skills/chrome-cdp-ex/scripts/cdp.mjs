@@ -9709,9 +9709,21 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
   }
 }
 
-function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '' } = {}) {
+function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform = process.platform } = {}) {
   const lower = String(message || '').toLowerCase();
   const target = targetPrefix || '<target>';
+  if (lower.includes('emfile') || lower.includes('too many open files')) {
+    const recovery = fdLimitRecovery({ platform });
+    const commands = recovery.commands || [];
+    return {
+      kind: 'fd-limit',
+      strategy: recovery.strategy,
+      run: commands[0]?.command || 'ulimit -n 4096',
+      then: commands[1]?.command || null,
+      reason: 'The process ran out of file descriptors while managing Chrome, sockets, screenshots, or session files.',
+      commands,
+    };
+  }
   if (
     lower.includes('cannot reach cdp') ||
     lower.includes('no devtoolsactiveport') ||
@@ -9813,11 +9825,14 @@ function cliErrorMessage(err) {
   return String(err?.message || err || '').trim() || 'unknown failure';
 }
 
-function buildCliErrorModel(err, { cmd = '', targetPrefix = '' } = {}) {
+function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = process.platform } = {}) {
   const message = cliErrorMessage(err);
-  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix });
+  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform });
   const nextSteps = [];
-  for (const step of [recovery.run, recovery.then]) {
+  const commandSteps = Array.isArray(recovery.commands) && recovery.commands.length
+    ? recovery.commands.map(command => command?.command).filter(Boolean)
+    : [recovery.run, recovery.then];
+  for (const step of commandSteps) {
     if (step && !nextSteps.includes(step)) nextSteps.push(step);
   }
   return {
@@ -9831,25 +9846,25 @@ function buildCliErrorModel(err, { cmd = '', targetPrefix = '' } = {}) {
   };
 }
 
-function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text' } = {}) {
-  if (format === 'json') return formatJson(buildCliErrorModel(err, { cmd, targetPrefix }));
+function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', platform = process.platform } = {}) {
+  if (format === 'json') return formatJson(buildCliErrorModel(err, { cmd, targetPrefix, platform }));
   const message = String(err?.message || err || '').trim();
   if (!message) {
-    const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix });
+    const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix, platform });
     return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), `Next: ${recovery.run}`].join('\n');
   }
   if (message.startsWith('Action failure:')) return message;
   const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
   if (/^Next:/m.test(message)) return lines.join('\n');
 
-  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix });
+  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform });
   lines.push(...formatCliErrorRecovery(recovery));
   lines.push(`Next: ${recovery.run}`);
   return lines.join('\n');
 }
 
-function exitCliError(err, { cmd = '', targetPrefix = '', format = 'text' } = {}) {
-  console.error(formatCliError(err, { cmd, targetPrefix, format }));
+function exitCliError(err, { cmd = '', targetPrefix = '', format = 'text', platform = process.platform } = {}) {
+  console.error(formatCliError(err, { cmd, targetPrefix, format, platform }));
   process.exit(1);
 }
 

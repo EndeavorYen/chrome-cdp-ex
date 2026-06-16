@@ -4068,6 +4068,20 @@ describe('formatCliError', () => {
     expect(out).toContain('Next: cdp perceive AABBCCDD -C -d 8');
   });
 
+  it('turns EMFILE errors into fd-limit recovery commands', () => {
+    const out = formatCliError(
+      new Error('EMFILE: too many open files, open "/tmp/cdp.sock"'),
+      { platform: 'darwin' }
+    );
+
+    expect(out).toContain('Error: EMFILE: too many open files');
+    expect(out).toContain('Kind: fd-limit');
+    expect(out).toContain('Strategy: raise-open-files-limit');
+    expect(out).toContain('Run: ulimit -n 4096');
+    expect(out).toContain('Then: sudo launchctl limit maxfiles 65536 200000');
+    expect(out).toContain('Next: ulimit -n 4096');
+  });
+
   it('preserves already-classified action failures', () => {
     const out = formatCliError('Action failure: overlay\nNext: cdp dismiss-modal AABBCCDD');
 
@@ -4109,6 +4123,40 @@ describe('formatCliError', () => {
     expect(parsed.recovery.run).toBe('cdp perceive AABBCCDD -C -d 8');
     expect(parsed.nextSteps).toEqual(['cdp perceive AABBCCDD -C -d 8']);
     expect(out).not.toContain('Recovery:');
+  });
+
+  it('formats EMFILE CLI errors as structured fd-limit JSON when requested', () => {
+    const out = formatCliError(
+      new Error('too many open files'),
+      { format: 'json', platform: 'darwin' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.cli-error.v1',
+      ok: false,
+      recovery: {
+        kind: 'fd-limit',
+        strategy: 'raise-open-files-limit',
+        run: 'ulimit -n 4096',
+        then: 'sudo launchctl limit maxfiles 65536 200000',
+        commands: [
+          {
+            scope: 'current-shell',
+            command: 'ulimit -n 4096',
+          },
+          {
+            scope: 'macos-login-session',
+            command: 'sudo launchctl limit maxfiles 65536 200000',
+            requiresAdmin: true,
+          },
+        ],
+      },
+      nextSteps: [
+        'ulimit -n 4096',
+        'sudo launchctl limit maxfiles 65536 200000',
+      ],
+    });
   });
 
   it('classifies missing action arguments as usage recovery instead of target status', () => {
