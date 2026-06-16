@@ -3746,6 +3746,43 @@ describe('formatCliError', () => {
 
     expect(out).toBe('Action failure: overlay\nNext: cdp dismiss-modal AABBCCDD');
   });
+
+  it('builds a structured JSON handoff for top-level CLI errors', () => {
+    const model = T.buildCliErrorModel(new Error('target ID required. Run "cdp list" first.'), { cmd: 'perceive' });
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.cli-error.v1',
+      ok: false,
+      command: 'perceive',
+      error: {
+        message: 'target ID required. Run "cdp list" first.',
+      },
+      recovery: {
+        kind: 'target-resolution',
+        strategy: 'rediscover-target',
+        run: 'cdp list  # if empty: cdp open https://example.com',
+        then: 'cdp open https://example.com',
+      },
+      nextSteps: [
+        'cdp list  # if empty: cdp open https://example.com',
+        'cdp open https://example.com',
+      ],
+    });
+  });
+
+  it('formats top-level CLI errors as parseable JSON when requested', () => {
+    const out = formatCliError(
+      new Error('Connection closed before response. The daemon for this tab may have crashed or exited.'),
+      { cmd: 'perceive', targetPrefix: 'AABBCCDD', format: 'json' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.cli-error.v1');
+    expect(parsed.recovery.kind).toBe('daemon-disconnect');
+    expect(parsed.recovery.run).toBe('cdp perceive AABBCCDD -C -d 8');
+    expect(parsed.nextSteps).toEqual(['cdp perceive AABBCCDD -C -d 8']);
+    expect(out).not.toContain('Recovery:');
+  });
 });
 
 describe('open onboarding guidance', () => {

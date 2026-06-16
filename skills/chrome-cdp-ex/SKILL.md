@@ -374,7 +374,7 @@ Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daem
 
 ### Error handling
 
-When a CLI command fails, read the printed `Recovery:` block before retrying. `Kind` names the failure class, `Strategy` says how to recover, `Run` is the primary command, and `Then` appears when a follow-up is useful. The legacy `Next:` line remains the shortest copy-pasteable command. Setup, target, daemon, and CDP errors are formatted this way instead of dumping a stack trace.
+When a CLI command fails, read the printed `Recovery:` block before retrying. `Kind` names the failure class, `Strategy` says how to recover, `Run` is the primary command, and `Then` appears when a follow-up is useful. The legacy `Next:` line remains the shortest copy-pasteable command. Add `--format json` when a script needs the versioned `chrome-cdp-ex.cli-error.v1` handoff with `recovery` and `nextSteps` instead of human text. Setup, target, daemon, and CDP errors are formatted this way instead of dumping a stack trace.
 
 ### Action feedback (automatic)
 

@@ -9110,6 +9110,19 @@ function parseTargetAndCommandArgs(cmd, args) {
   return { targetPrefix, cmdArgs };
 }
 
+function detectCliErrorFormat(args = []) {
+  try {
+    return parseFormatArgs(args, ['text', 'json']).format;
+  } catch {
+    return 'text';
+  }
+}
+
+function targetCommandCliErrorFormat(targetPrefix, cmdArgs = [], originalArgs = []) {
+  const targetLooksLikeFlag = targetPrefix && String(targetPrefix).startsWith('--');
+  return detectCliErrorFormat(targetLooksLikeFlag ? originalArgs : cmdArgs);
+}
+
 function formatArgSuffix(format) {
   return format && format !== 'text' ? ['--format', format] : [];
 }
@@ -9223,7 +9236,30 @@ function formatCliErrorRecovery(recovery) {
   return lines;
 }
 
-function formatCliError(err, { cmd = '', targetPrefix = '' } = {}) {
+function cliErrorMessage(err) {
+  return String(err?.message || err || '').trim() || 'unknown failure';
+}
+
+function buildCliErrorModel(err, { cmd = '', targetPrefix = '' } = {}) {
+  const message = cliErrorMessage(err);
+  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix });
+  const nextSteps = [];
+  for (const step of [recovery.run, recovery.then]) {
+    if (step && !nextSteps.includes(step)) nextSteps.push(step);
+  }
+  return {
+    schema: 'chrome-cdp-ex.cli-error.v1',
+    ok: false,
+    command: cmd || null,
+    targetPrefix: targetPrefix || null,
+    error: { message },
+    recovery,
+    nextSteps,
+  };
+}
+
+function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text' } = {}) {
+  if (format === 'json') return formatJson(buildCliErrorModel(err, { cmd, targetPrefix }));
   const message = String(err?.message || err || '').trim();
   if (!message) {
     const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix });
@@ -9322,7 +9358,7 @@ async function main() {
   if (cmd === 'list' || cmd === 'ls') {
     const fopts = parseFormatArgs(args, ['text', 'json']);
     if (fopts.args.length) {
-      console.error(formatCliError(`list: unknown argument ${fopts.args[0]}`, { cmd }));
+      console.error(formatCliError(`list: unknown argument ${fopts.args[0]}`, { cmd, format: fopts.format }));
       process.exit(1);
     }
     let pages;
@@ -9351,7 +9387,7 @@ async function main() {
   if (cmd === 'open') {
     const fopts = parseFormatArgs(args, ['text', 'json']);
     if (fopts.args.length > 1) {
-      console.error(formatCliError(`open: unknown argument ${fopts.args[1]}`, { cmd }));
+      console.error(formatCliError(`open: unknown argument ${fopts.args[1]}`, { cmd, format: fopts.format }));
       process.exit(1);
     }
     const url = fopts.args[0] || 'about:blank';
@@ -9429,7 +9465,7 @@ async function main() {
   if (cmd === 'doctor' || cmd === 'ready') {
     const fopts = parseFormatArgs(args, ['text', 'json']);
     if (fopts.args.length) {
-      console.error(formatCliError(`doctor: unknown argument ${fopts.args[0]}`, { cmd }));
+      console.error(formatCliError(`doctor: unknown argument ${fopts.args[0]}`, { cmd, format: fopts.format }));
       process.exit(1);
     }
     const checks = await runDoctorChecks();
@@ -9457,15 +9493,30 @@ async function main() {
 
   // Page commands — need target prefix
   if (!NEEDS_TARGET.has(cmd)) {
-    console.error(formatCliError(`Unknown command: ${cmd}`));
-    console.error('');
-    console.log(USAGE);
+    const cliErrorFormat = detectCliErrorFormat(args);
+    console.error(formatCliError(`Unknown command: ${cmd}`, { cmd, format: cliErrorFormat }));
+    if (cliErrorFormat === 'text') {
+      console.error('');
+      console.log(USAGE);
+    }
     process.exit(1);
   }
 
   let { targetPrefix, cmdArgs } = parseTargetAndCommandArgs(cmd, args);
+  let cliErrorFormat = targetCommandCliErrorFormat(targetPrefix, cmdArgs, args);
+  if (targetPrefix && String(targetPrefix).startsWith('--')) {
+    try {
+      const fopts = parseFormatArgs(args, ['text', 'json']);
+      cliErrorFormat = fopts.format;
+      targetPrefix = fopts.args[0];
+      cmdArgs = fopts.args.slice(1);
+    } catch (e) {
+      console.error(formatCliError(e, { cmd }));
+      process.exit(1);
+    }
+  }
   if (!targetPrefix) {
-    console.error(formatCliError('target ID required. Run "cdp list" first.', { cmd }));
+    console.error(formatCliError('target ID required. Run "cdp list" first.', { cmd, format: cliErrorFormat }));
     process.exit(1);
   }
 
@@ -9478,7 +9529,7 @@ async function main() {
     targetId = resolvePrefix(targetPrefix, daemonTargetIds, 'daemon');
   } else {
     if (!existsSync(PAGES_CACHE)) {
-      console.error(formatCliError('No page list cached. Run "cdp list" first.', { cmd, targetPrefix }));
+      console.error(formatCliError('No page list cached. Run "cdp list" first.', { cmd, targetPrefix, format: cliErrorFormat }));
       process.exit(1);
     }
     const pages = JSON.parse(readFileSync(PAGES_CACHE, 'utf8'));
@@ -9578,14 +9629,18 @@ async function main() {
   if (response.ok) {
     if (response.result) console.log(response.result);
   } else {
-    console.error(formatCliError(response.error, { cmd, targetPrefix }));
+    console.error(formatCliError(response.error, { cmd, targetPrefix, format: cliErrorFormat }));
     process.exitCode = 1;
   }
 }
 
 // Test exports — only available when NODE_ENV=test to avoid side effects
 if (process.env.NODE_ENV !== 'test') {
-  main().catch(e => { console.error(formatCliError(e)); process.exit(1); });
+  main().catch(e => {
+    const [cmd, ...args] = process.argv.slice(2);
+    console.error(formatCliError(e, { cmd, format: detectCliErrorFormat(args) }));
+    process.exit(1);
+  });
 }
 export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Data structures
@@ -9646,7 +9701,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
-  formatCliError, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  formatCliError, buildCliErrorModel, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   doctorWizardModel, doctorWizardSummary,
   doctorNextSteps, doctorStatusSummary, buildDoctorModel, formatDoctorOutput,

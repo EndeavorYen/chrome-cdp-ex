@@ -164,6 +164,14 @@ assertIncludes(cliErrorOut, 'Recovery:', 'targetless perceive recovery block');
 assertIncludes(cliErrorOut, 'Kind: target-resolution', 'targetless perceive recovery kind');
 assertIncludes(cliErrorOut, 'Run: cdp list', 'targetless perceive recovery run');
 assertIncludes(cliErrorOut, 'Next: cdp list', 'targetless perceive next step');
+const cliJsonErrorOut = step('actionable cli json error', () => runFailure(['perceive', '--format', 'json']));
+const parsedCliJsonError = JSON.parse(cliJsonErrorOut);
+if (parsedCliJsonError.schema !== 'chrome-cdp-ex.cli-error.v1' || parsedCliJsonError.ok !== false) {
+  throw new Error(`targetless perceive --format json should return CLI error JSON:\n${cliJsonErrorOut}`);
+}
+if (parsedCliJsonError.recovery?.kind !== 'target-resolution' || !parsedCliJsonError.nextSteps?.some(step => step.startsWith('cdp list'))) {
+  throw new Error(`targetless perceive --format json should include structured recovery next steps:\n${cliJsonErrorOut}`);
+}
 const perceive = step('perceive keep refs', () => run(['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20']));
 assertIncludes(perceive, 'Coords: top-level viewport CSS px', 'perceive');
 assertIncludes(perceive, 'fixed', 'perceive fixed annotation');
