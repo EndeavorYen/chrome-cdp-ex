@@ -18,7 +18,7 @@ const {
   captureScreenshot, screencastFallback, snapshotStr,
   resetScreenshotTier, getScreenshotTier, SCREENSHOT_TIMEOUT,
   decodeVLQ, mapLineToSource, stripVitePathQuery, mapStyleSource,
-  formatBatchResults, parseFlowSteps, settleFlow, flowStr,
+  formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkBrowserPermission, checkFdLimit,
   doctorWizardSummary, formatDoctorReport, runDoctorChecks, doctorStr,
 } = T;
@@ -256,6 +256,16 @@ describe('COMMANDS registry', () => {
       mutates: true,
       feedbackPolicy: 'report-only',
       outputFormats: ['text'],
+    }));
+  });
+
+  it('registers batch structured JSON handoff as a target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'batch',
+      aliases: [],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
     }));
   });
 
@@ -5340,6 +5350,87 @@ describe('formatBatchResults', () => {
   it('compact marks empty result as ok', () => {
     const out = formatBatchResults([{ cmd: 'press', ok: true, result: '' }], 'compact');
     expect(out).toContain('[1] press: ok');
+  });
+
+  it('formats structured JSON with failed step recovery hints for agents', () => {
+    const out = formatBatchResults(results, 'model', {
+      targetId: 'ABC123',
+      mode: 'sequential',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.batch.v1',
+      targetId: 'ABC123',
+      mode: 'sequential',
+      counts: {
+        steps: 3,
+        ok: 2,
+        failed: 1,
+      },
+      failedStep: {
+        index: 3,
+        cmd: 'fill',
+        ok: false,
+        error: 'Element not found: #x',
+      },
+      nextSteps: ['cdp status ABC123'],
+    });
+    expect(parsed.steps[0]).toMatchObject({
+      index: 1,
+      cmd: 'click',
+      ok: true,
+      resultPreview: 'Clicked <button> "Submit"',
+    });
+  });
+
+  it('extracts classified action failure next steps from structured batch JSON', () => {
+    const out = formatBatchResults([{
+      cmd: 'click',
+      ok: false,
+      error: [
+        'Action failure: overlay',
+        'Reason: overlay blocked the target',
+        'Next: cdp dismiss-modal ABC123',
+        'Original: Other element would receive the click',
+      ].join('\n'),
+    }], 'model', { targetId: 'ABC123' });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.failedStep).toMatchObject({
+      cmd: 'click',
+      failureKind: 'overlay',
+      nextCommand: 'cdp dismiss-modal ABC123',
+    });
+    expect(parsed.nextSteps).toEqual(['cdp dismiss-modal ABC123']);
+  });
+});
+
+describe('parseBatchArgs', () => {
+  it('keeps legacy JSON array output by default', () => {
+    expect(parseBatchArgs(['click #ok | summary'])).toMatchObject({
+      parallel: false,
+      output: 'legacy-json',
+      commands: [
+        { cmd: 'click', args: ['#ok'] },
+        { cmd: 'summary', args: [] },
+      ],
+    });
+  });
+
+  it('parses explicit --format json as structured batch output', () => {
+    expect(parseBatchArgs(['--format', 'json', 'click #ok | click #missing'])).toMatchObject({
+      output: 'model',
+      commands: [
+        { cmd: 'click', args: ['#ok'] },
+        { cmd: 'click', args: ['#missing'] },
+      ],
+    });
+  });
+
+  it('preserves plain and compact text modes', () => {
+    expect(parseBatchArgs(['--plain', 'click #ok']).output).toBe('plain');
+    expect(parseBatchArgs(['--compact', 'click #ok']).output).toBe('compact');
   });
 });
 

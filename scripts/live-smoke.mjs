@@ -298,6 +298,17 @@ if (parsedSinceAction.summary?.changed !== true) {
 if (!parsedSinceAction.nextSteps?.some(nextStep => nextStep.includes('report') && nextStep.includes('--format json'))) {
   throw new Error(`perceive --since-action json should include report handoff next step:\n${sinceActionJson}`);
 }
+const batchJsonOut = step('batch json failure handoff', () => run(['batch', target, '--format', 'json', 'summary | click #missing-batch-json-smoke']));
+const parsedBatch = JSON.parse(batchJsonOut);
+if (parsedBatch.schema !== 'chrome-cdp-ex.batch.v1' || parsedBatch.counts?.failed !== 1) {
+  throw new Error(`batch --format json should return structured failure handoff:\n${batchJsonOut}`);
+}
+if (parsedBatch.failedStep?.cmd !== 'click' || parsedBatch.failedStep?.failureKind !== 'selector') {
+  throw new Error(`batch --format json should identify the failed step and failure kind:\n${batchJsonOut}`);
+}
+if (!parsedBatch.nextSteps?.some(nextStep => nextStep.includes('cdp perceive'))) {
+  throw new Error(`batch --format json should include an executable recovery next step:\n${batchJsonOut}`);
+}
 const sessionShotOut = step('session shot attachment', () => run(['shot', target, '--quiet']));
 const sessionShotPath = sessionShotOut.split('\n')[0];
 if (sessionShotOut.split('\n').length !== 1 || !sessionShotPath.endsWith('.png') || !existsSync(sessionShotPath)) {

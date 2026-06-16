@@ -6177,7 +6177,102 @@ async function closetabStr(cdp, targetId) {
 }
 
 // --- Batch result formatting ---
-function formatBatchResults(results, format = 'json') {
+function firstNonEmptyLine(value, limit = 240) {
+  const line = String(value ?? '').split('\n').map(s => s.trim()).find(Boolean) || '';
+  return line.length > limit ? `${line.slice(0, limit - 1)}…` : line;
+}
+
+function maybeParseJson(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return null;
+  try { return JSON.parse(trimmed); } catch { return null; }
+}
+
+function extractLabeledLine(text, label) {
+  const re = new RegExp(`^${label}:\\s*(.+)$`, 'm');
+  return String(text || '').match(re)?.[1]?.trim() || null;
+}
+
+function batchStepModel(result = {}, index = 0) {
+  const actionModel = maybeParseJson(result.result);
+  const actionFailure = actionModel?.schema === 'chrome-cdp-ex.action.v1' && actionModel.dispatch?.ok === false;
+  const errorText = result.error || (actionFailure ? actionModel.dispatch?.error : null) || '';
+  const ok = result.ok === true && !actionFailure;
+  const failureKind = actionFailure
+    ? actionModel.effects?.failure?.kind || null
+    : extractLabeledLine(errorText, 'Action failure');
+  const nextCommand = actionFailure
+    ? actionModel.nextHint || actionModel.effects?.failure?.nextCommand || null
+    : extractLabeledLine(errorText, 'Next');
+  const step = {
+    index: index + 1,
+    cmd: result.cmd || '',
+    ok,
+  };
+  if (ok) {
+    step.resultPreview = firstNonEmptyLine(result.result);
+  } else {
+    step.error = errorText || 'unknown error';
+    if (failureKind) step.failureKind = failureKind;
+    if (nextCommand) step.nextCommand = nextCommand;
+  }
+  return step;
+}
+
+function buildBatchResultModel(results = [], { targetId = null, mode = 'sequential' } = {}) {
+  const steps = results.map((result, index) => batchStepModel(result, index));
+  const failedSteps = steps.filter(step => !step.ok);
+  const nextSteps = [...new Set(failedSteps.map(step => step.nextCommand).filter(Boolean))];
+  if (failedSteps.length && nextSteps.length === 0) {
+    nextSteps.push(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
+  }
+  return {
+    schema: 'chrome-cdp-ex.batch.v1',
+    targetId,
+    mode,
+    counts: {
+      steps: steps.length,
+      ok: steps.length - failedSteps.length,
+      failed: failedSteps.length,
+    },
+    steps,
+    failedStep: failedSteps[0] || null,
+    nextSteps,
+  };
+}
+
+function parseBatchArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const tokens = fopts.args;
+  const parallel = tokens.includes('--parallel');
+  const plain = tokens.includes('--plain');
+  const compact = tokens.includes('--compact');
+  const input = tokens.filter(a => a !== '--parallel' && a !== '--plain' && a !== '--compact').join(' ') || '';
+  let commands;
+  if (input.startsWith('[')) {
+    try { commands = JSON.parse(input); } catch { throw new Error('batch: invalid JSON array'); }
+    if (!Array.isArray(commands)) throw new Error('batch argument must be a JSON array');
+  } else {
+    commands = input.split('|').map(segment => {
+      const parts = segment.trim().split(/\s+/);
+      return { cmd: parts[0], args: parts.slice(1) };
+    }).filter(c => c.cmd);
+  }
+  return {
+    commands,
+    parallel,
+    output: fopts.format === 'json' ? 'model' : (plain ? 'plain' : compact ? 'compact' : 'legacy-json'),
+  };
+}
+
+function formatBatchResults(results, format = 'json', options = {}) {
+  if (format && typeof format === 'object') {
+    return formatJson(buildBatchResultModel(results, format));
+  }
+  if (format === 'model') {
+    return formatJson(buildBatchResultModel(results, options));
+  }
   if (format === 'plain') {
     const lines = [];
     for (let i = 0; i < results.length; i++) {
@@ -7838,20 +7933,13 @@ async function runDaemon(targetId) {
         }
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
         case 'batch': {
-          let commands;
-          const parallel = args.includes('--parallel');
-          const plain = args.includes('--plain');
-          const compact = args.includes('--compact');
-          const input = args.filter(a => a !== '--parallel' && a !== '--plain' && a !== '--compact').join(' ') || '';
-          if (input.startsWith('[')) {
-            try { commands = JSON.parse(input); } catch { return { ok: false, error: 'batch: invalid JSON array' }; }
-            if (!Array.isArray(commands)) return { ok: false, error: 'batch argument must be a JSON array' };
-          } else {
-            commands = input.split('|').map(segment => {
-              const parts = segment.trim().split(/\s+/);
-              return { cmd: parts[0], args: parts.slice(1) };
-            }).filter(c => c.cmd);
+          let parsedBatch;
+          try {
+            parsedBatch = parseBatchArgs(args);
+          } catch (e) {
+            return { ok: false, error: e.message };
           }
+          const { commands, parallel } = parsedBatch;
           if (!commands.length) return { ok: false, error: 'batch: no commands provided' };
           const blocked = commands.filter(c => BATCH_BLOCKED.has(c.cmd));
           if (blocked.length) return { ok: false, error: `batch: ${blocked.map(c => c.cmd).join(', ')} not allowed inside batch` };
@@ -7870,8 +7958,8 @@ async function runDaemon(targetId) {
             results = [];
             for (const c of commands) results.push(await runOne(c));
           }
-          const fmt = plain ? 'plain' : compact ? 'compact' : 'json';
-          result = formatBatchResults(results, fmt);
+          const fmt = parsedBatch.output === 'legacy-json' ? 'json' : parsedBatch.output;
+          result = formatBatchResults(results, fmt, { targetId, mode: parallel ? 'parallel' : 'sequential' });
           break;
         }
         case 'flow': {
@@ -8190,7 +8278,8 @@ Usage: cdp <command> [args]
   record <target> --until "dom stable"|"network idle"  Record until page quiets (max 30s)
   evalraw <target> <method> [json]  Send a raw CDP command; returns JSON result
                                     e.g. evalraw <t> "DOM.getDocument" '{}'
-  batch <target> <cmds> [--parallel] Execute multiple commands in one call (reduces IPC overhead)
+  batch <target> <cmds> [--parallel] [--format json] Execute multiple commands in one call
+                                    --format json returns chrome-cdp-ex.batch.v1 failure handoff
                                     Pipe syntax: 'fill @3 hello | fill @5 world | click @7'
                                     JSON syntax: '[{"cmd":"click","args":["@1"]},{"cmd":"perceive","args":["--diff"]}]'
                                     --parallel  Run commands concurrently (for independent ops like multiple elshots)
@@ -8324,7 +8413,7 @@ const COMMANDS = Object.freeze([
   { name: 'cookieset', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'cookiedel', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'evalraw', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'batch', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'batch', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'dialog', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'viewport', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'upload', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
@@ -8818,7 +8907,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Cascade source mapping
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
-  formatBatchResults, parseFlowSteps, settleFlow, flowStr,
+  formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
   formatCliError, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   doctorWizardModel, doctorWizardSummary,
