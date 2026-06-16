@@ -18,7 +18,7 @@ const {
   captureScreenshot, screencastFallback, snapshotStr,
   resetScreenshotTier, getScreenshotTier, SCREENSHOT_TIMEOUT,
   decodeVLQ, mapLineToSource, stripVitePathQuery, mapStyleSource,
-  formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
+  formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr, autoActionJsonArgs,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkBrowserPermission, checkFdLimit,
   doctorWizardSummary, formatDoctorReport, runDoctorChecks, doctorStr,
 } = T;
@@ -6069,6 +6069,37 @@ describe('formatBatchResults', () => {
       'cdp report ABC123 --format json',
     ]);
   });
+
+  it('surfaces investigate verdicts from successful action JSON steps', () => {
+    const action = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#noop', resolvedBy: 'selector', label: '#noop' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 90 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+      nextHint: null,
+    });
+    const out = formatBatchResults([{ cmd: 'click', ok: true, result: T.formatJson(action) }], 'model', { targetId: 'ABC123' });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.counts).toMatchObject({ steps: 1, ok: 1, failed: 0, attention: 1 });
+    expect(parsed.steps[0]).toMatchObject({
+      cmd: 'click',
+      ok: true,
+      verdict: {
+        status: 'investigate',
+        canContinue: false,
+        needsRecovery: true,
+        primaryNextStep: 'cdp overlay ABC123 "#noop" --format json',
+      },
+    });
+    expect(parsed.nextSteps).toEqual([
+      'cdp overlay ABC123 "#noop" --format json',
+      'cdp frame ABC123 --format json',
+      'cdp perceive ABC123 -C -d 8',
+      'cdp report ABC123 --format json',
+    ]);
+  });
 });
 
 describe('parseBatchArgs', () => {
@@ -6096,6 +6127,18 @@ describe('parseBatchArgs', () => {
   it('preserves plain and compact text modes', () => {
     expect(parseBatchArgs(['--plain', 'click #ok']).output).toBe('plain');
     expect(parseBatchArgs(['--compact', 'click #ok']).output).toBe('compact');
+  });
+
+  it('auto-adds action JSON format for parent JSON handoff', () => {
+    expect(autoActionJsonArgs('click', ['#noop'], true)).toEqual(['#noop', '--format', 'json']);
+  });
+
+  it('respects explicit subcommand format options', () => {
+    expect(autoActionJsonArgs('click', ['#noop', '--format', 'text'], true)).toEqual(['#noop', '--format', 'text']);
+  });
+
+  it('does not add action JSON format to read-only commands', () => {
+    expect(autoActionJsonArgs('summary', [], true)).toEqual([]);
   });
 });
 
@@ -6261,6 +6304,67 @@ describe('flowStr', () => {
     expect(parsed.steps[2]).toMatchObject({ index: 3, cmd: 'status', skipped: true });
   });
 
+  it('halts on failed action JSON steps', async () => {
+    const action = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#missing', resolvedBy: 'selector', label: '#missing' },
+      dispatch: { ok: false, method: 'click', error: 'Element not found: #missing' },
+      settle: { ok: false, durationMs: 12 },
+      effects: {
+        domDiff: null,
+        console: [],
+        network: [],
+        navigation: null,
+        failure: {
+          kind: 'selector',
+          reason: 'No current element matched the requested selector/ref.',
+          nextCommand: 'cdp perceive ABC123 -C -d 8',
+          originalMessage: 'Element not found: #missing',
+        },
+      },
+      nextHint: 'cdp perceive ABC123 -C -d 8',
+    });
+    const seen = [];
+    const out = await flowStr(
+      {
+        run: async (step) => {
+          seen.push(step.cmd);
+          return step.cmd === 'click'
+            ? { ok: true, result: T.formatJson(action) }
+            : { ok: true, result: `did ${step.cmd}` };
+        },
+        settle: async () => '',
+      },
+      'summary; click #missing; status',
+      { format: 'json', targetId: 'ABC123' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(seen).toEqual(['summary', 'click']);
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.flow.v1',
+      halted: true,
+      counts: { steps: 3, ok: 1, failed: 1, skipped: 1, attention: 0 },
+      failedStep: {
+        index: 2,
+        cmd: 'click',
+        ok: false,
+        failureKind: 'selector',
+        nextCommand: 'cdp perceive ABC123 -C -d 8',
+        verdict: {
+          status: 'blocked',
+          needsRecovery: true,
+          primaryNextStep: 'cdp perceive ABC123 -C -d 8',
+        },
+      },
+      nextSteps: [
+        'cdp perceive ABC123 -C -d 8',
+        'cdp status ABC123',
+      ],
+    });
+    expect(parsed.steps[2]).toMatchObject({ index: 3, cmd: 'status', skipped: true });
+  });
+
   it('returns structured JSON failure handoff for wait failures', async () => {
     const out = await flowStr(
       { run: async () => ({ ok: true, result: 'ok' }), settle: async () => { throw new Error('Unknown wait: "paint idle"'); } },
@@ -6325,6 +6429,45 @@ describe('flowStr', () => {
         status: 'attention',
         kind: 'network-failure',
         nextCommand: 'cdp netlog ABC123',
+      },
+    });
+  });
+
+  it('surfaces investigate verdicts from successful action JSON steps', async () => {
+    const action = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#noop', resolvedBy: 'selector', label: '#noop' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 90 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+      nextHint: null,
+    });
+    const out = await flowStr(
+      { run: async (step) => ({ ok: true, result: step.cmd === 'click' ? T.formatJson(action) : 'ok' }), settle: async () => '' },
+      'click #noop; summary',
+      { format: 'json', targetId: 'ABC123' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.flow.v1',
+      halted: false,
+      counts: { steps: 2, ok: 2, failed: 0, skipped: 0, attention: 1 },
+      nextSteps: [
+        'cdp overlay ABC123 "#noop" --format json',
+        'cdp frame ABC123 --format json',
+        'cdp perceive ABC123 -C -d 8',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(parsed.steps[0]).toMatchObject({
+      cmd: 'click',
+      ok: true,
+      verdict: {
+        status: 'investigate',
+        canContinue: false,
+        needsRecovery: true,
+        primaryNextStep: 'cdp overlay ABC123 "#noop" --format json',
       },
     });
   });

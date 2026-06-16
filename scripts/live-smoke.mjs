@@ -319,6 +319,28 @@ for (const expected of [
     throw new Error(`no-change click should include ${expected} in nextSteps:\n${noChangeClickJsonOut}`);
   }
 }
+const batchNoChangeJsonOut = step('batch json no-change verdict handoff', () => run(['batch', target, '--format', 'json', 'click #noop']));
+const parsedBatchNoChange = JSON.parse(batchNoChangeJsonOut);
+if (parsedBatchNoChange.schema !== 'chrome-cdp-ex.batch.v1' || parsedBatchNoChange.counts?.attention !== 1) {
+  throw new Error(`batch --format json should surface no-change action verdicts as attention:\n${batchNoChangeJsonOut}`);
+}
+if (parsedBatchNoChange.steps?.[0]?.verdict?.status !== 'investigate') {
+  throw new Error(`batch --format json should preserve the investigate verdict:\n${batchNoChangeJsonOut}`);
+}
+if (!parsedBatchNoChange.nextSteps?.includes(`cdp overlay ${target} "#noop" --format json`)) {
+  throw new Error(`batch --format json should promote no-change verdict recovery commands:\n${batchNoChangeJsonOut}`);
+}
+const flowNoChangeJsonOut = step('flow json no-change verdict handoff', () => run(['flow', target, '--format', 'json', 'click #noop; summary']));
+const parsedFlowNoChange = JSON.parse(flowNoChangeJsonOut);
+if (parsedFlowNoChange.schema !== 'chrome-cdp-ex.flow.v1' || parsedFlowNoChange.counts?.attention !== 1 || parsedFlowNoChange.counts?.failed !== 0) {
+  throw new Error(`flow --format json should surface no-change action verdicts as attention without halting:\n${flowNoChangeJsonOut}`);
+}
+if (parsedFlowNoChange.steps?.[0]?.verdict?.status !== 'investigate') {
+  throw new Error(`flow --format json should preserve the investigate verdict:\n${flowNoChangeJsonOut}`);
+}
+if (!parsedFlowNoChange.nextSteps?.includes(`cdp overlay ${target} "#noop" --format json`)) {
+  throw new Error(`flow --format json should promote no-change verdict recovery commands:\n${flowNoChangeJsonOut}`);
+}
 const diffShotOut = step('diff-shot fill diff', () => run(['diff-shot', target]));
 assertIncludes(diffShotOut, 'Diff-shot: changed', 'diff-shot diff');
 assertIncludes(diffShotOut, 'Diff image:', 'diff-shot artifact');

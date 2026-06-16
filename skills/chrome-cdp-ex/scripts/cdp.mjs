@@ -7026,13 +7026,40 @@ function compactActionDiagnosisModel(diagnosis = null) {
   };
 }
 
+function compactActionVerdictModel(verdict = null) {
+  if (!verdict || typeof verdict !== 'object') return null;
+  const nextSteps = Array.isArray(verdict.nextSteps) ? verdict.nextSteps.filter(Boolean) : [];
+  return {
+    schema: verdict.schema || 'chrome-cdp-ex.action-verdict.v1',
+    status: verdict.status || 'verify',
+    source: verdict.source || 'outcome',
+    confidence: verdict.confidence || 'medium',
+    canContinue: verdict.canContinue === true,
+    needsRecovery: verdict.needsRecovery === true,
+    primaryNextStep: verdict.primaryNextStep || null,
+    nextSteps,
+    reason: verdict.reason || null,
+  };
+}
+
 function diagnosisFromActionModel(actionModel = null) {
   if (actionModel?.schema !== 'chrome-cdp-ex.action.v1') return null;
   return compactActionDiagnosisModel(actionModel.effects?.diagnosis || null);
 }
 
+function verdictFromActionModel(actionModel = null) {
+  if (actionModel?.schema !== 'chrome-cdp-ex.action.v1') return null;
+  return compactActionVerdictModel(actionModel.verdict || null);
+}
+
 function isAttentionDiagnosis(diagnosis = null) {
   return diagnosis?.status === 'attention';
+}
+
+function isAttentionVerdict(verdict = null) {
+  if (!verdict || typeof verdict !== 'object') return false;
+  if (verdict.needsRecovery === true) return true;
+  return ['investigate', 'recover', 'blocked'].includes(verdict.status);
 }
 
 function recoveryCommandsFromDiagnosis(diagnosis = null) {
@@ -7043,10 +7070,39 @@ function recoveryCommandsFromDiagnosis(diagnosis = null) {
   return diagnosis?.nextCommand ? [diagnosis.nextCommand] : [];
 }
 
+function recoveryCommandsFromVerdict(verdict = null) {
+  const commands = Array.isArray(verdict?.nextSteps) ? verdict.nextSteps.filter(Boolean) : [];
+  if (commands.length) return commands;
+  return verdict?.primaryNextStep ? [verdict.primaryNextStep] : [];
+}
+
+function commandMeta(cmd) {
+  return COMMANDS.find(command => command.name === cmd || (command.aliases || []).includes(cmd)) || null;
+}
+
+function commandReturnsActionJson(cmd) {
+  const meta = commandMeta(cmd);
+  return meta?.mutates === true
+    && meta.feedbackPolicy
+    && Array.isArray(meta.outputFormats)
+    && meta.outputFormats.includes('json');
+}
+
+function argsHaveFormatOption(args = []) {
+  return Array.isArray(args) && args.includes('--format');
+}
+
+function autoActionJsonArgs(cmd, args = [], enabled = false) {
+  const normalizedArgs = Array.isArray(args) ? args : [];
+  if (!enabled || !commandReturnsActionJson(cmd) || argsHaveFormatOption(normalizedArgs)) return normalizedArgs;
+  return [...normalizedArgs, '--format', 'json'];
+}
+
 function batchStepModel(result = {}, index = 0) {
   const actionModel = maybeParseJson(result.result);
   const actionFailure = actionModel?.schema === 'chrome-cdp-ex.action.v1' && actionModel.dispatch?.ok === false;
   const diagnosis = diagnosisFromActionModel(actionModel);
+  const verdict = verdictFromActionModel(actionModel);
   const errorText = result.error || (actionFailure ? actionModel.dispatch?.error : null) || '';
   const ok = result.ok === true && !actionFailure;
   const failureKind = actionFailure
@@ -7068,23 +7124,28 @@ function batchStepModel(result = {}, index = 0) {
     if (nextCommand) step.nextCommand = nextCommand;
   }
   if (diagnosis) step.diagnosis = diagnosis;
+  if (verdict) step.verdict = verdict;
   return step;
 }
 
 function buildBatchResultModel(results = [], { targetId = null, mode = 'sequential' } = {}) {
   const steps = results.map((result, index) => batchStepModel(result, index));
   const failedSteps = steps.filter(step => !step.ok);
-  const attentionSteps = steps.filter(step => step.ok && isAttentionDiagnosis(step.diagnosis));
+  const diagnosisAttentionSteps = steps.filter(step => step.ok && isAttentionDiagnosis(step.diagnosis));
+  const verdictAttentionSteps = steps.filter(step => step.ok && isAttentionVerdict(step.verdict));
+  const attentionSteps = [...new Set([...diagnosisAttentionSteps, ...verdictAttentionSteps])];
   const nextSteps = [];
   const pushNext = (command) => {
     if (command && !nextSteps.includes(command)) nextSteps.push(command);
   };
   for (const step of failedSteps) {
     for (const command of recoveryCommandsFromDiagnosis(step.diagnosis)) pushNext(command);
+    for (const command of recoveryCommandsFromVerdict(step.verdict)) pushNext(command);
     pushNext(step.nextCommand);
   }
   for (const step of attentionSteps) {
     for (const command of recoveryCommandsFromDiagnosis(step.diagnosis)) pushNext(command);
+    for (const command of recoveryCommandsFromVerdict(step.verdict)) pushNext(command);
   }
   if (failedSteps.length && nextSteps.length === 0) {
     nextSteps.push(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
@@ -7263,9 +7324,20 @@ function flowStepModel(step = {}, index = 0, state = {}) {
   }
   if (base.ok) {
     const actionModel = maybeParseJson(state.result);
+    const actionFailure = actionModel?.schema === 'chrome-cdp-ex.action.v1' && actionModel.dispatch?.ok === false;
     const diagnosis = diagnosisFromActionModel(actionModel);
+    const verdict = verdictFromActionModel(actionModel);
     base.resultPreview = firstNonEmptyLine(state.result);
     if (diagnosis) base.diagnosis = diagnosis;
+    if (verdict) base.verdict = verdict;
+    if (actionFailure) {
+      base.ok = false;
+      base.error = actionModel.dispatch?.error || 'Action dispatch failed';
+      if (actionModel.effects?.failure?.kind) base.failureKind = actionModel.effects.failure.kind;
+      if (actionModel.nextHint || actionModel.effects?.failure?.nextCommand) {
+        base.nextCommand = actionModel.nextHint || actionModel.effects.failure.nextCommand;
+      }
+    }
     return base;
   }
   const errorText = String(state.error || 'unknown error');
@@ -7282,18 +7354,22 @@ function buildFlowResultModel({ targetId = null, input = '', steps = [], stepRes
   const skipped = stepResults.filter(step => step.skipped === true).length;
   const failed = failedStep ? 1 : 0;
   const ok = stepResults.filter(step => step.ok === true).length;
-  const attentionSteps = stepResults.filter(step => step.ok && isAttentionDiagnosis(step.diagnosis));
+  const diagnosisAttentionSteps = stepResults.filter(step => step.ok && isAttentionDiagnosis(step.diagnosis));
+  const verdictAttentionSteps = stepResults.filter(step => step.ok && isAttentionVerdict(step.verdict));
+  const attentionSteps = [...new Set([...diagnosisAttentionSteps, ...verdictAttentionSteps])];
   const nextSteps = [];
   const pushNext = (command) => {
     if (command && !nextSteps.includes(command)) nextSteps.push(command);
   };
   if (failedStep) {
     for (const command of recoveryCommandsFromDiagnosis(failedStep.diagnosis)) pushNext(command);
+    for (const command of recoveryCommandsFromVerdict(failedStep.verdict)) pushNext(command);
     pushNext(failedStep.nextCommand);
   }
   if (failedStep && nextSteps.length === 0) pushNext(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
   for (const step of attentionSteps) {
     for (const command of recoveryCommandsFromDiagnosis(step.diagnosis)) pushNext(command);
+    for (const command of recoveryCommandsFromVerdict(step.verdict)) pushNext(command);
   }
   return {
     schema: 'chrome-cdp-ex.flow.v1',
@@ -7369,9 +7445,15 @@ async function flowStr({ run, settle }, input, { format = 'text', targetId = nul
         }
         body = r.result ?? '';
       }
-      stepResults.push(flowStepModel(step, i, { ok: true, result: body }));
+      const stepModel = flowStepModel(step, i, { ok: true, result: body });
+      stepResults.push(stepModel);
       const text = (body || '').toString();
       if (text) for (const ln of text.split('\n')) lines.push('  ' + ln);
+      if (!stepModel.ok) {
+        markSkippedAfter(i + 1);
+        lines.push(`Flow halted at step ${i + 1}/${steps.length}`);
+        return finish();
+      }
     } catch (e) {
       stepResults.push(flowStepModel(step, i, { ok: false, error: e.message }));
       markSkippedAfter(i + 1);
@@ -9001,8 +9083,9 @@ async function runDaemon(targetId) {
             const unsafe = commands.filter(c => BATCH_NO_PARALLEL.has(c.cmd));
             if (unsafe.length) return { ok: false, error: `batch --parallel: ${[...new Set(unsafe.map(c => c.cmd))].join(', ')} mutate shared state — use sequential batch` };
           }
+          const autoActionJson = parsedBatch.output === 'model';
           const runOne = async (c) => {
-            const sub = await handleCommand({ cmd: c.cmd, args: c.args || [] });
+            const sub = await handleCommand({ cmd: c.cmd, args: autoActionJsonArgs(c.cmd, c.args || [], autoActionJson) });
             return { cmd: c.cmd, ok: sub.ok, result: sub.result, error: sub.error };
           };
           let results;
@@ -9020,7 +9103,7 @@ async function runDaemon(targetId) {
           const fopts = parseFormatArgs(args, ['text', 'json']);
           const input = fopts.args.join(' ');
           result = await flowStr({
-            run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] }),
+            run: (step) => handleCommand({ cmd: step.cmd, args: autoActionJsonArgs(step.cmd, step.args || [], fopts.format === 'json') }),
             settle: (what) => settleFlow(cdp, sessionId, what, pendingReqs),
           }, input, { format: fopts.format, targetId });
           break;
@@ -10145,7 +10228,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, formatCallResult, evalBase64Decode,
   navStr, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
-  parseRepeatArgs, repeatStr,
+  parseRepeatArgs, repeatStr, autoActionJsonArgs,
   parseReplayArgs, parseReplayArtifact, replayStepFromAction, replayActionsStr,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,
