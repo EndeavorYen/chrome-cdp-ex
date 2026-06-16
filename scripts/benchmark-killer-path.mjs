@@ -1105,6 +1105,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       ok: step.status === 0 || expectedFailure,
       status: step.status,
       expectedFailure,
+      benchmarkProbe: Boolean(step.benchmarkProbe),
       startedAt: step.startedAt,
       endedAt: step.endedAt,
       durationMs: Math.max(0, (step.endedAt ?? step.startedAt ?? 0) - (step.startedAt ?? 0)),
@@ -1117,15 +1118,15 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
     };
   });
 
-  const firstObservation = normalizedSteps.find(step => step.ok && step.hasUsefulObservation);
+  const coreSteps = normalizedSteps.filter(step => !step.benchmarkProbe);
+  const firstObservation = coreSteps.find(step => step.ok && step.hasUsefulObservation);
   const failed = normalizedSteps.find(step => !step.ok);
   const outputChars = normalizedSteps.reduce((sum, step) => sum + step.outputChars, 0);
-  const actionEvidenceSteps = normalizedSteps.filter(step => step.hasActionEvidence && !step.expectedFailure);
-  const usefulObservationTokens = normalizedSteps
+  const actionEvidenceSteps = coreSteps.filter(step => step.hasActionEvidence && !step.expectedFailure);
+  const usefulObservationTokens = coreSteps
     .filter(countsTowardUsefulObservationTokens)
     .reduce((sum, step) => sum + step.estimatedTokens, 0);
-  const reportIndex = steps.findIndex(step => step.name === 'report');
-  const reportStep = reportIndex >= 0 ? normalizedSteps[reportIndex] : null;
+  const reportStep = coreSteps.find(step => step.name === 'report') || null;
   const firstActionEvidence = actionEvidenceSteps[0] || null;
 
   const summary = {
@@ -1136,12 +1137,12 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
     failedStep: failed?.name || null,
     metrics: {
       totalMs: Math.max(0, (endedAt ?? startedAt ?? 0) - (startedAt ?? 0)),
-      commandCalls: normalizedSteps.length,
+      commandCalls: coreSteps.length,
       firstUsefulObservationMs: firstObservation
-        ? Math.max(0, (steps[normalizedSteps.indexOf(firstObservation)]?.endedAt ?? endedAt ?? 0) - (startedAt ?? 0))
+        ? Math.max(0, (firstObservation.endedAt ?? endedAt ?? 0) - (startedAt ?? 0))
         : null,
       firstActionEvidenceMs: firstActionEvidence
-        ? Math.max(0, (steps[normalizedSteps.indexOf(firstActionEvidence)]?.endedAt ?? endedAt ?? 0) - (startedAt ?? 0))
+        ? Math.max(0, (firstActionEvidence.endedAt ?? endedAt ?? 0) - (startedAt ?? 0))
         : null,
       goldenPathMs: reportStep && hasReportTimeline(reportStep)
         ? Math.max(0, (reportStep.endedAt ?? endedAt ?? 0) - (startedAt ?? 0))
@@ -1267,7 +1268,7 @@ function browserCandidates() {
   ].filter(([p]) => existsSync(p));
 }
 
-function runStep({ args, env, steps, name = args[0], timeout = 20000, expectedFailure = false }) {
+function runStep({ args, env, steps, name = args[0], timeout = 20000, expectedFailure = false, benchmarkProbe = false }) {
   const startedAt = Date.now();
   return new Promise((resolveStep) => {
     let stdout = '';
@@ -1298,6 +1299,7 @@ function runStep({ args, env, steps, name = args[0], timeout = 20000, expectedFa
         signal: signal || null,
         error: spawnError?.message || (timedOut ? `spawn ${process.execPath} ETIMEDOUT` : null),
         expectedFailure,
+        benchmarkProbe,
         stdout,
         stderr,
       };
@@ -1319,6 +1321,14 @@ function benchmarkHashUrl(baseUrl, hash) {
   const url = new URL(baseUrl);
   url.hash = hash;
   return url.toString();
+}
+
+export function buildKillerPathEntryPlan(url) {
+  return [
+    { args: ['doctor', '--format', 'json'] },
+    { args: ['open', url, '--attach-timeout-ms', '5000', '--ready-timeout-ms', '5000', '--ready-selector', '#custom-clickable', '--format', 'json'], timeout: 40000 },
+    { args: ['list', '--format', 'json'], requiresOpenedTarget: true, benchmarkProbe: true },
+  ];
 }
 
 export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entrySteps = 'doctor-list', navUrl = null } = {}) {
@@ -1477,10 +1487,7 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
     }
     if (!reachable) throw new Error('Browser did not become reachable via cdp list');
 
-    const entrySteps = [
-      { args: ['doctor', '--format', 'json'] },
-      { args: ['open', url, '--attach-timeout-ms', '5000', '--ready-timeout-ms', '5000', '--ready-selector', '#custom-clickable', '--format', 'json'], timeout: 40000 },
-    ];
+    const entrySteps = buildKillerPathEntryPlan(url);
     for (const planned of entrySteps) {
       const step = await runStep({ ...planned, env, steps });
       assertStep(step);
@@ -1491,6 +1498,16 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
         if (model.navigation?.ok !== true) throw new Error(`open did not navigate the benchmark tab\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
         if (model.ready?.ok !== true) throw new Error(`open did not reach the benchmark ready selector within 5000ms\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
         target = model.targetPrefix;
+      } else if (planned.requiresOpenedTarget) {
+        const model = parseJsonOutput(outputText(step));
+        if (model?.schema !== 'chrome-cdp-ex.list.v1') throw new Error(`list did not return a JSON page handoff\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
+        const missing = targetHandoffMissingFields(model);
+        if (missing.length) throw new Error(`list target handoff is incomplete (${missing.join(', ')})\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
+        const listedOpenedTarget = Array.isArray(model.pages) && model.pages.some(page => page?.targetPrefix === target);
+        if (!listedOpenedTarget) throw new Error(`list did not include the opened benchmark target ${target}\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
+        if (!hasPerceiveNextStepForTarget(model, target) || !String(model.recommendation?.run || '').startsWith(`cdp perceive ${target}`)) {
+          throw new Error(`list did not recommend perceiving the opened benchmark target ${target}\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
+        }
       }
     }
     if (!target) throw new Error('open did not produce a benchmark target');
