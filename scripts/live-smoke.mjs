@@ -346,6 +346,9 @@ if (parsedDiagnosticAction.schema !== 'chrome-cdp-ex.action.v1') {
 if (!['network-failure', 'network-pending'].includes(parsedDiagnosticAction.effects?.diagnosis?.kind)) {
   throw new Error(`diagnostic action json should diagnose the network effect:\n${diagnosticJsonOut}`);
 }
+if (parsedDiagnosticAction.outcome?.status !== 'attention' || parsedDiagnosticAction.outcome?.needsAttention !== true) {
+  throw new Error(`diagnostic action json should include an attention outcome:\n${diagnosticJsonOut}`);
+}
 if (!parsedDiagnosticAction.effects?.diagnosis?.nextCommand?.includes('cdp netlog')) {
   throw new Error(`diagnostic action json should include a netlog next command:\n${diagnosticJsonOut}`);
 }
@@ -410,6 +413,9 @@ if (parsedReport.counts?.actions < 1 || parsedReport.counts?.screenshots < 1) {
 if (!parsedReport.actions?.some(action => action.action === 'click' && action.evidence?.effectSummary)) {
   throw new Error(`report json should include action evidence timeline:\n${reportJson}`);
 }
+if (!parsedReport.actions?.some(action => action.outcome?.status && ['changed', 'attention'].includes(action.outcome.status))) {
+  throw new Error(`report json should include action outcomes:\n${reportJson}`);
+}
 if (!parsedReport.screenshots?.some(shot => shot.path === sessionShotPath)) {
   throw new Error(`report json should include screenshot attachment:\n${reportJson}`);
 }
@@ -426,6 +432,9 @@ if (recommendedCommands.length > 0 && !recommendedCommands.some(command => parse
 const reportLogEvents = readFileSync(reportLogPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
 if (!reportLogEvents.some(event => event.kind === 'action' && event.action?.action === 'click')) {
   throw new Error(`session log should contain a click action event\nLog:\n${readFileSync(reportLogPath, 'utf8')}`);
+}
+if (!reportLogEvents.some(event => event.kind === 'action' && event.action?.outcome?.status)) {
+  throw new Error(`session log should contain action outcome events\nLog:\n${readFileSync(reportLogPath, 'utf8')}`);
 }
 if (!reportLogEvents.some(event => event.kind === 'screenshot' && event.screenshot?.path === sessionShotPath)) {
   throw new Error(`session log should contain the screenshot event\nLog:\n${readFileSync(reportLogPath, 'utf8')}`);
@@ -454,6 +463,9 @@ if (!failedDiagnosticAction || failedDiagnosticAction.replayable !== false || !f
 }
 if (!recordActions.actions.some(action => action.action === 'click' && action.command?.join(' ') === 'click #combat' && action.replayable)) {
   throw new Error(`record-actions should include replayable click command\nOutput:\n${recordActionsJson}`);
+}
+if (!recordActions.actions.some(action => action.evidence?.outcome?.status)) {
+  throw new Error(`record-actions should include action outcome evidence\nOutput:\n${recordActionsJson}`);
 }
 const playwrightExport = step('export playwright', () => run(['export-playwright', target]));
 assertIncludes(playwrightExport, "import { test, expect } from '@playwright/test';", 'export-playwright import');

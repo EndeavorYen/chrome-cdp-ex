@@ -1526,7 +1526,7 @@ const SENSITIVE_QUERY_KEY_RE = /\b(pass(word)?|secret|token|api[-_]?key|credenti
 const NOISY_ACTION_NETWORK_TYPES = new Set(['Image', 'Stylesheet', 'Script', 'Font', 'Media', 'WebSocket']);
 
 function createActionResult({ action, target, dispatch, settle, effects, nextHint }) {
-  return applyActionRecommendation(applyActionDiagnosis({
+  return applyActionRecommendation(applyActionOutcome(applyActionDiagnosis({
     schema: 'chrome-cdp-ex.action.v1',
     action,
     target,
@@ -1534,7 +1534,7 @@ function createActionResult({ action, target, dispatch, settle, effects, nextHin
     settle,
     effects,
     nextHint,
-  }));
+  })));
 }
 
 function createActionObservationBaseline({ consoleBuf = null, exceptionBuf = null, netReqBuf = null } = {}) {
@@ -1665,6 +1665,93 @@ function normalizeNetworkDelta(delta = {}) {
   };
 }
 
+function actionDomDiffShowsChange(domDiff) {
+  const text = String(domDiff || '').trim();
+  if (!text) return false;
+  return !/no changes detected/i.test(text);
+}
+
+function actionHasDomObservation(actionResult = {}) {
+  return Object.prototype.hasOwnProperty.call(actionResult.effects || {}, 'domDiff')
+    && actionResult.effects.domDiff !== null
+    && actionResult.effects.domDiff !== undefined;
+}
+
+function buildActionOutcome(actionResult = {}) {
+  const effects = actionResult.effects || {};
+  const diagnosis = effects.diagnosis || null;
+  const domObserved = actionHasDomObservation(actionResult);
+  const changed = actionDomDiffShowsChange(effects.domDiff);
+  const base = {
+    schema: 'chrome-cdp-ex.action-outcome.v1',
+    changed: domObserved ? changed : null,
+    needsAttention: false,
+  };
+
+  if (actionResult.dispatch?.ok === false || effects.failure?.kind) {
+    return {
+      ...base,
+      status: 'failed',
+      changed: false,
+      needsAttention: true,
+      evidence: 'dispatch',
+      reason: effects.failure?.reason || 'Action failed before dispatch completed.',
+    };
+  }
+
+  if (actionResult.dispatch?.ok === true && actionResult.settle?.ok === false) {
+    return {
+      ...base,
+      status: 'timeout',
+      needsAttention: true,
+      evidence: 'settle',
+      reason: 'Action dispatched, but post-action observation timed out.',
+    };
+  }
+
+  if (diagnosis && diagnosis.status !== 'ok') {
+    return {
+      ...base,
+      status: 'attention',
+      needsAttention: true,
+      evidence: diagnosis.source || 'diagnosis',
+      reason: diagnosis.reason || 'Action needs follow-up.',
+    };
+  }
+
+  if (changed) {
+    return {
+      ...base,
+      status: 'changed',
+      changed: true,
+      evidence: 'dom',
+      reason: 'Observed page change after action.',
+    };
+  }
+
+  if (domObserved) {
+    return {
+      ...base,
+      status: 'no-change',
+      changed: false,
+      evidence: 'dom',
+      reason: 'No visible AX tree change observed after action.',
+    };
+  }
+
+  return {
+    ...base,
+    status: 'dispatched',
+    evidence: 'dispatch',
+    reason: 'Action dispatched; no DOM observation was captured for this command.',
+  };
+}
+
+function applyActionOutcome(actionResult) {
+  actionResult.outcome = buildActionOutcome(actionResult);
+  return actionResult;
+}
+
 function applyActionObservationDelta(actionResult, delta = {}) {
   if (!actionResult.effects) actionResult.effects = {};
   const consoleDelta = normalizeConsoleDelta(delta.console || {});
@@ -1676,7 +1763,7 @@ function applyActionObservationDelta(actionResult, delta = {}) {
   actionResult.effects.console = consoleDelta.entries || [];
   actionResult.effects.exceptions = exceptionDelta.entries || [];
   actionResult.effects.network = networkDelta.entries || [];
-  return applyActionRecommendation(applyActionDiagnosis(actionResult));
+  return applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(actionResult)));
 }
 
 function recoveryCommandArg(value) {
@@ -1823,7 +1910,7 @@ function actionDiagnosisSignals(actionResult = {}) {
   return {
     dispatchOk: actionResult.dispatch?.ok !== false,
     settleOk: actionResult.settle?.ok ?? null,
-    domChanged: !!String(effects.domDiff || '').trim(),
+    domChanged: actionDomDiffShowsChange(effects.domDiff),
     consoleErrors: consoleDelta.errors,
     consoleWarnings: consoleDelta.warnings,
     exceptions: exceptionDelta.count,
@@ -2070,6 +2157,7 @@ function formatActionText(result) {
     `${result.action}: ${result.dispatch.ok ? 'dispatched' : 'failed'} via ${result.dispatch.method}`,
   ];
   if (result.target?.label) lines.push(`Target: ${result.target.label}`);
+  if (result.outcome?.status) lines.push(`Outcome: ${result.outcome.status}${result.outcome.reason ? ` — ${result.outcome.reason}` : ''}`);
   if (result.effects?.failure?.kind) lines.push(`Failure: ${result.effects.failure.kind}`);
   if (diagnosis && diagnosis.status !== 'ok') {
     lines.push(`Diagnosis: ${diagnosis.kind}${diagnosis.reason ? ` — ${diagnosis.reason}` : ''}`);
@@ -2092,7 +2180,7 @@ function formatActionText(result) {
 
 function finalizeActionResult(result, { enrichActionResult = null, onActionResult = null } = {}) {
   if (enrichActionResult) enrichActionResult(result);
-  applyActionRecommendation(applyActionDiagnosis(result));
+  applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(result)));
   if (onActionResult) onActionResult(result);
   return result;
 }
@@ -2319,6 +2407,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
     networkSample: diagnostics.networkSample,
     failure: actionResult.effects?.failure || null,
     diagnosis: actionResult.effects?.diagnosis || null,
+    outcome: actionResult.outcome || buildActionOutcome(actionResult),
     nextHint: actionResult.nextHint || null,
   };
   session.actionLog.push(entry);
@@ -2451,6 +2540,7 @@ function buildSessionReportModel(session, { now = Date.now() } = {}) {
       ts: entry.ts || null,
       action: entry.action,
       status,
+      outcome: entry.outcome || null,
       target: entry.target || null,
       dispatch: entry.dispatch || null,
       settle: entry.settle || null,
@@ -2547,6 +2637,7 @@ function formatSessionReport(session, { now = Date.now(), format = 'text' } = {}
       const sourceTarget = actionTargetCommandId(entry.target || {}) || session.targetId;
       lines.push(`${i + 1}. ${entry.action}${label ? ` ${label}` : ''} — ${settleStatus}${settleDuration}`);
       if (entry.dispatch?.method) lines.push(`   Dispatch: ${entry.dispatch.method}`);
+      if (entry.outcome?.status) lines.push(`   Outcome: ${entry.outcome.status}${entry.outcome.reason ? ` — ${entry.outcome.reason}` : ''}`);
       if (entry.failure?.kind) lines.push(`   Failure: ${entry.failure.kind} — ${entry.failure.reason}`);
       if (entry.diagnosis?.kind && entry.diagnosis.status !== 'ok') {
         lines.push(`   Diagnosis: ${entry.diagnosis.kind} — ${entry.diagnosis.reason}`);
@@ -2779,6 +2870,7 @@ function buildRecordActionsModel(session) {
         networkSample: entry.networkSample || null,
         failure: entry.failure || null,
         diagnosis: entry.diagnosis || null,
+        outcome: entry.outcome || null,
         nextHint: entry.nextHint || null,
       },
     };
@@ -2836,6 +2928,7 @@ function formatRecordActions(session, { format = 'text' } = {}) {
     }
     if (step.evidence.effectSummary) lines.push(`   Evidence: ${step.evidence.effectSummary}`);
     if (step.evidence.effectSample) lines.push(`   Sample: ${step.evidence.effectSample}`);
+    if (step.evidence.outcome?.status) lines.push(`   Outcome: ${step.evidence.outcome.status}`);
     if (step.evidence.failure?.kind) lines.push(`   Failure: ${step.evidence.failure.kind}`);
     if (step.evidence.failure?.reason) lines.push(`   Reason: ${step.evidence.failure.reason}`);
     if (step.evidence.nextHint) lines.push(`   Next: ${step.evidence.nextHint}`);

@@ -868,6 +868,13 @@ describe('ActionResult', () => {
     expect(result.schema).toBe('chrome-cdp-ex.action.v1');
     expect(result.action).toBe('click');
     expect(result.dispatch.ok).toBe(true);
+    expect(result.outcome).toMatchObject({
+      schema: 'chrome-cdp-ex.action-outcome.v1',
+      status: 'changed',
+      changed: true,
+      needsAttention: false,
+      evidence: 'dom',
+    });
     expect(result.recommendation).toMatchObject({
       source: 'action-evidence',
       strategy: 'continue-from-evidence',
@@ -885,6 +892,26 @@ describe('ActionResult', () => {
     ]);
   });
 
+  it('classifies no-change action outcomes without treating the diff text as a DOM change', () => {
+    const result = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#refresh', resolvedBy: 'selector', label: 'Refresh' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 90 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+
+    expect(result.outcome).toMatchObject({
+      schema: 'chrome-cdp-ex.action-outcome.v1',
+      status: 'no-change',
+      changed: false,
+      needsAttention: false,
+      evidence: 'dom',
+    });
+    expect(result.effects.diagnosis).toBeUndefined();
+  });
+
   it('formats action evidence as compact text', () => {
     const text = T.formatActionText(T.createActionResult({
       action: 'fill',
@@ -895,6 +922,7 @@ describe('ActionResult', () => {
       nextHint: 'Continue with the next form field',
     }));
     expect(text).toMatch(/fill/i);
+    expect(text).toContain('Outcome: changed');
     expect(text).toMatch(/value changed/);
   });
 
@@ -1005,6 +1033,7 @@ describe('ActionResult', () => {
       dispatch: { ok: true, method: 'click' },
       settle: { ok: true },
       effects: { domDiff: 'checkout banner appeared' },
+      outcome: { status: 'changed', changed: true, needsAttention: false },
       nextHint: 'Use perceive --since-action if more evidence is needed',
     });
     expect(out).not.toContain('Clicked #submit');
@@ -1097,6 +1126,12 @@ describe('ActionResult', () => {
         networkFailures: 1,
       },
     });
+    expect(parsed.outcome).toMatchObject({
+      status: 'attention',
+      changed: true,
+      needsAttention: true,
+      evidence: 'network',
+    });
     expect(T.formatActionText(parsed)).toContain('Diagnosis: network-failure');
     expect(T.formatActionText(parsed)).toContain('Next: cdp netlog ABC123');
     expect(parsed.recommendation).toMatchObject({
@@ -1157,6 +1192,11 @@ describe('ActionResult', () => {
     expect(text).toContain('success but observation timed out');
     expect(text).toContain('Console: 1 entry (1 warning)');
     expect(captured.settle.ok).toBe(false);
+    expect(captured.outcome).toMatchObject({
+      status: 'timeout',
+      needsAttention: true,
+      evidence: 'settle',
+    });
     expect(captured.effects.consoleDelta.warnings).toBe(1);
   });
 
@@ -1352,6 +1392,7 @@ describe('Session report', () => {
     expect(out).toContain('Actions: 1');
     expect(out).toContain('Action timeline:');
     expect(out).toContain('1. click #combat — ok in 123ms');
+    expect(out).toContain('Outcome: changed — Observed page change after action.');
     expect(out).toContain('Effect: +++ Added (1):');
     expect(out).toContain('戰鬥勝利');
   });
@@ -1394,6 +1435,12 @@ describe('Session report', () => {
           index: 1,
           action: 'click',
           status: 'ok',
+          outcome: {
+            schema: 'chrome-cdp-ex.action-outcome.v1',
+            status: 'changed',
+            changed: true,
+            needsAttention: false,
+          },
           target: { input: '#combat', label: '#combat' },
           evidence: {
             settleDurationMs: 123,
