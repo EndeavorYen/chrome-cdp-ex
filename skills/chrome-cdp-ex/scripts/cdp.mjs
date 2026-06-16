@@ -7652,13 +7652,39 @@ function detectFdLimit({ runner = spawnSync } = {}) {
   }
 }
 
-function checkFdLimit({ limit = detectFdLimit() } = {}) {
+function fdLimitRecovery({ platform = process.platform } = {}) {
+  const commands = [
+    {
+      scope: 'current-shell',
+      command: 'ulimit -n 4096',
+      reason: 'Raise the open-files limit for this terminal before starting long chrome-cdp-ex sessions.',
+      requiresAdmin: false,
+    },
+  ];
+  if (platform === 'darwin') {
+    commands.push({
+      scope: 'macos-login-session',
+      command: 'sudo launchctl limit maxfiles 65536 200000',
+      reason: 'Raise the macOS launchd limit for GUI apps and future shells; rerun doctor afterwards.',
+      requiresAdmin: true,
+    });
+  }
+  return {
+    schema: 'chrome-cdp-ex.fd-limit-recovery.v1',
+    strategy: 'raise-open-files-limit',
+    commands,
+  };
+}
+
+function checkFdLimit({ limit = detectFdLimit(), platform = process.platform } = {}) {
+  const recovery = fdLimitRecovery({ platform });
   if (limit == null) {
     return {
       status: 'WARN',
       label: 'FD limit',
       detail: 'open-files limit unavailable',
       hint: 'If you see "Too many open files", rerun commands with: ulimit -n 4096',
+      recovery,
     };
   }
   if (limit >= 1024) {
@@ -7670,6 +7696,7 @@ function checkFdLimit({ limit = detectFdLimit() } = {}) {
     label: 'FD limit',
     detail: `${limit} open files (low for long browser sessions)`,
     hint: 'Raise for this shell with: ulimit -n 4096',
+    recovery,
   };
 }
 
@@ -7918,10 +7945,14 @@ function doctorWarningCommands(checks) {
   const fd = checks.find(c => c.label === 'FD limit');
   const warnings = [];
   if (fd?.status === 'WARN') {
+    const commands = Array.isArray(fd.recovery?.commands) && fd.recovery.commands.length
+      ? fd.recovery.commands
+      : [{ scope: 'current-shell', command: 'ulimit -n 4096', reason: fd.detail || 'open-files limit is low for long browser sessions', requiresAdmin: false }];
     warnings.push({
       label: 'FD limit',
-      command: 'ulimit -n 4096',
+      command: commands[0].command,
       reason: fd.detail || 'open-files limit is low for long browser sessions',
+      commands,
     });
   }
   return warnings;
@@ -8016,7 +8047,14 @@ function doctorRecommendationLines(checks) {
   if (recommendation.ask) lines.push(`  Ask: ${recommendation.ask}`);
   if (recommendation.after) lines.push(`  Then: ${recommendation.after}`);
   for (const warning of recommendation.warnings || []) {
-    lines.push(`  Long session note: ${warning.command}  # ${warning.reason}`);
+    const commands = Array.isArray(warning.commands) && warning.commands.length
+      ? warning.commands
+      : [{ command: warning.command, reason: warning.reason, requiresAdmin: false }];
+    for (const command of commands) {
+      if (!command.command) continue;
+      const admin = command.requiresAdmin ? ' (requires admin)' : '';
+      lines.push(`  Long session note: ${command.command}${admin}  # ${command.reason || warning.reason}`);
+    }
   }
   return lines;
 }
@@ -8138,7 +8176,7 @@ async function runDoctorChecks(opts = {}) {
   checks.push(checkNode(opts.nodeVersion));
   checks.push(checkSkillSymlink({ home: opts.home, fs }));
   checks.push(checkDaemonSockets({ list: opts.listDaemons }));
-  checks.push(checkFdLimit({ limit: opts.fdLimit }));
+  checks.push(checkFdLimit({ limit: opts.fdLimit, platform: opts.platform }));
   const cdp = await checkCdpReachability({ env: opts.env, fetcher: opts.fetcher, host: opts.host });
   checks.push(cdp);
   const tabs = await checkBrowserTargets({ cdp, env: opts.env, fetcher: opts.fetcher, host: opts.host });

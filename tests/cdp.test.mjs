@@ -6841,10 +6841,35 @@ describe('checkFdLimit', () => {
   });
 
   it('returns WARN with a concrete command when the open-files limit is low', () => {
-    const r = checkFdLimit({ limit: 256 });
+    const r = checkFdLimit({ limit: 256, platform: 'darwin' });
     expect(r.status).toBe('WARN');
     expect(r.detail).toContain('256');
     expect(r.hint).toContain('ulimit -n 4096');
+    expect(r.recovery).toMatchObject({
+      schema: 'chrome-cdp-ex.fd-limit-recovery.v1',
+      strategy: 'raise-open-files-limit',
+      commands: [
+        {
+          scope: 'current-shell',
+          command: 'ulimit -n 4096',
+        },
+        {
+          scope: 'macos-login-session',
+          command: 'sudo launchctl limit maxfiles 65536 200000',
+          requiresAdmin: true,
+        },
+      ],
+    });
+  });
+
+  it('returns WARN with fd recovery commands when the limit is unavailable', () => {
+    const r = checkFdLimit({ limit: null, platform: 'darwin' });
+    expect(r.status).toBe('WARN');
+    expect(r.detail).toContain('unavailable');
+    expect(r.recovery?.commands.map(command => command.command)).toEqual([
+      'ulimit -n 4096',
+      'sudo launchctl limit maxfiles 65536 200000',
+    ]);
   });
 });
 
@@ -7087,6 +7112,7 @@ describe('doctorStr', () => {
       fs: { existsSync: () => true, lstatSync: () => ({ isSymbolicLink: () => true }) },
       listDaemons: () => [],
       fdLimit: 256,
+      platform: 'darwin',
       env: { CDP_PORT: '9999' },
       fetcher,
     });
@@ -7107,8 +7133,40 @@ describe('doctorStr', () => {
         label: 'FD limit',
         command: 'ulimit -n 4096',
         reason: '256 open files (low for long browser sessions)',
+        commands: [
+          {
+            scope: 'current-shell',
+            command: 'ulimit -n 4096',
+            reason: 'Raise the open-files limit for this terminal before starting long chrome-cdp-ex sessions.',
+            requiresAdmin: false,
+          },
+          {
+            scope: 'macos-login-session',
+            command: 'sudo launchctl limit maxfiles 65536 200000',
+            reason: 'Raise the macOS launchd limit for GUI apps and future shells; rerun doctor afterwards.',
+            requiresAdmin: true,
+          },
+        ],
       },
     ]);
+  });
+
+  it('prints shell and macOS fd-limit recovery commands for low limits', async () => {
+    const fetcher = async () => { throw new Error('ECONNREFUSED'); };
+    const out = await doctorStr({
+      nodeVersion: 'v22.10.0',
+      home: '/tmp/x',
+      fs: { existsSync: () => true, lstatSync: () => ({ isSymbolicLink: () => true }) },
+      listDaemons: () => [],
+      fdLimit: 256,
+      platform: 'darwin',
+      env: { CDP_PORT: '9999' },
+      fetcher,
+    });
+
+    expect(out).toContain('Long session note: ulimit -n 4096');
+    expect(out).toContain('Long session note: sudo launchctl limit maxfiles 65536 200000');
+    expect(out).toContain('requires admin');
   });
 
   it('prints the recommendation before detailed doctor checks', async () => {

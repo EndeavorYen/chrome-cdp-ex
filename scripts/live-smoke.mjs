@@ -140,6 +140,16 @@ if (!parsedDoctor.recommendation?.source || !parsedDoctor.recommendation?.run) {
 if (!parsedDoctor.wizard?.goldenPath?.includes('perceive') || !parsedDoctor.nextSteps.some(step => step.startsWith('cdp perceive'))) {
   throw new Error(`doctor json should include golden path and executable perceive next step:\n${doctorJson}`);
 }
+const fdWarning = parsedDoctor.recommendation?.warnings?.find(warning => warning.label === 'FD limit');
+if (fdWarning) {
+  const fdCommands = fdWarning.commands?.map(command => command.command) || [];
+  if (!fdCommands.includes('ulimit -n 4096')) {
+    throw new Error(`doctor json FD warning should include current-shell ulimit recovery:\n${doctorJson}`);
+  }
+  if (process.platform === 'darwin' && !fdCommands.includes('sudo launchctl limit maxfiles 65536 200000')) {
+    throw new Error(`doctor json FD warning should include macOS launchctl recovery:\n${doctorJson}`);
+  }
+}
 const openJson = step('open json', () => run(['open', 'about:blank', '--format', 'json'], { timeout: 70000 }));
 const parsedOpen = JSON.parse(openJson);
 if (parsedOpen.schema !== 'chrome-cdp-ex.open.v1' || !parsedOpen.targetPrefix || parsedOpen.url !== 'about:blank') {
