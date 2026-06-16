@@ -298,6 +298,17 @@ if (parsedSinceAction.summary?.changed !== true) {
 if (!parsedSinceAction.nextSteps?.some(nextStep => nextStep.includes('report') && nextStep.includes('--format json'))) {
   throw new Error(`perceive --since-action json should include report handoff next step:\n${sinceActionJson}`);
 }
+const diagnosticJsonOut = step('diagnostic action json diagnosis', () => run(['click', target, '#diagnostic', '--format', 'json']));
+const parsedDiagnosticAction = JSON.parse(diagnosticJsonOut);
+if (parsedDiagnosticAction.schema !== 'chrome-cdp-ex.action.v1') {
+  throw new Error(`diagnostic action json should return action schema:\n${diagnosticJsonOut}`);
+}
+if (!['network-failure', 'network-pending'].includes(parsedDiagnosticAction.effects?.diagnosis?.kind)) {
+  throw new Error(`diagnostic action json should diagnose the network effect:\n${diagnosticJsonOut}`);
+}
+if (!parsedDiagnosticAction.effects?.diagnosis?.nextCommand?.includes('cdp netlog')) {
+  throw new Error(`diagnostic action json should include a netlog next command:\n${diagnosticJsonOut}`);
+}
 const batchJsonOut = step('batch json failure handoff', () => run(['batch', target, '--format', 'json', 'summary | click #missing-batch-json-smoke']));
 const parsedBatch = JSON.parse(batchJsonOut);
 if (parsedBatch.schema !== 'chrome-cdp-ex.batch.v1' || parsedBatch.counts?.failed !== 1) {

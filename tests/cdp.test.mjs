@@ -1016,6 +1016,53 @@ describe('ActionResult', () => {
     expect(captured.effects.networkDelta.failures).toBe(1);
   });
 
+  it('adds a structured diagnosis when action evidence shows runtime trouble', async () => {
+    const delta = {
+      console: {
+        count: 1,
+        errors: 0,
+        warnings: 1,
+        entries: [{ level: 'warning', text: 'slow endpoint', loc: 'app.js:21' }],
+      },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        pending: 0,
+        entries: [{ method: 'POST', url: 'https://example.com/api/save', status: 500, duration: 44 }],
+      },
+    };
+
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: async () => 'Clicked #save',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'error banner appeared',
+      enrichActionResult: (result) => T.applyActionObservationDelta(result, delta),
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.effects.diagnosis).toMatchObject({
+      schema: 'chrome-cdp-ex.action-diagnosis.v1',
+      status: 'attention',
+      kind: 'network-failure',
+      confidence: 'high',
+      source: 'network',
+      nextCommand: 'cdp netlog ABC123',
+      signals: {
+        dispatchOk: true,
+        settleOk: true,
+        domChanged: true,
+        consoleWarnings: 1,
+        networkFailures: 1,
+      },
+    });
+    expect(T.formatActionText(parsed)).toContain('Diagnosis: network-failure');
+    expect(T.formatActionText(parsed)).toContain('Next: cdp netlog ABC123');
+  });
+
   it('records report-only actions as action evidence without a DOM observation', async () => {
     let captured = null;
 
@@ -1158,6 +1205,12 @@ describe('ActionResult', () => {
           kind: 'overlay',
           nextCommand: 'cdp dismiss-modal abc123',
         },
+        diagnosis: {
+          status: 'blocked',
+          kind: 'overlay',
+          source: 'dispatch',
+          nextCommand: 'cdp dismiss-modal abc123',
+        },
       },
       nextHint: 'cdp dismiss-modal abc123',
     });
@@ -1174,7 +1227,7 @@ describe('Session report', () => {
   function sampleActionResult() {
     return T.createActionResult({
       action: 'click',
-      target: { input: '#combat', resolvedBy: 'selector', label: '#combat' },
+      target: { targetId: 'ABC123', input: '#combat', resolvedBy: 'selector', label: '#combat' },
       dispatch: { ok: true, method: 'click' },
       settle: { ok: true, durationMs: 123 },
       effects: {
@@ -1309,8 +1362,13 @@ describe('Session report', () => {
     expect(out).toContain('Console sample: [error] combat failed @ game.js:44');
     expect(out).toContain('Network: 1 request (1 failed)');
     expect(out).toContain('Network sample: POST /api/combat -> 500 in 27ms');
+    expect(out).toContain('Diagnosis: network-failure');
     expect(state.actionLog[0].consoleSummary).toBe('Console: 1 entry (1 error)');
     expect(state.actionLog[0].networkSummary).toBe('Network: 1 request (1 failed)');
+    expect(state.actionLog[0].diagnosis).toMatchObject({
+      kind: 'network-failure',
+      nextCommand: 'cdp netlog ABC123',
+    });
   });
 
   it('records classified action failures in the session report', () => {
@@ -5414,6 +5472,40 @@ describe('formatBatchResults', () => {
     });
     expect(parsed.nextSteps).toEqual(['cdp dismiss-modal ABC123']);
   });
+
+  it('surfaces attention diagnoses from successful action JSON steps', () => {
+    const action = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 120 },
+      effects: { domDiff: 'error banner appeared', console: [], network: [], navigation: null },
+      nextHint: null,
+    }), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        pending: 0,
+        entries: [{ method: 'POST', url: 'https://example.com/api/save', status: 500, duration: 44 }],
+      },
+    });
+    const out = formatBatchResults([{ cmd: 'click', ok: true, result: T.formatJson(action) }], 'model', { targetId: 'ABC123' });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.counts).toMatchObject({ steps: 1, ok: 1, failed: 0, attention: 1 });
+    expect(parsed.steps[0]).toMatchObject({
+      cmd: 'click',
+      ok: true,
+      diagnosis: {
+        status: 'attention',
+        kind: 'network-failure',
+        nextCommand: 'cdp netlog ABC123',
+      },
+    });
+    expect(parsed.nextSteps).toEqual(['cdp netlog ABC123']);
+  });
 });
 
 describe('parseBatchArgs', () => {
@@ -5625,6 +5717,48 @@ describe('flowStr', () => {
         error: 'Unknown wait: "paint idle"',
       },
       nextSteps: ['cdp status ABC123'],
+    });
+  });
+
+  it('surfaces attention diagnoses from successful action JSON steps', async () => {
+    const action = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 120 },
+      effects: { domDiff: 'error banner appeared', console: [], network: [], navigation: null },
+      nextHint: null,
+    }), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        pending: 0,
+        entries: [{ method: 'POST', url: 'https://example.com/api/save', status: 500, duration: 44 }],
+      },
+    });
+    const out = await flowStr(
+      { run: async (step) => ({ ok: true, result: step.cmd === 'click' ? T.formatJson(action) : 'ok' }), settle: async () => '' },
+      'click #save; summary',
+      { format: 'json', targetId: 'ABC123' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.flow.v1',
+      halted: false,
+      counts: { steps: 2, ok: 2, failed: 0, skipped: 0, attention: 1 },
+      nextSteps: ['cdp netlog ABC123'],
+    });
+    expect(parsed.steps[0]).toMatchObject({
+      cmd: 'click',
+      ok: true,
+      diagnosis: {
+        status: 'attention',
+        kind: 'network-failure',
+        nextCommand: 'cdp netlog ABC123',
+      },
     });
   });
 });

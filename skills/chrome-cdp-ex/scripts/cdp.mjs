@@ -148,6 +148,10 @@ function actionFailureInput(target = {}) {
   return target?.input || target?.label || target?.selector || '';
 }
 
+function actionTargetCommandId(target = {}) {
+  return actionFailureTargetId(target);
+}
+
 function classifyActionFailure(err, { action = 'action', target = {} } = {}) {
   const originalMessage = actionFailureMessage(err);
   const lower = originalMessage.toLowerCase();
@@ -1434,7 +1438,7 @@ const SENSITIVE_QUERY_KEY_RE = /\b(pass(word)?|secret|token|api[-_]?key|credenti
 const NOISY_ACTION_NETWORK_TYPES = new Set(['Image', 'Stylesheet', 'Script', 'Font', 'Media', 'WebSocket']);
 
 function createActionResult({ action, target, dispatch, settle, effects, nextHint }) {
-  return {
+  return applyActionDiagnosis({
     schema: 'chrome-cdp-ex.action.v1',
     action,
     target,
@@ -1442,7 +1446,7 @@ function createActionResult({ action, target, dispatch, settle, effects, nextHin
     settle,
     effects,
     nextHint,
-  };
+  });
 }
 
 function createActionObservationBaseline({ consoleBuf = null, exceptionBuf = null, netReqBuf = null } = {}) {
@@ -1584,6 +1588,133 @@ function applyActionObservationDelta(actionResult, delta = {}) {
   actionResult.effects.console = consoleDelta.entries || [];
   actionResult.effects.exceptions = exceptionDelta.entries || [];
   actionResult.effects.network = networkDelta.entries || [];
+  return applyActionDiagnosis(actionResult);
+}
+
+function actionDiagnosisSignals(actionResult = {}) {
+  const effects = actionResult.effects || {};
+  const consoleDelta = normalizeConsoleDelta(effects.consoleDelta || {});
+  const exceptionDelta = normalizeExceptionDelta(effects.exceptionDelta || {});
+  const networkDelta = normalizeNetworkDelta(effects.networkDelta || {});
+  return {
+    dispatchOk: actionResult.dispatch?.ok !== false,
+    settleOk: actionResult.settle?.ok ?? null,
+    domChanged: !!String(effects.domDiff || '').trim(),
+    consoleErrors: consoleDelta.errors,
+    consoleWarnings: consoleDelta.warnings,
+    exceptions: exceptionDelta.count,
+    networkFailures: networkDelta.failures,
+    networkPending: networkDelta.pending,
+  };
+}
+
+function createActionDiagnosis(actionResult = {}) {
+  const effects = actionResult.effects || {};
+  const targetId = actionTargetCommandId(actionResult.target || {});
+  const signals = actionDiagnosisSignals(actionResult);
+  const base = {
+    schema: 'chrome-cdp-ex.action-diagnosis.v1',
+    status: 'ok',
+    kind: 'ok',
+    confidence: 'medium',
+    source: 'action',
+    reason: 'Action dispatched without captured runtime failures.',
+    nextCommand: actionResult.nextHint || null,
+    signals,
+  };
+
+  if (effects.failure?.kind) {
+    return {
+      ...base,
+      status: 'blocked',
+      kind: effects.failure.kind,
+      confidence: 'high',
+      source: 'dispatch',
+      reason: effects.failure.reason || 'The action failed before dispatch completed.',
+      nextCommand: effects.failure.nextCommand || actionResult.nextHint || `cdp status ${targetId}`,
+    };
+  }
+
+  if (signals.exceptions > 0) {
+    return {
+      ...base,
+      status: 'attention',
+      kind: 'exception',
+      confidence: 'high',
+      source: 'exception',
+      reason: 'The action triggered one or more page exceptions.',
+      nextCommand: `cdp console ${targetId} --errors`,
+    };
+  }
+
+  if (signals.networkFailures > 0) {
+    return {
+      ...base,
+      status: 'attention',
+      kind: 'network-failure',
+      confidence: 'high',
+      source: 'network',
+      reason: 'The action triggered one or more failed network requests.',
+      nextCommand: `cdp netlog ${targetId}`,
+    };
+  }
+
+  if (signals.networkPending > 0) {
+    return {
+      ...base,
+      status: 'attention',
+      kind: 'network-pending',
+      confidence: 'medium',
+      source: 'network',
+      reason: 'The action left network requests pending after the settle window.',
+      nextCommand: `cdp netlog ${targetId}`,
+    };
+  }
+
+  if (signals.consoleErrors > 0) {
+    return {
+      ...base,
+      status: 'attention',
+      kind: 'console-error',
+      confidence: 'high',
+      source: 'console',
+      reason: 'The action triggered one or more console errors.',
+      nextCommand: `cdp console ${targetId} --errors`,
+    };
+  }
+
+  if (actionResult.dispatch?.ok === true && actionResult.settle?.ok === false) {
+    return {
+      ...base,
+      status: 'attention',
+      kind: 'observation-timeout',
+      confidence: 'medium',
+      source: 'settle',
+      reason: 'The action was dispatched, but post-action observation did not finish cleanly.',
+      nextCommand: `cdp perceive ${targetId} --since-action`,
+    };
+  }
+
+  if (signals.domChanged) {
+    return {
+      ...base,
+      status: 'ok',
+      kind: 'dom-changed',
+      confidence: 'medium',
+      source: 'dom',
+      reason: 'The action dispatched and changed the perceived DOM.',
+      nextCommand: actionResult.nextHint || `cdp perceive ${targetId} --since-action`,
+    };
+  }
+
+  return base;
+}
+
+function applyActionDiagnosis(actionResult) {
+  if (!actionResult.effects) actionResult.effects = {};
+  const diagnosis = createActionDiagnosis(actionResult);
+  if (diagnosis.status === 'ok' && diagnosis.kind === 'ok') delete actionResult.effects.diagnosis;
+  else actionResult.effects.diagnosis = diagnosis;
   return actionResult;
 }
 
@@ -1662,11 +1793,15 @@ function summarizeActionObservationEffects(effects = {}) {
 
 function formatActionText(result) {
   const diagnostics = summarizeActionObservationEffects(result.effects || {});
+  const diagnosis = result.effects?.diagnosis || null;
   const lines = [
     `${result.action}: ${result.dispatch.ok ? 'dispatched' : 'failed'} via ${result.dispatch.method}`,
   ];
   if (result.target?.label) lines.push(`Target: ${result.target.label}`);
   if (result.effects?.failure?.kind) lines.push(`Failure: ${result.effects.failure.kind}`);
+  if (diagnosis && diagnosis.status !== 'ok') {
+    lines.push(`Diagnosis: ${diagnosis.kind}${diagnosis.reason ? ` — ${diagnosis.reason}` : ''}`);
+  }
   if (result.settle) {
     const duration = result.settle.durationMs ? ` in ${result.settle.durationMs}ms` : '';
     lines.push(`Settle: ${result.settle.ok ? 'ok' : 'not confirmed'}${duration}`);
@@ -1678,12 +1813,14 @@ function formatActionText(result) {
   if (diagnostics.networkSummary) lines.push(diagnostics.networkSummary);
   if (diagnostics.networkSample) lines.push(`Network sample: ${diagnostics.networkSample}`);
   if (result.effects?.domDiff) lines.push('---', result.effects.domDiff);
+  if (diagnosis?.nextCommand && diagnosis.status !== 'ok') lines.push(`Next: ${diagnosis.nextCommand}`);
   if (result.nextHint) lines.push(`Hint: ${result.nextHint}`);
   return lines.join('\n');
 }
 
 function finalizeActionResult(result, { enrichActionResult = null, onActionResult = null } = {}) {
   if (enrichActionResult) enrichActionResult(result);
+  applyActionDiagnosis(result);
   if (onActionResult) onActionResult(result);
   return result;
 }
@@ -1889,6 +2026,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
     networkSummary: diagnostics.networkSummary,
     networkSample: diagnostics.networkSample,
     failure: actionResult.effects?.failure || null,
+    diagnosis: actionResult.effects?.diagnosis || null,
     nextHint: actionResult.nextHint || null,
   };
   session.actionLog.push(entry);
@@ -1943,6 +2081,7 @@ function buildSessionReportModel(session, { now = Date.now() } = {}) {
         networkSummary: entry.networkSummary || null,
         networkSample: entry.networkSample || null,
         failure: entry.failure || null,
+        diagnosis: entry.diagnosis || null,
       },
       nextHint: entry.nextHint || null,
     };
@@ -2021,6 +2160,9 @@ function formatSessionReport(session, { now = Date.now(), format = 'text' } = {}
       lines.push(`${i + 1}. ${entry.action}${label ? ` ${label}` : ''} — ${settleStatus}${settleDuration}`);
       if (entry.dispatch?.method) lines.push(`   Dispatch: ${entry.dispatch.method}`);
       if (entry.failure?.kind) lines.push(`   Failure: ${entry.failure.kind} — ${entry.failure.reason}`);
+      if (entry.diagnosis?.kind && entry.diagnosis.status !== 'ok') {
+        lines.push(`   Diagnosis: ${entry.diagnosis.kind} — ${entry.diagnosis.reason}`);
+      }
       if (entry.effectSummary) lines.push(`   Effect: ${entry.effectSummary}`);
       if (entry.effectSample) lines.push(`   Sample: ${entry.effectSample}`);
       if (entry.consoleSummary) lines.push(`   ${entry.consoleSummary}`);
@@ -2029,6 +2171,7 @@ function formatSessionReport(session, { now = Date.now(), format = 'text' } = {}
       if (entry.exceptionSample) lines.push(`   Exception sample: ${entry.exceptionSample}`);
       if (entry.networkSummary) lines.push(`   ${entry.networkSummary}`);
       if (entry.networkSample) lines.push(`   Network sample: ${entry.networkSample}`);
+      if (entry.diagnosis?.nextCommand && entry.diagnosis.status !== 'ok') lines.push(`   Diagnostic next: ${entry.diagnosis.nextCommand}`);
       if (entry.nextHint) lines.push(`   Next: ${entry.nextHint}`);
     }
   }
@@ -2241,6 +2384,7 @@ function buildRecordActionsModel(session) {
         networkSummary: entry.networkSummary || null,
         networkSample: entry.networkSample || null,
         failure: entry.failure || null,
+        diagnosis: entry.diagnosis || null,
         nextHint: entry.nextHint || null,
       },
     };
@@ -6194,9 +6338,33 @@ function extractLabeledLine(text, label) {
   return String(text || '').match(re)?.[1]?.trim() || null;
 }
 
+function compactActionDiagnosisModel(diagnosis = null) {
+  if (!diagnosis || typeof diagnosis !== 'object') return null;
+  return {
+    schema: diagnosis.schema || 'chrome-cdp-ex.action-diagnosis.v1',
+    status: diagnosis.status || 'ok',
+    kind: diagnosis.kind || 'ok',
+    confidence: diagnosis.confidence || 'medium',
+    source: diagnosis.source || 'action',
+    reason: diagnosis.reason || '',
+    nextCommand: diagnosis.nextCommand || null,
+    signals: diagnosis.signals || {},
+  };
+}
+
+function diagnosisFromActionModel(actionModel = null) {
+  if (actionModel?.schema !== 'chrome-cdp-ex.action.v1') return null;
+  return compactActionDiagnosisModel(actionModel.effects?.diagnosis || null);
+}
+
+function isAttentionDiagnosis(diagnosis = null) {
+  return diagnosis?.status === 'attention';
+}
+
 function batchStepModel(result = {}, index = 0) {
   const actionModel = maybeParseJson(result.result);
   const actionFailure = actionModel?.schema === 'chrome-cdp-ex.action.v1' && actionModel.dispatch?.ok === false;
+  const diagnosis = diagnosisFromActionModel(actionModel);
   const errorText = result.error || (actionFailure ? actionModel.dispatch?.error : null) || '';
   const ok = result.ok === true && !actionFailure;
   const failureKind = actionFailure
@@ -6217,13 +6385,20 @@ function batchStepModel(result = {}, index = 0) {
     if (failureKind) step.failureKind = failureKind;
     if (nextCommand) step.nextCommand = nextCommand;
   }
+  if (diagnosis) step.diagnosis = diagnosis;
   return step;
 }
 
 function buildBatchResultModel(results = [], { targetId = null, mode = 'sequential' } = {}) {
   const steps = results.map((result, index) => batchStepModel(result, index));
   const failedSteps = steps.filter(step => !step.ok);
+  const attentionSteps = steps.filter(step => step.ok && isAttentionDiagnosis(step.diagnosis));
   const nextSteps = [...new Set(failedSteps.map(step => step.nextCommand).filter(Boolean))];
+  for (const step of attentionSteps) {
+    if (step.diagnosis?.nextCommand && !nextSteps.includes(step.diagnosis.nextCommand)) {
+      nextSteps.push(step.diagnosis.nextCommand);
+    }
+  }
   if (failedSteps.length && nextSteps.length === 0) {
     nextSteps.push(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
   }
@@ -6235,6 +6410,7 @@ function buildBatchResultModel(results = [], { targetId = null, mode = 'sequenti
       steps: steps.length,
       ok: steps.length - failedSteps.length,
       failed: failedSteps.length,
+      attention: attentionSteps.length,
     },
     steps,
     failedStep: failedSteps[0] || null,
@@ -6399,7 +6575,10 @@ function flowStepModel(step = {}, index = 0, state = {}) {
     return base;
   }
   if (base.ok) {
+    const actionModel = maybeParseJson(state.result);
+    const diagnosis = diagnosisFromActionModel(actionModel);
     base.resultPreview = firstNonEmptyLine(state.result);
+    if (diagnosis) base.diagnosis = diagnosis;
     return base;
   }
   const errorText = String(state.error || 'unknown error');
@@ -6416,9 +6595,15 @@ function buildFlowResultModel({ targetId = null, input = '', steps = [], stepRes
   const skipped = stepResults.filter(step => step.skipped === true).length;
   const failed = failedStep ? 1 : 0;
   const ok = stepResults.filter(step => step.ok === true).length;
-  const nextSteps = failedStep?.nextCommand
-    ? [failedStep.nextCommand]
-    : (failedStep ? [targetId ? `cdp status ${targetId}` : 'cdp status <target>'] : []);
+  const attentionSteps = stepResults.filter(step => step.ok && isAttentionDiagnosis(step.diagnosis));
+  const nextSteps = [];
+  if (failedStep?.nextCommand) nextSteps.push(failedStep.nextCommand);
+  else if (failedStep) nextSteps.push(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
+  for (const step of attentionSteps) {
+    if (step.diagnosis?.nextCommand && !nextSteps.includes(step.diagnosis.nextCommand)) {
+      nextSteps.push(step.diagnosis.nextCommand);
+    }
+  }
   return {
     schema: 'chrome-cdp-ex.flow.v1',
     targetId,
@@ -6429,6 +6614,7 @@ function buildFlowResultModel({ targetId = null, input = '', steps = [], stepRes
       ok,
       failed,
       skipped,
+      attention: attentionSteps.length,
     },
     steps: stepResults,
     failedStep,
