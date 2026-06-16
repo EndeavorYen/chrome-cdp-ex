@@ -212,6 +212,36 @@ function benchmarkHandoffNextStepsCoverage(steps) {
   };
 }
 
+function benchmarkReportLatestActionCoverage(steps) {
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
+    if (model?.schema !== 'chrome-cdp-ex.report.v1' || !Array.isArray(model.actions) || model.actions.length === 0) continue;
+    total += 1;
+    const latest = model.latestAction;
+    const hasLatestAction = latest
+      && Number.isFinite(latest.index)
+      && latest.action
+      && latest.status;
+    if (hasLatestAction) {
+      covered += 1;
+    } else {
+      missing.push({
+        name: step.name,
+        commandText: step.commandText,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    rate: total > 0 ? covered / total : null,
+  };
+}
+
 function countsTowardUsefulObservationTokens(step) {
   const model = stepModel(step);
   const commandName = step.command?.[0] || step.name;
@@ -227,6 +257,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   autoEvidenceActionsMin: 1,
   observedActionEvidenceCoverageRateMin: 1,
   handoffNextStepsCoverageRateMin: 1,
+  reportLatestActionCoverageRateMin: 1,
   differentiatorSuccessRateMin: 1,
   staleRefRecoveryRateMin: 1,
 });
@@ -343,6 +374,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '===',
       limit: true,
       recommendation: 'Run cdp report <target> after action evidence so the session can be handed off.',
+    }),
+    gateCriterion({
+      name: 'report-latest-action',
+      actual: metrics.reportLatestActionCoverage?.rate ?? 1,
+      operator: '>=',
+      limit: limits.reportLatestActionCoverageRateMin,
+      recommendation: 'JSON report handoffs with actions must expose latestAction so agents can resume without rescanning the timeline.',
     }),
     gateCriterion({
       name: 'differentiator-success-rate',
@@ -549,6 +587,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       autoEvidenceActions: actionEvidenceSteps.length,
       actionEvidenceCoverage: benchmarkActionEvidenceCoverage(normalizedSteps),
       handoffNextStepsCoverage: benchmarkHandoffNextStepsCoverage(normalizedSteps),
+      reportLatestActionCoverage: benchmarkReportLatestActionCoverage(normalizedSteps),
       verificationCallsSaved: actionEvidenceSteps.length,
       hasReportTimeline: hasReportTimeline(reportStep || {}),
       differentiators: benchmarkDifferentiators(normalizedSteps),
@@ -588,6 +627,7 @@ export function formatBenchmarkReport(summary) {
     `Auto-evidence actions: ${summary.metrics.autoEvidenceActions}`,
     `Action evidence coverage: ${summary.metrics.actionEvidenceCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionEvidenceCoverage.rate * 100)}%`} (${summary.metrics.actionEvidenceCoverage?.covered ?? 0}/${summary.metrics.actionEvidenceCoverage?.total ?? 0})`,
     `Handoff nextSteps coverage: ${summary.metrics.handoffNextStepsCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffNextStepsCoverage.rate * 100)}%`} (${summary.metrics.handoffNextStepsCoverage?.covered ?? 0}/${summary.metrics.handoffNextStepsCoverage?.total ?? 0})`,
+    `Report latestAction coverage: ${summary.metrics.reportLatestActionCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportLatestActionCoverage.rate * 100)}%`} (${summary.metrics.reportLatestActionCoverage?.covered ?? 0}/${summary.metrics.reportLatestActionCoverage?.total ?? 0})`,
     `Verification calls saved: ${summary.metrics.verificationCallsSaved}`,
     `Report timeline: ${summary.metrics.hasReportTimeline ? 'yes' : 'no'}`,
     `Quality gate: ${gate.passed ? 'pass' : 'fail'}`,

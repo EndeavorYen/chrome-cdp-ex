@@ -336,8 +336,9 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Estimated output tokens:');
     expect(out).toContain('Action evidence coverage: 100% (2/2)');
     expect(out).toContain('Handoff nextSteps coverage: n/a (0/0)');
+    expect(out).toContain('Report latestAction coverage: n/a (0/0)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 12/12 pass');
+    expect(out).toContain('Gate checks: 13/13 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -553,6 +554,14 @@ describe('benchmark killer path helpers', () => {
           stdout: JSON.stringify({
             schema: 'chrome-cdp-ex.report.v1',
             actions: [{ index: 1, action: 'click' }],
+            latestAction: {
+              index: 1,
+              action: 'click',
+              status: 'ok',
+              outcomeStatus: 'changed',
+              verdictStatus: 'continue',
+              canContinue: true,
+            },
             nextSteps: ['cdp record-actions AABBCCDD --format json'],
           }),
           stderr: '',
@@ -564,6 +573,12 @@ describe('benchmark killer path helpers', () => {
     expect(summary.metrics.firstActionEvidenceMs).toBe(40);
     expect(summary.metrics.goldenPathMs).toBe(60);
     expect(summary.metrics.hasReportTimeline).toBe(true);
+    expect(summary.metrics.reportLatestActionCoverage).toMatchObject({
+      total: 1,
+      covered: 1,
+      missing: [],
+      rate: 1,
+    });
     expect(summary.metrics.usefulObservationTokens).toBe(
       estimateTokenCount(perceiveJson.length) + estimateTokenCount(actionJson.length) + estimateTokenCount(sinceActionJson.length),
     );
@@ -580,6 +595,50 @@ describe('benchmark killer path helpers', () => {
       rate: 1,
     });
     expect(summary.steps[2].hasActionEvidence).toBe(true);
+  });
+
+  it('fails the gate when a JSON report timeline lacks latestAction summary', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'report-latest-action',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'report',
+          command: ['report', 'AABBCCDD', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.report.v1',
+            actions: [{ index: 1, action: 'click' }],
+            nextSteps: ['cdp record-actions AABBCCDD --format json'],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.reportLatestActionCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'report',
+          commandText: 'cdp report AABBCCDD --format json',
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'report-latest-action',
+        passed: false,
+        actual: 0,
+        recommendation: 'JSON report handoffs with actions must expose latestAction so agents can resume without rescanning the timeline.',
+      }),
+    ]));
   });
 
   it('parses JSON mode and stability window options', () => {

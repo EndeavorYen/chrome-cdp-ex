@@ -2686,18 +2686,43 @@ function formatReportNextStepLines(nextSteps = []) {
   return lines;
 }
 
+function reportActionStatus(entry = {}) {
+  return entry.dispatch?.ok === false ? 'failed' : (entry.settle?.ok ? 'ok' : 'not-confirmed');
+}
+
+function buildLatestReportActionSummary(actionLog = []) {
+  if (!actionLog.length) return null;
+  const index = actionLog.length;
+  const entry = actionLog[index - 1] || {};
+  return {
+    index,
+    ts: entry.ts || null,
+    action: entry.action || null,
+    status: reportActionStatus(entry),
+    outcomeStatus: entry.outcome?.status || null,
+    verdictStatus: entry.verdict?.status || null,
+    canContinue: entry.verdict?.canContinue ?? null,
+    needsRecovery: entry.verdict?.needsRecovery ?? null,
+    effectSummary: entry.effectSummary || null,
+    effectSample: entry.effectSample || null,
+    consoleSummary: entry.consoleSummary || null,
+    networkSummary: entry.networkSummary || null,
+    diagnosisKind: entry.diagnosis?.kind || null,
+    nextHint: entry.nextHint || null,
+  };
+}
+
 function buildSessionReportModel(session, { now = Date.now() } = {}) {
   const actionLog = session.actionLog || [];
   const screenshots = session.screenshots || [];
   const uptimeMs = Math.max(0, now - (session.createdAt || now));
   const target = targetPrefixForDisplay(session.targetId);
   const actions = actionLog.map((entry, index) => {
-    const status = entry.dispatch?.ok === false ? 'failed' : (entry.settle?.ok ? 'ok' : 'not-confirmed');
     return {
       index: index + 1,
       ts: entry.ts || null,
       action: entry.action,
-      status,
+      status: reportActionStatus(entry),
       outcome: entry.outcome || null,
       verdict: entry.verdict || null,
       target: entry.target || null,
@@ -2746,6 +2771,7 @@ function buildSessionReportModel(session, { now = Date.now() } = {}) {
       screenshots: screenshots.length,
       records: session.records?.length || 0,
     },
+    latestAction: buildLatestReportActionSummary(actionLog),
     environment: {
       networkThrottleSummary: formatThrottleSummary(session.networkThrottle),
       networkMocksSummary: formatNetworkMocksSummary(session),
