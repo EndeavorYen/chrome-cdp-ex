@@ -8117,6 +8117,7 @@ function doctorWizardModel(checks) {
     status,
     currentStep,
     goldenPath: ['doctor', 'list/open', 'perceive', 'click/fill', 'since-action evidence', 'report'],
+    commands: doctorNextStepCommands(checks),
   };
 }
 

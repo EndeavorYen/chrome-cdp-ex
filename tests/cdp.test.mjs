@@ -7507,6 +7507,13 @@ describe('doctorStr', () => {
       currentStep: 'cdp perceive AABBCCDD -C -d 8  # click Allow if Chrome asks',
     });
     expect(model.wizard.goldenPath).toEqual(['doctor', 'list/open', 'perceive', 'click/fill', 'since-action evidence', 'report']);
+    expect(model.wizard.commands).toEqual([
+      'cdp list',
+      'cdp perceive AABBCCDD -C -d 8',
+      'cdp click AABBCCDD @ref  # or: cdp fill AABBCCDD <selector> <text>',
+      'cdp perceive AABBCCDD --since-action',
+      'cdp report AABBCCDD',
+    ]);
     expect(model.checks.map(check => check.label)).toEqual([
       'Node', 'Skill install', 'Daemons', 'FD limit', 'CDP', 'Tabs', 'Permission',
     ]);
