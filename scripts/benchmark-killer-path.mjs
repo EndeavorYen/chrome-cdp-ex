@@ -292,6 +292,63 @@ function benchmarkActionEvidenceCompletenessCoverage(steps) {
   };
 }
 
+function isFailedActionModel(model = {}) {
+  if (model?.schema !== 'chrome-cdp-ex.action.v1') return false;
+  return model.dispatch?.ok === false
+    || model.outcome?.status === 'failed'
+    || Boolean(model.effects?.failure?.kind);
+}
+
+function actionFailureDiagnosisMissingFields(model = {}) {
+  const missing = [];
+  const failure = model.effects?.failure || {};
+  const diagnosis = model.effects?.diagnosis || {};
+  const recovery = diagnosis.recovery || {};
+  const recoveryCommands = Array.isArray(recovery.commands) ? recovery.commands : [];
+  const recommendationCommands = Array.isArray(model.recommendation?.commands) ? model.recommendation.commands : [];
+  const nextSteps = Array.isArray(model.nextSteps) ? model.nextSteps : [];
+
+  if (typeof failure.kind !== 'string' || !failure.kind.trim()) missing.push('effects.failure.kind');
+  if (!diagnosis || typeof diagnosis !== 'object' || typeof diagnosis.kind !== 'string' || !diagnosis.kind.trim()) missing.push('effects.diagnosis');
+  if (diagnosis.status !== 'blocked' && diagnosis.status !== 'attention') missing.push('effects.diagnosis.status');
+  if (!recovery || typeof recovery !== 'object') missing.push('effects.diagnosis.recovery');
+  if (!recoveryCommands.some(entry => isExecutableRecoveryCommand(entry?.command))) missing.push('effects.diagnosis.recovery.commands');
+  if (!isExecutableRecoveryCommand(recovery.verifyCommand || diagnosis.nextCommand)) missing.push('effects.diagnosis.recovery.verifyCommand');
+  if (model.verdict?.canContinue !== false) missing.push('verdict.canContinue');
+  if (model.verdict?.needsRecovery !== true) missing.push('verdict.needsRecovery');
+  if (!isExecutableRecoveryCommand(model.verdict?.primaryNextStep)) missing.push('verdict.primaryNextStep');
+  if (!recommendationHasActionableContext(model.recommendation) || !recommendationCommands.some(isExecutableRecoveryCommand)) missing.push('recommendation');
+  if (!nextSteps.some(isExecutableRecoveryCommand)) missing.push('nextSteps');
+  return [...new Set(missing)];
+}
+
+function benchmarkActionFailureDiagnosisCoverage(steps) {
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
+    if (!isFailedActionModel(model)) continue;
+    total += 1;
+    const missingFields = actionFailureDiagnosisMissingFields(model);
+    if (missingFields.length === 0) {
+      covered += 1;
+    } else {
+      missing.push({
+        name: step.name,
+        commandText: step.commandText,
+        missing: missingFields,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    rate: total > 0 ? covered / total : null,
+  };
+}
+
 function parseJsonOutput(text = '') {
   const trimmed = String(text || '').trim();
   if (!trimmed.startsWith('{')) return null;
@@ -750,6 +807,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   autoEvidenceActionsMin: 1,
   observedActionEvidenceCoverageRateMin: 1,
   actionEvidenceCompletenessCoverageRateMin: 1,
+  actionFailureDiagnosisCoverageRateMin: 1,
   cliRecoveryCoverageRateMin: 1,
   handoffNextStepsCoverageRateMin: 1,
   handoffRecommendationCoverageRateMin: 1,
@@ -869,6 +927,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '>=',
       limit: limits.actionEvidenceCompletenessCoverageRateMin,
       recommendation: 'Action JSON evidence must include action, target, dispatch, settle, effects deltas, outcome, and verdict so agents can decide without another perceive.',
+    }),
+    gateCriterion({
+      name: 'action-failure-diagnosis',
+      actual: metrics.actionFailureDiagnosisCoverage?.rate ?? 1,
+      operator: '>=',
+      limit: limits.actionFailureDiagnosisCoverageRateMin,
+      recommendation: 'Failed action JSON must classify the failure and expose diagnosis recovery commands so agents can recover without parsing text.',
     }),
     gateCriterion({
       name: 'cli-recovery-coverage',
@@ -1153,6 +1218,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       autoEvidenceActions: actionEvidenceSteps.length,
       actionEvidenceCoverage: benchmarkActionEvidenceCoverage(normalizedSteps),
       actionEvidenceCompletenessCoverage: benchmarkActionEvidenceCompletenessCoverage(normalizedSteps),
+      actionFailureDiagnosisCoverage: benchmarkActionFailureDiagnosisCoverage(normalizedSteps),
       cliRecoveryCoverage: benchmarkCliRecoveryCoverage(normalizedSteps),
       handoffNextStepsCoverage: benchmarkHandoffNextStepsCoverage(normalizedSteps),
       handoffRecommendationCoverage: benchmarkHandoffRecommendationCoverage(normalizedSteps),
@@ -1202,6 +1268,7 @@ export function formatBenchmarkReport(summary) {
     `Auto-evidence actions: ${summary.metrics.autoEvidenceActions}`,
     `Action evidence coverage: ${summary.metrics.actionEvidenceCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionEvidenceCoverage.rate * 100)}%`} (${summary.metrics.actionEvidenceCoverage?.covered ?? 0}/${summary.metrics.actionEvidenceCoverage?.total ?? 0})`,
     `Action evidence completeness: ${summary.metrics.actionEvidenceCompletenessCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionEvidenceCompletenessCoverage.rate * 100)}%`} (${summary.metrics.actionEvidenceCompletenessCoverage?.covered ?? 0}/${summary.metrics.actionEvidenceCompletenessCoverage?.total ?? 0})`,
+    `Action failure diagnosis coverage: ${summary.metrics.actionFailureDiagnosisCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionFailureDiagnosisCoverage.rate * 100)}%`} (${summary.metrics.actionFailureDiagnosisCoverage?.covered ?? 0}/${summary.metrics.actionFailureDiagnosisCoverage?.total ?? 0})`,
     `CLI recovery coverage: ${summary.metrics.cliRecoveryCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.cliRecoveryCoverage.rate * 100)}%`} (${summary.metrics.cliRecoveryCoverage?.covered ?? 0}/${summary.metrics.cliRecoveryCoverage?.total ?? 0})`,
     `Handoff nextSteps coverage: ${summary.metrics.handoffNextStepsCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffNextStepsCoverage.rate * 100)}%`} (${summary.metrics.handoffNextStepsCoverage?.covered ?? 0}/${summary.metrics.handoffNextStepsCoverage?.total ?? 0})`,
     `Handoff recommendation coverage: ${summary.metrics.handoffRecommendationCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffRecommendationCoverage.rate * 100)}%`} (${summary.metrics.handoffRecommendationCoverage?.covered ?? 0}/${summary.metrics.handoffRecommendationCoverage?.total ?? 0})`,
@@ -1366,6 +1433,11 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
       name: 'stale-ref',
       expectedFailure: true,
       expectedPattern: /Action failure: stale-ref|Unknown ref|Refs were (cleared|invalidated)|Next:\s*cdp perceive/i,
+    },
+    {
+      args: ['click', target, '@1', '--format', 'json'],
+      name: 'stale-ref-json',
+      benchmarkProbe: true,
     },
   );
   if (stabilityMs > 0) {

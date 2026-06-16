@@ -394,6 +394,7 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Estimated output tokens:');
     expect(out).toContain('Action evidence coverage: 100% (2/2)');
     expect(out).toContain('Action evidence completeness: n/a (0/0)');
+    expect(out).toContain('Action failure diagnosis coverage: n/a (0/0)');
     expect(out).toContain('Handoff nextSteps coverage: 100% (1/1)');
     expect(out).toContain('Handoff recommendation coverage: 100% (1/1)');
     expect(out).toContain('Doctor onboarding coverage: n/a (0/0)');
@@ -405,7 +406,7 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Since-action evidence coverage: 100% (1/1)');
     expect(out).toContain('CLI recovery coverage: 100% (1/1)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 22/22 pass');
+    expect(out).toContain('Gate checks: 23/23 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -1222,6 +1223,157 @@ describe('benchmark killer path helpers', () => {
     ]));
   });
 
+  it('covers failed action JSON diagnosis handoffs', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'action-failure-diagnosis',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'stale-ref-json',
+          command: ['click', 'AABBCCDD', '@1', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          benchmarkProbe: true,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.action.v1',
+            action: 'click',
+            target: { targetId: 'AABBCCDD', input: '@1', resolvedBy: 'ref', label: '@1' },
+            dispatch: { ok: false, method: 'click', error: 'Unknown ref @1' },
+            settle: { ok: false, durationMs: 10 },
+            effects: {
+              domDiff: null,
+              failure: {
+                kind: 'stale-ref',
+                nextCommand: 'cdp perceive AABBCCDD -C -d 8',
+              },
+              diagnosis: {
+                schema: 'chrome-cdp-ex.action-diagnosis.v1',
+                status: 'blocked',
+                kind: 'stale-ref',
+                source: 'dispatch',
+                nextCommand: 'cdp perceive AABBCCDD -C -d 8',
+                recovery: {
+                  schema: 'chrome-cdp-ex.recovery-policy.v1',
+                  strategy: 'refresh-perception',
+                  priority: 'high',
+                  commands: [
+                    { command: 'cdp perceive AABBCCDD -C -d 8' },
+                    { command: 'cdp status AABBCCDD' },
+                    { command: 'cdp report AABBCCDD --format json' },
+                  ],
+                  verifyCommand: 'cdp perceive AABBCCDD -C -d 8',
+                  avoid: ['retrying the stale @ref before refreshing perception'],
+                },
+              },
+              consoleDelta: { count: 0, errors: 0, warnings: 0, entries: [] },
+              exceptionDelta: { count: 0, entries: [] },
+              networkDelta: { count: 0, failures: 0, pending: 0, entries: [] },
+            },
+            outcome: { status: 'failed', reason: 'Unknown ref @1' },
+            verdict: {
+              status: 'blocked',
+              source: 'diagnosis',
+              confidence: 'high',
+              canContinue: false,
+              needsRecovery: true,
+              primaryNextStep: 'cdp perceive AABBCCDD -C -d 8',
+              nextSteps: ['cdp perceive AABBCCDD -C -d 8', 'cdp status AABBCCDD'],
+            },
+            recommendation: {
+              source: 'action-diagnosis',
+              diagnosisKind: 'stale-ref',
+              commands: ['cdp perceive AABBCCDD -C -d 8', 'cdp status AABBCCDD'],
+            },
+            nextSteps: ['cdp perceive AABBCCDD -C -d 8', 'cdp status AABBCCDD'],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.actionFailureDiagnosisCoverage).toMatchObject({
+      total: 1,
+      covered: 1,
+      missing: [],
+      rate: 1,
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'action-failure-diagnosis',
+        passed: true,
+        actual: 1,
+      }),
+    ]));
+  });
+
+  it('fails the gate when failed action JSON lacks diagnosis recovery', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'action-failure-diagnosis',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'stale-ref-json',
+          command: ['click', 'AABBCCDD', '@1', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          benchmarkProbe: true,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.action.v1',
+            action: 'click',
+            target: { targetId: 'AABBCCDD', input: '@1', resolvedBy: 'ref', label: '@1' },
+            dispatch: { ok: false, method: 'click', error: 'Unknown ref @1' },
+            settle: { ok: false, durationMs: 10 },
+            effects: {
+              domDiff: null,
+              failure: { kind: 'stale-ref' },
+              consoleDelta: { count: 0, errors: 0, warnings: 0, entries: [] },
+              exceptionDelta: { count: 0, entries: [] },
+              networkDelta: { count: 0, failures: 0, pending: 0, entries: [] },
+            },
+            outcome: { status: 'failed' },
+            verdict: { status: 'blocked', canContinue: false, needsRecovery: true },
+            recommendation: { source: 'action' },
+            nextSteps: [],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.actionFailureDiagnosisCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'stale-ref-json',
+          commandText: 'cdp click AABBCCDD @1 --format json',
+          missing: expect.arrayContaining([
+            'effects.diagnosis',
+            'effects.diagnosis.recovery.commands',
+            'verdict.primaryNextStep',
+            'recommendation',
+            'nextSteps',
+          ]),
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'action-failure-diagnosis',
+        passed: false,
+        actual: 0,
+        recommendation: 'Failed action JSON must classify the failure and expose diagnosis recovery commands so agents can recover without parsing text.',
+      }),
+    ]));
+  });
+
   it('fails the gate when doctor JSON lacks onboarding wizard evidence', () => {
     const summary = summarizeBenchmarkRun({
       scenario: 'doctor-onboarding',
@@ -1499,6 +1651,10 @@ describe('benchmark killer path helpers', () => {
     expect(plan.find(step => step.args[0] === 'inject')?.args).toEqual(['inject', 'AABBCCDD', '--css', '#combat-log { outline: 2px solid rgb(37, 99, 235); }', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'nav')?.args).toEqual(['nav', 'AABBCCDD', 'http://127.0.0.1:41738/smoke-page.html#after-action-evidence', '--format', 'json']);
     expect(plan.find(step => step.name === 'stale-ref-mutate')?.args).toEqual(['reload', 'AABBCCDD', '--format', 'json']);
+    expect(plan.find(step => step.name === 'stale-ref-json')).toMatchObject({
+      args: ['click', 'AABBCCDD', '@1', '--format', 'json'],
+      benchmarkProbe: true,
+    });
     expect(plan.find(step => step.args[0] === 'doctor')?.args).toEqual(['doctor', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'list')?.args).toEqual(['list', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'perceive')?.args).toContain('--format');
@@ -1511,7 +1667,7 @@ describe('benchmark killer path helpers', () => {
     ]);
     expect(plan.find(step => step.args[0] === 'click')?.args).toContain('--format');
     expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--format', 'json']);
-    expect(plan.length).toBeLessThanOrEqual(23);
+    expect(plan.filter(step => !step.benchmarkProbe).length).toBeLessThanOrEqual(23);
   });
 
   it('plans live entry handoff probes for both open and list before perception', () => {
@@ -1551,7 +1707,7 @@ describe('benchmark killer path helpers', () => {
     expect(plan[0].args).toEqual(['perceive', 'AABBCCDD', '-C', '-d', '8', '--keep-refs', '--last', '20', '--format', 'json']);
     expect(plan.map(step => step.args[0])).not.toContain('doctor');
     expect(plan.map(step => step.args[0])).not.toContain('list');
-    expect(plan.length).toBeLessThanOrEqual(21);
+    expect(plan.filter(step => !step.benchmarkProbe).length).toBeLessThanOrEqual(21);
   });
 
   it('loads measured comparison baselines from a versioned file', () => {
