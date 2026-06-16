@@ -4,6 +4,7 @@ import { resolve } from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildKillerPathBenchmarkPlan,
   estimateTokenCount,
   formatBenchmarkReport,
   loadComparisonBaselineFile,
@@ -398,6 +399,24 @@ describe('benchmark killer path helpers', () => {
       stabilityMs: 1000,
       comparisonBaselinesPath: null,
     });
+  });
+
+  it('plans stale-ref mutation with real reload action evidence', () => {
+    const plan = buildKillerPathBenchmarkPlan('AABBCCDD', { stabilityMs: 1000 });
+    const staleRefMutation = plan.find(step => step.name === 'stale-ref-mutate');
+
+    expect(staleRefMutation).toMatchObject({
+      name: 'stale-ref-mutate',
+      args: ['reload', 'AABBCCDD'],
+    });
+    expect(staleRefMutation.args[0]).not.toBe('eval');
+    expect(plan.map(step => step.args[0])).toEqual(expect.arrayContaining([
+      'dismiss-modal',
+      'click',
+      'reload',
+      'report',
+    ]));
+    expect(plan.length).toBeLessThanOrEqual(20);
   });
 
   it('loads measured comparison baselines from a versioned file', () => {

@@ -592,6 +592,46 @@ function runStep({ args, env, steps, name = args[0], timeout = 20000, expectedFa
   return step;
 }
 
+export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000 } = {}) {
+  const hmrMutationScript = '(() => { if (typeof appendLog === "function") { appendLog("hmr panel ready"); return "hmr-added"; } const log = document.querySelector("#combat-log"); const el = document.createElement("p"); el.id = "hmr-panel"; el.textContent = "hmr panel ready"; log?.appendChild(el); if (log) log.scrollTop = log.scrollHeight; return "hmr-added"; })()';
+  const plan = [
+    { args: ['doctor'] },
+    { args: ['list'] },
+    { args: ['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20'] },
+    { args: ['overlay', target] },
+    { args: ['frame', target] },
+    { args: ['cascade', target, '#custom-clickable', 'cursor'] },
+    { args: ['dismiss-modal', target] },
+    { args: ['click', target, '#combat'] },
+    { args: ['perceive', target, '--since-action'] },
+    { args: ['report', target] },
+    { args: ['perceive', target, '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-baseline' },
+    { args: ['eval', target, hmrMutationScript], name: 'hmr-mutate' },
+    { args: ['perceive', target, '--diff', '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-diff' },
+    { args: ['perceive', target, '-s', '#cmd', '-d', '4'], name: 'stale-ref-setup' },
+    { args: ['reload', target], name: 'stale-ref-mutate' },
+    { args: ['wait', target, '1000'], name: 'stale-ref-wait', timeout: 5000 },
+    {
+      args: ['click', target, '@1'],
+      name: 'stale-ref',
+      expectedFailure: true,
+      expectedPattern: /Action failure: stale-ref|Unknown ref|Refs were (cleared|invalidated)|Next:\s*cdp perceive/i,
+    },
+  ];
+  if (stabilityMs > 0) {
+    plan.push(
+      {
+        args: ['wait', target, String(stabilityMs)],
+        name: 'stability-wait',
+        timeout: Math.max(5000, stabilityMs + 5000),
+      },
+      { args: ['status', target], name: 'stability-status' },
+      { args: ['report', target], name: 'stability-report' },
+    );
+  }
+  return plan;
+}
+
 function assertStep(step) {
   if (step.status !== 0) {
     throw new Error(`cdp ${step.command.join(' ')} failed\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
@@ -691,45 +731,13 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
     }
     if (!target) throw new Error('Browser did not become reachable via cdp list');
 
-    assertStep(runStep({ args: ['doctor'], env, steps }));
-    assertStep(runStep({ args: ['list'], env, steps }));
-    assertStep(runStep({ args: ['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20'], env, steps }));
-    assertStep(runStep({ args: ['overlay', target], env, steps }));
-    assertStep(runStep({ args: ['frame', target], env, steps }));
-    assertStep(runStep({ args: ['cascade', target, '#custom-clickable', 'cursor'], env, steps }));
-    assertStep(runStep({ args: ['dismiss-modal', target], env, steps }));
-    assertStep(runStep({ args: ['click', target, '#combat'], env, steps }));
-    assertStep(runStep({ args: ['perceive', target, '--since-action'], env, steps }));
-    assertStep(runStep({ args: ['report', target], env, steps }));
-    assertStep(runStep({ args: ['perceive', target, '-s', '#combat-log', '-d', '6', '--last', '20'], env, steps, name: 'hmr-baseline' }));
-    assertStep(runStep({
-      args: [
-        'eval',
-        target,
-        '(() => { if (typeof appendLog === "function") { appendLog("hmr panel ready"); return "hmr-added"; } const log = document.querySelector("#combat-log"); const el = document.createElement("p"); el.id = "hmr-panel"; el.textContent = "hmr panel ready"; log?.appendChild(el); if (log) log.scrollTop = log.scrollHeight; return "hmr-added"; })()',
-      ],
-      env,
-      steps,
-      name: 'hmr-mutate',
-    }));
-    assertStep(runStep({ args: ['perceive', target, '--diff', '-s', '#combat-log', '-d', '6', '--last', '20'], env, steps, name: 'hmr-diff' }));
-    assertStep(runStep({ args: ['perceive', target, '-s', '#cmd', '-d', '4'], env, steps, name: 'stale-ref-setup' }));
-    assertStep(runStep({ args: ['eval', target, 'location.reload(); "reload-dispatched"'], env, steps, name: 'stale-ref-mutate' }));
-    assertStep(runStep({ args: ['wait', target, '1000'], env, steps, name: 'stale-ref-wait', timeout: 5000 }));
-    assertExpectedFailure(
-      runStep({ args: ['click', target, '@1'], env, steps, name: 'stale-ref', expectedFailure: true }),
-      /Action failure: stale-ref|Unknown ref|Refs were (cleared|invalidated)|Next:\s*cdp perceive/i
-    );
-    if (stabilityMs > 0) {
-      assertStep(runStep({
-        args: ['wait', target, String(stabilityMs)],
-        env,
-        steps,
-        name: 'stability-wait',
-        timeout: Math.max(5000, stabilityMs + 5000),
-      }));
-      assertStep(runStep({ args: ['status', target], env, steps, name: 'stability-status' }));
-      assertStep(runStep({ args: ['report', target], env, steps, name: 'stability-report' }));
+    for (const planned of buildKillerPathBenchmarkPlan(target, { stabilityMs })) {
+      const step = runStep({ ...planned, env, steps });
+      if (planned.expectedFailure) {
+        assertExpectedFailure(step, planned.expectedPattern);
+      } else {
+        assertStep(step);
+      }
     }
 
     const summary = summarizeBenchmarkRun({

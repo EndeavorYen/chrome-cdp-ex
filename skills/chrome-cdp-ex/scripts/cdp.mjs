@@ -16,6 +16,9 @@ import net from 'net';
 const TIMEOUT = 15000;
 const SCREENSHOT_TIMEOUT = 30000;
 const NAVIGATION_TIMEOUT = 30000;
+const RELOAD_EVENT_TIMEOUT = 5000;
+const RELOAD_DISPATCH_TIMEOUT = 2000;
+const RELOAD_OBSERVE_TIMEOUT = 2000;
 const IDLE_TIMEOUT = 20 * 60 * 1000;
 const FIRE_AND_FORGET_KEEPALIVE = 60 * 60 * 1000;
 const DAEMON_CONNECT_RETRIES = 20;
@@ -6522,10 +6525,48 @@ async function historyNavStr(cdp, sid, direction) {
 }
 
 async function reloadStr(cdp, sid) {
-  const loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
-  await cdp.send('Page.reload', {}, sid);
-  try { await loadEvent.promise; } catch {}
+  await cdp.send('Page.enable', {}, sid);
+  const loadEvent = cdp.waitForEvent('Page.loadEventFired', RELOAD_EVENT_TIMEOUT);
+  try {
+    await cdp.send('Page.reload', {}, sid, RELOAD_DISPATCH_TIMEOUT);
+  } catch (e) {
+    if (!isTimeoutError(e, ['Page.reload'])) throw e;
+  }
+  try {
+    await Promise.race([
+      loadEvent.promise,
+      waitForDocumentReady(cdp, sid, 5000),
+    ]);
+  } catch {
+    // Some embedded/live targets do not reliably emit Page.loadEventFired after
+    // reload. Action feedback still performs a bounded post-reload observation.
+  } finally {
+    loadEvent.cancel?.();
+  }
   return 'Page reloaded';
+}
+
+async function observeReloadPage(cdp, sid) {
+  const result = await cdp.send('Runtime.evaluate', {
+    expression: `JSON.stringify({
+      title: document.title || '',
+      url: window.location.href || '',
+      readyState: document.readyState || ''
+    })`,
+    returnByValue: true,
+    awaitPromise: true,
+  }, sid, RELOAD_OBSERVE_TIMEOUT);
+  if (result.exceptionDetails) {
+    throw new Error(result.exceptionDetails.text || result.exceptionDetails.exception?.description);
+  }
+  const value = result.result?.value;
+  const parsed = typeof value === 'string' ? JSON.parse(value) : (value || {});
+  return [
+    'Reload observation:',
+    `Page: ${parsed.title || '(untitled)'}`,
+    `URL: ${parsed.url || '(unknown)'}`,
+    `Ready state: ${parsed.readyState || '(unknown)'}`,
+  ].join('\n');
 }
 
 // --- Inject: live CSS/JS injection with tracking ---
@@ -9217,7 +9258,7 @@ async function runDaemon(targetId) {
             const reloadResult = await reloadStr(cdp, sessionId);
             clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
             return `${reloadResult} (console/exception/navigation buffers cleared)`;
-          }, { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts.format);
+          }, { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts.format);
           break;
         }
         case 'closetab': result = await closetabStr(cdp, targetId); break;
@@ -9630,7 +9671,8 @@ ACTION FEEDBACK
   click, jsclick, clickxy, fill, type, press, select, scroll, upload, inject,
   dismiss-modal, and viewport (when resizing) automatically wait for DOM to
   settle and return compact action evidence plus a perceive diff.
-  back, forward, reload, and nav return action evidence plus a full perceive.
+  back, forward, and nav return action evidence plus a full perceive.
+  reload returns action evidence plus a bounded lightweight page observation.
   Each mutating action also snapshots console/exception/network buffers before
   dispatch and reports compact deltas such as console errors, failed requests,
   or requests still pending after the action observation window.
@@ -9737,7 +9779,7 @@ const COMMANDS = Object.freeze([
   { name: 'table', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'back', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
   { name: 'forward', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
-  { name: 'reload', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
+  { name: 'reload', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
   { name: 'closetab', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'netlog', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'inject', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
@@ -10418,7 +10460,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
   parseFormatArgs, formatJson, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, formatCallResult, evalBase64Decode,
-  navStr, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
+  navStr, reloadStr, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parseRepeatArgs, repeatStr, autoActionJsonArgs,
   isBatchParallelUnsafeCommand,

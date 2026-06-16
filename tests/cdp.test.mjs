@@ -10,7 +10,7 @@ const {
   shouldShowAxNode, formatAxNode, orderedAxChildren, isRef,
   validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
   formatPageList, buildPerceiveTree, perceivePageScript, injectStr, cascadeStr, recordStr, parseRecordArgs,
-  evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, navStr, clickStr, fillStr, fillReactStr, waitForStr,
+  evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, navStr, reloadStr, observeReloadPage, clickStr, fillStr, fillReactStr, waitForStr,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs, formatCliError,
   formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   statusStr, clearObservationBuffers,
@@ -3589,8 +3589,8 @@ function createMockCDP(handlers = {}) {
   const calls = [];
   return {
     calls,
-    send(method, params = {}, sessionId) {
-      calls.push({ method, params, sessionId });
+    send(method, params = {}, sessionId, timeout) {
+      calls.push({ method, params, sessionId, timeout });
       if (handlers[method]) return Promise.resolve(handlers[method](params, sessionId));
       return Promise.resolve({});
     },
@@ -4525,6 +4525,105 @@ describe('navStr', () => {
     const cdp = createMockCDP({});
     await expect(navStr(cdp, 'sid1', 'http://169.254.169.254/'))
       .rejects.toThrow(/metadata/i);
+  });
+});
+
+// =========================================================================
+// reloadStr (with CDP mock)
+// =========================================================================
+
+describe('reloadStr', () => {
+  it('enables Page events before reloading', async () => {
+    const cdp = createMockCDP({
+      'Page.enable': () => ({}),
+      'Page.reload': () => ({}),
+      'event:Page.loadEventFired': () => ({}),
+    });
+
+    const result = await reloadStr(cdp, 'sid1');
+
+    expect(result).toBe('Page reloaded');
+    expect(cdp.calls.map(call => call.method).slice(0, 2)).toEqual(['Page.enable', 'Page.reload']);
+  });
+
+  it('falls back to document readiness when reload load event is absent', async () => {
+    const calls = [];
+    let loadEventTimeout;
+    let reloadDispatchTimeout;
+    const cdp = {
+      calls,
+      send(method, params = {}, sessionId, timeout) {
+        calls.push({ method, params, sessionId });
+        if (method === 'Page.reload') reloadDispatchTimeout = timeout;
+        if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: 'complete' } });
+        return Promise.resolve({});
+      },
+      waitForEvent(_method, timeout) {
+        loadEventTimeout = timeout;
+        return {
+          promise: new Promise(() => {}),
+          cancel() {},
+        };
+      },
+    };
+
+    const result = await Promise.race([
+      reloadStr(cdp, 'sid1'),
+      new Promise(resolve => setTimeout(() => resolve('timed-out'), 50)),
+    ]);
+
+    expect(result).toBe('Page reloaded');
+    expect(reloadDispatchTimeout).toBeLessThanOrEqual(2000);
+    expect(loadEventTimeout).toBeLessThanOrEqual(5000);
+    expect(calls.map(call => call.method)).toEqual(['Page.enable', 'Page.reload', 'Runtime.evaluate']);
+  });
+
+  it('continues after a Page.reload dispatch timeout', async () => {
+    const cdp = {
+      calls: [],
+      send(method, params = {}, sessionId) {
+        cdp.calls.push({ method, params, sessionId });
+        if (method === 'Page.reload') return Promise.reject(new Error('Timeout: Page.reload'));
+        if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: 'complete' } });
+        return Promise.resolve({});
+      },
+      waitForEvent() {
+        return {
+          promise: new Promise(() => {}),
+          cancel() {},
+        };
+      },
+    };
+
+    await expect(reloadStr(cdp, 'sid1')).resolves.toBe('Page reloaded');
+    expect(cdp.calls.map(call => call.method)).toEqual(['Page.enable', 'Page.reload', 'Runtime.evaluate']);
+  });
+
+  it('observes reload completion with a short lightweight page probe', async () => {
+    let evaluateTimeout;
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params, _sid) => {
+        evaluateTimeout = cdp.calls.at(-1)?.timeout;
+        expect(params.expression).toContain('document.readyState');
+        return {
+          result: {
+            value: JSON.stringify({
+              title: 'Smoke',
+              url: 'https://example.test/app',
+              readyState: 'complete',
+            }),
+          },
+        };
+      },
+    });
+
+    const out = await observeReloadPage(cdp, 'sid1');
+
+    expect(evaluateTimeout).toBeLessThanOrEqual(2000);
+    expect(out).toContain('Reload observation');
+    expect(out).toContain('Page: Smoke');
+    expect(out).toContain('URL: https://example.test/app');
+    expect(out).toContain('Ready state: complete');
   });
 });
 
