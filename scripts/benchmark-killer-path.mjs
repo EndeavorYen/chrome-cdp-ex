@@ -244,13 +244,14 @@ function benchmarkReportLatestActionCoverage(steps) {
 
 function countsTowardUsefulObservationTokens(step) {
   const model = stepModel(step);
-  const commandName = step.command?.[0] || step.name;
+  const commandName = normalizeActionCommandName(step.command?.[0] || step.name);
   if (commandName === 'report' || model?.schema === 'chrome-cdp-ex.report.v1') return false;
-  return step.hasUsefulObservation || step.hasActionEvidence;
+  if (MUTATING_COMMANDS.has(commandName) || model?.schema === 'chrome-cdp-ex.action.v1') return false;
+  return step.hasUsefulObservation;
 }
 
 const DEFAULT_GATE_LIMITS = Object.freeze({
-  commandCallsMax: 20,
+  commandCallsMax: 23,
   firstUsefulObservationMsMax: 5000,
   goldenPathMsMax: 120000,
   usefulObservationTokensMax: 3000,
@@ -731,8 +732,16 @@ function runStep({ args, env, steps, name = args[0], timeout = 20000, expectedFa
   });
 }
 
-export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entrySteps = 'doctor-list' } = {}) {
+function benchmarkHashUrl(baseUrl, hash) {
+  if (!baseUrl) return null;
+  const url = new URL(baseUrl);
+  url.hash = hash;
+  return url.toString();
+}
+
+export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entrySteps = 'doctor-list', navUrl = null } = {}) {
   const hmrMutationScript = '(() => { if (typeof appendLog === "function") { appendLog("hmr panel ready"); return "hmr-added"; } const log = document.querySelector("#combat-log"); const el = document.createElement("p"); el.id = "hmr-panel"; el.textContent = "hmr panel ready"; log?.appendChild(el); if (log) log.scrollTop = log.scrollHeight; return "hmr-added"; })()';
+  const actionEvidenceNavUrl = benchmarkHashUrl(navUrl, 'after-action-evidence');
   const plan = [];
   if (entrySteps === 'doctor-list') {
     plan.push(
@@ -748,12 +757,15 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
     { args: ['frame', target] },
     { args: ['cascade', target, '#custom-clickable', 'cursor'] },
     { args: ['dismiss-modal', target] },
+    { args: ['fill', target, '#cmd', 'look trainer', '--format', 'json'] },
     { args: ['click', target, '#combat', '--format', 'json'] },
     { args: ['perceive', target, '--since-action', '--format', 'json'] },
     { args: ['report', target, '--format', 'json'] },
     { args: ['perceive', target, '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-baseline' },
     { args: ['eval', target, hmrMutationScript], name: 'hmr-mutate' },
     { args: ['perceive', target, '--diff', '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-diff' },
+    { args: ['inject', target, '--css', '#combat-log { outline: 2px solid rgb(37, 99, 235); }', '--format', 'json'] },
+    ...(actionEvidenceNavUrl ? [{ args: ['nav', target, actionEvidenceNavUrl, '--format', 'json'] }] : []),
     { args: ['perceive', target, '-s', '#cmd', '-d', '4'], name: 'stale-ref-setup' },
     { args: ['reload', target], name: 'stale-ref-mutate' },
     { args: ['wait', target, '1000'], name: 'stale-ref-wait', timeout: 5000 },
@@ -901,7 +913,7 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
     }
     if (!target) throw new Error('open did not produce a benchmark target');
 
-    for (const planned of buildKillerPathBenchmarkPlan(target, { stabilityMs, entrySteps: 'none' })) {
+    for (const planned of buildKillerPathBenchmarkPlan(target, { stabilityMs, entrySteps: 'none', navUrl: url })) {
       const step = await runStep({ ...planned, env, steps });
       if (planned.expectedFailure) {
         assertExpectedFailure(step, planned.expectedPattern);

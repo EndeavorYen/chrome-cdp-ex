@@ -580,7 +580,7 @@ describe('benchmark killer path helpers', () => {
       rate: 1,
     });
     expect(summary.metrics.usefulObservationTokens).toBe(
-      estimateTokenCount(perceiveJson.length) + estimateTokenCount(actionJson.length) + estimateTokenCount(sinceActionJson.length),
+      estimateTokenCount(perceiveJson.length) + estimateTokenCount(sinceActionJson.length),
     );
     expect(summary.metrics.actionEvidenceCoverage).toMatchObject({
       total: 1,
@@ -654,8 +654,11 @@ describe('benchmark killer path helpers', () => {
     });
   });
 
-  it('plans stale-ref mutation with real reload action evidence', () => {
-    const plan = buildKillerPathBenchmarkPlan('AABBCCDD', { stabilityMs: 1000 });
+  it('plans core mutating commands with live action evidence coverage', () => {
+    const plan = buildKillerPathBenchmarkPlan('AABBCCDD', {
+      stabilityMs: 1000,
+      navUrl: 'http://127.0.0.1:41738/smoke-page.html',
+    });
     const staleRefMutation = plan.find(step => step.name === 'stale-ref-mutate');
 
     expect(staleRefMutation).toMatchObject({
@@ -665,10 +668,16 @@ describe('benchmark killer path helpers', () => {
     expect(staleRefMutation.args[0]).not.toBe('eval');
     expect(plan.map(step => step.args[0])).toEqual(expect.arrayContaining([
       'dismiss-modal',
+      'fill',
       'click',
+      'inject',
+      'nav',
       'reload',
       'report',
     ]));
+    expect(plan.find(step => step.args[0] === 'fill')?.args).toEqual(['fill', 'AABBCCDD', '#cmd', 'look trainer', '--format', 'json']);
+    expect(plan.find(step => step.args[0] === 'inject')?.args).toEqual(['inject', 'AABBCCDD', '--css', '#combat-log { outline: 2px solid rgb(37, 99, 235); }', '--format', 'json']);
+    expect(plan.find(step => step.args[0] === 'nav')?.args).toEqual(['nav', 'AABBCCDD', 'http://127.0.0.1:41738/smoke-page.html#after-action-evidence', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'doctor')?.args).toEqual(['doctor', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'list')?.args).toEqual(['list', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'perceive')?.args).toContain('--format');
@@ -681,16 +690,20 @@ describe('benchmark killer path helpers', () => {
     ]);
     expect(plan.find(step => step.args[0] === 'click')?.args).toContain('--format');
     expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--format', 'json']);
-    expect(plan.length).toBeLessThanOrEqual(20);
+    expect(plan.length).toBeLessThanOrEqual(23);
   });
 
   it('can build the post-open benchmark plan without repeating doctor/list', () => {
-    const plan = buildKillerPathBenchmarkPlan('AABBCCDD', { stabilityMs: 1000, entrySteps: 'none' });
+    const plan = buildKillerPathBenchmarkPlan('AABBCCDD', {
+      stabilityMs: 1000,
+      entrySteps: 'none',
+      navUrl: 'http://127.0.0.1:41738/smoke-page.html',
+    });
 
     expect(plan[0].args).toEqual(['perceive', 'AABBCCDD', '-C', '-d', '8', '--keep-refs', '--last', '20', '--format', 'json']);
     expect(plan.map(step => step.args[0])).not.toContain('doctor');
     expect(plan.map(step => step.args[0])).not.toContain('list');
-    expect(plan.length).toBeLessThanOrEqual(18);
+    expect(plan.length).toBeLessThanOrEqual(21);
   });
 
   it('loads measured comparison baselines from a versioned file', () => {
