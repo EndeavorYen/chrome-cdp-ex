@@ -165,6 +165,8 @@ Action feedback is automatic.
 
 ## Quick start
 
+For the shortest first run, use [the Killer Path walkthrough](docs/examples/killer-path.md).
+
 1. Clone and enter the repo.
 
 ```bash
