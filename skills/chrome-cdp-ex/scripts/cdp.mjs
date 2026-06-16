@@ -1505,6 +1505,7 @@ async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
 
 function createPerceptionModel({ targetPrefix = '<target>', page, viewport, consoleHealth, refs, nodes, limits }) {
   const firstRef = nodes?.find(node => node.ref)?.ref || '@ref';
+  const recommendation = goldenPathActRecommendation(targetPrefix, { ref: firstRef });
   return {
     schema: 'chrome-cdp-ex.perceive.v1',
     targetPrefix,
@@ -1520,7 +1521,8 @@ function createPerceptionModel({ targetPrefix = '<target>', page, viewport, cons
     },
     nodes,
     limits,
-    recommendation: goldenPathActRecommendation(targetPrefix, { ref: firstRef }),
+    recommendation,
+    nextSteps: recommendation.commands,
   };
 }
 
@@ -9559,7 +9561,7 @@ Usage: cdp <command> [args]
   perceive <target> [flags] [--format json]  Full page perception with @ref indices + coordinates
                                     --diff: show only changes since last perceive
                                     --since-action: show changes caused by the last mutating command
-                                    JSON includes structured refs plus golden-path recommendation.
+                                    JSON includes structured refs plus recommendation/nextSteps.
                                     JSON with --diff/--since-action returns chrome-cdp-ex.perceive-diff.v1
                                     --frame @fN / -F @fN: perceive inside an iframe; refs become @fN:M
                                     -s <sel> / --selector: scope to CSS selector subtree

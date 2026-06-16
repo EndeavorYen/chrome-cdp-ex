@@ -853,6 +853,7 @@ describe('PerceptionModel', () => {
       consentRequired: false,
     });
     expect(model.recommendation.reason).toContain('first interactive ref');
+    expect(model.nextSteps).toEqual(model.recommendation.commands);
   });
 
   it('formats perception JSON as parseable output', () => {
