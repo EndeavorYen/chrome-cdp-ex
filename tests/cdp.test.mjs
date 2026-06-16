@@ -906,10 +906,29 @@ describe('ActionResult', () => {
       schema: 'chrome-cdp-ex.action-outcome.v1',
       status: 'no-change',
       changed: false,
-      needsAttention: false,
+      needsAttention: true,
       evidence: 'dom',
     });
+    expect(result.recommendation).toMatchObject({
+      source: 'action-outcome',
+      strategy: 'investigate-no-change',
+      outcomeStatus: 'no-change',
+      verifyCommand: 'cdp perceive ABC123 -C -d 8',
+      commands: [
+        'cdp overlay ABC123 "#refresh" --format json',
+        'cdp frame ABC123 --format json',
+        'cdp perceive ABC123 -C -d 8',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(result.nextSteps).toEqual([
+      'cdp overlay ABC123 "#refresh" --format json',
+      'cdp frame ABC123 --format json',
+      'cdp perceive ABC123 -C -d 8',
+      'cdp report ABC123 --format json',
+    ]);
     expect(result.effects.diagnosis).toBeUndefined();
+    expect(T.formatActionText(result)).toContain('Next: cdp overlay ABC123 "#refresh" --format json');
   });
 
   it('formats action evidence as compact text', () => {
@@ -1530,6 +1549,48 @@ describe('Session report', () => {
       diagnosisKind: 'network-failure',
       verifyCommand: 'cdp perceive ABC123 --since-action',
     });
+  });
+
+  it('prioritizes latest no-change outcome recovery in JSON report next steps', () => {
+    const state = T.createSessionState({ targetId: 'ABC123456789', sessionId: 'sid-1' });
+    const actionResult = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123456789', input: '#refresh', resolvedBy: 'selector', label: '#refresh' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 90 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+
+    T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+    const model = T.buildSessionReportModel(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(model.recommendation).toMatchObject({
+      source: 'latest-action-outcome',
+      strategy: 'investigate-no-change',
+      actionIndex: 1,
+      action: 'click',
+      outcomeStatus: 'no-change',
+      verifyCommand: 'cdp perceive ABC12345 -C -d 8',
+      commands: [
+        'cdp overlay ABC12345 "#refresh" --format json',
+        'cdp frame ABC12345 --format json',
+        'cdp perceive ABC12345 -C -d 8',
+        'cdp report ABC12345 --format json',
+      ],
+    });
+    expect(model.nextSteps).toEqual([
+      'cdp overlay ABC12345 "#refresh" --format json',
+      'cdp frame ABC12345 --format json',
+      'cdp perceive ABC12345 -C -d 8',
+      'cdp report ABC12345 --format json',
+      'cdp record-actions ABC12345 --format json',
+      'cdp export-playwright ABC12345',
+    ]);
+    expect(out).toContain('Outcome: no-change');
+    expect(out).toContain('Strategy: investigate-no-change');
+    expect(out).toContain('Run: cdp overlay ABC12345 "#refresh" --format json');
   });
 
   it('normalizes report diagnosis recovery commands to the target prefix', () => {

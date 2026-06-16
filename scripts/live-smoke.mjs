@@ -291,6 +291,28 @@ if (!parsedFailedClickAction.nextHint?.includes('cdp perceive')) {
 if (parsedFailedClickAction.recommendation?.source !== 'action-diagnosis' || !parsedFailedClickAction.nextSteps?.some(step => step.includes('cdp perceive'))) {
   throw new Error(`failed click --format json should promote diagnosis recovery commands:\n${failedClickJsonOut}`);
 }
+const noChangeClickJsonOut = step('no-change action json recovery', () => run(['click', target, '#noop', '--format', 'json']));
+const parsedNoChangeAction = JSON.parse(noChangeClickJsonOut);
+if (parsedNoChangeAction.schema !== 'chrome-cdp-ex.action.v1' || parsedNoChangeAction.action !== 'click') {
+  throw new Error(`no-change click --format json should return action evidence JSON:\n${noChangeClickJsonOut}`);
+}
+if (parsedNoChangeAction.outcome?.status !== 'no-change' || parsedNoChangeAction.outcome?.needsAttention !== true) {
+  throw new Error(`no-change click should report an attention-worthy no-change outcome:\n${noChangeClickJsonOut}`);
+}
+if (parsedNoChangeAction.recommendation?.strategy !== 'investigate-no-change') {
+  throw new Error(`no-change click should recommend investigation instead of normal continuation:\n${noChangeClickJsonOut}`);
+}
+const noChangeNextSteps = parsedNoChangeAction.nextSteps || [];
+for (const expected of [
+  `cdp overlay ${target} "#noop" --format json`,
+  `cdp frame ${target} --format json`,
+  `cdp perceive ${target} -C -d 8`,
+  `cdp report ${target} --format json`,
+]) {
+  if (!noChangeNextSteps.includes(expected)) {
+    throw new Error(`no-change click should include ${expected} in nextSteps:\n${noChangeClickJsonOut}`);
+  }
+}
 const diffShotOut = step('diff-shot fill diff', () => run(['diff-shot', target]));
 assertIncludes(diffShotOut, 'Diff-shot: changed', 'diff-shot diff');
 assertIncludes(diffShotOut, 'Diff image:', 'diff-shot artifact');

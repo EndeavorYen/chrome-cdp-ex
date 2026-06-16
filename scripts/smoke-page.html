@@ -26,6 +26,7 @@
     <input id="cmd" aria-label="command input" placeholder="look 訓練師">
     <button id="combat">Run combat</button>
     <button id="diagnostic">Run diagnostic</button>
+    <button id="noop">No visible change</button>
     <div id="custom-clickable" onclick="appendLog('custom clickable used')">Custom clickable div</div>
     <section role="region" aria-label="事件紀錄">
       <h2>事件紀錄</h2>
@@ -70,6 +71,9 @@
       } finally {
         appendLog('diagnostic requested');
       }
+    });
+    document.getElementById('noop').addEventListener('click', () => {
+      document.getElementById('noop').blur();
     });
     document.getElementById('close-modal').addEventListener('click', () => {
       document.getElementById('motd').hidden = true;

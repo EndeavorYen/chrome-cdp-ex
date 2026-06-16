@@ -1734,6 +1734,7 @@ function buildActionOutcome(actionResult = {}) {
       ...base,
       status: 'no-change',
       changed: false,
+      needsAttention: true,
       evidence: 'dom',
       reason: 'No visible AX tree change observed after action.',
     };
@@ -1769,7 +1770,9 @@ function applyActionObservationDelta(actionResult, delta = {}) {
 function recoveryCommandArg(value) {
   const text = String(value || '').trim();
   if (!text) return '';
-  if (/^@[a-z0-9:]+$/i.test(text) || /^[^\s"'`\\$]+$/.test(text)) return text;
+  if (/^@[a-z0-9:]+$/i.test(text)) return text;
+  if (text.startsWith('#')) return JSON.stringify(text);
+  if (/^[^\s"'`\\$]+$/.test(text)) return text;
   return JSON.stringify(text);
 }
 
@@ -1786,6 +1789,34 @@ function uniqueRecoveryCommands(commands = []) {
     out.push(entry);
   }
   return out;
+}
+
+function buildNoChangeOutcomeRecommendation({
+  action = null,
+  actionIndex = null,
+  target = '<target>',
+  targetInput = '',
+  source = 'action-outcome',
+} = {}) {
+  const input = recoveryCommandArg(targetInput);
+  const overlayCommand = input ? `cdp overlay ${target} ${input} --format json` : `cdp overlay ${target} --format json`;
+  const perceiveCommand = `cdp perceive ${target} -C -d 8`;
+  return {
+    source,
+    actionIndex,
+    action,
+    outcomeStatus: 'no-change',
+    strategy: 'investigate-no-change',
+    priority: 'medium',
+    reason: 'The action dispatched but produced no visible AX tree change; check blockers, frame context, or refreshed refs before retrying.',
+    verifyCommand: perceiveCommand,
+    commands: uniqueNextStepCommands([
+      overlayCommand,
+      `cdp frame ${target} --format json`,
+      perceiveCommand,
+      `cdp report ${target} --format json`,
+    ]),
+  };
 }
 
 function buildActionRecoveryPlan(diagnosis = {}, { targetId = '<target>', targetInput = '' } = {}) {
@@ -2050,6 +2081,14 @@ function buildActionRecommendation(actionResult = {}) {
       commands,
     };
   }
+  const outcome = actionResult.outcome || buildActionOutcome(actionResult);
+  if (outcome.status === 'no-change') {
+    return buildNoChangeOutcomeRecommendation({
+      action: actionResult.action || null,
+      target,
+      targetInput: actionFailureInput(actionResult.target || {}),
+    });
+  }
 
   return {
     source: 'action-evidence',
@@ -2174,6 +2213,9 @@ function formatActionText(result) {
   if (diagnostics.networkSample) lines.push(`Network sample: ${diagnostics.networkSample}`);
   if (result.effects?.domDiff) lines.push('---', result.effects.domDiff);
   if (diagnosis?.nextCommand && diagnosis.status !== 'ok') lines.push(`Next: ${diagnosis.nextCommand}`);
+  if (!diagnosis?.nextCommand && result.outcome?.status === 'no-change' && result.recommendation?.commands?.[0]) {
+    lines.push(`Next: ${result.recommendation.commands[0]}`);
+  }
   if (result.nextHint) lines.push(`Hint: ${result.nextHint}`);
   return lines.join('\n');
 }
@@ -2490,6 +2532,23 @@ function buildReportRecommendation(actionLog = [], target, fullTarget = target) 
       commands,
     };
   }
+  for (let i = actionLog.length - 1; i >= 0; i--) {
+    const entry = actionLog[i];
+    if (entry?.outcome?.status !== 'no-change') continue;
+    const sourceTarget = actionTargetCommandId(entry.target || {}) || fullTarget;
+    const recommendation = buildNoChangeOutcomeRecommendation({
+      source: 'latest-action-outcome',
+      actionIndex: i + 1,
+      action: entry.action || null,
+      target: sourceTarget,
+      targetInput: actionFailureInput(entry.target || {}),
+    });
+    return {
+      ...recommendation,
+      verifyCommand: normalizeReportTargetCommand(recommendation.verifyCommand || null, sourceTarget, target),
+      commands: normalizeReportTargetCommands(recommendation.commands || [], sourceTarget, target),
+    };
+  }
   return {
     source: actionLog.length > 0 ? 'session-continuation' : 'onboarding',
     actionIndex: null,
@@ -2509,6 +2568,7 @@ function formatReportRecommendationLines(recommendation = {}) {
   if (recommendation.source) lines.push(`  Source: ${recommendation.source}`);
   if (recommendation.actionIndex != null) lines.push(`  Action: #${recommendation.actionIndex}${recommendation.action ? ` ${recommendation.action}` : ''}`);
   if (recommendation.diagnosisKind) lines.push(`  Diagnosis: ${recommendation.diagnosisKind}`);
+  if (recommendation.outcomeStatus) lines.push(`  Outcome: ${recommendation.outcomeStatus}`);
   if (recommendation.strategy) lines.push(`  Strategy: ${recommendation.strategy}`);
   if (recommendation.priority) lines.push(`  Priority: ${recommendation.priority}`);
   if (run) lines.push(`  Run: ${run}`);
