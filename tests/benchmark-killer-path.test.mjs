@@ -337,10 +337,11 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Action evidence coverage: 100% (2/2)');
     expect(out).toContain('Handoff nextSteps coverage: n/a (0/0)');
     expect(out).toContain('Handoff recommendation coverage: n/a (0/0)');
+    expect(out).toContain('Doctor onboarding coverage: n/a (0/0)');
     expect(out).toContain('Report latestAction coverage: n/a (0/0)');
     expect(out).toContain('Report timelineWindow coverage: n/a (0/0)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 15/15 pass');
+    expect(out).toContain('Gate checks: 16/16 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -528,6 +529,17 @@ describe('benchmark killer path helpers', () => {
           status: 0,
           stdout: JSON.stringify({
             schema: 'chrome-cdp-ex.doctor.v1',
+            wizard: {
+              currentStep: 'cdp perceive AABBCCDD -C -d 8',
+              goldenPath: ['doctor', 'list/open', 'perceive', 'click/fill', 'since-action evidence', 'report'],
+            },
+            checks: [
+              { label: 'Node', status: 'OK' },
+              { label: 'FD limit', status: 'OK' },
+              { label: 'CDP', status: 'OK' },
+              { label: 'Tabs', status: 'OK' },
+              { label: 'Permission', status: 'WARN' },
+            ],
             recommendation: {
               source: 'doctor',
               commands: ['cdp list --format json'],
@@ -629,7 +641,61 @@ describe('benchmark killer path helpers', () => {
       missing: [],
       rate: 1,
     });
+    expect(summary.metrics.doctorOnboardingCoverage).toMatchObject({
+      total: 1,
+      covered: 1,
+      missing: [],
+      rate: 1,
+    });
     expect(summary.steps[2].hasActionEvidence).toBe(true);
+  });
+
+  it('fails the gate when doctor JSON lacks onboarding wizard evidence', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'doctor-onboarding',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'doctor',
+          command: ['doctor', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.doctor.v1',
+            recommendation: {
+              source: 'doctor-onboarding',
+              commands: ['cdp list --format json'],
+            },
+            nextSteps: ['cdp list --format json'],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.doctorOnboardingCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'doctor',
+          commandText: 'cdp doctor --format json',
+          missing: expect.arrayContaining(['wizard.currentStep', 'wizard.goldenPath', 'checks.Node', 'checks.CDP']),
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'doctor-onboarding',
+        passed: false,
+        actual: 0,
+        recommendation: 'Doctor JSON must expose wizard currentStep, golden path, and readiness checks for first-run onboarding.',
+      }),
+    ]));
   });
 
   it('fails the gate when a versioned JSON handoff lacks a recommendation', () => {

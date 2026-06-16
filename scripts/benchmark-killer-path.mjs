@@ -248,6 +248,59 @@ function benchmarkHandoffRecommendationCoverage(steps) {
   };
 }
 
+function doctorOnboardingMissingFields(model = {}) {
+  const missing = [];
+  const wizard = model.wizard || {};
+  if (typeof wizard.currentStep !== 'string' || !wizard.currentStep.trim()) {
+    missing.push('wizard.currentStep');
+  }
+  const goldenPath = Array.isArray(wizard.goldenPath) ? wizard.goldenPath : [];
+  for (const step of ['doctor', 'list/open', 'perceive', 'click/fill', 'since-action evidence', 'report']) {
+    if (!goldenPath.includes(step)) missing.push('wizard.goldenPath');
+  }
+  const checkLabels = new Set((Array.isArray(model.checks) ? model.checks : [])
+    .map(check => String(check?.label || ''))
+    .filter(Boolean));
+  for (const label of ['Node', 'FD limit', 'CDP', 'Tabs', 'Permission']) {
+    if (!checkLabels.has(label)) missing.push(`checks.${label}`);
+  }
+  if (!recommendationHasActionableContext(model.recommendation)) {
+    missing.push('recommendation');
+  }
+  const nextSteps = Array.isArray(model.nextSteps) ? model.nextSteps : [];
+  if (!nextSteps.some(value => /^cdp\s+\S+/.test(String(value || '')))) {
+    missing.push('nextSteps');
+  }
+  return [...new Set(missing)];
+}
+
+function benchmarkDoctorOnboardingCoverage(steps) {
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
+    if (model?.schema !== 'chrome-cdp-ex.doctor.v1') continue;
+    total += 1;
+    const missingFields = doctorOnboardingMissingFields(model);
+    if (missingFields.length === 0) {
+      covered += 1;
+    } else {
+      missing.push({
+        name: step.name,
+        commandText: step.commandText,
+        missing: missingFields,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    rate: total > 0 ? covered / total : null,
+  };
+}
+
 function benchmarkReportLatestActionCoverage(steps) {
   const missing = [];
   let total = 0;
@@ -333,6 +386,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   observedActionEvidenceCoverageRateMin: 1,
   handoffNextStepsCoverageRateMin: 1,
   handoffRecommendationCoverageRateMin: 1,
+  doctorOnboardingCoverageRateMin: 1,
   reportLatestActionCoverageRateMin: 1,
   reportTimelineWindowCoverageRateMin: 1,
   differentiatorSuccessRateMin: 1,
@@ -451,6 +505,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '>=',
       limit: limits.handoffRecommendationCoverageRateMin,
       recommendation: 'Every versioned JSON handoff must expose a recommendation that explains the next action.',
+    }),
+    gateCriterion({
+      name: 'doctor-onboarding',
+      actual: metrics.doctorOnboardingCoverage?.rate ?? 1,
+      operator: '>=',
+      limit: limits.doctorOnboardingCoverageRateMin,
+      recommendation: 'Doctor JSON must expose wizard currentStep, golden path, and readiness checks for first-run onboarding.',
     }),
     gateCriterion({
       name: 'report-timeline',
@@ -679,6 +740,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       actionEvidenceCoverage: benchmarkActionEvidenceCoverage(normalizedSteps),
       handoffNextStepsCoverage: benchmarkHandoffNextStepsCoverage(normalizedSteps),
       handoffRecommendationCoverage: benchmarkHandoffRecommendationCoverage(normalizedSteps),
+      doctorOnboardingCoverage: benchmarkDoctorOnboardingCoverage(normalizedSteps),
       reportLatestActionCoverage: benchmarkReportLatestActionCoverage(normalizedSteps),
       reportTimelineWindowCoverage: benchmarkReportTimelineWindowCoverage(normalizedSteps),
       verificationCallsSaved: actionEvidenceSteps.length,
@@ -721,6 +783,7 @@ export function formatBenchmarkReport(summary) {
     `Action evidence coverage: ${summary.metrics.actionEvidenceCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionEvidenceCoverage.rate * 100)}%`} (${summary.metrics.actionEvidenceCoverage?.covered ?? 0}/${summary.metrics.actionEvidenceCoverage?.total ?? 0})`,
     `Handoff nextSteps coverage: ${summary.metrics.handoffNextStepsCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffNextStepsCoverage.rate * 100)}%`} (${summary.metrics.handoffNextStepsCoverage?.covered ?? 0}/${summary.metrics.handoffNextStepsCoverage?.total ?? 0})`,
     `Handoff recommendation coverage: ${summary.metrics.handoffRecommendationCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffRecommendationCoverage.rate * 100)}%`} (${summary.metrics.handoffRecommendationCoverage?.covered ?? 0}/${summary.metrics.handoffRecommendationCoverage?.total ?? 0})`,
+    `Doctor onboarding coverage: ${summary.metrics.doctorOnboardingCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.doctorOnboardingCoverage.rate * 100)}%`} (${summary.metrics.doctorOnboardingCoverage?.covered ?? 0}/${summary.metrics.doctorOnboardingCoverage?.total ?? 0})`,
     `Report latestAction coverage: ${summary.metrics.reportLatestActionCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportLatestActionCoverage.rate * 100)}%`} (${summary.metrics.reportLatestActionCoverage?.covered ?? 0}/${summary.metrics.reportLatestActionCoverage?.total ?? 0})`,
     `Report timelineWindow coverage: ${summary.metrics.reportTimelineWindowCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportTimelineWindowCoverage.rate * 100)}%`} (${summary.metrics.reportTimelineWindowCoverage?.covered ?? 0}/${summary.metrics.reportTimelineWindowCoverage?.total ?? 0})`,
     `Verification calls saved: ${summary.metrics.verificationCallsSaved}`,
