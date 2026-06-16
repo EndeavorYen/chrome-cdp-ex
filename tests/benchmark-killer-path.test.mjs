@@ -147,6 +147,15 @@ describe('benchmark killer path helpers', () => {
     expect(summary.metrics.firstActionEvidenceMs).toBe(130);
     expect(summary.metrics.goldenPathMs).toBe(180);
     expect(summary.metrics.autoEvidenceActions).toBe(1);
+    expect(summary.metrics.actionEvidenceCoverage).toMatchObject({
+      total: 2,
+      covered: 2,
+      missing: [],
+      rate: 1,
+      byCommand: {
+        click: { total: 2, covered: 2, missing: 0 },
+      },
+    });
     expect(summary.metrics.verificationCallsSaved).toBe(1);
     expect(summary.metrics.hasReportTimeline).toBe(true);
     expect(summary.metrics.differentiators).toMatchObject({
@@ -216,6 +225,7 @@ describe('benchmark killer path helpers', () => {
       expect.objectContaining({ name: 'golden-path-under-two-minutes', passed: true, actual: 180, operator: '<=', limit: 120000 }),
       expect.objectContaining({ name: 'useful-observation-tokens', passed: true, operator: '<=', limit: 3000 }),
       expect.objectContaining({ name: 'auto-evidence-actions', passed: true, actual: 1, operator: '>=', limit: 1 }),
+      expect.objectContaining({ name: 'observed-action-evidence-coverage', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'report-timeline', passed: true, actual: true, operator: '===', limit: true }),
       expect.objectContaining({ name: 'differentiator-success-rate', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'stale-ref-recovery-rate', passed: true, actual: 1, operator: '>=', limit: 1 }),
@@ -252,6 +262,12 @@ describe('benchmark killer path helpers', () => {
     expect(summary.metrics.firstUsefulObservationMs).toBeNull();
     expect(summary.metrics.firstActionEvidenceMs).toBeNull();
     expect(summary.metrics.goldenPathMs).toBeNull();
+    expect(summary.metrics.actionEvidenceCoverage).toMatchObject({
+      total: 0,
+      covered: 0,
+      missing: [],
+      rate: null,
+    });
     expect(summary.gate.passed).toBe(false);
     expect(summary.gate.criteria).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -311,8 +327,9 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('First action evidence: 60 ms');
     expect(out).toContain('Golden path complete: 100 ms');
     expect(out).toContain('Estimated output tokens:');
+    expect(out).toContain('Action evidence coverage: 100% (2/2)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 10/10 pass');
+    expect(out).toContain('Gate checks: 11/11 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -327,6 +344,47 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Verification calls saved: 1');
     expect(out).toContain('doctor');
     expect(out).toContain('report');
+  });
+
+  it('fails the gate when an observed mutating command lacks action evidence', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'action-evidence-coverage',
+      startedAt: 0,
+      endedAt: 60,
+      target: 'AABBCCDD',
+      steps: [
+        { name: 'perceive', command: ['perceive', 'AABB'], startedAt: 0, endedAt: 10, status: 0, stdout: 'Page:\n@1 Textbox', stderr: '' },
+        { name: 'click', command: ['click', 'AABB', '#go'], startedAt: 10, endedAt: 20, status: 0, stdout: 'Clicked\nclick: dispatched', stderr: '' },
+        { name: 'fill', command: ['fill', 'AABB', '#cmd', 'look'], startedAt: 20, endedAt: 30, status: 0, stdout: 'Filled #cmd', stderr: '' },
+        { name: 'inject', command: ['inject', 'AABB', '--css', 'body{}'], startedAt: 30, endedAt: 40, status: 0, stdout: 'inject: dispatched\nEffects:\nstate changed', stderr: '' },
+        { name: 'reload', command: ['reload', 'AABB'], startedAt: 40, endedAt: 50, status: 0, stdout: 'reload: dispatched\nPage: Test', stderr: '' },
+        { name: 'nav', command: ['nav', 'AABB', 'https://example.test'], startedAt: 50, endedAt: 60, status: 0, stdout: 'nav: dispatched\nPage: Test', stderr: '' },
+      ],
+    });
+
+    expect(summary.metrics.actionEvidenceCoverage).toMatchObject({
+      total: 5,
+      covered: 4,
+      rate: 0.8,
+      byCommand: {
+        click: { total: 1, covered: 1, missing: 0 },
+        fill: { total: 1, covered: 0, missing: 1 },
+        inject: { total: 1, covered: 1, missing: 0 },
+        reload: { total: 1, covered: 1, missing: 0 },
+        nav: { total: 1, covered: 1, missing: 0 },
+      },
+    });
+    expect(summary.metrics.actionEvidenceCoverage.missing).toEqual([
+      expect.objectContaining({ command: 'fill', commandText: 'cdp fill AABB #cmd look' }),
+    ]);
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'observed-action-evidence-coverage',
+        passed: false,
+        actual: 0.8,
+        recommendation: 'Every mutating command exercised by the benchmark must return action evidence.',
+      }),
+    ]));
   });
 
   it('parses JSON mode and stability window options', () => {

@@ -36,11 +36,23 @@ function hasUsefulObservation(step) {
 
 function hasActionEvidence(step) {
   const text = outputText(step);
-  const commandName = step.command?.[0] || step.name;
+  const commandName = normalizeActionCommandName(step.command?.[0] || step.name);
   return MUTATING_COMMANDS.has(commandName)
     && (/^[a-z-]+: dispatched/m.test(text)
       || /Action failure:/m.test(text)
       || /success but observation timed out/i.test(text));
+}
+
+function normalizeActionCommandName(value = '') {
+  const name = String(value || '').toLowerCase();
+  if (name === 'navigate') return 'nav';
+  if (name === 'dismissmodal') return 'dismiss-modal';
+  return name;
+}
+
+function mutatingCommandName(step = {}) {
+  const commandName = normalizeActionCommandName(step.command?.[0] || step.name);
+  return MUTATING_COMMANDS.has(commandName) ? commandName : null;
 }
 
 function differentiatorProbe(steps, predicate) {
@@ -113,12 +125,47 @@ function benchmarkSessionStability(steps) {
   };
 }
 
+function benchmarkActionEvidenceCoverage(steps) {
+  const byCommand = {};
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    const command = mutatingCommandName(step);
+    if (!command) continue;
+    total += 1;
+    byCommand[command] ||= { total: 0, covered: 0, missing: 0 };
+    byCommand[command].total += 1;
+    if (step.hasActionEvidence) {
+      covered += 1;
+      byCommand[command].covered += 1;
+    } else {
+      byCommand[command].missing += 1;
+      missing.push({
+        command,
+        name: step.name,
+        commandText: step.commandText,
+        status: step.status,
+        expectedFailure: step.expectedFailure,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    byCommand,
+    rate: total > 0 ? covered / total : null,
+  };
+}
+
 const DEFAULT_GATE_LIMITS = Object.freeze({
   commandCallsMax: 20,
   firstUsefulObservationMsMax: 5000,
   goldenPathMsMax: 120000,
   usefulObservationTokensMax: 3000,
   autoEvidenceActionsMin: 1,
+  observedActionEvidenceCoverageRateMin: 1,
   differentiatorSuccessRateMin: 1,
   staleRefRecoveryRateMin: 1,
 });
@@ -214,6 +261,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '>=',
       limit: limits.autoEvidenceActionsMin,
       recommendation: 'Make mutating commands return action evidence so agents do not need manual verification calls.',
+    }),
+    gateCriterion({
+      name: 'observed-action-evidence-coverage',
+      actual: metrics.actionEvidenceCoverage?.rate ?? null,
+      operator: '>=',
+      limit: limits.observedActionEvidenceCoverageRateMin,
+      recommendation: 'Every mutating command exercised by the benchmark must return action evidence.',
     }),
     gateCriterion({
       name: 'report-timeline',
@@ -420,6 +474,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       estimatedOutputTokens: estimateTokenCount(outputChars),
       usefulObservationTokens,
       autoEvidenceActions: actionEvidenceSteps.length,
+      actionEvidenceCoverage: benchmarkActionEvidenceCoverage(normalizedSteps),
       verificationCallsSaved: actionEvidenceSteps.length,
       hasReportTimeline: /Session report:[\s\S]*Action timeline:/m.test(outputText(reportStep || {})),
       differentiators: benchmarkDifferentiators(normalizedSteps),
@@ -457,6 +512,7 @@ export function formatBenchmarkReport(summary) {
     `Estimated output tokens: ${summary.metrics.estimatedOutputTokens}`,
     `Useful observation tokens: ${summary.metrics.usefulObservationTokens}`,
     `Auto-evidence actions: ${summary.metrics.autoEvidenceActions}`,
+    `Action evidence coverage: ${summary.metrics.actionEvidenceCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionEvidenceCoverage.rate * 100)}%`} (${summary.metrics.actionEvidenceCoverage?.covered ?? 0}/${summary.metrics.actionEvidenceCoverage?.total ?? 0})`,
     `Verification calls saved: ${summary.metrics.verificationCallsSaved}`,
     `Report timeline: ${summary.metrics.hasReportTimeline ? 'yes' : 'no'}`,
     `Quality gate: ${gate.passed ? 'pass' : 'fail'}`,
