@@ -156,6 +156,10 @@ When connected via `CDP_PORT` to an Electron app, a header line is shown:
 
 All commands use `scripts/cdp.mjs`. The `<target>` is a **unique** targetId prefix from `list` (e.g. `A7BA5C64`). The CLI rejects ambiguous prefixes.
 
+```bash
+scripts/cdp.mjs help                         # show the command reference
+```
+
 ### Perceive page (recommended starting point)
 
 ```bash

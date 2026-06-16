@@ -20,7 +20,7 @@ const {
   decodeVLQ, mapLineToSource, stripVitePathQuery, mapStyleSource,
   formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr, autoActionJsonArgs,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkBrowserPermission, checkFdLimit,
-  doctorWizardSummary, formatDoctorReport, runDoctorChecks, doctorStr,
+  doctorWizardSummary, formatDoctorReport, runDoctorChecks, doctorStr, helpStr,
 } = T;
 
 // =========================================================================
@@ -227,6 +227,16 @@ describe('COMMANDS registry', () => {
     }));
   });
 
+  it('registers help as a targetless command with text output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'help',
+      aliases: [],
+      needsTarget: false,
+      mutates: false,
+      outputFormats: ['text'],
+    }));
+  });
+
   it('registers list as a targetless command with text and json output', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'list',
@@ -368,6 +378,18 @@ describe('COMMANDS registry', () => {
       mutates: false,
       outputFormats: ['text', 'json'],
     }));
+  });
+});
+
+describe('helpStr', () => {
+  it('returns the CLI usage with the golden path commands', () => {
+    const out = helpStr();
+
+    expect(out).toContain('Usage: cdp <command> [args]');
+    expect(out).toContain('doctor / ready');
+    expect(out).toContain('list [--format json]');
+    expect(out).toContain('perceive <target>');
+    expect(out).toContain('report <target>');
   });
 });
 

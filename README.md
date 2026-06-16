@@ -1,6 +1,6 @@
 # chrome-cdp-ex
 
-[![67 Commands](https://img.shields.io/badge/commands-67-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
+[![68 Commands](https://img.shields.io/badge/commands-68-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
@@ -60,7 +60,7 @@ Use Playwright instead when you need a clean, repeatable browser test from scrat
 - [Five success cases](#five-success-cases)
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
-- [Commands (67 total)](#commands-67-total)
+- [Commands (68 total)](#commands-68-total)
 - [WSL2 -> Windows Browser Control](#wsl2---windows-browser-control)
 - [Dogfood Benchmark](#dogfood-benchmark)
 - [Contributor Checks](#contributor-checks)
@@ -94,7 +94,7 @@ The agent using `perceive` (layout + colors + spacing + coordinates) produced th
 | **Electron app support** | **Yes** - `CDP_PORT=9222` | No | No |
 | **WSL2 -> Windows** | **Yes** - built-in | No | No |
 | **Dependencies** | **0** | Playwright + Chromium binary | Varies |
-| **Commands** | **67** | N/A (programmatic API) | ~14 |
+| **Commands** | **68** | N/A (programmatic API) | ~14 |
 
 ## One command, complete page understanding
 
@@ -251,7 +251,7 @@ Output:
 1ED3DBAA  My App                                                  http://localhost:5173/#/menu
 ```
 
-All 67 commands work: `perceive`, `frame`, `overlay`, `click`, `fill`, `cascade`, `record`, `checkpoint`, `restore`, `record-actions`, `export-playwright`, `diff-shot`, `replay`, `mock`, `clock`, `throttle`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
+All 68 commands work: `help`, `perceive`, `frame`, `overlay`, `click`, `fill`, `cascade`, `record`, `checkpoint`, `restore`, `record-actions`, `export-playwright`, `diff-shot`, `replay`, `mock`, `clock`, `throttle`, `report`, `inject`, `flow`, `repeat`, `doctor`, and more.
 
 </details>
 
@@ -294,7 +294,7 @@ Each tab gets its own daemon process that keeps the CDP session open.
 Chrome's "Allow debugging" dialog appears **once per tab**, not once per command.
 Daemons auto-exit after 20 minutes of inactivity and passively collect console/exception/navigation events into ring buffers.
 
-## Commands (67 total)
+## Commands (68 total)
 
 Tip: start with `perceive`, then use `click`/`fill`/`select`; use `status` or `console` when you need debugging context.
 
@@ -358,6 +358,7 @@ cdp repeat <t> 3 click "button[data-act='attack']"
 <summary><strong>Discovery & Lifecycle</strong></summary>
 
 ```bash
+help                              # show the command reference
 list [--format json]               # list open tabs (targetId prefixes; about:blank is "(blank tab)")
                                    # JSON gives schema/pages/recommendation/nextSteps for agents
 open   [url] [--format json]       # open new tab; JSON gives target/approval/recommendation/nextSteps handoff

@@ -9362,6 +9362,7 @@ const USAGE = `cdp - lightweight Chrome DevTools Protocol CLI (no Puppeteer)
 
 Usage: cdp <command> [args]
 
+  help                              Show this command reference (same as --help)
   list [--format json]              List open pages (shows unique target prefixes)
                                     JSON includes schema/pages/recommendation/nextSteps for agents.
   perceive <target> [flags] [--format json]  Full page perception with @ref indices + coordinates
@@ -9539,7 +9540,12 @@ DAEMON IPC (for advanced use / scripting)
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
+function helpStr() {
+  return USAGE;
+}
+
 const COMMANDS = Object.freeze([
+  { name: 'help', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text'] },
   { name: 'list', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'open', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
   { name: 'doctor', aliases: ['ready'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
@@ -9952,7 +9958,7 @@ async function main() {
   if (cmd === '_daemon') { await runDaemon(args[0]); return; }
 
   if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
-    console.log(USAGE); process.exit(0);
+    console.log(helpStr()); process.exit(0);
   }
 
   // List — use existing daemon if available, otherwise direct
@@ -10098,7 +10104,7 @@ async function main() {
     console.error(formatCliError(`Unknown command: ${cmd}`, { cmd, format: cliErrorFormat }));
     if (cliErrorFormat === 'text') {
       console.error('');
-      console.log(USAGE);
+      console.log(helpStr());
     }
     process.exit(1);
   }
@@ -10304,6 +10310,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Batch / flow / doctor
   formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
   formatCliError, buildCliErrorModel, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  helpStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   doctorWizardModel, doctorWizardSummary,
   doctorNextSteps, doctorStatusSummary, buildDoctorModel, formatDoctorOutput,
