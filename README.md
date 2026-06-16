@@ -9,6 +9,8 @@
 
 Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-ex` is for live-page perception when the agent needs to understand the browser you are actually using.
 
+[![Smart Eye benchmark proof: 25/25 quality gate, 1,384 useful observation tokens, 100% action evidence coverage](experiment/benchmark-proof.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
+
 ## Why agents need this
 
 Browser agents usually fail for boring reasons: they cannot tell what changed, they lose context after a click, or they can inspect DOM but not the page humans see. This tool gives them the missing perception layer.
@@ -22,6 +24,8 @@ Browser agents usually fail for boring reasons: they cannot tell what changed, t
 | "Exploration disappears after one prompt." | Session logs, screenshots, reports, checkpoints, replay, and Playwright export. |
 
 ## See it work
+
+[![Redesign experiment result from the chrome-cdp-ex perception run](experiment/final-A.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html)
 
 | Proof | Why it matters |
 |---|---|
