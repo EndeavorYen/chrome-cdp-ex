@@ -4446,6 +4446,17 @@ describe('open onboarding guidance', () => {
 });
 
 describe('status --runtime and buffer reset', () => {
+  it('uses a short page info timeout so status stays responsive after reload churn', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: JSON.stringify({ title: 'T', url: 'https://example.test/' }) } }),
+    });
+
+    await statusStr(cdp, 'sid1', new RingBuffer(10), new RingBuffer(10), new RingBuffer(10), { console: 0, exception: 0 });
+
+    const evaluateCall = cdp.calls.find(call => call.method === 'Runtime.evaluate');
+    expect(evaluateCall.timeout).toBeLessThanOrEqual(2000);
+  });
+
   it('includes Performance.getMetrics counters only when requested', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': () => ({ result: { value: JSON.stringify({ title: 'T', url: 'https://example.test/' }) } }),
@@ -7630,6 +7641,19 @@ describe('formatUnknownRefError', () => {
 
 describe('resolveRefNode stale backend handling', () => {
   const { resolveRefNode } = T;
+
+  it('resolves backend refs with a short timeout so stale refs fail fast', async () => {
+    const refMap = new Map([[31, 12345]]);
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => ({ object: { objectId: 'node-31' } }),
+    });
+
+    await expect(resolveRefNode(cdp, 'sid', refMap, '@31', { generation: 1 }))
+      .resolves.toBe('node-31');
+
+    const resolveCall = cdp.calls.find(call => call.method === 'DOM.resolveNode');
+    expect(resolveCall.timeout).toBeLessThanOrEqual(2000);
+  });
 
   it('classifies DOM-mutation stale refs when backend node resolution fails', async () => {
     const refMap = new Map([[31, 12345]]);

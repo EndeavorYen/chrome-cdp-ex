@@ -19,6 +19,8 @@ const NAVIGATION_TIMEOUT = 30000;
 const RELOAD_EVENT_TIMEOUT = 5000;
 const RELOAD_DISPATCH_TIMEOUT = 2000;
 const RELOAD_OBSERVE_TIMEOUT = 2000;
+const STATUS_PAGE_INFO_TIMEOUT = 2000;
+const REF_RESOLVE_TIMEOUT = 2000;
 const IDLE_TIMEOUT = 20 * 60 * 1000;
 const FIRE_AND_FORGET_KEEPALIVE = 60 * 60 * 1000;
 const DAEMON_CONNECT_RETRIES = 20;
@@ -806,7 +808,7 @@ async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
   };
   if (options.contextId != null) params.contextId = options.contextId;
   if (options.uniqueContextId != null) params.uniqueContextId = options.uniqueContextId;
-  const result = await cdp.send('Runtime.evaluate', params, sid);
+  const result = await cdp.send('Runtime.evaluate', params, sid, options.timeoutMs);
   if (result.exceptionDetails) {
     throw new Error(result.exceptionDetails.text || result.exceptionDetails.exception?.description);
   }
@@ -1287,7 +1289,7 @@ async function runtimeMetricsStr(cdp, sid) {
 async function pageInfoModel(cdp, sid) {
   let title = '', url = '';
   try {
-    const info = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ title: document.title, url: window.location.href })'));
+    const info = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ title: document.title, url: window.location.href })', false, { timeoutMs: STATUS_PAGE_INFO_TIMEOUT }));
     title = info.title;
     url = info.url;
   } catch {}
@@ -3500,7 +3502,7 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState) {
     backendNodeId = refMap.get(num);
   }
   try {
-    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }, sid);
+    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }, sid, REF_RESOLVE_TIMEOUT);
     return object.objectId;
   } catch (e) {
     // The ref existed in this daemon, but the backend node can no longer be
