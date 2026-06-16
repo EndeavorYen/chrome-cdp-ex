@@ -1544,6 +1544,7 @@ function formatPerceptionJson(model) {
 
 const MAX_ACTION_DELTA_ENTRIES = 5;
 const MAX_ACTION_JSON_DOM_DIFF_CHARS = 800;
+const DEFAULT_REPORT_ACTION_LIMIT = 20;
 const SENSITIVE_QUERY_KEY_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn)\b/i;
 const NOISY_ACTION_NETWORK_TYPES = new Set(['Image', 'Stylesheet', 'Script', 'Font', 'Media', 'WebSocket']);
 
@@ -2743,14 +2744,51 @@ function buildLatestReportActionSummary(actionLog = []) {
   };
 }
 
-function buildSessionReportModel(session, { now = Date.now() } = {}) {
+function parseReportArgs(args = []) {
+  let lastActions = DEFAULT_REPORT_ACTION_LIMIT;
+  const rest = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--all') {
+      lastActions = null;
+    } else if (arg === '--last') {
+      const raw = args[++i];
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) throw new Error('report: --last requires a positive integer');
+      lastActions = n;
+    } else {
+      rest.push(arg);
+    }
+  }
+  return { lastActions, args: rest };
+}
+
+function reportActionTimelineWindow(actionLog = [], lastActions = DEFAULT_REPORT_ACTION_LIMIT) {
+  const total = actionLog.length;
+  const limit = lastActions == null ? null : Math.max(1, Math.floor(Number(lastActions) || DEFAULT_REPORT_ACTION_LIMIT));
+  const startOffset = limit == null || total <= limit ? 0 : total - limit;
+  const entries = actionLog.slice(startOffset);
+  return {
+    entries,
+    total,
+    shown: entries.length,
+    omitted: startOffset,
+    startIndex: entries.length ? startOffset + 1 : null,
+    endIndex: entries.length ? total : null,
+    limit,
+  };
+}
+
+function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFAULT_REPORT_ACTION_LIMIT } = {}) {
   const actionLog = session.actionLog || [];
   const screenshots = session.screenshots || [];
+  const timelineWindow = reportActionTimelineWindow(actionLog, lastActions);
   const uptimeMs = Math.max(0, now - (session.createdAt || now));
   const target = targetPrefixForDisplay(session.targetId);
-  const actions = actionLog.map((entry, index) => {
+  const actions = timelineWindow.entries.map((entry, offset) => {
+    const index = (timelineWindow.startIndex || 1) + offset;
     return {
-      index: index + 1,
+      index,
       ts: entry.ts || null,
       action: entry.action,
       status: reportActionStatus(entry),
@@ -2802,6 +2840,14 @@ function buildSessionReportModel(session, { now = Date.now() } = {}) {
       screenshots: screenshots.length,
       records: session.records?.length || 0,
     },
+    timelineWindow: {
+      total: timelineWindow.total,
+      shown: timelineWindow.shown,
+      omitted: timelineWindow.omitted,
+      startIndex: timelineWindow.startIndex,
+      endIndex: timelineWindow.endIndex,
+      limit: timelineWindow.limit,
+    },
     latestAction: buildLatestReportActionSummary(actionLog),
     environment: {
       networkThrottleSummary: formatThrottleSummary(session.networkThrottle),
@@ -2822,19 +2868,23 @@ function buildSessionReportModel(session, { now = Date.now() } = {}) {
   };
 }
 
-function formatSessionReport(session, { now = Date.now(), format = 'text' } = {}) {
-  if (format === 'json') return formatJson(buildSessionReportModel(session, { now }));
-  const model = buildSessionReportModel(session, { now });
+function formatSessionReport(session, { now = Date.now(), format = 'text', lastActions = DEFAULT_REPORT_ACTION_LIMIT } = {}) {
+  if (format === 'json') return formatJson(buildSessionReportModel(session, { now, lastActions }));
+  const model = buildSessionReportModel(session, { now, lastActions });
   const actionLog = session.actionLog || [];
+  const timelineWindow = reportActionTimelineWindow(actionLog, lastActions);
   const screenshots = session.screenshots || [];
   const uptimeMs = Math.max(0, now - (session.createdAt || now));
+  const actionCountLine = timelineWindow.omitted > 0
+    ? `Actions: ${actionLog.length} (showing last ${timelineWindow.shown}, ${timelineWindow.omitted} omitted)`
+    : `Actions: ${actionLog.length}`;
   const lines = [
     `Session report: ${session.targetId}`,
     `CDP session: ${session.sessionId}`,
     `Uptime: ${formatDuration(uptimeMs)}`,
     `Log: ${session.logPath || '(disabled)'}`,
     `Screenshot dir: ${session.screenshotDir || '(disabled)'}`,
-    `Actions: ${actionLog.length}`,
+    actionCountLine,
     `Screenshots: ${screenshots.length}`,
     `Records: ${session.records?.length || 0}`,
     `Network throttle: ${formatThrottleSummary(session.networkThrottle)}`,
@@ -2846,12 +2896,16 @@ function formatSessionReport(session, { now = Date.now(), format = 'text' } = {}
   if (actionLog.length === 0) {
     lines.push('No actions recorded yet. Run click/fill/press/nav/inject/reload, then report again.');
   } else {
-    for (const [i, entry] of actionLog.entries()) {
+    if (timelineWindow.omitted > 0) {
+      lines.push(`Showing actions ${timelineWindow.startIndex}-${timelineWindow.endIndex}. Use report --all or inspect the JSONL log for the full action history.`);
+    }
+    for (const [offset, entry] of timelineWindow.entries.entries()) {
+      const i = (timelineWindow.startIndex || 1) + offset;
       const label = entry.target?.label || entry.target?.input || '';
       const settleStatus = entry.dispatch?.ok === false ? 'failed' : (entry.settle?.ok ? 'ok' : 'not confirmed');
       const settleDuration = Number.isFinite(entry.settle?.durationMs) ? ` in ${entry.settle.durationMs}ms` : '';
       const sourceTarget = actionTargetCommandId(entry.target || {}) || session.targetId;
-      lines.push(`${i + 1}. ${entry.action}${label ? ` ${label}` : ''} — ${settleStatus}${settleDuration}`);
+      lines.push(`${i}. ${entry.action}${label ? ` ${label}` : ''} — ${settleStatus}${settleDuration}`);
       if (entry.dispatch?.method) lines.push(`   Dispatch: ${entry.dispatch.method}`);
       if (entry.outcome?.status) lines.push(`   Outcome: ${entry.outcome.status}${entry.outcome.reason ? ` — ${entry.outcome.reason}` : ''}`);
       if (entry.verdict?.status) lines.push(`   Verdict: ${entry.verdict.status}${entry.verdict.reason ? ` — ${entry.verdict.reason}` : ''}`);
@@ -9205,8 +9259,9 @@ async function runDaemon(targetId) {
         }
         case 'report': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
-          if (fopts.args.length) throw new Error(`report: unknown argument ${fopts.args[0]}`);
-          result = formatSessionReport(session, { format: fopts.format });
+          const ropts = parseReportArgs(fopts.args);
+          if (ropts.args.length) throw new Error(`report: unknown argument ${ropts.args[0]}`);
+          result = formatSessionReport(session, { format: fopts.format, lastActions: ropts.lastActions });
           break;
         }
         case 'checkpoint': {
@@ -9667,7 +9722,7 @@ Usage: cdp <command> [args]
                                     --runtime: include Performance.getMetrics counters
   console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
-  report <target> [--format json]   Session action timeline + evidence summary + JSONL log path
+  report <target> [--last N|--all] [--format json]  Session action timeline + evidence summary + JSONL log path
   checkpoint <target> [--format json]  Capture URL, cookies, localStorage, and sessionStorage
   restore <target> --file <path> [--format json]  Restore a checkpoint artifact into the live page
   restore <target> --json <json> [--format json]  Restore an inline checkpoint JSON artifact
@@ -10729,7 +10784,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
   appendSessionEnvironmentLog, buildRecordEnvironmentModel,
-  initializeSessionLog, buildSessionReportModel, formatSessionReport, sessionScreenshotDir,
+  initializeSessionLog, parseReportArgs, buildSessionReportModel, formatSessionReport, sessionScreenshotDir,
   ensureSessionScreenshotDir, nextSessionScreenshotPath,
   buildRecordActionsModel, formatRecordActions,
   playwrightStepFromCommand, formatPlaywrightSpecFromRecordActions, formatExportPlaywright,

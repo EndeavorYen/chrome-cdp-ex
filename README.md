@@ -206,10 +206,10 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com   # only if l
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
 node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref        # or fill <target> <selector> <text>
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
-node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>            # add --format json for agent handoff
+node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>            # add --format json for agent handoff; --last N / --all controls timeline size
 ```
 
-`open` prints the new target prefix plus `Next:`, `Then:`, and `Report:` continuation hints. If Chrome approval times out, it keeps the tab and prints the exact `perceive <target> -C -d 8` retry command. Use `open --format json` when an agent or script needs the versioned `chrome-cdp-ex.open.v1` handoff payload with target prefix, approval state, navigation status, ready-state check, auto-perceive status, a golden-path `recommendation`, and executable `nextSteps`; add `--attach-timeout-ms 0` when automation should create the tab and return the handoff immediately instead of waiting up to 60s for a daemon. Use `--ready-timeout-ms <ms>` to bound the post-attach `document.readyState` wait, and `--ready-selector <sel>` when a script should wait for an app-shell selector before continuing. When auto-perceive succeeds, `nextSteps` starts at the action step instead of repeating `perceive`.
+`open` prints the new target prefix plus `Next:`, `Then:`, and `Report:` continuation hints. If Chrome approval times out, it keeps the tab and prints the exact `perceive <target> -C -d 8` retry command. Use `open --format json` when an agent or script needs the versioned `chrome-cdp-ex.open.v1` handoff payload with target prefix, approval state, navigation status, ready-state check, auto-perceive status, a golden-path `recommendation`, and executable `nextSteps`; add `--attach-timeout-ms 0` when automation should create the tab and return the handoff immediately instead of waiting up to 60s for a daemon. Use `--ready-timeout-ms <ms>` to bound the post-attach `document.readyState` wait, and `--ready-selector <sel>` when a script should wait for an app-shell selector before continuing. When auto-perceive succeeds, `nextSteps` starts at the action step instead of repeating `perceive`. `report` keeps handoffs bounded by showing the latest 20 actions by default; use `report <target> --last N` for a smaller window or `report <target> --all` when you intentionally need the full timeline.
 Use `list --format json` when an agent or script needs target IDs, stable prefixes, blank-tab labels, a golden-path `recommendation`, and executable `nextSteps` without parsing the human table. Use `perceive --format json` when the agent needs structured refs plus executable `nextSteps` for `click/fill -> perceive --since-action -> report` without parsing the text tree.
 
 If a CLI command fails, read the printed `Recovery:` block first: `Kind` names the failure class, `Strategy` says how to recover, `Run` is the primary command, and `Then` appears when a follow-up is useful. The legacy `Next:` line is still printed as the shortest copy-pasteable command. Add `--format json` when a script needs the versioned `chrome-cdp-ex.cli-error.v1` handoff with `recovery` and `nextSteps` instead of human text. Common setup, target, daemon, CDP, and `EMFILE` / "Too many open files" errors are formatted this way instead of dumping a stack trace; fd-limit recovery includes the shell `ulimit -n 4096` command and, on macOS, the `sudo launchctl limit maxfiles 65536 200000` login-session command.
@@ -647,10 +647,10 @@ Local run on 2026-06-16, measured with the same smoke page and measured local co
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 8.770s |
+| Total time | 8.791s |
 | Command calls | 23 |
-| First useful observation | 2.781s |
-| Golden path complete | 4.975s |
+| First useful observation | 2.787s |
+| Golden path complete | 5.001s |
 | Useful observation tokens | 1,295 |
 | Auto-evidence actions | 6 |
 | Action evidence coverage | 100% (7/7 mutating commands) |
@@ -658,8 +658,8 @@ Local run on 2026-06-16, measured with the same smoke page and measured local co
 | Report latestAction coverage | 100% (1/1 JSON reports) |
 | Quality gate | 13/13 pass |
 | Differentiator success rate | 100% |
-| Stale-ref recovery | 49ms, 1/1 recovered |
-| Session stability sample | 1.117s, 3 probes |
+| Stale-ref recovery | 52ms, 1/1 recovered |
+| Session stability sample | 1.119s, 3 probes |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
 

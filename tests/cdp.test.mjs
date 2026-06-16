@@ -770,6 +770,36 @@ describe('parseFormatArgs', () => {
   });
 });
 
+describe('parseReportArgs', () => {
+  it('defaults to a bounded latest-action report window', () => {
+    expect(T.parseReportArgs([])).toEqual({
+      lastActions: 20,
+      args: [],
+    });
+  });
+
+  it('parses --last with a positive integer', () => {
+    expect(T.parseReportArgs(['--last', '5'])).toEqual({
+      lastActions: 5,
+      args: [],
+    });
+  });
+
+  it('parses --all as an unbounded report window', () => {
+    expect(T.parseReportArgs(['--all', '--verbose'])).toEqual({
+      lastActions: null,
+      args: ['--verbose'],
+    });
+  });
+
+  it('rejects missing or invalid --last values', () => {
+    expect(() => T.parseReportArgs(['--last'])).toThrow(/--last requires a positive integer/);
+    expect(() => T.parseReportArgs(['--last', '0'])).toThrow(/--last requires a positive integer/);
+    expect(() => T.parseReportArgs(['--last', '1.5'])).toThrow(/--last requires a positive integer/);
+    expect(() => T.parseReportArgs(['--last', 'nope'])).toThrow(/--last requires a positive integer/);
+  });
+});
+
 describe('structured status and console models', () => {
   it('builds a versioned console model using new entries by default', () => {
     const consoleBuf = new RingBuffer(10);
@@ -1630,6 +1660,63 @@ describe('Session report', () => {
         'cdp export-playwright ABC12345',
       ],
     });
+  });
+
+  it('bounds JSON report action timeline to the latest actions by default', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    for (let index = 1; index <= 25; index++) {
+      T.appendSessionActionLog(state, T.createActionResult({
+        action: 'click',
+        target: { targetId: 'ABC123', input: `#btn-${index}`, resolvedBy: 'selector', label: `#btn-${index}` },
+        dispatch: { ok: true, method: 'click' },
+        settle: { ok: true, durationMs: index },
+        effects: { domDiff: `+++ Added (1):\n+   [status] Saved ${index}`, console: [], network: [], navigation: null },
+        nextHint: null,
+      }), { ts: Date.parse('2026-06-16T00:00:00.000Z') + index });
+    }
+
+    const model = T.buildSessionReportModel(state, { now: Date.parse('2026-06-16T00:00:30.000Z') });
+
+    expect(model.counts.actions).toBe(25);
+    expect(model.timelineWindow).toEqual({
+      total: 25,
+      shown: 20,
+      omitted: 5,
+      startIndex: 6,
+      endIndex: 25,
+      limit: 20,
+    });
+    expect(model.actions).toHaveLength(20);
+    expect(model.actions[0]).toMatchObject({ index: 6, action: 'click', target: { input: '#btn-6' } });
+    expect(model.actions[19]).toMatchObject({ index: 25, action: 'click', target: { input: '#btn-25' } });
+    expect(model.latestAction).toMatchObject({ index: 25, effectSample: '+   [status] Saved 25' });
+  });
+
+  it('formats only the requested latest report actions in text mode', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    for (let index = 1; index <= 5; index++) {
+      T.appendSessionActionLog(state, T.createActionResult({
+        action: 'click',
+        target: { targetId: 'ABC123', input: `#btn-${index}`, resolvedBy: 'selector', label: `#btn-${index}` },
+        dispatch: { ok: true, method: 'click' },
+        settle: { ok: true, durationMs: index },
+        effects: { domDiff: `+++ Added (1):\n+   [status] Saved ${index}`, console: [], network: [], navigation: null },
+        nextHint: null,
+      }), { ts: Date.parse('2026-06-16T00:00:00.000Z') + index });
+    }
+
+    const out = T.formatSessionReport(state, {
+      now: Date.parse('2026-06-16T00:00:30.000Z'),
+      lastActions: 2,
+    });
+
+    expect(out).toContain('Actions: 5 (showing last 2, 3 omitted)');
+    expect(out).not.toContain('1. click #btn-1');
+    expect(out).not.toContain('2. click #btn-2');
+    expect(out).not.toContain('3. click #btn-3');
+    expect(out).toContain('4. click #btn-4');
+    expect(out).toContain('5. click #btn-5');
+    expect(out).toContain('Use report --all or inspect the JSONL log for the full action history.');
   });
 
   it('records compact console and network deltas in session reports', () => {
