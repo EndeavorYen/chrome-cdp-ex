@@ -1,0 +1,156 @@
+# chrome-cdp-ex Reference
+
+> **TL;DR** — This is the technical reference for `chrome-cdp-ex`: command map, action evidence behavior, browser setup, Electron/WSL2 notes, and benchmark rules. Start with the README when you want the product story.
+
+## Command Map
+
+Most workflows start with `doctor -> list -> open -> perceive -> click/fill -> perceive --since-action -> report`.
+
+| Area | Commands |
+|---|---|
+| Discovery | `help`, `doctor`, `list`, `open`, `spawn-debug-browser`, `stop`, `closetab`, `keepalive` |
+| Perception | `perceive`, `summary`, `snap`, `frame`, `overlay`, `text`, `table`, `status`, `console`, `report` |
+| Visual capture | `shot`, `elshot`, `fullshot`, `scanshot`, `diff-shot` |
+| Interaction | `click`, `jsclick`, `clickxy`, `type`, `press`, `scroll`, `hover`, `fill`, `select`, `upload`, `dialog`, `dismiss-modal` |
+| Waiting and flow | `wait`, `waitfor`, `loadall`, `batch`, `flow`, `repeat` |
+| Navigation | `nav`, `back`, `forward`, `reload`, `viewport` |
+| Inspection | `html`, `eval`, `eval64`, `evalraw`, `call`, `styles`, `net`, `netlog`, `cookies`, `cookieset`, `cookiedel` |
+| Live experiment controls | `inject`, `cascade`, `record`, `mock`, `clock`, `throttle` |
+| Session assets | `checkpoint`, `restore`, `record-actions`, `export-playwright`, `replay` |
+
+## Agent Loop
+
+The core loop is intentionally short:
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
+node skills/chrome-cdp-ex/scripts/cdp.mjs list
+node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com
+node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
+node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref
+node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
+node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
+```
+
+Use `--format json` when another agent or script needs structured handoff data instead of human text.
+
+## Action Evidence
+
+Mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `upload`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, `restore`, and `dismiss-modal` return action evidence.
+
+Action evidence answers three questions:
+
+| Question | Signal |
+|---|---|
+| Was the action dispatched? | Target, dispatch status, settle status, failure kind when dispatch fails. |
+| What changed? | DOM diff summary, bounded evidence sample, console deltas, network deltas. |
+| What should the agent do next? | `outcome`, `verdict`, `recommendation`, `nextSteps`, and recovery commands. |
+
+Common outcomes:
+
+| Outcome | Meaning |
+|---|---|
+| `changed` | The page changed and the agent can usually continue. |
+| `no-change` | The action dispatched but did not produce visible change; inspect overlay/frame/state before retrying. |
+| `attention` | Console, network, or observation signals need diagnosis. |
+| `failed` | Dispatch failed; use the recovery command. |
+| `timeout` | The action may have happened, but post-action observation timed out. |
+
+`perceive --since-action` replays the causal diff from the last mutating command. `report --format json` packages the latest action, diagnosis, artifacts, recommendation, and timeline window.
+
+## CSS Source Tracing
+
+Use `cascade` when the agent knows what looks wrong but needs the source rule:
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs cascade <target> @ref background-color --format json
+```
+
+`cascade` returns the winning selector, overridden rules, source location, and edit target. It also resolves common Vite, CSS Modules, and Vue source-map locations.
+
+## Session Assets
+
+Use these when exploration should become reusable evidence:
+
+| Need | Command |
+|---|---|
+| Save risky browser state | `checkpoint <target> --format json` |
+| Restore captured URL/storage/cookies | `restore <target> --file checkpoint.json --format json` |
+| Export the action log | `record-actions <target> --format json` |
+| Draft a Playwright spec | `export-playwright <target> --format json` |
+| Replay portable live steps | `replay <target> --file artifact.json --format json` |
+| Capture visual fallback diffs | `diff-shot <target>` |
+
+Checkpoint artifacts can include cookies, localStorage, and sessionStorage. Treat them like secrets.
+
+## Browser Setup
+
+Preferred path: use the browser you already have open, then enable remote debugging from `chrome://inspect/#remote-debugging` or `edge://inspect`.
+
+When that is not available, spawn an isolated debug profile:
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com
+```
+
+Configuration:
+
+| Variable | Purpose |
+|---|---|
+| `CDP_PORT` | Connect to a specific debugging port. |
+| `CDP_HOST` | Override the CDP host, default `127.0.0.1`. |
+| `CDP_PORT_FILE` | Override the `DevToolsActivePort` file path. |
+
+## Electron
+
+Start Electron with remote debugging enabled:
+
+```bash
+electron . --remote-debugging-port=9222
+CDP_PORT=9222 node skills/chrome-cdp-ex/scripts/cdp.mjs list
+```
+
+In dev builds, you can enable it from the main process:
+
+```js
+if (process.env.NODE_ENV === 'development') {
+  app.commandLine.appendSwitch('remote-debugging-port', '9222');
+}
+```
+
+## WSL2 To Windows
+
+For WSL2 controlling Windows Chrome, run Windows-side Node so CDP connects to Windows localhost:
+
+```bash
+powershell.exe -NoProfile -Command "(Get-Command node -ErrorAction SilentlyContinue).Source"
+"/mnt/c/.../node.exe" skills/chrome-cdp-ex/scripts/cdp.mjs list
+```
+
+## Benchmark Gate
+
+The dogfood benchmark launches a disposable debug browser and measures:
+
+- `doctor -> open -> perceive -> act -> since-action evidence -> report`
+- command calls, total time, first useful observation, useful observation tokens
+- action evidence coverage and JSON completeness
+- failed-action diagnosis and no-change recovery
+- `nextSteps` and recommendation handoffs
+- modal, frame, CSS tracing, HMR/SPA diff, stale-ref recovery, and session stability probes
+
+Run:
+
+```bash
+npm run benchmark:killer
+npm run benchmark:killer -- --json
+npm run benchmark:generic-cdp -- --out generic-cdp-raw.json
+npm run benchmark:playwright -- --out playwright-raw.json
+npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json
+npm run benchmark:killer -- --comparison-baselines ./baselines.json
+```
+
+Publish comparison claims only when `gate.passed` is true and competitor baselines are measured, not the planning-only `heuristic-smoke-baseline`.
+
+## More Detail
+
+The canonical exhaustive reference is [skills/chrome-cdp-ex/SKILL.md](../skills/chrome-cdp-ex/SKILL.md). Keep this page readable; put command-by-command edge cases there.

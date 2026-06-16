@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
+<title>chrome-cdp-ex Smart Eye benchmark</title>
+<style>
+  * { box-sizing: border-box; }
+
+  :root {
+    --ink: #f7f3e8;
+    --muted: #9aa3a1;
+    --paper: #070909;
+    --line: #26302d;
+    --cyan: #62d7d1;
+    --lime: #afe66f;
+    --amber: #f2bd5c;
+  }
+
+  body {
+    margin: 0;
+    background:
+      linear-gradient(90deg, rgba(98, 215, 209, 0.05) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(98, 215, 209, 0.04) 1px, transparent 1px),
+      var(--paper);
+    background-size: 40px 40px;
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    line-height: 1.45;
+  }
+
+  main {
+    width: min(1120px, calc(100vw - 32px));
+    margin: 0 auto;
+    padding: 48px 0 64px;
+  }
+
+  a { color: inherit; }
+
+  .eyebrow {
+    color: var(--cyan);
+    font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    max-width: 760px;
+    margin: 12px 0 14px;
+    font-size: clamp(40px, 7vw, 88px);
+    line-height: 0.93;
+  }
+
+  .lead {
+    max-width: 760px;
+    margin: 0;
+    color: var(--muted);
+    font-size: 18px;
+  }
+
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 28px;
+    align-items: end;
+    padding-bottom: 36px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .gate {
+    border: 1px solid var(--lime);
+    background: rgba(175, 230, 111, 0.08);
+    padding: 22px;
+  }
+
+  .gate strong {
+    display: block;
+    font-size: 58px;
+    line-height: 1;
+  }
+
+  .gate span {
+    display: block;
+    margin-top: 8px;
+    color: var(--muted);
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin: 22px 0;
+  }
+
+  .stat,
+  .panel {
+    border: 1px solid var(--line);
+    background: rgba(16, 20, 20, 0.92);
+  }
+
+  .stat {
+    min-height: 136px;
+    padding: 18px;
+  }
+
+  .stat strong {
+    display: block;
+    color: var(--ink);
+    font-size: 36px;
+    line-height: 1;
+  }
+
+  .stat span {
+    display: block;
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .stat em {
+    color: var(--cyan);
+    font-style: normal;
+  }
+
+  .flow {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 10px;
+    margin: 28px 0;
+  }
+
+  .step {
+    border: 1px solid var(--line);
+    background: #0d1111;
+    padding: 14px;
+    min-height: 96px;
+  }
+
+  .step b {
+    display: block;
+    color: var(--amber);
+    font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .step span {
+    display: block;
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    margin-top: 18px;
+  }
+
+  .panel {
+    padding: 22px;
+  }
+
+  h2 {
+    margin: 0 0 16px;
+    font-size: 20px;
+  }
+
+  .coverage {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .check {
+    border: 1px solid var(--line);
+    padding: 12px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .check::before {
+    content: "PASS";
+    display: block;
+    margin-bottom: 6px;
+    color: var(--lime);
+    font: 700 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .timeline {
+    position: relative;
+    display: grid;
+    gap: 12px;
+  }
+
+  .bar {
+    display: grid;
+    grid-template-columns: 140px 1fr 74px;
+    gap: 12px;
+    align-items: center;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .track {
+    height: 12px;
+    border: 1px solid var(--line);
+    background: #070909;
+  }
+
+  .fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--cyan), var(--lime));
+  }
+
+  .terminal {
+    margin-top: 22px;
+    border: 1px solid var(--line);
+    background: #050606;
+    padding: 18px;
+    overflow-x: auto;
+    color: var(--cyan);
+    font: 14px ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .note {
+    margin: 18px 0 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 24px;
+  }
+
+  .link {
+    border: 1px solid var(--line);
+    padding: 10px 14px;
+    color: var(--ink);
+    text-decoration: none;
+    font-size: 14px;
+  }
+
+  .link:hover,
+  .link:focus-visible {
+    border-color: var(--cyan);
+    outline: none;
+  }
+
+  @media (max-width: 880px) {
+    .hero,
+    .grid,
+    .stats,
+    .flow {
+      grid-template-columns: 1fr;
+    }
+
+    .bar {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .stat,
+    .panel,
+    .step,
+    .gate {
+      transition: transform 160ms ease, border-color 160ms ease;
+    }
+
+    .stat:hover,
+    .panel:hover,
+    .step:hover,
+    .gate:hover {
+      transform: translateY(-2px);
+      border-color: var(--cyan);
+    }
+  }
+</style>
+</head>
+<body>
+<main>
+  <section class="hero" aria-labelledby="title">
+    <div>
+      <div class="eyebrow">Smart Eye benchmark</div>
+      <h1 id="title">Proof that agents can see, act, and recover.</h1>
+      <p class="lead">A local dogfood run exercises the real agent path: connect to a browser, perceive the page, act, capture evidence, recover from failures, trace CSS, and produce a report.</p>
+    </div>
+    <div class="gate" aria-label="Quality gate result">
+      <strong>25/25</strong>
+      <span>quality gate passed on the 2026-06-17 local run</span>
+    </div>
+  </section>
+
+  <section class="stats" aria-label="Benchmark highlights">
+    <div class="stat"><strong>5.716s</strong><span>golden path complete</span></div>
+    <div class="stat"><strong>1,384</strong><span><em>useful observation</em> tokens</span></div>
+    <div class="stat"><strong>100%</strong><span>action evidence coverage</span></div>
+    <div class="stat"><strong>49ms</strong><span>stale-ref recovery</span></div>
+  </section>
+
+  <section class="flow" aria-label="Measured agent flow">
+    <div class="step"><b>doctor</b><span>checks setup and gives the next command</span></div>
+    <div class="step"><b>open</b><span>hands back a live target prefix</span></div>
+    <div class="step"><b>perceive</b><span>returns layout, refs, console, and next steps</span></div>
+    <div class="step"><b>act</b><span>clicks, fills, reloads, and records dispatch</span></div>
+    <div class="step"><b>evidence</b><span>reports DOM, console, network, and recovery deltas</span></div>
+    <div class="step"><b>report</b><span>packages the long-session handoff</span></div>
+  </section>
+
+  <section class="grid">
+    <div class="panel">
+      <h2>What the gate proves</h2>
+      <div class="coverage">
+        <div class="check">JSON action evidence completeness</div>
+        <div class="check">Failed action diagnosis and recovery</div>
+        <div class="check">No-change action investigation</div>
+        <div class="check">Executable next steps in handoffs</div>
+        <div class="check">CSS source tracing handoff</div>
+        <div class="check">Frame, modal, and HMR probes</div>
+        <div class="check">Session report artifacts</div>
+        <div class="check">Stale-ref recovery</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Time to useful evidence</h2>
+      <div class="timeline">
+        <div class="bar">
+          <span>First observation</span>
+          <div class="track"><div class="fill" style="width: 30%"></div></div>
+          <span>2.842s</span>
+        </div>
+        <div class="bar">
+          <span>Golden path</span>
+          <div class="track"><div class="fill" style="width: 60%"></div></div>
+          <span>5.716s</span>
+        </div>
+        <div class="bar">
+          <span>Total run</span>
+          <div class="track"><div class="fill" style="width: 100%"></div></div>
+          <span>9.507s</span>
+        </div>
+      </div>
+      <p class="note">The benchmark charges the main path for command calls and treats differentiator checks as probes, so the proof covers more than the shortest demo path.</p>
+    </div>
+  </section>
+
+  <div class="terminal">npm run benchmark:killer</div>
+
+  <p class="note">Publish competitor deltas only after rerunning with measured Playwright and generic-CDP baselines. The README promotion checklist blocks claims when the benchmark gate fails.</p>
+
+  <nav class="links" aria-label="Related pages">
+    <a class="link" href="https://github.com/EndeavorYen/chrome-cdp-ex#readme">README</a>
+    <a class="link" href="showcase.html">Redesign experiment</a>
+    <a class="link" href="https://github.com/EndeavorYen/chrome-cdp-ex/blob/main/docs/examples/killer-path.md">Killer Path walkthrough</a>
+  </nav>
+</main>
+</body>
+</html>

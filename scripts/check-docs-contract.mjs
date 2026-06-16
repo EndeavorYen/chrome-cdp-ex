@@ -86,11 +86,12 @@ export function validateKillerPathContract(markdown) {
 export function checkDocsContract(docs, commands) {
   const failures = [];
 
+  const commandReference = `${docs.readme}\n${docs.reference || ''}`;
   for (const command of commands) {
     const names = [command.name, ...(command.aliases || [])];
-    const appearsInReadme = names.some(name => docs.readme.includes(name));
+    const appearsInReference = names.some(name => commandReference.includes(name));
     const appearsInSkill = names.some(name => docs.skill.includes(name));
-    if (!appearsInReadme || !appearsInSkill) {
+    if (!appearsInReference || !appearsInSkill) {
       failures.push(`Missing command docs for ${command.name}`);
     }
   }
@@ -174,6 +175,7 @@ function readDocs() {
   const read = path => readFileSync(path, 'utf8');
   return {
     readme: read('README.md'),
+    reference: read('docs/reference.md'),
     skill: read('skills/chrome-cdp-ex/SKILL.md'),
     killerPath: read('docs/examples/killer-path.md'),
   };

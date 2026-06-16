@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { checkDocsContract, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+const reference = readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
 const skill = readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.meta.url), 'utf8');
 const killerPath = readFileSync(new URL('../docs/examples/killer-path.md', import.meta.url), 'utf8');
 
@@ -51,6 +52,7 @@ describe('Killer Path docs contract', () => {
   it('requires README promotion claims to be benchmark-gated', () => {
     const docsWithoutChecklist = {
       readme: readme.replace(/### Promotion checklist[\s\S]+?(?=\n### |\n## |$)/, ''),
+      reference,
       skill,
       killerPath,
     };
@@ -59,5 +61,18 @@ describe('Killer Path docs contract', () => {
       'README is missing benchmark-gated promotion checklist',
       'README promotion checklist must block claims when benchmark gates fail',
     ]));
+  });
+
+  it('allows command reference details outside the README', () => {
+    const docs = {
+      readme: readme.replaceAll('mock', ''),
+      reference,
+      skill,
+      killerPath,
+    };
+
+    expect(checkDocsContract(docs, [{ name: 'mock', aliases: [] }])).not.toContain(
+      'Missing command docs for mock',
+    );
   });
 });
