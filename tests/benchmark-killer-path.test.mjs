@@ -398,11 +398,12 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Doctor onboarding coverage: n/a (0/0)');
     expect(out).toContain('Report latestAction coverage: n/a (0/0)');
     expect(out).toContain('Report timelineWindow coverage: n/a (0/0)');
+    expect(out).toContain('Report artifact coverage: n/a (0/0)');
     expect(out).toContain('Perception signal coverage: n/a (0/0)');
     expect(out).toContain('Since-action evidence coverage: 100% (1/1)');
     expect(out).toContain('CLI recovery coverage: 100% (1/1)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 20/20 pass');
+    expect(out).toContain('Gate checks: 21/21 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -706,8 +707,26 @@ describe('benchmark killer path helpers', () => {
           status: 0,
           stdout: JSON.stringify({
             schema: 'chrome-cdp-ex.report.v1',
+            paths: {
+              log: '/tmp/cdp-AABBCCDD.log',
+              screenshotDir: '/tmp/cdp-AABBCCDD-screenshots',
+            },
+            counts: { actions: 1, screenshots: 0, records: 0 },
             timelineWindow: { total: 1, shown: 1, omitted: 0, startIndex: 1, endIndex: 1, limit: 20 },
-            actions: [{ index: 1, action: 'click' }],
+            environment: {
+              networkThrottleSummary: 'off',
+              networkMocksSummary: 'none',
+              clockSummary: 'realtime',
+              controls: [],
+            },
+            actions: [{
+              index: 1,
+              action: 'click',
+              evidence: { effectSummary: '+++ Added (1)' },
+              outcome: { status: 'changed' },
+              verdict: { status: 'continue' },
+            }],
+            screenshots: [],
             latestAction: {
               index: 1,
               action: 'click',
@@ -738,6 +757,12 @@ describe('benchmark killer path helpers', () => {
       rate: 1,
     });
     expect(summary.metrics.reportTimelineWindowCoverage).toMatchObject({
+      total: 1,
+      covered: 1,
+      missing: [],
+      rate: 1,
+    });
+    expect(summary.metrics.reportArtifactCoverage).toMatchObject({
       total: 1,
       covered: 1,
       missing: [],
@@ -1099,6 +1124,61 @@ describe('benchmark killer path helpers', () => {
         passed: false,
         actual: 0,
         recommendation: 'JSON report handoffs must expose bounded timelineWindow metadata so long sessions stay token-safe.',
+      }),
+    ]));
+  });
+
+  it('fails the gate when report JSON lacks session artifact handoff fields', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'report-artifacts',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'report',
+          command: ['report', 'AABBCCDD', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.report.v1',
+            timelineWindow: { total: 1, shown: 1, omitted: 0, startIndex: 1, endIndex: 1, limit: 20 },
+            latestAction: { index: 1, action: 'click', status: 'ok' },
+            actions: [{ index: 1, action: 'click' }],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.reportArtifactCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'report',
+          commandText: 'cdp report AABBCCDD --format json',
+          missing: expect.arrayContaining([
+            'paths.log',
+            'paths.screenshotDir',
+            'counts.actions',
+            'counts.screenshots',
+            'actions.evidence',
+            'environment',
+            'recommendation',
+            'nextSteps',
+          ]),
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'report-artifact-coverage',
+        passed: false,
+        actual: 0,
+        recommendation: 'Report JSON must expose session log path, screenshot directory, counts, action evidence, environment, recommendation, and nextSteps so long sessions can be handed off.',
       }),
     ]));
   });
