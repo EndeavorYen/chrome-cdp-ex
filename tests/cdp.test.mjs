@@ -859,7 +859,7 @@ describe('ActionResult', () => {
   it('creates versioned action evidence', () => {
     const result = T.createActionResult({
       action: 'click',
-      target: { input: '@4', resolvedBy: 'ref', label: 'Submit' },
+      target: { targetId: 'ABC123', input: '@4', resolvedBy: 'ref', label: 'Submit' },
       dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
       settle: { ok: true, durationMs: 120 },
       effects: { domDiff: 'button disabled', console: [], network: [], navigation: null },
@@ -868,6 +868,21 @@ describe('ActionResult', () => {
     expect(result.schema).toBe('chrome-cdp-ex.action.v1');
     expect(result.action).toBe('click');
     expect(result.dispatch.ok).toBe(true);
+    expect(result.recommendation).toMatchObject({
+      source: 'action-evidence',
+      strategy: 'continue-from-evidence',
+      action: 'click',
+      targetPrefix: 'ABC123',
+      commands: [
+        'cdp report ABC123 --format json',
+        'cdp record-actions ABC123 --format json',
+      ],
+      optionalCommands: ['cdp perceive ABC123 --since-action'],
+    });
+    expect(result.nextSteps).toEqual([
+      'cdp report ABC123 --format json',
+      'cdp record-actions ABC123 --format json',
+    ]);
   });
 
   it('formats action evidence as compact text', () => {
@@ -1084,6 +1099,21 @@ describe('ActionResult', () => {
     });
     expect(T.formatActionText(parsed)).toContain('Diagnosis: network-failure');
     expect(T.formatActionText(parsed)).toContain('Next: cdp netlog ABC123');
+    expect(parsed.recommendation).toMatchObject({
+      source: 'action-diagnosis',
+      strategy: 'inspect-network',
+      diagnosisKind: 'network-failure',
+      commands: [
+        'cdp netlog ABC123',
+        'cdp perceive ABC123 --since-action',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(parsed.nextSteps).toEqual([
+      'cdp netlog ABC123',
+      'cdp perceive ABC123 --since-action',
+      'cdp report ABC123 --format json',
+    ]);
   });
 
   it('records report-only actions as action evidence without a DOM observation', async () => {

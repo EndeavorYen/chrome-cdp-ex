@@ -152,6 +152,12 @@ function actionTargetCommandId(target = {}) {
   return actionFailureTargetId(target);
 }
 
+function actionTargetCommandPrefix(target = {}) {
+  const id = String(actionTargetCommandId(target) || '');
+  if (!id || id === '<target>') return '<target>';
+  return id.slice(0, 8);
+}
+
 function classifyActionFailure(err, { action = 'action', target = {} } = {}) {
   const originalMessage = actionFailureMessage(err);
   const lower = originalMessage.toLowerCase();
@@ -1520,7 +1526,7 @@ const SENSITIVE_QUERY_KEY_RE = /\b(pass(word)?|secret|token|api[-_]?key|credenti
 const NOISY_ACTION_NETWORK_TYPES = new Set(['Image', 'Stylesheet', 'Script', 'Font', 'Media', 'WebSocket']);
 
 function createActionResult({ action, target, dispatch, settle, effects, nextHint }) {
-  return applyActionDiagnosis({
+  return applyActionRecommendation(applyActionDiagnosis({
     schema: 'chrome-cdp-ex.action.v1',
     action,
     target,
@@ -1528,7 +1534,7 @@ function createActionResult({ action, target, dispatch, settle, effects, nextHin
     settle,
     effects,
     nextHint,
-  });
+  }));
 }
 
 function createActionObservationBaseline({ consoleBuf = null, exceptionBuf = null, netReqBuf = null } = {}) {
@@ -1670,7 +1676,7 @@ function applyActionObservationDelta(actionResult, delta = {}) {
   actionResult.effects.console = consoleDelta.entries || [];
   actionResult.effects.exceptions = exceptionDelta.entries || [];
   actionResult.effects.network = networkDelta.entries || [];
-  return applyActionDiagnosis(actionResult);
+  return applyActionRecommendation(applyActionDiagnosis(actionResult));
 }
 
 function recoveryCommandArg(value) {
@@ -1941,6 +1947,49 @@ function applyActionDiagnosis(actionResult) {
   return actionResult;
 }
 
+function buildActionRecommendation(actionResult = {}) {
+  const target = actionTargetCommandPrefix(actionResult.target || {});
+  const diagnosis = actionResult.effects?.diagnosis || null;
+  if (diagnosis && diagnosis.status !== 'ok') {
+    const commands = recoveryCommandsFromDiagnosis(diagnosis);
+    return {
+      source: 'action-diagnosis',
+      action: actionResult.action || null,
+      targetPrefix: target,
+      diagnosisKind: diagnosis.kind || null,
+      strategy: diagnosis.recovery?.strategy || diagnosis.kind || 'recover-action',
+      priority: diagnosis.recovery?.priority || (diagnosis.status === 'blocked' ? 'high' : 'medium'),
+      verifyCommand: diagnosis.recovery?.verifyCommand || diagnosis.nextCommand || null,
+      commands,
+    };
+  }
+
+  return {
+    source: 'action-evidence',
+    action: actionResult.action || null,
+    targetPrefix: target,
+    strategy: actionResult.effects?.domDiff ? 'continue-from-evidence' : 'continue-or-handoff',
+    priority: 'medium',
+    reason: actionResult.effects?.domDiff
+      ? 'The action already includes observed page evidence; continue from that evidence without an extra verify call.'
+      : 'The action dispatched without captured runtime trouble; use report or record-actions when handing off.',
+    commands: uniqueNextStepCommands([
+      `cdp report ${target} --format json`,
+      `cdp record-actions ${target} --format json`,
+    ]),
+    optionalCommands: uniqueNextStepCommands([
+      `cdp perceive ${target} --since-action`,
+    ]),
+  };
+}
+
+function applyActionRecommendation(actionResult) {
+  const recommendation = buildActionRecommendation(actionResult);
+  actionResult.recommendation = recommendation;
+  actionResult.nextSteps = uniqueNextStepCommands(recommendation.commands || []);
+  return actionResult;
+}
+
 function countLabel(count, singular, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
@@ -2043,7 +2092,7 @@ function formatActionText(result) {
 
 function finalizeActionResult(result, { enrichActionResult = null, onActionResult = null } = {}) {
   if (enrichActionResult) enrichActionResult(result);
-  applyActionDiagnosis(result);
+  applyActionRecommendation(applyActionDiagnosis(result));
   if (onActionResult) onActionResult(result);
   return result;
 }

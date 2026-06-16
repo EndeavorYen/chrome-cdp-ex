@@ -274,6 +274,9 @@ if (parsedFillAction.dispatch?.ok !== true || parsedFillAction.settle?.ok !== tr
 if (!parsedFillAction.effects || !('domDiff' in parsedFillAction.effects)) {
   throw new Error(`fill --format json should include observed effects:\n${fillJsonOut}`);
 }
+if (parsedFillAction.recommendation?.source !== 'action-evidence' || !parsedFillAction.nextSteps?.includes(`cdp report ${target} --format json`)) {
+  throw new Error(`fill --format json should include action continuation recommendation:\n${fillJsonOut}`);
+}
 const failedClickJsonOut = step('failed action json evidence', () => run(['click', target, '#missing-action-json-smoke', '--format', 'json']));
 const parsedFailedClickAction = JSON.parse(failedClickJsonOut);
 if (parsedFailedClickAction.schema !== 'chrome-cdp-ex.action.v1' || parsedFailedClickAction.action !== 'click') {
@@ -284,6 +287,9 @@ if (parsedFailedClickAction.dispatch?.ok !== false || parsedFailedClickAction.ef
 }
 if (!parsedFailedClickAction.nextHint?.includes('cdp perceive')) {
   throw new Error(`failed click --format json should include an executable recovery nextHint:\n${failedClickJsonOut}`);
+}
+if (parsedFailedClickAction.recommendation?.source !== 'action-diagnosis' || !parsedFailedClickAction.nextSteps?.some(step => step.includes('cdp perceive'))) {
+  throw new Error(`failed click --format json should promote diagnosis recovery commands:\n${failedClickJsonOut}`);
 }
 const diffShotOut = step('diff-shot fill diff', () => run(['diff-shot', target]));
 assertIncludes(diffShotOut, 'Diff-shot: changed', 'diff-shot diff');
