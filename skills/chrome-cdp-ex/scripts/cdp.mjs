@@ -1591,6 +1591,142 @@ function applyActionObservationDelta(actionResult, delta = {}) {
   return applyActionDiagnosis(actionResult);
 }
 
+function recoveryCommandArg(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (/^@[a-z0-9:]+$/i.test(text) || /^[^\s"'`\\$]+$/.test(text)) return text;
+  return JSON.stringify(text);
+}
+
+function recoveryCommand(command, reason) {
+  return { command, reason };
+}
+
+function uniqueRecoveryCommands(commands = []) {
+  const seen = new Set();
+  const out = [];
+  for (const entry of commands) {
+    if (!entry?.command || seen.has(entry.command)) continue;
+    seen.add(entry.command);
+    out.push(entry);
+  }
+  return out;
+}
+
+function buildActionRecoveryPlan(diagnosis = {}, { targetId = '<target>', targetInput = '' } = {}) {
+  const target = targetId || '<target>';
+  const input = recoveryCommandArg(targetInput);
+  const perceiveCommand = `cdp perceive ${target} -C -d 8`;
+  const sinceActionCommand = `cdp perceive ${target} --since-action`;
+  const statusCommand = `cdp status ${target}`;
+  const reportCommand = `cdp report ${target} --format json`;
+  const netlogCommand = `cdp netlog ${target}`;
+  const consoleCommand = `cdp console ${target} --errors`;
+  const frameCommand = `cdp frame ${target} --format json`;
+  const overlayCommand = input ? `cdp overlay ${target} ${input} --format json` : `cdp overlay ${target} --format json`;
+  const dismissCommand = `cdp dismiss-modal ${target}`;
+  const nextCommand = diagnosis.nextCommand || null;
+  const base = {
+    schema: 'chrome-cdp-ex.recovery-policy.v1',
+    strategy: 'refresh-perception',
+    priority: diagnosis.status === 'blocked' ? 'high' : 'medium',
+    commands: [],
+    verifyCommand: perceiveCommand,
+    avoid: [],
+  };
+
+  switch (diagnosis.kind) {
+    case 'network-failure':
+    case 'network-pending':
+      return {
+        ...base,
+        strategy: 'inspect-network',
+        priority: diagnosis.kind === 'network-failure' ? 'high' : 'medium',
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(netlogCommand, 'Inspect failed or pending requests caused by the action.'),
+          recoveryCommand(sinceActionCommand, 'Verify what the action changed before retrying.'),
+          recoveryCommand(reportCommand, 'Preserve the action timeline and diagnostics for handoff.'),
+        ]),
+        verifyCommand: sinceActionCommand,
+        avoid: ['retrying the same action before checking network state'],
+      };
+    case 'exception':
+    case 'console-error':
+      return {
+        ...base,
+        strategy: 'inspect-runtime-errors',
+        priority: 'high',
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(consoleCommand, 'Inspect page errors triggered by the action.'),
+          recoveryCommand(sinceActionCommand, 'Verify visible UI changes from the action.'),
+          recoveryCommand(reportCommand, 'Preserve the action timeline and diagnostics for handoff.'),
+        ]),
+        verifyCommand: sinceActionCommand,
+      };
+    case 'overlay':
+      return {
+        ...base,
+        strategy: 'clear-overlay',
+        priority: 'high',
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(overlayCommand, 'Confirm which overlay or dialog blocks the target.'),
+          recoveryCommand(nextCommand || dismissCommand, 'Dismiss the blocking modal or overlay safely.'),
+          recoveryCommand(perceiveCommand, 'Refresh refs after the overlay changes.'),
+        ]),
+        verifyCommand: perceiveCommand,
+        avoid: ['retrying the same click before clearing or re-checking the overlay'],
+      };
+    case 'wrong-frame':
+      return {
+        ...base,
+        strategy: 'refresh-frame-context',
+        priority: 'high',
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(frameCommand, 'List frames and choose the correct frame context.'),
+          recoveryCommand(nextCommand || perceiveCommand, 'Refresh page perception before using refs again.'),
+        ]),
+        verifyCommand: nextCommand || perceiveCommand,
+        avoid: ['retrying top-level refs when the control may be inside an iframe'],
+      };
+    case 'stale-ref':
+    case 'dom-rewrite':
+    case 'navigation':
+    case 'selector':
+      return {
+        ...base,
+        strategy: 'refresh-perception',
+        priority: diagnosis.kind === 'selector' ? 'medium' : 'high',
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(nextCommand || perceiveCommand, 'Refresh current controls and refs.'),
+          recoveryCommand(statusCommand, 'Check navigation, console, and target health if the page changed.'),
+        ]),
+        verifyCommand: nextCommand || perceiveCommand,
+        avoid: ['retrying stale @refs before refreshing perception'],
+      };
+    case 'timeout':
+    case 'observation-timeout':
+      return {
+        ...base,
+        strategy: 'check-tab-health',
+        priority: 'medium',
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(nextCommand || statusCommand, 'Check whether the tab and CDP session are still responsive.'),
+          recoveryCommand(sinceActionCommand, 'If dispatch may have happened, inspect the last-action diff.'),
+          recoveryCommand(reportCommand, 'Preserve any partial diagnostics already captured.'),
+        ]),
+        verifyCommand: statusCommand,
+      };
+    default:
+      return {
+        ...base,
+        commands: uniqueRecoveryCommands([
+          recoveryCommand(nextCommand || perceiveCommand, 'Refresh perception before choosing the next action.'),
+        ]),
+        verifyCommand: nextCommand || perceiveCommand,
+      };
+  }
+}
+
 function actionDiagnosisSignals(actionResult = {}) {
   const effects = actionResult.effects || {};
   const consoleDelta = normalizeConsoleDelta(effects.consoleDelta || {});
@@ -1611,7 +1747,12 @@ function actionDiagnosisSignals(actionResult = {}) {
 function createActionDiagnosis(actionResult = {}) {
   const effects = actionResult.effects || {};
   const targetId = actionTargetCommandId(actionResult.target || {});
+  const targetInput = actionFailureInput(actionResult.target || effects.failure?.target || {});
   const signals = actionDiagnosisSignals(actionResult);
+  const finish = (diagnosis) => ({
+    ...diagnosis,
+    recovery: buildActionRecoveryPlan(diagnosis, { targetId, targetInput }),
+  });
   const base = {
     schema: 'chrome-cdp-ex.action-diagnosis.v1',
     status: 'ok',
@@ -1624,7 +1765,7 @@ function createActionDiagnosis(actionResult = {}) {
   };
 
   if (effects.failure?.kind) {
-    return {
+    return finish({
       ...base,
       status: 'blocked',
       kind: effects.failure.kind,
@@ -1632,11 +1773,11 @@ function createActionDiagnosis(actionResult = {}) {
       source: 'dispatch',
       reason: effects.failure.reason || 'The action failed before dispatch completed.',
       nextCommand: effects.failure.nextCommand || actionResult.nextHint || `cdp status ${targetId}`,
-    };
+    });
   }
 
   if (signals.exceptions > 0) {
-    return {
+    return finish({
       ...base,
       status: 'attention',
       kind: 'exception',
@@ -1644,11 +1785,11 @@ function createActionDiagnosis(actionResult = {}) {
       source: 'exception',
       reason: 'The action triggered one or more page exceptions.',
       nextCommand: `cdp console ${targetId} --errors`,
-    };
+    });
   }
 
   if (signals.networkFailures > 0) {
-    return {
+    return finish({
       ...base,
       status: 'attention',
       kind: 'network-failure',
@@ -1656,11 +1797,11 @@ function createActionDiagnosis(actionResult = {}) {
       source: 'network',
       reason: 'The action triggered one or more failed network requests.',
       nextCommand: `cdp netlog ${targetId}`,
-    };
+    });
   }
 
   if (signals.networkPending > 0) {
-    return {
+    return finish({
       ...base,
       status: 'attention',
       kind: 'network-pending',
@@ -1668,11 +1809,11 @@ function createActionDiagnosis(actionResult = {}) {
       source: 'network',
       reason: 'The action left network requests pending after the settle window.',
       nextCommand: `cdp netlog ${targetId}`,
-    };
+    });
   }
 
   if (signals.consoleErrors > 0) {
-    return {
+    return finish({
       ...base,
       status: 'attention',
       kind: 'console-error',
@@ -1680,11 +1821,11 @@ function createActionDiagnosis(actionResult = {}) {
       source: 'console',
       reason: 'The action triggered one or more console errors.',
       nextCommand: `cdp console ${targetId} --errors`,
-    };
+    });
   }
 
   if (actionResult.dispatch?.ok === true && actionResult.settle?.ok === false) {
-    return {
+    return finish({
       ...base,
       status: 'attention',
       kind: 'observation-timeout',
@@ -1692,11 +1833,11 @@ function createActionDiagnosis(actionResult = {}) {
       source: 'settle',
       reason: 'The action was dispatched, but post-action observation did not finish cleanly.',
       nextCommand: `cdp perceive ${targetId} --since-action`,
-    };
+    });
   }
 
   if (signals.domChanged) {
-    return {
+    return finish({
       ...base,
       status: 'ok',
       kind: 'dom-changed',
@@ -1704,7 +1845,7 @@ function createActionDiagnosis(actionResult = {}) {
       source: 'dom',
       reason: 'The action dispatched and changed the perceived DOM.',
       nextCommand: actionResult.nextHint || `cdp perceive ${targetId} --since-action`,
-    };
+    });
   }
 
   return base;
@@ -2162,6 +2303,9 @@ function formatSessionReport(session, { now = Date.now(), format = 'text' } = {}
       if (entry.failure?.kind) lines.push(`   Failure: ${entry.failure.kind} — ${entry.failure.reason}`);
       if (entry.diagnosis?.kind && entry.diagnosis.status !== 'ok') {
         lines.push(`   Diagnosis: ${entry.diagnosis.kind} — ${entry.diagnosis.reason}`);
+      }
+      if (entry.diagnosis?.recovery?.strategy && entry.diagnosis.status !== 'ok') {
+        lines.push(`   Recovery: ${entry.diagnosis.recovery.strategy}`);
       }
       if (entry.effectSummary) lines.push(`   Effect: ${entry.effectSummary}`);
       if (entry.effectSample) lines.push(`   Sample: ${entry.effectSample}`);
@@ -6348,6 +6492,7 @@ function compactActionDiagnosisModel(diagnosis = null) {
     source: diagnosis.source || 'action',
     reason: diagnosis.reason || '',
     nextCommand: diagnosis.nextCommand || null,
+    recovery: diagnosis.recovery || null,
     signals: diagnosis.signals || {},
   };
 }
@@ -6359,6 +6504,14 @@ function diagnosisFromActionModel(actionModel = null) {
 
 function isAttentionDiagnosis(diagnosis = null) {
   return diagnosis?.status === 'attention';
+}
+
+function recoveryCommandsFromDiagnosis(diagnosis = null) {
+  const commands = diagnosis?.recovery?.commands;
+  if (Array.isArray(commands) && commands.length) {
+    return commands.map(entry => entry?.command).filter(Boolean);
+  }
+  return diagnosis?.nextCommand ? [diagnosis.nextCommand] : [];
 }
 
 function batchStepModel(result = {}, index = 0) {
@@ -6393,11 +6546,16 @@ function buildBatchResultModel(results = [], { targetId = null, mode = 'sequenti
   const steps = results.map((result, index) => batchStepModel(result, index));
   const failedSteps = steps.filter(step => !step.ok);
   const attentionSteps = steps.filter(step => step.ok && isAttentionDiagnosis(step.diagnosis));
-  const nextSteps = [...new Set(failedSteps.map(step => step.nextCommand).filter(Boolean))];
+  const nextSteps = [];
+  const pushNext = (command) => {
+    if (command && !nextSteps.includes(command)) nextSteps.push(command);
+  };
+  for (const step of failedSteps) {
+    for (const command of recoveryCommandsFromDiagnosis(step.diagnosis)) pushNext(command);
+    pushNext(step.nextCommand);
+  }
   for (const step of attentionSteps) {
-    if (step.diagnosis?.nextCommand && !nextSteps.includes(step.diagnosis.nextCommand)) {
-      nextSteps.push(step.diagnosis.nextCommand);
-    }
+    for (const command of recoveryCommandsFromDiagnosis(step.diagnosis)) pushNext(command);
   }
   if (failedSteps.length && nextSteps.length === 0) {
     nextSteps.push(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
@@ -6597,12 +6755,16 @@ function buildFlowResultModel({ targetId = null, input = '', steps = [], stepRes
   const ok = stepResults.filter(step => step.ok === true).length;
   const attentionSteps = stepResults.filter(step => step.ok && isAttentionDiagnosis(step.diagnosis));
   const nextSteps = [];
-  if (failedStep?.nextCommand) nextSteps.push(failedStep.nextCommand);
-  else if (failedStep) nextSteps.push(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
+  const pushNext = (command) => {
+    if (command && !nextSteps.includes(command)) nextSteps.push(command);
+  };
+  if (failedStep) {
+    for (const command of recoveryCommandsFromDiagnosis(failedStep.diagnosis)) pushNext(command);
+    pushNext(failedStep.nextCommand);
+  }
+  if (failedStep && nextSteps.length === 0) pushNext(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
   for (const step of attentionSteps) {
-    if (step.diagnosis?.nextCommand && !nextSteps.includes(step.diagnosis.nextCommand)) {
-      nextSteps.push(step.diagnosis.nextCommand);
-    }
+    for (const command of recoveryCommandsFromDiagnosis(step.diagnosis)) pushNext(command);
   }
   return {
     schema: 'chrome-cdp-ex.flow.v1',
@@ -9119,6 +9281,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,
+  buildActionRecoveryPlan,
   createActionResult, formatActionText, runActionWithFeedback,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest,

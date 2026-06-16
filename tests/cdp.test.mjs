@@ -1051,6 +1051,17 @@ describe('ActionResult', () => {
       confidence: 'high',
       source: 'network',
       nextCommand: 'cdp netlog ABC123',
+      recovery: {
+        schema: 'chrome-cdp-ex.recovery-policy.v1',
+        strategy: 'inspect-network',
+        priority: 'high',
+        verifyCommand: 'cdp perceive ABC123 --since-action',
+        commands: [
+          { command: 'cdp netlog ABC123' },
+          { command: 'cdp perceive ABC123 --since-action' },
+          { command: 'cdp report ABC123 --format json' },
+        ],
+      },
       signals: {
         dispatchOk: true,
         settleOk: true,
@@ -1145,6 +1156,25 @@ describe('ActionResult', () => {
     expect(timeout.nextCommand).toBe('cdp status abc123');
   });
 
+  it('maps wrong-frame diagnoses to frame-aware recovery commands', () => {
+    const recovery = T.buildActionRecoveryPlan({
+      status: 'blocked',
+      kind: 'wrong-frame',
+      nextCommand: 'cdp perceive ABC123 -C -d 8',
+    }, { targetId: 'ABC123' });
+
+    expect(recovery).toMatchObject({
+      schema: 'chrome-cdp-ex.recovery-policy.v1',
+      strategy: 'refresh-frame-context',
+      priority: 'high',
+      commands: [
+        { command: 'cdp frame ABC123 --format json' },
+        { command: 'cdp perceive ABC123 -C -d 8' },
+      ],
+      verifyCommand: 'cdp perceive ABC123 -C -d 8',
+    });
+  });
+
   it('formats action failures without losing the original browser error', () => {
     const text = T.formatActionFailure(
       new Error('Element not found: #save'),
@@ -1210,6 +1240,15 @@ describe('ActionResult', () => {
           kind: 'overlay',
           source: 'dispatch',
           nextCommand: 'cdp dismiss-modal abc123',
+          recovery: {
+            strategy: 'clear-overlay',
+            commands: [
+              { command: 'cdp overlay abc123 @4 --format json' },
+              { command: 'cdp dismiss-modal abc123' },
+              { command: 'cdp perceive abc123 -C -d 8' },
+            ],
+            avoid: ['retrying the same click before clearing or re-checking the overlay'],
+          },
         },
       },
       nextHint: 'cdp dismiss-modal abc123',
@@ -1363,6 +1402,7 @@ describe('Session report', () => {
     expect(out).toContain('Network: 1 request (1 failed)');
     expect(out).toContain('Network sample: POST /api/combat -> 500 in 27ms');
     expect(out).toContain('Diagnosis: network-failure');
+    expect(out).toContain('Recovery: inspect-network');
     expect(state.actionLog[0].consoleSummary).toBe('Console: 1 entry (1 error)');
     expect(state.actionLog[0].networkSummary).toBe('Network: 1 request (1 failed)');
     expect(state.actionLog[0].diagnosis).toMatchObject({
@@ -5504,7 +5544,11 @@ describe('formatBatchResults', () => {
         nextCommand: 'cdp netlog ABC123',
       },
     });
-    expect(parsed.nextSteps).toEqual(['cdp netlog ABC123']);
+    expect(parsed.nextSteps).toEqual([
+      'cdp netlog ABC123',
+      'cdp perceive ABC123 --since-action',
+      'cdp report ABC123 --format json',
+    ]);
   });
 });
 
@@ -5749,7 +5793,11 @@ describe('flowStr', () => {
       schema: 'chrome-cdp-ex.flow.v1',
       halted: false,
       counts: { steps: 2, ok: 2, failed: 0, skipped: 0, attention: 1 },
-      nextSteps: ['cdp netlog ABC123'],
+      nextSteps: [
+        'cdp netlog ABC123',
+        'cdp perceive ABC123 --since-action',
+        'cdp report ABC123 --format json',
+      ],
     });
     expect(parsed.steps[0]).toMatchObject({
       cmd: 'click',

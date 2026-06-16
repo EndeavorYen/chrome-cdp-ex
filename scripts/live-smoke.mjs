@@ -309,6 +309,16 @@ if (!['network-failure', 'network-pending'].includes(parsedDiagnosticAction.effe
 if (!parsedDiagnosticAction.effects?.diagnosis?.nextCommand?.includes('cdp netlog')) {
   throw new Error(`diagnostic action json should include a netlog next command:\n${diagnosticJsonOut}`);
 }
+const diagnosticRecoveryCommands = parsedDiagnosticAction.effects?.diagnosis?.recovery?.commands?.map(entry => entry.command) || [];
+if (!diagnosticRecoveryCommands.some(command => command.includes('cdp netlog'))) {
+  throw new Error(`diagnostic action json should include a recovery netlog command:\n${diagnosticJsonOut}`);
+}
+if (!diagnosticRecoveryCommands.some(command => command.includes('perceive') && command.includes('--since-action'))) {
+  throw new Error(`diagnostic action json should include a recovery since-action command:\n${diagnosticJsonOut}`);
+}
+if (!diagnosticRecoveryCommands.some(command => command.includes('report') && command.includes('--format json'))) {
+  throw new Error(`diagnostic action json should include a recovery report handoff command:\n${diagnosticJsonOut}`);
+}
 const batchJsonOut = step('batch json failure handoff', () => run(['batch', target, '--format', 'json', 'summary | click #missing-batch-json-smoke']));
 const parsedBatch = JSON.parse(batchJsonOut);
 if (parsedBatch.schema !== 'chrome-cdp-ex.batch.v1' || parsedBatch.counts?.failed !== 1) {
@@ -340,6 +350,7 @@ const reportOut = step('session report', () => run(['report', target]));
 assertIncludes(reportOut, 'Session report:', 'report');
 assertIncludes(reportOut, 'Action timeline:', 'report');
 assertIncludes(reportOut, 'click #combat', 'report action timeline');
+assertIncludes(reportOut, 'Recovery:', 'report recovery strategy');
 assertIncludes(reportOut, 'Screenshot dir:', 'report screenshot dir');
 assertIncludes(reportOut, 'Attachments:', 'report attachments');
 assertIncludes(reportOut, sessionShotPath, 'report screenshot attachment');
