@@ -72,7 +72,7 @@ function mutatingCommandName(step = {}) {
 }
 
 function differentiatorProbe(steps, predicate) {
-  const matches = steps.filter(predicate);
+  const matches = steps.filter(step => !step.benchmarkProbe && predicate(step));
   const successful = matches.some(step => step.ok);
   return {
     success: successful,
@@ -107,6 +107,74 @@ function benchmarkDifferentiators(steps) {
   const probes = [modalOverlay, frameRefs, cssTrace, hmrDomUpdate];
   const successRate = probes.filter(probe => probe.success).length / probes.length;
   return { modalOverlay, frameRefs, cssTrace, hmrDomUpdate, successRate };
+}
+
+function differentiatorHandoffMissingFields(model = {}) {
+  const missing = [];
+  if (model.schema === 'chrome-cdp-ex.overlays.v1') {
+    if (!model.viewport || typeof model.viewport !== 'object') missing.push('viewport');
+    if (!Number.isFinite(model.overlayCount)) missing.push('overlayCount');
+    if (typeof model.blocking !== 'boolean') missing.push('blocking');
+    const overlays = Array.isArray(model.overlays) ? model.overlays : null;
+    if (!overlays) missing.push('overlays');
+    if (model.blocking === true && !(overlays || []).some(overlay => (
+      overlay?.blocking === true
+      || overlay?.coversTarget === true
+      || overlay?.kind === 'dialog'
+    ))) {
+      missing.push('overlays.blocking');
+    }
+    if (model.blocking === true && !isExecutableRecoveryCommand(model.nextCommand)) {
+      missing.push('nextCommand');
+    }
+    return [...new Set(missing)];
+  }
+
+  if (model.schema === 'chrome-cdp-ex.frames.v1') {
+    if (!Number.isFinite(model.frameCount)) missing.push('frameCount');
+    const frames = Array.isArray(model.frames) ? model.frames : null;
+    if (!frames) missing.push('frames');
+    if (!(frames || []).some(frame => /^@f\d+$/.test(String(frame?.ref || '')))) {
+      missing.push('frames.ref');
+    }
+    return [...new Set(missing)];
+  }
+
+  return missing;
+}
+
+function benchmarkDifferentiatorHandoffCoverage(steps) {
+  const bySchema = {};
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
+    if (!['chrome-cdp-ex.overlays.v1', 'chrome-cdp-ex.frames.v1'].includes(model?.schema)) continue;
+    total += 1;
+    bySchema[model.schema] ||= { total: 0, covered: 0, missing: 0 };
+    bySchema[model.schema].total += 1;
+    const missingFields = differentiatorHandoffMissingFields(model);
+    if (missingFields.length === 0) {
+      covered += 1;
+      bySchema[model.schema].covered += 1;
+    } else {
+      bySchema[model.schema].missing += 1;
+      missing.push({
+        name: step.name,
+        schema: model.schema,
+        commandText: step.commandText,
+        missing: missingFields,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    bySchema,
+    rate: total > 0 ? covered / total : null,
+  };
 }
 
 function benchmarkStaleRefRecovery(steps) {
@@ -819,6 +887,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   perceptionSignalCoverageRateMin: 1,
   sinceActionEvidenceCoverageRateMin: 1,
   differentiatorSuccessRateMin: 1,
+  differentiatorHandoffCoverageRateMin: 1,
   staleRefRecoveryRateMin: 1,
 });
 
@@ -1018,6 +1087,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '>=',
       limit: limits.differentiatorSuccessRateMin,
       recommendation: 'Keep modal/overlay, frame refs, CSS trace, and HMR/SPAs green before making differentiation claims.',
+    }),
+    gateCriterion({
+      name: 'differentiator-handoff-coverage',
+      actual: metrics.differentiatorHandoffCoverage?.rate ?? 1,
+      operator: '>=',
+      limit: limits.differentiatorHandoffCoverageRateMin,
+      recommendation: 'Keep overlay and frame JSON probes agent-readable before making differentiation claims.',
     }),
     gateCriterion({
       name: 'stale-ref-recovery-rate',
@@ -1232,6 +1308,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       verificationCallsSaved: actionEvidenceSteps.length,
       hasReportTimeline: hasReportTimeline(reportStep || {}),
       differentiators: benchmarkDifferentiators(normalizedSteps),
+      differentiatorHandoffCoverage: benchmarkDifferentiatorHandoffCoverage(normalizedSteps),
       staleRefRecovery: benchmarkStaleRefRecovery(normalizedSteps),
       sessionStability: benchmarkSessionStability(normalizedSteps),
     },
@@ -1279,6 +1356,7 @@ export function formatBenchmarkReport(summary) {
     `Report artifact coverage: ${summary.metrics.reportArtifactCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportArtifactCoverage.rate * 100)}%`} (${summary.metrics.reportArtifactCoverage?.covered ?? 0}/${summary.metrics.reportArtifactCoverage?.total ?? 0})`,
     `Perception signal coverage: ${summary.metrics.perceptionSignalCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.perceptionSignalCoverage.rate * 100)}%`} (${summary.metrics.perceptionSignalCoverage?.covered ?? 0}/${summary.metrics.perceptionSignalCoverage?.total ?? 0})`,
     `Since-action evidence coverage: ${summary.metrics.sinceActionEvidenceCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.sinceActionEvidenceCoverage.rate * 100)}%`} (${summary.metrics.sinceActionEvidenceCoverage?.covered ?? 0}/${summary.metrics.sinceActionEvidenceCoverage?.total ?? 0})`,
+    `Differentiator handoff coverage: ${summary.metrics.differentiatorHandoffCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.differentiatorHandoffCoverage.rate * 100)}%`} (${summary.metrics.differentiatorHandoffCoverage?.covered ?? 0}/${summary.metrics.differentiatorHandoffCoverage?.total ?? 0})`,
     `Verification calls saved: ${summary.metrics.verificationCallsSaved}`,
     `Report timeline: ${summary.metrics.hasReportTimeline ? 'yes' : 'no'}`,
     `Quality gate: ${gate.passed ? 'pass' : 'fail'}`,
@@ -1413,7 +1491,9 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
   plan.push(
     { args: ['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20', '--format', 'json'] },
     { args: ['overlay', target] },
+    { args: ['overlay', target, '--format', 'json'], name: 'overlay-json', benchmarkProbe: true },
     { args: ['frame', target] },
+    { args: ['frame', target, '--format', 'json'], name: 'frame-json', benchmarkProbe: true },
     { args: ['cascade', target, '#custom-clickable', 'cursor'] },
     { args: ['dismiss-modal', target, '--format', 'json'] },
     { args: ['fill', target, '#cmd', 'look trainer', '--format', 'json'] },

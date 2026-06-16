@@ -44,19 +44,54 @@ describe('benchmark killer path helpers', () => {
         stderr: '',
       },
       {
+        name: 'overlay-json',
+        command: ['overlay', 'AABBCCDD', '--format', 'json'],
+        startedAt: 55,
+        endedAt: 60,
+        status: 0,
+        benchmarkProbe: true,
+        stdout: JSON.stringify({
+          schema: 'chrome-cdp-ex.overlays.v1',
+          viewport: { width: 1280, height: 720 },
+          target: null,
+          overlayCount: 1,
+          blocking: true,
+          overlays: [{ kind: 'dialog', selector: '#modal', blocking: true }],
+          nextCommand: 'cdp dismiss-modal AABBCCDD',
+        }),
+        stderr: '',
+      },
+      {
         name: 'frame',
         command: ['frame', 'AABBCCDD'],
-        startedAt: 55,
-        endedAt: 75,
+        startedAt: 60,
+        endedAt: 80,
         status: 0,
         stdout: 'Frames:\n@f2 smoke-child http://example.test/child\n',
         stderr: '',
       },
       {
+        name: 'frame-json',
+        command: ['frame', 'AABBCCDD', '--format', 'json'],
+        startedAt: 80,
+        endedAt: 85,
+        status: 0,
+        benchmarkProbe: true,
+        stdout: JSON.stringify({
+          schema: 'chrome-cdp-ex.frames.v1',
+          frameCount: 2,
+          frames: [
+            { ref: '@f1', id: 'main', depth: 0, url: 'http://example.test/' },
+            { ref: '@f2', id: 'child', depth: 1, parentRef: '@f1', url: 'http://example.test/child' },
+          ],
+        }),
+        stderr: '',
+      },
+      {
         name: 'cascade',
         command: ['cascade', 'AABBCCDD', '#start', 'background-color'],
-        startedAt: 75,
-        endedAt: 100,
+        startedAt: 85,
+        endedAt: 110,
         status: 0,
         stdout: 'background-color:\n  WIN rgb(1, 2, 3) ← #start\n    → inline:12\n',
         stderr: '',
@@ -64,8 +99,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'hmr-diff',
         command: ['perceive', 'AABBCCDD', '--diff', '-s', '#combat-log', '--last', '20'],
-        startedAt: 100,
-        endedAt: 118,
+        startedAt: 110,
+        endedAt: 128,
         status: 0,
         stdout: '~~~ Text nodes updated (1 added)\n+   [StaticText] hmr panel ready\n',
         stderr: '',
@@ -73,8 +108,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'click',
         command: ['click', 'AABBCCDD', '#start'],
-        startedAt: 118,
-        endedAt: 130,
+        startedAt: 128,
+        endedAt: 140,
         status: 0,
         stdout: 'Clicked #start\n---\nclick: dispatched\nEffects:\n+++ Added\n[StaticText] Started\n',
         stderr: '',
@@ -82,8 +117,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'since-action',
         command: ['perceive', 'AABBCCDD', '--since-action', '--format', 'json'],
-        startedAt: 130,
-        endedAt: 140,
+        startedAt: 140,
+        endedAt: 150,
         status: 0,
         stdout: JSON.stringify({
           schema: 'chrome-cdp-ex.perceive-diff.v1',
@@ -107,8 +142,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'stale-ref',
         command: ['click', 'AABBCCDD', '@1'],
-        startedAt: 140,
-        endedAt: 160,
+        startedAt: 150,
+        endedAt: 170,
         status: 1,
         expectedFailure: true,
         stdout: '',
@@ -117,8 +152,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'report',
         command: ['report', 'AABBCCDD'],
-        startedAt: 160,
-        endedAt: 190,
+        startedAt: 170,
+        endedAt: 200,
         status: 0,
         stdout: 'Session report: AABBCCDD\nActions: 1\n\nAction timeline:\n- click #start\n',
         stderr: '',
@@ -126,8 +161,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'stability-wait',
         command: ['wait', 'AABBCCDD', '1000'],
-        startedAt: 190,
-        endedAt: 200,
+        startedAt: 200,
+        endedAt: 210,
         status: 0,
         stdout: 'waited 1000ms',
         stderr: '',
@@ -135,8 +170,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'stability-status',
         command: ['status', 'AABBCCDD'],
-        startedAt: 200,
-        endedAt: 215,
+        startedAt: 210,
+        endedAt: 225,
         status: 0,
         stdout: 'Status: ready\n',
         stderr: '',
@@ -144,8 +179,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'stability-report',
         command: ['report', 'AABBCCDD'],
-        startedAt: 215,
-        endedAt: 230,
+        startedAt: 225,
+        endedAt: 240,
         status: 0,
         stdout: 'Session report: AABBCCDD\nActions: 1\n\nAction timeline:\n- click #start\n',
         stderr: '',
@@ -155,7 +190,7 @@ describe('benchmark killer path helpers', () => {
     const summary = summarizeBenchmarkRun({
       scenario: 'killer-path',
       startedAt: 0,
-      endedAt: 230,
+      endedAt: 240,
       target: 'AABBCCDD',
       steps,
     });
@@ -166,13 +201,13 @@ describe('benchmark killer path helpers', () => {
     expect(summary.scenario).toBe('killer-path');
     expect(summary.success).toBe(true);
     expect(summary.target).toBe('AABBCCDD');
-    expect(summary.metrics.totalMs).toBe(230);
+    expect(summary.metrics.totalMs).toBe(240);
     expect(summary.metrics.commandCalls).toBe(13);
     expect(summary.metrics.outputChars).toBe(outputChars);
     expect(summary.metrics.estimatedOutputTokens).toBe(estimateTokenCount(outputChars));
     expect(summary.metrics.firstUsefulObservationMs).toBe(40);
-    expect(summary.metrics.firstActionEvidenceMs).toBe(130);
-    expect(summary.metrics.goldenPathMs).toBe(190);
+    expect(summary.metrics.firstActionEvidenceMs).toBe(140);
+    expect(summary.metrics.goldenPathMs).toBe(200);
     expect(summary.metrics.autoEvidenceActions).toBe(1);
     expect(summary.metrics.actionEvidenceCoverage).toMatchObject({
       total: 2,
@@ -203,6 +238,16 @@ describe('benchmark killer path helpers', () => {
       cssTrace: { success: true, durationMs: 25, commandCalls: 1 },
       hmrDomUpdate: { success: true, durationMs: 18, commandCalls: 1 },
       successRate: 1,
+    });
+    expect(summary.metrics.differentiatorHandoffCoverage).toMatchObject({
+      total: 2,
+      covered: 2,
+      missing: [],
+      rate: 1,
+      bySchema: {
+        'chrome-cdp-ex.overlays.v1': { total: 1, covered: 1, missing: 0 },
+        'chrome-cdp-ex.frames.v1': { total: 1, covered: 1, missing: 0 },
+      },
     });
     expect(summary.metrics.staleRefRecovery).toMatchObject({
       success: true,
@@ -261,24 +306,25 @@ describe('benchmark killer path helpers', () => {
     });
     expect(summary.gate.criteria).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'first-useful-observation', passed: true, actual: 40, operator: '<=', limit: 5000 }),
-      expect.objectContaining({ name: 'golden-path-under-two-minutes', passed: true, actual: 190, operator: '<=', limit: 120000 }),
+      expect.objectContaining({ name: 'golden-path-under-two-minutes', passed: true, actual: 200, operator: '<=', limit: 120000 }),
       expect.objectContaining({ name: 'useful-observation-tokens', passed: true, operator: '<=', limit: 3000 }),
       expect.objectContaining({ name: 'auto-evidence-actions', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'observed-action-evidence-coverage', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'since-action-evidence-coverage', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'report-timeline', passed: true, actual: true, operator: '===', limit: true }),
       expect.objectContaining({ name: 'differentiator-success-rate', passed: true, actual: 1, operator: '>=', limit: 1 }),
+      expect.objectContaining({ name: 'differentiator-handoff-coverage', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'stale-ref-recovery-rate', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'session-stability-sample', passed: true, actual: true, operator: '===', limit: true }),
     ]));
-    expect(summary.steps[6]).toMatchObject({
+    expect(summary.steps[8]).toMatchObject({
       name: 'click',
       ok: true,
       durationMs: 12,
-      estimatedTokens: estimateTokenCount(steps[6].stdout.length),
+      estimatedTokens: estimateTokenCount(steps[8].stdout.length),
       hasActionEvidence: true,
     });
-    expect(summary.steps[8]).toMatchObject({
+    expect(summary.steps[10]).toMatchObject({
       name: 'stale-ref',
       ok: true,
       expectedFailure: true,
@@ -406,7 +452,7 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Since-action evidence coverage: 100% (1/1)');
     expect(out).toContain('CLI recovery coverage: 100% (1/1)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 23/23 pass');
+    expect(out).toContain('Gate checks: 24/24 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -460,6 +506,72 @@ describe('benchmark killer path helpers', () => {
         passed: false,
         actual: 0.8,
         recommendation: 'Every mutating command exercised by the benchmark must return action evidence.',
+      }),
+    ]));
+  });
+
+  it('fails the gate when differentiator JSON handoffs are incomplete', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'differentiator-handoff',
+      startedAt: 0,
+      endedAt: 20,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'overlay-json',
+          command: ['overlay', 'AABBCCDD', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          benchmarkProbe: true,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.overlays.v1',
+            overlayCount: 1,
+            blocking: true,
+            overlays: [],
+          }),
+          stderr: '',
+        },
+        {
+          name: 'frame-json',
+          command: ['frame', 'AABBCCDD', '--format', 'json'],
+          startedAt: 10,
+          endedAt: 20,
+          status: 0,
+          benchmarkProbe: true,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.frames.v1',
+            frameCount: 1,
+            frames: [{ id: 'main', depth: 0, url: 'http://example.test/' }],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.differentiatorHandoffCoverage).toMatchObject({
+      total: 2,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'overlay-json',
+          schema: 'chrome-cdp-ex.overlays.v1',
+          missing: expect.arrayContaining(['viewport', 'overlays.blocking', 'nextCommand']),
+        }),
+        expect.objectContaining({
+          name: 'frame-json',
+          schema: 'chrome-cdp-ex.frames.v1',
+          missing: expect.arrayContaining(['frames.ref']),
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'differentiator-handoff-coverage',
+        passed: false,
+        actual: 0,
+        recommendation: 'Keep overlay and frame JSON probes agent-readable before making differentiation claims.',
       }),
     ]));
   });
