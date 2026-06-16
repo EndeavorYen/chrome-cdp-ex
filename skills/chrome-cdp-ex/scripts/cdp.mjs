@@ -10100,21 +10100,12 @@ function buildOpenModel({ targetId, url = '', attached = false, autoPerceive = n
     ? { attempted: false, ok: false, reason: 'not-run' }
     : { attempted: false, ok: false, reason: 'not-attached' };
   const autoPerceiveModel = autoPerceive || defaultAutoPerceive;
-  const nextSteps = approved
-    ? [
-        `cdp perceive ${target} -C -d 8`,
-        `cdp click ${target} @ref  # choose a ref from perceive`,
-        `cdp perceive ${target} --since-action`,
-        `cdp report ${target}`,
-      ]
-    : [
-        `cdp perceive ${target} -C -d 8`,
-      ];
   const recommendation = approved && autoPerceiveModel.ok
     ? goldenPathActRecommendation(target, { fromPerceptionBelow: true })
     : approved
     ? goldenPathPerceiveRecommendation(target)
     : goldenPathBrowserPermissionRecommendation(target);
+  const nextSteps = recommendation.commands;
   return {
     schema: 'chrome-cdp-ex.open.v1',
     targetId,

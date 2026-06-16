@@ -4356,8 +4356,7 @@ describe('open onboarding guidance', () => {
       approval: 'approved',
       autoPerceive: { attempted: true, ok: true },
       nextSteps: [
-        'cdp perceive AABBCCDD -C -d 8',
-        'cdp click AABBCCDD @ref  # choose a ref from perceive',
+        'cdp click AABBCCDD @ref  # choose a ref from the perception below',
         'cdp perceive AABBCCDD --since-action',
         'cdp report AABBCCDD',
       ],
@@ -4377,6 +4376,7 @@ describe('open onboarding guidance', () => {
       'cdp perceive AABBCCDD --since-action',
       'cdp report AABBCCDD',
     ]);
+    expect(model.nextSteps).toEqual(model.recommendation.commands);
   });
 
   it('recommends perceive when open JSON skipped auto-perceive output', () => {
