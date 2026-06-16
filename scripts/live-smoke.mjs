@@ -121,6 +121,9 @@ if (parsedList.schema !== 'chrome-cdp-ex.list.v1' || !Array.isArray(parsedList.p
 if (!parsedList.nextSteps?.some(step => step.startsWith(`cdp perceive ${target}`))) {
   throw new Error(`list json should include executable perceive next step\nOutput:\n${listJson}`);
 }
+if (parsedList.recommendation?.source !== 'golden-path' || parsedList.recommendation?.run !== `cdp perceive ${target} -C -d 8`) {
+  throw new Error(`list json should include golden-path perceive recommendation\nOutput:\n${listJson}`);
+}
 const doctorOut = step('doctor onboarding', () => run(['doctor']));
 assertIncludes(doctorOut, 'chrome-cdp-ex doctor', 'doctor');
 assertIncludes(doctorOut, 'FD limit', 'doctor fd limit');
@@ -148,6 +151,12 @@ if (parsedOpen.attached !== true || parsedOpen.approval !== 'approved') {
 if (!parsedOpen.nextSteps?.some(nextStep => nextStep.startsWith(`cdp perceive ${parsedOpen.targetPrefix}`))) {
   throw new Error(`open json should include executable perceive next step:\n${openJson}`);
 }
+const expectedOpenRecommendationPrefix = parsedOpen.autoPerceive?.ok
+  ? `cdp click ${parsedOpen.targetPrefix}`
+  : `cdp perceive ${parsedOpen.targetPrefix}`;
+if (parsedOpen.recommendation?.source !== 'golden-path' || !parsedOpen.recommendation?.run?.startsWith(expectedOpenRecommendationPrefix)) {
+  throw new Error(`open json should recommend the next golden-path command:\n${openJson}`);
+}
 step('close open json tab', () => run(['closetab', parsedOpen.targetPrefix]));
 const cliErrorOut = step('actionable cli error', () => runFailure(['perceive']));
 assertIncludes(cliErrorOut, 'Error: target ID required', 'targetless perceive error');
@@ -160,6 +169,9 @@ const perceiveJson = step('perceive json', () => run(['perceive', target, '--for
 const parsedPerceive = JSON.parse(perceiveJson);
 if (parsedPerceive.schema !== 'chrome-cdp-ex.perceive.v1') throw new Error(`perceive json schema mismatch:\n${perceiveJson}`);
 if (parsedPerceive.viewport.coordinateSpace !== 'viewport-css-px') throw new Error(`perceive json coordinateSpace mismatch:\n${perceiveJson}`);
+if (parsedPerceive.recommendation?.source !== 'golden-path' || !parsedPerceive.recommendation?.run?.startsWith(`cdp click ${target}`)) {
+  throw new Error(`perceive json should recommend action/evidence/report continuation:\n${perceiveJson}`);
+}
 const frameOut = step('frame tree refs', () => run(['frame', target]));
 assertIncludes(frameOut, 'Frames:', 'frame');
 assertIncludes(frameOut, '@f2', 'frame child ref');

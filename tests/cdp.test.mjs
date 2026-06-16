@@ -790,6 +790,7 @@ describe('structured status and console models', () => {
 describe('PerceptionModel', () => {
   it('builds a versioned model with page, viewport, console, refs, and nodes', () => {
     const model = T.createPerceptionModel({
+      targetPrefix: 'ABC12345',
       page: { title: 'Example', url: 'https://example.com' },
       viewport: { width: 1280, height: 720, scrollY: 0, scrollMax: 1000 },
       consoleHealth: { errors: 1, warnings: 2, exceptions: 0 },
@@ -801,6 +802,17 @@ describe('PerceptionModel', () => {
     expect(model.schema).toBe('chrome-cdp-ex.perceive.v1');
     expect(model.viewport.coordinateSpace).toBe('viewport-css-px');
     expect(model.nodes[0].ref).toBe('@1');
+    expect(model.recommendation).toMatchObject({
+      source: 'golden-path',
+      stage: 'act',
+      targetPrefix: 'ABC12345',
+      run: 'cdp click ABC12345 @1',
+      after: 'cdp perceive ABC12345 --since-action',
+      report: 'cdp report ABC12345',
+      requiresUserAction: false,
+      consentRequired: false,
+    });
+    expect(model.recommendation.reason).toContain('first interactive ref');
   });
 
   it('formats perception JSON as parseable output', () => {
@@ -2549,6 +2561,18 @@ describe('formatPageList', () => {
       `cdp perceive ${model.pages[0].targetPrefix} --since-action`,
       `cdp report ${model.pages[0].targetPrefix}`,
     ]);
+    expect(model.recommendation).toMatchObject({
+      source: 'golden-path',
+      stage: 'perceive',
+      targetPrefix: model.pages[0].targetPrefix,
+      run: `cdp perceive ${model.pages[0].targetPrefix} -C -d 8`,
+      after: `cdp click ${model.pages[0].targetPrefix} @ref  # choose a ref from perceive`,
+      evidence: `cdp perceive ${model.pages[0].targetPrefix} --since-action`,
+      report: `cdp report ${model.pages[0].targetPrefix}`,
+      requiresUserAction: false,
+      consentRequired: false,
+    });
+    expect(model.recommendation.commands).toEqual(model.nextSteps);
   });
 
   it('builds an empty list JSON model with an open next step', () => {
@@ -2560,6 +2584,15 @@ describe('formatPageList', () => {
       prefixLength: 8,
       pages: [],
       nextSteps: ['cdp open https://example.com'],
+    });
+    expect(model.recommendation).toMatchObject({
+      source: 'golden-path',
+      stage: 'open-page',
+      targetPrefix: null,
+      run: 'cdp open https://example.com',
+      after: 'cdp perceive <target-from-open> -C -d 8',
+      requiresUserAction: false,
+      consentRequired: false,
     });
   });
 
@@ -3736,6 +3769,38 @@ describe('open onboarding guidance', () => {
         'cdp report AABBCCDD',
       ],
     });
+    expect(model.recommendation).toMatchObject({
+      source: 'golden-path',
+      stage: 'act',
+      targetPrefix: 'AABBCCDD',
+      run: 'cdp click AABBCCDD @ref  # choose a ref from the perception below',
+      after: 'cdp perceive AABBCCDD --since-action',
+      report: 'cdp report AABBCCDD',
+      requiresUserAction: false,
+      consentRequired: false,
+    });
+    expect(model.recommendation.commands).toEqual([
+      'cdp click AABBCCDD @ref  # choose a ref from the perception below',
+      'cdp perceive AABBCCDD --since-action',
+      'cdp report AABBCCDD',
+    ]);
+  });
+
+  it('recommends perceive when open JSON skipped auto-perceive output', () => {
+    const model = T.buildOpenModel({
+      targetId: 'AABBCCDDEEFF',
+      url: 'about:blank',
+      attached: true,
+      autoPerceive: { attempted: false, ok: false, reason: 'json-output' },
+    });
+
+    expect(model.recommendation).toMatchObject({
+      source: 'golden-path',
+      stage: 'perceive',
+      targetPrefix: 'AABBCCDD',
+      run: 'cdp perceive AABBCCDD -C -d 8',
+      after: 'cdp click AABBCCDD @ref  # choose a ref from perceive',
+    });
   });
 
   it('formats a timeout recovery when browser permission is not approved yet', () => {
@@ -3765,6 +3830,15 @@ describe('open onboarding guidance', () => {
       nextSteps: [
         'cdp perceive AABBCCDD -C -d 8',
       ],
+    });
+    expect(model.recommendation).toMatchObject({
+      source: 'golden-path',
+      stage: 'browser-permission',
+      targetPrefix: 'AABBCCDD',
+      run: 'cdp perceive AABBCCDD -C -d 8',
+      ask: 'Click Allow if Chrome asks.',
+      requiresUserAction: true,
+      consentRequired: false,
     });
   });
 

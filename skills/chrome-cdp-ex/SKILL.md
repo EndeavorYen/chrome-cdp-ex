@@ -136,7 +136,7 @@ N="/mnt/c/.../node.exe" C="/path/to/scripts/cdp.mjs" && "$N" "$C" fill FFCC @3 "
 ```
 Or define both vars at the start of each Bash call using short aliases.
 
-On first use, always start with `list` to verify connectivity and discover available tabs. Use `list --format json` when an agent needs stable target prefixes, page metadata, and executable `nextSteps` without parsing the human table. Use `open --format json` when no page is available and the agent needs a clean `chrome-cdp-ex.open.v1` handoff with target prefix, approval state, and next commands.
+On first use, always start with `list` to verify connectivity and discover available tabs. Use `list --format json` when an agent needs stable target prefixes, page metadata, a golden-path `recommendation`, and executable `nextSteps` without parsing the human table. Use `open --format json` when no page is available and the agent needs a clean `chrome-cdp-ex.open.v1` handoff with target prefix, approval state, recommendation, and next commands. Use `perceive --format json` when the next agent should continue from structured refs into `click/fill -> perceive --since-action -> report`.
 
 **Interpreting `list` output**:
 ```
@@ -492,8 +492,8 @@ scripts/cdp.mjs flow    <target> "<steps>" [--format json] # sequential runner; 
                                                            # halts on the first failing step; JSON returns chrome-cdp-ex.flow.v1
 scripts/cdp.mjs doctor [--format json]         # one-call diagnostics (Node, install, daemon state, CDP, permission)
 scripts/cdp.mjs ready [--format json]          # alias of doctor; exits 1 if any check FAILs
-scripts/cdp.mjs list    [--format json]        # discover tabs; JSON gives schema/pages/nextSteps for agents
-scripts/cdp.mjs open    [url] [--format json]  # open new tab + auto-attach; text mode auto-perceives after approval
+scripts/cdp.mjs list    [--format json]        # discover tabs; JSON gives schema/pages/recommendation/nextSteps
+scripts/cdp.mjs open    [url] [--format json]  # open new tab + auto-attach; JSON gives approval/recommendation/nextSteps
 scripts/cdp.mjs keepalive <target> <ms>        # keep a tab daemon alive for long background work
 scripts/cdp.mjs stop    [target]               # stop daemon(s)
 ```

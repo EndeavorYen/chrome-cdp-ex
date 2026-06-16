@@ -530,6 +530,88 @@ function pageListBrowserModel(browserInfo = null) {
   };
 }
 
+function buildGoldenPathRecommendation({
+  stage,
+  targetPrefix = null,
+  run = null,
+  ask = null,
+  after = null,
+  evidence = null,
+  report = null,
+  reason = null,
+  commands = null,
+  requiresUserAction = false,
+  consentRequired = false,
+} = {}) {
+  return {
+    source: 'golden-path',
+    stage,
+    targetPrefix,
+    run,
+    ask,
+    after,
+    evidence,
+    report,
+    requiresUserAction,
+    consentRequired,
+    reason,
+    commands: commands || uniqueNextStepCommands([run, after, evidence, report]),
+  };
+}
+
+function goldenPathOpenPageRecommendation() {
+  return buildGoldenPathRecommendation({
+    stage: 'open-page',
+    run: 'cdp open https://example.com',
+    after: 'cdp perceive <target-from-open> -C -d 8',
+    reason: 'no debuggable page targets are available yet',
+    commands: ['cdp open https://example.com'],
+  });
+}
+
+function goldenPathPerceiveRecommendation(targetPrefix) {
+  return buildGoldenPathRecommendation({
+    stage: 'perceive',
+    targetPrefix,
+    run: `cdp perceive ${targetPrefix} -C -d 8`,
+    after: `cdp click ${targetPrefix} @ref  # choose a ref from perceive`,
+    evidence: `cdp perceive ${targetPrefix} --since-action`,
+    report: `cdp report ${targetPrefix}`,
+    reason: 'observe the real page before choosing an action target',
+  });
+}
+
+function goldenPathActRecommendation(targetPrefix, { ref = '@ref', fromPerceptionBelow = false } = {}) {
+  const refText = ref === '@ref'
+    ? `cdp click ${targetPrefix} @ref  # choose a ref from ${fromPerceptionBelow ? 'the perception below' : 'perceive'}`
+    : `cdp click ${targetPrefix} ${ref}`;
+  return buildGoldenPathRecommendation({
+    stage: 'act',
+    targetPrefix,
+    run: refText,
+    after: `cdp perceive ${targetPrefix} --since-action`,
+    report: `cdp report ${targetPrefix}`,
+    reason: ref === '@ref'
+      ? 'perception is ready; choose an interactive ref and act'
+      : `use the first interactive ref ${ref} from perception, then verify action evidence`,
+  });
+}
+
+function goldenPathBrowserPermissionRecommendation(targetPrefix) {
+  return buildGoldenPathRecommendation({
+    stage: 'browser-permission',
+    targetPrefix,
+    run: `cdp perceive ${targetPrefix} -C -d 8`,
+    ask: 'Click Allow if Chrome asks.',
+    after: `cdp click ${targetPrefix} @ref  # choose a ref from perceive`,
+    evidence: `cdp perceive ${targetPrefix} --since-action`,
+    report: `cdp report ${targetPrefix}`,
+    requiresUserAction: true,
+    reason: 'browser debugging approval is not confirmed yet',
+    commands: [`cdp perceive ${targetPrefix} -C -d 8`],
+  });
+}
+
 function buildPageListModel(pages = [], browserInfo = null) {
   const prefixLength = getDisplayPrefixLength(pages.map(p => p.targetId || ''));
   const modelPages = pages.map((p, index) => {
@@ -545,20 +627,17 @@ function buildPageListModel(pages = [], browserInfo = null) {
     };
   });
   const first = modelPages[0];
-  const nextSteps = first
-    ? [
-        `cdp perceive ${first.targetPrefix} -C -d 8`,
-        `cdp click ${first.targetPrefix} @ref  # choose a ref from perceive`,
-        `cdp perceive ${first.targetPrefix} --since-action`,
-        `cdp report ${first.targetPrefix}`,
-      ]
-    : ['cdp open https://example.com'];
+  const recommendation = first
+    ? goldenPathPerceiveRecommendation(first.targetPrefix)
+    : goldenPathOpenPageRecommendation();
+  const nextSteps = recommendation.commands;
   return {
     schema: 'chrome-cdp-ex.list.v1',
     targetCount: modelPages.length,
     prefixLength,
     browser: pageListBrowserModel(browserInfo),
     pages: modelPages,
+    recommendation,
     nextSteps,
   };
 }
@@ -1411,9 +1490,11 @@ async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
   return formatSummaryText(await summaryModel(cdp, sid, consoleBuf, exceptionBuf));
 }
 
-function createPerceptionModel({ page, viewport, consoleHealth, refs, nodes, limits }) {
+function createPerceptionModel({ targetPrefix = '<target>', page, viewport, consoleHealth, refs, nodes, limits }) {
+  const firstRef = nodes?.find(node => node.ref)?.ref || '@ref';
   return {
     schema: 'chrome-cdp-ex.perceive.v1',
+    targetPrefix,
     page,
     viewport: {
       ...viewport,
@@ -1426,6 +1507,7 @@ function createPerceptionModel({ page, viewport, consoleHealth, refs, nodes, lim
     },
     nodes,
     limits,
+    recommendation: goldenPathActRecommendation(targetPrefix, { ref: firstRef }),
   };
 }
 
@@ -4080,7 +4162,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   return output;
 }
 
-function perceptionModelFromText(output, refState = {}) {
+function perceptionModelFromText(output, refState = {}, targetPrefix = '<target>') {
   const lines = String(output || '').split('\n');
   const header = parsePerceiveHeader(output);
 
@@ -4106,6 +4188,7 @@ function perceptionModelFromText(output, refState = {}) {
   }
 
   return createPerceptionModel({
+    targetPrefix,
     page: header.page,
     viewport: header.viewport,
     consoleHealth: header.console,
@@ -4119,7 +4202,7 @@ function perceptionModelFromText(output, refState = {}) {
 
 async function perceiveModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
   const output = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts, refState);
-  return perceptionModelFromText(output, refState || {});
+  return perceptionModelFromText(output, refState || {}, opts.targetPrefix || '<target>');
 }
 
 async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
@@ -8765,10 +8848,11 @@ const USAGE = `cdp - lightweight Chrome DevTools Protocol CLI (no Puppeteer)
 Usage: cdp <command> [args]
 
   list [--format json]              List open pages (shows unique target prefixes)
-                                    JSON includes schema/pages/nextSteps for agents.
+                                    JSON includes schema/pages/recommendation/nextSteps for agents.
   perceive <target> [flags] [--format json]  Full page perception with @ref indices + coordinates
                                     --diff: show only changes since last perceive
                                     --since-action: show changes caused by the last mutating command
+                                    JSON includes structured refs plus golden-path recommendation.
                                     JSON with --diff/--since-action returns chrome-cdp-ex.perceive-diff.v1
                                     --frame @fN / -F @fN: perceive inside an iframe; refs become @fN:M
                                     -s <sel> / --selector: scope to CSS selector subtree
@@ -8880,11 +8964,11 @@ Usage: cdp <command> [args]
   doctor / ready [--format json]    One-call diagnostics: Node version, skill install path,
                                     daemon socket state, fd limit, CDP_PORT/DevToolsActivePort reachability,
                                     debuggable tab inventory, browser permission, Recommendation, and onboarding next steps.
-                                    Starts with Wizard status + current command; JSON includes wizard/checks/nextSteps.
+                                    Starts with Wizard status + current command; JSON includes wizard/checks/recommendation/nextSteps.
                                     No target required. Exits 1 if any check FAILs.
   keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)
   open  [url] [--format json]       Open a new tab (default: about:blank)
-                                    JSON includes schema/target/approval/nextSteps for agents.
+                                    JSON includes schema/target/approval/recommendation/nextSteps for agents.
                                     Note: each new tab triggers a fresh "Allow debugging?" prompt
   spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH]
                                     Launch an isolated debug profile (browser: edge|chrome|brave; default edge, port 9222).
@@ -9110,6 +9194,7 @@ function buildOpenModel({ targetId, url = '', attached = false, autoPerceive = n
   const defaultAutoPerceive = approved
     ? { attempted: false, ok: false, reason: 'not-run' }
     : { attempted: false, ok: false, reason: 'not-attached' };
+  const autoPerceiveModel = autoPerceive || defaultAutoPerceive;
   const nextSteps = approved
     ? [
         `cdp perceive ${target} -C -d 8`,
@@ -9120,6 +9205,11 @@ function buildOpenModel({ targetId, url = '', attached = false, autoPerceive = n
     : [
         `cdp perceive ${target} -C -d 8`,
       ];
+  const recommendation = approved && autoPerceiveModel.ok
+    ? goldenPathActRecommendation(target, { fromPerceptionBelow: true })
+    : approved
+    ? goldenPathPerceiveRecommendation(target)
+    : goldenPathBrowserPermissionRecommendation(target);
   return {
     schema: 'chrome-cdp-ex.open.v1',
     targetId,
@@ -9127,7 +9217,8 @@ function buildOpenModel({ targetId, url = '', attached = false, autoPerceive = n
     url,
     attached: approved,
     approval: approved ? 'approved' : 'pending',
-    autoPerceive: autoPerceive || defaultAutoPerceive,
+    autoPerceive: autoPerceiveModel,
+    recommendation,
     nextSteps,
   };
 }
