@@ -128,6 +128,19 @@ describe('benchmark killer path helpers', () => {
       commandCalls: 1,
       rate: 1,
     });
+    expect(summary.gate).toMatchObject({
+      schema: 'chrome-cdp-ex.benchmark-gate.v1',
+      passed: true,
+      profile: 'killer-path-default',
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'first-useful-observation', passed: true, actual: 40, operator: '<=', limit: 5000 }),
+      expect.objectContaining({ name: 'useful-observation-tokens', passed: true, operator: '<=', limit: 3000 }),
+      expect.objectContaining({ name: 'auto-evidence-actions', passed: true, actual: 1, operator: '>=', limit: 1 }),
+      expect.objectContaining({ name: 'report-timeline', passed: true, actual: true, operator: '===', limit: true }),
+      expect.objectContaining({ name: 'differentiator-success-rate', passed: true, actual: 1, operator: '>=', limit: 1 }),
+      expect.objectContaining({ name: 'stale-ref-recovery-rate', passed: true, actual: 1, operator: '>=', limit: 1 }),
+    ]));
     expect(summary.steps[6]).toMatchObject({
       name: 'click',
       ok: true,
@@ -157,6 +170,21 @@ describe('benchmark killer path helpers', () => {
     expect(summary.failedStep).toBe('perceive');
     expect(summary.metrics.commandCalls).toBe(2);
     expect(summary.metrics.firstUsefulObservationMs).toBeNull();
+    expect(summary.gate.passed).toBe(false);
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'first-useful-observation',
+        passed: false,
+        actual: null,
+        recommendation: 'Get the first useful page observation from doctor/list/open/perceive within the onboarding budget.',
+      }),
+      expect.objectContaining({
+        name: 'report-timeline',
+        passed: false,
+        actual: false,
+        recommendation: 'Run cdp report <target> after action evidence so the session can be handed off.',
+      }),
+    ]));
   });
 
   it('formats a compact text report for README and dogfood logs', () => {
@@ -184,6 +212,8 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Success: yes');
     expect(out).toContain('Command calls: 9');
     expect(out).toContain('Estimated output tokens:');
+    expect(out).toContain('Quality gate: pass');
+    expect(out).toContain('Gate checks: 8/8 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('CSS trace: yes');
     expect(out).toContain('Frame refs: yes');

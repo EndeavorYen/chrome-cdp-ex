@@ -646,6 +646,8 @@ npm run benchmark:killer -- --json
 
 It launches a disposable debug browser against the local smoke page and measures the Killer Path: `doctor -> list -> perceive -> act -> since-action evidence -> report`. The JSON report includes command calls, total time, first useful observation time, estimated output tokens, useful observation tokens, auto-evidence actions, verification calls saved, report timeline presence, stale-ref recovery, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time.
 
+The report also includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires: successful run, at most 20 command calls, first useful observation within 5 seconds, useful observation tokens at or below 3000, at least one auto-evidence action, a report timeline, 100% differentiator probe success, and 100% stale-ref recovery. Treat a failed gate as a stop sign before publishing comparison claims.
+
 ## Contributor Checks
 
 Run these before changing command behavior or docs:

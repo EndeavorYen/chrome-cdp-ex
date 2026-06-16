@@ -93,6 +93,96 @@ function benchmarkStaleRefRecovery(steps) {
   };
 }
 
+const DEFAULT_GATE_LIMITS = Object.freeze({
+  commandCallsMax: 20,
+  firstUsefulObservationMsMax: 5000,
+  usefulObservationTokensMax: 3000,
+  autoEvidenceActionsMin: 1,
+  differentiatorSuccessRateMin: 1,
+  staleRefRecoveryRateMin: 1,
+});
+
+function gateCriterion({ name, actual, operator, limit, recommendation }) {
+  let passed = false;
+  if (operator === '<=') passed = actual !== null && actual !== undefined && actual <= limit;
+  if (operator === '>=') passed = actual !== null && actual !== undefined && actual >= limit;
+  if (operator === '===') passed = actual === limit;
+  return { name, passed, actual, operator, limit, recommendation };
+}
+
+export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
+  const metrics = summary.metrics || {};
+  const differentiators = metrics.differentiators || {};
+  const staleRefRecovery = metrics.staleRefRecovery || {};
+  const criteria = [
+    gateCriterion({
+      name: 'run-success',
+      actual: summary.success === true,
+      operator: '===',
+      limit: true,
+      recommendation: 'Fix the failed benchmark step before using this run as evidence.',
+    }),
+    gateCriterion({
+      name: 'command-calls',
+      actual: metrics.commandCalls ?? null,
+      operator: '<=',
+      limit: limits.commandCallsMax,
+      recommendation: 'Keep the Killer Path compact; use JSON handoffs and action evidence instead of extra verify calls.',
+    }),
+    gateCriterion({
+      name: 'first-useful-observation',
+      actual: metrics.firstUsefulObservationMs ?? null,
+      operator: '<=',
+      limit: limits.firstUsefulObservationMsMax,
+      recommendation: 'Get the first useful page observation from doctor/list/open/perceive within the onboarding budget.',
+    }),
+    gateCriterion({
+      name: 'useful-observation-tokens',
+      actual: metrics.usefulObservationTokens ?? null,
+      operator: '<=',
+      limit: limits.usefulObservationTokensMax,
+      recommendation: 'Reduce page observation tokens by tightening perceive output and preserving only actionable context.',
+    }),
+    gateCriterion({
+      name: 'auto-evidence-actions',
+      actual: metrics.autoEvidenceActions ?? null,
+      operator: '>=',
+      limit: limits.autoEvidenceActionsMin,
+      recommendation: 'Make mutating commands return action evidence so agents do not need manual verification calls.',
+    }),
+    gateCriterion({
+      name: 'report-timeline',
+      actual: metrics.hasReportTimeline === true,
+      operator: '===',
+      limit: true,
+      recommendation: 'Run cdp report <target> after action evidence so the session can be handed off.',
+    }),
+    gateCriterion({
+      name: 'differentiator-success-rate',
+      actual: differentiators.successRate ?? 0,
+      operator: '>=',
+      limit: limits.differentiatorSuccessRateMin,
+      recommendation: 'Keep modal/overlay, frame refs, CSS trace, and HMR/SPAs green before making differentiation claims.',
+    }),
+    gateCriterion({
+      name: 'stale-ref-recovery-rate',
+      actual: staleRefRecovery.rate ?? 0,
+      operator: '>=',
+      limit: limits.staleRefRecoveryRateMin,
+      recommendation: 'Classify stale refs with an executable perceive recovery command.',
+    }),
+  ];
+  const passedCount = criteria.filter(criterion => criterion.passed).length;
+  return {
+    schema: 'chrome-cdp-ex.benchmark-gate.v1',
+    profile: 'killer-path-default',
+    passed: passedCount === criteria.length,
+    passedCount,
+    total: criteria.length,
+    criteria,
+  };
+}
+
 export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, endedAt, target = '', steps = [] } = {}) {
   const normalizedSteps = steps.map((step) => {
     const text = outputText(step);
@@ -124,7 +214,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
     .reduce((sum, step) => sum + step.estimatedTokens, 0);
   const reportStep = steps.find(step => step.name === 'report');
 
-  return {
+  const summary = {
     schema: 'chrome-cdp-ex.benchmark.v1',
     scenario,
     target,
@@ -147,11 +237,15 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
     },
     steps: normalizedSteps.map(({ outputText: _outputText, ...step }) => step),
   };
+  summary.gate = buildBenchmarkGate(summary);
+  return summary;
 }
 
 export function formatBenchmarkReport(summary) {
   const differentiators = summary.metrics.differentiators || {};
   const pct = Math.round((differentiators.successRate || 0) * 100);
+  const gate = summary.gate || buildBenchmarkGate(summary);
+  const failedGateCriteria = gate.criteria.filter(criterion => !criterion.passed);
   const lines = [
     `chrome-cdp-ex benchmark: ${summary.scenario}`,
     `Success: ${summary.success ? 'yes' : 'no'}${summary.failedStep ? ` (failed at ${summary.failedStep})` : ''}`,
@@ -165,6 +259,8 @@ export function formatBenchmarkReport(summary) {
     `Auto-evidence actions: ${summary.metrics.autoEvidenceActions}`,
     `Verification calls saved: ${summary.metrics.verificationCallsSaved}`,
     `Report timeline: ${summary.metrics.hasReportTimeline ? 'yes' : 'no'}`,
+    `Quality gate: ${gate.passed ? 'pass' : 'fail'}`,
+    `Gate checks: ${gate.passedCount}/${gate.total} pass`,
     `Differentiator success rate: ${pct}%`,
     `Modal/overlay: ${differentiators.modalOverlay?.success ? 'yes' : 'no'} (${differentiators.modalOverlay?.durationMs ?? 0} ms)`,
     `Frame refs: ${differentiators.frameRefs?.success ? 'yes' : 'no'} (${differentiators.frameRefs?.durationMs ?? 0} ms)`,
@@ -172,8 +268,15 @@ export function formatBenchmarkReport(summary) {
     `HMR/SPA diff: ${differentiators.hmrDomUpdate?.success ? 'yes' : 'no'} (${differentiators.hmrDomUpdate?.durationMs ?? 0} ms)`,
     `Stale-ref recovery: ${summary.metrics.staleRefRecovery?.success ? 'yes' : 'no'} (${summary.metrics.staleRefRecovery?.recovered ?? 0}/${summary.metrics.staleRefRecovery?.commandCalls ?? 0})`,
     '',
-    'Steps:',
   ];
+  if (failedGateCriteria.length) {
+    lines.push('Gate failures:');
+    for (const criterion of failedGateCriteria) {
+      lines.push(`  - ${criterion.name}: actual ${criterion.actual} ${criterion.operator} ${criterion.limit} (${criterion.recommendation})`);
+    }
+    lines.push('');
+  }
+  lines.push('Steps:');
   for (const step of summary.steps) {
     const details = [
       step.hasActionEvidence ? 'evidence' : '',

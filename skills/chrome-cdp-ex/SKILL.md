@@ -1047,6 +1047,8 @@ npm run benchmark:killer -- --json
 
 It launches a disposable debug browser against the local smoke page and measures `doctor -> list -> perceive -> act -> since-action evidence -> report`: command calls, total time, first useful observation time, estimated output tokens, useful observation tokens, auto-evidence actions, verification calls saved, report timeline presence, stale-ref recovery, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time.
 
+The report includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires a successful run, at most 20 command calls, first useful observation within 5 seconds, useful observation tokens at or below 3000, at least one auto-evidence action, a report timeline, 100% differentiator probe success, and 100% stale-ref recovery. Do not make adoption or comparison claims from a failed gate; fix the failed criterion first.
+
 ## Source
 
 **Upstream**: [pasky/chrome-cdp-skill](https://github.com/pasky/chrome-cdp-skill) (v1.0.1) — locally modified with Windows support, background observation, and additional commands.
