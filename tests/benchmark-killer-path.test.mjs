@@ -341,9 +341,10 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Doctor onboarding coverage: n/a (0/0)');
     expect(out).toContain('Report latestAction coverage: n/a (0/0)');
     expect(out).toContain('Report timelineWindow coverage: n/a (0/0)');
+    expect(out).toContain('Perception signal coverage: n/a (0/0)');
     expect(out).toContain('CLI recovery coverage: 100% (1/1)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 18/18 pass');
+    expect(out).toContain('Gate checks: 19/19 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -529,8 +530,13 @@ describe('benchmark killer path helpers', () => {
   it('treats versioned JSON action and report handoffs as benchmark evidence', () => {
     const perceiveJson = JSON.stringify({
       schema: 'chrome-cdp-ex.perceive.v1',
-      page: { title: 'Smoke' },
+      targetPrefix: 'AABBCCDD',
+      page: { title: 'Smoke', url: 'https://example.test' },
+      viewport: { width: 1280, height: 720, coordinateSpace: 'viewport-css-px' },
+      console: { errors: 0, warnings: 0, exceptions: 0 },
+      refs: { generation: 1, validity: 'until-navigation-or-dom-rewrite' },
       nodes: [{ ref: '@1', role: 'button', name: 'Start' }],
+      limits: { depth: 8, last: 20 },
       recommendation: {
         source: 'perceive',
         commands: ['cdp click AABBCCDD @1 --format json'],
@@ -705,7 +711,72 @@ describe('benchmark killer path helpers', () => {
       missing: [],
       rate: 1,
     });
+    expect(summary.metrics.perceptionSignalCoverage).toMatchObject({
+      total: 1,
+      covered: 1,
+      missing: [],
+      rate: 1,
+    });
     expect(summary.steps[2].hasActionEvidence).toBe(true);
+  });
+
+  it('fails the gate when perceive JSON lacks agent perception signals', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'perception-signal',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'perceive',
+          command: ['perceive', 'AABBCCDD', '-C', '-d', '8', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.perceive.v1',
+            nodes: [],
+            recommendation: {
+              source: 'perceive',
+              commands: ['cdp report AABBCCDD --format json'],
+            },
+            nextSteps: ['cdp report AABBCCDD --format json'],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.perceptionSignalCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'perceive',
+          commandText: 'cdp perceive AABBCCDD -C -d 8 --format json',
+          missing: expect.arrayContaining([
+            'targetPrefix',
+            'page',
+            'viewport',
+            'viewport.coordinateSpace',
+            'console',
+            'refs',
+            'refs.validity',
+            'nodes.ref',
+            'limits',
+          ]),
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'perception-signal-coverage',
+        passed: false,
+        actual: 0,
+        recommendation: 'Perceive JSON must expose page, viewport, console, refs, interactive nodes, limits, recommendation, and nextSteps so agents can choose an action without another page read.',
+      }),
+    ]));
   });
 
   it('fails the gate when action JSON lacks structured evidence for agent decisions', () => {

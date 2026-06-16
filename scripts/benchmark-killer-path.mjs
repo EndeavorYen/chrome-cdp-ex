@@ -486,6 +486,51 @@ function benchmarkReportTimelineWindowCoverage(steps) {
   };
 }
 
+function perceptionSignalMissingFields(model = {}) {
+  const missing = [];
+  if (typeof model.targetPrefix !== 'string' || !model.targetPrefix.trim()) missing.push('targetPrefix');
+  if (!model.page || typeof model.page !== 'object') missing.push('page');
+  if (!model.viewport || typeof model.viewport !== 'object') missing.push('viewport');
+  if (model.viewport?.coordinateSpace !== 'viewport-css-px') missing.push('viewport.coordinateSpace');
+  if (!model.console || typeof model.console !== 'object') missing.push('console');
+  if (!model.refs || typeof model.refs !== 'object') missing.push('refs');
+  if (model.refs?.validity !== 'until-navigation-or-dom-rewrite') missing.push('refs.validity');
+  const nodes = Array.isArray(model.nodes) ? model.nodes : [];
+  if (!nodes.some(node => /^@[\w:-]+$/.test(String(node?.ref || '')))) missing.push('nodes.ref');
+  if (!model.limits || typeof model.limits !== 'object') missing.push('limits');
+  if (!recommendationHasActionableContext(model.recommendation)) missing.push('recommendation');
+  const nextSteps = Array.isArray(model.nextSteps) ? model.nextSteps : [];
+  if (!nextSteps.some(value => /^cdp\s+\S+/.test(String(value || '')))) missing.push('nextSteps');
+  return [...new Set(missing)];
+}
+
+function benchmarkPerceptionSignalCoverage(steps) {
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
+    if (model?.schema !== 'chrome-cdp-ex.perceive.v1') continue;
+    total += 1;
+    const missingFields = perceptionSignalMissingFields(model);
+    if (missingFields.length === 0) {
+      covered += 1;
+    } else {
+      missing.push({
+        name: step.name,
+        commandText: step.commandText,
+        missing: missingFields,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    rate: total > 0 ? covered / total : null,
+  };
+}
+
 function countsTowardUsefulObservationTokens(step) {
   const model = stepModel(step);
   const commandName = normalizeActionCommandName(step.command?.[0] || step.name);
@@ -508,6 +553,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   doctorOnboardingCoverageRateMin: 1,
   reportLatestActionCoverageRateMin: 1,
   reportTimelineWindowCoverageRateMin: 1,
+  perceptionSignalCoverageRateMin: 1,
   differentiatorSuccessRateMin: 1,
   staleRefRecoveryRateMin: 1,
 });
@@ -666,6 +712,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '>=',
       limit: limits.reportTimelineWindowCoverageRateMin,
       recommendation: 'JSON report handoffs must expose bounded timelineWindow metadata so long sessions stay token-safe.',
+    }),
+    gateCriterion({
+      name: 'perception-signal-coverage',
+      actual: metrics.perceptionSignalCoverage?.rate ?? 1,
+      operator: '>=',
+      limit: limits.perceptionSignalCoverageRateMin,
+      recommendation: 'Perceive JSON must expose page, viewport, console, refs, interactive nodes, limits, recommendation, and nextSteps so agents can choose an action without another page read.',
     }),
     gateCriterion({
       name: 'differentiator-success-rate',
@@ -878,6 +931,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       doctorOnboardingCoverage: benchmarkDoctorOnboardingCoverage(normalizedSteps),
       reportLatestActionCoverage: benchmarkReportLatestActionCoverage(normalizedSteps),
       reportTimelineWindowCoverage: benchmarkReportTimelineWindowCoverage(normalizedSteps),
+      perceptionSignalCoverage: benchmarkPerceptionSignalCoverage(normalizedSteps),
       verificationCallsSaved: actionEvidenceSteps.length,
       hasReportTimeline: hasReportTimeline(reportStep || {}),
       differentiators: benchmarkDifferentiators(normalizedSteps),
@@ -923,6 +977,7 @@ export function formatBenchmarkReport(summary) {
     `Doctor onboarding coverage: ${summary.metrics.doctorOnboardingCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.doctorOnboardingCoverage.rate * 100)}%`} (${summary.metrics.doctorOnboardingCoverage?.covered ?? 0}/${summary.metrics.doctorOnboardingCoverage?.total ?? 0})`,
     `Report latestAction coverage: ${summary.metrics.reportLatestActionCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportLatestActionCoverage.rate * 100)}%`} (${summary.metrics.reportLatestActionCoverage?.covered ?? 0}/${summary.metrics.reportLatestActionCoverage?.total ?? 0})`,
     `Report timelineWindow coverage: ${summary.metrics.reportTimelineWindowCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportTimelineWindowCoverage.rate * 100)}%`} (${summary.metrics.reportTimelineWindowCoverage?.covered ?? 0}/${summary.metrics.reportTimelineWindowCoverage?.total ?? 0})`,
+    `Perception signal coverage: ${summary.metrics.perceptionSignalCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.perceptionSignalCoverage.rate * 100)}%`} (${summary.metrics.perceptionSignalCoverage?.covered ?? 0}/${summary.metrics.perceptionSignalCoverage?.total ?? 0})`,
     `Verification calls saved: ${summary.metrics.verificationCallsSaved}`,
     `Report timeline: ${summary.metrics.hasReportTimeline ? 'yes' : 'no'}`,
     `Quality gate: ${gate.passed ? 'pass' : 'fail'}`,
