@@ -157,6 +157,12 @@ describe('benchmark killer path helpers', () => {
         click: { total: 2, covered: 2, missing: 0 },
       },
     });
+    expect(summary.metrics.handoffNextStepsCoverage).toMatchObject({
+      total: 0,
+      covered: 0,
+      missing: [],
+      rate: null,
+    });
     expect(summary.metrics.verificationCallsSaved).toBe(1);
     expect(summary.metrics.hasReportTimeline).toBe(true);
     expect(summary.metrics.differentiators).toMatchObject({
@@ -329,8 +335,9 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Golden path complete: 100 ms');
     expect(out).toContain('Estimated output tokens:');
     expect(out).toContain('Action evidence coverage: 100% (2/2)');
+    expect(out).toContain('Handoff nextSteps coverage: n/a (0/0)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 11/11 pass');
+    expect(out).toContain('Gate checks: 12/12 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -384,6 +391,91 @@ describe('benchmark killer path helpers', () => {
         passed: false,
         actual: 0.8,
         recommendation: 'Every mutating command exercised by the benchmark must return action evidence.',
+      }),
+    ]));
+  });
+
+  it('fails the gate when a versioned JSON handoff lacks executable next steps', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'handoff-next-steps',
+      startedAt: 0,
+      endedAt: 40,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'doctor',
+          command: ['doctor', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.doctor.v1',
+            nextSteps: ['cdp list'],
+          }),
+          stderr: '',
+        },
+        {
+          name: 'perceive',
+          command: ['perceive', 'AABBCCDD', '--format', 'json'],
+          startedAt: 10,
+          endedAt: 20,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.perceive.v1',
+            recommendation: {
+              commands: ['cdp click AABBCCDD @1'],
+            },
+          }),
+          stderr: '',
+        },
+        {
+          name: 'click',
+          command: ['click', 'AABBCCDD', '@1', '--format', 'json'],
+          startedAt: 20,
+          endedAt: 30,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.action.v1',
+            dispatch: { ok: true },
+            outcome: { status: 'changed' },
+            nextSteps: ['cdp report AABBCCDD --format json'],
+          }),
+          stderr: '',
+        },
+        {
+          name: 'report',
+          command: ['report', 'AABBCCDD', '--format', 'json'],
+          startedAt: 30,
+          endedAt: 40,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.report.v1',
+            actions: [{ index: 1 }],
+            nextSteps: ['cdp record-actions AABBCCDD --format json'],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.handoffNextStepsCoverage).toMatchObject({
+      total: 4,
+      covered: 3,
+      rate: 0.75,
+      missing: [
+        expect.objectContaining({
+          name: 'perceive',
+          schema: 'chrome-cdp-ex.perceive.v1',
+          commandText: 'cdp perceive AABBCCDD --format json',
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'handoff-next-steps-coverage',
+        passed: false,
+        actual: 0.75,
+        recommendation: 'Every versioned JSON handoff in the Killer Path must expose executable top-level nextSteps.',
       }),
     ]));
   });
