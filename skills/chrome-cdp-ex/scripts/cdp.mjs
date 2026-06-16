@@ -16,8 +16,10 @@ import net from 'net';
 const TIMEOUT = 15000;
 const SCREENSHOT_TIMEOUT = 30000;
 const NAVIGATION_TIMEOUT = 30000;
-const RELOAD_EVENT_TIMEOUT = 5000;
-const RELOAD_DISPATCH_TIMEOUT = 2000;
+const RELOAD_EVENT_TIMEOUT = 1000;
+const RELOAD_DISPATCH_TIMEOUT = 1000;
+const RELOAD_READY_TIMEOUT = 1000;
+const RELOAD_READY_PROBE_TIMEOUT = 500;
 const RELOAD_OBSERVE_TIMEOUT = 2000;
 const STATUS_PAGE_INFO_TIMEOUT = 2000;
 const REF_RESOLVE_TIMEOUT = 2000;
@@ -1212,13 +1214,13 @@ async function htmlStr(cdp, sid, selector) {
   return evalStr(cdp, sid, expr);
 }
 
-async function waitForDocumentReady(cdp, sid, timeoutMs = NAVIGATION_TIMEOUT) {
+async function waitForDocumentReady(cdp, sid, timeoutMs = NAVIGATION_TIMEOUT, options = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastState = '';
   let lastError;
   while (Date.now() < deadline) {
     try {
-      const state = await evalStr(cdp, sid, 'document.readyState');
+      const state = await evalStr(cdp, sid, 'document.readyState', false, { timeoutMs: options.probeTimeoutMs });
       lastState = state;
       if (state === 'complete') return;
     } catch (e) {
@@ -6537,7 +6539,7 @@ async function reloadStr(cdp, sid) {
   try {
     await Promise.race([
       loadEvent.promise,
-      waitForDocumentReady(cdp, sid, 5000),
+      waitForDocumentReady(cdp, sid, RELOAD_READY_TIMEOUT, { probeTimeoutMs: RELOAD_READY_PROBE_TIMEOUT }),
     ]);
   } catch {
     // Some embedded/live targets do not reliably emit Page.loadEventFired after

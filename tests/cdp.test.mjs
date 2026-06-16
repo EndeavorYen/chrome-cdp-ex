@@ -4589,6 +4589,35 @@ describe('reloadStr', () => {
     expect(calls.map(call => call.method)).toEqual(['Page.enable', 'Page.reload', 'Runtime.evaluate']);
   });
 
+  it('bounds reload dispatch and readiness probes for live-session latency', async () => {
+    const calls = [];
+    let loadEventTimeout;
+    let reloadDispatchTimeout;
+    const cdp = {
+      calls,
+      send(method, params = {}, sessionId, timeout) {
+        calls.push({ method, params, sessionId, timeout });
+        if (method === 'Page.reload') reloadDispatchTimeout = timeout;
+        if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: 'complete' } });
+        return Promise.resolve({});
+      },
+      waitForEvent(_method, timeout) {
+        loadEventTimeout = timeout;
+        return {
+          promise: new Promise(() => {}),
+          cancel() {},
+        };
+      },
+    };
+
+    await expect(reloadStr(cdp, 'sid1')).resolves.toBe('Page reloaded');
+
+    const readyProbe = calls.find(call => call.method === 'Runtime.evaluate');
+    expect(reloadDispatchTimeout).toBeLessThanOrEqual(1000);
+    expect(loadEventTimeout).toBeLessThanOrEqual(1000);
+    expect(readyProbe.timeout).toBeLessThanOrEqual(500);
+  });
+
   it('continues after a Page.reload dispatch timeout', async () => {
     const cdp = {
       calls: [],
