@@ -212,6 +212,42 @@ function benchmarkHandoffNextStepsCoverage(steps) {
   };
 }
 
+function recommendationHasActionableContext(recommendation = {}) {
+  if (!recommendation || typeof recommendation !== 'object') return false;
+  const commands = Array.isArray(recommendation.commands) ? recommendation.commands : [];
+  if (commands.some(value => /^cdp\s+\S+/.test(String(value || '')))) return true;
+  for (const field of ['run', 'verifyCommand', 'after', 'ask', 'reason', 'strategy', 'source']) {
+    if (typeof recommendation[field] === 'string' && recommendation[field].trim()) return true;
+  }
+  return false;
+}
+
+function benchmarkHandoffRecommendationCoverage(steps) {
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
+    if (!model?.schema || !/^chrome-cdp-ex\.(doctor|list|open|perceive|perceive-diff|action|report)\.v1$/.test(model.schema)) continue;
+    total += 1;
+    if (recommendationHasActionableContext(model.recommendation)) {
+      covered += 1;
+    } else {
+      missing.push({
+        name: step.name,
+        schema: model.schema,
+        commandText: step.commandText,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    rate: total > 0 ? covered / total : null,
+  };
+}
+
 function benchmarkReportLatestActionCoverage(steps) {
   const missing = [];
   let total = 0;
@@ -296,6 +332,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   autoEvidenceActionsMin: 1,
   observedActionEvidenceCoverageRateMin: 1,
   handoffNextStepsCoverageRateMin: 1,
+  handoffRecommendationCoverageRateMin: 1,
   reportLatestActionCoverageRateMin: 1,
   reportTimelineWindowCoverageRateMin: 1,
   differentiatorSuccessRateMin: 1,
@@ -407,6 +444,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '>=',
       limit: limits.handoffNextStepsCoverageRateMin,
       recommendation: 'Every versioned JSON handoff in the Killer Path must expose executable top-level nextSteps.',
+    }),
+    gateCriterion({
+      name: 'handoff-recommendation-coverage',
+      actual: metrics.handoffRecommendationCoverage?.rate ?? 1,
+      operator: '>=',
+      limit: limits.handoffRecommendationCoverageRateMin,
+      recommendation: 'Every versioned JSON handoff must expose a recommendation that explains the next action.',
     }),
     gateCriterion({
       name: 'report-timeline',
@@ -634,6 +678,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       autoEvidenceActions: actionEvidenceSteps.length,
       actionEvidenceCoverage: benchmarkActionEvidenceCoverage(normalizedSteps),
       handoffNextStepsCoverage: benchmarkHandoffNextStepsCoverage(normalizedSteps),
+      handoffRecommendationCoverage: benchmarkHandoffRecommendationCoverage(normalizedSteps),
       reportLatestActionCoverage: benchmarkReportLatestActionCoverage(normalizedSteps),
       reportTimelineWindowCoverage: benchmarkReportTimelineWindowCoverage(normalizedSteps),
       verificationCallsSaved: actionEvidenceSteps.length,
@@ -675,6 +720,7 @@ export function formatBenchmarkReport(summary) {
     `Auto-evidence actions: ${summary.metrics.autoEvidenceActions}`,
     `Action evidence coverage: ${summary.metrics.actionEvidenceCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionEvidenceCoverage.rate * 100)}%`} (${summary.metrics.actionEvidenceCoverage?.covered ?? 0}/${summary.metrics.actionEvidenceCoverage?.total ?? 0})`,
     `Handoff nextSteps coverage: ${summary.metrics.handoffNextStepsCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffNextStepsCoverage.rate * 100)}%`} (${summary.metrics.handoffNextStepsCoverage?.covered ?? 0}/${summary.metrics.handoffNextStepsCoverage?.total ?? 0})`,
+    `Handoff recommendation coverage: ${summary.metrics.handoffRecommendationCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffRecommendationCoverage.rate * 100)}%`} (${summary.metrics.handoffRecommendationCoverage?.covered ?? 0}/${summary.metrics.handoffRecommendationCoverage?.total ?? 0})`,
     `Report latestAction coverage: ${summary.metrics.reportLatestActionCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportLatestActionCoverage.rate * 100)}%`} (${summary.metrics.reportLatestActionCoverage?.covered ?? 0}/${summary.metrics.reportLatestActionCoverage?.total ?? 0})`,
     `Report timelineWindow coverage: ${summary.metrics.reportTimelineWindowCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportTimelineWindowCoverage.rate * 100)}%`} (${summary.metrics.reportTimelineWindowCoverage?.covered ?? 0}/${summary.metrics.reportTimelineWindowCoverage?.total ?? 0})`,
     `Verification calls saved: ${summary.metrics.verificationCallsSaved}`,

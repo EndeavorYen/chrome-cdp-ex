@@ -336,10 +336,11 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Estimated output tokens:');
     expect(out).toContain('Action evidence coverage: 100% (2/2)');
     expect(out).toContain('Handoff nextSteps coverage: n/a (0/0)');
+    expect(out).toContain('Handoff recommendation coverage: n/a (0/0)');
     expect(out).toContain('Report latestAction coverage: n/a (0/0)');
     expect(out).toContain('Report timelineWindow coverage: n/a (0/0)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 14/14 pass');
+    expect(out).toContain('Gate checks: 15/15 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -487,18 +488,30 @@ describe('benchmark killer path helpers', () => {
       schema: 'chrome-cdp-ex.perceive.v1',
       page: { title: 'Smoke' },
       nodes: [{ ref: '@1', role: 'button', name: 'Start' }],
+      recommendation: {
+        source: 'perceive',
+        commands: ['cdp click AABBCCDD @1 --format json'],
+      },
       nextSteps: ['cdp click AABBCCDD @1 --format json'],
     });
     const actionJson = JSON.stringify({
       schema: 'chrome-cdp-ex.action.v1',
       dispatch: { ok: true },
       outcome: { status: 'changed' },
+      recommendation: {
+        source: 'action',
+        commands: ['cdp report AABBCCDD --format json'],
+      },
       nextSteps: ['cdp report AABBCCDD --format json'],
     });
     const sinceActionJson = JSON.stringify({
       schema: 'chrome-cdp-ex.perceive-diff.v1',
       mode: 'since-action',
       summary: { changed: true },
+      recommendation: {
+        source: 'perceive-diff',
+        commands: ['cdp report AABBCCDD --format json'],
+      },
       nextSteps: ['cdp report AABBCCDD --format json'],
     });
     const summary = summarizeBenchmarkRun({
@@ -515,6 +528,10 @@ describe('benchmark killer path helpers', () => {
           status: 0,
           stdout: JSON.stringify({
             schema: 'chrome-cdp-ex.doctor.v1',
+            recommendation: {
+              source: 'doctor',
+              commands: ['cdp list --format json'],
+            },
             nextSteps: ['cdp list --format json'],
           }),
           stderr: '',
@@ -564,6 +581,10 @@ describe('benchmark killer path helpers', () => {
               verdictStatus: 'continue',
               canContinue: true,
             },
+            recommendation: {
+              source: 'session-continuation',
+              commands: ['cdp record-actions AABBCCDD --format json'],
+            },
             nextSteps: ['cdp record-actions AABBCCDD --format json'],
           }),
           stderr: '',
@@ -602,7 +623,59 @@ describe('benchmark killer path helpers', () => {
       missing: [],
       rate: 1,
     });
+    expect(summary.metrics.handoffRecommendationCoverage).toMatchObject({
+      total: 5,
+      covered: 5,
+      missing: [],
+      rate: 1,
+    });
     expect(summary.steps[2].hasActionEvidence).toBe(true);
+  });
+
+  it('fails the gate when a versioned JSON handoff lacks a recommendation', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'handoff-recommendation',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'since-action',
+          command: ['perceive', 'AABBCCDD', '--since-action', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.perceive-diff.v1',
+            mode: 'since-action',
+            summary: { changed: true },
+            nextSteps: ['cdp report AABBCCDD --format json'],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.handoffRecommendationCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'since-action',
+          schema: 'chrome-cdp-ex.perceive-diff.v1',
+          commandText: 'cdp perceive AABBCCDD --since-action --format json',
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'handoff-recommendation-coverage',
+        passed: false,
+        actual: 0,
+        recommendation: 'Every versioned JSON handoff must expose a recommendation that explains the next action.',
+      }),
+    ]));
   });
 
   it('fails the gate when a JSON report timeline lacks bounded window metadata', () => {

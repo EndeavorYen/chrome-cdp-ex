@@ -2516,6 +2516,14 @@ describe('Perceive diff baseline', () => {
       added: ['  [alert] Saved'],
       removed: [],
       textAddedSamples: [],
+      recommendation: {
+        source: 'perceive-diff',
+        mode: 'since-action',
+        commands: [
+          'cdp report ABC12345 --format json',
+          'cdp record-actions ABC12345 --format json',
+        ],
+      },
       nextSteps: [
         'cdp report ABC12345 --format json',
         'cdp record-actions ABC12345 --format json',

@@ -647,20 +647,21 @@ Local run on 2026-06-16, measured with the same smoke page and measured local co
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 8.733s |
+| Total time | 8.763s |
 | Command calls | 23 |
-| First useful observation | 2.765s |
-| Golden path complete | 4.943s |
-| Useful observation tokens | 1,295 |
+| First useful observation | 2.783s |
+| Golden path complete | 4.986s |
+| Useful observation tokens | 1,384 |
 | Auto-evidence actions | 6 |
 | Action evidence coverage | 100% (7/7 mutating commands) |
 | Handoff nextSteps coverage | 100% (9/9 JSON handoffs) |
+| Handoff recommendation coverage | 100% (9/9 JSON handoffs) |
 | Report latestAction coverage | 100% (1/1 JSON reports) |
 | Report timelineWindow coverage | 100% (1/1 JSON reports) |
-| Quality gate | 14/14 pass |
+| Quality gate | 15/15 pass |
 | Differentiator success rate | 100% |
-| Stale-ref recovery | 53ms, 1/1 recovered |
-| Session stability sample | 1.120s, 3 probes |
+| Stale-ref recovery | 45ms, 1/1 recovered |
+| Session stability sample | 1.118s, 3 probes |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
 
@@ -674,9 +675,9 @@ npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out bas
 npm run benchmark:killer -- --comparison-baselines ./baselines.json
 ```
 
-It launches a disposable debug browser against the local smoke page and measures the Killer Path: `doctor -> open -> perceive -> act -> since-action evidence -> report`. The core handoff probes run with `--format json`, so the JSON report measures command calls, total time, first useful observation time, first action evidence time, golden path completion time, estimated output tokens, useful observation tokens, auto-evidence actions, observed action evidence coverage, observed JSON handoff `nextSteps` coverage, JSON report `latestAction` coverage, JSON report `timelineWindow` coverage, verification calls saved, report timeline presence, stale-ref recovery, session stability sample, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time. The useful observation token budget counts page perception/diff outputs, not action/report JSON evidence payloads. The default stability sample is 1000ms; use `--stability-ms` for 20-60 minute dogfood windows.
+It launches a disposable debug browser against the local smoke page and measures the Killer Path: `doctor -> open -> perceive -> act -> since-action evidence -> report`. The core handoff probes run with `--format json`, so the JSON report measures command calls, total time, first useful observation time, first action evidence time, golden path completion time, estimated output tokens, useful observation tokens, auto-evidence actions, observed action evidence coverage, observed JSON handoff `nextSteps` coverage, observed JSON handoff `recommendation` coverage, JSON report `latestAction` coverage, JSON report `timelineWindow` coverage, verification calls saved, report timeline presence, stale-ref recovery, session stability sample, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time. The useful observation token budget counts page perception/diff outputs, not action/report JSON evidence payloads. The default stability sample is 1000ms; use `--stability-ms` for 20-60 minute dogfood windows.
 
-The report also includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires: successful run, at most 23 command calls, first useful observation within 5 seconds, golden path completion within 2 minutes, useful observation tokens at or below 3000, at least one auto-evidence action, 100% evidence coverage for every observed mutating command, 100% top-level `nextSteps` coverage for observed JSON handoffs, a report timeline, 100% `latestAction` coverage for JSON report handoffs with actions, 100% `timelineWindow` coverage for JSON report handoffs with actions, 100% differentiator probe success, 100% stale-ref recovery, and a passing session stability sample. Treat a failed gate as a stop sign before publishing comparison claims.
+The report also includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires: successful run, at most 23 command calls, first useful observation within 5 seconds, golden path completion within 2 minutes, useful observation tokens at or below 3000, at least one auto-evidence action, 100% evidence coverage for every observed mutating command, 100% top-level `nextSteps` coverage for observed JSON handoffs, 100% `recommendation` coverage for observed JSON handoffs, a report timeline, 100% `latestAction` coverage for JSON report handoffs with actions, 100% `timelineWindow` coverage for JSON report handoffs with actions, 100% differentiator probe success, 100% stale-ref recovery, and a passing session stability sample. Treat a failed gate as a stop sign before publishing comparison claims.
 
 JSON output also includes `chrome-cdp-ex.benchmark-comparison.v1`. Pass `--comparison-baselines` with measured Playwright/generic-CDP baselines before publishing comparison claims; otherwise the built-in heuristic baseline is only a planning aid and must not be presented as external measurement.
 

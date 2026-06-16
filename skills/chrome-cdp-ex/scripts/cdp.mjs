@@ -4032,6 +4032,22 @@ function computePerceiveDiff(previousOutput, currentOutput) {
   };
 }
 
+function buildPerceiveDiffRecommendation({ mode, changed, baselineAvailable = true, nextSteps = [] }) {
+  const source = 'perceive-diff';
+  const reason = !baselineAvailable
+    ? 'No previous perceive baseline is available; capture a fresh perception before relying on diffs.'
+    : changed
+    ? 'The page changed; preserve the diff and action timeline before continuing.'
+    : 'No page change was detected; use the report timeline or a fresh perceive before retrying the action.';
+  return {
+    source,
+    mode,
+    reason,
+    commands: nextSteps,
+    verifyCommand: nextSteps[0] || null,
+  };
+}
+
 function buildPerceiveDiffModel(previousOutput, currentOutput, { mode = 'diff', targetPrefix = '' } = {}) {
   const diff = computePerceiveDiff(previousOutput, currentOutput);
   const target = targetPrefix || '<target>';
@@ -4063,6 +4079,7 @@ function buildPerceiveDiffModel(previousOutput, currentOutput, { mode = 'diff', 
     addedOmitted: Math.max(0, diff.addedStructural.length - 20),
     textRemovedSamples: diff.removedTextLines.slice(-3),
     textAddedSamples: diff.addedTextLines.slice(-3),
+    recommendation: buildPerceiveDiffRecommendation({ mode, changed, nextSteps }),
     nextSteps,
   };
 }
@@ -4799,6 +4816,10 @@ async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, las
   if (!baseline) {
     const header = parsePerceiveHeader(currentOutput);
     const target = opts.targetPrefix || '<target>';
+    const nextSteps = [
+      `cdp perceive ${target} -C -d 8`,
+      `cdp report ${target} --format json`,
+    ];
     return {
       schema: 'chrome-cdp-ex.perceive-diff.v1',
       mode,
@@ -4817,10 +4838,13 @@ async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, las
       addedOmitted: 0,
       textRemovedSamples: [],
       textAddedSamples: [],
-      nextSteps: [
-        `cdp perceive ${target} -C -d 8`,
-        `cdp report ${target} --format json`,
-      ],
+      recommendation: buildPerceiveDiffRecommendation({
+        mode,
+        changed: null,
+        baselineAvailable: false,
+        nextSteps,
+      }),
+      nextSteps,
     };
   }
   return buildPerceiveDiffModel(baseline, currentOutput, {
