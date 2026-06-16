@@ -1348,7 +1348,7 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
     { args: ['overlay', target] },
     { args: ['frame', target] },
     { args: ['cascade', target, '#custom-clickable', 'cursor'] },
-    { args: ['dismiss-modal', target] },
+    { args: ['dismiss-modal', target, '--format', 'json'] },
     { args: ['fill', target, '#cmd', 'look trainer', '--format', 'json'] },
     { args: ['click', target, '#combat', '--format', 'json'] },
     { args: ['perceive', target, '--since-action', '--format', 'json'] },

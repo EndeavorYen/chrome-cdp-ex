@@ -492,7 +492,7 @@ waitfor <target> --gone <sel|@ref> [ms]       # wait for element to DISAPPEAR
 waitfor <target> --text "str" [--scope sel] [ms]  # wait for text to appear
 waitfor <target> --any-of "a|b|c" [ms] [--scope sel]  # any of the alternatives appears
 waitfor <target> --selector-stable <sel> [stableMs] [timeoutMs]  # wait until selector stops mutating
-dismiss-modal <target>              # close visible modal/dialog safely (close button, fallback Escape)
+dismiss-modal <target> [--format json] # close visible modal/dialog safely (close button, fallback Escape)
 loadall <target> <selector> [ms]    # click "load more" until gone
 upload  <target> <selector> <paths> [--format json] # upload file(s) to <input type="file">
 dialog  <target> [accept|dismiss]   # dialog history; set auto-accept or auto-dismiss
@@ -647,17 +647,17 @@ Local run on 2026-06-16, measured with the same smoke page and measured local co
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 8.772s |
+| Total time | 8.850s |
 | Command calls | 23 |
-| First useful observation | 2.833s |
-| Golden path complete | 4.986s |
+| First useful observation | 2.844s |
+| Golden path complete | 5.076s |
 | Useful observation tokens | 1,384 |
 | Auto-evidence actions | 6 |
 | Action evidence coverage | 100% (7/7 mutating commands) |
-| Action evidence completeness | 100% (5/5 JSON action handoffs) |
+| Action evidence completeness | 100% (6/6 JSON action handoffs) |
 | CLI recovery coverage | 100% (1/1 failed steps) |
-| Handoff nextSteps coverage | 100% (11/11 JSON handoffs) |
-| Handoff recommendation coverage | 100% (11/11 JSON handoffs) |
+| Handoff nextSteps coverage | 100% (12/12 JSON handoffs) |
+| Handoff recommendation coverage | 100% (12/12 JSON handoffs) |
 | Doctor onboarding coverage | 100% (1/1 doctor handoff) |
 | Target handoff coverage | 100% (2/2 JSON target handoffs) |
 | Report latestAction coverage | 100% (1/1 JSON reports) |
@@ -667,8 +667,8 @@ Local run on 2026-06-16, measured with the same smoke page and measured local co
 | Since-action evidence coverage | 100% (1/1 JSON perceive-diff handoff) |
 | Quality gate | 22/22 pass |
 | Differentiator success rate | 100% |
-| Stale-ref recovery | 52ms, 1/1 recovered |
-| Session stability sample | 1.123s, 3 probes |
+| Stale-ref recovery | 46ms, 1/1 recovered |
+| Session stability sample | 1.116s, 3 probes |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
 

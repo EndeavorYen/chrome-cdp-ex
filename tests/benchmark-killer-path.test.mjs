@@ -1495,6 +1495,7 @@ describe('benchmark killer path helpers', () => {
       'report',
     ]));
     expect(plan.find(step => step.args[0] === 'fill')?.args).toEqual(['fill', 'AABBCCDD', '#cmd', 'look trainer', '--format', 'json']);
+    expect(plan.find(step => step.args[0] === 'dismiss-modal')?.args).toEqual(['dismiss-modal', 'AABBCCDD', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'inject')?.args).toEqual(['inject', 'AABBCCDD', '--css', '#combat-log { outline: 2px solid rgb(37, 99, 235); }', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'nav')?.args).toEqual(['nav', 'AABBCCDD', 'http://127.0.0.1:41738/smoke-page.html#after-action-evidence', '--format', 'json']);
     expect(plan.find(step => step.name === 'stale-ref-mutate')?.args).toEqual(['reload', 'AABBCCDD', '--format', 'json']);
