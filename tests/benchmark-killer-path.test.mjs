@@ -144,6 +144,8 @@ describe('benchmark killer path helpers', () => {
     expect(summary.metrics.outputChars).toBe(outputChars);
     expect(summary.metrics.estimatedOutputTokens).toBe(estimateTokenCount(outputChars));
     expect(summary.metrics.firstUsefulObservationMs).toBe(40);
+    expect(summary.metrics.firstActionEvidenceMs).toBe(130);
+    expect(summary.metrics.goldenPathMs).toBe(180);
     expect(summary.metrics.autoEvidenceActions).toBe(1);
     expect(summary.metrics.verificationCallsSaved).toBe(1);
     expect(summary.metrics.hasReportTimeline).toBe(true);
@@ -211,6 +213,7 @@ describe('benchmark killer path helpers', () => {
     });
     expect(summary.gate.criteria).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'first-useful-observation', passed: true, actual: 40, operator: '<=', limit: 5000 }),
+      expect.objectContaining({ name: 'golden-path-under-two-minutes', passed: true, actual: 180, operator: '<=', limit: 120000 }),
       expect.objectContaining({ name: 'useful-observation-tokens', passed: true, operator: '<=', limit: 3000 }),
       expect.objectContaining({ name: 'auto-evidence-actions', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'report-timeline', passed: true, actual: true, operator: '===', limit: true }),
@@ -247,6 +250,8 @@ describe('benchmark killer path helpers', () => {
     expect(summary.failedStep).toBe('perceive');
     expect(summary.metrics.commandCalls).toBe(2);
     expect(summary.metrics.firstUsefulObservationMs).toBeNull();
+    expect(summary.metrics.firstActionEvidenceMs).toBeNull();
+    expect(summary.metrics.goldenPathMs).toBeNull();
     expect(summary.gate.passed).toBe(false);
     expect(summary.gate.criteria).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -260,6 +265,12 @@ describe('benchmark killer path helpers', () => {
         passed: false,
         actual: false,
         recommendation: 'Run cdp report <target> after action evidence so the session can be handed off.',
+      }),
+      expect.objectContaining({
+        name: 'golden-path-under-two-minutes',
+        passed: false,
+        actual: null,
+        recommendation: 'Complete doctor/list/perceive/action/report within the two-minute first-success budget.',
       }),
       expect.objectContaining({
         name: 'session-stability-sample',
@@ -297,9 +308,11 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('chrome-cdp-ex benchmark: killer-path');
     expect(out).toContain('Success: yes');
     expect(out).toContain('Command calls: 12');
+    expect(out).toContain('First action evidence: 60 ms');
+    expect(out).toContain('Golden path complete: 100 ms');
     expect(out).toContain('Estimated output tokens:');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 9/9 pass');
+    expect(out).toContain('Gate checks: 10/10 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');

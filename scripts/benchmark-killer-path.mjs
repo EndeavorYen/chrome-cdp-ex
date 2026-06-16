@@ -116,6 +116,7 @@ function benchmarkSessionStability(steps) {
 const DEFAULT_GATE_LIMITS = Object.freeze({
   commandCallsMax: 20,
   firstUsefulObservationMsMax: 5000,
+  goldenPathMsMax: 120000,
   usefulObservationTokensMax: 3000,
   autoEvidenceActionsMin: 1,
   differentiatorSuccessRateMin: 1,
@@ -192,6 +193,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '<=',
       limit: limits.firstUsefulObservationMsMax,
       recommendation: 'Get the first useful page observation from doctor/list/open/perceive within the onboarding budget.',
+    }),
+    gateCriterion({
+      name: 'golden-path-under-two-minutes',
+      actual: metrics.goldenPathMs ?? null,
+      operator: '<=',
+      limit: limits.goldenPathMsMax,
+      recommendation: 'Complete doctor/list/perceive/action/report within the two-minute first-success budget.',
     }),
     gateCriterion({
       name: 'useful-observation-tokens',
@@ -386,7 +394,9 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
   const usefulObservationTokens = normalizedSteps
     .filter(step => step.hasUsefulObservation || step.hasActionEvidence)
     .reduce((sum, step) => sum + step.estimatedTokens, 0);
-  const reportStep = steps.find(step => step.name === 'report');
+  const reportIndex = steps.findIndex(step => step.name === 'report');
+  const reportStep = reportIndex >= 0 ? steps[reportIndex] : null;
+  const firstActionEvidence = actionEvidenceSteps[0] || null;
 
   const summary = {
     schema: 'chrome-cdp-ex.benchmark.v1',
@@ -399,6 +409,12 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       commandCalls: normalizedSteps.length,
       firstUsefulObservationMs: firstObservation
         ? Math.max(0, (steps[normalizedSteps.indexOf(firstObservation)]?.endedAt ?? endedAt ?? 0) - (startedAt ?? 0))
+        : null,
+      firstActionEvidenceMs: firstActionEvidence
+        ? Math.max(0, (steps[normalizedSteps.indexOf(firstActionEvidence)]?.endedAt ?? endedAt ?? 0) - (startedAt ?? 0))
+        : null,
+      goldenPathMs: reportStep && /Session report:[\s\S]*Action timeline:/m.test(outputText(reportStep || {}))
+        ? Math.max(0, (reportStep.endedAt ?? endedAt ?? 0) - (startedAt ?? 0))
         : null,
       outputChars,
       estimatedOutputTokens: estimateTokenCount(outputChars),
@@ -435,6 +451,8 @@ export function formatBenchmarkReport(summary) {
     `Total time: ${summary.metrics.totalMs} ms`,
     `Command calls: ${summary.metrics.commandCalls}`,
     `First useful observation: ${summary.metrics.firstUsefulObservationMs ?? 'n/a'} ms`,
+    `First action evidence: ${summary.metrics.firstActionEvidenceMs ?? 'n/a'} ms`,
+    `Golden path complete: ${summary.metrics.goldenPathMs ?? 'n/a'} ms`,
     `Output chars: ${summary.metrics.outputChars}`,
     `Estimated output tokens: ${summary.metrics.estimatedOutputTokens}`,
     `Useful observation tokens: ${summary.metrics.usefulObservationTokens}`,
