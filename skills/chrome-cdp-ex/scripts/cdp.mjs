@@ -1711,6 +1711,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       nextHint: failure.nextCommand,
     });
     finalizeActionResult(result, { enrichActionResult, onActionResult });
+    if (format === 'json') return formatActionResultOutput(result, { format });
     throw new Error(formatActionFailure(e, { action, target }));
   }
   if (feedbackPolicy === 'none' || feedbackPolicy === 'report-only') {
@@ -2215,14 +2216,18 @@ function buildRecordEnvironmentModel(session) {
 function buildRecordActionsModel(session) {
   const actions = (session.actionLog || []).map((entry, index) => {
     const inferred = inferRecordActionCommand(entry);
+    const dispatchFailed = entry.dispatch?.ok === false;
+    const needsInput = dispatchFailed
+      ? [...new Set([...inferred.needsInput, 'successful-dispatch'])]
+      : inferred.needsInput;
     return {
       index: index + 1,
       ts: entry.ts,
       action: entry.action,
       target: entry.target || null,
       command: inferred.command,
-      replayable: inferred.replayable,
-      needsInput: inferred.needsInput,
+      replayable: dispatchFailed ? false : inferred.replayable,
+      needsInput,
       evidence: {
         dispatchMethod: entry.dispatch?.method || null,
         settleOk: entry.settle?.ok ?? null,
@@ -2293,6 +2298,9 @@ function formatRecordActions(session, { format = 'text' } = {}) {
     }
     if (step.evidence.effectSummary) lines.push(`   Evidence: ${step.evidence.effectSummary}`);
     if (step.evidence.effectSample) lines.push(`   Sample: ${step.evidence.effectSample}`);
+    if (step.evidence.failure?.kind) lines.push(`   Failure: ${step.evidence.failure.kind}`);
+    if (step.evidence.failure?.reason) lines.push(`   Reason: ${step.evidence.failure.reason}`);
+    if (step.evidence.nextHint) lines.push(`   Next: ${step.evidence.nextHint}`);
     if (step.evidence.consoleSummary) lines.push(`   ${step.evidence.consoleSummary}`);
     if (step.evidence.consoleSample) lines.push(`   Console sample: ${step.evidence.consoleSample}`);
     if (step.evidence.exceptionSummary) lines.push(`   ${step.evidence.exceptionSummary}`);
@@ -8351,6 +8359,27 @@ function parseTargetAndCommandArgs(cmd, args) {
   return { targetPrefix, cmdArgs };
 }
 
+function formatArgSuffix(format) {
+  return format && format !== 'text' ? ['--format', format] : [];
+}
+
+function normalizeTargetCommandArgs(cmd, cmdArgs = []) {
+  const args = [...cmdArgs];
+  if (cmd === 'type') {
+    const fopts = parseFormatArgs(args, ['text', 'json']);
+    return [fopts.args.join(' '), ...formatArgSuffix(fopts.format)];
+  }
+  if (cmd === 'fill') {
+    if (args[0] === '--react') {
+      const fopts = parseFormatArgs(args.slice(2), ['text', 'json']);
+      return ['--react', args[1], fopts.args.join(' '), ...formatArgSuffix(fopts.format)];
+    }
+    const fopts = parseFormatArgs(args.slice(1), ['text', 'json']);
+    return [args[0], fopts.args.join(' '), ...formatArgSuffix(fopts.format)];
+  }
+  return args;
+}
+
 function formatCliError(err, { cmd = '', targetPrefix = '' } = {}) {
   const message = String(err?.message || err || '').trim();
   if (!message) return 'Error: unknown failure\nNext: cdp doctor';
@@ -8661,19 +8690,16 @@ async function main() {
   } else if (cmd === 'elshot') {
     if (!cmdArgs[0]) { console.error('Error: CSS selector required'); process.exit(1); }
   } else if (cmd === 'type') {
-    // Join all remaining args as text (allows spaces)
-    const text = cmdArgs.join(' ');
-    if (!text) { console.error('Error: text required'); process.exit(1); }
-    cmdArgs[0] = text;
+    cmdArgs = normalizeTargetCommandArgs(cmd, cmdArgs);
+    if (!cmdArgs[0]) { console.error('Error: text required'); process.exit(1); }
   } else if (cmd === 'fill') {
+    cmdArgs = normalizeTargetCommandArgs(cmd, cmdArgs);
     if (cmdArgs[0] === '--react') {
       if (!cmdArgs[1]) { console.error('Error: selector required'); process.exit(1); }
-      const text = cmdArgs.slice(2).join(' ');
-      if (!text) { console.error('Error: text required'); process.exit(1); }
-      cmdArgs.splice(0, cmdArgs.length, '--react', cmdArgs[1], text);
+      if (!cmdArgs[2]) { console.error('Error: text required'); process.exit(1); }
     } else {
       if (!cmdArgs[0]) { console.error('Error: selector required'); process.exit(1); }
-      if (cmdArgs.length > 2) cmdArgs[1] = cmdArgs.slice(1).join(' ');
+      if (!cmdArgs[1]) { console.error('Error: text required'); process.exit(1); }
     }
   } else if (cmd === 'evalraw') {
     // args: [method, ...jsonParts] — join json parts in case of spaces
@@ -8766,7 +8792,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseClockArgs, clockPageScript, formatClockSummary, buildClockModel, formatClockText, clockStr,
   parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
   injectStr, cascadeStr, recordStr, parseRecordArgs,
-  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs,
+  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
   parseFormatArgs, formatJson, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, formatCallResult, evalBase64Decode,
   navStr, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,

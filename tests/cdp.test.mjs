@@ -11,7 +11,7 @@ const {
   validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
   formatPageList, buildPerceiveTree, perceivePageScript, injectStr, cascadeStr, recordStr, parseRecordArgs,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, navStr, clickStr, fillStr, fillReactStr, waitForStr,
-  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, formatCliError,
+  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs, formatCliError,
   formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   statusStr, clearObservationBuffers,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
@@ -687,6 +687,27 @@ describe('parseFormatArgs', () => {
   it('serializes JSON models with indentation', () => {
     expect(T.formatJson({ schema: 'x', ok: true })).toBe('{\n  "schema": "x",\n  "ok": true\n}');
   });
+
+  it('preserves trailing --format json when joining fill and type text args', () => {
+    expect(normalizeTargetCommandArgs('fill', ['#cmd', 'look', 'merchant', '--format', 'json'])).toEqual([
+      '#cmd',
+      'look merchant',
+      '--format',
+      'json',
+    ]);
+    expect(normalizeTargetCommandArgs('fill', ['--react', '#cmd', 'look', 'merchant', '--format', 'json'])).toEqual([
+      '--react',
+      '#cmd',
+      'look merchant',
+      '--format',
+      'json',
+    ]);
+    expect(normalizeTargetCommandArgs('type', ['hello', 'world', '--format', 'json'])).toEqual([
+      'hello world',
+      '--format',
+      'json',
+    ]);
+  });
 });
 
 describe('structured status and console models', () => {
@@ -1085,6 +1106,44 @@ describe('ActionResult', () => {
     expect(captured.effects.failure.kind).toBe('overlay');
     expect(captured.nextHint).toBe('cdp dismiss-modal abc123');
   });
+
+  it('returns classified failed dispatch evidence as JSON for agents', async () => {
+    let captured = null;
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'abc123', input: '@4', resolvedBy: 'ref', label: 'Submit' },
+      dispatch: async () => {
+        throw new Error('Element is not clickable at point (20, 30). Other element would receive the click');
+      },
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'not reached',
+      format: 'json',
+      onActionResult: (result) => { captured = result; },
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.action.v1',
+      action: 'click',
+      target: { input: '@4', label: 'Submit' },
+      dispatch: {
+        ok: false,
+        method: 'click',
+        error: 'Element is not clickable at point (20, 30). Other element would receive the click',
+      },
+      settle: { ok: false },
+      effects: {
+        domDiff: null,
+        failure: {
+          kind: 'overlay',
+          nextCommand: 'cdp dismiss-modal abc123',
+        },
+      },
+      nextHint: 'cdp dismiss-modal abc123',
+    });
+    expect(captured.effects.failure.kind).toBe('overlay');
+    expect(out).not.toContain('Action failure: overlay');
+  });
 });
 
 // =========================================================================
@@ -1463,6 +1522,44 @@ describe('Session report', () => {
     expect(model.actions[0].evidence.networkSummary).toBe('Network: 1 request (1 failed)');
     expect(out).toContain('Console: 1 entry (1 warning)');
     expect(out).toContain('Network sample: POST /api/combat -> 500 in 27ms');
+  });
+
+  it('keeps failed dispatches as diagnostic evidence but not replayable steps', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    const failure = T.classifyActionFailure(
+      new Error('Element not found: #missing'),
+      { action: 'click', target: { targetId: 'ABC123', input: '#missing' } }
+    );
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: {
+        input: '#missing',
+        resolvedBy: 'selector',
+        label: '#missing',
+        commandArgs: ['#missing'],
+      },
+      dispatch: { ok: false, method: 'click', error: failure.originalMessage },
+      settle: { ok: false, durationMs: 12 },
+      effects: { domDiff: null, console: [], network: [], navigation: null, failure },
+      nextHint: failure.nextCommand,
+    }));
+
+    const model = T.buildRecordActionsModel(state);
+    const out = T.formatRecordActions(state);
+
+    expect(model.actions[0]).toMatchObject({
+      action: 'click',
+      command: ['click', '#missing'],
+      replayable: false,
+      needsInput: ['successful-dispatch'],
+      evidence: {
+        failure: { kind: 'selector' },
+        nextHint: 'cdp perceive ABC123 -C -d 8',
+      },
+    });
+    expect(out).toContain('1. click #missing — needs input');
+    expect(out).toContain('Missing: successful-dispatch');
+    expect(out).toContain('Failure: selector');
   });
 
   it('formats record-actions JSON for scripting', () => {
