@@ -1526,7 +1526,7 @@ const SENSITIVE_QUERY_KEY_RE = /\b(pass(word)?|secret|token|api[-_]?key|credenti
 const NOISY_ACTION_NETWORK_TYPES = new Set(['Image', 'Stylesheet', 'Script', 'Font', 'Media', 'WebSocket']);
 
 function createActionResult({ action, target, dispatch, settle, effects, nextHint }) {
-  return applyActionRecommendation(applyActionOutcome(applyActionDiagnosis({
+  return applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis({
     schema: 'chrome-cdp-ex.action.v1',
     action,
     target,
@@ -1534,7 +1534,7 @@ function createActionResult({ action, target, dispatch, settle, effects, nextHin
     settle,
     effects,
     nextHint,
-  })));
+  }))));
 }
 
 function createActionObservationBaseline({ consoleBuf = null, exceptionBuf = null, netReqBuf = null } = {}) {
@@ -1764,7 +1764,7 @@ function applyActionObservationDelta(actionResult, delta = {}) {
   actionResult.effects.console = consoleDelta.entries || [];
   actionResult.effects.exceptions = exceptionDelta.entries || [];
   actionResult.effects.network = networkDelta.entries || [];
-  return applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(actionResult)));
+  return applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(actionResult))));
 }
 
 function recoveryCommandArg(value) {
@@ -2116,6 +2116,91 @@ function applyActionRecommendation(actionResult) {
   return actionResult;
 }
 
+function buildActionVerdict(actionResult = {}) {
+  const diagnosis = actionResult.effects?.diagnosis || null;
+  const outcome = actionResult.outcome || buildActionOutcome(actionResult);
+  const recommendation = actionResult.recommendation || {};
+  const nextSteps = uniqueNextStepCommands(recommendation.commands || []);
+  const primaryNextStep = nextSteps[0] || recommendation.verifyCommand || actionResult.nextHint || null;
+  const base = {
+    schema: 'chrome-cdp-ex.action-verdict.v1',
+    source: diagnosis && diagnosis.status !== 'ok' ? 'diagnosis' : 'outcome',
+    primaryNextStep,
+    nextSteps,
+    reason: diagnosis && diagnosis.status !== 'ok'
+      ? diagnosis.reason || outcome.reason || null
+      : outcome.reason || recommendation.reason || null,
+  };
+
+  if (diagnosis && diagnosis.status !== 'ok') {
+    const blocked = diagnosis.status === 'blocked' || outcome.status === 'failed';
+    return {
+      ...base,
+      status: blocked ? 'blocked' : 'recover',
+      confidence: diagnosis.confidence || (blocked ? 'high' : 'medium'),
+      canContinue: false,
+      needsRecovery: true,
+    };
+  }
+
+  switch (outcome.status) {
+    case 'changed':
+      return {
+        ...base,
+        status: 'continue',
+        confidence: 'medium',
+        canContinue: true,
+        needsRecovery: false,
+      };
+    case 'no-change':
+      return {
+        ...base,
+        status: 'investigate',
+        confidence: 'medium',
+        canContinue: false,
+        needsRecovery: true,
+      };
+    case 'failed':
+      return {
+        ...base,
+        status: 'blocked',
+        confidence: 'high',
+        canContinue: false,
+        needsRecovery: true,
+      };
+    case 'timeout':
+      return {
+        ...base,
+        status: 'verify',
+        confidence: 'low',
+        canContinue: false,
+        needsRecovery: true,
+      };
+    case 'attention':
+      return {
+        ...base,
+        status: 'recover',
+        confidence: 'medium',
+        canContinue: false,
+        needsRecovery: true,
+      };
+    case 'dispatched':
+    default:
+      return {
+        ...base,
+        status: 'verify',
+        confidence: 'low',
+        canContinue: false,
+        needsRecovery: false,
+      };
+  }
+}
+
+function applyActionVerdict(actionResult) {
+  actionResult.verdict = buildActionVerdict(actionResult);
+  return actionResult;
+}
+
 function countLabel(count, singular, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
@@ -2201,6 +2286,9 @@ function formatActionText(result) {
   if (diagnosis && diagnosis.status !== 'ok') {
     lines.push(`Diagnosis: ${diagnosis.kind}${diagnosis.reason ? ` — ${diagnosis.reason}` : ''}`);
   }
+  if (result.verdict?.status) {
+    lines.push(`Verdict: ${result.verdict.status}${result.verdict.reason ? ` — ${result.verdict.reason}` : ''}`);
+  }
   if (result.settle) {
     const duration = result.settle.durationMs ? ` in ${result.settle.durationMs}ms` : '';
     lines.push(`Settle: ${result.settle.ok ? 'ok' : 'not confirmed'}${duration}`);
@@ -2222,7 +2310,7 @@ function formatActionText(result) {
 
 function finalizeActionResult(result, { enrichActionResult = null, onActionResult = null } = {}) {
   if (enrichActionResult) enrichActionResult(result);
-  applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(result)));
+  applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(result))));
   if (onActionResult) onActionResult(result);
   return result;
 }
@@ -2450,6 +2538,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
     failure: actionResult.effects?.failure || null,
     diagnosis: actionResult.effects?.diagnosis || null,
     outcome: actionResult.outcome || buildActionOutcome(actionResult),
+    verdict: actionResult.verdict || buildActionVerdict(actionResult),
     nextHint: actionResult.nextHint || null,
   };
   session.actionLog.push(entry);
@@ -2601,6 +2690,7 @@ function buildSessionReportModel(session, { now = Date.now() } = {}) {
       action: entry.action,
       status,
       outcome: entry.outcome || null,
+      verdict: entry.verdict || null,
       target: entry.target || null,
       dispatch: entry.dispatch || null,
       settle: entry.settle || null,
@@ -2698,6 +2788,7 @@ function formatSessionReport(session, { now = Date.now(), format = 'text' } = {}
       lines.push(`${i + 1}. ${entry.action}${label ? ` ${label}` : ''} — ${settleStatus}${settleDuration}`);
       if (entry.dispatch?.method) lines.push(`   Dispatch: ${entry.dispatch.method}`);
       if (entry.outcome?.status) lines.push(`   Outcome: ${entry.outcome.status}${entry.outcome.reason ? ` — ${entry.outcome.reason}` : ''}`);
+      if (entry.verdict?.status) lines.push(`   Verdict: ${entry.verdict.status}${entry.verdict.reason ? ` — ${entry.verdict.reason}` : ''}`);
       if (entry.failure?.kind) lines.push(`   Failure: ${entry.failure.kind} — ${entry.failure.reason}`);
       if (entry.diagnosis?.kind && entry.diagnosis.status !== 'ok') {
         lines.push(`   Diagnosis: ${entry.diagnosis.kind} — ${entry.diagnosis.reason}`);

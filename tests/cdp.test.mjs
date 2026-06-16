@@ -875,6 +875,19 @@ describe('ActionResult', () => {
       needsAttention: false,
       evidence: 'dom',
     });
+    expect(result.verdict).toMatchObject({
+      schema: 'chrome-cdp-ex.action-verdict.v1',
+      status: 'continue',
+      confidence: 'medium',
+      canContinue: true,
+      needsRecovery: false,
+      source: 'outcome',
+      primaryNextStep: 'cdp report ABC123 --format json',
+      nextSteps: [
+        'cdp report ABC123 --format json',
+        'cdp record-actions ABC123 --format json',
+      ],
+    });
     expect(result.recommendation).toMatchObject({
       source: 'action-evidence',
       strategy: 'continue-from-evidence',
@@ -927,7 +940,23 @@ describe('ActionResult', () => {
       'cdp perceive ABC123 -C -d 8',
       'cdp report ABC123 --format json',
     ]);
+    expect(result.verdict).toMatchObject({
+      schema: 'chrome-cdp-ex.action-verdict.v1',
+      status: 'investigate',
+      confidence: 'medium',
+      canContinue: false,
+      needsRecovery: true,
+      source: 'outcome',
+      primaryNextStep: 'cdp overlay ABC123 "#refresh" --format json',
+      nextSteps: [
+        'cdp overlay ABC123 "#refresh" --format json',
+        'cdp frame ABC123 --format json',
+        'cdp perceive ABC123 -C -d 8',
+        'cdp report ABC123 --format json',
+      ],
+    });
     expect(result.effects.diagnosis).toBeUndefined();
+    expect(T.formatActionText(result)).toContain('Verdict: investigate');
     expect(T.formatActionText(result)).toContain('Next: cdp overlay ABC123 "#refresh" --format json');
   });
 
@@ -1053,6 +1082,11 @@ describe('ActionResult', () => {
       settle: { ok: true },
       effects: { domDiff: 'checkout banner appeared' },
       outcome: { status: 'changed', changed: true, needsAttention: false },
+      verdict: {
+        status: 'continue',
+        canContinue: true,
+        needsRecovery: false,
+      },
       nextHint: 'Use perceive --since-action if more evidence is needed',
     });
     expect(out).not.toContain('Clicked #submit');
@@ -1151,7 +1185,22 @@ describe('ActionResult', () => {
       needsAttention: true,
       evidence: 'network',
     });
+    expect(parsed.verdict).toMatchObject({
+      schema: 'chrome-cdp-ex.action-verdict.v1',
+      status: 'recover',
+      confidence: 'high',
+      canContinue: false,
+      needsRecovery: true,
+      source: 'diagnosis',
+      primaryNextStep: 'cdp netlog ABC123',
+      nextSteps: [
+        'cdp netlog ABC123',
+        'cdp perceive ABC123 --since-action',
+        'cdp report ABC123 --format json',
+      ],
+    });
     expect(T.formatActionText(parsed)).toContain('Diagnosis: network-failure');
+    expect(T.formatActionText(parsed)).toContain('Verdict: recover');
     expect(T.formatActionText(parsed)).toContain('Next: cdp netlog ABC123');
     expect(parsed.recommendation).toMatchObject({
       source: 'action-diagnosis',
@@ -1352,6 +1401,14 @@ describe('ActionResult', () => {
           },
         },
       },
+      verdict: {
+        status: 'blocked',
+        confidence: 'high',
+        canContinue: false,
+        needsRecovery: true,
+        source: 'diagnosis',
+        primaryNextStep: 'cdp overlay abc123 @4 --format json',
+      },
       nextHint: 'cdp dismiss-modal abc123',
     });
     expect(captured.effects.failure.kind).toBe('overlay');
@@ -1412,6 +1469,7 @@ describe('Session report', () => {
     expect(out).toContain('Action timeline:');
     expect(out).toContain('1. click #combat — ok in 123ms');
     expect(out).toContain('Outcome: changed — Observed page change after action.');
+    expect(out).toContain('Verdict: continue');
     expect(out).toContain('Effect: +++ Added (1):');
     expect(out).toContain('戰鬥勝利');
   });
@@ -1459,6 +1517,12 @@ describe('Session report', () => {
             status: 'changed',
             changed: true,
             needsAttention: false,
+          },
+          verdict: {
+            schema: 'chrome-cdp-ex.action-verdict.v1',
+            status: 'continue',
+            canContinue: true,
+            needsRecovery: false,
           },
           target: { input: '#combat', label: '#combat' },
           evidence: {

@@ -274,6 +274,9 @@ if (parsedFillAction.dispatch?.ok !== true || parsedFillAction.settle?.ok !== tr
 if (!parsedFillAction.effects || !('domDiff' in parsedFillAction.effects)) {
   throw new Error(`fill --format json should include observed effects:\n${fillJsonOut}`);
 }
+if (parsedFillAction.verdict?.status !== 'continue' || parsedFillAction.verdict?.canContinue !== true) {
+  throw new Error(`fill --format json should include a continue verdict:\n${fillJsonOut}`);
+}
 if (parsedFillAction.recommendation?.source !== 'action-evidence' || !parsedFillAction.nextSteps?.includes(`cdp report ${target} --format json`)) {
   throw new Error(`fill --format json should include action continuation recommendation:\n${fillJsonOut}`);
 }
@@ -298,6 +301,9 @@ if (parsedNoChangeAction.schema !== 'chrome-cdp-ex.action.v1' || parsedNoChangeA
 }
 if (parsedNoChangeAction.outcome?.status !== 'no-change' || parsedNoChangeAction.outcome?.needsAttention !== true) {
   throw new Error(`no-change click should report an attention-worthy no-change outcome:\n${noChangeClickJsonOut}`);
+}
+if (parsedNoChangeAction.verdict?.status !== 'investigate' || parsedNoChangeAction.verdict?.canContinue !== false || parsedNoChangeAction.verdict?.needsRecovery !== true) {
+  throw new Error(`no-change click should include an investigate verdict:\n${noChangeClickJsonOut}`);
 }
 if (parsedNoChangeAction.recommendation?.strategy !== 'investigate-no-change') {
   throw new Error(`no-change click should recommend investigation instead of normal continuation:\n${noChangeClickJsonOut}`);
@@ -371,6 +377,10 @@ if (!['network-failure', 'network-pending'].includes(parsedDiagnosticAction.effe
 if (parsedDiagnosticAction.outcome?.status !== 'attention' || parsedDiagnosticAction.outcome?.needsAttention !== true) {
   throw new Error(`diagnostic action json should include an attention outcome:\n${diagnosticJsonOut}`);
 }
+const diagnosticActionTarget = parsedDiagnosticAction.target?.targetId || target;
+if (parsedDiagnosticAction.verdict?.status !== 'recover' || parsedDiagnosticAction.verdict?.primaryNextStep !== `cdp netlog ${diagnosticActionTarget}`) {
+  throw new Error(`diagnostic action json should include a recovery verdict:\n${diagnosticJsonOut}`);
+}
 if (!parsedDiagnosticAction.effects?.diagnosis?.nextCommand?.includes('cdp netlog')) {
   throw new Error(`diagnostic action json should include a netlog next command:\n${diagnosticJsonOut}`);
 }
@@ -437,6 +447,9 @@ if (!parsedReport.actions?.some(action => action.action === 'click' && action.ev
 }
 if (!parsedReport.actions?.some(action => action.outcome?.status && ['changed', 'attention'].includes(action.outcome.status))) {
   throw new Error(`report json should include action outcomes:\n${reportJson}`);
+}
+if (!parsedReport.actions?.some(action => action.verdict?.status && ['continue', 'recover', 'investigate'].includes(action.verdict.status))) {
+  throw new Error(`report json should include action verdicts:\n${reportJson}`);
 }
 if (!parsedReport.screenshots?.some(shot => shot.path === sessionShotPath)) {
   throw new Error(`report json should include screenshot attachment:\n${reportJson}`);
