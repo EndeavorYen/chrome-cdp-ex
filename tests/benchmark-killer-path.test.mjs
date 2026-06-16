@@ -441,6 +441,7 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Action evidence coverage: 100% (2/2)');
     expect(out).toContain('Action evidence completeness: n/a (0/0)');
     expect(out).toContain('Action failure diagnosis coverage: n/a (0/0)');
+    expect(out).toContain('Action no-change recovery coverage: n/a (0/0)');
     expect(out).toContain('Handoff nextSteps coverage: 100% (1/1)');
     expect(out).toContain('Handoff recommendation coverage: 100% (1/1)');
     expect(out).toContain('Doctor onboarding coverage: n/a (0/0)');
@@ -452,7 +453,7 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Since-action evidence coverage: 100% (1/1)');
     expect(out).toContain('CLI recovery coverage: 100% (1/1)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 24/24 pass');
+    expect(out).toContain('Gate checks: 25/25 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -1482,6 +1483,76 @@ describe('benchmark killer path helpers', () => {
         passed: false,
         actual: 0,
         recommendation: 'Failed action JSON must classify the failure and expose diagnosis recovery commands so agents can recover without parsing text.',
+      }),
+    ]));
+  });
+
+  it('fails the gate when no-change action JSON looks like normal success', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'action-no-change-recovery',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'no-change-json',
+          command: ['click', 'AABBCCDD', '#noop', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          benchmarkProbe: true,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.action.v1',
+            action: 'click',
+            target: { targetId: 'AABBCCDD', input: '#noop', resolvedBy: 'selector', label: '#noop' },
+            dispatch: { ok: true, method: 'click' },
+            settle: { ok: true, durationMs: 10 },
+            effects: {
+              domDiff: '(no changes detected in AX tree)',
+              consoleDelta: { count: 0, errors: 0, warnings: 0, entries: [] },
+              exceptionDelta: { count: 0, entries: [] },
+              networkDelta: { count: 0, failures: 0, pending: 0, entries: [] },
+            },
+            outcome: { status: 'no-change', changed: false, needsAttention: true },
+            verdict: { status: 'continue', canContinue: true, needsRecovery: false },
+            recommendation: {
+              source: 'action-evidence',
+              strategy: 'continue-from-evidence',
+              commands: ['cdp report AABBCCDD --format json'],
+            },
+            nextSteps: ['cdp report AABBCCDD --format json'],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.actionNoChangeRecoveryCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'no-change-json',
+          commandText: 'cdp click AABBCCDD #noop --format json',
+          missing: expect.arrayContaining([
+            'verdict.status',
+            'verdict.canContinue',
+            'verdict.needsRecovery',
+            'recommendation.strategy',
+            'nextSteps.overlay',
+            'nextSteps.frame',
+            'nextSteps.perceive',
+          ]),
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'action-no-change-recovery',
+        passed: false,
+        actual: 0,
+        recommendation: 'No-change action JSON must route agents to overlay, frame, fresh perceive, and report instead of treating dispatch as success.',
       }),
     ]));
   });

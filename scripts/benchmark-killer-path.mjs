@@ -417,6 +417,57 @@ function benchmarkActionFailureDiagnosisCoverage(steps) {
   };
 }
 
+function isNoChangeActionModel(model = {}) {
+  return model?.schema === 'chrome-cdp-ex.action.v1'
+    && model.outcome?.status === 'no-change';
+}
+
+function actionNoChangeRecoveryMissingFields(model = {}) {
+  const missing = [];
+  const verdict = model.verdict || {};
+  const recommendation = model.recommendation || {};
+  const nextSteps = Array.isArray(model.nextSteps) ? model.nextSteps : [];
+  const hasStep = (name) => nextSteps.some(value => new RegExp(`^cdp\\s+${name}\\b`).test(String(value || '')));
+
+  if (verdict.status !== 'investigate') missing.push('verdict.status');
+  if (verdict.canContinue !== false) missing.push('verdict.canContinue');
+  if (verdict.needsRecovery !== true) missing.push('verdict.needsRecovery');
+  if (!isExecutableRecoveryCommand(verdict.primaryNextStep)) missing.push('verdict.primaryNextStep');
+  if (recommendation.strategy !== 'investigate-no-change') missing.push('recommendation.strategy');
+  if (!hasStep('overlay')) missing.push('nextSteps.overlay');
+  if (!hasStep('frame')) missing.push('nextSteps.frame');
+  if (!hasStep('perceive')) missing.push('nextSteps.perceive');
+  if (!hasStep('report')) missing.push('nextSteps.report');
+  return [...new Set(missing)];
+}
+
+function benchmarkActionNoChangeRecoveryCoverage(steps) {
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
+    if (!isNoChangeActionModel(model)) continue;
+    total += 1;
+    const missingFields = actionNoChangeRecoveryMissingFields(model);
+    if (missingFields.length === 0) {
+      covered += 1;
+    } else {
+      missing.push({
+        name: step.name,
+        commandText: step.commandText,
+        missing: missingFields,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    rate: total > 0 ? covered / total : null,
+  };
+}
+
 function parseJsonOutput(text = '') {
   const trimmed = String(text || '').trim();
   if (!trimmed.startsWith('{')) return null;
@@ -876,6 +927,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   observedActionEvidenceCoverageRateMin: 1,
   actionEvidenceCompletenessCoverageRateMin: 1,
   actionFailureDiagnosisCoverageRateMin: 1,
+  actionNoChangeRecoveryCoverageRateMin: 1,
   cliRecoveryCoverageRateMin: 1,
   handoffNextStepsCoverageRateMin: 1,
   handoffRecommendationCoverageRateMin: 1,
@@ -1003,6 +1055,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '>=',
       limit: limits.actionFailureDiagnosisCoverageRateMin,
       recommendation: 'Failed action JSON must classify the failure and expose diagnosis recovery commands so agents can recover without parsing text.',
+    }),
+    gateCriterion({
+      name: 'action-no-change-recovery',
+      actual: metrics.actionNoChangeRecoveryCoverage?.rate ?? 1,
+      operator: '>=',
+      limit: limits.actionNoChangeRecoveryCoverageRateMin,
+      recommendation: 'No-change action JSON must route agents to overlay, frame, fresh perceive, and report instead of treating dispatch as success.',
     }),
     gateCriterion({
       name: 'cli-recovery-coverage',
@@ -1295,6 +1354,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       actionEvidenceCoverage: benchmarkActionEvidenceCoverage(normalizedSteps),
       actionEvidenceCompletenessCoverage: benchmarkActionEvidenceCompletenessCoverage(normalizedSteps),
       actionFailureDiagnosisCoverage: benchmarkActionFailureDiagnosisCoverage(normalizedSteps),
+      actionNoChangeRecoveryCoverage: benchmarkActionNoChangeRecoveryCoverage(normalizedSteps),
       cliRecoveryCoverage: benchmarkCliRecoveryCoverage(normalizedSteps),
       handoffNextStepsCoverage: benchmarkHandoffNextStepsCoverage(normalizedSteps),
       handoffRecommendationCoverage: benchmarkHandoffRecommendationCoverage(normalizedSteps),
@@ -1346,6 +1406,7 @@ export function formatBenchmarkReport(summary) {
     `Action evidence coverage: ${summary.metrics.actionEvidenceCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionEvidenceCoverage.rate * 100)}%`} (${summary.metrics.actionEvidenceCoverage?.covered ?? 0}/${summary.metrics.actionEvidenceCoverage?.total ?? 0})`,
     `Action evidence completeness: ${summary.metrics.actionEvidenceCompletenessCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionEvidenceCompletenessCoverage.rate * 100)}%`} (${summary.metrics.actionEvidenceCompletenessCoverage?.covered ?? 0}/${summary.metrics.actionEvidenceCompletenessCoverage?.total ?? 0})`,
     `Action failure diagnosis coverage: ${summary.metrics.actionFailureDiagnosisCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionFailureDiagnosisCoverage.rate * 100)}%`} (${summary.metrics.actionFailureDiagnosisCoverage?.covered ?? 0}/${summary.metrics.actionFailureDiagnosisCoverage?.total ?? 0})`,
+    `Action no-change recovery coverage: ${summary.metrics.actionNoChangeRecoveryCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionNoChangeRecoveryCoverage.rate * 100)}%`} (${summary.metrics.actionNoChangeRecoveryCoverage?.covered ?? 0}/${summary.metrics.actionNoChangeRecoveryCoverage?.total ?? 0})`,
     `CLI recovery coverage: ${summary.metrics.cliRecoveryCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.cliRecoveryCoverage.rate * 100)}%`} (${summary.metrics.cliRecoveryCoverage?.covered ?? 0}/${summary.metrics.cliRecoveryCoverage?.total ?? 0})`,
     `Handoff nextSteps coverage: ${summary.metrics.handoffNextStepsCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffNextStepsCoverage.rate * 100)}%`} (${summary.metrics.handoffNextStepsCoverage?.covered ?? 0}/${summary.metrics.handoffNextStepsCoverage?.total ?? 0})`,
     `Handoff recommendation coverage: ${summary.metrics.handoffRecommendationCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffRecommendationCoverage.rate * 100)}%`} (${summary.metrics.handoffRecommendationCoverage?.covered ?? 0}/${summary.metrics.handoffRecommendationCoverage?.total ?? 0})`,
@@ -1496,6 +1557,7 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
     { args: ['frame', target, '--format', 'json'], name: 'frame-json', benchmarkProbe: true },
     { args: ['cascade', target, '#custom-clickable', 'cursor'] },
     { args: ['dismiss-modal', target, '--format', 'json'] },
+    { args: ['click', target, '#noop', '--format', 'json'], name: 'no-change-json', benchmarkProbe: true },
     { args: ['fill', target, '#cmd', 'look trainer', '--format', 'json'] },
     { args: ['click', target, '#combat', '--format', 'json'] },
     { args: ['perceive', target, '--since-action', '--format', 'json'] },
