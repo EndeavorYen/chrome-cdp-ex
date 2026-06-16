@@ -396,6 +396,7 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Handoff nextSteps coverage: 100% (1/1)');
     expect(out).toContain('Handoff recommendation coverage: 100% (1/1)');
     expect(out).toContain('Doctor onboarding coverage: n/a (0/0)');
+    expect(out).toContain('Target handoff coverage: n/a (0/0)');
     expect(out).toContain('Report latestAction coverage: n/a (0/0)');
     expect(out).toContain('Report timelineWindow coverage: n/a (0/0)');
     expect(out).toContain('Report artifact coverage: n/a (0/0)');
@@ -403,7 +404,7 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Since-action evidence coverage: 100% (1/1)');
     expect(out).toContain('CLI recovery coverage: 100% (1/1)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 21/21 pass');
+    expect(out).toContain('Gate checks: 22/22 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -673,9 +674,34 @@ describe('benchmark killer path helpers', () => {
           stderr: '',
         },
         {
+          name: 'open',
+          command: ['open', 'https://example.test', '--format', 'json'],
+          startedAt: 10,
+          endedAt: 15,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.open.v1',
+            targetId: 'AABBCCDDEEFF',
+            targetPrefix: 'AABBCCDD',
+            url: 'https://example.test',
+            attached: true,
+            approval: 'approved',
+            navigation: { ok: true, url: 'https://example.test' },
+            ready: { attempted: true, ok: true, readyState: 'complete', selector: '#app', selectorFound: true },
+            autoPerceive: { attempted: false, ok: false, reason: 'not-run' },
+            recommendation: {
+              source: 'golden-path',
+              run: 'cdp perceive AABBCCDD -C -d 8',
+              commands: ['cdp perceive AABBCCDD -C -d 8'],
+            },
+            nextSteps: ['cdp perceive AABBCCDD -C -d 8'],
+          }),
+          stderr: '',
+        },
+        {
           name: 'perceive',
           command: ['perceive', 'AABBCCDD', '-C', '-d', '8', '--format', 'json'],
-          startedAt: 10,
+          startedAt: 15,
           endedAt: 25,
           status: 0,
           stdout: perceiveJson,
@@ -784,14 +810,14 @@ describe('benchmark killer path helpers', () => {
       rate: 1,
     });
     expect(summary.metrics.handoffNextStepsCoverage).toMatchObject({
-      total: 5,
-      covered: 5,
+      total: 6,
+      covered: 6,
       missing: [],
       rate: 1,
     });
     expect(summary.metrics.handoffRecommendationCoverage).toMatchObject({
-      total: 5,
-      covered: 5,
+      total: 6,
+      covered: 6,
       missing: [],
       rate: 1,
     });
@@ -813,7 +839,70 @@ describe('benchmark killer path helpers', () => {
       missing: [],
       rate: 1,
     });
-    expect(summary.steps[2].hasActionEvidence).toBe(true);
+    expect(summary.metrics.targetHandoffCoverage).toMatchObject({
+      total: 1,
+      covered: 1,
+      missing: [],
+      rate: 1,
+    });
+    expect(summary.steps[3].hasActionEvidence).toBe(true);
+  });
+
+  it('fails the gate when target handoff JSON cannot lead to perceive', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'target-handoff',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'open',
+          command: ['open', 'https://example.test', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.open.v1',
+            url: 'https://example.test',
+            attached: true,
+            approval: 'approved',
+            navigation: { ok: false },
+            ready: { attempted: true, ok: false },
+            recommendation: { source: 'golden-path' },
+            nextSteps: ['cdp report AABBCCDD --format json'],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.targetHandoffCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'open',
+          schema: 'chrome-cdp-ex.open.v1',
+          commandText: 'cdp open https://example.test --format json',
+          missing: expect.arrayContaining([
+            'targetPrefix',
+            'navigation.ok',
+            'ready.ok',
+            'recommendation.run',
+            'nextSteps.perceive',
+          ]),
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'target-handoff-coverage',
+        passed: false,
+        actual: 0,
+        recommendation: 'List/open JSON must expose a concrete target prefix and an executable perceive next step so first-run agents can continue the golden path.',
+      }),
+    ]));
   });
 
   it('fails the gate when perceive JSON lacks agent perception signals', () => {

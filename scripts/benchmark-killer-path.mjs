@@ -365,6 +365,81 @@ function benchmarkHandoffRecommendationCoverage(steps) {
   };
 }
 
+function targetPrefixIsConcrete(value) {
+  return typeof value === 'string' && value.trim() && value !== '<target>';
+}
+
+function hasPerceiveNextStepForTarget(model = {}, targetPrefix = '') {
+  if (!targetPrefixIsConcrete(targetPrefix)) return false;
+  const nextSteps = Array.isArray(model.nextSteps) ? model.nextSteps : [];
+  return nextSteps.some(value => String(value || '').startsWith(`cdp perceive ${targetPrefix}`));
+}
+
+function targetHandoffMissingFields(model = {}) {
+  const missing = [];
+  if (model.schema === 'chrome-cdp-ex.open.v1') {
+    if (!targetPrefixIsConcrete(model.targetPrefix)) missing.push('targetPrefix');
+    if (typeof model.attached !== 'boolean') missing.push('attached');
+    if (!['approved', 'pending'].includes(model.approval)) missing.push('approval');
+    if (model.url && model.url !== 'about:blank' && model.navigation?.ok !== true) missing.push('navigation.ok');
+    if (model.attached === true && model.ready?.ok !== true) missing.push('ready.ok');
+    if (typeof model.recommendation?.run !== 'string' || !model.recommendation.run.startsWith(`cdp perceive ${model.targetPrefix}`)) {
+      missing.push('recommendation.run');
+    }
+    if (!hasPerceiveNextStepForTarget(model, model.targetPrefix)) missing.push('nextSteps.perceive');
+    return [...new Set(missing)];
+  }
+
+  if (model.schema === 'chrome-cdp-ex.list.v1') {
+    if (!Number.isFinite(model.targetCount)) missing.push('targetCount');
+    if (!Array.isArray(model.pages)) missing.push('pages');
+    const pages = Array.isArray(model.pages) ? model.pages : [];
+    if (pages.length > 0) {
+      const firstPrefix = pages.find(page => targetPrefixIsConcrete(page?.targetPrefix))?.targetPrefix;
+      if (!firstPrefix) missing.push('pages.targetPrefix');
+      if (typeof model.recommendation?.run !== 'string' || !model.recommendation.run.startsWith(`cdp perceive ${firstPrefix}`)) {
+        missing.push('recommendation.run');
+      }
+      if (!hasPerceiveNextStepForTarget(model, firstPrefix)) missing.push('nextSteps.perceive');
+    } else {
+      const nextSteps = Array.isArray(model.nextSteps) ? model.nextSteps : [];
+      if (!nextSteps.some(value => /^cdp\s+open(\s|$)/.test(String(value || '')))) missing.push('nextSteps.open');
+      if (!recommendationHasActionableContext(model.recommendation)) missing.push('recommendation');
+    }
+    return [...new Set(missing)];
+  }
+
+  return missing;
+}
+
+function benchmarkTargetHandoffCoverage(steps) {
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
+    if (!['chrome-cdp-ex.open.v1', 'chrome-cdp-ex.list.v1'].includes(model?.schema)) continue;
+    total += 1;
+    const missingFields = targetHandoffMissingFields(model);
+    if (missingFields.length === 0) {
+      covered += 1;
+    } else {
+      missing.push({
+        name: step.name,
+        schema: model.schema,
+        commandText: step.commandText,
+        missing: missingFields,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    rate: total > 0 ? covered / total : null,
+  };
+}
+
 function doctorOnboardingMissingFields(model = {}) {
   const missing = [];
   const wizard = model.wizard || {};
@@ -679,6 +754,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   handoffNextStepsCoverageRateMin: 1,
   handoffRecommendationCoverageRateMin: 1,
   doctorOnboardingCoverageRateMin: 1,
+  targetHandoffCoverageRateMin: 1,
   reportLatestActionCoverageRateMin: 1,
   reportTimelineWindowCoverageRateMin: 1,
   reportArtifactCoverageRateMin: 1,
@@ -821,6 +897,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '>=',
       limit: limits.doctorOnboardingCoverageRateMin,
       recommendation: 'Doctor JSON must expose wizard currentStep, golden path, and readiness checks for first-run onboarding.',
+    }),
+    gateCriterion({
+      name: 'target-handoff-coverage',
+      actual: metrics.targetHandoffCoverage?.rate ?? 1,
+      operator: '>=',
+      limit: limits.targetHandoffCoverageRateMin,
+      recommendation: 'List/open JSON must expose a concrete target prefix and an executable perceive next step so first-run agents can continue the golden path.',
     }),
     gateCriterion({
       name: 'report-timeline',
@@ -1073,6 +1156,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       handoffNextStepsCoverage: benchmarkHandoffNextStepsCoverage(normalizedSteps),
       handoffRecommendationCoverage: benchmarkHandoffRecommendationCoverage(normalizedSteps),
       doctorOnboardingCoverage: benchmarkDoctorOnboardingCoverage(normalizedSteps),
+      targetHandoffCoverage: benchmarkTargetHandoffCoverage(normalizedSteps),
       reportLatestActionCoverage: benchmarkReportLatestActionCoverage(normalizedSteps),
       reportTimelineWindowCoverage: benchmarkReportTimelineWindowCoverage(normalizedSteps),
       reportArtifactCoverage: benchmarkReportArtifactCoverage(normalizedSteps),
@@ -1121,6 +1205,7 @@ export function formatBenchmarkReport(summary) {
     `Handoff nextSteps coverage: ${summary.metrics.handoffNextStepsCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffNextStepsCoverage.rate * 100)}%`} (${summary.metrics.handoffNextStepsCoverage?.covered ?? 0}/${summary.metrics.handoffNextStepsCoverage?.total ?? 0})`,
     `Handoff recommendation coverage: ${summary.metrics.handoffRecommendationCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffRecommendationCoverage.rate * 100)}%`} (${summary.metrics.handoffRecommendationCoverage?.covered ?? 0}/${summary.metrics.handoffRecommendationCoverage?.total ?? 0})`,
     `Doctor onboarding coverage: ${summary.metrics.doctorOnboardingCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.doctorOnboardingCoverage.rate * 100)}%`} (${summary.metrics.doctorOnboardingCoverage?.covered ?? 0}/${summary.metrics.doctorOnboardingCoverage?.total ?? 0})`,
+    `Target handoff coverage: ${summary.metrics.targetHandoffCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.targetHandoffCoverage.rate * 100)}%`} (${summary.metrics.targetHandoffCoverage?.covered ?? 0}/${summary.metrics.targetHandoffCoverage?.total ?? 0})`,
     `Report latestAction coverage: ${summary.metrics.reportLatestActionCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportLatestActionCoverage.rate * 100)}%`} (${summary.metrics.reportLatestActionCoverage?.covered ?? 0}/${summary.metrics.reportLatestActionCoverage?.total ?? 0})`,
     `Report timelineWindow coverage: ${summary.metrics.reportTimelineWindowCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportTimelineWindowCoverage.rate * 100)}%`} (${summary.metrics.reportTimelineWindowCoverage?.covered ?? 0}/${summary.metrics.reportTimelineWindowCoverage?.total ?? 0})`,
     `Report artifact coverage: ${summary.metrics.reportArtifactCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportArtifactCoverage.rate * 100)}%`} (${summary.metrics.reportArtifactCoverage?.covered ?? 0}/${summary.metrics.reportArtifactCoverage?.total ?? 0})`,
