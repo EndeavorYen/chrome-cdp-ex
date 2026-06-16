@@ -176,6 +176,14 @@ const perceive = step('perceive keep refs', () => run(['perceive', target, '-C',
 assertIncludes(perceive, 'Coords: top-level viewport CSS px', 'perceive');
 assertIncludes(perceive, 'fixed', 'perceive fixed annotation');
 assertIncludes(perceive, '@', 'perceive refs');
+const fillCliJsonErrorOut = step('validation cli json error', () => runFailure(['fill', target, '--format', 'json']));
+const parsedFillCliJsonError = JSON.parse(fillCliJsonErrorOut);
+if (parsedFillCliJsonError.schema !== 'chrome-cdp-ex.cli-error.v1' || parsedFillCliJsonError.recovery?.kind !== 'usage') {
+  throw new Error(`fill --format json without selector should return usage recovery JSON:\n${fillCliJsonErrorOut}`);
+}
+if (!parsedFillCliJsonError.nextSteps?.includes(`cdp fill ${target} <selector|@ref> <text>`)) {
+  throw new Error(`fill --format json validation failure should include a runnable command template:\n${fillCliJsonErrorOut}`);
+}
 const perceiveJson = step('perceive json', () => run(['perceive', target, '--format', 'json']));
 const parsedPerceive = JSON.parse(perceiveJson);
 if (parsedPerceive.schema !== 'chrome-cdp-ex.perceive.v1') throw new Error(`perceive json schema mismatch:\n${perceiveJson}`);

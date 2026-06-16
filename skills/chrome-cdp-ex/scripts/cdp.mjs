@@ -9144,6 +9144,56 @@ function normalizeTargetCommandArgs(cmd, cmdArgs = []) {
   return args;
 }
 
+function commandUsageTemplate(cmd = '', targetPrefix = '') {
+  const target = targetPrefix || '<target>';
+  switch (cmd) {
+    case 'nav':
+    case 'navigate':
+      return `cdp nav ${target} https://example.com`;
+    case 'click':
+    case 'jsclick':
+      return `cdp ${cmd} ${target} <selector|@ref>`;
+    case 'clickxy':
+      return `cdp clickxy ${target} <x> <y>`;
+    case 'fill':
+      return `cdp fill ${target} <selector|@ref> <text>`;
+    case 'type':
+      return `cdp type ${target} <text>`;
+    case 'press':
+      return `cdp press ${target} <key>`;
+    case 'select':
+      return `cdp select ${target} <selector> <value>`;
+    case 'elshot':
+      return `cdp elshot ${target} <selector|@ref>`;
+    case 'eval':
+      return `cdp eval ${target} <expression>`;
+    case 'eval64':
+      return `cdp eval64 ${target} <base64-expression>`;
+    case 'call':
+      return `cdp call ${target} <async-function-expression>`;
+    case 'evalraw':
+      return `cdp evalraw ${target} <CDP.method> [json]`;
+    case 'cookieset':
+      return `cdp cookieset ${target} "name=value; domain=.example.com"`;
+    case 'cookiedel':
+      return `cdp cookiedel ${target} <name>`;
+    case 'upload':
+      return `cdp upload ${target} <selector> <file-path>`;
+    case 'batch':
+      return `cdp batch ${target} "fill @3 hello | click @5"`;
+    case 'flow':
+      return `cdp flow ${target} "click @1; wait dom stable; summary"`;
+    case 'replay':
+      return `cdp replay ${target} --file <record-actions.json>`;
+    case 'restore':
+      return `cdp restore ${target} --file <checkpoint.json>`;
+    case 'inject':
+      return `cdp inject ${target} --css "body { outline: 1px solid red }"`;
+    default:
+      return `cdp ${cmd || '<command>'}${targetPrefix ? ` ${target}` : ''} <required-args>`;
+  }
+}
+
 function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '' } = {}) {
   const lower = String(message || '').toLowerCase();
   const target = targetPrefix || '<target>';
@@ -9207,6 +9257,14 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '' } = {}) {
       strategy: 'provide-url',
       run: `cdp nav ${target} https://example.com`,
       reason: 'Navigation commands need an explicit http or https URL.',
+    };
+  }
+  if (cmd && lower.includes('required')) {
+    return {
+      kind: 'usage',
+      strategy: 'provide-required-argument',
+      run: commandUsageTemplate(cmd, targetPrefix),
+      reason: 'The command is missing required input; provide the required argument instead of retrying unchanged.',
     };
   }
   return targetPrefix
@@ -9273,6 +9331,19 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text' } = 
   lines.push(...formatCliErrorRecovery(recovery));
   lines.push(`Next: ${recovery.run}`);
   return lines.join('\n');
+}
+
+function exitCliError(err, { cmd = '', targetPrefix = '', format = 'text' } = {}) {
+  console.error(formatCliError(err, { cmd, targetPrefix, format }));
+  process.exit(1);
+}
+
+function argsWithoutFormat(args = []) {
+  try {
+    return parseFormatArgs(args, ['text', 'json']).args;
+  } catch {
+    return args;
+  }
 }
 
 function targetPrefixForDisplay(targetId) {
@@ -9548,80 +9619,81 @@ async function main() {
       const b64 = cmdArgs.slice(b64Index + 1)
         .filter(a => a !== '--fire-and-forget' && a !== '--faf')
         .join('').trim();
-      if (!b64) { console.error('Error: base64 expression required'); process.exit(1); }
+      if (!b64) exitCliError('base64 expression required', { cmd, targetPrefix, format: cliErrorFormat });
       cmdArgs.splice(0, cmdArgs.length, ...(fire ? ['--fire-and-forget'] : []), '--b64', b64);
     } else {
       const expr = cmdArgs.filter(a => a !== '--fire-and-forget' && a !== '--faf').join(' ');
-      if (!expr) { console.error('Error: expression required'); process.exit(1); }
+      if (!expr) exitCliError('expression required', { cmd, targetPrefix, format: cliErrorFormat });
       cmdArgs.splice(0, cmdArgs.length, ...(fire ? ['--fire-and-forget'] : []), expr);
     }
   } else if (cmd === 'eval64') {
     const b64 = cmdArgs.join('').trim();
-    if (!b64) { console.error('Error: base64 expression required'); process.exit(1); }
+    if (!b64) exitCliError('base64 expression required', { cmd, targetPrefix, format: cliErrorFormat });
     cmdArgs.splice(0, cmdArgs.length, b64);
   } else if (cmd === 'call') {
     const expr = cmdArgs.join(' ');
-    if (!expr) { console.error('Error: expression required'); process.exit(1); }
+    if (!expr) exitCliError('expression required', { cmd, targetPrefix, format: cliErrorFormat });
     cmdArgs.splice(0, cmdArgs.length, expr);
   } else if (cmd === 'elshot') {
-    if (!cmdArgs[0]) { console.error('Error: CSS selector required'); process.exit(1); }
+    const checkArgs = argsWithoutFormat(cmdArgs);
+    if (!checkArgs[0]) exitCliError('CSS selector required', { cmd, targetPrefix, format: cliErrorFormat });
   } else if (cmd === 'type') {
+    const checkArgs = argsWithoutFormat(cmdArgs);
+    if (!checkArgs[0]) exitCliError('text required', { cmd, targetPrefix, format: cliErrorFormat });
     cmdArgs = normalizeTargetCommandArgs(cmd, cmdArgs);
-    if (!cmdArgs[0]) { console.error('Error: text required'); process.exit(1); }
   } else if (cmd === 'fill') {
-    cmdArgs = normalizeTargetCommandArgs(cmd, cmdArgs);
-    if (cmdArgs[0] === '--react') {
-      if (!cmdArgs[1]) { console.error('Error: selector required'); process.exit(1); }
-      if (!cmdArgs[2]) { console.error('Error: text required'); process.exit(1); }
+    const checkArgs = argsWithoutFormat(cmdArgs);
+    if (checkArgs[0] === '--react') {
+      if (!checkArgs[1]) exitCliError('selector required', { cmd, targetPrefix, format: cliErrorFormat });
+      if (!checkArgs[2]) exitCliError('text required', { cmd, targetPrefix, format: cliErrorFormat });
     } else {
-      if (!cmdArgs[0]) { console.error('Error: selector required'); process.exit(1); }
-      if (!cmdArgs[1]) { console.error('Error: text required'); process.exit(1); }
+      if (!checkArgs[0]) exitCliError('selector required', { cmd, targetPrefix, format: cliErrorFormat });
+      if (!checkArgs[1]) exitCliError('text required', { cmd, targetPrefix, format: cliErrorFormat });
     }
+    cmdArgs = normalizeTargetCommandArgs(cmd, cmdArgs);
   } else if (cmd === 'evalraw') {
     // args: [method, ...jsonParts] — join json parts in case of spaces
-    if (!cmdArgs[0]) { console.error('Error: CDP method required'); process.exit(1); }
+    if (!cmdArgs[0]) exitCliError('CDP method required', { cmd, targetPrefix, format: cliErrorFormat });
     if (cmdArgs.length > 2) cmdArgs[1] = cmdArgs.slice(1).join(' ');
   } else if (cmd === 'cookieset') {
-    if (!cmdArgs[0]) { console.error('Error: cookie string required (e.g. "name=value; domain=.example.com")'); process.exit(1); }
+    if (!cmdArgs[0]) exitCliError('cookie string required (e.g. "name=value; domain=.example.com")', { cmd, targetPrefix, format: cliErrorFormat });
     cmdArgs[0] = cmdArgs.join(' '); // join in case of spaces in cookie string
   } else if (cmd === 'cookiedel') {
-    if (!cmdArgs[0]) { console.error('Error: cookie name required'); process.exit(1); }
+    if (!cmdArgs[0]) exitCliError('cookie name required', { cmd, targetPrefix, format: cliErrorFormat });
   } else if (cmd === 'upload') {
-    if (!cmdArgs[0] || !cmdArgs[1]) { console.error('Error: selector and file path(s) required'); process.exit(1); }
+    if (!cmdArgs[0] || !cmdArgs[1]) exitCliError('selector and file path(s) required', { cmd, targetPrefix, format: cliErrorFormat });
     // args[0] = selector, args[1] = comma-separated file paths (no join needed)
   } else if (cmd === 'batch') {
     const filtered = cmdArgs.filter(a => a !== '--parallel' && a !== '--plain' && a !== '--compact');
-    if (!filtered[0]) { console.error('Error: commands required (pipe syntax or JSON array)'); process.exit(1); }
+    if (!filtered[0]) exitCliError('commands required (pipe syntax or JSON array)', { cmd, targetPrefix, format: cliErrorFormat });
   } else if (cmd === 'flow') {
     const fopts = parseFormatArgs(cmdArgs, ['text', 'json']);
-    if (!fopts.args[0]) { console.error('Error: flow steps required (semicolon-separated). Example: flow <target> "click @1; wait dom stable; summary"'); process.exit(1); }
+    if (!fopts.args[0]) exitCliError('flow steps required (semicolon-separated). Example: flow <target> "click @1; wait dom stable; summary"', { cmd, targetPrefix, format: cliErrorFormat });
     // Preserve multi-word/unquoted step recipes as one daemon argument.
     cmdArgs.splice(0, cmdArgs.length, ...formatArgSuffix(fopts.format), fopts.args.join(' '));
   } else if (cmd === 'replay') {
     const jsonIndex = cmdArgs.findIndex(a => a === '--json');
     if (jsonIndex !== -1) {
       const jsonPayload = cmdArgs.slice(jsonIndex + 1).join(' ').trim();
-      if (!jsonPayload) { console.error('Error: replay --json requires a record-actions JSON payload'); process.exit(1); }
+      if (!jsonPayload) exitCliError('replay --json requires a record-actions JSON payload', { cmd, targetPrefix, format: cliErrorFormat });
       cmdArgs.splice(jsonIndex + 1, cmdArgs.length - jsonIndex - 1, jsonPayload);
     } else if (!cmdArgs[0]) {
-      console.error('Error: replay requires --file <path> or --json <record-actions-json>');
-      process.exit(1);
+      exitCliError('replay requires --file <path> or --json <record-actions-json>', { cmd, targetPrefix, format: cliErrorFormat });
     }
   } else if (cmd === 'restore') {
     const jsonIndex = cmdArgs.findIndex(a => a === '--json');
     if (jsonIndex !== -1) {
       const jsonPayload = cmdArgs.slice(jsonIndex + 1).join(' ').trim();
-      if (!jsonPayload) { console.error('Error: restore --json requires a checkpoint JSON payload'); process.exit(1); }
+      if (!jsonPayload) exitCliError('restore --json requires a checkpoint JSON payload', { cmd, targetPrefix, format: cliErrorFormat });
       cmdArgs.splice(jsonIndex + 1, cmdArgs.length - jsonIndex - 1, jsonPayload);
     } else if (!cmdArgs[0]) {
-      console.error('Error: restore requires --file <path> or --json <checkpoint-json>');
-      process.exit(1);
+      exitCliError('restore requires --file <path> or --json <checkpoint-json>', { cmd, targetPrefix, format: cliErrorFormat });
     }
   }
 
-  if ((cmd === 'nav' || cmd === 'navigate') && !cmdArgs[0]) {
-    console.error('Error: URL required');
-    process.exit(1);
+  if (cmd === 'nav' || cmd === 'navigate') {
+    const checkArgs = argsWithoutFormat(cmdArgs);
+    if (!checkArgs[0]) exitCliError('URL required', { cmd, targetPrefix, format: cliErrorFormat });
   }
 
   const response = await sendCommand(conn, { cmd, args: cmdArgs });

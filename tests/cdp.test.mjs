@@ -3783,6 +3783,42 @@ describe('formatCliError', () => {
     expect(parsed.nextSteps).toEqual(['cdp perceive AABBCCDD -C -d 8']);
     expect(out).not.toContain('Recovery:');
   });
+
+  it('classifies missing action arguments as usage recovery instead of target status', () => {
+    const out = formatCliError(new Error('selector required'), {
+      cmd: 'fill',
+      targetPrefix: 'AABBCCDD',
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.cli-error.v1',
+      ok: false,
+      command: 'fill',
+      targetPrefix: 'AABBCCDD',
+      recovery: {
+        kind: 'usage',
+        strategy: 'provide-required-argument',
+        run: 'cdp fill AABBCCDD <selector|@ref> <text>',
+      },
+      nextSteps: ['cdp fill AABBCCDD <selector|@ref> <text>'],
+    });
+  });
+
+  it('classifies missing nav URLs as a concrete navigation recovery', () => {
+    const out = formatCliError(new Error('URL required'), {
+      cmd: 'nav',
+      targetPrefix: 'AABBCCDD',
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.recovery.kind).toBe('navigation');
+    expect(parsed.recovery.strategy).toBe('provide-url');
+    expect(parsed.recovery.run).toBe('cdp nav AABBCCDD https://example.com');
+    expect(parsed.nextSteps).toEqual(['cdp nav AABBCCDD https://example.com']);
+  });
 });
 
 describe('open onboarding guidance', () => {
