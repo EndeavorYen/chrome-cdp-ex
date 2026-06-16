@@ -493,6 +493,12 @@ describe('benchmark killer path helpers', () => {
       outcome: { status: 'changed' },
       nextSteps: ['cdp report AABBCCDD --format json'],
     });
+    const sinceActionJson = JSON.stringify({
+      schema: 'chrome-cdp-ex.perceive-diff.v1',
+      mode: 'since-action',
+      summary: { changed: true },
+      nextSteps: ['cdp report AABBCCDD --format json'],
+    });
     const summary = summarizeBenchmarkRun({
       scenario: 'json-handoff-killer-path',
       startedAt: 0,
@@ -530,9 +536,18 @@ describe('benchmark killer path helpers', () => {
           stderr: '',
         },
         {
+          name: 'since-action',
+          command: ['perceive', 'AABBCCDD', '--since-action', '--format', 'json'],
+          startedAt: 40,
+          endedAt: 50,
+          status: 0,
+          stdout: sinceActionJson,
+          stderr: '',
+        },
+        {
           name: 'report',
           command: ['report', 'AABBCCDD', '--format', 'json'],
-          startedAt: 40,
+          startedAt: 50,
           endedAt: 60,
           status: 0,
           stdout: JSON.stringify({
@@ -550,7 +565,7 @@ describe('benchmark killer path helpers', () => {
     expect(summary.metrics.goldenPathMs).toBe(60);
     expect(summary.metrics.hasReportTimeline).toBe(true);
     expect(summary.metrics.usefulObservationTokens).toBe(
-      estimateTokenCount(perceiveJson.length) + estimateTokenCount(actionJson.length),
+      estimateTokenCount(perceiveJson.length) + estimateTokenCount(actionJson.length) + estimateTokenCount(sinceActionJson.length),
     );
     expect(summary.metrics.actionEvidenceCoverage).toMatchObject({
       total: 1,
@@ -559,8 +574,8 @@ describe('benchmark killer path helpers', () => {
       rate: 1,
     });
     expect(summary.metrics.handoffNextStepsCoverage).toMatchObject({
-      total: 4,
-      covered: 4,
+      total: 5,
+      covered: 5,
       missing: [],
       rate: 1,
     });
@@ -598,6 +613,13 @@ describe('benchmark killer path helpers', () => {
     expect(plan.find(step => step.args[0] === 'doctor')?.args).toEqual(['doctor', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'list')?.args).toEqual(['list', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'perceive')?.args).toContain('--format');
+    expect(plan.find(step => step.args.includes('--since-action'))?.args).toEqual([
+      'perceive',
+      'AABBCCDD',
+      '--since-action',
+      '--format',
+      'json',
+    ]);
     expect(plan.find(step => step.args[0] === 'click')?.args).toContain('--format');
     expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--format', 'json']);
     expect(plan.length).toBeLessThanOrEqual(20);

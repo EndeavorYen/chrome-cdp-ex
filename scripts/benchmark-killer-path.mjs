@@ -39,6 +39,7 @@ function hasUsefulObservation(step) {
   const text = step.outputText || outputText(step);
   const model = stepModel(step);
   if (model?.schema === 'chrome-cdp-ex.perceive.v1') return true;
+  if (model?.schema === 'chrome-cdp-ex.perceive-diff.v1') return true;
   if (model?.schema === 'chrome-cdp-ex.report.v1') return hasReportTimeline(step);
   return step.name === 'perceive'
     || step.name === 'report'
@@ -190,7 +191,7 @@ function benchmarkHandoffNextStepsCoverage(steps) {
   let covered = 0;
   for (const step of steps) {
     const model = stepModel(step) || parseJsonOutput(step.outputText);
-    if (!model?.schema || !/^chrome-cdp-ex\.(doctor|list|open|perceive|action|report)\.v1$/.test(model.schema)) continue;
+    if (!model?.schema || !/^chrome-cdp-ex\.(doctor|list|open|perceive|perceive-diff|action|report)\.v1$/.test(model.schema)) continue;
     total += 1;
     const hasNextSteps = Array.isArray(model.nextSteps) && model.nextSteps.some(value => /^cdp\s+\S+/.test(String(value || '')));
     if (hasNextSteps) {
@@ -677,7 +678,7 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000 } = {}
     { args: ['cascade', target, '#custom-clickable', 'cursor'] },
     { args: ['dismiss-modal', target] },
     { args: ['click', target, '#combat', '--format', 'json'] },
-    { args: ['perceive', target, '--since-action'] },
+    { args: ['perceive', target, '--since-action', '--format', 'json'] },
     { args: ['report', target, '--format', 'json'] },
     { args: ['perceive', target, '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-baseline' },
     { args: ['eval', target, hmrMutationScript], name: 'hmr-mutate' },

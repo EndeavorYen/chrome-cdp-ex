@@ -647,15 +647,15 @@ Local run on 2026-06-16, measured with the same smoke page and measured local co
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 9.020s |
-| First useful observation | 1.440s |
-| Golden path complete | 3.076s |
-| Useful observation tokens | 2,651 |
+| Total time | 9.043s |
+| First useful observation | 1.476s |
+| Golden path complete | 3.115s |
+| Useful observation tokens | 2,759 |
 | Action evidence coverage | 100% (4/4 mutating commands) |
-| Handoff nextSteps coverage | 100% (5/5 JSON handoffs) |
+| Handoff nextSteps coverage | 100% (6/6 JSON handoffs) |
 | Quality gate | 12/12 pass |
 | Differentiator success rate | 100% |
-| Stale-ref recovery | 51ms, 1/1 recovered |
+| Stale-ref recovery | 53ms, 1/1 recovered |
 | Session stability sample | 1.652s, 3 probes |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
