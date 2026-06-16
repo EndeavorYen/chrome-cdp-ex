@@ -337,8 +337,9 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Action evidence coverage: 100% (2/2)');
     expect(out).toContain('Handoff nextSteps coverage: n/a (0/0)');
     expect(out).toContain('Report latestAction coverage: n/a (0/0)');
+    expect(out).toContain('Report timelineWindow coverage: n/a (0/0)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 13/13 pass');
+    expect(out).toContain('Gate checks: 14/14 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -553,6 +554,7 @@ describe('benchmark killer path helpers', () => {
           status: 0,
           stdout: JSON.stringify({
             schema: 'chrome-cdp-ex.report.v1',
+            timelineWindow: { total: 1, shown: 1, omitted: 0, startIndex: 1, endIndex: 1, limit: 20 },
             actions: [{ index: 1, action: 'click' }],
             latestAction: {
               index: 1,
@@ -579,6 +581,12 @@ describe('benchmark killer path helpers', () => {
       missing: [],
       rate: 1,
     });
+    expect(summary.metrics.reportTimelineWindowCoverage).toMatchObject({
+      total: 1,
+      covered: 1,
+      missing: [],
+      rate: 1,
+    });
     expect(summary.metrics.usefulObservationTokens).toBe(
       estimateTokenCount(perceiveJson.length) + estimateTokenCount(sinceActionJson.length),
     );
@@ -595,6 +603,51 @@ describe('benchmark killer path helpers', () => {
       rate: 1,
     });
     expect(summary.steps[2].hasActionEvidence).toBe(true);
+  });
+
+  it('fails the gate when a JSON report timeline lacks bounded window metadata', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'report-timeline-window',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'report',
+          command: ['report', 'AABBCCDD', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.report.v1',
+            actions: [{ index: 1, action: 'click' }],
+            latestAction: { index: 1, action: 'click', status: 'ok' },
+            nextSteps: ['cdp record-actions AABBCCDD --format json'],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.reportTimelineWindowCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'report',
+          commandText: 'cdp report AABBCCDD --format json',
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'report-timeline-window',
+        passed: false,
+        actual: 0,
+        recommendation: 'JSON report handoffs must expose bounded timelineWindow metadata so long sessions stay token-safe.',
+      }),
+    ]));
   });
 
   it('fails the gate when a JSON report timeline lacks latestAction summary', () => {
