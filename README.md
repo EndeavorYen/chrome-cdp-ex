@@ -639,6 +639,24 @@ See [SKILL.md](skills/chrome-cdp-ex/SKILL.md) for full WSL2 setup instructions.
 
 Use the live benchmark before making performance or adoption claims:
 
+### Latest dogfood snapshot
+
+Local run on 2026-06-16, measured with the same smoke page and measured local comparison baselines:
+
+| Metric | Latest run |
+|---|---:|
+| Total time | 8.996s |
+| First useful observation | 1.451s |
+| Golden path complete | 3.080s |
+| Useful observation tokens | 2,663 |
+| Action evidence coverage | 100% (4/4 mutating commands) |
+| Quality gate | 11/11 pass |
+| Differentiator success rate | 100% |
+| Stale-ref recovery | 51ms, 1/1 recovered |
+| Session stability sample | 1.648s, 3 probes |
+
+Regenerate this table after meaningful command, perception, or benchmark changes:
+
 ```bash
 npm run benchmark:killer
 npm run benchmark:killer -- --json

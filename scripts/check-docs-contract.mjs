@@ -31,6 +31,7 @@ const requiredReadmeSections = [
   '## Use this when',
   '## Do not use this when',
   '## Five success cases',
+  '### Latest dogfood snapshot',
 ];
 for (const section of requiredReadmeSections) {
   if (!docs.readme.includes(section)) {
@@ -49,6 +50,19 @@ const requiredSuccessCases = [
 for (const item of requiredSuccessCases) {
   if (!docs.readme.includes(item)) {
     console.error(`README is missing success case: ${item}`);
+    failures += 1;
+  }
+}
+
+const requiredBenchmarkProof = [
+  'Total time',
+  'Action evidence coverage',
+  'Stale-ref recovery',
+  'Quality gate',
+];
+for (const item of requiredBenchmarkProof) {
+  if (!docs.readme.includes(item)) {
+    console.error(`README is missing dogfood benchmark proof: ${item}`);
     failures += 1;
   }
 }
