@@ -5456,26 +5456,28 @@ function parseCheckpointArtifact(raw) {
 }
 
 function parseRestoreArgs(args, { reader = readFileSync } = {}) {
-  const tokens = (args || []).filter(a => a !== undefined && a !== null);
+  const fopts = parseFormatArgs((args || []).filter(a => a !== undefined && a !== null), ['text', 'json']);
+  const tokens = fopts.args;
   const positional = [];
+  const finish = (result) => ({ ...result, format: fopts.format });
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
     if (token === '--json') {
       const raw = tokens.slice(i + 1).join(' ').trim();
       if (!raw) throw new Error('restore --json requires a checkpoint JSON payload');
-      return { artifact: parseCheckpointArtifact(raw), source: 'inline JSON' };
+      return finish({ artifact: parseCheckpointArtifact(raw), source: 'inline JSON' });
     }
     if (token === '--file' || token === '-f') {
       const filePath = tokens[++i];
       if (!filePath) throw new Error('restore --file requires a checkpoint JSON path');
-      return { artifact: parseCheckpointArtifact(reader(filePath, 'utf8')), source: filePath };
+      return finish({ artifact: parseCheckpointArtifact(reader(filePath, 'utf8')), source: filePath });
     }
     positional.push(token);
   }
   const raw = positional.join(' ').trim();
   if (!raw) throw new Error('restore requires --file <path> or --json <checkpoint-json>');
-  if (raw.startsWith('{')) return { artifact: parseCheckpointArtifact(raw), source: 'inline JSON' };
-  return { artifact: parseCheckpointArtifact(reader(positional[0], 'utf8')), source: positional[0] };
+  if (raw.startsWith('{')) return finish({ artifact: parseCheckpointArtifact(raw), source: 'inline JSON' });
+  return finish({ artifact: parseCheckpointArtifact(reader(positional[0], 'utf8')), source: positional[0] });
 }
 
 function redactRestoreCommandArgs(args = []) {
@@ -9222,18 +9224,21 @@ async function runDaemon(targetId) {
           break;
         }
         case 'restore': {
-          const safeCommandArgs = redactRestoreCommandArgs(args);
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const safeCommandArgs = redactRestoreCommandArgs(fopts.args);
           result = await actionFeedback(
             'restore',
             async () => {
-              const restoreResult = await restoreCheckpointStr(cdp, sessionId, args);
+              const restoreResult = await restoreCheckpointStr(cdp, sessionId, fopts.args);
               clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
               session.pageGeneration += 1;
               invalidateSessionRefs(session, 'navigation');
               return restoreResult;
             },
             { input: 'checkpoint', resolvedBy: 'artifact', label: 'checkpoint', commandArgs: safeCommandArgs },
-            'report-only'
+            'report-only',
+            null,
+            fopts.format
           );
           break;
         }
@@ -9462,8 +9467,8 @@ Usage: cdp <command> [args]
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
   report <target> [--format json]   Session action timeline + evidence summary + JSONL log path
   checkpoint <target> [--format json]  Capture URL, cookies, localStorage, and sessionStorage
-  restore <target> --file <path>     Restore a checkpoint artifact into the live page
-  restore <target> --json <json>     Restore an inline checkpoint JSON artifact
+  restore <target> --file <path> [--format json]  Restore a checkpoint artifact into the live page
+  restore <target> --json <json> [--format json]  Restore an inline checkpoint JSON artifact
   record-actions <target>           Export action log + mock/clock/throttle environment as text or JSON
   export-playwright <target>         Export current workflow as a Playwright spec draft
   replay <target> --file <path> [--format json]  Replay environment controls + actions against the live page
@@ -9637,7 +9642,7 @@ const COMMANDS = Object.freeze([
   { name: 'overlay', aliases: ['overlays'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'report', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'checkpoint', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'restore', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'restore', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'record-actions', aliases: ['recordactions'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'export-playwright', aliases: ['export-pw'], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'replay', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },

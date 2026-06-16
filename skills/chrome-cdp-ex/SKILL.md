@@ -309,7 +309,7 @@ scripts/cdp.mjs frame   <target> [--format json]                  # frame tree w
 scripts/cdp.mjs overlay <target> [sel|@ref] [--format json]       # detect dialogs/overlays and hit-test blockers
 scripts/cdp.mjs report  <target> [--format json]                  # action timeline + evidence + screenshot attachments + JSONL log path
 scripts/cdp.mjs checkpoint <target> [--format json]                # capture URL, cookies, localStorage, and sessionStorage
-scripts/cdp.mjs restore <target> --file <path>                     # restore a checkpoint artifact; invalidates @refs
+scripts/cdp.mjs restore <target> --file <path> [--format json]     # restore a checkpoint artifact; invalidates @refs
 scripts/cdp.mjs record-actions <target> [--format json]           # export action log + mock/clock/throttle environment steps
 scripts/cdp.mjs export-playwright <target>                         # export current workflow as a Playwright spec draft
 scripts/cdp.mjs diff-shot <target> [--reset] [--threshold pct]     # viewport pixel diff against last diff-shot baseline
@@ -320,7 +320,7 @@ scripts/cdp.mjs replay <target> --file <path> [--format json]     # execute repl
 > Use `frame`/`frames` when an action is classified as `wrong-frame` or the page contains iframes; it lists stable `@fN` frame refs. Then run `perceive <target> --frame @f2` to assign frame-local element refs such as `@f2:4`. `click`, `fill`, and `cascade` can use those refs directly.
 > Use `overlay <target>` when a click/fill feels blocked or action failure says `overlay`; use `overlay <target> @ref` to ask whether a specific target point is covered. If blocking is reported, run the printed `dismiss-modal` command before retrying.
 > Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session, lists session screenshot attachments, and shows the per-target JSONL log path for post-mortem review.
-> Use `checkpoint --format json` before risky stateful exploration, then `restore --file checkpoint.json` to return to the captured URL, cookies, localStorage, and sessionStorage. After restore, run `perceive` before using any `@ref`; refs from the prior page state are intentionally invalid.
+> Use `checkpoint --format json` before risky stateful exploration, then `restore --file checkpoint.json --format json` to return to the captured URL, cookies, localStorage, and sessionStorage with a versioned action-evidence handoff. After restore, run `perceive` before using any `@ref`; refs from the prior page state are intentionally invalid.
 > Use `record-actions --format json` when a successful exploration should become a replay/export asset; it includes replayable `mock`, `clock`, and `throttle` environment controls before action steps, and each action preserves outcome, verdict, and diagnostics while failed dispatches stay as diagnostic evidence and are marked non-replayable. Use `export-playwright` when you want a reviewable Playwright spec draft from the portable subset, with portable network mocks converted to `page.route`, clear action-evidence text additions converted to initial `expect(page.getByText(...)).toBeVisible()` assertions, and non-portable live controls left as review comments. Use `diff-shot` when a fallback visual pixel diff is needed, then `replay --file artifact.json --format json` to apply environment controls first and get a versioned replay handoff with ok/failed/skipped counts, failed step, and recovery next steps. Incomplete commands are marked with explicit missing fields instead of guessed. Password-like fill/type targets are redacted before action artifacts are written.
 > Use `--format json` when another tool or agent needs a stable, parseable status, summary, console, or action-record payload.
 
@@ -491,7 +491,7 @@ scripts/cdp.mjs record  <target> --action click @5       # record while performi
                                                            # (DOM/network quiet, capped at 5s if no network, 10s otherwise).
                                                            # Add an explicit duration or --until to override the auto-settle default.
 scripts/cdp.mjs checkpoint <target> --format json          # page state artifact for workflow replay/debugging
-scripts/cdp.mjs restore <target> --file checkpoint.json    # restores URL/cookies/storage and clears old refs
+scripts/cdp.mjs restore <target> --file checkpoint.json --format json # restores URL/cookies/storage and clears old refs
 scripts/cdp.mjs flow    <target> "<steps>" [--format json] # sequential runner; semicolon-separated steps
                                                            # e.g. flow A7BA "click @1; wait dom stable; summary; console --errors"
                                                            # wait aliases: "wait dom stable", "wait network idle"

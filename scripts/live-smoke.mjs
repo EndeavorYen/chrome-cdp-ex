@@ -622,6 +622,18 @@ step('mutate checkpoint state before restore', () => run(['eval', target, 'local
 const restoreOut = step('restore checkpoint artifact', () => run(['restore', target, '--file', checkpointPath], { timeout: 30000 }));
 assertIncludes(restoreOut, 'Restored checkpoint', 'restore');
 assertIncludes(restoreOut, 'cookies:', 'restore cookie summary');
+step('mutate checkpoint state before restore json', () => run(['eval', target, 'localStorage.setItem("cdpSmokeCheckpoint","mutated-json"); sessionStorage.setItem("cdpSmokeCheckpoint","mutated-json"); "ok"']));
+const restoreJsonOut = step('restore checkpoint artifact json', () => run(['restore', target, '--file', checkpointPath, '--format', 'json'], { timeout: 30000 }));
+const parsedRestoreAction = JSON.parse(restoreJsonOut);
+if (parsedRestoreAction.schema !== 'chrome-cdp-ex.action.v1' || parsedRestoreAction.action !== 'restore') {
+  throw new Error(`restore --format json should return action evidence JSON:\n${restoreJsonOut}`);
+}
+if (parsedRestoreAction.dispatch?.ok !== true || parsedRestoreAction.settle?.ok !== true) {
+  throw new Error(`restore --format json should report dispatched and settled restore:\n${restoreJsonOut}`);
+}
+if (!parsedRestoreAction.nextSteps?.includes(`cdp report ${target} --format json`)) {
+  throw new Error(`restore --format json should include report handoff next step:\n${restoreJsonOut}`);
+}
 const restoredStorageJson = step('verify restored storage', () => run(['eval', target, 'JSON.stringify({local:localStorage.getItem("cdpSmokeCheckpoint"),session:sessionStorage.getItem("cdpSmokeCheckpoint")})']));
 const restoredStorage = JSON.parse(restoredStorageJson);
 if (restoredStorage.local !== 'local-ok' || restoredStorage.session !== 'session-ok') {

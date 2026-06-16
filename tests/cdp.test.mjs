@@ -374,7 +374,7 @@ describe('COMMANDS registry', () => {
       needsTarget: true,
       mutates: true,
       feedbackPolicy: 'report-only',
-      outputFormats: ['text'],
+      outputFormats: ['text', 'json'],
     }));
   });
 
@@ -3786,6 +3786,21 @@ describe('checkpoint / restore', () => {
 
     expect(parsed.schema).toBe('chrome-cdp-ex.checkpoint.v1');
     expect(parsed.page.url).toBe('https://example.com/app');
+  });
+
+  it('parses restore format separately from checkpoint artifact input', () => {
+    const checkpoint = {
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      page: { url: 'https://example.com/app', title: 'App', origin: 'https://example.com' },
+      storage: { localStorage: {}, sessionStorage: {} },
+      cookies: [],
+    };
+
+    const parsed = T.parseRestoreArgs(['--format', 'json', '--json', JSON.stringify(checkpoint)]);
+
+    expect(parsed.format).toBe('json');
+    expect(parsed.source).toBe('inline JSON');
+    expect(parsed.artifact.page.url).toBe('https://example.com/app');
   });
 
   it('restores cookies, URL, and storage from a checkpoint artifact', async () => {
