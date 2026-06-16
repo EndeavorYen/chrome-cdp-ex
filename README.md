@@ -642,11 +642,12 @@ Use the live benchmark before making performance or adoption claims:
 ```bash
 npm run benchmark:killer
 npm run benchmark:killer -- --json
+npm run benchmark:killer -- --stability-ms 1200000
 ```
 
-It launches a disposable debug browser against the local smoke page and measures the Killer Path: `doctor -> list -> perceive -> act -> since-action evidence -> report`. The JSON report includes command calls, total time, first useful observation time, estimated output tokens, useful observation tokens, auto-evidence actions, verification calls saved, report timeline presence, stale-ref recovery, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time.
+It launches a disposable debug browser against the local smoke page and measures the Killer Path: `doctor -> list -> perceive -> act -> since-action evidence -> report`. The JSON report includes command calls, total time, first useful observation time, estimated output tokens, useful observation tokens, auto-evidence actions, verification calls saved, report timeline presence, stale-ref recovery, session stability sample, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time. The default stability sample is 1000ms; use `--stability-ms` for 20-60 minute dogfood windows.
 
-The report also includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires: successful run, at most 20 command calls, first useful observation within 5 seconds, useful observation tokens at or below 3000, at least one auto-evidence action, a report timeline, 100% differentiator probe success, and 100% stale-ref recovery. Treat a failed gate as a stop sign before publishing comparison claims.
+The report also includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires: successful run, at most 20 command calls, first useful observation within 5 seconds, useful observation tokens at or below 3000, at least one auto-evidence action, a report timeline, 100% differentiator probe success, 100% stale-ref recovery, and a passing session stability sample. Treat a failed gate as a stop sign before publishing comparison claims.
 
 ## Contributor Checks
 

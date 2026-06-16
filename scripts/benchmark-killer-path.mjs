@@ -93,6 +93,26 @@ function benchmarkStaleRefRecovery(steps) {
   };
 }
 
+function benchmarkSessionStability(steps) {
+  const probes = steps.filter(step => /^stability-/.test(step.name || ''));
+  const failed = probes.find(step => !step.ok);
+  const statusOk = probes.some(step => step.name === 'stability-status' && step.ok);
+  const reportOk = probes.some(step => (
+    step.name === 'stability-report'
+    && step.ok
+    && /Session report:[\s\S]*Action timeline:/m.test(step.outputText || '')
+  ));
+  return {
+    enabled: probes.length > 0,
+    success: probes.length > 0 && !failed && statusOk && reportOk,
+    durationMs: probes.reduce((sum, step) => sum + step.durationMs, 0),
+    commandCalls: probes.length,
+    statusOk,
+    reportOk,
+    failedStep: failed?.name || (!statusOk && probes.length ? 'stability-status' : (!reportOk && probes.length ? 'stability-report' : null)),
+  };
+}
+
 const DEFAULT_GATE_LIMITS = Object.freeze({
   commandCallsMax: 20,
   firstUsefulObservationMsMax: 5000,
@@ -171,6 +191,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       limit: limits.staleRefRecoveryRateMin,
       recommendation: 'Classify stale refs with an executable perceive recovery command.',
     }),
+    gateCriterion({
+      name: 'session-stability-sample',
+      actual: metrics.sessionStability?.success === true,
+      operator: '===',
+      limit: true,
+      recommendation: 'Run the stability wait/status/report probe, or use --stability-ms for a longer dogfood window.',
+    }),
   ];
   const passedCount = criteria.filter(criterion => criterion.passed).length;
   return {
@@ -234,6 +261,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       hasReportTimeline: /Session report:[\s\S]*Action timeline:/m.test(outputText(reportStep || {})),
       differentiators: benchmarkDifferentiators(normalizedSteps),
       staleRefRecovery: benchmarkStaleRefRecovery(normalizedSteps),
+      sessionStability: benchmarkSessionStability(normalizedSteps),
     },
     steps: normalizedSteps.map(({ outputText: _outputText, ...step }) => step),
   };
@@ -267,6 +295,9 @@ export function formatBenchmarkReport(summary) {
     `CSS trace: ${differentiators.cssTrace?.success ? 'yes' : 'no'} (${differentiators.cssTrace?.durationMs ?? 0} ms)`,
     `HMR/SPA diff: ${differentiators.hmrDomUpdate?.success ? 'yes' : 'no'} (${differentiators.hmrDomUpdate?.durationMs ?? 0} ms)`,
     `Stale-ref recovery: ${summary.metrics.staleRefRecovery?.success ? 'yes' : 'no'} (${summary.metrics.staleRefRecovery?.recovered ?? 0}/${summary.metrics.staleRefRecovery?.commandCalls ?? 0})`,
+    summary.metrics.sessionStability?.enabled
+      ? `Session stability: ${summary.metrics.sessionStability.success ? 'yes' : 'no'} (${summary.metrics.sessionStability.durationMs} ms, ${summary.metrics.sessionStability.commandCalls} probes)`
+      : 'Session stability: not measured',
     '',
   ];
   if (failedGateCriteria.length) {
@@ -340,7 +371,20 @@ function assertExpectedFailure(step, pattern) {
   return text.trim();
 }
 
-export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BENCH_PORT || 9334), serverPort = Number(process.env.CDP_BENCH_HTTP_PORT || 41738), json = false } = {}) {
+export function parseBenchmarkArgs(argv = []) {
+  const opts = { json: false, stabilityMs: 1000 };
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--json') {
+      opts.json = true;
+    } else if (argv[i] === '--stability-ms') {
+      const value = Number(argv[++i]);
+      opts.stabilityMs = Number.isFinite(value) && value >= 0 ? value : opts.stabilityMs;
+    }
+  }
+  return opts;
+}
+
+export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BENCH_PORT || 9334), serverPort = Number(process.env.CDP_BENCH_HTTP_PORT || 41738), json = false, stabilityMs = 1000 } = {}) {
   if (!existsSync(cdp)) throw new Error(`cdp script not found: ${cdp}`);
   if (!existsSync(page)) throw new Error(`smoke page not found: ${page}`);
   const candidates = browserCandidates();
@@ -435,6 +479,17 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
       runStep({ args: ['click', target, '@1'], env, steps, name: 'stale-ref', expectedFailure: true }),
       /Action failure: stale-ref|Unknown ref|Refs were (cleared|invalidated)|Next:\s*cdp perceive/i
     );
+    if (stabilityMs > 0) {
+      assertStep(runStep({
+        args: ['wait', target, String(stabilityMs)],
+        env,
+        steps,
+        name: 'stability-wait',
+        timeout: Math.max(5000, stabilityMs + 5000),
+      }));
+      assertStep(runStep({ args: ['status', target], env, steps, name: 'stability-status' }));
+      assertStep(runStep({ args: ['report', target], env, steps, name: 'stability-report' }));
+    }
 
     const summary = summarizeBenchmarkRun({
       scenario: 'killer-path',
@@ -453,8 +508,8 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
-  const json = process.argv.includes('--json');
-  runKillerPathBenchmark({ json })
+  const opts = parseBenchmarkArgs(process.argv.slice(2));
+  runKillerPathBenchmark(opts)
     .then(out => {
       console.log(out);
     })

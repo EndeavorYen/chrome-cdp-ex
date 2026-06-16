@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   estimateTokenCount,
   formatBenchmarkReport,
+  parseBenchmarkArgs,
   summarizeBenchmarkRun,
 } from '../scripts/benchmark-killer-path.mjs';
 
@@ -91,12 +92,39 @@ describe('benchmark killer path helpers', () => {
         stdout: 'Session report: AABBCCDD\nActions: 1\n\nAction timeline:\n- click #start\n',
         stderr: '',
       },
+      {
+        name: 'stability-wait',
+        command: ['wait', 'AABBCCDD', '1000'],
+        startedAt: 180,
+        endedAt: 190,
+        status: 0,
+        stdout: 'waited 1000ms',
+        stderr: '',
+      },
+      {
+        name: 'stability-status',
+        command: ['status', 'AABBCCDD'],
+        startedAt: 190,
+        endedAt: 205,
+        status: 0,
+        stdout: 'Status: ready\n',
+        stderr: '',
+      },
+      {
+        name: 'stability-report',
+        command: ['report', 'AABBCCDD'],
+        startedAt: 205,
+        endedAt: 220,
+        status: 0,
+        stdout: 'Session report: AABBCCDD\nActions: 1\n\nAction timeline:\n- click #start\n',
+        stderr: '',
+      },
     ];
 
     const summary = summarizeBenchmarkRun({
       scenario: 'killer-path',
       startedAt: 0,
-      endedAt: 180,
+      endedAt: 220,
       target: 'AABBCCDD',
       steps,
     });
@@ -107,8 +135,8 @@ describe('benchmark killer path helpers', () => {
     expect(summary.scenario).toBe('killer-path');
     expect(summary.success).toBe(true);
     expect(summary.target).toBe('AABBCCDD');
-    expect(summary.metrics.totalMs).toBe(180);
-    expect(summary.metrics.commandCalls).toBe(9);
+    expect(summary.metrics.totalMs).toBe(220);
+    expect(summary.metrics.commandCalls).toBe(12);
     expect(summary.metrics.outputChars).toBe(outputChars);
     expect(summary.metrics.estimatedOutputTokens).toBe(estimateTokenCount(outputChars));
     expect(summary.metrics.firstUsefulObservationMs).toBe(40);
@@ -128,6 +156,15 @@ describe('benchmark killer path helpers', () => {
       commandCalls: 1,
       rate: 1,
     });
+    expect(summary.metrics.sessionStability).toMatchObject({
+      enabled: true,
+      success: true,
+      durationMs: 40,
+      commandCalls: 3,
+      statusOk: true,
+      reportOk: true,
+      failedStep: null,
+    });
     expect(summary.gate).toMatchObject({
       schema: 'chrome-cdp-ex.benchmark-gate.v1',
       passed: true,
@@ -140,6 +177,7 @@ describe('benchmark killer path helpers', () => {
       expect.objectContaining({ name: 'report-timeline', passed: true, actual: true, operator: '===', limit: true }),
       expect.objectContaining({ name: 'differentiator-success-rate', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'stale-ref-recovery-rate', passed: true, actual: 1, operator: '>=', limit: 1 }),
+      expect.objectContaining({ name: 'session-stability-sample', passed: true, actual: true, operator: '===', limit: true }),
     ]));
     expect(summary.steps[6]).toMatchObject({
       name: 'click',
@@ -184,6 +222,12 @@ describe('benchmark killer path helpers', () => {
         actual: false,
         recommendation: 'Run cdp report <target> after action evidence so the session can be handed off.',
       }),
+      expect.objectContaining({
+        name: 'session-stability-sample',
+        passed: false,
+        actual: false,
+        recommendation: 'Run the stability wait/status/report probe, or use --stability-ms for a longer dogfood window.',
+      }),
     ]));
   });
 
@@ -203,6 +247,9 @@ describe('benchmark killer path helpers', () => {
         { name: 'click', command: ['click', 'AABB', '#go'], startedAt: 30, endedAt: 60, status: 0, stdout: 'Clicked\nclick: dispatched', stderr: '' },
         { name: 'stale-ref', command: ['click', 'AABB', '@1'], startedAt: 60, endedAt: 75, status: 1, expectedFailure: true, stdout: '', stderr: 'Action failure: stale-ref\nNext: cdp perceive AABB -C -d 8' },
         { name: 'report', command: ['report', 'AABB'], startedAt: 75, endedAt: 100, status: 0, stdout: 'Session report: AABB\nActions: 1\n\nAction timeline:', stderr: '' },
+        { name: 'stability-wait', command: ['wait', 'AABB', '1000'], startedAt: 100, endedAt: 110, status: 0, stdout: 'waited 1000ms', stderr: '' },
+        { name: 'stability-status', command: ['status', 'AABB'], startedAt: 110, endedAt: 125, status: 0, stdout: 'Status: ready', stderr: '' },
+        { name: 'stability-report', command: ['report', 'AABB'], startedAt: 125, endedAt: 140, status: 0, stdout: 'Session report: AABB\nActions: 1\n\nAction timeline:', stderr: '' },
       ],
     });
 
@@ -210,11 +257,12 @@ describe('benchmark killer path helpers', () => {
 
     expect(out).toContain('chrome-cdp-ex benchmark: killer-path');
     expect(out).toContain('Success: yes');
-    expect(out).toContain('Command calls: 9');
+    expect(out).toContain('Command calls: 12');
     expect(out).toContain('Estimated output tokens:');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 8/8 pass');
+    expect(out).toContain('Gate checks: 9/9 pass');
     expect(out).toContain('Differentiator success rate: 100%');
+    expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('CSS trace: yes');
     expect(out).toContain('Frame refs: yes');
     expect(out).toContain('HMR/SPA diff: yes');
@@ -223,5 +271,16 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Verification calls saved: 1');
     expect(out).toContain('doctor');
     expect(out).toContain('report');
+  });
+
+  it('parses JSON mode and stability window options', () => {
+    expect(parseBenchmarkArgs(['--json', '--stability-ms', '1200000'])).toEqual({
+      json: true,
+      stabilityMs: 1200000,
+    });
+    expect(parseBenchmarkArgs([])).toEqual({
+      json: false,
+      stabilityMs: 1000,
+    });
   });
 });
