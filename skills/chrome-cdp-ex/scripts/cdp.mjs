@@ -8785,7 +8785,7 @@ async function runDaemon(targetId) {
   // Action feedback: wait for DOM to settle, then return structured evidence.
   const BATCH_BLOCKED = new Set(['batch', 'stop', 'repeat', 'flow']);
   // Commands that mutate shared state (refMap, lastPerceiveStore) — unsafe for parallel execution
-  const BATCH_NO_PARALLEL = new Set(['click', 'clickxy', 'jsclick', 'select', 'press', 'scroll', 'nav', 'navigate', 'back', 'forward', 'reload', 'viewport', 'fill', 'type', 'inject', 'mock', 'network-mock', 'clock', 'time-travel', 'perceive', 'snap', 'snapshot', 'dismiss-modal', 'dismissmodal']);
+  const BATCH_NO_PARALLEL = new Set(['click', 'clickxy', 'jsclick', 'select', 'press', 'scroll', 'nav', 'navigate', 'back', 'forward', 'reload', 'viewport', 'fill', 'type', 'upload', 'inject', 'mock', 'network-mock', 'clock', 'time-travel', 'perceive', 'snap', 'snapshot', 'dismiss-modal', 'dismissmodal']);
   async function observeActionDiffForTarget(target = {}, baselineOutput = null) {
     const targetFrameRef = frameRefFromActionTarget(target);
     await waitForSettle(cdp, sessionId);

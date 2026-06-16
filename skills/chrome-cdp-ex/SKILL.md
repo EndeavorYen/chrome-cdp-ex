@@ -345,7 +345,7 @@ scripts/cdp.mjs batch <target> --compact 'click @7 | console --errors'   # one l
 Executes multiple commands in a single IPC call. Default output is a JSON array of results.
 
 - **Pipe syntax**: commands separated by `|`, args separated by spaces. Auto-detected when input doesn't start with `[`.
-- **`--parallel`**: runs all commands concurrently via `Promise.all`. Safe for: `elshot`, `eval`, `html`, `text`, `table`, `styles`, `cookies`. Rejected for commands that auto-perceive (`click`, `fill`, `scroll`, `nav`, `perceive`, etc.) since they mutate shared state.
+- **`--parallel`**: runs all commands concurrently via `Promise.all`. Safe for: `elshot`, `eval`, `html`, `text`, `table`, `styles`, `cookies`. Rejected for commands that auto-perceive or mutate action/session state (`click`, `fill`, `upload`, `scroll`, `nav`, `perceive`, etc.); use sequential `batch` or `flow` for those.
 - **`--plain`**: human-readable per-step output. Each step gets a `[i/N] cmd args` header followed by indented result text. Use when an agent doesn't need to parse the result programmatically.
 - **`--compact`**: one line per step (`[i] cmd: <first line of result>`). Useful for quick visual scans.
 
@@ -750,9 +750,9 @@ scripts/cdp.mjs record <target> 5000
    batch <target> 'fill @3 user@example.com | fill @5 password123 | click @7'
    ```
 3. The final `click` auto-returns perceive diff showing the result
-4. For parallel fills (independent fields), add `--parallel`:
+4. Keep form fills sequential. They update focus, refs, action evidence, and the last-action baseline:
    ```bash
-   batch <target> --parallel 'fill @3 user@example.com | fill @5 password123'
+   batch <target> 'fill @3 user@example.com | fill @5 password123'
    ```
    Then `click <target> @7` to submit.
 

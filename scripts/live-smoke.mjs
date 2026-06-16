@@ -312,6 +312,10 @@ if (!parsedUploadAction.effects?.domDiff?.includes('upload-json-fixture.txt')) {
 if (parsedUploadAction.recommendation?.source !== 'action-evidence' || !parsedUploadAction.nextSteps?.includes(`cdp report ${target} --format json`)) {
   throw new Error(`upload --format json should include action continuation recommendation:\n${uploadJsonOut}`);
 }
+const parallelUploadOut = step('parallel upload blocked', () => runFailure(['batch', target, '--parallel', `upload #upload-file ${uploadFixturePath} | summary`]));
+assertIncludes(parallelUploadOut, 'batch --parallel:', 'parallel upload blocked');
+assertIncludes(parallelUploadOut, 'upload', 'parallel upload blocked command name');
+assertIncludes(parallelUploadOut, 'mutate shared state', 'parallel upload blocked reason');
 const failedClickJsonOut = step('failed action json evidence', () => run(['click', target, '#missing-action-json-smoke', '--format', 'json']));
 const parsedFailedClickAction = JSON.parse(failedClickJsonOut);
 if (parsedFailedClickAction.schema !== 'chrome-cdp-ex.action.v1' || parsedFailedClickAction.action !== 'click') {
