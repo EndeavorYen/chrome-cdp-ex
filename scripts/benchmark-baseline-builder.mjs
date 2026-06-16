@@ -49,9 +49,36 @@ export function buildComparisonBaselineFile(raw = {}, overrides = {}) {
   };
 }
 
+export function buildMergedComparisonBaselineFile(rawFiles = [], overrides = {}) {
+  if (!Array.isArray(rawFiles) || rawFiles.length === 0) {
+    throw new Error('raw baseline merge requires at least one input');
+  }
+  if (rawFiles.length === 1) return buildComparisonBaselineFile(rawFiles[0], overrides);
+  for (const raw of rawFiles) {
+    if (raw.schema !== 'chrome-cdp-ex.raw-baseline-results.v1') {
+      throw new Error('raw baseline input must use schema chrome-cdp-ex.raw-baseline-results.v1');
+    }
+    if (!Array.isArray(raw.runs)) {
+      throw new Error('raw baseline input must include a runs array');
+    }
+  }
+  const sources = rawFiles.map(raw => raw.source).filter(Boolean);
+  return {
+    schema: 'chrome-cdp-ex.comparison-baselines.v1',
+    source: overrides.source || 'merged-measured-baselines',
+    note: overrides.note || `Merged measured baselines from ${sources.length ? sources.join(' and ') : `${rawFiles.length} raw files`}.`,
+    baselines: rawFiles.flatMap((raw, rawIndex) => raw.runs.map((run, runIndex) => ({
+      id: run.id || `baseline-${rawIndex + 1}-${runIndex + 1}`,
+      label: run.label || run.id || `Baseline ${rawIndex + 1}.${runIndex + 1}`,
+      metrics: normalizeRunMetrics(run),
+    }))),
+  };
+}
+
 export function parseBaselineBuilderArgs(argv = []) {
   const opts = {
     inputPath: null,
+    inputPaths: [],
     outPath: null,
     source: null,
     note: null,
@@ -64,8 +91,9 @@ export function parseBaselineBuilderArgs(argv = []) {
       opts.source = argv[++i] || null;
     } else if (arg === '--note') {
       opts.note = argv[++i] || null;
-    } else if (!opts.inputPath) {
-      opts.inputPath = arg;
+    } else {
+      opts.inputPaths.push(arg);
+      if (!opts.inputPath) opts.inputPath = arg;
     }
   }
   return opts;
@@ -73,11 +101,11 @@ export function parseBaselineBuilderArgs(argv = []) {
 
 export function runBaselineBuilder(argv = process.argv.slice(2)) {
   const opts = parseBaselineBuilderArgs(argv);
-  if (!opts.inputPath) {
-    throw new Error('usage: benchmark-baseline-builder <raw-results.json> [--out baselines.json] [--source name] [--note text]');
+  if (!opts.inputPaths.length) {
+    throw new Error('usage: benchmark-baseline-builder <raw-results.json> [more-raw-results.json ...] [--out baselines.json] [--source name] [--note text]');
   }
-  const raw = JSON.parse(readFileSync(opts.inputPath, 'utf8'));
-  const output = buildComparisonBaselineFile(raw, opts);
+  const rawFiles = opts.inputPaths.map(inputPath => JSON.parse(readFileSync(inputPath, 'utf8')));
+  const output = buildMergedComparisonBaselineFile(rawFiles, opts);
   const text = `${JSON.stringify(output, null, 2)}\n`;
   if (opts.outPath) {
     writeFileSync(opts.outPath, text);

@@ -106,6 +106,7 @@ describe('benchmark baseline builder', () => {
   it('parses CLI args for input, output, source, and note', () => {
     expect(parseBaselineBuilderArgs([
       'raw.json',
+      'raw-2.json',
       '--out',
       'baselines.json',
       '--source',
@@ -114,6 +115,7 @@ describe('benchmark baseline builder', () => {
       'CI run',
     ])).toEqual({
       inputPath: 'raw.json',
+      inputPaths: ['raw.json', 'raw-2.json'],
       outPath: 'baselines.json',
       source: 'ci-measured',
       note: 'CI run',
@@ -142,6 +144,79 @@ describe('benchmark baseline builder', () => {
             metrics: {
               commandCalls: 24,
               usefulObservationTokens: 4200,
+            },
+          },
+        ],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('merges multiple raw baseline files from CLI-style args', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'chrome-cdp-ex-baseline-builder-'));
+    const playwrightPath = resolve(dir, 'playwright-raw.json');
+    const genericPath = resolve(dir, 'generic-cdp-raw.json');
+    const outPath = resolve(dir, 'baselines.json');
+    try {
+      writeFileSync(playwrightPath, JSON.stringify({
+        schema: 'chrome-cdp-ex.raw-baseline-results.v1',
+        source: 'measured-playwright-baseline',
+        runs: [
+          {
+            id: 'playwright',
+            commandCalls: 12,
+            usefulObservationTokens: 3000,
+            autoEvidenceActions: 0,
+            hasReportTimeline: false,
+            staleRefRecoveryRate: 0,
+            sessionStabilitySample: false,
+          },
+        ],
+      }));
+      writeFileSync(genericPath, JSON.stringify({
+        schema: 'chrome-cdp-ex.raw-baseline-results.v1',
+        source: 'measured-generic-cdp-baseline',
+        runs: [
+          {
+            id: 'generic-cdp',
+            commandCalls: 8,
+            usefulObservationTokens: 2000,
+            autoEvidenceActions: 0,
+            hasReportTimeline: false,
+            staleRefRecoveryRate: 0,
+            sessionStabilitySample: false,
+          },
+        ],
+      }));
+
+      expect(runBaselineBuilder([
+        playwrightPath,
+        genericPath,
+        '--out',
+        outPath,
+      ])).toBe(outPath);
+      expect(JSON.parse(readFileSync(outPath, 'utf8'))).toMatchObject({
+        schema: 'chrome-cdp-ex.comparison-baselines.v1',
+        source: 'merged-measured-baselines',
+        note: 'Merged measured baselines from measured-playwright-baseline and measured-generic-cdp-baseline.',
+        baselines: [
+          {
+            id: 'playwright',
+            metrics: {
+              commandCalls: 12,
+              usefulObservationTokens: 3000,
+              autoEvidenceActions: 0,
+              hasReportTimeline: false,
+            },
+          },
+          {
+            id: 'generic-cdp',
+            metrics: {
+              commandCalls: 8,
+              usefulObservationTokens: 2000,
+              staleRefRecoveryRate: 0,
+              sessionStabilitySample: false,
             },
           },
         ],
