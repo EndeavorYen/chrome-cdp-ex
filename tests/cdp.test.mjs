@@ -4446,7 +4446,7 @@ describe('open onboarding guidance', () => {
 });
 
 describe('status --runtime and buffer reset', () => {
-  it('uses a short page info timeout so status stays responsive after reload churn', async () => {
+  it('uses a sub-second page info timeout so status stays responsive after reload churn', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': () => ({ result: { value: JSON.stringify({ title: 'T', url: 'https://example.test/' }) } }),
     });
@@ -4454,7 +4454,7 @@ describe('status --runtime and buffer reset', () => {
     await statusStr(cdp, 'sid1', new RingBuffer(10), new RingBuffer(10), new RingBuffer(10), { console: 0, exception: 0 });
 
     const evaluateCall = cdp.calls.find(call => call.method === 'Runtime.evaluate');
-    expect(evaluateCall.timeout).toBeLessThanOrEqual(2000);
+    expect(evaluateCall.timeout).toBeLessThanOrEqual(500);
   });
 
   it('includes Performance.getMetrics counters only when requested', async () => {
