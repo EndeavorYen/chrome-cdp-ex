@@ -684,6 +684,15 @@ describe('benchmark killer path helpers', () => {
     expect(plan.length).toBeLessThanOrEqual(20);
   });
 
+  it('can build the post-open benchmark plan without repeating doctor/list', () => {
+    const plan = buildKillerPathBenchmarkPlan('AABBCCDD', { stabilityMs: 1000, entrySteps: 'none' });
+
+    expect(plan[0].args).toEqual(['perceive', 'AABBCCDD', '-C', '-d', '8', '--keep-refs', '--last', '20', '--format', 'json']);
+    expect(plan.map(step => step.args[0])).not.toContain('doctor');
+    expect(plan.map(step => step.args[0])).not.toContain('list');
+    expect(plan.length).toBeLessThanOrEqual(18);
+  });
+
   it('loads measured comparison baselines from a versioned file', () => {
     const dir = mkdtempSync(resolve(tmpdir(), 'chrome-cdp-ex-baselines-'));
     const file = resolve(dir, 'baselines.json');

@@ -29,6 +29,8 @@ const DAEMON_CONNECT_RETRIES = 20;
 const DAEMON_CONNECT_DELAY = 300;
 const DAEMON_ALLOW_RETRIES = 200;  // For open --attach: 200 * 300ms = 60s
 const DAEMON_ALLOW_DELAY = 300;
+const DEFAULT_OPEN_ATTACH_TIMEOUT_MS = DAEMON_ALLOW_RETRIES * DAEMON_ALLOW_DELAY;
+const DEFAULT_OPEN_READY_TIMEOUT_MS = 5000;
 const MIN_TARGET_PREFIX_LEN = 8;
 const MAX_ACTION_LOG_ENTRIES = 100;
 const MAX_ENVIRONMENT_LOG_ENTRIES = 100;
@@ -443,11 +445,21 @@ class CDP {
   send(method, params = {}, sessionId, timeoutMs = TIMEOUT) {
     const id = ++this.#id;
     return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      let timer;
+      this.#pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
       const msg = { id, method, params };
       if (sessionId) msg.sessionId = sessionId;
       this.#ws.send(JSON.stringify(msg));
-      setTimeout(() => {
+      timer = setTimeout(() => {
         if (this.#pending.has(id)) {
           this.#pending.delete(id);
           reject(new Error(`Timeout: ${method}`));
@@ -9457,11 +9469,28 @@ async function runDaemon(targetId) {
 // CLI ↔ daemon communication
 // ---------------------------------------------------------------------------
 
-function connectToSocket(sp) {
+function connectToSocket(sp, { timeoutMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
+    let settled = false;
     const conn = net.connect(sp);
-    conn.on('connect', () => resolve(conn));
-    conn.on('error', reject);
+    const settle = (fn) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      conn.off('connect', onConnect);
+      conn.off('error', onError);
+      fn();
+    };
+    const onConnect = () => settle(() => resolve(conn));
+    const onError = (error) => settle(() => reject(error));
+    const timer = setTimeout(() => {
+      settle(() => {
+        conn.destroy();
+        reject(new Error(`Timed out connecting to daemon socket: ${sp}`));
+      });
+    }, timeoutMs);
+    conn.on('connect', onConnect);
+    conn.on('error', onError);
   });
 }
 
@@ -9491,6 +9520,9 @@ async function getOrStartTabDaemon(targetId) {
 const IPC_TIMEOUT = 120000; // 2 minutes — generous for slow commands like scanshot
 
 function ipcTimeoutForRequest(req) {
+  if (Number.isFinite(req?.timeoutMs) && req.timeoutMs > 0) {
+    return Math.min(Math.max(100, Math.trunc(req.timeoutMs)), IPC_TIMEOUT);
+  }
   if (req?.cmd !== 'wait') return IPC_TIMEOUT;
   try {
     const waitMs = parseDelayMs(req.args?.[0], { name: 'wait duration', max: 60 * 60 * 1000 });
@@ -9702,8 +9734,12 @@ Usage: cdp <command> [args]
                                     Starts with Wizard status + current command; JSON includes wizard/checks/recommendation/nextSteps.
                                     No target required. Exits 1 if any check FAILs.
   keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)
-  open  [url] [--format json]       Open a new tab (default: about:blank)
+  open  [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--format json]
+                                    Open a new tab (default: about:blank)
                                     JSON includes schema/target/approval/recommendation/nextSteps for agents.
+                                    --attach-timeout-ms 0 returns the target handoff without waiting.
+                                    --ready-timeout-ms bounds document.readyState waiting after attach.
+                                    --ready-selector also waits for a CSS selector before returning.
                                     Note: each new tab triggers a fresh "Allow debugging?" prompt
   spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH]
                                     Launch an isolated debug profile (browser: edge|chrome|brave; default edge, port 9222).
@@ -10107,6 +10143,192 @@ function targetPrefixForDisplay(targetId) {
   return String(targetId || '').slice(0, 8) || '<target>';
 }
 
+function parseNonNegativeInteger(value, label) {
+  const raw = String(value ?? '').trim();
+  if (!/^\d+$/.test(raw)) throw new Error(`${label} must be a non-negative integer`);
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error(`${label} must be a non-negative integer`);
+  return parsed;
+}
+
+function parseOpenArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const positional = [];
+  let attachTimeoutMs = DEFAULT_OPEN_ATTACH_TIMEOUT_MS;
+  let readyTimeoutMs = null;
+  let readySelector = null;
+  for (let i = 0; i < fopts.args.length; i++) {
+    const token = fopts.args[i];
+    if (token === '--attach-timeout-ms') {
+      attachTimeoutMs = parseNonNegativeInteger(fopts.args[++i], 'open: --attach-timeout-ms');
+    } else if (String(token).startsWith('--attach-timeout-ms=')) {
+      attachTimeoutMs = parseNonNegativeInteger(String(token).slice('--attach-timeout-ms='.length), 'open: --attach-timeout-ms');
+    } else if (token === '--ready-timeout-ms') {
+      readyTimeoutMs = parseNonNegativeInteger(fopts.args[++i], 'open: --ready-timeout-ms');
+    } else if (String(token).startsWith('--ready-timeout-ms=')) {
+      readyTimeoutMs = parseNonNegativeInteger(String(token).slice('--ready-timeout-ms='.length), 'open: --ready-timeout-ms');
+    } else if (token === '--ready-selector') {
+      readySelector = fopts.args[++i];
+      if (!readySelector) throw new Error('open: --ready-selector requires a CSS selector');
+    } else if (String(token).startsWith('--ready-selector=')) {
+      readySelector = String(token).slice('--ready-selector='.length);
+      if (!readySelector) throw new Error('open: --ready-selector requires a CSS selector');
+    } else if (String(token).startsWith('-')) {
+      throw new Error(`open: unknown argument ${token}`);
+    } else {
+      positional.push(token);
+    }
+  }
+  if (positional.length > 1) throw new Error(`open: unknown argument ${positional[1]}`);
+  return {
+    url: positional[0] || 'about:blank',
+    format: fopts.format,
+    attachTimeoutMs,
+    readyTimeoutMs: readyTimeoutMs ?? (attachTimeoutMs > 0 ? DEFAULT_OPEN_READY_TIMEOUT_MS : 0),
+    readySelector,
+  };
+}
+
+async function waitForOpenReady(sp, { timeoutMs = DEFAULT_OPEN_READY_TIMEOUT_MS, url = '', selector = null } = {}) {
+  const timeout = Math.min(Math.max(timeoutMs, 0), 300000);
+  if (timeout <= 0) {
+    return { attempted: false, ok: false, reason: 'disabled', href: null, readyState: null, selector, selectorFound: false, timeoutMs: timeout };
+  }
+  const deadline = Date.now() + timeout;
+  let lastState = null;
+  while (true) {
+    let conn = null;
+    try {
+      conn = await connectToSocket(sp, { timeoutMs: Math.min(1000, Math.max(1, deadline - Date.now())) });
+      const probeTimeoutMs = Math.min(1000, Math.max(100, deadline - Date.now()));
+      const resp = await sendCommand(conn, {
+        cmd: 'eval',
+        args: [`JSON.stringify({ href: location.href, readyState: document.readyState, selectorFound: ${selector ? `Boolean(document.querySelector(${JSON.stringify(selector)}))` : 'true'} })`],
+        timeoutMs: probeTimeoutMs,
+      });
+      if (resp.ok) {
+        try {
+          lastState = JSON.parse(resp.result || '{}');
+        } catch {
+          lastState = { href: null, readyState: String(resp.result || '').trim() || null };
+        }
+      }
+      const readyState = lastState?.readyState || null;
+      const href = lastState?.href || null;
+      const selectorReady = lastState?.selectorFound === true;
+      const urlReady = !url || url === 'about:blank' || href === url;
+      if (resp.ok && urlReady && selectorReady && /^(interactive|complete)$/.test(readyState || '')) {
+        return { attempted: true, ok: true, href, readyState, selector, selectorFound: true, timeoutMs: timeout };
+      }
+    } catch (e) {
+      lastState = { error: e.message || String(e) };
+    } finally {
+      try { conn?.end(); } catch {}
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await sleep(Math.min(100, remainingMs));
+  }
+  return { attempted: true, ok: false, href: lastState?.href || null, readyState: lastState?.readyState || null, selector, selectorFound: lastState?.selectorFound === true, error: lastState?.error || null, timeoutMs: timeout };
+}
+
+function openNavigationScript(url) {
+  return `(function() {
+    location.assign(${JSON.stringify(url)});
+    return JSON.stringify({ method: 'location.assign', target: ${JSON.stringify(url)} });
+  })()`;
+}
+
+async function waitForOpenTargetUrl(targetId, url, timeoutMs = 1000) {
+  if (!url || url === 'about:blank') return { ok: true, href: 'about:blank' };
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  let lastHref = null;
+  let lastError = null;
+  while (Date.now() <= deadline) {
+    const cdp = new CDP();
+    try {
+      await cdp.connect(await getWsUrl());
+      const { targetInfos } = await cdp.send('Target.getTargets', {}, undefined, Math.min(1000, Math.max(100, deadline - Date.now() + 100)));
+      const target = (targetInfos || []).find(t => t.targetId === targetId);
+      lastHref = target?.url || null;
+      if (lastHref === url) return { ok: true, href: lastHref };
+    } catch (e) {
+      lastError = e.message || String(e);
+    } finally {
+      try { cdp.close(); } catch {}
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await sleep(Math.min(100, remainingMs));
+  }
+  return { ok: false, href: lastHref, error: lastError };
+}
+
+async function navigateOpenTarget(targetId, sp, url) {
+  if (!url || url === 'about:blank') return { attempted: false, ok: true, reason: 'about:blank' };
+  const attempts = [];
+  const initialUrl = await waitForOpenTargetUrl(targetId, url, 1500);
+  if (initialUrl.ok) {
+    return { attempted: true, ok: true, method: 'Target.createTarget', href: initialUrl.href, error: null };
+  }
+  const cdp = new CDP();
+  try {
+    await cdp.connect(await getWsUrl());
+    await cdp.send('Target.activateTarget', { targetId }, undefined, 5000).catch(() => {});
+    const attached = await cdp.send('Target.attachToTarget', { targetId, flatten: true }, undefined, 5000);
+    const sid = attached.sessionId;
+    await cdp.send('Page.enable', {}, sid, 2000).catch(() => {});
+    try {
+      const nav = await cdp.send('Page.navigate', { url }, sid, 5000);
+      if (nav?.errorText) throw new Error(nav.errorText);
+      return { attempted: true, ok: true, method: 'Page.navigate', error: null };
+    } catch (e) {
+      attempts.push({ method: 'Page.navigate', error: e.message || String(e) });
+    }
+    try {
+      await cdp.send('Runtime.evaluate', {
+        expression: openNavigationScript(url),
+        returnByValue: false,
+        awaitPromise: false,
+      }, sid, 5000);
+      return { attempted: true, ok: true, method: 'Runtime.evaluate location.assign', error: null, attempts };
+    } catch (e) {
+      attempts.push({ method: 'Runtime.evaluate location.assign', error: e.message || String(e) });
+    }
+  } catch (e) {
+    attempts.push({ method: 'direct-cdp', error: e.message || String(e) });
+  } finally {
+    try { cdp.close(); } catch {}
+  }
+
+  const afterDirectUrl = await waitForOpenTargetUrl(targetId, url, 1500);
+  if (afterDirectUrl.ok) {
+    return { attempted: true, ok: true, method: 'Target.url-observed', href: afterDirectUrl.href, attempts, error: null };
+  }
+
+  let conn = null;
+  try {
+    conn = await connectToSocket(sp);
+    const resp = await sendCommand(conn, { cmd: 'eval', args: [openNavigationScript(url)] });
+    return {
+      attempted: true,
+      ok: resp.ok === true,
+      method: 'daemon eval location.assign',
+      attempts,
+      error: resp.ok ? null : (resp.error || 'navigation failed'),
+    };
+  } catch (e) {
+    attempts.push({ method: 'daemon eval location.assign', error: e.message || String(e) });
+    const afterDaemonUrl = await waitForOpenTargetUrl(targetId, url, 1500);
+    if (afterDaemonUrl.ok) {
+      return { attempted: true, ok: true, method: 'Target.url-observed', href: afterDaemonUrl.href, attempts, error: null };
+    }
+    return { attempted: true, ok: false, method: 'daemon eval location.assign', attempts, error: e.message || String(e) };
+  } finally {
+    try { conn?.end(); } catch {}
+  }
+}
+
 function formatOpenReadyMessage(targetId, url = '') {
   const target = targetPrefixForDisplay(targetId);
   const lines = [
@@ -10119,7 +10341,7 @@ function formatOpenReadyMessage(targetId, url = '') {
   return lines.join('\n');
 }
 
-function buildOpenModel({ targetId, url = '', attached = false, autoPerceive = null } = {}) {
+function buildOpenModel({ targetId, url = '', attached = false, autoPerceive = null, ready = null, navigation = null } = {}) {
   const target = targetPrefixForDisplay(targetId);
   const approved = attached === true;
   const defaultAutoPerceive = approved
@@ -10139,6 +10361,8 @@ function buildOpenModel({ targetId, url = '', attached = false, autoPerceive = n
     url,
     attached: approved,
     approval: approved ? 'approved' : 'pending',
+    navigation,
+    ready,
     autoPerceive: autoPerceiveModel,
     recommendation,
     nextSteps,
@@ -10204,16 +10428,12 @@ async function main() {
 
   // Open new tab
   if (cmd === 'open') {
-    const fopts = parseFormatArgs(args, ['text', 'json']);
-    if (fopts.args.length > 1) {
-      console.error(formatCliError(`open: unknown argument ${fopts.args[1]}`, { cmd, format: fopts.format }));
-      process.exit(1);
-    }
-    const url = fopts.args[0] || 'about:blank';
+    const opts = parseOpenArgs(args);
+    const url = opts.url;
     if (url !== 'about:blank') validateUrl(url);
     const cdp = new CDP();
     await cdp.connect(await getWsUrl());
-    const { targetId } = await cdp.send('Target.createTarget', { url });
+    const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
     // Refresh cache; new tab may not appear in getTargets immediately, so add it manually
     const pages = await getPages(cdp);
     if (!pages.some(p => p.targetId === targetId)) {
@@ -10221,13 +10441,13 @@ async function main() {
     }
     cdp.close();
     writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
-    if (fopts.format === 'text') {
+    if (opts.format === 'text') {
       console.log(`Opened new tab: ${targetId.slice(0, 8)}  ${url}`);
     }
 
     // Auto-attach: start daemon and wait for user to click "Allow debugging?"
-    if (fopts.format === 'text') {
-      console.log('Waiting for "Allow debugging?" approval in Chrome... (up to 60s)');
+    if (opts.format === 'text') {
+      console.log(`Waiting for "Allow debugging?" approval in Chrome... (up to ${formatDuration(opts.attachTimeoutMs)})`);
     }
     const sp = sockPath(targetId);
     if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
@@ -10237,20 +10457,30 @@ async function main() {
     });
     child.unref();
     let attached = false;
-    for (let i = 0; i < DAEMON_ALLOW_RETRIES; i++) {
-      await sleep(DAEMON_ALLOW_DELAY);
+    const attachDeadline = Date.now() + opts.attachTimeoutMs;
+    while (Date.now() < attachDeadline) {
+      const remainingMs = attachDeadline - Date.now();
       try {
-        const conn = await connectToSocket(sp);
+        const conn = await connectToSocket(sp, { timeoutMs: Math.min(DAEMON_ALLOW_DELAY, Math.max(1, remainingMs)) });
         conn.end();
         attached = true;
         break;
       } catch {}
+      await sleep(Math.min(DAEMON_ALLOW_DELAY, remainingMs));
     }
-    if (fopts.format === 'json') {
+    const navigation = attached
+      ? await navigateOpenTarget(targetId, sp, url)
+      : { attempted: false, ok: false, reason: 'not-attached' };
+    const ready = attached
+      ? await waitForOpenReady(sp, { timeoutMs: opts.readyTimeoutMs, url, selector: opts.readySelector })
+      : { attempted: false, ok: false, reason: 'not-attached', timeoutMs: opts.readyTimeoutMs };
+    if (opts.format === 'json') {
       console.log(formatJson(buildOpenModel({
         targetId,
         url,
         attached,
+        navigation,
+        ready,
         autoPerceive: attached
           ? { attempted: false, ok: false, reason: 'json-output' }
           : { attempted: false, ok: false, reason: 'not-attached' },
@@ -10522,7 +10752,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
-  formatCliError, buildCliErrorModel, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  formatCliError, buildCliErrorModel, parseOpenArgs, openNavigationScript, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   helpStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   doctorWizardModel, doctorWizardSummary,

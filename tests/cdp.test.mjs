@@ -4342,6 +4342,34 @@ describe('formatCliError', () => {
 });
 
 describe('open onboarding guidance', () => {
+  it('parses bounded attach waiting for JSON/open automation', () => {
+    expect(T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', '0', '--format', 'json'])).toEqual({
+      url: 'https://example.com',
+      format: 'json',
+      attachTimeoutMs: 0,
+      readyTimeoutMs: 0,
+      readySelector: null,
+    });
+    expect(T.parseOpenArgs(['--attach-timeout-ms=1200', '--ready-timeout-ms', '2500', '--ready-selector', '#app'])).toEqual({
+      url: 'about:blank',
+      format: 'text',
+      attachTimeoutMs: 1200,
+      readyTimeoutMs: 2500,
+      readySelector: '#app',
+    });
+    expect(() => T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', 'nope'])).toThrow('open: --attach-timeout-ms must be a non-negative integer');
+    expect(() => T.parseOpenArgs(['https://example.com', '--ready-timeout-ms', 'nope'])).toThrow('open: --ready-timeout-ms must be a non-negative integer');
+    expect(() => T.parseOpenArgs(['https://example.com', '--ready-selector'])).toThrow('open: --ready-selector requires a CSS selector');
+  });
+
+  it('builds page-side navigation for open onboarding', () => {
+    const script = T.openNavigationScript('https://example.com/path?x="quoted"');
+
+    expect(script).toContain('location.assign("https://example.com/path?x=\\"quoted\\"")');
+    expect(script).toContain('return JSON.stringify');
+    expect(script).toContain('location.assign');
+  });
+
   it('formats a ready continuation after open auto-perceives the page', () => {
     const out = formatOpenReadyMessage('AABBCCDDEEFF', 'https://example.com');
 

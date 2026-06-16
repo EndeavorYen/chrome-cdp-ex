@@ -686,32 +686,63 @@ function browserCandidates() {
 
 function runStep({ args, env, steps, name = args[0], timeout = 20000, expectedFailure = false }) {
   const startedAt = Date.now();
-  const res = spawnSync(process.execPath, [cdp, ...args], {
-    cwd: repoRoot,
-    env,
-    encoding: 'utf8',
-    timeout,
+  return new Promise((resolveStep) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    let spawnError = null;
+    const child = spawn(process.execPath, [cdp, ...args], {
+      cwd: repoRoot,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, timeout);
+    const finish = (status, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const endedAt = Date.now();
+      const step = {
+        name,
+        command: args,
+        startedAt,
+        endedAt,
+        status: status ?? (signal ? 1 : 0),
+        signal: signal || null,
+        error: spawnError?.message || (timedOut ? `spawn ${process.execPath} ETIMEDOUT` : null),
+        expectedFailure,
+        stdout,
+        stderr,
+      };
+      steps.push(step);
+      resolveStep(step);
+    };
+    child.stdout?.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr?.on('data', chunk => { stderr += chunk.toString(); });
+    child.on('error', (error) => {
+      spawnError = error;
+      finish(1, null);
+    });
+    child.on('close', finish);
   });
-  const endedAt = Date.now();
-  const step = {
-    name,
-    command: args,
-    startedAt,
-    endedAt,
-    status: res.status ?? 1,
-    expectedFailure,
-    stdout: res.stdout || '',
-    stderr: res.stderr || '',
-  };
-  steps.push(step);
-  return step;
 }
 
-export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000 } = {}) {
+export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entrySteps = 'doctor-list' } = {}) {
   const hmrMutationScript = '(() => { if (typeof appendLog === "function") { appendLog("hmr panel ready"); return "hmr-added"; } const log = document.querySelector("#combat-log"); const el = document.createElement("p"); el.id = "hmr-panel"; el.textContent = "hmr panel ready"; log?.appendChild(el); if (log) log.scrollTop = log.scrollHeight; return "hmr-added"; })()';
-  const plan = [
-    { args: ['doctor', '--format', 'json'] },
-    { args: ['list', '--format', 'json'] },
+  const plan = [];
+  if (entrySteps === 'doctor-list') {
+    plan.push(
+      { args: ['doctor', '--format', 'json'] },
+      { args: ['list', '--format', 'json'] },
+    );
+  } else if (entrySteps !== 'none') {
+    throw new Error(`Unknown benchmark entrySteps: ${entrySteps}`);
+  }
+  plan.push(
     { args: ['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20', '--format', 'json'] },
     { args: ['overlay', target] },
     { args: ['frame', target] },
@@ -732,7 +763,7 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000 } = {}
       expectedFailure: true,
       expectedPattern: /Action failure: stale-ref|Unknown ref|Refs were (cleared|invalidated)|Next:\s*cdp perceive/i,
     },
-  ];
+  );
   if (stabilityMs > 0) {
     plan.push(
       {
@@ -749,7 +780,12 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000 } = {}
 
 function assertStep(step) {
   if (step.status !== 0) {
-    throw new Error(`cdp ${step.command.join(' ')} failed\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
+    const diagnostics = [
+      `status: ${step.status}`,
+      step.signal ? `signal: ${step.signal}` : null,
+      step.error ? `error: ${step.error}` : null,
+    ].filter(Boolean).join('\n');
+    throw new Error(`cdp ${step.command.join(' ')} failed\n${diagnostics}\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
   }
   return step.stdout.trim();
 }
@@ -826,11 +862,12 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
       `--user-data-dir=${profileDir}`,
       '--no-first-run',
       '--no-default-browser-check',
-      url,
-    ], { stdio: 'ignore' });
+      'about:blank',
+    ], { detached: true, stdio: 'ignore' });
     browser.unref();
 
     const env = { ...process.env, CDP_PORT: String(port) };
+    let reachable = false;
     for (let i = 0; i < 30; i++) {
       const res = spawnSync(process.execPath, [cdp, 'list'], {
         cwd: repoRoot,
@@ -838,16 +875,34 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
         encoding: 'utf8',
         timeout: 5000,
       });
-      if (res.status === 0 && res.stdout.includes('chrome-cdp-ex long-session smoke')) {
-        target = res.stdout.trim().split(/\s+/)[0];
+      if (res.status === 0) {
+        reachable = true;
         break;
       }
       await new Promise(r => setTimeout(r, 300));
     }
-    if (!target) throw new Error('Browser did not become reachable via cdp list');
+    if (!reachable) throw new Error('Browser did not become reachable via cdp list');
 
-    for (const planned of buildKillerPathBenchmarkPlan(target, { stabilityMs })) {
-      const step = runStep({ ...planned, env, steps });
+    const entrySteps = [
+      { args: ['doctor', '--format', 'json'] },
+      { args: ['open', url, '--attach-timeout-ms', '5000', '--ready-timeout-ms', '5000', '--ready-selector', '#custom-clickable', '--format', 'json'], timeout: 40000 },
+    ];
+    for (const planned of entrySteps) {
+      const step = await runStep({ ...planned, env, steps });
+      assertStep(step);
+      if (planned.args[0] === 'open') {
+        const model = parseJsonOutput(outputText(step));
+        if (!model?.targetPrefix) throw new Error(`open did not return a targetPrefix\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
+        if (model.attached !== true) throw new Error(`open did not attach the benchmark tab within 5000ms\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
+        if (model.navigation?.ok !== true) throw new Error(`open did not navigate the benchmark tab\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
+        if (model.ready?.ok !== true) throw new Error(`open did not reach the benchmark ready selector within 5000ms\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
+        target = model.targetPrefix;
+      }
+    }
+    if (!target) throw new Error('open did not produce a benchmark target');
+
+    for (const planned of buildKillerPathBenchmarkPlan(target, { stabilityMs, entrySteps: 'none' })) {
+      const step = await runStep({ ...planned, env, steps });
       if (planned.expectedFailure) {
         assertExpectedFailure(step, planned.expectedPattern);
       } else {

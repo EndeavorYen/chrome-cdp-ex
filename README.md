@@ -209,7 +209,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
 node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>            # add --format json for agent handoff
 ```
 
-`open` prints the new target prefix plus `Next:`, `Then:`, and `Report:` continuation hints. If Chrome approval times out, it keeps the tab and prints the exact `perceive <target> -C -d 8` retry command. Use `open --format json` when an agent or script needs the versioned `chrome-cdp-ex.open.v1` handoff payload with target prefix, approval state, auto-perceive status, a golden-path `recommendation`, and executable `nextSteps`; when auto-perceive succeeds, `nextSteps` starts at the action step instead of repeating `perceive`.
+`open` prints the new target prefix plus `Next:`, `Then:`, and `Report:` continuation hints. If Chrome approval times out, it keeps the tab and prints the exact `perceive <target> -C -d 8` retry command. Use `open --format json` when an agent or script needs the versioned `chrome-cdp-ex.open.v1` handoff payload with target prefix, approval state, navigation status, ready-state check, auto-perceive status, a golden-path `recommendation`, and executable `nextSteps`; add `--attach-timeout-ms 0` when automation should create the tab and return the handoff immediately instead of waiting up to 60s for a daemon. Use `--ready-timeout-ms <ms>` to bound the post-attach `document.readyState` wait, and `--ready-selector <sel>` when a script should wait for an app-shell selector before continuing. When auto-perceive succeeds, `nextSteps` starts at the action step instead of repeating `perceive`.
 Use `list --format json` when an agent or script needs target IDs, stable prefixes, blank-tab labels, a golden-path `recommendation`, and executable `nextSteps` without parsing the human table. Use `perceive --format json` when the agent needs structured refs plus executable `nextSteps` for `click/fill -> perceive --since-action -> report` without parsing the text tree.
 
 If a CLI command fails, read the printed `Recovery:` block first: `Kind` names the failure class, `Strategy` says how to recover, `Run` is the primary command, and `Then` appears when a follow-up is useful. The legacy `Next:` line is still printed as the shortest copy-pasteable command. Add `--format json` when a script needs the versioned `chrome-cdp-ex.cli-error.v1` handoff with `recovery` and `nextSteps` instead of human text. Common setup, target, daemon, CDP, and `EMFILE` / "Too many open files" errors are formatted this way instead of dumping a stack trace; fd-limit recovery includes the shell `ulimit -n 4096` command and, on macOS, the `sudo launchctl limit maxfiles 65536 200000` login-session command.
@@ -647,17 +647,17 @@ Local run on 2026-06-16, measured with the same smoke page and measured local co
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 9.018s |
-| First useful observation | 1.464s |
-| Golden path complete | 3.096s |
-| Useful observation tokens | 2,759 |
+| Total time | 6.986s |
+| First useful observation | 2.770s |
+| Golden path complete | 4.388s |
+| Useful observation tokens | 2,680 |
 | Action evidence coverage | 100% (4/4 mutating commands) |
 | Handoff nextSteps coverage | 100% (6/6 JSON handoffs) |
 | Report latestAction coverage | 100% (1/1 JSON reports) |
 | Quality gate | 13/13 pass |
 | Differentiator success rate | 100% |
-| Stale-ref recovery | 53ms, 1/1 recovered |
-| Session stability sample | 1.648s, 3 probes |
+| Stale-ref recovery | 51ms, 1/1 recovered |
+| Session stability sample | 1.120s, 3 probes |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
 
@@ -671,11 +671,11 @@ npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out bas
 npm run benchmark:killer -- --comparison-baselines ./baselines.json
 ```
 
-It launches a disposable debug browser against the local smoke page and measures the Killer Path: `doctor -> list -> perceive -> act -> since-action evidence -> report`. The core handoff probes run with `--format json`, so the JSON report measures command calls, total time, first useful observation time, first action evidence time, golden path completion time, estimated output tokens, useful observation tokens, auto-evidence actions, observed action evidence coverage, observed JSON handoff `nextSteps` coverage, JSON report `latestAction` coverage, verification calls saved, report timeline presence, stale-ref recovery, session stability sample, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time. The default stability sample is 1000ms; use `--stability-ms` for 20-60 minute dogfood windows.
+It launches a disposable debug browser against the local smoke page and measures the Killer Path: `doctor -> open -> perceive -> act -> since-action evidence -> report`. The core handoff probes run with `--format json`, so the JSON report measures command calls, total time, first useful observation time, first action evidence time, golden path completion time, estimated output tokens, useful observation tokens, auto-evidence actions, observed action evidence coverage, observed JSON handoff `nextSteps` coverage, JSON report `latestAction` coverage, verification calls saved, report timeline presence, stale-ref recovery, session stability sample, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time. The default stability sample is 1000ms; use `--stability-ms` for 20-60 minute dogfood windows.
 
 The report also includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires: successful run, at most 20 command calls, first useful observation within 5 seconds, golden path completion within 2 minutes, useful observation tokens at or below 3000, at least one auto-evidence action, 100% evidence coverage for every observed mutating command, 100% top-level `nextSteps` coverage for observed JSON handoffs, a report timeline, 100% `latestAction` coverage for JSON report handoffs with actions, 100% differentiator probe success, 100% stale-ref recovery, and a passing session stability sample. Treat a failed gate as a stop sign before publishing comparison claims.
 
-JSON output also includes `chrome-cdp-ex.benchmark-comparison.v1`: a conservative `heuristic-smoke-baseline` comparison against Playwright test generation/snapshots, manual DevTools inspection, and generic CDP scripting. Treat it as a planning baseline until dedicated competitor harnesses exist; it is meant to show what must be proven, not to overstate external measurements.
+JSON output also includes `chrome-cdp-ex.benchmark-comparison.v1`. Pass `--comparison-baselines` with measured Playwright/generic-CDP baselines before publishing comparison claims; otherwise the built-in heuristic baseline is only a planning aid and must not be presented as external measurement.
 
 To replace the heuristic comparison with measured competitor runs, either pass `--comparison-baselines` a `chrome-cdp-ex.comparison-baselines.v1` file directly, or normalize one or more raw harness result files with `npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json`. Raw result files use `{"schema":"chrome-cdp-ex.raw-baseline-results.v1","source":"measured-local-baseline","runs":[{"id":"playwright","label":"Measured Playwright harness","commandCalls":24,"usefulObservationTokens":4200,"verificationCallsSaved":0,"differentiatorSuccessRate":0.5}]}`.
 
