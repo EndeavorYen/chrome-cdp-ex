@@ -1877,13 +1877,62 @@ describe('Session report', () => {
 
     const out = T.formatExportPlaywright(state);
 
-    expect(out).toContain("import { test } from '@playwright/test';");
+    expect(out).toContain("import { test, expect } from '@playwright/test';");
     expect(out).toContain("test('chrome-cdp-ex exported workflow'");
     expect(out).toContain('await page.goto("https://example.com/dashboard");');
     expect(out).toContain('await page.locator("#cmd").fill("look trainer");');
     expect(out).toContain('await page.locator("#combat").click();');
+    expect(out).toContain('await expect(page.getByText("戰鬥勝利")).toBeVisible();');
     expect(out).toContain('Not exported: click @1');
     expect(out).toContain('needs stable selector');
+  });
+
+  it('exports observed text additions as Playwright assertions', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#save', resolvedBy: 'selector', label: '#save', commandArgs: ['#save'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] Saved successfully', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const out = T.formatExportPlaywright(state);
+
+    expect(out).toContain("import { test, expect } from '@playwright/test';");
+    expect(out).toContain('await page.locator("#save").click();');
+    expect(out).toContain('await expect(page.getByText("Saved successfully")).toBeVisible();');
+    expect(out.indexOf('await page.locator("#save").click();')).toBeLessThan(
+      out.indexOf('await expect(page.getByText("Saved successfully")).toBeVisible();')
+    );
+  });
+
+  it('prefers high-signal observed text when exporting Playwright assertions', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat', commandArgs: ['#combat'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: {
+        domDiff: [
+          '~~~ Text nodes updated (3 added)',
+          '+   [StaticText] 戰鬥開始',
+          '+   [StaticText] 攻擊命中',
+          '+   [StaticText] 戰鬥勝利',
+        ].join('\n'),
+        console: [],
+        network: [],
+        navigation: null,
+      },
+      nextHint: null,
+    }));
+
+    const out = T.formatExportPlaywright(state);
+
+    expect(out).toContain('await expect(page.getByText("戰鬥勝利")).toBeVisible();');
+    expect(out).not.toContain('await expect(page.getByText("戰鬥開始")).toBeVisible();');
   });
 
   it('exports portable network mocks before Playwright action steps', () => {

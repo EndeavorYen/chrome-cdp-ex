@@ -2163,6 +2163,26 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
   }
 }
 
+const HIGH_SIGNAL_ACTION_TEXT_RE = /\b(saved|success|succeeded|complete|completed|done|created|updated|deleted|failed|failure|error|warning|invalid|required)\b|成功|勝利|完成|已儲存|儲存|失敗|錯誤|警告|無效|必填/i;
+
+function actionDomDiffSampleScore(line = '') {
+  const trimmed = String(line || '').trim();
+  let score = 0;
+  if (trimmed.startsWith('+')) score += 2;
+  if (/^\+\s+\[(alert|status|statustext|statictext|heading)\]/i.test(trimmed)) score += 2;
+  if (HIGH_SIGNAL_ACTION_TEXT_RE.test(trimmed)) score += 4;
+  if (/^-\s/.test(trimmed)) score -= 2;
+  return score;
+}
+
+function chooseActionDomDiffSample(lines = []) {
+  const samples = lines.filter(l => /^[+-]\s/.test(l));
+  if (!samples.length) return null;
+  return samples
+    .map((line, index) => ({ line, index, score: actionDomDiffSampleScore(line) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)[0].line;
+}
+
 function summarizeActionDomDiff(domDiff) {
   const lines = String(domDiff || '').split('\n').map(l => l.trim()).filter(Boolean);
   const summary = lines.find(l =>
@@ -2171,7 +2191,7 @@ function summarizeActionDomDiff(domDiff) {
     l.startsWith('~~~ Text nodes updated') ||
     l.includes('no changes detected')
   ) || null;
-  const sample = lines.find(l => /^[+-]\s/.test(l)) || null;
+  const sample = chooseActionDomDiffSample(lines);
   return { summary, sample };
 }
 
@@ -2834,6 +2854,33 @@ function isPlaywrightPortableSelector(value) {
   return selector && !selector.startsWith('@') && !selector.startsWith('<') && selector !== '<redacted>';
 }
 
+const PLAYWRIGHT_ASSERTION_TEXT_ROLES = new Set(['alert', 'status', 'statustext', 'statictext', 'heading']);
+
+function cleanObservedTextForPlaywrightAssertion(text) {
+  return String(text || '')
+    .replace(/\s+@f?\d+(?::\d+)?\b.*$/u, '')
+    .replace(/\s+\(-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?\s+\d+(?:\.\d+)?[×x]\d+(?:\.\d+)?.*$/u, '')
+    .replace(/\s{2,}.*/u, '')
+    .trim();
+}
+
+function observedTextAssertionFromEffectSample(sample) {
+  const line = String(sample || '').trim();
+  const match = line.match(/^\+\s+\[([^\]]+)\]\s+(.+)$/u);
+  if (!match) return null;
+  const role = match[1].replace(/\s+/g, '').toLowerCase();
+  if (!PLAYWRIGHT_ASSERTION_TEXT_ROLES.has(role)) return null;
+  const text = cleanObservedTextForPlaywrightAssertion(match[2]);
+  if (!text || text.length < 2 || text.length > 160) return null;
+  return text;
+}
+
+function playwrightAssertionLinesFromEvidence(evidence = {}) {
+  const text = observedTextAssertionFromEffectSample(evidence.effectSample);
+  if (!text) return [];
+  return [`await expect(page.getByText(${JSON.stringify(text)})).toBeVisible();`];
+}
+
 function playwrightStepFromCommand(action = {}) {
   const command = Array.isArray(action.command) ? action.command.map(v => String(v)) : [];
   const commandText = command.length ? formatCommandLine(command) : `${action.action || 'action'} <missing command>`;
@@ -2843,6 +2890,10 @@ function playwrightStepFromCommand(action = {}) {
       `// Reason: ${reason}`,
     ],
     exported: false,
+  });
+  const finish = (lines) => ({
+    lines: [...lines, ...playwrightAssertionLinesFromEvidence(action.evidence || {})],
+    exported: true,
   });
 
   if (action.replayable !== true) {
@@ -2859,13 +2910,13 @@ function playwrightStepFromCommand(action = {}) {
     case 'nav':
     case 'navigate':
       return args[0]
-        ? { lines: [`await page.goto(${JSON.stringify(args[0])});`], exported: true }
+        ? finish([`await page.goto(${JSON.stringify(args[0])});`])
         : skip('missing URL');
     case 'click':
     case 'jsclick': {
       const selector = args[0] === '--js' || args[0] === '-j' ? args[1] : args[0];
       if (!isPlaywrightPortableSelector(selector)) return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
-      return { lines: [`await page.locator(${JSON.stringify(selector)}).click();`], exported: true };
+      return finish([`await page.locator(${JSON.stringify(selector)}).click();`]);
     }
     case 'fill': {
       const usesReactFill = args[0] === '--react';
@@ -2873,27 +2924,27 @@ function playwrightStepFromCommand(action = {}) {
       const text = usesReactFill ? args[2] : args[1];
       if (!isPlaywrightPortableSelector(selector)) return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
       if (text == null || text === '<redacted>') return skip('missing fill text');
-      return { lines: [`await page.locator(${JSON.stringify(selector)}).fill(${JSON.stringify(text)});`], exported: true };
+      return finish([`await page.locator(${JSON.stringify(selector)}).fill(${JSON.stringify(text)});`]);
     }
     case 'select': {
       const [selector, value] = args;
       if (!isPlaywrightPortableSelector(selector)) return skip('needs stable selector');
       if (value == null) return skip('missing select value');
-      return { lines: [`await page.locator(${JSON.stringify(selector)}).selectOption(${JSON.stringify(value)});`], exported: true };
+      return finish([`await page.locator(${JSON.stringify(selector)}).selectOption(${JSON.stringify(value)});`]);
     }
     case 'type':
       return args[0]
-        ? { lines: [`await page.keyboard.type(${JSON.stringify(args[0])});`], exported: true }
+        ? finish([`await page.keyboard.type(${JSON.stringify(args[0])});`])
         : skip('missing text');
     case 'press':
       return args[0]
-        ? { lines: [`await page.keyboard.press(${JSON.stringify(args[0])});`], exported: true }
+        ? finish([`await page.keyboard.press(${JSON.stringify(args[0])});`])
         : skip('missing key');
     case 'clickxy': {
       const x = Number(args[0]);
       const y = Number(args[1]);
       return Number.isFinite(x) && Number.isFinite(y)
-        ? { lines: [`await page.mouse.click(${x}, ${y});`, '// Coordinate click: review before committing as a regression test.'], exported: true }
+        ? finish([`await page.mouse.click(${x}, ${y});`, '// Coordinate click: review before committing as a regression test.'])
         : skip('missing coordinates');
     }
     case 'scroll': {
@@ -2903,24 +2954,24 @@ function playwrightStepFromCommand(action = {}) {
       let xy = dirMap[direction.toLowerCase()];
       if (!xy && direction.includes(',')) xy = direction.split(',').map(Number);
       return xy && xy.every(Number.isFinite)
-        ? { lines: [`await page.mouse.wheel(${xy[0]}, ${xy[1]});`], exported: true }
+        ? finish([`await page.mouse.wheel(${xy[0]}, ${xy[1]});`])
         : skip('unsupported scroll arguments');
     }
     case 'viewport': {
       const match = String(args[0] || '').match(/^(\d+)[x×](\d+)$/);
       return match
-        ? { lines: [`await page.setViewportSize({ width: ${Number(match[1])}, height: ${Number(match[2])} });`], exported: true }
+        ? finish([`await page.setViewportSize({ width: ${Number(match[1])}, height: ${Number(match[2])} });`])
         : skip('unsupported viewport format');
     }
     case 'reload':
-      return { lines: ['await page.reload();'], exported: true };
+      return finish(['await page.reload();']);
     case 'back':
-      return { lines: ['await page.goBack();'], exported: true };
+      return finish(['await page.goBack();']);
     case 'forward':
-      return { lines: ['await page.goForward();'], exported: true };
+      return finish(['await page.goForward();']);
     case 'dismiss-modal':
     case 'dismissmodal':
-      return { lines: ['await page.keyboard.press("Escape");', '// Review: chrome-cdp-ex may have clicked a specific close button instead.'], exported: true };
+      return finish(['await page.keyboard.press("Escape");', '// Review: chrome-cdp-ex may have clicked a specific close button instead.']);
     default:
       return skip(`unsupported command: ${cmd}`);
   }
@@ -2985,8 +3036,11 @@ function playwrightStepFromEnvironment(entry = {}) {
 function formatPlaywrightSpecFromRecordActions(model, { title = 'chrome-cdp-ex exported workflow' } = {}) {
   const actions = Array.isArray(model?.actions) ? model.actions : [];
   const environment = Array.isArray(model?.environment) ? model.environment : [];
+  const environmentSteps = environment.map(entry => playwrightStepFromEnvironment(entry));
+  const actionSteps = actions.map(action => playwrightStepFromCommand(action));
+  const hasAssertions = actionSteps.some(step => step.lines.some(line => /\bexpect\(/.test(line)));
   const lines = [
-    "import { test } from '@playwright/test';",
+    `import { test${hasAssertions ? ', expect' : ''} } from '@playwright/test';`,
     '',
     '// Generated from chrome-cdp-ex record-actions.',
     '// Review selectors, assertions, auth state, and skipped steps before committing.',
@@ -2995,16 +3049,14 @@ function formatPlaywrightSpecFromRecordActions(model, { title = 'chrome-cdp-ex e
   ];
   let environmentExported = 0;
   let environmentSkipped = 0;
-  for (const entry of environment) {
-    const step = playwrightStepFromEnvironment(entry);
+  for (const step of environmentSteps) {
     if (step.exported) environmentExported++;
     else environmentSkipped++;
     for (const line of step.lines) lines.push(`  ${line}`);
   }
   let exported = 0;
   let skipped = 0;
-  for (const action of actions) {
-    const step = playwrightStepFromCommand(action);
+  for (const step of actionSteps) {
     if (step.exported) exported++;
     else skipped++;
     for (const line of step.lines) lines.push(`  ${line}`);

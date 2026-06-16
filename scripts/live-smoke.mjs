@@ -456,10 +456,11 @@ if (!recordActions.actions.some(action => action.action === 'click' && action.co
   throw new Error(`record-actions should include replayable click command\nOutput:\n${recordActionsJson}`);
 }
 const playwrightExport = step('export playwright', () => run(['export-playwright', target]));
-assertIncludes(playwrightExport, "import { test } from '@playwright/test';", 'export-playwright import');
+assertIncludes(playwrightExport, "import { test, expect } from '@playwright/test';", 'export-playwright import');
 assertIncludes(playwrightExport, 'await page.route("**/api/mock*"', 'export-playwright mock route');
 assertIncludes(playwrightExport, 'await page.locator("#cmd").fill("look trainer");', 'export-playwright fill');
 assertIncludes(playwrightExport, 'await page.locator("#combat").click();', 'export-playwright click');
+assertIncludes(playwrightExport, 'await expect(page.getByText("戰鬥勝利")).toBeVisible();', 'export-playwright evidence assertion');
 const replayArtifactPath = resolve(profileDir, 'record-actions.json');
 writeFileSync(replayArtifactPath, recordActionsJson);
 const replayOut = step('replay record-actions artifact', () => run(['replay', target, '--file', replayArtifactPath], { timeout: 30000 }));
