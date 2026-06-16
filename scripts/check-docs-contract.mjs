@@ -34,6 +34,9 @@ export function commandArgsToKind(args) {
   if (/^report\b/.test(args)) return 'report';
   if (/^click\b/.test(args)) return 'click';
   if (/^fill\b/.test(args)) return 'fill';
+  if (/^cascade\b/.test(args)) return 'cascade';
+  if (/^record-actions\b/.test(args)) return 'record-actions';
+  if (/^export-playwright\b/.test(args)) return 'export-playwright';
   if (/^perceive\b/.test(args) && /\s--since-action\b/.test(args)) return 'perceive:since-action';
   if (/^perceive\b/.test(args) && /\s-C\b/.test(args) && /\s-d\s+\d+\b/.test(args)) {
     return 'perceive:page';
@@ -63,6 +66,18 @@ export function validateKillerPathContract(markdown) {
 
   if (!kinds.includes('fill')) {
     failures.push('Killer Path is missing form-fill alternative command');
+  }
+  if (!markdown.includes('click <target> "#missing" --format json')) {
+    failures.push('Killer Path example is missing failed-action recovery command');
+  }
+  if (!kinds.includes('cascade')) {
+    failures.push('Killer Path example is missing CSS tracing command');
+  }
+  if (!kinds.includes('record-actions')) {
+    failures.push('Killer Path example is missing record-actions handoff command');
+  }
+  if (!kinds.includes('export-playwright')) {
+    failures.push('Killer Path example is missing export-playwright handoff command');
   }
 
   return failures;
@@ -123,6 +138,15 @@ export function checkDocsContract(docs, commands) {
 
   if (!docs.readme.includes('docs/examples/killer-path.md')) {
     failures.push('README is missing a first-run Killer Path example link');
+  }
+  if (!docs.readme.includes('### Promotion checklist')) {
+    failures.push('README is missing benchmark-gated promotion checklist');
+  }
+  if (!docs.readme.includes('gate.passed') || !docs.readme.includes('block promotion')) {
+    failures.push('README promotion checklist must block claims when benchmark gates fail');
+  }
+  if (!docs.readme.includes('heuristic-smoke-baseline') || !docs.readme.includes('--comparison-baselines')) {
+    failures.push('README promotion checklist must require measured comparison baselines');
   }
 
   const requiredKillerPathTerms = [

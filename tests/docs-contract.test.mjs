@@ -1,7 +1,9 @@
 import { readFileSync } from 'fs';
 import { describe, expect, it } from 'vitest';
-import { validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
+import { checkDocsContract, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
 
+const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+const skill = readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.meta.url), 'utf8');
 const killerPath = readFileSync(new URL('../docs/examples/killer-path.md', import.meta.url), 'utf8');
 
 describe('Killer Path docs contract', () => {
@@ -29,5 +31,33 @@ describe('Killer Path docs contract', () => {
     expect(validateKillerPathContract(withoutFill)).toContain(
       'Killer Path is missing form-fill alternative command',
     );
+  });
+
+  it('requires recovery, CSS tracing, and export handoff examples', () => {
+    const withoutPromotionWorkflow = killerPath
+      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs click <target> "#missing" --format json\n/g, '')
+      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs cascade <target> @ref background-color --format json\n/g, '')
+      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs record-actions <target> --format json\n/g, '')
+      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs export-playwright <target> --format json\n/g, '');
+
+    expect(validateKillerPathContract(withoutPromotionWorkflow)).toEqual(expect.arrayContaining([
+      'Killer Path example is missing failed-action recovery command',
+      'Killer Path example is missing CSS tracing command',
+      'Killer Path example is missing record-actions handoff command',
+      'Killer Path example is missing export-playwright handoff command',
+    ]));
+  });
+
+  it('requires README promotion claims to be benchmark-gated', () => {
+    const docsWithoutChecklist = {
+      readme: readme.replace(/### Promotion checklist[\s\S]+?(?=\n### |\n## |$)/, ''),
+      skill,
+      killerPath,
+    };
+
+    expect(checkDocsContract(docsWithoutChecklist, [])).toEqual(expect.arrayContaining([
+      'README is missing benchmark-gated promotion checklist',
+      'README promotion checklist must block claims when benchmark gates fail',
+    ]));
   });
 });

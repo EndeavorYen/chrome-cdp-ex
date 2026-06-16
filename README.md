@@ -81,6 +81,8 @@ The agent using `perceive` (layout + colors + spacing + coordinates) produced th
 
 ### The numbers
 
+Treat these as product-positioning examples until they are backed by the reproducible [Dogfood Benchmark](#dogfood-benchmark) commands below.
+
 | | `chrome-cdp-ex` | Playwright | Other CDP tools |
 |---|---|---|---|
 | **Calls to fully understand a page** | **1** (`perceive`) | 3+ (snapshot + console + viewport) | 2+ (snap + console) |
@@ -643,14 +645,14 @@ Use the live benchmark before making performance or adoption claims:
 
 ### Latest dogfood snapshot
 
-Local run on 2026-06-16, measured with the same smoke page and measured local comparison baselines:
+Local run on 2026-06-17 against the same smoke page. Publish competitor comparison deltas only after rerunning with measured `--comparison-baselines`.
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 9.415s |
+| Total time | 9.507s |
 | Command calls | 23 |
-| First useful observation | 2.813s |
-| Golden path complete | 5.694s |
+| First useful observation | 2.842s |
+| Golden path complete | 5.716s |
 | Useful observation tokens | 1,384 |
 | Auto-evidence actions | 6 |
 | Action evidence coverage | 100% (9/9 mutating commands) |
@@ -670,8 +672,8 @@ Local run on 2026-06-16, measured with the same smoke page and measured local co
 | Differentiator handoff coverage | 100% (3/3 JSON differentiator handoffs) |
 | Quality gate | 25/25 pass |
 | Differentiator success rate | 100% |
-| Stale-ref recovery | 31ms, 1/1 recovered |
-| Session stability sample | 1.107s, 3 probes |
+| Stale-ref recovery | 49ms, 1/1 recovered |
+| Session stability sample | 1.120s, 3 probes |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
 
@@ -684,6 +686,16 @@ npm run benchmark:playwright -- --out playwright-raw.json
 npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json
 npm run benchmark:killer -- --comparison-baselines ./baselines.json
 ```
+
+### Promotion checklist
+
+Do not publish README, marketplace, awesome-list, or social comparison claims unless:
+
+- `npm run benchmark:killer -- --json` exits 0 and `gate.passed` is true.
+- Competitor comparisons use `npm run benchmark:killer -- --comparison-baselines ./baselines.json` with measured baselines, not the planning-only `heuristic-smoke-baseline`.
+- `docs/examples/killer-path.md` still covers real browser perception, failed action recovery, CSS tracing, and export handoff.
+- Workflow handoffs from `record-actions --format json` and `export-playwright --format json` distinguish exported, skipped, review-needed, and live-only steps.
+- If any benchmark gate criterion fails, block promotion and fix the failed criterion before publishing the claim.
 
 It launches a disposable debug browser against the local smoke page and measures the Killer Path: `doctor -> open -> perceive -> act -> since-action evidence -> report`. The core handoff probes run with `--format json`, so the JSON report measures command calls, total time, first useful observation time, first action evidence time, golden path completion time, estimated output tokens, useful observation tokens, auto-evidence actions, observed action evidence coverage, observed JSON action evidence completeness, observed failed action diagnosis coverage, observed no-change action recovery coverage, failed-step CLI recovery coverage, observed JSON handoff `nextSteps` coverage, observed JSON handoff `recommendation` coverage, doctor onboarding coverage, target handoff coverage from `open`/`list` JSON into an executable `perceive`, JSON report `latestAction` coverage, JSON report `timelineWindow` coverage, JSON report artifact coverage, observed JSON perception signal coverage, observed JSON since-action evidence coverage, observed JSON differentiator handoff coverage, verification calls saved, report timeline presence, stale-ref recovery, session stability sample, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time. The live benchmark marks the `list --format json`, `overlay --format json`, `frame --format json`, `cascade --format json`, `click #noop --format json`, and failed-action JSON recovery checks as coverage probes, so it proves those branch handoffs without charging the single-path command budget. The useful observation token budget counts page perception/diff outputs, not action/report JSON evidence payloads. The default stability sample is 1000ms; use `--stability-ms` for 20-60 minute dogfood windows.
 
