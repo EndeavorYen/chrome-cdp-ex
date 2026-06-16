@@ -7088,6 +7088,14 @@ function commandReturnsActionJson(cmd) {
     && meta.outputFormats.includes('json');
 }
 
+const BATCH_PARALLEL_READ_STATE_COMMANDS = new Set(['perceive', 'snap', 'snapshot']);
+
+function isBatchParallelUnsafeCommand(cmd) {
+  const meta = commandMeta(cmd);
+  if (meta?.mutates === true) return true;
+  return BATCH_PARALLEL_READ_STATE_COMMANDS.has(cmd);
+}
+
 function argsHaveFormatOption(args = []) {
   return Array.isArray(args) && args.includes('--format');
 }
@@ -8784,8 +8792,6 @@ async function runDaemon(targetId) {
 
   // Action feedback: wait for DOM to settle, then return structured evidence.
   const BATCH_BLOCKED = new Set(['batch', 'stop', 'repeat', 'flow']);
-  // Commands that mutate shared state (refMap, lastPerceiveStore) — unsafe for parallel execution
-  const BATCH_NO_PARALLEL = new Set(['click', 'clickxy', 'jsclick', 'select', 'press', 'scroll', 'nav', 'navigate', 'back', 'forward', 'reload', 'viewport', 'fill', 'type', 'upload', 'inject', 'mock', 'network-mock', 'clock', 'time-travel', 'perceive', 'snap', 'snapshot', 'dismiss-modal', 'dismissmodal']);
   async function observeActionDiffForTarget(target = {}, baselineOutput = null) {
     const targetFrameRef = frameRefFromActionTarget(target);
     await waitForSettle(cdp, sessionId);
@@ -9122,7 +9128,7 @@ async function runDaemon(targetId) {
           const blocked = commands.filter(c => BATCH_BLOCKED.has(c.cmd));
           if (blocked.length) return { ok: false, error: `batch: ${blocked.map(c => c.cmd).join(', ')} not allowed inside batch` };
           if (parallel) {
-            const unsafe = commands.filter(c => BATCH_NO_PARALLEL.has(c.cmd));
+            const unsafe = commands.filter(c => isBatchParallelUnsafeCommand(c.cmd));
             if (unsafe.length) return { ok: false, error: `batch --parallel: ${[...new Set(unsafe.map(c => c.cmd))].join(', ')} mutate shared state — use sequential batch` };
           }
           const autoActionJson = parsedBatch.output === 'model';
@@ -9464,7 +9470,7 @@ Usage: cdp <command> [args]
                                     --format json returns chrome-cdp-ex.batch.v1 failure handoff
                                     Pipe syntax: 'fill @3 hello | fill @5 world | click @7'
                                     JSON syntax: '[{"cmd":"click","args":["@1"]},{"cmd":"perceive","args":["--diff"]}]'
-                                    --parallel  Run commands concurrently (for independent ops like multiple elshots)
+                                    --parallel  Run read-only/extraction commands concurrently (mutating commands are rejected)
                                     --plain     Human-readable per-step output (default: pretty JSON)
                                     --compact   One line per step (head + first line of result)
   flow  <target> "<steps>" [--format json]  Sequential runner. Steps separated by ";".
@@ -10293,6 +10299,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   navStr, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parseRepeatArgs, repeatStr, autoActionJsonArgs,
+  isBatchParallelUnsafeCommand,
   parseReplayArgs, parseReplayArtifact, replayStepFromAction, replayActionsStr,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,

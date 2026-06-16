@@ -316,6 +316,19 @@ const parallelUploadOut = step('parallel upload blocked', () => runFailure(['bat
 assertIncludes(parallelUploadOut, 'batch --parallel:', 'parallel upload blocked');
 assertIncludes(parallelUploadOut, 'upload', 'parallel upload blocked command name');
 assertIncludes(parallelUploadOut, 'mutate shared state', 'parallel upload blocked reason');
+const parallelMutatingGuards = [
+  ['restore', '--json', '{}'],
+  ['replay', '--json', '{"schema":"chrome-cdp-ex.record-actions.v1","actions":[]}'],
+  ['cookieset', 'smoke_parallel_guard=1'],
+  ['cookiedel', 'smoke_parallel_guard'],
+  ['closetab'],
+];
+for (const [cmd, ...cmdArgs] of parallelMutatingGuards) {
+  const out = step(`parallel ${cmd} blocked`, () => runFailure(['batch', target, '--parallel', `${[cmd, ...cmdArgs].join(' ')} | summary`]));
+  assertIncludes(out, 'batch --parallel:', `parallel ${cmd} blocked`);
+  assertIncludes(out, cmd, `parallel ${cmd} blocked command name`);
+  assertIncludes(out, 'mutate shared state', `parallel ${cmd} blocked reason`);
+}
 const failedClickJsonOut = step('failed action json evidence', () => run(['click', target, '#missing-action-json-smoke', '--format', 'json']));
 const parsedFailedClickAction = JSON.parse(failedClickJsonOut);
 if (parsedFailedClickAction.schema !== 'chrome-cdp-ex.action.v1' || parsedFailedClickAction.action !== 'click') {

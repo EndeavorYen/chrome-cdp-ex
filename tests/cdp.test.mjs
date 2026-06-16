@@ -197,6 +197,24 @@ describe('COMMANDS registry', () => {
     }
   });
 
+  it('treats mutating commands as unsafe for parallel batch execution', () => {
+    const missing = T.COMMANDS
+      .filter(command => command.mutates)
+      .flatMap(command => [command.name, ...(command.aliases || [])])
+      .filter(name => !T.isBatchParallelUnsafeCommand(name));
+
+    expect(missing).toEqual([]);
+    expect(T.isBatchParallelUnsafeCommand('perceive')).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('snap')).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('snapshot')).toBe(true);
+  });
+
+  it('keeps read-only extraction commands safe for parallel batch execution', () => {
+    for (const name of ['elshot', 'html', 'text', 'table', 'styles', 'cookies', 'summary', 'console', 'status']) {
+      expect(T.isBatchParallelUnsafeCommand(name)).toBe(false);
+    }
+  });
+
   it('registers record-actions as a target command with text and json output', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'record-actions',
