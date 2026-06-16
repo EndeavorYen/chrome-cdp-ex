@@ -643,6 +643,7 @@ Use the live benchmark before making performance or adoption claims:
 npm run benchmark:killer
 npm run benchmark:killer -- --json
 npm run benchmark:killer -- --stability-ms 1200000
+npm run benchmark:baseline -- raw-results.json --out baselines.json
 npm run benchmark:killer -- --comparison-baselines ./baselines.json
 ```
 
@@ -652,7 +653,7 @@ The report also includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The d
 
 JSON output also includes `chrome-cdp-ex.benchmark-comparison.v1`: a conservative `heuristic-smoke-baseline` comparison against Playwright test generation/snapshots, manual DevTools inspection, and generic CDP scripting. Treat it as a planning baseline until dedicated competitor harnesses exist; it is meant to show what must be proven, not to overstate external measurements.
 
-To replace the heuristic comparison with measured competitor runs, pass `--comparison-baselines` a JSON file shaped like `{"schema":"chrome-cdp-ex.comparison-baselines.v1","source":"measured-local-baseline","baselines":[{"id":"playwright","label":"Measured Playwright harness","metrics":{"commandCalls":24,"usefulObservationTokens":4200,"verificationCallsSaved":0,"differentiatorSuccessRate":0.5}}]}`.
+To replace the heuristic comparison with measured competitor runs, either pass `--comparison-baselines` a `chrome-cdp-ex.comparison-baselines.v1` file directly, or normalize raw harness results with `npm run benchmark:baseline -- raw-results.json --out baselines.json`. Raw result files use `{"schema":"chrome-cdp-ex.raw-baseline-results.v1","source":"measured-local-baseline","runs":[{"id":"playwright","label":"Measured Playwright harness","commandCalls":24,"usefulObservationTokens":4200,"verificationCallsSaved":0,"differentiatorSuccessRate":0.5}]}`.
 
 ## Contributor Checks
 
