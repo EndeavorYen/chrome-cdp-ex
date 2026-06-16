@@ -6437,6 +6437,68 @@ describe('doctorStr', () => {
       'cdp perceive AABBCCDD -C -d 8',
       'cdp report AABBCCDD',
     ]));
+    expect(model.recommendation).toMatchObject({
+      source: 'doctor-onboarding',
+      stage: 'browser-permission',
+      run: 'cdp perceive AABBCCDD -C -d 8',
+      requiresUserAction: true,
+      consentRequired: false,
+      after: 'cdp click AABBCCDD @ref  # or: cdp fill AABBCCDD <selector> <text>',
+    });
+    expect(model.recommendation.ask).toContain('Allow');
+  });
+
+  it('returns a consent-aware recommendation when browser CDP is blocked', async () => {
+    const fetcher = async () => { throw new Error('ECONNREFUSED'); };
+    const out = await doctorStr({
+      format: 'json',
+      nodeVersion: 'v22.10.0',
+      home: '/tmp/x',
+      fs: { existsSync: () => true, lstatSync: () => ({ isSymbolicLink: () => true }) },
+      listDaemons: () => [],
+      fdLimit: 256,
+      env: { CDP_PORT: '9999' },
+      fetcher,
+    });
+
+    const model = JSON.parse(out);
+    expect(model.recommendation).toMatchObject({
+      source: 'doctor-onboarding',
+      stage: 'browser-cdp',
+      run: 'cdp spawn-debug-browser edge --port 9222 --url https://example.com',
+      after: 'cdp list',
+      requiresUserAction: true,
+      consentRequired: true,
+    });
+    expect(model.recommendation.ask).toContain('chrome://inspect/#remote-debugging');
+    expect(model.recommendation.reason).toContain('cannot reach');
+    expect(model.recommendation.warnings).toEqual([
+      {
+        label: 'FD limit',
+        command: 'ulimit -n 4096',
+        reason: '256 open files (low for long browser sessions)',
+      },
+    ]);
+  });
+
+  it('prints the recommendation before detailed doctor checks', async () => {
+    const fetcher = async (url) => url.endsWith('/json/list')
+      ? { ok: true, json: async () => ([{ type: 'page', id: 'AABBCCDDEEFF', title: 'Example', url: 'https://example.com' }]) }
+      : { ok: true, json: async () => ({ Browser: 'Chrome/123', webSocketDebuggerUrl: 'ws://x' }) };
+    const out = await doctorStr({
+      nodeVersion: 'v22.10.0',
+      home: '/tmp/no-such-home',
+      fs: { existsSync: () => false, lstatSync: null },
+      listDaemons: () => [],
+      fdLimit: 4096,
+      env: { CDP_PORT: '9222' },
+      fetcher,
+    });
+
+    expect(out).toContain('Recommendation:');
+    expect(out).toContain('Run: cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('Ask: Click Allow if Chrome asks.');
+    expect(out.indexOf('Recommendation:')).toBeLessThan(out.indexOf('Checks:'));
   });
 });
 

@@ -131,6 +131,9 @@ const parsedDoctor = JSON.parse(doctorJson);
 if (parsedDoctor.schema !== 'chrome-cdp-ex.doctor.v1' || !Array.isArray(parsedDoctor.checks) || !Array.isArray(parsedDoctor.nextSteps)) {
   throw new Error(`doctor json schema mismatch:\n${doctorJson}`);
 }
+if (!parsedDoctor.recommendation?.source || !parsedDoctor.recommendation?.run) {
+  throw new Error(`doctor json should include a runnable onboarding recommendation:\n${doctorJson}`);
+}
 if (!parsedDoctor.wizard?.goldenPath?.includes('perceive') || !parsedDoctor.nextSteps.some(step => step.startsWith('cdp perceive'))) {
   throw new Error(`doctor json should include golden path and executable perceive next step:\n${doctorJson}`);
 }

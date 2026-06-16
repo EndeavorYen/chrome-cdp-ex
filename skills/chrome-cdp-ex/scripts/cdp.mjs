@@ -7355,6 +7355,113 @@ function doctorWizardModel(checks) {
   };
 }
 
+function doctorWarningCommands(checks) {
+  const fd = checks.find(c => c.label === 'FD limit');
+  const warnings = [];
+  if (fd?.status === 'WARN') {
+    warnings.push({
+      label: 'FD limit',
+      command: 'ulimit -n 4096',
+      reason: fd.detail || 'open-files limit is low for long browser sessions',
+    });
+  }
+  return warnings;
+}
+
+function doctorRecommendationModel(checks) {
+  const node = checks.find(c => c.label === 'Node');
+  const cdp = checks.find(c => c.label === 'CDP');
+  const daemon = checks.find(c => c.label === 'Daemons');
+  const tabs = checks.find(c => c.label === 'Tabs');
+  const permission = checks.find(c => c.label === 'Permission');
+  const target = permission?.targetPrefixes?.[0] || daemon?.targetPrefixes?.[0] || tabs?.targetPrefixes?.[0] || '<target>';
+  const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
+  const base = {
+    source: 'doctor-onboarding',
+    stage: 'perceive',
+    run: `cdp perceive ${target} -C -d 8`,
+    ask: null,
+    after: `cdp click ${target} @ref  # or: cdp fill ${target} <selector> <text>`,
+    requiresUserAction: false,
+    consentRequired: false,
+    reason: 'ready for live browser perception',
+    commands: doctorNextStepCommands(checks),
+    warnings: doctorWarningCommands(checks),
+  };
+
+  if (node?.status === 'FAIL') {
+    return {
+      ...base,
+      stage: 'node',
+      run: null,
+      ask: 'Install Node.js 22+.',
+      after: 'cdp doctor',
+      requiresUserAction: true,
+      reason: node.detail || null,
+    };
+  }
+  if (cdp?.status === 'FAIL') {
+    return {
+      ...base,
+      stage: 'browser-cdp',
+      run: 'cdp spawn-debug-browser edge --port 9222 --url https://example.com',
+      ask: 'Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: cdp doctor.',
+      after: 'cdp list',
+      requiresUserAction: true,
+      consentRequired: true,
+      reason: cdp.detail || null,
+    };
+  }
+  if (cdp?.status === 'WARN') {
+    return {
+      ...base,
+      stage: 'browser-cdp',
+      run: 'cdp doctor',
+      ask: 'Re-toggle browser remote debugging, or restart the app with CDP_PORT set.',
+      after: 'cdp list',
+      requiresUserAction: true,
+      reason: cdp.detail || null,
+    };
+  }
+  if (noTargets) {
+    return {
+      ...base,
+      stage: 'open-page',
+      run: 'cdp open https://example.com',
+      ask: null,
+      after: 'cdp perceive <target-from-open> -C -d 8',
+      reason: tabs?.detail || null,
+    };
+  }
+  if (permission?.status === 'WARN') {
+    return {
+      ...base,
+      stage: 'browser-permission',
+      run: `cdp perceive ${target} -C -d 8`,
+      ask: 'Click Allow if Chrome asks.',
+      after: `cdp click ${target} @ref  # or: cdp fill ${target} <selector> <text>`,
+      requiresUserAction: true,
+      reason: permission.detail || null,
+    };
+  }
+  return base;
+}
+
+function doctorRecommendationLines(checks) {
+  const recommendation = doctorRecommendationModel(checks);
+  const lines = ['Recommendation:'];
+  if (recommendation.run) {
+    const consent = recommendation.consentRequired ? '  (ask user first)' : '';
+    lines.push(`  Run: ${recommendation.run}${consent}`);
+  }
+  if (recommendation.ask) lines.push(`  Ask: ${recommendation.ask}`);
+  if (recommendation.after) lines.push(`  Then: ${recommendation.after}`);
+  for (const warning of recommendation.warnings || []) {
+    lines.push(`  Long session note: ${warning.command}  # ${warning.reason}`);
+  }
+  return lines;
+}
+
 function doctorNextSteps(checks) {
   const failures = checks.filter(c => c.status === 'FAIL');
   const cdp = checks.find(c => c.label === 'CDP');
@@ -7406,7 +7513,7 @@ function doctorNextSteps(checks) {
 
 function formatDoctorReport(checks) {
   const lines = ['chrome-cdp-ex doctor'];
-  lines.push(...doctorWizardSummary(checks), '', 'Checks:');
+  lines.push(...doctorWizardSummary(checks), '', ...doctorRecommendationLines(checks), '', 'Checks:');
   for (const c of checks) {
     const tag = c.status.padEnd(4);
     lines.push(`  [${tag}] ${c.label}: ${c.detail}`);
@@ -7454,6 +7561,7 @@ function buildDoctorModel(checks) {
     schema: 'chrome-cdp-ex.doctor.v1',
     ...summary,
     wizard: doctorWizardModel(checks),
+    recommendation: doctorRecommendationModel(checks),
     checks: checks.map(check => ({ ...check })),
     nextSteps: doctorNextStepCommands(checks),
   };
@@ -8771,7 +8879,7 @@ Usage: cdp <command> [args]
                                     Example: repeat A7BA 5 press c
   doctor / ready [--format json]    One-call diagnostics: Node version, skill install path,
                                     daemon socket state, fd limit, CDP_PORT/DevToolsActivePort reachability,
-                                    debuggable tab inventory, browser permission, and onboarding next steps.
+                                    debuggable tab inventory, browser permission, Recommendation, and onboarding next steps.
                                     Starts with Wizard status + current command; JSON includes wizard/checks/nextSteps.
                                     No target required. Exits 1 if any check FAILs.
   keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)
