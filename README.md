@@ -521,8 +521,8 @@ inject  <target> --css "<text>"     # inject inline <style> with tracking
 inject  <target> --css-file <url>   # inject <link rel="stylesheet">
 inject  <target> --js-file <url>    # inject <script src> and wait for load
 inject  <target> --remove [id]      # remove injected element(s) — all or by id
-cascade <target> <sel|@ref>         # CSS origin tracing: full cascade with source file + line
-cascade <target> <sel|@ref> <prop>  # filter to one property (e.g. "background-color")
+cascade <target> <sel|@ref> [--format json]        # CSS origin tracing: full cascade with source file + line
+cascade <target> <sel|@ref> <prop> [--format json] # filter to one property (e.g. "background-color")
 record  <target> [ms]               # timeline of DOM/console/network/navigation events
 record  <target> --action click @5  # record cause → effect around an action;
                                     # auto-settles when no duration/--until given
@@ -539,7 +539,7 @@ replay  <target> --file <path> [--format json] # execute replayable steps from a
 
 `inject` returns an ID (`inject-1`, `inject-2`...) for targeted removal. URLs are validated (blocks `data:`, `file:`, cloud metadata).
 
-`cascade` shows which CSS rule won, which were overridden, inline styles, and inherited properties — with source locations. Answers "which file do I edit?" in one call. For Vite / CSS Modules pipelines, `cascade` also reads inline base64 source maps and stripped `?vue&type=style&…` query suffixes, so locations resolve to the original `*.module.css` / `*.vue` source instead of an opaque stylesheet id.
+`cascade` shows which CSS rule won, which were overridden, inline styles, and inherited properties — with source locations. Answers "which file do I edit?" in one call. Add `--format json` when an agent needs the versioned `chrome-cdp-ex.cascade.v1` handoff with `properties[].winner.source`, `editTarget`, and an edit recommendation instead of parsing text. For Vite / CSS Modules pipelines, `cascade` also reads inline base64 source maps and stripped `?vue&type=style&…` query suffixes, so locations resolve to the original `*.module.css` / `*.vue` source instead of an opaque stylesheet id.
 
 </details>
 
@@ -647,10 +647,10 @@ Local run on 2026-06-16, measured with the same smoke page and measured local co
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 9.498s |
+| Total time | 9.415s |
 | Command calls | 23 |
-| First useful observation | 2.870s |
-| Golden path complete | 5.701s |
+| First useful observation | 2.813s |
+| Golden path complete | 5.694s |
 | Useful observation tokens | 1,384 |
 | Auto-evidence actions | 6 |
 | Action evidence coverage | 100% (9/9 mutating commands) |
@@ -667,11 +667,11 @@ Local run on 2026-06-16, measured with the same smoke page and measured local co
 | Report artifact coverage | 100% (1/1 JSON reports) |
 | Perception signal coverage | 100% (1/1 JSON perceive handoff) |
 | Since-action evidence coverage | 100% (1/1 JSON perceive-diff handoff) |
-| Differentiator handoff coverage | 100% (2/2 JSON differentiator handoffs) |
+| Differentiator handoff coverage | 100% (3/3 JSON differentiator handoffs) |
 | Quality gate | 25/25 pass |
 | Differentiator success rate | 100% |
-| Stale-ref recovery | 50ms, 1/1 recovered |
-| Session stability sample | 1.122s, 3 probes |
+| Stale-ref recovery | 31ms, 1/1 recovered |
+| Session stability sample | 1.107s, 3 probes |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
 
@@ -685,7 +685,7 @@ npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out bas
 npm run benchmark:killer -- --comparison-baselines ./baselines.json
 ```
 
-It launches a disposable debug browser against the local smoke page and measures the Killer Path: `doctor -> open -> perceive -> act -> since-action evidence -> report`. The core handoff probes run with `--format json`, so the JSON report measures command calls, total time, first useful observation time, first action evidence time, golden path completion time, estimated output tokens, useful observation tokens, auto-evidence actions, observed action evidence coverage, observed JSON action evidence completeness, observed failed action diagnosis coverage, observed no-change action recovery coverage, failed-step CLI recovery coverage, observed JSON handoff `nextSteps` coverage, observed JSON handoff `recommendation` coverage, doctor onboarding coverage, target handoff coverage from `open`/`list` JSON into an executable `perceive`, JSON report `latestAction` coverage, JSON report `timelineWindow` coverage, JSON report artifact coverage, observed JSON perception signal coverage, observed JSON since-action evidence coverage, observed JSON differentiator handoff coverage, verification calls saved, report timeline presence, stale-ref recovery, session stability sample, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time. The live benchmark marks the `list --format json`, `overlay --format json`, `frame --format json`, `click #noop --format json`, and failed-action JSON recovery checks as coverage probes, so it proves those branch handoffs without charging the single-path command budget. The useful observation token budget counts page perception/diff outputs, not action/report JSON evidence payloads. The default stability sample is 1000ms; use `--stability-ms` for 20-60 minute dogfood windows.
+It launches a disposable debug browser against the local smoke page and measures the Killer Path: `doctor -> open -> perceive -> act -> since-action evidence -> report`. The core handoff probes run with `--format json`, so the JSON report measures command calls, total time, first useful observation time, first action evidence time, golden path completion time, estimated output tokens, useful observation tokens, auto-evidence actions, observed action evidence coverage, observed JSON action evidence completeness, observed failed action diagnosis coverage, observed no-change action recovery coverage, failed-step CLI recovery coverage, observed JSON handoff `nextSteps` coverage, observed JSON handoff `recommendation` coverage, doctor onboarding coverage, target handoff coverage from `open`/`list` JSON into an executable `perceive`, JSON report `latestAction` coverage, JSON report `timelineWindow` coverage, JSON report artifact coverage, observed JSON perception signal coverage, observed JSON since-action evidence coverage, observed JSON differentiator handoff coverage, verification calls saved, report timeline presence, stale-ref recovery, session stability sample, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time. The live benchmark marks the `list --format json`, `overlay --format json`, `frame --format json`, `cascade --format json`, `click #noop --format json`, and failed-action JSON recovery checks as coverage probes, so it proves those branch handoffs without charging the single-path command budget. The useful observation token budget counts page perception/diff outputs, not action/report JSON evidence payloads. The default stability sample is 1000ms; use `--stability-ms` for 20-60 minute dogfood windows.
 
 The report also includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires: successful run, at most 23 command calls, first useful observation within 5 seconds, golden path completion within 2 minutes, useful observation tokens at or below 3000, at least one auto-evidence action, 100% evidence coverage for every observed mutating command, 100% JSON action evidence completeness with action, target, dispatch, settle, effects deltas, outcome, and verdict, 100% failed action JSON diagnosis coverage with failure kind, diagnosis, recovery commands, verdict, recommendation, and nextSteps, 100% no-change action recovery coverage with investigate verdict plus overlay/frame/perceive/report next steps, 100% executable recovery coverage for failed steps, 100% top-level `nextSteps` coverage for observed JSON handoffs, 100% `recommendation` coverage for observed JSON handoffs, 100% doctor onboarding coverage with wizard current step, golden path, and readiness checks, 100% target handoff coverage with a concrete target prefix and executable `perceive` continuation, a report timeline, 100% `latestAction` coverage for JSON report handoffs with actions, 100% `timelineWindow` coverage for JSON report handoffs with actions, 100% report artifact coverage with session log path, screenshot directory, counts, action evidence, environment, recommendation, and nextSteps, 100% JSON perception signal coverage with page, viewport, console, refs, interactive nodes, limits, recommendation, and nextSteps, 100% JSON since-action evidence coverage with causal diff summary, bounded evidence samples, recommendation, and nextSteps, 100% differentiator probe success, 100% JSON differentiator handoff coverage, 100% stale-ref recovery, and a passing session stability sample. Treat a failed gate as a stop sign before publishing comparison claims.
 

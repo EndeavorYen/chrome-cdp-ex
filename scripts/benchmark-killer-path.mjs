@@ -140,6 +140,19 @@ function differentiatorHandoffMissingFields(model = {}) {
     return [...new Set(missing)];
   }
 
+  if (model.schema === 'chrome-cdp-ex.cascade.v1') {
+    if (!Number.isFinite(model.propertyCount)) missing.push('propertyCount');
+    const properties = Array.isArray(model.properties) ? model.properties : null;
+    if (!properties) missing.push('properties');
+    if (!(properties || []).some(entry => typeof entry?.winner?.source === 'string' && entry.winner.source.trim())) {
+      missing.push('properties.winner.source');
+    }
+    if (typeof model.editTarget?.source !== 'string' || !model.editTarget.source.trim()) {
+      missing.push('editTarget.source');
+    }
+    return [...new Set(missing)];
+  }
+
   return missing;
 }
 
@@ -150,7 +163,7 @@ function benchmarkDifferentiatorHandoffCoverage(steps) {
   let covered = 0;
   for (const step of steps) {
     const model = stepModel(step) || parseJsonOutput(step.outputText);
-    if (!['chrome-cdp-ex.overlays.v1', 'chrome-cdp-ex.frames.v1'].includes(model?.schema)) continue;
+    if (!['chrome-cdp-ex.overlays.v1', 'chrome-cdp-ex.frames.v1', 'chrome-cdp-ex.cascade.v1'].includes(model?.schema)) continue;
     total += 1;
     bySchema[model.schema] ||= { total: 0, covered: 0, missing: 0 };
     bySchema[model.schema].total += 1;
@@ -1152,7 +1165,7 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       actual: metrics.differentiatorHandoffCoverage?.rate ?? 1,
       operator: '>=',
       limit: limits.differentiatorHandoffCoverageRateMin,
-      recommendation: 'Keep overlay and frame JSON probes agent-readable before making differentiation claims.',
+      recommendation: 'Keep overlay, frame, and cascade JSON probes agent-readable before making differentiation claims.',
     }),
     gateCriterion({
       name: 'stale-ref-recovery-rate',
@@ -1556,6 +1569,7 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
     { args: ['frame', target] },
     { args: ['frame', target, '--format', 'json'], name: 'frame-json', benchmarkProbe: true },
     { args: ['cascade', target, '#custom-clickable', 'cursor'] },
+    { args: ['cascade', target, '#custom-clickable', 'cursor', '--format', 'json'], name: 'cascade-json', benchmarkProbe: true },
     { args: ['dismiss-modal', target, '--format', 'json'] },
     { args: ['click', target, '#noop', '--format', 'json'], name: 'no-change-json', benchmarkProbe: true },
     { args: ['fill', target, '#cmd', 'look trainer', '--format', 'json'] },

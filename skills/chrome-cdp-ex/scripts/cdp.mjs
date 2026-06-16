@@ -7077,7 +7077,7 @@ async function resolveStyleSource(cdp, sid, rule) {
   return mapStyleSource(header?.text || '', sheetId, genLine0);
 }
 
-async function cascadeStr(cdp, sid, selector, property, refMap, refState) {
+async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts = {}) {
   if (!selector) throw new Error('CSS selector or @ref required');
 
   // CSS.getMatchedStylesForNode requires these domains/document state. Enable
@@ -7184,10 +7184,40 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState) {
       m.rule.style?.cssProperties?.some(p => !p.disabled && p.value && INHERITABLE_PROPS.has(p.name))));
 
   if (propRules.size === 0 && !hasInherited && !property) {
+    if (opts.format === 'json') {
+      return formatJson({
+        schema: 'chrome-cdp-ex.cascade.v1',
+        input: { selector, property: null },
+        propertyCount: 0,
+        properties: [],
+        inherited: [],
+        editTarget: null,
+        message: 'No matching CSS rules found for this element',
+      });
+    }
     return 'No matching CSS rules found for this element';
   }
   if (propRules.size === 0 && !hasInherited && property) {
     const computed = computedMap.get(property);
+    if (opts.format === 'json') {
+      return formatJson({
+        schema: 'chrome-cdp-ex.cascade.v1',
+        input: { selector, property },
+        propertyCount: computed ? 1 : 0,
+        properties: computed ? [{
+          name: property,
+          computedValue: computed,
+          winner: null,
+          rules: [],
+          note: 'computed, no explicit rule found',
+        }] : [],
+        inherited: [],
+        editTarget: null,
+        message: computed
+          ? `${property}: ${computed} (computed, no explicit rule found)`
+          : `Property "${property}" not found on this element`,
+      });
+    }
     return computed
       ? `${property}: ${computed} (computed, no explicit rule found)`
       : `Property "${property}" not found on this element`;
@@ -7195,24 +7225,49 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState) {
 
   // Format output
   const lines = [];
+  const properties = [];
   for (const [prop, rules] of propRules) {
     const computedVal = computedMap.get(prop);
     if (!computedVal) continue;
 
     lines.push(`${prop}: ${computedVal}`);
+    const ruleModels = [];
+    let winner = null;
     for (const r of rules) {
       const isWinner = normalizeCssValue(r.value) === normalizeCssValue(computedVal);
       const mark = isWinner ? '✓' : '✗';
       const note = isWinner ? '' : '  [overridden]';
+      const ruleModel = {
+        selector: r.selector,
+        value: r.value,
+        source: r.source,
+        origin: r.origin || null,
+        winner: isWinner,
+        overridden: !isWinner,
+      };
+      ruleModels.push(ruleModel);
+      if (isWinner && !winner) winner = {
+        selector: r.selector,
+        value: r.value,
+        source: r.source,
+        origin: r.origin || null,
+      };
       lines.push(`  ${mark} ${r.selector} { ${prop}: ${r.value} }${note}`);
       lines.push(`    → ${r.source}`);
     }
+    properties.push({
+      name: prop,
+      computedValue: computedVal,
+      winner,
+      rules: ruleModels,
+    });
     lines.push('');
   }
 
   // Inherited properties
   const inherited = matched.inherited || [];
   const inheritedLines = [];
+  const inheritedModels = [];
   for (const inh of inherited) {
     for (const match of inh.matchedCSSRules || []) {
       const rule = match.rule;
@@ -7223,6 +7278,13 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState) {
         const selectorText = rule.selectorList?.text || '?';
         const source = await resolveStyleSource(cdp, sid, rule);
         inheritedLines.push(`  ${prop.name}: ${prop.value}  ← ${selectorText}  → ${source}`);
+        inheritedModels.push({
+          name: prop.name,
+          value: prop.value,
+          selector: selectorText,
+          source,
+          origin: rule.origin || null,
+        });
       }
     }
   }
@@ -7237,6 +7299,41 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState) {
       seen.add(l);
       lines.push(l);
     }
+  }
+
+  if (opts.format === 'json') {
+    const editProperty = property
+      ? properties.find(entry => entry.name === property)
+      : properties.find(entry => entry.winner);
+    const editTarget = editProperty?.winner
+      ? {
+        property: editProperty.name,
+        selector: editProperty.winner.selector,
+        value: editProperty.winner.value,
+        source: editProperty.winner.source,
+        origin: editProperty.winner.origin || null,
+      }
+      : null;
+    return formatJson({
+      schema: 'chrome-cdp-ex.cascade.v1',
+      input: { selector, property: property || null },
+      propertyCount: properties.length,
+      properties,
+      inherited: inheritedModels,
+      editTarget,
+      recommendation: editTarget
+        ? {
+          source: 'cascade',
+          strategy: 'edit-winning-source',
+          property: editTarget.property,
+          selector: editTarget.selector,
+          sourceLocation: editTarget.source,
+        }
+        : {
+          source: 'cascade',
+          strategy: 'inspect-computed-style',
+        },
+    });
   }
 
   return lines.join('\n').trim() || 'No matching CSS rules found';
@@ -9425,7 +9522,11 @@ async function runDaemon(targetId) {
           break;
         }
         case 'record': result = await recordStr(cdp, sessionId, args, refMap); break;
-        case 'cascade': result = await cascadeStr(cdp, sessionId, args[0], args[1], refMap, refState); break;
+        case 'cascade': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await cascadeStr(cdp, sessionId, fopts.args[0], fopts.args[1], refMap, refState, { format: fopts.format });
+          break;
+        }
         case 'dismiss-modal': case 'dismissmodal': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
           result = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }, 'settle-diff', null, fopts.format);
@@ -9798,8 +9899,8 @@ Usage: cdp <command> [args]
                                     --css-file <url> Inject <link rel="stylesheet">
                                     --js-file <url>  Inject <script src> and wait for load
                                     --remove [id]    Remove injected element(s) (all, or by id)
-  cascade <target> <sel|@ref> [prop] CSS origin tracing — shows which rules apply, source file + line
-                                    Optional: filter to one property (e.g. "background-color")
+  cascade <target> <sel|@ref> [prop] [--format json] CSS origin tracing — shows which rules apply, source file + line
+                                    Optional: filter to one property (e.g. "background-color"); JSON returns chrome-cdp-ex.cascade.v1
   record <target> [ms]              Record a short timeline of DOM/console/network/navigation events
   record <target> --action click @5 Record events around an action (click/press/fill/select/type/scroll/nav)
   record <target> --until "dom stable"|"network idle"  Record until page quiets (max 30s)
@@ -9963,7 +10064,7 @@ const COMMANDS = Object.freeze([
   { name: 'closetab', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'netlog', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'inject', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
-  { name: 'cascade', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'cascade', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'record', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'flow', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'repeat', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },

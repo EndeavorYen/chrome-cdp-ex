@@ -327,6 +327,16 @@ describe('COMMANDS registry', () => {
     }));
   });
 
+  it('registers cascade structured JSON handoff as a target command', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'cascade',
+      aliases: [],
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
   it('registers throttle as a mutating target command', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'throttle',
@@ -5812,6 +5822,76 @@ describe('cascadeStr', () => {
     expect(result).toContain('[overridden]');
     expect(result).toContain('components.css:142');
     expect(result).toContain('base.css:28');
+  });
+
+  it('returns structured JSON with winning CSS source for agents', async () => {
+    const cdp = makeCascadeCDP(
+      [
+        {
+          rule: {
+            selectorList: { text: '.btn-primary' },
+            origin: 'regular',
+            style: {
+              styleSheetId: 'components.css',
+              range: { startLine: 141 },
+              cssProperties: [{ name: 'background-color', value: '#2563eb' }],
+            },
+          },
+        },
+        {
+          rule: {
+            selectorList: { text: 'button' },
+            origin: 'regular',
+            style: {
+              styleSheetId: 'base.css',
+              range: { startLine: 27 },
+              cssProperties: [{ name: 'background-color', value: '#e5e7eb' }],
+            },
+          },
+        },
+      ],
+      [{ name: 'background-color', value: '#2563eb' }],
+    );
+    const result = await cascadeStr(cdp, 'sid1', '.btn', 'background-color', new Map(), null, { format: 'json' });
+    const model = JSON.parse(result);
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.cascade.v1',
+      input: { selector: '.btn', property: 'background-color' },
+      propertyCount: 1,
+      properties: [
+        {
+          name: 'background-color',
+          computedValue: '#2563eb',
+          winner: {
+            selector: '.btn-primary',
+            value: '#2563eb',
+            source: 'components.css:142',
+          },
+          rules: [
+            {
+              selector: '.btn-primary',
+              value: '#2563eb',
+              source: 'components.css:142',
+              winner: true,
+              overridden: false,
+            },
+            {
+              selector: 'button',
+              value: '#e5e7eb',
+              source: 'base.css:28',
+              winner: false,
+              overridden: true,
+            },
+          ],
+        },
+      ],
+    });
+    expect(model.editTarget).toMatchObject({
+      property: 'background-color',
+      selector: '.btn-primary',
+      source: 'components.css:142',
+    });
   });
 
   it('should show inherited properties', async () => {
