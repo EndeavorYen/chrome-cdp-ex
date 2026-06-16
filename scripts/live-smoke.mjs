@@ -502,6 +502,9 @@ if (!recordActions.actions.some(action => action.action === 'click' && action.co
 if (!recordActions.actions.some(action => action.evidence?.outcome?.status)) {
   throw new Error(`record-actions should include action outcome evidence\nOutput:\n${recordActionsJson}`);
 }
+if (!recordActions.actions.some(action => action.evidence?.verdict?.status)) {
+  throw new Error(`record-actions should include action verdict evidence\nOutput:\n${recordActionsJson}`);
+}
 const playwrightExport = step('export playwright', () => run(['export-playwright', target]));
 assertIncludes(playwrightExport, "import { test, expect } from '@playwright/test';", 'export-playwright import');
 assertIncludes(playwrightExport, 'await page.route("**/api/mock*"', 'export-playwright mock route');

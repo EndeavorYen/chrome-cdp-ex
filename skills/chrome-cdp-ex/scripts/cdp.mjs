@@ -3022,6 +3022,7 @@ function buildRecordActionsModel(session) {
         failure: entry.failure || null,
         diagnosis: entry.diagnosis || null,
         outcome: entry.outcome || null,
+        verdict: entry.verdict || null,
         nextHint: entry.nextHint || null,
       },
     };
@@ -3080,6 +3081,7 @@ function formatRecordActions(session, { format = 'text' } = {}) {
     if (step.evidence.effectSummary) lines.push(`   Evidence: ${step.evidence.effectSummary}`);
     if (step.evidence.effectSample) lines.push(`   Sample: ${step.evidence.effectSample}`);
     if (step.evidence.outcome?.status) lines.push(`   Outcome: ${step.evidence.outcome.status}`);
+    if (step.evidence.verdict?.status) lines.push(`   Verdict: ${step.evidence.verdict.status}`);
     if (step.evidence.failure?.kind) lines.push(`   Failure: ${step.evidence.failure.kind}`);
     if (step.evidence.failure?.reason) lines.push(`   Reason: ${step.evidence.failure.reason}`);
     if (step.evidence.nextHint) lines.push(`   Next: ${step.evidence.nextHint}`);

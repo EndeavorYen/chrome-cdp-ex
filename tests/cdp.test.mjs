@@ -1852,6 +1852,12 @@ describe('Session report', () => {
         settleOk: true,
         settleDurationMs: 123,
         effectSummary: '+++ Added (1):',
+        verdict: {
+          schema: 'chrome-cdp-ex.action-verdict.v1',
+          status: 'continue',
+          canContinue: true,
+          needsRecovery: false,
+        },
       },
     });
   });
@@ -1920,6 +1926,7 @@ describe('Session report', () => {
     expect(out).toContain('1. click #combat — replayable');
     expect(out).toContain('Replay: click #combat');
     expect(out).toContain('Evidence: +++ Added (1):');
+    expect(out).toContain('Verdict: continue');
     expect(out).toContain('2. fill #cmd — needs input');
     expect(out).toContain('Replay: fill #cmd <text>');
   });
