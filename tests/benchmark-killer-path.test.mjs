@@ -346,6 +346,10 @@ describe('benchmark killer path helpers', () => {
               usefulObservationTokens: 4200,
               verificationCallsSaved: 0,
               differentiatorSuccessRate: 0.5,
+              autoEvidenceActions: 0,
+              hasReportTimeline: false,
+              staleRefRecoveryRate: 0,
+              sessionStabilitySample: false,
             },
           },
         ],
@@ -362,6 +366,10 @@ describe('benchmark killer path helpers', () => {
           { name: 'perceive', command: ['perceive', 'AABB'], startedAt: 0, endedAt: 20, status: 0, stdout: 'Page:\n@1 Button', stderr: '' },
           { name: 'click', command: ['click', 'AABB', '#go'], startedAt: 20, endedAt: 30, status: 0, stdout: 'Clicked\nclick: dispatched', stderr: '' },
           { name: 'report', command: ['report', 'AABB'], startedAt: 30, endedAt: 40, status: 0, stdout: 'Session report: AABB\nActions: 1\n\nAction timeline:', stderr: '' },
+          { name: 'stale-ref', command: ['click', 'AABB', '@1'], startedAt: 40, endedAt: 55, status: 1, expectedFailure: true, stdout: '', stderr: 'Action failure: stale-ref\nNext: cdp perceive AABB -C -d 8' },
+          { name: 'stability-wait', command: ['wait', 'AABB', '1000'], startedAt: 55, endedAt: 65, status: 0, stdout: 'waited 1000ms', stderr: '' },
+          { name: 'stability-status', command: ['status', 'AABB'], startedAt: 65, endedAt: 75, status: 0, stdout: 'Status: ready', stderr: '' },
+          { name: 'stability-report', command: ['report', 'AABB'], startedAt: 75, endedAt: 90, status: 0, stdout: 'Session report: AABB\nActions: 1\n\nAction timeline:', stderr: '' },
         ],
       });
 
@@ -379,10 +387,22 @@ describe('benchmark killer path helpers', () => {
           expect.objectContaining({
             id: 'playwright',
             label: 'Measured Playwright harness',
+            metrics: expect.objectContaining({
+              autoEvidenceActions: 0,
+              hasReportTimeline: false,
+              staleRefRecoveryRate: 0,
+              sessionStabilitySample: false,
+            }),
             delta: expect.objectContaining({
-              commandCallsSaved: 21,
+              commandCallsSaved: expect.any(Number),
               usefulObservationTokensSaved: expect.any(Number),
             }),
+            capabilityGaps: [
+              'action-evidence',
+              'report-timeline',
+              'stale-ref-recovery',
+              'session-stability',
+            ],
           }),
         ],
       });

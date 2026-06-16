@@ -248,12 +248,25 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
 }
 
 function normalizeBaselineMetrics(metrics = {}) {
-  return {
+  const normalized = {
     commandCalls: metrics.commandCalls ?? null,
     usefulObservationTokens: metrics.usefulObservationTokens ?? null,
     verificationCallsSaved: metrics.verificationCallsSaved ?? 0,
     differentiatorSuccessRate: metrics.differentiatorSuccessRate ?? null,
   };
+  if (Object.hasOwn(metrics, 'autoEvidenceActions')) {
+    normalized.autoEvidenceActions = metrics.autoEvidenceActions ?? null;
+  }
+  if (Object.hasOwn(metrics, 'hasReportTimeline')) {
+    normalized.hasReportTimeline = metrics.hasReportTimeline;
+  }
+  if (Object.hasOwn(metrics, 'staleRefRecoveryRate')) {
+    normalized.staleRefRecoveryRate = metrics.staleRefRecoveryRate ?? null;
+  }
+  if (Object.hasOwn(metrics, 'sessionStabilitySample')) {
+    normalized.sessionStabilitySample = metrics.sessionStabilitySample;
+  }
+  return normalized;
 }
 
 function normalizeComparisonBaselineSet(input = DEFAULT_COMPARISON_BASELINE_SET) {
@@ -290,22 +303,41 @@ export function buildBenchmarkComparison(summary, baselineSet = DEFAULT_COMPARIS
   const normalizedBaselineSet = normalizeComparisonBaselineSet(baselineSet);
   const actual = summary.metrics || {};
   const actualDifferentiatorRate = actual.differentiators?.successRate ?? 0;
+  const actualMetrics = {
+    commandCalls: actual.commandCalls ?? null,
+    usefulObservationTokens: actual.usefulObservationTokens ?? null,
+    verificationCallsSaved: actual.verificationCallsSaved ?? null,
+    differentiatorSuccessRate: actualDifferentiatorRate,
+    autoEvidenceActions: actual.autoEvidenceActions ?? null,
+    hasReportTimeline: actual.hasReportTimeline ?? null,
+    staleRefRecoveryRate: actual.staleRefRecovery?.rate ?? null,
+    sessionStabilitySample: actual.sessionStability?.success ?? null,
+  };
   return {
     schema: 'chrome-cdp-ex.benchmark-comparison.v1',
     source: normalizedBaselineSet.source,
     note: normalizedBaselineSet.note,
-    actual: {
-      commandCalls: actual.commandCalls ?? null,
-      usefulObservationTokens: actual.usefulObservationTokens ?? null,
-      verificationCallsSaved: actual.verificationCallsSaved ?? null,
-      differentiatorSuccessRate: actualDifferentiatorRate,
-    },
+    actual: actualMetrics,
     baselines: normalizedBaselineSet.baselines.map((baseline) => {
       const metrics = normalizeBaselineMetrics(baseline.metrics);
+      const capabilityGaps = [];
+      if (metrics.autoEvidenceActions != null && actualMetrics.autoEvidenceActions != null && metrics.autoEvidenceActions < actualMetrics.autoEvidenceActions) {
+        capabilityGaps.push('action-evidence');
+      }
+      if (metrics.hasReportTimeline === false && actualMetrics.hasReportTimeline === true) {
+        capabilityGaps.push('report-timeline');
+      }
+      if (metrics.staleRefRecoveryRate != null && actualMetrics.staleRefRecoveryRate != null && metrics.staleRefRecoveryRate < actualMetrics.staleRefRecoveryRate) {
+        capabilityGaps.push('stale-ref-recovery');
+      }
+      if (metrics.sessionStabilitySample === false && actualMetrics.sessionStabilitySample === true) {
+        capabilityGaps.push('session-stability');
+      }
       return {
         id: baseline.id,
         label: baseline.label,
         metrics,
+        capabilityGaps,
         delta: {
           commandCallsSaved: metrics.commandCalls != null && actual.commandCalls != null
             ? metrics.commandCalls - actual.commandCalls
@@ -435,7 +467,8 @@ export function formatBenchmarkReport(summary) {
       const calls = formatSignedDelta(baseline.delta.commandCallsSaved, 'calls');
       const tokens = formatSignedDelta(baseline.delta.usefulObservationTokensSaved, 'useful-observation tokens');
       const verify = formatSignedDelta(baseline.delta.verificationCallsSaved, 'verification calls');
-      lines.push(`  - ${baseline.label}: ${calls}, ${tokens}, ${verify}`);
+      const gaps = baseline.capabilityGaps?.length ? `, gaps: ${baseline.capabilityGaps.join(', ')}` : '';
+      lines.push(`  - ${baseline.label}: ${calls}, ${tokens}, ${verify}${gaps}`);
     }
     lines.push('');
   }

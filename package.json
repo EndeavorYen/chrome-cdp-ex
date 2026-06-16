@@ -20,6 +20,7 @@
     "check:docs": "node scripts/check-docs-contract.mjs",
     "smoke:live": "node scripts/live-smoke.mjs",
     "benchmark:killer": "node scripts/benchmark-killer-path.mjs",
+    "benchmark:generic-cdp": "node scripts/benchmark-generic-cdp-baseline.mjs",
     "benchmark:baseline": "node scripts/benchmark-baseline-builder.mjs"
   },
   "devDependencies": {

@@ -73,6 +73,36 @@ describe('benchmark baseline builder', () => {
     })).toThrow(/raw-baseline-results\.v1/);
   });
 
+  it('preserves optional capability metrics for capability-aware comparisons', () => {
+    const out = buildComparisonBaselineFile({
+      schema: 'chrome-cdp-ex.raw-baseline-results.v1',
+      runs: [
+        {
+          id: 'generic-cdp',
+          commandCalls: 8,
+          usefulObservationTokens: 2041,
+          verificationCallsSaved: 0,
+          differentiatorSuccessRate: 1,
+          autoEvidenceActions: 0,
+          hasReportTimeline: false,
+          staleRefRecoveryRate: 0,
+          sessionStabilitySample: false,
+        },
+      ],
+    });
+
+    expect(out.baselines[0].metrics).toMatchObject({
+      commandCalls: 8,
+      usefulObservationTokens: 2041,
+      verificationCallsSaved: 0,
+      differentiatorSuccessRate: 1,
+      autoEvidenceActions: 0,
+      hasReportTimeline: false,
+      staleRefRecoveryRate: 0,
+      sessionStabilitySample: false,
+    });
+  });
+
   it('parses CLI args for input, output, source, and note', () => {
     expect(parseBaselineBuilderArgs([
       'raw.json',

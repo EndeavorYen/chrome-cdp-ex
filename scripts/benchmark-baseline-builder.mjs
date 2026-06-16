@@ -9,12 +9,25 @@ function metricNumber(value, fallback = null) {
 
 function normalizeRunMetrics(run = {}) {
   const metrics = run.metrics || run;
-  return {
+  const normalized = {
     commandCalls: metricNumber(metrics.commandCalls),
     usefulObservationTokens: metricNumber(metrics.usefulObservationTokens),
     verificationCallsSaved: metricNumber(metrics.verificationCallsSaved, 0),
     differentiatorSuccessRate: metricNumber(metrics.differentiatorSuccessRate),
   };
+  if (Object.hasOwn(metrics, 'autoEvidenceActions')) {
+    normalized.autoEvidenceActions = metricNumber(metrics.autoEvidenceActions, 0);
+  }
+  if (Object.hasOwn(metrics, 'hasReportTimeline')) {
+    normalized.hasReportTimeline = Boolean(metrics.hasReportTimeline);
+  }
+  if (Object.hasOwn(metrics, 'staleRefRecoveryRate')) {
+    normalized.staleRefRecoveryRate = metricNumber(metrics.staleRefRecoveryRate, 0);
+  }
+  if (Object.hasOwn(metrics, 'sessionStabilitySample')) {
+    normalized.sessionStabilitySample = Boolean(metrics.sessionStabilitySample);
+  }
+  return normalized;
 }
 
 export function buildComparisonBaselineFile(raw = {}, overrides = {}) {
