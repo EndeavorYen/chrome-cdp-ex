@@ -7477,8 +7477,9 @@ async function flowStr({ run, settle }, input, { format = 'text', targetId = nul
 const REPLAY_BLOCKED = new Set(['replay', 'record-actions', 'recordactions', 'batch', 'flow', 'repeat', 'stop']);
 
 function parseReplayArgs(args, { reader = readFileSync } = {}) {
-  const tokens = (args || []).filter(a => a !== undefined && a !== null);
-  const opts = { continueOnError: false, artifact: null, source: 'inline JSON' };
+  const fopts = parseFormatArgs((args || []).filter(a => a !== undefined && a !== null), ['text', 'json']);
+  const tokens = fopts.args;
+  const opts = { continueOnError: false, artifact: null, source: 'inline JSON', format: fopts.format };
   const positional = [];
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -7539,18 +7540,26 @@ function replayStepFromAction(action = {}) {
     const missing = Array.isArray(action.needsInput) && action.needsInput.length
       ? action.needsInput
       : ['review'];
-    return { skip: true, commandText, missing, reason: 'not replayable' };
+    return { skip: true, command, commandText, missing, reason: 'not replayable' };
   }
   if (!command.length || !command[0]) {
-    return { skip: true, commandText, missing: ['command'], reason: 'missing command' };
+    return { skip: true, command, commandText, missing: ['command'], reason: 'missing command' };
   }
   if (command.includes('<redacted>')) {
-    return { skip: true, commandText, missing: redactedCommandNeedsInput(action.action || command[0]), reason: 'redacted input' };
+    return { skip: true, command, commandText, missing: redactedCommandNeedsInput(action.action || command[0]), reason: 'redacted input' };
   }
   if (REPLAY_BLOCKED.has(command[0])) {
-    return { skip: true, commandText, missing: ['safe command'], reason: `blocked command: ${command[0]}` };
+    return { skip: true, command, commandText, missing: ['safe command'], reason: `blocked command: ${command[0]}` };
   }
-  return { cmd: command[0], args: command.slice(1), commandText };
+  return { cmd: command[0], args: command.slice(1), command, commandText };
+}
+
+function replayRecoveryNextSteps(targetId) {
+  const target = targetId || '<target>';
+  return [
+    `cdp perceive ${target} -C -d 8`,
+    `cdp report ${target} --format json`,
+  ];
 }
 
 async function replayActionsStr({ run }, args) {
@@ -7558,32 +7567,78 @@ async function replayActionsStr({ run }, args) {
   const actions = opts.artifact.actions;
   const environment = Array.isArray(opts.artifact.environment) ? opts.artifact.environment : [];
   const total = actions.length;
+  const model = {
+    schema: 'chrome-cdp-ex.replay.v1',
+    source: opts.source,
+    sourceTargetId: opts.artifact.targetId || null,
+    sourceSessionId: opts.artifact.sessionId || null,
+    continueOnError: opts.continueOnError,
+    halted: false,
+    counts: {
+      environment: environment.length,
+      actions: total,
+      total: environment.length + total,
+      ok: 0,
+      failed: 0,
+      skipped: 0,
+    },
+    steps: [],
+    failedStep: null,
+    nextSteps: [],
+  };
   const lines = [
     `Replay: ${total} step(s)`,
     `Source: ${opts.source}`,
   ];
   if (environment.length) lines.push(`Environment: ${environment.length} step(s)`);
-  let okCount = 0, failCount = 0, skipCount = 0;
-  const runReplayStep = async (step, label, haltText) => {
+  const finish = () => {
+    lines.push(`Done: ${model.counts.ok} ok, ${model.counts.failed} failed, ${model.counts.skipped} skipped`);
+    if (model.failedStep) model.nextSteps = replayRecoveryNextSteps(model.sourceTargetId);
+    return opts.format === 'json' ? formatJson(model) : lines.join('\n');
+  };
+  const recordStep = (phase, index, totalCount, step, details) => {
+    const entry = {
+      phase,
+      index,
+      total: totalCount,
+      command: step.command || [],
+      commandText: step.commandText,
+      ok: details.ok === true,
+      skipped: details.skipped === true,
+    };
+    if (details.resultPreview) entry.resultPreview = details.resultPreview;
+    if (details.error) entry.error = details.error;
+    if (step.reason) entry.reason = step.reason;
+    if (step.missing?.length) entry.missing = step.missing;
+    model.steps.push(entry);
+    return entry;
+  };
+  const runReplayStep = async (step, phase, index, totalCount, label, haltText) => {
     if (step.skip) {
-      skipCount++;
+      model.counts.skipped++;
       lines.push(`${label} skip ${step.commandText}`);
       if (step.reason) lines.push(`  Reason: ${step.reason}`);
       if (step.missing?.length) lines.push(`  Missing: ${step.missing.join(', ')}`);
+      recordStep(phase, index, totalCount, step, { skipped: true });
       return true;
     }
     lines.push(`${label} ${step.commandText}`);
     const result = await run({ cmd: step.cmd, args: step.args });
     if (result?.ok) {
-      okCount++;
+      model.counts.ok++;
       const body = (result.result || '').toString().split('\n')[0].slice(0, 240);
       if (body) lines.push(`  ok: ${body}`);
       else lines.push('  ok');
+      recordStep(phase, index, totalCount, step, { ok: true, resultPreview: body || null });
       return true;
     }
-    failCount++;
-    lines.push(`  ✗ ${result?.error || 'unknown error'}`);
+    model.counts.failed++;
+    const error = result?.error || 'unknown error';
+    lines.push(`  ✗ ${error}`);
+    const failedStep = recordStep(phase, index, totalCount, step, { ok: false, error });
+    if (!model.failedStep) model.failedStep = failedStep;
     if (!opts.continueOnError) {
+      model.halted = true;
       lines.push(`${haltText} (use --continue to keep going).`);
       return false;
     }
@@ -7591,20 +7646,18 @@ async function replayActionsStr({ run }, args) {
   };
   for (let i = 0; i < environment.length; i++) {
     const step = replayStepFromAction(environment[i]);
-    const keepGoing = await runReplayStep(step, `[env ${i + 1}/${environment.length}]`, `Replay halted at environment step ${i + 1}/${environment.length}`);
+    const keepGoing = await runReplayStep(step, 'environment', i + 1, environment.length, `[env ${i + 1}/${environment.length}]`, `Replay halted at environment step ${i + 1}/${environment.length}`);
     if (!keepGoing) {
-      lines.push(`Done: ${okCount} ok, ${failCount} failed, ${skipCount} skipped`);
-      return lines.join('\n');
+      return finish();
     }
   }
   for (let i = 0; i < actions.length; i++) {
     const action = actions[i];
     const step = replayStepFromAction(action);
-    const keepGoing = await runReplayStep(step, `[${i + 1}/${total}]`, `Replay halted at step ${i + 1}/${total}`);
+    const keepGoing = await runReplayStep(step, 'action', i + 1, total, `[${i + 1}/${total}]`, `Replay halted at step ${i + 1}/${total}`);
     if (!keepGoing) break;
   }
-  lines.push(`Done: ${okCount} ok, ${failCount} failed, ${skipCount} skipped`);
-  return lines.join('\n');
+  return finish();
 }
 
 // --- Doctor: one-call diagnostics ---
@@ -9413,8 +9466,8 @@ Usage: cdp <command> [args]
   restore <target> --json <json>     Restore an inline checkpoint JSON artifact
   record-actions <target>           Export action log + mock/clock/throttle environment as text or JSON
   export-playwright <target>         Export current workflow as a Playwright spec draft
-  replay <target> --file <path>      Replay environment controls + actions against the live page
-  replay <target> --json <json>      Replay an inline record-actions JSON artifact
+  replay <target> --file <path> [--format json]  Replay environment controls + actions against the live page
+  replay <target> --json <json> [--format json]  Replay an inline record-actions JSON artifact
   frame <target> [--format json]     List page frames with stable @fN refs (alias: frames)
   overlay <target> [sel|@ref] [--format json]  Detect visible dialogs/overlays and target blockers
   net   <target>                    Network performance entries
@@ -9587,7 +9640,7 @@ const COMMANDS = Object.freeze([
   { name: 'restore', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'record-actions', aliases: ['recordactions'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'export-playwright', aliases: ['export-pw'], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'replay', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'replay', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'elshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'click', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'jsclick', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },

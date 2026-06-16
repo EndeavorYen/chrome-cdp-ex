@@ -591,6 +591,14 @@ assertIncludes(replayOut, 'mock add **/api/mock*', 'replay mock environment');
 assertIncludes(replayOut, 'fill #cmd "look trainer"', 'replay fill');
 assertIncludes(replayOut, 'click #combat', 'replay click');
 assertIncludes(replayOut, 'Done:', 'replay summary');
+const replayJsonOut = step('replay record-actions artifact json', () => run(['replay', target, '--file', replayArtifactPath, '--format', 'json'], { timeout: 30000 }));
+const parsedReplay = JSON.parse(replayJsonOut);
+if (parsedReplay.schema !== 'chrome-cdp-ex.replay.v1' || parsedReplay.counts?.actions < 1 || parsedReplay.counts?.environment < 1) {
+  throw new Error(`replay --format json should return structured replay counts:\n${replayJsonOut}`);
+}
+if (!Array.isArray(parsedReplay.steps) || !parsedReplay.steps.some(step => step.phase === 'environment') || !parsedReplay.steps.some(step => step.phase === 'action')) {
+  throw new Error(`replay --format json should include environment and action steps:\n${replayJsonOut}`);
+}
 step('wait any-of', () => assertIncludes(run(['waitfor', target, '--any-of', '戰鬥勝利|戰敗|逃跑成功', '8000', '--scope', '#combat-log'], { timeout: 12000 }), '戰鬥勝利', 'waitfor --any-of'));
 step('wait selector stable', () => assertIncludes(run(['waitfor', target, '--selector-stable', '#combat-log', '500', '8000'], { timeout: 12000 }), 'stable', 'waitfor --selector-stable'));
 const shotOut = step('shot quiet', () => run(['shot', target, resolve(tmpdir(), 'chrome-cdp-ex-smoke.png'), '--quiet']));

@@ -283,7 +283,7 @@ describe('COMMANDS registry', () => {
       needsTarget: true,
       mutates: true,
       feedbackPolicy: 'report-only',
-      outputFormats: ['text'],
+      outputFormats: ['text', 'json'],
     }));
   });
 
@@ -6670,6 +6670,72 @@ describe('replayActionsStr', () => {
     expect(out).toContain('Element not found');
     expect(out).toContain('Replay halted at step 1/2');
     expect(out).toContain('Done: 0 ok, 1 failed, 0 skipped');
+  });
+
+  it('returns structured JSON handoff with counts and failed step', async () => {
+    const calls = [];
+    const source = artifact([
+      { index: 1, action: 'fill', command: ['fill', '#cmd', 'look trainer'], replayable: true, needsInput: [] },
+      { index: 2, action: 'click', command: ['click', '#missing'], replayable: true, needsInput: [] },
+      { index: 3, action: 'click', command: ['click', '#later'], replayable: true, needsInput: [] },
+    ]);
+    source.environmentCount = 1;
+    source.environment = [
+      { index: 1, type: 'mock', action: 'add', command: ['mock', 'add', '**/api/fail*', '--status', '503'], replayable: true, needsInput: [] },
+    ];
+
+    const out = await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step);
+        if (step.cmd === 'click') return { ok: false, error: 'Element not found: #missing' };
+        return { ok: true, result: `${step.cmd} ok\nsecond line` };
+      },
+    }, ['--format', 'json', '--json', JSON.stringify(source)]);
+    const parsed = JSON.parse(out);
+
+    expect(calls).toEqual([
+      { cmd: 'mock', args: ['add', '**/api/fail*', '--status', '503'] },
+      { cmd: 'fill', args: ['#cmd', 'look trainer'] },
+      { cmd: 'click', args: ['#missing'] },
+    ]);
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.replay.v1',
+      source: 'inline JSON',
+      sourceTargetId: 'ABC123',
+      halted: true,
+      counts: {
+        environment: 1,
+        actions: 3,
+        ok: 2,
+        failed: 1,
+        skipped: 0,
+        total: 4,
+      },
+      failedStep: {
+        phase: 'action',
+        index: 2,
+        commandText: 'click #missing',
+        error: 'Element not found: #missing',
+      },
+      nextSteps: [
+        'cdp perceive ABC123 -C -d 8',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(parsed.steps).toHaveLength(3);
+    expect(parsed.steps[0]).toMatchObject({
+      phase: 'environment',
+      index: 1,
+      ok: true,
+      command: ['mock', 'add', '**/api/fail*', '--status', '503'],
+      resultPreview: 'mock ok',
+    });
+    expect(parsed.steps[2]).toMatchObject({
+      phase: 'action',
+      index: 2,
+      ok: false,
+      command: ['click', '#missing'],
+    });
   });
 });
 

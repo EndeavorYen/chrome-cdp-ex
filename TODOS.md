@@ -56,10 +56,10 @@
 - [x] `record-actions` — export the current session action log as replay-oriented text/JSON. Priority: P1.
 - [x] `replay` — execute a recorded action artifact against the live page. Priority: P1.
 - [x] `checkpoint` / `restore` — save/restore page state (cookies, localStorage, sessionStorage, URL) for stateful testing. Priority: P1.
-- [ ] `mock` / `throttle` / `clock` — request fixtures, network throttling, and `Date.now()` control. Priority: P2.
-- [ ] `summary --schema=json` — structured perceive output for LLM tool-calling. Priority: P2.
+- [x] `mock` / `throttle` / `clock` — request fixtures, network throttling, and `Date.now()` control. Priority: P2.
+- [x] `summary --format json` — structured summary output for LLM tool-calling. Priority: P2.
 - [ ] `tab-group` / `broadcast` — multi-tab coordination. Priority: P2.
-- [ ] `diff-shot` — visual regression diff between baseline + current. Priority: P2.
+- [x] `diff-shot` — visual regression diff between baseline + current. Priority: P2.
 - [x] `frame` / `frames` — list CDP frame tree with stable `@fN` refs and parse `@fN:M` syntax. Priority: P1.
 - [x] Frame-scoped perception/action refs — `perceive --frame @fN` emits `@fN:M` refs; `click`, `fill`, and `cascade` can resolve them. Priority: P1.
 - [ ] `components` — React/Vue component tree + state inspection. Priority: P2.
