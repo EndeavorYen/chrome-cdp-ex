@@ -1133,6 +1133,35 @@ describe('ActionResult', () => {
     expect(out).not.toContain('Clicked #submit');
   });
 
+  it('compacts long DOM diff evidence in JSON action handoffs', async () => {
+    const longDiff = [
+      'Page: Very Large App',
+      '+++ Added (1):',
+      ...Array.from({ length: 180 }, (_, index) => `+   [StaticText] low signal row ${index}`),
+      '+   [status] Saved successfully',
+      'TAIL-SHOULD-NOT-BE-SERIALIZED',
+    ].join('\n');
+
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: async () => 'Clicked #save',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => longDiff,
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.effects.domDiffChars).toBe(longDiff.length);
+    expect(parsed.effects.domDiffTruncated).toBe(true);
+    expect(parsed.effects.domDiffSummary).toBe('+++ Added (1):');
+    expect(parsed.effects.domDiffSample).toBe('+   [status] Saved successfully');
+    expect(parsed.effects.domDiff).toContain('+++ Added (1):');
+    expect(parsed.effects.domDiff).toContain('[status] Saved successfully');
+    expect(parsed.effects.domDiff.length).toBeLessThan(900);
+    expect(out).not.toContain('TAIL-SHOULD-NOT-BE-SERIALIZED');
+  });
+
   it('enriches action feedback before formatting and logging', async () => {
     const delta = {
       console: {

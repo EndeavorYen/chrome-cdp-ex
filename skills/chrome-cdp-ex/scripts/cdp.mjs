@@ -1543,6 +1543,7 @@ function formatPerceptionJson(model) {
 }
 
 const MAX_ACTION_DELTA_ENTRIES = 5;
+const MAX_ACTION_JSON_DOM_DIFF_CHARS = 800;
 const SENSITIVE_QUERY_KEY_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn)\b/i;
 const NOISY_ACTION_NETWORK_TYPES = new Set(['Image', 'Stylesheet', 'Script', 'Font', 'Media', 'WebSocket']);
 
@@ -2337,7 +2338,7 @@ function finalizeActionResult(result, { enrichActionResult = null, onActionResul
 }
 
 function formatActionResultOutput(result, { format = 'text', dispatchText = '', timeoutError = null } = {}) {
-  if (format === 'json') return formatJson(result);
+  if (format === 'json') return formatJson(compactActionResultForJson(result));
   const text = dispatchText ? `${dispatchText}\n---\n${formatActionText(result)}` : formatActionText(result);
   if (!timeoutError) return text;
   return `${text}\n(success but observation timed out after action dispatch: ${timeoutError.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
@@ -2432,6 +2433,24 @@ function summarizeActionDomDiff(domDiff) {
   ) || null;
   const sample = chooseActionDomDiffSample(lines);
   return { summary, sample };
+}
+
+function compactActionResultForJson(result) {
+  const compact = JSON.parse(JSON.stringify(result));
+  const effects = compact.effects || {};
+  if (typeof effects.domDiff !== 'string') return compact;
+
+  const original = effects.domDiff;
+  const { summary, sample } = summarizeActionDomDiff(original);
+  effects.domDiffChars = original.length;
+  effects.domDiffSummary = summary;
+  effects.domDiffSample = sample;
+  effects.domDiffTruncated = original.length > MAX_ACTION_JSON_DOM_DIFF_CHARS;
+  if (effects.domDiffTruncated) {
+    effects.domDiff = [summary, sample].filter(Boolean).join('\n')
+      || compactActionText(original, MAX_ACTION_JSON_DOM_DIFF_CHARS);
+  }
+  return compact;
 }
 
 const SENSITIVE_ACTION_TARGET_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn)\b/i;
