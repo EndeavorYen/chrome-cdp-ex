@@ -1485,6 +1485,75 @@ describe('Session report', () => {
     });
   });
 
+  it('normalizes report diagnosis recovery commands to the target prefix', () => {
+    const state = T.createSessionState({ targetId: 'ABC123456789', sessionId: 'sid-1' });
+    const actionResult = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123456789', input: '#combat', resolvedBy: 'selector', label: '#combat' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] 戰鬥勝利', console: [], network: [], navigation: null },
+      nextHint: null,
+    }), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        pending: 0,
+        entries: [{ method: 'POST', url: 'https://example.com/api/combat', status: 500, duration: 27 }],
+      },
+    });
+
+    T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+    const model = T.buildSessionReportModel(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(model.recommendation.commands).toEqual([
+      'cdp netlog ABC12345',
+      'cdp perceive ABC12345 --since-action',
+      'cdp report ABC12345 --format json',
+    ]);
+    expect(model.nextSteps).toEqual([
+      'cdp netlog ABC12345',
+      'cdp perceive ABC12345 --since-action',
+      'cdp report ABC12345 --format json',
+      'cdp record-actions ABC12345 --format json',
+      'cdp export-playwright ABC12345',
+    ]);
+    expect(out).toContain('Run: cdp netlog ABC12345');
+    expect(out).not.toContain('cdp netlog ABC123456789');
+  });
+
+  it('prints report recommendation and executable next steps in text mode', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    const actionResult = T.applyActionObservationDelta(sampleActionResult(), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 1,
+        pending: 0,
+        entries: [{ method: 'POST', url: 'https://example.com/api/combat', status: 500, duration: 27 }],
+      },
+    });
+
+    T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+    const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
+
+    expect(out).toContain('Recommendation:');
+    expect(out).toContain('Source: latest-action-diagnosis');
+    expect(out).toContain('Strategy: inspect-network');
+    expect(out).toContain('Run: cdp netlog ABC123');
+    expect(out).toContain('Verify: cdp perceive ABC123 --since-action');
+    expect(out).toContain('Next steps:');
+    expect(out).toContain('1. cdp netlog ABC123');
+    expect(out).toContain('2. cdp perceive ABC123 --since-action');
+    expect(out).toContain('3. cdp report ABC123 --format json');
+    expect(out).toContain('4. cdp record-actions ABC123 --format json');
+    expect(out).toContain('5. cdp export-playwright ABC123');
+  });
+
   it('records classified action failures in the session report', () => {
     const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
     const failure = T.classifyActionFailure(

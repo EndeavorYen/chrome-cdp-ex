@@ -2334,6 +2334,20 @@ function uniqueNextStepCommands(commands = []) {
   return out;
 }
 
+function escapeRegExpLiteral(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeReportTargetCommand(command, fromTarget, toTarget) {
+  if (!command || !fromTarget || !toTarget || fromTarget === toTarget) return command;
+  const re = new RegExp(`^(cdp\\s+\\S+\\s+)${escapeRegExpLiteral(fromTarget)}(?=$|\\s)`);
+  return String(command).replace(re, `$1${toTarget}`);
+}
+
+function normalizeReportTargetCommands(commands = [], fromTarget, toTarget) {
+  return uniqueNextStepCommands(commands.map(command => normalizeReportTargetCommand(command, fromTarget, toTarget)));
+}
+
 function defaultReportNextSteps(target, hasActions) {
   return hasActions
     ? [
@@ -2347,13 +2361,15 @@ function defaultReportNextSteps(target, hasActions) {
       ];
 }
 
-function buildReportRecommendation(actionLog = [], target) {
+function buildReportRecommendation(actionLog = [], target, fullTarget = target) {
   for (let i = actionLog.length - 1; i >= 0; i--) {
     const entry = actionLog[i];
     const diagnosis = entry?.diagnosis || null;
     if (!diagnosis || diagnosis.status === 'ok') continue;
     const recovery = diagnosis.recovery || null;
-    const commands = recoveryCommandsFromDiagnosis(diagnosis);
+    const sourceTarget = actionTargetCommandId(entry.target || {}) || fullTarget;
+    const commands = normalizeReportTargetCommands(recoveryCommandsFromDiagnosis(diagnosis), sourceTarget, target);
+    const verifyCommand = normalizeReportTargetCommand(recovery?.verifyCommand || diagnosis.nextCommand || null, sourceTarget, target);
     return {
       source: 'latest-action-diagnosis',
       actionIndex: i + 1,
@@ -2361,7 +2377,7 @@ function buildReportRecommendation(actionLog = [], target) {
       diagnosisKind: diagnosis.kind || null,
       strategy: recovery?.strategy || null,
       priority: recovery?.priority || null,
-      verifyCommand: recovery?.verifyCommand || diagnosis.nextCommand || null,
+      verifyCommand,
       commands,
     };
   }
@@ -2375,6 +2391,32 @@ function buildReportRecommendation(actionLog = [], target) {
     verifyCommand: actionLog.length > 0 ? `cdp perceive ${target} --since-action` : `cdp perceive ${target} -C -d 8`,
     commands: defaultReportNextSteps(target, actionLog.length > 0),
   };
+}
+
+function formatReportRecommendationLines(recommendation = {}) {
+  const commands = recommendation.commands || [];
+  const run = commands[0] || recommendation.verifyCommand || null;
+  const lines = ['Recommendation:'];
+  if (recommendation.source) lines.push(`  Source: ${recommendation.source}`);
+  if (recommendation.actionIndex != null) lines.push(`  Action: #${recommendation.actionIndex}${recommendation.action ? ` ${recommendation.action}` : ''}`);
+  if (recommendation.diagnosisKind) lines.push(`  Diagnosis: ${recommendation.diagnosisKind}`);
+  if (recommendation.strategy) lines.push(`  Strategy: ${recommendation.strategy}`);
+  if (recommendation.priority) lines.push(`  Priority: ${recommendation.priority}`);
+  if (run) lines.push(`  Run: ${run}`);
+  if (recommendation.verifyCommand) lines.push(`  Verify: ${recommendation.verifyCommand}`);
+  return lines;
+}
+
+function formatReportNextStepLines(nextSteps = []) {
+  const lines = ['Next steps:'];
+  if (!nextSteps.length) {
+    lines.push('  1. cdp perceive <target> -C -d 8');
+    return lines;
+  }
+  for (const [index, command] of nextSteps.entries()) {
+    lines.push(`  ${index + 1}. ${command}`);
+  }
+  return lines;
 }
 
 function buildSessionReportModel(session, { now = Date.now() } = {}) {
@@ -2410,7 +2452,7 @@ function buildSessionReportModel(session, { now = Date.now() } = {}) {
       nextHint: entry.nextHint || null,
     };
   });
-  const recommendation = buildReportRecommendation(actionLog, target);
+  const recommendation = buildReportRecommendation(actionLog, target, session.targetId);
   const nextSteps = uniqueNextStepCommands([
     ...(recommendation.commands || []),
     ...(actionLog.length > 0 ? [
@@ -2456,6 +2498,7 @@ function buildSessionReportModel(session, { now = Date.now() } = {}) {
 
 function formatSessionReport(session, { now = Date.now(), format = 'text' } = {}) {
   if (format === 'json') return formatJson(buildSessionReportModel(session, { now }));
+  const model = buildSessionReportModel(session, { now });
   const actionLog = session.actionLog || [];
   const screenshots = session.screenshots || [];
   const uptimeMs = Math.max(0, now - (session.createdAt || now));
@@ -2481,6 +2524,7 @@ function formatSessionReport(session, { now = Date.now(), format = 'text' } = {}
       const label = entry.target?.label || entry.target?.input || '';
       const settleStatus = entry.dispatch?.ok === false ? 'failed' : (entry.settle?.ok ? 'ok' : 'not confirmed');
       const settleDuration = Number.isFinite(entry.settle?.durationMs) ? ` in ${entry.settle.durationMs}ms` : '';
+      const sourceTarget = actionTargetCommandId(entry.target || {}) || session.targetId;
       lines.push(`${i + 1}. ${entry.action}${label ? ` ${label}` : ''} — ${settleStatus}${settleDuration}`);
       if (entry.dispatch?.method) lines.push(`   Dispatch: ${entry.dispatch.method}`);
       if (entry.failure?.kind) lines.push(`   Failure: ${entry.failure.kind} — ${entry.failure.reason}`);
@@ -2498,8 +2542,10 @@ function formatSessionReport(session, { now = Date.now(), format = 'text' } = {}
       if (entry.exceptionSample) lines.push(`   Exception sample: ${entry.exceptionSample}`);
       if (entry.networkSummary) lines.push(`   ${entry.networkSummary}`);
       if (entry.networkSample) lines.push(`   Network sample: ${entry.networkSample}`);
-      if (entry.diagnosis?.nextCommand && entry.diagnosis.status !== 'ok') lines.push(`   Diagnostic next: ${entry.diagnosis.nextCommand}`);
-      if (entry.nextHint) lines.push(`   Next: ${entry.nextHint}`);
+      if (entry.diagnosis?.nextCommand && entry.diagnosis.status !== 'ok') {
+        lines.push(`   Diagnostic next: ${normalizeReportTargetCommand(entry.diagnosis.nextCommand, sourceTarget, model.targetPrefix)}`);
+      }
+      if (entry.nextHint) lines.push(`   Next: ${normalizeReportTargetCommand(entry.nextHint, sourceTarget, model.targetPrefix)}`);
     }
   }
   if (screenshots.length > 0) {
@@ -2509,7 +2555,8 @@ function formatSessionReport(session, { now = Date.now(), format = 'text' } = {}
       lines.push(`${i + 1}. ${entry.kind || 'shot'} — ${entry.path}${note}`);
     }
   }
-  lines.push('', 'Next: use `perceive --since-action` to re-check the last action, or continue from the timeline above.');
+  lines.push('', ...formatReportRecommendationLines(model.recommendation));
+  lines.push('', ...formatReportNextStepLines(model.nextSteps));
   return lines.join('\n');
 }
 
