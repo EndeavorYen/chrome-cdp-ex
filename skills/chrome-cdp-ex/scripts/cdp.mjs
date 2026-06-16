@@ -6573,6 +6573,13 @@ async function observeReloadPage(cdp, sid) {
   ].join('\n');
 }
 
+async function reloadActionDispatch({ cdp, sessionId, session, consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq }) {
+  const reloadResult = await reloadStr(cdp, sessionId);
+  clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
+  invalidateSessionRefs(session, 'navigation');
+  return `${reloadResult} (console/exception/navigation buffers cleared)`;
+}
+
 // --- Inject: live CSS/JS injection with tracking ---
 async function injectStr(cdp, sid, args) {
   const type = args[0];
@@ -9258,11 +9265,17 @@ async function runDaemon(targetId) {
         }
         case 'reload': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('reload', async () => {
-            const reloadResult = await reloadStr(cdp, sessionId);
-            clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
-            return `${reloadResult} (console/exception/navigation buffers cleared)`;
-          }, { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts.format);
+          result = await actionFeedback('reload', () => reloadActionDispatch({
+            cdp,
+            sessionId,
+            session,
+            consoleBuf,
+            exceptionBuf,
+            navBuf,
+            netReqBuf,
+            pendingReqs,
+            lastReadSeq,
+          }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts.format);
           break;
         }
         case 'closetab': result = await closetabStr(cdp, targetId); break;
@@ -10464,7 +10477,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
   parseFormatArgs, formatJson, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, formatCallResult, evalBase64Decode,
-  navStr, reloadStr, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parseRepeatArgs, repeatStr, autoActionJsonArgs,
   isBatchParallelUnsafeCommand,

@@ -10,7 +10,7 @@ const {
   shouldShowAxNode, formatAxNode, orderedAxChildren, isRef,
   validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
   formatPageList, buildPerceiveTree, perceivePageScript, injectStr, cascadeStr, recordStr, parseRecordArgs,
-  evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, navStr, reloadStr, observeReloadPage, clickStr, fillStr, fillReactStr, waitForStr,
+  evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, fillStr, fillReactStr, waitForStr,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs, formatCliError,
   formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   statusStr, clearObservationBuffers,
@@ -4664,6 +4664,45 @@ describe('reloadStr', () => {
     expect(out).toContain('Page: Smoke');
     expect(out).toContain('URL: https://example.test/app');
     expect(out).toContain('Ready state: complete');
+  });
+
+  it('invalidates refs immediately after reload action dispatch', async () => {
+    const cdp = createMockCDP({
+      'Page.enable': () => ({}),
+      'Page.reload': () => ({}),
+      'event:Page.loadEventFired': () => ({}),
+    });
+    const session = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid1' });
+    session.refs.map.set(1, 101);
+    session.refs.generation = 1;
+    session.refs.invalidationReason = null;
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    const navBuf = new RingBuffer(10);
+    const netReqBuf = new RingBuffer(10);
+    const pendingReqs = new Map([['r1', { url: '/api' }]]);
+    const lastReadSeq = { console: 0, exception: 0, nav: 0 };
+    consoleBuf.push({ text: 'before reload' });
+    navBuf.push({ url: 'https://example.test/before' });
+
+    const out = await reloadActionDispatch({
+      cdp,
+      sessionId: 'sid1',
+      session,
+      consoleBuf,
+      exceptionBuf,
+      navBuf,
+      netReqBuf,
+      pendingReqs,
+      lastReadSeq,
+    });
+
+    expect(out).toContain('Page reloaded');
+    expect(session.refs.map.size).toBe(0);
+    expect(session.refs.invalidationReason).toBe('navigation');
+    expect(pendingReqs.size).toBe(0);
+    expect(consoleBuf.all()).toEqual([]);
+    expect(navBuf.all()).toEqual([]);
   });
 });
 
