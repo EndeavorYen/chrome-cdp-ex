@@ -175,6 +175,80 @@ function benchmarkActionEvidenceCoverage(steps) {
   };
 }
 
+function actionEvidenceCompletenessMissingFields(model = {}) {
+  const missing = [];
+  const objectFields = ['target', 'dispatch', 'settle', 'effects', 'outcome', 'verdict'];
+  if (typeof model.action !== 'string' || !model.action.trim()) missing.push('action');
+  for (const field of objectFields) {
+    if (!model[field] || typeof model[field] !== 'object') missing.push(field);
+  }
+
+  const target = model.target || {};
+  if (!['targetId', 'input', 'resolvedBy', 'label'].some(field => typeof target[field] === 'string' && target[field].trim())) {
+    missing.push('target');
+  }
+
+  const dispatch = model.dispatch || {};
+  if (typeof dispatch.ok !== 'boolean') missing.push('dispatch.ok');
+  if (typeof dispatch.method !== 'string' || !dispatch.method.trim()) missing.push('dispatch.method');
+
+  const settle = model.settle || {};
+  if (typeof settle.ok !== 'boolean') missing.push('settle.ok');
+  if (!Number.isFinite(settle.durationMs)) missing.push('settle.durationMs');
+
+  const effects = model.effects || {};
+  const hasEvidence = Object.hasOwn(effects, 'domDiff')
+    || typeof effects.domDiffSummary === 'string'
+    || typeof effects.domDiffSample === 'string'
+    || Boolean(effects.failure?.kind)
+    || Boolean(effects.diagnosis?.kind);
+  if (!hasEvidence) missing.push('effects.evidence');
+  for (const field of ['consoleDelta', 'exceptionDelta', 'networkDelta']) {
+    const delta = effects[field];
+    if (!delta || typeof delta !== 'object' || !Number.isFinite(delta.count)) missing.push(`effects.${field}`);
+  }
+
+  const outcome = model.outcome || {};
+  if (typeof outcome.status !== 'string' || !outcome.status.trim()) missing.push('outcome.status');
+
+  const verdict = model.verdict || {};
+  if (typeof verdict.status !== 'string' || !verdict.status.trim()) missing.push('verdict.status');
+  if (typeof verdict.canContinue !== 'boolean') missing.push('verdict.canContinue');
+  if (typeof verdict.needsRecovery !== 'boolean') missing.push('verdict.needsRecovery');
+
+  if (!recommendationHasActionableContext(model.recommendation)) missing.push('recommendation');
+  const nextSteps = Array.isArray(model.nextSteps) ? model.nextSteps : [];
+  if (!nextSteps.some(value => /^cdp\s+\S+/.test(String(value || '')))) missing.push('nextSteps');
+  return [...new Set(missing)];
+}
+
+function benchmarkActionEvidenceCompletenessCoverage(steps) {
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
+    if (model?.schema !== 'chrome-cdp-ex.action.v1') continue;
+    total += 1;
+    const missingFields = actionEvidenceCompletenessMissingFields(model);
+    if (missingFields.length === 0) {
+      covered += 1;
+    } else {
+      missing.push({
+        name: step.name,
+        commandText: step.commandText,
+        missing: missingFields,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    rate: total > 0 ? covered / total : null,
+  };
+}
+
 function parseJsonOutput(text = '') {
   const trimmed = String(text || '').trim();
   if (!trimmed.startsWith('{')) return null;
@@ -384,6 +458,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   usefulObservationTokensMax: 3000,
   autoEvidenceActionsMin: 1,
   observedActionEvidenceCoverageRateMin: 1,
+  actionEvidenceCompletenessCoverageRateMin: 1,
   handoffNextStepsCoverageRateMin: 1,
   handoffRecommendationCoverageRateMin: 1,
   doctorOnboardingCoverageRateMin: 1,
@@ -491,6 +566,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '>=',
       limit: limits.observedActionEvidenceCoverageRateMin,
       recommendation: 'Every mutating command exercised by the benchmark must return action evidence.',
+    }),
+    gateCriterion({
+      name: 'action-evidence-completeness',
+      actual: metrics.actionEvidenceCompletenessCoverage?.rate ?? 1,
+      operator: '>=',
+      limit: limits.actionEvidenceCompletenessCoverageRateMin,
+      recommendation: 'Action JSON evidence must include action, target, dispatch, settle, effects deltas, outcome, and verdict so agents can decide without another perceive.',
     }),
     gateCriterion({
       name: 'handoff-next-steps-coverage',
@@ -738,6 +820,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       usefulObservationTokens,
       autoEvidenceActions: actionEvidenceSteps.length,
       actionEvidenceCoverage: benchmarkActionEvidenceCoverage(normalizedSteps),
+      actionEvidenceCompletenessCoverage: benchmarkActionEvidenceCompletenessCoverage(normalizedSteps),
       handoffNextStepsCoverage: benchmarkHandoffNextStepsCoverage(normalizedSteps),
       handoffRecommendationCoverage: benchmarkHandoffRecommendationCoverage(normalizedSteps),
       doctorOnboardingCoverage: benchmarkDoctorOnboardingCoverage(normalizedSteps),
@@ -781,6 +864,7 @@ export function formatBenchmarkReport(summary) {
     `Useful observation tokens: ${summary.metrics.usefulObservationTokens}`,
     `Auto-evidence actions: ${summary.metrics.autoEvidenceActions}`,
     `Action evidence coverage: ${summary.metrics.actionEvidenceCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionEvidenceCoverage.rate * 100)}%`} (${summary.metrics.actionEvidenceCoverage?.covered ?? 0}/${summary.metrics.actionEvidenceCoverage?.total ?? 0})`,
+    `Action evidence completeness: ${summary.metrics.actionEvidenceCompletenessCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.actionEvidenceCompletenessCoverage.rate * 100)}%`} (${summary.metrics.actionEvidenceCompletenessCoverage?.covered ?? 0}/${summary.metrics.actionEvidenceCompletenessCoverage?.total ?? 0})`,
     `Handoff nextSteps coverage: ${summary.metrics.handoffNextStepsCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffNextStepsCoverage.rate * 100)}%`} (${summary.metrics.handoffNextStepsCoverage?.covered ?? 0}/${summary.metrics.handoffNextStepsCoverage?.total ?? 0})`,
     `Handoff recommendation coverage: ${summary.metrics.handoffRecommendationCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.handoffRecommendationCoverage.rate * 100)}%`} (${summary.metrics.handoffRecommendationCoverage?.covered ?? 0}/${summary.metrics.handoffRecommendationCoverage?.total ?? 0})`,
     `Doctor onboarding coverage: ${summary.metrics.doctorOnboardingCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.doctorOnboardingCoverage.rate * 100)}%`} (${summary.metrics.doctorOnboardingCoverage?.covered ?? 0}/${summary.metrics.doctorOnboardingCoverage?.total ?? 0})`,
@@ -924,7 +1008,7 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
     { args: ['inject', target, '--css', '#combat-log { outline: 2px solid rgb(37, 99, 235); }', '--format', 'json'] },
     ...(actionEvidenceNavUrl ? [{ args: ['nav', target, actionEvidenceNavUrl, '--format', 'json'] }] : []),
     { args: ['perceive', target, '-s', '#cmd', '-d', '4'], name: 'stale-ref-setup' },
-    { args: ['reload', target], name: 'stale-ref-mutate' },
+    { args: ['reload', target, '--format', 'json'], name: 'stale-ref-mutate' },
     { args: ['wait', target, '1000'], name: 'stale-ref-wait', timeout: 5000 },
     {
       args: ['click', target, '@1'],

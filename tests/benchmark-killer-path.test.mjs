@@ -335,13 +335,14 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Golden path complete: 100 ms');
     expect(out).toContain('Estimated output tokens:');
     expect(out).toContain('Action evidence coverage: 100% (2/2)');
+    expect(out).toContain('Action evidence completeness: n/a (0/0)');
     expect(out).toContain('Handoff nextSteps coverage: n/a (0/0)');
     expect(out).toContain('Handoff recommendation coverage: n/a (0/0)');
     expect(out).toContain('Doctor onboarding coverage: n/a (0/0)');
     expect(out).toContain('Report latestAction coverage: n/a (0/0)');
     expect(out).toContain('Report timelineWindow coverage: n/a (0/0)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 16/16 pass');
+    expect(out).toContain('Gate checks: 17/17 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -497,8 +498,18 @@ describe('benchmark killer path helpers', () => {
     });
     const actionJson = JSON.stringify({
       schema: 'chrome-cdp-ex.action.v1',
-      dispatch: { ok: true },
+      action: 'click',
+      target: { targetId: 'AABBCCDD', input: '@1', resolvedBy: 'ref', label: 'Start' },
+      dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
+      settle: { ok: true, durationMs: 120 },
+      effects: {
+        domDiff: '+++ Added (1):\n+   [status] Started',
+        consoleDelta: { count: 0, errors: 0, warnings: 0, entries: [] },
+        exceptionDelta: { count: 0, entries: [] },
+        networkDelta: { count: 0, failures: 0, pending: 0, entries: [] },
+      },
       outcome: { status: 'changed' },
+      verdict: { status: 'continue', canContinue: true, needsRecovery: false },
       recommendation: {
         source: 'action',
         commands: ['cdp report AABBCCDD --format json'],
@@ -629,6 +640,12 @@ describe('benchmark killer path helpers', () => {
       missing: [],
       rate: 1,
     });
+    expect(summary.metrics.actionEvidenceCompletenessCoverage).toMatchObject({
+      total: 1,
+      covered: 1,
+      missing: [],
+      rate: 1,
+    });
     expect(summary.metrics.handoffNextStepsCoverage).toMatchObject({
       total: 5,
       covered: 5,
@@ -648,6 +665,67 @@ describe('benchmark killer path helpers', () => {
       rate: 1,
     });
     expect(summary.steps[2].hasActionEvidence).toBe(true);
+  });
+
+  it('fails the gate when action JSON lacks structured evidence for agent decisions', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'action-evidence-completeness',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'click',
+          command: ['click', 'AABBCCDD', '@1', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.action.v1',
+            dispatch: { ok: true },
+            outcome: { status: 'changed' },
+            recommendation: {
+              source: 'action',
+              commands: ['cdp report AABBCCDD --format json'],
+            },
+            nextSteps: ['cdp report AABBCCDD --format json'],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.actionEvidenceCompletenessCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'click',
+          commandText: 'cdp click AABBCCDD @1 --format json',
+          missing: expect.arrayContaining([
+            'action',
+            'target',
+            'dispatch.method',
+            'settle.ok',
+            'settle.durationMs',
+            'effects.evidence',
+            'effects.consoleDelta',
+            'effects.exceptionDelta',
+            'effects.networkDelta',
+            'verdict.status',
+          ]),
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'action-evidence-completeness',
+        passed: false,
+        actual: 0,
+        recommendation: 'Action JSON evidence must include action, target, dispatch, settle, effects deltas, outcome, and verdict so agents can decide without another perceive.',
+      }),
+    ]));
   });
 
   it('fails the gate when doctor JSON lacks onboarding wizard evidence', () => {
@@ -855,7 +933,7 @@ describe('benchmark killer path helpers', () => {
 
     expect(staleRefMutation).toMatchObject({
       name: 'stale-ref-mutate',
-      args: ['reload', 'AABBCCDD'],
+      args: ['reload', 'AABBCCDD', '--format', 'json'],
     });
     expect(staleRefMutation.args[0]).not.toBe('eval');
     expect(plan.map(step => step.args[0])).toEqual(expect.arrayContaining([
@@ -870,6 +948,7 @@ describe('benchmark killer path helpers', () => {
     expect(plan.find(step => step.args[0] === 'fill')?.args).toEqual(['fill', 'AABBCCDD', '#cmd', 'look trainer', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'inject')?.args).toEqual(['inject', 'AABBCCDD', '--css', '#combat-log { outline: 2px solid rgb(37, 99, 235); }', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'nav')?.args).toEqual(['nav', 'AABBCCDD', 'http://127.0.0.1:41738/smoke-page.html#after-action-evidence', '--format', 'json']);
+    expect(plan.find(step => step.name === 'stale-ref-mutate')?.args).toEqual(['reload', 'AABBCCDD', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'doctor')?.args).toEqual(['doctor', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'list')?.args).toEqual(['list', '--format', 'json']);
     expect(plan.find(step => step.args[0] === 'perceive')?.args).toContain('--format');
