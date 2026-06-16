@@ -165,6 +165,41 @@ describe('benchmark killer path helpers', () => {
       reportOk: true,
       failedStep: null,
     });
+    expect(summary.comparison).toMatchObject({
+      schema: 'chrome-cdp-ex.benchmark-comparison.v1',
+      source: 'heuristic-smoke-baseline',
+      note: 'Baselines are conservative planning estimates for this smoke path until competitor harnesses are implemented.',
+    });
+    expect(summary.comparison.baselines).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'playwright',
+        label: 'Playwright test generator/snapshot',
+        metrics: expect.objectContaining({
+          commandCalls: 26,
+          usefulObservationTokens: 5000,
+          verificationCallsSaved: 0,
+        }),
+        delta: expect.objectContaining({
+          commandCallsSaved: 14,
+          usefulObservationTokensSaved: expect.any(Number),
+          verificationCallsSaved: 1,
+        }),
+      }),
+      expect.objectContaining({
+        id: 'devtools-manual',
+        label: 'Manual DevTools inspection',
+        delta: expect.objectContaining({
+          commandCallsSaved: 23,
+        }),
+      }),
+      expect.objectContaining({
+        id: 'generic-cdp',
+        label: 'Generic CDP script',
+        delta: expect.objectContaining({
+          commandCallsSaved: 18,
+        }),
+      }),
+    ]));
     expect(summary.gate).toMatchObject({
       schema: 'chrome-cdp-ex.benchmark-gate.v1',
       passed: true,
@@ -263,6 +298,10 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Gate checks: 9/9 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
+    expect(out).toContain('Comparison baselines:');
+    expect(out).toContain('Playwright test generator/snapshot: saves 14 calls');
+    expect(out).toContain('Generic CDP script: saves 18 calls');
+    expect(out).toContain('heuristic-smoke-baseline');
     expect(out).toContain('CSS trace: yes');
     expect(out).toContain('Frame refs: yes');
     expect(out).toContain('HMR/SPA diff: yes');

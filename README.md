@@ -649,6 +649,8 @@ It launches a disposable debug browser against the local smoke page and measures
 
 The report also includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires: successful run, at most 20 command calls, first useful observation within 5 seconds, useful observation tokens at or below 3000, at least one auto-evidence action, a report timeline, 100% differentiator probe success, 100% stale-ref recovery, and a passing session stability sample. Treat a failed gate as a stop sign before publishing comparison claims.
 
+JSON output also includes `chrome-cdp-ex.benchmark-comparison.v1`: a conservative `heuristic-smoke-baseline` comparison against Playwright test generation/snapshots, manual DevTools inspection, and generic CDP scripting. Treat it as a planning baseline until dedicated competitor harnesses exist; it is meant to show what must be proven, not to overstate external measurements.
+
 ## Contributor Checks
 
 Run these before changing command behavior or docs:

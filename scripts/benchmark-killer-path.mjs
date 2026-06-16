@@ -122,6 +122,39 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   staleRefRecoveryRateMin: 1,
 });
 
+const COMPARISON_BASELINES = Object.freeze([
+  {
+    id: 'playwright',
+    label: 'Playwright test generator/snapshot',
+    metrics: {
+      commandCalls: 26,
+      usefulObservationTokens: 5000,
+      verificationCallsSaved: 0,
+      differentiatorSuccessRate: 0.5,
+    },
+  },
+  {
+    id: 'devtools-manual',
+    label: 'Manual DevTools inspection',
+    metrics: {
+      commandCalls: 35,
+      usefulObservationTokens: null,
+      verificationCallsSaved: 0,
+      differentiatorSuccessRate: 0.5,
+    },
+  },
+  {
+    id: 'generic-cdp',
+    label: 'Generic CDP script',
+    metrics: {
+      commandCalls: 30,
+      usefulObservationTokens: 7000,
+      verificationCallsSaved: 0,
+      differentiatorSuccessRate: 0.25,
+    },
+  },
+]);
+
 function gateCriterion({ name, actual, operator, limit, recommendation }) {
   let passed = false;
   if (operator === '<=') passed = actual !== null && actual !== undefined && actual <= limit;
@@ -210,6 +243,41 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
   };
 }
 
+export function buildBenchmarkComparison(summary, baselines = COMPARISON_BASELINES) {
+  const actual = summary.metrics || {};
+  const actualDifferentiatorRate = actual.differentiators?.successRate ?? 0;
+  return {
+    schema: 'chrome-cdp-ex.benchmark-comparison.v1',
+    source: 'heuristic-smoke-baseline',
+    note: 'Baselines are conservative planning estimates for this smoke path until competitor harnesses are implemented.',
+    actual: {
+      commandCalls: actual.commandCalls ?? null,
+      usefulObservationTokens: actual.usefulObservationTokens ?? null,
+      verificationCallsSaved: actual.verificationCallsSaved ?? null,
+      differentiatorSuccessRate: actualDifferentiatorRate,
+    },
+    baselines: baselines.map(baseline => ({
+      id: baseline.id,
+      label: baseline.label,
+      metrics: baseline.metrics,
+      delta: {
+        commandCallsSaved: baseline.metrics.commandCalls != null && actual.commandCalls != null
+          ? baseline.metrics.commandCalls - actual.commandCalls
+          : null,
+        usefulObservationTokensSaved: baseline.metrics.usefulObservationTokens != null && actual.usefulObservationTokens != null
+          ? baseline.metrics.usefulObservationTokens - actual.usefulObservationTokens
+          : null,
+        verificationCallsSaved: actual.verificationCallsSaved != null
+          ? actual.verificationCallsSaved - (baseline.metrics.verificationCallsSaved || 0)
+          : null,
+        differentiatorSuccessRateDelta: baseline.metrics.differentiatorSuccessRate != null
+          ? actualDifferentiatorRate - baseline.metrics.differentiatorSuccessRate
+          : null,
+      },
+    })),
+  };
+}
+
 export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, endedAt, target = '', steps = [] } = {}) {
   const normalizedSteps = steps.map((step) => {
     const text = outputText(step);
@@ -266,7 +334,14 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
     steps: normalizedSteps.map(({ outputText: _outputText, ...step }) => step),
   };
   summary.gate = buildBenchmarkGate(summary);
+  summary.comparison = buildBenchmarkComparison(summary);
   return summary;
+}
+
+function formatSignedDelta(value, unit) {
+  if (value == null) return `unknown ${unit}`;
+  if (value >= 0) return `saves ${value} ${unit}`;
+  return `costs ${Math.abs(value)} ${unit}`;
 }
 
 export function formatBenchmarkReport(summary) {
@@ -304,6 +379,16 @@ export function formatBenchmarkReport(summary) {
     lines.push('Gate failures:');
     for (const criterion of failedGateCriteria) {
       lines.push(`  - ${criterion.name}: actual ${criterion.actual} ${criterion.operator} ${criterion.limit} (${criterion.recommendation})`);
+    }
+    lines.push('');
+  }
+  if (summary.comparison?.baselines?.length) {
+    lines.push(`Comparison baselines: ${summary.comparison.source}`);
+    for (const baseline of summary.comparison.baselines) {
+      const calls = formatSignedDelta(baseline.delta.commandCallsSaved, 'calls');
+      const tokens = formatSignedDelta(baseline.delta.usefulObservationTokensSaved, 'useful-observation tokens');
+      const verify = formatSignedDelta(baseline.delta.verificationCallsSaved, 'verification calls');
+      lines.push(`  - ${baseline.label}: ${calls}, ${tokens}, ${verify}`);
     }
     lines.push('');
   }
