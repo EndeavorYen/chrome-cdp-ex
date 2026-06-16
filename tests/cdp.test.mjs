@@ -3699,6 +3699,10 @@ describe('formatCliError', () => {
     const out = formatCliError(new Error('Cannot reach CDP on 127.0.0.1:9222 — is the app running with --remote-debugging-port=9222?'));
 
     expect(out).toContain('Error: Cannot reach CDP on 127.0.0.1:9222');
+    expect(out).toContain('Recovery:');
+    expect(out).toContain('Kind: browser-cdp');
+    expect(out).toContain('Strategy: run-doctor');
+    expect(out).toContain('Run: cdp doctor');
     expect(out).toContain('Next: cdp doctor');
   });
 
@@ -3706,6 +3710,11 @@ describe('formatCliError', () => {
     const out = formatCliError(new Error('No target matching prefix "abc". Run "cdp list".'));
 
     expect(out).toContain('Error: No target matching prefix "abc". Run "cdp list".');
+    expect(out).toContain('Recovery:');
+    expect(out).toContain('Kind: target-resolution');
+    expect(out).toContain('Strategy: rediscover-target');
+    expect(out).toContain('Run: cdp list  # if empty: cdp open https://example.com');
+    expect(out).toContain('Then: cdp open https://example.com');
     expect(out).toContain('Next: cdp list');
     expect(out).toContain('cdp open https://example.com');
   });
@@ -3725,6 +3734,10 @@ describe('formatCliError', () => {
     );
 
     expect(out).toContain('Error: Connection closed before response');
+    expect(out).toContain('Recovery:');
+    expect(out).toContain('Kind: daemon-disconnect');
+    expect(out).toContain('Strategy: restart-tab-daemon');
+    expect(out).toContain('Run: cdp perceive AABBCCDD -C -d 8');
     expect(out).toContain('Next: cdp perceive AABBCCDD -C -d 8');
   });
 

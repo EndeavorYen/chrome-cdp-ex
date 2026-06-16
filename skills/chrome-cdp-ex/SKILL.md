@@ -374,7 +374,7 @@ Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daem
 
 ### Error handling
 
-When a CLI command fails, read and follow the printed `Next:` line before retrying. Setup, target, daemon, and CDP errors are formatted as actionable recovery commands such as `cdp doctor`, `cdp list`, `cdp open https://example.com`, or `cdp perceive <target> -C -d 8`.
+When a CLI command fails, read the printed `Recovery:` block before retrying. `Kind` names the failure class, `Strategy` says how to recover, `Run` is the primary command, and `Then` appears when a follow-up is useful. The legacy `Next:` line remains the shortest copy-pasteable command. Setup, target, daemon, and CDP errors are formatted this way instead of dumping a stack trace.
 
 ### Action feedback (automatic)
 

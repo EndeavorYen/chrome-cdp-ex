@@ -160,6 +160,9 @@ if (parsedOpen.recommendation?.source !== 'golden-path' || !parsedOpen.recommend
 step('close open json tab', () => run(['closetab', parsedOpen.targetPrefix]));
 const cliErrorOut = step('actionable cli error', () => runFailure(['perceive']));
 assertIncludes(cliErrorOut, 'Error: target ID required', 'targetless perceive error');
+assertIncludes(cliErrorOut, 'Recovery:', 'targetless perceive recovery block');
+assertIncludes(cliErrorOut, 'Kind: target-resolution', 'targetless perceive recovery kind');
+assertIncludes(cliErrorOut, 'Run: cdp list', 'targetless perceive recovery run');
 assertIncludes(cliErrorOut, 'Next: cdp list', 'targetless perceive next step');
 const perceive = step('perceive keep refs', () => run(['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20']));
 assertIncludes(perceive, 'Coords: top-level viewport CSS px', 'perceive');

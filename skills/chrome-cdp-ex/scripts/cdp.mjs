@@ -9131,44 +9131,111 @@ function normalizeTargetCommandArgs(cmd, cmdArgs = []) {
   return args;
 }
 
-function formatCliError(err, { cmd = '', targetPrefix = '' } = {}) {
-  const message = String(err?.message || err || '').trim();
-  if (!message) return 'Error: unknown failure\nNext: cdp doctor';
-  if (message.startsWith('Action failure:')) return message;
-  const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
-  if (/^Next:/m.test(message)) return lines.join('\n');
-
-  const lower = message.toLowerCase();
-  let next = null;
+function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '' } = {}) {
+  const lower = String(message || '').toLowerCase();
+  const target = targetPrefix || '<target>';
   if (
     lower.includes('cannot reach cdp') ||
     lower.includes('no devtoolsactiveport') ||
     lower.includes('websocket error') ||
     lower.includes('remote-debugging-port')
   ) {
-    next = 'cdp doctor';
-  } else if (
+    return {
+      kind: 'browser-cdp',
+      strategy: 'run-doctor',
+      run: 'cdp doctor',
+      reason: 'Chrome is not reachable through the configured debugging endpoint.',
+    };
+  }
+  if (
     lower.includes('target id required') ||
     lower.includes('no page list cached') ||
     lower.includes('no target matching prefix')
   ) {
-    next = 'cdp list  # if empty: cdp open https://example.com';
-  } else if (lower.includes('ambiguous prefix')) {
-    next = 'cdp list  # copy a longer target prefix';
-  } else if (
+    return {
+      kind: 'target-resolution',
+      strategy: 'rediscover-target',
+      run: 'cdp list  # if empty: cdp open https://example.com',
+      then: 'cdp open https://example.com',
+      reason: 'The requested tab target could not be resolved from the current page list.',
+    };
+  }
+  if (lower.includes('ambiguous prefix')) {
+    return {
+      kind: 'target-resolution',
+      strategy: 'choose-longer-prefix',
+      run: 'cdp list  # copy a longer target prefix',
+      reason: 'More than one tab matches the provided target prefix.',
+    };
+  }
+  if (
     lower.includes('connection closed before response') ||
     lower.includes('daemon failed to start') ||
     lower.includes('ipc timeout')
   ) {
-    next = `cdp perceive ${targetPrefix || '<target>'} -C -d 8`;
-  } else if (lower.includes('unknown command')) {
-    next = 'cdp help';
-  } else if ((cmd === 'nav' || cmd === 'navigate') && lower.includes('url required')) {
-    next = `cdp nav ${targetPrefix || '<target>'} https://example.com`;
-  } else {
-    next = targetPrefix ? `cdp status ${targetPrefix}` : 'cdp doctor';
+    return {
+      kind: 'daemon-disconnect',
+      strategy: 'restart-tab-daemon',
+      run: `cdp perceive ${target} -C -d 8`,
+      reason: 'The per-tab daemon did not return a usable response.',
+    };
   }
-  lines.push(`Next: ${next}`);
+  if (lower.includes('unknown command')) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help',
+      reason: 'The command name does not match the registered CLI commands.',
+    };
+  }
+  if ((cmd === 'nav' || cmd === 'navigate') && lower.includes('url required')) {
+    return {
+      kind: 'navigation',
+      strategy: 'provide-url',
+      run: `cdp nav ${target} https://example.com`,
+      reason: 'Navigation commands need an explicit http or https URL.',
+    };
+  }
+  return targetPrefix
+    ? {
+        kind: 'unknown',
+        strategy: 'inspect-status',
+        run: `cdp status ${targetPrefix}`,
+        reason: 'The failure was not classified; inspect the target status before retrying.',
+      }
+    : {
+        kind: 'unknown',
+        strategy: 'run-doctor',
+        run: 'cdp doctor',
+        reason: 'The failure was not classified; check browser setup and available targets.',
+      };
+}
+
+function formatCliErrorRecovery(recovery) {
+  const lines = [
+    'Recovery:',
+    `  Kind: ${recovery.kind}`,
+    `  Strategy: ${recovery.strategy}`,
+    `  Run: ${recovery.run}`,
+  ];
+  if (recovery.then) lines.push(`  Then: ${recovery.then}`);
+  if (recovery.reason) lines.push(`  Reason: ${recovery.reason}`);
+  return lines;
+}
+
+function formatCliError(err, { cmd = '', targetPrefix = '' } = {}) {
+  const message = String(err?.message || err || '').trim();
+  if (!message) {
+    const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix });
+    return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), `Next: ${recovery.run}`].join('\n');
+  }
+  if (message.startsWith('Action failure:')) return message;
+  const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
+  if (/^Next:/m.test(message)) return lines.join('\n');
+
+  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix });
+  lines.push(...formatCliErrorRecovery(recovery));
+  lines.push(`Next: ${recovery.run}`);
   return lines.join('\n');
 }
 

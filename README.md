@@ -210,7 +210,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>            # add --for
 `open` prints the new target prefix plus `Next:`, `Then:`, and `Report:` continuation hints. If Chrome approval times out, it keeps the tab and prints the exact `perceive <target> -C -d 8` retry command. Use `open --format json` when an agent or script needs the versioned `chrome-cdp-ex.open.v1` handoff payload with target prefix, approval state, auto-perceive status, a golden-path `recommendation`, and executable `nextSteps`.
 Use `list --format json` when an agent or script needs target IDs, stable prefixes, blank-tab labels, a golden-path `recommendation`, and executable `nextSteps` without parsing the human table. Use `perceive --format json` when the agent should continue from structured refs into `click/fill -> perceive --since-action -> report` without parsing the text tree.
 
-If a CLI command fails, read the printed `Next:` line first. Common setup, target, daemon, and CDP errors are formatted with a copy-pasteable recovery command instead of a stack trace.
+If a CLI command fails, read the printed `Recovery:` block first: `Kind` names the failure class, `Strategy` says how to recover, `Run` is the primary command, and `Then` appears when a follow-up is useful. The legacy `Next:` line is still printed as the shortest copy-pasteable command. Common setup, target, daemon, and CDP errors are formatted this way instead of dumping a stack trace.
 
 **Requires:** Node.js 22+ (uses built-in WebSocket). Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
 
