@@ -79,10 +79,35 @@ describe('benchmark killer path helpers', () => {
         stderr: '',
       },
       {
+        name: 'since-action',
+        command: ['perceive', 'AABBCCDD', '--since-action', '--format', 'json'],
+        startedAt: 130,
+        endedAt: 140,
+        status: 0,
+        stdout: JSON.stringify({
+          schema: 'chrome-cdp-ex.perceive-diff.v1',
+          mode: 'since-action',
+          summary: { changed: true, removed: 0, added: 1, textRemoved: 0, textAdded: 0 },
+          removed: [],
+          added: ['[StaticText] Started'],
+          removedOmitted: 0,
+          addedOmitted: 0,
+          textRemovedSamples: [],
+          textAddedSamples: [],
+          recommendation: {
+            source: 'perceive-diff',
+            mode: 'since-action',
+            commands: ['cdp report AABBCCDD --format json'],
+          },
+          nextSteps: ['cdp report AABBCCDD --format json'],
+        }),
+        stderr: '',
+      },
+      {
         name: 'stale-ref',
         command: ['click', 'AABBCCDD', '@1'],
-        startedAt: 130,
-        endedAt: 150,
+        startedAt: 140,
+        endedAt: 160,
         status: 1,
         expectedFailure: true,
         stdout: '',
@@ -91,8 +116,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'report',
         command: ['report', 'AABBCCDD'],
-        startedAt: 150,
-        endedAt: 180,
+        startedAt: 160,
+        endedAt: 190,
         status: 0,
         stdout: 'Session report: AABBCCDD\nActions: 1\n\nAction timeline:\n- click #start\n',
         stderr: '',
@@ -100,8 +125,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'stability-wait',
         command: ['wait', 'AABBCCDD', '1000'],
-        startedAt: 180,
-        endedAt: 190,
+        startedAt: 190,
+        endedAt: 200,
         status: 0,
         stdout: 'waited 1000ms',
         stderr: '',
@@ -109,8 +134,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'stability-status',
         command: ['status', 'AABBCCDD'],
-        startedAt: 190,
-        endedAt: 205,
+        startedAt: 200,
+        endedAt: 215,
         status: 0,
         stdout: 'Status: ready\n',
         stderr: '',
@@ -118,8 +143,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'stability-report',
         command: ['report', 'AABBCCDD'],
-        startedAt: 205,
-        endedAt: 220,
+        startedAt: 215,
+        endedAt: 230,
         status: 0,
         stdout: 'Session report: AABBCCDD\nActions: 1\n\nAction timeline:\n- click #start\n',
         stderr: '',
@@ -129,7 +154,7 @@ describe('benchmark killer path helpers', () => {
     const summary = summarizeBenchmarkRun({
       scenario: 'killer-path',
       startedAt: 0,
-      endedAt: 220,
+      endedAt: 230,
       target: 'AABBCCDD',
       steps,
     });
@@ -140,13 +165,13 @@ describe('benchmark killer path helpers', () => {
     expect(summary.scenario).toBe('killer-path');
     expect(summary.success).toBe(true);
     expect(summary.target).toBe('AABBCCDD');
-    expect(summary.metrics.totalMs).toBe(220);
-    expect(summary.metrics.commandCalls).toBe(12);
+    expect(summary.metrics.totalMs).toBe(230);
+    expect(summary.metrics.commandCalls).toBe(13);
     expect(summary.metrics.outputChars).toBe(outputChars);
     expect(summary.metrics.estimatedOutputTokens).toBe(estimateTokenCount(outputChars));
     expect(summary.metrics.firstUsefulObservationMs).toBe(40);
     expect(summary.metrics.firstActionEvidenceMs).toBe(130);
-    expect(summary.metrics.goldenPathMs).toBe(180);
+    expect(summary.metrics.goldenPathMs).toBe(190);
     expect(summary.metrics.autoEvidenceActions).toBe(1);
     expect(summary.metrics.actionEvidenceCoverage).toMatchObject({
       total: 2,
@@ -158,10 +183,16 @@ describe('benchmark killer path helpers', () => {
       },
     });
     expect(summary.metrics.handoffNextStepsCoverage).toMatchObject({
-      total: 0,
-      covered: 0,
+      total: 1,
+      covered: 1,
       missing: [],
-      rate: null,
+      rate: 1,
+    });
+    expect(summary.metrics.sinceActionEvidenceCoverage).toMatchObject({
+      total: 1,
+      covered: 1,
+      missing: [],
+      rate: 1,
     });
     expect(summary.metrics.verificationCallsSaved).toBe(1);
     expect(summary.metrics.hasReportTimeline).toBe(true);
@@ -202,7 +233,7 @@ describe('benchmark killer path helpers', () => {
           verificationCallsSaved: 0,
         }),
         delta: expect.objectContaining({
-          commandCallsSaved: 14,
+          commandCallsSaved: 13,
           usefulObservationTokensSaved: expect.any(Number),
           verificationCallsSaved: 1,
         }),
@@ -211,14 +242,14 @@ describe('benchmark killer path helpers', () => {
         id: 'devtools-manual',
         label: 'Manual DevTools inspection',
         delta: expect.objectContaining({
-          commandCallsSaved: 23,
+          commandCallsSaved: 22,
         }),
       }),
       expect.objectContaining({
         id: 'generic-cdp',
         label: 'Generic CDP script',
         delta: expect.objectContaining({
-          commandCallsSaved: 18,
+          commandCallsSaved: 17,
         }),
       }),
     ]));
@@ -229,10 +260,11 @@ describe('benchmark killer path helpers', () => {
     });
     expect(summary.gate.criteria).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'first-useful-observation', passed: true, actual: 40, operator: '<=', limit: 5000 }),
-      expect.objectContaining({ name: 'golden-path-under-two-minutes', passed: true, actual: 180, operator: '<=', limit: 120000 }),
+      expect.objectContaining({ name: 'golden-path-under-two-minutes', passed: true, actual: 190, operator: '<=', limit: 120000 }),
       expect.objectContaining({ name: 'useful-observation-tokens', passed: true, operator: '<=', limit: 3000 }),
       expect.objectContaining({ name: 'auto-evidence-actions', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'observed-action-evidence-coverage', passed: true, actual: 1, operator: '>=', limit: 1 }),
+      expect.objectContaining({ name: 'since-action-evidence-coverage', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'report-timeline', passed: true, actual: true, operator: '===', limit: true }),
       expect.objectContaining({ name: 'differentiator-success-rate', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'stale-ref-recovery-rate', passed: true, actual: 1, operator: '>=', limit: 1 }),
@@ -245,7 +277,7 @@ describe('benchmark killer path helpers', () => {
       estimatedTokens: estimateTokenCount(steps[6].stdout.length),
       hasActionEvidence: true,
     });
-    expect(summary.steps[7]).toMatchObject({
+    expect(summary.steps[8]).toMatchObject({
       name: 'stale-ref',
       ok: true,
       expectedFailure: true,
@@ -318,8 +350,33 @@ describe('benchmark killer path helpers', () => {
         { name: 'cascade', command: ['cascade', 'AABB', '#go', 'color'], startedAt: 50, endedAt: 60, status: 0, stdout: 'color:\n  WIN red ← #go\n    → inline:1', stderr: '' },
         { name: 'hmr-diff', command: ['perceive', 'AABB', '--diff', '-s', '#combat-log', '--last', '20'], startedAt: 60, endedAt: 72, status: 0, stdout: '~~~ Text nodes updated (1 added)\n+   [StaticText] hmr panel ready', stderr: '' },
         { name: 'click', command: ['click', 'AABB', '#go'], startedAt: 30, endedAt: 60, status: 0, stdout: 'Clicked\nclick: dispatched', stderr: '' },
-        { name: 'stale-ref', command: ['click', 'AABB', '@1'], startedAt: 60, endedAt: 75, status: 1, expectedFailure: true, stdout: '', stderr: 'Action failure: stale-ref\nNext: cdp perceive AABB -C -d 8' },
-        { name: 'report', command: ['report', 'AABB'], startedAt: 75, endedAt: 100, status: 0, stdout: 'Session report: AABB\nActions: 1\n\nAction timeline:', stderr: '' },
+        {
+          name: 'since-action',
+          command: ['perceive', 'AABB', '--since-action', '--format', 'json'],
+          startedAt: 60,
+          endedAt: 72,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.perceive-diff.v1',
+            mode: 'since-action',
+            summary: { changed: true, removed: 0, added: 1, textRemoved: 0, textAdded: 0 },
+            removed: [],
+            added: ['[button] Started'],
+            removedOmitted: 0,
+            addedOmitted: 0,
+            textRemovedSamples: [],
+            textAddedSamples: [],
+            recommendation: {
+              source: 'perceive-diff',
+              mode: 'since-action',
+              commands: ['cdp report AABB --format json'],
+            },
+            nextSteps: ['cdp report AABB --format json'],
+          }),
+          stderr: '',
+        },
+        { name: 'stale-ref', command: ['click', 'AABB', '@1'], startedAt: 72, endedAt: 80, status: 1, expectedFailure: true, stdout: '', stderr: 'Action failure: stale-ref\nNext: cdp perceive AABB -C -d 8' },
+        { name: 'report', command: ['report', 'AABB'], startedAt: 80, endedAt: 100, status: 0, stdout: 'Session report: AABB\nActions: 1\n\nAction timeline:', stderr: '' },
         { name: 'stability-wait', command: ['wait', 'AABB', '1000'], startedAt: 100, endedAt: 110, status: 0, stdout: 'waited 1000ms', stderr: '' },
         { name: 'stability-status', command: ['status', 'AABB'], startedAt: 110, endedAt: 125, status: 0, stdout: 'Status: ready', stderr: '' },
         { name: 'stability-report', command: ['report', 'AABB'], startedAt: 125, endedAt: 140, status: 0, stdout: 'Session report: AABB\nActions: 1\n\nAction timeline:', stderr: '' },
@@ -330,26 +387,27 @@ describe('benchmark killer path helpers', () => {
 
     expect(out).toContain('chrome-cdp-ex benchmark: killer-path');
     expect(out).toContain('Success: yes');
-    expect(out).toContain('Command calls: 12');
+    expect(out).toContain('Command calls: 13');
     expect(out).toContain('First action evidence: 60 ms');
     expect(out).toContain('Golden path complete: 100 ms');
     expect(out).toContain('Estimated output tokens:');
     expect(out).toContain('Action evidence coverage: 100% (2/2)');
     expect(out).toContain('Action evidence completeness: n/a (0/0)');
-    expect(out).toContain('Handoff nextSteps coverage: n/a (0/0)');
-    expect(out).toContain('Handoff recommendation coverage: n/a (0/0)');
+    expect(out).toContain('Handoff nextSteps coverage: 100% (1/1)');
+    expect(out).toContain('Handoff recommendation coverage: 100% (1/1)');
     expect(out).toContain('Doctor onboarding coverage: n/a (0/0)');
     expect(out).toContain('Report latestAction coverage: n/a (0/0)');
     expect(out).toContain('Report timelineWindow coverage: n/a (0/0)');
     expect(out).toContain('Perception signal coverage: n/a (0/0)');
+    expect(out).toContain('Since-action evidence coverage: 100% (1/1)');
     expect(out).toContain('CLI recovery coverage: 100% (1/1)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 19/19 pass');
+    expect(out).toContain('Gate checks: 20/20 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
-    expect(out).toContain('Playwright test generator/snapshot: saves 14 calls');
-    expect(out).toContain('Generic CDP script: saves 18 calls');
+    expect(out).toContain('Playwright test generator/snapshot: saves 13 calls');
+    expect(out).toContain('Generic CDP script: saves 17 calls');
     expect(out).toContain('heuristic-smoke-baseline');
     expect(out).toContain('CSS trace: yes');
     expect(out).toContain('Frame refs: yes');
@@ -566,9 +624,16 @@ describe('benchmark killer path helpers', () => {
     const sinceActionJson = JSON.stringify({
       schema: 'chrome-cdp-ex.perceive-diff.v1',
       mode: 'since-action',
-      summary: { changed: true },
+      summary: { changed: true, removed: 0, added: 1, textRemoved: 0, textAdded: 0 },
+      removed: [],
+      added: ['[status] Started'],
+      removedOmitted: 0,
+      addedOmitted: 0,
+      textRemovedSamples: [],
+      textAddedSamples: [],
       recommendation: {
         source: 'perceive-diff',
+        mode: 'since-action',
         commands: ['cdp report AABBCCDD --format json'],
       },
       nextSteps: ['cdp report AABBCCDD --format json'],
@@ -717,6 +782,12 @@ describe('benchmark killer path helpers', () => {
       missing: [],
       rate: 1,
     });
+    expect(summary.metrics.sinceActionEvidenceCoverage).toMatchObject({
+      total: 1,
+      covered: 1,
+      missing: [],
+      rate: 1,
+    });
     expect(summary.steps[2].hasActionEvidence).toBe(true);
   });
 
@@ -775,6 +846,59 @@ describe('benchmark killer path helpers', () => {
         passed: false,
         actual: 0,
         recommendation: 'Perceive JSON must expose page, viewport, console, refs, interactive nodes, limits, recommendation, and nextSteps so agents can choose an action without another page read.',
+      }),
+    ]));
+  });
+
+  it('fails the gate when since-action JSON lacks causal diff evidence', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'since-action-evidence',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'since-action',
+          command: ['perceive', 'AABBCCDD', '--since-action', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.perceive-diff.v1',
+            mode: 'since-action',
+            summary: { changed: true },
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.sinceActionEvidenceCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'since-action',
+          commandText: 'cdp perceive AABBCCDD --since-action --format json',
+          missing: expect.arrayContaining([
+            'summary.removed',
+            'summary.added',
+            'summary.textRemoved',
+            'summary.textAdded',
+            'evidence',
+            'recommendation',
+            'nextSteps',
+          ]),
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'since-action-evidence-coverage',
+        passed: false,
+        actual: 0,
+        recommendation: 'Since-action JSON must expose a causal diff summary, bounded evidence samples, recommendation, and nextSteps so agents know what changed after the action.',
       }),
     ]));
   });

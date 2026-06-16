@@ -531,6 +531,67 @@ function benchmarkPerceptionSignalCoverage(steps) {
   };
 }
 
+function isSinceActionEvidenceStep(step = {}, model = {}) {
+  return model?.schema === 'chrome-cdp-ex.perceive-diff.v1'
+    && (model.mode === 'since-action'
+      || step.name === 'since-action'
+      || (Array.isArray(step.command) && step.command.includes('--since-action')));
+}
+
+function sinceActionEvidenceMissingFields(model = {}) {
+  const missing = [];
+  if (model.mode !== 'since-action') missing.push('mode');
+  if (model.baselineAvailable === false) missing.push('baselineAvailable');
+  const summary = model.summary || {};
+  if (!summary || typeof summary !== 'object') {
+    missing.push('summary');
+  }
+  if (typeof summary.changed !== 'boolean') missing.push('summary.changed');
+  for (const field of ['removed', 'added', 'textRemoved', 'textAdded']) {
+    if (!Number.isFinite(summary[field])) missing.push(`summary.${field}`);
+  }
+
+  const changedCounts = ['removed', 'added', 'textRemoved', 'textAdded']
+    .some(field => Number.isFinite(summary[field]) && summary[field] > 0);
+  const hasEvidenceSamples = ['removed', 'added', 'textRemovedSamples', 'textAddedSamples']
+    .some(field => Array.isArray(model[field]) && model[field].length > 0);
+  if (summary.changed === true && !changedCounts && !hasEvidenceSamples) {
+    missing.push('evidence');
+  }
+
+  if (!recommendationHasActionableContext(model.recommendation)) missing.push('recommendation');
+  const nextSteps = Array.isArray(model.nextSteps) ? model.nextSteps : [];
+  if (!nextSteps.some(value => /^cdp\s+\S+/.test(String(value || '')))) missing.push('nextSteps');
+  return [...new Set(missing)];
+}
+
+function benchmarkSinceActionEvidenceCoverage(steps) {
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
+    if (!isSinceActionEvidenceStep(step, model)) continue;
+    total += 1;
+    const missingFields = sinceActionEvidenceMissingFields(model);
+    if (missingFields.length === 0) {
+      covered += 1;
+    } else {
+      missing.push({
+        name: step.name,
+        commandText: step.commandText,
+        missing: missingFields,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    rate: total > 0 ? covered / total : null,
+  };
+}
+
 function countsTowardUsefulObservationTokens(step) {
   const model = stepModel(step);
   const commandName = normalizeActionCommandName(step.command?.[0] || step.name);
@@ -554,6 +615,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   reportLatestActionCoverageRateMin: 1,
   reportTimelineWindowCoverageRateMin: 1,
   perceptionSignalCoverageRateMin: 1,
+  sinceActionEvidenceCoverageRateMin: 1,
   differentiatorSuccessRateMin: 1,
   staleRefRecoveryRateMin: 1,
 });
@@ -719,6 +781,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '>=',
       limit: limits.perceptionSignalCoverageRateMin,
       recommendation: 'Perceive JSON must expose page, viewport, console, refs, interactive nodes, limits, recommendation, and nextSteps so agents can choose an action without another page read.',
+    }),
+    gateCriterion({
+      name: 'since-action-evidence-coverage',
+      actual: metrics.sinceActionEvidenceCoverage?.rate ?? null,
+      operator: '>=',
+      limit: limits.sinceActionEvidenceCoverageRateMin,
+      recommendation: 'Since-action JSON must expose a causal diff summary, bounded evidence samples, recommendation, and nextSteps so agents know what changed after the action.',
     }),
     gateCriterion({
       name: 'differentiator-success-rate',
@@ -932,6 +1001,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       reportLatestActionCoverage: benchmarkReportLatestActionCoverage(normalizedSteps),
       reportTimelineWindowCoverage: benchmarkReportTimelineWindowCoverage(normalizedSteps),
       perceptionSignalCoverage: benchmarkPerceptionSignalCoverage(normalizedSteps),
+      sinceActionEvidenceCoverage: benchmarkSinceActionEvidenceCoverage(normalizedSteps),
       verificationCallsSaved: actionEvidenceSteps.length,
       hasReportTimeline: hasReportTimeline(reportStep || {}),
       differentiators: benchmarkDifferentiators(normalizedSteps),
@@ -978,6 +1048,7 @@ export function formatBenchmarkReport(summary) {
     `Report latestAction coverage: ${summary.metrics.reportLatestActionCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportLatestActionCoverage.rate * 100)}%`} (${summary.metrics.reportLatestActionCoverage?.covered ?? 0}/${summary.metrics.reportLatestActionCoverage?.total ?? 0})`,
     `Report timelineWindow coverage: ${summary.metrics.reportTimelineWindowCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportTimelineWindowCoverage.rate * 100)}%`} (${summary.metrics.reportTimelineWindowCoverage?.covered ?? 0}/${summary.metrics.reportTimelineWindowCoverage?.total ?? 0})`,
     `Perception signal coverage: ${summary.metrics.perceptionSignalCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.perceptionSignalCoverage.rate * 100)}%`} (${summary.metrics.perceptionSignalCoverage?.covered ?? 0}/${summary.metrics.perceptionSignalCoverage?.total ?? 0})`,
+    `Since-action evidence coverage: ${summary.metrics.sinceActionEvidenceCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.sinceActionEvidenceCoverage.rate * 100)}%`} (${summary.metrics.sinceActionEvidenceCoverage?.covered ?? 0}/${summary.metrics.sinceActionEvidenceCoverage?.total ?? 0})`,
     `Verification calls saved: ${summary.metrics.verificationCallsSaved}`,
     `Report timeline: ${summary.metrics.hasReportTimeline ? 'yes' : 'no'}`,
     `Quality gate: ${gate.passed ? 'pass' : 'fail'}`,
