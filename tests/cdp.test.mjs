@@ -313,7 +313,7 @@ describe('COMMANDS registry', () => {
       aliases: ['export-pw'],
       needsTarget: true,
       mutates: false,
-      outputFormats: ['text'],
+      outputFormats: ['text', 'json'],
     }));
   });
 
@@ -2104,6 +2104,82 @@ describe('Session report', () => {
     expect(out).toContain('await expect(page.getByText("戰鬥勝利")).toBeVisible();');
     expect(out).toContain('Not exported: click @1');
     expect(out).toContain('needs stable selector');
+  });
+
+  it('exports a structured Playwright handoff with spec and review counts', () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.environmentLog.push({
+      ts: Date.parse('2026-06-16T00:00:01.000Z'),
+      kind: 'mock',
+      action: 'add',
+      rule: {
+        urlPattern: '**/api/fail*',
+        status: 503,
+        body: '{"ok":false}',
+        contentType: 'application/json',
+      },
+    });
+    state.environmentLog.push({
+      ts: Date.parse('2026-06-16T00:00:02.000Z'),
+      kind: 'clock',
+      action: 'apply',
+      clock: { profile: 'freeze', atMs: Date.parse('2020-01-02T03:04:05.000Z'), offsetMs: 0 },
+    });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'nav',
+      target: { input: 'https://example.com/dashboard', resolvedBy: 'url', label: 'dashboard', commandArgs: ['https://example.com/dashboard'] },
+      dispatch: { ok: true, method: 'nav' },
+      settle: { ok: true, durationMs: 300 },
+      effects: { domDiff: 'Page changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#combat', resolvedBy: 'selector', label: '#combat', commandArgs: ['#combat'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 123 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] 戰鬥勝利', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '@1', resolvedBy: 'ref', label: '@1', commandArgs: ['@1'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 60 },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+
+    const parsed = JSON.parse(T.formatExportPlaywright(state, { format: 'json', title: 'exported smoke' }));
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.export-playwright.v1',
+      targetId: 'ABC123',
+      sessionId: 'sid-1',
+      title: 'exported smoke',
+      counts: {
+        environment: 2,
+        environmentExported: 1,
+        environmentSkipped: 1,
+        actions: 3,
+        actionsExported: 2,
+        actionsSkipped: 1,
+        assertions: 1,
+      },
+      nextSteps: [
+        'Review skipped steps and auth state before committing the Playwright spec.',
+        'cdp record-actions ABC123 --format json',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(parsed.spec).toContain("test('exported smoke'");
+    expect(parsed.spec).toContain('await page.route("**/api/fail*"');
+    expect(parsed.spec).toContain('await page.goto("https://example.com/dashboard");');
+    expect(parsed.spec).toContain('await expect(page.getByText("戰鬥勝利")).toBeVisible();');
+    expect(parsed.review).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'environment', index: 2, exported: false, reason: 'chrome-cdp-ex live clock override has no portable exporter step yet' }),
+      expect.objectContaining({ phase: 'action', index: 3, exported: false, reason: 'needs stable selector; chrome-cdp-ex @refs are session-local' }),
+    ]));
   });
 
   it('exports observed text additions as Playwright assertions', () => {

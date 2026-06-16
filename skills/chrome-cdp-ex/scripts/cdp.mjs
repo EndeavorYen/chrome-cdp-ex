@@ -3320,10 +3320,11 @@ function formatPlaywrightSpecFromRecordActions(model, { title = 'chrome-cdp-ex e
 }
 
 function parseExportPlaywrightArgs(args = []) {
-  const opts = { title: 'chrome-cdp-ex exported workflow' };
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--title') {
-      opts.title = args[++i] || opts.title;
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const opts = { title: 'chrome-cdp-ex exported workflow', format: fopts.format };
+  for (let i = 0; i < fopts.args.length; i++) {
+    if (fopts.args[i] === '--title') {
+      opts.title = fopts.args[++i] || opts.title;
     }
   }
   return opts;
@@ -3333,8 +3334,71 @@ function singleQuotedJsString(value) {
   return `'${String(value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r/g, '\\r').replace(/\n/g, '\\n')}'`;
 }
 
+function playwrightExportReviewEntry(phase, index, sourceEntry = {}, step = {}) {
+  const command = Array.isArray(sourceEntry.command) ? sourceEntry.command.map(v => String(v)) : [];
+  const reasonLine = (step.lines || []).find(line => line.startsWith('// Reason: '));
+  return {
+    phase,
+    index,
+    exported: step.exported === true,
+    command,
+    commandText: command.length ? formatCommandLine(command) : null,
+    reason: reasonLine ? reasonLine.slice('// Reason: '.length) : null,
+  };
+}
+
+function buildExportPlaywrightModel(recordActionsModel, opts = {}) {
+  const actions = Array.isArray(recordActionsModel?.actions) ? recordActionsModel.actions : [];
+  const environment = Array.isArray(recordActionsModel?.environment) ? recordActionsModel.environment : [];
+  const environmentSteps = environment.map(entry => playwrightStepFromEnvironment(entry));
+  const actionSteps = actions.map(action => playwrightStepFromCommand(action));
+  const environmentExported = environmentSteps.filter(step => step.exported).length;
+  const actionsExported = actionSteps.filter(step => step.exported).length;
+  const assertions = actionSteps.reduce((count, step) => (
+    count + (step.lines || []).filter(line => /\bexpect\(/.test(line)).length
+  ), 0);
+  const review = [
+    ...environmentSteps.map((step, i) => playwrightExportReviewEntry('environment', i + 1, environment[i], step)),
+    ...actionSteps.map((step, i) => playwrightExportReviewEntry('action', i + 1, actions[i], step)),
+  ].filter(entry => !entry.exported);
+  const targetId = recordActionsModel?.targetId || '<target>';
+  const skipped = review.length;
+  const nextSteps = skipped > 0
+    ? [
+        'Review skipped steps and auth state before committing the Playwright spec.',
+        `cdp record-actions ${targetId} --format json`,
+        `cdp report ${targetId} --format json`,
+      ]
+    : [
+        'Review auth state and selectors before committing the Playwright spec.',
+        `cdp report ${targetId} --format json`,
+      ];
+
+  return {
+    schema: 'chrome-cdp-ex.export-playwright.v1',
+    targetId: recordActionsModel?.targetId || null,
+    sessionId: recordActionsModel?.sessionId || null,
+    source: 'record-actions',
+    title: opts.title || 'chrome-cdp-ex exported workflow',
+    counts: {
+      environment: environment.length,
+      environmentExported,
+      environmentSkipped: environment.length - environmentExported,
+      actions: actions.length,
+      actionsExported,
+      actionsSkipped: actions.length - actionsExported,
+      assertions,
+    },
+    spec: formatPlaywrightSpecFromRecordActions(recordActionsModel, opts),
+    review,
+    nextSteps,
+  };
+}
+
 function formatExportPlaywright(session, opts = {}) {
-  return formatPlaywrightSpecFromRecordActions(buildRecordActionsModel(session), opts);
+  const model = buildRecordActionsModel(session);
+  if (opts.format === 'json') return formatJson(buildExportPlaywrightModel(model, opts));
+  return formatPlaywrightSpecFromRecordActions(model, opts);
 }
 
 function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targetId), screenshotDir = sessionScreenshotDir(targetId) }) {
@@ -9470,7 +9534,7 @@ Usage: cdp <command> [args]
   restore <target> --file <path> [--format json]  Restore a checkpoint artifact into the live page
   restore <target> --json <json> [--format json]  Restore an inline checkpoint JSON artifact
   record-actions <target>           Export action log + mock/clock/throttle environment as text or JSON
-  export-playwright <target>         Export current workflow as a Playwright spec draft
+  export-playwright <target> [--format json]  Export current workflow as a Playwright spec draft or JSON handoff
   replay <target> --file <path> [--format json]  Replay environment controls + actions against the live page
   replay <target> --json <json> [--format json]  Replay an inline record-actions JSON artifact
   frame <target> [--format json]     List page frames with stable @fN refs (alias: frames)
@@ -9644,7 +9708,7 @@ const COMMANDS = Object.freeze([
   { name: 'checkpoint', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'restore', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'record-actions', aliases: ['recordactions'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'export-playwright', aliases: ['export-pw'], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'export-playwright', aliases: ['export-pw'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'replay', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'elshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'click', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },

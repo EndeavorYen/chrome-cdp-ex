@@ -582,6 +582,21 @@ assertIncludes(playwrightExport, 'await page.route("**/api/mock*"', 'export-play
 assertIncludes(playwrightExport, 'await page.locator("#cmd").fill("look trainer");', 'export-playwright fill');
 assertIncludes(playwrightExport, 'await page.locator("#combat").click();', 'export-playwright click');
 assertIncludes(playwrightExport, 'await expect(page.getByText("戰鬥勝利")).toBeVisible();', 'export-playwright evidence assertion');
+const playwrightExportJson = step('export playwright json', () => run(['export-playwright', target, '--format', 'json']));
+const playwrightExportModel = JSON.parse(playwrightExportJson);
+if (playwrightExportModel.schema !== 'chrome-cdp-ex.export-playwright.v1') {
+  throw new Error(`export-playwright JSON should include schema\nOutput:\n${playwrightExportJson}`);
+}
+assertIncludes(playwrightExportModel.spec, "import { test, expect } from '@playwright/test';", 'export-playwright JSON spec');
+if ((playwrightExportModel.counts?.actions || 0) < 1 || (playwrightExportModel.counts?.actionsExported || 0) < 1) {
+  throw new Error(`export-playwright JSON should include exported action counts\nOutput:\n${playwrightExportJson}`);
+}
+if ((playwrightExportModel.counts?.assertions || 0) < 1) {
+  throw new Error(`export-playwright JSON should include assertion counts\nOutput:\n${playwrightExportJson}`);
+}
+if (!Array.isArray(playwrightExportModel.review)) {
+  throw new Error(`export-playwright JSON should include review list\nOutput:\n${playwrightExportJson}`);
+}
 const replayArtifactPath = resolve(profileDir, 'record-actions.json');
 writeFileSync(replayArtifactPath, recordActionsJson);
 const replayOut = step('replay record-actions artifact', () => run(['replay', target, '--file', replayArtifactPath], { timeout: 30000 }));
