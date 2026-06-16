@@ -384,11 +384,13 @@ When a CLI command fails, read the printed `Recovery:` block before retrying. `K
 
 These commands **automatically wait for DOM to settle and return compact `ActionResult` evidence plus perceive feedback** — no need to manually run `perceive` or `perceive --diff` afterwards. Add `--format json` to action commands when a script needs the versioned `chrome-cdp-ex.action.v1` evidence model without human dispatch text; action JSON includes top-level `outcome` (`changed`, `no-change`, `attention`, `failed`, `timeout`, or `dispatched`), `verdict` (`continue`, `investigate`, `recover`, `blocked`, or `verify`), `recommendation`, and `nextSteps` so agents can decide whether to continue, recover, hand off to `report --format json`, or capture `record-actions --format json` without parsing `nextHint`. A dispatched `no-change` outcome is not normal success: follow its `investigate-no-change` recommendation to inspect `overlay`, `frame`, a fresh `perceive`, and `report` before retrying. Dispatch failures are returned as the same JSON model with `dispatch.ok=false`, `effects.failure.kind`, and an executable `nextHint`; when a diagnosis exists, `recommendation.source` becomes `action-diagnosis` and `nextSteps` are promoted from the diagnosis recovery policy. When an action needs attention, JSON also includes `effects.diagnosis` (`chrome-cdp-ex.action-diagnosis.v1`) with `status`, `kind`, `reason`, `signals`, and `nextCommand`; kinds include `network-failure`, `network-pending`, `exception`, `console-error`, `observation-timeout`, and classified dispatch failures such as `overlay` or `stale-ref`. Each diagnosis also carries `recovery` (`chrome-cdp-ex.recovery-policy.v1`) with a strategy, priority, ordered commands, verification command, and avoid list; prefer those commands when scripting Smart Eye recovery. `report <target>` prints a text `Recommendation` / `Next steps` handoff after the timeline and each action's outcome/verdict; `report <target> --format json` promotes the latest diagnosis recovery policy, or the latest `no-change` outcome when no harder diagnosis is present, into `recommendation` and `nextSteps`, then appends `record-actions` / `export-playwright` handoff commands for workflow capture. Use `batch <target> --format json ...` when combining several steps in one call; it returns `chrome-cdp-ex.batch.v1` with per-step status/verdict, attention counts for successful action verdicts such as `no-change`, the first failed step, classified `Action failure` kind, and executable `nextSteps`. Use `flow <target> --format json "summary; click #missing; status"` when ordered pipelines need the same handoff shape plus skipped downstream steps and successful action verdict attention. Action feedback also snapshots console, exception, and network buffers before dispatch, then reports low-token deltas like `Console: 1 entry (1 error)`, `Network: 1 request (1 failed)`, or `Network: 1 request (1 pending)` when the action caused runtime failures, request failures, or requests that have not settled yet. If you need to ask again what the last action changed, run `perceive --since-action`.
 
+`upload` returns ActionResult evidence after setting files, so form previews, validation messages, or upload queues can appear in `perceive --since-action` and `report`.
+
 If dispatch fails, read the classified `Action failure:` block instead of retrying blindly. Failures are grouped as `stale-ref`, `overlay`, `wrong-frame`, `navigation`, `dom-rewrite`, `timeout`, or `selector`, and each one includes a concrete `Next:` command such as `cdp dismiss-modal <target>`, `cdp overlay <target> @ref`, `cdp perceive <target> -C -d 8`, or `cdp status <target>`. The failed action is also recorded in `report <target>` so long sessions keep the diagnosis; successful actions record DOM, console, exception, and network evidence for later `record-actions` export.
 
 | Command | Auto-returns |
 |---------|-------------|
-| `click`, `jsclick`, `clickxy`, `fill`, `type`, `press`, `select`, `scroll`, `inject`, `dismiss-modal` | action evidence + perceive diff |
+| `click`, `jsclick`, `clickxy`, `fill`, `type`, `press`, `select`, `scroll`, `upload`, `inject`, `dismiss-modal` | action evidence + perceive diff |
 | `back`, `forward`, `reload` | action evidence + full perceive |
 | `viewport` (when resizing) | action evidence + perceive diff |
 | `nav` | action evidence + **full perceive** (new page, not a diff) |
@@ -472,7 +474,7 @@ scripts/cdp.mjs cookieset <target> <cookie>            # set cookie: "name=value
 scripts/cdp.mjs cookiedel <target> <name>              # delete cookie by name
 scripts/cdp.mjs dialog  <target> [accept|dismiss]      # show dialog history; set auto-accept or auto-dismiss
 scripts/cdp.mjs viewport <target> [WxH]               # show or set viewport (e.g. 375x812)
-scripts/cdp.mjs upload  <target> <selector> <paths>    # upload file(s) to input[type=file]
+scripts/cdp.mjs upload  <target> <selector> <paths> [--format json] # upload file(s) to input[type=file]
 scripts/cdp.mjs back    <target>                       # navigate back in browser history
 scripts/cdp.mjs forward <target>                       # navigate forward in browser history
 scripts/cdp.mjs reload  <target>                       # reload current page
@@ -538,9 +540,11 @@ scripts/cdp.mjs cookiedel <target> session_id                          # delete 
 Upload files to `<input type="file">` elements.
 
 ```bash
-scripts/cdp.mjs upload <target> "#file-input" /path/to/file.pdf
+scripts/cdp.mjs upload <target> "#file-input" /path/to/file.pdf [--format json]
 scripts/cdp.mjs upload <target> "#file-input" /path/a.jpg,/path/b.jpg   # multiple files (comma-separated)
 ```
+
+`upload` returns ActionResult evidence after setting files, so form previews, validation messages, or upload queues can appear in `perceive --since-action` and `report`.
 
 ### Text extraction
 

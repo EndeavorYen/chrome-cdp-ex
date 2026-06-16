@@ -27,6 +27,8 @@
     <button id="combat">Run combat</button>
     <button id="diagnostic">Run diagnostic</button>
     <button id="noop">No visible change</button>
+    <label>Upload evidence <input id="upload-file" aria-label="upload evidence" type="file"></label>
+    <p id="upload-status" role="status">upload:none</p>
     <div id="custom-clickable" onclick="appendLog('custom clickable used')">Custom clickable div</div>
     <section role="region" aria-label="事件紀錄">
       <h2>事件紀錄</h2>
@@ -74,6 +76,11 @@
     });
     document.getElementById('noop').addEventListener('click', () => {
       document.getElementById('noop').blur();
+    });
+    document.getElementById('upload-file').addEventListener('change', (e) => {
+      const names = Array.from(e.target.files || []).map(file => file.name).join(', ') || 'none';
+      document.getElementById('upload-status').textContent = 'upload:' + names;
+      appendLog('upload selected ' + names);
     });
     document.getElementById('close-modal').addEventListener('click', () => {
       document.getElementById('motd').hidden = true;

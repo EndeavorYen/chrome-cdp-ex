@@ -9069,7 +9069,11 @@ async function runDaemon(targetId) {
           else result = await viewportStr(cdp, sessionId, args[0]);
           break;
         }
-        case 'upload': result = await uploadStr(cdp, sessionId, args[0], args[1]); break;
+        case 'upload': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('upload', () => uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'state-change', null, fopts.format);
+          break;
+        }
         case 'text': result = await textStr(cdp, sessionId, args); break;
         case 'table': result = await tableStr(cdp, sessionId, args[0]); break;
         case 'back': {
@@ -9435,7 +9439,7 @@ Usage: cdp <command> [args]
   cookiedel <target> <name>         Delete a cookie by name
   dialog  <target> [accept|dismiss] Show dialog history; set auto-accept (default) or auto-dismiss
   viewport <target> [WxH]           Show or set viewport size (e.g. 375x812, 1280x720)
-  upload  <target> <selector> <paths>  Upload file(s) to <input type="file"> (comma-separated paths)
+  upload  <target> <selector> <paths> [--format json]  Upload file(s) to <input type="file"> (comma-separated paths)
   text    <target> [selector]       Clean visible text — optional CSS selector to scope
                                     --root auto|default|<sel>: scope to #root/[data-reactroot]/main/body or selector
   table   <target> [selector]       Full table data extraction (tab-separated, no row limit)
@@ -9495,14 +9499,15 @@ Usage: cdp <command> [args]
   stop  [target]                    Stop daemon(s)
 
 ACTION FEEDBACK
-  click, clickxy, press (Enter/Escape/Tab), select, scroll, and viewport (when
-  resizing) automatically wait for DOM to settle and return a perceive diff.
+  click, jsclick, clickxy, fill, type, press, select, scroll, upload, inject,
+  dismiss-modal, and viewport (when resizing) automatically wait for DOM to
+  settle and return compact action evidence plus a perceive diff.
+  back, forward, reload, and nav return action evidence plus a full perceive.
   Each mutating action also snapshots console/exception/network buffers before
   dispatch and reports compact deltas such as console errors, failed requests,
   or requests still pending after the action observation window.
   If that post-action observation times out after the action was sent, the
   command reports success with "observation timed out" instead of a pure timeout.
-  nav automatically returns a full perceive of the loaded page.
   No need to manually run perceive or perceive --diff after these actions.
   To re-check what the last action changed, run perceive --since-action.
 

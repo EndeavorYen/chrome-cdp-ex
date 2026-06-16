@@ -33,6 +33,10 @@ if (browserCandidates.length === 0) skip('no supported Chrome/Edge/Brave browser
 
 const [browserPath, browserName] = browserCandidates[0];
 const profileDir = mkdtempSync(resolve(tmpdir(), `chrome-cdp-ex-smoke-${browserName}-`));
+const uploadFixturePath = resolve(profileDir, 'upload-fixture.txt');
+const uploadJsonFixturePath = resolve(profileDir, 'upload-json-fixture.txt');
+writeFileSync(uploadFixturePath, 'chrome-cdp-ex upload smoke fixture\n');
+writeFileSync(uploadJsonFixturePath, 'chrome-cdp-ex upload JSON smoke fixture\n');
 let browser;
 let server;
 
@@ -289,6 +293,24 @@ if (parsedFillAction.verdict?.status !== 'continue' || parsedFillAction.verdict?
 }
 if (parsedFillAction.recommendation?.source !== 'action-evidence' || !parsedFillAction.nextSteps?.includes(`cdp report ${target} --format json`)) {
   throw new Error(`fill --format json should include action continuation recommendation:\n${fillJsonOut}`);
+}
+const uploadOut = step('upload action evidence', () => run(['upload', target, '#upload-file', uploadFixturePath]));
+assertIncludes(uploadOut, 'Uploaded 1 file', 'upload');
+assertIncludes(uploadOut, 'upload: dispatched', 'upload action evidence');
+assertIncludes(uploadOut, 'upload-fixture.txt', 'upload action DOM diff');
+const uploadJsonOut = step('upload action json evidence', () => run(['upload', target, '#upload-file', uploadJsonFixturePath, '--format', 'json']));
+const parsedUploadAction = JSON.parse(uploadJsonOut);
+if (parsedUploadAction.schema !== 'chrome-cdp-ex.action.v1' || parsedUploadAction.action !== 'upload') {
+  throw new Error(`upload --format json should return action evidence JSON:\n${uploadJsonOut}`);
+}
+if (parsedUploadAction.dispatch?.ok !== true || parsedUploadAction.settle?.ok !== true) {
+  throw new Error(`upload --format json should report dispatched and settled action:\n${uploadJsonOut}`);
+}
+if (!parsedUploadAction.effects?.domDiff?.includes('upload-json-fixture.txt')) {
+  throw new Error(`upload --format json should include observed upload effects:\n${uploadJsonOut}`);
+}
+if (parsedUploadAction.recommendation?.source !== 'action-evidence' || !parsedUploadAction.nextSteps?.includes(`cdp report ${target} --format json`)) {
+  throw new Error(`upload --format json should include action continuation recommendation:\n${uploadJsonOut}`);
 }
 const failedClickJsonOut = step('failed action json evidence', () => run(['click', target, '#missing-action-json-smoke', '--format', 'json']));
 const parsedFailedClickAction = JSON.parse(failedClickJsonOut);
