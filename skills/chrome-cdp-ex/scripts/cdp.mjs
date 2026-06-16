@@ -2194,6 +2194,58 @@ function appendSessionScreenshot(session, { kind = 'shot', path = null, note = '
   return entry;
 }
 
+function uniqueNextStepCommands(commands = []) {
+  const out = [];
+  for (const command of commands) {
+    if (!command || out.includes(command)) continue;
+    out.push(command);
+  }
+  return out;
+}
+
+function defaultReportNextSteps(target, hasActions) {
+  return hasActions
+    ? [
+        `cdp perceive ${target} --since-action`,
+        `cdp record-actions ${target} --format json`,
+        `cdp export-playwright ${target}`,
+      ]
+    : [
+        `cdp perceive ${target} -C -d 8`,
+        `cdp click ${target} @ref  # choose a ref from perceive`,
+      ];
+}
+
+function buildReportRecommendation(actionLog = [], target) {
+  for (let i = actionLog.length - 1; i >= 0; i--) {
+    const entry = actionLog[i];
+    const diagnosis = entry?.diagnosis || null;
+    if (!diagnosis || diagnosis.status === 'ok') continue;
+    const recovery = diagnosis.recovery || null;
+    const commands = recoveryCommandsFromDiagnosis(diagnosis);
+    return {
+      source: 'latest-action-diagnosis',
+      actionIndex: i + 1,
+      action: entry.action || null,
+      diagnosisKind: diagnosis.kind || null,
+      strategy: recovery?.strategy || null,
+      priority: recovery?.priority || null,
+      verifyCommand: recovery?.verifyCommand || diagnosis.nextCommand || null,
+      commands,
+    };
+  }
+  return {
+    source: actionLog.length > 0 ? 'session-continuation' : 'onboarding',
+    actionIndex: null,
+    action: null,
+    diagnosisKind: null,
+    strategy: actionLog.length > 0 ? 'continue-or-export' : 'perceive-first',
+    priority: 'medium',
+    verifyCommand: actionLog.length > 0 ? `cdp perceive ${target} --since-action` : `cdp perceive ${target} -C -d 8`,
+    commands: defaultReportNextSteps(target, actionLog.length > 0),
+  };
+}
+
 function buildSessionReportModel(session, { now = Date.now() } = {}) {
   const actionLog = session.actionLog || [];
   const screenshots = session.screenshots || [];
@@ -2227,6 +2279,14 @@ function buildSessionReportModel(session, { now = Date.now() } = {}) {
       nextHint: entry.nextHint || null,
     };
   });
+  const recommendation = buildReportRecommendation(actionLog, target);
+  const nextSteps = uniqueNextStepCommands([
+    ...(recommendation.commands || []),
+    ...(actionLog.length > 0 ? [
+      `cdp record-actions ${target} --format json`,
+      `cdp export-playwright ${target}`,
+    ] : []),
+  ]);
   return {
     schema: 'chrome-cdp-ex.report.v1',
     targetId: session.targetId,
@@ -2258,16 +2318,8 @@ function buildSessionReportModel(session, { now = Date.now() } = {}) {
       path: entry.path || null,
       note: entry.note || '',
     })),
-    nextSteps: actionLog.length > 0
-      ? [
-          `cdp perceive ${target} --since-action`,
-          `cdp record-actions ${target} --format json`,
-          `cdp export-playwright ${target}`,
-        ]
-      : [
-          `cdp perceive ${target} -C -d 8`,
-          `cdp click ${target} @ref  # choose a ref from perceive`,
-        ],
+    recommendation,
+    nextSteps: nextSteps.length ? nextSteps : defaultReportNextSteps(target, actionLog.length > 0),
   };
 }
 

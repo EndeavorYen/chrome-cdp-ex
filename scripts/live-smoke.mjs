@@ -373,6 +373,13 @@ if (!parsedReport.screenshots?.some(shot => shot.path === sessionShotPath)) {
 if (parsedReport.paths?.log !== reportLogPath || !parsedReport.nextSteps?.some(nextStep => nextStep.includes('record-actions'))) {
   throw new Error(`report json should include log path and handoff next steps:\n${reportJson}`);
 }
+if (!parsedReport.recommendation?.source || !parsedReport.recommendation?.strategy) {
+  throw new Error(`report json should include a Smart Eye recommendation:\n${reportJson}`);
+}
+const recommendedCommands = parsedReport.recommendation?.commands || [];
+if (recommendedCommands.length > 0 && !recommendedCommands.some(command => parsedReport.nextSteps?.includes(command))) {
+  throw new Error(`report json nextSteps should include recovery recommendation commands:\n${reportJson}`);
+}
 const reportLogEvents = readFileSync(reportLogPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
 if (!reportLogEvents.some(event => event.kind === 'action' && event.action?.action === 'click')) {
   throw new Error(`session log should contain a click action event\nLog:\n${readFileSync(reportLogPath, 'utf8')}`);
