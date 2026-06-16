@@ -122,38 +122,42 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   staleRefRecoveryRateMin: 1,
 });
 
-const COMPARISON_BASELINES = Object.freeze([
-  {
-    id: 'playwright',
-    label: 'Playwright test generator/snapshot',
-    metrics: {
-      commandCalls: 26,
-      usefulObservationTokens: 5000,
-      verificationCallsSaved: 0,
-      differentiatorSuccessRate: 0.5,
+const DEFAULT_COMPARISON_BASELINE_SET = Object.freeze({
+  source: 'heuristic-smoke-baseline',
+  note: 'Baselines are conservative planning estimates for this smoke path until competitor harnesses are implemented.',
+  baselines: Object.freeze([
+    {
+      id: 'playwright',
+      label: 'Playwright test generator/snapshot',
+      metrics: {
+        commandCalls: 26,
+        usefulObservationTokens: 5000,
+        verificationCallsSaved: 0,
+        differentiatorSuccessRate: 0.5,
+      },
     },
-  },
-  {
-    id: 'devtools-manual',
-    label: 'Manual DevTools inspection',
-    metrics: {
-      commandCalls: 35,
-      usefulObservationTokens: null,
-      verificationCallsSaved: 0,
-      differentiatorSuccessRate: 0.5,
+    {
+      id: 'devtools-manual',
+      label: 'Manual DevTools inspection',
+      metrics: {
+        commandCalls: 35,
+        usefulObservationTokens: null,
+        verificationCallsSaved: 0,
+        differentiatorSuccessRate: 0.5,
+      },
     },
-  },
-  {
-    id: 'generic-cdp',
-    label: 'Generic CDP script',
-    metrics: {
-      commandCalls: 30,
-      usefulObservationTokens: 7000,
-      verificationCallsSaved: 0,
-      differentiatorSuccessRate: 0.25,
+    {
+      id: 'generic-cdp',
+      label: 'Generic CDP script',
+      metrics: {
+        commandCalls: 30,
+        usefulObservationTokens: 7000,
+        verificationCallsSaved: 0,
+        differentiatorSuccessRate: 0.25,
+      },
     },
-  },
-]);
+  ]),
+});
 
 function gateCriterion({ name, actual, operator, limit, recommendation }) {
   let passed = false;
@@ -243,42 +247,85 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
   };
 }
 
-export function buildBenchmarkComparison(summary, baselines = COMPARISON_BASELINES) {
+function normalizeBaselineMetrics(metrics = {}) {
+  return {
+    commandCalls: metrics.commandCalls ?? null,
+    usefulObservationTokens: metrics.usefulObservationTokens ?? null,
+    verificationCallsSaved: metrics.verificationCallsSaved ?? 0,
+    differentiatorSuccessRate: metrics.differentiatorSuccessRate ?? null,
+  };
+}
+
+function normalizeComparisonBaselineSet(input = DEFAULT_COMPARISON_BASELINE_SET) {
+  if (Array.isArray(input)) {
+    return { ...DEFAULT_COMPARISON_BASELINE_SET, baselines: input };
+  }
+  return {
+    source: input.source || DEFAULT_COMPARISON_BASELINE_SET.source,
+    note: input.note || DEFAULT_COMPARISON_BASELINE_SET.note,
+    baselines: Array.isArray(input.baselines) ? input.baselines : DEFAULT_COMPARISON_BASELINE_SET.baselines,
+  };
+}
+
+export function loadComparisonBaselineFile(filePath) {
+  const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
+  if (parsed.schema !== 'chrome-cdp-ex.comparison-baselines.v1') {
+    throw new Error(`comparison baseline file must use schema chrome-cdp-ex.comparison-baselines.v1: ${filePath}`);
+  }
+  if (!Array.isArray(parsed.baselines)) {
+    throw new Error(`comparison baseline file must include baselines array: ${filePath}`);
+  }
+  return {
+    source: parsed.source || 'measured-baseline-file',
+    note: parsed.note || `Measured comparison baselines loaded from ${filePath}.`,
+    baselines: parsed.baselines.map((baseline, index) => ({
+      id: baseline.id || `baseline-${index + 1}`,
+      label: baseline.label || baseline.id || `Baseline ${index + 1}`,
+      metrics: normalizeBaselineMetrics(baseline.metrics || {}),
+    })),
+  };
+}
+
+export function buildBenchmarkComparison(summary, baselineSet = DEFAULT_COMPARISON_BASELINE_SET) {
+  const normalizedBaselineSet = normalizeComparisonBaselineSet(baselineSet);
   const actual = summary.metrics || {};
   const actualDifferentiatorRate = actual.differentiators?.successRate ?? 0;
   return {
     schema: 'chrome-cdp-ex.benchmark-comparison.v1',
-    source: 'heuristic-smoke-baseline',
-    note: 'Baselines are conservative planning estimates for this smoke path until competitor harnesses are implemented.',
+    source: normalizedBaselineSet.source,
+    note: normalizedBaselineSet.note,
     actual: {
       commandCalls: actual.commandCalls ?? null,
       usefulObservationTokens: actual.usefulObservationTokens ?? null,
       verificationCallsSaved: actual.verificationCallsSaved ?? null,
       differentiatorSuccessRate: actualDifferentiatorRate,
     },
-    baselines: baselines.map(baseline => ({
-      id: baseline.id,
-      label: baseline.label,
-      metrics: baseline.metrics,
-      delta: {
-        commandCallsSaved: baseline.metrics.commandCalls != null && actual.commandCalls != null
-          ? baseline.metrics.commandCalls - actual.commandCalls
-          : null,
-        usefulObservationTokensSaved: baseline.metrics.usefulObservationTokens != null && actual.usefulObservationTokens != null
-          ? baseline.metrics.usefulObservationTokens - actual.usefulObservationTokens
-          : null,
-        verificationCallsSaved: actual.verificationCallsSaved != null
-          ? actual.verificationCallsSaved - (baseline.metrics.verificationCallsSaved || 0)
-          : null,
-        differentiatorSuccessRateDelta: baseline.metrics.differentiatorSuccessRate != null
-          ? actualDifferentiatorRate - baseline.metrics.differentiatorSuccessRate
-          : null,
-      },
-    })),
+    baselines: normalizedBaselineSet.baselines.map((baseline) => {
+      const metrics = normalizeBaselineMetrics(baseline.metrics);
+      return {
+        id: baseline.id,
+        label: baseline.label,
+        metrics,
+        delta: {
+          commandCallsSaved: metrics.commandCalls != null && actual.commandCalls != null
+            ? metrics.commandCalls - actual.commandCalls
+            : null,
+          usefulObservationTokensSaved: metrics.usefulObservationTokens != null && actual.usefulObservationTokens != null
+            ? metrics.usefulObservationTokens - actual.usefulObservationTokens
+            : null,
+          verificationCallsSaved: actual.verificationCallsSaved != null
+            ? actual.verificationCallsSaved - (metrics.verificationCallsSaved || 0)
+            : null,
+          differentiatorSuccessRateDelta: metrics.differentiatorSuccessRate != null
+            ? actualDifferentiatorRate - metrics.differentiatorSuccessRate
+            : null,
+        },
+      };
+    }),
   };
 }
 
-export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, endedAt, target = '', steps = [] } = {}) {
+export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, endedAt, target = '', steps = [], comparisonBaselineSet = DEFAULT_COMPARISON_BASELINE_SET } = {}) {
   const normalizedSteps = steps.map((step) => {
     const text = outputText(step);
     const outputChars = text.length;
@@ -334,7 +381,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
     steps: normalizedSteps.map(({ outputText: _outputText, ...step }) => step),
   };
   summary.gate = buildBenchmarkGate(summary);
-  summary.comparison = buildBenchmarkComparison(summary);
+  summary.comparison = buildBenchmarkComparison(summary, comparisonBaselineSet);
   return summary;
 }
 
@@ -457,19 +504,21 @@ function assertExpectedFailure(step, pattern) {
 }
 
 export function parseBenchmarkArgs(argv = []) {
-  const opts = { json: false, stabilityMs: 1000 };
+  const opts = { json: false, stabilityMs: 1000, comparisonBaselinesPath: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--json') {
       opts.json = true;
     } else if (argv[i] === '--stability-ms') {
       const value = Number(argv[++i]);
       opts.stabilityMs = Number.isFinite(value) && value >= 0 ? value : opts.stabilityMs;
+    } else if (argv[i] === '--comparison-baselines' || argv[i] === '--baseline-file') {
+      opts.comparisonBaselinesPath = argv[++i] || null;
     }
   }
   return opts;
 }
 
-export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BENCH_PORT || 9334), serverPort = Number(process.env.CDP_BENCH_HTTP_PORT || 41738), json = false, stabilityMs = 1000 } = {}) {
+export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BENCH_PORT || 9334), serverPort = Number(process.env.CDP_BENCH_HTTP_PORT || 41738), json = false, stabilityMs = 1000, comparisonBaselinesPath = null } = {}) {
   if (!existsSync(cdp)) throw new Error(`cdp script not found: ${cdp}`);
   if (!existsSync(page)) throw new Error(`smoke page not found: ${page}`);
   const candidates = browserCandidates();
@@ -582,6 +631,7 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
       endedAt: Date.now(),
       target,
       steps,
+      comparisonBaselineSet: comparisonBaselinesPath ? loadComparisonBaselineFile(comparisonBaselinesPath) : DEFAULT_COMPARISON_BASELINE_SET,
     });
     summary.browser = browserName;
     summary.port = port;

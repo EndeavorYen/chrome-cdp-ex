@@ -1044,6 +1044,7 @@ Before making performance or adoption claims, run the live Killer Path benchmark
 npm run benchmark:killer
 npm run benchmark:killer -- --json
 npm run benchmark:killer -- --stability-ms 1200000
+npm run benchmark:killer -- --comparison-baselines ./baselines.json
 ```
 
 It launches a disposable debug browser against the local smoke page and measures `doctor -> list -> perceive -> act -> since-action evidence -> report`: command calls, total time, first useful observation time, estimated output tokens, useful observation tokens, auto-evidence actions, verification calls saved, report timeline presence, stale-ref recovery, session stability sample, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time. The default stability sample is 1000ms; use `--stability-ms` for 20-60 minute dogfood windows.
@@ -1051,6 +1052,8 @@ It launches a disposable debug browser against the local smoke page and measures
 The report includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires a successful run, at most 20 command calls, first useful observation within 5 seconds, useful observation tokens at or below 3000, at least one auto-evidence action, a report timeline, 100% differentiator probe success, 100% stale-ref recovery, and a passing session stability sample. Do not make adoption or comparison claims from a failed gate; fix the failed criterion first.
 
 JSON output also includes `chrome-cdp-ex.benchmark-comparison.v1`: a conservative `heuristic-smoke-baseline` comparison against Playwright test generation/snapshots, manual DevTools inspection, and generic CDP scripting. Treat it as a planning baseline until dedicated competitor harnesses exist; it is meant to show what must be proven, not to overstate external measurements.
+
+To replace the heuristic comparison with measured competitor runs, pass `--comparison-baselines` a JSON file shaped like `{"schema":"chrome-cdp-ex.comparison-baselines.v1","source":"measured-local-baseline","baselines":[{"id":"playwright","label":"Measured Playwright harness","metrics":{"commandCalls":24,"usefulObservationTokens":4200,"verificationCallsSaved":0,"differentiatorSuccessRate":0.5}}]}`.
 
 ## Source
 

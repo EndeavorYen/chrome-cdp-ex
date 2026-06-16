@@ -1,8 +1,12 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { resolve } from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
   estimateTokenCount,
   formatBenchmarkReport,
+  loadComparisonBaselineFile,
   parseBenchmarkArgs,
   summarizeBenchmarkRun,
 } from '../scripts/benchmark-killer-path.mjs';
@@ -313,13 +317,77 @@ describe('benchmark killer path helpers', () => {
   });
 
   it('parses JSON mode and stability window options', () => {
-    expect(parseBenchmarkArgs(['--json', '--stability-ms', '1200000'])).toEqual({
+    expect(parseBenchmarkArgs(['--json', '--stability-ms', '1200000', '--comparison-baselines', '/tmp/baselines.json'])).toEqual({
       json: true,
       stabilityMs: 1200000,
+      comparisonBaselinesPath: '/tmp/baselines.json',
     });
     expect(parseBenchmarkArgs([])).toEqual({
       json: false,
       stabilityMs: 1000,
+      comparisonBaselinesPath: null,
     });
+  });
+
+  it('loads measured comparison baselines from a versioned file', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'chrome-cdp-ex-baselines-'));
+    const file = resolve(dir, 'baselines.json');
+    try {
+      writeFileSync(file, JSON.stringify({
+        schema: 'chrome-cdp-ex.comparison-baselines.v1',
+        source: 'measured-local-baseline',
+        note: 'Measured with local Playwright and generic CDP harnesses.',
+        baselines: [
+          {
+            id: 'playwright',
+            label: 'Measured Playwright harness',
+            metrics: {
+              commandCalls: 24,
+              usefulObservationTokens: 4200,
+              verificationCallsSaved: 0,
+              differentiatorSuccessRate: 0.5,
+            },
+          },
+        ],
+      }));
+
+      const loaded = loadComparisonBaselineFile(file);
+      const summary = summarizeBenchmarkRun({
+        scenario: 'killer-path',
+        startedAt: 0,
+        endedAt: 40,
+        target: 'AABBCCDD',
+        comparisonBaselineSet: loaded,
+        steps: [
+          { name: 'perceive', command: ['perceive', 'AABB'], startedAt: 0, endedAt: 20, status: 0, stdout: 'Page:\n@1 Button', stderr: '' },
+          { name: 'click', command: ['click', 'AABB', '#go'], startedAt: 20, endedAt: 30, status: 0, stdout: 'Clicked\nclick: dispatched', stderr: '' },
+          { name: 'report', command: ['report', 'AABB'], startedAt: 30, endedAt: 40, status: 0, stdout: 'Session report: AABB\nActions: 1\n\nAction timeline:', stderr: '' },
+        ],
+      });
+
+      expect(loaded).toMatchObject({
+        source: 'measured-local-baseline',
+        note: 'Measured with local Playwright and generic CDP harnesses.',
+        baselines: [
+          expect.objectContaining({ id: 'playwright', label: 'Measured Playwright harness' }),
+        ],
+      });
+      expect(summary.comparison).toMatchObject({
+        source: 'measured-local-baseline',
+        note: 'Measured with local Playwright and generic CDP harnesses.',
+        baselines: [
+          expect.objectContaining({
+            id: 'playwright',
+            label: 'Measured Playwright harness',
+            delta: expect.objectContaining({
+              commandCallsSaved: 21,
+              usefulObservationTokensSaved: expect.any(Number),
+            }),
+          }),
+        ],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
