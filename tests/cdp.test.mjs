@@ -16,7 +16,7 @@ const {
   statusStr, clearObservationBuffers,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
   captureScreenshot, screencastFallback, snapshotStr,
-  resetScreenshotTier, getScreenshotTier, SCREENSHOT_TIMEOUT,
+  resetScreenshotTier, getScreenshotTier,
   decodeVLQ, mapLineToSource, stripVitePathQuery, mapStyleSource,
   formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr, autoActionJsonArgs,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkBrowserPermission, checkFdLimit,
@@ -3255,7 +3255,7 @@ describe('KEY_MAP', () => {
   });
 
   it('should have correct structure for each entry', () => {
-    for (const [name, entry] of Object.entries(KEY_MAP)) {
+    for (const entry of Object.values(KEY_MAP)) {
       expect(entry).toHaveProperty('key');
       expect(entry).toHaveProperty('code');
       expect(entry).toHaveProperty('keyCode');
@@ -3340,7 +3340,7 @@ describe('buildPerceiveTree', () => {
     nodes[3].childIds = ['h1'];
 
     const refMap = new Map();
-    const { treeLines, refNodeIds } = buildPerceiveTree(nodes, emptyMeta, refMap);
+    const { treeLines } = buildPerceiveTree(nodes, emptyMeta, refMap);
 
     expect(treeLines.join('\n')).toContain('[WebArea] Test Page');
     expect(treeLines.join('\n')).toContain('[navigation] Main Nav');
@@ -3743,7 +3743,7 @@ function createMockCDP(handlers = {}) {
       return Promise.resolve({});
     },
     onEvent() { return () => {}; },
-    waitForEvent(method, timeout) {
+    waitForEvent(method, _timeout) {
       let timer;
       return {
         promise: handlers[`event:${method}`]
@@ -5541,25 +5541,8 @@ describe('perceiveStr integration', () => {
     { nodeId: '6', parentId: '4', role: { value: 'button' }, name: { value: 'Submit' }, backendDOMNodeId: 104 },
   ];
 
-  function makePerceiveCDP() {
-    return createMockCDP({
-      'Accessibility.getFullAXTree': () => ({ nodes: fakeAxNodes }),
-      'Runtime.evaluate': () => ({ result: { value: fakeMeta } }),
-      'DOM.resolveNode': (params) => ({ object: { objectId: `obj-${params.backendNodeId}` } }),
-      'Runtime.callFunctionOn': () => ({
-        result: { value: { x: 10, y: 20, w: 100, h: 30 } },
-      }),
-    });
-  }
-
   it('should produce header with page title, URL, viewport, and console health', async () => {
-    const cdp = makePerceiveCDP();
     const refMap = new Map();
-    const consoleBuf = new RingBuffer(200);
-    const exceptionBuf = new RingBuffer(50);
-    const store = { output: null };
-
-    const result = await T.evalStr(cdp, 'sid1', '1').then(() => null).catch(() => null);
     // Use buildPerceiveTree directly since perceiveStr needs real evalStr
     const { treeLines, refNodeIds } = buildPerceiveTree(fakeAxNodes, JSON.parse(fakeMeta), refMap, {});
 
@@ -5624,8 +5607,6 @@ describe('perceiveStr integration', () => {
     const refMap = new Map();
     const meta = JSON.parse(fakeMeta);
     const store = { output: null };
-    const consoleBuf = new RingBuffer(200);
-    const exceptionBuf = new RingBuffer(50);
 
     // Build a fake "first perceive" output manually
     const { treeLines } = buildPerceiveTree(fakeAxNodes, meta, refMap, {});

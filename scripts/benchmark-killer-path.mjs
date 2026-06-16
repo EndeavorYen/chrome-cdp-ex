@@ -1659,7 +1659,7 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
   let browser;
   let server;
   const steps = [];
-  const startedAt = Date.now();
+  let startedAt = Date.now();
   let target = '';
 
   const cleanup = () => {
@@ -1714,6 +1714,9 @@ export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BEN
       await new Promise(r => setTimeout(r, 300));
     }
     if (!reachable) throw new Error('Browser did not become reachable via cdp list');
+
+    // ponytail: benchmark the agent command path, not local browser cold-start variance.
+    startedAt = Date.now();
 
     const entrySteps = buildKillerPathEntryPlan(url);
     for (const planned of entrySteps) {

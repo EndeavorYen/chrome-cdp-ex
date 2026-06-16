@@ -291,15 +291,15 @@
     </div>
     <div class="gate" aria-label="Quality gate result">
       <strong>25/25</strong>
-      <span>quality gate passed on the 2026-06-17 local run</span>
+      <span>quality gate passed<br>2026-06-17 local run</span>
     </div>
   </section>
 
   <section class="stats" aria-label="Benchmark highlights">
-    <div class="stat"><strong>5.716s</strong><span>golden path complete</span></div>
+    <div class="stat"><strong>5.066s</strong><span>golden path complete</span></div>
     <div class="stat"><strong>1,384</strong><span><em>useful observation</em> tokens</span></div>
     <div class="stat"><strong>100%</strong><span>action evidence coverage</span></div>
-    <div class="stat"><strong>49ms</strong><span>stale-ref recovery</span></div>
+    <div class="stat"><strong>53ms</strong><span>stale-ref recovery</span></div>
   </section>
 
   <section class="flow" aria-label="Measured agent flow">
@@ -331,18 +331,18 @@
       <div class="timeline">
         <div class="bar">
           <span>First observation</span>
-          <div class="track"><div class="fill" style="width: 30%"></div></div>
-          <span>2.842s</span>
+          <div class="track"><div class="fill" style="width: 24%"></div></div>
+          <span>2.173s</span>
         </div>
         <div class="bar">
           <span>Golden path</span>
-          <div class="track"><div class="fill" style="width: 60%"></div></div>
-          <span>5.716s</span>
+          <div class="track"><div class="fill" style="width: 57%"></div></div>
+          <span>5.066s</span>
         </div>
         <div class="bar">
           <span>Total run</span>
           <div class="track"><div class="fill" style="width: 100%"></div></div>
-          <span>9.507s</span>
+          <span>8.887s</span>
         </div>
       </div>
       <p class="note">The benchmark charges the main path for command calls and treats differentiator checks as probes, so the proof covers more than the shortest demo path.</p>
