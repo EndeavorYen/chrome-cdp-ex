@@ -70,7 +70,7 @@ The benchmark measures the agent path this tool is built for: see the page, act,
 | Proof point | Latest local run |
 |---|---:|
 | Quality gate | **25/25 pass** |
-| Golden path complete | **5.716s** |
+| Golden path complete | **5.066s** |
 | Useful observation tokens | **1,384** |
 | Action evidence coverage | **100%** |
 | Differentiator success rate | **100%** |
@@ -172,25 +172,26 @@ Use the live benchmark before making performance or adoption claims. [View the v
 
 ### Latest dogfood snapshot
 
-Local run on 2026-06-17 against the same smoke page. Publish competitor comparison deltas only after rerunning with measured `--comparison-baselines`.
+Local run on 2026-06-17 against the same smoke page. Timing starts after CDP is reachable so browser cold-start variance is excluded. Publish competitor comparison deltas only after rerunning with measured `--comparison-baselines`.
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 9.507s |
+| Total time | 8.887s |
 | Command calls | 23 |
-| First useful observation | 2.842s |
-| Golden path complete | 5.716s |
+| First useful observation | 2.173s |
+| Golden path complete | 5.066s |
 | Useful observation tokens | 1,384 |
 | Action evidence coverage | 100% (9/9 mutating commands) |
 | Differentiator success rate | 100% |
-| Stale-ref recovery | 49ms, 1/1 recovered |
+| Stale-ref recovery | 53ms, 1/1 recovered |
 | Quality gate | 25/25 pass |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
 
 ```bash
 npm run benchmark:killer
-npm run benchmark:killer -- --json
+npm run benchmark:killer -- --json > benchmark.json
+npm run benchmark:update-readme -- benchmark.json README.md --html experiment/benchmark.html --date YYYY-MM-DD
 npm run benchmark:generic-cdp -- --out generic-cdp-raw.json
 npm run benchmark:playwright -- --out playwright-raw.json
 npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json

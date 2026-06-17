@@ -12,6 +12,7 @@ import { homedir } from 'os';
 import { resolve, delimiter } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import net from 'net';
+import { autoActionJsonArgs as autoActionJsonArgsForCommands } from './lib/action-evidence.mjs';
 
 const TIMEOUT = 15000;
 const SCREENSHOT_TIMEOUT = 30000;
@@ -7432,14 +7433,6 @@ function commandMeta(cmd) {
   return COMMANDS.find(command => command.name === cmd || (command.aliases || []).includes(cmd)) || null;
 }
 
-function commandReturnsActionJson(cmd) {
-  const meta = commandMeta(cmd);
-  return meta?.mutates === true
-    && meta.feedbackPolicy
-    && Array.isArray(meta.outputFormats)
-    && meta.outputFormats.includes('json');
-}
-
 const BATCH_PARALLEL_READ_STATE_COMMANDS = new Set(['perceive', 'snap', 'snapshot']);
 
 function isBatchParallelUnsafeCommand(cmd) {
@@ -7448,14 +7441,8 @@ function isBatchParallelUnsafeCommand(cmd) {
   return BATCH_PARALLEL_READ_STATE_COMMANDS.has(cmd);
 }
 
-function argsHaveFormatOption(args = []) {
-  return Array.isArray(args) && args.includes('--format');
-}
-
 function autoActionJsonArgs(cmd, args = [], enabled = false) {
-  const normalizedArgs = Array.isArray(args) ? args : [];
-  if (!enabled || !commandReturnsActionJson(cmd) || argsHaveFormatOption(normalizedArgs)) return normalizedArgs;
-  return [...normalizedArgs, '--format', 'json'];
+  return autoActionJsonArgsForCommands(cmd, args, enabled, { commands: COMMANDS });
 }
 
 function batchStepModel(result = {}, index = 0) {

@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.6.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.4.0...v2.6.0) (2026-06-17)
+
+### Features
+
+* ship Smart Eye action evidence, session reports, workflow handoffs, and benchmark-gated README proof.
+
+### Maintenance
+
+* add a README benchmark updater so dogfood snapshot claims stay tied to real benchmark JSON.
+
 ## [2.4.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.3.0...v2.4.0) (2026-04-26)
 
 
