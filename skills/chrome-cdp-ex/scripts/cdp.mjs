@@ -1291,8 +1291,75 @@ async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
 const MAX_ACTION_DELTA_ENTRIES = 5;
 const MAX_ACTION_JSON_DOM_DIFF_CHARS = 800;
 const DEFAULT_REPORT_ACTION_LIMIT = 20;
-const SENSITIVE_QUERY_KEY_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn)\b/i;
+const REDACTED_VALUE = '<redacted>';
+const SENSITIVE_QUERY_KEY_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn|session|sid|cookie|jwt|csrf|xsrf|refresh|access)\b/i;
+const SENSITIVE_METADATA_KEY_ALLOWLIST = new Set([
+  'schema',
+  'source',
+  'targetId',
+  'targetPrefix',
+  'sessionId',
+  'sessionStorage',
+  'localStorage',
+  'storage',
+  'cookies',
+  'cookieCount',
+  'createdAt',
+  'now',
+  'ts',
+  'index',
+  'action',
+  'kind',
+  'status',
+  'method',
+  'path',
+  'paths',
+  'url',
+  'origin',
+  'title',
+  'domain',
+  'sameSite',
+  'secure',
+  'httpOnly',
+  'expires',
+  'redaction',
+  'redacted',
+]);
+const SECRET_ASSIGNMENT_RE = /(^|[\s{[,;?&])([A-Za-z0-9_.-]*(?:pass(?:word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(?:orization)?|pin|cvv|card|ssn|session|sid|cookie|jwt|csrf|xsrf|refresh|access)[A-Za-z0-9_.-]*\s*[:=]\s*)(["']?)([^"'\s,;&}\])]+)/gi;
+const AUTH_HEADER_VALUE_RE = /\b(Authorization\s*[:=]\s*(?:Bearer|Basic)\s+)([A-Za-z0-9._~+/=-]+)/gi;
+const BEARER_VALUE_RE = /\b(Bearer\s+)([A-Za-z0-9._~+/=-]+)/gi;
 const NOISY_ACTION_NETWORK_TYPES = new Set(['Image', 'Stylesheet', 'Script', 'Font', 'Media', 'WebSocket']);
+
+function isSensitiveDataKey(key = '') {
+  const name = String(key || '');
+  if (!name || SENSITIVE_METADATA_KEY_ALLOWLIST.has(name)) return false;
+  const normalized = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[-_.]+/g, ' ');
+  return SENSITIVE_QUERY_KEY_RE.test(name) || SENSITIVE_QUERY_KEY_RE.test(normalized);
+}
+
+function redactSensitiveString(value) {
+  const text = String(value ?? '');
+  return text
+    .replace(AUTH_HEADER_VALUE_RE, `$1${REDACTED_VALUE}`)
+    .replace(BEARER_VALUE_RE, `$1${REDACTED_VALUE}`)
+    .replace(SECRET_ASSIGNMENT_RE, (_match, prefix, key, quote) => `${prefix}${key}${quote}${REDACTED_VALUE}${quote}`);
+}
+
+function redactSensitiveArtifactValue(value, key = '') {
+  if (value == null) return value;
+  if (isSensitiveDataKey(key)) return REDACTED_VALUE;
+  if (typeof value === 'string') return redactSensitiveString(value);
+  if (Array.isArray(value)) return value.map(item => redactSensitiveArtifactValue(item));
+  if (typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [
+      entryKey,
+      redactSensitiveArtifactValue(entryValue, entryKey),
+    ]));
+  }
+  return value;
+}
 
 function createActionResult({ action, target, dispatch, settle, effects, nextHint }) {
   return applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis({
@@ -1339,14 +1406,14 @@ function compactActionUrl(value) {
 function compactConsoleDeltaEntry(entry = {}) {
   return {
     level: compactActionText(entry.level || 'log', 30),
-    text: compactActionText(entry.text || entry.msg || entry.message || ''),
+    text: compactActionText(redactSensitiveString(entry.text || entry.msg || entry.message || '')),
     loc: compactActionText(entry.loc || '', 120),
   };
 }
 
 function compactExceptionDeltaEntry(entry = {}) {
   return {
-    message: compactActionText(entry.msg || entry.message || entry.text || 'Unknown exception'),
+    message: compactActionText(redactSensitiveString(entry.msg || entry.message || entry.text || 'Unknown exception')),
     loc: compactActionText(entry.loc || '', 120),
   };
 }
@@ -1812,20 +1879,20 @@ function formatConsoleDeltaSample(entry) {
   if (!entry) return null;
   const level = entry.level || 'log';
   const loc = entry.loc ? ` @ ${entry.loc}` : '';
-  return `[${level}] ${entry.text || '(empty)'}${loc}`;
+  return `[${level}] ${redactSensitiveString(entry.text || '(empty)')}${loc}`;
 }
 
 function formatExceptionDeltaSample(entry) {
   if (!entry) return null;
   const loc = entry.loc ? ` @ ${entry.loc}` : '';
-  return `${entry.message || 'Unknown exception'}${loc}`;
+  return `${redactSensitiveString(entry.message || 'Unknown exception')}${loc}`;
 }
 
 function formatNetworkDeltaSample(entry) {
   if (!entry) return null;
   const status = entry.errorText || entry.status || 'pending';
   const duration = Number.isFinite(entry.duration) ? ` in ${entry.duration}ms` : '';
-  return `${entry.method || 'GET'} ${entry.url || '(unknown URL)'} -> ${status}${duration}`;
+  return `${entry.method || 'GET'} ${redactSensitiveString(entry.url || '(unknown URL)')} -> ${status}${duration}`;
 }
 
 function summarizeActionConsoleDelta(delta = {}) {
@@ -1902,7 +1969,7 @@ function formatActionText(result) {
   if (diagnostics.exceptionSample) lines.push(`Exception sample: ${diagnostics.exceptionSample}`);
   if (diagnostics.networkSummary) lines.push(diagnostics.networkSummary);
   if (diagnostics.networkSample) lines.push(`Network sample: ${diagnostics.networkSample}`);
-  if (result.effects?.domDiff) lines.push('---', result.effects.domDiff);
+  if (result.effects?.domDiff) lines.push('---', redactSensitiveString(result.effects.domDiff));
   if (diagnosis?.nextCommand && diagnosis.status !== 'ok') lines.push(`Next: ${diagnosis.nextCommand}`);
   if (!diagnosis?.nextCommand && result.outcome?.status === 'no-change' && result.recommendation?.commands?.[0]) {
     lines.push(`Next: ${result.recommendation.commands[0]}`);
@@ -2018,8 +2085,9 @@ function summarizeActionDomDiff(domDiff) {
 
 function compactActionResultForJson(result) {
   const compact = JSON.parse(JSON.stringify(result));
+  compact.target = sanitizeActionTargetForLog(compact.action, compact.target || null);
   const effects = compact.effects || {};
-  if (typeof effects.domDiff !== 'string') return compact;
+  if (typeof effects.domDiff !== 'string') return redactSensitiveArtifactValue(compact);
 
   const original = effects.domDiff;
   const { summary, sample } = summarizeActionDomDiff(original);
@@ -2031,7 +2099,7 @@ function compactActionResultForJson(result) {
     effects.domDiff = [summary, sample].filter(Boolean).join('\n')
       || compactActionText(original, MAX_ACTION_JSON_DOM_DIFF_CHARS);
   }
-  return compact;
+  return redactSensitiveArtifactValue(compact);
 }
 
 const SENSITIVE_ACTION_TARGET_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn)\b/i;
@@ -2142,7 +2210,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
   const { summary, sample } = summarizeActionDomDiff(domDiff);
   const diagnostics = summarizeActionObservationEffects(actionResult.effects || {});
   const target = sanitizeActionTargetForLog(actionResult.action, actionResult.target || null);
-  const entry = {
+  const entry = redactSensitiveArtifactValue({
     ts,
     action: actionResult.action,
     target,
@@ -2161,7 +2229,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
     outcome: actionResult.outcome || buildActionOutcome(actionResult),
     verdict: actionResult.verdict || buildActionVerdict(actionResult),
     nextHint: actionResult.nextHint || null,
-  };
+  });
   session.actionLog.push(entry);
   if (session.actionLog.length > MAX_ACTION_LOG_ENTRIES) {
     session.actionLog.splice(0, session.actionLog.length - MAX_ACTION_LOG_ENTRIES);
@@ -5344,18 +5412,41 @@ function checkpointPageScript() {
   })()`;
 }
 
-function sanitizeCheckpointCookies(cookies = []) {
+function sanitizeCheckpointCookies(cookies = [], { redactValues = true } = {}) {
   return cookies.map(cookie => {
     const out = {};
     for (const key of ['name', 'value', 'domain', 'path', 'secure', 'httpOnly', 'sameSite']) {
-      if (cookie[key] !== undefined) out[key] = cookie[key];
+      if (cookie[key] !== undefined) out[key] = key === 'value' && redactValues ? REDACTED_VALUE : cookie[key];
     }
     if (Number.isFinite(cookie.expires) && cookie.expires > 0) out.expires = cookie.expires;
+    if (redactValues && out.value !== undefined) out.redacted = ['value'];
     return out;
   }).filter(cookie => cookie.name);
 }
 
-async function checkpointModel(cdp, sid, { now = Date.now() } = {}) {
+function sanitizeCheckpointStorage(storage = {}, { redactValues = true } = {}) {
+  if (!storage || typeof storage !== 'object') return {};
+  if (!redactValues) return { ...storage };
+  return Object.fromEntries(Object.entries(storage).map(([key, value]) => [
+    key,
+    isSensitiveDataKey(key) ? REDACTED_VALUE : redactSensitiveArtifactValue(value, key),
+  ]));
+}
+
+function parseCheckpointArgs(args = []) {
+  const rest = [];
+  let unsafeFullCapture = false;
+  for (const arg of args || []) {
+    if (arg === '--unsafe-full' || arg === '--full' || arg === '--include-secrets') {
+      unsafeFullCapture = true;
+    } else {
+      rest.push(arg);
+    }
+  }
+  return { unsafeFullCapture, args: rest };
+}
+
+async function checkpointModel(cdp, sid, { now = Date.now(), unsafeFullCapture = false } = {}) {
   const raw = await evalStr(cdp, sid, checkpointPageScript());
   let pageState;
   try {
@@ -5366,35 +5457,49 @@ async function checkpointModel(cdp, sid, { now = Date.now() } = {}) {
   let cookies = [];
   try {
     const res = await cdp.send('Network.getCookies', {}, sid);
-    cookies = sanitizeCheckpointCookies(res.cookies || []);
+    cookies = sanitizeCheckpointCookies(res.cookies || [], { redactValues: !unsafeFullCapture });
   } catch {}
   return {
     schema: 'chrome-cdp-ex.checkpoint.v1',
     ts: now,
+    privacy: {
+      redaction: unsafeFullCapture ? 'unsafe-full' : 'default-redacted',
+      cookies: !unsafeFullCapture,
+      storage: !unsafeFullCapture,
+      warning: unsafeFullCapture
+        ? 'This checkpoint intentionally includes raw cookie and storage values. Treat it as a secret artifact.'
+        : 'Cookie values and sensitive storage values are redacted by default. Use --unsafe-full only when restore fidelity is required and the artifact can be protected.',
+    },
     page: {
       url: pageState.url || '',
       title: pageState.title || '',
       origin: pageState.origin || '',
     },
     storage: {
-      localStorage: pageState.localStorage || {},
-      sessionStorage: pageState.sessionStorage || {},
+      localStorage: sanitizeCheckpointStorage(pageState.localStorage || {}, { redactValues: !unsafeFullCapture }),
+      sessionStorage: sanitizeCheckpointStorage(pageState.sessionStorage || {}, { redactValues: !unsafeFullCapture }),
     },
     cookies,
   };
 }
 
-async function checkpointStr(cdp, sid, { format = 'text', now = Date.now() } = {}) {
-  const model = await checkpointModel(cdp, sid, { now });
+async function checkpointStr(cdp, sid, { format = 'text', now = Date.now(), unsafeFullCapture = false } = {}) {
+  const model = await checkpointModel(cdp, sid, { now, unsafeFullCapture });
   if (format === 'json') return formatJson(model);
   const localCount = Object.keys(model.storage.localStorage || {}).length;
   const sessionCount = Object.keys(model.storage.sessionStorage || {}).length;
   return [
     'Checkpoint captured',
     `URL: ${model.page.url}`,
+    `Privacy: ${model.privacy.redaction}`,
     `Storage: local ${localCount}, session ${sessionCount}`,
     `Cookies: ${model.cookies.length}`,
-    'Next: save `checkpoint --format json` output and restore with `restore --file <path>`.',
+    unsafeFullCapture
+      ? 'Warning: raw cookie and storage values are included. Protect this artifact like a secret.'
+      : 'Values: cookie values and sensitive storage values are redacted by default.',
+    unsafeFullCapture
+      ? 'Next: save `checkpoint --unsafe-full --format json` output and restore with `restore --file <path>`.'
+      : 'Next: use `checkpoint --unsafe-full --format json` only when restore fidelity is required.',
   ].join('\n');
 }
 
@@ -9116,7 +9221,9 @@ async function runDaemon(targetId) {
         }
         case 'checkpoint': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await checkpointStr(cdp, sessionId, { format: fopts.format });
+          const copts = parseCheckpointArgs(fopts.args);
+          if (copts.args.length) throw new Error(`checkpoint: unknown argument ${copts.args[0]}`);
+          result = await checkpointStr(cdp, sessionId, { format: fopts.format, unsafeFullCapture: copts.unsafeFullCapture });
           appendSessionEventLog(session, { kind: 'checkpoint', url: result.includes('URL: ') ? result.split('URL: ')[1]?.split('\n')[0] : undefined });
           break;
         }
@@ -9585,7 +9692,7 @@ Usage: cdp <command> [args]
   console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
   report <target> [--last N|--all] [--format json]  Session action timeline + evidence summary + JSONL log path
-  checkpoint <target> [--format json]  Capture URL, cookies, localStorage, and sessionStorage
+  checkpoint <target> [--unsafe-full] [--format json]  Capture URL plus redacted cookies/storage; unsafe-full keeps restorable secrets
   restore <target> --file <path> [--format json]  Restore a checkpoint artifact into the live page
   restore <target> --json <json> [--format json]  Restore an inline checkpoint JSON artifact
   record-actions <target>           Export action log + mock/clock/throttle environment as text or JSON
@@ -10653,7 +10760,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   buildRecordActionsModel, formatRecordActions,
   playwrightStepFromCommand, formatPlaywrightSpecFromRecordActions, formatExportPlaywright,
   parseDiffShotArgs, diffShotCompareScript, formatDiffShotResult, diffShotStr,
-  checkpointPageScript, sanitizeCheckpointCookies, checkpointModel, checkpointStr,
+  checkpointPageScript, sanitizeCheckpointCookies, sanitizeCheckpointStorage, parseCheckpointArgs, checkpointModel, checkpointStr,
   parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs,
   checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,
   // Command implementations

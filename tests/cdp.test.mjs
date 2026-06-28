@@ -1173,6 +1173,28 @@ describe('ActionResult', () => {
     expect(out).not.toContain('Clicked #submit');
   });
 
+  it('redacts sensitive values in JSON action handoffs', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'fill',
+      target: {
+        input: '#password',
+        resolvedBy: 'selector',
+        label: '#password',
+        commandArgs: ['#password', 'pw-sentinel-123'],
+      },
+      dispatch: async () => 'Filled #password',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => '+++ Added (1):\n+   [status] token=dom-sentinel-abc saved',
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.target.commandArgs).toEqual(['#password', '<redacted>']);
+    expect(out).not.toContain('pw-sentinel-123');
+    expect(out).not.toContain('dom-sentinel-abc');
+    expect(out).toContain('<redacted>');
+  });
+
   it('compacts long DOM diff evidence in JSON action handoffs', async () => {
     const longDiff = [
       'Page: Very Large App',
@@ -2442,6 +2464,72 @@ describe('Session report', () => {
       expect(model.actions[0].needsInput).toEqual(['text']);
       expect(logText).not.toContain('secret123');
       expect(logText).toContain('<redacted>');
+    } finally {
+      rmSync(logPath, { force: true });
+    }
+  });
+
+  it('redacts sentinel secrets from report, record, export, and JSONL artifacts', () => {
+    const logPath = `/tmp/cdp-sensitive-artifacts-${Date.now()}-${Math.random().toString(16).slice(2)}.log`;
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1', logPath });
+    const sentinels = [
+      'pw-sentinel-123',
+      'console-sentinel-456',
+      'api-sentinel-789',
+      'dom-sentinel-abc',
+    ];
+
+    try {
+      const actionResult = T.applyActionObservationDelta(T.createActionResult({
+        action: 'fill',
+        target: {
+          input: '#password',
+          resolvedBy: 'selector',
+          label: '#password',
+          commandArgs: ['#password', 'pw-sentinel-123'],
+        },
+        dispatch: { ok: true, method: 'fill' },
+        settle: { ok: true, durationMs: 50 },
+        effects: {
+          domDiff: '+++ Added (1):\n+   [status] token=dom-sentinel-abc saved',
+          console: [],
+          network: [],
+          navigation: null,
+        },
+        nextHint: null,
+      }), {
+        console: {
+          count: 1,
+          errors: 1,
+          warnings: 0,
+          entries: [{ level: 'error', text: 'Authorization: Bearer console-sentinel-456', loc: 'auth.js:1' }],
+        },
+        exceptions: { count: 0, entries: [] },
+        network: {
+          count: 1,
+          failures: 1,
+          pending: 0,
+          entries: [{ method: 'POST', url: 'https://example.com/api/login?api_key=api-sentinel-789', status: 401, duration: 27 }],
+        },
+      });
+      T.appendSessionActionLog(state, actionResult, { ts: Date.parse('2026-06-16T00:00:03.000Z') });
+
+      const artifacts = [
+        T.formatSessionReport(state),
+        T.formatSessionReport(state, { format: 'json' }),
+        T.formatRecordActions(state),
+        T.formatRecordActions(state, { format: 'json' }),
+        T.formatExportPlaywright(state),
+        T.formatExportPlaywright(state, { format: 'json' }),
+        readFileSync(logPath, 'utf8'),
+      ];
+
+      for (const artifact of artifacts) {
+        for (const sentinel of sentinels) {
+          expect(artifact).not.toContain(sentinel);
+        }
+      }
+      expect(artifacts.join('\n')).toContain('<redacted>');
     } finally {
       rmSync(logPath, { force: true });
     }
@@ -3965,15 +4053,15 @@ describe('checkpoint / restore', () => {
             url: 'https://example.com/app',
             title: 'App',
             origin: 'https://example.com',
-            localStorage: { theme: 'dark' },
-            sessionStorage: { wizard: '2' },
+            localStorage: { theme: 'dark', authToken: 'local-sentinel-123' },
+            sessionStorage: { wizard: '2', apiKey: 'session-sentinel-456' },
           }),
         },
       }),
       'Network.getCookies': () => ({
         cookies: [{
           name: 'sid',
-          value: 'abc',
+          value: 'cookie-sentinel-789',
           domain: 'example.com',
           path: '/',
           secure: true,
@@ -3992,10 +4080,53 @@ describe('checkpoint / restore', () => {
       title: 'App',
       origin: 'https://example.com',
     });
-    expect(model.storage.localStorage).toEqual({ theme: 'dark' });
-    expect(model.storage.sessionStorage).toEqual({ wizard: '2' });
+    expect(model.privacy).toMatchObject({
+      redaction: 'default-redacted',
+      cookies: true,
+      storage: true,
+    });
+    expect(model.storage.localStorage).toEqual({ theme: 'dark', authToken: '<redacted>' });
+    expect(model.storage.sessionStorage).toEqual({ wizard: '2', apiKey: '<redacted>' });
     expect(model.cookies).toHaveLength(1);
-    expect(model.cookies[0]).toMatchObject({ name: 'sid', value: 'abc', domain: 'example.com' });
+    expect(model.cookies[0]).toMatchObject({ name: 'sid', value: '<redacted>', domain: 'example.com' });
+    expect(JSON.stringify(model)).not.toContain('local-sentinel-123');
+    expect(JSON.stringify(model)).not.toContain('session-sentinel-456');
+    expect(JSON.stringify(model)).not.toContain('cookie-sentinel-789');
+  });
+
+  it('labels unsafe checkpoint captures that preserve restorable secrets', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({
+        result: {
+          value: JSON.stringify({
+            url: 'https://example.com/app',
+            title: 'App',
+            origin: 'https://example.com',
+            localStorage: { authToken: 'local-sentinel-123' },
+            sessionStorage: { apiKey: 'session-sentinel-456' },
+          }),
+        },
+      }),
+      'Network.getCookies': () => ({
+        cookies: [{
+          name: 'sid',
+          value: 'cookie-sentinel-789',
+          domain: 'example.com',
+          path: '/',
+        }],
+      }),
+    });
+
+    const model = await T.checkpointModel(cdp, 'sid-1', { now: 12345, unsafeFullCapture: true });
+
+    expect(model.privacy).toMatchObject({
+      redaction: 'unsafe-full',
+      cookies: false,
+      storage: false,
+    });
+    expect(model.storage.localStorage.authToken).toBe('local-sentinel-123');
+    expect(model.storage.sessionStorage.apiKey).toBe('session-sentinel-456');
+    expect(model.cookies[0].value).toBe('cookie-sentinel-789');
   });
 
   it('formats checkpoint JSON for artifact files', async () => {
