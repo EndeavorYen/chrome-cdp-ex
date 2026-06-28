@@ -4327,6 +4327,13 @@ describe('visible controls inspector', () => {
     });
   });
 
+  it('rejects controls flags that are missing required values', () => {
+    expect(() => parseControlsArgs(['--selector'])).toThrow(/--selector requires a CSS selector/);
+    expect(() => parseControlsArgs(['--filter'])).toThrow(/--filter requires text/);
+    expect(() => parseControlsArgs(['--limit'])).toThrow(/--limit requires a positive integer/);
+    expect(() => parseControlsArgs(['--limit', '0'])).toThrow(/--limit requires a positive integer/);
+  });
+
   it('formats a compact scoped visible-controls inventory', () => {
     const out = formatVisibleControlsText(controlsModel);
     expect(out).toContain('Visible controls: 2/2 in #composer');
@@ -4379,6 +4386,78 @@ describe('visible controls inspector', () => {
     }
   });
 
+  it('returns an invalid-selector model instead of throwing from the page script', () => {
+    const previousWindow = globalThis.window;
+    const previousDocument = globalThis.document;
+    const previousCss = globalThis.CSS;
+    globalThis.window = {
+      innerWidth: 1200,
+      innerHeight: 800,
+      CSS: { escape: (value) => String(value) },
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1', cursor: 'default' }),
+    };
+    globalThis.document = {
+      querySelector: () => {
+        throw new SyntaxError('Invalid selector');
+      },
+    };
+    globalThis.CSS = globalThis.window.CSS;
+    try {
+      const model = JSON.parse(globalThis.eval(visibleControlsPageScript({ selector: '[bad', limit: 5 })));
+      expect(model).toMatchObject({
+        schema: 'chrome-cdp-ex.visible-controls.v1',
+        scope: '[bad',
+        error: 'invalid-selector',
+        controls: [],
+      });
+      expect(model.message).toContain('Invalid selector');
+    } finally {
+      globalThis.window = previousWindow;
+      globalThis.document = previousDocument;
+      globalThis.CSS = previousCss;
+    }
+  });
+
+  it('treats the first supported token in a multi-token ARIA role as interactive', () => {
+    const roleButton = {
+      tagName: 'SECTION',
+      id: 'save',
+      className: '',
+      disabled: false,
+      tabIndex: -1,
+      innerText: 'Save',
+      textContent: 'Save',
+      getAttribute: (name) => (name === 'role' ? 'button menuitem' : null),
+      hasAttribute: () => false,
+      getBoundingClientRect: () => ({ left: 16, top: 24, right: 96, bottom: 56, width: 80, height: 32 }),
+    };
+    const previousWindow = globalThis.window;
+    const previousDocument = globalThis.document;
+    const previousCss = globalThis.CSS;
+    globalThis.window = {
+      innerWidth: 1200,
+      innerHeight: 800,
+      CSS: { escape: (value) => String(value) },
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1', cursor: 'default' }),
+    };
+    globalThis.document = { querySelectorAll: (selector) => (selector.includes('[role]') ? [roleButton] : []) };
+    globalThis.CSS = globalThis.window.CSS;
+    try {
+      const model = JSON.parse(globalThis.eval(visibleControlsPageScript({ limit: 5 })));
+      expect(model.controls).toHaveLength(1);
+      expect(model.controls[0]).toMatchObject({
+        tag: 'section',
+        role: 'button',
+        label: 'Save',
+        selector: 'section#save',
+      });
+    } finally {
+      globalThis.window = previousWindow;
+      globalThis.document = previousDocument;
+      globalThis.CSS = previousCss;
+    }
+  });
+
   it('returns text from Runtime.evaluate visible control data', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': (params) => {
@@ -4393,6 +4472,30 @@ describe('visible controls inspector', () => {
     const out = await controlsStr(cdp, 'sid1', { selector: '#composer', limit: 10 });
     expect(out).toContain('Visible controls: 2/2 in #composer');
     expect(out).toContain('button role=button aria-label="編輯"');
+  });
+
+  it('turns invalid-selector models into actionable controls errors', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({
+        result: {
+          value: JSON.stringify({
+            schema: 'chrome-cdp-ex.visible-controls.v1',
+            scope: '[bad',
+            filter: null,
+            limit: 5,
+            total: 0,
+            returned: 0,
+            truncated: false,
+            controls: [],
+            error: 'invalid-selector',
+            message: 'Invalid selector',
+          }),
+        },
+      }),
+    });
+
+    await expect(controlsStr(cdp, 'sid1', { selector: '[bad', limit: 5 })).rejects
+      .toThrow('controls: invalid selector: [bad');
   });
 
   it('returns JSON from Runtime.evaluate visible control data', async () => {

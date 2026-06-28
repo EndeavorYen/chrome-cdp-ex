@@ -3433,15 +3433,25 @@ function parsePerceiveArgs(args) {
 
 function parseControlsArgs(args) {
   const opts = { selector: null, filter: null, limit: 30 };
+  const requireValue = (flag, label, index) => {
+    const value = args[index + 1];
+    if (!value || value.startsWith('--')) throw new Error(`controls: ${flag} requires ${label}`);
+    return value;
+  };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '-s' || a === '--selector' || a === '--scope') {
-      opts.selector = args[++i] || null;
+      opts.selector = requireValue(a, 'a CSS selector', i);
+      i++;
     } else if (a === '--filter' || a === '-f') {
-      opts.filter = args[++i] || null;
+      opts.filter = requireValue(a, 'text', i);
+      i++;
     } else if (a === '--limit' || a === '-n') {
-      const n = parseInt(args[++i], 10);
-      opts.limit = Number.isFinite(n) && n > 0 ? Math.min(n, 100) : opts.limit;
+      const raw = requireValue(a, 'a positive integer', i);
+      i++;
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) throw new Error(`controls: ${a} requires a positive integer`);
+      opts.limit = Math.min(n, 100);
     } else {
       throw new Error(`controls: unknown argument ${a}`);
     }
@@ -3457,8 +3467,15 @@ function visibleControlsCollectorSource() {
         const limit = Math.max(1, Math.min(Number(options.limit) || 30, 100));
         const scope = options.selector || null;
         const filter = options.filter ? String(options.filter).toLowerCase() : null;
-        const root = scope ? document.querySelector(scope) : document;
         const schema = 'chrome-cdp-ex.visible-controls.v1';
+        let root = document;
+        if (scope) {
+          try {
+            root = document.querySelector(scope);
+          } catch (err) {
+            return { schema, scope, filter: options.filter || null, limit, total: 0, returned: 0, truncated: false, controls: [], error: 'invalid-selector', message: String(err && err.message || err || 'Invalid selector') };
+          }
+        }
         if (!root) {
           return { schema, scope, filter: options.filter || null, limit, total: 0, returned: 0, truncated: false, controls: [], error: 'scope-not-found' };
         }
@@ -3470,7 +3487,7 @@ function visibleControlsCollectorSource() {
           '[role="button"]', '[role="link"]', '[role="menuitem"]', '[role="option"]',
           '[role="checkbox"]', '[role="radio"]', '[role="switch"]', '[role="tab"]',
           '[role="textbox"]', '[role="combobox"]', '[role="searchbox"]',
-          '[contenteditable="true"]', '[onclick]', '[tabindex]',
+          '[role]', '[contenteditable="true"]', '[onclick]', '[tabindex]',
           '[aria-label]', '[title]',
           'div', 'span', 'li', 'label', 'svg', 'img'
         ].join(',');
@@ -3486,7 +3503,10 @@ function visibleControlsCollectorSource() {
 
         function roleFor(el) {
           const explicit = el.getAttribute('role');
-          if (explicit) return explicit;
+          if (explicit) {
+            const tokens = String(explicit).trim().toLowerCase().split(/\s+/).filter(Boolean);
+            return tokens.find(token => interactiveRoles.has(token)) || tokens[0] || '';
+          }
           const tag = el.tagName.toLowerCase();
           if (tag === 'a') return 'link';
           if (tag === 'button') return 'button';
@@ -3640,6 +3660,9 @@ async function controlsStr(cdp, sid, opts = {}) {
   }
   const raw = result.result?.value ?? '{}';
   const model = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  if (model.error === 'invalid-selector') {
+    throw new Error(`controls: invalid selector: ${model.scope}${model.message ? ` (${model.message})` : ''}`);
+  }
   if (model.error === 'scope-not-found') {
     throw new Error(`controls: selector not found: ${model.scope}`);
   }
