@@ -1073,14 +1073,31 @@ async function runtimeMetricsStr(cdp, sid) {
   return lines.join('\n');
 }
 
-async function pageInfoModel(cdp, sid) {
+function buildTargetStatusDiagnostic(err, { cmd = 'status', targetPrefix = '' } = {}) {
+  const model = buildCliErrorModel(err, { cmd, targetPrefix });
+  const state = model.recovery.kind === 'target-closed'
+    ? 'closed'
+    : model.recovery.kind === 'daemon-disconnect'
+    ? 'daemon-disconnect'
+    : 'error';
+  return {
+    state,
+    error: model.error,
+    recovery: model.recovery,
+    nextSteps: model.nextSteps,
+  };
+}
+
+async function pageInfoModel(cdp, sid, opts = {}) {
   let title = '', url = '';
   try {
     const info = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ title: document.title, url: window.location.href })', false, { timeoutMs: STATUS_PAGE_INFO_TIMEOUT }));
     title = info.title;
     url = info.url;
-  } catch {}
-  return { title, url };
+  } catch (e) {
+    return { title, url, diagnostic: buildTargetStatusDiagnostic(e, { targetPrefix: opts.targetPrefix }) };
+  }
+  return { title, url, diagnostic: null };
 }
 
 function buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag) {
@@ -1108,10 +1125,14 @@ function buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag) {
   };
 }
 
-function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, lastReadSeq, runtime = null }) {
+function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, lastReadSeq, runtime = null, diagnostic = null }) {
   return {
     schema: 'chrome-cdp-ex.status.v1',
     targetId,
+    target: {
+      state: diagnostic?.state || 'connected',
+      diagnostic,
+    },
     page,
     console: consoleBuf.since(lastReadSeq.console),
     exceptions: exceptionBuf.since(lastReadSeq.exception),
@@ -1121,11 +1142,17 @@ function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, la
 }
 
 async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq, opts = {}) {
-  const { title, url } = await pageInfoModel(cdp, sid);
+  const { title, url, diagnostic } = await pageInfoModel(cdp, sid, { targetPrefix: opts.targetPrefix });
 
   const lines = [];
   lines.push(`URL: ${url}`);
   lines.push(`Title: ${title}`);
+  if (diagnostic) {
+    lines.push(`Target state: ${diagnostic.state}`);
+    lines.push(`Diagnostic: ${diagnostic.error.message}`);
+    lines.push(...formatCliErrorRecovery(diagnostic.recovery));
+    lines.push(`Next: ${diagnostic.recovery.run}`);
+  }
 
   const navs = navBuf.all();
   if (navs.length > 0) {
@@ -9166,19 +9193,21 @@ async function runDaemon(targetId) {
             const runtime = fopts.args.includes('--runtime')
               ? await runtimeMetricsStr(cdp, sessionId).catch(e => ({ unavailable: e.message }))
               : null;
+            const page = await pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) });
             result = formatJson(buildStatusModel({
               targetId,
-              page: await pageInfoModel(cdp, sessionId),
+              page: { title: page.title, url: page.url },
               consoleBuf,
               exceptionBuf,
               navBuf,
               lastReadSeq,
               runtime,
+              diagnostic: page.diagnostic || null,
             }));
             lastReadSeq.console = consoleBuf.latest();
             lastReadSeq.exception = exceptionBuf.latest();
           } else {
-            result = await statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq, { runtime: fopts.args.includes('--runtime') });
+            result = await statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq, { runtime: fopts.args.includes('--runtime'), targetPrefix: targetPrefixForDisplay(targetId) });
           }
           break;
         }
@@ -10063,6 +10092,23 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       strategy: 'choose-longer-prefix',
       run: 'cdp list  # copy a longer target prefix',
       reason: 'More than one tab matches the provided target prefix.',
+    };
+  }
+  if (
+    lower.includes('target closed') ||
+    lower.includes('target destroyed') ||
+    lower.includes('inspector.detached') ||
+    lower.includes('detached from target') ||
+    lower.includes('no target with given id') ||
+    lower.includes('session closed') ||
+    lower.includes('page, context or browser has been closed')
+  ) {
+    return {
+      kind: 'target-closed',
+      strategy: 'rediscover-target',
+      run: 'cdp list',
+      then: 'cdp open https://example.com',
+      reason: 'The tab target appears to be closed, detached, or no longer present in Chrome.',
     };
   }
   if (

@@ -4757,6 +4757,20 @@ describe('formatCliError', () => {
     expect(out).toContain('Next: cdp perceive AABBCCDD -C -d 8');
   });
 
+  it('classifies closed tab failures separately from daemon disconnects', () => {
+    const out = formatCliError(
+      new Error('Protocol error: Target closed'),
+      { cmd: 'status', targetPrefix: 'AABBCCDD' }
+    );
+
+    expect(out).toContain('Kind: target-closed');
+    expect(out).toContain('Strategy: rediscover-target');
+    expect(out).toContain('Run: cdp list');
+    expect(out).toContain('Then: cdp open https://example.com');
+    expect(out).toContain('Next: cdp list');
+    expect(out).not.toContain('Kind: daemon-disconnect');
+  });
+
   it('turns EMFILE errors into fd-limit recovery commands', () => {
     const out = formatCliError(
       new Error('EMFILE: too many open files, open "/tmp/cdp.sock"'),
@@ -4812,6 +4826,20 @@ describe('formatCliError', () => {
     expect(parsed.recovery.run).toBe('cdp perceive AABBCCDD -C -d 8');
     expect(parsed.nextSteps).toEqual(['cdp perceive AABBCCDD -C -d 8']);
     expect(out).not.toContain('Recovery:');
+  });
+
+  it('formats closed tab CLI errors as structured JSON recovery', () => {
+    const out = formatCliError(
+      new Error('Inspector.detached: target closed'),
+      { cmd: 'status', targetPrefix: 'AABBCCDD', format: 'json' }
+    );
+    const parsed = JSON.parse(out);
+
+    expect(parsed.recovery.kind).toBe('target-closed');
+    expect(parsed.recovery.strategy).toBe('rediscover-target');
+    expect(parsed.recovery.run).toBe('cdp list');
+    expect(parsed.recovery.then).toBe('cdp open https://example.com');
+    expect(parsed.nextSteps).toEqual(['cdp list', 'cdp open https://example.com']);
   });
 
   it('formats EMFILE CLI errors as structured fd-limit JSON when requested', () => {
@@ -5032,6 +5060,29 @@ describe('open onboarding guidance', () => {
 });
 
 describe('status --runtime and buffer reset', () => {
+  it('reports closed target state without crashing', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => {
+        throw new Error('Protocol error: Target closed');
+      },
+    });
+
+    const out = await statusStr(
+      cdp,
+      'sid1',
+      new RingBuffer(10),
+      new RingBuffer(10),
+      new RingBuffer(10),
+      { console: 0, exception: 0 },
+      { targetPrefix: 'AABBCCDD' }
+    );
+
+    expect(out).toContain('Target state: closed');
+    expect(out).toContain('Kind: target-closed');
+    expect(out).toContain('Run: cdp list');
+    expect(out).toContain('Next: cdp list');
+  });
+
   it('uses a sub-second page info timeout so status stays responsive after reload churn', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': () => ({ result: { value: JSON.stringify({ title: 'T', url: 'https://example.test/' }) } }),
