@@ -2007,6 +2007,7 @@ describe('benchmark killer path helpers', () => {
     const controls = fixture.steps.find(step => step.name === 'controls');
     const text = fixture.steps.find(step => step.name === 'text');
     const table = fixture.steps.find(step => step.name === 'table');
+    const summaryStep = fixture.steps.find(step => step.name === 'summary');
 
     perceive.stdout = JSON.stringify({
       schema: 'chrome-cdp-ex.perceive.v1',
@@ -2028,6 +2029,20 @@ describe('benchmark killer path helpers', () => {
     });
     text.stdout = 'Visible text copied from every noisy hidden template node without an output budget.';
     table.stdout = 'name\tstatus\towner\n' + Array.from({ length: 20 }, (_, index) => `row-${index + 1}\topen\tteam`).join('\n');
+    summaryStep.stdout = JSON.stringify({
+      schema: 'chrome-cdp-ex.summary.v1',
+      counts: {
+        domNodes: 5200,
+        tableRows: 1000,
+        visibleControls: 240,
+        hiddenTemplateNodes: 1600,
+      },
+      limits: {
+        outputTokenBudget: 1200,
+      },
+      recommendation: { run: 'cdp controls AABBCCDD --format json' },
+      nextSteps: ['cdp controls AABBCCDD --format json'],
+    });
 
     const summary = summarizeBenchmarkRun(fixture);
 
@@ -2037,14 +2052,18 @@ describe('benchmark killer path helpers', () => {
     });
     expect(summary.metrics.largeAppStress.truncationMetadataCoverage).toMatchObject({
       total: 5,
-      covered: 1,
-      rate: 0.2,
+      covered: 0,
+      rate: 0,
+    });
+    expect(summary.metrics.largeAppStress.hiddenTemplateOmission).toMatchObject({
+      covered: false,
+      hiddenTemplateNodes: 1600,
     });
     expect(summary.gate.criteria).toEqual(expect.arrayContaining([
       expect.objectContaining({
         name: 'large-app-truncation-metadata',
         passed: false,
-        actual: 0.2,
+        actual: 0,
         culprit: expect.objectContaining({
           name: 'perceive',
           commandText: 'cdp perceive AABBCCDD -C -d 8 --keep-refs --last 20 --format json',
@@ -2057,6 +2076,14 @@ describe('benchmark killer path helpers', () => {
         culprit: expect.objectContaining({
           name: 'controls',
           commandText: 'cdp controls AABBCCDD --limit 50 --format json',
+        }),
+      }),
+      expect.objectContaining({
+        name: 'large-app-hidden-template-omission',
+        passed: false,
+        actual: false,
+        culprit: expect.objectContaining({
+          reason: 'hidden/template node omission metadata is missing',
         }),
       }),
     ]));

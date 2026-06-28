@@ -1066,7 +1066,8 @@ function largeAppHiddenTemplateOmissionSummary(steps = [], scale = null) {
       const text = step.outputText || outputText(step);
       return Number.isFinite(model?.limits?.hiddenTemplateNodesOmitted)
         || Number.isFinite(model?.limits?.hiddenNodesOmitted)
-        || /hidden template|hiddenTemplateNodes/i.test(text);
+        || /hiddenTemplateNodesOmitted=\d+/i.test(text)
+        || /hidden template nodes? omitted=\d+/i.test(text);
     }));
   return {
     covered,
