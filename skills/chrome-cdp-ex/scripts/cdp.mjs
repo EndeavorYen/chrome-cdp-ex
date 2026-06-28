@@ -2657,13 +2657,30 @@ function commandArgsFromTarget(entry, fallbackArgs = []) {
   return args.filter(v => v !== undefined && v !== null).map(v => String(v));
 }
 
+function normalizeRecordCommandName(value = '') {
+  const name = String(value || '').toLowerCase();
+  if (name === 'diffshot') return 'diff-shot';
+  if (name === 'dismissmodal') return 'dismiss-modal';
+  return name;
+}
+
+function forcedRecordCommandNeedsInput(commandName, args = []) {
+  const name = normalizeRecordCommandName(commandName);
+  if (name === 'diff-shot') return ['live-visual-baseline'];
+  if (name === 'upload') {
+    if (args.includes('<redacted>') || args.length < 2) return ['file'];
+  }
+  return null;
+}
+
 function inferRecordActionCommand(entry) {
   const targetInput = entry.target?.input || '';
   const commandName = entry.target?.commandName || entry.action;
   const explicitArgs = entry.target && Array.isArray(entry.target.commandArgs);
   if (explicitArgs) {
     const args = commandArgsFromTarget(entry);
-    const needsInput = args.includes('<redacted>') ? redactedCommandNeedsInput(entry.action) : [];
+    const needsInput = forcedRecordCommandNeedsInput(commandName, args)
+      || (args.includes('<redacted>') ? redactedCommandNeedsInput(commandName) : []);
     return { command: [commandName, ...args], replayable: needsInput.length === 0, needsInput };
   }
 
@@ -2707,6 +2724,19 @@ function inferRecordActionCommand(entry) {
       return { command: ['type', '<text>'], replayable: false, needsInput: ['text'] };
     case 'inject':
       return { command: ['inject', targetInput || '<type>', '<content>'], replayable: false, needsInput: ['content'] };
+    case 'upload':
+      return {
+        command: ['upload', targetInput || '<selector>', '<file>'],
+        replayable: false,
+        needsInput: targetInput ? ['file'] : ['target', 'file'],
+      };
+    case 'diff-shot':
+    case 'diffshot':
+      return {
+        command: ['diff-shot', targetInput || '<selector>'],
+        replayable: false,
+        needsInput: ['live-visual-baseline'],
+      };
     default:
       return {
         command: targetInput ? [entry.action, targetInput] : [entry.action],
@@ -2720,6 +2750,7 @@ function redactedCommandNeedsInput(action) {
   if (action === 'fill' || action === 'type') return ['text'];
   if (action === 'select') return ['value'];
   if (action === 'inject') return ['content'];
+  if (action === 'upload') return ['file'];
   return ['input'];
 }
 
