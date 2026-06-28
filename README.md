@@ -176,15 +176,17 @@ Local run on 2026-06-28 against the same smoke page. Timing starts after CDP is 
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 8.894s |
+| Total time | 9.034s |
 | Command calls | 24 |
-| First useful observation | 2.170s |
-| Golden path complete | 5.102s |
+| First useful observation | 2.235s |
+| First action evidence | 2.989s |
+| Golden path complete | 5.140s |
+| Estimated output tokens | 15,678 |
 | Useful observation tokens | 1,569 |
 | Action evidence coverage | 100% (9/9 mutating commands) |
 | Differentiator success rate | 100% |
-| Stale-ref recovery | 32ms, 1/1 recovered |
-| Quality gate | 25/25 pass |
+| Stale-ref recovery | 54ms, 1/1 recovered |
+| Quality gate | 29/29 pass |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
 
@@ -205,6 +207,7 @@ A versioned schema example is checked in at [`docs/benchmarks/measured-baselines
 Do not publish README, marketplace, awesome-list, or social comparison claims unless:
 
 - `npm run benchmark:killer -- --json` exits 0 and `gate.passed` is true.
+- Total output, per-command output, first-action-evidence, and per-command latency gates pass; inspect the gate `culprit` before publishing speed or efficiency claims.
 - Competitor comparisons use `npm run benchmark:killer -- --comparison-baselines ./baselines.json` with measured baselines, not the planning-only `heuristic-smoke-baseline`.
 - `docs/examples/killer-path.md` still covers real browser perception, failed action recovery, CSS tracing, and export handoff.
 - Workflow handoffs from `record-actions --format json` and `export-playwright --format json` distinguish exported, skipped, review-needed, and live-only steps.

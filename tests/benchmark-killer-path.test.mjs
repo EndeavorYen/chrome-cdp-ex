@@ -4,6 +4,7 @@ import { resolve } from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildBenchmarkGate,
   buildKillerPathEntryPlan,
   buildKillerPathBenchmarkPlan,
   estimateTokenCount,
@@ -235,6 +236,15 @@ describe('benchmark killer path helpers', () => {
     expect(summary.metrics.commandCalls).toBe(14);
     expect(summary.metrics.outputChars).toBe(outputChars);
     expect(summary.metrics.estimatedOutputTokens).toBe(estimateTokenCount(outputChars));
+    expect(summary.metrics.maxStepEstimatedTokens).toBeGreaterThan(0);
+    expect(summary.metrics.maxStepDurationMs).toBe(30);
+    expect(summary.metrics.biggestOutputStep).toEqual(expect.objectContaining({
+      name: expect.any(String),
+      estimatedTokens: summary.metrics.maxStepEstimatedTokens,
+    }));
+    expect(summary.metrics.slowestStep).toEqual(expect.objectContaining({
+      durationMs: 30,
+    }));
     expect(summary.metrics.firstUsefulObservationMs).toBe(40);
     expect(summary.metrics.firstActionEvidenceMs).toBe(152);
     expect(summary.metrics.goldenPathMs).toBe(212);
@@ -338,7 +348,11 @@ describe('benchmark killer path helpers', () => {
     });
     expect(summary.gate.criteria).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'first-useful-observation', passed: true, actual: 40, operator: '<=', limit: 5000 }),
+      expect.objectContaining({ name: 'first-action-evidence', passed: true, actual: 152, operator: '<=' }),
       expect.objectContaining({ name: 'golden-path-under-two-minutes', passed: true, actual: 212, operator: '<=', limit: 120000 }),
+      expect.objectContaining({ name: 'total-output-tokens', passed: true, actual: summary.metrics.estimatedOutputTokens, operator: '<=' }),
+      expect.objectContaining({ name: 'max-step-output-tokens', passed: true, actual: summary.metrics.maxStepEstimatedTokens, operator: '<=' }),
+      expect.objectContaining({ name: 'max-step-duration', passed: true, actual: 30, operator: '<=' }),
       expect.objectContaining({ name: 'useful-observation-tokens', passed: true, operator: '<=', limit: 3000 }),
       expect.objectContaining({ name: 'auto-evidence-actions', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'observed-action-evidence-coverage', passed: true, actual: 1, operator: '>=', limit: 1 }),
@@ -363,6 +377,88 @@ describe('benchmark killer path helpers', () => {
       ok: true,
       expectedFailure: true,
     });
+  });
+
+  it('fails the gate when total output, step output, latency, or first action evidence exceed budgets', () => {
+    const steps = [
+      { name: 'doctor', command: ['doctor'], startedAt: 0, endedAt: 10, status: 0, stdout: 'Wizard:\n', stderr: '' },
+      { name: 'perceive', command: ['perceive', 'AABB'], startedAt: 10, endedAt: 80, status: 0, stdout: 'Page:\n@1 Button\n', stderr: '' },
+      {
+        name: 'click',
+        command: ['click', 'AABB', '@1'],
+        startedAt: 80,
+        endedAt: 300,
+        status: 0,
+        stdout: `${'x'.repeat(1000)}\nclick: dispatched\n`,
+        stderr: '',
+      },
+      { name: 'perceive', command: ['perceive', 'AABB', '--since-action'], startedAt: 300, endedAt: 330, status: 0, stdout: '+++ Added\n', stderr: '' },
+      { name: 'report', command: ['report', 'AABB'], startedAt: 330, endedAt: 360, status: 0, stdout: 'Session report:\nAction timeline:\n- click\n', stderr: '' },
+      { name: 'stability-wait', command: ['wait', 'AABB', '1'], startedAt: 360, endedAt: 520, status: 0, stdout: 'Waited 1ms', stderr: '' },
+      { name: 'stability-status', command: ['status', 'AABB'], startedAt: 520, endedAt: 530, status: 0, stdout: 'Status: ready', stderr: '' },
+      { name: 'stability-report', command: ['report', 'AABB'], startedAt: 530, endedAt: 540, status: 0, stdout: 'Session report:\nAction timeline:\n- click\n', stderr: '' },
+    ];
+    const summary = summarizeBenchmarkRun({ startedAt: 0, endedAt: 540, target: 'AABB', steps });
+    const gate = buildBenchmarkGate(summary, {
+      commandCallsMax: 20,
+      firstUsefulObservationMsMax: 5000,
+      firstActionEvidenceMsMax: 250,
+      goldenPathMsMax: 120000,
+      estimatedOutputTokensMax: 200,
+      maxStepEstimatedTokensMax: 100,
+      maxStepDurationMsMax: 150,
+      usefulObservationTokensMax: 3000,
+      autoEvidenceActionsMin: 1,
+      observedActionEvidenceCoverageRateMin: 1,
+      actionEvidenceCompletenessCoverageRateMin: 0,
+      actionFailureDiagnosisCoverageRateMin: 0,
+      actionNoChangeRecoveryCoverageRateMin: 0,
+      cliRecoveryCoverageRateMin: 0,
+      handoffNextStepsCoverageRateMin: 0,
+      handoffRecommendationCoverageRateMin: 0,
+      doctorOnboardingCoverageRateMin: 0,
+      targetHandoffCoverageRateMin: 0,
+      reportLatestActionCoverageRateMin: 0,
+      reportTimelineWindowCoverageRateMin: 0,
+      reportArtifactCoverageRateMin: 0,
+      perceptionSignalCoverageRateMin: 0,
+      sinceActionEvidenceCoverageRateMin: 0,
+      differentiatorSuccessRateMin: 0,
+      differentiatorHandoffCoverageRateMin: 0,
+      staleRefRecoveryRateMin: 0,
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'first-action-evidence',
+        passed: false,
+        actual: 300,
+        limit: 250,
+        culprit: expect.objectContaining({ name: 'click' }),
+      }),
+      expect.objectContaining({
+        name: 'total-output-tokens',
+        passed: false,
+        actual: summary.metrics.estimatedOutputTokens,
+        limit: 200,
+        culprit: expect.objectContaining({ name: 'click' }),
+      }),
+      expect.objectContaining({
+        name: 'max-step-output-tokens',
+        passed: false,
+        actual: summary.metrics.maxStepEstimatedTokens,
+        limit: 100,
+        culprit: expect.objectContaining({ name: 'click' }),
+      }),
+      expect.objectContaining({
+        name: 'max-step-duration',
+        passed: false,
+        actual: 220,
+        limit: 150,
+        culprit: expect.objectContaining({ name: 'click' }),
+      }),
+    ]));
   });
 
   it('marks failed runs with the failed step and keeps partial metrics', () => {
@@ -488,7 +584,7 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Since-action evidence coverage: 100% (1/1)');
     expect(out).toContain('CLI recovery coverage: 100% (1/1)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 25/25 pass');
+    expect(out).toContain('Gate checks: 29/29 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
