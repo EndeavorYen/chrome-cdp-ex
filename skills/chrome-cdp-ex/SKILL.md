@@ -173,7 +173,8 @@ scripts/cdp.mjs perceive <target> -s "#main"   # scope to CSS selector subtree
 scripts/cdp.mjs perceive <target> -x "nav, aside, [role=complementary]"  # exclude noisy regions
 scripts/cdp.mjs perceive <target> -i           # interactive elements only (compact)
 scripts/cdp.mjs perceive <target> -d 3         # limit tree depth to 3
-scripts/cdp.mjs perceive <target> -C           # include non-ARIA clickable elements (@c refs)
+scripts/cdp.mjs perceive <target> -C           # include visible controls + non-ARIA clickables (@c refs)
+scripts/cdp.mjs controls <target> -s "#composer" --format json # visible controls inventory for selector repair
 ```
 
 Returns a single **enriched accessibility tree** that combines semantic structure with inline visual annotations:
@@ -1026,13 +1027,14 @@ cdp shot <t> /tmp/x.png --verbose   # path + full coordinate-mapping tutorial
 cdp shot <t> --annotate             # red-box overlay using the most recent perceive's @refs
 ```
 
-### `@c` / cursor-interactive elements
+### Visible controls and `@c` cursor-interactive elements
 
 ```bash
-cdp perceive <t> -C   # also lists non-ARIA clickables (cursor:pointer, onclick, tabindex)
+cdp perceive <t> -C
+cdp controls <t> -s "#composer" --filter send --format json
 ```
 
-These get `@c1`, `@c2`… handles. Useful for SPAs that wrap clickable behaviour on a `<div>` instead of a `<button>`.
+`perceive -C` adds a compact visible-controls section for dense composers and query bars, including standard buttons, textboxes, labels, rects, selectors, and non-ARIA clickables. Non-ARIA clickables still get `@c1`, `@c2`… handles. Use `controls` when selector repair needs a bounded JSON inventory scoped to a subtree.
 
 ### Vite / HMR
 

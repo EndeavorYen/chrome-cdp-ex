@@ -1,6 +1,6 @@
 # chrome-cdp-ex
 
-[![68 Commands](https://img.shields.io/badge/commands-68-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
+[![69 Commands](https://img.shields.io/badge/commands-69-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
@@ -151,13 +151,13 @@ Most readers only need this loop:
 doctor -> list -> open -> perceive -> click/fill -> perceive --since-action -> report
 ```
 
-See [docs/reference.md](docs/reference.md) for Electron, WSL2, screenshots, CSS tracing, network mocks, checkpoints, replay, export, and all 68 commands.
+See [docs/reference.md](docs/reference.md) for Electron, WSL2, screenshots, CSS tracing, network mocks, checkpoints, replay, export, and all 69 commands.
 
 ## Command map
 
 | Need | Start with |
 |---|---|
-| Understand the page | `perceive`, `summary`, `text` |
+| Understand the page | `perceive`, `controls`, `summary`, `text` |
 | Act and verify | `click`, `fill`, `press`, `perceive --since-action` |
 | Debug live state | `status`, `console`, `netlog`, `report` |
 | Trace styling | `cascade`, `styles`, `inject` |
@@ -227,7 +227,7 @@ npm run smoke:live
 
 - **Original**: [pasky/chrome-cdp-skill](https://github.com/pasky/chrome-cdp-skill) by Petr Baudis (daemon-per-tab architecture and core CDP client)
 - **Contributors**: [ynezz](https://github.com/ynezz) (Flatpak paths), [Jah-yee](https://github.com/Jah-yee), [Rolf Fredheim](https://github.com/rolfredheim)
-- **This fork**: `@ref` system, perceive-first workflow, action feedback, background observation, realistic input simulation, form automation, WSL2 support, and 28 additional commands
+- **This fork**: `@ref` system, perceive-first workflow, action feedback, background observation, realistic input simulation, form automation, WSL2 support, and 29 additional commands
 
 ## License
 
