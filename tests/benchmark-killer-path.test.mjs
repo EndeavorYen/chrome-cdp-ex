@@ -127,10 +127,19 @@ describe('benchmark killer path helpers', () => {
         stderr: '',
       },
       {
+        name: 'guarded-page',
+        command: ['perceive', 'AABBCCDD', '-s', '#auth-panel', '-d', '4'],
+        startedAt: 133,
+        endedAt: 140,
+        status: 0,
+        stdout: 'Page: Test\n[region] Authenticated dashboard\n[StaticText] auth state preserved\n@7 [button] Refresh account\n',
+        stderr: '',
+      },
+      {
         name: 'click',
         command: ['click', 'AABBCCDD', '#start'],
-        startedAt: 133,
-        endedAt: 145,
+        startedAt: 140,
+        endedAt: 152,
         status: 0,
         stdout: 'Clicked #start\n---\nclick: dispatched\nEffects:\n+++ Added\n[StaticText] Started\n',
         stderr: '',
@@ -138,8 +147,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'since-action',
         command: ['perceive', 'AABBCCDD', '--since-action', '--format', 'json'],
-        startedAt: 145,
-        endedAt: 155,
+        startedAt: 152,
+        endedAt: 162,
         status: 0,
         stdout: JSON.stringify({
           schema: 'chrome-cdp-ex.perceive-diff.v1',
@@ -163,8 +172,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'stale-ref',
         command: ['click', 'AABBCCDD', '@1'],
-        startedAt: 155,
-        endedAt: 175,
+        startedAt: 162,
+        endedAt: 182,
         status: 1,
         expectedFailure: true,
         stdout: '',
@@ -173,8 +182,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'report',
         command: ['report', 'AABBCCDD'],
-        startedAt: 175,
-        endedAt: 205,
+        startedAt: 182,
+        endedAt: 212,
         status: 0,
         stdout: 'Session report: AABBCCDD\nActions: 1\n\nAction timeline:\n- click #start\n',
         stderr: '',
@@ -182,8 +191,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'stability-wait',
         command: ['wait', 'AABBCCDD', '1000'],
-        startedAt: 205,
-        endedAt: 215,
+        startedAt: 212,
+        endedAt: 222,
         status: 0,
         stdout: 'waited 1000ms',
         stderr: '',
@@ -191,8 +200,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'stability-status',
         command: ['status', 'AABBCCDD'],
-        startedAt: 215,
-        endedAt: 230,
+        startedAt: 222,
+        endedAt: 237,
         status: 0,
         stdout: 'Status: ready\n',
         stderr: '',
@@ -200,8 +209,8 @@ describe('benchmark killer path helpers', () => {
       {
         name: 'stability-report',
         command: ['report', 'AABBCCDD'],
-        startedAt: 230,
-        endedAt: 245,
+        startedAt: 237,
+        endedAt: 252,
         status: 0,
         stdout: 'Session report: AABBCCDD\nActions: 1\n\nAction timeline:\n- click #start\n',
         stderr: '',
@@ -211,7 +220,7 @@ describe('benchmark killer path helpers', () => {
     const summary = summarizeBenchmarkRun({
       scenario: 'killer-path',
       startedAt: 0,
-      endedAt: 245,
+      endedAt: 252,
       target: 'AABBCCDD',
       steps,
     });
@@ -222,13 +231,13 @@ describe('benchmark killer path helpers', () => {
     expect(summary.scenario).toBe('killer-path');
     expect(summary.success).toBe(true);
     expect(summary.target).toBe('AABBCCDD');
-    expect(summary.metrics.totalMs).toBe(245);
-    expect(summary.metrics.commandCalls).toBe(13);
+    expect(summary.metrics.totalMs).toBe(252);
+    expect(summary.metrics.commandCalls).toBe(14);
     expect(summary.metrics.outputChars).toBe(outputChars);
     expect(summary.metrics.estimatedOutputTokens).toBe(estimateTokenCount(outputChars));
     expect(summary.metrics.firstUsefulObservationMs).toBe(40);
-    expect(summary.metrics.firstActionEvidenceMs).toBe(145);
-    expect(summary.metrics.goldenPathMs).toBe(205);
+    expect(summary.metrics.firstActionEvidenceMs).toBe(152);
+    expect(summary.metrics.goldenPathMs).toBe(212);
     expect(summary.metrics.autoEvidenceActions).toBe(1);
     expect(summary.metrics.actionEvidenceCoverage).toMatchObject({
       total: 2,
@@ -258,6 +267,7 @@ describe('benchmark killer path helpers', () => {
       frameRefs: { success: true, durationMs: 20, commandCalls: 1 },
       cssTrace: { success: true, durationMs: 25, commandCalls: 1 },
       hmrDomUpdate: { success: true, durationMs: 18, commandCalls: 1 },
+      guardedPage: { success: true, durationMs: 7, commandCalls: 1 },
       successRate: 1,
     });
     expect(summary.metrics.differentiatorHandoffCoverage).toMatchObject({
@@ -301,7 +311,7 @@ describe('benchmark killer path helpers', () => {
           verificationCallsSaved: 0,
         }),
         delta: expect.objectContaining({
-          commandCallsSaved: 13,
+          commandCallsSaved: 12,
           usefulObservationTokensSaved: expect.any(Number),
           verificationCallsSaved: 1,
         }),
@@ -310,14 +320,14 @@ describe('benchmark killer path helpers', () => {
         id: 'devtools-manual',
         label: 'Manual DevTools inspection',
         delta: expect.objectContaining({
-          commandCallsSaved: 22,
+          commandCallsSaved: 21,
         }),
       }),
       expect.objectContaining({
         id: 'generic-cdp',
         label: 'Generic CDP script',
         delta: expect.objectContaining({
-          commandCallsSaved: 17,
+          commandCallsSaved: 16,
         }),
       }),
     ]));
@@ -328,7 +338,7 @@ describe('benchmark killer path helpers', () => {
     });
     expect(summary.gate.criteria).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'first-useful-observation', passed: true, actual: 40, operator: '<=', limit: 5000 }),
-      expect.objectContaining({ name: 'golden-path-under-two-minutes', passed: true, actual: 205, operator: '<=', limit: 120000 }),
+      expect.objectContaining({ name: 'golden-path-under-two-minutes', passed: true, actual: 212, operator: '<=', limit: 120000 }),
       expect.objectContaining({ name: 'useful-observation-tokens', passed: true, operator: '<=', limit: 3000 }),
       expect.objectContaining({ name: 'auto-evidence-actions', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'observed-action-evidence-coverage', passed: true, actual: 1, operator: '>=', limit: 1 }),
@@ -339,14 +349,16 @@ describe('benchmark killer path helpers', () => {
       expect.objectContaining({ name: 'stale-ref-recovery-rate', passed: true, actual: 1, operator: '>=', limit: 1 }),
       expect.objectContaining({ name: 'session-stability-sample', passed: true, actual: true, operator: '===', limit: true }),
     ]));
-    expect(summary.steps[9]).toMatchObject({
+    const clickSummary = summary.steps.find(step => step.name === 'click');
+    const clickSource = steps.find(step => step.name === 'click');
+    expect(clickSummary).toMatchObject({
       name: 'click',
       ok: true,
       durationMs: 12,
-      estimatedTokens: estimateTokenCount(steps[9].stdout.length),
+      estimatedTokens: estimateTokenCount(clickSource.stdout.length),
       hasActionEvidence: true,
     });
-    expect(summary.steps[11]).toMatchObject({
+    expect(summary.steps.find(step => step.name === 'stale-ref')).toMatchObject({
       name: 'stale-ref',
       ok: true,
       expectedFailure: true,
@@ -418,6 +430,7 @@ describe('benchmark killer path helpers', () => {
         { name: 'frame', command: ['frame', 'AABB'], startedAt: 40, endedAt: 50, status: 0, stdout: 'Frames:\n@f2 smoke-child', stderr: '' },
         { name: 'cascade', command: ['cascade', 'AABB', '#go', 'color'], startedAt: 50, endedAt: 60, status: 0, stdout: 'color:\n  WIN red ← #go\n    → inline:1', stderr: '' },
         { name: 'hmr-diff', command: ['perceive', 'AABB', '--diff', '-s', '#combat-log', '--last', '20'], startedAt: 60, endedAt: 72, status: 0, stdout: '~~~ Text nodes updated (1 added)\n+   [StaticText] hmr panel ready', stderr: '' },
+        { name: 'guarded-page', command: ['perceive', 'AABB', '-s', '#auth-panel', '-d', '4'], startedAt: 72, endedAt: 80, status: 0, stdout: '[region] Authenticated dashboard\n[StaticText] auth state preserved\n@7 [button] Refresh account', stderr: '' },
         { name: 'click', command: ['click', 'AABB', '#go'], startedAt: 30, endedAt: 60, status: 0, stdout: 'Clicked\nclick: dispatched', stderr: '' },
         {
           name: 'since-action',
@@ -456,7 +469,7 @@ describe('benchmark killer path helpers', () => {
 
     expect(out).toContain('chrome-cdp-ex benchmark: killer-path');
     expect(out).toContain('Success: yes');
-    expect(out).toContain('Command calls: 13');
+    expect(out).toContain('Command calls: 14');
     expect(out).toContain('First action evidence: 60 ms');
     expect(out).toContain('Golden path complete: 100 ms');
     expect(out).toContain('Estimated output tokens:');
@@ -479,13 +492,14 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
-    expect(out).toContain('Playwright test generator/snapshot: saves 13 calls');
-    expect(out).toContain('Generic CDP script: saves 17 calls');
+    expect(out).toContain('Playwright test generator/snapshot: saves 12 calls');
+    expect(out).toContain('Generic CDP script: saves 16 calls');
     expect(out).toContain('heuristic-smoke-baseline');
     expect(out).toContain('CSS trace: yes');
     expect(out).toContain('Frame refs: yes');
     expect(out).toContain('HMR/SPA diff: yes');
     expect(out).toContain('Modal/overlay: yes');
+    expect(out).toContain('Guarded page: yes');
     expect(out).toContain('Stale-ref recovery: yes');
     expect(out).toContain('Verification calls saved: 1');
     expect(out).toContain('doctor');
@@ -1892,7 +1906,8 @@ describe('benchmark killer path helpers', () => {
     ]);
     expect(plan.find(step => step.args[0] === 'click')?.args).toContain('--format');
     expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--format', 'json']);
-    expect(plan.filter(step => !step.benchmarkProbe).length).toBeLessThanOrEqual(23);
+    expect(plan.find(step => step.name === 'guarded-page')?.args).toEqual(['perceive', 'AABBCCDD', '-s', '#auth-panel', '-d', '4']);
+    expect(plan.filter(step => !step.benchmarkProbe).length).toBeLessThanOrEqual(24);
   });
 
   it('plans live entry handoff probes for both open and list before perception', () => {
@@ -1932,7 +1947,8 @@ describe('benchmark killer path helpers', () => {
     expect(plan[0].args).toEqual(['perceive', 'AABBCCDD', '-C', '-d', '8', '--keep-refs', '--last', '20', '--format', 'json']);
     expect(plan.map(step => step.args[0])).not.toContain('doctor');
     expect(plan.map(step => step.args[0])).not.toContain('list');
-    expect(plan.filter(step => !step.benchmarkProbe).length).toBeLessThanOrEqual(21);
+    expect(plan.find(step => step.name === 'guarded-page')?.args).toEqual(['perceive', 'AABBCCDD', '-s', '#auth-panel', '-d', '4']);
+    expect(plan.filter(step => !step.benchmarkProbe).length).toBeLessThanOrEqual(22);
   });
 
   it('loads measured comparison baselines from a versioned file', () => {

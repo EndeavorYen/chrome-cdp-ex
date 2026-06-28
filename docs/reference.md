@@ -149,6 +149,8 @@ npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out bas
 npm run benchmark:killer -- --comparison-baselines ./baselines.json
 ```
 
+Use [`docs/benchmarks/measured-baselines.example.json`](benchmarks/measured-baselines.example.json) as the checked-in schema fixture for reviewers. Do not publish comparison claims from that example file; regenerate a measured `baselines.json` for the machine and browser under test.
+
 Publish comparison claims only when `gate.passed` is true and competitor baselines are measured, not the planning-only `heuristic-smoke-baseline`.
 
 ## More Detail

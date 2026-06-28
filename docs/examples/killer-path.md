@@ -54,10 +54,11 @@ After a useful exploration, capture the workflow and export the portable test dr
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs record-actions <target> --format json
+node skills/chrome-cdp-ex/scripts/cdp.mjs replay <target> --file record-actions.json --format json
 node skills/chrome-cdp-ex/scripts/cdp.mjs export-playwright <target> --format json
 ```
 
-`record-actions` preserves replayable steps plus live-only environment controls. `export-playwright` reports exported, skipped, review-needed, and live-only work so reusable tests stay honest about what needs human review.
+`record-actions` preserves replayable steps plus live-only environment controls. Save the JSON artifact as `record-actions.json`, replay its portable subset, then export the Playwright draft. `replay` reports ok, failed, skipped, and recovery next steps; `export-playwright` reports exported, skipped, review-needed, and live-only work so reusable tests stay honest about what needs human review.
 
 ## What Success Looks Like
 
