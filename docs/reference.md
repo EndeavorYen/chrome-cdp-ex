@@ -74,14 +74,15 @@ Use these when exploration should become reusable evidence:
 
 | Need | Command |
 |---|---|
-| Save risky browser state | `checkpoint <target> --format json` |
+| Save browser state with redacted values | `checkpoint <target> --format json` |
+| Save a fully restorable secret checkpoint | `checkpoint <target> --unsafe-full --format json` |
 | Restore captured URL/storage/cookies | `restore <target> --file checkpoint.json --format json` |
 | Export the action log | `record-actions <target> --format json` |
 | Draft a Playwright spec | `export-playwright <target> --format json` |
 | Replay portable live steps | `replay <target> --file artifact.json --format json` |
 | Capture visual fallback diffs | `diff-shot <target>` |
 
-Checkpoint artifacts can include cookies, localStorage, and sessionStorage. Treat them like secrets.
+Report, record-actions, export-playwright, and session JSONL artifacts redact common password, token, API key, authorization, cookie, and session patterns by default while preserving command names, keys, counts, domains, and paths for debugging. Checkpoint JSON also redacts cookie values and sensitive storage keys by default. Use `checkpoint --unsafe-full --format json` only when you need a fully restorable artifact; that output intentionally includes raw cookies and storage values, so treat it like a secret.
 
 ## Browser Setup
 
