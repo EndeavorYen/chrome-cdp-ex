@@ -83,6 +83,29 @@ export function validateKillerPathContract(markdown) {
   return failures;
 }
 
+function parseJsonDoc(text, label, failures) {
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    failures.push(`${label} is not valid JSON: ${e.message}`);
+    return null;
+  }
+}
+
+function checkReleaseMetadataContract(docs) {
+  const failures = [];
+  if (!docs.packageJson && !docs.pluginManifest) return failures;
+
+  const packageModel = docs.packageJson ? parseJsonDoc(docs.packageJson, 'package.json', failures) : null;
+  const pluginModel = docs.pluginManifest ? parseJsonDoc(docs.pluginManifest, '.claude-plugin/plugin.json', failures) : null;
+  if (!packageModel || !pluginModel) return failures;
+
+  if (packageModel.version !== pluginModel.version) {
+    failures.push(`Release metadata version mismatch: package.json ${packageModel.version} != .claude-plugin/plugin.json ${pluginModel.version}`);
+  }
+  return failures;
+}
+
 export function checkDocsContract(docs, commands) {
   const failures = [];
 
@@ -168,6 +191,7 @@ export function checkDocsContract(docs, commands) {
   }
 
   failures.push(...validateKillerPathContract(docs.killerPath));
+  failures.push(...checkReleaseMetadataContract(docs));
   return failures;
 }
 
@@ -178,6 +202,8 @@ function readDocs() {
     reference: read('docs/reference.md'),
     skill: read('skills/chrome-cdp-ex/SKILL.md'),
     killerPath: read('docs/examples/killer-path.md'),
+    packageJson: read('package.json'),
+    pluginManifest: read('.claude-plugin/plugin.json'),
   };
 }
 

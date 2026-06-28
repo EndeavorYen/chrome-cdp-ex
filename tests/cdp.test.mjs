@@ -4146,7 +4146,7 @@ describe('evalStr', () => {
     await expect(evalStr(cdp, 'sid1', 'x')).rejects.toThrow('ReferenceError');
   });
 
-  it('should prefer exceptionDetails.text over exception.description', async () => {
+  it('should prefer exception.description when exceptionDetails.text is generic Uncaught', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': () => ({
         result: {},
@@ -4156,8 +4156,7 @@ describe('evalStr', () => {
         },
       }),
     });
-    // text is checked first; falls back to exception.description only if text is falsy
-    await expect(evalStr(cdp, 'sid1', 'x.y')).rejects.toThrow('Uncaught');
+    await expect(evalStr(cdp, 'sid1', 'x.y')).rejects.toThrow('TypeError: cannot read property');
   });
 
   it('should fall back to exception.description when text is empty', async () => {
@@ -4912,6 +4911,20 @@ describe('clickStr', () => {
     const result = await clickStr(cdp, 'sid1', '@1', refMap);
     expect(result).toContain('Clicked');
     expect(result).toContain('@1');
+  });
+
+  it('should click cursor-interactive @c refs using saved viewport coordinates', async () => {
+    const refMap = new Map([
+      ['c2', { x: 10, y: 20, w: 30, h: 40, sel: 'svg', text: 'Remove image' }],
+    ]);
+    const cdp = createMockCDP({
+      'Input.dispatchMouseEvent': () => ({}),
+    });
+    const result = await clickStr(cdp, 'sid1', '@c2', refMap);
+    const pressed = cdp.calls.find(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mousePressed');
+
+    expect(result).toBe('Clicked <svg> "Remove image" (@c2)');
+    expect(pressed.params).toMatchObject({ x: 25, y: 40 });
   });
 
   it('should throw when element not found by CSS selector', async () => {
