@@ -12,6 +12,7 @@
     .sticky-tools { position: sticky; top: 0; padding: 8px; background: #e0f2fe; border-bottom: 1px solid #7dd3fc; }
     button, input { font: inherit; padding: 8px 12px; margin: 4px; }
     #combat-log { border: 1px solid #cbd5e1; background: white; height: 320px; overflow: auto; padding: 12px; }
+    #auth-panel { border: 1px solid #bbf7d0; background: #f0fdf4; padding: 12px; margin: 16px 0; }
     #custom-clickable { cursor: pointer; display: inline-block; padding: 8px 12px; background: #fde68a; border-radius: 8px; }
     [role="dialog"] { position: fixed; inset: 20% auto auto 50%; transform: translateX(-50%); background: white; border: 2px solid #0f172a; padding: 20px; z-index: 20; box-shadow: 0 20px 60px #0005; }
     [hidden] { display: none !important; }
@@ -30,6 +31,11 @@
     <label>Upload evidence <input id="upload-file" aria-label="upload evidence" type="file"></label>
     <p id="upload-status" role="status">upload:none</p>
     <div id="custom-clickable" onclick="appendLog('custom clickable used')">Custom clickable div</div>
+    <section id="auth-panel" role="region" aria-label="Authenticated dashboard">
+      <h2>Authenticated dashboard</h2>
+      <p id="auth-state">auth state preserved</p>
+      <button id="refresh-account">Refresh account</button>
+    </section>
     <section role="region" aria-label="事件紀錄">
       <h2>事件紀錄</h2>
       <div id="combat-log"></div>
@@ -76,6 +82,10 @@
     });
     document.getElementById('noop').addEventListener('click', () => {
       document.getElementById('noop').blur();
+    });
+    document.getElementById('refresh-account').addEventListener('click', () => {
+      document.getElementById('auth-state').textContent = 'auth state preserved after refresh';
+      appendLog('authenticated dashboard refreshed');
     });
     document.getElementById('upload-file').addEventListener('change', (e) => {
       const names = Array.from(e.target.files || []).map(file => file.name).join(', ') || 'none';

@@ -9,7 +9,7 @@
 
 Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-ex` is for live-page perception when the agent needs to understand the browser you are actually using.
 
-[![Smart Eye benchmark proof: 25/25 quality gate, 1,384 useful observation tokens, 100% action evidence coverage](experiment/benchmark-proof.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
+[![Smart Eye benchmark proof: 25/25 quality gate, 1,569 useful observation tokens, 100% action evidence coverage](experiment/benchmark-proof.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
 
 ## Why agents need this
 
@@ -29,7 +29,7 @@ Browser agents usually fail for boring reasons: they cannot tell what changed, t
 
 | Proof | Why it matters |
 |---|---|
-| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | The current dogfood run passes a 25/25 quality gate with 1,384 useful observation tokens. |
+| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | The current dogfood run passes a 25/25 quality gate with 1,569 useful observation tokens. |
 | [Redesign experiment](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html) | Same page, same prompt, same rounds; the agent with richer perception produced the best result. |
 | [Killer Path walkthrough](docs/examples/killer-path.md) | A 60-second route through `doctor -> open -> perceive -> act -> evidence -> report`. |
 
@@ -70,8 +70,8 @@ The benchmark measures the agent path this tool is built for: see the page, act,
 | Proof point | Latest local run |
 |---|---:|
 | Quality gate | **25/25 pass** |
-| Golden path complete | **5.066s** |
-| Useful observation tokens | **1,384** |
+| Golden path complete | **5.102s** |
+| Useful observation tokens | **1,569** |
 | Action evidence coverage | **100%** |
 | Differentiator success rate | **100%** |
 
@@ -172,18 +172,18 @@ Use the live benchmark before making performance or adoption claims. [View the v
 
 ### Latest dogfood snapshot
 
-Local run on 2026-06-17 against the same smoke page. Timing starts after CDP is reachable so browser cold-start variance is excluded. Publish competitor comparison deltas only after rerunning with measured `--comparison-baselines`.
+Local run on 2026-06-28 against the same smoke page. Timing starts after CDP is reachable so browser cold-start variance is excluded. Publish competitor comparison deltas only after rerunning with measured `--comparison-baselines`.
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 8.887s |
-| Command calls | 23 |
-| First useful observation | 2.173s |
-| Golden path complete | 5.066s |
-| Useful observation tokens | 1,384 |
+| Total time | 8.894s |
+| Command calls | 24 |
+| First useful observation | 2.170s |
+| Golden path complete | 5.102s |
+| Useful observation tokens | 1,569 |
 | Action evidence coverage | 100% (9/9 mutating commands) |
 | Differentiator success rate | 100% |
-| Stale-ref recovery | 53ms, 1/1 recovered |
+| Stale-ref recovery | 32ms, 1/1 recovered |
 | Quality gate | 25/25 pass |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
@@ -197,6 +197,8 @@ npm run benchmark:playwright -- --out playwright-raw.json
 npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json
 npm run benchmark:killer -- --comparison-baselines ./baselines.json
 ```
+
+A versioned schema example is checked in at [`docs/benchmarks/measured-baselines.example.json`](docs/benchmarks/measured-baselines.example.json). Treat it as a format fixture only; regenerate local measured baselines before publishing comparison deltas.
 
 ### Promotion checklist
 

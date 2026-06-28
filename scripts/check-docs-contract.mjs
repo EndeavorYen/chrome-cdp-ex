@@ -36,6 +36,7 @@ export function commandArgsToKind(args) {
   if (/^fill\b/.test(args)) return 'fill';
   if (/^cascade\b/.test(args)) return 'cascade';
   if (/^record-actions\b/.test(args)) return 'record-actions';
+  if (/^replay\b/.test(args)) return 'replay';
   if (/^export-playwright\b/.test(args)) return 'export-playwright';
   if (/^perceive\b/.test(args) && /\s--since-action\b/.test(args)) return 'perceive:since-action';
   if (/^perceive\b/.test(args) && /\s-C\b/.test(args) && /\s-d\s+\d+\b/.test(args)) {
@@ -75,6 +76,9 @@ export function validateKillerPathContract(markdown) {
   }
   if (!kinds.includes('record-actions')) {
     failures.push('Killer Path example is missing record-actions handoff command');
+  }
+  if (!kinds.includes('replay')) {
+    failures.push('Killer Path example is missing replay handoff command');
   }
   if (!kinds.includes('export-playwright')) {
     failures.push('Killer Path example is missing export-playwright handoff command');

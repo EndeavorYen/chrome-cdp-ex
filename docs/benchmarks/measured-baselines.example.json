@@ -1,0 +1,35 @@
+{
+  "schema": "chrome-cdp-ex.comparison-baselines.v1",
+  "source": "measured-baseline-example",
+  "note": "Example artifact generated from the baseline builder schema. Re-run benchmark:generic-cdp, benchmark:playwright, and benchmark:baseline on your machine before publishing comparison claims.",
+  "baselines": [
+    {
+      "id": "playwright",
+      "label": "Measured Playwright harness example",
+      "metrics": {
+        "commandCalls": 24,
+        "usefulObservationTokens": 4200,
+        "verificationCallsSaved": 0,
+        "differentiatorSuccessRate": 0.5,
+        "autoEvidenceActions": 0,
+        "hasReportTimeline": false,
+        "staleRefRecoveryRate": 0,
+        "sessionStabilitySample": false
+      }
+    },
+    {
+      "id": "generic-cdp",
+      "label": "Measured generic CDP harness example",
+      "metrics": {
+        "commandCalls": 29,
+        "usefulObservationTokens": 6500,
+        "verificationCallsSaved": 0,
+        "differentiatorSuccessRate": 0.25,
+        "autoEvidenceActions": 0,
+        "hasReportTimeline": false,
+        "staleRefRecoveryRate": 0,
+        "sessionStabilitySample": false
+      }
+    }
+  ]
+}

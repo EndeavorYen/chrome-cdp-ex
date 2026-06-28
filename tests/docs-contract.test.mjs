@@ -8,6 +8,7 @@ const skill = readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.me
 const killerPath = readFileSync(new URL('../docs/examples/killer-path.md', import.meta.url), 'utf8');
 const packageJson = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
 const pluginManifest = readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8');
+const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 
 describe('Killer Path docs contract', () => {
   it('accepts the documented first-run golden path', () => {
@@ -36,17 +37,19 @@ describe('Killer Path docs contract', () => {
     );
   });
 
-  it('requires recovery, CSS tracing, and export handoff examples', () => {
+  it('requires recovery, CSS tracing, replay, and export handoff examples', () => {
     const withoutPromotionWorkflow = killerPath
       .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs click <target> "#missing" --format json\n/g, '')
       .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs cascade <target> @ref background-color --format json\n/g, '')
       .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs record-actions <target> --format json\n/g, '')
+      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs replay <target> --file record-actions\.json --format json\n/g, '')
       .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs export-playwright <target> --format json\n/g, '');
 
     expect(validateKillerPathContract(withoutPromotionWorkflow)).toEqual(expect.arrayContaining([
       'Killer Path example is missing failed-action recovery command',
       'Killer Path example is missing CSS tracing command',
       'Killer Path example is missing record-actions handoff command',
+      'Killer Path example is missing replay handoff command',
       'Killer Path example is missing export-playwright handoff command',
     ]));
   });
@@ -63,6 +66,11 @@ describe('Killer Path docs contract', () => {
       'README is missing benchmark-gated promotion checklist',
       'README promotion checklist must block claims when benchmark gates fail',
     ]));
+  });
+
+  it('documents a checked-in measured baseline artifact for comparison reruns', () => {
+    expect(readme).toContain('docs/benchmarks/measured-baselines.example.json');
+    expect(reference).toContain('docs/benchmarks/measured-baselines.example.json');
   });
 
   it('requires package and plugin manifest versions to match', () => {
@@ -91,5 +99,15 @@ describe('Killer Path docs contract', () => {
     expect(checkDocsContract(docs, [{ name: 'mock', aliases: [] }])).not.toContain(
       'Missing command docs for mock',
     );
+  });
+});
+
+describe('Repository release gates', () => {
+  it('runs CI for pull requests targeting main and dev', () => {
+    expect(ciWorkflow).toMatch(/pull_request:\s*\n\s*branches:\s*\[[^\]]*\bmain\b[^\]]*\bdev\b[^\]]*\]/);
+  });
+
+  it('runs the docs contract in CI', () => {
+    expect(ciWorkflow).toContain('npm run check:docs');
   });
 });

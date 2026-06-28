@@ -1,0 +1,98 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  buildActionRecoveryPlan,
+  buildNoChangeOutcomeRecommendation,
+  classifyActionFailure,
+  formatActionFailure,
+  recoveryCommandsFromDiagnosis,
+} from '../skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs';
+
+describe('action recovery lib', () => {
+  it('classifies stale refs, overlays, and wrong frames into executable next commands', () => {
+    expect(classifyActionFailure(
+      new Error('Unknown ref: @4. Refs were invalidated by DOM changes.'),
+      { action: 'click', target: { targetId: 'ABC123', input: '@4' } },
+    )).toMatchObject({
+      kind: 'stale-ref',
+      nextCommand: 'cdp perceive ABC123 -C -d 8',
+    });
+
+    expect(classifyActionFailure(
+      new Error('Other element would receive the click'),
+      { action: 'click', target: { targetId: 'ABC123', input: '#save' } },
+    )).toMatchObject({
+      kind: 'overlay',
+      nextCommand: 'cdp dismiss-modal ABC123',
+    });
+
+    expect(classifyActionFailure(
+      new Error('No frame for given id found'),
+      { action: 'click', target: { targetId: 'ABC123', input: '#pay' } },
+    )).toMatchObject({
+      kind: 'wrong-frame',
+      nextCommand: 'cdp perceive ABC123 -C -d 8',
+    });
+  });
+
+  it('builds recovery policies for runtime and network diagnostics', () => {
+    expect(buildActionRecoveryPlan({ status: 'attention', kind: 'console-error' }, { targetId: 'ABC123' })).toMatchObject({
+      strategy: 'inspect-runtime-errors',
+      priority: 'high',
+      commands: [
+        { command: 'cdp console ABC123 --errors' },
+        { command: 'cdp perceive ABC123 --since-action' },
+        { command: 'cdp report ABC123 --format json' },
+      ],
+      verifyCommand: 'cdp perceive ABC123 --since-action',
+    });
+
+    expect(buildActionRecoveryPlan({ status: 'attention', kind: 'network-failure' }, { targetId: 'ABC123' })).toMatchObject({
+      strategy: 'inspect-network',
+      priority: 'high',
+      commands: [
+        { command: 'cdp netlog ABC123' },
+        { command: 'cdp perceive ABC123 --since-action' },
+        { command: 'cdp report ABC123 --format json' },
+      ],
+    });
+  });
+
+  it('routes no-change actions to overlay, frame, perceive, and report checks', () => {
+    const recommendation = buildNoChangeOutcomeRecommendation({
+      action: 'click',
+      actionIndex: 2,
+      target: 'ABC123',
+      targetInput: '#refresh',
+    });
+
+    expect(recommendation).toMatchObject({
+      source: 'action-outcome',
+      actionIndex: 2,
+      action: 'click',
+      strategy: 'investigate-no-change',
+      priority: 'medium',
+      verifyCommand: 'cdp perceive ABC123 -C -d 8',
+      commands: [
+        'cdp overlay ABC123 "#refresh" --format json',
+        'cdp frame ABC123 --format json',
+        'cdp perceive ABC123 -C -d 8',
+        'cdp report ABC123 --format json',
+      ],
+    });
+  });
+
+  it('keeps text failure output and recovery command extraction stable', () => {
+    const text = formatActionFailure(new Error('Element not found: #save'), {
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save' },
+    });
+
+    expect(text).toContain('Action failure: selector');
+    expect(text).toContain('Next: cdp perceive ABC123 -C -d 8');
+    expect(text).toContain('Original: Element not found: #save');
+    expect(recoveryCommandsFromDiagnosis({
+      recovery: { commands: [{ command: 'cdp console ABC123 --errors' }] },
+    })).toEqual(['cdp console ABC123 --errors']);
+  });
+});

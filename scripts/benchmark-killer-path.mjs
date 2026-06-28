@@ -104,9 +104,16 @@ function benchmarkDifferentiators(steps) {
       && /hmr panel ready|spa|hot update/i.test(text)
       && /\+\+\+ Added|~~~ Text nodes updated|@/m.test(text);
   });
-  const probes = [modalOverlay, frameRefs, cssTrace, hmrDomUpdate];
+  const guardedPage = differentiatorProbe(steps, (step) => {
+    const commandName = step.command?.[0] || step.name;
+    const text = step.outputText || '';
+    return (step.name === 'guarded-page' || commandName === 'perceive')
+      && /auth(?:enticated)?|logged[- ]in|dashboard|guarded/i.test(text)
+      && /@|button|region|status/i.test(text);
+  });
+  const probes = [modalOverlay, frameRefs, cssTrace, hmrDomUpdate, guardedPage];
   const successRate = probes.filter(probe => probe.success).length / probes.length;
-  return { modalOverlay, frameRefs, cssTrace, hmrDomUpdate, successRate };
+  return { modalOverlay, frameRefs, cssTrace, hmrDomUpdate, guardedPage, successRate };
 }
 
 function differentiatorHandoffMissingFields(model = {}) {
@@ -932,7 +939,7 @@ function countsTowardUsefulObservationTokens(step) {
 }
 
 const DEFAULT_GATE_LIMITS = Object.freeze({
-  commandCallsMax: 23,
+  commandCallsMax: 24,
   firstUsefulObservationMsMax: 5000,
   goldenPathMsMax: 120000,
   usefulObservationTokensMax: 3000,
@@ -1158,7 +1165,7 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       actual: differentiators.successRate ?? 0,
       operator: '>=',
       limit: limits.differentiatorSuccessRateMin,
-      recommendation: 'Keep modal/overlay, frame refs, CSS trace, and HMR/SPAs green before making differentiation claims.',
+      recommendation: 'Keep modal/overlay, frame refs, CSS trace, HMR/SPAs, and guarded pages green before making differentiation claims.',
     }),
     gateCriterion({
       name: 'differentiator-handoff-coverage',
@@ -1440,6 +1447,7 @@ export function formatBenchmarkReport(summary) {
     `Frame refs: ${differentiators.frameRefs?.success ? 'yes' : 'no'} (${differentiators.frameRefs?.durationMs ?? 0} ms)`,
     `CSS trace: ${differentiators.cssTrace?.success ? 'yes' : 'no'} (${differentiators.cssTrace?.durationMs ?? 0} ms)`,
     `HMR/SPA diff: ${differentiators.hmrDomUpdate?.success ? 'yes' : 'no'} (${differentiators.hmrDomUpdate?.durationMs ?? 0} ms)`,
+    `Guarded page: ${differentiators.guardedPage?.success ? 'yes' : 'no'} (${differentiators.guardedPage?.durationMs ?? 0} ms)`,
     `Stale-ref recovery: ${summary.metrics.staleRefRecovery?.success ? 'yes' : 'no'} (${summary.metrics.staleRefRecovery?.recovered ?? 0}/${summary.metrics.staleRefRecovery?.commandCalls ?? 0})`,
     summary.metrics.sessionStability?.enabled
       ? `Session stability: ${summary.metrics.sessionStability.success ? 'yes' : 'no'} (${summary.metrics.sessionStability.durationMs} ms, ${summary.metrics.sessionStability.commandCalls} probes)`
@@ -1576,6 +1584,7 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
     { args: ['click', target, '#combat', '--format', 'json'] },
     { args: ['perceive', target, '--since-action', '--format', 'json'] },
     { args: ['report', target, '--format', 'json'] },
+    { args: ['perceive', target, '-s', '#auth-panel', '-d', '4'], name: 'guarded-page' },
     { args: ['perceive', target, '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-baseline' },
     { args: ['eval', target, hmrMutationScript], name: 'hmr-mutate' },
     { args: ['perceive', target, '--diff', '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-diff' },
