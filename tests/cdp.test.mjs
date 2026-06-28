@@ -2468,6 +2468,165 @@ describe('Session report', () => {
     ]));
   });
 
+  it('keeps workflow artifacts ordered and honest across record, replay, and export', async () => {
+    const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
+    state.environmentLog.push({
+      ts: Date.parse('2026-06-16T00:00:01.000Z'),
+      kind: 'mock',
+      action: 'add',
+      rule: {
+        urlPattern: '**/api/flaky*',
+        status: 503,
+        body: '{"ok":false}',
+        contentType: 'application/json',
+      },
+    });
+    state.environmentLog.push({
+      ts: Date.parse('2026-06-16T00:00:02.000Z'),
+      kind: 'throttle',
+      action: 'apply',
+      throttle: { profile: 'custom', latencyMs: 120, downloadKbps: 256, uploadKbps: 128 },
+    });
+    state.environmentLog.push({
+      ts: Date.parse('2026-06-16T00:00:03.000Z'),
+      kind: 'clock',
+      action: 'apply',
+      clock: { profile: 'freeze', atMs: Date.parse('2020-01-02T03:04:05.000Z'), offsetMs: 0 },
+    });
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'dismiss-modal',
+      target: { input: 'dialog', resolvedBy: 'selector', label: 'dialog', commandArgs: [] },
+      dispatch: { ok: true, method: 'dismiss-modal' },
+      settle: { ok: true, durationMs: 50 },
+      effects: { domDiff: 'modal dismissed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'fill',
+      target: { input: '#email', resolvedBy: 'selector', label: '#email', commandArgs: ['#email', 'agent@example.test'] },
+      dispatch: { ok: true, method: 'fill' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: 'value changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'click',
+      target: { input: '#submit', resolvedBy: 'selector', label: '#submit', commandArgs: ['#submit'] },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 120 },
+      effects: { domDiff: '+++ Added (1):\n+   [alert] Upload complete', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'upload',
+      target: { input: '#avatar', resolvedBy: 'selector', label: '#avatar', commandArgs: ['#avatar', '<redacted>'] },
+      dispatch: { ok: true, method: 'upload' },
+      settle: { ok: true, durationMs: 180 },
+      effects: { domDiff: 'file input changed', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'diff-shot',
+      target: { input: '#preview', resolvedBy: 'selector', label: '#preview', commandName: 'diff-shot', commandArgs: ['#preview'] },
+      dispatch: { ok: true, method: 'diff-shot' },
+      settle: { ok: true, durationMs: 220 },
+      effects: { domDiff: 'pixel diff captured', console: [], network: [], navigation: null },
+      nextHint: null,
+    }));
+    T.appendSessionScreenshot(state, {
+      kind: 'diff-shot',
+      path: '/tmp/chrome-cdp-ex/screens-ABC123/diff-shot-001.png',
+      note: 'visual baseline changed',
+    });
+
+    const record = T.buildRecordActionsModel(state);
+
+    expect(record.environment.map(entry => entry.type)).toEqual(['mock', 'throttle', 'clock']);
+    expect(record.actions.map(action => action.action)).toEqual(['dismiss-modal', 'fill', 'click', 'upload', 'diff-shot']);
+    expect(record.actions[3]).toMatchObject({
+      action: 'upload',
+      command: ['upload', '#avatar', '<redacted>'],
+      replayable: false,
+      needsInput: ['file'],
+    });
+    expect(record.actions[4]).toMatchObject({
+      action: 'diff-shot',
+      command: ['diff-shot', '#preview'],
+      replayable: false,
+      needsInput: ['live-visual-baseline'],
+    });
+    expect(Buffer.byteLength(JSON.stringify(record), 'utf8')).toBeLessThan(64 * 1024);
+
+    const calls = [];
+    const replay = JSON.parse(await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step);
+        if (step.cmd === 'click' && step.args[0] === '#submit') {
+          return { ok: false, error: 'Action failure: selector\nNext: cdp perceive ABC123 -C -d 8' };
+        }
+        return { ok: true, result: `${step.cmd} ok` };
+      },
+    }, ['--continue', '--format', 'json', '--json', JSON.stringify(record)]));
+
+    expect(calls.slice(0, 3)).toEqual([
+      { cmd: 'mock', args: ['add', '**/api/flaky*', '--status', '503', '--body', '{"ok":false}', '--content-type', 'application/json'] },
+      { cmd: 'throttle', args: ['custom', '--latency', '120', '--download', '256', '--upload', '128'] },
+      { cmd: 'clock', args: ['freeze', '--at', '2020-01-02T03:04:05.000Z'] },
+    ]);
+    expect(replay).toMatchObject({
+      schema: 'chrome-cdp-ex.replay.v1',
+      continueOnError: true,
+      halted: false,
+      counts: {
+        environment: 3,
+        actions: 5,
+        total: 8,
+        ok: 5,
+        failed: 1,
+        skipped: 2,
+      },
+      failedStep: {
+        phase: 'action',
+        index: 3,
+        commandText: 'click #submit',
+        error: 'Action failure: selector\nNext: cdp perceive ABC123 -C -d 8',
+      },
+      nextSteps: [
+        'cdp perceive ABC123 -C -d 8',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(replay.steps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'action', index: 4, skipped: true, missing: ['file'] }),
+      expect.objectContaining({ phase: 'action', index: 5, skipped: true, missing: ['live-visual-baseline'] }),
+    ]));
+
+    const exported = JSON.parse(T.formatExportPlaywright(state, { format: 'json', title: 'workflow artifact' }));
+
+    expect(exported).toMatchObject({
+      schema: 'chrome-cdp-ex.export-playwright.v1',
+      counts: {
+        environment: 3,
+        environmentExported: 1,
+        environmentSkipped: 2,
+        actions: 5,
+        actionsExported: 3,
+        actionsSkipped: 2,
+        assertions: 1,
+      },
+    });
+    expect(exported.spec).toContain('await page.route("**/api/flaky*"');
+    expect(exported.spec).toContain('await page.locator("#email").fill("agent@example.test");');
+    expect(exported.spec).toContain('await page.locator("#submit").click();');
+    expect(exported.spec).toContain('await expect(page.getByText("Upload complete")).toBeVisible();');
+    expect(exported.review).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'environment', index: 2, reason: 'chrome-cdp-ex live network throttling has no portable exporter step yet' }),
+      expect.objectContaining({ phase: 'environment', index: 3, reason: 'chrome-cdp-ex live clock override has no portable exporter step yet' }),
+      expect.objectContaining({ phase: 'action', index: 4, reason: 'not replayable; missing file' }),
+      expect.objectContaining({ phase: 'action', index: 5, reason: 'not replayable; missing live-visual-baseline' }),
+    ]));
+  });
+
   it('exports observed text additions as Playwright assertions', () => {
     const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1' });
     T.appendSessionActionLog(state, T.createActionResult({
