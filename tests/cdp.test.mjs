@@ -2,7 +2,9 @@
 // Run: npm test
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { readFileSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { resolve } from 'path';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const {
@@ -1717,11 +1719,133 @@ describe('Session report', () => {
       startIndex: 6,
       endIndex: 25,
       limit: 20,
+      mode: 'latest',
+      expensive: false,
     });
     expect(model.actions).toHaveLength(20);
     expect(model.actions[0]).toMatchObject({ index: 6, action: 'click', target: { input: '#btn-6' } });
     expect(model.actions[19]).toMatchObject({ index: 25, action: 'click', target: { input: '#btn-25' } });
     expect(model.latestAction).toMatchObject({ index: 25, effectSample: '+   [status] Saved 25' });
+  });
+
+  it('keeps long-session report handoffs bounded and documents artifact cleanup', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'cdp-long-session-artifacts-'));
+    const logPath = resolve(dir, 'session-ABC12345.jsonl');
+    const screenshotDir = resolve(dir, 'screens-ABC12345');
+    try {
+      mkdirSync(screenshotDir);
+      writeFileSync(logPath, 'x'.repeat(4096));
+      const state = T.createSessionState({
+        targetId: 'ABC123456789',
+        sessionId: 'sid-1',
+        logPath,
+        screenshotDir,
+      });
+      state.createdAt = Date.parse('2026-06-16T00:00:00.000Z');
+      state.actionLog = Array.from({ length: 120 }, (_, index) => {
+        const actionIndex = index + 1;
+        return {
+          ts: Date.parse('2026-06-16T00:00:00.000Z') + actionIndex,
+          action: actionIndex % 5 === 0 ? 'fill' : 'click',
+          target: {
+            targetId: 'ABC123456789',
+            input: `#control-${actionIndex}`,
+            label: `#control-${actionIndex}`,
+            resolvedBy: 'selector',
+          },
+          dispatch: { ok: true, method: actionIndex % 5 === 0 ? 'fill' : 'click' },
+          settle: { ok: true, durationMs: 20 + actionIndex },
+          effectSummary: `+++ Added (1): action ${actionIndex}`,
+          effectSample: `+   [status] action ${actionIndex} completed`,
+          consoleSummary: actionIndex % 7 === 0 ? 'Console: 3 entries (2 errors)' : null,
+          consoleSample: actionIndex % 7 === 0 ? '[error] noisy console event' : null,
+          networkSummary: actionIndex % 9 === 0 ? 'Network: 2 requests (1 failed)' : null,
+          networkSample: actionIndex % 9 === 0 ? 'GET /api/noise -> failed' : null,
+          outcome: { status: 'changed', changed: true },
+          verdict: { status: 'continue', canContinue: true, needsRecovery: false },
+        };
+      });
+      for (let index = 1; index <= 3; index++) {
+        const shotPath = resolve(screenshotDir, `shot-${String(index).padStart(3, '0')}.png`);
+        writeFileSync(shotPath, 's'.repeat(index * 1024));
+        T.appendSessionScreenshot(state, {
+          kind: index === 2 ? 'diff-shot' : 'shot',
+          path: shotPath,
+          note: `artifact ${index}`,
+          ts: Date.parse('2026-06-16T00:00:10.000Z') + index,
+        });
+      }
+
+      const model = T.buildSessionReportModel(state, {
+        now: Date.parse('2026-06-16T00:01:00.000Z'),
+      });
+      const jsonBytes = Buffer.byteLength(JSON.stringify(model), 'utf8');
+
+      expect(model.counts.actions).toBe(120);
+      expect(model.timelineWindow).toMatchObject({
+        total: 120,
+        shown: 20,
+        omitted: 100,
+        startIndex: 101,
+        endIndex: 120,
+        limit: 20,
+        mode: 'latest',
+        expensive: false,
+      });
+      expect(model.reportBudget).toMatchObject({
+        jsonBytesMax: expect.any(Number),
+        actionLimit: 20,
+        allActionsOptIn: true,
+        expensive: false,
+      });
+      expect(jsonBytes).toBeLessThanOrEqual(model.reportBudget.jsonBytesMax);
+      expect(model.actions).toHaveLength(20);
+      expect(model.actions[0]).toMatchObject({ index: 101, target: { input: '#control-101' } });
+      expect(model.artifacts).toMatchObject({
+        paths: { log: logPath, screenshotDir },
+        counts: { actions: 120, screenshots: 3, records: 0 },
+        sizes: {
+          log: { path: logPath, exists: true, sizeBytes: expect.any(Number) },
+          screenshotDir: { path: screenshotDir, exists: true, fileCount: 3, sizeBytes: 6144 },
+          screenshots: { count: 3, totalBytes: 6144 },
+        },
+      });
+      expect(model.artifacts.sizes.log.sizeBytes).toBeGreaterThanOrEqual(4096);
+      expect(model.cleanup).toMatchObject({
+        staleAfterHours: expect.any(Number),
+        targets: [logPath, screenshotDir],
+      });
+      expect(model.cleanup.workflow.join(' ')).toContain('Remove stale session artifacts');
+
+      const allModel = T.buildSessionReportModel(state, {
+        now: Date.parse('2026-06-16T00:01:00.000Z'),
+        lastActions: null,
+      });
+      expect(allModel.timelineWindow).toMatchObject({
+        total: 120,
+        shown: 120,
+        omitted: 0,
+        limit: null,
+        mode: 'all',
+        expensive: true,
+      });
+      expect(allModel.reportBudget).toMatchObject({
+        actionLimit: null,
+        allActionsOptIn: true,
+        expensive: true,
+      });
+      expect(allModel.reportBudget.warning).toContain('report --all');
+
+      const text = T.formatSessionReport(state, {
+        now: Date.parse('2026-06-16T00:01:00.000Z'),
+      });
+      expect(text).toContain('Report JSON budget:');
+      expect(text).toContain('--all is opt-in');
+      expect(text).toContain('Artifact bytes:');
+      expect(text).toContain('Cleanup: Remove stale session artifacts');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('formats only the requested latest report actions in text mode', () => {
