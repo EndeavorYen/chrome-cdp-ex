@@ -930,6 +930,208 @@ function benchmarkSinceActionEvidenceCoverage(steps) {
   };
 }
 
+const LARGE_APP_STRESS_COMMANDS = Object.freeze(['perceive', 'controls', 'text', 'table', 'summary']);
+
+function compactBenchmarkStep(step, reason = '') {
+  if (!step) return null;
+  return {
+    name: step.name,
+    commandText: step.commandText,
+    durationMs: step.durationMs,
+    outputChars: step.outputChars,
+    estimatedTokens: step.estimatedTokens,
+    ...(reason ? { reason } : {}),
+  };
+}
+
+function firstLargeAppCulprit(entries, reason = '') {
+  const entry = entries.find(item => item?.step);
+  return entry ? compactBenchmarkStep(entry.step, reason || entry.reason || '') : null;
+}
+
+function largeAppCommandName(step = {}) {
+  return String(step.command?.[0] || step.name || '').toLowerCase();
+}
+
+function numberFromText(text = '', patterns = []) {
+  for (const pattern of patterns) {
+    const match = String(text || '').match(pattern);
+    if (!match) continue;
+    const value = Number(match[1]);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function modelNumber(model = {}, paths = []) {
+  for (const path of paths) {
+    const value = path.split('.').reduce((acc, key) => (acc && typeof acc === 'object' ? acc[key] : undefined), model);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function largeAppOutputIsBudgeted(step = {}, model = null) {
+  if (model?.budget && typeof model.budget === 'object') return true;
+  if (model?.limits && typeof model.limits === 'object') {
+    return ['outputTokenBudget', 'outputTokensMax', 'tokenBudget', 'nodeBudget', 'limit', 'rowBudget', 'tableRowBudget', 'controlsLimit']
+      .some(field => Number.isFinite(model.limits[field]));
+  }
+  if (Number.isFinite(model?.limit)) return true;
+  if (model && typeof model === 'object') return false;
+  const text = step.outputText || outputText(step);
+  return /\b(outputTokenBudget|tokenBudget|rowBudget|nodeBudget)\s*[=:]/i.test(text)
+    || /\blimit\s+\d+/i.test(text)
+    || /\(--auto limit \d+\)/i.test(text)
+    || /--last\s+\d+/i.test(text)
+    || /\bbudget\s+source/i.test(text)
+    || /\bbudget:/i.test(text);
+}
+
+function largeAppHasTruncationMetadata(step = {}, model = null) {
+  if (model?.limits && typeof model.limits === 'object' && model.limits.truncated === true) return true;
+  if (model?.truncated === true) return true;
+  if (Number.isFinite(model?.omitted) && model.omitted > 0) return true;
+  if (Number.isFinite(model?.returned) && Number.isFinite(model?.total) && model.returned < model.total) return true;
+  if (model && typeof model === 'object') return false;
+  const text = step.outputText || outputText(step);
+  return /\b(truncated|omitted|hidden template nodes omitted|hiddenTemplateNodesOmitted|earlier text node|more rows|rows? omitted)\b/i.test(text);
+}
+
+function collectLargeAppScale(steps = []) {
+  const scale = {
+    domNodes: 0,
+    tableRows: 0,
+    visibleControls: 0,
+    hiddenTemplateNodes: 0,
+  };
+  for (const step of steps) {
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
+    const text = step.outputText || outputText(step);
+    scale.domNodes = Math.max(
+      scale.domNodes,
+      modelNumber(model, ['limits.sourceDomNodes', 'limits.domNodes', 'limits.nodeCount', 'counts.domNodes', 'metadata.domNodes']) || 0,
+      numberFromText(text, [/sourceDomNodes=(\d+)/i, /domNodes=(\d+)/i, /(\d+)\s+DOM nodes?/i]) || 0,
+    );
+    scale.tableRows = Math.max(
+      scale.tableRows,
+      modelNumber(model, ['limits.sourceTableRows', 'limits.tableRows', 'counts.tableRows', 'metadata.tableRows']) || 0,
+      numberFromText(text, [/sourceRows=(\d+)/i, /tableRows=(\d+)/i, /(\d+)\s+rows?\s+total/i]) || 0,
+    );
+    scale.visibleControls = Math.max(
+      scale.visibleControls,
+      modelNumber(model, ['interactive.total', 'counts.visibleControls', 'metadata.visibleControls', 'total']) || 0,
+      numberFromText(text, [/visibleControls=(\d+)/i, /controls=(\d+)/i]) || 0,
+    );
+    scale.hiddenTemplateNodes = Math.max(
+      scale.hiddenTemplateNodes,
+      modelNumber(model, ['limits.hiddenTemplateNodesOmitted', 'limits.hiddenNodesOmitted', 'counts.hiddenTemplateNodes', 'metadata.hiddenTemplateNodes']) || 0,
+      numberFromText(text, [/hiddenTemplateNodes=(\d+)/i, /hiddenTemplateNodesOmitted=(\d+)/i, /hidden template nodes? omitted=(\d+)/i]) || 0,
+    );
+  }
+  return {
+    ...scale,
+    covered: scale.domNodes >= 5000 && scale.tableRows >= 1000 && scale.visibleControls >= 200,
+  };
+}
+
+function largeAppVisibleControlsSummary(steps = []) {
+  const controlsStep = steps.find(step => largeAppCommandName(step) === 'controls');
+  const model = controlsStep ? (stepModel(controlsStep) || parseJsonOutput(controlsStep.outputText)) : null;
+  const total = modelNumber(model, ['total', 'counts.visibleControls', 'metadata.visibleControls']);
+  const returned = modelNumber(model, ['returned', 'counts.returnedControls']);
+  const limit = modelNumber(model, ['limit', 'limits.controlsLimit', 'limits.limit']);
+  const bounded = Boolean(controlsStep
+    && Number.isFinite(total)
+    && Number.isFinite(returned)
+    && Number.isFinite(limit)
+    && total >= 200
+    && returned <= limit
+    && limit <= 50
+    && model?.truncated === true);
+  return {
+    total: total ?? null,
+    returned: returned ?? null,
+    limit: limit ?? null,
+    bounded,
+    culprit: bounded ? null : compactBenchmarkStep(controlsStep, 'visible controls are not bounded to a <=50 item limit'),
+  };
+}
+
+function largeAppHiddenTemplateOmissionSummary(steps = [], scale = null) {
+  const culprit = steps.find(step => largeAppCommandName(step) === 'perceive') || steps[0] || null;
+  const covered = Boolean((scale?.hiddenTemplateNodes || 0) > 0
+    && steps.some((step) => {
+      const model = stepModel(step) || parseJsonOutput(step.outputText);
+      const text = step.outputText || outputText(step);
+      return Number.isFinite(model?.limits?.hiddenTemplateNodesOmitted)
+        || Number.isFinite(model?.limits?.hiddenNodesOmitted)
+        || /hidden template|hiddenTemplateNodes/i.test(text);
+    }));
+  return {
+    covered,
+    hiddenTemplateNodes: scale?.hiddenTemplateNodes || 0,
+    culprit: covered ? null : compactBenchmarkStep(culprit, 'hidden/template node omission metadata is missing'),
+  };
+}
+
+function coverageForLargeAppCommands(steps = [], predicate, reason) {
+  const missing = [];
+  let covered = 0;
+  for (const commandName of LARGE_APP_STRESS_COMMANDS) {
+    const step = steps.find(candidate => largeAppCommandName(candidate) === commandName);
+    if (step && predicate(step, stepModel(step) || parseJsonOutput(step.outputText))) {
+      covered += 1;
+    } else {
+      missing.push({ command: commandName, step, reason });
+    }
+  }
+  return {
+    total: LARGE_APP_STRESS_COMMANDS.length,
+    covered,
+    rate: covered / LARGE_APP_STRESS_COMMANDS.length,
+    missing,
+    culprit: firstLargeAppCulprit(missing, reason),
+  };
+}
+
+function benchmarkLargeAppStress(steps = []) {
+  const commandCoverage = coverageForLargeAppCommands(
+    steps,
+    step => Boolean(step),
+    'required large-app stress command was not observed',
+  );
+  const outputBudgetCoverage = coverageForLargeAppCommands(
+    steps,
+    largeAppOutputIsBudgeted,
+    'output budget metadata is missing',
+  );
+  const truncationMetadataCoverage = coverageForLargeAppCommands(
+    steps,
+    largeAppHasTruncationMetadata,
+    'truncation or omission metadata is missing',
+  );
+  const scale = collectLargeAppScale(steps);
+  const visibleControls = largeAppVisibleControlsSummary(steps);
+  const hiddenTemplateOmission = largeAppHiddenTemplateOmissionSummary(steps, scale);
+  return {
+    enabled: true,
+    expectedCommands: [...LARGE_APP_STRESS_COMMANDS],
+    commandCoverage,
+    outputBudgetCoverage,
+    truncationMetadataCoverage,
+    scale,
+    visibleControls,
+    hiddenTemplateOmission,
+    success: commandCoverage.rate === 1
+      && outputBudgetCoverage.rate === 1
+      && truncationMetadataCoverage.rate === 1
+      && scale.covered
+      && visibleControls.bounded
+      && hiddenTemplateOmission.covered,
+  };
+}
+
 function countsTowardUsefulObservationTokens(step) {
   const model = stepModel(step);
   const commandName = normalizeActionCommandName(step.command?.[0] || step.name);
@@ -965,6 +1167,12 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   differentiatorSuccessRateMin: 1,
   differentiatorHandoffCoverageRateMin: 1,
   staleRefRecoveryRateMin: 1,
+  largeAppCommandCoverageRateMin: 1,
+  largeAppOutputBudgetCoverageRateMin: 1,
+  largeAppTruncationMetadataCoverageRateMin: 1,
+  largeAppDomNodesMin: 5000,
+  largeAppTableRowsMin: 1000,
+  largeAppVisibleControlsMin: 200,
 });
 
 const DEFAULT_COMPARISON_BASELINE_SET = Object.freeze({
@@ -1012,8 +1220,127 @@ function gateCriterion({ name, actual, operator, limit, recommendation, culprit 
   return { name, passed, actual, operator, limit, recommendation, ...(culprit ? { culprit } : {}) };
 }
 
+function buildLargeAppStressGate(summary, limits = DEFAULT_GATE_LIMITS) {
+  const metrics = summary.metrics || {};
+  const largeAppStress = metrics.largeAppStress || {};
+  const criteria = [
+    gateCriterion({
+      name: 'run-success',
+      actual: summary.success === true,
+      operator: '===',
+      limit: true,
+      recommendation: 'Fix the failed benchmark step before using this run as evidence.',
+    }),
+    gateCriterion({
+      name: 'command-calls',
+      actual: metrics.commandCalls ?? null,
+      operator: '<=',
+      limit: limits.commandCallsMax,
+      recommendation: 'Keep the large-app stress probe compact; run only the perception and extraction commands that prove bounded output.',
+    }),
+    gateCriterion({
+      name: 'first-useful-observation',
+      actual: metrics.firstUsefulObservationMs ?? null,
+      operator: '<=',
+      limit: limits.firstUsefulObservationMsMax,
+      recommendation: 'Large app perception must produce a useful observation quickly enough for first-run agent loops.',
+    }),
+    gateCriterion({
+      name: 'total-output-tokens',
+      actual: metrics.estimatedOutputTokens ?? null,
+      operator: '<=',
+      limit: limits.estimatedOutputTokensMax,
+      recommendation: 'Keep total stress output bounded so large DOMs cannot silently consume the model context.',
+      culprit: metrics.biggestOutputStep || null,
+    }),
+    gateCriterion({
+      name: 'max-step-output-tokens',
+      actual: metrics.maxStepEstimatedTokens ?? null,
+      operator: '<=',
+      limit: limits.maxStepEstimatedTokensMax,
+      recommendation: 'Keep any single stress command from dumping the app; inspect the culprit command output.',
+      culprit: metrics.biggestOutputStep || null,
+    }),
+    gateCriterion({
+      name: 'max-step-duration',
+      actual: metrics.maxStepDurationMs ?? null,
+      operator: '<=',
+      limit: limits.maxStepDurationMsMax,
+      recommendation: 'Keep each large-app command responsive enough for interactive repair loops.',
+      culprit: metrics.slowestStep || null,
+    }),
+    gateCriterion({
+      name: 'useful-observation-tokens',
+      actual: metrics.usefulObservationTokens ?? null,
+      operator: '<=',
+      limit: limits.usefulObservationTokensMax,
+      recommendation: 'Large app perception should summarize actionable state instead of dumping every visible node.',
+    }),
+    gateCriterion({
+      name: 'large-app-command-coverage',
+      actual: largeAppStress.commandCoverage?.rate ?? null,
+      operator: '>=',
+      limit: limits.largeAppCommandCoverageRateMin,
+      recommendation: 'Exercise perceive -C, controls, text --auto, table, and summary in the stress scenario.',
+      culprit: largeAppStress.commandCoverage?.culprit || null,
+    }),
+    gateCriterion({
+      name: 'large-app-scale-coverage',
+      actual: largeAppStress.scale?.covered === true,
+      operator: '===',
+      limit: true,
+      recommendation: 'The stress fixture must cover at least 5000 DOM nodes, 1000 table rows, and 200 visible controls.',
+      culprit: largeAppStress.commandCoverage?.culprit || null,
+    }),
+    gateCriterion({
+      name: 'large-app-output-budget-metadata',
+      actual: largeAppStress.outputBudgetCoverage?.rate ?? null,
+      operator: '>=',
+      limit: limits.largeAppOutputBudgetCoverageRateMin,
+      recommendation: 'Every stress command must expose or print output budget/limit metadata.',
+      culprit: largeAppStress.outputBudgetCoverage?.culprit || null,
+    }),
+    gateCriterion({
+      name: 'large-app-truncation-metadata',
+      actual: largeAppStress.truncationMetadataCoverage?.rate ?? null,
+      operator: '>=',
+      limit: limits.largeAppTruncationMetadataCoverageRateMin,
+      recommendation: 'Every stress command must expose truncation or omission metadata so hidden/template nodes cannot dominate.',
+      culprit: largeAppStress.truncationMetadataCoverage?.culprit || null,
+    }),
+    gateCriterion({
+      name: 'large-app-visible-controls-bounded',
+      actual: largeAppStress.visibleControls?.bounded === true,
+      operator: '===',
+      limit: true,
+      recommendation: 'Visible controls inventory must be discoverable but capped to a <=50 item response.',
+      culprit: largeAppStress.visibleControls?.culprit || null,
+    }),
+    gateCriterion({
+      name: 'large-app-hidden-template-omission',
+      actual: largeAppStress.hiddenTemplateOmission?.covered === true,
+      operator: '===',
+      limit: true,
+      recommendation: 'Stress output must explicitly omit hidden/template DOM so invisible app scaffolding cannot dominate perception.',
+      culprit: largeAppStress.hiddenTemplateOmission?.culprit || null,
+    }),
+  ];
+  const passedCount = criteria.filter(criterion => criterion.passed).length;
+  return {
+    schema: 'chrome-cdp-ex.benchmark-gate.v1',
+    profile: 'large-app-stress',
+    passed: passedCount === criteria.length,
+    passedCount,
+    total: criteria.length,
+    criteria,
+  };
+}
+
 export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
   const metrics = summary.metrics || {};
+  if (metrics.largeAppStress?.enabled === true) {
+    return buildLargeAppStressGate(summary, limits);
+  }
   const differentiators = metrics.differentiators || {};
   const staleRefRecovery = metrics.staleRefRecovery || {};
   const criteria = [
@@ -1346,6 +1673,150 @@ export function buildBenchmarkComparison(summary, baselineSet = DEFAULT_COMPARIS
   };
 }
 
+export function buildLargeAppStressFixture({
+  target = 'AABBCCDD',
+  startedAt = 0,
+  domNodes = 5200,
+  tableRows = 1000,
+  visibleControls = 240,
+  hiddenTemplateNodes = 1600,
+  controlsLimit = 50,
+  nodeBudget = 80,
+  tableRowBudget = 20,
+  outputTokenBudget = 1200,
+} = {}) {
+  const step = (name, command, startOffset, durationMs, stdout) => ({
+    name,
+    command,
+    startedAt: startedAt + startOffset,
+    endedAt: startedAt + startOffset + durationMs,
+    status: 0,
+    stdout: typeof stdout === 'string' ? stdout : JSON.stringify(stdout),
+    stderr: '',
+  });
+  const controlRows = Array.from({ length: controlsLimit }, (_, index) => ({
+    ref: `@${index + 1}`,
+    role: index % 3 === 0 ? 'button' : index % 3 === 1 ? 'textbox' : 'link',
+    label: `Visible control ${index + 1}`,
+    selector: `[data-control="${index + 1}"]`,
+  }));
+  const rows = [
+    'account\tstatus\towner',
+    ...Array.from({ length: Math.min(tableRowBudget, 5) }, (_, index) => `account-${index + 1}\tactive\tteam-${index + 1}`),
+  ].join('\n');
+  const steps = [
+    step('perceive', ['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20', '--format', 'json'], 0, 110, {
+      schema: 'chrome-cdp-ex.perceive.v1',
+      targetPrefix: target,
+      page: { title: 'Large SaaS stress fixture', url: 'https://example.test/large-app' },
+      viewport: { width: 1440, height: 900, coordinateSpace: 'viewport-css-px' },
+      console: { errors: 0, warnings: 2, recent: ['2 noisy logs summarized'] },
+      refs: { count: controlsLimit, validity: 'until-navigation-or-dom-rewrite' },
+      nodes: [
+        { ref: '@1', role: 'button', name: 'Create invoice' },
+        { ref: '@2', role: 'textbox', name: 'Search accounts' },
+      ],
+      interactive: { total: visibleControls, returned: controlsLimit, truncated: true },
+      limits: {
+        sourceDomNodes: domNodes,
+        returnedNodes: nodeBudget,
+        nodeBudget,
+        outputTokenBudget,
+        hiddenTemplateNodesOmitted: hiddenTemplateNodes,
+        truncated: true,
+      },
+      recommendation: {
+        summary: 'Use bounded controls before acting in the dense dashboard.',
+        run: `cdp controls ${target} --limit ${controlsLimit} --format json`,
+        commands: [`cdp controls ${target} --limit ${controlsLimit} --format json`],
+      },
+      nextSteps: [`cdp controls ${target} --limit ${controlsLimit} --format json`],
+    }),
+    step('controls', ['controls', target, '--limit', String(controlsLimit), '--format', 'json'], 120, 90, {
+      schema: 'chrome-cdp-ex.visible-controls.v1',
+      scope: 'document',
+      filter: null,
+      limit: controlsLimit,
+      total: visibleControls,
+      returned: controlsLimit,
+      truncated: true,
+      omitted: visibleControls - controlsLimit,
+      budget: { outputTokenBudget, controlLimit: controlsLimit },
+      limits: {
+        controlsLimit,
+        outputTokenBudget,
+        hiddenTemplateNodesOmitted: hiddenTemplateNodes,
+        truncated: true,
+      },
+      controls: controlRows,
+    }),
+    step(
+      'text',
+      ['text', target, '--auto'],
+      220,
+      70,
+      [
+        `Visible text budget: sourceDomNodes=${domNodes} hiddenTemplateNodes=${hiddenTemplateNodes} outputTokenBudget=${outputTokenBudget}`,
+        'Dashboard text: Accounts, invoices, approvals, alerts, activity feed',
+        `... ${Math.max(0, domNodes - 120)} earlier text node(s) omitted (--auto limit ${outputTokenBudget})`,
+        `... hidden template nodes omitted=${hiddenTemplateNodes} truncated=true`,
+      ].join('\n'),
+    ),
+    step(
+      'table',
+      ['table', target, '#accounts-grid'],
+      300,
+      85,
+      [
+        rows,
+        `... ${tableRows - tableRowBudget} rows omitted (limit ${tableRowBudget} of ${tableRows} rows total)`,
+        `budget sourceRows=${tableRows} returnedRows=${tableRowBudget} outputTokenBudget=${outputTokenBudget} truncated=true`,
+      ].join('\n'),
+    ),
+    step('summary', ['summary', target, '--format', 'json'], 395, 60, {
+      schema: 'chrome-cdp-ex.summary.v1',
+      page: { title: 'Large SaaS stress fixture' },
+      counts: {
+        domNodes,
+        tableRows,
+        visibleControls,
+        hiddenTemplateNodes,
+      },
+      limits: {
+        nodeBudget,
+        tableRowBudget,
+        controlsLimit,
+        outputTokenBudget,
+        hiddenTemplateNodesOmitted: hiddenTemplateNodes,
+        truncated: true,
+      },
+      recommendation: {
+        summary: 'Continue with bounded controls or scoped table extraction.',
+        run: `cdp controls ${target} --limit ${controlsLimit} --format json`,
+        commands: [`cdp controls ${target} --limit ${controlsLimit} --format json`],
+      },
+      nextSteps: [`cdp controls ${target} --limit ${controlsLimit} --format json`],
+    }),
+  ];
+  return {
+    scenario: 'large-app-stress',
+    startedAt,
+    endedAt: steps.at(-1).endedAt,
+    target,
+    metadata: {
+      domNodes,
+      tableRows,
+      visibleControls,
+      hiddenTemplateNodes,
+      controlsLimit,
+      nodeBudget,
+      tableRowBudget,
+      outputTokenBudget,
+    },
+    steps,
+  };
+}
+
 export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, endedAt, target = '', steps = [], comparisonBaselineSet = DEFAULT_COMPARISON_BASELINE_SET } = {}) {
   const normalizedSteps = steps.map((step) => {
     const text = outputText(step);
@@ -1447,6 +1918,9 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       differentiatorHandoffCoverage: benchmarkDifferentiatorHandoffCoverage(normalizedSteps),
       staleRefRecovery: benchmarkStaleRefRecovery(normalizedSteps),
       sessionStability: benchmarkSessionStability(normalizedSteps),
+      largeAppStress: scenario === 'large-app-stress'
+        ? benchmarkLargeAppStress(normalizedSteps)
+        : { enabled: false },
     },
     steps: normalizedSteps.map(({ outputText: _outputText, model: _model, ...step }) => step),
   };
@@ -1505,6 +1979,9 @@ export function formatBenchmarkReport(summary) {
     `HMR/SPA diff: ${differentiators.hmrDomUpdate?.success ? 'yes' : 'no'} (${differentiators.hmrDomUpdate?.durationMs ?? 0} ms)`,
     `Guarded page: ${differentiators.guardedPage?.success ? 'yes' : 'no'} (${differentiators.guardedPage?.durationMs ?? 0} ms)`,
     `Stale-ref recovery: ${summary.metrics.staleRefRecovery?.success ? 'yes' : 'no'} (${summary.metrics.staleRefRecovery?.recovered ?? 0}/${summary.metrics.staleRefRecovery?.commandCalls ?? 0})`,
+    summary.metrics.largeAppStress?.enabled
+      ? `Large app stress: ${summary.metrics.largeAppStress.success ? 'pass' : 'fail'} (commands ${summary.metrics.largeAppStress.commandCoverage.covered}/${summary.metrics.largeAppStress.commandCoverage.total}, budgets ${summary.metrics.largeAppStress.outputBudgetCoverage.covered}/${summary.metrics.largeAppStress.outputBudgetCoverage.total}, truncation metadata ${summary.metrics.largeAppStress.truncationMetadataCoverage.covered}/${summary.metrics.largeAppStress.truncationMetadataCoverage.total})`
+      : 'Large app stress: not measured',
     summary.metrics.sessionStability?.enabled
       ? `Session stability: ${summary.metrics.sessionStability.success ? 'yes' : 'no'} (${summary.metrics.sessionStability.durationMs} ms, ${summary.metrics.sessionStability.commandCalls} probes)`
       : 'Session stability: not measured',

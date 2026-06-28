@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildBenchmarkGate,
+  buildLargeAppStressFixture,
   buildKillerPathEntryPlan,
   buildKillerPathBenchmarkPlan,
   estimateTokenCount,
@@ -1958,6 +1959,107 @@ describe('benchmark killer path helpers', () => {
       stabilityMs: 1000,
       comparisonBaselinesPath: null,
     });
+  });
+
+  it('summarizes large app stress budgets, truncation metadata, and bounded controls', () => {
+    const fixture = buildLargeAppStressFixture();
+    const summary = summarizeBenchmarkRun(fixture);
+
+    expect(summary.scenario).toBe('large-app-stress');
+    expect(summary.metrics.largeAppStress).toMatchObject({
+      enabled: true,
+      commandCoverage: { total: 5, covered: 5, rate: 1 },
+      outputBudgetCoverage: { total: 5, covered: 5, rate: 1 },
+      truncationMetadataCoverage: { total: 5, covered: 5, rate: 1 },
+      scale: {
+        domNodes: 5200,
+        tableRows: 1000,
+        visibleControls: 240,
+        hiddenTemplateNodes: 1600,
+        covered: true,
+      },
+      visibleControls: {
+        total: 240,
+        returned: 50,
+        limit: 50,
+        bounded: true,
+      },
+      hiddenTemplateOmission: { covered: true },
+    });
+    expect(summary.gate).toMatchObject({
+      profile: 'large-app-stress',
+      passed: true,
+    });
+    expect(summary.gate.criteria.map(criterion => criterion.name)).toEqual(expect.arrayContaining([
+      'large-app-command-coverage',
+      'large-app-scale-coverage',
+      'large-app-output-budget-metadata',
+      'large-app-truncation-metadata',
+      'large-app-visible-controls-bounded',
+      'large-app-hidden-template-omission',
+    ]));
+    expect(formatBenchmarkReport(summary)).toContain('Large app stress: pass (commands 5/5, budgets 5/5, truncation metadata 5/5)');
+  });
+
+  it('fails large app stress gate with command culprit when output is unbounded', () => {
+    const fixture = buildLargeAppStressFixture();
+    const perceive = fixture.steps.find(step => step.name === 'perceive');
+    const controls = fixture.steps.find(step => step.name === 'controls');
+    const text = fixture.steps.find(step => step.name === 'text');
+    const table = fixture.steps.find(step => step.name === 'table');
+
+    perceive.stdout = JSON.stringify({
+      schema: 'chrome-cdp-ex.perceive.v1',
+      page: { title: 'Large SaaS stress fixture' },
+      viewport: { width: 1440, height: 900 },
+      console: { errors: 0 },
+      refs: { count: 240 },
+      interactive: { total: 240 },
+      nextSteps: ['cdp controls AABBCCDD --format json'],
+      recommendation: { run: 'cdp controls AABBCCDD --format json' },
+    });
+    controls.stdout = JSON.stringify({
+      schema: 'chrome-cdp-ex.visible-controls.v1',
+      total: 240,
+      returned: 240,
+      limit: 240,
+      truncated: false,
+      controls: [],
+    });
+    text.stdout = 'Visible text copied from every noisy hidden template node without an output budget.';
+    table.stdout = 'name\tstatus\towner\n' + Array.from({ length: 20 }, (_, index) => `row-${index + 1}\topen\tteam`).join('\n');
+
+    const summary = summarizeBenchmarkRun(fixture);
+
+    expect(summary.gate).toMatchObject({
+      profile: 'large-app-stress',
+      passed: false,
+    });
+    expect(summary.metrics.largeAppStress.truncationMetadataCoverage).toMatchObject({
+      total: 5,
+      covered: 1,
+      rate: 0.2,
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'large-app-truncation-metadata',
+        passed: false,
+        actual: 0.2,
+        culprit: expect.objectContaining({
+          name: 'perceive',
+          commandText: 'cdp perceive AABBCCDD -C -d 8 --keep-refs --last 20 --format json',
+        }),
+      }),
+      expect.objectContaining({
+        name: 'large-app-visible-controls-bounded',
+        passed: false,
+        actual: false,
+        culprit: expect.objectContaining({
+          name: 'controls',
+          commandText: 'cdp controls AABBCCDD --limit 50 --format json',
+        }),
+      }),
+    ]));
   });
 
   it('plans core mutating commands with live action evidence coverage', () => {
