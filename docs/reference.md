@@ -9,7 +9,7 @@ Most workflows start with `doctor -> list -> open -> perceive -> click/fill -> p
 | Area | Commands |
 |---|---|
 | Discovery | `help`, `doctor`, `list`, `open`, `spawn-debug-browser`, `stop`, `closetab`, `keepalive` |
-| Perception | `perceive`, `summary`, `snap`, `frame`, `overlay`, `text`, `table`, `status`, `console`, `report` |
+| Perception | `perceive`, `controls`, `summary`, `snap`, `frame`, `overlay`, `text`, `table`, `status`, `console`, `report` |
 | Visual capture | `shot`, `elshot`, `fullshot`, `scanshot`, `diff-shot` |
 | Interaction | `click`, `jsclick`, `clickxy`, `type`, `press`, `scroll`, `hover`, `fill`, `select`, `upload`, `dialog`, `dismiss-modal` |
 | Waiting and flow | `wait`, `waitfor`, `loadall`, `batch`, `flow`, `repeat` |

@@ -9,8 +9,8 @@ const {
   RingBuffer, resolvePrefix, getDisplayPrefixLength, sockPath,
   shouldShowAxNode, formatAxNode, orderedAxChildren, isRef,
   validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
-  formatPageList, buildPerceiveTree, perceivePageScript, injectStr, cascadeStr, recordStr, parseRecordArgs,
-  evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, fillStr, fillReactStr, waitForStr,
+  formatPageList, buildPerceiveTree, perceivePageScript, perceiveStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
+  evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, parseControlsArgs, controlsStr, formatVisibleControlsText, navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, fillStr, fillReactStr, waitForStr,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs, formatCliError,
   formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   statusStr, clearObservationBuffers,
@@ -4260,6 +4260,141 @@ describe('eval fire-and-forget and call helpers', () => {
     });
     const out = await callStr(cdp, 'sid1', 'async () => ({ ok: true, n: 2 })');
     expect(JSON.parse(out)).toEqual({ ok: true, n: 2 });
+  });
+
+  it('callStr evaluates synchronous function expressions without calling the returned promise', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': async (params) => {
+        const value = await globalThis.eval(params.expression);
+        return { result: { value } };
+      },
+    });
+
+    await expect(callStr(cdp, 'sid1', '() => "Imagine - Grok"')).resolves.toBe('"Imagine - Grok"');
+  });
+});
+
+describe('visible controls inspector', () => {
+  const controlsModel = {
+    schema: 'chrome-cdp-ex.visible-controls.v1',
+    scope: '#composer',
+    filter: null,
+    limit: 10,
+    total: 2,
+    returned: 2,
+    truncated: false,
+    controls: [
+      {
+        tag: 'textarea',
+        role: 'textbox',
+        label: 'Ask anything',
+        text: '',
+        disabled: false,
+        clickable: true,
+        rect: { x: 80, y: 520, w: 620, h: 44 },
+        selector: 'textarea#prompt',
+        hints: { id: 'prompt', classes: ['composer-input'] },
+      },
+      {
+        tag: 'button',
+        role: 'button',
+        ariaLabel: '編輯',
+        label: '編輯',
+        text: '',
+        disabled: false,
+        clickable: true,
+        rect: { x: 720, y: 524, w: 44, h: 36 },
+        selector: 'button[aria-label="編輯"]',
+        hints: { classes: ['icon-button'] },
+      },
+    ],
+  };
+
+  it('registers controls as a target command with text and JSON output', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'controls',
+      needsTarget: true,
+      mutates: false,
+      outputFormats: ['text', 'json'],
+    }));
+  });
+
+  it('parses scope, filter, and limit arguments', () => {
+    expect(parseControlsArgs(['-s', '#composer', '--filter', 'edit', '--limit', '10'])).toEqual({
+      selector: '#composer',
+      filter: 'edit',
+      limit: 10,
+    });
+  });
+
+  it('formats a compact scoped visible-controls inventory', () => {
+    const out = formatVisibleControlsText(controlsModel);
+    expect(out).toContain('Visible controls: 2/2 in #composer');
+    expect(out).toContain('textarea role=textbox "Ask anything"');
+    expect(out).toContain('button role=button aria-label="編輯" "編輯"');
+    expect(out).toContain('[clickable]');
+    expect(out).toContain('(720,524 44×36)');
+    expect(out).toContain('button[aria-label="編輯"]');
+  });
+
+  it('returns text from Runtime.evaluate visible control data', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        expect(params.awaitPromise).toBe(false);
+        expect(params.returnByValue).toBe(true);
+        expect(params.expression).toContain('chrome-cdp-ex.visible-controls.v1');
+        expect(params.expression).toContain('#composer');
+        return { result: { value: JSON.stringify(controlsModel) } };
+      },
+    });
+
+    const out = await controlsStr(cdp, 'sid1', { selector: '#composer', limit: 10 });
+    expect(out).toContain('Visible controls: 2/2 in #composer');
+    expect(out).toContain('button role=button aria-label="編輯"');
+  });
+
+  it('returns JSON from Runtime.evaluate visible control data', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: JSON.stringify(controlsModel) } }),
+    });
+
+    const out = await controlsStr(cdp, 'sid1', { selector: '#composer', limit: 10, format: 'json' });
+    expect(JSON.parse(out)).toEqual(controlsModel);
+  });
+
+  it('perceive -C includes visible standard controls for dense composers', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({
+        result: {
+          value: JSON.stringify({
+            title: 'Dense app',
+            url: 'https://app.example.test',
+            vw: 900,
+            vh: 640,
+            scrollY: 0,
+            scrollMax: 0,
+            counts: { textarea: 1, button: 1 },
+            focused: '<textarea#prompt>',
+            layoutMap: {},
+            styleHints: {},
+            cursorInteractives: [],
+            visibleControls: controlsModel.controls,
+            visibleControlsTruncated: false,
+          }),
+        },
+      }),
+      'Accessibility.getFullAXTree': () => ({
+        nodes: [
+          { nodeId: 'root', role: { value: 'RootWebArea' }, name: { value: 'Dense app' }, childIds: ['composer'] },
+          { nodeId: 'composer', role: { value: 'textbox' }, name: { value: 'Ask anything' }, backendDOMNodeId: 7 },
+        ],
+      }),
+    });
+
+    const out = await perceiveStr(cdp, 'sid1', new RingBuffer(10), new RingBuffer(10), new Map(), { last: null }, { cursorInteractive: true, maxDepth: 8 });
+    expect(out).toContain('[Visible controls]');
+    expect(out).toContain('button role=button aria-label="編輯"');
+    expect(out).toContain('textarea role=textbox "Ask anything"');
   });
 });
 

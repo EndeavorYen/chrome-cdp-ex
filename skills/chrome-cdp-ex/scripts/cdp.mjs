@@ -636,7 +636,7 @@ function formatCallResult(remote) {
 
 async function callStr(cdp, sid, expression) {
   if (!expression) throw new Error('Expression required');
-  const wrapped = `Promise.resolve().then(async () => {
+  const wrapped = `(async () => {
     const value = (${expression});
     let result = (typeof value === 'function') ? value() : value;
     return await result;
@@ -3431,6 +3431,219 @@ function parsePerceiveArgs(args) {
   return opts;
 }
 
+function parseControlsArgs(args) {
+  const opts = { selector: null, filter: null, limit: 30 };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-s' || a === '--selector' || a === '--scope') {
+      opts.selector = args[++i] || null;
+    } else if (a === '--filter' || a === '-f') {
+      opts.filter = args[++i] || null;
+    } else if (a === '--limit' || a === '-n') {
+      const n = parseInt(args[++i], 10);
+      opts.limit = Number.isFinite(n) && n > 0 ? Math.min(n, 100) : opts.limit;
+    } else {
+      throw new Error(`controls: unknown argument ${a}`);
+    }
+  }
+  return opts;
+}
+
+function visibleControlsCollectorSource() {
+  return String.raw`
+      function chromeCdpVisibleControls(options) {
+        const vw = window.innerWidth || 0;
+        const vh = window.innerHeight || 0;
+        const limit = Math.max(1, Math.min(Number(options.limit) || 30, 100));
+        const scope = options.selector || null;
+        const filter = options.filter ? String(options.filter).toLowerCase() : null;
+        const root = scope ? document.querySelector(scope) : document;
+        const schema = 'chrome-cdp-ex.visible-controls.v1';
+        if (!root) {
+          return { schema, scope, filter: options.filter || null, limit, total: 0, returned: 0, truncated: false, controls: [], error: 'scope-not-found' };
+        }
+
+        const interactiveRoles = new Set(['button', 'link', 'menuitem', 'option', 'checkbox', 'radio', 'switch', 'tab', 'textbox', 'combobox', 'searchbox']);
+        const nativeInteractive = new Set(['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'SUMMARY']);
+        const selector = [
+          'a', 'button', 'input', 'select', 'textarea', 'summary',
+          '[role="button"]', '[role="link"]', '[role="menuitem"]', '[role="option"]',
+          '[role="checkbox"]', '[role="radio"]', '[role="switch"]', '[role="tab"]',
+          '[role="textbox"]', '[role="combobox"]', '[role="searchbox"]',
+          '[contenteditable="true"]', '[onclick]', '[tabindex]',
+          '[aria-label]', '[title]',
+          'div', 'span', 'li', 'label', 'svg', 'img'
+        ].join(',');
+
+        function esc(value) {
+          const text = String(value || '');
+          return window.CSS && CSS.escape ? CSS.escape(text) : text.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+        }
+
+        function compactText(value, max = 60) {
+          return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+        }
+
+        function roleFor(el) {
+          const explicit = el.getAttribute('role');
+          if (explicit) return explicit;
+          const tag = el.tagName.toLowerCase();
+          if (tag === 'a') return 'link';
+          if (tag === 'button') return 'button';
+          if (tag === 'textarea') return 'textbox';
+          if (tag === 'select') return 'combobox';
+          if (tag === 'input') {
+            const type = String(el.getAttribute('type') || 'text').toLowerCase();
+            if (['button', 'submit', 'reset', 'image'].includes(type)) return 'button';
+            if (['checkbox', 'radio'].includes(type)) return type;
+            return 'textbox';
+          }
+          return '';
+        }
+
+        function selectorFor(el) {
+          const tag = el.tagName.toLowerCase();
+          if (el.id) return tag + '#' + esc(el.id);
+          const aria = el.getAttribute('aria-label');
+          if (aria) return tag + '[aria-label="' + String(aria).replace(/"/g, '\\"') + '"]';
+          const title = el.getAttribute('title');
+          if (title) return tag + '[title="' + String(title).replace(/"/g, '\\"') + '"]';
+          if (typeof el.className === 'string' && el.className.trim()) {
+            return tag + el.className.trim().split(/\s+/).slice(0, 2).map(c => '.' + esc(c)).join('');
+          }
+          return tag;
+        }
+
+        function isVisible(rect, cs) {
+          if (!rect || rect.width < 4 || rect.height < 4) return false;
+          if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+          return rect.bottom >= 0 && rect.right >= 0 && rect.top <= vh && rect.left <= vw;
+        }
+
+        function isClickable(el, cs, role) {
+          const tagInteractive = nativeInteractive.has(el.tagName);
+          const roleInteractive = interactiveRoles.has(role);
+          return tagInteractive || roleInteractive || cs.cursor === 'pointer' || el.hasAttribute('onclick') || (el.hasAttribute('tabindex') && el.tabIndex >= 0);
+        }
+
+        const controls = [];
+        const seen = new Set();
+        const candidates = root.querySelectorAll ? root.querySelectorAll(selector) : [];
+        for (const el of candidates) {
+          const cs = window.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          if (!isVisible(rect, cs)) continue;
+          const role = roleFor(el);
+          const clickable = isClickable(el, cs, role);
+          const ariaLabel = compactText(el.getAttribute('aria-label'));
+          const title = compactText(el.getAttribute('title'));
+          const text = compactText(el.innerText || el.textContent || el.getAttribute('placeholder') || el.getAttribute('value'));
+          const label = ariaLabel || title || text || role || el.tagName.toLowerCase();
+          if (!clickable && !ariaLabel && !title) continue;
+          const path = selectorFor(el);
+          const key = path + '|' + Math.round(rect.left) + ',' + Math.round(rect.top);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const haystack = [el.tagName, role, ariaLabel, title, text, path, el.id, el.className].join(' ').toLowerCase();
+          if (filter && !haystack.includes(filter)) continue;
+          const classes = typeof el.className === 'string'
+            ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 3)
+            : [];
+          controls.push({
+            tag: el.tagName.toLowerCase(),
+            role,
+            ariaLabel,
+            title,
+            label,
+            text,
+            disabled: Boolean(el.disabled) || el.getAttribute('aria-disabled') === 'true',
+            clickable,
+            rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) },
+            selector: path,
+            hints: { id: el.id || '', classes },
+          });
+        }
+        const total = controls.length;
+        return {
+          schema,
+          scope,
+          filter: options.filter || null,
+          limit,
+          total,
+          returned: Math.min(total, limit),
+          truncated: total > limit,
+          controls: controls.slice(0, limit),
+        };
+      }
+  `;
+}
+
+function visibleControlsPageScript(opts = {}) {
+  const options = {
+    selector: opts.selector || null,
+    filter: opts.filter || null,
+    limit: opts.limit || 30,
+  };
+  return `(function() {
+${visibleControlsCollectorSource()}
+      return JSON.stringify(chromeCdpVisibleControls(${JSON.stringify(options)}));
+    })()`;
+}
+
+function formatVisibleControlLine(control, index = null) {
+  const role = control.role ? ` role=${control.role}` : '';
+  const aria = control.ariaLabel ? ` aria-label="${control.ariaLabel}"` : '';
+  const title = control.title && control.title !== control.label ? ` title="${control.title}"` : '';
+  const label = control.label ? ` "${control.label}"` : '';
+  const state = [
+    control.clickable ? 'clickable' : null,
+    control.disabled ? 'disabled' : null,
+  ].filter(Boolean);
+  const stateText = state.length ? ` [${state.join(',')}]` : '';
+  const rect = control.rect ? ` (${control.rect.x},${control.rect.y} ${control.rect.w}×${control.rect.h})` : '';
+  const hints = [];
+  if (control.hints?.id) hints.push(`#${control.hints.id}`);
+  for (const cls of control.hints?.classes || []) hints.push(`.${cls}`);
+  const hintText = hints.length ? ` ${hints.join('')}` : '';
+  const prefix = index == null ? '' : `${index}. `;
+  return `${prefix}${control.tag || '?'}${role}${aria}${title}${label}${stateText}${rect} ${control.selector || ''}${hintText}`.trimEnd();
+}
+
+function formatVisibleControlsText(model) {
+  if (model.error === 'scope-not-found') {
+    return `Visible controls: scope not found (${model.scope})`;
+  }
+  const scope = model.scope ? ` in ${model.scope}` : '';
+  const filter = model.filter ? ` matching "${model.filter}"` : '';
+  const suffix = model.truncated ? ` (truncated to ${model.limit})` : '';
+  const lines = [`Visible controls: ${model.returned}/${model.total}${scope}${filter}${suffix}`];
+  if (!model.controls?.length) {
+    lines.push('  none');
+    return lines.join('\n');
+  }
+  model.controls.forEach((control, index) => {
+    lines.push(`  ${formatVisibleControlLine(control, index + 1)}`);
+  });
+  return lines.join('\n');
+}
+
+async function controlsStr(cdp, sid, opts = {}) {
+  const result = await cdp.send('Runtime.evaluate', {
+    expression: visibleControlsPageScript(opts),
+    returnByValue: true,
+    awaitPromise: false,
+  }, sid);
+  if (result.exceptionDetails) {
+    throw new Error(runtimeExceptionMessage(result.exceptionDetails));
+  }
+  const raw = result.result?.value ?? '{}';
+  const model = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  if (model.error === 'scope-not-found') {
+    throw new Error(`controls: selector not found: ${model.scope}`);
+  }
+  return opts.format === 'json' ? formatJson(model) : formatVisibleControlsText(model);
+}
+
 function collectDomBackendNodeIds(node, out = new Set()) {
   if (!node || typeof node !== 'object') return out;
   const backendNodeId = node.backendNodeId ?? node.backendDOMNodeId;
@@ -3835,6 +4048,7 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
 // Collects page metadata, layout map, style hints, and cursor-interactive elements.
 function perceivePageScript(cursorInteractive) {
   return `(function() {
+${visibleControlsCollectorSource()}
       const vw = window.innerWidth, vh = window.innerHeight;
       const scrollY = Math.round(window.scrollY);
       const scrollMax = Math.round(document.documentElement.scrollHeight - window.innerHeight);
@@ -3987,7 +4201,13 @@ function perceivePageScript(cursorInteractive) {
 
       // Cursor-interactive scan: find non-ARIA clickable elements (cursor:pointer, onclick, tabindex)
       const cursorInteractives = [];
+      let visibleControls = [];
+      let visibleControlsTruncated = false;
       if (${cursorInteractive}) {
+        const visibleControlsModel = chromeCdpVisibleControls({ limit: 30 });
+        visibleControls = visibleControlsModel.controls || [];
+        visibleControlsTruncated = Boolean(visibleControlsModel.truncated);
+
         const ARIA_INTERACTIVE = new Set(['A','BUTTON','INPUT','SELECT','TEXTAREA']);
         const seen = new Set();
         const candidates = document.querySelectorAll('div, span, li, td, tr, label, img, svg, i, p, section, article, [onclick], [tabindex]:not(a):not(button):not(input):not(select):not(textarea)');
@@ -4020,7 +4240,8 @@ function perceivePageScript(cursorInteractive) {
       return JSON.stringify({
         title: document.title, url: window.location.href,
         vw, vh, scrollY, scrollMax,
-        counts, focused: focusDesc, layoutMap, styleHints, cursorInteractives
+        counts, focused: focusDesc, layoutMap, styleHints, cursorInteractives,
+        visibleControls, visibleControlsTruncated
       });
     })()`;
 }
@@ -4183,6 +4404,13 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
       cRefCounter++;
       refMap.set(`c${cRefCounter}`, ci);
       treeLines.push(`  [clickable] ${ci.text || ci.sel}  @c${cRefCounter}  (${ci.x},${ci.y} ${ci.w}×${ci.h})`);
+    }
+  }
+  if (cursorInteractive && meta.visibleControls?.length > 0) {
+    treeLines.push('');
+    treeLines.push(`[Visible controls]${meta.visibleControlsTruncated ? ' (truncated)' : ''}`);
+    for (const control of meta.visibleControls) {
+      treeLines.push(`  ${formatVisibleControlLine(control)}`);
     }
   }
 
@@ -8890,6 +9118,12 @@ async function runDaemon(targetId) {
             : await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState);
           break;
         }
+        case 'controls': {
+          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const copts = parseControlsArgs(fopts.args);
+          result = await controlsStr(cdp, sessionId, { ...copts, format: fopts.format });
+          break;
+        }
         case 'elshot': result = await elshotStr(cdp, sessionId, args[0], targetId, refMap, refState); break;
         case 'click': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
@@ -9302,6 +9536,8 @@ Usage: cdp <command> [args]
                                     -d N / --depth N: limit tree depth
                                     -C / --cursor-interactive: include non-ARIA clickable elements (@c refs)
   snap  <target> [--full]           Accessibility tree snapshot (compact by default, --full for complete)
+  controls <target> [-s selector] [--filter text] [--limit N] [--format json]
+                                    Bounded visible controls inventory for selector/debugging repair
   eval  <target> <expr>             Evaluate JS expression
                                     --b64 / -b <base64>: decode UTF-8 base64 first
                                     (safe transport for CJK / shell-hostile expressions)
@@ -9464,7 +9700,7 @@ DAEMON IPC (for advanced use / scripting)
     Request:  {"id":<number>, "cmd":"<command>", "args":["arg1","arg2",...]}
     Response: {"id":<number>, "ok":true,  "result":"<string>"}
            or {"id":<number>, "ok":false, "error":"<message>"}
-  Commands mirror the CLI: perceive, status, summary, console, frame, snap, eval, eval64, call, wait, keepalive, shot, diff-shot,
+  Commands mirror the CLI: perceive, status, summary, console, frame, snap, controls, eval, eval64, call, wait, keepalive, shot, diff-shot,
   elshot, fullshot, scanshot, html, nav, net, mock, clock, throttle, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
@@ -9485,6 +9721,7 @@ const COMMANDS = Object.freeze([
   { name: 'stop', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'perceive', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'snap', aliases: ['snapshot'], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'controls', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'eval', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'eval64', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'call', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
@@ -10376,6 +10613,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
   parsePerceiveArgs, buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
+  parseControlsArgs, visibleControlsPageScript, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,
