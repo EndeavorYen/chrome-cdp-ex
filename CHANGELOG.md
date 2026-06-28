@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.7.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.6.0...v2.7.0) (2026-06-28)
+
+### Features
+
+* resolve the remaining Smart Eye readiness issues and close the practical-agent epic.
+* add guarded-page benchmark coverage, measured baseline examples, and replay-first workflow export guidance.
+
+### Maintenance
+
+* extract action recovery, perception, and session report helpers into tested runtime modules.
+* run docs contract checks on main PRs and keep release metadata plus first-run docs gated.
+
 ## [2.6.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.4.0...v2.6.0) (2026-06-17)
 
 ### Features

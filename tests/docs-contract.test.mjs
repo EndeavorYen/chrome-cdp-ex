@@ -74,17 +74,18 @@ describe('Killer Path docs contract', () => {
   });
 
   it('requires package and plugin manifest versions to match', () => {
+    const packageVersion = JSON.parse(packageJson).version;
     const docs = {
       readme,
       reference,
       skill,
       killerPath,
       packageJson,
-      pluginManifest: pluginManifest.replace('"version": "2.6.0"', '"version": "0.0.0"'),
+      pluginManifest: pluginManifest.replace(/"version":\s*"[^"]+"/, '"version": "0.0.0"'),
     };
 
     expect(checkDocsContract(docs, [])).toContain(
-      'Release metadata version mismatch: package.json 2.6.0 != .claude-plugin/plugin.json 0.0.0',
+      `Release metadata version mismatch: package.json ${packageVersion} != .claude-plugin/plugin.json 0.0.0`,
     );
   });
 
