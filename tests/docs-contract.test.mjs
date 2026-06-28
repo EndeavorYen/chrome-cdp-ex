@@ -6,6 +6,8 @@ const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const reference = readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
 const skill = readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.meta.url), 'utf8');
 const killerPath = readFileSync(new URL('../docs/examples/killer-path.md', import.meta.url), 'utf8');
+const packageJson = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+const pluginManifest = readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8');
 
 describe('Killer Path docs contract', () => {
   it('accepts the documented first-run golden path', () => {
@@ -61,6 +63,21 @@ describe('Killer Path docs contract', () => {
       'README is missing benchmark-gated promotion checklist',
       'README promotion checklist must block claims when benchmark gates fail',
     ]));
+  });
+
+  it('requires package and plugin manifest versions to match', () => {
+    const docs = {
+      readme,
+      reference,
+      skill,
+      killerPath,
+      packageJson,
+      pluginManifest: pluginManifest.replace('"version": "2.6.0"', '"version": "0.0.0"'),
+    };
+
+    expect(checkDocsContract(docs, [])).toContain(
+      'Release metadata version mismatch: package.json 2.6.0 != .claude-plugin/plugin.json 0.0.0',
+    );
   });
 
   it('allows command reference details outside the README', () => {

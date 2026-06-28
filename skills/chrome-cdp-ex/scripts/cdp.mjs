@@ -809,6 +809,13 @@ function evalBase64Decode(b64) {
   return decoded;
 }
 
+function runtimeExceptionMessage(exceptionDetails) {
+  const text = exceptionDetails?.text;
+  const description = exceptionDetails?.exception?.description;
+  if (description && (text === 'Uncaught' || text === 'Uncaught (in promise)' || !text)) return description;
+  return text || description || 'Unknown runtime exception';
+}
+
 async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
   // Auto-wrap: if expression contains `await`, wrap in async IIFE
   let expr = expression;
@@ -825,7 +832,7 @@ async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
   if (options.uniqueContextId != null) params.uniqueContextId = options.uniqueContextId;
   const result = await cdp.send('Runtime.evaluate', params, sid, options.timeoutMs);
   if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.text || result.exceptionDetails.exception?.description);
+    throw new Error(runtimeExceptionMessage(result.exceptionDetails));
   }
   const val = result.result.value;
   return typeof val === 'object' ? JSON.stringify(val, null, 2) : String(val ?? '');
@@ -875,7 +882,7 @@ async function callStr(cdp, sid, expression) {
     awaitPromise: true,
   }, sid);
   if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.text || result.exceptionDetails.exception?.description);
+    throw new Error(runtimeExceptionMessage(result.exceptionDetails));
   }
   return formatCallResult(result.result);
 }
@@ -3657,6 +3664,30 @@ async function resolveRef(cdp, sid, refMap, ref, refState) {
 }
 
 function isRef(s) { return /^@\d+$/.test(s) || /^@f\d+:\d+$/.test(s); }
+function isCursorRef(s) { return /^@c\d+$/.test(String(s || '')); }
+
+function resolveCursorRef(refMap, ref, refState) {
+  const key = String(ref || '').slice(1);
+  const entry = refMap.get(key);
+  if (!entry) {
+    throw new Error(`Unknown cursor ref: ${ref}. Run "perceive -C -d 8" to refresh cursor refs, or use a stable CSS selector.${refState?.invalidationReason ? ` Ref state: ${refState.invalidationReason}.` : ''}`);
+  }
+  const x = Number(entry.x);
+  const y = Number(entry.y);
+  const w = Number(entry.w);
+  const h = Number(entry.h);
+  if (![x, y, w, h].every(Number.isFinite)) {
+    throw new Error(`Invalid cursor ref: ${ref}. Run "perceive -C -d 8" to refresh cursor refs, or use a stable CSS selector.`);
+  }
+  return {
+    x,
+    y,
+    w,
+    h,
+    sel: entry.sel || 'cursor-ref',
+    text: String(entry.text || '').trim().substring(0, 80),
+  };
+}
 
 function parseFrameOnlyRef(s) {
   const m = String(s || '').match(/^@f(\d+)$/);
@@ -4690,6 +4721,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     treeLines.push('[Cursor-interactive elements] (non-ARIA clickable)');
     for (const ci of meta.cursorInteractives) {
       cRefCounter++;
+      refMap.set(`c${cRefCounter}`, ci);
       treeLines.push(`  [clickable] ${ci.text || ci.sel}  @c${cRefCounter}  (${ci.x},${ci.y} ${ci.w}×${ci.h})`);
     }
   }
@@ -4984,6 +5016,11 @@ async function jsClickStr(cdp, sid, selector, refMap, refState) {
 // Click element by CSS selector or @ref
 async function clickStr(cdp, sid, selector, refMap, refState) {
   if (!selector) throw new Error('CSS selector or @ref required');
+  if (isCursorRef(selector)) {
+    const r = resolveCursorRef(refMap, selector, refState);
+    await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2);
+    return `Clicked <${r.sel}> "${r.text}" (${selector})`;
+  }
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState);
     await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2);
@@ -6699,7 +6736,7 @@ async function observeReloadPage(cdp, sid) {
     awaitPromise: true,
   }, sid, RELOAD_OBSERVE_TIMEOUT);
   if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.text || result.exceptionDetails.exception?.description);
+    throw new Error(runtimeExceptionMessage(result.exceptionDetails));
   }
   const value = result.result?.value;
   const parsed = typeof value === 'string' ? JSON.parse(value) : (value || {});
