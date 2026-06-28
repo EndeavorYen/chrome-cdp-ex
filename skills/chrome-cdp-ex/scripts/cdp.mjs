@@ -187,6 +187,15 @@ function formatDuration(ms) {
   return `${Number.isInteger(h) ? h : h.toFixed(1)}h`;
 }
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return 'n/a';
+  if (bytes < 1024) return `${bytes} B`;
+  const kib = bytes / 1024;
+  if (kib < 1024) return `${Number.isInteger(kib) ? kib : kib.toFixed(1)} KiB`;
+  const mib = kib / 1024;
+  return `${Number.isInteger(mib) ? mib : mib.toFixed(1)} MiB`;
+}
+
 function parseFormatArgs(args, allowed = ['text', 'json']) {
   const next = [];
   let format = 'text';
@@ -1318,6 +1327,8 @@ async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
 const MAX_ACTION_DELTA_ENTRIES = 5;
 const MAX_ACTION_JSON_DOM_DIFF_CHARS = 800;
 const DEFAULT_REPORT_ACTION_LIMIT = 20;
+const DEFAULT_REPORT_JSON_BYTES_MAX = 64 * 1024;
+const DEFAULT_STALE_ARTIFACT_HOURS = 24;
 const REDACTED_VALUE = '<redacted>';
 const SENSITIVE_QUERY_KEY_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn|session|sid|cookie|jwt|csrf|xsrf|refresh|access)\b/i;
 const SENSITIVE_METADATA_KEY_ALLOWLIST = new Set([
@@ -2164,6 +2175,124 @@ function sessionScreenshotDir(targetId, runtimeDir = RUNTIME_DIR) {
   return resolve(runtimeDir, `cdp-${safeTarget}-screenshots`);
 }
 
+function directoryArtifactStats(dir) {
+  let sizeBytes = 0;
+  let fileCount = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = resolve(dir, entry.name);
+    const stats = lstatSync(fullPath);
+    if (stats.isDirectory()) {
+      const child = directoryArtifactStats(fullPath);
+      sizeBytes += child.sizeBytes;
+      fileCount += child.fileCount;
+    } else {
+      sizeBytes += stats.size;
+      fileCount += 1;
+    }
+  }
+  return { sizeBytes, fileCount };
+}
+
+function artifactPathStats(path) {
+  if (!path) {
+    return {
+      path: null,
+      exists: false,
+      kind: null,
+      sizeBytes: null,
+      fileCount: 0,
+      error: null,
+    };
+  }
+  try {
+    const stats = lstatSync(path);
+    if (stats.isDirectory()) {
+      const dir = directoryArtifactStats(path);
+      return {
+        path,
+        exists: true,
+        kind: 'directory',
+        sizeBytes: dir.sizeBytes,
+        fileCount: dir.fileCount,
+        error: null,
+      };
+    }
+    return {
+      path,
+      exists: true,
+      kind: stats.isSymbolicLink() ? 'symlink' : 'file',
+      sizeBytes: stats.size,
+      fileCount: 1,
+      error: null,
+    };
+  } catch (e) {
+    return {
+      path,
+      exists: false,
+      kind: null,
+      sizeBytes: null,
+      fileCount: 0,
+      error: e.message,
+    };
+  }
+}
+
+function buildSessionArtifactsSummary(session = {}) {
+  const screenshots = session.screenshots || [];
+  const screenshotItems = screenshots.map(entry => artifactPathStats(entry.path));
+  const screenshotTotalBytes = screenshotItems.reduce((sum, item) => sum + (Number.isFinite(item.sizeBytes) ? item.sizeBytes : 0), 0);
+  const log = artifactPathStats(session.logPath || null);
+  const screenshotDir = artifactPathStats(session.screenshotDir || null);
+  return {
+    paths: {
+      log: session.logPath || null,
+      screenshotDir: session.screenshotDir || null,
+    },
+    counts: {
+      actions: session.actionLog?.length || 0,
+      screenshots: screenshots.length,
+      records: session.records?.length || 0,
+    },
+    sizes: {
+      log,
+      screenshotDir,
+      screenshots: {
+        count: screenshots.length,
+        totalBytes: screenshotTotalBytes,
+        missing: screenshotItems.filter(item => !item.exists).length,
+      },
+    },
+  };
+}
+
+function buildReportBudget(timelineWindow = {}) {
+  const expensive = timelineWindow.limit == null;
+  return {
+    jsonBytesMax: DEFAULT_REPORT_JSON_BYTES_MAX,
+    estimatedJsonBytes: null,
+    defaultActionLimit: DEFAULT_REPORT_ACTION_LIMIT,
+    actionLimit: timelineWindow.limit,
+    allActionsOptIn: true,
+    expensive,
+    warning: expensive
+      ? 'report --all includes the full action history and can be expensive for long sessions.'
+      : 'Default report JSON is bounded; --all is opt-in and expensive for long sessions.',
+  };
+}
+
+function buildArtifactCleanupWorkflow(session = {}) {
+  const targets = [session.logPath || null, session.screenshotDir || null].filter(Boolean);
+  return {
+    staleAfterHours: DEFAULT_STALE_ARTIFACT_HOURS,
+    targets,
+    workflow: [
+      'Remove stale session artifacts after preserving any evidence needed for handoff or debugging.',
+      'Delete the listed log file and screenshot directory when the browser session is no longer active.',
+      'Use report --format json to re-check artifact paths, counts, and sizes before cleanup.',
+    ],
+  };
+}
+
 function nextSessionScreenshotPath(session, kind = 'shot') {
   const safeKind = String(kind || 'shot').replace(/[^A-Za-z0-9_.-]/g, '_');
   const dir = session.screenshotDir || sessionScreenshotDir(session.targetId);
@@ -2339,6 +2468,8 @@ function reportActionTimelineWindow(actionLog = [], lastActions = DEFAULT_REPORT
     startIndex: entries.length ? startOffset + 1 : null,
     endIndex: entries.length ? total : null,
     limit,
+    mode: limit == null ? 'all' : 'latest',
+    expensive: limit == null,
   };
 }
 
@@ -2348,6 +2479,9 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
   const timelineWindow = reportActionTimelineWindow(actionLog, lastActions);
   const uptimeMs = Math.max(0, now - (session.createdAt || now));
   const target = targetPrefixForDisplay(session.targetId);
+  const artifacts = buildSessionArtifactsSummary(session);
+  const reportBudget = buildReportBudget(timelineWindow);
+  const cleanup = buildArtifactCleanupWorkflow(session);
   const actions = timelineWindow.entries.map((entry, offset) => {
     const index = (timelineWindow.startIndex || 1) + offset;
     return {
@@ -2386,7 +2520,7 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
       `cdp export-playwright ${target}`,
     ] : []),
   ]);
-  return {
+  const model = {
     schema: 'chrome-cdp-ex.report.v1',
     targetId: session.targetId,
     targetPrefix: target,
@@ -2403,6 +2537,9 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
       screenshots: screenshots.length,
       records: session.records?.length || 0,
     },
+    artifacts,
+    reportBudget,
+    cleanup,
     timelineWindow: {
       total: timelineWindow.total,
       shown: timelineWindow.shown,
@@ -2410,6 +2547,8 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
       startIndex: timelineWindow.startIndex,
       endIndex: timelineWindow.endIndex,
       limit: timelineWindow.limit,
+      mode: timelineWindow.mode,
+      expensive: timelineWindow.expensive,
     },
     latestAction: buildLatestReportActionSummary(actionLog),
     environment: {
@@ -2429,6 +2568,9 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
     recommendation,
     nextSteps: nextSteps.length ? nextSteps : defaultReportNextSteps(target, actionLog.length > 0),
   };
+  model.reportBudget.estimatedJsonBytes = Buffer.byteLength(formatJson(model), 'utf8');
+  model.reportBudget.estimatedJsonBytes = Buffer.byteLength(formatJson(model), 'utf8');
+  return model;
 }
 
 function formatSessionReport(session, { now = Date.now(), format = 'text', lastActions = DEFAULT_REPORT_ACTION_LIMIT } = {}) {
@@ -2450,6 +2592,9 @@ function formatSessionReport(session, { now = Date.now(), format = 'text', lastA
     actionCountLine,
     `Screenshots: ${screenshots.length}`,
     `Records: ${session.records?.length || 0}`,
+    `Report JSON budget: ${formatBytes(model.reportBudget.estimatedJsonBytes)} / ${formatBytes(model.reportBudget.jsonBytesMax)}; ${model.reportBudget.warning}`,
+    `Artifact bytes: log ${formatBytes(model.artifacts.sizes.log.sizeBytes)}, screenshots ${formatBytes(model.artifacts.sizes.screenshotDir.sizeBytes)} (${model.artifacts.sizes.screenshotDir.fileCount} files)`,
+    `Cleanup: ${model.cleanup.workflow[0]}`,
     `Network throttle: ${formatThrottleSummary(session.networkThrottle)}`,
     `Network mocks: ${formatNetworkMocksSummary(session)}`,
     `Clock: ${formatClockSummary(session.clock)}`,
