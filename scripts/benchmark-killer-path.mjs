@@ -941,7 +941,11 @@ function countsTowardUsefulObservationTokens(step) {
 const DEFAULT_GATE_LIMITS = Object.freeze({
   commandCallsMax: 24,
   firstUsefulObservationMsMax: 5000,
+  firstActionEvidenceMsMax: 5000,
   goldenPathMsMax: 120000,
+  estimatedOutputTokensMax: 20000,
+  maxStepEstimatedTokensMax: 5000,
+  maxStepDurationMsMax: 5000,
   usefulObservationTokensMax: 3000,
   autoEvidenceActionsMin: 1,
   observedActionEvidenceCoverageRateMin: 1,
@@ -1000,12 +1004,12 @@ const DEFAULT_COMPARISON_BASELINE_SET = Object.freeze({
   ]),
 });
 
-function gateCriterion({ name, actual, operator, limit, recommendation }) {
+function gateCriterion({ name, actual, operator, limit, recommendation, culprit = null }) {
   let passed = false;
   if (operator === '<=') passed = actual !== null && actual !== undefined && actual <= limit;
   if (operator === '>=') passed = actual !== null && actual !== undefined && actual >= limit;
   if (operator === '===') passed = actual === limit;
-  return { name, passed, actual, operator, limit, recommendation };
+  return { name, passed, actual, operator, limit, recommendation, ...(culprit ? { culprit } : {}) };
 }
 
 export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
@@ -1035,11 +1039,43 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       recommendation: 'Get the first useful page observation from doctor/list/open/perceive within the onboarding budget.',
     }),
     gateCriterion({
+      name: 'first-action-evidence',
+      actual: metrics.firstActionEvidenceMs ?? null,
+      operator: '<=',
+      limit: limits.firstActionEvidenceMsMax,
+      recommendation: 'Return the first action evidence quickly enough that agents do not need manual verification loops.',
+      culprit: metrics.firstActionEvidenceStep || null,
+    }),
+    gateCriterion({
       name: 'golden-path-under-two-minutes',
       actual: metrics.goldenPathMs ?? null,
       operator: '<=',
       limit: limits.goldenPathMsMax,
       recommendation: 'Complete doctor/list/perceive/action/report within the two-minute first-success budget.',
+    }),
+    gateCriterion({
+      name: 'total-output-tokens',
+      actual: metrics.estimatedOutputTokens ?? null,
+      operator: '<=',
+      limit: limits.estimatedOutputTokensMax,
+      recommendation: 'Keep total benchmark output bounded so live-agent sessions do not silently consume the model context.',
+      culprit: metrics.biggestOutputStep || null,
+    }),
+    gateCriterion({
+      name: 'max-step-output-tokens',
+      actual: metrics.maxStepEstimatedTokens ?? null,
+      operator: '<=',
+      limit: limits.maxStepEstimatedTokensMax,
+      recommendation: 'Keep any single benchmark command from dominating handoff tokens; inspect the culprit step output.',
+      culprit: metrics.biggestOutputStep || null,
+    }),
+    gateCriterion({
+      name: 'max-step-duration',
+      actual: metrics.maxStepDurationMs ?? null,
+      operator: '<=',
+      limit: limits.maxStepDurationMsMax,
+      recommendation: 'Keep individual benchmark commands responsive; inspect the slowest step before publishing speed claims.',
+      culprit: metrics.slowestStep || null,
     }),
     gateCriterion({
       name: 'useful-observation-tokens',
@@ -1348,6 +1384,21 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
     .reduce((sum, step) => sum + step.estimatedTokens, 0);
   const reportStep = coreSteps.find(step => step.name === 'report') || null;
   const firstActionEvidence = actionEvidenceSteps[0] || null;
+  const biggestOutputStep = normalizedSteps.reduce((biggest, step) => (
+    !biggest || step.estimatedTokens > biggest.estimatedTokens ? step : biggest
+  ), null);
+  const slowestStep = normalizedSteps.reduce((slowest, step) => (
+    !slowest || step.durationMs > slowest.durationMs ? step : slowest
+  ), null);
+  const stepBudgetSummary = (step) => step
+    ? {
+        name: step.name,
+        commandText: step.commandText,
+        durationMs: step.durationMs,
+        outputChars: step.outputChars,
+        estimatedTokens: step.estimatedTokens,
+      }
+    : null;
 
   const summary = {
     schema: 'chrome-cdp-ex.benchmark.v1',
@@ -1369,6 +1420,11 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
         : null,
       outputChars,
       estimatedOutputTokens: estimateTokenCount(outputChars),
+      maxStepEstimatedTokens: biggestOutputStep?.estimatedTokens ?? 0,
+      maxStepDurationMs: slowestStep?.durationMs ?? 0,
+      biggestOutputStep: stepBudgetSummary(biggestOutputStep),
+      slowestStep: stepBudgetSummary(slowestStep),
+      firstActionEvidenceStep: stepBudgetSummary(firstActionEvidence),
       usefulObservationTokens,
       autoEvidenceActions: actionEvidenceSteps.length,
       actionEvidenceCoverage: benchmarkActionEvidenceCoverage(normalizedSteps),
