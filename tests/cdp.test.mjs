@@ -10,7 +10,7 @@ const {
   shouldShowAxNode, formatAxNode, orderedAxChildren, isRef,
   validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
   formatPageList, buildPerceiveTree, perceivePageScript, perceiveStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
-  evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, parseControlsArgs, controlsStr, formatVisibleControlsText, navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, fillStr, fillReactStr, waitForStr,
+  evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, parseControlsArgs, visibleControlsPageScript, controlsStr, formatVisibleControlsText, navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, fillStr, fillReactStr, waitForStr,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs, formatCliError,
   formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   statusStr, clearObservationBuffers,
@@ -4335,6 +4335,48 @@ describe('visible controls inspector', () => {
     expect(out).toContain('[clickable]');
     expect(out).toContain('(720,524 44×36)');
     expect(out).toContain('button[aria-label="編輯"]');
+  });
+
+  it('includes the scoped root when the scope is itself a visible control', () => {
+    const button = {
+      tagName: 'BUTTON',
+      id: 'send',
+      className: '',
+      disabled: false,
+      tabIndex: 0,
+      innerText: 'Send',
+      textContent: 'Send',
+      getAttribute: (name) => ({ role: null, 'aria-label': null, title: null, type: null }[name] ?? null),
+      hasAttribute: () => false,
+      getBoundingClientRect: () => ({ left: 12, top: 20, right: 92, bottom: 52, width: 80, height: 32 }),
+      matches: (selector) => selector.includes('button'),
+      querySelectorAll: () => [],
+    };
+    const previousWindow = globalThis.window;
+    const previousDocument = globalThis.document;
+    const previousCss = globalThis.CSS;
+    globalThis.window = {
+      innerWidth: 1200,
+      innerHeight: 800,
+      CSS: { escape: (value) => String(value) },
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1', cursor: 'default' }),
+    };
+    globalThis.document = { querySelector: (selector) => (selector === '#send' ? button : null) };
+    globalThis.CSS = globalThis.window.CSS;
+    try {
+      const model = JSON.parse(globalThis.eval(visibleControlsPageScript({ selector: '#send', limit: 5 })));
+      expect(model.controls).toHaveLength(1);
+      expect(model.controls[0]).toMatchObject({
+        tag: 'button',
+        role: 'button',
+        label: 'Send',
+        selector: 'button#send',
+      });
+    } finally {
+      globalThis.window = previousWindow;
+      globalThis.document = previousDocument;
+      globalThis.CSS = previousCss;
+    }
   });
 
   it('returns text from Runtime.evaluate visible control data', async () => {

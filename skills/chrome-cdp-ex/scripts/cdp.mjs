@@ -3528,7 +3528,9 @@ function visibleControlsCollectorSource() {
 
         const controls = [];
         const seen = new Set();
-        const candidates = root.querySelectorAll ? root.querySelectorAll(selector) : [];
+        const candidates = [];
+        if (root.matches && root.matches(selector)) candidates.push(root);
+        if (root.querySelectorAll) candidates.push(...root.querySelectorAll(selector));
         for (const el of candidates) {
           const cs = window.getComputedStyle(el);
           const rect = el.getBoundingClientRect();
