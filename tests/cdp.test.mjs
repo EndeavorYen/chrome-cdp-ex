@@ -1402,6 +1402,52 @@ describe('ActionResult', () => {
     expect(captured.effects.consoleDelta.warnings).toBe(1);
   });
 
+  it('returns action evidence when post-action observation throws after dispatch', async () => {
+    const err = new TypeError("Failed to execute 'observe' on 'MutationObserver': parameter 1 is not of type 'Node'.");
+    let captured = null;
+
+    const out = await T.runActionWithFeedback({
+      action: 'clickxy',
+      target: { targetId: 'ABC12345', input: '75,116', resolvedBy: 'coordinates', label: '75,116' },
+      dispatch: async () => 'Clicked at 75,116',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => { throw err; },
+      format: 'json',
+      onActionResult: (result) => { captured = result; },
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.action.v1');
+    expect(parsed.dispatch).toMatchObject({ ok: true, method: 'clickxy' });
+    expect(parsed.settle.ok).toBe(false);
+    expect(parsed.outcome).toMatchObject({
+      status: 'attention',
+      needsAttention: true,
+      evidence: 'observation',
+    });
+    expect(parsed.effects.diagnosis).toMatchObject({
+      status: 'attention',
+      kind: 'observation-error',
+      source: 'observation',
+      nextCommand: 'cdp status ABC12345',
+      recovery: {
+        strategy: 'check-tab-health',
+        commands: [
+          { command: 'cdp status ABC12345' },
+          { command: 'cdp perceive ABC12345 --since-action' },
+          { command: 'cdp report ABC12345 --format json' },
+        ],
+      },
+    });
+    expect(parsed.nextSteps).toEqual([
+      'cdp status ABC12345',
+      'cdp perceive ABC12345 --since-action',
+      'cdp report ABC12345 --format json',
+    ]);
+    expect(parsed.error).toBeUndefined();
+    expect(captured.effects.observationError.message).toContain("Failed to execute 'observe'");
+  });
+
   it('classifies action failures into recoverable next steps', () => {
     const overlay = T.classifyActionFailure(
       new Error('Element is not clickable at point (20, 30). Other element would receive the click'),

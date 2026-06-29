@@ -56,6 +56,8 @@ Common outcomes:
 | `failed` | Dispatch failed; use the recovery command. |
 | `timeout` | The action may have happened, but post-action observation timed out. |
 
+If dispatch succeeds but post-action observation fails internally, the action still returns `chrome-cdp-ex.action.v1` with an `observation-error` diagnosis instead of a generic CLI error.
+
 `perceive --since-action` replays the causal diff from the last mutating command. `report --format json` packages the latest action, diagnosis, artifacts, recommendation, and timeline window.
 
 ## CSS Source Tracing
