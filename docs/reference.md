@@ -60,6 +60,10 @@ If dispatch succeeds but post-action observation fails internally, the action st
 
 `perceive --since-action` replays the causal diff from the last mutating command. `report --format json` packages the latest action, diagnosis, artifacts, recommendation, and timeline window.
 
+## Daemon Freshness
+
+Target commands check per-tab daemon metadata before dispatching work. If an existing daemon was started from an older checkout, or cannot report metadata, the CLI returns a `stale-daemon` recovery model with `cdp stop <target>` and `rerun the original command` in `nextSteps`. Use `--allow-stale-daemon` only for intentional long-running daemon sessions.
+
 ## CSS Source Tracing
 
 Use `cascade` when the agent knows what looks wrong but needs the source rule:

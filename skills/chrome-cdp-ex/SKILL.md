@@ -379,7 +379,9 @@ Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daem
 
 ### Error handling
 
-When a CLI command fails, read the printed `Recovery:` block before retrying. `Kind` names the failure class, `Strategy` says how to recover, `Run` is the primary command, and `Then` appears when a follow-up is useful. The legacy `Next:` line remains the shortest copy-pasteable command. Add `--format json` when a script needs the versioned `chrome-cdp-ex.cli-error.v1` handoff with `recovery` and `nextSteps` instead of human text. Setup, target, daemon, CDP, and `EMFILE` / "Too many open files" errors are formatted this way instead of dumping a stack trace; fd-limit recovery includes the shell `ulimit -n 4096` command and, on macOS, the `sudo launchctl limit maxfiles 65536 200000` login-session command.
+When a CLI command fails, read the printed `Recovery:` block before retrying. `Kind` names the failure class, `Strategy` says how to recover, `Run` is the primary command, and `Then` appears when a follow-up is useful. The legacy `Next:` line remains the shortest copy-pasteable command. Add `--format json` when a script needs the versioned `chrome-cdp-ex.cli-error.v1` handoff with `recovery` and `nextSteps` instead of human text. Setup, target, daemon, CDP, stale-daemon, and `EMFILE` / "Too many open files" errors are formatted this way instead of dumping a stack trace; fd-limit recovery includes the shell `ulimit -n 4096` command and, on macOS, the `sudo launchctl limit maxfiles 65536 200000` login-session command.
+
+Target commands verify the per-tab daemon metadata before running. If the checkout or script changed since that daemon started, the command fails as `stale-daemon` instead of silently using old code. Run the printed `cdp stop <target>` command, then rerun the original command and click Allow in Chrome if prompted. For an intentional long-running daemon only, add `--allow-stale-daemon` to bypass this check once.
 
 ### Action feedback (automatic)
 
@@ -506,6 +508,8 @@ scripts/cdp.mjs open    [url] [--format json]  # open new tab + auto-attach; JSO
 scripts/cdp.mjs keepalive <target> <ms>        # keep a tab daemon alive for long background work
 scripts/cdp.mjs stop    [target]               # stop daemon(s)
 ```
+
+Add `--allow-stale-daemon` to a target command only when preserving an intentional old daemon session matters more than running the current checkout. Normal recovery is `scripts/cdp.mjs stop <target>`, then rerun the original command.
 
 ### Dialog handling
 

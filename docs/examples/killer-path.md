@@ -66,4 +66,4 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs export-playwright <target> --format js
 
 ## If It Fails
 
-Read the `Recovery:` block before retrying. It names the failure kind, gives the primary `Run:` command, and keeps the short `Next:` command for copy-paste recovery. For stale refs, run `perceive <target> -C -d 8` again or switch long loops to stable CSS selectors.
+Read the `Recovery:` block before retrying. It names the failure kind, gives the primary `Run:` command, and keeps the short `Next:` command for copy-paste recovery. For stale refs, run `perceive <target> -C -d 8` again or switch long loops to stable CSS selectors. For stale daemons after a checkout update, run the printed `cdp stop <target>` command, then rerun the original command.

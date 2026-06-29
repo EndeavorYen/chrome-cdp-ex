@@ -9,7 +9,7 @@
 
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync } from 'fs';
 import { homedir } from 'os';
-import { resolve, delimiter } from 'path';
+import { dirname, resolve, delimiter } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import net from 'net';
 import { autoActionJsonArgs as autoActionJsonArgsForCommands } from './lib/action-evidence.mjs';
@@ -75,6 +75,8 @@ const RUNTIME_DIR = IS_WINDOWS
 try { mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 }); } catch {}
 const SOCK_PREFIX = resolve(RUNTIME_DIR, 'cdp-');
 const PAGES_CACHE = resolve(RUNTIME_DIR, 'pages.json');
+const DAEMON_METADATA_SCHEMA = 'chrome-cdp-ex.daemon-metadata.v1';
+const ALLOW_STALE_DAEMON_FLAG = '--allow-stale-daemon';
 
 class RingBuffer {
   constructor(capacity) { this.buf = []; this.capacity = capacity; this.seq = 0; }
@@ -215,6 +217,129 @@ function parseFormatArgs(args, allowed = ['text', 'json']) {
 
 function formatJson(model) {
   return JSON.stringify(model, null, 2);
+}
+
+function safeLstat(path) {
+  try { return lstatSync(path); } catch { return null; }
+}
+
+function findNearestPackageJson(startDir = process.cwd()) {
+  let dir = resolve(startDir || process.cwd());
+  for (let i = 0; i < 12; i++) {
+    const candidate = resolve(dir, 'package.json');
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (!parent || parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+function readPackageVersion(packageJsonPath) {
+  if (!packageJsonPath) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
+    return typeof parsed.version === 'string' && parsed.version.trim() ? parsed.version.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function currentGitCommit(cwd) {
+  try {
+    const res = spawnSync('git', ['-C', cwd || process.cwd(), 'rev-parse', '--short=12', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const commit = String(res.stdout || '').trim();
+    return res.status === 0 && commit ? commit : null;
+  } catch {
+    return null;
+  }
+}
+
+function collectDaemonMetadata({ scriptPath = process.argv[1], now = Date.now(), pid = process.pid } = {}) {
+  const resolvedScriptPath = scriptPath ? resolve(scriptPath) : null;
+  const scriptStats = resolvedScriptPath ? safeLstat(resolvedScriptPath) : null;
+  const packageJsonPath = findNearestPackageJson(resolvedScriptPath ? dirname(resolvedScriptPath) : process.cwd());
+  const gitCwd = packageJsonPath ? dirname(packageJsonPath) : process.cwd();
+  return {
+    schema: DAEMON_METADATA_SCHEMA,
+    scriptPath: resolvedScriptPath,
+    scriptMtimeMs: scriptStats ? scriptStats.mtimeMs : null,
+    packageVersion: readPackageVersion(packageJsonPath),
+    gitCommit: currentGitCommit(gitCwd),
+    pid,
+    startedAt: new Date(now).toISOString(),
+  };
+}
+
+function comparableMetadataValue(value) {
+  return value !== null && value !== undefined && value !== '' && value !== 'unknown';
+}
+
+function assessDaemonFreshness({ targetPrefix = '', current = null, daemon = null } = {}) {
+  const displayTarget = targetPrefixForDisplay(targetPrefix);
+  if (!daemon || daemon.schema !== DAEMON_METADATA_SCHEMA) {
+    return {
+      stale: true,
+      status: 'missing-metadata',
+      targetPrefix: displayTarget,
+      current,
+      daemon,
+      mismatches: [{ field: 'metadata', daemon: null, current: 'available' }],
+    };
+  }
+
+  const fields = ['gitCommit', 'packageVersion', 'scriptPath', 'scriptMtimeMs'];
+  const mismatches = [];
+  for (const field of fields) {
+    const daemonValue = daemon[field];
+    const currentValue = current?.[field];
+    if (!comparableMetadataValue(daemonValue) || !comparableMetadataValue(currentValue)) continue;
+    if (daemonValue !== currentValue) {
+      mismatches.push({ field, daemon: daemonValue, current: currentValue });
+    }
+  }
+
+  return {
+    stale: mismatches.length > 0,
+    status: mismatches.length > 0 ? 'stale' : 'current',
+    targetPrefix: displayTarget,
+    current,
+    daemon,
+    mismatches,
+  };
+}
+
+function metadataCommit(metadata) {
+  return metadata?.gitCommit || 'unknown';
+}
+
+function formatStaleDaemonMessage(assessment = {}) {
+  const target = assessment.targetPrefix || '<target>';
+  const currentCommit = metadataCommit(assessment.current);
+  const stopCommand = `cdp stop ${target}`;
+  if (assessment.status === 'missing-metadata') {
+    return `Stale daemon for ${target}: daemon metadata missing, current commit ${currentCommit}. Run "${stopCommand}" then rerun the command. If this long-running daemon is intentional, rerun once with ${ALLOW_STALE_DAEMON_FLAG}.`;
+  }
+
+  const daemonCommit = metadataCommit(assessment.daemon);
+  const pid = assessment.daemon?.pid ? `, pid ${assessment.daemon.pid}` : '';
+  const mismatchText = Array.isArray(assessment.mismatches) && assessment.mismatches.length
+    ? ` Mismatched metadata: ${assessment.mismatches.map(m => `${m.field} daemon=${m.daemon} current=${m.current}`).join(', ')}.`
+    : '';
+  return `Stale daemon for ${target}: daemon commit ${daemonCommit}, current commit ${currentCommit}${pid}.${mismatchText} Run "${stopCommand}" then rerun the command. If this long-running daemon is intentional, rerun once with ${ALLOW_STALE_DAEMON_FLAG}.`;
+}
+
+function parseDaemonMetadataResult(result) {
+  if (!result) return null;
+  if (typeof result === 'object') return result;
+  try {
+    return JSON.parse(String(result));
+  } catch {
+    return null;
+  }
 }
 
 async function waitStr(msArg) {
@@ -9065,6 +9190,7 @@ async function dismissModalStr(cdp, sid) {
 async function runDaemon(targetId) {
   resetScreenshotTier();
   const sp = sockPath(targetId);
+  const daemonMetadata = collectDaemonMetadata();
 
   const cdp = new CDP();
   try {
@@ -9334,6 +9460,10 @@ async function runDaemon(targetId) {
     try {
       let result;
       switch (cmd) {
+        case 'meta': {
+          result = formatJson(daemonMetadata);
+          break;
+        }
         case 'list': {
           const pages = await getPages(cdp);
           result = formatPageList(pages, _browserInfo);
@@ -9859,6 +9989,18 @@ function sendCommand(conn, req) {
   });
 }
 
+async function assertFreshDaemonConnection(conn, { targetPrefix, currentMetadata }) {
+  const response = await sendCommand(conn, { cmd: 'meta', args: [] });
+  const daemonMetadata = response?.ok ? parseDaemonMetadataResult(response.result) : null;
+  const assessment = assessDaemonFreshness({
+    targetPrefix,
+    current: currentMetadata,
+    daemon: daemonMetadata,
+  });
+  if (assessment.stale) throw new Error(formatStaleDaemonMessage(assessment));
+  return assessment;
+}
+
 // Find any running daemon socket to reuse for list
 function findAnyDaemonSocket() {
   return listDaemonSockets()[0]?.socketPath || null;
@@ -10327,6 +10469,16 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       run: 'cdp list',
       then: 'cdp open https://example.com',
       reason: 'The tab target appears to be closed, detached, or no longer present in Chrome.',
+    };
+  }
+  if (lower.includes('stale daemon')) {
+    const staleTarget = targetPrefix || String(message || '').match(/stale daemon for\s+([A-Za-z0-9_-]+)/i)?.[1] || '<target>';
+    return {
+      kind: 'stale-daemon',
+      strategy: 'restart-target-daemon',
+      run: `cdp stop ${staleTarget}`,
+      then: 'rerun the original command',
+      reason: `The per-target daemon was started from an older checkout or cannot report metadata; restart it before using this target. Use ${ALLOW_STALE_DAEMON_FLAG} only for intentional long-running daemon sessions.`,
     };
   }
   if (
@@ -10859,11 +11011,19 @@ async function main() {
     process.exit(1);
   }
 
-  let { targetPrefix, cmdArgs } = parseTargetAndCommandArgs(cmd, args);
-  let cliErrorFormat = targetCommandCliErrorFormat(targetPrefix, cmdArgs, args);
+  const targetCommandArgs = [...args];
+  let allowStaleDaemon = process.env.CDP_ALLOW_STALE_DAEMON === '1';
+  const allowStaleDaemonFlagIndex = targetCommandArgs.indexOf(ALLOW_STALE_DAEMON_FLAG);
+  if (allowStaleDaemonFlagIndex !== -1) {
+    allowStaleDaemon = true;
+    targetCommandArgs.splice(allowStaleDaemonFlagIndex, 1);
+  }
+
+  let { targetPrefix, cmdArgs } = parseTargetAndCommandArgs(cmd, targetCommandArgs);
+  let cliErrorFormat = targetCommandCliErrorFormat(targetPrefix, cmdArgs, targetCommandArgs);
   if (targetPrefix && String(targetPrefix).startsWith('--')) {
     try {
-      const fopts = parseFormatArgs(args, ['text', 'json']);
+      const fopts = parseFormatArgs(targetCommandArgs, ['text', 'json']);
       cliErrorFormat = fopts.format;
       targetPrefix = fopts.args[0];
       cmdArgs = fopts.args.slice(1);
@@ -10893,7 +11053,19 @@ async function main() {
     targetId = resolvePrefix(targetPrefix, pages.map(p => p.targetId), 'target', 'Run "cdp list".');
   }
 
-  const conn = await getOrStartTabDaemon(targetId);
+  let conn = await getOrStartTabDaemon(targetId);
+  if (!allowStaleDaemon) {
+    try {
+      await assertFreshDaemonConnection(conn, {
+        targetPrefix: targetPrefixForDisplay(targetId),
+        currentMetadata: collectDaemonMetadata(),
+      });
+    } catch (e) {
+      console.error(formatCliError(e, { cmd, targetPrefix: targetPrefixForDisplay(targetId), format: cliErrorFormat }));
+      process.exit(1);
+    }
+    conn = await connectToSocket(sockPath(targetId));
+  }
 
   if (cmd === 'eval') {
     const fire = cmdArgs.includes('--fire-and-forget') || cmdArgs.includes('--faf');
@@ -11041,6 +11213,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseRepeatArgs, repeatStr, autoActionJsonArgs,
   isBatchParallelUnsafeCommand,
   parseReplayArgs, parseReplayArtifact, replayStepFromAction, replayActionsStr,
+  collectDaemonMetadata, assessDaemonFreshness, formatStaleDaemonMessage,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,
   formatUnknownRefError, resolveRefNode, formatRefRect, isPriorityPerceiveTextLine,
