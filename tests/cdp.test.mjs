@@ -5039,6 +5039,105 @@ describe('wait helpers', () => {
   });
 });
 
+describe('daemon metadata freshness', () => {
+  const current = {
+    schema: 'chrome-cdp-ex.daemon-metadata.v1',
+    scriptPath: '/repo/skills/chrome-cdp-ex/scripts/cdp.mjs',
+    scriptMtimeMs: 2000,
+    packageVersion: '2.7.0',
+    gitCommit: 'new1234',
+    pid: 222,
+    startedAt: '2026-06-29T15:40:00.000Z',
+  };
+
+  it('accepts a daemon whose script metadata matches the current checkout', () => {
+    const assessment = T.assessDaemonFreshness({
+      targetPrefix: 'AABBCCDD',
+      current,
+      daemon: { ...current, pid: 111, startedAt: '2026-06-29T15:30:00.000Z' },
+    });
+
+    expect(assessment).toMatchObject({
+      stale: false,
+      status: 'current',
+      targetPrefix: 'AABBCCDD',
+      mismatches: [],
+    });
+  });
+
+  it('blocks stale daemon metadata and names daemon/current versions', () => {
+    const assessment = T.assessDaemonFreshness({
+      targetPrefix: 'AABBCCDD',
+      current,
+      daemon: {
+        ...current,
+        scriptMtimeMs: 1000,
+        gitCommit: 'old9999',
+        pid: 111,
+        startedAt: '2026-06-29T15:00:00.000Z',
+      },
+    });
+    const message = T.formatStaleDaemonMessage(assessment);
+
+    expect(assessment).toMatchObject({
+      stale: true,
+      status: 'stale',
+      targetPrefix: 'AABBCCDD',
+      mismatches: [
+        { field: 'gitCommit', daemon: 'old9999', current: 'new1234' },
+        { field: 'scriptMtimeMs', daemon: 1000, current: 2000 },
+      ],
+    });
+    expect(message).toContain('Stale daemon for AABBCCDD');
+    expect(message).toContain('daemon commit old9999');
+    expect(message).toContain('current commit new1234');
+    expect(message).toContain('pid 111');
+    expect(message).toContain('cdp stop AABBCCDD');
+    expect(message).toContain('--allow-stale-daemon');
+  });
+
+  it('blocks missing daemon metadata as an older daemon', () => {
+    const assessment = T.assessDaemonFreshness({
+      targetPrefix: 'AABBCCDD',
+      current,
+      daemon: null,
+    });
+    const message = T.formatStaleDaemonMessage(assessment);
+
+    expect(assessment).toMatchObject({
+      stale: true,
+      status: 'missing-metadata',
+      targetPrefix: 'AABBCCDD',
+      mismatches: [{ field: 'metadata', daemon: null, current: 'available' }],
+    });
+    expect(message).toContain('Stale daemon for AABBCCDD');
+    expect(message).toContain('daemon metadata missing');
+    expect(message).toContain('current commit new1234');
+    expect(message).toContain('cdp stop AABBCCDD');
+  });
+
+  it('formats stale daemon CLI errors with restart recovery', () => {
+    const model = T.buildCliErrorModel(
+      new Error('Stale daemon for AABBCCDD: daemon commit old9999, current commit new1234. Run "cdp stop AABBCCDD" then rerun the command.'),
+      { cmd: 'click', targetPrefix: 'AABBCCDD' }
+    );
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.cli-error.v1',
+      ok: false,
+      command: 'click',
+      targetPrefix: 'AABBCCDD',
+      recovery: {
+        kind: 'stale-daemon',
+        strategy: 'restart-target-daemon',
+        run: 'cdp stop AABBCCDD',
+        then: 'rerun the original command',
+      },
+      nextSteps: ['cdp stop AABBCCDD', 'rerun the original command'],
+    });
+  });
+});
+
 describe('formatCliError', () => {
   it('adds an executable doctor next step when CDP is unreachable', () => {
     const out = formatCliError(new Error('Cannot reach CDP on 127.0.0.1:9222 — is the app running with --remote-debugging-port=9222?'));
