@@ -332,6 +332,7 @@ export function buildActionRecoveryPlan(diagnosis = {}, { targetId = '<target>',
       };
     case 'timeout':
     case 'observation-timeout':
+    case 'observation-error':
       return {
         ...base,
         strategy: 'check-tab-health',

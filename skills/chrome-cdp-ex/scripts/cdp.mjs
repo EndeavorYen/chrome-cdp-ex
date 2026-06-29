@@ -1441,6 +1441,14 @@ function compactActionUrl(value) {
   }
 }
 
+function compactObservationError(err) {
+  const message = compactActionText(redactSensitiveString(actionFailureMessage(err)), 240);
+  return {
+    name: compactActionText(err?.name || err?.constructor?.name || 'Error', 80),
+    message: message || 'Post-action observation failed.',
+  };
+}
+
 function compactConsoleDeltaEntry(entry = {}) {
   return {
     level: compactActionText(entry.level || 'log', 30),
@@ -1573,6 +1581,16 @@ function buildActionOutcome(actionResult = {}) {
     };
   }
 
+  if (diagnosis?.kind === 'observation-error' || effects.observationError?.message) {
+    return {
+      ...base,
+      status: 'attention',
+      needsAttention: true,
+      evidence: 'observation',
+      reason: diagnosis.reason || 'Action dispatched, but post-action observation failed.',
+    };
+  }
+
   if (actionResult.dispatch?.ok === true && actionResult.settle?.ok === false) {
     return {
       ...base,
@@ -1655,6 +1673,7 @@ function actionDiagnosisSignals(actionResult = {}) {
     exceptions: exceptionDelta.count,
     networkFailures: networkDelta.failures,
     networkPending: networkDelta.pending,
+    observationError: Boolean(effects.observationError?.message),
   };
 }
 
@@ -1687,6 +1706,18 @@ function createActionDiagnosis(actionResult = {}) {
       source: 'dispatch',
       reason: effects.failure.reason || 'The action failed before dispatch completed.',
       nextCommand: effects.failure.nextCommand || actionResult.nextHint || `cdp status ${targetId}`,
+    });
+  }
+
+  if (signals.observationError) {
+    return finish({
+      ...base,
+      status: 'attention',
+      kind: 'observation-error',
+      confidence: 'medium',
+      source: 'observation',
+      reason: `The action was dispatched, but post-action observation failed: ${effects.observationError.message}`,
+      nextCommand: `cdp status ${targetId}`,
     });
   }
 
@@ -1994,6 +2025,7 @@ function formatActionText(result) {
   if (diagnosis && diagnosis.status !== 'ok') {
     lines.push(`Diagnosis: ${diagnosis.kind}${diagnosis.reason ? ` — ${diagnosis.reason}` : ''}`);
   }
+  if (result.effects?.observationError?.message) lines.push(`Observation error: ${result.effects.observationError.message}`);
   if (result.verdict?.status) {
     lines.push(`Verdict: ${result.verdict.status}${result.verdict.reason ? ` — ${result.verdict.reason}` : ''}`);
   }
@@ -2075,17 +2107,27 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
     finalizeActionResult(result, { enrichActionResult, onActionResult });
     return formatActionResultOutput(result, { format, dispatchText });
   } catch (e) {
-    if (!isTimeoutError(e)) throw e;
+    const observationError = isTimeoutError(e) ? null : compactObservationError(e);
     const result = createActionResult({
       action,
       target: target || { input: '', resolvedBy: 'command', label: '' },
       dispatch: { ok: true, method: dispatchMethod },
       settle: { ok: false, durationMs: Date.now() - startedAt },
-      effects: { domDiff: null, console: [], network: [], navigation: null },
+      effects: {
+        domDiff: null,
+        console: [],
+        network: [],
+        navigation: null,
+        ...(observationError ? { observationError } : {}),
+      },
       nextHint,
     });
     finalizeActionResult(result, { enrichActionResult, onActionResult });
-    return formatActionResultOutput(result, { format, dispatchText, timeoutError: e });
+    return formatActionResultOutput(result, {
+      format,
+      dispatchText,
+      timeoutError: observationError ? null : e,
+    });
   }
 }
 
