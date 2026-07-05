@@ -988,6 +988,89 @@ describe('ActionResult', () => {
     ]);
   });
 
+  it('creates an action receipt that separates dispatch, settlement, delta, and recovery', () => {
+    const result = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '@4', resolvedBy: 'ref', label: 'Submit' },
+      dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
+      settle: { ok: true, durationMs: 120 },
+      effects: {
+        domDiff: '+++ Added\n+   [StaticText] Saved',
+        console: [],
+        network: [],
+        navigation: null,
+        consoleDelta: { count: 0, errors: 0, warnings: 0, entries: [] },
+        exceptionDelta: { count: 0, entries: [] },
+        networkDelta: { count: 0, failures: 0, pending: 0, entries: [] },
+      },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+
+    expect(result.receipt).toMatchObject({
+      schema: 'chrome-cdp-ex.action-receipt.v1',
+      actionName: 'click',
+      targetSummary: 'Submit',
+      dispatch: {
+        ok: true,
+        method: 'Input.dispatchMouseEvent',
+      },
+      settlement: {
+        ok: true,
+        strategy: 'dom-observation',
+        durationMs: 120,
+      },
+      outcome: 'changed',
+      observedDelta: [
+        'DOM changed after action',
+        'DOM sample: +   [StaticText] Saved',
+        'Console unchanged',
+        'Exceptions unchanged',
+        'Network unchanged',
+      ],
+      observedDeltaDetails: [
+        {
+          type: 'dom',
+          status: 'changed',
+          summary: 'DOM changed after action',
+          sample: '+   [StaticText] Saved',
+        },
+        {
+          type: 'console',
+          status: 'unchanged',
+          count: 0,
+          errors: 0,
+          warnings: 0,
+          summary: 'Console unchanged',
+        },
+        {
+          type: 'exception',
+          status: 'unchanged',
+          count: 0,
+          summary: 'Exceptions unchanged',
+        },
+        {
+          type: 'network',
+          status: 'unchanged',
+          count: 0,
+          failures: 0,
+          pending: 0,
+          summary: 'Network unchanged',
+        },
+      ],
+      blockingSignals: [],
+      recoveryHint: 'Continue from the observed action evidence.',
+      nextSteps: [
+        'cdp report ABC123 --format json',
+        'cdp record-actions ABC123 --format json',
+      ],
+    });
+    expect(result.receipt.actionId).toMatch(/^act_[0-9a-f]{12}$/);
+    expect(result.receipt.recovery).toMatchObject({
+      strategy: 'continue-from-evidence',
+      priority: 'medium',
+    });
+  });
+
   it('classifies no-change action outcomes without treating the diff text as a DOM change', () => {
     const result = T.createActionResult({
       action: 'click',
@@ -1012,14 +1095,12 @@ describe('ActionResult', () => {
       verifyCommand: 'cdp perceive ABC123 -C -d 8',
       commands: [
         'cdp overlay ABC123 "#refresh" --format json',
-        'cdp frame ABC123 --format json',
         'cdp perceive ABC123 -C -d 8',
         'cdp report ABC123 --format json',
       ],
     });
     expect(result.nextSteps).toEqual([
       'cdp overlay ABC123 "#refresh" --format json',
-      'cdp frame ABC123 --format json',
       'cdp perceive ABC123 -C -d 8',
       'cdp report ABC123 --format json',
     ]);
@@ -1033,7 +1114,6 @@ describe('ActionResult', () => {
       primaryNextStep: 'cdp overlay ABC123 "#refresh" --format json',
       nextSteps: [
         'cdp overlay ABC123 "#refresh" --format json',
-        'cdp frame ABC123 --format json',
         'cdp perceive ABC123 -C -d 8',
         'cdp report ABC123 --format json',
       ],
@@ -1041,6 +1121,77 @@ describe('ActionResult', () => {
     expect(result.effects.diagnosis).toBeUndefined();
     expect(T.formatActionText(result)).toContain('Verdict: investigate');
     expect(T.formatActionText(result)).toContain('Next: cdp overlay ABC123 "#refresh" --format json');
+  });
+
+  it('uses receipt blocking signals and recovery hint for no-change actions', () => {
+    const result = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#refresh', resolvedBy: 'selector', label: 'Refresh' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 90 },
+      effects: {
+        domDiff: '(no changes detected in AX tree)',
+        console: [],
+        network: [],
+        navigation: null,
+        consoleDelta: { count: 0, errors: 0, warnings: 0, entries: [] },
+        exceptionDelta: { count: 0, entries: [] },
+        networkDelta: { count: 0, failures: 0, pending: 0, entries: [] },
+      },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+
+    expect(result.receipt).toMatchObject({
+      schema: 'chrome-cdp-ex.action-receipt.v1',
+      outcome: 'no-change',
+      observedDelta: [
+        'No visible AX tree change observed',
+        'Console unchanged',
+        'Exceptions unchanged',
+        'Network unchanged',
+      ],
+      blockingSignals: [
+        'overlay-check-needed',
+        'fresh-perception-needed',
+      ],
+      recoveryHint: 'Action dispatched but produced no visible AX tree change; inspect overlays and fresh refs before retrying.',
+      nextSteps: [
+        'cdp overlay ABC123 "#refresh" --format json',
+        'cdp perceive ABC123 -C -d 8',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(T.formatActionText(result)).toContain('Receipt: no-change');
+    expect(T.formatActionText(result)).toContain('Blocking signals: overlay-check-needed, fresh-perception-needed');
+    expect(T.formatActionText(result)).toContain('Recovery hint: Action dispatched but produced no visible AX tree change');
+  });
+
+  it('adds frame recovery only when no-change evidence is frame scoped', () => {
+    const result = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '@f2:4', resolvedBy: 'frame-ref', label: 'Pay now', frameRef: '@f2' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 90 },
+      effects: {
+        domDiff: '(no changes detected in AX tree)',
+        consoleDelta: { count: 0, errors: 0, warnings: 0, entries: [] },
+        exceptionDelta: { count: 0, entries: [] },
+        networkDelta: { count: 0, failures: 0, pending: 0, entries: [] },
+      },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+
+    expect(result.receipt.blockingSignals).toEqual([
+      'overlay-check-needed',
+      'frame-check-needed',
+      'fresh-perception-needed',
+    ]);
+    expect(result.nextSteps).toEqual([
+      'cdp overlay ABC123 @f2:4 --format json',
+      'cdp frame ABC123 --format json',
+      'cdp perceive ABC123 -C -d 8',
+      'cdp report ABC123 --format json',
+    ]);
   });
 
   it('formats action evidence as compact text', () => {
@@ -1351,6 +1502,30 @@ describe('ActionResult', () => {
       'cdp perceive ABC123 --since-action',
       'cdp report ABC123 --format json',
     ]);
+    expect(parsed.receipt).toMatchObject({
+      schema: 'chrome-cdp-ex.action-receipt.v1',
+      dispatch: { ok: true },
+      settlement: { ok: true },
+      observedDelta: expect.arrayContaining([
+        'Console: 1 entry (1 warning)',
+        'Network: 1 request (1 failed)',
+      ]),
+      observedDeltaDetails: expect.arrayContaining([
+        expect.objectContaining({ type: 'console', status: 'changed' }),
+        expect.objectContaining({ type: 'network', status: 'changed' }),
+      ]),
+      blockingSignals: expect.arrayContaining(['network-failure']),
+      recoveryHint: 'The action triggered one or more failed network requests.',
+      nextSteps: [
+        'cdp netlog ABC123',
+        'cdp perceive ABC123 --since-action',
+        'cdp report ABC123 --format json',
+      ],
+    });
+    expect(parsed.receipt.observedDeltaDetails).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'exception', status: 'unchanged' }),
+    ]));
+    expect(parsed.receipt).not.toHaveProperty('recovery');
   });
 
   it('records report-only actions as action evidence without a DOM observation', async () => {
@@ -1645,6 +1820,17 @@ describe('Session report', () => {
     const out = T.formatSessionReport(state, { now: Date.parse('2026-06-16T00:00:05.000Z') });
 
     expect(state.actionLog).toHaveLength(1);
+    expect(state.actionLog[0].sequence).toBe(1);
+    expect(state.actionLog[0].eventId).toBe('act_ABC123_000001');
+    expect(state.actionLog[0].receipt).toMatchObject({
+      eventId: 'act_ABC123_000001',
+      sequence: 1,
+      outcome: 'changed',
+      observedDeltaDetails: expect.arrayContaining([
+        expect.objectContaining({ type: 'dom', status: 'changed' }),
+        expect.objectContaining({ type: 'console', status: 'unchanged' }),
+      ]),
+    });
     expect(out).toContain('Actions: 1');
     expect(out).toContain('Action timeline:');
     expect(out).toContain('1. click #combat — ok in 123ms');
@@ -1685,6 +1871,8 @@ describe('Session report', () => {
       counts: { actions: 1, screenshots: 1, records: 0 },
       latestAction: {
         index: 1,
+        sequence: 1,
+        eventId: 'act_ABC12345_000001',
         action: 'click',
         status: 'ok',
         outcomeStatus: 'changed',
@@ -1723,6 +1911,14 @@ describe('Session report', () => {
             effectSummary: '+++ Added (1):',
             effectSample: '+   [alert] 戰鬥勝利',
           },
+          receipt: {
+            eventId: 'act_ABC12345_000001',
+            sequence: 1,
+            outcome: 'changed',
+            observedDeltaDetails: [
+              expect.objectContaining({ type: 'dom', status: 'changed' }),
+            ],
+          },
           nextHint: 'Use perceive --since-action if more evidence is needed',
         },
       ],
@@ -1740,6 +1936,17 @@ describe('Session report', () => {
         'cdp export-playwright ABC12345',
       ],
     });
+    expect(Object.keys(model.actions[0].receipt).sort()).toEqual([
+      'actionId',
+      'blockingSignals',
+      'eventId',
+      'loggedAt',
+      'observedDeltaDetails',
+      'outcome',
+      'recoveryHint',
+      'schema',
+      'sequence',
+    ]);
   });
 
   it('bounds JSON report action timeline to the latest actions by default', () => {
@@ -2011,14 +2218,12 @@ describe('Session report', () => {
       verifyCommand: 'cdp perceive ABC12345 -C -d 8',
       commands: [
         'cdp overlay ABC12345 "#refresh" --format json',
-        'cdp frame ABC12345 --format json',
         'cdp perceive ABC12345 -C -d 8',
         'cdp report ABC12345 --format json',
       ],
     });
     expect(model.nextSteps).toEqual([
       'cdp overlay ABC12345 "#refresh" --format json',
-      'cdp frame ABC12345 --format json',
       'cdp perceive ABC12345 -C -d 8',
       'cdp report ABC12345 --format json',
       'cdp record-actions ABC12345 --format json',
@@ -3581,6 +3786,20 @@ describe('formatPageList', () => {
       consentRequired: false,
     });
     expect(model.recommendation.commands).toEqual(model.nextSteps);
+  });
+
+  it('recommends the first non-blank page when blank tabs are listed first', () => {
+    const model = T.buildPageListModel([
+      { targetId: 'AABBCCDD11223344', type: 'page', title: '', url: 'about:blank' },
+      { targetId: 'EEFF001122334455', type: 'page', title: 'Dashboard', url: 'https://example.com/app' },
+    ]);
+    expect(model.pages[0]).toMatchObject({ isBlank: true });
+    expect(model.pages[1]).toMatchObject({ isBlank: false });
+    expect(model.recommendation).toMatchObject({
+      targetPrefix: model.pages[1].targetPrefix,
+      run: `cdp perceive ${model.pages[1].targetPrefix} -C -d 8`,
+    });
+    expect(model.nextSteps[0]).toBe(`cdp perceive ${model.pages[1].targetPrefix} -C -d 8`);
   });
 
   it('builds an empty list JSON model with an open next step', () => {
@@ -7582,7 +7801,6 @@ describe('formatBatchResults', () => {
     });
     expect(parsed.nextSteps).toEqual([
       'cdp overlay ABC123 "#noop" --format json',
-      'cdp frame ABC123 --format json',
       'cdp perceive ABC123 -C -d 8',
       'cdp report ABC123 --format json',
     ]);
@@ -7942,7 +8160,6 @@ describe('flowStr', () => {
       counts: { steps: 2, ok: 2, failed: 0, skipped: 0, attention: 1 },
       nextSteps: [
         'cdp overlay ABC123 "#noop" --format json',
-        'cdp frame ABC123 --format json',
         'cdp perceive ABC123 -C -d 8',
         'cdp report ABC123 --format json',
       ],

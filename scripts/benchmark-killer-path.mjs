@@ -350,6 +350,18 @@ function actionEvidenceCompletenessMissingFields(model = {}) {
   if (!recommendationHasActionableContext(model.recommendation)) missing.push('recommendation');
   const nextSteps = Array.isArray(model.nextSteps) ? model.nextSteps : [];
   if (!nextSteps.some(value => /^cdp\s+\S+/.test(String(value || '')))) missing.push('nextSteps');
+
+  const receipt = model.receipt || {};
+  if (!Object.hasOwn(model, 'receipt') || !model.receipt || typeof model.receipt !== 'object') missing.push('receipt');
+  if (typeof receipt.eventId !== 'string' || !receipt.eventId.trim()) missing.push('receipt.eventId');
+  if (!receipt.dispatch || typeof receipt.dispatch !== 'object') missing.push('receipt.dispatch');
+  if (!receipt.settlement || typeof receipt.settlement !== 'object') missing.push('receipt.settlement');
+  if (!Array.isArray(receipt.observedDelta)) missing.push('receipt.observedDelta');
+  if (!Array.isArray(receipt.observedDeltaDetails) || receipt.observedDeltaDetails.length === 0) missing.push('receipt.observedDeltaDetails');
+  if (!Array.isArray(receipt.blockingSignals)) missing.push('receipt.blockingSignals');
+  if (typeof receipt.recoveryHint !== 'string' || !receipt.recoveryHint.trim()) missing.push('receipt.recoveryHint');
+  const receiptNextSteps = Array.isArray(receipt.nextSteps) ? receipt.nextSteps : [];
+  if (!receiptNextSteps.some(isExecutableRecoveryCommand)) missing.push('receipt.nextSteps');
   return [...new Set(missing)];
 }
 
@@ -446,6 +458,8 @@ function actionNoChangeRecoveryMissingFields(model = {}) {
   const missing = [];
   const verdict = model.verdict || {};
   const recommendation = model.recommendation || {};
+  const receipt = model.receipt || {};
+  const blockingSignals = Array.isArray(receipt.blockingSignals) ? receipt.blockingSignals : [];
   const nextSteps = Array.isArray(model.nextSteps) ? model.nextSteps : [];
   const hasStep = (name) => nextSteps.some(value => new RegExp(`^cdp\\s+${name}\\b`).test(String(value || '')));
 
@@ -454,10 +468,12 @@ function actionNoChangeRecoveryMissingFields(model = {}) {
   if (verdict.needsRecovery !== true) missing.push('verdict.needsRecovery');
   if (!isExecutableRecoveryCommand(verdict.primaryNextStep)) missing.push('verdict.primaryNextStep');
   if (recommendation.strategy !== 'investigate-no-change') missing.push('recommendation.strategy');
-  if (!hasStep('overlay')) missing.push('nextSteps.overlay');
-  if (!hasStep('frame')) missing.push('nextSteps.frame');
-  if (!hasStep('perceive')) missing.push('nextSteps.perceive');
+  if (blockingSignals.includes('overlay-check-needed') && !hasStep('overlay')) missing.push('nextSteps.overlay');
+  if (blockingSignals.includes('frame-check-needed') && !hasStep('frame')) missing.push('nextSteps.frame');
+  if ((blockingSignals.length === 0 || blockingSignals.includes('fresh-perception-needed')) && !hasStep('perceive')) missing.push('nextSteps.perceive');
   if (!hasStep('report')) missing.push('nextSteps.report');
+  if (!Array.isArray(receipt.blockingSignals) || receipt.blockingSignals.length === 0) missing.push('receipt.blockingSignals');
+  if (typeof receipt.recoveryHint !== 'string' || !receipt.recoveryHint.trim()) missing.push('receipt.recoveryHint');
   return [...new Set(missing)];
 }
 
@@ -591,7 +607,9 @@ function targetHandoffMissingFields(model = {}) {
     if (!Array.isArray(model.pages)) missing.push('pages');
     const pages = Array.isArray(model.pages) ? model.pages : [];
     if (pages.length > 0) {
-      const firstPrefix = pages.find(page => targetPrefixIsConcrete(page?.targetPrefix))?.targetPrefix;
+      const recommendedPage = pages.find(page => page?.isBlank === false && targetPrefixIsConcrete(page?.targetPrefix))
+        || pages.find(page => targetPrefixIsConcrete(page?.targetPrefix));
+      const firstPrefix = recommendedPage?.targetPrefix;
       if (!firstPrefix) missing.push('pages.targetPrefix');
       if (typeof model.recommendation?.run !== 'string' || !model.recommendation.run.startsWith(`cdp perceive ${firstPrefix}`)) {
         missing.push('recommendation.run');
@@ -1431,7 +1449,7 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       actual: metrics.actionEvidenceCompletenessCoverage?.rate ?? 1,
       operator: '>=',
       limit: limits.actionEvidenceCompletenessCoverageRateMin,
-      recommendation: 'Action JSON evidence must include action, target, dispatch, settle, effects deltas, outcome, and verdict so agents can decide without another perceive.',
+      recommendation: 'Action JSON evidence must include the Action Receipt contract: event id, dispatch, settlement, observed delta details, blocking signals, recovery hint, and next steps.',
     }),
     gateCriterion({
       name: 'action-failure-diagnosis',
@@ -1445,7 +1463,7 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       actual: metrics.actionNoChangeRecoveryCoverage?.rate ?? 1,
       operator: '>=',
       limit: limits.actionNoChangeRecoveryCoverageRateMin,
-      recommendation: 'No-change action JSON must route agents to overlay, frame, fresh perceive, and report instead of treating dispatch as success.',
+      recommendation: 'No-change action JSON must route agents to target-aware overlay/frame checks, fresh perceive, and report instead of treating dispatch as success.',
     }),
     gateCriterion({
       name: 'cli-recovery-coverage',

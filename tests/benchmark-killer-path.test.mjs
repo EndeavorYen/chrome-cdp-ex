@@ -15,6 +15,36 @@ import {
   summarizeBenchmarkRun,
 } from '../scripts/benchmark-killer-path.mjs';
 
+function sampleActionReceipt(overrides = {}) {
+  return {
+    schema: 'chrome-cdp-ex.action-receipt.v1',
+    actionId: 'act_123456789abc',
+    eventId: 'act_AABBCCDD_000001',
+    sequence: 1,
+    actionName: 'click',
+    targetSummary: 'Start',
+    dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
+    settlement: { ok: true, strategy: 'dom-observation', durationMs: 120 },
+    outcome: 'changed',
+    observedDelta: ['DOM changed after action'],
+    observedDeltaDetails: [
+      { type: 'dom', status: 'changed', summary: 'DOM changed after action' },
+      { type: 'console', status: 'unchanged', count: 0, errors: 0, warnings: 0, summary: 'Console unchanged' },
+      { type: 'exception', status: 'unchanged', count: 0, summary: 'Exceptions unchanged' },
+      { type: 'network', status: 'unchanged', count: 0, failures: 0, pending: 0, summary: 'Network unchanged' },
+    ],
+    blockingSignals: [],
+    recoveryHint: 'Continue from the observed action evidence.',
+    nextSteps: ['cdp report AABBCCDD --format json'],
+    recovery: {
+      strategy: 'continue-from-evidence',
+      priority: 'low',
+      verifyCommand: 'cdp report AABBCCDD --format json',
+    },
+    ...overrides,
+  };
+}
+
 describe('benchmark killer path helpers', () => {
   it('summarizes command calls, timing, token estimates, and action evidence', () => {
     const steps = [
@@ -889,6 +919,7 @@ describe('benchmark killer path helpers', () => {
         source: 'action',
         commands: ['cdp report AABBCCDD --format json'],
       },
+      receipt: sampleActionReceipt(),
       nextSteps: ['cdp report AABBCCDD --format json'],
     });
     const sinceActionJson = JSON.stringify({
@@ -1475,6 +1506,15 @@ describe('benchmark killer path helpers', () => {
             'effects.exceptionDelta',
             'effects.networkDelta',
             'verdict.status',
+            'receipt',
+            'receipt.eventId',
+            'receipt.dispatch',
+            'receipt.settlement',
+            'receipt.observedDelta',
+            'receipt.observedDeltaDetails',
+            'receipt.blockingSignals',
+            'receipt.recoveryHint',
+            'receipt.nextSteps',
           ]),
         }),
       ],
@@ -1484,7 +1524,7 @@ describe('benchmark killer path helpers', () => {
         name: 'action-evidence-completeness',
         passed: false,
         actual: 0,
-        recommendation: 'Action JSON evidence must include action, target, dispatch, settle, effects deltas, outcome, and verdict so agents can decide without another perceive.',
+        recommendation: 'Action JSON evidence must include the Action Receipt contract: event id, dispatch, settlement, observed delta details, blocking signals, recovery hint, and next steps.',
       }),
     ]));
   });
@@ -1553,6 +1593,20 @@ describe('benchmark killer path helpers', () => {
               diagnosisKind: 'stale-ref',
               commands: ['cdp perceive AABBCCDD -C -d 8', 'cdp status AABBCCDD'],
             },
+            receipt: sampleActionReceipt({
+              dispatch: { ok: false, method: 'click', error: 'Unknown ref @1' },
+              settlement: { ok: false, strategy: 'dispatch-failure', durationMs: 10 },
+              outcome: 'failed',
+              observedDelta: ['Dispatch failed: stale-ref'],
+              blockingSignals: ['stale-ref'],
+              recoveryHint: 'Unknown ref @1',
+              nextSteps: ['cdp perceive AABBCCDD -C -d 8', 'cdp status AABBCCDD'],
+              recovery: {
+                strategy: 'refresh-perception',
+                priority: 'high',
+                verifyCommand: 'cdp perceive AABBCCDD -C -d 8',
+              },
+            }),
             nextSteps: ['cdp perceive AABBCCDD -C -d 8', 'cdp status AABBCCDD'],
           }),
           stderr: '',
@@ -1692,10 +1746,11 @@ describe('benchmark killer path helpers', () => {
             'verdict.status',
             'verdict.canContinue',
             'verdict.needsRecovery',
+            'verdict.primaryNextStep',
             'recommendation.strategy',
-            'nextSteps.overlay',
-            'nextSteps.frame',
             'nextSteps.perceive',
+            'receipt.blockingSignals',
+            'receipt.recoveryHint',
           ]),
         }),
       ],
@@ -1705,7 +1760,7 @@ describe('benchmark killer path helpers', () => {
         name: 'action-no-change-recovery',
         passed: false,
         actual: 0,
-        recommendation: 'No-change action JSON must route agents to overlay, frame, fresh perceive, and report instead of treating dispatch as success.',
+        recommendation: 'No-change action JSON must route agents to target-aware overlay/frame checks, fresh perceive, and report instead of treating dispatch as success.',
       }),
     ]));
   });

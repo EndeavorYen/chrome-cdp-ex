@@ -551,9 +551,9 @@ function buildPageListModel(pages = [], browserInfo = null) {
       isBlank,
     };
   });
-  const first = modelPages[0];
-  const recommendation = first
-    ? goldenPathPerceiveRecommendation(first.targetPrefix)
+  const recommendedPage = modelPages.find(page => !page.isBlank) || modelPages[0];
+  const recommendation = recommendedPage
+    ? goldenPathPerceiveRecommendation(recommendedPage.targetPrefix)
     : goldenPathOpenPageRecommendation();
   const nextSteps = recommendation.commands;
   return {
@@ -1525,7 +1525,7 @@ function redactSensitiveArtifactValue(value, key = '') {
 }
 
 function createActionResult({ action, target, dispatch, settle, effects, nextHint }) {
-  return applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis({
+  return applyActionReceipt(applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis({
     schema: 'chrome-cdp-ex.action.v1',
     action,
     target,
@@ -1533,7 +1533,7 @@ function createActionResult({ action, target, dispatch, settle, effects, nextHin
     settle,
     effects,
     nextHint,
-  }))));
+  })))));
 }
 
 function createActionObservationBaseline({ consoleBuf = null, exceptionBuf = null, netReqBuf = null } = {}) {
@@ -1770,6 +1770,191 @@ function applyActionOutcome(actionResult) {
   return actionResult;
 }
 
+function stableActionHash(value = {}) {
+  const text = JSON.stringify(value, Object.keys(value || {}).sort());
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+function buildActionId(actionResult = {}) {
+  const seed = {
+    action: actionResult.action || '',
+    target: actionResult.target?.label || actionResult.target?.input || '',
+    dispatch: actionResult.dispatch?.method || '',
+    settle: actionResult.settle?.durationMs || 0,
+    outcome: actionResult.outcome?.status || '',
+  };
+  const first = stableActionHash(seed);
+  const second = stableActionHash({ ...seed, dispatchOk: actionResult.dispatch?.ok === true });
+  return `act_${first}${second.slice(0, 4)}`;
+}
+
+function actionTargetSummary(actionResult = {}) {
+  const target = actionResult.target || {};
+  return compactActionText(target.label || target.input || target.selector || target.resolvedBy || actionResult.action || '', 160) || null;
+}
+
+function actionSettlementStrategy(actionResult = {}) {
+  if (actionResult.effects?.domDiff != null) return 'dom-observation';
+  if (actionResult.effects?.observationError?.message) return 'observation-error';
+  if (actionResult.dispatch?.ok === false) return 'dispatch-failed';
+  if (actionResult.settle?.ok === false) return 'not-confirmed';
+  return 'report-only';
+}
+
+function actionDeltaDetails(actionResult = {}) {
+  const effects = actionResult.effects || {};
+  const details = [];
+  const outcome = actionResult.outcome || buildActionOutcome(actionResult);
+
+  if (effects.failure?.kind) {
+    details.push({
+      type: 'dispatch',
+      status: 'failed',
+      summary: `Dispatch failed: ${effects.failure.kind}`,
+      ...(effects.failure.reason ? { sample: effects.failure.reason } : {}),
+    });
+  } else if (outcome.status === 'changed') {
+    const sample = summarizeActionDomDiff(effects.domDiff).sample;
+    details.push({
+      type: 'dom',
+      status: 'changed',
+      summary: 'DOM changed after action',
+      ...(sample ? { sample } : {}),
+    });
+  } else if (outcome.status === 'no-change') {
+    details.push({
+      type: 'dom',
+      status: 'no-change',
+      summary: 'No visible AX tree change observed',
+    });
+  } else if (effects.domDiff == null) {
+    details.push({
+      type: 'dom',
+      status: 'not-captured',
+      summary: 'DOM observation not captured',
+    });
+  }
+
+  const consoleDelta = normalizeConsoleDelta(effects.consoleDelta || {});
+  const consoleSummary = summarizeActionConsoleDelta(consoleDelta);
+  details.push({
+    type: 'console',
+    status: consoleDelta.count > 0 ? 'changed' : 'unchanged',
+    count: Number(consoleDelta.count || 0),
+    errors: Number(consoleDelta.errors || 0),
+    warnings: Number(consoleDelta.warnings || 0),
+    summary: consoleSummary.summary || 'Console unchanged',
+    ...(consoleSummary.sample ? { sample: consoleSummary.sample } : {}),
+  });
+
+  const exceptionDelta = normalizeExceptionDelta(effects.exceptionDelta || {});
+  const exceptionSummary = summarizeActionExceptionDelta(exceptionDelta);
+  details.push({
+    type: 'exception',
+    status: exceptionDelta.count > 0 ? 'changed' : 'unchanged',
+    count: Number(exceptionDelta.count || 0),
+    summary: exceptionSummary.summary || 'Exceptions unchanged',
+    ...(exceptionSummary.sample ? { sample: exceptionSummary.sample } : {}),
+  });
+
+  const networkDelta = normalizeNetworkDelta(effects.networkDelta || {});
+  const networkSummary = summarizeActionNetworkDelta(networkDelta);
+  details.push({
+    type: 'network',
+    status: networkDelta.count > 0 ? 'changed' : 'unchanged',
+    count: Number(networkDelta.count || 0),
+    failures: Number(networkDelta.failures || 0),
+    pending: Number(networkDelta.pending || 0),
+    summary: networkSummary.summary || 'Network unchanged',
+    ...(networkSummary.sample ? { sample: networkSummary.sample } : {}),
+  });
+
+  if (effects.observationError?.message) {
+    details.push({
+      type: 'observation',
+      status: 'error',
+      summary: `Observation error: ${effects.observationError.message}`,
+    });
+  }
+  return details;
+}
+
+function actionDeltaLines(actionResult = {}) {
+  const lines = [];
+  for (const detail of actionDeltaDetails(actionResult)) {
+    if (detail.summary) lines.push(detail.summary);
+    if (!detail.sample) continue;
+    if (detail.type === 'dom') lines.push(`DOM sample: ${detail.sample}`);
+    else if (detail.type === 'console') lines.push(`Console sample: ${detail.sample}`);
+    else if (detail.type === 'exception') lines.push(`Exception sample: ${detail.sample}`);
+    else if (detail.type === 'network') lines.push(`Network sample: ${detail.sample}`);
+  }
+  return lines;
+}
+
+function actionBlockingSignals(actionResult = {}) {
+  const signals = [];
+  const diagnosis = actionResult.effects?.diagnosis || null;
+  const recommendation = actionResult.recommendation || {};
+  if (Array.isArray(recommendation.blockingSignals)) signals.push(...recommendation.blockingSignals);
+  if (diagnosis?.kind && diagnosis.status !== 'ok') signals.push(diagnosis.kind);
+  if (actionResult.outcome?.status === 'timeout') signals.push('settlement-timeout');
+  if (actionResult.effects?.observationError?.message) signals.push('observation-error');
+  return [...new Set(signals)];
+}
+
+function actionRecoveryHint(actionResult = {}) {
+  const recommendation = actionResult.recommendation || {};
+  const diagnosis = actionResult.effects?.diagnosis || null;
+  const outcome = actionResult.outcome || buildActionOutcome(actionResult);
+  if (typeof recommendation.recoveryHint === 'string' && recommendation.recoveryHint.trim()) return recommendation.recoveryHint;
+  if (diagnosis?.reason && diagnosis.status !== 'ok') return diagnosis.reason;
+  if (outcome.status === 'changed') return 'Continue from the observed action evidence.';
+  if (outcome.status === 'failed') return 'Run the recovery command before retrying the action.';
+  if (outcome.status === 'timeout') return 'Verify the post-action state before retrying; the action may have dispatched.';
+  if (outcome.status === 'dispatched') return 'Capture a fresh observation before assuming task progress.';
+  return recommendation.reason || outcome.reason || actionResult.nextHint || null;
+}
+
+function buildActionReceipt(actionResult = {}) {
+  const outcome = actionResult.outcome || buildActionOutcome(actionResult);
+  const recommendation = actionResult.recommendation || {};
+  const nextSteps = uniqueNextStepCommands(actionResult.nextSteps || recommendation.commands || []);
+  return {
+    schema: 'chrome-cdp-ex.action-receipt.v1',
+    actionId: buildActionId(actionResult),
+    actionName: actionResult.action || null,
+    targetSummary: actionTargetSummary(actionResult),
+    dispatch: actionResult.dispatch || null,
+    settlement: {
+      ok: actionResult.settle?.ok ?? null,
+      strategy: actionSettlementStrategy(actionResult),
+      durationMs: Number.isFinite(actionResult.settle?.durationMs) ? actionResult.settle.durationMs : null,
+    },
+    outcome: outcome.status || 'unknown',
+    observedDelta: actionDeltaLines(actionResult),
+    observedDeltaDetails: actionDeltaDetails(actionResult),
+    blockingSignals: actionBlockingSignals(actionResult),
+    recoveryHint: actionRecoveryHint(actionResult),
+    nextSteps,
+    recovery: {
+      strategy: recommendation.strategy || actionResult.effects?.diagnosis?.recovery?.strategy || null,
+      priority: recommendation.priority || actionResult.effects?.diagnosis?.recovery?.priority || null,
+      verifyCommand: recommendation.verifyCommand || actionResult.effects?.diagnosis?.recovery?.verifyCommand || null,
+    },
+  };
+}
+
+function applyActionReceipt(actionResult) {
+  actionResult.receipt = buildActionReceipt(actionResult);
+  return actionResult;
+}
+
 function applyActionObservationDelta(actionResult, delta = {}) {
   if (!actionResult.effects) actionResult.effects = {};
   const consoleDelta = normalizeConsoleDelta(delta.console || {});
@@ -1781,7 +1966,7 @@ function applyActionObservationDelta(actionResult, delta = {}) {
   actionResult.effects.console = consoleDelta.entries || [];
   actionResult.effects.exceptions = exceptionDelta.entries || [];
   actionResult.effects.network = networkDelta.entries || [];
-  return applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(actionResult))));
+  return applyActionReceipt(applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(actionResult)))));
 }
 
 function actionDiagnosisSignals(actionResult = {}) {
@@ -1951,6 +2136,7 @@ function buildActionRecommendation(actionResult = {}) {
       action: actionResult.action || null,
       target,
       targetInput: actionFailureInput(actionResult.target || {}),
+      targetInfo: actionResult.target || {},
     });
   }
 
@@ -2146,6 +2332,13 @@ function formatActionText(result) {
   ];
   if (result.target?.label) lines.push(`Target: ${result.target.label}`);
   if (result.outcome?.status) lines.push(`Outcome: ${result.outcome.status}${result.outcome.reason ? ` — ${result.outcome.reason}` : ''}`);
+  if (result.receipt?.outcome) {
+    lines.push(`Receipt: ${result.receipt.outcome}`);
+    if (Array.isArray(result.receipt.blockingSignals) && result.receipt.blockingSignals.length) {
+      lines.push(`Blocking signals: ${result.receipt.blockingSignals.join(', ')}`);
+    }
+    if (result.receipt.recoveryHint) lines.push(`Recovery hint: ${result.receipt.recoveryHint}`);
+  }
   if (result.effects?.failure?.kind) lines.push(`Failure: ${result.effects.failure.kind}`);
   if (diagnosis && diagnosis.status !== 'ok') {
     lines.push(`Diagnosis: ${diagnosis.kind}${diagnosis.reason ? ` — ${diagnosis.reason}` : ''}`);
@@ -2175,7 +2368,7 @@ function formatActionText(result) {
 
 function finalizeActionResult(result, { enrichActionResult = null, onActionResult = null } = {}) {
   if (enrichActionResult) enrichActionResult(result);
-  applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(result))));
+  applyActionReceipt(applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(result)))));
   if (onActionResult) onActionResult(result);
   return result;
 }
@@ -2288,9 +2481,47 @@ function summarizeActionDomDiff(domDiff) {
   return { summary, sample };
 }
 
+function isSignalDeltaDetail(detail = {}) {
+  if (!detail || typeof detail !== 'object') return false;
+  if (detail.status && detail.status !== 'unchanged') return true;
+  return ['count', 'errors', 'warnings', 'failures', 'pending'].some(key => Number(detail[key] || 0) > 0);
+}
+
+function compactDeltaDetailsForHandoff(details = []) {
+  const items = Array.isArray(details) ? details.filter(detail => detail && typeof detail === 'object') : [];
+  const signalItems = items.filter(isSignalDeltaDetail);
+  return signalItems.length ? signalItems : items.slice(0, 1);
+}
+
+function compactObservedDeltaLinesForHandoff(lines = []) {
+  const items = Array.isArray(lines) ? lines.filter(line => typeof line === 'string' && line.trim()) : [];
+  const signalItems = items.filter(line => !/^(Console|Exceptions|Network) unchanged$/i.test(line.trim()));
+  return signalItems.length ? signalItems : items.slice(0, 1);
+}
+
+function compactReceiptForActionJson(receipt = null) {
+  if (!receipt || typeof receipt !== 'object') return receipt;
+  return {
+    schema: receipt.schema || 'chrome-cdp-ex.action-receipt.v1',
+    actionId: receipt.actionId || null,
+    eventId: receipt.eventId || null,
+    sequence: receipt.sequence ?? null,
+    loggedAt: receipt.loggedAt || null,
+    dispatch: receipt.dispatch || null,
+    settlement: receipt.settlement || null,
+    outcome: receipt.outcome || null,
+    observedDelta: compactObservedDeltaLinesForHandoff(receipt.observedDelta),
+    observedDeltaDetails: compactDeltaDetailsForHandoff(receipt.observedDeltaDetails),
+    blockingSignals: Array.isArray(receipt.blockingSignals) ? receipt.blockingSignals : [],
+    recoveryHint: receipt.recoveryHint || null,
+    nextSteps: Array.isArray(receipt.nextSteps) ? receipt.nextSteps : [],
+  };
+}
+
 function compactActionResultForJson(result) {
   const compact = JSON.parse(JSON.stringify(result));
   compact.target = sanitizeActionTargetForLog(compact.action, compact.target || null);
+  compact.receipt = compactReceiptForActionJson(compact.receipt);
   const effects = compact.effects || {};
   if (typeof effects.domDiff !== 'string') return redactSensitiveArtifactValue(compact);
 
@@ -2527,13 +2758,39 @@ function initializeSessionLog(session, { ts = session.createdAt || Date.now(), w
   }
 }
 
+function nextSessionActionSequence(session) {
+  const current = Number.isInteger(session.actionSeq) ? session.actionSeq : (session.actionLog?.length || 0);
+  session.actionSeq = current + 1;
+  return session.actionSeq;
+}
+
+function sessionActionEventId(session, sequence) {
+  const target = targetPrefixForDisplay(session.targetId || 'target');
+  return `act_${target}_${String(sequence).padStart(6, '0')}`;
+}
+
+function applyActionReceiptEvent(actionResult, { eventId, sequence, ts } = {}) {
+  actionResult.receipt = {
+    ...buildActionReceipt(actionResult),
+    eventId,
+    sequence,
+    loggedAt: Number.isFinite(ts) ? new Date(ts).toISOString() : null,
+  };
+  return actionResult.receipt;
+}
+
 function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {}) {
   if (!session.actionLog) session.actionLog = [];
+  const sequence = nextSessionActionSequence(session);
+  const eventId = sessionActionEventId(session, sequence);
+  const receipt = applyActionReceiptEvent(actionResult, { eventId, sequence, ts });
   const domDiff = actionResult.effects?.domDiff || '';
   const { summary, sample } = summarizeActionDomDiff(domDiff);
   const diagnostics = summarizeActionObservationEffects(actionResult.effects || {});
   const target = sanitizeActionTargetForLog(actionResult.action, actionResult.target || null);
   const entry = redactSensitiveArtifactValue({
+    sequence,
+    eventId,
     ts,
     action: actionResult.action,
     target,
@@ -2551,6 +2808,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
     diagnosis: actionResult.effects?.diagnosis || null,
     outcome: actionResult.outcome || buildActionOutcome(actionResult),
     verdict: actionResult.verdict || buildActionVerdict(actionResult),
+    receipt,
     nextHint: actionResult.nextHint || null,
   });
   session.actionLog.push(entry);
@@ -2587,6 +2845,8 @@ function buildLatestReportActionSummary(actionLog = []) {
   const entry = actionLog[index - 1] || {};
   return {
     index,
+    sequence: entry.sequence ?? index,
+    eventId: entry.eventId || entry.receipt?.eventId || null,
     ts: entry.ts || null,
     action: entry.action || null,
     status: reportActionStatus(entry),
@@ -2640,6 +2900,21 @@ function reportActionTimelineWindow(actionLog = [], lastActions = DEFAULT_REPORT
   };
 }
 
+function compactReceiptForReport(receipt = null) {
+  if (!receipt || typeof receipt !== 'object') return null;
+  return {
+    schema: receipt.schema || 'chrome-cdp-ex.action-receipt.v1',
+    actionId: receipt.actionId || null,
+    eventId: receipt.eventId || null,
+    sequence: receipt.sequence ?? null,
+    loggedAt: receipt.loggedAt || null,
+    outcome: receipt.outcome || null,
+    observedDeltaDetails: compactDeltaDetailsForHandoff(receipt.observedDeltaDetails),
+    blockingSignals: Array.isArray(receipt.blockingSignals) ? receipt.blockingSignals : [],
+    recoveryHint: receipt.recoveryHint || null,
+  };
+}
+
 function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFAULT_REPORT_ACTION_LIMIT } = {}) {
   const actionLog = session.actionLog || [];
   const screenshots = session.screenshots || [];
@@ -2653,6 +2928,8 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
     const index = (timelineWindow.startIndex || 1) + offset;
     return {
       index,
+      sequence: entry.sequence ?? index,
+      eventId: entry.eventId || entry.receipt?.eventId || null,
       ts: entry.ts || null,
       action: entry.action,
       status: reportActionStatus(entry),
@@ -2661,6 +2938,7 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
       target: entry.target || null,
       dispatch: entry.dispatch || null,
       settle: entry.settle || null,
+      receipt: compactReceiptForReport(entry.receipt),
       evidence: {
         dispatchMethod: entry.dispatch?.method || null,
         settleOk: entry.settle?.ok ?? null,
@@ -3453,6 +3731,7 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
     networkMockHits: [],
     clock: null,
     environmentLog: [],
+    actionSeq: 0,
     actionLog: [],
     screenshots: [],
     diffShot: null,
@@ -11186,7 +11465,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,
   buildActionRecoveryPlan,
-  createActionResult, formatActionText, runActionWithFeedback,
+  createActionResult, buildActionReceipt, formatActionText, runActionWithFeedback,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,

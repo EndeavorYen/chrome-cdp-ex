@@ -5,11 +5,11 @@
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
 
-> **TL;DR** — The Smart Eye for coding agents. `chrome-cdp-ex` lets an agent see and act inside your real browser: logged-in tabs, page layout, visible styles, action evidence, CSS source tracing, and long-session reports.
+> **TL;DR** — The Smart Eye for coding agents. `chrome-cdp-ex` lets an agent see and act inside your real browser: logged-in tabs, page layout, visible styles, action receipts, CSS source tracing, and long-session reports.
 
 Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-ex` is for live-page perception when the agent needs to understand the browser you are actually using.
 
-[![Smart Eye benchmark proof: 25/25 quality gate, 1,569 useful observation tokens, 100% action evidence coverage](experiment/benchmark-proof.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
+[![Smart Eye benchmark proof: 29/29 quality gate, 1,569 useful observation tokens, 100% action evidence coverage](experiment/benchmark-proof.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
 
 ## Why agents need this
 
@@ -18,7 +18,7 @@ Browser agents usually fail for boring reasons: they cannot tell what changed, t
 | Pain | What `chrome-cdp-ex` gives the agent |
 |---|---|
 | "I can click, but I cannot really see the page." | Layout, visible text, colors, coordinates, refs, and console health. |
-| "I clicked. Did anything happen?" | Every action returns evidence, a verdict, and the next step. |
+| "I clicked. Did anything happen?" | Every action returns an Action Receipt with dispatch, settlement, observed delta, blocking signals, and next steps. |
 | "Which CSS rule made this button blue?" | `cascade` traces the visible style back to selector and source line. |
 | "The bug only happens in my logged-in browser." | It connects to real Chrome, Edge, Brave, Electron, or WSL2-to-Windows sessions. |
 | "Exploration disappears after one prompt." | Session logs, screenshots, reports, checkpoints, replay, and Playwright export. |
@@ -29,7 +29,7 @@ Browser agents usually fail for boring reasons: they cannot tell what changed, t
 
 | Proof | Why it matters |
 |---|---|
-| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | The current dogfood run passes a 25/25 quality gate with 1,569 useful observation tokens. |
+| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | The current dogfood run passes a 29/29 quality gate with 1,569 useful observation tokens. |
 | [Redesign experiment](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html) | Same page, same prompt, same rounds; the agent with richer perception produced the best result. |
 | [Killer Path walkthrough](docs/examples/killer-path.md) | A 60-second route through `doctor -> open -> perceive -> act -> evidence -> report`. |
 
@@ -58,7 +58,7 @@ Use Playwright when you need a clean, repeatable browser test from scratch.
 | Case | What the agent does |
 |---|---|
 | Logged-in dashboard inspection | `doctor -> list -> perceive` reads the real dashboard without relogin or a copied screenshot. |
-| Action evidence after form input | `fill` or `click` reports what changed so the agent can choose the next step. |
+| Action evidence after form input | `fill` or `click` returns an Action Receipt so the agent can distinguish dispatched, changed, no-change, failed, and timeout states. |
 | CSS source tracing | `cascade @ref background-color` shows the winning selector and source file/line to edit. |
 | Long-session debugging | `status`, `netlog`, `mock`, `clock`, `throttle`, screenshots, and `report` preserve evidence across a live tab session. |
 | Workflow capture and replay | `checkpoint`, `record-actions`, `export-playwright`, `diff-shot`, and `replay` turn exploration into reusable debugging and regression assets. |
@@ -69,8 +69,8 @@ The benchmark measures the agent path this tool is built for: see the page, act,
 
 | Proof point | Latest local run |
 |---|---:|
-| Quality gate | **25/25 pass** |
-| Golden path complete | **5.102s** |
+| Quality gate | **29/29 pass** |
+| Golden path complete | **5.330s** |
 | Useful observation tokens | **1,569** |
 | Action evidence coverage | **100%** |
 | Differentiator success rate | **100%** |
@@ -129,7 +129,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
 node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>            # add --format json for agent handoff; --last N / --all controls timeline size
 ```
 
-The important bit is the loop: first perceive the page, then act, then ask what changed because of that action. Use `--format json` when another agent or script needs structured handoff data.
+The important bit is the loop: first perceive the page, then act, then ask what changed because of that action. Use `--format json` when another agent or script needs structured handoff data; action JSON includes `receipt.schema = chrome-cdp-ex.action-receipt.v1`.
 
 **Requires:** Node.js 22+ (uses built-in WebSocket). Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
 
@@ -158,7 +158,7 @@ See [docs/reference.md](docs/reference.md) for Electron, WSL2, screenshots, CSS 
 | Need | Start with |
 |---|---|
 | Understand the page | `perceive`, `controls`, `summary`, `text` |
-| Act and verify | `click`, `fill`, `press`, `perceive --since-action` |
+| Act and verify | `click`, `fill`, `press`, Action Receipt JSON, `perceive --since-action` |
 | Debug live state | `status`, `console`, `netlog`, `report` |
 | Trace styling | `cascade`, `styles`, `inject` |
 | Preserve a session | `checkpoint`, `record-actions`, `export-playwright`, `replay` |
@@ -172,20 +172,20 @@ Use the live benchmark before making performance or adoption claims. [View the v
 
 ### Latest dogfood snapshot
 
-Local run on 2026-06-28 against the same smoke page. Timing starts after CDP is reachable so browser cold-start variance is excluded. Publish competitor comparison deltas only after rerunning with measured `--comparison-baselines`.
+Local run on 2026-07-06 against the same smoke page. Timing starts after CDP is reachable so browser cold-start variance is excluded. Publish competitor comparison deltas only after rerunning with measured `--comparison-baselines`.
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 9.034s |
+| Total time | 9.293s |
 | Command calls | 24 |
-| First useful observation | 2.235s |
-| First action evidence | 2.989s |
-| Golden path complete | 5.140s |
-| Estimated output tokens | 15,678 |
+| First useful observation | 2.184s |
+| First action evidence | 3.013s |
+| Golden path complete | 5.330s |
+| Estimated output tokens | 19,177 |
 | Useful observation tokens | 1,569 |
 | Action evidence coverage | 100% (9/9 mutating commands) |
 | Differentiator success rate | 100% |
-| Stale-ref recovery | 54ms, 1/1 recovered |
+| Stale-ref recovery | 67ms, 1/1 recovered |
 | Quality gate | 29/29 pass |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
@@ -208,6 +208,7 @@ Do not publish README, marketplace, awesome-list, or social comparison claims un
 
 - `npm run benchmark:killer -- --json` exits 0 and `gate.passed` is true.
 - Total output, per-command output, first-action-evidence, and per-command latency gates pass; inspect the gate `culprit` before publishing speed or efficiency claims.
+- Action JSON passes the Action Receipt contract gate: `eventId`, `dispatch`, `settlement`, `observedDeltaDetails`, `blockingSignals`, `recoveryHint`, and executable `nextSteps`.
 - Competitor comparisons use `npm run benchmark:killer -- --comparison-baselines ./baselines.json` with measured baselines, not the planning-only `heuristic-smoke-baseline`.
 - `docs/examples/killer-path.md` still covers real browser perception, failed action recovery, CSS tracing, and export handoff.
 - Workflow handoffs from `record-actions --format json` and `export-playwright --format json` distinguish exported, skipped, review-needed, and live-only steps.

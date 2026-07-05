@@ -212,16 +212,54 @@ export function uniqueNextStepCommands(commands = []) {
   return out;
 }
 
+function noChangeNeedsOverlay(action) {
+  return new Set(['click', 'jsclick', 'clickxy', 'fill', 'select', 'upload', 'press', 'dismiss-modal'])
+    .has(String(action || '').toLowerCase());
+}
+
+function noChangeNeedsFrameContext(targetInput = '', targetInfo = {}) {
+  const input = String(targetInput || targetInfo.input || '');
+  return /^@f\d+:/i.test(input)
+    || Boolean(targetInfo.frameRef)
+    || Boolean(targetInfo.frameId)
+    || targetInfo.resolvedBy === 'frame-ref';
+}
+
+function noChangeBlockingSignals({ action = null, targetInput = '', targetInfo = {} } = {}) {
+  const signals = [];
+  if (noChangeNeedsOverlay(action)) signals.push('overlay-check-needed');
+  if (noChangeNeedsFrameContext(targetInput, targetInfo)) signals.push('frame-check-needed');
+  signals.push('fresh-perception-needed');
+  return [...new Set(signals)];
+}
+
+function noChangeRecoveryHint(signals = []) {
+  const topics = [];
+  if (signals.includes('overlay-check-needed')) topics.push('overlays');
+  if (signals.includes('frame-check-needed')) topics.push('frame context');
+  if (signals.includes('fresh-perception-needed')) topics.push('fresh refs');
+  const phrase = topics.length <= 1
+    ? topics[0] || 'fresh page state'
+    : `${topics.slice(0, -1).join(', ')} and ${topics.at(-1)}`;
+  return `Action dispatched but produced no visible AX tree change; inspect ${phrase} before retrying.`;
+}
+
 export function buildNoChangeOutcomeRecommendation({
   action = null,
   actionIndex = null,
   target = '<target>',
   targetInput = '',
+  targetInfo = {},
   source = 'action-outcome',
 } = {}) {
   const input = recoveryCommandArg(targetInput);
+  const blockingSignals = noChangeBlockingSignals({ action, targetInput, targetInfo });
   const overlayCommand = input ? `cdp overlay ${target} ${input} --format json` : `cdp overlay ${target} --format json`;
   const perceiveCommand = `cdp perceive ${target} -C -d 8`;
+  const commands = [];
+  if (blockingSignals.includes('overlay-check-needed')) commands.push(overlayCommand);
+  if (blockingSignals.includes('frame-check-needed')) commands.push(`cdp frame ${target} --format json`);
+  commands.push(perceiveCommand, `cdp report ${target} --format json`);
   return {
     source,
     actionIndex,
@@ -230,13 +268,10 @@ export function buildNoChangeOutcomeRecommendation({
     strategy: 'investigate-no-change',
     priority: 'medium',
     reason: 'The action dispatched but produced no visible AX tree change; check blockers, frame context, or refreshed refs before retrying.',
+    blockingSignals,
+    recoveryHint: noChangeRecoveryHint(blockingSignals),
     verifyCommand: perceiveCommand,
-    commands: uniqueNextStepCommands([
-      overlayCommand,
-      `cdp frame ${target} --format json`,
-      perceiveCommand,
-      `cdp report ${target} --format json`,
-    ]),
+    commands: uniqueNextStepCommands(commands),
   };
 }
 

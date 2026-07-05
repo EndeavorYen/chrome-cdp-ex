@@ -58,7 +58,7 @@ describe('action recovery lib', () => {
     });
   });
 
-  it('routes no-change actions to overlay, frame, perceive, and report checks', () => {
+  it('routes no-change actions to target-aware overlay, perceive, and report checks', () => {
     const recommendation = buildNoChangeOutcomeRecommendation({
       action: 'click',
       actionIndex: 2,
@@ -72,14 +72,39 @@ describe('action recovery lib', () => {
       action: 'click',
       strategy: 'investigate-no-change',
       priority: 'medium',
+      blockingSignals: [
+        'overlay-check-needed',
+        'fresh-perception-needed',
+      ],
+      recoveryHint: 'Action dispatched but produced no visible AX tree change; inspect overlays and fresh refs before retrying.',
       verifyCommand: 'cdp perceive ABC123 -C -d 8',
       commands: [
         'cdp overlay ABC123 "#refresh" --format json',
-        'cdp frame ABC123 --format json',
         'cdp perceive ABC123 -C -d 8',
         'cdp report ABC123 --format json',
       ],
     });
+  });
+
+  it('adds frame checks to no-change recommendations only for frame-scoped targets', () => {
+    const recommendation = buildNoChangeOutcomeRecommendation({
+      action: 'click',
+      target: 'ABC123',
+      targetInput: '@f2:4',
+      targetInfo: { resolvedBy: 'frame-ref', frameRef: '@f2' },
+    });
+
+    expect(recommendation.blockingSignals).toEqual([
+      'overlay-check-needed',
+      'frame-check-needed',
+      'fresh-perception-needed',
+    ]);
+    expect(recommendation.commands).toEqual([
+      'cdp overlay ABC123 @f2:4 --format json',
+      'cdp frame ABC123 --format json',
+      'cdp perceive ABC123 -C -d 8',
+      'cdp report ABC123 --format json',
+    ]);
   });
 
   it('keeps text failure output and recovery command extraction stable', () => {

@@ -49,6 +49,9 @@
 - [x] Action failure classifier for overlay, wrong frame, navigation, DOM rewrite, and timeout. Priority: P1.
 - [x] Token-aware `perceive` scoring for important controls, errors, changes, and new UI. Priority: P1.
 - [x] `overlay` / `overlays` detector — read-only dialog/overlay and target hit-test blocker diagnosis. Priority: P1.
+- [x] Action Receipt v1 — `chrome-cdp-ex.action-receipt.v1` summarizes dispatch, settlement, observed delta, structured delta details, session event identity, blocking signals, recovery hint, and next steps. Priority: P1.
+- [x] Target-aware no-change recovery signals — actions with no visible AX tree change emit relevant overlay, frame, and fresh-perception blocking signals. Priority: P1.
+- [x] Benchmark gate requires Action Receipt completeness for action JSON handoffs. Priority: P1.
 
 ### Feature Roadmap (medium effort)
 
@@ -64,10 +67,12 @@
 - [x] Frame-scoped perception/action refs — `perceive --frame @fN` emits `@fN:M` refs; `click`, `fill`, and `cascade` can resolve them. Priority: P1.
 - [ ] `components` — React/Vue component tree + state inspection. Priority: P2.
 - [ ] `emulate` — dark/light mode emulation. Priority: P2.
+- [ ] Browser Use mapping doc — map Action Receipt, no-change recovery, and benchmark-gated handoffs to Browser Use contribution language. Priority: P2.
+- [ ] Recovery policy registry — centralize diagnosis kinds, recovery strategies, priorities, commands, and verify commands. Priority: P2.
 
 ### Polish backlog
 
-- [ ] Adaptive `perceive` line/token budget beyond `--last`.
+- [ ] Adaptive `perceive` line/token budget beyond `--last`, using page density, task context, and error state.
 - [ ] `eval --raw` flag to bypass the auto-`JSON.stringify` of object results.
 - [x] Per-target daemon log file at `<runtime-dir>/cdp-<target>.log` for post-mortem.
 - [x] Session screenshot directory + report attachments.

@@ -46,6 +46,25 @@ Action evidence answers three questions:
 | What changed? | DOM diff summary, bounded evidence sample, console deltas, network deltas. |
 | What should the agent do next? | `outcome`, `verdict`, `recommendation`, `nextSteps`, and recovery commands. |
 
+### Action Receipt
+
+`chrome-cdp-ex.action.v1` keeps the full low-level evidence envelope. Each action also includes `receipt.schema = chrome-cdp-ex.action-receipt.v1`, a stable summary contract for agents that should not have to infer progress from prose. CLI JSON and report handoffs keep the receipt compact by omitting duplicated fields and unchanged delta channels; the per-target JSONL session log preserves the full receipt for audit and replay correlation.
+
+| Receipt field | Meaning |
+|---|---|
+| `actionId` | Stable pre-log correlation hash for the attempted action. |
+| `eventId` / `sequence` / `loggedAt` | Session-level event identity added when the action is recorded; use this for audit, report, and replay correlation. |
+| `actionName` / `targetSummary` | What was attempted and the resolved target label; duplicated in compact handoffs as top-level `action` and `target`. |
+| `dispatch` | Whether the input command reached CDP or failed before dispatch. |
+| `settlement` | Whether post-action observation settled, which strategy was used, and how long it took. |
+| `outcome` | Normalized result: `changed`, `no-change`, `attention`, `failed`, `timeout`, or `dispatched`. |
+| `observedDelta` | Bounded human-readable evidence lines: DOM diff, console, exceptions, network, or observation error. Compact handoffs keep signal-bearing lines. |
+| `observedDeltaDetails` | Structured delta rows such as `{ type, status, count, sample }` for DOM, console, exceptions, network, dispatch, and observation errors. Compact handoffs keep changed, failed, no-change, not-captured, and non-zero channels. |
+| `blockingSignals` | Structured blockers such as stale refs, observation errors, or no-change investigation signals. |
+| `recoveryHint` | One-line explanation of what the agent should do before retrying or continuing. |
+| `nextSteps` | Executable `cdp ...` commands for the next observation, report, or recovery action. |
+| `recovery` | Strategy, priority, and verify command when the action needs recovery; compact handoffs expose the same path through top-level `recommendation`, `verdict`, and `nextSteps`. |
+
 Common outcomes:
 
 | Outcome | Meaning |
@@ -55,6 +74,8 @@ Common outcomes:
 | `attention` | Console, network, or observation signals need diagnosis. |
 | `failed` | Dispatch failed; use the recovery command. |
 | `timeout` | The action may have happened, but post-action observation timed out. |
+
+For `no-change`, the receipt exposes target-aware blocking signals. Click/fill-style actions get `overlay-check-needed`; frame-scoped targets such as `@f2:4` get `frame-check-needed`; every no-change action gets `fresh-perception-needed`. Treat these as "inspect before retry" signals and follow the matching `nextSteps`.
 
 If dispatch succeeds but post-action observation fails internally, the action still returns `chrome-cdp-ex.action.v1` with an `observation-error` diagnosis instead of a generic CLI error.
 
@@ -141,6 +162,7 @@ The dogfood benchmark launches a disposable debug browser and measures:
 - `doctor -> open -> perceive -> act -> since-action evidence -> report`
 - command calls, total time, first useful observation, useful observation tokens
 - action evidence coverage and JSON completeness
+- Action Receipt contract completeness
 - failed-action diagnosis and no-change recovery
 - `nextSteps` and recommendation handoffs
 - modal, frame, CSS tracing, HMR/SPA diff, stale-ref recovery, and session stability probes

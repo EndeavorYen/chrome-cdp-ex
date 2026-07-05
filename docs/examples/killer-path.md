@@ -12,12 +12,12 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs list
 # If list has no useful target:
 node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
-node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref
+node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref --format json
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
 node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 ```
 
-`report` shows the latest 20 actions by default to keep handoffs small. Add `--last N` for a narrower handoff or `--all` when you intentionally need the full timeline; the JSONL log path in the report still preserves the long session history.
+The action JSON includes `receipt.schema = chrome-cdp-ex.action-receipt.v1`, which summarizes dispatch, settlement, observed delta, structured delta details, blocking signals, recovery hint, and executable next steps. Handoff receipts keep signal-bearing delta rows and omit duplicated recovery fields; the per-target JSONL log preserves the full receipt. Once the action is recorded, the receipt also carries `eventId`, `sequence`, and `loggedAt` for report/replay correlation. `report` shows the latest 20 actions by default to keep handoffs small. Add `--last N` for a narrower handoff or `--all` when you intentionally need the full timeline; the JSONL log path in the report still preserves the long session history.
 
 For forms, replace the action line with:
 
@@ -36,7 +36,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs frame <target> --format json
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
 ```
 
-The failed action JSON exposes `effects.failure.kind`, `recommendation`, and executable `nextSteps`; use those before retrying the same action.
+The failed action JSON exposes `effects.failure.kind`, `recommendation`, `receipt.recoveryHint`, and executable `nextSteps`; use those before retrying the same action. When `receipt.outcome` is `no-change`, inspect `receipt.blockingSignals` first. The signals are target-aware: overlay checks appear for click/fill-style actions, frame checks appear for frame-scoped targets, and fresh perception is always required before retry.
 
 ## CSS Trace
 
@@ -62,7 +62,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs export-playwright <target> --format js
 
 ## What Success Looks Like
 
-`perceive` returns a compact page map with `@ref` handles, layout hints, and console health. `click` or `fill` returns action evidence, including dispatch status, observed DOM diff, and console/network deltas. `perceive --since-action` answers what changed because of the last action, and `report` gives the session timeline plus next steps.
+`perceive` returns a compact page map with `@ref` handles, layout hints, and console health. `click` or `fill` returns action evidence plus an Action Receipt, including dispatch status, settlement, observed DOM diff, structured console/network deltas, blocking signals, recovery hint, and next steps. `perceive --since-action` answers what changed because of the last action, and `report` gives the session timeline plus next steps.
 
 ## If It Fails
 

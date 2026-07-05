@@ -44,7 +44,7 @@ describe('session report lib', () => {
     });
   });
 
-  it('routes latest no-change outcomes through overlay and frame checks', () => {
+  it('routes latest no-change outcomes through target-aware overlay and fresh perceive checks', () => {
     const recommendation = buildReportRecommendation([
       {
         action: 'click',
@@ -58,7 +58,6 @@ describe('session report lib', () => {
       outcomeStatus: 'no-change',
       commands: [
         'cdp overlay ABC123 "#refresh" --format json',
-        'cdp frame ABC123 --format json',
         'cdp perceive ABC123 -C -d 8',
         'cdp report ABC123 --format json',
       ],
