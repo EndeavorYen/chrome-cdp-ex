@@ -1016,8 +1016,13 @@ describe('ActionResult', () => {
       },
       settlement: {
         ok: true,
+        state: 'settled',
         strategy: 'dom-observation',
         durationMs: 120,
+        timeoutMs: null,
+        observedChannels: ['ax-diff', 'console', 'exceptions', 'network'],
+        signals: [],
+        reason: 'Post-action DOM observation completed.',
       },
       outcome: 'changed',
       observedDelta: [
@@ -1068,6 +1073,81 @@ describe('ActionResult', () => {
     expect(result.receipt.recovery).toMatchObject({
       strategy: 'continue-from-evidence',
       priority: 'medium',
+    });
+  });
+
+  it('makes settlement semantics explicit for failed, timeout, observation-error, and report-only actions', () => {
+    const failed = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '@99', resolvedBy: 'ref', label: '@99' },
+      dispatch: { ok: false, method: 'click', error: 'Unknown ref @99' },
+      settle: { ok: false, durationMs: 12 },
+      effects: { domDiff: null, failure: { kind: 'stale-ref', reason: 'Unknown ref @99' } },
+      nextHint: 'cdp perceive ABC123 -C -d 8',
+    });
+    expect(failed.receipt.settlement).toMatchObject({
+      ok: false,
+      state: 'failed',
+      strategy: 'dispatch-failed',
+      durationMs: 12,
+      signals: ['dispatch-failed'],
+      reason: 'Action failed before dispatch completed.',
+    });
+
+    const timeout = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: false, durationMs: 2000, timeoutMs: 2000 },
+      effects: { domDiff: null, consoleDelta: { count: 0, entries: [] } },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    expect(timeout.receipt.settlement).toMatchObject({
+      ok: false,
+      state: 'not-confirmed',
+      strategy: 'timeout',
+      durationMs: 2000,
+      timeoutMs: 2000,
+      observedChannels: ['console'],
+      signals: ['settlement-timeout'],
+      reason: 'Action dispatched, but post-action observation did not confirm settlement.',
+    });
+
+    const observationError = T.createActionResult({
+      action: 'clickxy',
+      target: { targetId: 'ABC123', input: '75,116', resolvedBy: 'coordinates', label: '75,116' },
+      dispatch: { ok: true, method: 'clickxy' },
+      settle: { ok: false, durationMs: 300 },
+      effects: {
+        domDiff: null,
+        observationError: { name: 'TypeError', message: 'observer failed' },
+      },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    expect(observationError.receipt.settlement).toMatchObject({
+      ok: false,
+      state: 'not-confirmed',
+      strategy: 'observation-error',
+      durationMs: 300,
+      signals: ['observation-error'],
+      reason: 'Action dispatched, but post-action observation failed.',
+    });
+
+    const reportOnly = T.createActionResult({
+      action: 'restore',
+      target: { targetId: 'ABC123', input: 'checkpoint', resolvedBy: 'artifact', label: 'checkpoint' },
+      dispatch: { ok: true, method: 'restore' },
+      settle: { ok: true, durationMs: 50 },
+      effects: { domDiff: null, console: [], network: [], navigation: null },
+      nextHint: 'Use report for follow-up evidence',
+    });
+    expect(reportOnly.receipt.settlement).toMatchObject({
+      ok: true,
+      state: 'not-applicable',
+      strategy: 'report-only',
+      durationMs: 50,
+      signals: ['report-only'],
+      reason: 'Action dispatched without post-action DOM observation.',
     });
   });
 
@@ -1505,7 +1585,12 @@ describe('ActionResult', () => {
     expect(parsed.receipt).toMatchObject({
       schema: 'chrome-cdp-ex.action-receipt.v1',
       dispatch: { ok: true },
-      settlement: { ok: true },
+      settlement: {
+        ok: true,
+        state: 'settled',
+        strategy: 'dom-observation',
+        signals: [],
+      },
       observedDelta: expect.arrayContaining([
         'Console: 1 entry (1 warning)',
         'Network: 1 request (1 failed)',
@@ -1826,6 +1911,14 @@ describe('Session report', () => {
       eventId: 'act_ABC123_000001',
       sequence: 1,
       outcome: 'changed',
+      settlement: {
+        state: 'settled',
+        strategy: 'dom-observation',
+        reason: 'Post-action DOM observation completed.',
+      },
+      recovery: {
+        strategy: 'continue-from-evidence',
+      },
       observedDeltaDetails: expect.arrayContaining([
         expect.objectContaining({ type: 'dom', status: 'changed' }),
         expect.objectContaining({ type: 'console', status: 'unchanged' }),
@@ -1915,6 +2008,12 @@ describe('Session report', () => {
             eventId: 'act_ABC12345_000001',
             sequence: 1,
             outcome: 'changed',
+            settlement: {
+              state: 'settled',
+              strategy: 'dom-observation',
+              durationMs: 123,
+              signals: [],
+            },
             observedDeltaDetails: [
               expect.objectContaining({ type: 'dom', status: 'changed' }),
             ],
@@ -1946,7 +2045,11 @@ describe('Session report', () => {
       'recoveryHint',
       'schema',
       'sequence',
+      'settlement',
     ]);
+    expect(model.actions[0].receipt).not.toHaveProperty('dispatch');
+    expect(model.actions[0].receipt).not.toHaveProperty('nextSteps');
+    expect(model.actions[0].receipt).not.toHaveProperty('recovery');
   });
 
   it('bounds JSON report action timeline to the latest actions by default', () => {

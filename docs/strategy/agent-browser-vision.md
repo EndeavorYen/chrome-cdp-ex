@@ -45,6 +45,7 @@ The product direction is to make browser work auditable at each handoff boundary
 |---|---|
 | Perception | Compact `perceive`/`summary` models that expose visible targets, refs, layout, console health, and budget metadata. |
 | Action Receipt | `chrome-cdp-ex.action-receipt.v1` summarizes dispatch, settlement, observed delta, structured delta details, session event identity, blocking signals, recovery hint, and next steps. |
+| Receipt Surfaces | Full session logs, action JSON, report JSON, and text output each expose the receipt shape appropriate for audit, agent handoff, session handoff, or quick human reading. |
 | Recovery Policy | Failed, timed-out, stale-ref, wrong-frame, overlay, and no-change paths should expose executable recovery commands before the agent retries. |
 | Session Handoff | `report`, `record-actions`, `replay`, and `export-playwright` preserve what happened, what is portable, and what needs review. |
 | Benchmark Gate | Promotion claims are blocked unless live browser runs prove evidence coverage, receipt completeness, recovery coverage, and bounded output. |
@@ -54,6 +55,8 @@ The product direction is to make browser work auditable at each handoff boundary
 | Area | Plan | Why |
 |---|---|---|
 | Action Receipt v1 | Shipped as a derived field inside `chrome-cdp-ex.action.v1`, with structured delta details and session event ids when recorded. | Gives agents a stable receipt instead of asking them to parse low-level evidence every time. |
+| Settlement semantics | Shipped explicit `settlement.state`, `strategy`, `signals`, and `reason` fields in Action Receipt v1. | Separates dispatch success from page/app processing evidence so agents do not over-trust weak settlement. |
+| Receipt surface contract | Shipped centralized action/report receipt surface helpers while preserving full session log receipts. | Keeps prompt-facing handoffs compact as new evidence fields are added. |
 | No-change recovery | Shipped target-aware `overlay-check-needed`, `frame-check-needed`, and `fresh-perception-needed` signals. | Prevents "dispatch succeeded" from being mistaken for task progress without forcing irrelevant frame checks. |
 | Adaptive perception budget | Make `perceive` choose line/token budget from page density, error state, and task context. | Keeps output small without hiding the next useful target. |
 | Recovery policy registry | Centralize diagnosis -> strategy -> commands so action, report, replay, and benchmark agree. | Reduces drift between text, JSON, and tests. |

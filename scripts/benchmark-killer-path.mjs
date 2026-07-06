@@ -356,6 +356,11 @@ function actionEvidenceCompletenessMissingFields(model = {}) {
   if (typeof receipt.eventId !== 'string' || !receipt.eventId.trim()) missing.push('receipt.eventId');
   if (!receipt.dispatch || typeof receipt.dispatch !== 'object') missing.push('receipt.dispatch');
   if (!receipt.settlement || typeof receipt.settlement !== 'object') missing.push('receipt.settlement');
+  const receiptSettlement = receipt.settlement || {};
+  if (typeof receiptSettlement.state !== 'string' || !receiptSettlement.state.trim()) missing.push('receipt.settlement.state');
+  if (typeof receiptSettlement.strategy !== 'string' || !receiptSettlement.strategy.trim()) missing.push('receipt.settlement.strategy');
+  if (!Number.isFinite(receiptSettlement.durationMs)) missing.push('receipt.settlement.durationMs');
+  if (!Array.isArray(receiptSettlement.signals)) missing.push('receipt.settlement.signals');
   if (!Array.isArray(receipt.observedDelta)) missing.push('receipt.observedDelta');
   if (!Array.isArray(receipt.observedDeltaDetails) || receipt.observedDeltaDetails.length === 0) missing.push('receipt.observedDeltaDetails');
   if (!Array.isArray(receipt.blockingSignals)) missing.push('receipt.blockingSignals');
@@ -1449,7 +1454,7 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       actual: metrics.actionEvidenceCompletenessCoverage?.rate ?? 1,
       operator: '>=',
       limit: limits.actionEvidenceCompletenessCoverageRateMin,
-      recommendation: 'Action JSON evidence must include the Action Receipt contract: event id, dispatch, settlement, observed delta details, blocking signals, recovery hint, and next steps.',
+      recommendation: 'Action JSON evidence must include the Action Receipt contract: event id, dispatch, settlement semantics, observed delta details, blocking signals, recovery hint, and next steps.',
     }),
     gateCriterion({
       name: 'action-failure-diagnosis',

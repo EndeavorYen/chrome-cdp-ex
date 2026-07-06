@@ -50,6 +50,7 @@
 - [x] Token-aware `perceive` scoring for important controls, errors, changes, and new UI. Priority: P1.
 - [x] `overlay` / `overlays` detector — read-only dialog/overlay and target hit-test blocker diagnosis. Priority: P1.
 - [x] Action Receipt v1 — `chrome-cdp-ex.action-receipt.v1` summarizes dispatch, settlement, observed delta, structured delta details, session event identity, blocking signals, recovery hint, and next steps. Priority: P1.
+- [x] Action Receipt settlement semantics — receipts expose settlement `state`, `strategy`, `signals`, `reason`, and handoff-safe surface shapes. Priority: P1.
 - [x] Target-aware no-change recovery signals — actions with no visible AX tree change emit relevant overlay, frame, and fresh-perception blocking signals. Priority: P1.
 - [x] Benchmark gate requires Action Receipt completeness for action JSON handoffs. Priority: P1.
 

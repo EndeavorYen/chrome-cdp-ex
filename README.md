@@ -208,7 +208,7 @@ Do not publish README, marketplace, awesome-list, or social comparison claims un
 
 - `npm run benchmark:killer -- --json` exits 0 and `gate.passed` is true.
 - Total output, per-command output, first-action-evidence, and per-command latency gates pass; inspect the gate `culprit` before publishing speed or efficiency claims.
-- Action JSON passes the Action Receipt contract gate: `eventId`, `dispatch`, `settlement`, `observedDeltaDetails`, `blockingSignals`, `recoveryHint`, and executable `nextSteps`.
+- Action JSON passes the Action Receipt contract gate: `eventId`, `dispatch`, `settlement.state/strategy/signals`, `observedDeltaDetails`, `blockingSignals`, `recoveryHint`, and executable `nextSteps`.
 - Competitor comparisons use `npm run benchmark:killer -- --comparison-baselines ./baselines.json` with measured baselines, not the planning-only `heuristic-smoke-baseline`.
 - `docs/examples/killer-path.md` still covers real browser perception, failed action recovery, CSS tracing, and export handoff.
 - Workflow handoffs from `record-actions --format json` and `export-playwright --format json` distinguish exported, skipped, review-needed, and live-only steps.

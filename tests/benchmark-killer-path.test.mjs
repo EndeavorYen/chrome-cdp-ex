@@ -24,7 +24,16 @@ function sampleActionReceipt(overrides = {}) {
     actionName: 'click',
     targetSummary: 'Start',
     dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
-    settlement: { ok: true, strategy: 'dom-observation', durationMs: 120 },
+    settlement: {
+      ok: true,
+      state: 'settled',
+      strategy: 'dom-observation',
+      durationMs: 120,
+      timeoutMs: null,
+      observedChannels: ['ax-diff', 'console', 'exceptions', 'network'],
+      signals: [],
+      reason: 'Post-action DOM observation completed.',
+    },
     outcome: 'changed',
     observedDelta: ['DOM changed after action'],
     observedDeltaDetails: [
@@ -1510,6 +1519,10 @@ describe('benchmark killer path helpers', () => {
             'receipt.eventId',
             'receipt.dispatch',
             'receipt.settlement',
+            'receipt.settlement.state',
+            'receipt.settlement.strategy',
+            'receipt.settlement.durationMs',
+            'receipt.settlement.signals',
             'receipt.observedDelta',
             'receipt.observedDeltaDetails',
             'receipt.blockingSignals',
@@ -1524,9 +1537,68 @@ describe('benchmark killer path helpers', () => {
         name: 'action-evidence-completeness',
         passed: false,
         actual: 0,
-        recommendation: 'Action JSON evidence must include the Action Receipt contract: event id, dispatch, settlement, observed delta details, blocking signals, recovery hint, and next steps.',
+        recommendation: 'Action JSON evidence must include the Action Receipt contract: event id, dispatch, settlement semantics, observed delta details, blocking signals, recovery hint, and next steps.',
       }),
     ]));
+  });
+
+  it('fails the gate when action receipts omit settlement semantics', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'action-settlement-semantics',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'click',
+          command: ['click', 'AABBCCDD', '@1', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify({
+            schema: 'chrome-cdp-ex.action.v1',
+            action: 'click',
+            target: { targetId: 'AABBCCDD', input: '@1', resolvedBy: 'ref', label: 'Start' },
+            dispatch: { ok: true, method: 'click' },
+            settle: { ok: true, durationMs: 120 },
+            effects: {
+              domDiff: '+++ Added\n+   [status] Done',
+              consoleDelta: { count: 0, errors: 0, warnings: 0, entries: [] },
+              exceptionDelta: { count: 0, entries: [] },
+              networkDelta: { count: 0, failures: 0, pending: 0, entries: [] },
+            },
+            outcome: { status: 'changed' },
+            verdict: { status: 'continue', canContinue: true, needsRecovery: false },
+            recommendation: {
+              source: 'action-evidence',
+              commands: ['cdp report AABBCCDD --format json'],
+            },
+            receipt: sampleActionReceipt({
+              settlement: { ok: true, durationMs: 120 },
+            }),
+            nextSteps: ['cdp report AABBCCDD --format json'],
+          }),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.actionEvidenceCompletenessCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'click',
+          commandText: 'cdp click AABBCCDD @1 --format json',
+          missing: expect.arrayContaining([
+            'receipt.settlement.state',
+            'receipt.settlement.strategy',
+            'receipt.settlement.signals',
+          ]),
+        }),
+      ],
+    });
   });
 
   it('covers failed action JSON diagnosis handoffs', () => {

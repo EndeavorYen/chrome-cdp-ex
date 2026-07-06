@@ -14,6 +14,10 @@ import { spawn, spawnSync } from 'child_process';
 import net from 'net';
 import { autoActionJsonArgs as autoActionJsonArgsForCommands } from './lib/action-evidence.mjs';
 import {
+  receiptForActionJson,
+  receiptForReport,
+} from './lib/action-receipt-surfaces.mjs';
+import {
   actionFailureInput,
   actionFailureMessage,
   actionTargetCommandId,
@@ -1799,11 +1803,62 @@ function actionTargetSummary(actionResult = {}) {
 }
 
 function actionSettlementStrategy(actionResult = {}) {
-  if (actionResult.effects?.domDiff != null) return 'dom-observation';
-  if (actionResult.effects?.observationError?.message) return 'observation-error';
   if (actionResult.dispatch?.ok === false) return 'dispatch-failed';
-  if (actionResult.settle?.ok === false) return 'not-confirmed';
+  if (actionResult.effects?.failure?.kind) return 'dispatch-failed';
+  if (actionResult.effects?.observationError?.message) return 'observation-error';
+  if (actionResult.settle?.ok === false) return 'timeout';
+  if (actionResult.effects?.domDiff != null) return 'dom-observation';
   return 'report-only';
+}
+
+function actionSettlementObservedChannels(actionResult = {}) {
+  const effects = actionResult.effects || {};
+  const channels = [];
+  if (actionResult.dispatch?.ok === false || effects.failure?.kind) channels.push('dispatch');
+  if (effects.domDiff != null) channels.push('ax-diff');
+  if (Object.hasOwn(effects, 'consoleDelta')) channels.push('console');
+  if (Object.hasOwn(effects, 'exceptionDelta')) channels.push('exceptions');
+  if (Object.hasOwn(effects, 'networkDelta')) channels.push('network');
+  if (effects.observationError?.message) channels.push('observation');
+  return [...new Set(channels)];
+}
+
+function actionSettlementSignals(actionResult = {}, strategy = actionSettlementStrategy(actionResult)) {
+  if (strategy === 'dispatch-failed') return ['dispatch-failed'];
+  if (strategy === 'observation-error') return ['observation-error'];
+  if (strategy === 'timeout') return ['settlement-timeout'];
+  if (strategy === 'report-only') return ['report-only'];
+  return [];
+}
+
+function actionSettlementState(actionResult = {}, strategy = actionSettlementStrategy(actionResult)) {
+  if (strategy === 'dispatch-failed') return 'failed';
+  if (strategy === 'report-only') return 'not-applicable';
+  if (actionResult.settle?.ok === true) return 'settled';
+  return 'not-confirmed';
+}
+
+function actionSettlementReason(actionResult = {}, strategy = actionSettlementStrategy(actionResult)) {
+  if (strategy === 'dispatch-failed') return 'Action failed before dispatch completed.';
+  if (strategy === 'observation-error') return 'Action dispatched, but post-action observation failed.';
+  if (strategy === 'timeout') return 'Action dispatched, but post-action observation did not confirm settlement.';
+  if (strategy === 'report-only') return 'Action dispatched without post-action DOM observation.';
+  if (strategy === 'dom-observation') return 'Post-action DOM observation completed.';
+  return 'Action settlement status is not confirmed.';
+}
+
+function buildSettlementReceipt(actionResult = {}) {
+  const strategy = actionSettlementStrategy(actionResult);
+  return {
+    ok: actionResult.settle?.ok ?? null,
+    state: actionSettlementState(actionResult, strategy),
+    strategy,
+    durationMs: Number.isFinite(actionResult.settle?.durationMs) ? actionResult.settle.durationMs : null,
+    timeoutMs: Number.isFinite(actionResult.settle?.timeoutMs) ? actionResult.settle.timeoutMs : null,
+    observedChannels: actionSettlementObservedChannels(actionResult),
+    signals: actionSettlementSignals(actionResult, strategy),
+    reason: actionSettlementReason(actionResult, strategy),
+  };
 }
 
 function actionDeltaDetails(actionResult = {}) {
@@ -1931,11 +1986,7 @@ function buildActionReceipt(actionResult = {}) {
     actionName: actionResult.action || null,
     targetSummary: actionTargetSummary(actionResult),
     dispatch: actionResult.dispatch || null,
-    settlement: {
-      ok: actionResult.settle?.ok ?? null,
-      strategy: actionSettlementStrategy(actionResult),
-      durationMs: Number.isFinite(actionResult.settle?.durationMs) ? actionResult.settle.durationMs : null,
-    },
+    settlement: buildSettlementReceipt(actionResult),
     outcome: outcome.status || 'unknown',
     observedDelta: actionDeltaLines(actionResult),
     observedDeltaDetails: actionDeltaDetails(actionResult),
@@ -2481,47 +2532,10 @@ function summarizeActionDomDiff(domDiff) {
   return { summary, sample };
 }
 
-function isSignalDeltaDetail(detail = {}) {
-  if (!detail || typeof detail !== 'object') return false;
-  if (detail.status && detail.status !== 'unchanged') return true;
-  return ['count', 'errors', 'warnings', 'failures', 'pending'].some(key => Number(detail[key] || 0) > 0);
-}
-
-function compactDeltaDetailsForHandoff(details = []) {
-  const items = Array.isArray(details) ? details.filter(detail => detail && typeof detail === 'object') : [];
-  const signalItems = items.filter(isSignalDeltaDetail);
-  return signalItems.length ? signalItems : items.slice(0, 1);
-}
-
-function compactObservedDeltaLinesForHandoff(lines = []) {
-  const items = Array.isArray(lines) ? lines.filter(line => typeof line === 'string' && line.trim()) : [];
-  const signalItems = items.filter(line => !/^(Console|Exceptions|Network) unchanged$/i.test(line.trim()));
-  return signalItems.length ? signalItems : items.slice(0, 1);
-}
-
-function compactReceiptForActionJson(receipt = null) {
-  if (!receipt || typeof receipt !== 'object') return receipt;
-  return {
-    schema: receipt.schema || 'chrome-cdp-ex.action-receipt.v1',
-    actionId: receipt.actionId || null,
-    eventId: receipt.eventId || null,
-    sequence: receipt.sequence ?? null,
-    loggedAt: receipt.loggedAt || null,
-    dispatch: receipt.dispatch || null,
-    settlement: receipt.settlement || null,
-    outcome: receipt.outcome || null,
-    observedDelta: compactObservedDeltaLinesForHandoff(receipt.observedDelta),
-    observedDeltaDetails: compactDeltaDetailsForHandoff(receipt.observedDeltaDetails),
-    blockingSignals: Array.isArray(receipt.blockingSignals) ? receipt.blockingSignals : [],
-    recoveryHint: receipt.recoveryHint || null,
-    nextSteps: Array.isArray(receipt.nextSteps) ? receipt.nextSteps : [],
-  };
-}
-
 function compactActionResultForJson(result) {
   const compact = JSON.parse(JSON.stringify(result));
   compact.target = sanitizeActionTargetForLog(compact.action, compact.target || null);
-  compact.receipt = compactReceiptForActionJson(compact.receipt);
+  compact.receipt = receiptForActionJson(compact.receipt);
   const effects = compact.effects || {};
   if (typeof effects.domDiff !== 'string') return redactSensitiveArtifactValue(compact);
 
@@ -2900,21 +2914,6 @@ function reportActionTimelineWindow(actionLog = [], lastActions = DEFAULT_REPORT
   };
 }
 
-function compactReceiptForReport(receipt = null) {
-  if (!receipt || typeof receipt !== 'object') return null;
-  return {
-    schema: receipt.schema || 'chrome-cdp-ex.action-receipt.v1',
-    actionId: receipt.actionId || null,
-    eventId: receipt.eventId || null,
-    sequence: receipt.sequence ?? null,
-    loggedAt: receipt.loggedAt || null,
-    outcome: receipt.outcome || null,
-    observedDeltaDetails: compactDeltaDetailsForHandoff(receipt.observedDeltaDetails),
-    blockingSignals: Array.isArray(receipt.blockingSignals) ? receipt.blockingSignals : [],
-    recoveryHint: receipt.recoveryHint || null,
-  };
-}
-
 function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFAULT_REPORT_ACTION_LIMIT } = {}) {
   const actionLog = session.actionLog || [];
   const screenshots = session.screenshots || [];
@@ -2938,7 +2937,7 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
       target: entry.target || null,
       dispatch: entry.dispatch || null,
       settle: entry.settle || null,
-      receipt: compactReceiptForReport(entry.receipt),
+      receipt: receiptForReport(entry.receipt),
       evidence: {
         dispatchMethod: entry.dispatch?.method || null,
         settleOk: entry.settle?.ok ?? null,

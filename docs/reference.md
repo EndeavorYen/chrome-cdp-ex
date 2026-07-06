@@ -56,7 +56,7 @@ Action evidence answers three questions:
 | `eventId` / `sequence` / `loggedAt` | Session-level event identity added when the action is recorded; use this for audit, report, and replay correlation. |
 | `actionName` / `targetSummary` | What was attempted and the resolved target label; duplicated in compact handoffs as top-level `action` and `target`. |
 | `dispatch` | Whether the input command reached CDP or failed before dispatch. |
-| `settlement` | Whether post-action observation settled, which strategy was used, and how long it took. |
+| `settlement` | Whether post-action observation settled, which strategy was used, how long it took, and why the agent can or cannot trust the post-action evidence. |
 | `outcome` | Normalized result: `changed`, `no-change`, `attention`, `failed`, `timeout`, or `dispatched`. |
 | `observedDelta` | Bounded human-readable evidence lines: DOM diff, console, exceptions, network, or observation error. Compact handoffs keep signal-bearing lines. |
 | `observedDeltaDetails` | Structured delta rows such as `{ type, status, count, sample }` for DOM, console, exceptions, network, dispatch, and observation errors. Compact handoffs keep changed, failed, no-change, not-captured, and non-zero channels. |
@@ -64,6 +64,27 @@ Action evidence answers three questions:
 | `recoveryHint` | One-line explanation of what the agent should do before retrying or continuing. |
 | `nextSteps` | Executable `cdp ...` commands for the next observation, report, or recovery action. |
 | `recovery` | Strategy, priority, and verify command when the action needs recovery; compact handoffs expose the same path through top-level `recommendation`, `verdict`, and `nextSteps`. |
+
+Settlement fields:
+
+| Settlement field | Meaning |
+|---|---|
+| `ok` | Backward-compatible boolean from the action feedback loop. |
+| `state` | `settled`, `not-confirmed`, `not-applicable`, or `failed`. |
+| `strategy` | `dom-observation`, `timeout`, `observation-error`, `dispatch-failed`, or `report-only`. |
+| `durationMs` / `timeoutMs` | Elapsed action feedback time and, when known, the timeout budget. |
+| `observedChannels` | Full/action JSON channels captured for this action, such as `ax-diff`, `console`, `exceptions`, `network`, `dispatch`, or `observation`. |
+| `signals` | Machine-readable settlement signals such as `settlement-timeout`, `observation-error`, `dispatch-failed`, or `report-only`. |
+| `reason` | Short explanation of the settlement state; compact action handoffs may omit the redundant `settled` explanation while preserving reasons for failed or not-confirmed states. |
+
+Receipt surfaces:
+
+| Surface | Purpose | Receipt shape |
+|---|---|---|
+| Session JSONL / action log | Audit, replay, and debugging | Full receipt, including recovery metadata and unchanged delta channels. |
+| Action JSON | Agent handoff immediately after one command | Compact receipt with dispatch, settlement semantics, signal-bearing deltas, recovery hint, and executable next steps. |
+| Report JSON | Session handoff | Smaller receipt with event identity, settlement summary, outcome, blocking signals, recovery hint, and compact delta details. |
+| Text output | Human quick read | Outcome, receipt status, blocking signals, recovery hint, settle line, and high-signal evidence samples. |
 
 Common outcomes:
 
