@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, writeFileSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { pathToFileURL } from 'url';
 
@@ -41,6 +41,7 @@ export function parseCampaignArgs(argv = []) {
     json: false,
     failFast: false,
     output: null,
+    history: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -59,6 +60,9 @@ export function parseCampaignArgs(argv = []) {
     } else if (arg === '--output') {
       opts.output = argv[++i] || null;
       if (!opts.output) throw new Error('output path is required after --output');
+    } else if (arg === '--history' || arg === '--history-file') {
+      opts.history = argv[++i] || null;
+      if (!opts.history) throw new Error('history path is required after --history');
     } else if (arg === '--json') {
       opts.json = true;
     } else if (arg === '--fail-fast') {
@@ -264,6 +268,96 @@ export function summarizeCampaignRun({ startedAt, endedAt, rounds = [], plan = [
   };
 }
 
+function trendMetricsForSummary(summary = {}) {
+  const rounds = Array.isArray(summary.rounds) ? summary.rounds : [];
+  const metric = name => rounds.map(round => round.metrics?.[name]);
+  const slowest = summary.opportunities?.slowestRound || null;
+  return {
+    passRate: Number.isFinite(summary.passRate) ? summary.passRate : null,
+    avgEstimatedOutputTokens: numericAverage(metric('estimatedOutputTokens')),
+    avgUsefulObservationTokens: numericAverage(metric('usefulObservationTokens')),
+    maxStepEstimatedTokens: numericMax(metric('maxStepEstimatedTokens')),
+    slowestStepMs: slowest?.value ?? numericMax(metric('maxStepDurationMs')),
+    slowestStepName: slowest?.step?.name || null,
+    slowestStepType: slowest?.type || null,
+    slowestStepRound: slowest?.round || null,
+  };
+}
+
+export function buildCampaignHistoryRecord(summary = {}, { recordedAt = null } = {}) {
+  return {
+    schema: 'chrome-cdp-ex.live-campaign-history.v1',
+    recordedAt: recordedAt || summary.endedAt || new Date().toISOString(),
+    startedAt: summary.startedAt || null,
+    endedAt: summary.endedAt || null,
+    roundsCompleted: summary.roundsCompleted ?? null,
+    passCount: summary.passCount ?? null,
+    failCount: summary.failCount ?? null,
+    metrics: trendMetricsForSummary(summary),
+  };
+}
+
+function readPreviousCampaignHistoryRecord(historyPath) {
+  if (!existsSync(historyPath)) return null;
+  const lines = readFileSync(historyPath, 'utf8')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return null;
+  return JSON.parse(lines.at(-1));
+}
+
+function metricDelta(current, previous, key) {
+  const currentValue = current?.metrics?.[key];
+  const previousValue = previous?.metrics?.[key];
+  if (!Number.isFinite(currentValue) || !Number.isFinite(previousValue)) return null;
+  return currentValue - previousValue;
+}
+
+function buildCampaignHistoryDelta(current, previous) {
+  if (!previous) return null;
+  const fromStep = previous.metrics?.slowestStepName || null;
+  const toStep = current.metrics?.slowestStepName || null;
+  return {
+    previousRecordedAt: previous.recordedAt || null,
+    passRate: metricDelta(current, previous, 'passRate'),
+    avgEstimatedOutputTokens: metricDelta(current, previous, 'avgEstimatedOutputTokens'),
+    avgUsefulObservationTokens: metricDelta(current, previous, 'avgUsefulObservationTokens'),
+    maxStepEstimatedTokens: metricDelta(current, previous, 'maxStepEstimatedTokens'),
+    slowestStepMs: metricDelta(current, previous, 'slowestStepMs'),
+    slowestStepChanged: fromStep !== toStep ? { from: fromStep, to: toStep } : null,
+  };
+}
+
+export function appendCampaignHistory(historyPath, summary, opts = {}) {
+  const outputPath = resolve(historyPath);
+  mkdirSync(dirname(outputPath), { recursive: true });
+  const previous = readPreviousCampaignHistoryRecord(outputPath);
+  const current = buildCampaignHistoryRecord(summary, opts);
+  const delta = buildCampaignHistoryDelta(current, previous);
+  appendFileSync(outputPath, `${JSON.stringify(current)}\n`);
+  return {
+    path: outputPath,
+    previous,
+    current,
+    delta,
+  };
+}
+
+function formatSignedIntegerDelta(value, unit) {
+  if (!Number.isFinite(value)) return `n/a ${unit}`;
+  const rounded = Math.round(value);
+  const sign = rounded > 0 ? '+' : '';
+  return `${sign}${rounded} ${unit}`;
+}
+
+function formatPassRateDelta(value) {
+  if (!Number.isFinite(value)) return 'n/a';
+  const points = Math.round(value * 100);
+  const sign = points > 0 ? '+' : '';
+  return `${sign}${points}pp`;
+}
+
 export function formatCampaignReport(summary) {
   const pct = summary.passRate == null ? 'n/a' : `${Math.round(summary.passRate * 100)}%`;
   const lines = [
@@ -279,6 +373,17 @@ export function formatCampaignReport(summary) {
     lines.push(`  - ${entry.type}: ${passRate}, avg total ${entry.avgTotalMs ?? 'n/a'} ms, avg output ${entry.avgEstimatedOutputTokens ?? 'n/a'} tokens, avg useful observation ${entry.avgUsefulObservationTokens ?? 'n/a'} tokens`);
     if (entry.largeAppStress) {
       lines.push(`    large-app stress: ${entry.largeAppStress.passed}/${entry.largeAppStress.rounds} pass, command coverage ${Math.round((entry.largeAppStress.avgCommandCoverageRate || 0) * 100)}%, output budgets ${Math.round((entry.largeAppStress.avgOutputBudgetCoverageRate || 0) * 100)}%, truncation metadata ${Math.round((entry.largeAppStress.avgTruncationMetadataCoverageRate || 0) * 100)}%`);
+    }
+  }
+  if (summary.history) {
+    if (summary.history.delta) {
+      const delta = summary.history.delta;
+      lines.push('', `History trend: pass rate ${formatPassRateDelta(delta.passRate)}, avg output ${formatSignedIntegerDelta(delta.avgEstimatedOutputTokens, 'tokens')}, max step ${formatSignedIntegerDelta(delta.maxStepEstimatedTokens, 'tokens')}, slowest step ${formatSignedIntegerDelta(delta.slowestStepMs, 'ms')}`);
+      if (delta.slowestStepChanged) {
+        lines.push(`  - slowest step changed: ${delta.slowestStepChanged.from || 'n/a'} -> ${delta.slowestStepChanged.to || 'n/a'}`);
+      }
+    } else {
+      lines.push('', 'History trend: first recorded run, no previous campaign baseline');
     }
   }
   if (summary.failurePatterns.length) {
@@ -356,6 +461,9 @@ export async function runLiveCampaign(opts = {}) {
     rounds,
     plan,
   });
+  if (opts.history) {
+    summary.history = appendCampaignHistory(opts.history, summary);
+  }
   if (opts.output) {
     const outputPath = resolve(opts.output);
     mkdirSync(dirname(outputPath), { recursive: true });
