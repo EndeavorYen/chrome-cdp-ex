@@ -907,7 +907,21 @@ async function runCampaignRound(plan, opts) {
 
 export async function runLiveCampaign(opts = {}) {
   if (!opts.skipLock) {
-    return withLiveBenchmarkLock({ name: 'benchmark:campaign' }, () => runLiveCampaign({ ...opts, skipLock: true }));
+    const port = Number(opts.portStart || process.env.CDP_CAMPAIGN_PORT_START || 9440);
+    const serverPort = Number(opts.serverPortStart || process.env.CDP_CAMPAIGN_HTTP_PORT_START || 42140);
+    return withLiveBenchmarkLock({
+      name: 'benchmark:campaign',
+      port,
+      serverPort,
+      browser: 'campaign',
+      profilePrefix: 'chrome-cdp-ex-campaign',
+    }, run => runLiveCampaign({
+      ...opts,
+      skipLock: true,
+      portStart: run.metadata.port,
+      serverPortStart: run.metadata.serverPort,
+      liveRun: run,
+    }));
   }
   const plan = buildCampaignRoundPlan(opts);
   const outputPath = opts.output ? resolve(opts.output) : null;
@@ -919,6 +933,7 @@ export async function runLiveCampaign(opts = {}) {
   for (const roundPlan of plan) {
     const round = await runCampaignRound(roundPlan, opts);
     rounds.push(round);
+    opts.liveRun?.heartbeat();
     if (!round.success && opts.failFast) break;
     if (opts.settleMs > 0 && rounds.length < plan.length) await sleep(opts.settleMs);
   }

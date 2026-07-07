@@ -424,12 +424,29 @@ export function parseMcpBenchmarkArgs(argv = []) {
 
 export async function runMcpBenchmark(opts = {}) {
   if (!opts.skipLock) {
-    return withLiveBenchmarkLock({ name: 'benchmark:mcp' }, () => runMcpBenchmark({ ...opts, skipLock: true }));
+    const port = Number(opts.port || process.env.CDP_MCP_BENCH_PORT || 9335);
+    const serverPort = Number(opts.serverPort || process.env.CDP_MCP_BENCH_HTTP_PORT || 41739);
+    return withLiveBenchmarkLock({
+      name: 'benchmark:mcp',
+      port,
+      serverPort,
+      browser: 'auto',
+      profilePrefix: 'chrome-cdp-ex-mcp-bench',
+    }, run => runMcpBenchmark({
+      ...opts,
+      skipLock: true,
+      port: run.metadata.port,
+      serverPort: run.metadata.serverPort,
+      profileDir: run.metadata.profileDir,
+      liveRun: run,
+    }));
   }
   const {
     port = Number(process.env.CDP_MCP_BENCH_PORT || 9335),
     serverPort = Number(process.env.CDP_MCP_BENCH_HTTP_PORT || 41739),
     json = false,
+    profileDir: requestedProfileDir = null,
+    liveRun = null,
   } = opts;
   if (!existsSync(cdp)) throw new Error(`cdp script not found: ${cdp}`);
   if (!existsSync(mcpServer)) throw new Error(`MCP server not found: ${mcpServer}`);
@@ -438,7 +455,7 @@ export async function runMcpBenchmark(opts = {}) {
   if (candidates.length === 0) throw new Error('no supported Chrome/Edge/Brave browser binary found');
 
   const [browserPath, browserName] = candidates[0];
-  const profileDir = mkdtempSync(resolve(tmpdir(), `chrome-cdp-ex-mcp-bench-${browserName}-`));
+  const profileDir = requestedProfileDir || mkdtempSync(resolve(tmpdir(), `chrome-cdp-ex-mcp-bench-${browserName}-`));
   const steps = [];
   let browser;
   let server;
@@ -471,6 +488,7 @@ export async function runMcpBenchmark(opts = {}) {
       server.once('error', reject);
       server.listen(serverPort, '127.0.0.1', resolveServer);
     });
+    liveRun?.heartbeat();
 
     const url = `http://127.0.0.1:${serverPort}/smoke-page.html`;
     browser = spawn(browserPath, [
@@ -481,6 +499,7 @@ export async function runMcpBenchmark(opts = {}) {
       'about:blank',
     ], { detached: true, stdio: 'ignore' });
     browser.unref();
+    liveRun?.heartbeat();
 
     const env = { ...process.env, CDP_PORT: String(port) };
     let reachable = false;
