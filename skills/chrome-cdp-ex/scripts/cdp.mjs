@@ -386,6 +386,17 @@ function parseFormatArgs(args, allowed = ['text', 'json']) {
   return { format, args: next };
 }
 
+function parseCompactFormatArgs(args, allowed = ['text', 'json']) {
+  const fopts = parseFormatArgs(args, allowed);
+  let compact = false;
+  const next = [];
+  for (const arg of fopts.args) {
+    if (arg === '--compact') compact = true;
+    else next.push(arg);
+  }
+  return { format: fopts.format, compact, args: next };
+}
+
 function formatJson(model) {
   return JSON.stringify(model, null, 2);
 }
@@ -2623,8 +2634,18 @@ function finalizeActionResult(result, { enrichActionResult = null, onActionResul
   return result;
 }
 
-function formatActionResultOutput(result, { format = 'text', dispatchText = '', timeoutError = null } = {}) {
-  if (format === 'json') return formatJson(compactActionResultForJson(result));
+function normalizeActionOutputOptions(format = 'text') {
+  if (format && typeof format === 'object') {
+    return {
+      format: format.format || 'text',
+      compact: format.compact === true,
+    };
+  }
+  return { format, compact: false };
+}
+
+function formatActionResultOutput(result, { format = 'text', compact = false, dispatchText = '', timeoutError = null } = {}) {
+  if (format === 'json') return formatJson(compactActionResultForJson(result, { compact }));
   const text = dispatchText ? `${dispatchText}\n---\n${formatActionText(result)}` : formatActionText(result);
   if (!timeoutError) return text;
   return `${text}\n(success but observation timed out after action dispatch: ${timeoutError.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
@@ -2891,6 +2912,7 @@ async function pageContainsText(cdp, sid, text) {
 }
 
 async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --since-action if more evidence is needed', enrichActionResult = null, onActionResult = null, format = 'text' }) {
+  const output = normalizeActionOutputOptions(format);
   const startedAt = Date.now();
   let dispatchText;
   try {
@@ -2906,7 +2928,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       nextHint: failure.nextCommand,
     });
     finalizeActionResult(result, { enrichActionResult, onActionResult });
-    if (format === 'json') return formatActionResultOutput(result, { format });
+    if (output.format === 'json') return formatActionResultOutput(result, output);
     throw new Error(formatActionFailure(e, { action, target }));
   }
   if (feedbackPolicy === 'none' || feedbackPolicy === 'report-only') {
@@ -2920,7 +2942,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
     });
     finalizeActionResult(result, { enrichActionResult, onActionResult });
     if (feedbackPolicy === 'none') return dispatchText;
-    return formatActionResultOutput(result, { format, dispatchText });
+    return formatActionResultOutput(result, { ...output, dispatchText });
   }
   try {
     const domDiff = await observe();
@@ -2933,7 +2955,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       nextHint,
     });
     finalizeActionResult(result, { enrichActionResult, onActionResult });
-    return formatActionResultOutput(result, { format, dispatchText });
+    return formatActionResultOutput(result, { ...output, dispatchText });
   } catch (e) {
     const observationError = isTimeoutError(e) ? null : compactObservationError(e);
     const result = createActionResult({
@@ -2952,7 +2974,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
     });
     finalizeActionResult(result, { enrichActionResult, onActionResult });
     return formatActionResultOutput(result, {
-      format,
+      ...output,
       dispatchText,
       timeoutError: observationError ? null : e,
     });
@@ -2991,12 +3013,161 @@ function summarizeActionDomDiff(domDiff) {
   return { summary, sample };
 }
 
-function compactActionResultForJson(result) {
+function compactActionTargetModel(target = null) {
+  if (!target || typeof target !== 'object') return target;
+  const compact = {};
+  for (const field of ['targetId', 'input', 'resolvedBy', 'label', 'frameRef', 'redacted']) {
+    if (target[field] !== undefined && target[field] !== null && target[field] !== '') compact[field] = target[field];
+  }
+  return compact;
+}
+
+function compactActionDeltaModel(delta = {}, fields = []) {
+  const compact = {
+    count: numericDeltaCount(delta.count, 0),
+  };
+  for (const field of fields) {
+    compact[field] = numericDeltaCount(delta[field], 0);
+  }
+  const entries = Array.isArray(delta.entries) ? delta.entries.filter(Boolean) : [];
+  const signal = entries.find(entry => (
+    entry?.level === 'error'
+    || entry?.level === 'warning'
+    || entry?.level === 'warn'
+    || entry?.failed === true
+    || entry?.errorText
+    || Number(entry?.status) >= 400
+    || entry?.pending === true
+  )) || entries[0];
+  if (signal) {
+    compact.sample = Object.fromEntries(Object.entries(signal).filter(([, value]) => (
+      value !== null && value !== undefined && value !== '' && value !== false
+    )));
+  }
+  return compact;
+}
+
+function compactActionFailureModel(failure = null) {
+  if (!failure || typeof failure !== 'object') return null;
+  return {
+    kind: failure.kind || 'unknown',
+    reason: failure.reason || failure.originalMessage || null,
+    nextCommand: failure.nextCommand || null,
+  };
+}
+
+function compactActionRecommendationModel(recommendation = null) {
+  if (!recommendation || typeof recommendation !== 'object') return null;
+  const compact = {};
+  for (const field of ['source', 'strategy', 'action', 'targetPrefix', 'outcomeStatus', 'diagnosisKind', 'priority', 'verifyCommand']) {
+    if (recommendation[field] !== undefined && recommendation[field] !== null && recommendation[field] !== '') {
+      compact[field] = recommendation[field];
+    }
+  }
+  for (const field of ['commands', 'blockingSignals']) {
+    if (Array.isArray(recommendation[field]) && recommendation[field].length) compact[field] = recommendation[field];
+  }
+  return compact;
+}
+
+function compactActionOutcomeModel(outcome = null) {
+  if (!outcome || typeof outcome !== 'object') return null;
+  return {
+    status: outcome.status || 'unknown',
+    changed: outcome.changed ?? null,
+    needsAttention: outcome.needsAttention === true,
+    evidence: outcome.evidence || null,
+  };
+}
+
+function compactActionVerdictForJson(verdict = null) {
+  if (!verdict || typeof verdict !== 'object') return null;
+  return {
+    status: verdict.status || 'verify',
+    canContinue: verdict.canContinue === true,
+    needsRecovery: verdict.needsRecovery === true,
+    primaryNextStep: verdict.primaryNextStep || null,
+  };
+}
+
+function receiptForCompactActionJson(receipt = null) {
+  const base = receiptForActionJson(receipt);
+  if (!base || typeof base !== 'object') return base;
+  return {
+    schema: base.schema || 'chrome-cdp-ex.action-receipt.v1',
+    eventId: base.eventId || null,
+    sequence: base.sequence ?? null,
+    dispatch: base.dispatch || null,
+    settlement: {
+      state: base.settlement?.state || null,
+      strategy: base.settlement?.strategy || null,
+      durationMs: Number.isFinite(base.settlement?.durationMs) ? base.settlement.durationMs : null,
+      signals: Array.isArray(base.settlement?.signals) ? base.settlement.signals : [],
+    },
+    outcome: base.outcome || null,
+    observedDelta: Array.isArray(base.observedDelta) ? base.observedDelta.slice(0, 2) : [],
+    observedDeltaDetails: Array.isArray(base.observedDeltaDetails) ? base.observedDeltaDetails.slice(0, 2) : [],
+    blockingSignals: Array.isArray(base.blockingSignals) ? base.blockingSignals : [],
+    recoveryHint: base.recoveryHint || null,
+    nextSteps: Array.isArray(base.nextSteps) ? base.nextSteps : [],
+  };
+}
+
+function compactActionEffectsModel(effects = {}) {
+  const compact = {};
+  if (typeof effects.domDiff === 'string') {
+    const summary = effects.domDiffSummary || summarizeActionDomDiff(effects.domDiff).summary;
+    const sample = effects.domDiffSample || summarizeActionDomDiff(effects.domDiff).sample;
+    compact.domDiffChars = Number.isFinite(effects.domDiffChars) ? effects.domDiffChars : effects.domDiff.length;
+    compact.domDiffSummary = summary || 'DOM observation captured';
+    if (sample) compact.domDiffSample = sample;
+    if (effects.domDiffTruncated === true || effects.domDiff.length > MAX_ACTION_JSON_DOM_DIFF_CHARS) {
+      compact.domDiffTruncated = true;
+    }
+  } else if (Object.hasOwn(effects, 'domDiff')) {
+    compact.domDiff = effects.domDiff ?? null;
+    if (compact.domDiff == null) compact.domDiffSummary = 'DOM observation not captured';
+  } else {
+    compact.domDiff = null;
+    compact.domDiffSummary = 'DOM observation not captured';
+  }
+  compact.consoleDelta = compactActionDeltaModel(normalizeConsoleDelta(effects.consoleDelta || {}), ['errors', 'warnings']);
+  compact.exceptionDelta = compactActionDeltaModel(normalizeExceptionDelta(effects.exceptionDelta || {}));
+  compact.networkDelta = compactActionDeltaModel(normalizeNetworkDelta(effects.networkDelta || {}), ['failures', 'pending']);
+  const failure = compactActionFailureModel(effects.failure);
+  if (failure) compact.failure = failure;
+  const diagnosis = compactActionDiagnosisModel(effects.diagnosis);
+  if (diagnosis && diagnosis.status !== 'ok') compact.diagnosis = diagnosis;
+  if (effects.observationError?.message) compact.observationError = effects.observationError;
+  return compact;
+}
+
+function compactActionHandoffForJson(result = {}) {
+  return {
+    schema: result.schema || 'chrome-cdp-ex.action.v1',
+    mode: 'compact',
+    action: result.action || null,
+    target: compactActionTargetModel(result.target || null),
+    dispatch: result.dispatch || null,
+    settle: result.settle || null,
+    effects: compactActionEffectsModel(result.effects || {}),
+    outcome: compactActionOutcomeModel(result.outcome),
+    verdict: compactActionVerdictForJson(result.verdict),
+    recommendation: compactActionRecommendationModel(result.recommendation),
+    nextSteps: Array.isArray(result.nextSteps) ? result.nextSteps : [],
+    receipt: receiptForCompactActionJson(result.receipt),
+  };
+}
+
+function compactActionResultForJson(result, { compact: compactMode = false } = {}) {
   const compact = JSON.parse(JSON.stringify(result));
   compact.target = sanitizeActionTargetForLog(compact.action, compact.target || null);
   compact.receipt = receiptForActionJson(compact.receipt);
   const effects = compact.effects || {};
-  if (typeof effects.domDiff !== 'string') return redactSensitiveArtifactValue(compact);
+  if (typeof effects.domDiff !== 'string') {
+    const redacted = redactSensitiveArtifactValue(compact);
+    return compactMode ? compactActionHandoffForJson(redacted) : redacted;
+  }
 
   const original = effects.domDiff;
   const { summary, sample } = summarizeActionDomDiff(original);
@@ -3008,7 +3179,8 @@ function compactActionResultForJson(result) {
     effects.domDiff = [summary, sample].filter(Boolean).join('\n')
       || compactActionText(original, MAX_ACTION_JSON_DOM_DIFF_CHARS);
   }
-  return redactSensitiveArtifactValue(compact);
+  const redacted = redactSensitiveArtifactValue(compact);
+  return compactMode ? compactActionHandoffForJson(redacted) : redacted;
 }
 
 const SENSITIVE_ACTION_TARGET_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn)\b/i;
@@ -3336,13 +3508,127 @@ function buildLatestReportActionSummary(actionLog = []) {
   };
 }
 
+function compactReportActionTarget(target = null) {
+  if (!target || typeof target !== 'object') return target;
+  const compact = {};
+  for (const field of ['input', 'label', 'resolvedBy', 'frameRef']) {
+    if (target[field] !== undefined && target[field] !== null && target[field] !== '') compact[field] = target[field];
+  }
+  return compact;
+}
+
+function compactReportActionEvidence(entry = {}) {
+  return {
+    dispatchMethod: entry.dispatch?.method || null,
+    settleOk: entry.settle?.ok ?? null,
+    settleDurationMs: entry.settle?.durationMs ?? null,
+    effectSummary: entry.effectSummary || null,
+    effectSample: entry.effectSample || null,
+    consoleSummary: entry.consoleSummary || null,
+    exceptionSummary: entry.exceptionSummary || null,
+    networkSummary: entry.networkSummary || null,
+    failure: entry.failure?.kind || entry.failure || null,
+    diagnosis: entry.diagnosis?.kind || entry.diagnosis || null,
+  };
+}
+
+function reportActionModel(entry = {}, index = 1, { compact = false } = {}) {
+  if (compact) {
+    return {
+      index,
+      sequence: entry.sequence ?? index,
+      eventId: entry.eventId || entry.receipt?.eventId || null,
+      ts: entry.ts || null,
+      action: entry.action,
+      status: reportActionStatus(entry),
+      target: compactReportActionTarget(entry.target || null),
+      evidence: compactReportActionEvidence(entry),
+      receipt: receiptForReport(entry.receipt),
+      nextHint: entry.nextHint || null,
+    };
+  }
+  return {
+    index,
+    sequence: entry.sequence ?? index,
+    eventId: entry.eventId || entry.receipt?.eventId || null,
+    ts: entry.ts || null,
+    action: entry.action,
+    status: reportActionStatus(entry),
+    outcome: entry.outcome || null,
+    verdict: entry.verdict || null,
+    target: entry.target || null,
+    dispatch: entry.dispatch || null,
+    settle: entry.settle || null,
+    receipt: receiptForReport(entry.receipt),
+    evidence: {
+      dispatchMethod: entry.dispatch?.method || null,
+      settleOk: entry.settle?.ok ?? null,
+      settleDurationMs: entry.settle?.durationMs ?? null,
+      effectSummary: entry.effectSummary || null,
+      effectSample: entry.effectSample || null,
+      consoleSummary: entry.consoleSummary || null,
+      consoleSample: entry.consoleSample || null,
+      exceptionSummary: entry.exceptionSummary || null,
+      exceptionSample: entry.exceptionSample || null,
+      networkSummary: entry.networkSummary || null,
+      networkSample: entry.networkSample || null,
+      failure: entry.failure || null,
+      diagnosis: entry.diagnosis || null,
+    },
+    nextHint: entry.nextHint || null,
+  };
+}
+
+function compactReportBudgetModel(reportBudget = {}) {
+  return {
+    jsonBytesMax: reportBudget.jsonBytesMax ?? DEFAULT_REPORT_JSON_BYTES_MAX,
+    estimatedJsonBytes: null,
+    actionLimit: reportBudget.actionLimit ?? null,
+  };
+}
+
+function compactReportArtifactsSummary(artifacts = {}) {
+  return {
+    paths: artifacts.paths || {},
+    counts: artifacts.counts || {},
+  };
+}
+
+function compactReportEnvironmentModel(environment = {}) {
+  return {
+    networkThrottleSummary: environment.networkThrottleSummary || 'none',
+    networkMocksSummary: environment.networkMocksSummary || 'none',
+    clockSummary: environment.clockSummary || 'real time',
+  };
+}
+
+function reportScreenshotModel(entry = {}, index = 0, { compact = false } = {}) {
+  if (compact) {
+    return {
+      index: index + 1,
+      path: entry.path || null,
+      kind: entry.kind || 'shot',
+    };
+  }
+  return {
+    index: index + 1,
+    ts: entry.ts || null,
+    kind: entry.kind || 'shot',
+    path: entry.path || null,
+    note: entry.note || '',
+  };
+}
+
 function parseReportArgs(args = []) {
   let lastActions = DEFAULT_REPORT_ACTION_LIMIT;
+  let compact = false;
   const rest = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--all') {
       lastActions = null;
+    } else if (arg === '--compact') {
+      compact = true;
     } else if (arg === '--last') {
       const raw = args[++i];
       const n = Number(raw);
@@ -3352,7 +3638,7 @@ function parseReportArgs(args = []) {
       rest.push(arg);
     }
   }
-  return { lastActions, args: rest };
+  return { lastActions, compact, args: rest };
 }
 
 function reportActionTimelineWindow(actionLog = [], lastActions = DEFAULT_REPORT_ACTION_LIMIT) {
@@ -3373,7 +3659,7 @@ function reportActionTimelineWindow(actionLog = [], lastActions = DEFAULT_REPORT
   };
 }
 
-function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFAULT_REPORT_ACTION_LIMIT } = {}) {
+function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFAULT_REPORT_ACTION_LIMIT, compact = false } = {}) {
   const actionLog = session.actionLog || [];
   const screenshots = session.screenshots || [];
   const timelineWindow = reportActionTimelineWindow(actionLog, lastActions);
@@ -3384,36 +3670,7 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
   const cleanup = buildArtifactCleanupWorkflow(session);
   const actions = timelineWindow.entries.map((entry, offset) => {
     const index = (timelineWindow.startIndex || 1) + offset;
-    return {
-      index,
-      sequence: entry.sequence ?? index,
-      eventId: entry.eventId || entry.receipt?.eventId || null,
-      ts: entry.ts || null,
-      action: entry.action,
-      status: reportActionStatus(entry),
-      outcome: entry.outcome || null,
-      verdict: entry.verdict || null,
-      target: entry.target || null,
-      dispatch: entry.dispatch || null,
-      settle: entry.settle || null,
-      receipt: receiptForReport(entry.receipt),
-      evidence: {
-        dispatchMethod: entry.dispatch?.method || null,
-        settleOk: entry.settle?.ok ?? null,
-        settleDurationMs: entry.settle?.durationMs ?? null,
-        effectSummary: entry.effectSummary || null,
-        effectSample: entry.effectSample || null,
-        consoleSummary: entry.consoleSummary || null,
-        consoleSample: entry.consoleSample || null,
-        exceptionSummary: entry.exceptionSummary || null,
-        exceptionSample: entry.exceptionSample || null,
-        networkSummary: entry.networkSummary || null,
-        networkSample: entry.networkSample || null,
-        failure: entry.failure || null,
-        diagnosis: entry.diagnosis || null,
-      },
-      nextHint: entry.nextHint || null,
-    };
+    return reportActionModel(entry, index, { compact });
   });
   const recommendation = buildReportRecommendation(actionLog, target, session.targetId);
   const nextSteps = uniqueNextStepCommands([
@@ -3423,8 +3680,15 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
       `cdp export-playwright ${target}`,
     ] : []),
   ]);
+  const environment = {
+    networkThrottleSummary: formatThrottleSummary(session.networkThrottle),
+    networkMocksSummary: formatNetworkMocksSummary(session),
+    clockSummary: formatClockSummary(session.clock),
+    controls: buildRecordEnvironmentModel(session),
+  };
   const model = {
     schema: 'chrome-cdp-ex.report.v1',
+    ...(compact ? { mode: 'compact' } : {}),
     targetId: session.targetId,
     targetPrefix: target,
     sessionId: session.sessionId,
@@ -3440,9 +3704,9 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
       screenshots: screenshots.length,
       records: session.records?.length || 0,
     },
-    artifacts,
-    reportBudget,
-    cleanup,
+    artifacts: compact ? compactReportArtifactsSummary(artifacts) : artifacts,
+    reportBudget: compact ? compactReportBudgetModel(reportBudget) : reportBudget,
+    ...(!compact ? { cleanup } : {}),
     timelineWindow: {
       total: timelineWindow.total,
       shown: timelineWindow.shown,
@@ -3454,30 +3718,18 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
       expensive: timelineWindow.expensive,
     },
     latestAction: buildLatestReportActionSummary(actionLog),
-    environment: {
-      networkThrottleSummary: formatThrottleSummary(session.networkThrottle),
-      networkMocksSummary: formatNetworkMocksSummary(session),
-      clockSummary: formatClockSummary(session.clock),
-      controls: buildRecordEnvironmentModel(session),
-    },
+    environment: compact ? compactReportEnvironmentModel(environment) : environment,
     actions,
-    screenshots: screenshots.map((entry, index) => ({
-      index: index + 1,
-      ts: entry.ts || null,
-      kind: entry.kind || 'shot',
-      path: entry.path || null,
-      note: entry.note || '',
-    })),
+    screenshots: screenshots.map((entry, index) => reportScreenshotModel(entry, index, { compact })),
     recommendation,
     nextSteps: nextSteps.length ? nextSteps : defaultReportNextSteps(target, actionLog.length > 0),
   };
   model.reportBudget.estimatedJsonBytes = Buffer.byteLength(formatJson(model), 'utf8');
-  model.reportBudget.estimatedJsonBytes = Buffer.byteLength(formatJson(model), 'utf8');
   return model;
 }
 
-function formatSessionReport(session, { now = Date.now(), format = 'text', lastActions = DEFAULT_REPORT_ACTION_LIMIT } = {}) {
-  if (format === 'json') return formatJson(buildSessionReportModel(session, { now, lastActions }));
+function formatSessionReport(session, { now = Date.now(), format = 'text', lastActions = DEFAULT_REPORT_ACTION_LIMIT, compact = false } = {}) {
+  if (format === 'json') return formatJson(buildSessionReportModel(session, { now, lastActions, compact }));
   const model = buildSessionReportModel(session, { now, lastActions });
   const actionLog = session.actionLog || [];
   const timelineWindow = reportActionTimelineWindow(actionLog, lastActions);
@@ -10487,14 +10739,14 @@ async function runDaemon(targetId) {
         }
         case 'html': result = await htmlStr(cdp, sessionId, args[0]); break;
         case 'nav': case 'navigate': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           result = await actionFeedback(
             'nav',
             () => navStr(cdp, sessionId, fopts.args[0]),
             { input: fopts.args[0], resolvedBy: 'url', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] },
             'full-perceive',
             observeFullPerceive,
-            fopts.format
+            fopts
           );
           break;
         }
@@ -10560,7 +10812,7 @@ async function runDaemon(targetId) {
           const fopts = parseFormatArgs(args, ['text', 'json']);
           const ropts = parseReportArgs(fopts.args);
           if (ropts.args.length) throw new Error(`report: unknown argument ${ropts.args[0]}`);
-          result = formatSessionReport(session, { format: fopts.format, lastActions: ropts.lastActions });
+          result = formatSessionReport(session, { format: fopts.format, lastActions: ropts.lastActions, compact: ropts.compact });
           break;
         }
         case 'qa': case 'qa-page': {
@@ -10706,57 +10958,57 @@ async function runDaemon(targetId) {
           break;
         }
         case 'click': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           const cargs = fopts.args;
           // `click --js <selector|@ref>` switches to the JS-fallback path that
           // calls HTMLElement.click() instead of dispatching CDP mouse events.
           // Useful when overlays or weird hit testing block the realistic
           // mouse path; opt-in only so default behaviour is unchanged.
           if (cargs[0] === '--js' || cargs[0] === '-j') {
-            result = await actionFeedback('click', () => jsClickStr(cdp, sessionId, cargs[1], refMap, refState), { input: cargs[1], resolvedBy: 'selector-or-ref', label: cargs[1] || '', commandArgs: ['--js', cargs[1]] }, 'settle-diff', null, fopts.format);
+            result = await actionFeedback('click', () => jsClickStr(cdp, sessionId, cargs[1], refMap, refState), { input: cargs[1], resolvedBy: 'selector-or-ref', label: cargs[1] || '', commandArgs: ['--js', cargs[1]] }, 'settle-diff', null, fopts);
           } else {
-            result = await actionFeedback('click', () => clickStr(cdp, sessionId, cargs[0], refMap, refState), { input: cargs[0], resolvedBy: 'selector-or-ref', label: cargs[0] || '', commandArgs: [cargs[0]] }, 'settle-diff', null, fopts.format);
+            result = await actionFeedback('click', () => clickStr(cdp, sessionId, cargs[0], refMap, refState), { input: cargs[0], resolvedBy: 'selector-or-ref', label: cargs[0] || '', commandArgs: [cargs[0]] }, 'settle-diff', null, fopts);
           }
           break;
         }
         case 'jsclick': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, fopts.args[0], refMap, refState), { input: fopts.args[0], resolvedBy: 'selector-or-ref', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts.format);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, fopts.args[0], refMap, refState), { input: fopts.args[0], resolvedBy: 'selector-or-ref', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
           break;
         }
         case 'clickxy': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: `${fopts.args[0]},${fopts.args[1]}`, resolvedBy: 'coordinates', label: `${fopts.args[0]},${fopts.args[1]}`, commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts.format);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: `${fopts.args[0]},${fopts.args[1]}`, resolvedBy: 'coordinates', label: `${fopts.args[0]},${fopts.args[1]}`, commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
           break;
         }
         case 'type': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('type', () => typeStr(cdp, sessionId, fopts.args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts.format);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('type', () => typeStr(cdp, sessionId, fopts.args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
           break;
         }
         case 'press': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts.format);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
           break;
         }
         case 'scroll': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('scroll', () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: [fopts.args[0], fopts.args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: fopts.args[0] || 'scroll', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts.format);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('scroll', () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: [fopts.args[0], fopts.args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: fopts.args[0] || 'scroll', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
           break;
         }
         case 'hover': result = await hoverStr(cdp, sessionId, args[0], refMap, refState); break;
         case 'waitfor': result = await waitForStr(cdp, sessionId, args, refMap, refState); break;
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'fill': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           const fargs = fopts.args;
-          if (fargs[0] === '--react') result = await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[1], fargs[2], refMap, refState, { react: true }), { input: fargs[1], resolvedBy: 'selector-or-ref', label: fargs[1] || '', commandArgs: ['--react', fargs[1], fargs[2]] }, 'settle-diff', null, fopts.format);
-          else result = await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[0], fargs[1], refMap, refState), { input: fargs[0], resolvedBy: 'selector-or-ref', label: fargs[0] || '', commandArgs: [fargs[0], fargs[1]] }, 'settle-diff', null, fopts.format);
+          if (fargs[0] === '--react') result = await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[1], fargs[2], refMap, refState, { react: true }), { input: fargs[1], resolvedBy: 'selector-or-ref', label: fargs[1] || '', commandArgs: ['--react', fargs[1], fargs[2]] }, 'settle-diff', null, fopts);
+          else result = await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[0], fargs[1], refMap, refState), { input: fargs[0], resolvedBy: 'selector-or-ref', label: fargs[0] || '', commandArgs: [fargs[0], fargs[1]] }, 'settle-diff', null, fopts);
           break;
         }
         case 'select': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('select', () => selectStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts.format);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('select', () => selectStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
           break;
         }
         case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
@@ -10767,30 +11019,30 @@ async function runDaemon(targetId) {
         case 'cookiedel': result = await cookieDelStr(cdp, sessionId, args[0]); break;
         case 'dialog': result = dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]); break;
         case 'viewport': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          if (fopts.args[0]) result = await actionFeedback('viewport', () => viewportStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'viewport', label: fopts.args[0], commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts.format); // auto-diff when resizing
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+          if (fopts.args[0]) result = await actionFeedback('viewport', () => viewportStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'viewport', label: fopts.args[0], commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts); // auto-diff when resizing
           else result = await viewportStr(cdp, sessionId, args[0]);
           break;
         }
         case 'upload': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('upload', () => uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'state-change', null, fopts.format);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('upload', () => uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'state-change', null, fopts);
           break;
         }
         case 'text': result = await textStr(cdp, sessionId, args); break;
         case 'table': result = await tableStr(cdp, sessionId, args[0]); break;
         case 'back': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('back', () => historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts.format);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('back', () => historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts);
           break;
         }
         case 'forward': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('forward', () => historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts.format);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('forward', () => historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts);
           break;
         }
         case 'reload': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           result = await actionFeedback('reload', () => reloadActionDispatch({
             cdp,
             sessionId,
@@ -10801,14 +11053,14 @@ async function runDaemon(targetId) {
             netReqBuf,
             pendingReqs,
             lastReadSeq,
-          }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts.format);
+          }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts);
           break;
         }
         case 'closetab': result = await closetabStr(cdp, targetId); break;
         case 'netlog': result = netlogStr(netReqBuf, args[0]); break;
         case 'inject': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('inject', () => injectStr(cdp, sessionId, fopts.args), { input: fopts.args[0] || '', resolvedBy: 'command', label: fopts.args[0] || 'inject', commandArgs: fopts.args }, 'state-change', null, fopts.format);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('inject', () => injectStr(cdp, sessionId, fopts.args), { input: fopts.args[0] || '', resolvedBy: 'command', label: fopts.args[0] || 'inject', commandArgs: fopts.args }, 'state-change', null, fopts);
           break;
         }
         case 'record': result = await recordStr(cdp, sessionId, args, refMap); break;
@@ -10818,8 +11070,8 @@ async function runDaemon(targetId) {
           break;
         }
         case 'dismiss-modal': case 'dismissmodal': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }, 'settle-diff', null, fopts.format);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+          result = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }, 'settle-diff', null, fopts);
           break;
         }
         case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
@@ -10876,7 +11128,7 @@ async function runDaemon(targetId) {
           break;
         }
         case 'restore': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           const safeCommandArgs = redactRestoreCommandArgs(fopts.args);
           result = await actionFeedback(
             'restore',
@@ -10890,7 +11142,7 @@ async function runDaemon(targetId) {
             { input: 'checkpoint', resolvedBy: 'artifact', label: 'checkpoint', commandArgs: safeCommandArgs },
             'report-only',
             null,
-            fopts.format
+            fopts
           );
           break;
         }
@@ -11426,23 +11678,26 @@ function targetCommandCliErrorFormat(targetPrefix, cmdArgs = [], originalArgs = 
   return detectCliErrorFormat(targetLooksLikeFlag ? originalArgs : cmdArgs);
 }
 
-function formatArgSuffix(format) {
-  return format && format !== 'text' ? ['--format', format] : [];
+function formatArgSuffix(format, { compact = false } = {}) {
+  return [
+    ...(format && format !== 'text' ? ['--format', format] : []),
+    ...(compact ? ['--compact'] : []),
+  ];
 }
 
 function normalizeTargetCommandArgs(cmd, cmdArgs = []) {
   const args = [...cmdArgs];
   if (cmd === 'type') {
-    const fopts = parseFormatArgs(args, ['text', 'json']);
-    return [fopts.args.join(' '), ...formatArgSuffix(fopts.format)];
+    const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+    return [fopts.args.join(' '), ...formatArgSuffix(fopts.format, fopts)];
   }
   if (cmd === 'fill') {
     if (args[0] === '--react') {
-      const fopts = parseFormatArgs(args.slice(2), ['text', 'json']);
-      return ['--react', args[1], fopts.args.join(' '), ...formatArgSuffix(fopts.format)];
+      const fopts = parseCompactFormatArgs(args.slice(2), ['text', 'json']);
+      return ['--react', args[1], fopts.args.join(' '), ...formatArgSuffix(fopts.format, fopts)];
     }
-    const fopts = parseFormatArgs(args.slice(1), ['text', 'json']);
-    return [args[0], fopts.args.join(' '), ...formatArgSuffix(fopts.format)];
+    const fopts = parseCompactFormatArgs(args.slice(1), ['text', 'json']);
+    return [args[0], fopts.args.join(' '), ...formatArgSuffix(fopts.format, fopts)];
   }
   return args;
 }

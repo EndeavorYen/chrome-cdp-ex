@@ -127,6 +127,15 @@ Receipt surfaces:
 | Report JSON | Session handoff | Smaller receipt with event identity, settlement summary, outcome, blocking signals, recovery hint, and compact delta details. |
 | Text output | Human quick read | Outcome, receipt status, blocking signals, recovery hint, settle line, and high-signal evidence samples. |
 
+For token-bound handoffs, add `--compact` to mutating action JSON and report JSON:
+
+```bash
+cdp click <target> @1 --format json --compact
+cdp report <target> --last 1 --format json --compact
+```
+
+Compact action/report JSON keeps the executable handoff contract - `schema`, target/action identity, dispatch/settlement status, high-signal evidence, outcome/verdict, recommendation, next steps, and receipt recovery data - while trimming duplicated full diagnostic envelopes and long DOM evidence. Use the session JSONL path from `report` when you need the full audit trail.
+
 Common outcomes:
 
 | Outcome | Meaning |

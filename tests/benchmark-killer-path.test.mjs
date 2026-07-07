@@ -390,7 +390,7 @@ describe('benchmark killer path helpers', () => {
       expect.objectContaining({ name: 'first-useful-observation', passed: true, actual: 40, operator: '<=', limit: 5000 }),
       expect.objectContaining({ name: 'first-action-evidence', passed: true, actual: 152, operator: '<=' }),
       expect.objectContaining({ name: 'golden-path-under-two-minutes', passed: true, actual: 212, operator: '<=', limit: 120000 }),
-      expect.objectContaining({ name: 'total-output-tokens', passed: true, actual: summary.metrics.estimatedOutputTokens, operator: '<=', limit: 17000 }),
+      expect.objectContaining({ name: 'total-output-tokens', passed: true, actual: summary.metrics.estimatedOutputTokens, operator: '<=', limit: 12750 }),
       expect.objectContaining({ name: 'max-step-output-tokens', passed: true, actual: summary.metrics.maxStepEstimatedTokens, operator: '<=' }),
       expect.objectContaining({ name: 'max-step-duration', passed: true, actual: 30, operator: '<=' }),
       expect.objectContaining({ name: 'useful-observation-tokens', passed: true, operator: '<=', limit: 3000 }),
@@ -554,6 +554,32 @@ describe('benchmark killer path helpers', () => {
         culprit: expect.objectContaining({ name: 'click' }),
       }),
     ]));
+  });
+
+  it('uses compact JSON handoffs for high-volume action and report benchmark steps', () => {
+    const plan = buildKillerPathBenchmarkPlan('AABBCCDD', {
+      entrySteps: 'none',
+      stabilityMs: 1000,
+      navUrl: 'https://example.com/app',
+    });
+    const byName = new Map(plan.map(step => [step.name || step.args[0], step.args]));
+
+    for (const name of [
+      'dismiss-modal',
+      'no-change-json',
+      'fill',
+      'click',
+      'inject',
+      'nav',
+      'stale-ref-mutate',
+      'stale-ref-json',
+    ]) {
+      const args = byName.get(name);
+      expect(args, `${name} plan step`).toEqual(expect.arrayContaining(['--format', 'json', '--compact']));
+    }
+
+    expect(byName.get('report')).toEqual(expect.arrayContaining(['report', 'AABBCCDD', '--last', '1', '--format', 'json', '--compact']));
+    expect(byName.get('stability-report')).toEqual(expect.arrayContaining(['report', 'AABBCCDD', '--last', '1', '--format', 'json', '--compact']));
   });
 
   it('marks failed runs with the failed step and keeps partial metrics', () => {
@@ -2287,7 +2313,7 @@ describe('benchmark killer path helpers', () => {
 
     expect(staleRefMutation).toMatchObject({
       name: 'stale-ref-mutate',
-      args: ['reload', 'AABBCCDD', '--format', 'json'],
+      args: expect.arrayContaining(['reload', 'AABBCCDD', '--format', 'json', '--compact']),
     });
     expect(staleRefMutation.args[0]).not.toBe('eval');
     expect(plan.map(step => step.args[0])).toEqual(expect.arrayContaining([
@@ -2299,13 +2325,13 @@ describe('benchmark killer path helpers', () => {
       'reload',
       'report',
     ]));
-    expect(plan.find(step => step.args[0] === 'fill')?.args).toEqual(['fill', 'AABBCCDD', '#cmd', 'look trainer', '--format', 'json']);
-    expect(plan.find(step => step.args[0] === 'dismiss-modal')?.args).toEqual(['dismiss-modal', 'AABBCCDD', '--format', 'json']);
-    expect(plan.find(step => step.args[0] === 'inject')?.args).toEqual(['inject', 'AABBCCDD', '--css', '#combat-log { outline: 2px solid rgb(37, 99, 235); }', '--format', 'json']);
-    expect(plan.find(step => step.args[0] === 'nav')?.args).toEqual(['nav', 'AABBCCDD', 'http://127.0.0.1:41738/smoke-page.html#after-action-evidence', '--format', 'json']);
-    expect(plan.find(step => step.name === 'stale-ref-mutate')?.args).toEqual(['reload', 'AABBCCDD', '--format', 'json']);
+    expect(plan.find(step => step.args[0] === 'fill')?.args).toEqual(['fill', 'AABBCCDD', '#cmd', 'look trainer', '--format', 'json', '--compact']);
+    expect(plan.find(step => step.args[0] === 'dismiss-modal')?.args).toEqual(['dismiss-modal', 'AABBCCDD', '--format', 'json', '--compact']);
+    expect(plan.find(step => step.args[0] === 'inject')?.args).toEqual(['inject', 'AABBCCDD', '--css', '#combat-log { outline: 2px solid rgb(37, 99, 235); }', '--format', 'json', '--compact']);
+    expect(plan.find(step => step.args[0] === 'nav')?.args).toEqual(['nav', 'AABBCCDD', 'http://127.0.0.1:41738/smoke-page.html#after-action-evidence', '--format', 'json', '--compact']);
+    expect(plan.find(step => step.name === 'stale-ref-mutate')?.args).toEqual(['reload', 'AABBCCDD', '--format', 'json', '--compact']);
     expect(plan.find(step => step.name === 'stale-ref-json')).toMatchObject({
-      args: ['click', 'AABBCCDD', '@1', '--format', 'json'],
+      args: ['click', 'AABBCCDD', '@1', '--format', 'json', '--compact'],
       benchmarkProbe: true,
     });
     expect(plan.find(step => step.args[0] === 'doctor')?.args).toEqual(['doctor', '--format', 'json']);
@@ -2319,7 +2345,7 @@ describe('benchmark killer path helpers', () => {
       'json',
     ]);
     expect(plan.find(step => step.args[0] === 'click')?.args).toContain('--format');
-    expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--last', '1', '--format', 'json']);
+    expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--last', '1', '--format', 'json', '--compact']);
     expect(plan.find(step => step.name === 'guarded-page')?.args).toEqual(['perceive', 'AABBCCDD', '-s', '#auth-panel', '-d', '4']);
     expect(plan.filter(step => !step.benchmarkProbe).length).toBeLessThanOrEqual(24);
   });
@@ -2361,7 +2387,7 @@ describe('benchmark killer path helpers', () => {
     expect(plan[0].args).toEqual(['perceive', 'AABBCCDD', '-C', '-d', '8', '--keep-refs', '--last', '20', '--format', 'json']);
     expect(plan.map(step => step.args[0])).not.toContain('doctor');
     expect(plan.map(step => step.args[0])).not.toContain('list');
-    expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--last', '1', '--format', 'json']);
+    expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--last', '1', '--format', 'json', '--compact']);
     expect(plan.find(step => step.name === 'guarded-page')?.args).toEqual(['perceive', 'AABBCCDD', '-s', '#auth-panel', '-d', '4']);
     expect(plan.filter(step => !step.benchmarkProbe).length).toBeLessThanOrEqual(22);
   });

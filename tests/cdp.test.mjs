@@ -780,6 +780,30 @@ describe('parseFormatArgs', () => {
       'json',
     ]);
   });
+
+  it('preserves trailing --compact when joining fill and type text args', () => {
+    expect(normalizeTargetCommandArgs('fill', ['#cmd', 'look', 'merchant', '--format', 'json', '--compact'])).toEqual([
+      '#cmd',
+      'look merchant',
+      '--format',
+      'json',
+      '--compact',
+    ]);
+    expect(normalizeTargetCommandArgs('fill', ['--react', '#cmd', 'look', 'merchant', '--format', 'json', '--compact'])).toEqual([
+      '--react',
+      '#cmd',
+      'look merchant',
+      '--format',
+      'json',
+      '--compact',
+    ]);
+    expect(normalizeTargetCommandArgs('type', ['hello', 'world', '--format', 'json', '--compact'])).toEqual([
+      'hello world',
+      '--format',
+      'json',
+      '--compact',
+    ]);
+  });
 });
 
 describe('summaryModel large-app diagnostics', () => {
@@ -826,6 +850,7 @@ describe('parseReportArgs', () => {
   it('defaults to a bounded latest-action report window', () => {
     expect(T.parseReportArgs([])).toEqual({
       lastActions: 20,
+      compact: false,
       args: [],
     });
   });
@@ -833,6 +858,7 @@ describe('parseReportArgs', () => {
   it('parses --last with a positive integer', () => {
     expect(T.parseReportArgs(['--last', '5'])).toEqual({
       lastActions: 5,
+      compact: false,
       args: [],
     });
   });
@@ -840,7 +866,16 @@ describe('parseReportArgs', () => {
   it('parses --all as an unbounded report window', () => {
     expect(T.parseReportArgs(['--all', '--verbose'])).toEqual({
       lastActions: null,
+      compact: false,
       args: ['--verbose'],
+    });
+  });
+
+  it('parses --compact for bounded JSON handoffs', () => {
+    expect(T.parseReportArgs(['--last', '1', '--compact'])).toEqual({
+      lastActions: 1,
+      compact: true,
+      args: [],
     });
   });
 
@@ -1497,6 +1532,133 @@ describe('ActionResult', () => {
     expect(out).not.toContain('TAIL-SHOULD-NOT-BE-SERIALIZED');
   });
 
+  it('returns compact JSON action handoffs without dropping receipt evidence', async () => {
+    const longDiff = [
+      'Page: Very Large App',
+      '+++ Added (1):',
+      ...Array.from({ length: 120 }, (_, index) => `+   [StaticText] low signal row ${index}`),
+      '+   [status] Saved successfully',
+    ].join('\n');
+    const options = {
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: async () => 'Clicked #save',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => longDiff,
+      enrichActionResult: (result) => T.applyActionObservationDelta(result, {
+        console: {
+          count: 5,
+          errors: 0,
+          warnings: 0,
+          entries: Array.from({ length: 5 }, (_, index) => ({
+            level: 'log',
+            text: `low signal console row ${index}`,
+            loc: `app.js:${index + 1}`,
+          })),
+        },
+        exceptions: { count: 0, entries: [] },
+        network: {
+          count: 5,
+          failures: 0,
+          pending: 0,
+          entries: Array.from({ length: 5 }, (_, index) => ({
+            method: 'GET',
+            url: `https://example.com/api/row-${index}?cacheBust=${index}`,
+            status: 200,
+            duration: 10 + index,
+          })),
+        },
+      }),
+    };
+
+    const fullOut = await T.runActionWithFeedback({ ...options, format: 'json' });
+    const compactOut = await T.runActionWithFeedback({ ...options, format: { format: 'json', compact: true } });
+    const parsed = JSON.parse(compactOut);
+
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.action.v1',
+      mode: 'compact',
+      action: 'click',
+      target: { input: '#save', label: 'Save', resolvedBy: 'selector' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true },
+      outcome: { status: 'changed' },
+      verdict: { status: 'continue', canContinue: true, needsRecovery: false },
+      effects: {
+        domDiffChars: longDiff.length,
+        domDiffSummary: '+++ Added (1):',
+        domDiffSample: '+   [status] Saved successfully',
+      },
+      receipt: {
+        eventId: null,
+        dispatch: { ok: true, method: 'click' },
+        settlement: {
+          state: 'settled',
+          strategy: 'dom-observation',
+          durationMs: expect.any(Number),
+          signals: [],
+        },
+        observedDelta: expect.any(Array),
+        observedDeltaDetails: expect.any(Array),
+        blockingSignals: [],
+        recoveryHint: 'Continue from the observed action evidence.',
+        nextSteps: [
+          'cdp report ABC123 --format json',
+          'cdp record-actions ABC123 --format json',
+        ],
+      },
+      nextSteps: [
+        'cdp report ABC123 --format json',
+        'cdp record-actions ABC123 --format json',
+      ],
+    });
+    expect(parsed.effects).not.toHaveProperty('domDiff');
+    expect(parsed.effects.consoleDelta).toMatchObject({ count: 5, errors: 0, warnings: 0 });
+    expect(parsed.effects.networkDelta).toMatchObject({ count: 5, failures: 0, pending: 0 });
+    expect(compactOut.length).toBeLessThan(fullOut.length);
+  });
+
+  it('keeps a compact evidence marker when an action has no DOM diff', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'restore',
+      target: { targetId: 'ABC123', input: 'checkpoint', resolvedBy: 'artifact', label: 'checkpoint' },
+      dispatch: async () => 'Restored checkpoint',
+      feedbackPolicy: 'report-only',
+      format: { format: 'json', compact: true },
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.effects).toHaveProperty('domDiff', null);
+    expect(parsed.effects.domDiffSummary).toBe('DOM observation not captured');
+    expect(parsed.effects.consoleDelta).toMatchObject({ count: 0 });
+    expect(parsed.receipt).toMatchObject({
+      settlement: {
+        state: 'not-applicable',
+        strategy: 'report-only',
+        signals: ['report-only'],
+      },
+      observedDeltaDetails: expect.arrayContaining([
+        expect.objectContaining({ type: 'dom', status: 'not-captured' }),
+      ]),
+    });
+  });
+
+  it('summarizes compact full-observation action evidence even without diff markers', async () => {
+    const observation = 'Page: Example\n@1 [button] Continue';
+    const out = await T.runActionWithFeedback({
+      action: 'nav',
+      target: { targetId: 'ABC123', input: 'https://example.com', resolvedBy: 'url', label: 'https://example.com' },
+      dispatch: async () => 'Navigated',
+      feedbackPolicy: 'full-perceive',
+      observe: async () => observation,
+      format: { format: 'json', compact: true },
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.effects.domDiffChars).toBe(observation.length);
+    expect(parsed.effects.domDiffSummary).toBe('DOM observation captured');
+  });
+
   it('enriches action feedback before formatting and logging', async () => {
     const delta = {
       console: {
@@ -2090,6 +2252,86 @@ describe('Session report', () => {
     expect(model.actions[0].receipt).not.toHaveProperty('dispatch');
     expect(model.actions[0].receipt).not.toHaveProperty('nextSteps');
     expect(model.actions[0].receipt).not.toHaveProperty('recovery');
+  });
+
+  it('builds compact JSON report handoffs with bounded action evidence', () => {
+    const state = T.createSessionState({
+      targetId: 'ABC123456789',
+      sessionId: 'sid-1',
+      logPath: '/tmp/chrome-cdp-ex/session-ABC12345.jsonl',
+      screenshotDir: '/tmp/chrome-cdp-ex/screens-ABC12345',
+    });
+    state.createdAt = Date.parse('2026-06-16T00:00:00.000Z');
+    T.appendSessionActionLog(state, sampleActionResult(), {
+      ts: Date.parse('2026-06-16T00:00:03.000Z'),
+    });
+
+    const fullModel = T.buildSessionReportModel(state, {
+      now: Date.parse('2026-06-16T00:00:05.000Z'),
+    });
+    const compactModel = T.buildSessionReportModel(state, {
+      now: Date.parse('2026-06-16T00:00:05.000Z'),
+      compact: true,
+      lastActions: 1,
+    });
+
+    expect(compactModel).toMatchObject({
+      schema: 'chrome-cdp-ex.report.v1',
+      mode: 'compact',
+      counts: { actions: 1, screenshots: 0, records: 0 },
+      latestAction: {
+        index: 1,
+        eventId: 'act_ABC12345_000001',
+        action: 'click',
+        status: 'ok',
+      },
+      timelineWindow: {
+        total: 1,
+        shown: 1,
+        omitted: 0,
+        limit: 1,
+        mode: 'latest',
+      },
+      actions: [
+        {
+          index: 1,
+          action: 'click',
+          status: 'ok',
+          target: { input: '#combat', label: '#combat' },
+          evidence: {
+            dispatchMethod: 'click',
+            settleOk: true,
+            settleDurationMs: 123,
+            effectSummary: '+++ Added (1):',
+            effectSample: '+   [alert] 戰鬥勝利',
+          },
+          receipt: {
+            eventId: 'act_ABC12345_000001',
+            settlement: {
+              state: 'settled',
+              strategy: 'dom-observation',
+              durationMs: 123,
+              signals: [],
+            },
+            observedDeltaDetails: [
+              expect.objectContaining({ type: 'dom', status: 'changed' }),
+            ],
+          },
+        },
+      ],
+      recommendation: expect.objectContaining({
+        commands: expect.arrayContaining(['cdp perceive ABC12345 --since-action']),
+      }),
+      nextSteps: expect.arrayContaining([
+        'cdp perceive ABC12345 --since-action',
+        'cdp record-actions ABC12345 --format json',
+      ]),
+    });
+    expect(compactModel.actions[0]).not.toHaveProperty('dispatch');
+    expect(compactModel.actions[0]).not.toHaveProperty('settle');
+    expect(compactModel.actions[0]).not.toHaveProperty('outcome');
+    expect(compactModel.actions[0]).not.toHaveProperty('verdict');
+    expect(compactModel.reportBudget.estimatedJsonBytes).toBeLessThan(fullModel.reportBudget.estimatedJsonBytes);
   });
 
   it('bounds JSON report action timeline to the latest actions by default', () => {
