@@ -135,6 +135,24 @@ describe('live campaign benchmark helpers', () => {
     ]);
   });
 
+  it('plans configurable real-app target profiles for local live campaigns', () => {
+    const opts = parseCampaignArgs([
+      '--rounds', '4',
+      '--types', 'real-app',
+      '--real-app-targets', 'dashboard,docs-app,auth-flow',
+      '--port-start', '9500',
+      '--server-port-start', '9600',
+    ]);
+
+    expect(opts.realAppTargets).toEqual(['dashboard', 'docs-app', 'auth-flow']);
+    expect(buildCampaignRoundPlan(opts)).toEqual([
+      { round: 1, type: 'real-app', port: 9500, serverPort: 9600, realAppTarget: 'dashboard', targetClass: 'dashboard' },
+      { round: 2, type: 'real-app', port: 9501, serverPort: 9601, realAppTarget: 'docs-app', targetClass: 'docs' },
+      { round: 3, type: 'real-app', port: 9502, serverPort: 9602, realAppTarget: 'auth-flow', targetClass: 'auth' },
+      { round: 4, type: 'real-app', port: 9503, serverPort: 9603, realAppTarget: 'dashboard', targetClass: 'dashboard' },
+    ]);
+  });
+
   it('compacts benchmark summaries into comparable live round rows', () => {
     const round = compactCampaignRound(
       { round: 1, type: 'mcp', port: 9440, serverPort: 42140 },
@@ -194,6 +212,86 @@ describe('live campaign benchmark helpers', () => {
         biggestOutputStep: { name: 'report', estimatedTokens: 2800 },
       },
     });
+  });
+
+  it('keeps real-app target class in summaries, reports, and issue diagnostics', () => {
+    const passed = compactCampaignRound(
+      { round: 1, type: 'real-app', port: 9500, serverPort: 9600, realAppTarget: 'docs-app', targetClass: 'docs' },
+      {
+        success: true,
+        gate: { profile: 'killer-path-default', passed: true, passedCount: 30, total: 30, criteria: [] },
+        metrics: {
+          realAppTarget: {
+            name: 'docs-app',
+            targetClass: 'docs',
+            safeLocalOnly: true,
+          },
+          totalMs: 4200,
+          estimatedOutputTokens: 8100,
+          firstUsefulObservationMs: 1400,
+          maxStepEstimatedTokens: 900,
+          biggestOutputStep: { name: 'perceive', estimatedTokens: 900 },
+        },
+      },
+      { startedAt: '2026-07-07T00:00:00.000Z', endedAt: '2026-07-07T00:00:04.200Z', wallMs: 4200 },
+    );
+    const failed = {
+      round: 2,
+      type: 'real-app',
+      port: 9501,
+      serverPort: 9601,
+      seed: 'real-app-auth-flow',
+      realAppTarget: 'auth-flow',
+      targetClass: 'auth',
+      success: false,
+      failedStep: 'guarded-page',
+      error: 'auth handoff missing',
+      gate: { failedCriteria: ['real-app-target-class'] },
+      metrics: {
+        realAppTarget: { name: 'auth-flow', targetClass: 'auth', safeLocalOnly: true },
+        maxResponsiveStepDurationMs: 2200,
+      },
+      culprit: { slowestResponsiveStep: { name: 'guarded-page', commandText: 'cdp perceive AABB -s #auth-panel', durationMs: 2200 } },
+    };
+    const summary = summarizeCampaignRun({
+      startedAt: '2026-07-07T00:00:00.000Z',
+      endedAt: '2026-07-07T00:00:08.000Z',
+      plan: [{}, {}],
+      rounds: [passed, failed],
+    });
+    const report = formatCampaignReport(summary);
+
+    expect(passed).toMatchObject({
+      realAppTarget: 'docs-app',
+      targetClass: 'docs',
+      metrics: {
+        realAppTarget: {
+          name: 'docs-app',
+          targetClass: 'docs',
+          safeLocalOnly: true,
+        },
+      },
+    });
+    expect(summary.typeSummaries).toContainEqual(expect.objectContaining({
+      type: 'real-app',
+      realAppTargets: {
+        targets: ['auth-flow', 'docs-app'],
+        classes: ['auth', 'docs'],
+      },
+    }));
+    expect(summary.failurePatterns).toContainEqual(expect.objectContaining({
+      round: 2,
+      type: 'real-app',
+      realAppTarget: 'auth-flow',
+      targetClass: 'auth',
+    }));
+    expect(summary.issueDrafts[0].reproductionCommand).toContain('--real-app-targets auth-flow');
+    expect(summary.issueDrafts[0].reproductionCommand).not.toContain('--adversarial-seeds');
+    expect(summary.issueDrafts[0].body).toContain('- Real-app target: auth-flow');
+    expect(summary.issueDrafts[0].body).toContain('- Target class: auth');
+    expect(report).toContain('real-app targets: auth-flow, docs-app; classes auth, docs');
+    expect(report).toContain('OK   #1 real-app docs-app/docs');
+    expect(report).toContain('FAIL #2 real-app auth-flow/auth');
   });
 
   it('keeps adversarial seed and replay command in failed campaign diagnostics', () => {

@@ -274,11 +274,14 @@ npm run benchmark:campaign -- --rounds 3 --types killer --adversarial-seeds alph
 npm run benchmark:campaign -- --rounds 10 --history ./campaign-history.jsonl
 npm run benchmark:campaign -- --rounds 10 --compare-baseline ./main-campaign.json
 npm run benchmark:campaign -- --types large-app --rounds 1 --json
+npm run benchmark:campaign -- --types real-app --real-app-targets dashboard,docs-app,auth-flow --rounds 3 --json
 ```
 
 Use [`docs/benchmarks/measured-baselines.example.json`](benchmarks/measured-baselines.example.json) as the checked-in schema fixture for reviewers. Do not publish comparison claims from that example file; regenerate a measured `baselines.json` for the machine and browser under test.
 
 Use `benchmark:campaign` for repeated live testing. It runs sequential rounds with unique CDP and HTTP ports, alternating MCP and Killer Path by default, then reports pass rate, latency, estimated output tokens, first-useful-observation time, and the slowest / largest-output step candidates. Add `--types large-app` to run the high-intensity live SaaS stress fixture with 5000+ DOM nodes, 1000 source table rows, 200+ visible controls, bounded output checks, and truncation metadata coverage.
+
+Add `--types real-app --real-app-targets dashboard,docs-app,auth-flow` when you need local target classes that behave more like real products. Built-in target profiles are `dashboard`, `docs-app`, `auth-flow`, `data-table`, and `canvas-heavy`; campaign output records `realAppTarget`, `targetClass`, and culprit steps for failures or optimization suspects. These profiles are safe local/test-only fixtures. If you point future target profiles at external URLs, use only owned test tenants or explicit staging environments, never customer data, personal accounts, or production workflows.
 
 Killer Path gates include long-session report budget coverage. Any report handoff with 50 or more recorded actions must stay inside its JSON byte budget, expose `latestAction`, keep a bounded non-expensive `timelineWindow`, preserve recovery-critical receipt fields, and point to artifact paths instead of dumping all history.
 
