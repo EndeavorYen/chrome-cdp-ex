@@ -1,6 +1,6 @@
 # chrome-cdp-ex
 
-[![69 Commands](https://img.shields.io/badge/commands-69-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
+[![75 Commands](https://img.shields.io/badge/commands-75-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
@@ -114,7 +114,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 `doctor` tells you whether the browser is reachable, what to run next, and how to recover common setup issues. If CDP is not ready, use one of these paths:
 
 - **Existing browser session (preferred):** open `chrome://inspect/#remote-debugging` (or `edge://inspect`) and toggle remote debugging on. Cleanest path; touches no profile state.
-- **Isolated debug profile:** `node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com`.
+- **Isolated debug profile:** `node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com`. Add `--headless --no-sandbox` for Linux CI, containers, or remote shells without a display.
 - **Electron app:** start it with `--remote-debugging-port=<port>` and run with `CDP_PORT=<port>`.
 
 4. Follow the golden path.
@@ -123,8 +123,10 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 node skills/chrome-cdp-ex/scripts/cdp.mjs list
 node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com   # only if list is empty; add --format json for scripts
+node skills/chrome-cdp-ex/scripts/cdp.mjs use <target> --name app     # optional: reuse the tab as "app" or "current"
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
 node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref        # or fill <target> <selector> <text>
+node skills/chrome-cdp-ex/scripts/cdp.mjs verify-click <target> @ref --expect-text "Saved"
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
 node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>            # add --format json for agent handoff; --last N / --all controls timeline size
 ```
@@ -137,7 +139,7 @@ The important bit is the loop: first perceive the page, then act, then ask what 
 
 - [Killer Path walkthrough](docs/examples/killer-path.md) — fastest way to dogfood the tool.
 - [Product strategy](docs/strategy/agent-browser-vision.md) — why this is an agent perception layer, not another Playwright.
-- [Technical reference](docs/reference.md) — command map, action evidence, Electron, WSL2, and benchmark gates.
+- [Technical reference](docs/reference.md) — command map, action evidence, semantic assertions, MCP server, Electron, WSL2, and benchmark gates.
 - [Full skill reference](skills/chrome-cdp-ex/SKILL.md) — every command, flag, and troubleshooting path.
 - [Benchmark proof](#dogfood-benchmark) — how promotion claims are gated.
 
@@ -151,18 +153,21 @@ Most readers only need this loop:
 doctor -> list -> open -> perceive -> click/fill -> perceive --since-action -> report
 ```
 
-See [docs/reference.md](docs/reference.md) for Electron, WSL2, screenshots, CSS tracing, network mocks, checkpoints, replay, export, and all 69 commands.
+See [docs/reference.md](docs/reference.md) for Electron, WSL2, screenshots, CSS tracing, network mocks, checkpoints, replay, export, MCP stdio use, and all 75 commands.
 
 ## Command map
 
 | Need | Start with |
 |---|---|
 | Understand the page | `perceive`, `controls`, `summary`, `text` |
-| Act and verify | `click`, `fill`, `press`, Action Receipt JSON, `perceive --since-action` |
+| Act and verify | `click`, `fill`, `press`, `verify-click`, Action Receipt JSON, `perceive --since-action` |
+| Run a UI smoke | `qa` for desktop/mobile screenshots, perception, console health, and optional semantic checks |
+| Reuse live targets | `use`, `attach`, `current`, `forget` for named target aliases such as `app` |
 | Debug live state | `status`, `console`, `netlog`, `report` |
 | Trace styling | `cascade`, `styles`, `inject` |
 | Preserve a session | `checkpoint`, `record-actions`, `export-playwright`, `replay` |
 | Capture visuals | `shot`, `elshot`, `diff-shot` |
+| Agent-native integration | `node skills/chrome-cdp-ex/scripts/mcp-server.mjs` exposes stdio MCP tools for doctor/list/open/perceive/action/qa/report |
 
 Full command details are in [docs/reference.md](docs/reference.md) and [skills/chrome-cdp-ex/SKILL.md](skills/chrome-cdp-ex/SKILL.md).
 

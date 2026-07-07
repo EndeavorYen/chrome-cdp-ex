@@ -8,10 +8,10 @@ description: "Your EYES into the user's live Chrome browser and Electron apps. T
 ## TL;DR — 90% workflow
 
 1. **Readiness:** `cdp doctor` — checks Node, install path, daemon state, fd limit, CDP reachability, browser debugging permission, and prints the next command to run.
-2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`.
+2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`. Use `cdp use <target> --name app` when the same live tab will be reused.
 3. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, top-level viewport CSS coordinates (fixed/sticky elements are tagged), console health.
 4. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
-5. **Verify/report:** read the automatic action evidence, then use `cdp perceive <target> --since-action` or `cdp report <target>` for handoff; use `cdp report <target> --format json` when a script needs the versioned session memory model. Report handoffs show the latest 20 actions by default; add `--last N` for a smaller window or `--all` when you intentionally need the full timeline. If you used `cdp mock`, `cdp clock`, or `cdp throttle`, confirm the report shows the intended environment state and reset with `cdp mock <target> clear` / `cdp clock <target> reset` / `cdp throttle <target> off`.
+5. **Verify/report:** read the automatic action evidence, then use `cdp verify-click <target> @ref --expect-text "Saved"` for semantic interaction checks, `cdp perceive <target> --since-action`, or `cdp report <target>` for handoff; use `cdp report <target> --format json` when a script needs the versioned session memory model. Report handoffs show the latest 20 actions by default; add `--last N` for a smaller window or `--all` when you intentionally need the full timeline. If you used `cdp mock`, `cdp clock`, or `cdp throttle`, confirm the report shows the intended environment state and reset with `cdp mock <target> clear` / `cdp clock <target> reset` / `cdp throttle <target> off`.
 
 For long-session game / animation work also reach for `cdp waitfor <target> --any-of "win|lose|escape" 60000 --scope ".combat-log"` and `cdp waitfor <target> --selector-stable ".combat-log" 3000 60000`. To close MOTD-style modals safely without firing background shortcuts, use `cdp dismiss-modal <target>` (it prefers an explicit close button, falls back to Escape — never `press Space`).
 
@@ -63,6 +63,7 @@ After modifying code or interacting with a page, choose your verification tool b
 | Layout/spacing correct | `perceive` — `↕height`, `display`, `gap` on landmarks | Exact px values |
 | Visual polish/aesthetics | `elshot <selector>` on the specific component | Only for **subjective** visual quality that can't be expressed as structured data |
 | Animation/transition | `elshot <selector>` before and after | Only case truly needing pixel capture |
+| Click causes expected text/request/status | `verify-click <target> @ref --expect-text "Saved" --expect-request "POST /api/save" --expect-status 200` | Combines action evidence with semantic assertions |
 | What sequence of events an action causes | `record --action click @5` | Captures DOM mutations, network requests, console logs in chronological order |
 | When the page becomes stable after action | `record --until "dom stable"` | Reports exact settle time + what happened before settling |
 | Why something is slow or broken after navigation | `record <target> 5000` after `nav` | Correlates API calls → DOM updates → errors in a single timeline |
@@ -74,7 +75,7 @@ After modifying code or interacting with a page, choose your verification tool b
 Pick one — listed in the order to try them on a fresh machine:
 
 1. **Existing browser session** — open `chrome://inspect/#remote-debugging` (or `edge://inspect`) in Chrome / Chromium / Brave / Edge / Vivaldi and toggle the remote-debugging switch. Cleanest path when the toggle is reachable.
-2. **Isolated debug profile (when the toggle path doesn't work, with user consent)** — `node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com` launches a *separate* user-data-dir + `--remote-debugging-port` so you do not touch the user's main browser. macOS, Linux, and Windows browser paths are auto-detected; Linux also falls back to common browser names on `$PATH`, and `--exe /path/to/browser` handles non-standard installs. The disposable profile is at `/tmp/chrome-cdp-ex-<browser>-debug-profile-<port>`. Always confirm with the user before spawning.
+2. **Isolated debug profile (when the toggle path doesn't work, with user consent)** — `node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com` launches a *separate* user-data-dir + `--remote-debugging-port` so you do not touch the user's main browser. Add `--headless --no-sandbox` for Linux CI, containers, or remote shells without a display. macOS, Linux, and Windows browser paths are auto-detected; Linux also falls back to common browser names on `$PATH`, and `--exe /path/to/browser` handles non-standard installs. The disposable profile is at `/tmp/chrome-cdp-ex-<browser>-debug-profile-<port>`. Always confirm with the user before spawning.
 3. **Electron apps** — set `CDP_PORT=<port>` (the app must be launched with `--remote-debugging-port=<port>` or `app.commandLine.appendSwitch('remote-debugging-port', '<port>')`).
 
 Other requirements:
@@ -129,6 +130,19 @@ CDP_PORT=9222 node ~/.claude/plugins/.../skills/chrome-cdp-ex/scripts/cdp.mjs <c
 # WSL2 (use Windows Node.js):
 "$NODE_WIN" ~/.claude/plugins/.../skills/chrome-cdp-ex/scripts/cdp.mjs <command> [args]
 ```
+
+### Named targets and MCP adapter
+
+```bash
+scripts/cdp.mjs use <target> --name app          # store "app" and make it current
+scripts/cdp.mjs attach --port 9222 --target <target> --name app
+scripts/cdp.mjs current [--format json]          # show current alias and all aliases
+scripts/cdp.mjs forget app                       # remove an alias
+scripts/cdp.mjs perceive app -C -d 8             # aliases work anywhere a target prefix is accepted
+node skills/chrome-cdp-ex/scripts/mcp-server.mjs # stdio MCP tools for agent-native workflows
+```
+
+Use `use` for normal live workflows; use `attach` when you need to record the CDP host/port explicitly. The MCP server exposes doctor, list/open, perception, screenshot, action, `qa_page`, and report tools, with `confirm: true` required before mutating calls.
 
 **WSL2 efficiency tip**: Shell state doesn't persist between Bash calls. To avoid redefining `NODE_WIN` and `CDP` every time, **chain commands with `&&`** in a single Bash call:
 ```bash
@@ -309,6 +323,8 @@ scripts/cdp.mjs console <target> [--all|--errors] [--format json] # console buff
 scripts/cdp.mjs frame   <target> [--format json]                  # frame tree with @fN refs (alias: frames)
 scripts/cdp.mjs overlay <target> [sel|@ref] [--format json]       # detect dialogs/overlays and hit-test blockers
 scripts/cdp.mjs report  <target> [--format json]                  # action timeline + evidence + screenshot attachments + JSONL log path
+scripts/cdp.mjs verify-click <target> <sel|@ref> [--expect-text text] [--expect-request pattern] [--format json]
+scripts/cdp.mjs qa <target> [--desktop WxH] [--mobile WxH] [--expect-text text] [--format json]
 scripts/cdp.mjs checkpoint <target> [--format json]                # capture URL, cookies, localStorage, and sessionStorage
 scripts/cdp.mjs restore <target> --file <path> [--format json]     # restore a checkpoint artifact; invalidates @refs
 scripts/cdp.mjs record-actions <target> [--format json]           # export action log + mock/clock/throttle environment steps
@@ -373,7 +389,7 @@ scripts/cdp.mjs doctor [--format json] # one-call diagnostics (no target needed)
 scripts/cdp.mjs ready     # alias
 ```
 
-`doctor` is the onboarding wizard. It starts with a `Wizard` summary showing current status, the next command, and the golden path, then a `Recommendation` block with `Run`, `Ask`, and `Then` lines so agents do not have to infer the next move from checks. It then checks Node 22+, the skill install path, daemon sockets, open-file limit, CDP reachability, debuggable page targets, and whether browser debugging approval is already confirmed. Use `doctor --format json` when an agent needs a stable `chrome-cdp-ex.doctor.v1` payload with `wizard`, consent-aware `recommendation`, `checks`, and executable `nextSteps`; `recommendation` includes `run`, `ask`, `after`, `requiresUserAction`, `consentRequired`, and warning commands such as `ulimit -n 4096`. Low open-file limits include structured recovery for the current shell and, on macOS, the login session / GUI app limit (`sudo launchctl limit maxfiles 65536 200000`, requires admin). When ready, follow its printed path: `open` if no page exists, or `list` then `perceive <printed-prefix> -C -d 8`, click Allow if Chrome asks, `click`/`fill`, `perceive --since-action`, then `report`.
+`doctor` is the onboarding wizard. It starts with a `Wizard` summary showing current status, the next command, and the golden path, then a `Recommendation` block with `Run`, `Ask`, and `Then` lines so agents do not have to infer the next move from checks. It then checks Node 22+, the skill install path, daemon sockets, open-file limit, runtime environment, CDP reachability, debuggable page targets, and whether browser debugging approval is already confirmed. Use `doctor --format json` when an agent needs a stable `chrome-cdp-ex.doctor.v1` payload with `wizard`, consent-aware `recommendation`, `checks`, and executable `nextSteps`; `recommendation` includes `run`, `ask`, `after`, `requiresUserAction`, `consentRequired`, and warning commands such as `ulimit -n 4096`. Low open-file limits include structured recovery for the current shell and, on macOS, the login session / GUI app limit (`sudo launchctl limit maxfiles 65536 200000`, requires admin). In Linux CI, containers, SSH-like shells, or no-display environments, the `Environment` check recommends a headless `spawn-debug-browser` command with `--no-sandbox` and `--exe` when a browser is found. When ready, follow its printed path: `open` if no page exists, or `list` then `perceive <printed-prefix> -C -d 8`, click Allow if Chrome asks, `click`/`fill`, `perceive --since-action`, then `report`.
 
 Reports `[OK]` / `[WARN]` / `[FAIL]` for: Node version, skill install path, daemon socket state, open-file limit, CDP reachability (CDP_PORT or auto-discovered DevToolsActivePort), debuggable tab inventory, and browser permission. Exits with code 1 if any check fails. Run this **first** when an agent is unsure whether the environment is wired up.
 
@@ -393,7 +409,8 @@ If dispatch fails, read the classified `Action failure:` block instead of retryi
 
 | Command | Auto-returns |
 |---------|-------------|
-| `click`, `jsclick`, `clickxy`, `fill`, `type`, `press`, `select`, `scroll`, `upload`, `inject`, `dismiss-modal` | action evidence + perceive diff |
+| `click`, `verify-click`, `jsclick`, `clickxy`, `fill`, `type`, `press`, `select`, `scroll`, `upload`, `inject`, `dismiss-modal` | action evidence + perceive diff |
+| `qa` with `--click` | semantic QA report + action evidence |
 | `back`, `forward` | action evidence + full perceive |
 | `reload` | action evidence + bounded lightweight page observation |
 | `viewport` (when resizing) | action evidence + perceive diff |
@@ -504,7 +521,13 @@ scripts/cdp.mjs flow    <target> "<steps>" [--format json] # sequential runner; 
 scripts/cdp.mjs doctor [--format json]         # one-call diagnostics (Node, install, daemon state, CDP, permission)
 scripts/cdp.mjs ready [--format json]          # alias of doctor; exits 1 if any check FAILs
 scripts/cdp.mjs list    [--format json]        # discover tabs; JSON gives schema/pages/recommendation/nextSteps
+scripts/cdp.mjs use <target> --name app        # save a named alias for target reuse
+scripts/cdp.mjs attach --port 9222 --target <target> --name app # explicit alias with CDP endpoint
+scripts/cdp.mjs current [--format json]        # show current alias and saved aliases
+scripts/cdp.mjs forget app                     # remove a saved alias
 scripts/cdp.mjs open    [url] [--format json]  # open new tab + auto-attach; JSON gives approval/recommendation/nextSteps
+scripts/cdp.mjs qa <target> [--desktop WxH] [--mobile WxH] [--format json] # page smoke: screenshots/perception/console/assertions
+scripts/cdp.mjs verify-click <target> <sel|@ref> [--expect-text text] [--expect-request pattern] [--format json]
 scripts/cdp.mjs keepalive <target> <ms>        # keep a tab daemon alive for long background work
 scripts/cdp.mjs stop    [target]               # stop daemon(s)
 ```

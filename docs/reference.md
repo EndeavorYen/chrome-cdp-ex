@@ -8,10 +8,10 @@ Most workflows start with `doctor -> list -> open -> perceive -> click/fill -> p
 
 | Area | Commands |
 |---|---|
-| Discovery | `help`, `doctor`, `list`, `open`, `spawn-debug-browser`, `stop`, `closetab`, `keepalive` |
-| Perception | `perceive`, `controls`, `summary`, `snap`, `frame`, `overlay`, `text`, `table`, `status`, `console`, `report` |
+| Discovery | `help`, `doctor`, `list`, `open`, `spawn-debug-browser`, `attach`, `use`, `forget`, `current`, `stop`, `closetab`, `keepalive` |
+| Perception | `perceive`, `controls`, `summary`, `snap`, `frame`, `overlay`, `text`, `table`, `status`, `console`, `report`, `qa` |
 | Visual capture | `shot`, `elshot`, `fullshot`, `scanshot`, `diff-shot` |
-| Interaction | `click`, `jsclick`, `clickxy`, `type`, `press`, `scroll`, `hover`, `fill`, `select`, `upload`, `dialog`, `dismiss-modal` |
+| Interaction | `click`, `verify-click`, `jsclick`, `clickxy`, `type`, `press`, `scroll`, `hover`, `fill`, `select`, `upload`, `dialog`, `dismiss-modal` |
 | Waiting and flow | `wait`, `waitfor`, `loadall`, `batch`, `flow`, `repeat` |
 | Navigation | `nav`, `back`, `forward`, `reload`, `viewport` |
 | Inspection | `html`, `eval`, `eval64`, `evalraw`, `call`, `styles`, `net`, `netlog`, `cookies`, `cookieset`, `cookiedel` |
@@ -34,9 +34,50 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 
 Use `--format json` when another agent or script needs structured handoff data instead of human text.
 
+## Named Targets
+
+Use named aliases when a target prefix is noisy or a workflow should keep addressing the same live tab:
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs use <target> --name app
+node skills/chrome-cdp-ex/scripts/cdp.mjs current
+node skills/chrome-cdp-ex/scripts/cdp.mjs perceive app -C -d 8
+node skills/chrome-cdp-ex/scripts/cdp.mjs forget app
+```
+
+`attach` is the explicit form for recording a target plus `--port` / `--host`; `use` also accepts `9222/<target>` and stores that CDP port for later commands. `list --format json` includes aliases, and text `list` shows aliases next to matching tabs.
+
+## Semantic Verification And QA
+
+`verify-click` wraps one click with assertions that agents normally check manually:
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs verify-click <target> @ref \
+  --expect-text "Saved" \
+  --expect-request "POST /api/save" \
+  --expect-status 200 \
+  --no-console-errors \
+  --format json
+```
+
+It returns `chrome-cdp-ex.semantic-interaction.v1` with the action evidence plus text, network, and console assertions. Text output keeps the same signals readable for human review.
+
+`qa` is a higher-level smoke command for live UI checks:
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs qa <target> \
+  --desktop 1440x900 \
+  --mobile 390x844 \
+  --expect-text "Dashboard" \
+  --no-console-errors \
+  --format json
+```
+
+It captures page info, console health, desktop/mobile screenshots, perception summaries, and optional semantic checks. Add `--click <selector-or-ref>` to include a verified interaction before the final assertions.
+
 ## Action Evidence
 
-Mutating commands such as `click`, `fill`, `type`, `press`, `select`, `scroll`, `upload`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, `restore`, and `dismiss-modal` return action evidence.
+Mutating commands such as `click`, `verify-click`, `qa` with `--click`, `fill`, `type`, `press`, `select`, `scroll`, `upload`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, `restore`, and `dismiss-modal` return action evidence.
 
 Action evidence answers three questions:
 
@@ -140,6 +181,7 @@ When that is not available, spawn an isolated debug profile:
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com
+node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser chrome --headless --no-sandbox --port 9222 --url https://example.com
 ```
 
 Configuration:
@@ -149,6 +191,18 @@ Configuration:
 | `CDP_PORT` | Connect to a specific debugging port. |
 | `CDP_HOST` | Override the CDP host, default `127.0.0.1`. |
 | `CDP_PORT_FILE` | Override the `DevToolsActivePort` file path. |
+
+`spawn-debug-browser` waits until `/json/version` answers before reporting success. If the browser exits early or CDP never becomes ready, the error includes captured stdout/stderr and a recovery command. `doctor` includes an `Environment` check and recommends `--headless --no-sandbox --exe <path>` when it detects Linux CI, containers, SSH-style remote shells, or no display.
+
+## MCP Server
+
+For agent-native workflows, run the stdio MCP adapter:
+
+```bash
+node skills/chrome-cdp-ex/scripts/mcp-server.mjs
+```
+
+It exposes tools for `doctor`, `list_tabs`, `open_or_attach`, `perceive`, `screenshot`, `click`, `fill`, `viewport`, `qa_page`, and `report`. Mutating tools require `confirm: true`, and the adapter maps each call to the same `cdp.mjs` commands documented above.
 
 ## Electron
 

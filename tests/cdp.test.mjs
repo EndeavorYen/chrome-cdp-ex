@@ -192,7 +192,7 @@ describe('COMMANDS registry', () => {
       'back', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
       'clock', 'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav',
       'open', 'press', 'reload', 'replay', 'restore', 'scroll', 'select', 'spawn-debug-browser',
-      'stop', 'mock', 'throttle', 'type', 'upload', 'viewport',
+      'stop', 'mock', 'qa', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
     ].sort());
     for (const command of mutating) {
       expect(command.feedbackPolicy).toMatch(/^(none|settle-diff|full-perceive|state-change|report-only)$/);
@@ -8870,18 +8870,21 @@ describe('runDoctorChecks', () => {
       fs: { existsSync: () => false, lstatSync: null },
       listDaemons: () => [],
       fdLimit: 4096,
+      platform: 'linux',
       env: { CDP_PORT: '9222' },
       fetcher,
     });
     expect(Array.isArray(checks)).toBe(true);
-    expect(checks).toHaveLength(7);
+    expect(checks).toHaveLength(8);
     expect(checks[0].label).toBe('Node');
     expect(checks[1].label).toBe('Skill install');
     expect(checks[2].label).toBe('Daemons');
     expect(checks[3].label).toBe('FD limit');
-    expect(checks[4].label).toBe('CDP');
-    expect(checks[5].label).toBe('Tabs');
-    expect(checks[6].label).toBe('Permission');
+    expect(checks[4].label).toBe('Environment');
+    expect(checks[4].status).toBe('OK');
+    expect(checks[5].label).toBe('CDP');
+    expect(checks[6].label).toBe('Tabs');
+    expect(checks[7].label).toBe('Permission');
   });
 });
 
@@ -8965,7 +8968,7 @@ describe('doctorStr', () => {
       'cdp report AABBCCDD',
     ]);
     expect(model.checks.map(check => check.label)).toEqual([
-      'Node', 'Skill install', 'Daemons', 'FD limit', 'CDP', 'Tabs', 'Permission',
+      'Node', 'Skill install', 'Daemons', 'FD limit', 'Environment', 'CDP', 'Tabs', 'Permission',
     ]);
     expect(model.nextSteps).toEqual(expect.arrayContaining([
       'cdp list',
@@ -9460,7 +9463,7 @@ describe('parseSpawnDebugBrowserArgs', () => {
       ['chrome', '--port', '9333', '--url', 'http://127.0.0.1:3000', '--profile-dir', '/tmp/p'],
       { TMPDIR: '/tmp' }
     );
-    expect(opts).toEqual({
+    expect(opts).toMatchObject({
       browser: 'chrome',
       port: 9333,
       url: 'http://127.0.0.1:3000',
@@ -9526,8 +9529,14 @@ describe('spawnDebugBrowserStr', () => {
       return { pid: 4242, unref() {} };
     };
     const fs = { existsSync: () => true, mkdirSync: () => {} };
-    const out = await spawnDebugBrowserStr(['edge', '--port', '9311'], { TMPDIR: '/tmp' }, { fs, spawn: fakeSpawn, platform: 'darwin' });
+    const out = await spawnDebugBrowserStr(['edge', '--port', '9311'], { TMPDIR: '/tmp' }, {
+      fs,
+      spawn: fakeSpawn,
+      platform: 'darwin',
+      waitForSpawnedCdp: async () => ({ ok: true, port: 9311, product: 'Edge/126' }),
+    });
     expect(out).toContain('Spawned edge debug profile on CDP_PORT=9311');
+    expect(out).toContain('CDP ready');
     expect(out).toContain('Next: CDP_PORT=9311');
     expect(calls[0].args).toContain('--remote-debugging-port=9311');
   });
