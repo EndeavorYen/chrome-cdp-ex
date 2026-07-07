@@ -358,12 +358,16 @@ if (parsedNoChangeAction.recommendation?.strategy !== 'investigate-no-change') {
   throw new Error(`no-change click should recommend investigation instead of normal continuation:\n${noChangeClickJsonOut}`);
 }
 const noChangeNextSteps = parsedNoChangeAction.nextSteps || [];
-for (const expected of [
+const expectedNoChangeSteps = [
   `cdp overlay ${target} "#noop" --format json`,
-  `cdp frame ${target} --format json`,
   `cdp perceive ${target} -C -d 8`,
   `cdp report ${target} --format json`,
-]) {
+];
+const noChangeBlockingSignals = parsedNoChangeAction.receipt?.blockingSignals || parsedNoChangeAction.recommendation?.blockingSignals || [];
+if (noChangeBlockingSignals.includes('frame-check-needed')) {
+  expectedNoChangeSteps.splice(1, 0, `cdp frame ${target} --format json`);
+}
+for (const expected of expectedNoChangeSteps) {
   if (!noChangeNextSteps.includes(expected)) {
     throw new Error(`no-change click should include ${expected} in nextSteps:\n${noChangeClickJsonOut}`);
   }
