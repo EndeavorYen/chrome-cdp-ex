@@ -12,12 +12,12 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs list
 # If list has no useful target:
 node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
-node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref --format json
+node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref --format json --compact
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
-node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
+node skills/chrome-cdp-ex/scripts/cdp.mjs report <target> --last 1 --format json --compact
 ```
 
-The action JSON includes `receipt.schema = chrome-cdp-ex.action-receipt.v1`, which summarizes dispatch, settlement, observed delta, structured delta details, blocking signals, recovery hint, and executable next steps. Settlement is explicit: `state` separates settled, not-confirmed, not-applicable, and failed actions, while `signals` explains timeouts, observation errors, dispatch failures, or report-only actions. Handoff receipts keep signal-bearing delta rows and omit duplicated recovery fields; the per-target JSONL log preserves the full receipt. Once the action is recorded, the receipt also carries `eventId`, `sequence`, and `loggedAt` for report/replay correlation. `report` shows the latest 20 actions by default to keep handoffs small. Add `--last N` for a narrower handoff or `--all` when you intentionally need the full timeline; the JSONL log path in the report still preserves the long session history.
+The action JSON includes `receipt.schema = chrome-cdp-ex.action-receipt.v1`, which summarizes dispatch, settlement, observed delta, structured delta details, blocking signals, recovery hint, and executable next steps. Settlement is explicit: `state` separates settled, not-confirmed, not-applicable, and failed actions, while `signals` explains timeouts, observation errors, dispatch failures, or report-only actions. `--compact` keeps the executable handoff contract while trimming duplicated diagnostics and long DOM evidence; the per-target JSONL log preserves the full receipt. Once the action is recorded, the receipt also carries `eventId`, `sequence`, and `loggedAt` for report/replay correlation. `report` shows the latest 20 actions by default to keep handoffs small. Add `--last N` for a narrower handoff or `--all` when you intentionally need the full timeline; the JSONL log path in the report still preserves the long session history.
 
 For forms, replace the action line with:
 
