@@ -260,11 +260,14 @@ npm run benchmark:playwright -- --out playwright-raw.json
 npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json
 npm run benchmark:killer -- --comparison-baselines ./baselines.json
 npm run benchmark:campaign -- --rounds 10 --output ./campaign.json
+npm run benchmark:campaign -- --types large-app --rounds 1 --json
 ```
 
 Use [`docs/benchmarks/measured-baselines.example.json`](benchmarks/measured-baselines.example.json) as the checked-in schema fixture for reviewers. Do not publish comparison claims from that example file; regenerate a measured `baselines.json` for the machine and browser under test.
 
-Use `benchmark:campaign` for repeated live testing. It runs sequential rounds with unique CDP and HTTP ports, alternating MCP and Killer Path by default, then reports pass rate, latency, estimated output tokens, first-useful-observation time, and the slowest / largest-output step candidates. Keep benchmark runs sequential unless you are intentionally testing browser isolation; concurrent disposable browser launches can introduce CDP discovery noise on some desktop browsers.
+Use `benchmark:campaign` for repeated live testing. It runs sequential rounds with unique CDP and HTTP ports, alternating MCP and Killer Path by default, then reports pass rate, latency, estimated output tokens, first-useful-observation time, and the slowest / largest-output step candidates. Add `--types large-app` to run the high-intensity live SaaS stress fixture with 5000+ DOM nodes, 1000 source table rows, 200+ visible controls, bounded output checks, and truncation metadata coverage.
+
+Direct live benchmark commands use a shared lock and fail fast if another live benchmark is already running. Prefer `benchmark:campaign` instead of launching `benchmark:mcp`, `benchmark:killer`, or large-app stress runs in parallel; the campaign runner keeps the lock for the full sequence and avoids cross-run CDP target contamination.
 
 Publish comparison claims only when `gate.passed` is true and competitor baselines are measured, not the planning-only `heuristic-smoke-baseline`.
 

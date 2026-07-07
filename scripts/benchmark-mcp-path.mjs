@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { spawn, spawnSync } from 'child_process';
 
 import { estimateTokenCount } from './benchmark-killer-path.mjs';
+import { withLiveBenchmarkLock } from './benchmark-run-lock.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
@@ -260,6 +261,9 @@ function gateCriterion(name, passed, actual, limit, recommendation) {
   return { name, passed, actual, limit, recommendation };
 }
 
+const MCP_TOOL_OUTPUT_TOKENS_MAX = 3200;
+const MCP_USEFUL_OBSERVATION_TOKENS_MAX = 5000;
+
 export function summarizeMcpBenchmarkRun({ startedAt, endedAt, target = '', steps = [], browser = '', port = null, url = '' } = {}) {
   const normalizedSteps = steps.map(step => {
     const text = stepText(step);
@@ -300,12 +304,27 @@ export function summarizeMcpBenchmarkRun({ startedAt, endedAt, target = '', step
   const toolListStep = steps.find(step => step.name === 'tools-list');
   const verifyStep = steps.find(step => step.name === 'verify-click');
   const reportModel = stepModel(steps.find(step => step.name === 'report'));
+  const perToolOutputTokens = toolSteps.map(step => ({
+    name: step.name,
+    tool: step.mcpTool,
+    commandText: step.commandText,
+    outputChars: step.outputChars,
+    estimatedTokens: step.estimatedTokens,
+  }));
+  const biggestToolOutputStep = perToolOutputTokens.reduce((biggest, step) => (
+    !biggest || step.estimatedTokens > biggest.estimatedTokens ? step : biggest
+  ), null);
+  const usefulObservationTokens = toolSteps
+    .filter(step => step.hasUsefulObservation)
+    .reduce((sum, step) => sum + step.estimatedTokens, 0);
   const criteria = [
     gateCriterion('run-success', !failed, failed?.name || null, 'no failed step', 'Fix the failed MCP tool call before using this run as evidence.'),
     gateCriterion('tool-call-budget', toolSteps.length <= 6, toolSteps.length, '<= 6', 'Keep the MCP problem-finding path to six tool calls or fewer.'),
     gateCriterion('first-useful-observation', firstObservation && firstObservation.endedAt - startedAt <= 6000, firstObservation ? firstObservation.endedAt - startedAt : null, '<= 6000ms', 'MCP should produce a useful observation quickly enough to guide the next tool call.'),
     gateCriterion('first-action-evidence', firstActionEvidence && firstActionEvidence.endedAt - startedAt <= 9000, firstActionEvidence ? firstActionEvidence.endedAt - startedAt : null, '<= 9000ms', 'MCP mutating calls should return action evidence without an extra manual observe turn.'),
     gateCriterion('output-token-budget', estimateTokenCount(outputChars) <= 12000, estimateTokenCount(outputChars), '<= 12000 tokens', 'Keep MCP output bounded so tool envelopes do not hide token regressions.'),
+    gateCriterion('useful-observation-token-budget', usefulObservationTokens <= MCP_USEFUL_OBSERVATION_TOKENS_MAX, usefulObservationTokens, `<= ${MCP_USEFUL_OBSERVATION_TOKENS_MAX} useful-observation tokens`, 'Keep MCP observations compact enough to preserve context for recovery decisions.'),
+    gateCriterion('mcp-tool-output-budget', (biggestToolOutputStep?.estimatedTokens ?? 0) <= MCP_TOOL_OUTPUT_TOKENS_MAX, biggestToolOutputStep?.estimatedTokens ?? 0, `<= ${MCP_TOOL_OUTPUT_TOKENS_MAX} tokens/tool`, 'Keep any single MCP tool response from dominating the handoff; inspect the culprit tool output.'),
     gateCriterion('mcp-recovery-tool-coverage', toolsListContains(toolListStep, ['controls', 'overlay', 'dismiss_modal', 'verify_click']), true, 'required tools present', 'MCP must expose the recovery tools needed after a blocked click.'),
     gateCriterion('overlay-recovery-covered', overlayRecoveryCovered(steps), true, 'overlay -> dismiss_modal action', 'A visible overlay should be diagnosable and recoverable through MCP-only tools.'),
     gateCriterion('semantic-verification', semanticVerificationPassed(verifyStep), true, 'verify_click pass', 'MCP should complete click plus expected text verification in one tool call.'),
@@ -332,15 +351,16 @@ export function summarizeMcpBenchmarkRun({ startedAt, endedAt, target = '', step
         : null,
       outputChars,
       estimatedOutputTokens: estimateTokenCount(outputChars),
-      usefulObservationTokens: toolSteps
-        .filter(step => step.hasUsefulObservation)
-        .reduce((sum, step) => sum + step.estimatedTokens, 0),
+      usefulObservationTokens,
       actionEvidenceToolCalls: toolSteps.filter(step => step.hasActionEvidence).length,
       maxStepEstimatedTokens: biggestOutputStep?.estimatedTokens ?? 0,
+      maxToolOutputTokens: biggestToolOutputStep?.estimatedTokens ?? 0,
+      perToolOutputTokens,
       maxStepDurationMs: slowestStep?.durationMs ?? 0,
       biggestOutputStep: biggestOutputStep
         ? { name: biggestOutputStep.name, commandText: biggestOutputStep.commandText, estimatedTokens: biggestOutputStep.estimatedTokens }
         : null,
+      biggestToolOutputStep,
       slowestStep: slowestStep
         ? { name: slowestStep.name, commandText: slowestStep.commandText, durationMs: slowestStep.durationMs }
         : null,
@@ -374,6 +394,7 @@ export function formatMcpBenchmarkReport(summary) {
     `Golden path complete: ${summary.metrics.goldenPathMs ?? 'n/a'} ms`,
     `Estimated output tokens: ${summary.metrics.estimatedOutputTokens}`,
     `Useful observation tokens: ${summary.metrics.usefulObservationTokens}`,
+    `Biggest tool output: ${summary.metrics.biggestToolOutputStep?.tool || 'n/a'} (${summary.metrics.biggestToolOutputStep?.estimatedTokens ?? 'n/a'} tokens)`,
     `Action evidence tool calls: ${summary.metrics.actionEvidenceToolCalls}`,
     `Overlay recovery covered: ${summary.metrics.overlayRecoveryCovered ? 'yes' : 'no'}`,
     `Semantic verification: ${summary.metrics.semanticVerificationPassed ? 'pass' : 'fail'}`,
@@ -401,7 +422,15 @@ export function parseMcpBenchmarkArgs(argv = []) {
   return opts;
 }
 
-export async function runMcpBenchmark({ port = Number(process.env.CDP_MCP_BENCH_PORT || 9335), serverPort = Number(process.env.CDP_MCP_BENCH_HTTP_PORT || 41739), json = false } = {}) {
+export async function runMcpBenchmark(opts = {}) {
+  if (!opts.skipLock) {
+    return withLiveBenchmarkLock({ name: 'benchmark:mcp' }, () => runMcpBenchmark({ ...opts, skipLock: true }));
+  }
+  const {
+    port = Number(process.env.CDP_MCP_BENCH_PORT || 9335),
+    serverPort = Number(process.env.CDP_MCP_BENCH_HTTP_PORT || 41739),
+    json = false,
+  } = opts;
   if (!existsSync(cdp)) throw new Error(`cdp script not found: ${cdp}`);
   if (!existsSync(mcpServer)) throw new Error(`MCP server not found: ${mcpServer}`);
   if (!existsSync(page)) throw new Error(`smoke page not found: ${page}`);

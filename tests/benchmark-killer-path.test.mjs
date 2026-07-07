@@ -390,7 +390,7 @@ describe('benchmark killer path helpers', () => {
       expect.objectContaining({ name: 'first-useful-observation', passed: true, actual: 40, operator: '<=', limit: 5000 }),
       expect.objectContaining({ name: 'first-action-evidence', passed: true, actual: 152, operator: '<=' }),
       expect.objectContaining({ name: 'golden-path-under-two-minutes', passed: true, actual: 212, operator: '<=', limit: 120000 }),
-      expect.objectContaining({ name: 'total-output-tokens', passed: true, actual: summary.metrics.estimatedOutputTokens, operator: '<=' }),
+      expect.objectContaining({ name: 'total-output-tokens', passed: true, actual: summary.metrics.estimatedOutputTokens, operator: '<=', limit: 17000 }),
       expect.objectContaining({ name: 'max-step-output-tokens', passed: true, actual: summary.metrics.maxStepEstimatedTokens, operator: '<=' }),
       expect.objectContaining({ name: 'max-step-duration', passed: true, actual: 30, operator: '<=' }),
       expect.objectContaining({ name: 'useful-observation-tokens', passed: true, operator: '<=', limit: 3000 }),
@@ -2162,8 +2162,8 @@ describe('benchmark killer path helpers', () => {
       },
       visibleControls: {
         total: 240,
-        returned: 50,
-        limit: 50,
+        returned: 30,
+        limit: 30,
         bounded: true,
       },
       hiddenTemplateOmission: { covered: true },
@@ -2181,6 +2181,13 @@ describe('benchmark killer path helpers', () => {
       'large-app-hidden-template-omission',
     ]));
     expect(formatBenchmarkReport(summary)).toContain('Large app stress: pass (commands 5/5, budgets 5/5, truncation metadata 5/5)');
+  });
+
+  it('keeps the large app perceive step compact enough for live token gates', () => {
+    const fixture = buildLargeAppStressFixture();
+    const perceive = fixture.steps.find(step => step.name === 'perceive');
+
+    expect(perceive.command).toEqual(['perceive', 'AABBCCDD', '-C', '-d', '3', '--keep-refs', '--last', '5', '--format', 'json']);
   });
 
   it('fails large app stress gate with command culprit when output is unbounded', () => {
@@ -2248,7 +2255,7 @@ describe('benchmark killer path helpers', () => {
         actual: 0,
         culprit: expect.objectContaining({
           name: 'perceive',
-          commandText: 'cdp perceive AABBCCDD -C -d 8 --keep-refs --last 20 --format json',
+          commandText: 'cdp perceive AABBCCDD -C -d 3 --keep-refs --last 5 --format json',
         }),
       }),
       expect.objectContaining({
@@ -2257,7 +2264,7 @@ describe('benchmark killer path helpers', () => {
         actual: false,
         culprit: expect.objectContaining({
           name: 'controls',
-          commandText: 'cdp controls AABBCCDD --limit 50 --format json',
+          commandText: 'cdp controls AABBCCDD --limit 30 --format json',
         }),
       }),
       expect.objectContaining({
@@ -2312,7 +2319,7 @@ describe('benchmark killer path helpers', () => {
       'json',
     ]);
     expect(plan.find(step => step.args[0] === 'click')?.args).toContain('--format');
-    expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--format', 'json']);
+    expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--last', '1', '--format', 'json']);
     expect(plan.find(step => step.name === 'guarded-page')?.args).toEqual(['perceive', 'AABBCCDD', '-s', '#auth-panel', '-d', '4']);
     expect(plan.filter(step => !step.benchmarkProbe).length).toBeLessThanOrEqual(24);
   });
@@ -2354,6 +2361,7 @@ describe('benchmark killer path helpers', () => {
     expect(plan[0].args).toEqual(['perceive', 'AABBCCDD', '-C', '-d', '8', '--keep-refs', '--last', '20', '--format', 'json']);
     expect(plan.map(step => step.args[0])).not.toContain('doctor');
     expect(plan.map(step => step.args[0])).not.toContain('list');
+    expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--last', '1', '--format', 'json']);
     expect(plan.find(step => step.name === 'guarded-page')?.args).toEqual(['perceive', 'AABBCCDD', '-s', '#auth-panel', '-d', '4']);
     expect(plan.filter(step => !step.benchmarkProbe).length).toBeLessThanOrEqual(22);
   });
