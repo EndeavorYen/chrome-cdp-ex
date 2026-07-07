@@ -30,6 +30,8 @@ Use `History trend` to compare against the previous campaign. Treat negative pas
 
 Use `Regression comparison` before review when you have a saved `main` campaign summary or history record. Treat `warn` as review-required evidence and `fail` as a blocker unless the regression is intentional and documented with a stronger live result.
 
+Use `Route recommendation` to decide whether the next agent workflow should prefer MCP tools or direct CLI commands. Trust high-confidence recommendations when both routes have comparable non-adversarial rounds; treat low confidence or `inconclusive` as a signal to run more matched rounds before changing operator guidance.
+
 Use adversarial seeds when the fixed smoke fixture feels too easy. A seed generates a replayable page with overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, and hidden-template traits, and failed campaign rounds keep the seed in their reproduction command.
 
 ## 2. Open Issues

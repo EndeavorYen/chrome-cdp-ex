@@ -19,6 +19,14 @@ const DEFAULT_REGRESSION_THRESHOLDS = Object.freeze({
   warnSlowestStepMsIncrease: 250,
   failSlowestStepMsIncrease: 1000,
 });
+const ROUTE_RECOMMENDATION_THRESHOLDS = Object.freeze({
+  passRate: 0.05,
+  strongPassRate: 0.2,
+  avgTotalMs: 500,
+  avgFirstUsefulObservationMs: 500,
+  avgFirstActionEvidenceMs: 500,
+  avgEstimatedOutputTokens: 250,
+});
 
 function parsePositiveInt(value, name, { min = 1, max = 100 } = {}) {
   const raw = String(value ?? '').trim();
@@ -261,6 +269,154 @@ function summarizeRoundsForType(rounds, type) {
   };
 }
 
+function comparableRouteRounds(rounds = [], type) {
+  return rounds.filter(round => (
+    round.type === type
+    && round.metrics?.adversarialScenario?.enabled !== true
+  ));
+}
+
+function summarizeRouteRounds(rounds = [], route, type) {
+  const selected = comparableRouteRounds(rounds, type);
+  const metric = name => selected.map(round => round.metrics?.[name]);
+  const passed = selected.filter(round => round.success).length;
+  return {
+    route,
+    type,
+    rounds: selected.length,
+    passed,
+    failed: selected.length - passed,
+    passRate: selected.length ? passed / selected.length : null,
+    avgTotalMs: numericAverage(metric('totalMs')),
+    avgFirstUsefulObservationMs: numericAverage(metric('firstUsefulObservationMs')),
+    avgFirstActionEvidenceMs: numericAverage(metric('firstActionEvidenceMs')),
+    avgEstimatedOutputTokens: numericAverage(metric('estimatedOutputTokens')),
+    maxStepEstimatedTokens: numericMax(metric('maxStepEstimatedTokens')),
+  };
+}
+
+function routeMetricEvidence({ name, mcp, cli, threshold, direction = 'lower', unit, weight = 1 }) {
+  const delta = Number.isFinite(mcp) && Number.isFinite(cli) ? mcp - cli : null;
+  let winner = null;
+  if (Number.isFinite(delta) && Math.abs(delta) >= threshold) {
+    winner = direction === 'higher'
+      ? (delta > 0 ? 'mcp' : 'cli')
+      : (delta < 0 ? 'mcp' : 'cli');
+  }
+  return {
+    name,
+    winner,
+    delta,
+    unit,
+    direction,
+    threshold,
+    weight,
+  };
+}
+
+function routeScore(evidence = [], route) {
+  return evidence
+    .filter(entry => entry.winner === route)
+    .reduce((sum, entry) => sum + entry.weight, 0);
+}
+
+function routeRecommendationForEvidence(evidence = [], mcp = {}, cli = {}) {
+  if (!mcp.rounds || !cli.rounds) {
+    return {
+      route: 'inconclusive',
+      confidence: 'low',
+      reason: 'Need at least one comparable MCP round and one comparable CLI round.',
+    };
+  }
+
+  const passRate = evidence.find(entry => entry.name === 'pass-rate');
+  if (passRate?.winner && Math.abs(passRate.delta) >= ROUTE_RECOMMENDATION_THRESHOLDS.strongPassRate) {
+    return {
+      route: passRate.winner,
+      confidence: 'high',
+      reason: `${passRate.winner} has a materially higher pass rate on matched rounds.`,
+    };
+  }
+
+  const mcpScore = routeScore(evidence, 'mcp');
+  const cliScore = routeScore(evidence, 'cli');
+  if (mcpScore >= cliScore + 2) {
+    return {
+      route: 'mcp',
+      confidence: mcpScore >= 5 ? 'high' : 'medium',
+      reason: 'MCP wins the weighted latency/token/pass-rate evidence.',
+    };
+  }
+  if (cliScore >= mcpScore + 2) {
+    return {
+      route: 'cli',
+      confidence: cliScore >= 5 ? 'high' : 'medium',
+      reason: 'CLI wins the weighted latency/token/pass-rate evidence.',
+    };
+  }
+  return {
+    route: 'inconclusive',
+    confidence: 'low',
+    reason: 'Matched MCP and CLI evidence is too close to recommend a route.',
+  };
+}
+
+export function buildMcpCliRouteRecommendation(rounds = []) {
+  const mcp = summarizeRouteRounds(rounds, 'mcp', 'mcp');
+  const cli = summarizeRouteRounds(rounds, 'cli', 'killer');
+  const excludedRounds = rounds
+    .filter(round => round.type === 'killer' && round.metrics?.adversarialScenario?.enabled === true)
+    .map(round => ({ round: round.round, type: round.type, seed: round.seed || round.metrics?.adversarialScenario?.seed || null }));
+  const evidence = [
+    routeMetricEvidence({
+      name: 'pass-rate',
+      mcp: mcp.passRate,
+      cli: cli.passRate,
+      threshold: ROUTE_RECOMMENDATION_THRESHOLDS.passRate,
+      direction: 'higher',
+      unit: 'ratio',
+      weight: 3,
+    }),
+    routeMetricEvidence({
+      name: 'avg-total-latency',
+      mcp: mcp.avgTotalMs,
+      cli: cli.avgTotalMs,
+      threshold: ROUTE_RECOMMENDATION_THRESHOLDS.avgTotalMs,
+      unit: 'ms',
+    }),
+    routeMetricEvidence({
+      name: 'first-useful-observation',
+      mcp: mcp.avgFirstUsefulObservationMs,
+      cli: cli.avgFirstUsefulObservationMs,
+      threshold: ROUTE_RECOMMENDATION_THRESHOLDS.avgFirstUsefulObservationMs,
+      unit: 'ms',
+    }),
+    routeMetricEvidence({
+      name: 'first-action-evidence',
+      mcp: mcp.avgFirstActionEvidenceMs,
+      cli: cli.avgFirstActionEvidenceMs,
+      threshold: ROUTE_RECOMMENDATION_THRESHOLDS.avgFirstActionEvidenceMs,
+      unit: 'ms',
+    }),
+    routeMetricEvidence({
+      name: 'avg-output-tokens',
+      mcp: mcp.avgEstimatedOutputTokens,
+      cli: cli.avgEstimatedOutputTokens,
+      threshold: ROUTE_RECOMMENDATION_THRESHOLDS.avgEstimatedOutputTokens,
+      unit: 'tokens',
+      weight: 2,
+    }),
+  ];
+  return {
+    schema: 'chrome-cdp-ex.mcp-cli-route-recommendation.v1',
+    routes: { mcp, cli },
+    deltas: Object.fromEntries(evidence.map(entry => [entry.name, entry.delta])),
+    evidence,
+    excludedRounds,
+    recommendation: routeRecommendationForEvidence(evidence, mcp, cli),
+  };
+}
+
 function topCulprit(rounds, field, metricName) {
   const entries = rounds
     .map(round => ({
@@ -401,6 +557,7 @@ export function summarizeCampaignRun({ startedAt, endedAt, rounds = [], plan = [
       slowestResponsiveRound: topCulprit(rounds, 'slowestResponsiveStep', 'maxResponsiveStepDurationMs'),
       biggestOutputRound: topCulprit(rounds, 'biggestOutputStep', 'maxStepEstimatedTokens'),
     },
+    routeRecommendation: buildMcpCliRouteRecommendation(rounds),
     issueDrafts: buildCampaignIssueDrafts(rounds, artifacts),
     rounds,
   };
@@ -624,6 +781,11 @@ function formatPassRateDelta(value) {
   return `${sign}${points}pp`;
 }
 
+function formatRouteMetric(value, unit) {
+  if (!Number.isFinite(value)) return `n/a ${unit}`;
+  return `${Math.round(value)} ${unit}`;
+}
+
 export function formatCampaignReport(summary) {
   const pct = summary.passRate == null ? 'n/a' : `${Math.round(summary.passRate * 100)}%`;
   const lines = [
@@ -661,6 +823,20 @@ export function formatCampaignReport(summary) {
     lines.push(`  - slowest step delta: ${formatSignedIntegerDelta(comparison.deltas.slowestStepMs, 'ms')}`);
     if (comparison.newCulpritSteps?.length) {
       lines.push(`  - new culprit: ${comparison.newCulpritSteps.map(change => `${change.field} ${change.from || 'n/a'} -> ${change.to || 'n/a'}`).join('; ')}`);
+    }
+  }
+  if (summary.routeRecommendation) {
+    const routing = summary.routeRecommendation;
+    const recommendation = routing.recommendation || {};
+    const mcp = routing.routes?.mcp || {};
+    const cli = routing.routes?.cli || {};
+    lines.push('', `Route recommendation: ${recommendation.route || 'inconclusive'} (${recommendation.confidence || 'low'} confidence)`);
+    lines.push(`  - reason: ${recommendation.reason || 'n/a'}`);
+    lines.push(`  - mcp: ${mcp.rounds ?? 0} rounds, pass ${mcp.passRate == null ? 'n/a' : `${Math.round(mcp.passRate * 100)}%`}, avg total ${formatRouteMetric(mcp.avgTotalMs, 'ms')}, avg output ${formatRouteMetric(mcp.avgEstimatedOutputTokens, 'tokens')}`);
+    lines.push(`  - cli: ${cli.rounds ?? 0} rounds, pass ${cli.passRate == null ? 'n/a' : `${Math.round(cli.passRate * 100)}%`}, avg total ${formatRouteMetric(cli.avgTotalMs, 'ms')}, avg output ${formatRouteMetric(cli.avgEstimatedOutputTokens, 'tokens')}`);
+    lines.push(`  - deltas (mcp - cli): pass ${formatPassRateDelta(routing.deltas?.['pass-rate'])}, avg total ${formatSignedIntegerDelta(routing.deltas?.['avg-total-latency'], 'ms')}, first observation ${formatSignedIntegerDelta(routing.deltas?.['first-useful-observation'], 'ms')}, first action ${formatSignedIntegerDelta(routing.deltas?.['first-action-evidence'], 'ms')}, avg output ${formatSignedIntegerDelta(routing.deltas?.['avg-output-tokens'], 'tokens')}`);
+    if (routing.excludedRounds?.length) {
+      lines.push(`  - excluded from route comparison: ${routing.excludedRounds.length} adversarial CLI round(s)`);
     }
   }
   if (summary.failurePatterns.length) {
