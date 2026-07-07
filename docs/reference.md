@@ -202,7 +202,15 @@ For agent-native workflows, run the stdio MCP adapter:
 node skills/chrome-cdp-ex/scripts/mcp-server.mjs
 ```
 
-It exposes tools for `doctor`, `list_tabs`, `open_or_attach`, `perceive`, `screenshot`, `click`, `fill`, `viewport`, `qa_page`, and `report`. Mutating tools require `confirm: true`, and the adapter maps each call to the same `cdp.mjs` commands documented above.
+It exposes tools for `doctor`, `list_tabs`, `open_or_attach`, `perceive`, `controls`, `overlay`, `screenshot`, `click`, `verify_click`, `dismiss_modal`, `fill`, `viewport`, `qa_page`, and `report`. Mutating tools require `confirm: true`, and the adapter maps each call to the same `cdp.mjs` commands documented above.
+
+Use the MCP benchmark when changing the adapter or tool surface:
+
+```bash
+npm run benchmark:mcp
+```
+
+The benchmark exercises the live problem-finding path through stdio MCP: open a smoke page, discover compact visible controls, detect a blocking modal, recover with `dismiss_modal`, validate a combat action with `verify_click`, and hand off the action timeline with `report`.
 
 ## Electron
 

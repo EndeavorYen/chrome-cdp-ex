@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'child_process';
+import { readFileSync } from 'fs';
 
 process.env.NODE_ENV = 'test';
 
@@ -9,6 +10,7 @@ const {
   buildMcpToolCommand,
   createMcpInitializeResult,
 } = await import('../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs');
+const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
 function encodeMcpMessage(payload) {
   const body = JSON.stringify(payload);
@@ -281,22 +283,51 @@ describe('current open issue contracts', () => {
       'open_or_attach',
       'list_tabs',
       'perceive',
+      'controls',
+      'overlay',
       'screenshot',
       'click',
+      'verify_click',
+      'dismiss_modal',
       'fill',
       'viewport',
       'qa_page',
       'report',
     ]));
     expect(createMcpInitializeResult().serverInfo.name).toBe('chrome-cdp-ex');
+    expect(createMcpInitializeResult().serverInfo.version).toBe(packageJson.version);
     expect(buildMcpToolCommand('doctor', {})).toEqual(['doctor', '--format', 'json']);
     expect(buildMcpToolCommand('perceive', { target: 'app', depth: 4, cursorInteractive: true }))
       .toEqual(['perceive', 'app', '-d', '4', '-C', '--format', 'json']);
+    expect(buildMcpToolCommand('controls', { target: 'app', selector: '#composer', filter: 'send', limit: 5 }))
+      .toEqual(['controls', 'app', '--selector', '#composer', '--filter', 'send', '--limit', '5', '--format', 'json']);
+    expect(buildMcpToolCommand('overlay', { target: 'app', selector: '@3' }))
+      .toEqual(['overlay', 'app', '@3', '--format', 'json']);
     expect(buildMcpToolCommand('open_or_attach', { target: 'ABC12345', port: 9223 }))
       .toEqual(['use', '--port', '9223', '--target', 'ABC12345']);
     expect(buildMcpToolCommand('click', { target: 'app', selector: 'button.primary', confirm: true }))
       .toEqual(['click', 'app', 'button.primary', '--format', 'json']);
+    expect(buildMcpToolCommand('verify_click', {
+      target: 'app',
+      selector: 'button.primary',
+      expectText: 'Saved',
+      expectRequest: 'POST /api/save',
+      expectStatus: 200,
+      noConsoleErrors: true,
+      confirm: true,
+    })).toEqual([
+      'verify-click', 'app', 'button.primary',
+      '--expect-text', 'Saved',
+      '--expect-request', 'POST /api/save',
+      '--expect-status', '200',
+      '--no-console-errors',
+      '--format', 'json',
+    ]);
+    expect(buildMcpToolCommand('dismiss_modal', { target: 'app', confirm: true }))
+      .toEqual(['dismiss-modal', 'app', '--format', 'json']);
     expect(() => buildMcpToolCommand('fill', { target: 'app', selector: '#password', text: 'secret' }))
+      .toThrow(/confirm: true/);
+    expect(() => buildMcpToolCommand('dismiss_modal', { target: 'app' }))
       .toThrow(/confirm: true/);
     expect(buildMcpToolCommand('qa_page', {
       target: 'app',
