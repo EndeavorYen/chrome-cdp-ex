@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   appendCampaignHistory,
+  buildCampaignIssueDrafts,
   buildCampaignRoundPlan,
   compactCampaignRound,
   formatCampaignReport,
@@ -43,6 +44,23 @@ describe('live campaign benchmark helpers', () => {
       { round: 3, type: 'large-app', port: 9502, serverPort: 43002 },
       { round: 4, type: 'mcp', port: 9503, serverPort: 43003 },
       { round: 5, type: 'killer', port: 9504, serverPort: 43004 },
+    ]);
+  });
+
+  it('assigns adversarial seeds to killer campaign rounds for replay', () => {
+    const opts = parseCampaignArgs([
+      '--rounds', '5',
+      '--types', 'killer,mcp,killer',
+      '--adversarial-seeds', 'alpha,beta',
+    ]);
+
+    expect(opts.adversarialSeeds).toEqual(['alpha', 'beta']);
+    expect(buildCampaignRoundPlan(opts)).toEqual([
+      { round: 1, type: 'killer', port: 9440, serverPort: 42140, seed: 'alpha' },
+      { round: 2, type: 'mcp', port: 9441, serverPort: 42141 },
+      { round: 3, type: 'killer', port: 9442, serverPort: 42142, seed: 'beta' },
+      { round: 4, type: 'killer', port: 9443, serverPort: 42143, seed: 'alpha' },
+      { round: 5, type: 'mcp', port: 9444, serverPort: 42144 },
     ]);
   });
 
@@ -105,6 +123,45 @@ describe('live campaign benchmark helpers', () => {
         biggestOutputStep: { name: 'report', estimatedTokens: 2800 },
       },
     });
+  });
+
+  it('keeps adversarial seed and replay command in failed campaign diagnostics', () => {
+    const round = compactCampaignRound(
+      { round: 2, type: 'killer', port: 9442, serverPort: 42142, seed: 'round5-alpha' },
+      {
+        success: false,
+        failedStep: 'adversarial-shadow',
+        gate: {
+          profile: 'killer-path-default',
+          passed: false,
+          passedCount: 28,
+          total: 32,
+          criteria: [
+            { name: 'adversarial-scenario-exercised', passed: false },
+          ],
+        },
+        metrics: {
+          estimatedOutputTokens: 13000,
+          adversarialScenario: {
+            enabled: true,
+            seed: 'round5-alpha',
+            replayCommand: 'npm run benchmark:killer -- --json --adversarial-seed "round5-alpha"',
+          },
+          biggestOutputStep: { name: 'adversarial-shadow', estimatedTokens: 3000 },
+        },
+      },
+      { startedAt: '2026-07-07T00:00:00.000Z', endedAt: '2026-07-07T00:00:03.200Z', wallMs: 3200 },
+    );
+    const drafts = buildCampaignIssueDrafts([round], { output: '/tmp/campaign.json' });
+
+    expect(round.seed).toBe('round5-alpha');
+    expect(round.metrics.adversarialScenario).toMatchObject({ seed: 'round5-alpha' });
+    expect(drafts[0]).toMatchObject({
+      seed: 'round5-alpha',
+      reproductionCommand: 'npm run benchmark:campaign -- --types killer --rounds 1 --port-start 9442 --server-port-start 42142 --adversarial-seeds round5-alpha --fail-fast --json',
+    });
+    expect(drafts[0].body).toContain('- Seed: round5-alpha');
+    expect(drafts[0].body).toContain('--adversarial-seeds round5-alpha');
   });
 
   it('summarizes pass rate, per-type averages, failures, and optimization suspects', () => {

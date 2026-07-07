@@ -30,6 +30,15 @@ function parseTypes(value) {
   return types;
 }
 
+function parseSeedList(value) {
+  const seeds = String(value || '')
+    .split(',')
+    .map(seed => seed.trim())
+    .filter(Boolean);
+  if (!seeds.length) throw new Error('adversarial seeds must include at least one seed');
+  return seeds;
+}
+
 export function parseCampaignArgs(argv = []) {
   const opts = {
     rounds: 10,
@@ -42,6 +51,7 @@ export function parseCampaignArgs(argv = []) {
     failFast: false,
     output: null,
     history: null,
+    adversarialSeeds: [],
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -63,6 +73,10 @@ export function parseCampaignArgs(argv = []) {
     } else if (arg === '--history' || arg === '--history-file') {
       opts.history = argv[++i] || null;
       if (!opts.history) throw new Error('history path is required after --history');
+    } else if (arg === '--adversarial-seed') {
+      opts.adversarialSeeds = parseSeedList(argv[++i]);
+    } else if (arg === '--adversarial-seeds') {
+      opts.adversarialSeeds = parseSeedList(argv[++i]);
     } else if (arg === '--json') {
       opts.json = true;
     } else if (arg === '--fail-fast') {
@@ -79,13 +93,22 @@ export function buildCampaignRoundPlan({
   types = [...DEFAULT_TYPES],
   portStart = 9440,
   serverPortStart = 42140,
+  adversarialSeeds = [],
 } = {}) {
-  return Array.from({ length: rounds }, (_, index) => ({
-    round: index + 1,
-    type: types[index % types.length],
-    port: portStart + index,
-    serverPort: serverPortStart + index,
-  }));
+  let adversarialIndex = 0;
+  return Array.from({ length: rounds }, (_, index) => {
+    const type = types[index % types.length];
+    const seed = type === 'killer' && adversarialSeeds.length
+      ? adversarialSeeds[adversarialIndex++ % adversarialSeeds.length]
+      : null;
+    return {
+      round: index + 1,
+      type,
+      port: portStart + index,
+      serverPort: serverPortStart + index,
+      ...(seed ? { seed } : {}),
+    };
+  });
 }
 
 function sleep(ms) {
@@ -109,6 +132,7 @@ export function compactCampaignRound(plan, result, timing = {}) {
     type: plan.type,
     port: plan.port,
     serverPort: plan.serverPort,
+    seed: plan.seed || result?.metrics?.adversarialScenario?.seed || null,
     success,
     runSuccess: result?.success === true,
     gatePassed,
@@ -142,6 +166,7 @@ export function compactCampaignRound(plan, result, timing = {}) {
       reportTimeline: metricValue(result, 'hasReportTimeline', metricValue(result, 'reportTimeline')),
       semanticVerificationPassed: metricValue(result, 'semanticVerificationPassed'),
       overlayRecoveryCovered: metricValue(result, 'overlayRecoveryCovered'),
+      adversarialScenario: metricValue(result, 'adversarialScenario'),
     },
     culprit: {
       slowestStep: metricValue(result, 'slowestStep'),
@@ -162,6 +187,7 @@ function failedRound(plan, error, timing = {}) {
     type: plan.type,
     port: plan.port,
     serverPort: plan.serverPort,
+    seed: plan.seed || null,
     success: false,
     runSuccess: false,
     gatePassed: false,
@@ -264,6 +290,7 @@ function buildReproductionCommand(round = {}) {
   ];
   if (Number.isFinite(round.port)) parts.push('--port-start', String(round.port));
   if (Number.isFinite(round.serverPort)) parts.push('--server-port-start', String(round.serverPort));
+  if (round.seed) parts.push('--adversarial-seeds', String(round.seed));
   parts.push('--fail-fast', '--json');
   return parts.join(' ');
 }
@@ -338,6 +365,7 @@ export function summarizeCampaignRun({ startedAt, endedAt, rounds = [], plan = [
     .map(round => ({
       round: round.round,
       type: round.type,
+      seed: round.seed || null,
       failedStep: round.failedStep,
       error: round.error || null,
       failedCriteria: round.gate?.failedCriteria || [],
@@ -486,7 +514,8 @@ export function formatCampaignReport(summary) {
     lines.push('', 'Failures:');
     for (const failure of summary.failurePatterns) {
       const details = failure.error || failure.failedCriteria.join(', ') || failure.failedStep;
-      lines.push(`  - round ${failure.round} ${failure.type}: ${details}`);
+      const seed = failure.seed ? ` seed ${failure.seed}` : '';
+      lines.push(`  - round ${failure.round} ${failure.type}${seed}: ${details}`);
     }
   }
   if (summary.issueDrafts?.length) {
@@ -509,7 +538,8 @@ export function formatCampaignReport(summary) {
   }
   lines.push('', 'Rounds:');
   for (const round of summary.rounds) {
-    lines.push(`  ${round.success ? 'OK  ' : 'FAIL'} #${round.round} ${round.type}: total ${round.metrics.totalMs ?? 'n/a'} ms, output ${round.metrics.estimatedOutputTokens ?? 'n/a'} tokens, first observation ${round.metrics.firstUsefulObservationMs ?? 'n/a'} ms`);
+    const seed = round.seed ? ` seed ${round.seed}` : '';
+    lines.push(`  ${round.success ? 'OK  ' : 'FAIL'} #${round.round} ${round.type}${seed}: total ${round.metrics.totalMs ?? 'n/a'} ms, output ${round.metrics.estimatedOutputTokens ?? 'n/a'} tokens, first observation ${round.metrics.firstUsefulObservationMs ?? 'n/a'} ms`);
   }
   return lines.join('\n');
 }
@@ -527,6 +557,7 @@ async function runCampaignRound(plan, opts) {
         serverPort: plan.serverPort,
         json: true,
         stabilityMs: opts.stabilityMs,
+        adversarialSeed: plan.seed || null,
         skipLock: true,
       });
     const endedAt = new Date().toISOString();
