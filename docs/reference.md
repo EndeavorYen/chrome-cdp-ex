@@ -294,7 +294,7 @@ When a campaign round fails, the summary includes issue-ready diagnostics with a
 
 For the repeatable issue -> fix -> review -> merge process, use the [self-improvement loop runbook](self-improvement-loop.md).
 
-Direct live benchmark commands use a shared lock and fail fast if another live benchmark is already running. Prefer `benchmark:campaign` instead of launching `benchmark:mcp`, `benchmark:killer`, or large-app stress runs in parallel; the campaign runner keeps the lock for the full sequence and avoids cross-run CDP target contamination.
+Direct live benchmark commands use an isolated run manager and fail fast if the configured live slot is already owned. Each owner record includes the benchmark name, run id, slot, CDP port, HTTP server port, profile directory, process id, and heartbeat timestamp, so interrupted runs can be reclaimed without hiding live owners. Prefer `benchmark:campaign` for repeated testing; it keeps one owner for the full sequence while allocating unique round ports to avoid cross-run CDP target contamination.
 
 Publish comparison claims only when `gate.passed` is true and competitor baselines are measured, not the planning-only `heuristic-smoke-baseline`.
 

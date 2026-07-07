@@ -2625,19 +2625,36 @@ function assertExpectedFailure(step, pattern) {
 
 export async function runLargeAppStressBenchmark(opts = {}) {
   if (!opts.skipLock) {
-    return withLiveBenchmarkLock({ name: 'benchmark:large-app' }, () => runLargeAppStressBenchmark({ ...opts, skipLock: true }));
+    const port = Number(opts.port || process.env.CDP_LARGE_APP_BENCH_PORT || 9336);
+    const serverPort = Number(opts.serverPort || process.env.CDP_LARGE_APP_BENCH_HTTP_PORT || 41740);
+    return withLiveBenchmarkLock({
+      name: 'benchmark:large-app',
+      port,
+      serverPort,
+      browser: 'auto',
+      profilePrefix: 'chrome-cdp-ex-large-app',
+    }, run => runLargeAppStressBenchmark({
+      ...opts,
+      skipLock: true,
+      port: run.metadata.port,
+      serverPort: run.metadata.serverPort,
+      profileDir: run.metadata.profileDir,
+      liveRun: run,
+    }));
   }
   const {
     port = Number(process.env.CDP_LARGE_APP_BENCH_PORT || 9336),
     serverPort = Number(process.env.CDP_LARGE_APP_BENCH_HTTP_PORT || 41740),
     json = false,
+    profileDir: requestedProfileDir = null,
+    liveRun = null,
   } = opts;
   if (!existsSync(cdp)) throw new Error(`cdp script not found: ${cdp}`);
   const candidates = browserCandidates();
   if (candidates.length === 0) throw new Error('no supported Chrome/Edge/Brave browser binary found');
 
   const [browserPath, browserName] = candidates[0];
-  const profileDir = mkdtempSync(resolve(tmpdir(), `chrome-cdp-ex-large-app-${browserName}-`));
+  const profileDir = requestedProfileDir || mkdtempSync(resolve(tmpdir(), `chrome-cdp-ex-large-app-${browserName}-`));
   let browser;
   let server;
   const steps = [];
@@ -2665,6 +2682,7 @@ export async function runLargeAppStressBenchmark(opts = {}) {
       server.once('error', reject);
       server.listen(serverPort, '127.0.0.1', resolveServer);
     });
+    liveRun?.heartbeat();
 
     const url = `http://127.0.0.1:${serverPort}/large-app.html`;
     browser = spawn(browserPath, [
@@ -2675,6 +2693,7 @@ export async function runLargeAppStressBenchmark(opts = {}) {
       'about:blank',
     ], { detached: true, stdio: 'ignore' });
     browser.unref();
+    liveRun?.heartbeat();
 
     const env = { ...process.env, CDP_PORT: String(port) };
     let reachable = false;
@@ -2755,7 +2774,22 @@ export function parseBenchmarkArgs(argv = []) {
 
 export async function runKillerPathBenchmark(opts = {}) {
   if (!opts.skipLock) {
-    return withLiveBenchmarkLock({ name: 'benchmark:killer' }, () => runKillerPathBenchmark({ ...opts, skipLock: true }));
+    const port = Number(opts.port || process.env.CDP_BENCH_PORT || 9334);
+    const serverPort = Number(opts.serverPort || process.env.CDP_BENCH_HTTP_PORT || 41738);
+    return withLiveBenchmarkLock({
+      name: 'benchmark:killer',
+      port,
+      serverPort,
+      browser: 'auto',
+      profilePrefix: 'chrome-cdp-ex-bench',
+    }, run => runKillerPathBenchmark({
+      ...opts,
+      skipLock: true,
+      port: run.metadata.port,
+      serverPort: run.metadata.serverPort,
+      profileDir: run.metadata.profileDir,
+      liveRun: run,
+    }));
   }
   const {
     port = Number(process.env.CDP_BENCH_PORT || 9334),
@@ -2765,6 +2799,8 @@ export async function runKillerPathBenchmark(opts = {}) {
     comparisonBaselinesPath = null,
     adversarialSeed = null,
     adversarialTraits = null,
+    profileDir: requestedProfileDir = null,
+    liveRun = null,
   } = opts;
   if (!existsSync(cdp)) throw new Error(`cdp script not found: ${cdp}`);
   if (!existsSync(page)) throw new Error(`smoke page not found: ${page}`);
@@ -2772,7 +2808,7 @@ export async function runKillerPathBenchmark(opts = {}) {
   if (candidates.length === 0) throw new Error('no supported Chrome/Edge/Brave browser binary found');
 
   const [browserPath, browserName] = candidates[0];
-  const profileDir = mkdtempSync(resolve(tmpdir(), `chrome-cdp-ex-bench-${browserName}-`));
+  const profileDir = requestedProfileDir || mkdtempSync(resolve(tmpdir(), `chrome-cdp-ex-bench-${browserName}-`));
   let browser;
   let server;
   const steps = [];
@@ -2820,6 +2856,7 @@ export async function runKillerPathBenchmark(opts = {}) {
       server.once('error', reject);
       server.listen(serverPort, '127.0.0.1', resolveServer);
     });
+    liveRun?.heartbeat();
 
     const url = adversarialScenario
       ? `http://127.0.0.1:${serverPort}${adversarialScenario.path}`
@@ -2832,6 +2869,7 @@ export async function runKillerPathBenchmark(opts = {}) {
       'about:blank',
     ], { detached: true, stdio: 'ignore' });
     browser.unref();
+    liveRun?.heartbeat();
 
     const env = { ...process.env, CDP_PORT: String(port) };
     let reachable = false;
