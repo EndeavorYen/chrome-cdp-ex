@@ -8,6 +8,7 @@ import {
   buildCampaignIssueDrafts,
   buildCampaignRegressionComparison,
   buildCampaignRoundPlan,
+  buildMcpCliRouteRecommendation,
   compactCampaignRound,
   formatCampaignReport,
   parseCampaignArgs,
@@ -52,6 +53,33 @@ function campaignSummaryForComparison({
   });
   summary.passRate = passRate;
   return summary;
+}
+
+function routeRound({
+  round,
+  type,
+  success = true,
+  totalMs = 4000,
+  firstUsefulObservationMs = 1500,
+  firstActionEvidenceMs = 2600,
+  estimatedOutputTokens = 8000,
+  maxStepEstimatedTokens = 2000,
+  adversarial = false,
+} = {}) {
+  return {
+    round,
+    type,
+    success,
+    metrics: {
+      totalMs,
+      firstUsefulObservationMs,
+      firstActionEvidenceMs,
+      estimatedOutputTokens,
+      maxStepEstimatedTokens,
+      ...(adversarial ? { adversarialScenario: { enabled: true, seed: 'route-noise' } } : {}),
+    },
+    culprit: { slowestStep: { name: 'open' }, biggestOutputStep: { name: 'report' } },
+  };
 }
 
 describe('live campaign benchmark helpers', () => {
@@ -205,6 +233,63 @@ describe('live campaign benchmark helpers', () => {
     });
     expect(drafts[0].body).toContain('- Seed: round5-alpha');
     expect(drafts[0].body).toContain('--adversarial-seeds round5-alpha');
+  });
+
+  it('recommends MCP when matched rounds are faster and lower token than CLI', () => {
+    const recommendation = buildMcpCliRouteRecommendation([
+      routeRound({ round: 1, type: 'mcp', totalMs: 3000, firstUsefulObservationMs: 1200, firstActionEvidenceMs: 2100, estimatedOutputTokens: 7000 }),
+      routeRound({ round: 2, type: 'killer', totalMs: 5200, firstUsefulObservationMs: 2600, firstActionEvidenceMs: 3900, estimatedOutputTokens: 9600 }),
+      routeRound({ round: 3, type: 'killer', adversarial: true, totalMs: 12000, estimatedOutputTokens: 20000 }),
+    ]);
+
+    expect(recommendation).toMatchObject({
+      schema: 'chrome-cdp-ex.mcp-cli-route-recommendation.v1',
+      recommendation: { route: 'mcp', confidence: 'high' },
+      deltas: {
+        'avg-total-latency': -2200,
+        'first-useful-observation': -1400,
+        'first-action-evidence': -1800,
+        'avg-output-tokens': -2600,
+      },
+      excludedRounds: [{ round: 3, type: 'killer', seed: 'route-noise' }],
+    });
+  });
+
+  it('recommends CLI when matched rounds have better pass rate and token cost', () => {
+    const recommendation = buildMcpCliRouteRecommendation([
+      routeRound({ round: 1, type: 'mcp', success: false, totalMs: 3200, estimatedOutputTokens: 11000 }),
+      routeRound({ round: 2, type: 'killer', success: true, totalMs: 4300, estimatedOutputTokens: 7900 }),
+    ]);
+
+    expect(recommendation.recommendation).toMatchObject({
+      route: 'cli',
+      confidence: 'high',
+    });
+    expect(recommendation.evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'pass-rate', winner: 'cli' }),
+      expect.objectContaining({ name: 'avg-output-tokens', winner: 'cli' }),
+    ]));
+  });
+
+  it('reports inconclusive routing with first-observation and first-action deltas', () => {
+    const summary = summarizeCampaignRun({
+      startedAt: '2026-07-07T00:00:00.000Z',
+      endedAt: '2026-07-07T00:00:08.000Z',
+      plan: [{}, {}],
+      rounds: [
+        routeRound({ round: 1, type: 'mcp', totalMs: 4000, firstUsefulObservationMs: 1800, firstActionEvidenceMs: 2800, estimatedOutputTokens: 8000 }),
+        routeRound({ round: 2, type: 'killer', totalMs: 4300, firstUsefulObservationMs: 2000, firstActionEvidenceMs: 3100, estimatedOutputTokens: 8200 }),
+      ],
+    });
+    const report = formatCampaignReport(summary);
+
+    expect(summary.routeRecommendation.recommendation).toMatchObject({
+      route: 'inconclusive',
+      confidence: 'low',
+    });
+    expect(report).toContain('Route recommendation: inconclusive (low confidence)');
+    expect(report).toContain('first observation -200 ms');
+    expect(report).toContain('first action -300 ms');
   });
 
   it('passes regression comparison when current metrics stay within thresholds', () => {
