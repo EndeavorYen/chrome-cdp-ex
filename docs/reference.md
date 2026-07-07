@@ -259,9 +259,12 @@ npm run benchmark:generic-cdp -- --out generic-cdp-raw.json
 npm run benchmark:playwright -- --out playwright-raw.json
 npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json
 npm run benchmark:killer -- --comparison-baselines ./baselines.json
+npm run benchmark:campaign -- --rounds 10 --output ./campaign.json
 ```
 
 Use [`docs/benchmarks/measured-baselines.example.json`](benchmarks/measured-baselines.example.json) as the checked-in schema fixture for reviewers. Do not publish comparison claims from that example file; regenerate a measured `baselines.json` for the machine and browser under test.
+
+Use `benchmark:campaign` for repeated live testing. It runs sequential rounds with unique CDP and HTTP ports, alternating MCP and Killer Path by default, then reports pass rate, latency, estimated output tokens, first-useful-observation time, and the slowest / largest-output step candidates. Keep benchmark runs sequential unless you are intentionally testing browser isolation; concurrent disposable browser launches can introduce CDP discovery noise on some desktop browsers.
 
 Publish comparison claims only when `gate.passed` is true and competitor baselines are measured, not the planning-only `heuristic-smoke-baseline`.
 
