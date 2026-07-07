@@ -3,13 +3,14 @@
 [![75 Commands](https://img.shields.io/badge/commands-75-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
+[![Release v2.9.1](https://img.shields.io/badge/release-v2.9.1-brightgreen)](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.9.1)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
 
 > **TL;DR** — The Smart Eye for coding agents. `chrome-cdp-ex` lets an agent see and act inside your real browser: logged-in tabs, page layout, visible styles, action receipts, CSS source tracing, and long-session reports.
 
 Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-ex` is for live-page perception when the agent needs to understand the browser you are actually using.
 
-[![Smart Eye benchmark proof: 29/29 quality gate, 1,569 useful observation tokens, 100% action evidence coverage](experiment/benchmark-proof.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
+[![Smart Eye benchmark proof: v2.9.1 real-app campaign, 3/3 rounds, 33/33 quality gate per round, 1,637 useful observation tokens](experiment/benchmark-proof.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
 
 ## Why agents need this
 
@@ -29,7 +30,7 @@ Browser agents usually fail for boring reasons: they cannot tell what changed, t
 
 | Proof | Why it matters |
 |---|---|
-| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | The current dogfood run passes a 29/29 quality gate with 1,569 useful observation tokens. |
+| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | The v2.9.1 real-app campaign passed 3/3 local target classes, each with a 33/33 gate. |
 | [Redesign experiment](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html) | Same page, same prompt, same rounds; the agent with richer perception produced the best result. |
 | [Killer Path walkthrough](docs/examples/killer-path.md) | A 60-second route through `doctor -> open -> perceive -> act -> evidence -> report`. |
 
@@ -65,36 +66,54 @@ Use Playwright when you need a clean, repeatable browser test from scratch.
 
 ## Smart Eye Proof
 
-The benchmark measures the agent path this tool is built for: see the page, act, verify, recover, and hand off evidence.
+The release proof measures the agent path this tool is built for: see the page, act, verify, recover, and hand off evidence. For v2.9.1, the front-door proof is a real-app campaign across local dashboard, docs, and auth fixtures rather than a single easy smoke page.
 
 | Proof point | Latest local run |
 |---|---:|
-| Quality gate | **29/29 pass** |
-| Golden path complete | **5.327s** |
-| Useful observation tokens | **1,569** |
-| Action evidence coverage | **100%** |
-| Differentiator success rate | **100%** |
+| Release proof | **v2.9.1 live campaign** |
+| Real-app targets | **dashboard, docs-app, auth-flow** |
+| Campaign pass rate | **3/3 rounds** |
+| Quality gate | **33/33 pass in each round** |
+| First useful observation | **2.211s avg** |
+| First action evidence | **3.052s avg** |
+| Useful observation tokens | **1,637 avg** |
+| Max step output | **1,113 tokens** |
 
-[**View the benchmark proof ->**](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
+[**View the benchmark proof ->**](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) · [**Read the v2.9.1 release notes ->**](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.9.1)
 
-This is not a synthetic unit test. It launches a disposable debug browser, exercises perception, action evidence, recovery, CSS tracing, frame/modal/HMR probes, and report handoff, then blocks promotion claims if the gate fails. Re-run it with:
+This is not a synthetic unit test. It launches disposable debug browsers, exercises perception, action evidence, recovery, CSS tracing, frame/modal/HMR probes, and report handoff, then blocks promotion claims if the gate fails. Re-run the same campaign with:
 
 ```bash
-npm run benchmark:killer
+npm run benchmark:campaign -- --rounds 3 --types real-app --real-app-targets dashboard,docs-app,auth-flow --settle-ms 0 --json --output real-app-campaign.json
 ```
 
 ## Quick start
 
 For the shortest first run, use [the Killer Path walkthrough](docs/examples/killer-path.md).
 
-1. Clone and enter the repo.
+1. Choose an install source.
+
+Use the GitHub release tarball when you want a pinned v2.9.1 install:
+
+```bash
+curl -L -o pi-chrome-cdp-2.9.1.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.9.1/pi-chrome-cdp-2.9.1.tgz
+mkdir -p chrome-cdp-ex-v2.9.1
+tar -xzf pi-chrome-cdp-2.9.1.tgz -C chrome-cdp-ex-v2.9.1 --strip-components=1
+cd chrome-cdp-ex-v2.9.1
+```
+
+The GitHub Release notes publish the final tarball checksum after package validation.
+
+Use source when you want current `main`:
 
 ```bash
 git clone https://github.com/EndeavorYen/chrome-cdp-ex.git
 cd chrome-cdp-ex
 ```
 
-2. Install in Claude Code (choose one option).
+This project does not publish to the npm registry. GitHub Releases, GitHub Pages, release tags, and release assets are the official publish surfaces.
+
+2. Load or install in Claude Code.
 
 ```bash
 # Option A: load in Claude Code for the current project/session
@@ -141,7 +160,9 @@ The important bit is the loop: first perceive the page, then act, then ask what 
 - [Product strategy](docs/strategy/agent-browser-vision.md) — why this is an agent perception layer, not another Playwright.
 - [Technical reference](docs/reference.md) — command map, action evidence, semantic assertions, MCP server, Electron, WSL2, and benchmark gates.
 - [Full skill reference](skills/chrome-cdp-ex/SKILL.md) — every command, flag, and troubleshooting path.
+- [Self-improvement loop](docs/self-improvement-loop.md) — the issue -> test -> PR -> review -> merge loop used for repeated live testing.
 - [Benchmark proof](#dogfood-benchmark) — how promotion claims are gated.
+- [v2.9.1 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.9.1) — release notes and package tarball asset.
 
 ## How it works
 
@@ -177,29 +198,30 @@ Use the live benchmark before making performance or adoption claims. [View the v
 
 ### Latest dogfood snapshot
 
-Local run on 2026-07-07 against the same smoke page. Timing starts after CDP is reachable so browser cold-start variance is excluded. Publish competitor comparison deltas only after rerunning with measured `--comparison-baselines`.
+Local run on 2026-07-08 against three safe local real-app fixtures: dashboard, docs-app, auth-flow. Timing starts after CDP is reachable so browser cold-start variance is excluded. Publish competitor comparison deltas only after rerunning with measured `--comparison-baselines`.
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 9.325s |
-| Command calls | 24 |
-| First useful observation | 2.192s |
-| First action evidence | 3.020s |
-| Golden path complete | 5.327s |
-| Estimated output tokens | 19,177 |
-| Useful observation tokens | 1,569 |
-| Action evidence coverage | 100% (9/9 mutating commands) |
-| Differentiator success rate | 100% |
-| Stale-ref recovery | 65ms, 1/1 recovered |
-| Quality gate | 29/29 pass |
+| Total time | 10.126s avg |
+| Command calls | 24 per round |
+| First useful observation | 2.211s avg |
+| First action evidence | 3.052s avg |
+| Golden path complete | 5.223s avg |
+| Estimated output tokens | 12,660 avg |
+| Useful observation tokens | 1,637 avg |
+| Action evidence coverage | 6 auto-evidence actions per round; no failed criteria |
+| Real-app targets | dashboard, docs-app, auth-flow |
+| Stale-ref recovery | covered by all real-app adversarial profiles |
+| Quality gate | 33/33 pass in all 3 rounds |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
 
 ```bash
 npm run benchmark:killer
 npm run benchmark:mcp
+npm run benchmark:campaign -- --rounds 3 --types real-app --real-app-targets dashboard,docs-app,auth-flow --settle-ms 0 --json --output real-app-campaign.json
+npm run benchmark:update-readme -- real-app-campaign.json README.md --html experiment/benchmark.html --date YYYY-MM-DD
 npm run benchmark:killer -- --json > benchmark.json
-npm run benchmark:update-readme -- benchmark.json README.md --html experiment/benchmark.html --date YYYY-MM-DD
 npm run benchmark:generic-cdp -- --out generic-cdp-raw.json
 npm run benchmark:playwright -- --out playwright-raw.json
 npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json
@@ -213,6 +235,7 @@ A versioned schema example is checked in at [`docs/benchmarks/measured-baselines
 Do not publish README, marketplace, awesome-list, or social comparison claims unless:
 
 - `npm run benchmark:killer -- --json` exits 0 and `gate.passed` is true.
+- `npm run benchmark:campaign -- --rounds 3 --types real-app --real-app-targets dashboard,docs-app,auth-flow --json` completes with 3/3 passing rounds before making high-difficulty real-app claims.
 - Total output, per-command output, first-action-evidence, and per-command latency gates pass; inspect the gate `culprit` before publishing speed or efficiency claims.
 - Action JSON passes the Action Receipt contract gate: `eventId`, `dispatch`, `settlement.state/strategy/signals`, `observedDeltaDetails`, `blockingSignals`, `recoveryHint`, and executable `nextSteps`.
 - Competitor comparisons use `npm run benchmark:killer -- --comparison-baselines ./baselines.json` with measured baselines, not the planning-only `heuristic-smoke-baseline`.

@@ -287,19 +287,19 @@
     <div>
       <div class="eyebrow">Smart Eye benchmark</div>
       <h1 id="title">Proof that agents can see, act, and recover.</h1>
-      <p class="lead">A local dogfood run exercises the real agent path: connect to a browser, perceive the page, act, capture evidence, recover from failures, trace CSS, and produce a report.</p>
+      <p class="lead">The v2.9.1 local real-app campaign exercises the agent path across dashboard, docs, and auth fixtures: connect to a browser, perceive the page, act, capture evidence, recover from failures, trace CSS, and produce a report.</p>
     </div>
     <div class="gate" aria-label="Quality gate result">
-      <strong>25/25</strong>
-      <span>quality gate passed<br>2026-06-17 local run</span>
+      <strong>33/33</strong>
+      <span>quality gate passed in each real-app round<br>2026-07-08 local run</span>
     </div>
   </section>
 
   <section class="stats" aria-label="Benchmark highlights">
-    <div class="stat"><strong>5.327s</strong><span>golden path complete</span></div>
-    <div class="stat"><strong>1,569</strong><span><em>useful observation</em> tokens</span></div>
-    <div class="stat"><strong>100%</strong><span>action evidence coverage</span></div>
-    <div class="stat"><strong>65ms</strong><span>stale-ref recovery</span></div>
+    <div class="stat"><strong>3/3</strong><span>real-app targets passed</span></div>
+    <div class="stat"><strong>2.211s</strong><span>first useful observation avg</span></div>
+    <div class="stat"><strong>3.052s</strong><span>first action evidence avg</span></div>
+    <div class="stat"><strong>1,637</strong><span><em>useful observation</em> tokens avg</span></div>
   </section>
 
   <section class="flow" aria-label="Measured agent flow">
@@ -330,31 +330,37 @@
       <h2>Time to useful evidence</h2>
       <div class="timeline">
         <div class="bar">
-          <span>First observation</span>
-          <div class="track"><div class="fill" style="width: 24%"></div></div>
-          <span>2.192s</span>
+          <span>First observation avg</span>
+          <div class="track"><div class="fill" style="width: 22%"></div></div>
+          <span>2.211s</span>
         </div>
         <div class="bar">
-          <span>Golden path</span>
-          <div class="track"><div class="fill" style="width: 57%"></div></div>
-          <span>5.327s</span>
+          <span>First action evidence</span>
+          <div class="track"><div class="fill" style="width: 30%"></div></div>
+          <span>3.052s</span>
         </div>
         <div class="bar">
-          <span>Total run</span>
+          <span>Golden path avg</span>
+          <div class="track"><div class="fill" style="width: 52%"></div></div>
+          <span>5.223s</span>
+        </div>
+        <div class="bar">
+          <span>Total run avg</span>
           <div class="track"><div class="fill" style="width: 100%"></div></div>
-          <span>9.325s</span>
+          <span>10.126s</span>
         </div>
       </div>
-      <p class="note">The benchmark charges the main path for command calls and treats differentiator checks as probes, so the proof covers more than the shortest demo path.</p>
+      <p class="note">The campaign keeps each round local and test-only while adding overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, and hidden-template traits.</p>
     </div>
   </section>
 
-  <div class="terminal">npm run benchmark:killer</div>
+  <div class="terminal">npm run benchmark:campaign -- --rounds 3 --types real-app --real-app-targets dashboard,docs-app,auth-flow --settle-ms 0 --json</div>
 
   <p class="note">Publish competitor deltas only after rerunning with measured Playwright and generic-CDP baselines. The README promotion checklist blocks claims when the benchmark gate fails.</p>
 
   <nav class="links" aria-label="Related pages">
     <a class="link" href="https://github.com/EndeavorYen/chrome-cdp-ex#readme">README</a>
+    <a class="link" href="https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.9.1">v2.9.1 release</a>
     <a class="link" href="showcase.html">Redesign experiment</a>
     <a class="link" href="https://github.com/EndeavorYen/chrome-cdp-ex/blob/main/docs/examples/killer-path.md">Killer Path walkthrough</a>
   </nav>

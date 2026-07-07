@@ -20,6 +20,12 @@ function percent(rate) {
   return value === null ? 'n/a' : `${Math.round(value * 100)}%`;
 }
 
+function average(values) {
+  const finite = values.filter(Number.isFinite);
+  if (!finite.length) return null;
+  return finite.reduce((sum, value) => sum + value, 0) / finite.length;
+}
+
 function gate(summary) {
   const gateModel = summary.gate || {};
   if (!Number.isFinite(gateModel.passedCount) || !Number.isFinite(gateModel.total)) return 'n/a';
@@ -63,7 +69,117 @@ function replaceMetricInSection(readme, start, end, label, value) {
   return `${before}${replaceMetric(section, label, value)}${after}`;
 }
 
+function isCampaignSummary(summary) {
+  return summary?.schema === 'chrome-cdp-ex.live-campaign.v1';
+}
+
+function primaryCampaignType(summary) {
+  return summary.typeSummaries?.find(item => item.type === 'real-app') || summary.typeSummaries?.[0] || {};
+}
+
+function campaignRounds(summary, type = primaryCampaignType(summary).type) {
+  const rounds = Array.isArray(summary.rounds) ? summary.rounds : [];
+  return type ? rounds.filter(round => round.type === type) : rounds;
+}
+
+function campaignTargets(typeSummary) {
+  const targets = typeSummary.realAppTargets?.targets || [];
+  if (!targets.length) return 'n/a';
+  const preferred = ['dashboard', 'docs-app', 'auth-flow', 'data-table', 'canvas-heavy'];
+  return [...targets]
+    .sort((a, b) => {
+      const ai = preferred.indexOf(a);
+      const bi = preferred.indexOf(b);
+      if (ai >= 0 && bi >= 0) return ai - bi;
+      if (ai >= 0) return -1;
+      if (bi >= 0) return 1;
+      return targets.indexOf(a) - targets.indexOf(b);
+    })
+    .join(', ');
+}
+
+function campaignGate(summary, { proof = false } = {}) {
+  const rounds = campaignRounds(summary);
+  const passedRounds = rounds.filter(round => round.gatePassed === true);
+  const gates = passedRounds
+    .map(round => round.gate)
+    .filter(gateModel => Number.isFinite(gateModel?.passedCount) && Number.isFinite(gateModel?.total));
+  const first = gates[0];
+  const sameGate = first && gates.every(gateModel => gateModel.passedCount === first.passedCount && gateModel.total === first.total);
+  if (sameGate) {
+    return proof
+      ? `${first.passedCount}/${first.total} pass in each round`
+      : `${first.passedCount}/${first.total} pass in all ${passedRounds.length} rounds`;
+  }
+  if (Number.isFinite(summary.passCount) && Number.isFinite(summary.roundsCompleted)) {
+    return `${summary.passCount}/${summary.roundsCompleted} rounds passed`;
+  }
+  return 'n/a';
+}
+
+function campaignAutoEvidence(summary) {
+  const value = average(campaignRounds(summary).map(round => round.metrics?.autoEvidenceActions));
+  if (!Number.isFinite(value)) return 'n/a';
+  const rounded = Number.isInteger(value) ? value : value.toFixed(1);
+  return `${rounded} auto-evidence actions per round; no failed criteria`;
+}
+
+function campaignTraitCoverage(summary, trait) {
+  const rounds = campaignRounds(summary).filter(round => round.gatePassed === true);
+  if (!rounds.length) return 'n/a';
+  const covered = rounds.every(round => round.metrics?.realAppTarget?.traits?.includes(trait));
+  return covered ? `covered by all real-app adversarial profiles` : 'not covered in every profile';
+}
+
+function campaignGoldenPathMs(summary) {
+  return average(campaignRounds(summary).map(round => round.metrics?.goldenPathMs));
+}
+
+function updateReadmeCampaignSnapshot(readme, summary, { runDate } = {}) {
+  if (summary.passCount !== summary.roundsCompleted || summary.passCount === 0) {
+    throw new Error('campaign gate failed; snapshot not updated');
+  }
+  const typeSummary = primaryCampaignType(summary);
+  const targets = campaignTargets(typeSummary);
+  const roundCount = `${summary.passCount}/${summary.roundsCompleted} rounds`;
+  const goldenPathMs = campaignGoldenPathMs(summary);
+
+  let next = readme;
+  next = next.replace(
+    /Local run on \d{4}-\d{2}-\d{2} against three safe local real-app fixtures: [^.]+\./,
+    `Local run on ${runDate || new Date().toISOString().slice(0, 10)} against three safe local real-app fixtures: ${targets}.`,
+  );
+
+  const proofStart = '## Smart Eye Proof';
+  const proofEnd = '## Quick start';
+  next = replaceMetricInSection(next, proofStart, proofEnd, 'Release proof', `**v${readme.match(/release-v([\d.]+)/)?.[1] || 'current'} live campaign**`);
+  next = replaceMetricInSection(next, proofStart, proofEnd, 'Real-app targets', `**${targets}**`);
+  next = replaceMetricInSection(next, proofStart, proofEnd, 'Campaign pass rate', `**${roundCount}**`);
+  next = replaceMetricInSection(next, proofStart, proofEnd, 'Quality gate', `**${campaignGate(summary, { proof: true })}**`);
+  next = replaceMetricInSection(next, proofStart, proofEnd, 'First useful observation', `**${seconds(typeSummary.avgFirstUsefulObservationMs)} avg**`);
+  next = replaceMetricInSection(next, proofStart, proofEnd, 'First action evidence', `**${seconds(typeSummary.avgFirstActionEvidenceMs)} avg**`);
+  next = replaceMetricInSection(next, proofStart, proofEnd, 'Useful observation tokens', `**${commas(Math.round(typeSummary.avgUsefulObservationTokens || 0))} avg**`);
+  next = replaceMetricInSection(next, proofStart, proofEnd, 'Max step output', `**${commas(typeSummary.maxStepEstimatedTokens || 0)} tokens**`);
+
+  const snapshotStart = '### Latest dogfood snapshot';
+  const snapshotEnd = 'Regenerate this table';
+  next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'Total time', `${seconds(typeSummary.avgTotalMs)} avg`);
+  next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'Command calls', `${Math.round(average(campaignRounds(summary).map(round => round.metrics?.commandCalls)) || 0)} per round`);
+  next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'First useful observation', `${seconds(typeSummary.avgFirstUsefulObservationMs)} avg`);
+  next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'First action evidence', `${seconds(typeSummary.avgFirstActionEvidenceMs)} avg`);
+  next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'Golden path complete', `${seconds(goldenPathMs)} avg`);
+  next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'Estimated output tokens', `${commas(Math.round(typeSummary.avgEstimatedOutputTokens || 0))} avg`);
+  next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'Useful observation tokens', `${commas(Math.round(typeSummary.avgUsefulObservationTokens || 0))} avg`);
+  next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'Action evidence coverage', campaignAutoEvidence(summary));
+  next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'Real-app targets', targets);
+  next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'Stale-ref recovery', campaignTraitCoverage(summary, 'stale-ref'));
+  next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'Quality gate', campaignGate(summary));
+  return next;
+}
+
 export function updateReadmeBenchmarkSnapshot(readme, summary, { runDate } = {}) {
+  if (isCampaignSummary(summary)) return updateReadmeCampaignSnapshot(readme, summary, { runDate });
+
   assertPassedGate(summary);
   let next = readme;
   const metrics = summary.metrics || {};
@@ -109,7 +225,34 @@ function timelineWidth(ms, totalMs) {
   return Math.min(100, Math.max(1, Math.round((ms / totalMs) * 100)));
 }
 
+function updateBenchmarkCampaignHtmlSnapshot(html, summary, { runDate } = {}) {
+  if (summary.passCount !== summary.roundsCompleted || summary.passCount === 0) {
+    throw new Error('campaign gate failed; snapshot not updated');
+  }
+  const typeSummary = primaryCampaignType(summary);
+  const rounds = campaignRounds(summary);
+  const gates = rounds.map(round => round.gate).filter(Boolean);
+  const firstGate = gates.find(gateModel => Number.isFinite(gateModel?.passedCount) && Number.isFinite(gateModel?.total));
+  const gateText = firstGate ? `${firstGate.passedCount}/${firstGate.total}` : `${summary.passCount}/${summary.roundsCompleted}`;
+  const goldenPathMs = campaignGoldenPathMs(summary);
+  let next = html.replace(
+    /<strong>[^<]+<\/strong>\s*<span>quality gate passed[^<]*<br>\d{4}-\d{2}-\d{2} local run<\/span>/,
+    `<strong>${gateText}</strong>\n      <span>quality gate passed in each real-app round<br>${runDate || new Date().toISOString().slice(0, 10)} local run</span>`,
+  );
+  next = replaceStat(next, 'real-app targets passed', `${summary.passCount}/${summary.roundsCompleted}`);
+  next = replaceStat(next, 'first useful observation avg', seconds(typeSummary.avgFirstUsefulObservationMs));
+  next = replaceStat(next, 'first action evidence avg', seconds(typeSummary.avgFirstActionEvidenceMs));
+  next = replaceStat(next, '<em>useful observation</em> tokens avg', commas(Math.round(typeSummary.avgUsefulObservationTokens || 0)));
+  next = replaceTimeline(next, 'First observation avg', seconds(typeSummary.avgFirstUsefulObservationMs), timelineWidth(typeSummary.avgFirstUsefulObservationMs, typeSummary.avgTotalMs));
+  next = replaceTimeline(next, 'First action evidence', seconds(typeSummary.avgFirstActionEvidenceMs), timelineWidth(typeSummary.avgFirstActionEvidenceMs, typeSummary.avgTotalMs));
+  next = replaceTimeline(next, 'Golden path avg', seconds(goldenPathMs), timelineWidth(goldenPathMs, typeSummary.avgTotalMs));
+  next = replaceTimeline(next, 'Total run avg', seconds(typeSummary.avgTotalMs), 100);
+  return next;
+}
+
 export function updateBenchmarkHtmlSnapshot(html, summary, { runDate } = {}) {
+  if (isCampaignSummary(summary)) return updateBenchmarkCampaignHtmlSnapshot(html, summary, { runDate });
+
   assertPassedGate(summary);
   const metrics = summary.metrics || {};
   const totalMs = metrics.totalMs;

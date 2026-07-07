@@ -34,6 +34,24 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 
 Use `--format json` when another agent or script needs structured handoff data instead of human text.
 
+## Install And Release Surface
+
+Official releases live on GitHub, not the npm registry. Use the release tag, release notes, GitHub Pages proof page, and attached tarball as the publish surface.
+
+Pinned v2.9.1 install:
+
+```bash
+curl -L -o pi-chrome-cdp-2.9.1.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.9.1/pi-chrome-cdp-2.9.1.tgz
+mkdir -p chrome-cdp-ex-v2.9.1
+tar -xzf pi-chrome-cdp-2.9.1.tgz -C chrome-cdp-ex-v2.9.1 --strip-components=1
+cd chrome-cdp-ex-v2.9.1
+claude --plugin-dir .
+```
+
+The GitHub Release notes publish the final tarball checksum after package validation.
+
+For current `main`, clone `https://github.com/EndeavorYen/chrome-cdp-ex.git` and use the same `claude --plugin-dir .` or `cp -r skills/chrome-cdp-ex ~/.claude/skills/` path documented in the README.
+
 ## Named Targets
 
 Use named aliases when a target prefix is noisy or a workflow should keep addressing the same live tab:
@@ -282,6 +300,12 @@ Use [`docs/benchmarks/measured-baselines.example.json`](benchmarks/measured-base
 Use `benchmark:campaign` for repeated live testing. It runs sequential rounds with unique CDP and HTTP ports, alternating MCP and Killer Path by default, then reports pass rate, latency, estimated output tokens, first-useful-observation time, and the slowest / largest-output step candidates. Add `--types large-app` to run the high-intensity live SaaS stress fixture with 5000+ DOM nodes, 1000 source table rows, 200+ visible controls, bounded output checks, and truncation metadata coverage.
 
 Add `--types real-app --real-app-targets dashboard,docs-app,auth-flow` when you need local target classes that behave more like real products. Built-in target profiles are `dashboard`, `docs-app`, `auth-flow`, `data-table`, and `canvas-heavy`; campaign output records `realAppTarget`, `targetClass`, and culprit steps for failures or optimization suspects. These profiles are safe local/test-only fixtures. If you point future target profiles at external URLs, use only owned test tenants or explicit staging environments, never customer data, personal accounts, or production workflows.
+
+The README and GitHub Pages benchmark proof should use a current real-app campaign when making high-difficulty usability claims. For the v2.9.1 front-door snapshot, the campaign command was:
+
+```bash
+npm run benchmark:campaign -- --rounds 3 --types real-app --real-app-targets dashboard,docs-app,auth-flow --settle-ms 0 --json --output real-app-campaign.json
+```
 
 Killer Path gates include long-session report budget coverage. Any report handoff with 50 or more recorded actions must stay inside its JSON byte budget, expose `latestAction`, keep a bounded non-expensive `timelineWindow`, preserve recovery-critical receipt fields, and point to artifact paths instead of dumping all history.
 
