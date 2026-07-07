@@ -782,6 +782,46 @@ describe('parseFormatArgs', () => {
   });
 });
 
+describe('summaryModel large-app diagnostics', () => {
+  it('includes DOM, table, visible-control, and hidden-template counts for stress gates', async () => {
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({
+        result: {
+          value: JSON.stringify({
+            title: 'Large SaaS stress fixture',
+            url: 'http://127.0.0.1:42520/large-app.html',
+            viewport: '1440x900',
+            scrollY: 0,
+            scrollMax: 3000,
+            counts: { button: 220, 'input[text]': 20 },
+            focused: 'none',
+            domNodes: 5200,
+            tableRows: 1000,
+            visibleControls: 240,
+            hiddenTemplateNodes: 1600,
+          }),
+        },
+      }),
+    });
+
+    const model = await T.summaryModel(cdp, 'sid-1', consoleBuf, exceptionBuf);
+
+    expect(model.counts).toMatchObject({
+      domNodes: 5200,
+      tableRows: 1000,
+      visibleControls: 240,
+      hiddenTemplateNodes: 1600,
+    });
+    expect(model.limits).toMatchObject({
+      outputTokenBudget: expect.any(Number),
+      hiddenTemplateNodesOmitted: 1600,
+      truncated: true,
+    });
+  });
+});
+
 describe('parseReportArgs', () => {
   it('defaults to a bounded latest-action report window', () => {
     expect(T.parseReportArgs([])).toEqual({

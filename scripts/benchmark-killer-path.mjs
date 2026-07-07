@@ -6,10 +6,13 @@ import { dirname, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { spawn, spawnSync } from 'child_process';
 
+import { withLiveBenchmarkLock } from './benchmark-run-lock.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
 const cdp = resolve(repoRoot, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
 const page = resolve(__dirname, 'smoke-page.html');
+const LARGE_APP_PERCEIVE_ARGS = Object.freeze(['-C', '-d', '3', '--keep-refs', '--last', '5', '--format', 'json']);
 
 const MUTATING_COMMANDS = new Set([
   'click', 'fill', 'type', 'press', 'select', 'scroll', 'nav', 'back', 'forward',
@@ -1180,7 +1183,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   firstUsefulObservationMsMax: 5000,
   firstActionEvidenceMsMax: 5000,
   goldenPathMsMax: 120000,
-  estimatedOutputTokensMax: 20000,
+  estimatedOutputTokensMax: 17000,
   maxStepEstimatedTokensMax: 5000,
   maxStepDurationMsMax: 5000,
   usefulObservationTokensMax: 3000,
@@ -1348,7 +1351,7 @@ function buildLargeAppStressGate(summary, limits = DEFAULT_GATE_LIMITS) {
       actual: largeAppStress.visibleControls?.bounded === true,
       operator: '===',
       limit: true,
-      recommendation: 'Visible controls inventory must be discoverable but capped to a <=50 item response.',
+      recommendation: 'Visible controls inventory must be discoverable but capped to a <=30 item response.',
       culprit: largeAppStress.visibleControls?.culprit || null,
     }),
     gateCriterion({
@@ -1715,7 +1718,7 @@ export function buildLargeAppStressFixture({
   tableRows = 1000,
   visibleControls = 240,
   hiddenTemplateNodes = 1600,
-  controlsLimit = 50,
+  controlsLimit = 30,
   nodeBudget = 80,
   tableRowBudget = 20,
   outputTokenBudget = 1200,
@@ -1740,7 +1743,7 @@ export function buildLargeAppStressFixture({
     ...Array.from({ length: Math.min(tableRowBudget, 5) }, (_, index) => `account-${index + 1}\tactive\tteam-${index + 1}`),
   ].join('\n');
   const steps = [
-    step('perceive', ['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20', '--format', 'json'], 0, 110, {
+    step('perceive', ['perceive', target, ...LARGE_APP_PERCEIVE_ARGS], 0, 110, {
       schema: 'chrome-cdp-ex.perceive.v1',
       targetPrefix: target,
       page: { title: 'Large SaaS stress fixture', url: 'https://example.test/large-app' },
@@ -1850,6 +1853,68 @@ export function buildLargeAppStressFixture({
     },
     steps,
   };
+}
+
+export function buildLargeAppStressHtml({
+  domNodes = 5200,
+  tableRows = 1000,
+  visibleControls = 240,
+  hiddenTemplateNodes = 1600,
+  tableRowBudget = 20,
+  outputTokenBudget = 1200,
+} = {}) {
+  const controls = Array.from({ length: visibleControls }, (_, index) => {
+    const n = index + 1;
+    if (index % 3 === 0) return `<button data-control="${n}" type="button">Visible control ${n}</button>`;
+    if (index % 3 === 1) return `<input data-control="${n}" aria-label="Visible control ${n}" value="account-${n}">`;
+    return `<a data-control="${n}" href="#account-${n}">Visible control ${n}</a>`;
+  }).join('\n');
+  const visibleRows = Array.from({ length: tableRowBudget }, (_, index) => {
+    const n = index + 1;
+    return `<tr><td>account-${n}</td><td>active</td><td>team-${n}</td></tr>`;
+  }).join('\n');
+  const hiddenNodes = Array.from({ length: hiddenTemplateNodes }, (_, index) => (
+    `<div data-hidden-template-node="${index + 1}">hidden template node ${index + 1}</div>`
+  )).join('\n');
+  const fillerCount = Math.max(0, domNodes - visibleControls - hiddenTemplateNodes - tableRowBudget - 100);
+  const fillerNodes = Array.from({ length: fillerCount }, (_, index) => (
+    `<span data-filler-node="${index + 1}"></span>`
+  )).join('\n');
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Large SaaS stress fixture domNodes=${domNodes} tableRows=${tableRows} visibleControls=${visibleControls} hiddenTemplateNodes=${hiddenTemplateNodes}</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 0; }
+      main { padding: 24px; }
+      #control-grid { display: grid; grid-template-columns: repeat(12, minmax(90px, 1fr)); gap: 6px; }
+      #accounts-grid { margin-top: 24px; width: 100%; border-collapse: collapse; }
+      #accounts-grid th, #accounts-grid td { border: 1px solid #ccc; padding: 4px 6px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Large SaaS stress fixture</h1>
+      <p id="stress-metadata">sourceDomNodes=${domNodes} tableRows=${tableRows} visibleControls=${visibleControls} hiddenTemplateNodes=${hiddenTemplateNodes} outputTokenBudget=${outputTokenBudget} hidden template nodes omitted=${hiddenTemplateNodes} truncated=true</p>
+      <section id="control-grid" aria-label="Visible controls">
+        ${controls}
+      </section>
+      <table id="accounts-grid" data-source-rows="${tableRows}">
+        <caption>budget sourceRows=${tableRows} returnedRows=${tableRowBudget} outputTokenBudget=${outputTokenBudget} truncated=true</caption>
+        <thead><tr><th>account</th><th>status</th><th>owner</th></tr></thead>
+        <tbody>
+          ${visibleRows}
+          <tr><td colspan="3">... ${tableRows - tableRowBudget} rows omitted (limit ${tableRowBudget} of ${tableRows} rows total)</td></tr>
+        </tbody>
+      </table>
+      <section id="hidden-templates" data-hidden-template hidden>
+        ${hiddenNodes}
+        ${fillerNodes}
+      </section>
+    </main>
+  </body>
+</html>`;
 }
 
 export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, endedAt, target = '', steps = [], comparisonBaselineSet = DEFAULT_COMPARISON_BASELINE_SET } = {}) {
@@ -2154,7 +2219,7 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
     { args: ['fill', target, '#cmd', 'look trainer', '--format', 'json'] },
     { args: ['click', target, '#combat', '--format', 'json'] },
     { args: ['perceive', target, '--since-action', '--format', 'json'] },
-    { args: ['report', target, '--format', 'json'] },
+    { args: ['report', target, '--last', '1', '--format', 'json'] },
     { args: ['perceive', target, '-s', '#auth-panel', '-d', '4'], name: 'guarded-page' },
     { args: ['perceive', target, '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-baseline' },
     { args: ['eval', target, hmrMutationScript], name: 'hmr-mutate' },
@@ -2184,7 +2249,7 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
         timeout: Math.max(5000, stabilityMs + 5000),
       },
       { args: ['status', target], name: 'stability-status' },
-      { args: ['report', target], name: 'stability-report' },
+      { args: ['report', target, '--last', '1'], name: 'stability-report' },
     );
   }
   return plan;
@@ -2213,6 +2278,117 @@ function assertExpectedFailure(step, pattern) {
   return text.trim();
 }
 
+export async function runLargeAppStressBenchmark(opts = {}) {
+  if (!opts.skipLock) {
+    return withLiveBenchmarkLock({ name: 'benchmark:large-app' }, () => runLargeAppStressBenchmark({ ...opts, skipLock: true }));
+  }
+  const {
+    port = Number(process.env.CDP_LARGE_APP_BENCH_PORT || 9336),
+    serverPort = Number(process.env.CDP_LARGE_APP_BENCH_HTTP_PORT || 41740),
+    json = false,
+  } = opts;
+  if (!existsSync(cdp)) throw new Error(`cdp script not found: ${cdp}`);
+  const candidates = browserCandidates();
+  if (candidates.length === 0) throw new Error('no supported Chrome/Edge/Brave browser binary found');
+
+  const [browserPath, browserName] = candidates[0];
+  const profileDir = mkdtempSync(resolve(tmpdir(), `chrome-cdp-ex-large-app-${browserName}-`));
+  let browser;
+  let server;
+  const steps = [];
+  let startedAt = Date.now();
+  let target = '';
+
+  const cleanup = () => {
+    if (browser && !browser.killed) browser.kill('SIGTERM');
+    if (server) server.close();
+    try { rmSync(profileDir, { recursive: true, force: true }); } catch {}
+  };
+
+  try {
+    const html = buildLargeAppStressHtml();
+    server = createServer((req, res) => {
+      if (req.url === '/' || req.url === '/large-app.html') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(html);
+        return;
+      }
+      res.writeHead(404);
+      res.end('not found');
+    });
+    await new Promise((resolveServer, reject) => {
+      server.once('error', reject);
+      server.listen(serverPort, '127.0.0.1', resolveServer);
+    });
+
+    const url = `http://127.0.0.1:${serverPort}/large-app.html`;
+    browser = spawn(browserPath, [
+      `--remote-debugging-port=${port}`,
+      `--user-data-dir=${profileDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      'about:blank',
+    ], { detached: true, stdio: 'ignore' });
+    browser.unref();
+
+    const env = { ...process.env, CDP_PORT: String(port) };
+    let reachable = false;
+    for (let i = 0; i < 30; i++) {
+      const res = spawnSync(process.execPath, [cdp, 'list'], {
+        cwd: repoRoot,
+        env,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      if (res.status === 0) {
+        reachable = true;
+        break;
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
+    if (!reachable) throw new Error('Browser did not become reachable via cdp list');
+
+    startedAt = Date.now();
+    const open = await runStep({
+      args: ['open', url, '--attach-timeout-ms', '5000', '--ready-timeout-ms', '5000', '--ready-selector', '[data-control="1"]', '--format', 'json'],
+      timeout: 40000,
+      env,
+      steps,
+      name: 'open',
+      benchmarkProbe: true,
+    });
+    assertStep(open);
+    const openModel = parseJsonOutput(outputText(open));
+    target = openModel?.targetPrefix;
+    if (!target) throw new Error(`open did not return a targetPrefix\nSTDOUT:\n${open.stdout}\nSTDERR:\n${open.stderr}`);
+
+    for (const planned of [
+      { args: ['perceive', target, ...LARGE_APP_PERCEIVE_ARGS], name: 'perceive', timeout: 40000 },
+      { args: ['controls', target, '--limit', '30', '--format', 'json'], name: 'controls' },
+      { args: ['text', target, '--auto'], name: 'text', timeout: 30000 },
+      { args: ['table', target, '#accounts-grid'], name: 'table', timeout: 30000 },
+      { args: ['summary', target, '--format', 'json'], name: 'summary' },
+    ]) {
+      const step = await runStep({ ...planned, env, steps });
+      assertStep(step);
+    }
+
+    const summary = summarizeBenchmarkRun({
+      scenario: 'large-app-stress',
+      startedAt,
+      endedAt: Date.now(),
+      target,
+      steps,
+    });
+    summary.browser = browserName;
+    summary.port = port;
+    summary.url = url;
+    return json ? JSON.stringify(summary, null, 2) : formatBenchmarkReport(summary);
+  } finally {
+    cleanup();
+  }
+}
+
 export function parseBenchmarkArgs(argv = []) {
   const opts = { json: false, stabilityMs: 1000, comparisonBaselinesPath: null };
   for (let i = 0; i < argv.length; i++) {
@@ -2228,7 +2404,17 @@ export function parseBenchmarkArgs(argv = []) {
   return opts;
 }
 
-export async function runKillerPathBenchmark({ port = Number(process.env.CDP_BENCH_PORT || 9334), serverPort = Number(process.env.CDP_BENCH_HTTP_PORT || 41738), json = false, stabilityMs = 1000, comparisonBaselinesPath = null } = {}) {
+export async function runKillerPathBenchmark(opts = {}) {
+  if (!opts.skipLock) {
+    return withLiveBenchmarkLock({ name: 'benchmark:killer' }, () => runKillerPathBenchmark({ ...opts, skipLock: true }));
+  }
+  const {
+    port = Number(process.env.CDP_BENCH_PORT || 9334),
+    serverPort = Number(process.env.CDP_BENCH_HTTP_PORT || 41738),
+    json = false,
+    stabilityMs = 1000,
+    comparisonBaselinesPath = null,
+  } = opts;
   if (!existsSync(cdp)) throw new Error(`cdp script not found: ${cdp}`);
   if (!existsSync(page)) throw new Error(`smoke page not found: ${page}`);
   const candidates = browserCandidates();

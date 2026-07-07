@@ -3,10 +3,12 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { pathToFileURL } from 'url';
 
-import { runKillerPathBenchmark } from './benchmark-killer-path.mjs';
+import { runKillerPathBenchmark, runLargeAppStressBenchmark } from './benchmark-killer-path.mjs';
 import { runMcpBenchmark } from './benchmark-mcp-path.mjs';
+import { withLiveBenchmarkLock } from './benchmark-run-lock.mjs';
 
 const DEFAULT_TYPES = Object.freeze(['mcp', 'killer']);
+const ALL_TYPES = Object.freeze(['mcp', 'killer', 'large-app']);
 
 function parsePositiveInt(value, name, { min = 1, max = 100 } = {}) {
   const raw = String(value ?? '').trim();
@@ -23,7 +25,7 @@ function parseTypes(value) {
     .map(type => type.trim())
     .filter(Boolean);
   if (!types.length) throw new Error('types must include at least one benchmark type');
-  const invalid = types.filter(type => !DEFAULT_TYPES.includes(type));
+  const invalid = types.filter(type => !ALL_TYPES.includes(type));
   if (invalid.length) throw new Error(`unknown benchmark type(s): ${invalid.join(', ')}`);
   return types;
 }
@@ -131,6 +133,7 @@ export function compactCampaignRound(plan, result, timing = {}) {
       maxStepDurationMs: metricValue(result, 'maxStepDurationMs'),
       maxResponsiveStepDurationMs: metricValue(result, 'maxResponsiveStepDurationMs'),
       maxStepEstimatedTokens: metricValue(result, 'maxStepEstimatedTokens'),
+      largeAppStress: metricValue(result, 'largeAppStress'),
       autoEvidenceActions: metricValue(result, 'autoEvidenceActions'),
       reportTimeline: metricValue(result, 'hasReportTimeline', metricValue(result, 'reportTimeline')),
       semanticVerificationPassed: metricValue(result, 'semanticVerificationPassed'),
@@ -171,10 +174,11 @@ function failedRound(plan, error, timing = {}) {
   };
 }
 
-function numericAverage(values) {
+function numericAverage(values, { round = true } = {}) {
   const nums = values.filter(Number.isFinite);
   if (!nums.length) return null;
-  return Math.round(nums.reduce((sum, value) => sum + value, 0) / nums.length);
+  const average = nums.reduce((sum, value) => sum + value, 0) / nums.length;
+  return round ? Math.round(average) : average;
 }
 
 function numericMax(values) {
@@ -186,6 +190,9 @@ function summarizeRoundsForType(rounds, type) {
   const selected = rounds.filter(round => round.type === type);
   const metric = name => selected.map(round => round.metrics?.[name]);
   const passed = selected.filter(round => round.success).length;
+  const stressRounds = selected
+    .map(round => round.metrics?.largeAppStress)
+    .filter(stress => stress?.enabled === true);
   return {
     type,
     rounds: selected.length,
@@ -200,6 +207,13 @@ function summarizeRoundsForType(rounds, type) {
     maxStepDurationMs: numericMax(metric('maxStepDurationMs')),
     maxResponsiveStepDurationMs: numericMax(metric('maxResponsiveStepDurationMs')),
     maxStepEstimatedTokens: numericMax(metric('maxStepEstimatedTokens')),
+    largeAppStress: stressRounds.length ? {
+      rounds: stressRounds.length,
+      passed: stressRounds.filter(stress => stress.success === true).length,
+      avgCommandCoverageRate: numericAverage(stressRounds.map(stress => stress.commandCoverage?.rate), { round: false }),
+      avgOutputBudgetCoverageRate: numericAverage(stressRounds.map(stress => stress.outputBudgetCoverage?.rate), { round: false }),
+      avgTruncationMetadataCoverageRate: numericAverage(stressRounds.map(stress => stress.truncationMetadataCoverage?.rate), { round: false }),
+    } : null,
   };
 }
 
@@ -263,6 +277,9 @@ export function formatCampaignReport(summary) {
   for (const entry of summary.typeSummaries) {
     const passRate = entry.passRate == null ? 'n/a' : `${Math.round(entry.passRate * 100)}%`;
     lines.push(`  - ${entry.type}: ${passRate}, avg total ${entry.avgTotalMs ?? 'n/a'} ms, avg output ${entry.avgEstimatedOutputTokens ?? 'n/a'} tokens, avg useful observation ${entry.avgUsefulObservationTokens ?? 'n/a'} tokens`);
+    if (entry.largeAppStress) {
+      lines.push(`    large-app stress: ${entry.largeAppStress.passed}/${entry.largeAppStress.rounds} pass, command coverage ${Math.round((entry.largeAppStress.avgCommandCoverageRate || 0) * 100)}%, output budgets ${Math.round((entry.largeAppStress.avgOutputBudgetCoverageRate || 0) * 100)}%, truncation metadata ${Math.round((entry.largeAppStress.avgTruncationMetadataCoverageRate || 0) * 100)}%`);
+    }
   }
   if (summary.failurePatterns.length) {
     lines.push('', 'Failures:');
@@ -294,12 +311,15 @@ async function runCampaignRound(plan, opts) {
   const wallStart = Date.now();
   try {
     const raw = plan.type === 'mcp'
-      ? await runMcpBenchmark({ port: plan.port, serverPort: plan.serverPort, json: true })
+      ? await runMcpBenchmark({ port: plan.port, serverPort: plan.serverPort, json: true, skipLock: true })
+      : plan.type === 'large-app'
+      ? await runLargeAppStressBenchmark({ port: plan.port, serverPort: plan.serverPort, json: true, skipLock: true })
       : await runKillerPathBenchmark({
         port: plan.port,
         serverPort: plan.serverPort,
         json: true,
         stabilityMs: opts.stabilityMs,
+        skipLock: true,
       });
     const endedAt = new Date().toISOString();
     return compactCampaignRound(plan, parseBenchmarkSummary(raw), {
@@ -318,6 +338,9 @@ async function runCampaignRound(plan, opts) {
 }
 
 export async function runLiveCampaign(opts = {}) {
+  if (!opts.skipLock) {
+    return withLiveBenchmarkLock({ name: 'benchmark:campaign' }, () => runLiveCampaign({ ...opts, skipLock: true }));
+  }
   const plan = buildCampaignRoundPlan(opts);
   const startedAt = new Date().toISOString();
   const rounds = [];

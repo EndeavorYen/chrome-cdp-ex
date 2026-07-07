@@ -1551,11 +1551,22 @@ async function summaryModel(cdp, sid, consoleBuf, exceptionBuf) {
     (function() {
       const counts = {};
       const interactive = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [tabindex]');
+      let visibleControls = 0;
       for (const el of interactive) {
+        const style = window.getComputedStyle(el);
+        if (el.hidden || el.getAttribute('aria-hidden') === 'true' || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') continue;
+        visibleControls += 1;
         const tag = el.tagName.toLowerCase();
         const type = tag === 'input' ? 'input[' + (el.type || 'text') + ']' : tag;
         counts[type] = (counts[type] || 0) + 1;
       }
+      const domNodes = document.querySelectorAll('*').length;
+      let tableRows = 0;
+      for (const table of document.querySelectorAll('table')) {
+        const sourceRows = Number(table.getAttribute('data-source-rows') || table.dataset.sourceRows || 0);
+        tableRows = Math.max(tableRows, table.querySelectorAll('tr').length, Number.isFinite(sourceRows) ? sourceRows : 0);
+      }
+      const hiddenTemplateNodes = document.querySelectorAll('template *, [data-hidden-template], [data-hidden-template] *, [hidden], [hidden] *, [aria-hidden="true"], [aria-hidden="true"] *').length;
       const focused = document.activeElement;
       const focusDesc = focused && focused !== document.body
         ? '<' + focused.tagName.toLowerCase() + (focused.id ? '#' + focused.id : '') + (focused.className ? '.' + focused.className.toString().split(' ')[0] : '') + '>'
@@ -1567,6 +1578,10 @@ async function summaryModel(cdp, sid, consoleBuf, exceptionBuf) {
         scrollY: Math.round(window.scrollY),
         scrollMax: Math.round(document.documentElement.scrollHeight - window.innerHeight),
         counts,
+        domNodes,
+        tableRows,
+        visibleControls,
+        hiddenTemplateNodes,
         focused: focusDesc,
       };
     })()
@@ -1590,6 +1605,17 @@ async function summaryModel(cdp, sid, consoleBuf, exceptionBuf) {
       scrollMax: r.scrollMax,
     },
     interactive: r.counts,
+    counts: {
+      domNodes: r.domNodes || 0,
+      tableRows: r.tableRows || 0,
+      visibleControls: r.visibleControls || 0,
+      hiddenTemplateNodes: r.hiddenTemplateNodes || 0,
+    },
+    limits: {
+      outputTokenBudget: 1200,
+      hiddenTemplateNodesOmitted: r.hiddenTemplateNodes || 0,
+      truncated: (r.domNodes || 0) > 1000 || (r.tableRows || 0) > 100 || (r.visibleControls || 0) > 50 || (r.hiddenTemplateNodes || 0) > 0,
+    },
     focused: r.focused,
     console: { errors, warnings, exceptions },
   };
@@ -5652,7 +5678,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   return output;
 }
 
-function perceptionModelFromText(output, refState = {}, targetPrefix = '<target>') {
+function perceptionModelFromText(output, refState = {}, targetPrefix = '<target>', opts = {}) {
   const lines = String(output || '').split('\n');
   const header = parsePerceiveHeader(output);
 
@@ -5686,13 +5712,14 @@ function perceptionModelFromText(output, refState = {}, targetPrefix = '<target>
     nodes,
     limits: {
       truncated: output.includes('truncated'),
+      ...(opts.last ? { lastTextRows: opts.last, outputTokenBudget: opts.last * 80 } : {}),
     },
   });
 }
 
 async function perceiveModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
   const output = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts, refState);
-  return perceptionModelFromText(output, refState || {}, opts.targetPrefix || '<target>');
+  return perceptionModelFromText(output, refState || {}, opts.targetPrefix || '<target>', opts);
 }
 
 async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {

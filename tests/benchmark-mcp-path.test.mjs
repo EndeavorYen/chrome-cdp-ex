@@ -100,7 +100,122 @@ describe('benchmark MCP path helpers', () => {
     expect(summary.metrics.overlayRecoveryCovered).toBe(true);
     expect(summary.metrics.semanticVerificationPassed).toBe(true);
     expect(summary.metrics.reportTimeline).toBe(true);
-    expect(summary.gate).toMatchObject({ passed: true, passedCount: 9, total: 9 });
+    expect(summary.gate).toMatchObject({ passed: true, passedCount: 11, total: 11 });
     expect(formatMcpBenchmarkReport(summary)).toContain('Quality gate: pass');
+  });
+
+  it('fails when one MCP tool dominates output before the total token budget is exhausted', () => {
+    const startedAt = 0;
+    const hugeReport = 'x'.repeat(14000);
+    const steps = [
+      {
+        name: 'tools-list',
+        mcpMethod: 'tools/list',
+        command: ['mcp', 'tools/list'],
+        startedAt,
+        endedAt: 5,
+        status: 0,
+        stdout: JSON.stringify({
+          tools: [
+            { name: 'controls' },
+            { name: 'overlay' },
+            { name: 'dismiss_modal' },
+            { name: 'verify_click' },
+          ],
+        }),
+        stderr: '',
+        benchmarkProbe: true,
+      },
+      {
+        name: 'open',
+        mcpTool: 'open_or_attach',
+        command: ['open'],
+        startedAt: 10,
+        endedAt: 20,
+        status: 0,
+        stdout: JSON.stringify({ schema: 'chrome-cdp-ex.open.v1', targetPrefix: 'AABBCCDD' }),
+        stderr: '',
+      },
+      {
+        name: 'controls',
+        mcpTool: 'controls',
+        command: ['controls'],
+        startedAt: 20,
+        endedAt: 30,
+        status: 0,
+        stdout: JSON.stringify({ schema: 'chrome-cdp-ex.visible-controls.v1', controls: [{ ref: '@1' }] }),
+        stderr: '',
+      },
+      {
+        name: 'overlay',
+        mcpTool: 'overlay',
+        command: ['overlay'],
+        startedAt: 30,
+        endedAt: 40,
+        status: 0,
+        stdout: JSON.stringify({ schema: 'chrome-cdp-ex.overlays.v1', blocking: true, nextCommand: 'cdp dismiss-modal AABBCCDD' }),
+        stderr: '',
+      },
+      {
+        name: 'dismiss-modal',
+        mcpTool: 'dismiss_modal',
+        command: ['dismiss-modal'],
+        startedAt: 40,
+        endedAt: 50,
+        status: 0,
+        stdout: JSON.stringify({ schema: 'chrome-cdp-ex.action.v1', dispatch: { ok: true } }),
+        stderr: '',
+      },
+      {
+        name: 'verify-click',
+        mcpTool: 'verify_click',
+        command: ['verify-click'],
+        startedAt: 50,
+        endedAt: 60,
+        status: 0,
+        stdout: JSON.stringify({
+          schema: 'chrome-cdp-ex.semantic-interaction.v1',
+          verdict: 'pass',
+          action: { verdict: 'continue' },
+          assertions: [{ kind: 'text', status: 'pass' }],
+        }),
+        stderr: '',
+      },
+      {
+        name: 'report',
+        mcpTool: 'report',
+        command: ['report'],
+        startedAt: 60,
+        endedAt: 70,
+        status: 0,
+        stdout: JSON.stringify({
+          schema: 'chrome-cdp-ex.report.v1',
+          actions: [{ action: 'click' }],
+          payload: hugeReport,
+        }),
+        stderr: '',
+      },
+    ];
+
+    const summary = summarizeMcpBenchmarkRun({
+      startedAt,
+      endedAt: 80,
+      target: 'AABBCCDD',
+      steps,
+    });
+
+    expect(summary.metrics.estimatedOutputTokens).toBeLessThan(12000);
+    expect(summary.metrics.maxToolOutputTokens).toBeGreaterThan(3200);
+    expect(summary.metrics.perToolOutputTokens).toContainEqual(expect.objectContaining({
+      tool: 'report',
+      estimatedTokens: summary.metrics.maxToolOutputTokens,
+    }));
+    expect(summary.gate.criteria).toContainEqual(expect.objectContaining({
+      name: 'mcp-tool-output-budget',
+      passed: false,
+      actual: summary.metrics.maxToolOutputTokens,
+      limit: '<= 3200 tokens/tool',
+    }));
+    expect(formatMcpBenchmarkReport(summary)).toContain('Biggest tool output: report');
   });
 });
