@@ -8,7 +8,41 @@ import { runMcpBenchmark } from './benchmark-mcp-path.mjs';
 import { withLiveBenchmarkLock } from './benchmark-run-lock.mjs';
 
 const DEFAULT_TYPES = Object.freeze(['mcp', 'killer']);
-const ALL_TYPES = Object.freeze(['mcp', 'killer', 'large-app']);
+const ALL_TYPES = Object.freeze(['mcp', 'killer', 'large-app', 'real-app']);
+const DEFAULT_REAL_APP_TARGETS = Object.freeze(['dashboard', 'docs-app', 'auth-flow']);
+const REAL_APP_BASE_TRAITS = Object.freeze([
+  'overlay',
+  'stale-ref',
+  'iframe',
+  'shadow-dom',
+  'spa-route',
+  'slow-network',
+  'auth-wall',
+  'large-table',
+  'hidden-template',
+]);
+const REAL_APP_TARGET_PROFILES = Object.freeze({
+  dashboard: {
+    targetClass: 'dashboard',
+    traits: REAL_APP_BASE_TRAITS,
+  },
+  'docs-app': {
+    targetClass: 'docs',
+    traits: REAL_APP_BASE_TRAITS,
+  },
+  'auth-flow': {
+    targetClass: 'auth',
+    traits: REAL_APP_BASE_TRAITS,
+  },
+  'data-table': {
+    targetClass: 'table',
+    traits: REAL_APP_BASE_TRAITS,
+  },
+  'canvas-heavy': {
+    targetClass: 'canvas',
+    traits: REAL_APP_BASE_TRAITS,
+  },
+});
 const DEFAULT_REGRESSION_THRESHOLDS = Object.freeze({
   warnPassRateDrop: 0.01,
   failPassRateDrop: 0.05,
@@ -57,6 +91,24 @@ function parseSeedList(value) {
   return seeds;
 }
 
+function parseRealAppTargets(value) {
+  const targets = String(value || '')
+    .split(',')
+    .map(target => target.trim())
+    .filter(Boolean);
+  const selected = targets.length ? targets : [...DEFAULT_REAL_APP_TARGETS];
+  const invalid = selected.filter(target => !REAL_APP_TARGET_PROFILES[target]);
+  if (invalid.length) throw new Error(`unknown real-app target(s): ${invalid.join(', ')}`);
+  return [...new Set(selected)];
+}
+
+function realAppTargetProfile(name) {
+  const target = name || DEFAULT_REAL_APP_TARGETS[0];
+  const profile = REAL_APP_TARGET_PROFILES[target];
+  if (!profile) throw new Error(`unknown real-app target: ${target}`);
+  return { name: target, ...profile };
+}
+
 export function parseCampaignArgs(argv = []) {
   const opts = {
     rounds: 10,
@@ -71,6 +123,7 @@ export function parseCampaignArgs(argv = []) {
     history: null,
     compareBaseline: null,
     adversarialSeeds: [],
+    realAppTargets: [...DEFAULT_REAL_APP_TARGETS],
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -99,6 +152,8 @@ export function parseCampaignArgs(argv = []) {
       opts.adversarialSeeds = parseSeedList(argv[++i]);
     } else if (arg === '--adversarial-seeds') {
       opts.adversarialSeeds = parseSeedList(argv[++i]);
+    } else if (arg === '--real-app-targets') {
+      opts.realAppTargets = parseRealAppTargets(argv[++i]);
     } else if (arg === '--json') {
       opts.json = true;
     } else if (arg === '--fail-fast') {
@@ -116,19 +171,26 @@ export function buildCampaignRoundPlan({
   portStart = 9440,
   serverPortStart = 42140,
   adversarialSeeds = [],
+  realAppTargets = [...DEFAULT_REAL_APP_TARGETS],
 } = {}) {
   let adversarialIndex = 0;
+  let realAppIndex = 0;
   return Array.from({ length: rounds }, (_, index) => {
     const type = types[index % types.length];
     const seed = type === 'killer' && adversarialSeeds.length
       ? adversarialSeeds[adversarialIndex++ % adversarialSeeds.length]
       : null;
+    const realAppTarget = type === 'real-app'
+      ? realAppTargets[realAppIndex++ % realAppTargets.length]
+      : null;
+    const realAppProfile = realAppTarget ? realAppTargetProfile(realAppTarget) : null;
     return {
       round: index + 1,
       type,
       port: portStart + index,
       serverPort: serverPortStart + index,
       ...(seed ? { seed } : {}),
+      ...(realAppProfile ? { realAppTarget: realAppProfile.name, targetClass: realAppProfile.targetClass } : {}),
     };
   });
 }
@@ -155,6 +217,8 @@ export function compactCampaignRound(plan, result, timing = {}) {
     port: plan.port,
     serverPort: plan.serverPort,
     seed: plan.seed || result?.metrics?.adversarialScenario?.seed || null,
+    realAppTarget: plan.realAppTarget || result?.metrics?.realAppTarget?.name || null,
+    targetClass: plan.targetClass || result?.metrics?.realAppTarget?.targetClass || null,
     success,
     runSuccess: result?.success === true,
     gatePassed,
@@ -184,6 +248,7 @@ export function compactCampaignRound(plan, result, timing = {}) {
       maxResponsiveStepDurationMs: metricValue(result, 'maxResponsiveStepDurationMs'),
       maxStepEstimatedTokens: metricValue(result, 'maxStepEstimatedTokens'),
       largeAppStress: metricValue(result, 'largeAppStress'),
+      realAppTarget: metricValue(result, 'realAppTarget'),
       autoEvidenceActions: metricValue(result, 'autoEvidenceActions'),
       reportTimeline: metricValue(result, 'hasReportTimeline', metricValue(result, 'reportTimeline')),
       semanticVerificationPassed: metricValue(result, 'semanticVerificationPassed'),
@@ -210,6 +275,8 @@ function failedRound(plan, error, timing = {}) {
     port: plan.port,
     serverPort: plan.serverPort,
     seed: plan.seed || null,
+    realAppTarget: plan.realAppTarget || null,
+    targetClass: plan.targetClass || null,
     success: false,
     runSuccess: false,
     gatePassed: false,
@@ -245,6 +312,13 @@ function summarizeRoundsForType(rounds, type) {
   const stressRounds = selected
     .map(round => round.metrics?.largeAppStress)
     .filter(stress => stress?.enabled === true);
+  const realAppTargets = selected
+    .map(round => round.metrics?.realAppTarget || (round.realAppTarget ? {
+      name: round.realAppTarget,
+      targetClass: round.targetClass || null,
+    } : null))
+    .filter(Boolean);
+  const unique = values => [...new Set(values.filter(Boolean))].sort();
   return {
     type,
     rounds: selected.length,
@@ -259,6 +333,10 @@ function summarizeRoundsForType(rounds, type) {
     maxStepDurationMs: numericMax(metric('maxStepDurationMs')),
     maxResponsiveStepDurationMs: numericMax(metric('maxResponsiveStepDurationMs')),
     maxStepEstimatedTokens: numericMax(metric('maxStepEstimatedTokens')),
+    realAppTargets: realAppTargets.length ? {
+      targets: unique(realAppTargets.map(target => target.name)),
+      classes: unique(realAppTargets.map(target => target.targetClass)),
+    } : null,
     largeAppStress: stressRounds.length ? {
       rounds: stressRounds.length,
       passed: stressRounds.filter(stress => stress.success === true).length,
@@ -460,7 +538,8 @@ function buildReproductionCommand(round = {}) {
   ];
   if (Number.isFinite(round.port)) parts.push('--port-start', String(round.port));
   if (Number.isFinite(round.serverPort)) parts.push('--server-port-start', String(round.serverPort));
-  if (round.seed) parts.push('--adversarial-seeds', String(round.seed));
+  if (round.seed && round.type !== 'real-app') parts.push('--adversarial-seeds', String(round.seed));
+  if (round.realAppTarget) parts.push('--real-app-targets', String(round.realAppTarget));
   parts.push('--fail-fast', '--json');
   return parts.join(' ');
 }
@@ -480,6 +559,10 @@ function buildIssueDraftBody(round, draft) {
     '## Failure',
     `- Type: ${round.type}`,
     `- Round: ${round.round}`,
+    ...(draft.realAppTarget ? [
+      `- Real-app target: ${draft.realAppTarget}`,
+      `- Target class: ${draft.targetClass || 'n/a'}`,
+    ] : []),
     `- Ports: CDP ${round.port ?? 'n/a'}, HTTP ${round.serverPort ?? 'n/a'}`,
     `- Seed: ${draft.seed ?? 'n/a'}`,
     `- Failed criteria: ${draft.failedCriteria.length ? draft.failedCriteria.join(', ') : 'n/a'}`,
@@ -509,6 +592,8 @@ export function buildCampaignIssueDrafts(rounds = [], artifacts = {}) {
         reproductionCommand: buildReproductionCommand(round),
         suggestedLabels: ['bug', 'type: benchmark', 'priority: p1'],
         seed: round.seed ?? round.metrics?.seed ?? null,
+        realAppTarget: round.realAppTarget ?? round.metrics?.realAppTarget?.name ?? null,
+        targetClass: round.targetClass ?? round.metrics?.realAppTarget?.targetClass ?? null,
         ports: {
           cdp: Number.isFinite(round.port) ? round.port : null,
           http: Number.isFinite(round.serverPort) ? round.serverPort : null,
@@ -536,6 +621,8 @@ export function summarizeCampaignRun({ startedAt, endedAt, rounds = [], plan = [
       round: round.round,
       type: round.type,
       seed: round.seed || null,
+      realAppTarget: round.realAppTarget || null,
+      targetClass: round.targetClass || null,
       failedStep: round.failedStep,
       error: round.error || null,
       failedCriteria: round.gate?.failedCriteria || [],
@@ -799,6 +886,9 @@ export function formatCampaignReport(summary) {
   for (const entry of summary.typeSummaries) {
     const passRate = entry.passRate == null ? 'n/a' : `${Math.round(entry.passRate * 100)}%`;
     lines.push(`  - ${entry.type}: ${passRate}, avg total ${entry.avgTotalMs ?? 'n/a'} ms, avg output ${entry.avgEstimatedOutputTokens ?? 'n/a'} tokens, avg useful observation ${entry.avgUsefulObservationTokens ?? 'n/a'} tokens`);
+    if (entry.realAppTargets) {
+      lines.push(`    real-app targets: ${entry.realAppTargets.targets.join(', ')}; classes ${entry.realAppTargets.classes.join(', ')}`);
+    }
     if (entry.largeAppStress) {
       lines.push(`    large-app stress: ${entry.largeAppStress.passed}/${entry.largeAppStress.rounds} pass, command coverage ${Math.round((entry.largeAppStress.avgCommandCoverageRate || 0) * 100)}%, output budgets ${Math.round((entry.largeAppStress.avgOutputBudgetCoverageRate || 0) * 100)}%, truncation metadata ${Math.round((entry.largeAppStress.avgTruncationMetadataCoverageRate || 0) * 100)}%`);
     }
@@ -868,20 +958,53 @@ export function formatCampaignReport(summary) {
   lines.push('', 'Rounds:');
   for (const round of summary.rounds) {
     const seed = round.seed ? ` seed ${round.seed}` : '';
-    lines.push(`  ${round.success ? 'OK  ' : 'FAIL'} #${round.round} ${round.type}${seed}: total ${round.metrics.totalMs ?? 'n/a'} ms, output ${round.metrics.estimatedOutputTokens ?? 'n/a'} tokens, first observation ${round.metrics.firstUsefulObservationMs ?? 'n/a'} ms`);
+    const target = round.realAppTarget ? ` ${round.realAppTarget}/${round.targetClass || 'unknown'}` : '';
+    lines.push(`  ${round.success ? 'OK  ' : 'FAIL'} #${round.round} ${round.type}${target}${seed}: total ${round.metrics.totalMs ?? 'n/a'} ms, output ${round.metrics.estimatedOutputTokens ?? 'n/a'} tokens, first observation ${round.metrics.firstUsefulObservationMs ?? 'n/a'} ms`);
   }
   return lines.join('\n');
+}
+
+function decorateRealAppBenchmarkSummary(summary, plan = {}) {
+  const profile = realAppTargetProfile(plan.realAppTarget);
+  return {
+    ...summary,
+    scenario: 'real-app-target',
+    metrics: {
+      ...(summary.metrics || {}),
+      realAppTarget: {
+        schema: 'chrome-cdp-ex.real-app-target.v1',
+        name: profile.name,
+        targetClass: profile.targetClass,
+        traits: profile.traits,
+        safeLocalOnly: true,
+        source: 'local-test-fixture',
+      },
+    },
+  };
 }
 
 async function runCampaignRound(plan, opts) {
   const startedAt = new Date().toISOString();
   const wallStart = Date.now();
   try {
-    const raw = plan.type === 'mcp'
-      ? await runMcpBenchmark({ port: plan.port, serverPort: plan.serverPort, json: true, skipLock: true })
-      : plan.type === 'large-app'
-      ? await runLargeAppStressBenchmark({ port: plan.port, serverPort: plan.serverPort, json: true, skipLock: true })
-      : await runKillerPathBenchmark({
+    let raw;
+    if (plan.type === 'mcp') {
+      raw = await runMcpBenchmark({ port: plan.port, serverPort: plan.serverPort, json: true, skipLock: true });
+    } else if (plan.type === 'large-app') {
+      raw = await runLargeAppStressBenchmark({ port: plan.port, serverPort: plan.serverPort, json: true, skipLock: true });
+    } else if (plan.type === 'real-app') {
+      const profile = realAppTargetProfile(plan.realAppTarget);
+      raw = await runKillerPathBenchmark({
+        port: plan.port,
+        serverPort: plan.serverPort,
+        json: true,
+        stabilityMs: opts.stabilityMs,
+        adversarialSeed: `real-app-${profile.name}`,
+        adversarialTraits: profile.traits,
+        skipLock: true,
+      });
+    } else {
+      raw = await runKillerPathBenchmark({
         port: plan.port,
         serverPort: plan.serverPort,
         json: true,
@@ -889,8 +1012,12 @@ async function runCampaignRound(plan, opts) {
         adversarialSeed: plan.seed || null,
         skipLock: true,
       });
+    }
+    const result = plan.type === 'real-app'
+      ? decorateRealAppBenchmarkSummary(parseBenchmarkSummary(raw), plan)
+      : parseBenchmarkSummary(raw);
     const endedAt = new Date().toISOString();
-    return compactCampaignRound(plan, parseBenchmarkSummary(raw), {
+    return compactCampaignRound(plan, result, {
       startedAt,
       endedAt,
       wallMs: Date.now() - wallStart,

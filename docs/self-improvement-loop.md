@@ -23,6 +23,7 @@ git status --short --branch
 gh issue list --state open --limit 50
 npm run benchmark:campaign -- --rounds 10 --types mcp,killer,large-app --history ./campaign-history.jsonl --output ./campaign.json
 npm run benchmark:campaign -- --rounds 3 --types killer --adversarial-seeds alpha,beta --output ./adversarial-campaign.json
+npm run benchmark:campaign -- --rounds 3 --types real-app --real-app-targets dashboard,docs-app,auth-flow --output ./real-app-campaign.json
 npm run benchmark:campaign -- --rounds 3 --types mcp,killer --compare-baseline ./main-campaign.json --output ./branch-campaign.json
 ```
 
@@ -31,6 +32,8 @@ Use `History trend` to compare against the previous campaign. Treat negative pas
 Use `Regression comparison` before review when you have a saved `main` campaign summary or history record. Treat `warn` as review-required evidence and `fail` as a blocker unless the regression is intentional and documented with a stronger live result.
 
 Use `Route recommendation` to decide whether the next agent workflow should prefer MCP tools or direct CLI commands. Trust high-confidence recommendations when both routes have comparable non-adversarial rounds; treat low confidence or `inconclusive` as a signal to run more matched rounds before changing operator guidance.
+
+Use `real-app` target profiles when synthetic smoke pages are too easy. The built-in profiles are local/test-only and label each round with `realAppTarget` and `targetClass`; treat any future URL-backed target as allowed only for owned staging/test tenants with no personal, customer, or production data.
 
 Treat failed `long-session-report-budget` gates as merge blockers. They mean the report handoff for many-action sessions either exceeded its byte budget, exposed an expensive full-history window, lost latest-action context, or dropped recovery-critical receipt fields.
 
