@@ -110,6 +110,39 @@ function checkReleaseMetadataContract(docs) {
   return failures;
 }
 
+function checkSelfImprovementLoopContract(docs) {
+  const failures = [];
+  const text = docs.selfImprovementLoop || '';
+  const required = [
+    '## Round Contract',
+    '## 1. Self-Assess',
+    '## 2. Open Issues',
+    '## 3. Implement And Verify',
+    '## 4. Review And Merge',
+    '## 5. Next-Round Backlog',
+    'npm run benchmark:campaign -- --rounds 10 --types mcp,killer,large-app --history',
+    'gh issue create',
+    'npm test',
+    'npm run lint',
+    'npm run check:docs',
+    'gh pr create --base main',
+    'gh pr checks',
+    'gh pr merge',
+    'History trend',
+    'issueDrafts',
+    'origin/main',
+  ];
+  for (const item of required) {
+    if (!text.includes(item)) {
+      failures.push(`Self-improvement loop runbook is missing: ${item}`);
+    }
+  }
+  if (!docs.reference.includes('self-improvement-loop.md')) {
+    failures.push('Reference docs must link to the self-improvement loop runbook');
+  }
+  return failures;
+}
+
 export function checkDocsContract(docs, commands) {
   const failures = [];
 
@@ -196,6 +229,7 @@ export function checkDocsContract(docs, commands) {
 
   failures.push(...validateKillerPathContract(docs.killerPath));
   failures.push(...checkReleaseMetadataContract(docs));
+  failures.push(...checkSelfImprovementLoopContract(docs));
   return failures;
 }
 
@@ -204,6 +238,7 @@ function readDocs() {
   return {
     readme: read('README.md'),
     reference: read('docs/reference.md'),
+    selfImprovementLoop: read('docs/self-improvement-loop.md'),
     skill: read('skills/chrome-cdp-ex/SKILL.md'),
     killerPath: read('docs/examples/killer-path.md'),
     packageJson: read('package.json'),
