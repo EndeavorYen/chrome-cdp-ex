@@ -4,6 +4,7 @@ import { checkDocsContract, validateKillerPathContract } from '../scripts/check-
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const reference = readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
+const selfImprovementLoop = readFileSync(new URL('../docs/self-improvement-loop.md', import.meta.url), 'utf8');
 const skill = readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.meta.url), 'utf8');
 const killerPath = readFileSync(new URL('../docs/examples/killer-path.md', import.meta.url), 'utf8');
 const packageJson = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
@@ -58,6 +59,7 @@ describe('Killer Path docs contract', () => {
     const docsWithoutChecklist = {
       readme: readme.replace(/### Promotion checklist[\s\S]+?(?=\n### |\n## |$)/, ''),
       reference,
+      selfImprovementLoop,
       skill,
       killerPath,
     };
@@ -78,6 +80,7 @@ describe('Killer Path docs contract', () => {
     const docs = {
       readme,
       reference,
+      selfImprovementLoop,
       skill,
       killerPath,
       packageJson,
@@ -93,12 +96,27 @@ describe('Killer Path docs contract', () => {
     const docs = {
       readme: readme.replaceAll('mock', ''),
       reference,
+      selfImprovementLoop,
       skill,
       killerPath,
     };
 
     expect(checkDocsContract(docs, [{ name: 'mock', aliases: [] }])).not.toContain(
       'Missing command docs for mock',
+    );
+  });
+
+  it('requires the self-improvement loop runbook to cover issue, test, review, and merge commands', () => {
+    const docs = {
+      readme,
+      reference,
+      selfImprovementLoop: selfImprovementLoop.replace('gh issue create', 'gh issue draft'),
+      skill,
+      killerPath,
+    };
+
+    expect(checkDocsContract(docs, [])).toContain(
+      'Self-improvement loop runbook is missing: gh issue create',
     );
   });
 });
