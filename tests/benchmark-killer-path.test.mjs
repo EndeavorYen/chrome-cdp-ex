@@ -56,6 +56,85 @@ function sampleActionReceipt(overrides = {}) {
   };
 }
 
+function longSessionReportModel(overrides = {}) {
+  const total = overrides.counts?.actions ?? 120;
+  const shown = overrides.timelineWindow?.shown ?? 20;
+  const start = Math.max(1, total - shown + 1);
+  const actions = Array.from({ length: shown }, (_, index) => {
+    const actionIndex = start + index;
+    return {
+      index: actionIndex,
+      action: actionIndex % 5 === 0 ? 'fill' : 'click',
+      status: 'ok',
+      target: { input: `#control-${actionIndex}` },
+      evidence: {
+        dispatchMethod: actionIndex % 5 === 0 ? 'fill' : 'click',
+        settleOk: true,
+        settleDurationMs: 30 + index,
+        effectSummary: `+++ Added (1): action ${actionIndex}`,
+        effectSample: `+   [status] action ${actionIndex} completed`,
+      },
+      receipt: sampleActionReceipt({
+        eventId: `act_AABBCCDD_${String(actionIndex).padStart(6, '0')}`,
+        sequence: actionIndex,
+      }),
+    };
+  });
+  return {
+    schema: 'chrome-cdp-ex.report.v1',
+    targetId: 'AABBCCDD',
+    targetPrefix: 'AABBCCDD',
+    paths: {
+      log: '/tmp/chrome-cdp-ex/session-AABBCCDD.jsonl',
+      screenshotDir: '/tmp/chrome-cdp-ex/screens-AABBCCDD',
+    },
+    counts: { actions: total, screenshots: 2, records: 0 },
+    reportBudget: {
+      jsonBytesMax: 32768,
+      estimatedJsonBytes: 12000,
+      actionLimit: 20,
+      allActionsOptIn: true,
+      expensive: false,
+    },
+    timelineWindow: {
+      total,
+      shown,
+      omitted: total - shown,
+      startIndex: start,
+      endIndex: total,
+      limit: 20,
+      mode: 'latest',
+      expensive: false,
+    },
+    latestAction: {
+      index: total,
+      action: actions.at(-1)?.action || 'click',
+      status: 'ok',
+      outcomeStatus: 'changed',
+      verdictStatus: 'continue',
+      canContinue: true,
+      needsRecovery: false,
+      effectSample: `+   [status] action ${total} completed`,
+    },
+    artifacts: {
+      paths: {
+        log: '/tmp/chrome-cdp-ex/session-AABBCCDD.jsonl',
+        screenshotDir: '/tmp/chrome-cdp-ex/screens-AABBCCDD',
+      },
+      counts: { actions: total, screenshots: 2, records: 0 },
+    },
+    environment: { clockSummary: 'real time' },
+    actions,
+    screenshots: [{ index: 1, kind: 'shot', path: '/tmp/chrome-cdp-ex/screens-AABBCCDD/shot-001.png' }],
+    recommendation: {
+      source: 'latest-action-outcome',
+      commands: ['cdp perceive AABBCCDD --since-action'],
+    },
+    nextSteps: ['cdp perceive AABBCCDD --since-action', 'cdp record-actions AABBCCDD --format json'],
+    ...overrides,
+  };
+}
+
 describe('benchmark killer path helpers', () => {
   it('builds replayable adversarial scenarios with high-difficulty traits', () => {
     const scenario = buildAdversarialScenario('round5-alpha', {
@@ -795,8 +874,9 @@ describe('benchmark killer path helpers', () => {
     expect(out).toContain('Perception signal coverage: n/a (0/0)');
     expect(out).toContain('Since-action evidence coverage: 100% (1/1)');
     expect(out).toContain('CLI recovery coverage: 100% (1/1)');
+    expect(out).toContain('Long-session report budget coverage: n/a (0/0)');
     expect(out).toContain('Quality gate: pass');
-    expect(out).toContain('Gate checks: 29/29 pass');
+    expect(out).toContain('Gate checks: 30/30 pass');
     expect(out).toContain('Differentiator success rate: 100%');
     expect(out).toContain('Session stability: yes (40 ms, 3 probes)');
     expect(out).toContain('Comparison baselines:');
@@ -2243,6 +2323,110 @@ describe('benchmark killer path helpers', () => {
         passed: false,
         actual: 0,
         recommendation: 'JSON report handoffs with actions must expose latestAction so agents can resume without rescanning the timeline.',
+      }),
+    ]));
+  });
+
+  it('covers long-session report budget and compact latest-action handoff', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'long-session-report-budget',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'report',
+          command: ['report', 'AABBCCDD', '--format', 'json', '--compact'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify(longSessionReportModel()),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.longSessionReportBudgetCoverage).toMatchObject({
+      total: 1,
+      covered: 1,
+      missing: [],
+      rate: 1,
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'long-session-report-budget',
+        passed: true,
+        actual: 1,
+      }),
+    ]));
+  });
+
+  it('fails the gate when a long-session report dumps all actions or exceeds budget', () => {
+    const summary = summarizeBenchmarkRun({
+      scenario: 'long-session-report-budget',
+      startedAt: 0,
+      endedAt: 10,
+      target: 'AABBCCDD',
+      steps: [
+        {
+          name: 'report',
+          command: ['report', 'AABBCCDD', '--format', 'json'],
+          startedAt: 0,
+          endedAt: 10,
+          status: 0,
+          stdout: JSON.stringify(longSessionReportModel({
+            reportBudget: {
+              jsonBytesMax: 32768,
+              estimatedJsonBytes: 92000,
+              actionLimit: null,
+              allActionsOptIn: true,
+              expensive: true,
+            },
+            timelineWindow: {
+              total: 120,
+              shown: 120,
+              omitted: 0,
+              startIndex: 1,
+              endIndex: 120,
+              limit: null,
+              mode: 'all',
+              expensive: true,
+            },
+            actions: Array.from({ length: 120 }, (_, index) => ({
+              index: index + 1,
+              action: 'click',
+              status: 'ok',
+              target: { input: `#control-${index + 1}` },
+              evidence: { effectSummary: `action ${index + 1}` },
+            })),
+          })),
+          stderr: '',
+        },
+      ],
+    });
+
+    expect(summary.metrics.longSessionReportBudgetCoverage).toMatchObject({
+      total: 1,
+      covered: 0,
+      rate: 0,
+      missing: [
+        expect.objectContaining({
+          name: 'report',
+          commandText: 'cdp report AABBCCDD --format json',
+          missing: expect.arrayContaining([
+            'reportBudget.estimatedJsonBytes',
+            'timelineWindow.expensive',
+            'timelineWindow.omitted',
+            'actions.window',
+          ]),
+        }),
+      ],
+    });
+    expect(summary.gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'long-session-report-budget',
+        passed: false,
+        actual: 0,
       }),
     ]));
   });

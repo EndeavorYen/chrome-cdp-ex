@@ -902,6 +902,79 @@ function benchmarkReportArtifactCoverage(steps) {
   };
 }
 
+const LONG_SESSION_REPORT_ACTIONS_MIN = 50;
+
+function reportActionHasRecoveryCriticalReceipt(action = {}) {
+  const receipt = action.receipt || {};
+  return receipt
+    && typeof receipt === 'object'
+    && (receipt.eventId || Number.isFinite(receipt.sequence))
+    && receipt.settlement
+    && typeof receipt.settlement === 'object'
+    && typeof receipt.settlement.strategy === 'string'
+    && Array.isArray(receipt.blockingSignals)
+    && Object.hasOwn(receipt, 'recoveryHint');
+}
+
+function longSessionReportMissingFields(model = {}) {
+  const missing = [];
+  const actionsTotal = Number(model.counts?.actions ?? model.timelineWindow?.total);
+  const actions = Array.isArray(model.actions) ? model.actions : [];
+  const budget = model.reportBudget || {};
+  const window = model.timelineWindow || {};
+  const estimatedBytes = Number(budget.estimatedJsonBytes);
+  const maxBytes = Number(budget.jsonBytesMax);
+  const rawActionLimit = budget.actionLimit ?? window.limit;
+  const actionLimit = rawActionLimit == null ? null : Number(rawActionLimit);
+
+  if (!Number.isFinite(maxBytes)) missing.push('reportBudget.jsonBytesMax');
+  if (!Number.isFinite(estimatedBytes) || (Number.isFinite(maxBytes) && estimatedBytes > maxBytes)) {
+    missing.push('reportBudget.estimatedJsonBytes');
+  }
+  if (!Number.isFinite(actionLimit)) missing.push('reportBudget.actionLimit');
+  if (window.expensive === true || budget.expensive === true) missing.push('timelineWindow.expensive');
+  if (!Number.isFinite(window.omitted) || window.omitted <= 0) missing.push('timelineWindow.omitted');
+  if (!Number.isFinite(window.shown) || window.shown !== actions.length) missing.push('timelineWindow.shown');
+  if (Number.isFinite(actionLimit) && actions.length > actionLimit) missing.push('actions.window');
+  if (Number.isFinite(actionsTotal) && actions.length >= actionsTotal) missing.push('actions.window');
+  if (!model.latestAction || !Number.isFinite(model.latestAction.index) || !model.latestAction.action || !model.latestAction.status) {
+    missing.push('latestAction');
+  }
+  if (!actions.some(reportActionHasRecoveryCriticalReceipt)) missing.push('actions.receipt');
+  if (typeof model.paths?.log !== 'string' || !model.paths.log.trim()) missing.push('paths.log');
+  if (typeof model.paths?.screenshotDir !== 'string' || !model.paths.screenshotDir.trim()) missing.push('paths.screenshotDir');
+  return [...new Set(missing)];
+}
+
+function benchmarkLongSessionReportBudgetCoverage(steps) {
+  const missing = [];
+  let total = 0;
+  let covered = 0;
+  for (const step of steps) {
+    const model = stepModel(step) || parseJsonOutput(step.outputText);
+    if (model?.schema !== 'chrome-cdp-ex.report.v1') continue;
+    const actionsTotal = Number(model.counts?.actions ?? model.timelineWindow?.total);
+    if (!Number.isFinite(actionsTotal) || actionsTotal < LONG_SESSION_REPORT_ACTIONS_MIN) continue;
+    total += 1;
+    const missingFields = longSessionReportMissingFields(model);
+    if (missingFields.length === 0) {
+      covered += 1;
+    } else {
+      missing.push({
+        name: step.name,
+        commandText: step.commandText,
+        missing: missingFields,
+      });
+    }
+  }
+  return {
+    total,
+    covered,
+    missing,
+    rate: total > 0 ? covered / total : null,
+  };
+}
+
 function perceptionSignalMissingFields(model = {}) {
   const missing = [];
   if (typeof model.targetPrefix !== 'string' || !model.targetPrefix.trim()) missing.push('targetPrefix');
@@ -1252,6 +1325,7 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   reportLatestActionCoverageRateMin: 1,
   reportTimelineWindowCoverageRateMin: 1,
   reportArtifactCoverageRateMin: 1,
+  longSessionReportBudgetCoverageRateMin: 1,
   perceptionSignalCoverageRateMin: 1,
   sinceActionEvidenceCoverageRateMin: 1,
   differentiatorSuccessRateMin: 1,
@@ -1598,6 +1672,13 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       operator: '>=',
       limit: limits.reportArtifactCoverageRateMin,
       recommendation: 'Report JSON must expose session log path, screenshot directory, counts, action evidence, environment, recommendation, and nextSteps so long sessions can be handed off.',
+    }),
+    gateCriterion({
+      name: 'long-session-report-budget',
+      actual: metrics.longSessionReportBudgetCoverage?.rate ?? 1,
+      operator: '>=',
+      limit: limits.longSessionReportBudgetCoverageRateMin,
+      recommendation: 'Long-session report JSON must stay within its byte budget, expose latestAction, bound the timeline window, keep recovery-critical receipts, and point to artifacts instead of dumping all history.',
     }),
     gateCriterion({
       name: 'perception-signal-coverage',
@@ -2263,6 +2344,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       reportLatestActionCoverage: benchmarkReportLatestActionCoverage(normalizedSteps),
       reportTimelineWindowCoverage: benchmarkReportTimelineWindowCoverage(normalizedSteps),
       reportArtifactCoverage: benchmarkReportArtifactCoverage(normalizedSteps),
+      longSessionReportBudgetCoverage: benchmarkLongSessionReportBudgetCoverage(normalizedSteps),
       perceptionSignalCoverage: benchmarkPerceptionSignalCoverage(normalizedSteps),
       sinceActionEvidenceCoverage: benchmarkSinceActionEvidenceCoverage(normalizedSteps),
       verificationCallsSaved: actionEvidenceSteps.length,
@@ -2319,6 +2401,7 @@ export function formatBenchmarkReport(summary) {
     `Report latestAction coverage: ${summary.metrics.reportLatestActionCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportLatestActionCoverage.rate * 100)}%`} (${summary.metrics.reportLatestActionCoverage?.covered ?? 0}/${summary.metrics.reportLatestActionCoverage?.total ?? 0})`,
     `Report timelineWindow coverage: ${summary.metrics.reportTimelineWindowCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportTimelineWindowCoverage.rate * 100)}%`} (${summary.metrics.reportTimelineWindowCoverage?.covered ?? 0}/${summary.metrics.reportTimelineWindowCoverage?.total ?? 0})`,
     `Report artifact coverage: ${summary.metrics.reportArtifactCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.reportArtifactCoverage.rate * 100)}%`} (${summary.metrics.reportArtifactCoverage?.covered ?? 0}/${summary.metrics.reportArtifactCoverage?.total ?? 0})`,
+    `Long-session report budget coverage: ${summary.metrics.longSessionReportBudgetCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.longSessionReportBudgetCoverage.rate * 100)}%`} (${summary.metrics.longSessionReportBudgetCoverage?.covered ?? 0}/${summary.metrics.longSessionReportBudgetCoverage?.total ?? 0})`,
     `Perception signal coverage: ${summary.metrics.perceptionSignalCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.perceptionSignalCoverage.rate * 100)}%`} (${summary.metrics.perceptionSignalCoverage?.covered ?? 0}/${summary.metrics.perceptionSignalCoverage?.total ?? 0})`,
     `Since-action evidence coverage: ${summary.metrics.sinceActionEvidenceCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.sinceActionEvidenceCoverage.rate * 100)}%`} (${summary.metrics.sinceActionEvidenceCoverage?.covered ?? 0}/${summary.metrics.sinceActionEvidenceCoverage?.total ?? 0})`,
     `Differentiator handoff coverage: ${summary.metrics.differentiatorHandoffCoverage?.rate == null ? 'n/a' : `${Math.round(summary.metrics.differentiatorHandoffCoverage.rate * 100)}%`} (${summary.metrics.differentiatorHandoffCoverage?.covered ?? 0}/${summary.metrics.differentiatorHandoffCoverage?.total ?? 0})`,
