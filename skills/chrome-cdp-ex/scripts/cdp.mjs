@@ -79,8 +79,11 @@ const RUNTIME_DIR = IS_WINDOWS
 try { mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 }); } catch {}
 const SOCK_PREFIX = resolve(RUNTIME_DIR, 'cdp-');
 const PAGES_CACHE = resolve(RUNTIME_DIR, 'pages.json');
+const ALIASES_CACHE = resolve(RUNTIME_DIR, 'aliases.json');
 const DAEMON_METADATA_SCHEMA = 'chrome-cdp-ex.daemon-metadata.v1';
 const ALLOW_STALE_DAEMON_FLAG = '--allow-stale-daemon';
+const DEFAULT_CDP_HOST = '127.0.0.1';
+const DEFAULT_SPAWN_READY_TIMEOUT_MS = 5000;
 
 class RingBuffer {
   constructor(capacity) { this.buf = []; this.capacity = capacity; this.seq = 0; }
@@ -96,11 +99,175 @@ function sockPath(targetId) {
   return `${SOCK_PREFIX}${targetId}.sock`;
 }
 
+function emptyAliasStore() {
+  return {
+    schema: 'chrome-cdp-ex.aliases.v1',
+    current: null,
+    aliases: {},
+  };
+}
+
+function normalizeAliasName(name) {
+  const value = String(name || '').trim();
+  if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(value)) {
+    throw new Error('alias name must start with a letter and contain only letters, numbers, dot, dash, or underscore');
+  }
+  return value;
+}
+
+function normalizeAliasStore(raw) {
+  const store = raw && typeof raw === 'object' ? raw : {};
+  const aliases = {};
+  for (const [name, alias] of Object.entries(store.aliases || {})) {
+    if (!alias?.targetId) continue;
+    aliases[name] = {
+      name,
+      targetId: String(alias.targetId),
+      targetPrefix: String(alias.targetPrefix || alias.targetId).slice(0, 8),
+      port: alias.port == null || alias.port === '' ? null : Number(alias.port),
+      host: alias.host || null,
+      url: alias.url || '',
+      title: alias.title || '',
+      createdAt: alias.createdAt || null,
+      updatedAt: alias.updatedAt || null,
+    };
+  }
+  const current = store.current && aliases[store.current] ? store.current : null;
+  return { ...emptyAliasStore(), aliases, current };
+}
+
+function readTargetAliases({ path = ALIASES_CACHE, reader = readFileSync } = {}) {
+  try {
+    return normalizeAliasStore(JSON.parse(reader(path, 'utf8')));
+  } catch {
+    return emptyAliasStore();
+  }
+}
+
+function writeTargetAliases(store, { path = ALIASES_CACHE, writer = writeFileSync } = {}) {
+  const normalized = normalizeAliasStore(store);
+  writer(path, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
+  return normalized;
+}
+
+function upsertTargetAlias(store = emptyAliasStore(), record = {}) {
+  const normalized = normalizeAliasStore(store);
+  const name = normalizeAliasName(record.name);
+  if (!record.targetId) throw new Error('alias targetId is required');
+  const now = new Date(record.now || Date.now()).toISOString();
+  const previous = normalized.aliases[name] || {};
+  normalized.aliases[name] = {
+    name,
+    targetId: String(record.targetId),
+    targetPrefix: String(record.targetId).slice(0, 8),
+    port: record.port == null || record.port === '' ? null : Number(record.port),
+    host: record.host || null,
+    url: record.url || previous.url || '',
+    title: record.title || previous.title || '',
+    createdAt: previous.createdAt || now,
+    updatedAt: now,
+  };
+  normalized.current = name;
+  return normalized;
+}
+
+function removeTargetAlias(store = emptyAliasStore(), name) {
+  const normalized = normalizeAliasStore(store);
+  const aliasName = normalizeAliasName(name);
+  delete normalized.aliases[aliasName];
+  if (normalized.current === aliasName) normalized.current = Object.keys(normalized.aliases)[0] || null;
+  return normalized;
+}
+
+function resolveTargetAlias(name, store = readTargetAliases()) {
+  const key = String(name || '').trim();
+  if (!key) return null;
+  const normalized = normalizeAliasStore(store);
+  if (key === 'current' && normalized.current) return normalized.aliases[normalized.current] || null;
+  return normalized.aliases[key] || null;
+}
+
+function aliasesForTarget(targetId, aliases = {}) {
+  return Object.values(aliases || {})
+    .filter(alias => alias?.targetId === targetId)
+    .map(alias => alias.name)
+    .sort();
+}
+
+function aliasEnv(alias, baseEnv = process.env) {
+  if (!alias?.port) return baseEnv;
+  return {
+    ...baseEnv,
+    CDP_PORT: String(alias.port),
+    ...(alias.host ? { CDP_HOST: alias.host } : {}),
+  };
+}
+
+function parseAliasCommandArgs(args = [], mode = 'use') {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const parsed = {
+    mode,
+    format: fopts.format,
+    name: null,
+    targetId: null,
+    port: null,
+    host: null,
+  };
+  const positional = [];
+  for (let i = 0; i < fopts.args.length; i++) {
+    const token = fopts.args[i];
+    if (token === '--name' || token === '-n') parsed.name = fopts.args[++i] || null;
+    else if (token === '--target' || token === '-t') parsed.targetId = fopts.args[++i] || null;
+    else if (token === '--port' || token === '-p') parsed.port = Number(fopts.args[++i]);
+    else if (token === '--host') parsed.host = fopts.args[++i] || null;
+    else if (String(token).startsWith('--')) throw new Error(`${mode}: unknown argument ${token}`);
+    else positional.push(token);
+  }
+  if (!parsed.targetId && positional[0]) {
+    const slash = String(positional[0]).match(/^(\d+)\/(.+)$/);
+    if (slash) {
+      parsed.port = Number(slash[1]);
+      parsed.targetId = slash[2];
+    } else {
+      parsed.targetId = positional[0];
+    }
+  }
+  if (!parsed.name && mode === 'use') parsed.name = positional[1] || 'current';
+  if (!parsed.name) throw new Error(`${mode}: --name is required`);
+  if (!parsed.targetId) throw new Error(`${mode}: --target or target id is required`);
+  if (parsed.port != null && (!Number.isInteger(parsed.port) || parsed.port <= 0 || parsed.port > 65535)) {
+    throw new Error(`${mode}: --port must be a TCP port`);
+  }
+  return parsed;
+}
+
+function formatAliasRecord(alias, { format = 'text' } = {}) {
+  if (format === 'json') return formatJson({ schema: 'chrome-cdp-ex.alias.v1', alias });
+  const parts = [`Alias @${alias.name}: ${alias.targetPrefix}`];
+  if (alias.port) parts.push(`CDP_PORT=${alias.port}`);
+  if (alias.url) parts.push(alias.url);
+  return parts.join('  ');
+}
+
+function formatCurrentAlias(store, { format = 'text' } = {}) {
+  const normalized = normalizeAliasStore(store);
+  const current = normalized.current ? normalized.aliases[normalized.current] : null;
+  if (format === 'json') {
+    return formatJson({
+      schema: 'chrome-cdp-ex.alias-current.v1',
+      current: current || null,
+      aliases: Object.values(normalized.aliases),
+    });
+  }
+  if (!current) return 'No current alias. Run: cdp use <target> --name app';
+  return formatAliasRecord(current);
+}
+
 // Browser metadata from /json/version — set when connecting via CDP_PORT
 let _browserInfo = null;
 
 async function getWsUrl() {
-  const host = process.env.CDP_HOST || '127.0.0.1';
+  const host = process.env.CDP_HOST || DEFAULT_CDP_HOST;
 
   // CDP_PORT: explicit port (e.g. Electron with --remote-debugging-port=9222)
   if (process.env.CDP_PORT) {
@@ -512,7 +679,8 @@ async function getPages(cdp) {
     && !t.url.startsWith('devtools://'));
 }
 
-function formatPageList(pages, browserInfo = null) {
+function formatPageList(pages, browserInfo = null, opts = {}) {
+  const aliases = opts.aliases || {};
   const lines = [];
   if (browserInfo) {
     const ua = browserInfo['User-Agent'] || '';
@@ -525,7 +693,9 @@ function formatPageList(pages, browserInfo = null) {
     const isBlank = !p.url || p.url === 'about:blank';
     const rawTitle = isBlank ? '(blank tab)' : (p.title || '');
     const title = rawTitle.substring(0, 54).padEnd(54);
-    return `${id}  ${title}  ${p.url || ''}`;
+    const aliasNames = aliasesForTarget(p.targetId, aliases);
+    const aliasSuffix = aliasNames.length ? `  ${aliasNames.map(name => `@${name}`).join(' ')}` : '';
+    return `${id}  ${title}  ${p.url || ''}${aliasSuffix}`;
   }));
   return lines.join('\n');
 }
@@ -541,7 +711,8 @@ function pageListBrowserModel(browserInfo = null) {
   };
 }
 
-function buildPageListModel(pages = [], browserInfo = null) {
+function buildPageListModel(pages = [], browserInfo = null, opts = {}) {
+  const aliases = opts.aliases || {};
   const prefixLength = getDisplayPrefixLength(pages.map(p => p.targetId || ''));
   const modelPages = pages.map((p, index) => {
     const isBlank = !p.url || p.url === 'about:blank';
@@ -553,6 +724,7 @@ function buildPageListModel(pages = [], browserInfo = null) {
       title: isBlank ? '(blank tab)' : (p.title || ''),
       url: p.url || '',
       isBlank,
+      aliases: aliasesForTarget(p.targetId || '', aliases),
     };
   });
   const recommendedPage = modelPages.find(page => !page.isBlank) || modelPages[0];
@@ -566,14 +738,15 @@ function buildPageListModel(pages = [], browserInfo = null) {
     prefixLength,
     browser: pageListBrowserModel(browserInfo),
     pages: modelPages,
+    aliases: Object.values(aliases).map(alias => ({ ...alias })),
     recommendation,
     nextSteps,
   };
 }
 
-function formatPageListOutput(pages, browserInfo = null, { format = 'text' } = {}) {
-  if (format === 'json') return formatJson(buildPageListModel(pages, browserInfo));
-  return formatPageList(pages, browserInfo);
+function formatPageListOutput(pages, browserInfo = null, { format = 'text', aliases = {} } = {}) {
+  if (format === 'json') return formatJson(buildPageListModel(pages, browserInfo, { aliases }));
+  return formatPageList(pages, browserInfo, { aliases });
 }
 
 function shouldShowAxNode(node, compact = false, parentNode = null) {
@@ -2429,6 +2602,266 @@ function formatActionResultOutput(result, { format = 'text', dispatchText = '', 
   const text = dispatchText ? `${dispatchText}\n---\n${formatActionText(result)}` : formatActionText(result);
   if (!timeoutError) return text;
   return `${text}\n(success but observation timed out after action dispatch: ${timeoutError.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
+}
+
+function parseVerifyClickArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const tokens = fopts.args;
+  const opts = {
+    selector: null,
+    expectRequest: null,
+    expectStatus: null,
+    expectText: null,
+    noConsoleErrors: false,
+    evidence: 'concise',
+    format: fopts.format,
+  };
+  const positional = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--expect-request') opts.expectRequest = tokens[++i] || '';
+    else if (token === '--expect-status') {
+      const status = Number(tokens[++i]);
+      if (!Number.isInteger(status) || status < 100 || status > 599) throw new Error('verify-click: --expect-status requires an HTTP status code');
+      opts.expectStatus = status;
+    } else if (token === '--expect-text') opts.expectText = tokens[++i] || '';
+    else if (token === '--no-console-errors') opts.noConsoleErrors = true;
+    else if (token === '--evidence') {
+      const evidence = tokens[++i] || '';
+      if (!['concise', 'full'].includes(evidence)) throw new Error('verify-click: --evidence must be concise or full');
+      opts.evidence = evidence;
+    } else if (String(token).startsWith('--')) {
+      throw new Error(`verify-click: unknown argument ${token}`);
+    } else {
+      positional.push(token);
+    }
+  }
+  if (positional.length !== 1) throw new Error('verify-click requires exactly one selector or @ref');
+  opts.selector = positional[0];
+  return opts;
+}
+
+function normalizeRequestExpectation(pattern = '') {
+  const text = String(pattern || '').trim();
+  const match = text.match(/^([A-Z]+)\s+(.+)$/);
+  return match
+    ? { method: match[1], pattern: match[2].trim(), display: `${match[1]} ${match[2].trim()}` }
+    : { method: null, pattern: text, display: text };
+}
+
+function requestUrlPieces(url = '') {
+  try {
+    const parsed = new URL(url);
+    return {
+      full: parsed.href,
+      path: `${parsed.pathname}${parsed.search || ''}`,
+    };
+  } catch {
+    return { full: String(url || ''), path: String(url || '') };
+  }
+}
+
+function wildcardMatch(value = '', pattern = '') {
+  const escaped = String(pattern).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+  return new RegExp(`^${escaped}$`).test(String(value || ''));
+}
+
+function findExpectedNetworkRequest(entries = [], expectation = '') {
+  const expected = normalizeRequestExpectation(expectation);
+  return (entries || []).find(entry => {
+    if (expected.method && String(entry.method || '').toUpperCase() !== expected.method) return false;
+    const pieces = requestUrlPieces(entry.url || '');
+    return pieces.path.includes(expected.pattern)
+      || pieces.full.includes(expected.pattern)
+      || wildcardMatch(pieces.path, expected.pattern)
+      || wildcardMatch(pieces.full, expected.pattern);
+  }) || null;
+}
+
+function buildSemanticInteractionModel(actionResult = {}, opts = {}, observed = {}) {
+  const networkEntries = actionResult.effects?.networkDelta?.entries || actionResult.effects?.network || [];
+  const consoleDelta = normalizeConsoleDelta(actionResult.effects?.consoleDelta || {});
+  const exceptionDelta = normalizeExceptionDelta(actionResult.effects?.exceptionDelta || {});
+  const assertions = [];
+  let matchedRequest = null;
+
+  if (opts.expectRequest) {
+    matchedRequest = findExpectedNetworkRequest(networkEntries, opts.expectRequest);
+    const expected = normalizeRequestExpectation(opts.expectRequest);
+    const statusOk = opts.expectStatus == null || Number(matchedRequest?.status) === Number(opts.expectStatus);
+    assertions.push({
+      kind: 'request',
+      expected: expected.display,
+      expectedStatus: opts.expectStatus,
+      status: matchedRequest && statusOk ? 'pass' : 'fail',
+      matched: matchedRequest ? {
+        method: matchedRequest.method || null,
+        url: matchedRequest.url || null,
+        status: matchedRequest.status ?? null,
+        duration: matchedRequest.duration ?? null,
+      } : null,
+      message: matchedRequest
+        ? `${expected.display} -> ${matchedRequest.status ?? 'unknown'} ${statusOk ? 'matched' : 'status-mismatch'}`
+        : `${expected.display} not observed`,
+    });
+  }
+
+  if (opts.expectText) {
+    const matched = observed.textMatched === true;
+    assertions.push({
+      kind: 'text',
+      expected: opts.expectText,
+      status: matched ? 'pass' : 'fail',
+      message: matched ? `"${opts.expectText}" matched` : `"${opts.expectText}" not found`,
+    });
+  }
+
+  if (opts.noConsoleErrors) {
+    const errors = Number(consoleDelta.errors || 0) + Number(exceptionDelta.count || 0);
+    assertions.push({
+      kind: 'console',
+      expected: 'no console errors',
+      status: errors === 0 ? 'pass' : 'fail',
+      errors,
+      warnings: Number(consoleDelta.warnings || 0),
+      message: errors === 0 ? 'clean' : `${errors} error${errors === 1 ? '' : 's'}`,
+    });
+  }
+
+  const dispatchOk = actionResult.dispatch?.ok !== false;
+  const verdict = dispatchOk && assertions.every(assertion => assertion.status === 'pass') ? 'pass' : 'fail';
+  return {
+    schema: 'chrome-cdp-ex.semantic-interaction.v1',
+    action: actionResult.action || 'click',
+    target: actionResult.target?.input || actionResult.target?.label || opts.selector || null,
+    dispatch: actionResult.dispatch || null,
+    settlement: buildSettlementReceipt(actionResult),
+    outcome: actionResult.outcome?.status || buildActionOutcome(actionResult).status,
+    verdict,
+    assertions,
+    matchedRequest,
+    actionEvidence: opts.evidence === 'full' ? actionResult : null,
+  };
+}
+
+function formatSemanticInteractionResult(model) {
+  const lines = [
+    `Action: ${model.action}${model.target ? ` ${model.target}` : ''}`,
+    `Dispatch: ${model.dispatch?.ok === false ? 'failed' : 'ok'}`,
+  ];
+  for (const assertion of model.assertions || []) {
+    if (assertion.kind === 'request') {
+      lines.push(`Request: ${assertion.message}`);
+    } else if (assertion.kind === 'text') {
+      lines.push(`Text: ${assertion.message}`);
+    } else if (assertion.kind === 'console') {
+      lines.push(`Console: ${assertion.message}`);
+    } else {
+      lines.push(`${assertion.kind}: ${assertion.message || assertion.status}`);
+    }
+  }
+  lines.push(`Verdict: ${model.verdict}`);
+  return lines.join('\n');
+}
+
+function parseQaArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const opts = {
+    desktop: '1440x900',
+    mobile: '390x844',
+    click: null,
+    expectRequest: null,
+    expectStatus: null,
+    expectText: null,
+    noConsoleErrors: false,
+    format: fopts.format,
+  };
+  for (let i = 0; i < fopts.args.length; i++) {
+    const token = fopts.args[i];
+    if (token === '--desktop') opts.desktop = fopts.args[++i] || opts.desktop;
+    else if (token === '--mobile') opts.mobile = fopts.args[++i] || opts.mobile;
+    else if (token === '--click') opts.click = fopts.args[++i] || '';
+    else if (token === '--expect-request') opts.expectRequest = fopts.args[++i] || '';
+    else if (token === '--expect-status') {
+      const status = Number(fopts.args[++i]);
+      if (!Number.isInteger(status) || status < 100 || status > 599) throw new Error('qa: --expect-status requires an HTTP status code');
+      opts.expectStatus = status;
+    } else if (token === '--expect-text') opts.expectText = fopts.args[++i] || '';
+    else if (token === '--no-console-errors') opts.noConsoleErrors = true;
+    else throw new Error(`qa: unknown argument ${token}`);
+  }
+  return opts;
+}
+
+function buildQaPageModel({ targetId = '', page = {}, console: consoleHealth = {}, perception = null, screenshots = {}, action = null, assertions = [], errors = [] } = {}) {
+  const checks = {
+    page: page?.url || page?.title ? 'pass' : 'fail',
+    console: Number(consoleHealth.errors || 0) === 0 && Number(consoleHealth.exceptions || 0) === 0 ? 'pass' : 'fail',
+    desktopScreenshot: screenshots.desktop?.path ? 'pass' : 'skip',
+    mobileScreenshot: screenshots.mobile?.path ? 'pass' : 'skip',
+    assertions: assertions.length ? (assertions.every(assertion => assertion.status === 'pass') ? 'pass' : 'fail') : 'skip',
+    action: action ? action.verdict : 'skip',
+  };
+  if (errors.length) checks.errors = 'fail';
+  const verdict = Object.values(checks).some(status => status === 'fail') ? 'fail' : 'pass';
+  return {
+    schema: 'chrome-cdp-ex.qa-page.v1',
+    targetId,
+    targetPrefix: targetPrefixForDisplay(targetId),
+    page,
+    console: consoleHealth,
+    perception,
+    screenshots,
+    action,
+    assertions,
+    errors,
+    checks,
+    verdict,
+    nextSteps: [
+      `cdp report ${targetPrefixForDisplay(targetId)} --format json`,
+      `cdp perceive ${targetPrefixForDisplay(targetId)} -C -d 8`,
+    ],
+  };
+}
+
+function formatQaPageReport(model) {
+  const lines = [
+    `QA page: ${model.page?.title || '(untitled)'}`,
+    `URL: ${model.page?.url || '(unknown)'}`,
+    `Page: ${model.checks.page}`,
+    `Console: ${model.checks.console}${model.console ? ` (${model.console.errors || 0} errors, ${model.console.warnings || 0} warnings, ${model.console.exceptions || 0} exceptions)` : ''}`,
+  ];
+  if (model.screenshots?.desktop?.path) lines.push(`Desktop screenshot: ${model.screenshots.desktop.path}`);
+  if (model.screenshots?.mobile?.path) lines.push(`Mobile screenshot: ${model.screenshots.mobile.path}`);
+  if (model.action) {
+    lines.push(`Action: ${model.action.verdict}`);
+    for (const assertion of model.action.assertions || []) {
+      lines.push(`  ${assertion.kind}: ${assertion.status} — ${assertion.message || assertion.expected}`);
+    }
+  }
+  if (model.assertions?.length) {
+    lines.push('Assertions:');
+    for (const assertion of model.assertions) {
+      lines.push(`  ${assertion.kind}: ${assertion.status} — ${assertion.message || assertion.expected}`);
+    }
+  }
+  for (const error of model.errors || []) lines.push(`Error: ${error}`);
+  lines.push(`Verdict: ${model.verdict}`);
+  return lines.join('\n');
+}
+
+async function pageContainsText(cdp, sid, text) {
+  if (!text) return false;
+  const raw = await evalStr(cdp, sid, `(function() {
+    const needle = ${JSON.stringify(String(text))};
+    const body = document.body ? (document.body.innerText || document.body.textContent || '') : '';
+    return JSON.stringify({ matched: body.includes(needle) });
+  })()`);
+  try {
+    return JSON.parse(raw).matched === true;
+  } catch {
+    return false;
+  }
 }
 
 async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --since-action if more evidence is needed', enrichActionResult = null, onActionResult = null, format = 'text' }) {
@@ -8791,6 +9224,90 @@ function checkBrowserPermission({ daemons = null, tabs = null } = {}) {
   };
 }
 
+function detectRuntimeEnvironment({ platform = process.platform, env = process.env, fs = { existsSync } } = {}) {
+  const displayAvailable = Boolean(env?.DISPLAY || env?.WAYLAND_DISPLAY);
+  const remoteSignals = [
+    env?.SSH_CONNECTION,
+    env?.SSH_CLIENT,
+    env?.REMOTE_CONTAINERS,
+    env?.CODESPACES,
+    env?.CI,
+    env?.CONTAINER,
+  ].filter(Boolean);
+  const headlessLikely = platform === 'linux' && !displayAvailable;
+  const browserCandidates = ['chrome', 'edge', 'brave']
+    .map(browser => ({ browser, executable: detectBrowserPath(browser, platform, fs, env) }))
+    .filter(candidate => candidate.executable);
+  const preferred = browserCandidates.find(candidate => candidate.browser === 'chrome') || browserCandidates[0] || null;
+  return {
+    platform,
+    displayAvailable,
+    remoteLikely: remoteSignals.length > 0,
+    headlessLikely,
+    sandboxMayNeedNoSandbox: platform === 'linux' && (headlessLikely || Boolean(env?.CI) || Boolean(env?.CONTAINER)),
+    browserCandidates,
+    preferredBrowser: preferred,
+  };
+}
+
+function environmentRecoveryCommand(envInfo) {
+  const candidate = envInfo.preferredBrowser;
+  if (!candidate) return null;
+  const args = ['cdp spawn-debug-browser', candidate.browser];
+  if (envInfo.headlessLikely) args.push('--headless');
+  if (envInfo.sandboxMayNeedNoSandbox) args.push('--no-sandbox');
+  args.push('--port', '9222');
+  args.push('--exe', candidate.executable);
+  args.push('--url', 'https://example.com');
+  return args.join(' ');
+}
+
+function checkRuntimeEnvironment(opts = {}) {
+  const info = detectRuntimeEnvironment(opts);
+  const command = environmentRecoveryCommand(info);
+  if (info.headlessLikely || info.remoteLikely) {
+    const traits = [
+      info.platform,
+      info.remoteLikely ? 'remote/container-like' : null,
+      info.headlessLikely ? 'headless/no DISPLAY' : null,
+      info.preferredBrowser ? `${info.preferredBrowser.browser} at ${info.preferredBrowser.executable}` : 'no browser executable detected',
+    ].filter(Boolean).join(', ');
+    return {
+      status: info.preferredBrowser ? 'WARN' : 'FAIL',
+      label: 'Environment',
+      detail: `detected ${traits}`,
+      hint: command || 'Install Chrome/Chromium or pass --exe to spawn-debug-browser.',
+      environment: info,
+      recovery: command ? {
+        strategy: 'spawn-headless-debug-browser',
+        command,
+        requiresUserAction: true,
+        consentRequired: true,
+      } : null,
+    };
+  }
+  return {
+    status: 'OK',
+    label: 'Environment',
+    detail: `${info.platform}${info.displayAvailable ? ', display available' : ''}`,
+    environment: info,
+    recovery: null,
+  };
+}
+
+function reconcileRuntimeEnvironmentCheck(environment, cdp) {
+  if (cdp?.status !== 'OK' || environment?.label !== 'Environment' || environment.status === 'OK') {
+    return environment;
+  }
+  return {
+    ...environment,
+    status: 'OK',
+    detail: `${environment.detail}; CDP reachable`,
+    hint: null,
+    recovery: null,
+  };
+}
+
 function doctorWizardSummary(checks) {
   const wizard = doctorWizardModel(checks);
   return [
@@ -8857,6 +9374,7 @@ function doctorWarningCommands(checks) {
 function doctorRecommendationModel(checks) {
   const node = checks.find(c => c.label === 'Node');
   const cdp = checks.find(c => c.label === 'CDP');
+  const environment = checks.find(c => c.label === 'Environment');
   const daemon = checks.find(c => c.label === 'Daemons');
   const tabs = checks.find(c => c.label === 'Tabs');
   const permission = checks.find(c => c.label === 'Permission');
@@ -8887,6 +9405,18 @@ function doctorRecommendationModel(checks) {
     };
   }
   if (cdp?.status === 'FAIL') {
+    if (environment?.recovery?.command) {
+      return {
+        ...base,
+        stage: 'browser-cdp',
+        run: environment.recovery.command,
+        ask: 'Approve launching an isolated local debug browser profile, then run: cdp list.',
+        after: 'cdp list',
+        requiresUserAction: true,
+        consentRequired: true,
+        reason: `${cdp.detail || 'Chrome is not reachable.'} Environment looks ${environment.detail || 'headless/remote'}.`,
+      };
+    }
     return {
       ...base,
       stage: 'browser-cdp',
@@ -8959,6 +9489,7 @@ function doctorNextSteps(checks) {
   const failures = checks.filter(c => c.status === 'FAIL');
   const cdp = checks.find(c => c.label === 'CDP');
   const node = checks.find(c => c.label === 'Node');
+  const environment = checks.find(c => c.label === 'Environment');
   const fd = checks.find(c => c.label === 'FD limit');
   const daemon = checks.find(c => c.label === 'Daemons');
   const tabs = checks.find(c => c.label === 'Tabs');
@@ -8970,9 +9501,15 @@ function doctorNextSteps(checks) {
     return lines;
   }
   if (cdp?.status === 'FAIL') {
-    lines.push('  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
-    lines.push('  2. Isolated profile: cdp spawn-debug-browser edge --port 9222 --url https://example.com');
-    lines.push('  3. Then run: cdp list');
+    if (environment?.recovery?.command) {
+      lines.push(`  1. ${environment.recovery.command}`);
+      lines.push('  2. Then run: cdp list');
+      lines.push('  3. Existing browser alternative: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
+    } else {
+      lines.push('  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
+      lines.push('  2. Isolated profile: cdp spawn-debug-browser edge --port 9222 --url https://example.com');
+      lines.push('  3. Then run: cdp list');
+    }
     return lines;
   }
   if (cdp?.status === 'WARN') {
@@ -9073,7 +9610,9 @@ async function runDoctorChecks(opts = {}) {
   checks.push(checkSkillSymlink({ home: opts.home, fs }));
   checks.push(checkDaemonSockets({ list: opts.listDaemons }));
   checks.push(checkFdLimit({ limit: opts.fdLimit, platform: opts.platform }));
+  checks.push(checkRuntimeEnvironment({ platform: opts.platform, env: opts.env, fs }));
   const cdp = await checkCdpReachability({ env: opts.env, fetcher: opts.fetcher, host: opts.host });
+  checks[4] = reconcileRuntimeEnvironmentCheck(checks[4], cdp);
   checks.push(cdp);
   const tabs = await checkBrowserTargets({ cdp, env: opts.env, fetcher: opts.fetcher, host: opts.host });
   checks.push(tabs);
@@ -9122,15 +9661,33 @@ const DEFAULT_BROWSER_PATHS = {
 };
 
 function parseSpawnDebugBrowserArgs(args, env = process.env) {
-  const opts = { browser: (env && env.CDP_DEBUG_BROWSER) || 'edge', port: 9222, url: null, profileDir: null, executable: null };
+  const opts = {
+    browser: (env && env.CDP_DEBUG_BROWSER) || 'edge',
+    port: 9222,
+    host: DEFAULT_CDP_HOST,
+    url: null,
+    profileDir: null,
+    executable: null,
+    headless: false,
+    noSandbox: false,
+    disableGpu: false,
+    waitMs: DEFAULT_SPAWN_READY_TIMEOUT_MS,
+  };
   const tokens = (args || []).filter(a => a !== undefined && a !== null);
   for (let i = 0; i < tokens.length; i++) {
     const a = tokens[i];
     if (a === '--port' || a === '-p') opts.port = parseInt(tokens[++i]) || 9222;
+    else if (a === '--host') opts.host = tokens[++i] || opts.host;
     else if (a === '--url' || a === '-u') opts.url = tokens[++i];
     else if (a === '--profile-dir') opts.profileDir = tokens[++i];
     else if (a === '--browser') opts.browser = (tokens[++i] || opts.browser).toLowerCase();
     else if (a === '--exe' || a === '--executable') opts.executable = tokens[++i];
+    else if (a === '--headless') opts.headless = 'new';
+    else if (String(a).startsWith('--headless=')) opts.headless = String(a).slice('--headless='.length) || 'new';
+    else if (a === '--no-sandbox') opts.noSandbox = true;
+    else if (a === '--disable-gpu') opts.disableGpu = true;
+    else if (a === '--wait-ms') opts.waitMs = parseNonNegativeInteger(tokens[++i], 'spawn-debug-browser: --wait-ms');
+    else if (String(a).startsWith('--wait-ms=')) opts.waitMs = parseNonNegativeInteger(String(a).slice('--wait-ms='.length), 'spawn-debug-browser: --wait-ms');
     else if (['edge','chrome','brave','google-chrome','msedge','chromium'].includes(a.toLowerCase())) {
       const norm = a.toLowerCase();
       if (norm === 'msedge') opts.browser = 'edge';
@@ -9182,26 +9739,128 @@ function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { ex
     throw new Error(`spawn-debug-browser: cannot find ${opts.browser} executable. Tried: ${tried}. Use --exe /path/to/browser, set CDP_DEBUG_BROWSER, or install it on PATH.`);
   }
   const args = [
+    `--remote-debugging-address=${opts.host || DEFAULT_CDP_HOST}`,
     `--remote-debugging-port=${opts.port}`,
     `--user-data-dir=${opts.profileDir}`,
     '--no-first-run',
     '--no-default-browser-check',
   ];
+  if (opts.headless) args.push(`--headless=${opts.headless === true ? 'new' : opts.headless}`);
+  if (opts.noSandbox) args.push('--no-sandbox');
+  if (opts.disableGpu) args.push('--disable-gpu');
   if (opts.url) args.push(opts.url);
-  return { exe, args, profileDir: opts.profileDir, port: opts.port, url: opts.url, browser: opts.browser };
+  return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs };
+}
+
+function captureSpawnOutput(child, maxBytes = 4096) {
+  const output = { stdout: '', stderr: '' };
+  for (const key of ['stdout', 'stderr']) {
+    const stream = child?.[key];
+    if (!stream?.on) continue;
+    try { stream.setEncoding?.('utf8'); } catch {}
+    stream.on('data', chunk => {
+      output[key] = (output[key] + String(chunk)).slice(-maxBytes);
+    });
+  }
+  return output;
+}
+
+async function waitForSpawnedCdp({ port, host = DEFAULT_CDP_HOST, timeoutMs = DEFAULT_SPAWN_READY_TIMEOUT_MS, child = null, fetcher = fetch, output = null } = {}) {
+  const timeout = Math.min(Math.max(Number(timeoutMs) || DEFAULT_SPAWN_READY_TIMEOUT_MS, 0), 120000);
+  const deadline = Date.now() + timeout;
+  let exited = false;
+  let exitCode = null;
+  let signal = null;
+  let lastError = null;
+  if (child?.once) {
+    child.once('exit', (code, sig) => {
+      exited = true;
+      exitCode = code;
+      signal = sig || null;
+    });
+  }
+  while (Date.now() <= deadline) {
+    if (exited) {
+      return {
+        ok: false,
+        exited: true,
+        exitCode,
+        signal,
+        stdout: output?.stdout || '',
+        stderr: output?.stderr || '',
+      };
+    }
+    try {
+      const res = await fetcher(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(500) });
+      if (res.ok) {
+        const info = await res.json().catch(() => ({}));
+        return {
+          ok: true,
+          port,
+          host,
+          product: info.Browser || info.product || null,
+          webSocketDebuggerUrl: info.webSocketDebuggerUrl || null,
+        };
+      }
+      lastError = `HTTP ${res.status}`;
+    } catch (e) {
+      lastError = e.message || String(e);
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await sleep(Math.min(100, remainingMs));
+  }
+  return {
+    ok: false,
+    timeout: true,
+    port,
+    host,
+    timeoutMs: timeout,
+    error: lastError,
+    stdout: output?.stdout || '',
+    stderr: output?.stderr || '',
+  };
+}
+
+function formatSpawnDebugBrowserReadinessFailure(plan, readiness) {
+  const lines = [];
+  if (readiness?.exited) {
+    lines.push(`spawn-debug-browser: ${plan.browser} exited early before CDP became reachable (exit ${readiness.exitCode ?? 'unknown'}${readiness.signal ? `, signal ${readiness.signal}` : ''}).`);
+  } else {
+    lines.push(`spawn-debug-browser: CDP was not reachable on ${plan.host}:${plan.port} within ${formatDuration(readiness?.timeoutMs || plan.waitMs)}.`);
+  }
+  if (readiness?.stderr) lines.push(`stderr: ${readiness.stderr.trim()}`);
+  if (readiness?.stdout) lines.push(`stdout: ${readiness.stdout.trim()}`);
+  lines.push(`Try: cdp spawn-debug-browser ${plan.browser} --headless --no-sandbox --port ${plan.port} --exe ${plan.exe}${plan.url ? ` --url ${plan.url}` : ''}`);
+  return lines.join('\n');
 }
 
 async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   const platform = deps.platform || process.platform;
   const fs = deps.fs || { existsSync, mkdirSync };
   const launcher = deps.spawn || spawn;
+  const waitForCdp = deps.waitForSpawnedCdp || waitForSpawnedCdp;
   const opts = parseSpawnDebugBrowserArgs(args, env);
   const plan = buildSpawnDebugBrowserPlan(opts, platform, fs, env);
   try { fs.mkdirSync(plan.profileDir, { recursive: true }); } catch {}
-  const child = launcher(plan.exe, plan.args, { detached: true, stdio: 'ignore' });
+  const child = launcher(plan.exe, plan.args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const output = captureSpawnOutput(child);
+  const readiness = await waitForCdp({
+    port: plan.port,
+    host: plan.host,
+    timeoutMs: plan.waitMs,
+    child,
+    output,
+  });
+  if (!readiness.ok) {
+    throw new Error(formatSpawnDebugBrowserReadinessFailure(plan, readiness));
+  }
+  child.stdout?.unref?.();
+  child.stderr?.unref?.();
   child.unref?.();
   const lines = [];
   lines.push(`Spawned ${plan.browser} debug profile on CDP_PORT=${plan.port} (pid ${child.pid || '?'})`);
+  lines.push(`  CDP ready:  ${readiness.product || `${plan.host}:${plan.port}`}`);
   lines.push(`  Executable: ${plan.exe}`);
   lines.push(`  Profile:    ${plan.profileDir}`);
   if (plan.url) lines.push(`  URL:        ${plan.url}`);
@@ -9701,7 +10360,7 @@ async function runDaemon(targetId) {
     await waitForSettle(cdp, sessionId);
     return perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {}, refState);
   }
-  async function actionFeedback(action, actionDispatch, target = {}, feedbackPolicy = 'settle-diff', observe = null, format = 'text') {
+  async function actionFeedback(action, actionDispatch, target = {}, feedbackPolicy = 'settle-diff', observe = null, format = 'text', captureActionResult = null) {
     const dispatch = typeof actionDispatch === 'function' ? actionDispatch : async () => actionDispatch;
     const actionTarget = target && typeof target === 'object'
       ? { ...target, targetId }
@@ -9727,7 +10386,10 @@ async function runDaemon(targetId) {
         { consoleBuf, exceptionBuf, netReqBuf },
         observationBaseline
       )),
-      onActionResult: (actionResult) => appendSessionActionLog(session, actionResult, { ts: session.lastAction.ts }),
+      onActionResult: (actionResult) => {
+        appendSessionActionLog(session, actionResult, { ts: session.lastAction.ts });
+        captureActionResult?.(actionResult);
+      },
       format,
     });
   }
@@ -9874,6 +10536,91 @@ async function runDaemon(targetId) {
           result = formatSessionReport(session, { format: fopts.format, lastActions: ropts.lastActions });
           break;
         }
+        case 'qa': case 'qa-page': {
+          const qopts = parseQaArgs(args);
+          const errors = [];
+          const page = await pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) });
+          const consoleHealth = {
+            errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
+            warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+            exceptions: exceptionBuf.all().length,
+          };
+          const screenshots = {};
+          for (const [kind, size] of [['desktop', qopts.desktop], ['mobile', qopts.mobile]]) {
+            if (!size) continue;
+            try {
+              await viewportStr(cdp, sessionId, size);
+              ensureSessionScreenshotDir(session);
+              const path = nextSessionScreenshotPath(session, kind);
+              const shot = await shotStr(cdp, sessionId, path, targetId, { quiet: true });
+              appendSessionScreenshot(session, { kind: `qa-${kind}`, path: shot.split('\n')[0], note: size });
+              screenshots[kind] = { viewport: size, path: shot.split('\n')[0] };
+            } catch (e) {
+              errors.push(`${kind} screenshot: ${e.message}`);
+            }
+          }
+          let perception = null;
+          try {
+            const text = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, { cursorInteractive: true, maxDepth: 4, targetPrefix: targetPrefixForDisplay(targetId) }, refState);
+            perception = { captured: true, summary: text.split('\n').slice(0, 6).join('\n') };
+          } catch (e) {
+            perception = { captured: false, error: e.message };
+            errors.push(`perceive: ${e.message}`);
+          }
+          let action = null;
+          const assertions = [];
+          if (qopts.click) {
+            let captured = null;
+            await actionFeedback(
+              'click',
+              () => clickStr(cdp, sessionId, qopts.click, refMap, refState),
+              { input: qopts.click, resolvedBy: 'selector-or-ref', label: qopts.click || '', commandArgs: [qopts.click] },
+              'settle-diff',
+              null,
+              'json',
+              result => { captured = result; }
+            );
+            const textMatched = qopts.expectText ? await pageContainsText(cdp, sessionId, qopts.expectText).catch(() => false) : false;
+            action = buildSemanticInteractionModel(captured || {}, {
+              selector: qopts.click,
+              expectRequest: qopts.expectRequest,
+              expectStatus: qopts.expectStatus,
+              expectText: qopts.expectText,
+              noConsoleErrors: qopts.noConsoleErrors,
+              evidence: 'concise',
+            }, { textMatched });
+          } else {
+            if (qopts.expectText) {
+              const textMatched = await pageContainsText(cdp, sessionId, qopts.expectText).catch(() => false);
+              assertions.push({
+                kind: 'text',
+                expected: qopts.expectText,
+                status: textMatched ? 'pass' : 'fail',
+                message: textMatched ? `"${qopts.expectText}" matched` : `"${qopts.expectText}" not found`,
+              });
+            }
+            if (qopts.expectRequest) {
+              assertions.push({
+                kind: 'request',
+                expected: qopts.expectRequest,
+                status: 'fail',
+                message: '--expect-request requires --click so the command can collect action network evidence',
+              });
+            }
+          }
+          const model = buildQaPageModel({
+            targetId,
+            page: { title: page.title, url: page.url },
+            console: consoleHealth,
+            perception,
+            screenshots,
+            action,
+            assertions,
+            errors,
+          });
+          result = qopts.format === 'json' ? formatJson(model) : formatQaPageReport(model);
+          break;
+        }
         case 'checkpoint': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
           const copts = parseCheckpointArgs(fopts.args);
@@ -9912,6 +10659,25 @@ async function runDaemon(targetId) {
           break;
         }
         case 'elshot': result = await elshotStr(cdp, sessionId, args[0], targetId, refMap, refState); break;
+        case 'verify-click': case 'verifyclick': {
+          const vopts = parseVerifyClickArgs(args);
+          let captured = null;
+          await actionFeedback(
+            'click',
+            () => clickStr(cdp, sessionId, vopts.selector, refMap, refState),
+            { input: vopts.selector, resolvedBy: 'selector-or-ref', label: vopts.selector || '', commandArgs: [vopts.selector] },
+            'settle-diff',
+            null,
+            'json',
+            result => { captured = result; }
+          );
+          const textMatched = vopts.expectText ? await pageContainsText(cdp, sessionId, vopts.expectText).catch(() => false) : false;
+          const model = buildSemanticInteractionModel(captured || {}, vopts, { textMatched });
+          result = vopts.format === 'json'
+            ? formatJson(model)
+            : `${formatSemanticInteractionResult(model)}${vopts.evidence === 'full' && captured ? `\n---\n${formatActionText(captured)}` : ''}`;
+          break;
+        }
         case 'click': {
           const fopts = parseFormatArgs(args, ['text', 'json']);
           const cargs = fopts.args;
@@ -10190,7 +10956,7 @@ function connectToSocket(sp, { timeoutMs = 5000 } = {}) {
   });
 }
 
-async function getOrStartTabDaemon(targetId) {
+async function getOrStartTabDaemon(targetId, opts = {}) {
   const sp = sockPath(targetId);
   // Try existing daemon
   try { return await connectToSocket(sp); } catch {}
@@ -10202,6 +10968,7 @@ async function getOrStartTabDaemon(targetId) {
   const child = spawn(process.execPath, [process.argv[1], '_daemon', targetId], {
     detached: true,
     stdio: 'ignore',
+    env: opts.env || process.env,
   });
   child.unref();
 
@@ -10324,6 +11091,11 @@ Usage: cdp <command> [args]
   help                              Show this command reference (same as --help)
   list [--format json]              List open pages (shows unique target prefixes)
                                     JSON includes schema/pages/recommendation/nextSteps for agents.
+  use <target> --name <alias>        Save a named target alias (also becomes current)
+                                    Accepts 9222/<target> to bind a CDP port to the alias.
+  attach --port N --target <id> --name <alias>  Explicitly save an alias with host/port metadata
+  current [--format json]            Show current alias plus saved aliases
+  forget <alias>                     Remove a saved alias
   perceive <target> [flags] [--format json]  Full page perception with @ref indices + coordinates
                                     --diff: show only changes since last perceive
                                     --since-action: show changes caused by the last mutating command
@@ -10368,6 +11140,10 @@ Usage: cdp <command> [args]
   replay <target> --json <json> [--format json]  Replay an inline record-actions JSON artifact
   frame <target> [--format json]     List page frames with stable @fN refs (alias: frames)
   overlay <target> [sel|@ref] [--format json]  Detect visible dialogs/overlays and target blockers
+  qa <target> [--desktop WxH] [--mobile WxH] [--format json]  Live UI smoke: page info, console health, screenshots, perception, assertions
+                                    Optional: --click <sel|@ref> --expect-text text --expect-request pattern
+  verify-click <target> <sel|@ref> [--format json]  Click once and assert text/network/console outcomes
+                                    --expect-text text --expect-request pattern --expect-status code --no-console-errors
   net   <target>                    Network performance entries
   click   <target> <sel|@ref> [--format json]  Click element by CSS selector or @ref
                                     --js / -j: use HTMLElement.click() (JS fallback)
@@ -10453,6 +11229,9 @@ Usage: cdp <command> [args]
                                     Note: each new tab triggers a fresh "Allow debugging?" prompt
   spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH]
                                     Launch an isolated debug profile (browser: edge|chrome|brave; default edge, port 9222).
+                                    --host HOST binds remote debugging address (default 127.0.0.1).
+                                    --headless [new|old], --no-sandbox, --disable-gpu help CI/container/headless runs.
+                                    --wait-ms N bounds the readiness probe before success.
                                     Uses --remote-debugging-port + --user-data-dir; does not touch your main profile.
                                     "spawn" is a short alias.
   dismiss-modal <target>            Close common dialog/modal patterns safely (close button, then Escape) —
@@ -10460,9 +11239,10 @@ Usage: cdp <command> [args]
   stop  [target]                    Stop daemon(s)
 
 ACTION FEEDBACK
-  click, jsclick, clickxy, fill, type, press, select, scroll, upload, inject,
-  dismiss-modal, and viewport (when resizing) automatically wait for DOM to
+  click, verify-click, jsclick, clickxy, fill, type, press, select, scroll,
+  upload, inject, dismiss-modal, and viewport (when resizing) automatically wait for DOM to
   settle and return compact action evidence plus a perceive diff.
+  qa returns a semantic QA report and includes action evidence when --click is used.
   back, forward, and nav return action evidence plus a full perceive.
   reload returns action evidence plus a bounded lightweight page observation.
   Each mutating action also snapshots console/exception/network buffers before
@@ -10473,8 +11253,8 @@ ACTION FEEDBACK
   No need to manually run perceive or perceive --diff after these actions.
   To re-check what the last action changed, run perceive --since-action.
 
-<target> is a unique targetId prefix from "cdp list". If a prefix is ambiguous,
-use more characters.
+<target> is a unique targetId prefix from "cdp list" or a saved alias from
+"cdp use <target> --name app". If a prefix is ambiguous, use more characters.
 
 COORDINATE SYSTEM
   shot captures the viewport at the device's native resolution.
@@ -10503,7 +11283,8 @@ DAEMON IPC (for advanced use / scripting)
   elshot, fullshot, scanshot, html, nav, net, mock, clock, throttle, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
-  record, checkpoint, restore, record-actions, export-playwright, replay, report, evalraw, batch, flow, repeat, stop.
+  record, checkpoint, restore, record-actions, export-playwright, replay, report, qa, verify-click,
+  evalraw, batch, flow, repeat, stop.
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
@@ -10517,6 +11298,10 @@ const COMMANDS = Object.freeze([
   { name: 'open', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
   { name: 'doctor', aliases: ['ready'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'spawn-debug-browser', aliases: ['spawn'], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'attach', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'use', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'forget', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'current', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'stop', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'perceive', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'snap', aliases: ['snapshot'], needsTarget: true, mutates: false, outputFormats: ['text'] },
@@ -10546,6 +11331,8 @@ const COMMANDS = Object.freeze([
   { name: 'export-playwright', aliases: ['export-pw'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'replay', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'elshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'qa', aliases: ['qa-page'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
+  { name: 'verify-click', aliases: ['verifyclick'], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'click', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'jsclick', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'clickxy', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
@@ -11159,7 +11946,8 @@ async function main() {
       cdp.close();
     }
     writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
-    console.log(formatPageListOutput(pages, _browserInfo, { format: fopts.format }));
+    const aliasStore = readTargetAliases();
+    console.log(formatPageListOutput(pages, _browserInfo, { format: fopts.format, aliases: aliasStore.aliases }));
     process.stdout.write('', () => process.exit(0));
     return;
   }
@@ -11272,6 +12060,45 @@ async function main() {
     }
   }
 
+  if (cmd === 'attach' || cmd === 'use') {
+    try {
+      const parsed = parseAliasCommandArgs(args, cmd);
+      const store = readTargetAliases();
+      const next = upsertTargetAlias(store, {
+        name: parsed.name,
+        targetId: parsed.targetId,
+        port: parsed.port,
+        host: parsed.host,
+      });
+      writeTargetAliases(next);
+      console.log(formatAliasRecord(next.aliases[normalizeAliasName(parsed.name)], { format: parsed.format }));
+      process.exit(0);
+    } catch (e) {
+      const format = detectCliErrorFormat(args);
+      console.error(formatCliError(e, { cmd, format }));
+      process.exit(1);
+    }
+  }
+
+  if (cmd === 'forget') {
+    const fopts = parseFormatArgs(args, ['text', 'json']);
+    const name = fopts.args[0];
+    if (!name) exitCliError('forget requires an alias name', { cmd, format: fopts.format });
+    const next = removeTargetAlias(readTargetAliases(), name);
+    writeTargetAliases(next);
+    console.log(fopts.format === 'json'
+      ? formatJson({ schema: 'chrome-cdp-ex.alias-forget.v1', removed: name, current: next.current })
+      : `Forgot @${name}`);
+    process.exit(0);
+  }
+
+  if (cmd === 'current') {
+    const fopts = parseFormatArgs(args, ['text', 'json']);
+    if (fopts.args.length) exitCliError(`current: unknown argument ${fopts.args[0]}`, { cmd, format: fopts.format });
+    console.log(formatCurrentAlias(readTargetAliases(), { format: fopts.format }));
+    process.exit(0);
+  }
+
   // Targetless wait: avoids shell sleep policy for simple delays.
   if (cmd === 'wait' && /^\d+$/.test(args[0] || '') && !args[1]) {
     console.log(await waitStr(args[0]));
@@ -11317,10 +12144,13 @@ async function main() {
 
   // Resolve prefix → full targetId from cache or running daemon
   let targetId;
+  let targetAlias = resolveTargetAlias(targetPrefix);
   const daemonTargetIds = listDaemonSockets().map(d => d.targetId);
   const daemonMatches = daemonTargetIds.filter(id => id.toUpperCase().startsWith(targetPrefix.toUpperCase()));
 
-  if (daemonMatches.length > 0) {
+  if (targetAlias) {
+    targetId = targetAlias.targetId;
+  } else if (daemonMatches.length > 0) {
     targetId = resolvePrefix(targetPrefix, daemonTargetIds, 'daemon');
   } else {
     if (!existsSync(PAGES_CACHE)) {
@@ -11331,7 +12161,7 @@ async function main() {
     targetId = resolvePrefix(targetPrefix, pages.map(p => p.targetId), 'target', 'Run "cdp list".');
   }
 
-  let conn = await getOrStartTabDaemon(targetId);
+  let conn = await getOrStartTabDaemon(targetId, { env: aliasEnv(targetAlias) });
   if (!allowStaleDaemon) {
     try {
       await assertFreshDaemonConnection(conn, {
@@ -11455,6 +12285,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   RingBuffer, CDP,
   // Utilities
   resolvePrefix, getDisplayPrefixLength, sockPath, isRef, validateUrl,
+  emptyAliasStore, readTargetAliases, writeTargetAliases, upsertTargetAlias,
+  removeTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
   // AX tree helpers
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
@@ -11465,6 +12297,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   classifyActionFailure, formatActionFailure,
   buildActionRecoveryPlan,
   createActionResult, buildActionReceipt, formatActionText, runActionWithFeedback,
+  parseVerifyClickArgs, buildSemanticInteractionModel, formatSemanticInteractionResult,
+  parseQaArgs, buildQaPageModel, formatQaPageReport,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
@@ -11500,7 +12334,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr,
   parseShotArgs, shotStr,
-  parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan, spawnDebugBrowserStr,
+  parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
+  waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
   // Screenshot
@@ -11515,6 +12350,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   formatCliError, buildCliErrorModel, parseOpenArgs, openNavigationScript, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   helpStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
+  detectRuntimeEnvironment, checkRuntimeEnvironment,
   doctorWizardModel, doctorWizardSummary,
   doctorNextSteps, doctorStatusSummary, buildDoctorModel, formatDoctorOutput,
   formatDoctorReport, runDoctorChecks, doctorStr,
