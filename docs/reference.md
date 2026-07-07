@@ -272,6 +272,7 @@ npm run benchmark:killer -- --json --adversarial-seed round5-alpha
 npm run benchmark:campaign -- --rounds 10 --output ./campaign.json
 npm run benchmark:campaign -- --rounds 3 --types killer --adversarial-seeds alpha,beta --json
 npm run benchmark:campaign -- --rounds 10 --history ./campaign-history.jsonl
+npm run benchmark:campaign -- --rounds 10 --compare-baseline ./main-campaign.json
 npm run benchmark:campaign -- --types large-app --rounds 1 --json
 ```
 
@@ -282,6 +283,8 @@ Use `benchmark:campaign` for repeated live testing. It runs sequential rounds wi
 Use `--adversarial-seed <seed>` on `benchmark:killer` when you need a replayable high-difficulty browser page. The generated page composes overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, and hidden-template traits while preserving the normal Killer Path selectors. Campaigns can pass `--adversarial-seeds alpha,beta`; failing rounds include the seed and reproduction command in `issueDrafts`.
 
 Add `--history <jsonl>` when running self-improvement loops. The campaign appends a compact record for each run and reports deltas against the previous record for pass rate, average output tokens, max step tokens, and slowest-step latency so regressions are visible before opening or merging follow-up fixes.
+
+Add `--compare-baseline <json-or-jsonl>` during PR review when you need a before-after regression check against `main` or a saved campaign summary. The comparison reports pass-rate delta, average output-token delta, max-step token delta, slowest-step latency delta, and new culprit changes for both slowest and largest-output steps. JSONL baselines use the latest non-empty record, so a `--history` file can double as a compact review baseline.
 
 When a campaign round fails, the summary includes issue-ready diagnostics with a suggested title, reproduction command, ports, failed criteria, culprit step, artifact paths, and labels. Use those drafts as the starting point for follow-up issues instead of hand-writing failure reports from raw logs.
 

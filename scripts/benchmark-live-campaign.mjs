@@ -9,6 +9,16 @@ import { withLiveBenchmarkLock } from './benchmark-run-lock.mjs';
 
 const DEFAULT_TYPES = Object.freeze(['mcp', 'killer']);
 const ALL_TYPES = Object.freeze(['mcp', 'killer', 'large-app']);
+const DEFAULT_REGRESSION_THRESHOLDS = Object.freeze({
+  warnPassRateDrop: 0.01,
+  failPassRateDrop: 0.05,
+  warnAvgEstimatedOutputTokensIncrease: 250,
+  failAvgEstimatedOutputTokensIncrease: 1000,
+  warnMaxStepEstimatedTokensIncrease: 250,
+  failMaxStepEstimatedTokensIncrease: 1000,
+  warnSlowestStepMsIncrease: 250,
+  failSlowestStepMsIncrease: 1000,
+});
 
 function parsePositiveInt(value, name, { min = 1, max = 100 } = {}) {
   const raw = String(value ?? '').trim();
@@ -51,6 +61,7 @@ export function parseCampaignArgs(argv = []) {
     failFast: false,
     output: null,
     history: null,
+    compareBaseline: null,
     adversarialSeeds: [],
   };
   for (let i = 0; i < argv.length; i++) {
@@ -73,6 +84,9 @@ export function parseCampaignArgs(argv = []) {
     } else if (arg === '--history' || arg === '--history-file') {
       opts.history = argv[++i] || null;
       if (!opts.history) throw new Error('history path is required after --history');
+    } else if (arg === '--compare-baseline' || arg === '--baseline-summary') {
+      opts.compareBaseline = argv[++i] || null;
+      if (!opts.compareBaseline) throw new Error('comparison baseline path is required after --compare-baseline');
     } else if (arg === '--adversarial-seed') {
       opts.adversarialSeeds = parseSeedList(argv[++i]);
     } else if (arg === '--adversarial-seeds') {
@@ -396,6 +410,7 @@ function trendMetricsForSummary(summary = {}) {
   const rounds = Array.isArray(summary.rounds) ? summary.rounds : [];
   const metric = name => rounds.map(round => round.metrics?.[name]);
   const slowest = summary.opportunities?.slowestRound || null;
+  const biggest = summary.opportunities?.biggestOutputRound || null;
   return {
     passRate: Number.isFinite(summary.passRate) ? summary.passRate : null,
     avgEstimatedOutputTokens: numericAverage(metric('estimatedOutputTokens')),
@@ -405,6 +420,9 @@ function trendMetricsForSummary(summary = {}) {
     slowestStepName: slowest?.step?.name || null,
     slowestStepType: slowest?.type || null,
     slowestStepRound: slowest?.round || null,
+    biggestOutputStepName: biggest?.step?.name || null,
+    biggestOutputStepType: biggest?.type || null,
+    biggestOutputStepRound: biggest?.round || null,
   };
 }
 
@@ -451,6 +469,130 @@ function buildCampaignHistoryDelta(current, previous) {
     slowestStepMs: metricDelta(current, previous, 'slowestStepMs'),
     slowestStepChanged: fromStep !== toStep ? { from: fromStep, to: toStep } : null,
   };
+}
+
+function campaignComparisonMetrics(input = {}) {
+  if (input.schema === 'chrome-cdp-ex.live-campaign-history.v1') {
+    return input.metrics || {};
+  }
+  return trendMetricsForSummary(input);
+}
+
+function comparisonStatusForDelta(delta, { warn, fail, direction = 'increase' } = {}) {
+  if (!Number.isFinite(delta)) return 'unknown';
+  const regression = direction === 'drop' ? -delta : delta;
+  if (Number.isFinite(fail) && regression >= fail) return 'fail';
+  if (Number.isFinite(warn) && regression >= warn) return 'warn';
+  return 'pass';
+}
+
+function worstComparisonStatus(statuses = []) {
+  if (statuses.includes('fail')) return 'fail';
+  if (statuses.includes('warn')) return 'warn';
+  if (statuses.includes('unknown')) return 'unknown';
+  return 'pass';
+}
+
+function comparisonCheck({ name, delta, warn, fail, direction, unit }) {
+  return {
+    name,
+    status: comparisonStatusForDelta(delta, { warn, fail, direction }),
+    delta,
+    unit,
+    direction,
+    warnThreshold: warn,
+    failThreshold: fail,
+  };
+}
+
+function culpritChanges(current = {}, baseline = {}) {
+  const fields = [
+    ['slowestStepName', 'slowest-step'],
+    ['slowestStepType', 'slowest-step-type'],
+    ['slowestStepRound', 'slowest-step-round'],
+    ['biggestOutputStepName', 'biggest-output-step'],
+    ['biggestOutputStepType', 'biggest-output-step-type'],
+    ['biggestOutputStepRound', 'biggest-output-step-round'],
+  ];
+  return fields
+    .map(([field, label]) => ({
+      field: label,
+      from: baseline[field] ?? null,
+      to: current[field] ?? null,
+    }))
+    .filter(change => change.from !== change.to && (change.from != null || change.to != null));
+}
+
+export function buildCampaignRegressionComparison(currentSummary = {}, baselineSummary = {}, opts = {}) {
+  const thresholds = { ...DEFAULT_REGRESSION_THRESHOLDS, ...(opts.thresholds || {}) };
+  const current = campaignComparisonMetrics(currentSummary);
+  const baseline = campaignComparisonMetrics(baselineSummary);
+  const deltas = {
+    passRate: Number.isFinite(current.passRate) && Number.isFinite(baseline.passRate) ? current.passRate - baseline.passRate : null,
+    avgEstimatedOutputTokens: Number.isFinite(current.avgEstimatedOutputTokens) && Number.isFinite(baseline.avgEstimatedOutputTokens) ? current.avgEstimatedOutputTokens - baseline.avgEstimatedOutputTokens : null,
+    maxStepEstimatedTokens: Number.isFinite(current.maxStepEstimatedTokens) && Number.isFinite(baseline.maxStepEstimatedTokens) ? current.maxStepEstimatedTokens - baseline.maxStepEstimatedTokens : null,
+    slowestStepMs: Number.isFinite(current.slowestStepMs) && Number.isFinite(baseline.slowestStepMs) ? current.slowestStepMs - baseline.slowestStepMs : null,
+  };
+  const checks = [
+    comparisonCheck({
+      name: 'pass-rate',
+      delta: deltas.passRate,
+      warn: thresholds.warnPassRateDrop,
+      fail: thresholds.failPassRateDrop,
+      direction: 'drop',
+      unit: 'ratio',
+    }),
+    comparisonCheck({
+      name: 'avg-output-tokens',
+      delta: deltas.avgEstimatedOutputTokens,
+      warn: thresholds.warnAvgEstimatedOutputTokensIncrease,
+      fail: thresholds.failAvgEstimatedOutputTokensIncrease,
+      direction: 'increase',
+      unit: 'tokens',
+    }),
+    comparisonCheck({
+      name: 'max-step-tokens',
+      delta: deltas.maxStepEstimatedTokens,
+      warn: thresholds.warnMaxStepEstimatedTokensIncrease,
+      fail: thresholds.failMaxStepEstimatedTokensIncrease,
+      direction: 'increase',
+      unit: 'tokens',
+    }),
+    comparisonCheck({
+      name: 'slowest-step-latency',
+      delta: deltas.slowestStepMs,
+      warn: thresholds.warnSlowestStepMsIncrease,
+      fail: thresholds.failSlowestStepMsIncrease,
+      direction: 'increase',
+      unit: 'ms',
+    }),
+  ];
+  const newCulpritSteps = culpritChanges(current, baseline);
+  const status = worstComparisonStatus(checks.map(check => check.status));
+  return {
+    schema: 'chrome-cdp-ex.campaign-regression-comparison.v1',
+    baselineLabel: opts.baselineLabel || baselineSummary.recordedAt || baselineSummary.endedAt || 'baseline',
+    currentLabel: opts.currentLabel || currentSummary.endedAt || 'current',
+    status,
+    thresholds,
+    baseline,
+    current,
+    deltas,
+    checks,
+    newCulpritSteps,
+  };
+}
+
+export function readComparisonBaseline(path) {
+  const raw = readFileSync(path, 'utf8').trim();
+  if (!raw) throw new Error(`comparison baseline is empty: ${path}`);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // Fall through to JSONL support for compact campaign history files.
+  }
+  const lines = raw.split('\n').map(line => line.trim()).filter(Boolean);
+  return JSON.parse(lines.at(-1));
 }
 
 export function appendCampaignHistory(historyPath, summary, opts = {}) {
@@ -508,6 +650,17 @@ export function formatCampaignReport(summary) {
       }
     } else {
       lines.push('', 'History trend: first recorded run, no previous campaign baseline');
+    }
+  }
+  if (summary.regressionComparison) {
+    const comparison = summary.regressionComparison;
+    lines.push('', `Regression comparison: ${comparison.status}`);
+    lines.push(`  - pass rate delta: ${formatPassRateDelta(comparison.deltas.passRate)}`);
+    lines.push(`  - avg output delta: ${formatSignedIntegerDelta(comparison.deltas.avgEstimatedOutputTokens, 'tokens')}`);
+    lines.push(`  - max step delta: ${formatSignedIntegerDelta(comparison.deltas.maxStepEstimatedTokens, 'tokens')}`);
+    lines.push(`  - slowest step delta: ${formatSignedIntegerDelta(comparison.deltas.slowestStepMs, 'ms')}`);
+    if (comparison.newCulpritSteps?.length) {
+      lines.push(`  - new culprit: ${comparison.newCulpritSteps.map(change => `${change.field} ${change.from || 'n/a'} -> ${change.to || 'n/a'}`).join('; ')}`);
     }
   }
   if (summary.failurePatterns.length) {
@@ -583,6 +736,8 @@ export async function runLiveCampaign(opts = {}) {
   const plan = buildCampaignRoundPlan(opts);
   const outputPath = opts.output ? resolve(opts.output) : null;
   const historyPath = opts.history ? resolve(opts.history) : null;
+  const baselinePath = opts.compareBaseline ? resolve(opts.compareBaseline) : null;
+  const comparisonBaseline = baselinePath ? readComparisonBaseline(baselinePath) : null;
   const startedAt = new Date().toISOString();
   const rounds = [];
   for (const roundPlan of plan) {
@@ -603,6 +758,12 @@ export async function runLiveCampaign(opts = {}) {
   });
   if (historyPath) {
     summary.history = appendCampaignHistory(historyPath, summary);
+  }
+  if (comparisonBaseline) {
+    summary.regressionComparison = buildCampaignRegressionComparison(summary, comparisonBaseline, {
+      baselineLabel: baselinePath,
+      currentLabel: summary.endedAt,
+    });
   }
   if (outputPath) {
     mkdirSync(dirname(outputPath), { recursive: true });

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
 import { describe, expect, it } from 'vitest';
@@ -6,12 +6,53 @@ import { describe, expect, it } from 'vitest';
 import {
   appendCampaignHistory,
   buildCampaignIssueDrafts,
+  buildCampaignRegressionComparison,
   buildCampaignRoundPlan,
   compactCampaignRound,
   formatCampaignReport,
   parseCampaignArgs,
+  readComparisonBaseline,
+  runLiveCampaign,
   summarizeCampaignRun,
 } from '../scripts/benchmark-live-campaign.mjs';
+
+function campaignSummaryForComparison({
+  passRate = 1,
+  avgTokens = 10000,
+  maxStepTokens = 3000,
+  slowestMs = 1200,
+  slowestStep = 'open',
+  biggestOutputStep = 'report',
+  type = 'killer',
+} = {}) {
+  const rounds = [
+    {
+      round: 1,
+      type,
+      success: passRate > 0,
+      metrics: {
+        estimatedOutputTokens: avgTokens,
+        maxStepEstimatedTokens: maxStepTokens,
+        maxStepDurationMs: slowestMs,
+        maxResponsiveStepDurationMs: slowestMs,
+      },
+      culprit: {
+        slowestStep: { name: slowestStep },
+        slowestResponsiveStep: { name: slowestStep },
+        biggestOutputStep: { name: biggestOutputStep },
+      },
+    },
+  ];
+  if (passRate === 0) rounds[0].success = false;
+  const summary = summarizeCampaignRun({
+    startedAt: '2026-07-07T00:00:00.000Z',
+    endedAt: '2026-07-07T00:00:02.000Z',
+    plan: [{}],
+    rounds,
+  });
+  summary.passRate = passRate;
+  return summary;
+}
 
 describe('live campaign benchmark helpers', () => {
   it('parses campaign arguments and alternates benchmark types by default', () => {
@@ -25,6 +66,7 @@ describe('live campaign benchmark helpers', () => {
       '--json',
       '--output', '/tmp/campaign.json',
       '--history', '/tmp/campaign-history.jsonl',
+      '--compare-baseline', '/tmp/main-campaign.json',
     ]);
 
     expect(opts).toMatchObject({
@@ -37,6 +79,7 @@ describe('live campaign benchmark helpers', () => {
       json: true,
       output: '/tmp/campaign.json',
       history: '/tmp/campaign-history.jsonl',
+      compareBaseline: '/tmp/main-campaign.json',
     });
     expect(buildCampaignRoundPlan(opts)).toEqual([
       { round: 1, type: 'mcp', port: 9500, serverPort: 43000 },
@@ -162,6 +205,148 @@ describe('live campaign benchmark helpers', () => {
     });
     expect(drafts[0].body).toContain('- Seed: round5-alpha');
     expect(drafts[0].body).toContain('--adversarial-seeds round5-alpha');
+  });
+
+  it('passes regression comparison when current metrics stay within thresholds', () => {
+    const baseline = campaignSummaryForComparison({ passRate: 1, avgTokens: 10000, maxStepTokens: 3000, slowestMs: 1200, slowestStep: 'open' });
+    const current = campaignSummaryForComparison({ passRate: 1, avgTokens: 10050, maxStepTokens: 3050, slowestMs: 1240, slowestStep: 'open' });
+    const comparison = buildCampaignRegressionComparison(current, baseline, {
+      thresholds: {
+        warnAvgEstimatedOutputTokensIncrease: 250,
+        warnMaxStepEstimatedTokensIncrease: 250,
+        warnSlowestStepMsIncrease: 250,
+      },
+    });
+
+    expect(comparison).toMatchObject({
+      schema: 'chrome-cdp-ex.campaign-regression-comparison.v1',
+      status: 'pass',
+      deltas: {
+        passRate: 0,
+        avgEstimatedOutputTokens: 50,
+        maxStepEstimatedTokens: 50,
+        slowestStepMs: 40,
+      },
+      newCulpritSteps: [],
+    });
+    expect(comparison.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'avg-output-tokens', status: 'pass' }),
+      expect.objectContaining({ name: 'max-step-tokens', status: 'pass' }),
+      expect.objectContaining({ name: 'slowest-step-latency', status: 'pass' }),
+    ]));
+  });
+
+  it('warns regression comparison for threshold-adjacent token and culprit changes', () => {
+    const baseline = campaignSummaryForComparison({ passRate: 1, avgTokens: 10000, maxStepTokens: 3000, slowestMs: 1200, slowestStep: 'open', biggestOutputStep: 'report' });
+    const current = campaignSummaryForComparison({ passRate: 0.99, avgTokens: 10300, maxStepTokens: 3250, slowestMs: 1300, slowestStep: 'report', biggestOutputStep: 'action' });
+    const comparison = buildCampaignRegressionComparison(current, baseline, {
+      thresholds: {
+        warnPassRateDrop: 0.01,
+        failPassRateDrop: 0.1,
+        warnAvgEstimatedOutputTokensIncrease: 250,
+        failAvgEstimatedOutputTokensIncrease: 1000,
+        warnMaxStepEstimatedTokensIncrease: 250,
+        failMaxStepEstimatedTokensIncrease: 1000,
+        warnSlowestStepMsIncrease: 250,
+        failSlowestStepMsIncrease: 1000,
+      },
+    });
+
+    expect(comparison.status).toBe('warn');
+    expect(comparison.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'pass-rate', status: 'warn' }),
+      expect.objectContaining({ name: 'avg-output-tokens', status: 'warn', delta: 300 }),
+      expect.objectContaining({ name: 'max-step-tokens', status: 'warn', delta: 250 }),
+    ]));
+    expect(comparison.newCulpritSteps).toEqual(expect.arrayContaining([
+      { field: 'slowest-step', from: 'open', to: 'report' },
+      { field: 'biggest-output-step', from: 'report', to: 'action' },
+    ]));
+    expect(formatCampaignReport({ ...current, regressionComparison: comparison })).toContain('Regression comparison: warn');
+    expect(formatCampaignReport({ ...current, regressionComparison: comparison })).toContain('new culprit: slowest-step open -> report');
+    expect(formatCampaignReport({ ...current, regressionComparison: comparison })).toContain('biggest-output-step report -> action');
+  });
+
+  it('fails regression comparison when configured thresholds are exceeded', () => {
+    const baseline = campaignSummaryForComparison({ passRate: 1, avgTokens: 10000, maxStepTokens: 3000, slowestMs: 1200 });
+    const current = campaignSummaryForComparison({ passRate: 0.8, avgTokens: 11600, maxStepTokens: 4400, slowestMs: 2600 });
+    const comparison = buildCampaignRegressionComparison(current, baseline, {
+      thresholds: {
+        failPassRateDrop: 0.05,
+        failAvgEstimatedOutputTokensIncrease: 1000,
+        failMaxStepEstimatedTokensIncrease: 1000,
+        failSlowestStepMsIncrease: 1000,
+      },
+    });
+
+    expect(comparison.status).toBe('fail');
+    expect(comparison.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'pass-rate', status: 'fail' }),
+      expect.objectContaining({ name: 'avg-output-tokens', status: 'fail', delta: 1600 }),
+      expect.objectContaining({ name: 'max-step-tokens', status: 'fail', delta: 1400 }),
+      expect.objectContaining({ name: 'slowest-step-latency', status: 'fail', delta: 1400 }),
+    ]));
+  });
+
+  it('reads pretty JSON and JSONL regression baselines', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'chrome-cdp-ex-baseline-'));
+    const prettyPath = resolve(dir, 'baseline.json');
+    const jsonlPath = resolve(dir, 'baseline.jsonl');
+    try {
+      writeFileSync(prettyPath, `${JSON.stringify({ schema: 'chrome-cdp-ex.live-campaign.v1', passRate: 1 }, null, 2)}\n`);
+      writeFileSync(jsonlPath, [
+        JSON.stringify({ schema: 'chrome-cdp-ex.live-campaign-history.v1', metrics: { passRate: 0.5 } }),
+        JSON.stringify({ schema: 'chrome-cdp-ex.live-campaign-history.v1', metrics: { passRate: 1 } }),
+      ].join('\n'));
+
+      expect(readComparisonBaseline(prettyPath)).toMatchObject({
+        schema: 'chrome-cdp-ex.live-campaign.v1',
+        passRate: 1,
+      });
+      expect(readComparisonBaseline(jsonlPath)).toMatchObject({
+        schema: 'chrome-cdp-ex.live-campaign-history.v1',
+        metrics: { passRate: 1 },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads comparison baseline before appending current history', async () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'chrome-cdp-ex-history-baseline-'));
+    const historyPath = resolve(dir, 'history.jsonl');
+    const baseline = {
+      schema: 'chrome-cdp-ex.live-campaign-history.v1',
+      recordedAt: '2026-07-07T00:00:00.000Z',
+      metrics: {
+        passRate: 0.5,
+        avgEstimatedOutputTokens: 9000,
+        maxStepEstimatedTokens: 2000,
+        slowestStepMs: 1000,
+        slowestStepName: 'open',
+        biggestOutputStepName: 'report',
+      },
+    };
+    try {
+      writeFileSync(historyPath, `${JSON.stringify(baseline)}\n`);
+
+      const raw = await runLiveCampaign({
+        rounds: 0,
+        types: ['killer'],
+        history: historyPath,
+        compareBaseline: historyPath,
+        json: true,
+        skipLock: true,
+      });
+      const summary = JSON.parse(raw);
+      const records = readFileSync(historyPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+
+      expect(summary.history.previous).toMatchObject(baseline);
+      expect(summary.regressionComparison.baseline).toMatchObject(baseline.metrics);
+      expect(records).toHaveLength(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('summarizes pass rate, per-type averages, failures, and optimization suspects', () => {
