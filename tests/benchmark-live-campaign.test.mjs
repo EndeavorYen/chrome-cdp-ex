@@ -56,11 +56,13 @@ describe('live campaign benchmark helpers', () => {
           estimatedOutputTokens: 7600,
           usefulObservationTokens: 4300,
           maxStepDurationMs: 1700,
+          maxResponsiveStepDurationMs: 1600,
           maxStepEstimatedTokens: 2800,
           reportTimeline: true,
           semanticVerificationPassed: true,
           overlayRecoveryCovered: true,
           slowestStep: { name: 'open', durationMs: 1700 },
+          slowestResponsiveStep: { name: 'perceive', durationMs: 1600 },
           biggestOutputStep: { name: 'report', estimatedTokens: 2800 },
         },
       },
@@ -77,10 +79,12 @@ describe('live campaign benchmark helpers', () => {
         toolCalls: 6,
         protocolCalls: 2,
         estimatedOutputTokens: 7600,
+        maxResponsiveStepDurationMs: 1600,
         reportTimeline: true,
       },
       culprit: {
         slowestStep: { name: 'open', durationMs: 1700 },
+        slowestResponsiveStep: { name: 'perceive', durationMs: 1600 },
         biggestOutputStep: { name: 'report', estimatedTokens: 2800 },
       },
     });
@@ -99,9 +103,10 @@ describe('live campaign benchmark helpers', () => {
           firstUsefulObservationMs: 1600,
           firstActionEvidenceMs: 2500,
           maxStepDurationMs: 1600,
+          maxResponsiveStepDurationMs: 1500,
           maxStepEstimatedTokens: 2600,
         },
-        culprit: { slowestStep: { name: 'open' }, biggestOutputStep: { name: 'report' } },
+        culprit: { slowestStep: { name: 'open' }, slowestResponsiveStep: { name: 'perceive' }, biggestOutputStep: { name: 'report' } },
       },
       {
         round: 2,
@@ -117,9 +122,10 @@ describe('live campaign benchmark helpers', () => {
           firstUsefulObservationMs: 2200,
           firstActionEvidenceMs: 3000,
           maxStepDurationMs: 2100,
+          maxResponsiveStepDurationMs: 1200,
           maxStepEstimatedTokens: 4700,
         },
-        culprit: { slowestStep: { name: 'open' }, biggestOutputStep: { name: 'report' } },
+        culprit: { slowestStep: { name: 'open' }, slowestResponsiveStep: { name: 'click' }, biggestOutputStep: { name: 'report' } },
       },
     ];
 
@@ -140,6 +146,7 @@ describe('live campaign benchmark helpers', () => {
       failurePatterns: [{ round: 2, type: 'killer', failedStep: 'list', failedCriteria: ['run-success'] }],
       opportunities: {
         slowestRound: { round: 2, type: 'killer', value: 2100 },
+        slowestResponsiveRound: { round: 1, type: 'mcp', value: 1500 },
         biggestOutputRound: { round: 2, type: 'killer', value: 4700 },
       },
     });
@@ -148,7 +155,9 @@ describe('live campaign benchmark helpers', () => {
       rounds: 1,
       passed: 1,
       avgEstimatedOutputTokens: 7000,
+      maxResponsiveStepDurationMs: 1500,
     }));
     expect(formatCampaignReport(summary)).toContain('Pass rate: 50% (1/2)');
+    expect(formatCampaignReport(summary)).toContain('slowest responsive step: round 1 mcp, 1500 ms (perceive)');
   });
 });

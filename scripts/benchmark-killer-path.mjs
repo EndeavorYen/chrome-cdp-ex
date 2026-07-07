@@ -1164,6 +1164,17 @@ function countsTowardUsefulObservationTokens(step) {
   return step.hasUsefulObservation;
 }
 
+function isIntentionalStabilityWaitStep(step = {}) {
+  const commandName = normalizeActionCommandName(step.command?.[0] || step.name);
+  return step.name === 'stability-wait' && commandName === 'wait';
+}
+
+function slowestStepByDuration(steps = []) {
+  return steps.reduce((slowest, step) => (
+    !slowest || step.durationMs > slowest.durationMs ? step : slowest
+  ), null);
+}
+
 const DEFAULT_GATE_LIMITS = Object.freeze({
   commandCallsMax: 24,
   firstUsefulObservationMsMax: 5000,
@@ -1287,11 +1298,11 @@ function buildLargeAppStressGate(summary, limits = DEFAULT_GATE_LIMITS) {
     }),
     gateCriterion({
       name: 'max-step-duration',
-      actual: metrics.maxStepDurationMs ?? null,
+      actual: metrics.maxResponsiveStepDurationMs ?? metrics.maxStepDurationMs ?? null,
       operator: '<=',
       limit: limits.maxStepDurationMsMax,
       recommendation: 'Keep each large-app command responsive enough for interactive repair loops.',
-      culprit: metrics.slowestStep || null,
+      culprit: metrics.slowestResponsiveStep || metrics.slowestStep || null,
     }),
     gateCriterion({
       name: 'useful-observation-tokens',
@@ -1422,11 +1433,11 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
     }),
     gateCriterion({
       name: 'max-step-duration',
-      actual: metrics.maxStepDurationMs ?? null,
+      actual: metrics.maxResponsiveStepDurationMs ?? metrics.maxStepDurationMs ?? null,
       operator: '<=',
       limit: limits.maxStepDurationMsMax,
-      recommendation: 'Keep individual benchmark commands responsive; inspect the slowest step before publishing speed claims.',
-      culprit: metrics.slowestStep || null,
+      recommendation: 'Keep individual benchmark commands responsive; intentional stability waits are tracked separately.',
+      culprit: metrics.slowestResponsiveStep || metrics.slowestStep || null,
     }),
     gateCriterion({
       name: 'useful-observation-tokens',
@@ -1882,9 +1893,10 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
   const biggestOutputStep = normalizedSteps.reduce((biggest, step) => (
     !biggest || step.estimatedTokens > biggest.estimatedTokens ? step : biggest
   ), null);
-  const slowestStep = normalizedSteps.reduce((slowest, step) => (
-    !slowest || step.durationMs > slowest.durationMs ? step : slowest
-  ), null);
+  const slowestStep = slowestStepByDuration(normalizedSteps);
+  const slowestResponsiveStep = slowestStepByDuration(
+    normalizedSteps.filter(step => !isIntentionalStabilityWaitStep(step)),
+  );
   const stepBudgetSummary = (step) => step
     ? {
         name: step.name,
@@ -1917,8 +1929,10 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       estimatedOutputTokens: estimateTokenCount(outputChars),
       maxStepEstimatedTokens: biggestOutputStep?.estimatedTokens ?? 0,
       maxStepDurationMs: slowestStep?.durationMs ?? 0,
+      maxResponsiveStepDurationMs: slowestResponsiveStep?.durationMs ?? 0,
       biggestOutputStep: stepBudgetSummary(biggestOutputStep),
       slowestStep: stepBudgetSummary(slowestStep),
+      slowestResponsiveStep: stepBudgetSummary(slowestResponsiveStep),
       firstActionEvidenceStep: stepBudgetSummary(firstActionEvidence),
       usefulObservationTokens,
       autoEvidenceActions: actionEvidenceSteps.length,

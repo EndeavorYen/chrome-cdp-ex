@@ -129,6 +129,7 @@ export function compactCampaignRound(plan, result, timing = {}) {
       estimatedOutputTokens: metricValue(result, 'estimatedOutputTokens'),
       usefulObservationTokens: metricValue(result, 'usefulObservationTokens'),
       maxStepDurationMs: metricValue(result, 'maxStepDurationMs'),
+      maxResponsiveStepDurationMs: metricValue(result, 'maxResponsiveStepDurationMs'),
       maxStepEstimatedTokens: metricValue(result, 'maxStepEstimatedTokens'),
       autoEvidenceActions: metricValue(result, 'autoEvidenceActions'),
       reportTimeline: metricValue(result, 'hasReportTimeline', metricValue(result, 'reportTimeline')),
@@ -137,6 +138,7 @@ export function compactCampaignRound(plan, result, timing = {}) {
     },
     culprit: {
       slowestStep: metricValue(result, 'slowestStep'),
+      slowestResponsiveStep: metricValue(result, 'slowestResponsiveStep'),
       biggestOutputStep: metricValue(result, 'biggestOutputStep'),
     },
     timing: {
@@ -196,6 +198,7 @@ function summarizeRoundsForType(rounds, type) {
     avgEstimatedOutputTokens: numericAverage(metric('estimatedOutputTokens')),
     avgUsefulObservationTokens: numericAverage(metric('usefulObservationTokens')),
     maxStepDurationMs: numericMax(metric('maxStepDurationMs')),
+    maxResponsiveStepDurationMs: numericMax(metric('maxResponsiveStepDurationMs')),
     maxStepEstimatedTokens: numericMax(metric('maxStepEstimatedTokens')),
   };
 }
@@ -240,6 +243,7 @@ export function summarizeCampaignRun({ startedAt, endedAt, rounds = [], plan = [
     failurePatterns: failedRounds,
     opportunities: {
       slowestRound: topCulprit(rounds, 'slowestStep', 'maxStepDurationMs'),
+      slowestResponsiveRound: topCulprit(rounds, 'slowestResponsiveStep', 'maxResponsiveStepDurationMs'),
       biggestOutputRound: topCulprit(rounds, 'biggestOutputStep', 'maxStepEstimatedTokens'),
     },
     rounds,
@@ -272,6 +276,10 @@ export function formatCampaignReport(summary) {
   if (slowest || biggest) {
     lines.push('', 'Optimization suspects:');
     if (slowest) lines.push(`  - slowest step: round ${slowest.round} ${slowest.type}, ${slowest.value} ms (${slowest.step?.name || 'unknown'})`);
+    if (summary.opportunities.slowestResponsiveRound) {
+      const responsive = summary.opportunities.slowestResponsiveRound;
+      lines.push(`  - slowest responsive step: round ${responsive.round} ${responsive.type}, ${responsive.value} ms (${responsive.step?.name || 'unknown'})`);
+    }
     if (biggest) lines.push(`  - biggest output: round ${biggest.round} ${biggest.type}, ${biggest.value} tokens (${biggest.step?.name || 'unknown'})`);
   }
   lines.push('', 'Rounds:');

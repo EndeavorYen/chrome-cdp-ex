@@ -501,6 +501,61 @@ describe('benchmark killer path helpers', () => {
     ]));
   });
 
+  it('keeps intentional stability waits out of the responsive max-step gate', () => {
+    const steps = [
+      { name: 'perceive', command: ['perceive', 'AABB'], startedAt: 0, endedAt: 80, status: 0, stdout: 'Page:\n@1 Button', stderr: '' },
+      { name: 'click', command: ['click', 'AABB', '#go'], startedAt: 80, endedAt: 200, status: 0, stdout: 'Clicked\nclick: dispatched', stderr: '' },
+      { name: 'since-action', command: ['perceive', 'AABB', '--since-action'], startedAt: 200, endedAt: 240, status: 0, stdout: '+++ Added\n', stderr: '' },
+      { name: 'report', command: ['report', 'AABB'], startedAt: 240, endedAt: 270, status: 0, stdout: 'Session report:\nAction timeline:\n- click\n', stderr: '' },
+      { name: 'stability-wait', command: ['wait', 'AABB', '5000'], startedAt: 270, endedAt: 5317, status: 0, stdout: 'Waited 5000ms', stderr: '' },
+      { name: 'stability-status', command: ['status', 'AABB'], startedAt: 5317, endedAt: 5330, status: 0, stdout: 'Status: ready', stderr: '' },
+      { name: 'stability-report', command: ['report', 'AABB'], startedAt: 5330, endedAt: 5355, status: 0, stdout: 'Session report:\nAction timeline:\n- click\n', stderr: '' },
+    ];
+    const summary = summarizeBenchmarkRun({ startedAt: 0, endedAt: 5355, target: 'AABB', steps });
+    const gate = buildBenchmarkGate(summary, {
+      commandCallsMax: 20,
+      firstUsefulObservationMsMax: 5000,
+      firstActionEvidenceMsMax: 5000,
+      goldenPathMsMax: 120000,
+      estimatedOutputTokensMax: 20000,
+      maxStepEstimatedTokensMax: 5000,
+      maxStepDurationMsMax: 150,
+      usefulObservationTokensMax: 3000,
+      autoEvidenceActionsMin: 1,
+      observedActionEvidenceCoverageRateMin: 0,
+      actionEvidenceCompletenessCoverageRateMin: 0,
+      actionFailureDiagnosisCoverageRateMin: 0,
+      actionNoChangeRecoveryCoverageRateMin: 0,
+      cliRecoveryCoverageRateMin: 0,
+      handoffNextStepsCoverageRateMin: 0,
+      handoffRecommendationCoverageRateMin: 0,
+      doctorOnboardingCoverageRateMin: 0,
+      targetHandoffCoverageRateMin: 0,
+      reportLatestActionCoverageRateMin: 0,
+      reportTimelineWindowCoverageRateMin: 0,
+      reportArtifactCoverageRateMin: 0,
+      perceptionSignalCoverageRateMin: 0,
+      sinceActionEvidenceCoverageRateMin: 0,
+      differentiatorSuccessRateMin: 0,
+      differentiatorHandoffCoverageRateMin: 0,
+      staleRefRecoveryRateMin: 0,
+    });
+
+    expect(summary.metrics.maxStepDurationMs).toBe(5047);
+    expect(summary.metrics.slowestStep).toEqual(expect.objectContaining({ name: 'stability-wait' }));
+    expect(summary.metrics.maxResponsiveStepDurationMs).toBe(120);
+    expect(summary.metrics.slowestResponsiveStep).toEqual(expect.objectContaining({ name: 'click' }));
+    expect(gate.criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'max-step-duration',
+        passed: true,
+        actual: 120,
+        limit: 150,
+        culprit: expect.objectContaining({ name: 'click' }),
+      }),
+    ]));
+  });
+
   it('marks failed runs with the failed step and keeps partial metrics', () => {
     const summary = summarizeBenchmarkRun({
       scenario: 'killer-path',
