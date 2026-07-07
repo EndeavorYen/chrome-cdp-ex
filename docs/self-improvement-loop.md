@@ -14,6 +14,8 @@ Each round has five steps:
 
 Do not count a brainstorm, local-only commit, or open PR as a completed round.
 
+When a round changes release readiness, install instructions, benchmark claims, or public positioning, treat the front door as part of the fix: README, GitHub Pages benchmark page, benchmark proof image, release/download links, changelog, and install commands must agree before review.
+
 ## 1. Self-Assess
 
 Start from current state, not memory:
@@ -66,6 +68,8 @@ Use the full test suite for merge readiness. Use a focused live campaign for the
 ## 4. Review And Merge
 
 Review the diff against the project's existing conventions. Prioritize real blockers: wrong issue scope, missing acceptance coverage, misleading benchmark evidence, token regressions, fragile live-browser behavior, or docs that make commands unrepeatable.
+
+For release-facing documentation changes, click through or inspect every public link added to the README, verify the tarball/download path points at this repository's GitHub Release, and regenerate the benchmark proof image whenever `experiment/benchmark.html` changes its visible numbers.
 
 ```bash
 gh pr create --base main --head <branch> --title "..." --body "..."

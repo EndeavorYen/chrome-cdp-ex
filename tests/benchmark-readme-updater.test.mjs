@@ -108,4 +108,122 @@ Local run on 2026-01-01 against the same smoke page.
     expect(updated).toContain('<span>3.391s</span>');
     expect(updated).toContain('<span>10.104s</span>');
   });
+
+  it('updates README and benchmark page from a live campaign summary', () => {
+    const campaign = {
+      schema: 'chrome-cdp-ex.live-campaign.v1',
+      roundsCompleted: 3,
+      passCount: 3,
+      typeSummaries: [{
+        type: 'real-app',
+        avgTotalMs: 10161,
+        avgFirstUsefulObservationMs: 2187,
+        avgFirstActionEvidenceMs: 3015,
+        avgEstimatedOutputTokens: 12677,
+        avgUsefulObservationTokens: 1637,
+        maxStepEstimatedTokens: 1113,
+        realAppTargets: { targets: ['auth-flow', 'dashboard', 'docs-app'] },
+      }],
+      rounds: [
+        {
+          type: 'real-app',
+          gatePassed: true,
+          gate: { passed: true, passedCount: 33, total: 33 },
+          metrics: {
+            commandCalls: 24,
+            goldenPathMs: 5256,
+            autoEvidenceActions: 6,
+            realAppTarget: { traits: ['stale-ref'] },
+          },
+        },
+        {
+          type: 'real-app',
+          gatePassed: true,
+          gate: { passed: true, passedCount: 33, total: 33 },
+          metrics: {
+            commandCalls: 24,
+            goldenPathMs: 5197,
+            autoEvidenceActions: 6,
+            realAppTarget: { traits: ['stale-ref'] },
+          },
+        },
+        {
+          type: 'real-app',
+          gatePassed: true,
+          gate: { passed: true, passedCount: 33, total: 33 },
+          metrics: {
+            commandCalls: 24,
+            goldenPathMs: 5200,
+            autoEvidenceActions: 6,
+            realAppTarget: { traits: ['stale-ref'] },
+          },
+        },
+      ],
+    };
+    const readme = `# chrome-cdp-ex
+
+[![Release v2.9.0](https://img.shields.io/badge/release-v2.9.0-brightgreen)](release)
+
+## Smart Eye Proof
+
+| Proof point | Latest local run |
+|---|---:|
+| Release proof | **old** |
+| Real-app targets | **old** |
+| Campaign pass rate | **old** |
+| Quality gate | **old** |
+| First useful observation | **old** |
+| First action evidence | **old** |
+| Useful observation tokens | **old** |
+| Max step output | **old** |
+
+## Quick start
+
+### Latest dogfood snapshot
+
+Local run on 2026-01-01 against three safe local real-app fixtures: old.
+
+| Metric | Latest run |
+|---|---:|
+| Total time | old |
+| Command calls | old |
+| First useful observation | old |
+| First action evidence | old |
+| Golden path complete | old |
+| Estimated output tokens | old |
+| Useful observation tokens | old |
+| Action evidence coverage | old |
+| Real-app targets | old |
+| Stale-ref recovery | old |
+| Quality gate | old |
+
+Regenerate this table
+`;
+    const html = `
+      <strong>old</strong>
+      <span>quality gate passed in each real-app round<br>2026-01-01 local run</span>
+      <div class="stat"><strong>old</strong><span>real-app targets passed</span></div>
+      <div class="stat"><strong>old</strong><span>first useful observation avg</span></div>
+      <div class="stat"><strong>old</strong><span>first action evidence avg</span></div>
+      <div class="stat"><strong>old</strong><span><em>useful observation</em> tokens avg</span></div>
+      <span>First observation avg</span><div class="track"><div class="fill" style="width: 1%"></div></div><span>old</span>
+      <span>First action evidence</span><div class="track"><div class="fill" style="width: 1%"></div></div><span>old</span>
+      <span>Golden path avg</span><div class="track"><div class="fill" style="width: 1%"></div></div><span>old</span>
+      <span>Total run avg</span><div class="track"><div class="fill" style="width: 100%"></div></div><span>old</span>
+    `;
+
+    const updatedReadme = updateReadmeBenchmarkSnapshot(readme, campaign, { runDate: '2026-07-08' });
+    const updatedHtml = updateBenchmarkHtmlSnapshot(html, campaign, { runDate: '2026-07-08' });
+
+    expect(updatedReadme).toContain('| Quality gate | **33/33 pass in each round** |');
+    expect(updatedReadme).toContain('| First action evidence | **3.015s avg** |');
+    expect(updatedReadme).toContain('| Max step output | **1,113 tokens** |');
+    expect(updatedReadme).toContain('Local run on 2026-07-08 against three safe local real-app fixtures: dashboard, docs-app, auth-flow.');
+    expect(updatedReadme).toContain('| Golden path complete | 5.218s avg |');
+    expect(updatedReadme).toContain('| Action evidence coverage | 6 auto-evidence actions per round; no failed criteria |');
+    expect(updatedHtml).toContain('<strong>33/33</strong>');
+    expect(updatedHtml).toContain('<strong>3/3</strong><span>real-app targets passed</span>');
+    expect(updatedHtml).toContain('<span>5.218s</span>');
+    expect(updatedHtml).toContain('<span>10.161s</span>');
+  });
 });

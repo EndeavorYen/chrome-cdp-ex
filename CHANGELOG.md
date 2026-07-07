@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [2.9.1](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.9.0...v2.9.1) (2026-07-08)
+
+### Documentation
+
+* refresh README, GitHub Pages benchmark proof, release links, and pinned install guidance for the release front door.
+* teach the README benchmark updater to refresh real-app live campaign snapshots in both README and the benchmark page.
+
 ## [2.9.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.8.0...v2.9.0) (2026-07-08)
 
 ### Features
