@@ -32,6 +32,8 @@ Use `Regression comparison` before review when you have a saved `main` campaign 
 
 Use `Route recommendation` to decide whether the next agent workflow should prefer MCP tools or direct CLI commands. Trust high-confidence recommendations when both routes have comparable non-adversarial rounds; treat low confidence or `inconclusive` as a signal to run more matched rounds before changing operator guidance.
 
+Treat failed `long-session-report-budget` gates as merge blockers. They mean the report handoff for many-action sessions either exceeded its byte budget, exposed an expensive full-history window, lost latest-action context, or dropped recovery-critical receipt fields.
+
 Use adversarial seeds when the fixed smoke fixture feels too easy. A seed generates a replayable page with overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, and hidden-template traits, and failed campaign rounds keep the seed in their reproduction command.
 
 ## 2. Open Issues
