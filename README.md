@@ -167,7 +167,7 @@ See [docs/reference.md](docs/reference.md) for Electron, WSL2, screenshots, CSS 
 | Trace styling | `cascade`, `styles`, `inject` |
 | Preserve a session | `checkpoint`, `record-actions`, `export-playwright`, `replay` |
 | Capture visuals | `shot`, `elshot`, `diff-shot` |
-| Agent-native integration | `node skills/chrome-cdp-ex/scripts/mcp-server.mjs` exposes stdio MCP tools for doctor/list/open/perceive/action/qa/report |
+| Agent-native integration | `node skills/chrome-cdp-ex/scripts/mcp-server.mjs` exposes stdio MCP tools for doctor/list/open/perceive/controls/overlay/action/verify/qa/report |
 
 Full command details are in [docs/reference.md](docs/reference.md) and [skills/chrome-cdp-ex/SKILL.md](skills/chrome-cdp-ex/SKILL.md).
 
@@ -197,6 +197,7 @@ Regenerate this table after meaningful command, perception, or benchmark changes
 
 ```bash
 npm run benchmark:killer
+npm run benchmark:mcp
 npm run benchmark:killer -- --json > benchmark.json
 npm run benchmark:update-readme -- benchmark.json README.md --html experiment/benchmark.html --date YYYY-MM-DD
 npm run benchmark:generic-cdp -- --out generic-cdp-raw.json

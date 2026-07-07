@@ -20,6 +20,7 @@
     "check:docs": "node scripts/check-docs-contract.mjs",
     "smoke:live": "node scripts/live-smoke.mjs",
     "benchmark:killer": "node scripts/benchmark-killer-path.mjs",
+    "benchmark:mcp": "node scripts/benchmark-mcp-path.mjs",
     "benchmark:update-readme": "node scripts/update-readme-benchmark.mjs",
     "benchmark:generic-cdp": "node scripts/benchmark-generic-cdp-baseline.mjs",
     "benchmark:playwright": "node scripts/benchmark-playwright-baseline.mjs",

@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+* expand MCP tools with compact `controls`, `overlay`, `dismiss_modal`, and `verify_click` workflows so MCP clients can diagnose blockers, recover from modals, and verify interactions without falling back to raw CLI commands.
+* add an MCP live benchmark for the problem-finding path, measuring tool calls, protocol calls, latency, output tokens, overlay recovery, semantic verification, and report handoff.
+
+### Fixes
+
+* keep MCP `initialize` server version in sync with `package.json` release metadata.
+
 ## [2.8.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.7.0...v2.8.0) (2026-07-07)
 
 ### Features

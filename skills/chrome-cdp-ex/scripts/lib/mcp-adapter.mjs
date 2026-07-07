@@ -1,4 +1,9 @@
+import { readFileSync } from 'fs';
+
 export const MCP_PROTOCOL_VERSION = '2024-11-05';
+export const MCP_SERVER_VERSION = JSON.parse(
+  readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8'),
+).version;
 
 function stringSchema(description, extra = {}) {
   return { type: 'string', description, ...extra };
@@ -59,6 +64,34 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
     },
   },
   {
+    name: 'controls',
+    description: 'Return a compact list of visible controls for low-token target discovery.',
+    inputSchema: {
+      type: 'object',
+      required: ['target'],
+      properties: {
+        target: stringSchema('Target prefix or named alias.'),
+        selector: stringSchema('Optional CSS selector scope.'),
+        filter: stringSchema('Optional visible text/name filter.'),
+        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum controls to return.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'overlay',
+    description: 'Detect dialogs, overlays, and hit-test blockers for the page or a target point.',
+    inputSchema: {
+      type: 'object',
+      required: ['target'],
+      properties: {
+        target: stringSchema('Target prefix or named alias.'),
+        selector: stringSchema('Optional CSS selector, @ref, or @c ref to test for coverage.'),
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'screenshot',
     description: 'Capture a viewport screenshot for a target.',
     inputSchema: {
@@ -82,6 +115,38 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
         target: stringSchema('Target prefix or named alias.'),
         selector: stringSchema('CSS selector, @ref, or @c ref.'),
         js: booleanSchema('Use HTMLElement.click() fallback instead of CDP mouse events.'),
+        confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'verify_click',
+    description: 'Click once and assert expected text, network request/status, and console health. Requires confirm: true.',
+    inputSchema: {
+      type: 'object',
+      required: ['target', 'selector', 'confirm'],
+      properties: {
+        target: stringSchema('Target prefix or named alias.'),
+        selector: stringSchema('CSS selector, @ref, or @c ref.'),
+        expectText: stringSchema('Expected text after the click.'),
+        expectRequest: stringSchema('Expected network request, e.g. POST /api/save.'),
+        expectStatus: { type: 'integer', minimum: 100, maximum: 599, description: 'Expected HTTP status for the matched request.' },
+        noConsoleErrors: booleanSchema('Fail if action console/exception errors appear.'),
+        evidence: stringSchema('Text evidence detail level.', { enum: ['concise', 'full'] }),
+        confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'dismiss_modal',
+    description: 'Close common dialogs/modals safely and return action evidence. Requires confirm: true.',
+    inputSchema: {
+      type: 'object',
+      required: ['target', 'confirm'],
+      properties: {
+        target: stringSchema('Target prefix or named alias.'),
         confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
       },
       additionalProperties: false,
@@ -192,6 +257,18 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.sinceAction) command.push('--since-action');
       return optionalFormatJson(command);
     }
+    case 'controls': {
+      const command = ['controls', requireString(args, 'target')];
+      if (args.selector) command.push('--selector', String(args.selector));
+      if (args.filter) command.push('--filter', String(args.filter));
+      if (args.limit != null) command.push('--limit', String(args.limit));
+      return optionalFormatJson(command);
+    }
+    case 'overlay': {
+      const command = ['overlay', requireString(args, 'target')];
+      if (args.selector) command.push(String(args.selector));
+      return optionalFormatJson(command);
+    }
     case 'screenshot': {
       const command = ['shot', requireString(args, 'target')];
       if (args.annotate) command.push('--annotate');
@@ -204,6 +281,20 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.js) command.push('--js');
       command.push(requireString(args, 'selector'));
       return optionalFormatJson(command);
+    }
+    case 'verify_click': {
+      requireConfirm(args, 'verify_click');
+      const command = ['verify-click', requireString(args, 'target'), requireString(args, 'selector')];
+      if (args.expectText) command.push('--expect-text', String(args.expectText));
+      if (args.expectRequest) command.push('--expect-request', String(args.expectRequest));
+      if (args.expectStatus != null) command.push('--expect-status', String(args.expectStatus));
+      if (args.noConsoleErrors) command.push('--no-console-errors');
+      if (args.evidence) command.push('--evidence', String(args.evidence));
+      return optionalFormatJson(command);
+    }
+    case 'dismiss_modal': {
+      requireConfirm(args, 'dismiss_modal');
+      return ['dismiss-modal', requireString(args, 'target'), '--format', 'json'];
     }
     case 'fill': {
       requireConfirm(args, 'fill');
@@ -248,7 +339,7 @@ export function createMcpInitializeResult() {
     protocolVersion: MCP_PROTOCOL_VERSION,
     serverInfo: {
       name: 'chrome-cdp-ex',
-      version: '2.7.0',
+      version: MCP_SERVER_VERSION,
     },
     capabilities: {
       tools: {},
