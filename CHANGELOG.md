@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.8.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.7.0...v2.8.0) (2026-07-07)
+
+### Features
+
+* add `controls`, `verify-click`, and `qa` workflows so agents can inspect visible controls, assert expected action outcomes, and run desktop/mobile smoke checks from the CLI.
+* add the stdio MCP server and adapter for agent-native doctor/list/open/perceive/action/QA/report workflows.
+* promote action receipt observability with structured `chrome-cdp-ex.action-receipt.v1` JSON, report surfaces, executable recovery next steps, and post-action settlement evidence.
+
+### Fixes
+
+* detect stale target daemons before commands run, with explicit stop-and-retry guidance and an intentional `--allow-stale-daemon` escape hatch.
+* harden no-change, closed-target, post-action observation, stale-ref, overlay, and wrong-frame recovery paths so failures produce actionable diagnostics instead of ambiguous success.
+* redact sensitive action artifacts and keep long-session reports bounded for safer handoffs.
+
+### Maintenance
+
+* expand killer-path benchmark gates for action evidence completeness, stale-ref recovery, artifact replay, and large-app stress coverage.
+* document this repository's PR target and GitHub-release publish policy.
+* refresh README, technical reference, and skill guidance for the 75-command Smart Eye workflow.
+
 ## [2.7.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.6.0...v2.7.0) (2026-06-28)
 
 ### Features
