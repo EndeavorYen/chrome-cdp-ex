@@ -351,4 +351,82 @@ describe('live campaign benchmark helpers', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('emits issue-ready diagnostics for MCP, Killer, and large-app campaign failures', () => {
+    const summary = summarizeCampaignRun({
+      startedAt: '2026-07-08T01:00:00.000Z',
+      endedAt: '2026-07-08T01:00:12.000Z',
+      plan: [{}, {}, {}],
+      artifacts: {
+        output: '/tmp/campaign-failure.json',
+        history: '/tmp/campaign-history.jsonl',
+      },
+      rounds: [
+        {
+          round: 1,
+          type: 'mcp',
+          port: 9500,
+          serverPort: 9600,
+          success: false,
+          failedStep: null,
+          error: null,
+          gate: { failedCriteria: ['mcp-tool-output-budget'] },
+          metrics: { maxStepEstimatedTokens: 4100 },
+          culprit: { biggestOutputStep: { name: 'report', commandText: 'mcp report', estimatedTokens: 4100 } },
+        },
+        {
+          round: 2,
+          type: 'killer',
+          port: 9501,
+          serverPort: 9601,
+          success: false,
+          failedStep: 'click',
+          error: 'Action failure: stale-ref',
+          gate: { failedCriteria: ['run-success'] },
+          metrics: { maxStepDurationMs: 5100 },
+          culprit: { slowestStep: { name: 'click', commandText: 'cdp click AABB @1', durationMs: 5100 } },
+        },
+        {
+          round: 3,
+          type: 'large-app',
+          port: 9502,
+          serverPort: 9602,
+          success: false,
+          failedStep: null,
+          error: null,
+          gate: { failedCriteria: ['large-app-truncation-metadata'] },
+          metrics: { maxResponsiveStepDurationMs: 2200 },
+          culprit: { slowestResponsiveStep: { name: 'summary', commandText: 'cdp summary AABB --format json', durationMs: 2200 } },
+        },
+      ],
+    });
+
+    expect(summary.issueDrafts).toHaveLength(3);
+    expect(summary.issueDrafts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: '[live-campaign] mcp round 1 failed: mcp-tool-output-budget',
+        reproductionCommand: 'npm run benchmark:campaign -- --types mcp --rounds 1 --port-start 9500 --server-port-start 9600 --fail-fast --json',
+        suggestedLabels: ['bug', 'type: benchmark', 'priority: p1'],
+        seed: null,
+        ports: { cdp: 9500, http: 9600 },
+        failedCriteria: ['mcp-tool-output-budget'],
+        culpritStep: { name: 'report', commandText: 'mcp report', estimatedTokens: 4100 },
+        artifactPaths: ['/tmp/campaign-failure.json', '/tmp/campaign-history.jsonl'],
+      }),
+      expect.objectContaining({
+        title: '[live-campaign] killer round 2 failed: run-success',
+        error: 'Action failure: stale-ref',
+        culpritStep: { name: 'click', commandText: 'cdp click AABB @1', durationMs: 5100 },
+      }),
+      expect.objectContaining({
+        title: '[live-campaign] large-app round 3 failed: large-app-truncation-metadata',
+        culpritStep: { name: 'summary', commandText: 'cdp summary AABB --format json', durationMs: 2200 },
+      }),
+    ]));
+    expect(summary.issueDrafts[0].body).toContain('Reproduce');
+    expect(summary.issueDrafts[0].body).toContain('npm run benchmark:campaign -- --types mcp --rounds 1');
+    expect(summary.issueDrafts[0].body).toContain('/tmp/campaign-failure.json');
+    expect(formatCampaignReport(summary)).toContain('Issue-ready diagnostics:');
+    expect(formatCampaignReport(summary)).toContain('[live-campaign] mcp round 1 failed: mcp-tool-output-budget');
+  });
 });

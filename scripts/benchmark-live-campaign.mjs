@@ -234,7 +234,102 @@ function topCulprit(rounds, field, metricName) {
   return entries[0] || null;
 }
 
-export function summarizeCampaignRun({ startedAt, endedAt, rounds = [], plan = [] } = {}) {
+function artifactPathList(artifacts = {}) {
+  return Object.values(artifacts)
+    .filter(Boolean)
+    .map(value => String(value));
+}
+
+function roundCulpritStep(round = {}) {
+  return round.culprit?.biggestOutputStep
+    || round.culprit?.slowestResponsiveStep
+    || round.culprit?.slowestStep
+    || null;
+}
+
+function roundFailedCriteria(round = {}) {
+  return Array.isArray(round.gate?.failedCriteria) ? round.gate.failedCriteria : [];
+}
+
+function issueFailureReason(round = {}) {
+  const criteria = roundFailedCriteria(round);
+  return criteria.length ? criteria.join(', ') : round.error || round.failedStep || 'unknown failure';
+}
+
+function buildReproductionCommand(round = {}) {
+  const parts = [
+    'npm run benchmark:campaign --',
+    '--types', round.type || 'mcp',
+    '--rounds', '1',
+  ];
+  if (Number.isFinite(round.port)) parts.push('--port-start', String(round.port));
+  if (Number.isFinite(round.serverPort)) parts.push('--server-port-start', String(round.serverPort));
+  parts.push('--fail-fast', '--json');
+  return parts.join(' ');
+}
+
+function buildIssueDraftBody(round, draft) {
+  const artifactLines = draft.artifactPaths.length
+    ? draft.artifactPaths.map(path => `- ${path}`).join('\n')
+    : '- n/a';
+  return [
+    `Live campaign ${round.type} round ${round.round} failed.`,
+    '',
+    '## Reproduce',
+    '```bash',
+    draft.reproductionCommand,
+    '```',
+    '',
+    '## Failure',
+    `- Type: ${round.type}`,
+    `- Round: ${round.round}`,
+    `- Ports: CDP ${round.port ?? 'n/a'}, HTTP ${round.serverPort ?? 'n/a'}`,
+    `- Seed: ${draft.seed ?? 'n/a'}`,
+    `- Failed criteria: ${draft.failedCriteria.length ? draft.failedCriteria.join(', ') : 'n/a'}`,
+    `- Failed step: ${round.failedStep || 'n/a'}`,
+    `- Error: ${round.error || 'n/a'}`,
+    '',
+    '## Culprit',
+    '```json',
+    JSON.stringify(draft.culpritStep || {}, null, 2),
+    '```',
+    '',
+    '## Artifacts',
+    artifactLines,
+    '',
+    `Suggested labels: ${draft.suggestedLabels.join(', ')}`,
+  ].join('\n');
+}
+
+export function buildCampaignIssueDrafts(rounds = [], artifacts = {}) {
+  const paths = artifactPathList(artifacts);
+  return rounds
+    .filter(round => round && round.success === false)
+    .map((round) => {
+      const failedCriteria = roundFailedCriteria(round);
+      const draft = {
+        title: `[live-campaign] ${round.type} round ${round.round} failed: ${issueFailureReason(round)}`,
+        reproductionCommand: buildReproductionCommand(round),
+        suggestedLabels: ['bug', 'type: benchmark', 'priority: p1'],
+        seed: round.seed ?? round.metrics?.seed ?? null,
+        ports: {
+          cdp: Number.isFinite(round.port) ? round.port : null,
+          http: Number.isFinite(round.serverPort) ? round.serverPort : null,
+        },
+        failedCriteria,
+        failedStep: round.failedStep || null,
+        error: round.error || null,
+        culpritStep: roundCulpritStep(round),
+        artifactPaths: paths,
+      };
+      return {
+        ...draft,
+        body: buildIssueDraftBody(round, draft),
+      };
+    });
+}
+
+export function summarizeCampaignRun({ startedAt, endedAt, rounds = [], plan = [], artifacts = {} } = {}) {
   const passCount = rounds.filter(round => round.success).length;
   const typeSummaries = [...new Set(rounds.map(round => round.type))]
     .map(type => summarizeRoundsForType(rounds, type));
@@ -264,6 +359,7 @@ export function summarizeCampaignRun({ startedAt, endedAt, rounds = [], plan = [
       slowestResponsiveRound: topCulprit(rounds, 'slowestResponsiveStep', 'maxResponsiveStepDurationMs'),
       biggestOutputRound: topCulprit(rounds, 'biggestOutputStep', 'maxStepEstimatedTokens'),
     },
+    issueDrafts: buildCampaignIssueDrafts(rounds, artifacts),
     rounds,
   };
 }
@@ -393,6 +489,13 @@ export function formatCampaignReport(summary) {
       lines.push(`  - round ${failure.round} ${failure.type}: ${details}`);
     }
   }
+  if (summary.issueDrafts?.length) {
+    lines.push('', 'Issue-ready diagnostics:');
+    for (const draft of summary.issueDrafts) {
+      lines.push(`  - ${draft.title}`);
+      lines.push(`    Reproduce: ${draft.reproductionCommand}`);
+    }
+  }
   const slowest = summary.opportunities.slowestRound;
   const biggest = summary.opportunities.biggestOutputRound;
   if (slowest || biggest) {
@@ -447,6 +550,8 @@ export async function runLiveCampaign(opts = {}) {
     return withLiveBenchmarkLock({ name: 'benchmark:campaign' }, () => runLiveCampaign({ ...opts, skipLock: true }));
   }
   const plan = buildCampaignRoundPlan(opts);
+  const outputPath = opts.output ? resolve(opts.output) : null;
+  const historyPath = opts.history ? resolve(opts.history) : null;
   const startedAt = new Date().toISOString();
   const rounds = [];
   for (const roundPlan of plan) {
@@ -460,12 +565,15 @@ export async function runLiveCampaign(opts = {}) {
     endedAt: new Date().toISOString(),
     rounds,
     plan,
+    artifacts: {
+      output: outputPath,
+      history: historyPath,
+    },
   });
-  if (opts.history) {
-    summary.history = appendCampaignHistory(opts.history, summary);
+  if (historyPath) {
+    summary.history = appendCampaignHistory(historyPath, summary);
   }
-  if (opts.output) {
-    const outputPath = resolve(opts.output);
+  if (outputPath) {
     mkdirSync(dirname(outputPath), { recursive: true });
     writeFileSync(outputPath, `${JSON.stringify(summary, null, 2)}\n`);
   }
