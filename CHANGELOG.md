@@ -2,14 +2,24 @@
 
 ## [Unreleased]
 
+## [2.9.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.8.0...v2.9.0) (2026-07-08)
+
 ### Features
 
-* expand MCP tools with compact `controls`, `overlay`, `dismiss_modal`, and `verify_click` workflows so MCP clients can diagnose blockers, recover from modals, and verify interactions without falling back to raw CLI commands.
-* add an MCP live benchmark for the problem-finding path, measuring tool calls, protocol calls, latency, output tokens, overlay recovery, semantic verification, and report handoff.
+* add a repeated live campaign benchmark loop with history trends, issue-ready diagnostics, regression comparisons, and a documented self-improvement runbook.
+* add adversarial and real-app live target profiles for high-difficulty local testing, including dashboard, docs-app, auth-flow, data-table, and canvas-heavy classes.
+* expand MCP problem-finding coverage with compact recovery tools, MCP live benchmarks, and MCP-vs-CLI route recommendations for latency, token, and pass-rate comparisons.
 
 ### Fixes
 
 * keep MCP `initialize` server version in sync with `package.json` release metadata.
+* fix live benchmark backlog regressions, responsive latency gating, and live-smoke no-change recovery contracts found during dogfood campaigns.
+* add an isolated live benchmark run manager with owner metadata, heartbeat records, dead-owner reclaim, and port/profile allocation to prevent cross-target contamination.
+
+### Maintenance
+
+* compact action/report payloads and gate long-session report budgets so handoffs stay bounded under many-action sessions.
+* document safe local/test-only requirements for real-app campaign targets and refresh benchmark reference commands.
 
 ## [2.8.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.7.0...v2.8.0) (2026-07-07)
 
