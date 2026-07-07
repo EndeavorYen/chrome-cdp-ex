@@ -23,9 +23,12 @@ git status --short --branch
 gh issue list --state open --limit 50
 npm run benchmark:campaign -- --rounds 10 --types mcp,killer,large-app --history ./campaign-history.jsonl --output ./campaign.json
 npm run benchmark:campaign -- --rounds 3 --types killer --adversarial-seeds alpha,beta --output ./adversarial-campaign.json
+npm run benchmark:campaign -- --rounds 3 --types mcp,killer --compare-baseline ./main-campaign.json --output ./branch-campaign.json
 ```
 
 Use `History trend` to compare against the previous campaign. Treat negative pass-rate deltas, rising average output tokens, rising max step tokens, or slower culprit steps as candidates for the next issue. If a campaign fails, inspect `issueDrafts` in the JSON output before writing a new issue by hand.
+
+Use `Regression comparison` before review when you have a saved `main` campaign summary or history record. Treat `warn` as review-required evidence and `fail` as a blocker unless the regression is intentional and documented with a stronger live result.
 
 Use adversarial seeds when the fixed smoke fixture feels too easy. A seed generates a replayable page with overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, and hidden-template traits, and failed campaign rounds keep the seed in their reproduction command.
 
@@ -48,6 +51,7 @@ npm test
 npm run lint
 npm run check:docs
 npm run benchmark:campaign -- --rounds 2 --types mcp,killer --history /tmp/chrome-cdp-ex-loop-history.jsonl
+npm run benchmark:campaign -- --rounds 2 --types mcp,killer --compare-baseline /tmp/chrome-cdp-ex-main-campaign.json
 ```
 
 Use the full test suite for merge readiness. Use a focused live campaign for the feature path, and a longer campaign when the issue changes benchmark gates, token budgets, browser isolation, or MCP behavior.
