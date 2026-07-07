@@ -268,7 +268,9 @@ npm run benchmark:generic-cdp -- --out generic-cdp-raw.json
 npm run benchmark:playwright -- --out playwright-raw.json
 npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json
 npm run benchmark:killer -- --comparison-baselines ./baselines.json
+npm run benchmark:killer -- --json --adversarial-seed round5-alpha
 npm run benchmark:campaign -- --rounds 10 --output ./campaign.json
+npm run benchmark:campaign -- --rounds 3 --types killer --adversarial-seeds alpha,beta --json
 npm run benchmark:campaign -- --rounds 10 --history ./campaign-history.jsonl
 npm run benchmark:campaign -- --types large-app --rounds 1 --json
 ```
@@ -276,6 +278,8 @@ npm run benchmark:campaign -- --types large-app --rounds 1 --json
 Use [`docs/benchmarks/measured-baselines.example.json`](benchmarks/measured-baselines.example.json) as the checked-in schema fixture for reviewers. Do not publish comparison claims from that example file; regenerate a measured `baselines.json` for the machine and browser under test.
 
 Use `benchmark:campaign` for repeated live testing. It runs sequential rounds with unique CDP and HTTP ports, alternating MCP and Killer Path by default, then reports pass rate, latency, estimated output tokens, first-useful-observation time, and the slowest / largest-output step candidates. Add `--types large-app` to run the high-intensity live SaaS stress fixture with 5000+ DOM nodes, 1000 source table rows, 200+ visible controls, bounded output checks, and truncation metadata coverage.
+
+Use `--adversarial-seed <seed>` on `benchmark:killer` when you need a replayable high-difficulty browser page. The generated page composes overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, and hidden-template traits while preserving the normal Killer Path selectors. Campaigns can pass `--adversarial-seeds alpha,beta`; failing rounds include the seed and reproduction command in `issueDrafts`.
 
 Add `--history <jsonl>` when running self-improvement loops. The campaign appends a compact record for each run and reports deltas against the previous record for pass rate, average output tokens, max step tokens, and slowest-step latency so regressions are visible before opening or merging follow-up fixes.
 

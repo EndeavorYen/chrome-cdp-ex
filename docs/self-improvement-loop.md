@@ -22,9 +22,12 @@ Start from current state, not memory:
 git status --short --branch
 gh issue list --state open --limit 50
 npm run benchmark:campaign -- --rounds 10 --types mcp,killer,large-app --history ./campaign-history.jsonl --output ./campaign.json
+npm run benchmark:campaign -- --rounds 3 --types killer --adversarial-seeds alpha,beta --output ./adversarial-campaign.json
 ```
 
 Use `History trend` to compare against the previous campaign. Treat negative pass-rate deltas, rising average output tokens, rising max step tokens, or slower culprit steps as candidates for the next issue. If a campaign fails, inspect `issueDrafts` in the JSON output before writing a new issue by hand.
+
+Use adversarial seeds when the fixed smoke fixture feels too easy. A seed generates a replayable page with overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, and hidden-template traits, and failed campaign rounds keep the seed in their reproduction command.
 
 ## 2. Open Issues
 

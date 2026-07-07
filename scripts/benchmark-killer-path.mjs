@@ -13,6 +13,17 @@ const repoRoot = resolve(__dirname, '..');
 const cdp = resolve(repoRoot, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
 const page = resolve(__dirname, 'smoke-page.html');
 const LARGE_APP_PERCEIVE_ARGS = Object.freeze(['-C', '-d', '3', '--keep-refs', '--last', '5', '--format', 'json']);
+const ADVERSARIAL_TRAITS = Object.freeze([
+  'overlay',
+  'stale-ref',
+  'iframe',
+  'shadow-dom',
+  'spa-route',
+  'slow-network',
+  'auth-wall',
+  'large-table',
+  'hidden-template',
+]);
 
 const MUTATING_COMMANDS = new Set([
   'click', 'fill', 'type', 'press', 'select', 'scroll', 'nav', 'back', 'forward',
@@ -272,6 +283,47 @@ function benchmarkSessionStability(steps) {
     statusOk,
     reportOk,
     failedStep: failed?.name || (!statusOk && probes.length ? 'stability-status' : (!reportOk && probes.length ? 'stability-report' : null)),
+  };
+}
+
+function benchmarkAdversarialScenario(scenario = null, steps = []) {
+  if (!scenario) return { enabled: false };
+  const traits = Array.isArray(scenario.traits) ? scenario.traits : [];
+  const stepNames = new Set(steps.map(step => step.name));
+  const exercised = {
+    'slow-network': stepNames.has('adversarial-slow-network'),
+    'large-table': stepNames.has('adversarial-table'),
+    'shadow-dom': stepNames.has('adversarial-shadow'),
+  };
+  const exercisedTraits = traits.filter(trait => exercised[trait] === true);
+  return {
+    enabled: true,
+    schema: scenario.schema || 'chrome-cdp-ex.adversarial-scenario.v1',
+    seed: scenario.seed || null,
+    targetClass: scenario.targetClass || null,
+    traits,
+    replayCommand: scenario.replayCommand || null,
+    generatedCoverage: {
+      total: ADVERSARIAL_TRAITS.length,
+      covered: traits.filter(trait => ADVERSARIAL_TRAITS.includes(trait)).length,
+      missing: ADVERSARIAL_TRAITS.filter(trait => !traits.includes(trait)),
+      rate: ADVERSARIAL_TRAITS.length ? traits.filter(trait => ADVERSARIAL_TRAITS.includes(trait)).length / ADVERSARIAL_TRAITS.length : null,
+    },
+    exercisedCoverage: {
+      total: Object.keys(exercised).filter(trait => traits.includes(trait)).length,
+      covered: exercisedTraits.length,
+      missing: Object.entries(exercised)
+        .filter(([trait, covered]) => traits.includes(trait) && covered !== true)
+        .map(([trait]) => trait),
+      rate: Object.keys(exercised).some(trait => traits.includes(trait))
+        ? exercisedTraits.length / Object.keys(exercised).filter(trait => traits.includes(trait)).length
+        : null,
+    },
+    scale: {
+      tableRows: scenario.tableRows ?? null,
+      hiddenTemplateNodes: scenario.hiddenTemplateNodes ?? null,
+      slowNetworkMs: scenario.slowNetworkMs ?? null,
+    },
   };
 }
 
@@ -1590,6 +1642,32 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
       recommendation: 'Run the stability wait/status/report probe, or use --stability-ms for a longer dogfood window.',
     }),
   ];
+  if (metrics.adversarialScenario?.enabled === true) {
+    const adversarial = metrics.adversarialScenario;
+    criteria.push(
+      gateCriterion({
+        name: 'adversarial-scenario-generated',
+        actual: adversarial.generatedCoverage?.rate ?? null,
+        operator: '>=',
+        limit: 1,
+        recommendation: 'Generated adversarial scenarios must compose overlay, stale-ref, iframe, shadow DOM, SPA route, slow network, auth wall, large table, and hidden-template traits.',
+      }),
+      gateCriterion({
+        name: 'adversarial-scenario-exercised',
+        actual: adversarial.exercisedCoverage?.rate ?? null,
+        operator: '>=',
+        limit: 1,
+        recommendation: 'Adversarial runs must exercise at least the live-only slow-network, large-table, and shadow-DOM probes when those traits are generated.',
+      }),
+      gateCriterion({
+        name: 'adversarial-scenario-replay',
+        actual: Boolean(adversarial.seed && adversarial.replayCommand),
+        operator: '===',
+        limit: true,
+        recommendation: 'Adversarial failures must record a seed and replay command for issue-ready diagnostics.',
+      }),
+    );
+  }
   const passedCount = criteria.filter(criterion => criterion.passed).length;
   return {
     schema: 'chrome-cdp-ex.benchmark-gate.v1',
@@ -1709,6 +1787,178 @@ export function buildBenchmarkComparison(summary, baselineSet = DEFAULT_COMPARIS
       };
     }),
   };
+}
+
+function hashAdversarialSeed(seed = '') {
+  let hash = 2166136261;
+  for (const char of String(seed || 'default')) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function normalizeAdversarialSeed(seed = '') {
+  const normalized = String(seed || '').trim();
+  return normalized || 'default';
+}
+
+function normalizeAdversarialTraits(traits = null) {
+  const requested = Array.isArray(traits)
+    ? traits
+    : String(traits || '')
+      .split(',')
+      .map(trait => trait.trim())
+      .filter(Boolean);
+  const selected = requested.length ? requested : ADVERSARIAL_TRAITS;
+  const invalid = selected.filter(trait => !ADVERSARIAL_TRAITS.includes(trait));
+  if (invalid.length) throw new Error(`unknown adversarial trait(s): ${invalid.join(', ')}`);
+  return [...new Set(selected)];
+}
+
+function htmlEscape(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+export function buildAdversarialScenario(seed = 'default', opts = {}) {
+  const normalizedSeed = normalizeAdversarialSeed(seed);
+  const traits = normalizeAdversarialTraits(opts.traits);
+  const hash = hashAdversarialSeed(normalizedSeed);
+  const tableRows = opts.tableRows ?? (traits.includes('large-table') ? 180 + (hash % 90) : 12);
+  const hiddenTemplateNodes = opts.hiddenTemplateNodes ?? (traits.includes('hidden-template') ? 120 + (hash % 80) : 0);
+  const slowNetworkMs = opts.slowNetworkMs ?? (traits.includes('slow-network') ? 450 + (hash % 350) : 0);
+  const routeName = `route-${(hash % 997).toString(36)}`;
+  const targetClass = [
+    traits.includes('auth-wall') ? 'auth' : null,
+    traits.includes('iframe') ? 'iframe' : null,
+    traits.includes('shadow-dom') ? 'shadow' : null,
+    traits.includes('large-table') ? 'table' : null,
+    traits.includes('slow-network') ? 'slow-network' : null,
+  ].filter(Boolean).join('+') || 'base';
+  const scenario = {
+    schema: 'chrome-cdp-ex.adversarial-scenario.v1',
+    seed: normalizedSeed,
+    hash,
+    targetClass,
+    traits,
+    tableRows,
+    hiddenTemplateNodes,
+    slowNetworkMs,
+    routeName,
+    path: `/adversarial-${encodeURIComponent(normalizedSeed)}.html`,
+    replayCommand: `npm run benchmark:killer -- --json --adversarial-seed ${JSON.stringify(normalizedSeed)}`,
+  };
+  return {
+    ...scenario,
+    html: buildAdversarialScenarioHtml(scenario),
+  };
+}
+
+export function buildAdversarialScenarioHtml(scenario = { seed: 'default', traits: ADVERSARIAL_TRAITS }) {
+  const traits = new Set(normalizeAdversarialTraits(scenario.traits));
+  const seed = htmlEscape(normalizeAdversarialSeed(scenario.seed));
+  const tableRows = Math.max(1, Number(scenario.tableRows || 12));
+  const hiddenTemplateNodes = Math.max(0, Number(scenario.hiddenTemplateNodes || 0));
+  const slowNetworkMs = Math.max(0, Number(scenario.slowNetworkMs || 0));
+  const routeName = htmlEscape(scenario.routeName || 'route');
+  const renderedTableRows = Math.min(tableRows, 24);
+  const tableBody = Array.from({ length: renderedTableRows }, (_, index) => {
+    const n = index + 1;
+    return `<tr><td>acct-${n}</td><td>${n % 5 === 0 ? 'review' : 'active'}</td><td>team-${(n % 7) + 1}</td></tr>`;
+  }).join('\n');
+  const hiddenNodes = Array.from({ length: hiddenTemplateNodes }, (_, index) => (
+    `<div data-hidden-template-node="${index + 1}">hidden adversarial template ${index + 1}</div>`
+  )).join('\n');
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>chrome-cdp-ex adversarial ${seed}</title>
+  <style>
+    body { margin: 0; min-height: 2200px; font-family: system-ui, sans-serif; background: #f8fafc; color: #172033; }
+    main { max-width: 940px; padding: 28px; }
+    button, input { font: inherit; margin: 4px; padding: 8px 12px; }
+    #combat-log { height: 260px; overflow: auto; border: 1px solid #cbd5e1; background: white; padding: 10px; }
+    #auth-panel { border: 1px solid #86efac; background: #f0fdf4; margin: 14px 0; padding: 12px; }
+    #custom-clickable { display: inline-block; cursor: pointer; padding: 8px 12px; background: #fde68a; border-radius: 6px; }
+    #scenario-table { width: 100%; border-collapse: collapse; margin-top: 18px; }
+    #scenario-table td, #scenario-table th { border: 1px solid #cbd5e1; padding: 4px 6px; }
+    [role="dialog"] { position: fixed; z-index: 30; top: 18%; left: 50%; transform: translateX(-50%); background: white; border: 2px solid #172033; box-shadow: 0 20px 60px #0005; padding: 18px; }
+    .route-panel { border: 1px solid #93c5fd; background: #eff6ff; padding: 10px; margin: 12px 0; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body data-adversarial-seed="${seed}" data-adversarial-traits="${htmlEscape((scenario.traits || []).join(','))}">
+  <main>
+    <h1>Adversarial browser scenario ${seed}</h1>
+    <p id="scenario-meta">traits: ${htmlEscape((scenario.traits || []).join(', '))}; tableRows=${tableRows}; hiddenTemplateNodes=${hiddenTemplateNodes}; slowNetworkMs=${slowNetworkMs}</p>
+    <input id="cmd" aria-label="command input" placeholder="look trainer">
+    <button id="combat" type="button">Run combat</button>
+    <button id="diagnostic" type="button">Run diagnostic</button>
+    <button id="noop" type="button">No visible change</button>
+    <div id="custom-clickable" onclick="appendLog('custom clickable used')">Custom clickable div</div>
+    ${traits.has('auth-wall') ? '<section id="auth-panel" role="region" aria-label="Authenticated guarded dashboard"><h2>Authenticated dashboard</h2><p id="auth-state">guarded dashboard authenticated</p><button id="refresh-account" type="button">Refresh account</button></section>' : '<section id="auth-panel" role="region" aria-label="Dashboard"><h2>Dashboard</h2><p id="auth-state">dashboard ready</p><button id="refresh-account" type="button">Refresh account</button></section>'}
+    ${traits.has('spa-route') ? `<section class="route-panel" aria-label="SPA route"><h2>SPA route</h2><p id="route-state">route pending ${routeName}</p><button id="route-button" type="button">Navigate route</button></section>` : ''}
+    <section role="region" aria-label="Event log">
+      <h2>Event log</h2>
+      <div id="combat-log"></div>
+    </section>
+    ${traits.has('shadow-dom') ? '<shadow-action-card id="shadow-card"></shadow-action-card>' : ''}
+    ${traits.has('iframe') ? '<iframe title="Adversarial child frame" name="adversarial-child" srcdoc="<main><h2>Adversarial child frame</h2><button id=&quot;child-action&quot;>Child action</button><p id=&quot;child-status&quot;>child:none</p><script>document.getElementById(&quot;child-action&quot;).addEventListener(&quot;click&quot;,()=>{document.getElementById(&quot;child-status&quot;).textContent=&quot;success: child clicked&quot;;});</script></main>"></iframe>' : ''}
+    ${traits.has('large-table') ? `<table id="scenario-table" data-source-rows="${tableRows}"><caption>Adversarial large table ${tableRows} rows, renderedRows=${renderedTableRows}</caption><thead><tr><th>account</th><th>status</th><th>owner</th></tr></thead><tbody>${tableBody}<tr><td colspan="3">... ${Math.max(0, tableRows - renderedTableRows)} rows omitted in fixture DOM</td></tr></tbody></table>` : ''}
+    ${traits.has('hidden-template') ? `<template id="adversarial-template">${hiddenNodes}</template><section id="hidden-templates" hidden>${hiddenNodes}</section>` : ''}
+  </main>
+  ${traits.has('overlay') ? '<div role="dialog" aria-modal="true" aria-label="Adversarial MOTD" id="motd"><p>Adversarial modal blocks first action</p><button aria-label="Close" id="close-modal" type="button">Close</button></div>' : ''}
+  <script>
+    const log = document.getElementById('combat-log');
+    function appendLog(text) {
+      const p = document.createElement('p');
+      p.textContent = text;
+      log.appendChild(p);
+      log.scrollTop = log.scrollHeight;
+    }
+    window.appendLog = appendLog;
+    for (let i = 1; i <= 80; i++) appendLog('history #' + i);
+    ${traits.has('shadow-dom') ? "customElements.define('shadow-action-card', class extends HTMLElement { connectedCallback() { const root = this.attachShadow({ mode: 'open' }); root.innerHTML = '<section aria-label=\"Shadow DOM task\"><button id=\"shadow-action\" type=\"button\">Shadow action</button><p id=\"shadow-status\">shadow:none</p></section>'; root.getElementById('shadow-action').addEventListener('click', () => { root.getElementById('shadow-status').textContent = 'shadow:clicked'; appendLog('shadow action clicked'); }); } });" : ''}
+    document.getElementById('combat').addEventListener('click', () => {
+      appendLog('combat started');
+      setTimeout(() => appendLog('round 1'), 80);
+      setTimeout(() => appendLog('combat victory'), 180);
+    });
+    document.getElementById('diagnostic').addEventListener('click', async () => {
+      appendLog('diagnostic started');
+      try {
+        const response = await fetch('/api/slow?seed=${encodeURIComponent(scenario.seed || 'default')}&delay=${slowNetworkMs}', { method: 'POST' });
+        appendLog('diagnostic network ' + response.status);
+      } catch {
+        appendLog('diagnostic network failed');
+      }
+    });
+    document.getElementById('noop').addEventListener('click', () => document.getElementById('noop').blur());
+    document.getElementById('refresh-account').addEventListener('click', () => {
+      document.getElementById('auth-state').textContent = 'guarded dashboard refreshed';
+      appendLog('authenticated dashboard refreshed');
+    });
+    const modalClose = document.getElementById('close-modal');
+    if (modalClose) modalClose.addEventListener('click', () => {
+      document.getElementById('motd').hidden = true;
+      appendLog('modal dismissed');
+    });
+    const routeButton = document.getElementById('route-button');
+    if (routeButton) routeButton.addEventListener('click', () => {
+      location.hash = '${routeName}';
+      document.getElementById('route-state').textContent = 'route active ${routeName}';
+      appendLog('spa route ${routeName}');
+    });
+    window.addEventListener('hashchange', () => appendLog('hash route ' + location.hash.slice(1)));
+  </script>
+</body>
+</html>`;
 }
 
 export function buildLargeAppStressFixture({
@@ -1917,7 +2167,7 @@ export function buildLargeAppStressHtml({
 </html>`;
 }
 
-export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, endedAt, target = '', steps = [], comparisonBaselineSet = DEFAULT_COMPARISON_BASELINE_SET } = {}) {
+export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, endedAt, target = '', steps = [], comparisonBaselineSet = DEFAULT_COMPARISON_BASELINE_SET, adversarialScenario = null } = {}) {
   const normalizedSteps = steps.map((step) => {
     const text = outputText(step);
     const model = parseJsonOutput(text);
@@ -2021,6 +2271,7 @@ export function summarizeBenchmarkRun({ scenario = 'killer-path', startedAt, end
       differentiatorHandoffCoverage: benchmarkDifferentiatorHandoffCoverage(normalizedSteps),
       staleRefRecovery: benchmarkStaleRefRecovery(normalizedSteps),
       sessionStability: benchmarkSessionStability(normalizedSteps),
+      adversarialScenario: benchmarkAdversarialScenario(adversarialScenario, normalizedSteps),
       largeAppStress: scenario === 'large-app-stress'
         ? benchmarkLargeAppStress(normalizedSteps)
         : { enabled: false },
@@ -2088,8 +2339,14 @@ export function formatBenchmarkReport(summary) {
     summary.metrics.sessionStability?.enabled
       ? `Session stability: ${summary.metrics.sessionStability.success ? 'yes' : 'no'} (${summary.metrics.sessionStability.durationMs} ms, ${summary.metrics.sessionStability.commandCalls} probes)`
       : 'Session stability: not measured',
+    summary.metrics.adversarialScenario?.enabled
+      ? `Adversarial scenario: seed ${summary.metrics.adversarialScenario.seed}, class ${summary.metrics.adversarialScenario.targetClass}, traits ${summary.metrics.adversarialScenario.generatedCoverage.covered}/${summary.metrics.adversarialScenario.generatedCoverage.total}, exercised ${summary.metrics.adversarialScenario.exercisedCoverage.covered}/${summary.metrics.adversarialScenario.exercisedCoverage.total}`
+      : 'Adversarial scenario: not measured',
     '',
   ];
+  if (summary.metrics.adversarialScenario?.enabled && summary.metrics.adversarialScenario.replayCommand) {
+    lines.push(`Adversarial replay: ${summary.metrics.adversarialScenario.replayCommand}`, '');
+  }
   if (failedGateCriteria.length) {
     lines.push('Gate failures:');
     for (const criterion of failedGateCriteria) {
@@ -2194,7 +2451,7 @@ export function buildKillerPathEntryPlan(url) {
   ];
 }
 
-export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entrySteps = 'doctor-list', navUrl = null } = {}) {
+export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entrySteps = 'doctor-list', navUrl = null, adversarial = false } = {}) {
   const hmrMutationScript = '(() => { if (typeof appendLog === "function") { appendLog("hmr panel ready"); return "hmr-added"; } const log = document.querySelector("#combat-log"); const el = document.createElement("p"); el.id = "hmr-panel"; el.textContent = "hmr panel ready"; log?.appendChild(el); if (log) log.scrollTop = log.scrollHeight; return "hmr-added"; })()';
   const actionEvidenceNavUrl = benchmarkHashUrl(navUrl, 'after-action-evidence');
   const plan = [];
@@ -2224,6 +2481,11 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
     { args: ['perceive', target, '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-baseline' },
     { args: ['eval', target, hmrMutationScript], name: 'hmr-mutate' },
     { args: ['perceive', target, '--diff', '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-diff' },
+    ...(adversarial ? [
+      { args: ['click', target, '#diagnostic', '--format', 'json', '--compact'], name: 'adversarial-slow-network', benchmarkProbe: true, timeout: 10000 },
+      { args: ['table', target, '#scenario-table'], name: 'adversarial-table', benchmarkProbe: true },
+      { args: ['perceive', target, '-s', 'shadow-action-card', '-d', '5'], name: 'adversarial-shadow', benchmarkProbe: true },
+    ] : []),
     { args: ['inject', target, '--css', '#combat-log { outline: 2px solid rgb(37, 99, 235); }', '--format', 'json', '--compact'] },
     ...(actionEvidenceNavUrl ? [{ args: ['nav', target, actionEvidenceNavUrl, '--format', 'json', '--compact'] }] : []),
     { args: ['perceive', target, '-s', '#cmd', '-d', '4'], name: 'stale-ref-setup' },
@@ -2390,7 +2652,7 @@ export async function runLargeAppStressBenchmark(opts = {}) {
 }
 
 export function parseBenchmarkArgs(argv = []) {
-  const opts = { json: false, stabilityMs: 1000, comparisonBaselinesPath: null };
+  const opts = { json: false, stabilityMs: 1000, comparisonBaselinesPath: null, adversarialSeed: null, adversarialTraits: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--json') {
       opts.json = true;
@@ -2399,6 +2661,10 @@ export function parseBenchmarkArgs(argv = []) {
       opts.stabilityMs = Number.isFinite(value) && value >= 0 ? value : opts.stabilityMs;
     } else if (argv[i] === '--comparison-baselines' || argv[i] === '--baseline-file') {
       opts.comparisonBaselinesPath = argv[++i] || null;
+    } else if (argv[i] === '--adversarial-seed') {
+      opts.adversarialSeed = normalizeAdversarialSeed(argv[++i]);
+    } else if (argv[i] === '--adversarial-traits') {
+      opts.adversarialTraits = normalizeAdversarialTraits(argv[++i]);
     }
   }
   return opts;
@@ -2414,6 +2680,8 @@ export async function runKillerPathBenchmark(opts = {}) {
     json = false,
     stabilityMs = 1000,
     comparisonBaselinesPath = null,
+    adversarialSeed = null,
+    adversarialTraits = null,
   } = opts;
   if (!existsSync(cdp)) throw new Error(`cdp script not found: ${cdp}`);
   if (!existsSync(page)) throw new Error(`smoke page not found: ${page}`);
@@ -2435,10 +2703,26 @@ export async function runKillerPathBenchmark(opts = {}) {
   };
 
   try {
+    const adversarialScenario = adversarialSeed
+      ? buildAdversarialScenario(adversarialSeed, { traits: adversarialTraits })
+      : null;
     server = createServer((req, res) => {
-      if (req.url === '/' || req.url === '/smoke-page.html') {
+      if (adversarialScenario && (req.url === '/' || req.url === adversarialScenario.path)) {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(adversarialScenario.html);
+        return;
+      }
+      if (!adversarialScenario && (req.url === '/' || req.url === '/smoke-page.html')) {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         res.end(readFileSync(page));
+        return;
+      }
+      if (adversarialScenario && req.url?.startsWith('/api/slow')) {
+        const delay = Math.max(0, Math.min(2000, Number(new URL(req.url, 'http://127.0.0.1').searchParams.get('delay') || adversarialScenario.slowNetworkMs || 0)));
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: true, seed: adversarialScenario.seed, delay }));
+        }, delay);
         return;
       }
       if (req.url?.startsWith('/api/fail')) {
@@ -2454,7 +2738,9 @@ export async function runKillerPathBenchmark(opts = {}) {
       server.listen(serverPort, '127.0.0.1', resolveServer);
     });
 
-    const url = `http://127.0.0.1:${serverPort}/smoke-page.html`;
+    const url = adversarialScenario
+      ? `http://127.0.0.1:${serverPort}${adversarialScenario.path}`
+      : `http://127.0.0.1:${serverPort}/smoke-page.html`;
     browser = spawn(browserPath, [
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${profileDir}`,
@@ -2509,7 +2795,7 @@ export async function runKillerPathBenchmark(opts = {}) {
     }
     if (!target) throw new Error('open did not produce a benchmark target');
 
-    for (const planned of buildKillerPathBenchmarkPlan(target, { stabilityMs, entrySteps: 'none', navUrl: url })) {
+    for (const planned of buildKillerPathBenchmarkPlan(target, { stabilityMs, entrySteps: 'none', navUrl: url, adversarial: Boolean(adversarialScenario) })) {
       const step = await runStep({ ...planned, env, steps });
       if (planned.expectedFailure) {
         assertExpectedFailure(step, planned.expectedPattern);
@@ -2524,6 +2810,7 @@ export async function runKillerPathBenchmark(opts = {}) {
       endedAt: Date.now(),
       target,
       steps,
+      adversarialScenario,
       comparisonBaselineSet: comparisonBaselinesPath ? loadComparisonBaselineFile(comparisonBaselinesPath) : DEFAULT_COMPARISON_BASELINE_SET,
     });
     summary.browser = browserName;

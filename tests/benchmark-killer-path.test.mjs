@@ -4,6 +4,8 @@ import { resolve } from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildAdversarialScenario,
+  buildAdversarialScenarioHtml,
   buildBenchmarkGate,
   buildLargeAppStressFixture,
   buildKillerPathEntryPlan,
@@ -55,6 +57,95 @@ function sampleActionReceipt(overrides = {}) {
 }
 
 describe('benchmark killer path helpers', () => {
+  it('builds replayable adversarial scenarios with high-difficulty traits', () => {
+    const scenario = buildAdversarialScenario('round5-alpha', {
+      traits: ['overlay', 'stale-ref', 'iframe', 'shadow-dom', 'spa-route', 'slow-network', 'auth-wall', 'large-table', 'hidden-template'],
+      tableRows: 222,
+      hiddenTemplateNodes: 77,
+      slowNetworkMs: 650,
+    });
+    const html = buildAdversarialScenarioHtml(scenario);
+
+    expect(scenario).toMatchObject({
+      schema: 'chrome-cdp-ex.adversarial-scenario.v1',
+      seed: 'round5-alpha',
+      targetClass: 'auth+iframe+shadow+table+slow-network',
+      tableRows: 222,
+      hiddenTemplateNodes: 77,
+      slowNetworkMs: 650,
+    });
+    expect(scenario.traits).toEqual([
+      'overlay',
+      'stale-ref',
+      'iframe',
+      'shadow-dom',
+      'spa-route',
+      'slow-network',
+      'auth-wall',
+      'large-table',
+      'hidden-template',
+    ]);
+    expect(scenario.replayCommand).toContain('--adversarial-seed "round5-alpha"');
+    expect(html).toContain('data-adversarial-seed="round5-alpha"');
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('name="adversarial-child"');
+    expect(html).toContain('attachShadow');
+    expect(html).toContain('route pending');
+    expect(html).toContain('/api/slow');
+    expect(html).toContain('Authenticated guarded dashboard');
+    expect(html).toContain('id="scenario-table"');
+    expect(html).toContain('data-hidden-template-node="1"');
+    expect(html).toContain('id="cmd"');
+    expect(html).toContain('id="combat"');
+  });
+
+  it('adds adversarial probes to the killer path only when requested', () => {
+    const normal = buildKillerPathBenchmarkPlan('AABBCCDD', { entrySteps: 'none', stabilityMs: 0 });
+    const adversarial = buildKillerPathBenchmarkPlan('AABBCCDD', { entrySteps: 'none', stabilityMs: 0, adversarial: true });
+
+    expect(normal.map(step => step.name)).not.toEqual(expect.arrayContaining([
+      'adversarial-slow-network',
+      'adversarial-table',
+      'adversarial-shadow',
+    ]));
+    expect(adversarial).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'adversarial-slow-network', args: ['click', 'AABBCCDD', '#diagnostic', '--format', 'json', '--compact'], benchmarkProbe: true }),
+      expect.objectContaining({ name: 'adversarial-table', args: ['table', 'AABBCCDD', '#scenario-table'], benchmarkProbe: true }),
+      expect.objectContaining({ name: 'adversarial-shadow', args: ['perceive', 'AABBCCDD', '-s', 'shadow-action-card', '-d', '5'], benchmarkProbe: true }),
+    ]));
+  });
+
+  it('summarizes adversarial seed coverage and replay metadata', () => {
+    const scenario = buildAdversarialScenario('round5-beta');
+    const summary = summarizeBenchmarkRun({
+      scenario: 'killer-path',
+      startedAt: 0,
+      endedAt: 100,
+      target: 'AABBCCDD',
+      adversarialScenario: scenario,
+      steps: [
+        { name: 'adversarial-slow-network', command: ['click', 'AABBCCDD', '#diagnostic'], startedAt: 0, endedAt: 20, status: 0, stdout: 'click: dispatched', stderr: '' },
+        { name: 'adversarial-table', command: ['table', 'AABBCCDD', '#scenario-table'], startedAt: 20, endedAt: 40, status: 0, stdout: 'account\tstatus\nacct-1\tactive', stderr: '' },
+        { name: 'adversarial-shadow', command: ['perceive', 'AABBCCDD', '-s', 'shadow-action-card'], startedAt: 40, endedAt: 60, status: 0, stdout: 'Page:\n[button] Shadow action', stderr: '' },
+      ],
+    });
+
+    expect(summary.metrics.adversarialScenario).toMatchObject({
+      enabled: true,
+      seed: 'round5-beta',
+      generatedCoverage: { total: 9, covered: 9, missing: [], rate: 1 },
+      exercisedCoverage: { total: 3, covered: 3, missing: [], rate: 1 },
+    });
+    expect(summary.metrics.adversarialScenario.replayCommand).toContain('--adversarial-seed "round5-beta"');
+    expect(buildBenchmarkGate(summary).criteria).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'adversarial-scenario-generated', passed: true }),
+      expect.objectContaining({ name: 'adversarial-scenario-exercised', passed: true }),
+      expect.objectContaining({ name: 'adversarial-scenario-replay', passed: true }),
+    ]));
+    expect(formatBenchmarkReport(summary)).toContain('Adversarial scenario: seed round5-beta');
+    expect(formatBenchmarkReport(summary)).toContain('Adversarial replay: npm run benchmark:killer -- --json --adversarial-seed "round5-beta"');
+  });
+
   it('summarizes command calls, timing, token estimates, and action evidence', () => {
     const steps = [
       {
@@ -2161,11 +2252,22 @@ describe('benchmark killer path helpers', () => {
       json: true,
       stabilityMs: 1200000,
       comparisonBaselinesPath: '/tmp/baselines.json',
+      adversarialSeed: null,
+      adversarialTraits: null,
     });
     expect(parseBenchmarkArgs([])).toEqual({
       json: false,
       stabilityMs: 1000,
       comparisonBaselinesPath: null,
+      adversarialSeed: null,
+      adversarialTraits: null,
+    });
+    expect(parseBenchmarkArgs(['--adversarial-seed', 'round5-gamma', '--adversarial-traits', 'overlay,iframe'])).toEqual({
+      json: false,
+      stabilityMs: 1000,
+      comparisonBaselinesPath: null,
+      adversarialSeed: 'round5-gamma',
+      adversarialTraits: ['overlay', 'iframe'],
     });
   });
 
