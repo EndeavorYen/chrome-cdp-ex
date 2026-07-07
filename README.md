@@ -70,7 +70,7 @@ The benchmark measures the agent path this tool is built for: see the page, act,
 | Proof point | Latest local run |
 |---|---:|
 | Quality gate | **29/29 pass** |
-| Golden path complete | **5.330s** |
+| Golden path complete | **5.327s** |
 | Useful observation tokens | **1,569** |
 | Action evidence coverage | **100%** |
 | Differentiator success rate | **100%** |
@@ -177,20 +177,20 @@ Use the live benchmark before making performance or adoption claims. [View the v
 
 ### Latest dogfood snapshot
 
-Local run on 2026-07-06 against the same smoke page. Timing starts after CDP is reachable so browser cold-start variance is excluded. Publish competitor comparison deltas only after rerunning with measured `--comparison-baselines`.
+Local run on 2026-07-07 against the same smoke page. Timing starts after CDP is reachable so browser cold-start variance is excluded. Publish competitor comparison deltas only after rerunning with measured `--comparison-baselines`.
 
 | Metric | Latest run |
 |---|---:|
-| Total time | 9.293s |
+| Total time | 9.325s |
 | Command calls | 24 |
-| First useful observation | 2.184s |
-| First action evidence | 3.013s |
-| Golden path complete | 5.330s |
+| First useful observation | 2.192s |
+| First action evidence | 3.020s |
+| Golden path complete | 5.327s |
 | Estimated output tokens | 19,177 |
 | Useful observation tokens | 1,569 |
 | Action evidence coverage | 100% (9/9 mutating commands) |
 | Differentiator success rate | 100% |
-| Stale-ref recovery | 67ms, 1/1 recovered |
+| Stale-ref recovery | 65ms, 1/1 recovered |
 | Quality gate | 29/29 pass |
 
 Regenerate this table after meaningful command, perception, or benchmark changes:
