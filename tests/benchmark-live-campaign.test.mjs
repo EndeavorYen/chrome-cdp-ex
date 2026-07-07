@@ -1,6 +1,10 @@
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { resolve } from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  appendCampaignHistory,
   buildCampaignRoundPlan,
   compactCampaignRound,
   formatCampaignReport,
@@ -19,6 +23,7 @@ describe('live campaign benchmark helpers', () => {
       '--settle-ms', '0',
       '--json',
       '--output', '/tmp/campaign.json',
+      '--history', '/tmp/campaign-history.jsonl',
     ]);
 
     expect(opts).toMatchObject({
@@ -30,6 +35,7 @@ describe('live campaign benchmark helpers', () => {
       settleMs: 0,
       json: true,
       output: '/tmp/campaign.json',
+      history: '/tmp/campaign-history.jsonl',
     });
     expect(buildCampaignRoundPlan(opts)).toEqual([
       { round: 1, type: 'mcp', port: 9500, serverPort: 43000 },
@@ -237,5 +243,112 @@ describe('live campaign benchmark helpers', () => {
       avgTruncationMetadataCoverageRate: 0.5,
     });
     expect(formatCampaignReport(summary)).toContain('large-app stress: 1/2 pass, command coverage 50%, output budgets 50%, truncation metadata 50%');
+  });
+
+  it('appends compact campaign history and reports previous-run deltas', () => {
+    const dir = mkdtempSync(resolve(tmpdir(), 'chrome-cdp-ex-campaign-history-'));
+    const historyPath = resolve(dir, 'history.jsonl');
+    try {
+      const first = summarizeCampaignRun({
+        startedAt: '2026-07-08T00:00:00.000Z',
+        endedAt: '2026-07-08T00:00:04.000Z',
+        plan: [{}, {}],
+        rounds: [
+          {
+            round: 1,
+            type: 'mcp',
+            success: true,
+            metrics: {
+              estimatedOutputTokens: 6000,
+              maxStepEstimatedTokens: 2400,
+              maxStepDurationMs: 1200,
+              maxResponsiveStepDurationMs: 1100,
+            },
+            culprit: { slowestStep: { name: 'open' }, biggestOutputStep: { name: 'report' } },
+          },
+          {
+            round: 2,
+            type: 'killer',
+            success: true,
+            metrics: {
+              estimatedOutputTokens: 16000,
+              maxStepEstimatedTokens: 3000,
+              maxStepDurationMs: 1400,
+              maxResponsiveStepDurationMs: 1300,
+            },
+            culprit: { slowestStep: { name: 'report' }, biggestOutputStep: { name: 'report' } },
+          },
+        ],
+      });
+      expect(appendCampaignHistory(historyPath, first)).toMatchObject({
+        previous: null,
+        current: {
+          schema: 'chrome-cdp-ex.live-campaign-history.v1',
+          metrics: {
+            passRate: 1,
+            avgEstimatedOutputTokens: 11000,
+            maxStepEstimatedTokens: 3000,
+            slowestStepMs: 1400,
+          },
+        },
+        delta: null,
+      });
+
+      const second = summarizeCampaignRun({
+        startedAt: '2026-07-08T00:05:00.000Z',
+        endedAt: '2026-07-08T00:05:04.000Z',
+        plan: [{}, {}],
+        rounds: [
+          {
+            round: 1,
+            type: 'mcp',
+            success: true,
+            metrics: {
+              estimatedOutputTokens: 7000,
+              maxStepEstimatedTokens: 2600,
+              maxStepDurationMs: 1500,
+              maxResponsiveStepDurationMs: 1400,
+            },
+            culprit: { slowestStep: { name: 'open' }, biggestOutputStep: { name: 'report' } },
+          },
+          {
+            round: 2,
+            type: 'killer',
+            success: false,
+            metrics: {
+              estimatedOutputTokens: 19000,
+              maxStepEstimatedTokens: 3600,
+              maxStepDurationMs: 1800,
+              maxResponsiveStepDurationMs: 1700,
+            },
+            culprit: { slowestStep: { name: 'click' }, biggestOutputStep: { name: 'action' } },
+          },
+        ],
+      });
+      second.history = appendCampaignHistory(historyPath, second);
+
+      expect(second.history.delta).toMatchObject({
+        passRate: -0.5,
+        avgEstimatedOutputTokens: 2000,
+        maxStepEstimatedTokens: 600,
+        slowestStepMs: 400,
+        slowestStepChanged: { from: 'report', to: 'click' },
+      });
+      expect(formatCampaignReport(second)).toContain('History trend: pass rate -50pp, avg output +2000 tokens, max step +600 tokens, slowest step +400 ms');
+      expect(formatCampaignReport(second)).toContain('slowest step changed: report -> click');
+      const records = readFileSync(historyPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(records).toHaveLength(2);
+      expect(records[1]).toMatchObject({
+        schema: 'chrome-cdp-ex.live-campaign-history.v1',
+        metrics: {
+          passRate: 0.5,
+          avgEstimatedOutputTokens: 13000,
+          maxStepEstimatedTokens: 3600,
+          slowestStepMs: 1800,
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
