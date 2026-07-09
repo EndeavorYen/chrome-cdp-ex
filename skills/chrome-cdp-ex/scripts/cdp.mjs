@@ -8291,6 +8291,10 @@ function formatTextNoMatchError(parsed = {}, opts = {}) {
 function textPageScript(opts) {
   const { selectors = [], auto = false, exclude = null, root = null } = opts || {};
   const extraExcludes = exclude ? exclude.split(',').map(s => s.trim()).filter(Boolean) : [];
+  // Explicit selectors default to document-wide search so they match eval's
+  // document.querySelector behavior. Full-page / --auto extraction still uses
+  // auto root candidates to reduce nav/shell noise.
+  const defaultRoot = (selectors.length > 0 && !auto) ? 'document' : 'auto';
   return `(function() {
     const STRIP = ['script','style','noscript','svg','link','meta','template'];
     const AUTO_NOISE = ['nav','aside','footer','[role="navigation"]','[role="complementary"]','[role="contentinfo"]'];
@@ -8307,7 +8311,7 @@ function textPageScript(opts) {
       return [s];
     }
     function pickRoot() {
-      const setting = ${JSON.stringify(root || 'auto')};
+      const setting = ${JSON.stringify(root || defaultRoot)};
       if (!setting || setting === 'auto' || setting === 'default') {
         for (const sel of ROOT_CANDIDATES) {
           const found = safeQuery(document, sel);
@@ -10203,8 +10207,14 @@ function doctorWizardModel(checks) {
     status = 'waiting for a debuggable page';
     currentStep = 'cdp open https://example.com';
   } else if (permission?.status === 'WARN') {
-    status = 'waiting for browser debugging approval';
-    currentStep = `cdp perceive ${target} -C -d 8  # click Allow if Chrome asks`;
+    const severity = doctorCheckSeverity(permission);
+    if (severity === 'advisory') {
+      status = 'usable with advisory notes (CDP reachable)';
+      currentStep = `cdp list; cdp perceive ${target} -C -d 8`;
+    } else {
+      status = 'waiting for browser debugging approval';
+      currentStep = `cdp perceive ${target} -C -d 8  # click Allow if Chrome asks`;
+    }
   }
 
   return {
@@ -10311,6 +10321,18 @@ function doctorRecommendationModel(checks) {
     };
   }
   if (permission?.status === 'WARN') {
+    const severity = doctorCheckSeverity(permission);
+    if (severity === 'advisory') {
+      return {
+        ...base,
+        stage: 'perceive',
+        run: `cdp perceive ${target} -C -d 8`,
+        ask: null,
+        after: `cdp click ${target} @ref  # or: cdp fill ${target} <selector> <text>`,
+        requiresUserAction: false,
+        reason: permission.detail || 'CDP is usable; permission approval is advisory until a tab daemon attaches.',
+      };
+    }
     return {
       ...base,
       stage: 'browser-permission',
@@ -10442,16 +10464,15 @@ function doctorStatusSummary(checks) {
   const failures = annotated.filter(c => c.status === 'FAIL' || c.severity === 'blocking').length;
   const warnings = annotated.filter(c => c.severity === 'warning').length;
   const advisories = annotated.filter(c => c.severity === 'advisory').length;
-  const softWarnings = annotated.filter(c => c.status === 'WARN').length;
   let readiness = 'ready';
   if (failures > 0) readiness = 'blocked';
-  else if (warnings > 0 || advisories > 0 || softWarnings > 0) readiness = 'usable-with-warnings';
+  else if (warnings > 0 || advisories > 0) readiness = 'usable-with-warnings';
   return {
     status: readiness,
     readiness,
     ready: readiness === 'ready',
     failures,
-    warnings: softWarnings,
+    warnings,
     actionableWarnings: warnings,
     advisories,
   };
@@ -13080,8 +13101,13 @@ async function main() {
         console.log(`Reused existing tab: ${selection.targetPrefix}  ${selection.page.url || url}`);
         console.log(`Next: cdp perceive ${selection.targetPrefix} -C -d 8`);
         return;
-      } catch {
-        // No unique match — fall through to open a new tab.
+      } catch (e) {
+        // Zero matches: fall through and open a new tab.
+        // Ambiguous matches: fail closed so agents do not open yet another duplicate.
+        if (/pages matched/i.test(e.message || '')) {
+          console.error(formatCliError(e, { cmd: 'open', format: opts.format }));
+          process.exit(1);
+        }
       }
     }
 

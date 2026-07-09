@@ -9062,7 +9062,7 @@ describe('doctorWizardSummary', () => {
     expect(out).toContain('Current step: cdp open https://example.com');
   });
 
-  it('points to perceive when a target exists but browser permission is not confirmed', () => {
+  it('treats unconfirmed permission as advisory when CDP/tabs are already usable', () => {
     const out = doctorWizardSummary([
       { status: 'OK', label: 'Node', detail: 'v22' },
       { status: 'OK', label: 'CDP', detail: 'reachable' },
@@ -9070,9 +9070,9 @@ describe('doctorWizardSummary', () => {
       { status: 'WARN', label: 'Permission', detail: 'browser debugging approval not confirmed', targetPrefixes: ['AABBCCDD'] },
     ]).join('\n');
 
-    expect(out).toContain('Status: waiting for browser debugging approval');
-    expect(out).toContain('Current step: cdp perceive AABBCCDD -C -d 8');
-    expect(out).toContain('click Allow');
+    expect(out).toContain('Status: usable with advisory notes (CDP reachable)');
+    expect(out).toContain('Current step: cdp list; cdp perceive AABBCCDD -C -d 8');
+    expect(out).not.toContain('waiting for browser debugging approval');
   });
 });
 
@@ -9207,7 +9207,7 @@ describe('doctorStr', () => {
     expect(out).toContain('Next steps:');
     expect(out).toContain('cdp list');
     expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
-    expect(out).toContain('click Allow');
+    expect(out).toContain('usable with advisory notes');
   });
 
   it('marks report as Blocked when CDP fails', async () => {
@@ -9247,12 +9247,12 @@ describe('doctorStr', () => {
       readiness: 'usable-with-warnings',
       ready: false,
       failures: 0,
-      warnings: 2,
     });
+    expect(model.warnings + model.advisories).toBeGreaterThan(0);
     expect(model.checks.find(c => c.label === 'Permission')?.severity).toBe('advisory');
     expect(model.wizard).toMatchObject({
-      status: 'waiting for browser debugging approval',
-      currentStep: 'cdp perceive AABBCCDD -C -d 8  # click Allow if Chrome asks',
+      status: 'usable with advisory notes (CDP reachable)',
+      currentStep: expect.stringContaining('cdp perceive AABBCCDD -C -d 8'),
     });
     expect(model.wizard.goldenPath).toEqual(['doctor', 'list/open', 'perceive', 'click/fill', 'since-action evidence', 'report']);
     expect(model.wizard.commands).toEqual([
@@ -9272,13 +9272,13 @@ describe('doctorStr', () => {
     ]));
     expect(model.recommendation).toMatchObject({
       source: 'doctor-onboarding',
-      stage: 'browser-permission',
+      stage: 'perceive',
       run: 'cdp perceive AABBCCDD -C -d 8',
-      requiresUserAction: true,
+      requiresUserAction: false,
       consentRequired: false,
       after: 'cdp click AABBCCDD @ref  # or: cdp fill AABBCCDD <selector> <text>',
     });
-    expect(model.recommendation.ask).toContain('Allow');
+    expect(model.recommendation.ask).toBeNull();
   });
 
   it('returns a consent-aware recommendation when browser CDP is blocked', async () => {
@@ -9363,7 +9363,8 @@ describe('doctorStr', () => {
 
     expect(out).toContain('Recommendation:');
     expect(out).toContain('Run: cdp perceive AABBCCDD -C -d 8');
-    expect(out).toContain('Ask: Click Allow if Chrome asks.');
+    expect(out).not.toContain('Ask: Click Allow if Chrome asks.');
+    expect(out).toContain('Then: cdp click AABBCCDD @ref');
     expect(out.indexOf('Recommendation:')).toBeLessThan(out.indexOf('Checks:'));
   });
 });

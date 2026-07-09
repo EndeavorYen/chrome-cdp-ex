@@ -13,6 +13,13 @@
 ### Fixes
 
 * make `text`/`html` selector failures report search root/scope and suggest an `eval` fallback (#85).
+* default explicit `text <selector>` searches to the document root so they match `eval document.querySelector(...)` (#85).
+* treat unconfirmed browser permission as advisory in doctor wizard/recommendation when CDP is already usable (#87).
+
+### Breaking Changes
+
+* doctor JSON `status` values are now `ready | usable-with-warnings | blocked` (replacing `mostly-ready` / `not-ready`). Prefer the new `readiness` + per-check `severity` fields.
+* `html` no-match now throws instead of returning the soft string `Element not found`.
 
 ## [2.9.1](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.9.0...v2.9.1) (2026-07-08)
 

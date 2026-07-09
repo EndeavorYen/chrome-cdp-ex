@@ -461,6 +461,10 @@ describe('issues #82-#87 contracts', () => {
     expect(err).toContain('within root "body"');
     expect(err).toContain('document.querySelector("#promptBlock")');
     expect(err).toContain('text --root');
+    // Explicit selectors default to document-wide search (matches eval querySelector).
+    const script = T.textPageScript({ selectors: ['#promptBlock'] });
+    expect(script).toContain('document');
+    expect(script).toMatch(/setting === 'document'|sel: 'document'/);
   });
 
   it('#86 builds responsive audit pass/warn/fail summaries', () => {
@@ -535,5 +539,11 @@ describe('issues #82-#87 contracts', () => {
     ]);
     expect(model.provenCommand).toBeTruthy();
     expect(model.checks.find(c => c.label === 'Permission').severity).toBe('advisory');
+    expect(model.wizard.status).toMatch(/usable with advisory/i);
+    expect(model.recommendation).toMatchObject({
+      stage: 'perceive',
+      requiresUserAction: false,
+      ask: null,
+    });
   });
 });
