@@ -263,6 +263,173 @@ function formatCurrentAlias(store, { format = 'text' } = {}) {
   return formatAliasRecord(current);
 }
 
+// ---------------------------------------------------------------------------
+// tab-group / broadcast — multi-tab coordination
+// ---------------------------------------------------------------------------
+
+const TAB_GROUPS_CACHE = resolve(RUNTIME_DIR, 'tab-groups.json');
+
+function emptyTabGroupStore() {
+  return { schema: 'chrome-cdp-ex.tab-groups.v1', groups: {} };
+}
+
+function normalizeTabGroupName(name) {
+  const value = String(name || '').trim();
+  if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(value)) {
+    throw new Error('tab-group name must start with a letter and contain only letters, numbers, dot, dash, or underscore');
+  }
+  return value;
+}
+
+function normalizeTabGroupStore(raw) {
+  const store = raw && typeof raw === 'object' ? raw : {};
+  const groups = {};
+  for (const [name, group] of Object.entries(store.groups || {})) {
+    if (!group) continue;
+    const members = Array.isArray(group.members)
+      ? [...new Set(group.members.map(m => String(m || '').trim()).filter(Boolean))]
+      : [];
+    groups[name] = {
+      name,
+      members,
+      createdAt: group.createdAt || null,
+      updatedAt: group.updatedAt || null,
+    };
+  }
+  return { ...emptyTabGroupStore(), groups };
+}
+
+function readTabGroups({ path = TAB_GROUPS_CACHE, reader = readFileSync } = {}) {
+  try {
+    return normalizeTabGroupStore(JSON.parse(reader(path, 'utf8')));
+  } catch {
+    return emptyTabGroupStore();
+  }
+}
+
+function writeTabGroups(store, { path = TAB_GROUPS_CACHE, writer = writeFileSync } = {}) {
+  const normalized = normalizeTabGroupStore(store);
+  writer(path, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
+  return normalized;
+}
+
+function upsertTabGroup(store = emptyTabGroupStore(), { name, members = [], now = Date.now() } = {}) {
+  const normalized = normalizeTabGroupStore(store);
+  const groupName = normalizeTabGroupName(name);
+  const previous = normalized.groups[groupName] || {};
+  const ts = new Date(now).toISOString();
+  const nextMembers = [...new Set([...(previous.members || []), ...members.map(String)])].filter(Boolean);
+  normalized.groups[groupName] = {
+    name: groupName,
+    members: nextMembers,
+    createdAt: previous.createdAt || ts,
+    updatedAt: ts,
+  };
+  return normalized;
+}
+
+function removeTabGroupMember(store = emptyTabGroupStore(), name, member, { now = Date.now() } = {}) {
+  const normalized = normalizeTabGroupStore(store);
+  const groupName = normalizeTabGroupName(name);
+  const group = normalized.groups[groupName];
+  if (!group) throw new Error(`tab-group: unknown group "${groupName}"`);
+  group.members = group.members.filter(m => m !== String(member));
+  group.updatedAt = new Date(now).toISOString();
+  return normalized;
+}
+
+function deleteTabGroup(store = emptyTabGroupStore(), name) {
+  const normalized = normalizeTabGroupStore(store);
+  const groupName = normalizeTabGroupName(name);
+  if (!normalized.groups[groupName]) throw new Error(`tab-group: unknown group "${groupName}"`);
+  delete normalized.groups[groupName];
+  return normalized;
+}
+
+function getTabGroup(store = emptyTabGroupStore(), name) {
+  const normalized = normalizeTabGroupStore(store);
+  const groupName = normalizeTabGroupName(name);
+  return normalized.groups[groupName] || null;
+}
+
+function parseTabGroupArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const [action, ...rest] = fopts.args;
+  if (!action) throw new Error('tab-group: action required (list|create|add|remove|delete|show)');
+  const actionName = String(action).toLowerCase();
+  if (!['list', 'create', 'add', 'remove', 'delete', 'show'].includes(actionName)) {
+    throw new Error(`tab-group: unknown action ${action}`);
+  }
+  return { format: fopts.format, action: actionName, args: rest };
+}
+
+function formatTabGroupStore(store, { format = 'text' } = {}) {
+  const normalized = normalizeTabGroupStore(store);
+  const groups = Object.values(normalized.groups).sort((a, b) => a.name.localeCompare(b.name));
+  if (format === 'json') {
+    return formatJson({
+      schema: 'chrome-cdp-ex.tab-groups.v1',
+      groupCount: groups.length,
+      groups,
+    });
+  }
+  if (!groups.length) return 'No tab groups. Create one: cdp tab-group create app <target> [<target>...]';
+  return groups.map(g => `${g.name}  (${g.members.length})  ${g.members.join(', ') || '(empty)'}`).join('\n');
+}
+
+function formatTabGroup(group, { format = 'text' } = {}) {
+  if (!group) throw new Error('tab-group: group required');
+  if (format === 'json') return formatJson({ schema: 'chrome-cdp-ex.tab-group.v1', group });
+  return [
+    `Tab group: ${group.name}`,
+    `Members (${group.members.length}): ${group.members.join(', ') || '(empty)'}`,
+    group.updatedAt ? `Updated: ${group.updatedAt}` : null,
+  ].filter(Boolean).join('\n');
+}
+
+function parseBroadcastArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const [groupName, ...cmdParts] = fopts.args;
+  if (!groupName) throw new Error('broadcast: group name required');
+  if (!cmdParts.length) throw new Error('broadcast: command required (e.g. broadcast app perceive -C -d 4)');
+  return {
+    format: fopts.format,
+    groupName: normalizeTabGroupName(groupName),
+    command: cmdParts[0],
+    commandArgs: cmdParts.slice(1),
+  };
+}
+
+function buildBroadcastModel({ groupName, command, results = [] } = {}) {
+  const ok = results.filter(r => r.ok).length;
+  const failed = results.length - ok;
+  return {
+    schema: 'chrome-cdp-ex.broadcast.v1',
+    group: groupName,
+    command,
+    count: results.length,
+    ok,
+    failed,
+    results,
+    nextSteps: failed
+      ? results.filter(r => !r.ok).slice(0, 3).map(r => `cdp ${command} ${r.targetPrefix}  # retry failed member`)
+      : [`cdp tab-group show ${groupName}`],
+  };
+}
+
+function formatBroadcastResult(model) {
+  const lines = [
+    `Broadcast ${model.group}: ${model.command} → ${model.ok}/${model.count} ok` +
+      (model.failed ? `, ${model.failed} failed` : ''),
+  ];
+  for (const entry of model.results || []) {
+    const head = entry.ok ? 'OK' : 'ERR';
+    const preview = String(entry.result || entry.error || '').split('\n')[0].slice(0, 160);
+    lines.push(`  [${head}] ${entry.targetPrefix}: ${preview}`);
+  }
+  return lines.join('\n');
+}
+
 function isBlankPageUrl(url = '') {
   const value = String(url || '').trim();
   return !value || value === 'about:blank' || value === 'about:srcdoc';
@@ -5514,7 +5681,7 @@ function parsePerceiveArgs(args) {
   const opts = {
     diff: false, selector: null, exclude: null,
     interactive: false, maxDepth: Infinity, cursorInteractive: false,
-    keepRefs: false, last: null, sinceAction: false, frameRef: null,
+    keepRefs: false, last: null, adaptive: false, sinceAction: false, frameRef: null,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -5527,12 +5694,39 @@ function parsePerceiveArgs(args) {
     else if (a === '-d' || a === '--depth') opts.maxDepth = parseInt(args[++i]) || Infinity;
     else if (a === '-C' || a === '--cursor-interactive') opts.cursorInteractive = true;
     else if (a === '--keep-refs') opts.keepRefs = true;
+    else if (a === '--adaptive') opts.adaptive = true;
     else if (a === '--last') {
-      const n = parseInt(args[++i]);
-      opts.last = Number.isFinite(n) && n > 0 ? n : null;
+      const raw = args[++i];
+      if (raw === 'auto') {
+        opts.last = 'auto';
+        opts.adaptive = true;
+      } else {
+        const n = parseInt(raw);
+        opts.last = Number.isFinite(n) && n > 0 ? n : null;
+      }
     }
   }
   return opts;
+}
+
+/**
+ * Choose a perceive text-row budget from density + error state.
+ * Explicit numeric --last still wins; this is for --adaptive / --last auto.
+ */
+function chooseAdaptivePerceiveLast({
+  lineCount = 0,
+  consoleErrors = 0,
+  interactiveCount = 0,
+  hasPriorityText = false,
+} = {}) {
+  let budget = 48;
+  if (lineCount > 100) budget = 36;
+  if (lineCount > 220) budget = 24;
+  if (lineCount > 400) budget = 16;
+  if (consoleErrors > 0 || hasPriorityText) budget = Math.max(budget, 28);
+  if (interactiveCount > 40) budget = Math.min(budget, 22);
+  if (interactiveCount > 80) budget = Math.min(budget, 16);
+  return Math.max(8, Math.min(80, budget));
 }
 
 function parseControlsArgs(args) {
@@ -5966,6 +6160,7 @@ function formatRefRect(rect) {
 // Takes raw AX nodes + page metadata, returns enriched tree lines and ref node IDs.
 function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   const { maxDepth = Infinity, interactiveOnly = false, keepRefs = false, last = null } = opts;
+  // opts.adaptive + opts.consoleErrors are used by the --last auto / --adaptive budget path
 
   const nodesById = new Map(nodes.map(n => [n.nodeId, n]));
   const childrenByParent = new Map();
@@ -6137,15 +6332,27 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   // lines (anything containing `@<digit>` or `@c<digit>`) and structural lines
   // (landmarks, headings, dialogs, etc.) are always kept.
   // --keep-refs: when truncating, ensure every line carrying an @ref survives.
+  // --adaptive / --last auto: choose N from density + error/priority signals.
   let outLines = treeLines;
-  if (last && Number.isFinite(last) && last > 0) {
+  let effectiveLast = last;
+  if (last === 'auto' || (opts.adaptive && (last == null || last === 'auto'))) {
+    const interactiveCount = outLines.filter(ln => /@(c?\d+)/.test(ln)).length;
+    const hasPriorityText = outLines.some(ln => isPriorityPerceiveTextLine(ln));
+    effectiveLast = chooseAdaptivePerceiveLast({
+      lineCount: outLines.length,
+      consoleErrors: Number(opts.consoleErrors || 0),
+      interactiveCount,
+      hasPriorityText,
+    });
+  }
+  if (effectiveLast && Number.isFinite(effectiveLast) && effectiveLast > 0) {
     const refLineRe = /@(c?\d+)/;
     const textRoleRe = /\[(StaticText|paragraph|listitem|note|description|comment|term|definition)\]/;
     // Walk backwards collecting the last N text lines while keeping all ref/structural lines
     const reversed = [];
     let textKept = 0;
     let priorityKept = 0;
-    const priorityBudget = Math.max(last, 12);
+    const priorityBudget = Math.max(effectiveLast, 12);
     let textOmitted = 0;
     for (let i = outLines.length - 1; i >= 0; i--) {
       const ln = outLines[i];
@@ -6153,14 +6360,17 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
       const isText = textRoleRe.test(ln) && !isRef;
       if (isText) {
         if (isPriorityPerceiveTextLine(ln) && priorityKept < priorityBudget) { reversed.push(ln); priorityKept++; }
-        else if (textKept < last) { reversed.push(ln); textKept++; }
+        else if (textKept < effectiveLast) { reversed.push(ln); textKept++; }
         else { textOmitted++; }
       } else {
         reversed.push(ln);
       }
     }
     outLines = reversed.reverse();
-    if (textOmitted > 0) outLines.push(`  ... ${textOmitted} earlier text node(s) omitted (--last ${last})`);
+    if (textOmitted > 0) {
+      const label = (last === 'auto' || opts.adaptive) ? `--adaptive last ${effectiveLast}` : `--last ${effectiveLast}`;
+      outLines.push(`  ... ${textOmitted} earlier text node(s) omitted (${label})`);
+    }
   } else if (keepRefs) {
     // No size budget enforced here; the caller chooses when to truncate, but
     // when --keep-refs is set we mark lines so downstream truncation can
@@ -6379,7 +6589,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   const {
     diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null,
     interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false,
-    keepRefs = false, last = null, sinceAction = false, diffBaseline = null,
+    keepRefs = false, last = null, adaptive = false, sinceAction = false, diffBaseline = null,
     frameRef = null,
   } = opts;
   const frameContext = frameRef ? await resolveFrameRef(cdp, sid, frameRef) : null;
@@ -6466,7 +6676,14 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   }
 
   const activeRefMap = frame ? new Map() : refMap;
-  const builtTree = buildPerceiveTree(axNodes, meta, activeRefMap, { maxDepth, interactiveOnly, keepRefs, last });
+  const builtTree = buildPerceiveTree(axNodes, meta, activeRefMap, {
+    maxDepth,
+    interactiveOnly,
+    keepRefs,
+    last,
+    adaptive,
+    consoleErrors: errors + exceptions,
+  });
   let treeLines = builtTree.treeLines;
   const { refNodeIds } = builtTree;
   if (frame) storeFrameScopedRefs(refState, frame, frameContext.frames, activeRefMap);
@@ -7446,6 +7663,285 @@ async function stylesStr(cdp, sid, selectorOrArgs) {
     lines.push('  ' + k + ': ' + v);
   }
   return lines.join('\n');
+}
+
+
+// ---------------------------------------------------------------------------
+// components — React/Vue component tree + state (MVP)
+// ---------------------------------------------------------------------------
+
+function parseComponentsArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const opts = { format: fopts.format, depth: 6, ref: null, selector: null };
+  const positional = [];
+  for (let i = 0; i < fopts.args.length; i++) {
+    const a = fopts.args[i];
+    if (a === '--depth' || a === '-d') {
+      const n = parseInt(fopts.args[++i], 10);
+      if (!Number.isFinite(n) || n <= 0) throw new Error('components: --depth requires a positive integer');
+      opts.depth = Math.min(n, 20);
+    } else if (String(a).startsWith('@') || String(a).startsWith('@c') || String(a).includes(':')) {
+      opts.ref = a;
+    } else if (String(a).startsWith('-')) {
+      throw new Error(`components: unknown argument ${a}`);
+    } else {
+      positional.push(a);
+    }
+  }
+  if (!opts.ref && positional[0]) {
+    if (String(positional[0]).startsWith('@')) opts.ref = positional[0];
+    else opts.selector = positional[0];
+  }
+  return opts;
+}
+
+function frameworkDetectorScript() {
+  return `(function() {
+    try {
+      const hook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+      if (hook?.renderers?.size > 0) {
+        const renderer = Array.from(hook.renderers.values())[0];
+        return JSON.stringify({ framework: 'react', version: renderer?.version || 'unknown', source: 'devtools-hook' });
+      }
+    } catch {}
+    try {
+      if (window.__VUE__) return JSON.stringify({ framework: 'vue', version: window.__VUE__.version || 'unknown', source: '__VUE__' });
+    } catch {}
+    try {
+      const vueApp = document.querySelector('#app')?.__vue_app__ || document.querySelector('[data-v-app]')?.__vue_app__;
+      if (vueApp) return JSON.stringify({ framework: 'vue', version: vueApp.version || '3', source: 'vue_app' });
+    } catch {}
+    try {
+      const el = document.querySelector('[ng-version]');
+      if (el) return JSON.stringify({ framework: 'angular', version: el.getAttribute('ng-version') || 'unknown', source: 'ng-version' });
+    } catch {}
+    // Fiber present without DevTools hook (dev builds)
+    try {
+      const roots = document.querySelectorAll('[data-reactroot], #root, #__next, #app, [data-reactroot]');
+      for (const root of roots) {
+        const key = Object.keys(root).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
+        if (key) return JSON.stringify({ framework: 'react', version: 'fiber', source: 'fiber-key' });
+      }
+    } catch {}
+    return JSON.stringify({ framework: null });
+  })()`;
+}
+
+function reactComponentsTreeScript(maxDepth = 6) {
+  return `(function() {
+    const maxDepth = ${Number(maxDepth) || 6};
+    function safeName(type) {
+      if (!type) return null;
+      if (typeof type === 'string') return type;
+      return type.displayName || type.name || null;
+    }
+    function summarizeProps(props) {
+      if (!props || typeof props !== 'object') return '';
+      const parts = [];
+      for (const [k, v] of Object.entries(props)) {
+        if (k === 'children' || typeof v === 'function') continue;
+        let s;
+        try { s = typeof v === 'string' ? JSON.stringify(v) : (typeof v === 'object' ? JSON.stringify(v) : String(v)); }
+        catch { s = '[unserializable]'; }
+        if (s.length > 40) s = s.slice(0, 37) + '...';
+        parts.push(k + '=' + s);
+        if (parts.length >= 4) { parts.push('...'); break; }
+      }
+      return parts.length ? ' ' + parts.join(' ') : '';
+    }
+    function walk(fiber, depth, lines, seen) {
+      if (!fiber || depth > maxDepth) return;
+      const id = fiber._debugID || fiber.actualStartTime || Math.random();
+      if (seen.has(fiber)) return;
+      seen.add(fiber);
+      const name = safeName(fiber.type);
+      if (name && name.length <= 60 && !/^[a-z]/.test(name)) {
+        lines.push('  '.repeat(depth) + '<' + name + summarizeProps(fiber.memoizedProps) + '>');
+        if (fiber.child) walk(fiber.child, depth + 1, lines, seen);
+      } else {
+        if (fiber.child) walk(fiber.child, depth, lines, seen);
+      }
+      if (fiber.sibling) walk(fiber.sibling, depth, lines, seen);
+    }
+    const roots = document.querySelectorAll('[data-reactroot], #root, #__next, #app, body > div');
+    for (const root of roots) {
+      const key = Object.keys(root).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
+      if (!key) continue;
+      let fiber = root[key];
+      // Climb to root fiber
+      let guard = 0;
+      while (fiber?.return && guard++ < 50) fiber = fiber.return;
+      const lines = [];
+      walk(fiber, 0, lines, new Set());
+      if (lines.length) {
+        return JSON.stringify({ ok: true, framework: 'react', lines: lines.slice(0, 200), truncated: lines.length > 200 });
+      }
+    }
+    return JSON.stringify({ ok: false, framework: 'react', reason: 'fiber-tree-not-found' });
+  })()`;
+}
+
+function vueComponentsTreeScript(maxDepth = 6) {
+  return `(function() {
+    const maxDepth = ${Number(maxDepth) || 6};
+    function walk(vm, depth, lines) {
+      if (!vm || depth > maxDepth) return;
+      const name = vm.$options?.name || vm.type?.name || vm.$.type?.name || 'Anonymous';
+      const props = vm.$props || vm.props || {};
+      const propParts = [];
+      try {
+        for (const [k, v] of Object.entries(props || {})) {
+          if (typeof v === 'function') continue;
+          let s = typeof v === 'object' ? JSON.stringify(v) : String(v);
+          if (s.length > 30) s = s.slice(0, 27) + '...';
+          propParts.push(k + '=' + s);
+          if (propParts.length >= 3) break;
+        }
+      } catch {}
+      lines.push('  '.repeat(depth) + '<' + name + (propParts.length ? ' ' + propParts.join(' ') : '') + '>');
+      const children = vm.$children || vm.subTree?.component?.subTree?.children || [];
+      if (Array.isArray(children)) {
+        for (const child of children) {
+          const next = child?.component || child;
+          if (next) walk(next, depth + 1, lines);
+        }
+      }
+    }
+    const lines = [];
+    const appEl = document.querySelector('#app') || document.querySelector('[data-v-app]');
+    const app = appEl?.__vue_app__;
+    if (app?._instance) {
+      walk(app._instance, 0, lines);
+    } else if (appEl?.__vue__) {
+      walk(appEl.__vue__, 0, lines);
+    }
+    if (!lines.length) return JSON.stringify({ ok: false, framework: 'vue', reason: 'vue-tree-not-found' });
+    return JSON.stringify({ ok: true, framework: 'vue', lines: lines.slice(0, 200), truncated: lines.length > 200 });
+  })()`;
+}
+
+function reactComponentAtElementScript() {
+  return `(function(el) {
+    if (!el) return JSON.stringify({ ok: false, reason: 'no-element' });
+    const key = Object.keys(el).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
+    if (!key) return JSON.stringify({ ok: false, reason: 'no-fiber-on-element' });
+    let fiber = el[key];
+    let guard = 0;
+    while (fiber && guard++ < 40) {
+      const name = fiber.type?.displayName || fiber.type?.name;
+      if (typeof name === 'string' && name.length && name[0] === name[0].toUpperCase()) {
+        const props = {};
+        try {
+          for (const [k, v] of Object.entries(fiber.memoizedProps || {})) {
+            if (k === 'children' || typeof v === 'function') continue;
+            try { props[k] = typeof v === 'object' ? JSON.parse(JSON.stringify(v)) : v; }
+            catch { props[k] = String(v).slice(0, 80); }
+            if (Object.keys(props).length >= 12) break;
+          }
+        } catch {}
+        const state = {};
+        try {
+          let hook = fiber.memoizedState;
+          let i = 0;
+          while (hook && i < 8) {
+            if (hook.memoizedState !== undefined && typeof hook.memoizedState !== 'function') {
+              try { state['hook' + i] = JSON.parse(JSON.stringify(hook.memoizedState)); }
+              catch { state['hook' + i] = String(hook.memoizedState).slice(0, 80); }
+            }
+            hook = hook.next;
+            i++;
+          }
+        } catch {}
+        return JSON.stringify({ ok: true, name, props, state });
+      }
+      fiber = fiber.return;
+    }
+    return JSON.stringify({ ok: false, reason: 'no-named-component' });
+  })`;
+}
+
+async function componentsStr(cdp, sid, args = [], refMap = new Map(), refState = null) {
+  const opts = parseComponentsArgs(args);
+  const detectionRaw = await evalStr(cdp, sid, frameworkDetectorScript());
+  let detection;
+  try { detection = JSON.parse(detectionRaw); } catch { detection = { framework: null }; }
+  if (!detection.framework) {
+    const msg = 'No supported framework detected (React fiber/DevTools, Vue, or Angular ng-version).';
+    return opts.format === 'json'
+      ? formatJson({ schema: 'chrome-cdp-ex.components.v1', framework: null, ok: false, message: msg })
+      : msg;
+  }
+  if (detection.framework === 'angular') {
+    const msg = `Angular ${detection.version} detected; tree extraction not yet supported. Use eval for ng probes.`;
+    return opts.format === 'json'
+      ? formatJson({ schema: 'chrome-cdp-ex.components.v1', framework: 'angular', version: detection.version, ok: false, message: msg })
+      : msg;
+  }
+
+  if (opts.ref || opts.selector) {
+    if (opts.ref) {
+      try {
+        const resolved = await resolveRefNode(cdp, sid, opts.ref, refMap, refState);
+        if (resolved?.backendNodeId) {
+          const { object } = await cdp.send('DOM.resolveNode', { backendNodeId: resolved.backendNodeId }, sid);
+          if (object?.objectId && detection.framework === 'react') {
+            const result = await cdp.send('Runtime.callFunctionOn', {
+              objectId: object.objectId,
+              functionDeclaration: reactComponentAtElementScript() + '.call(null, this)',
+              returnByValue: true,
+            }, sid);
+            if (result.exceptionDetails) throw new Error(runtimeExceptionMessage(result.exceptionDetails));
+            let parsed;
+            try { parsed = JSON.parse(result.result?.value || '{}'); } catch { parsed = { ok: false }; }
+            if (opts.format === 'json') {
+              return formatJson({ schema: 'chrome-cdp-ex.components.v1', framework: detection.framework, version: detection.version, target: opts.ref, ...parsed });
+            }
+            if (!parsed.ok) return `components: could not resolve component for ${opts.ref} (${parsed.reason || 'unknown'})`;
+            const lines = [`Component: <${parsed.name}>`];
+            lines.push(`  Props: ${JSON.stringify(parsed.props || {})}`);
+            lines.push(`  State/hooks: ${JSON.stringify(parsed.state || {})}`);
+            return lines.join('\n');
+          }
+        }
+      } catch (e) {
+        if (opts.format === 'json') {
+          return formatJson({ schema: 'chrome-cdp-ex.components.v1', framework: detection.framework, ok: false, error: e.message });
+        }
+        return `components: ${e.message}`;
+      }
+    }
+    if (opts.selector) {
+      const raw = await evalStr(cdp, sid, `(${reactComponentAtElementScript()})(document.querySelector(${JSON.stringify(opts.selector)}))`);
+      let parsed;
+      try { parsed = JSON.parse(raw); } catch { parsed = { ok: false, reason: 'parse-failed' }; }
+      if (opts.format === 'json') {
+        return formatJson({ schema: 'chrome-cdp-ex.components.v1', framework: detection.framework, version: detection.version, target: opts.selector, ...parsed });
+      }
+      if (!parsed.ok) return `components: could not resolve component for ${opts.selector} (${parsed.reason || 'unknown'})`;
+      return [`Component: <${parsed.name}>`, `  Props: ${JSON.stringify(parsed.props || {})}`, `  State/hooks: ${JSON.stringify(parsed.state || {})}`].join('\n');
+    }
+  }
+
+  const treeRaw = detection.framework === 'vue'
+    ? await evalStr(cdp, sid, vueComponentsTreeScript(opts.depth))
+    : await evalStr(cdp, sid, reactComponentsTreeScript(opts.depth));
+  let tree;
+  try { tree = JSON.parse(treeRaw); } catch { tree = { ok: false, reason: 'parse-failed' }; }
+  if (opts.format === 'json') {
+    return formatJson({
+      schema: 'chrome-cdp-ex.components.v1',
+      framework: detection.framework,
+      version: detection.version,
+      source: detection.source,
+      depth: opts.depth,
+      ...tree,
+    });
+  }
+  if (!tree.ok) {
+    return `${detection.framework} ${detection.version || ''} detected but component tree not found (${tree.reason || 'unknown'}). Use a dev build or framework DevTools hooks.`.replace(/\\s+/g, ' ').trim();
+  }
+  const header = `[${detection.framework} ${detection.version || ''} detected]`;
+  return [header, '', ...(tree.lines || []), tree.truncated ? `... truncated` : null].filter(Boolean).join('\n');
 }
 
 async function cookiesStr(cdp, sid) {
@@ -11952,6 +12448,7 @@ async function runDaemon(targetId) {
         case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
         case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
         case 'styles': result = await stylesStr(cdp, sessionId, args); break;
+        case 'components': result = await componentsStr(cdp, sessionId, args, refMap, refState); break;
         case 'cookies': result = await cookiesStr(cdp, sessionId); break;
         case 'cookieset': result = await cookieSetStr(cdp, sessionId, args[0]); break;
         case 'cookiedel': result = await cookieDelStr(cdp, sessionId, args[0]); break;
@@ -12316,6 +12813,12 @@ Usage: cdp <command> [args]
   target --url URL|--title TEXT [--exact] [--format json]
                                     Select a page target by URL/title substring (or exact match).
                                     Ambiguous matches return candidate URLs/titles and follow-up commands.
+  tab-group list|create|add|remove|delete|show [--format json]
+                                    Named multi-tab groups stored outside the repo (runtime dir).
+                                    create <name> [targets...] | add/remove <name> <target> | show/delete <name>
+  broadcast <group> <cmd> [args...] [--format json]
+                                    Run one command against every member of a tab-group.
+                                    Returns per-target OK/ERR results (read-only cmds preferred).
   use <target> --name <alias>        Save a named target alias (also becomes current)
                                     Accepts 9222/<target> to bind a CDP port to the alias.
   attach --port N --target <id> --name <alias>  Explicitly save an alias with host/port metadata
@@ -12326,6 +12829,8 @@ Usage: cdp <command> [args]
                                     --since-action: show changes caused by the last mutating command
                                     --qa / --summary: compact QA summary (url/title/blank/console/next)
                                     --max-diff-lines N: truncate long text output
+                                    --adaptive / --last auto: density+error aware text-row budget
+                                    --last N: keep last N text rows (explicit wins over adaptive)
                                     JSON includes structured refs plus recommendation/nextSteps.
                                     JSON with --diff/--since-action returns chrome-cdp-ex.perceive-diff.v1
                                     --frame @fN / -F @fN: perceive inside an iframe; refs become @fN:M
@@ -12404,6 +12909,9 @@ Usage: cdp <command> [args]
   styles  <target> <selector> [--root auto|body|document|<sel>]
                                     Get computed styles for element (filtered to meaningful props)
                                     On no-match, error includes root/scope and an eval fallback
+  components <target> [--depth N] [@ref|selector] [--format json]
+                                    React/Vue component tree (MVP) or props/state for a target element.
+                                    Graceful message when framework hooks/fiber data are unavailable.
   cookies <target>                  List cookies for current page
   cookieset <target> <cookie>       Set a cookie: "name=value" or "name=value; domain=.example.com; secure"
   cookiedel <target> <name>         Delete a cookie by name
@@ -12530,7 +13038,7 @@ DAEMON IPC (for advanced use / scripting)
   Commands mirror the CLI: perceive, status, summary, console, frame, snap, controls, eval, eval64, call, wait, keepalive, shot, diff-shot,
   elshot, fullshot, scanshot, html, nav, net, mock, clock, throttle, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
-  viewport, emulate, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
+  viewport, emulate, upload, text, table, components, back, forward, reload, closetab, netlog, inject, cascade,
   record, checkpoint, restore, record-actions, export-playwright, replay, report, qa, responsive-audit,
   verify-click, evalraw, batch, flow, repeat, stop.
   The socket disappears after 20 min of inactivity or when the tab closes.
@@ -12544,6 +13052,8 @@ const COMMANDS = Object.freeze([
   { name: 'help', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text'] },
   { name: 'list', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'target', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'tab-group', aliases: ['tabgroup'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'broadcast', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'open', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
   { name: 'doctor', aliases: ['ready'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'spawn-debug-browser', aliases: ['spawn'], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
@@ -12597,6 +13107,7 @@ const COMMANDS = Object.freeze([
   { name: 'fullshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'scanshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'styles', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
+  { name: 'components', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'cookies', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'cookieset', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
   { name: 'cookiedel', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
@@ -13210,6 +13721,113 @@ async function main() {
     return;
   }
 
+  // tab-group management (no target required)
+  if (cmd === 'tab-group' || cmd === 'tabgroup') {
+    try {
+      const opts = parseTabGroupArgs(args);
+      let store = readTabGroups();
+      if (opts.action === 'list') {
+        console.log(formatTabGroupStore(store, { format: opts.format }));
+        process.exit(0);
+      }
+      if (opts.action === 'create') {
+        const [name, ...members] = opts.args;
+        if (!name) throw new Error('tab-group create: name required');
+        store = upsertTabGroup(store, { name, members });
+        writeTabGroups(store);
+        console.log(formatTabGroup(store.groups[normalizeTabGroupName(name)], { format: opts.format }));
+        process.exit(0);
+      }
+      if (opts.action === 'add') {
+        const [name, member] = opts.args;
+        if (!name || !member) throw new Error('tab-group add: name and target required');
+        store = upsertTabGroup(store, { name, members: [member] });
+        writeTabGroups(store);
+        console.log(formatTabGroup(store.groups[normalizeTabGroupName(name)], { format: opts.format }));
+        process.exit(0);
+      }
+      if (opts.action === 'remove') {
+        const [name, member] = opts.args;
+        if (!name || !member) throw new Error('tab-group remove: name and target required');
+        store = removeTabGroupMember(store, name, member);
+        writeTabGroups(store);
+        console.log(formatTabGroup(store.groups[normalizeTabGroupName(name)], { format: opts.format }));
+        process.exit(0);
+      }
+      if (opts.action === 'delete') {
+        const [name] = opts.args;
+        if (!name) throw new Error('tab-group delete: name required');
+        store = deleteTabGroup(store, name);
+        writeTabGroups(store);
+        console.log(opts.format === 'json'
+          ? formatJson({ schema: 'chrome-cdp-ex.tab-group-delete.v1', removed: normalizeTabGroupName(name) })
+          : `Deleted tab group ${normalizeTabGroupName(name)}`);
+        process.exit(0);
+      }
+      if (opts.action === 'show') {
+        const [name] = opts.args;
+        if (!name) throw new Error('tab-group show: name required');
+        const group = getTabGroup(store, name);
+        if (!group) throw new Error(`tab-group: unknown group "${normalizeTabGroupName(name)}"`);
+        console.log(formatTabGroup(group, { format: opts.format }));
+        process.exit(0);
+      }
+    } catch (e) {
+      console.error(formatCliError(e, { cmd: 'tab-group', format: detectCliErrorFormat(args) }));
+      process.exit(1);
+    }
+  }
+
+  // broadcast a command to every member of a tab-group
+  if (cmd === 'broadcast') {
+    try {
+      const opts = parseBroadcastArgs(args);
+      const group = getTabGroup(readTabGroups(), opts.groupName);
+      if (!group) throw new Error(`broadcast: unknown group "${opts.groupName}"`);
+      if (!group.members.length) throw new Error(`broadcast: group "${opts.groupName}" has no members`);
+      const results = [];
+      for (const member of group.members) {
+        const entry = { target: member, targetPrefix: String(member).slice(0, 8), ok: false, result: null, error: null };
+        try {
+          // Resolve alias or prefix to a live target, then run via daemon IPC.
+          let targetId = null;
+          const alias = resolveTargetAlias(member);
+          if (alias?.targetId) targetId = alias.targetId;
+          else {
+            const daemonIds = listDaemonSockets().map(d => d.targetId);
+            const matches = daemonIds.filter(id => id.toUpperCase().startsWith(String(member).toUpperCase()));
+            if (matches.length === 1) targetId = matches[0];
+            else if (existsSync(PAGES_CACHE)) {
+              const pages = JSON.parse(readFileSync(PAGES_CACHE, 'utf8'));
+              targetId = resolvePrefix(member, pages.map(p => p.targetId), 'target');
+            } else {
+              throw new Error(`cannot resolve target ${member}; run cdp list`);
+            }
+          }
+          entry.targetPrefix = targetPrefixForDisplay(targetId);
+          const conn = await getOrStartTabDaemon(targetId, { env: aliasEnv(alias) });
+          const resp = await sendCommand(conn, { cmd: opts.command, args: opts.commandArgs });
+          try { conn.end(); } catch {}
+          if (resp.ok) {
+            entry.ok = true;
+            entry.result = resp.result;
+          } else {
+            entry.error = resp.error || 'command failed';
+          }
+        } catch (e) {
+          entry.error = e.message || String(e);
+        }
+        results.push(entry);
+      }
+      const model = buildBroadcastModel({ groupName: opts.groupName, command: opts.command, results });
+      console.log(opts.format === 'json' ? formatJson(model) : formatBroadcastResult(model));
+      process.exit(model.failed ? 1 : 0);
+    } catch (e) {
+      console.error(formatCliError(e, { cmd: 'broadcast', format: detectCliErrorFormat(args) }));
+      process.exit(1);
+    }
+  }
+
   // Target selection by URL/title (no target prefix required)
   if (cmd === 'target') {
     try {
@@ -13698,5 +14316,11 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseResponsiveAuditArgs, buildResponsiveAuditModel, formatResponsiveAuditReport,
   responsiveAuditViewportScript, responsiveAuditStr, countNetworkFailures,
   stylesStr,
+  emptyTabGroupStore, normalizeTabGroupName, normalizeTabGroupStore, readTabGroups, writeTabGroups,
+  upsertTabGroup, removeTabGroupMember, deleteTabGroup, getTabGroup,
+  parseTabGroupArgs, formatTabGroupStore, formatTabGroup,
+  parseBroadcastArgs, buildBroadcastModel, formatBroadcastResult,
+  parseComponentsArgs, frameworkDetectorScript, reactComponentsTreeScript, vueComponentsTreeScript,
+  componentsStr, chooseAdaptivePerceiveLast,
   COMMANDS, NEEDS_TARGET,
 } : undefined;

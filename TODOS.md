@@ -62,22 +62,22 @@
 - [x] `checkpoint` / `restore` — save/restore page state (cookies, localStorage, sessionStorage, URL) for stateful testing. Priority: P1.
 - [x] `mock` / `throttle` / `clock` — request fixtures, network throttling, and `Date.now()` control. Priority: P2.
 - [x] `summary --format json` — structured summary output for LLM tool-calling. Priority: P2.
-- [ ] `tab-group` / `broadcast` — multi-tab coordination. Priority: P2.
+- [x] `tab-group` / `broadcast` — multi-tab coordination. Priority: P2.
 - [x] `diff-shot` — visual regression diff between baseline + current. Priority: P2.
 - [x] `frame` / `frames` — list CDP frame tree with stable `@fN` refs and parse `@fN:M` syntax. Priority: P1.
 - [x] Frame-scoped perception/action refs — `perceive --frame @fN` emits `@fN:M` refs; `click`, `fill`, and `cascade` can resolve them. Priority: P1.
-- [ ] `components` — React/Vue component tree + state inspection. Priority: P2.
+- [x] `components` — React/Vue component tree + state inspection. Priority: P2.
 - [x] `emulate` — dark/light mode emulation. Priority: P2.
-- [ ] Browser Use mapping doc — map Action Receipt, no-change recovery, and benchmark-gated handoffs to Browser Use contribution language. Priority: P2.
+- [x] Browser Use mapping doc — map Action Receipt, no-change recovery, and benchmark-gated handoffs to Browser Use contribution language. Priority: P2.
 - [x] Recovery policy registry — centralize diagnosis kinds, recovery strategies, priorities, commands, and verify commands. Priority: P2.
 
 ### Polish backlog
 
-- [ ] Adaptive `perceive` line/token budget beyond `--last`, using page density, task context, and error state.
+- [x] Adaptive `perceive` line/token budget beyond `--last`, using page density, task context, and error state.
 - [x] `eval --raw` flag to bypass the auto-`JSON.stringify` of object results.
 - [x] Per-target daemon log file at `<runtime-dir>/cdp-<target>.log` for post-mortem.
 - [x] Session screenshot directory + report attachments.
 
 ## Distribution & Visibility
 
-- [ ] **Research and submit to awesome-lists** — Find relevant awesome-lists (awesome-claude-code, awesome-browser-automation, etc.) and submit PRs. Check if a Claude Code plugin directory exists. Priority: P2. Depends on: README rewrite complete.
+- [x] **Research awesome-lists** — documented in `docs/outreach/awesome-lists.md` (human-approved external PRs still required). Priority: P2.

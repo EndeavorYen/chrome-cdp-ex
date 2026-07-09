@@ -4,6 +4,12 @@
 
 ### Features
 
+* add `tab-group` / `broadcast` multi-tab coordination (#97).
+* add `components` MVP for React/Vue tree and element props/state (#98).
+* add adaptive perceive text-row budgets via `--adaptive` / `--last auto` (#99).
+* document Browser Use mapping for Action Receipt and recovery (#100).
+* research awesome-list outreach targets without auto-submitting external PRs (#101).
+
 * add `emulate` for dark/light and reduced-motion media features (#93).
 * add `eval --raw` for compact object output without pretty JSON (#94).
 * centralize action recovery policies in a data-driven registry (#95).

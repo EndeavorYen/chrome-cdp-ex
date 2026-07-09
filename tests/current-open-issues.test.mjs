@@ -644,3 +644,52 @@ describe('issues #93-#95 contracts', () => {
     expect(T.formatEvalValue(undefined, { raw: true })).toBe('');
   });
 });
+
+describe('issues #97-#101 contracts', () => {
+  it('#97 stores tab groups and formats broadcast results', () => {
+    let store = T.emptyTabGroupStore();
+    store = T.upsertTabGroup(store, { name: 'auth', members: ['AAAABBBB', 'CCCCDDDD'] });
+    expect(T.getTabGroup(store, 'auth').members).toEqual(['AAAABBBB', 'CCCCDDDD']);
+    store = T.removeTabGroupMember(store, 'auth', 'CCCCDDDD');
+    expect(T.getTabGroup(store, 'auth').members).toEqual(['AAAABBBB']);
+    const model = T.buildBroadcastModel({
+      groupName: 'auth',
+      command: 'perceive',
+      results: [
+        { targetPrefix: 'AAAABBBB', ok: true, result: 'Page: A' },
+        { targetPrefix: 'CCCCDDDD', ok: false, error: 'timeout' },
+      ],
+    });
+    expect(model).toMatchObject({ schema: 'chrome-cdp-ex.broadcast.v1', ok: 1, failed: 1 });
+    expect(T.formatBroadcastResult(model)).toContain('1/2 ok');
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({ name: 'tab-group' }));
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({ name: 'broadcast', mutates: true }));
+  });
+
+  it('#98 parses components args and detector script', () => {
+    expect(T.parseComponentsArgs(['--depth', '3', '@2'])).toMatchObject({ depth: 3, ref: '@2' });
+    expect(T.frameworkDetectorScript()).toContain('__REACT_DEVTOOLS_GLOBAL_HOOK__');
+    expect(T.reactComponentsTreeScript(2)).toContain('maxDepth = 2');
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({ name: 'components', needsTarget: true }));
+  });
+
+  it('#99 chooses adaptive perceive last budgets from density and errors', () => {
+    expect(T.chooseAdaptivePerceiveLast({ lineCount: 50, consoleErrors: 0, interactiveCount: 5 })).toBeGreaterThanOrEqual(40);
+    expect(T.chooseAdaptivePerceiveLast({ lineCount: 500, consoleErrors: 0, interactiveCount: 10 })).toBeLessThanOrEqual(20);
+    expect(T.chooseAdaptivePerceiveLast({ lineCount: 120, consoleErrors: 3, interactiveCount: 5 })).toBeGreaterThanOrEqual(28);
+    expect(T.parsePerceiveArgs(['--adaptive']).adaptive).toBe(true);
+    expect(T.parsePerceiveArgs(['--last', 'auto']).last).toBe('auto');
+    expect(T.parsePerceiveArgs(['--last', '12']).last).toBe(12);
+  });
+
+  it('#100 and #101 ship docs artifacts for Browser Use mapping and outreach research', async () => {
+    const { readFileSync, existsSync } = await import('fs');
+    expect(existsSync('docs/browser-use-mapping.md')).toBe(true);
+    expect(existsSync('docs/outreach/awesome-lists.md')).toBe(true);
+    const mapping = readFileSync('docs/browser-use-mapping.md', 'utf8');
+    expect(mapping).toMatch(/Action Receipt/i);
+    expect(mapping).toMatch(/recovery/i);
+    const outreach = readFileSync('docs/outreach/awesome-lists.md', 'utf8');
+    expect(outreach).toMatch(/Do not auto-submit/i);
+  });
+});
