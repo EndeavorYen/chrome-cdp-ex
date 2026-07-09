@@ -1,6 +1,6 @@
 # chrome-cdp-ex
 
-[![77 Commands](https://img.shields.io/badge/commands-77-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
+[![78 Commands](https://img.shields.io/badge/commands-78-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
 [![Release v2.9.1](https://img.shields.io/badge/release-v2.9.1-brightgreen)](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.9.1)
@@ -174,7 +174,7 @@ Most readers only need this loop:
 doctor -> list -> open -> perceive -> click/fill -> perceive --since-action -> report
 ```
 
-See [docs/reference.md](docs/reference.md) for Electron, WSL2, screenshots, CSS tracing, network mocks, checkpoints, replay, export, MCP stdio use, and all 77 commands.
+See [docs/reference.md](docs/reference.md) for Electron, WSL2, screenshots, CSS tracing, network mocks, checkpoints, replay, export, MCP stdio use, and all 78 commands.
 
 ## Command map
 

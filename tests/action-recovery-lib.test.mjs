@@ -6,6 +6,9 @@ import {
   classifyActionFailure,
   formatActionFailure,
   recoveryCommandsFromDiagnosis,
+  RECOVERY_POLICY_REGISTRY,
+  listRecoveryPolicyKinds,
+  getRecoveryPolicyTemplate,
 } from '../skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs';
 
 describe('action recovery lib', () => {
@@ -119,5 +122,25 @@ describe('action recovery lib', () => {
     expect(recoveryCommandsFromDiagnosis({
       recovery: { commands: [{ command: 'cdp console ABC123 --errors' }] },
     })).toEqual(['cdp console ABC123 --errors']);
+  });
+});
+
+
+describe('recovery policy registry', () => {
+  it('#95 exposes a stable registry for known diagnosis kinds', () => {
+    const kinds = listRecoveryPolicyKinds();
+    for (const kind of ['overlay', 'stale-ref', 'network-failure', 'timeout', 'wrong-frame', 'console-error']) {
+      expect(kinds).toContain(kind);
+      expect(getRecoveryPolicyTemplate(kind).strategy).toBeTruthy();
+    }
+    expect(RECOVERY_POLICY_REGISTRY.default.strategy).toBe('refresh-perception');
+    const plan = buildActionRecoveryPlan({ kind: 'overlay', nextCommand: 'cdp dismiss-modal ABC' }, { targetId: 'ABC123', targetInput: '#x' });
+    expect(plan.schema).toBe('chrome-cdp-ex.recovery-policy.v1');
+    expect(plan.strategy).toBe('clear-overlay');
+    expect(plan.commands.map(c => c.command)).toEqual(expect.arrayContaining([
+      'cdp overlay ABC123 "#x" --format json',
+      'cdp dismiss-modal ABC',
+      'cdp perceive ABC123 -C -d 8',
+    ]));
   });
 });

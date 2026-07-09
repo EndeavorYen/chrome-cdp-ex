@@ -190,7 +190,7 @@ describe('COMMANDS registry', () => {
     const mutating = T.COMMANDS.filter(c => c.mutates);
     expect(mutating.map(c => c.name).sort()).toEqual([
       'back', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
-      'clock', 'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav',
+      'clock', 'dismiss-modal', 'emulate', 'fill', 'forward', 'inject', 'jsclick', 'nav',
       'open', 'press', 'reload', 'replay', 'restore', 'responsive-audit', 'scroll', 'select', 'spawn-debug-browser',
       'stop', 'mock', 'qa', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
     ].sort());
