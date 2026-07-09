@@ -188,6 +188,7 @@ scripts/cdp.mjs perceive <target> -x "nav, aside, [role=complementary]"  # exclu
 scripts/cdp.mjs perceive <target> -i           # interactive elements only (compact)
 scripts/cdp.mjs perceive <target> -d 3         # limit tree depth to 3
 scripts/cdp.mjs perceive <target> -C           # include visible controls + non-ARIA clickables (@c refs)
+scripts/cdp.mjs perceive <target> --adaptive  # density/error-aware text-row budget
 scripts/cdp.mjs controls <target> -s "#composer" --format json # visible controls inventory for selector repair
 ```
 
@@ -492,6 +493,7 @@ scripts/cdp.mjs fill    <target> <sel|@ref> <text> [--format json] # clear field
 scripts/cdp.mjs fill    <target> --react <sel|@ref> <text> [--format json] # React-controlled input value setter + input/change events
 scripts/cdp.mjs select  <target> <selector> <value> [--format json] # select option (auto-returns perceive diff)
 scripts/cdp.mjs styles  <target> <selector>            # computed styles (meaningful props only)
+scripts/cdp.mjs components <target> [--depth N]     # React/Vue component tree MVP
 scripts/cdp.mjs text    <target> [selector]              # clean text — optional CSS selector to scope
 scripts/cdp.mjs table   <target> [selector]            # full table data (tab-separated, no row limit)
 scripts/cdp.mjs cookies <target>                       # list cookies for current page
@@ -526,6 +528,8 @@ scripts/cdp.mjs doctor [--format json]         # one-call diagnostics (Node, ins
 scripts/cdp.mjs ready [--format json]          # alias of doctor; exits 1 if any check FAILs
 scripts/cdp.mjs list    [--format json]        # discover tabs; JSON gives schema/pages/recommendation/nextSteps
 scripts/cdp.mjs target --url URL|--title TEXT [--exact] [--format json] # select by URL/title
+scripts/cdp.mjs tab-group create app <t1> <t2>   # named multi-tab group
+scripts/cdp.mjs broadcast app perceive -C -d 4   # run one command on each member
 scripts/cdp.mjs use <target> --name app        # save a named alias for target reuse
 scripts/cdp.mjs attach --port 9222 --target <target> --name app # explicit alias with CDP endpoint
 scripts/cdp.mjs current [--format json]        # show current alias and saved aliases

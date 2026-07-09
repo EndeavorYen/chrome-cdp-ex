@@ -189,7 +189,7 @@ describe('COMMANDS registry', () => {
   it('marks mutating commands with a feedback policy or explicit none policy', () => {
     const mutating = T.COMMANDS.filter(c => c.mutates);
     expect(mutating.map(c => c.name).sort()).toEqual([
-      'back', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
+      'back', 'broadcast', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
       'clock', 'dismiss-modal', 'emulate', 'fill', 'forward', 'inject', 'jsclick', 'nav',
       'open', 'press', 'reload', 'replay', 'restore', 'responsive-audit', 'scroll', 'select', 'spawn-debug-browser',
       'stop', 'mock', 'qa', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
@@ -3901,6 +3901,7 @@ describe('parsePerceiveArgs', () => {
       cursorInteractive: false,
       keepRefs: false,
       last: null,
+      adaptive: false,
       sinceAction: false,
       frameRef: null,
     });
@@ -3969,6 +3970,7 @@ describe('parsePerceiveArgs', () => {
       cursorInteractive: true,
       keepRefs: false,
       last: null,
+      adaptive: false,
       sinceAction: false,
       frameRef: null,
     });

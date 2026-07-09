@@ -8,8 +8,8 @@ Most workflows start with `doctor -> list -> open -> perceive -> click/fill -> p
 
 | Area | Commands |
 |---|---|
-| Discovery | `help`, `doctor`, `list`, `target`, `open`, `spawn-debug-browser`, `attach`, `use`, `forget`, `current`, `stop`, `closetab`, `keepalive` |
-| Perception | `perceive`, `controls`, `summary`, `snap`, `frame`, `overlay`, `text`, `table`, `status`, `console`, `report`, `qa`, `responsive-audit` |
+| Discovery | `help`, `doctor`, `list`, `target`, `tab-group`, `broadcast`, `open`, `spawn-debug-browser`, `attach`, `use`, `forget`, `current`, `stop`, `closetab`, `keepalive` |
+| Perception | `perceive`, `controls`, `summary`, `snap`, `frame`, `overlay`, `text`, `table`, `components`, `status`, `console`, `report`, `qa`, `responsive-audit` |
 | Visual capture | `shot`, `elshot`, `fullshot`, `scanshot`, `diff-shot` |
 | Interaction | `click`, `verify-click`, `jsclick`, `clickxy`, `type`, `press`, `scroll`, `hover`, `fill`, `select`, `upload`, `dialog`, `dismiss-modal` |
 | Waiting and flow | `wait`, `waitfor`, `loadall`, `batch`, `flow`, `repeat` |
@@ -33,6 +33,8 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 ```
 
 Use `--format json` when another agent or script needs structured handoff data instead of human text.
+
+For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a text-row budget from page density and console errors. Explicit `--last N` always wins.
 
 ## Install And Release Surface
 
@@ -121,6 +123,27 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target> --qa --format json
 ```
 
 MCP tools mirror these workflows: `select_target`, `responsive_audit`, plus `qa` flags on `perceive` / `click` / `report`, and `open_or_attach.reuseUrl`.
+
+See also [Browser Use mapping](browser-use-mapping.md) and [awesome-list outreach research](outreach/awesome-lists.md).
+
+## Multi-tab groups
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs tab-group create auth AABB CC11
+node skills/chrome-cdp-ex/scripts/cdp.mjs broadcast auth perceive -C -d 4
+node skills/chrome-cdp-ex/scripts/cdp.mjs tab-group show auth --format json
+```
+
+Groups are stored in the CDP runtime directory (not the git repo). Prefer read-only broadcast commands unless mutation is intentional.
+
+## Components (MVP)
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs components <target> --depth 4
+node skills/chrome-cdp-ex/scripts/cdp.mjs components <target> @3 --format json
+```
+
+Works best with React/Vue dev builds or DevTools hooks. Production minification may strip component names.
 
 ## Media emulation
 
