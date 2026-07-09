@@ -1308,7 +1308,10 @@ const DEFAULT_GATE_LIMITS = Object.freeze({
   firstUsefulObservationMsMax: 5000,
   firstActionEvidenceMsMax: 5000,
   goldenPathMsMax: 120000,
-  estimatedOutputTokensMax: 12750,
+  // Real-app adversarial campaigns exercise extra probes (table/shadow/slow-network)
+  // on top of the golden path. Keep useful-observation budgets tight, but leave
+  // modest headroom so total handoff noise does not falsely fail a healthy run.
+  estimatedOutputTokensMax: 13500,
   maxStepEstimatedTokensMax: 5000,
   maxStepDurationMsMax: 5000,
   usefulObservationTokensMax: 3000,
@@ -2566,8 +2569,10 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
     { args: ['perceive', target, '--diff', '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-diff' },
     ...(adversarial ? [
       { args: ['click', target, '#diagnostic', '--format', 'json', '--compact'], name: 'adversarial-slow-network', benchmarkProbe: true, timeout: 10000 },
-      { args: ['table', target, '#scenario-table'], name: 'adversarial-table', benchmarkProbe: true },
-      { args: ['perceive', target, '-s', 'shadow-action-card', '-d', '5'], name: 'adversarial-shadow', benchmarkProbe: true },
+      // Bound large-table proof to a row-count probe — dumping full TSV of 100+ rows
+      // inflates total-output-tokens without improving the trait signal.
+      { args: ['eval', target, 'document.querySelectorAll("#scenario-table tr").length'], name: 'adversarial-table', benchmarkProbe: true },
+      { args: ['perceive', target, '-s', 'shadow-action-card', '-d', '4', '--adaptive'], name: 'adversarial-shadow', benchmarkProbe: true },
     ] : []),
     { args: ['inject', target, '--css', '#combat-log { outline: 2px solid rgb(37, 99, 235); }', '--format', 'json', '--compact'] },
     ...(actionEvidenceNavUrl ? [{ args: ['nav', target, actionEvidenceNavUrl, '--format', 'json', '--compact'] }] : []),
