@@ -191,7 +191,7 @@ describe('COMMANDS registry', () => {
     expect(mutating.map(c => c.name).sort()).toEqual([
       'back', 'click', 'clickxy', 'closetab', 'cookiedel', 'cookieset',
       'clock', 'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav',
-      'open', 'press', 'reload', 'replay', 'restore', 'scroll', 'select', 'spawn-debug-browser',
+      'open', 'press', 'reload', 'replay', 'restore', 'responsive-audit', 'scroll', 'select', 'spawn-debug-browser',
       'stop', 'mock', 'qa', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
     ].sort());
     for (const command of mutating) {
@@ -851,6 +851,7 @@ describe('parseReportArgs', () => {
     expect(T.parseReportArgs([])).toEqual({
       lastActions: 20,
       compact: false,
+      qa: false,
       args: [],
     });
   });
@@ -859,6 +860,7 @@ describe('parseReportArgs', () => {
     expect(T.parseReportArgs(['--last', '5'])).toEqual({
       lastActions: 5,
       compact: false,
+      qa: false,
       args: [],
     });
   });
@@ -867,6 +869,7 @@ describe('parseReportArgs', () => {
     expect(T.parseReportArgs(['--all', '--verbose'])).toEqual({
       lastActions: null,
       compact: false,
+      qa: false,
       args: ['--verbose'],
     });
   });
@@ -875,6 +878,7 @@ describe('parseReportArgs', () => {
     expect(T.parseReportArgs(['--last', '1', '--compact'])).toEqual({
       lastActions: 1,
       compact: true,
+      qa: false,
       args: [],
     });
   });
@@ -4173,18 +4177,22 @@ describe('formatPageList', () => {
     expect(model.recommendation.commands).toEqual(model.nextSteps);
   });
 
-  it('recommends the first non-blank page when blank tabs are listed first', () => {
+  it('recommends and ranks non-blank pages ahead of blank tabs', () => {
     const model = T.buildPageListModel([
       { targetId: 'AABBCCDD11223344', type: 'page', title: '', url: 'about:blank' },
       { targetId: 'EEFF001122334455', type: 'page', title: 'Dashboard', url: 'https://example.com/app' },
     ]);
-    expect(model.pages[0]).toMatchObject({ isBlank: true });
-    expect(model.pages[1]).toMatchObject({ isBlank: false });
-    expect(model.recommendation).toMatchObject({
-      targetPrefix: model.pages[1].targetPrefix,
-      run: `cdp perceive ${model.pages[1].targetPrefix} -C -d 8`,
+    expect(model.pages[0]).toMatchObject({ isBlank: false, title: 'Dashboard', recommended: true });
+    expect(model.pages[1]).toMatchObject({ isBlank: true });
+    expect(model.recommended).toMatchObject({
+      targetPrefix: model.pages[0].targetPrefix,
+      url: 'https://example.com/app',
     });
-    expect(model.nextSteps[0]).toBe(`cdp perceive ${model.pages[1].targetPrefix} -C -d 8`);
+    expect(model.recommendation).toMatchObject({
+      targetPrefix: model.pages[0].targetPrefix,
+      run: `cdp perceive ${model.pages[0].targetPrefix} -C -d 8`,
+    });
+    expect(model.nextSteps[0]).toBe(`cdp perceive ${model.pages[0].targetPrefix} -C -d 8`);
   });
 
   it('builds an empty list JSON model with an open next step', () => {
@@ -5953,6 +5961,7 @@ describe('open onboarding guidance', () => {
       attachTimeoutMs: 0,
       readyTimeoutMs: 0,
       readySelector: null,
+      reuseUrl: false,
     });
     expect(T.parseOpenArgs(['--attach-timeout-ms=1200', '--ready-timeout-ms', '2500', '--ready-selector', '#app'])).toEqual({
       url: 'about:blank',
@@ -5960,6 +5969,7 @@ describe('open onboarding guidance', () => {
       attachTimeoutMs: 1200,
       readyTimeoutMs: 2500,
       readySelector: '#app',
+      reuseUrl: false,
     });
     expect(() => T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', 'nope'])).toThrow('open: --attach-timeout-ms must be a non-negative integer');
     expect(() => T.parseOpenArgs(['https://example.com', '--ready-timeout-ms', 'nope'])).toThrow('open: --ready-timeout-ms must be a non-negative integer');
@@ -9081,7 +9091,7 @@ describe('formatDoctorReport', () => {
     expect(out).toContain('[FAIL] CDP');
     expect(out).toContain('hint: cp -r ...');
     expect(out).toContain('hint: enable debugging');
-    expect(out).toContain('Not ready');
+    expect(out).toContain('Blocked');
     expect(out).toContain('Next steps:');
     expect(out).toContain('cdp spawn-debug-browser edge --port 9222 --url https://example.com');
   });
@@ -9094,19 +9104,19 @@ describe('formatDoctorReport', () => {
       { status: 'OK', label: 'CDP', detail: 'reachable' },
     ]);
     expect(out).toContain('Ready.');
-    expect(out).not.toContain('Not ready');
+    expect(out).not.toContain('Blocked');
     expect(out).toContain('Next steps:');
     expect(out).toContain('cdp list');
     expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
     expect(out).toContain('cdp report AABBCCDD');
   });
 
-  it('reports "Mostly ready" when only WARNs present', () => {
+  it('reports "Usable with warnings" when only WARNs present', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22' },
       { status: 'WARN', label: 'Skill', detail: 'missing' },
     ]);
-    expect(out).toContain('Mostly ready');
+    expect(out).toContain('Usable with warnings');
     expect(out).toContain('1 warning');
   });
 
@@ -9134,7 +9144,7 @@ describe('formatDoctorReport', () => {
       },
     ]);
 
-    expect(out).toContain('Mostly ready');
+    expect(out).toContain('Usable with warnings');
     expect(out).toContain('cdp open https://example.com');
     expect(out).toContain('Use the target id printed by open');
     expect(out).toContain('cdp report <target-from-open>');
@@ -9171,7 +9181,7 @@ describe('runDoctorChecks', () => {
 });
 
 describe('doctorStr', () => {
-  it('returns formatted multi-line report including Ready./Not ready summary', async () => {
+  it('returns formatted multi-line report including Ready./Blocked summary', async () => {
     const fetcher = async (url) => url.endsWith('/json/list')
       ? { ok: true, json: async () => ([{ type: 'page', id: 'AABBCCDDEEFF', title: 'Example', url: 'https://example.com' }]) }
       : { ok: true, json: async () => ({ Browser: 'Chrome/123', webSocketDebuggerUrl: 'ws://x' }) };
@@ -9192,14 +9202,15 @@ describe('doctorStr', () => {
     expect(out).toMatch(/\[OK\s*\] CDP/);
     expect(out).toMatch(/\[OK\s*\] Tabs/);
     expect(out).toMatch(/\[WARN\] Permission/);
-    expect(out).toContain('Mostly ready');
+    expect(out).toContain('Usable with warnings');
+    expect(out).toContain('severity: advisory');
     expect(out).toContain('Next steps:');
     expect(out).toContain('cdp list');
     expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
     expect(out).toContain('click Allow');
   });
 
-  it('marks report as Not ready when CDP fails', async () => {
+  it('marks report as Blocked when CDP fails', async () => {
     const fetcher = async () => { throw new Error('ECONNREFUSED'); };
     const out = await doctorStr({
       nodeVersion: 'v22.10.0',
@@ -9210,7 +9221,7 @@ describe('doctorStr', () => {
       env: { CDP_PORT: '9999' },
       fetcher,
     });
-    expect(out).toContain('Not ready');
+    expect(out).toContain('Blocked');
     expect(out).toMatch(/\[FAIL\] CDP/);
   });
 
@@ -9232,11 +9243,13 @@ describe('doctorStr', () => {
     const model = JSON.parse(out);
     expect(model).toMatchObject({
       schema: 'chrome-cdp-ex.doctor.v1',
-      status: 'mostly-ready',
+      status: 'usable-with-warnings',
+      readiness: 'usable-with-warnings',
       ready: false,
       failures: 0,
       warnings: 2,
     });
+    expect(model.checks.find(c => c.label === 'Permission')?.severity).toBe('advisory');
     expect(model.wizard).toMatchObject({
       status: 'waiting for browser debugging approval',
       currentStep: 'cdp perceive AABBCCDD -C -d 8  # click Allow if Chrome asks',

@@ -376,3 +376,164 @@ describe('current open issue contracts', () => {
     expect(responses[1].result.tools.map(tool => tool.name)).toContain('qa_page');
   });
 });
+
+
+describe('issues #82-#87 contracts', () => {
+  it('#82 selects targets by URL/title and errors on ambiguity', () => {
+    const pages = [
+      { targetId: 'AAAABBBB11112222', title: 'Blank', url: 'about:blank' },
+      { targetId: 'CCCCDDDD33334444', title: 'Agent Decision Lab', url: 'http://127.0.0.1:8788/app' },
+      { targetId: 'EEEEFFFF55556666', title: 'Other', url: 'http://127.0.0.1:8788/other' },
+    ];
+    const selected = T.selectPageTarget(pages, { url: '8788/app' });
+    expect(selected).toMatchObject({
+      targetId: 'CCCCDDDD33334444',
+      targetPrefix: expect.stringMatching(/^CCCC/),
+    });
+    expect(T.formatTargetSelect(selected, pages)).toContain('Selected target:');
+    expect(T.parseOpenArgs(['https://example.com', '--reuse-url']).reuseUrl).toBe(true);
+    expect(() => T.selectPageTarget(pages, { url: '8788' })).toThrow(/2 pages matched/);
+    expect(T.rankPageTargets(pages)[0].url).toContain('8788');
+  });
+
+  it('#83 returns spawn target handoff model with cleanup guidance', async () => {
+    const out = await T.spawnDebugBrowserStr([
+      'chrome', '--port', '9444', '--url', 'https://example.com', '--exe', '/opt/chromium/chrome', '--format', 'json',
+    ], { TMPDIR: '/tmp', PATH: '' }, {
+      platform: 'linux',
+      fs: { existsSync: path => path === '/opt/chromium/chrome', mkdirSync: () => {} },
+      spawn: () => ({
+        pid: 777,
+        unref: () => {},
+        stdout: { on: () => {}, setEncoding: () => {}, unref: () => {} },
+        stderr: { on: () => {}, setEncoding: () => {}, unref: () => {} },
+        on: () => {},
+        once: () => {},
+      }),
+      waitForSpawnedCdp: async () => ({ ok: true, port: 9444, product: 'Chrome/126' }),
+      listSpawnedDebugTargets: async () => ([
+        { targetId: 'TARGETID00000001', title: 'Example', url: 'https://example.com', type: 'page' },
+      ]),
+    });
+    const model = JSON.parse(out);
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.spawn-debug-browser.v1',
+      ready: true,
+      pid: 777,
+      port: 9444,
+      url: 'https://example.com',
+      targetId: 'TARGETID00000001',
+      targetPrefix: expect.any(String),
+    });
+    expect(model.nextCommand).toMatch(/perceive .* -C -d 8/);
+    expect(model.cleanup.deleteProfile).toContain(model.profileDir);
+  });
+
+  it('#84 builds compact QA summary models for action handoffs', () => {
+    const summary = T.buildQaSummaryModel({
+      page: { url: 'http://127.0.0.1:8787', title: 'App' },
+      console: { errors: 0, exceptions: 0 },
+      network: { failures: 0 },
+      action: { outcome: 'changed', dispatch: { ok: true }, changed: true },
+      targetPrefix: 'ABC12345',
+      nextCommand: 'cdp report ABC12345',
+      source: 'action',
+    });
+    expect(summary).toMatchObject({
+      schema: 'chrome-cdp-ex.qa-summary.v1',
+      ok: true,
+      changed: 'changed',
+      consoleErrors: 0,
+      networkFailures: 0,
+    });
+    expect(T.formatQaSummaryText(summary)).toContain('QA summary: pass');
+    const parsed = T.parseQaModeArgs(['--qa', '--max-diff-lines', '5', 'extra']);
+    expect(parsed).toMatchObject({ qa: true, compact: true, maxDiffLines: 5, args: ['extra'] });
+    expect(T.parseReportArgs(['--qa', '--last', '3'])).toMatchObject({ qa: true, compact: true, lastActions: 3 });
+  });
+
+  it('#85 improves text no-match diagnostics with root/scope and eval fallback', () => {
+    expect(T.parseTextArgs(['--root', 'document', '#promptBlock']).root).toBe('document');
+    const err = T.formatTextNoMatchError(
+      { tried: ['#promptBlock'], root: 'body' },
+      { selectors: ['#promptBlock'], root: 'body' },
+    );
+    expect(err).toContain('within root "body"');
+    expect(err).toContain('document.querySelector("#promptBlock")');
+    expect(err).toContain('text --root');
+  });
+
+  it('#86 builds responsive audit pass/warn/fail summaries', () => {
+    const model = T.buildResponsiveAuditModel({
+      targetId: 'ABCDEF0123456789',
+      page: { title: 'App', url: 'http://127.0.0.1:8787' },
+      console: { errors: 0, warnings: 0, exceptions: 0 },
+      viewports: [
+        {
+          viewport: '1440x900',
+          url: 'http://127.0.0.1:8787',
+          title: 'App',
+          screenshot: '/tmp/desktop.png',
+          overflowX: false,
+          blank: false,
+          controlCount: 4,
+          scroll: { width: 1440, height: 900, clientWidth: 1440, clientHeight: 900 },
+        },
+        {
+          viewport: '390x844',
+          url: 'http://127.0.0.1:8787',
+          title: 'App',
+          screenshot: '/tmp/mobile.png',
+          overflowX: true,
+          blank: false,
+          controlCount: 3,
+          scroll: { width: 420, height: 1200, clientWidth: 390, clientHeight: 844 },
+        },
+      ],
+    });
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.responsive-audit.v1',
+      verdict: 'warn',
+      summary: { pass: 1, warn: 1, fail: 0 },
+    });
+    expect(T.formatResponsiveAuditReport(model)).toContain('Responsive audit: warn');
+    expect(T.parseResponsiveAuditArgs([]).viewports).toEqual(['1440x900', '390x844']);
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'responsive-audit',
+      aliases: ['visual-check'],
+      needsTarget: true,
+    }));
+  });
+
+  it('#87 classifies doctor permission as advisory and readiness as usable-with-warnings', () => {
+    const permission = T.checkBrowserPermission({
+      daemons: { targetPrefixes: [] },
+      tabs: { status: 'OK', targetPrefixes: ['AABBCCDD'] },
+      cdp: { status: 'OK' },
+      environment: { environment: { headlessLikely: true } },
+    });
+    expect(permission.severity).toBe('advisory');
+    expect(permission.detail).toMatch(/headless CDP is reachable/i);
+
+    const summary = T.doctorStatusSummary([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'CDP', detail: 'ok' },
+      { status: 'OK', label: 'Tabs', detail: '1', targetPrefixes: ['AABBCCDD'] },
+      permission,
+    ]);
+    expect(summary).toMatchObject({
+      readiness: 'usable-with-warnings',
+      status: 'usable-with-warnings',
+      failures: 0,
+      advisories: 1,
+    });
+    const model = T.buildDoctorModel([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'CDP', detail: 'ok' },
+      { status: 'OK', label: 'Tabs', detail: '1', targetPrefixes: ['AABBCCDD'] },
+      permission,
+    ]);
+    expect(model.provenCommand).toBeTruthy();
+    expect(model.checks.find(c => c.label === 'Permission').severity).toBe('advisory');
+  });
+});

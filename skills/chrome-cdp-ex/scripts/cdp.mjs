@@ -263,6 +263,236 @@ function formatCurrentAlias(store, { format = 'text' } = {}) {
   return formatAliasRecord(current);
 }
 
+function isBlankPageUrl(url = '') {
+  const value = String(url || '').trim();
+  return !value || value === 'about:blank' || value === 'about:srcdoc';
+}
+
+function pageTargetScore(page = {}) {
+  let score = 0;
+  const url = page.url || '';
+  const title = page.title || '';
+  if (!isBlankPageUrl(url)) score += 100;
+  if (title && title !== '(blank tab)') score += 20;
+  if (/^https?:\/\//i.test(url)) score += 10;
+  if (/^http:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(url)) score += 5;
+  if (page.attached === true || page.attached === 1) score += 3;
+  if (typeof page.lastAccessTime === 'number') score += Math.min(10, Math.floor(page.lastAccessTime / 1e12));
+  return score;
+}
+
+function rankPageTargets(pages = []) {
+  return [...pages].sort((a, b) => {
+    const scoreDiff = pageTargetScore(b) - pageTargetScore(a);
+    if (scoreDiff !== 0) return scoreDiff;
+    return String(a.targetId || '').localeCompare(String(b.targetId || ''));
+  });
+}
+
+function pageMatchesUrl(page = {}, needle = '', { exact = false } = {}) {
+  const url = String(page.url || '');
+  const want = String(needle || '');
+  if (!want) return false;
+  if (exact) return url === want || url === want.replace(/\/$/, '') || url.replace(/\/$/, '') === want;
+  return url.toLowerCase().includes(want.toLowerCase());
+}
+
+function pageMatchesTitle(page = {}, needle = '', { exact = false } = {}) {
+  const title = String(page.title || '');
+  const want = String(needle || '');
+  if (!want) return false;
+  if (exact) return title === want;
+  return title.toLowerCase().includes(want.toLowerCase());
+}
+
+function matchPageTargets(pages = [], { url = null, title = null, exact = false } = {}) {
+  return (pages || []).filter(page => {
+    if (url && !pageMatchesUrl(page, url, { exact })) return false;
+    if (title && !pageMatchesTitle(page, title, { exact })) return false;
+    return true;
+  });
+}
+
+function formatTargetCandidateLine(page, prefixLength = 8) {
+  const prefix = String(page.targetId || '').slice(0, prefixLength);
+  const title = isBlankPageUrl(page.url) ? '(blank tab)' : (page.title || '(untitled)');
+  return `${prefix}  ${title}  ${page.url || ''}`;
+}
+
+function selectPageTarget(pages = [], opts = {}) {
+  const { url = null, title = null, exact = false } = opts;
+  if (!url && !title) {
+    throw new Error('target: provide --url and/or --title to select a page');
+  }
+  const matches = matchPageTargets(pages, { url, title, exact });
+  const ranked = rankPageTargets(matches);
+  const prefixLength = getDisplayPrefixLength((pages || []).map(p => p.targetId || ''));
+  if (ranked.length === 0) {
+    const filters = [
+      url ? `--url ${url}` : null,
+      title ? `--title ${JSON.stringify(title)}` : null,
+      exact ? '--exact' : null,
+    ].filter(Boolean).join(' ');
+    throw new Error(`target: no page matched ${filters}. Run: cdp list`);
+  }
+  if (ranked.length > 1) {
+    const lines = ranked.slice(0, 8).map(page => `  ${formatTargetCandidateLine(page, prefixLength)}`);
+    const more = ranked.length > lines.length ? `\n  … +${ranked.length - lines.length} more` : '';
+    throw new Error([
+      `target: ${ranked.length} pages matched; narrow with a more specific --url/--title or --exact`,
+      'Candidates:',
+      ...lines,
+      more,
+      `Follow-up: cdp list --format json`,
+      `Or: cdp target --url <more-specific-url> --format json`,
+    ].filter(Boolean).join('\n'));
+  }
+  const chosen = ranked[0];
+  return {
+    page: chosen,
+    targetId: chosen.targetId,
+    targetPrefix: String(chosen.targetId || '').slice(0, prefixLength),
+    matchCount: 1,
+    filters: { url, title, exact },
+  };
+}
+
+function parseTargetSelectArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const parsed = {
+    format: fopts.format,
+    url: null,
+    title: null,
+    exact: false,
+  };
+  for (let i = 0; i < fopts.args.length; i++) {
+    const token = fopts.args[i];
+    if (token === '--url' || token === '-u') parsed.url = fopts.args[++i] || null;
+    else if (token === '--title' || token === '-t') parsed.title = fopts.args[++i] || null;
+    else if (token === '--exact') parsed.exact = true;
+    else throw new Error(`target: unknown argument ${token}`);
+  }
+  if (!parsed.url && !parsed.title) throw new Error('target: provide --url and/or --title');
+  return parsed;
+}
+
+function buildTargetSelectModel(selection, pages = []) {
+  const page = selection.page || {};
+  const prefixLength = getDisplayPrefixLength((pages || []).map(p => p.targetId || ''));
+  return {
+    schema: 'chrome-cdp-ex.target-select.v1',
+    targetId: selection.targetId,
+    targetPrefix: selection.targetPrefix || String(selection.targetId || '').slice(0, prefixLength),
+    title: isBlankPageUrl(page.url) ? '(blank tab)' : (page.title || ''),
+    url: page.url || '',
+    isBlank: isBlankPageUrl(page.url),
+    matchCount: selection.matchCount || 1,
+    filters: selection.filters || {},
+    recommendation: goldenPathPerceiveRecommendation(selection.targetPrefix || String(selection.targetId || '').slice(0, 8)),
+    nextSteps: [
+      `cdp perceive ${selection.targetPrefix || String(selection.targetId || '').slice(0, 8)} -C -d 8`,
+      `cdp use ${selection.targetPrefix || String(selection.targetId || '').slice(0, 8)} --name app`,
+    ],
+  };
+}
+
+function formatTargetSelect(selection, pages = [], { format = 'text' } = {}) {
+  const model = buildTargetSelectModel(selection, pages);
+  if (format === 'json') return formatJson(model);
+  return [
+    `Selected target: ${model.targetPrefix}`,
+    `URL: ${model.url || '(unknown)'}`,
+    `Title: ${model.title || '(untitled)'}`,
+    `Next: ${model.nextSteps[0]}`,
+  ].join('\n');
+}
+
+function parseQaModeArgs(args = [], allowed = ['text', 'json']) {
+  const fopts = parseFormatArgs(args, allowed);
+  let qa = false;
+  let summary = false;
+  let compact = false;
+  let maxDiffLines = null;
+  let maxControls = null;
+  const next = [];
+  for (let i = 0; i < fopts.args.length; i++) {
+    const arg = fopts.args[i];
+    if (arg === '--qa') qa = true;
+    else if (arg === '--summary') summary = true;
+    else if (arg === '--compact') compact = true;
+    else if (arg === '--max-diff-lines') {
+      maxDiffLines = parseNonNegativeInteger(fopts.args[++i], '--max-diff-lines');
+    } else if (String(arg).startsWith('--max-diff-lines=')) {
+      maxDiffLines = parseNonNegativeInteger(String(arg).slice('--max-diff-lines='.length), '--max-diff-lines');
+    } else if (arg === '--max-controls') {
+      maxControls = parseNonNegativeInteger(fopts.args[++i], '--max-controls');
+    } else if (String(arg).startsWith('--max-controls=')) {
+      maxControls = parseNonNegativeInteger(String(arg).slice('--max-controls='.length), '--max-controls');
+    } else next.push(arg);
+  }
+  return {
+    format: fopts.format,
+    qa: qa || summary,
+    summary: summary || qa,
+    compact: compact || qa || summary,
+    maxDiffLines,
+    maxControls,
+    args: next,
+  };
+}
+
+function buildQaSummaryModel({
+  page = {},
+  console: consoleHealth = {},
+  network = {},
+  action = null,
+  blank = null,
+  nextCommand = null,
+  targetPrefix = null,
+  source = 'qa-summary',
+} = {}) {
+  const url = page.url || '';
+  const title = page.title || '';
+  const isBlank = blank == null ? isBlankPageUrl(url) : Boolean(blank);
+  const consoleErrors = Number(consoleHealth.errors || 0) + Number(consoleHealth.exceptions || 0);
+  const networkFailures = Number(network.failures || 0);
+  const changed = action?.outcome
+    ? !['no-change', 'failed', 'timeout'].includes(action.outcome)
+    : action?.changed;
+  const changedStatus = changed == null ? 'unknown' : (changed ? 'changed' : 'no-change');
+  const ok = !isBlank && consoleErrors === 0 && networkFailures === 0 && action?.dispatch?.ok !== false;
+  return {
+    schema: 'chrome-cdp-ex.qa-summary.v1',
+    source,
+    targetPrefix: targetPrefix || null,
+    page: { url, title, isBlank },
+    consoleErrors,
+    networkFailures,
+    changed: changedStatus,
+    ok,
+    nextCommand: nextCommand || (targetPrefix ? `cdp report ${targetPrefix}` : null),
+  };
+}
+
+function formatQaSummaryText(model) {
+  return [
+    `QA summary: ${model.ok ? 'pass' : 'review'}`,
+    `Page: ${model.page?.title || '(untitled)'}`,
+    `URL: ${model.page?.url || '(unknown)'}${model.page?.isBlank ? ' (blank)' : ''}`,
+    `Console errors: ${model.consoleErrors}`,
+    `Network failures: ${model.networkFailures}`,
+    `Changed: ${model.changed}`,
+    model.nextCommand ? `Next: ${model.nextCommand}` : null,
+  ].filter(Boolean).join('\n');
+}
+
+function truncateTextLines(text = '', maxLines = null) {
+  if (maxLines == null || maxLines < 0) return String(text || '');
+  const lines = String(text || '').split('\n');
+  if (lines.length <= maxLines) return lines.join('\n');
+  return [...lines.slice(0, maxLines), `… truncated ${lines.length - maxLines} lines`].join('\n');
+}
+
 // Browser metadata from /json/version — set when connecting via CDP_PORT
 let _browserInfo = null;
 
@@ -389,12 +619,22 @@ function parseFormatArgs(args, allowed = ['text', 'json']) {
 function parseCompactFormatArgs(args, allowed = ['text', 'json']) {
   const fopts = parseFormatArgs(args, allowed);
   let compact = false;
+  let qa = false;
+  let maxDiffLines = null;
   const next = [];
-  for (const arg of fopts.args) {
+  for (let i = 0; i < fopts.args.length; i++) {
+    const arg = fopts.args[i];
     if (arg === '--compact') compact = true;
-    else next.push(arg);
+    else if (arg === '--qa' || arg === '--summary') {
+      qa = true;
+      compact = true;
+    } else if (arg === '--max-diff-lines') {
+      maxDiffLines = parseNonNegativeInteger(fopts.args[++i], '--max-diff-lines');
+    } else if (String(arg).startsWith('--max-diff-lines=')) {
+      maxDiffLines = parseNonNegativeInteger(String(arg).slice('--max-diff-lines='.length), '--max-diff-lines');
+    } else next.push(arg);
   }
-  return { format: fopts.format, compact, args: next };
+  return { format: fopts.format, compact, qa, maxDiffLines, args: next };
 }
 
 function formatJson(model) {
@@ -692,21 +932,24 @@ async function getPages(cdp) {
 
 function formatPageList(pages, browserInfo = null, opts = {}) {
   const aliases = opts.aliases || {};
+  const ranked = opts.ranked === false ? pages : rankPageTargets(pages);
   const lines = [];
   if (browserInfo) {
     const ua = browserInfo['User-Agent'] || '';
     const m = ua.match(/Electron\/([\d.]+)/);
     if (m) lines.push(`[Electron ${m[1]}]`);
   }
-  const prefixLen = getDisplayPrefixLength(pages.map(p => p.targetId));
-  lines.push(...pages.map(p => {
+  const prefixLen = getDisplayPrefixLength(ranked.map(p => p.targetId));
+  const recommendedId = (rankPageTargets(pages).find(p => !isBlankPageUrl(p.url)) || ranked[0])?.targetId;
+  lines.push(...ranked.map(p => {
     const id = p.targetId.slice(0, prefixLen).padEnd(prefixLen);
-    const isBlank = !p.url || p.url === 'about:blank';
+    const isBlank = isBlankPageUrl(p.url);
     const rawTitle = isBlank ? '(blank tab)' : (p.title || '');
     const title = rawTitle.substring(0, 54).padEnd(54);
     const aliasNames = aliasesForTarget(p.targetId, aliases);
     const aliasSuffix = aliasNames.length ? `  ${aliasNames.map(name => `@${name}`).join(' ')}` : '';
-    return `${id}  ${title}  ${p.url || ''}${aliasSuffix}`;
+    const rec = p.targetId === recommendedId ? ' *' : '';
+    return `${id}  ${title}  ${p.url || ''}${aliasSuffix}${rec}`;
   }));
   return lines.join('\n');
 }
@@ -724,9 +967,10 @@ function pageListBrowserModel(browserInfo = null) {
 
 function buildPageListModel(pages = [], browserInfo = null, opts = {}) {
   const aliases = opts.aliases || {};
+  const ranked = rankPageTargets(pages);
   const prefixLength = getDisplayPrefixLength(pages.map(p => p.targetId || ''));
-  const modelPages = pages.map((p, index) => {
-    const isBlank = !p.url || p.url === 'about:blank';
+  const modelPages = ranked.map((p, index) => {
+    const isBlank = isBlankPageUrl(p.url);
     return {
       index: index + 1,
       targetId: p.targetId || '',
@@ -735,10 +979,13 @@ function buildPageListModel(pages = [], browserInfo = null, opts = {}) {
       title: isBlank ? '(blank tab)' : (p.title || ''),
       url: p.url || '',
       isBlank,
+      score: pageTargetScore(p),
+      recommended: false,
       aliases: aliasesForTarget(p.targetId || '', aliases),
     };
   });
   const recommendedPage = modelPages.find(page => !page.isBlank) || modelPages[0];
+  if (recommendedPage) recommendedPage.recommended = true;
   const recommendation = recommendedPage
     ? goldenPathPerceiveRecommendation(recommendedPage.targetPrefix)
     : goldenPathOpenPageRecommendation();
@@ -749,6 +996,15 @@ function buildPageListModel(pages = [], browserInfo = null, opts = {}) {
     prefixLength,
     browser: pageListBrowserModel(browserInfo),
     pages: modelPages,
+    recommended: recommendedPage
+      ? {
+          targetId: recommendedPage.targetId,
+          targetPrefix: recommendedPage.targetPrefix,
+          url: recommendedPage.url,
+          title: recommendedPage.title,
+          score: recommendedPage.score,
+        }
+      : null,
     aliases: Object.values(aliases).map(alias => ({ ...alias })),
     recommendation,
     nextSteps,
@@ -1314,11 +1570,46 @@ async function diffShotStr(cdp, sid, session, opts = {}) {
   return opts.format === 'json' ? formatJson(model) : formatDiffShotResult(model);
 }
 
-async function htmlStr(cdp, sid, selector) {
-  const expr = selector
-    ? `document.querySelector(${JSON.stringify(selector)})?.outerHTML || 'Element not found'`
-    : `document.documentElement.outerHTML`;
-  return evalStr(cdp, sid, expr);
+async function htmlStr(cdp, sid, selectorOrArgs) {
+  // Share selector/root resolution rules with text where practical.
+  let opts;
+  if (Array.isArray(selectorOrArgs)) opts = parseTextArgs(selectorOrArgs);
+  else if (typeof selectorOrArgs === 'string' || selectorOrArgs == null) {
+    opts = parseTextArgs(selectorOrArgs ? [selectorOrArgs] : []);
+  } else opts = { selectors: [], root: null };
+  const selector = opts.selectors[0] || null;
+  const root = opts.root || 'document';
+  const result = await evalStr(cdp, sid, `(function() {
+    function safeQuery(root, sel) { try { return root?.querySelector?.(sel) || null; } catch { return null; } }
+    let scope = document.documentElement;
+    const rootSetting = ${JSON.stringify(root)};
+    if (rootSetting === 'body') scope = document.body || document.documentElement;
+    else if (rootSetting === 'auto' || rootSetting === 'default') {
+      scope = safeQuery(document, '#root') || safeQuery(document, '[data-reactroot]') || safeQuery(document, 'main') || document.body || document.documentElement;
+    } else if (rootSetting !== 'document') {
+      scope = safeQuery(document, rootSetting);
+      if (!scope) return JSON.stringify({ ok: false, root: rootSetting, reason: 'root-not-found' });
+    }
+    if (!${JSON.stringify(selector)}) {
+      return JSON.stringify({ ok: true, root: rootSetting, html: (scope || document.documentElement).outerHTML });
+    }
+    const el = scope === document || scope === document.documentElement
+      ? safeQuery(document, ${JSON.stringify(selector)})
+      : (scope.matches && scope.matches(${JSON.stringify(selector)}) ? scope : safeQuery(scope, ${JSON.stringify(selector)}));
+    if (!el) return JSON.stringify({ ok: false, root: rootSetting, selector: ${JSON.stringify(selector)} });
+    return JSON.stringify({ ok: true, root: rootSetting, html: el.outerHTML });
+  })()`);
+  let parsed;
+  try { parsed = JSON.parse(result); } catch { return result; }
+  if (!parsed.ok) {
+    const rootLabel = parsed.root || root || 'document';
+    const sel = parsed.selector || selector || '';
+    throw new Error(
+      `html: no element matched within root "${rootLabel}"${sel ? ` for selector ${sel}` : ''}. ` +
+      `Fallback: cdp eval <target> "document.querySelector(${JSON.stringify(sel || 'selector')})?.outerHTML"`
+    );
+  }
+  return parsed.html || '';
 }
 
 async function waitForDocumentReady(cdp, sid, timeoutMs = NAVIGATION_TIMEOUT, options = {}) {
@@ -2638,15 +2929,48 @@ function normalizeActionOutputOptions(format = 'text') {
   if (format && typeof format === 'object') {
     return {
       format: format.format || 'text',
-      compact: format.compact === true,
+      compact: format.compact === true || format.qa === true || format.summary === true,
+      qa: format.qa === true || format.summary === true,
+      maxDiffLines: format.maxDiffLines == null ? null : Number(format.maxDiffLines),
     };
   }
-  return { format, compact: false };
+  return { format, compact: false, qa: false, maxDiffLines: null };
 }
 
-function formatActionResultOutput(result, { format = 'text', compact = false, dispatchText = '', timeoutError = null } = {}) {
+function formatActionResultOutput(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null } = {}) {
+  if (qa) {
+    const summary = buildQaSummaryModel({
+      page: {
+        url: result.effects?.page?.url || result.page?.url || '',
+        title: result.effects?.page?.title || result.page?.title || '',
+      },
+      console: {
+        errors: Number(result.effects?.consoleDelta?.errors || 0),
+        exceptions: Number(result.effects?.exceptionDelta?.count || 0),
+      },
+      network: {
+        failures: Number(result.effects?.networkDelta?.failures || 0),
+      },
+      action: {
+        outcome: result.outcome?.status || result.receipt?.outcome || null,
+        dispatch: result.dispatch || null,
+        changed: result.outcome?.status ? result.outcome.status !== 'no-change' : Boolean(result.effects?.domDiff),
+      },
+      targetPrefix: result.target?.targetId ? targetPrefixForDisplay(result.target.targetId) : null,
+      nextCommand: result.recommendation?.commands?.[0] || result.effects?.diagnosis?.nextCommand || null,
+      source: 'action',
+    });
+    if (format === 'json') {
+      return formatJson({
+        summary,
+        action: compactActionResultForJson(result, { compact: true }),
+      });
+    }
+    return formatQaSummaryText(summary);
+  }
   if (format === 'json') return formatJson(compactActionResultForJson(result, { compact }));
-  const text = dispatchText ? `${dispatchText}\n---\n${formatActionText(result)}` : formatActionText(result);
+  let text = dispatchText ? `${dispatchText}\n---\n${formatActionText(result)}` : formatActionText(result);
+  if (maxDiffLines != null) text = truncateTextLines(text, maxDiffLines);
   if (!timeoutError) return text;
   return `${text}\n(success but observation timed out after action dispatch: ${timeoutError.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
 }
@@ -2838,6 +3162,188 @@ function parseQaArgs(args = []) {
     else throw new Error(`qa: unknown argument ${token}`);
   }
   return opts;
+}
+
+function parseResponsiveAuditArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const opts = {
+    format: fopts.format,
+    viewports: [],
+    outDir: null,
+    maxControls: 12,
+  };
+  for (let i = 0; i < fopts.args.length; i++) {
+    const token = fopts.args[i];
+    if (token === '--viewport' || token === '-V') {
+      const size = fopts.args[++i];
+      if (!size) throw new Error('responsive-audit: --viewport requires WxH');
+      opts.viewports.push(size);
+    } else if (token === '--out-dir' || token === '--output-dir') {
+      opts.outDir = fopts.args[++i] || null;
+      if (!opts.outDir) throw new Error('responsive-audit: --out-dir requires a path');
+    } else if (token === '--max-controls') {
+      opts.maxControls = parseNonNegativeInteger(fopts.args[++i], 'responsive-audit: --max-controls');
+    } else {
+      throw new Error(`responsive-audit: unknown argument ${token}`);
+    }
+  }
+  if (!opts.viewports.length) opts.viewports = ['1440x900', '390x844'];
+  return opts;
+}
+
+function responsiveAuditViewportScript() {
+  return `(function() {
+    const doc = document.documentElement;
+    const body = document.body;
+    const scrollWidth = Math.max(doc?.scrollWidth || 0, body?.scrollWidth || 0);
+    const scrollHeight = Math.max(doc?.scrollHeight || 0, body?.scrollHeight || 0);
+    const clientWidth = doc?.clientWidth || window.innerWidth || 0;
+    const clientHeight = doc?.clientHeight || window.innerHeight || 0;
+    const overflowX = scrollWidth > clientWidth + 1;
+    const controls = Array.from(document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]'))
+      .filter(el => {
+        const r = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      })
+      .slice(0, 20)
+      .map(el => ({
+        tag: el.tagName.toLowerCase(),
+        text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 80),
+      }));
+    const blank = !(document.body && (document.body.innerText || '').trim()) && document.querySelectorAll('*').length < 8;
+    return JSON.stringify({
+      url: location.href,
+      title: document.title,
+      viewport: window.innerWidth + 'x' + window.innerHeight,
+      scroll: { width: scrollWidth, height: scrollHeight, clientWidth, clientHeight },
+      overflowX,
+      controlCount: controls.length,
+      controls,
+      blank,
+    });
+  })()`;
+}
+
+function buildResponsiveAuditModel({
+  targetId = '',
+  viewports = [],
+  page = {},
+  console: consoleHealth = {},
+  errors = [],
+} = {}) {
+  const checks = viewports.map(entry => {
+    let status = 'pass';
+    if (entry.error) status = 'fail';
+    else if (entry.blank || entry.overflowX || Number(consoleHealth.errors || 0) > 0) status = 'warn';
+    return {
+      viewport: entry.viewport,
+      status,
+      url: entry.url || page.url || '',
+      title: entry.title || page.title || '',
+      screenshot: entry.screenshot || null,
+      overflowX: Boolean(entry.overflowX),
+      blank: Boolean(entry.blank),
+      scroll: entry.scroll || null,
+      controlCount: entry.controlCount ?? null,
+      controls: entry.controls || [],
+      error: entry.error || null,
+    };
+  });
+  const verdict = checks.some(c => c.status === 'fail')
+    ? 'fail'
+    : checks.some(c => c.status === 'warn')
+      ? 'warn'
+      : 'pass';
+  return {
+    schema: 'chrome-cdp-ex.responsive-audit.v1',
+    targetId,
+    targetPrefix: targetPrefixForDisplay(targetId),
+    page,
+    console: consoleHealth,
+    viewports: checks,
+    errors,
+    verdict,
+    summary: {
+      pass: checks.filter(c => c.status === 'pass').length,
+      warn: checks.filter(c => c.status === 'warn').length,
+      fail: checks.filter(c => c.status === 'fail').length,
+    },
+    nextSteps: [
+      `cdp shot ${targetPrefixForDisplay(targetId)}`,
+      `cdp perceive ${targetPrefixForDisplay(targetId)} -C -d 8`,
+      `cdp report ${targetPrefixForDisplay(targetId)}`,
+    ],
+  };
+}
+
+function formatResponsiveAuditReport(model) {
+  const lines = [
+    `Responsive audit: ${model.verdict}`,
+    `Page: ${model.page?.title || '(untitled)'}`,
+    `URL: ${model.page?.url || '(unknown)'}`,
+    `Console: ${model.console?.errors || 0} errors, ${model.console?.warnings || 0} warnings`,
+    `Summary: ${model.summary.pass} pass / ${model.summary.warn} warn / ${model.summary.fail} fail`,
+  ];
+  for (const vp of model.viewports || []) {
+    lines.push(`- ${vp.viewport}: ${vp.status}` +
+      `${vp.overflowX ? ' overflow-x' : ''}` +
+      `${vp.blank ? ' blank' : ''}` +
+      `${vp.controlCount != null ? ` controls=${vp.controlCount}` : ''}` +
+      `${vp.screenshot ? ` shot=${vp.screenshot}` : ''}` +
+      `${vp.error ? ` error=${vp.error}` : ''}`);
+  }
+  for (const error of model.errors || []) lines.push(`Error: ${error}`);
+  if (model.nextSteps?.[0]) lines.push(`Next: ${model.nextSteps[0]}`);
+  return lines.join('\n');
+}
+
+async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, exceptionBuf, args = []) {
+  const opts = parseResponsiveAuditArgs(args);
+  const page = await pageInfoModel(cdp, sid, { targetPrefix: targetPrefixForDisplay(targetId) });
+  const consoleHealth = {
+    errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
+    warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+    exceptions: exceptionBuf.all().length,
+  };
+  const viewports = [];
+  const errors = [];
+  for (const size of opts.viewports) {
+    const entry = { viewport: size };
+    try {
+      await viewportStr(cdp, sid, size);
+      const metricsRaw = await evalStr(cdp, sid, responsiveAuditViewportScript());
+      const metrics = JSON.parse(metricsRaw);
+      Object.assign(entry, metrics);
+      const shotDir = opts.outDir || session.screenshotDir || null;
+      if (opts.outDir) {
+        try { mkdirSync(opts.outDir, { recursive: true }); } catch {}
+      } else {
+        ensureSessionScreenshotDir(session);
+      }
+      const path = opts.outDir
+        ? resolve(opts.outDir, `responsive-${size.replace(/[^0-9x]/gi, 'x')}-${Date.now()}.png`)
+        : nextSessionScreenshotPath(session, `responsive-${size}`);
+      const shot = await shotStr(cdp, sid, path, targetId, { quiet: true });
+      entry.screenshot = shot.split('\n')[0];
+      appendSessionScreenshot(session, { kind: 'responsive-audit', path: entry.screenshot, note: size });
+      if (!shotDir && !opts.outDir) {
+        // default screenshots stay under session dir outside the repo
+      }
+    } catch (e) {
+      entry.error = e.message || String(e);
+      errors.push(`${size}: ${entry.error}`);
+    }
+    viewports.push(entry);
+  }
+  const model = buildResponsiveAuditModel({
+    targetId,
+    viewports,
+    page: { title: page.title, url: page.url },
+    console: consoleHealth,
+    errors,
+  });
+  return opts.format === 'json' ? formatJson(model) : formatResponsiveAuditReport(model);
 }
 
 function buildQaPageModel({ targetId = '', page = {}, console: consoleHealth = {}, perception = null, screenshots = {}, action = null, assertions = [], errors = [] } = {}) {
@@ -3622,12 +4128,16 @@ function reportScreenshotModel(entry = {}, index = 0, { compact = false } = {}) 
 function parseReportArgs(args = []) {
   let lastActions = DEFAULT_REPORT_ACTION_LIMIT;
   let compact = false;
+  let qa = false;
   const rest = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--all') {
       lastActions = null;
     } else if (arg === '--compact') {
+      compact = true;
+    } else if (arg === '--qa' || arg === '--summary') {
+      qa = true;
       compact = true;
     } else if (arg === '--last') {
       const raw = args[++i];
@@ -3638,7 +4148,7 @@ function parseReportArgs(args = []) {
       rest.push(arg);
     }
   }
-  return { lastActions, compact, args: rest };
+  return { lastActions, compact, qa, args: rest };
 }
 
 function reportActionTimelineWindow(actionLog = [], lastActions = DEFAULT_REPORT_ACTION_LIMIT) {
@@ -3728,7 +4238,42 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
   return model;
 }
 
-function formatSessionReport(session, { now = Date.now(), format = 'text', lastActions = DEFAULT_REPORT_ACTION_LIMIT, compact = false } = {}) {
+function formatSessionReport(session, { now = Date.now(), format = 'text', lastActions = DEFAULT_REPORT_ACTION_LIMIT, compact = false, qa = false } = {}) {
+  if (qa) {
+    const model = buildSessionReportModel(session, { now, lastActions, compact: true });
+    const latest = model.latestAction || null;
+    const summary = buildQaSummaryModel({
+      page: { url: latest?.url || '', title: '' },
+      console: {
+        errors: Number(latest?.consoleErrors || latest?.effects?.consoleDelta?.errors || 0),
+        exceptions: Number(latest?.exceptions || latest?.effects?.exceptionDelta?.count || 0),
+      },
+      network: {
+        failures: Number(latest?.networkFailures || latest?.effects?.networkDelta?.failures || 0),
+      },
+      action: latest ? {
+        outcome: latest.outcome || latest.receipt?.outcome || null,
+        dispatch: { ok: latest.dispatchOk !== false },
+        changed: latest.outcome ? latest.outcome !== 'no-change' : undefined,
+      } : null,
+      targetPrefix: model.targetPrefix,
+      nextCommand: model.nextSteps?.[0] || null,
+      source: 'report',
+    });
+    if (format === 'json') {
+      return formatJson({
+        ...summary,
+        report: {
+          schema: model.schema,
+          targetPrefix: model.targetPrefix,
+          counts: model.counts,
+          latestAction: model.latestAction,
+          nextSteps: model.nextSteps,
+        },
+      });
+    }
+    return formatQaSummaryText(summary);
+  }
   if (format === 'json') return formatJson(buildSessionReportModel(session, { now, lastActions, compact }));
   const model = buildSessionReportModel(session, { now, lastActions });
   const actionLog = session.actionLog || [];
@@ -7706,7 +8251,7 @@ async function uploadStr(cdp, sid, selector, filePaths) {
 //   text                          → full body
 //   text "main, [role=main]"      → fallback chain (try first, then next…)
 //   text --auto                   → auto-pick main content (excludes nav/aside/script/style)
-//   text --root auto              → scope extraction to #root / [data-reactroot] / main / body
+//   text --root auto|body|document|<sel>  → scope extraction root
 //   text --auto --exclude "nav,.sidebar"  → custom extra exclusions
 function parseTextArgs(args) {
   const opts = { selectors: [], auto: false, exclude: null, root: null };
@@ -7724,6 +8269,23 @@ function parseTextArgs(args) {
     }
   }
   return opts;
+}
+
+function formatTextNoMatchError(parsed = {}, opts = {}) {
+  const tried = (parsed.tried || []).join(', ') || '(no candidates)';
+  const root = parsed.root || opts.root || 'auto';
+  const selector = (opts.selectors && opts.selectors[0]) || parsed.sel || '';
+  const lines = [
+    `text: no element matched within root "${root}". Tried: ${tried}.`,
+    `Scope: root=${root}${selector ? `; selector=${selector}` : ''}.`,
+  ];
+  if (selector) {
+    lines.push(`Fallback: cdp eval <target> "document.querySelector(${JSON.stringify(selector)})?.textContent"`);
+  } else {
+    lines.push('Try `text <target> --auto` or `text <target> "main, [role=main], body"`.');
+  }
+  lines.push('Tip: `text --root body|document|auto|<css>` changes the search root.');
+  return lines.join(' ');
 }
 
 function textPageScript(opts) {
@@ -7751,6 +8313,12 @@ function textPageScript(opts) {
           const found = safeQuery(document, sel);
           if (found) return { el: found, sel };
         }
+        return { el: document.body || document.documentElement, sel: 'body' };
+      }
+      if (setting === 'document') {
+        return { el: document.documentElement || document.body, sel: 'document' };
+      }
+      if (setting === 'body') {
         return { el: document.body || document.documentElement, sel: 'body' };
       }
       const found = safeQuery(document, setting);
@@ -7799,7 +8367,7 @@ function textPageScript(opts) {
     }
     const tried = [];
     const rootInfo = pickRoot();
-    if (!rootInfo.el) return JSON.stringify({ ok: false, tried: ['--root ' + rootInfo.sel] });
+    if (!rootInfo.el) return JSON.stringify({ ok: false, root: rootInfo.sel, tried: ['--root ' + rootInfo.sel] });
     const scope = rootInfo.el;
     const selectors = ${JSON.stringify(selectors)};
     for (const sel of selectors) {
@@ -7818,7 +8386,7 @@ function textPageScript(opts) {
     if (selectors.length === 0 && !${auto ? 'true' : 'false'}) {
       return JSON.stringify({ ok: true, sel: rootInfo.sel, root: rootInfo.sel, text: clean(scope, false) });
     }
-    return JSON.stringify({ ok: false, tried });
+    return JSON.stringify({ ok: false, root: rootInfo.sel, tried });
   })()`;
 }
 
@@ -7833,8 +8401,7 @@ async function textStr(cdp, sid, args) {
   try { parsed = JSON.parse(result); }
   catch { return result; }
   if (!parsed.ok) {
-    const tried = (parsed.tried || []).join(', ') || '(no candidates)';
-    throw new Error(`text: no element matched. Tried: ${tried}. Try \`text <target> --auto\` or \`text <target> "main, [role=main], body"\`.`);
+    throw new Error(formatTextNoMatchError(parsed, opts));
   }
   const out = parsed.text || '';
   // Hint when no scope was given and text is large.
@@ -9461,25 +10028,38 @@ async function checkBrowserTargets({ cdp = null, env = process.env, fetcher = fe
   }
 }
 
-function checkBrowserPermission({ daemons = null, tabs = null } = {}) {
+function checkBrowserPermission({ daemons = null, tabs = null, cdp = null, environment = null } = {}) {
   const daemonPrefixes = daemons?.targetPrefixes || [];
   if (daemonPrefixes.length > 0) {
     return {
       status: 'OK',
       label: 'Permission',
       detail: `debugging approved for ${daemonPrefixes.join(', ')}`,
+      severity: 'ok',
+      provenCommand: `cdp perceive ${daemonPrefixes[0]} -C -d 8`,
       targetPrefixes: daemonPrefixes,
     };
   }
 
   const tabPrefixes = tabs?.targetPrefixes || [];
+  const headless = Boolean(environment?.environment?.headlessLikely || environment?.headlessLikely);
+  const cdpReachable = cdp?.status === 'OK';
   if (tabPrefixes.length > 0) {
     const target = tabPrefixes[0];
+    const probe = `cdp perceive ${target} -C -d 8`;
+    // CDP + tabs are enough for agents to proceed; missing daemon approval is advisory.
     return {
       status: 'WARN',
       label: 'Permission',
-      detail: `browser debugging approval not confirmed for ${target}`,
-      hint: `Run: cdp perceive ${target} -C -d 8; if Chrome asks "Allow debugging?", click Allow`,
+      detail: headless && cdpReachable
+        ? `headless CDP is reachable; tab daemon not attached yet for ${target}`
+        : `browser debugging approval not confirmed for ${target}`,
+      hint: headless && cdpReachable
+        ? `Non-blocking. Run: ${probe} (or cdp list). UI "Allow debugging?" is not required for headless sessions when CDP works.`
+        : `Run: ${probe}; if Chrome asks "Allow debugging?", click Allow`,
+      severity: 'advisory',
+      provenCommand: cdpReachable ? `cdp list` : null,
+      nextProbe: probe,
       targetPrefixes: tabPrefixes,
     };
   }
@@ -9490,6 +10070,7 @@ function checkBrowserPermission({ daemons = null, tabs = null } = {}) {
       label: 'Permission',
       detail: 'no target available to request browser debugging approval',
       hint: 'Run: cdp open https://example.com; if Chrome asks "Allow debugging?", click Allow',
+      severity: 'warning',
       targetPrefixes: [],
     };
   }
@@ -9499,6 +10080,7 @@ function checkBrowserPermission({ daemons = null, tabs = null } = {}) {
     label: 'Permission',
     detail: 'skipped until CDP and tabs are reachable',
     hint: 'Fix CDP/tabs first, then rerun: cdp doctor',
+    severity: 'warning',
     targetPrefixes: [],
   };
 }
@@ -9821,30 +10403,57 @@ function doctorNextSteps(checks) {
 }
 
 function formatDoctorReport(checks) {
+  const model = buildDoctorModel(checks);
   const lines = ['chrome-cdp-ex doctor'];
   lines.push(...doctorWizardSummary(checks), '', ...doctorRecommendationLines(checks), '', 'Checks:');
-  for (const c of checks) {
+  for (const c of model.checks) {
     const tag = c.status.padEnd(4);
     lines.push(`  [${tag}] ${c.label}: ${c.detail}`);
+    if (c.severity && c.severity !== 'ok') lines.push(`         severity: ${c.severity}`);
     if (c.hint) lines.push(`         hint: ${c.hint}`);
   }
-  const fails = checks.filter(c => c.status === 'FAIL').length;
-  const warns = checks.filter(c => c.status === 'WARN').length;
-  if (fails === 0 && warns === 0) lines.push('Ready.');
-  else if (fails === 0) lines.push(`Mostly ready (${warns} warning${warns > 1 ? 's' : ''}).`);
-  else lines.push(`Not ready: ${fails} failure${fails > 1 ? 's' : ''}${warns ? `, ${warns} warning${warns > 1 ? 's' : ''}` : ''}.`);
+  if (model.readiness === 'ready') lines.push('Ready.');
+  else if (model.readiness === 'usable-with-warnings') {
+    lines.push(`Usable with warnings (${model.warnings} warning${model.warnings === 1 ? '' : 's'}, ${model.advisories} advisor${model.advisories === 1 ? 'y' : 'ies'}).`);
+  } else {
+    lines.push(`Blocked: ${model.failures} failure${model.failures === 1 ? '' : 's'}${model.warnings ? `, ${model.warnings} warning${model.warnings === 1 ? '' : 's'}` : ''}.`);
+  }
+  if (model.provenCommand) lines.push(`Proven / next probe: ${model.provenCommand}`);
   lines.push(...doctorNextSteps(checks));
   return lines.join('\n');
 }
 
+function doctorCheckSeverity(check = {}) {
+  if (check.severity) return check.severity;
+  if (check.status === 'FAIL') return 'blocking';
+  if (check.status === 'WARN') {
+    // Permission without a live daemon is advisory when CDP/tabs are otherwise usable.
+    if (check.label === 'Permission' && !/no target|skipped until/i.test(check.detail || '')) return 'advisory';
+    return 'warning';
+  }
+  return 'ok';
+}
+
 function doctorStatusSummary(checks) {
-  const failures = checks.filter(c => c.status === 'FAIL').length;
-  const warnings = checks.filter(c => c.status === 'WARN').length;
+  const annotated = (checks || []).map(check => ({
+    ...check,
+    severity: doctorCheckSeverity(check),
+  }));
+  const failures = annotated.filter(c => c.status === 'FAIL' || c.severity === 'blocking').length;
+  const warnings = annotated.filter(c => c.severity === 'warning').length;
+  const advisories = annotated.filter(c => c.severity === 'advisory').length;
+  const softWarnings = annotated.filter(c => c.status === 'WARN').length;
+  let readiness = 'ready';
+  if (failures > 0) readiness = 'blocked';
+  else if (warnings > 0 || advisories > 0 || softWarnings > 0) readiness = 'usable-with-warnings';
   return {
-    status: failures > 0 ? 'not-ready' : (warnings > 0 ? 'mostly-ready' : 'ready'),
-    ready: failures === 0 && warnings === 0,
+    status: readiness,
+    readiness,
+    ready: readiness === 'ready',
     failures,
-    warnings,
+    warnings: softWarnings,
+    actionableWarnings: warnings,
+    advisories,
   };
 }
 
@@ -9866,12 +10475,23 @@ function doctorNextStepCommands(checks) {
 
 function buildDoctorModel(checks) {
   const summary = doctorStatusSummary(checks);
+  const annotatedChecks = checks.map(check => ({ ...check, severity: doctorCheckSeverity(check) }));
+  const recommendation = doctorRecommendationModel(checks);
+  const cdpOk = annotatedChecks.find(c => c.label === 'CDP')?.status === 'OK';
+  const tabsOk = annotatedChecks.find(c => c.label === 'Tabs')?.status === 'OK';
+  const permission = annotatedChecks.find(c => c.label === 'Permission');
+  const provenCommand = cdpOk && tabsOk
+    ? (permission?.status === 'OK'
+      ? (permission.targetPrefixes?.[0] ? `cdp perceive ${permission.targetPrefixes[0]} -C -d 8` : 'cdp list')
+      : (permission?.hint?.match(/cdp \S.+/)?.[0] || recommendation?.run || 'cdp list'))
+    : (recommendation?.run || null);
   return {
     schema: 'chrome-cdp-ex.doctor.v1',
     ...summary,
+    provenCommand,
     wizard: doctorWizardModel(checks),
-    recommendation: doctorRecommendationModel(checks),
-    checks: checks.map(check => ({ ...check })),
+    recommendation,
+    checks: annotatedChecks,
     nextSteps: doctorNextStepCommands(checks),
   };
 }
@@ -9895,7 +10515,12 @@ async function runDoctorChecks(opts = {}) {
   checks.push(cdp);
   const tabs = await checkBrowserTargets({ cdp, env: opts.env, fetcher: opts.fetcher, host: opts.host });
   checks.push(tabs);
-  checks.push(checkBrowserPermission({ daemons: checks.find(c => c.label === 'Daemons'), tabs }));
+  checks.push(checkBrowserPermission({
+    daemons: checks.find(c => c.label === 'Daemons'),
+    tabs,
+    cdp,
+    environment: checks.find(c => c.label === 'Environment'),
+  }));
   return checks;
 }
 
@@ -9940,6 +10565,7 @@ const DEFAULT_BROWSER_PATHS = {
 };
 
 function parseSpawnDebugBrowserArgs(args, env = process.env) {
+  const fopts = parseFormatArgs(args || [], ['text', 'json']);
   const opts = {
     browser: (env && env.CDP_DEBUG_BROWSER) || 'edge',
     port: 9222,
@@ -9951,8 +10577,9 @@ function parseSpawnDebugBrowserArgs(args, env = process.env) {
     noSandbox: false,
     disableGpu: false,
     waitMs: DEFAULT_SPAWN_READY_TIMEOUT_MS,
+    format: fopts.format,
   };
-  const tokens = (args || []).filter(a => a !== undefined && a !== null);
+  const tokens = (fopts.args || []).filter(a => a !== undefined && a !== null);
   for (let i = 0; i < tokens.length; i++) {
     const a = tokens[i];
     if (a === '--port' || a === '-p') opts.port = parseInt(tokens[++i]) || 9222;
@@ -9979,6 +10606,77 @@ function parseSpawnDebugBrowserArgs(args, env = process.env) {
     opts.profileDir = `${tmp.replace(/\/$/, '')}/chrome-cdp-ex-${opts.browser}-debug-profile-${opts.port}`;
   }
   return opts;
+}
+
+async function listSpawnedDebugTargets({ port, host = DEFAULT_CDP_HOST, fetcher = fetch } = {}) {
+  try {
+    const res = await fetcher(`http://${host}:${port}/json/list`, { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return [];
+    const raw = await res.json();
+    return Array.isArray(raw)
+      ? raw.map(normalizeBrowserTargetInfo).filter(isDebuggablePageTarget)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function pickSpawnedTarget(pages = [], url = null) {
+  if (!pages.length) return null;
+  if (url) {
+    try {
+      return selectPageTarget(pages, { url, exact: false }).page;
+    } catch {
+      // fall through to ranked pick
+    }
+  }
+  return rankPageTargets(pages)[0] || null;
+}
+
+function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = null } = {}) {
+  const targetId = target?.targetId || null;
+  const targetPrefix = targetId ? String(targetId).slice(0, getDisplayPrefixLength([targetId])) : null;
+  const nextCommand = targetPrefix
+    ? `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`
+    : `CDP_PORT=${plan.port} cdp list`;
+  return {
+    schema: 'chrome-cdp-ex.spawn-debug-browser.v1',
+    ready: readiness?.ok === true,
+    browser: plan.browser,
+    pid: child?.pid || null,
+    profileDir: plan.profileDir,
+    host: plan.host,
+    port: plan.port,
+    url: plan.url || target?.url || null,
+    product: readiness?.product || null,
+    targetId,
+    targetPrefix,
+    title: target?.title || null,
+    nextCommand,
+    cleanup: {
+      stopHint: `CDP_PORT=${plan.port} cdp stop${targetPrefix ? ` ${targetPrefix}` : ''}`,
+      deleteProfile: `rm -rf ${plan.profileDir}`,
+    },
+  };
+}
+
+function formatSpawnDebugBrowserOutput(model, { format = 'text' } = {}) {
+  if (format === 'json') return formatJson(model);
+  const lines = [
+    `Spawned ${model.browser} debug profile on CDP_PORT=${model.port} (pid ${model.pid || '?'})`,
+    `  CDP ready:  ${model.product || `${model.host}:${model.port}`}`,
+    `  Executable: (see profile)`,
+    `  Profile:    ${model.profileDir}`,
+  ];
+  if (model.url) lines.push(`  URL:        ${model.url}`);
+  if (model.targetPrefix) {
+    lines.push(`  Target:     ${model.targetPrefix}${model.title ? `  ${model.title}` : ''}`);
+  }
+  lines.push('');
+  lines.push(`Next: ${model.nextCommand}`);
+  lines.push(`Stop/cleanup: ${model.cleanup.stopHint}; then ${model.cleanup.deleteProfile}`);
+  lines.push(`(Profile is disposable — delete ${model.profileDir} to reset.)`);
+  return lines.join('\n');
 }
 
 const BROWSER_COMMANDS = {
@@ -10119,6 +10817,8 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   const fs = deps.fs || { existsSync, mkdirSync };
   const launcher = deps.spawn || spawn;
   const waitForCdp = deps.waitForSpawnedCdp || waitForSpawnedCdp;
+  const listTargets = deps.listSpawnedDebugTargets || listSpawnedDebugTargets;
+  const fetcher = deps.fetcher || fetch;
   const opts = parseSpawnDebugBrowserArgs(args, env);
   const plan = buildSpawnDebugBrowserPlan(opts, platform, fs, env);
   try { fs.mkdirSync(plan.profileDir, { recursive: true }); } catch {}
@@ -10130,6 +10830,7 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
     timeoutMs: plan.waitMs,
     child,
     output,
+    fetcher,
   });
   if (!readiness.ok) {
     throw new Error(formatSpawnDebugBrowserReadinessFailure(plan, readiness));
@@ -10137,16 +10838,16 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   child.stdout?.unref?.();
   child.stderr?.unref?.();
   child.unref?.();
-  const lines = [];
-  lines.push(`Spawned ${plan.browser} debug profile on CDP_PORT=${plan.port} (pid ${child.pid || '?'})`);
-  lines.push(`  CDP ready:  ${readiness.product || `${plan.host}:${plan.port}`}`);
-  lines.push(`  Executable: ${plan.exe}`);
-  lines.push(`  Profile:    ${plan.profileDir}`);
-  if (plan.url) lines.push(`  URL:        ${plan.url}`);
-  lines.push('');
-  lines.push(`Next: CDP_PORT=${plan.port} node skills/chrome-cdp-ex/scripts/cdp.mjs list`);
-  lines.push(`(Profile is disposable — delete ${plan.profileDir} to reset.)`);
-  return lines.join('\n');
+  const pages = await listTargets({ port: plan.port, host: plan.host, fetcher });
+  const target = pickSpawnedTarget(pages, plan.url);
+  const model = buildSpawnDebugBrowserModel(plan, readiness, { child, target });
+  // Prefer executable path in text mode for operators.
+  if (opts.format !== 'json') {
+    const text = formatSpawnDebugBrowserOutput(model, { format: 'text' })
+      .replace('  Executable: (see profile)', `  Executable: ${plan.exe}`);
+    return text;
+  }
+  return formatSpawnDebugBrowserOutput(model, { format: 'json' });
 }
 
 function overlayDetectorScript({ targetPoint = null } = {}) {
@@ -10737,7 +11438,7 @@ async function runDaemon(targetId) {
           result = await diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args));
           break;
         }
-        case 'html': result = await htmlStr(cdp, sessionId, args[0]); break;
+        case 'html': result = await htmlStr(cdp, sessionId, args); break;
         case 'nav': case 'navigate': {
           const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           result = await actionFeedback(
@@ -10812,7 +11513,16 @@ async function runDaemon(targetId) {
           const fopts = parseFormatArgs(args, ['text', 'json']);
           const ropts = parseReportArgs(fopts.args);
           if (ropts.args.length) throw new Error(`report: unknown argument ${ropts.args[0]}`);
-          result = formatSessionReport(session, { format: fopts.format, lastActions: ropts.lastActions, compact: ropts.compact });
+          result = formatSessionReport(session, {
+            format: fopts.format,
+            lastActions: ropts.lastActions,
+            compact: ropts.compact,
+            qa: ropts.qa,
+          });
+          break;
+        }
+        case 'responsive-audit': case 'visual-check': {
+          result = await responsiveAuditStr(cdp, sessionId, session, targetId, consoleBuf, exceptionBuf, args);
           break;
         }
         case 'qa': case 'qa-page': {
@@ -10918,17 +11628,56 @@ async function runDaemon(targetId) {
           break;
         }
         case 'perceive': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
+          const fopts = parseQaModeArgs(args, ['text', 'json']);
           const popts = parsePerceiveArgs(fopts.args);
           popts.targetPrefix = targetPrefixForDisplay(targetId);
           if (popts.sinceAction) {
             popts.diffBaseline = session.lastAction?.baselineOutput || null;
+          }
+          if (fopts.qa) {
+            const page = await pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) });
+            const consoleHealth = {
+              errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
+              warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+              exceptions: exceptionBuf.all().length,
+            };
+            let text = '';
+            try {
+              text = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
+                ...popts,
+                interactive: true,
+                maxDepth: Math.min(popts.maxDepth || 8, 6),
+              }, refState);
+            } catch (e) {
+              text = e.message || String(e);
+            }
+            const summary = buildQaSummaryModel({
+              page: { title: page.title, url: page.url },
+              console: consoleHealth,
+              network: { failures: 0 },
+              blank: isBlankPageUrl(page.url),
+              targetPrefix: targetPrefixForDisplay(targetId),
+              nextCommand: `cdp report ${targetPrefixForDisplay(targetId)}`,
+              source: 'perceive',
+            });
+            if (fopts.format === 'json') {
+              result = formatJson({
+                summary,
+                perceptionPreview: truncateTextLines(text, fopts.maxDiffLines ?? 20),
+              });
+            } else {
+              result = formatQaSummaryText(summary);
+            }
+            break;
           }
           result = fopts.format === 'json' && (popts.sinceAction || popts.diff)
             ? formatJson(await perceiveDiffModel(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
             : fopts.format === 'json'
             ? formatPerceptionJson(await perceiveModel(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
             : await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState);
+          if (fopts.maxDiffLines != null && fopts.format !== 'json') {
+            result = truncateTextLines(result, fopts.maxDiffLines);
+          }
           break;
         }
         case 'controls': {
@@ -11370,6 +12119,10 @@ Usage: cdp <command> [args]
   help                              Show this command reference (same as --help)
   list [--format json]              List open pages (shows unique target prefixes)
                                     JSON includes schema/pages/recommendation/nextSteps for agents.
+                                    Prefers non-blank pages when recommending the next target (* marker).
+  target --url URL|--title TEXT [--exact] [--format json]
+                                    Select a page target by URL/title substring (or exact match).
+                                    Ambiguous matches return candidate URLs/titles and follow-up commands.
   use <target> --name <alias>        Save a named target alias (also becomes current)
                                     Accepts 9222/<target> to bind a CDP port to the alias.
   attach --port N --target <id> --name <alias>  Explicitly save an alias with host/port metadata
@@ -11378,6 +12131,8 @@ Usage: cdp <command> [args]
   perceive <target> [flags] [--format json]  Full page perception with @ref indices + coordinates
                                     --diff: show only changes since last perceive
                                     --since-action: show changes caused by the last mutating command
+                                    --qa / --summary: compact QA summary (url/title/blank/console/next)
+                                    --max-diff-lines N: truncate long text output
                                     JSON includes structured refs plus recommendation/nextSteps.
                                     JSON with --diff/--since-action returns chrome-cdp-ex.perceive-diff.v1
                                     --frame @fN / -F @fN: perceive inside an iframe; refs become @fN:M
@@ -11409,7 +12164,9 @@ Usage: cdp <command> [args]
                                     --runtime: include Performance.getMetrics counters
   console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
-  report <target> [--last N|--all] [--format json]  Session action timeline + evidence summary + JSONL log path
+  report <target> [--last N|--all] [--format json] [--qa|--summary] [--compact]
+                                    Session action timeline + evidence summary + JSONL log path
+                                    --qa/--summary returns a compact chrome-cdp-ex.qa-summary.v1 handoff
   checkpoint <target> [--unsafe-full] [--format json]  Capture URL plus redacted cookies/storage; unsafe-full keeps restorable secrets
   restore <target> --file <path> [--format json]  Restore a checkpoint artifact into the live page
   restore <target> --json <json> [--format json]  Restore an inline checkpoint JSON artifact
@@ -11421,11 +12178,16 @@ Usage: cdp <command> [args]
   overlay <target> [sel|@ref] [--format json]  Detect visible dialogs/overlays and target blockers
   qa <target> [--desktop WxH] [--mobile WxH] [--format json]  Live UI smoke: page info, console health, screenshots, perception, assertions
                                     Optional: --click <sel|@ref> --expect-text text --expect-request pattern
+  responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]
+                                    Built-in responsive visual audit (alias: visual-check).
+                                    Defaults to desktop 1440x900 + mobile 390x844.
+                                    Collects screenshot, overflow-x, scroll metrics, controls, blank/console signals.
   verify-click <target> <sel|@ref> [--format json]  Click once and assert text/network/console outcomes
                                     --expect-text text --expect-request pattern --expect-status code --no-console-errors
   net   <target>                    Network performance entries
-  click   <target> <sel|@ref> [--format json]  Click element by CSS selector or @ref
+  click   <target> <sel|@ref> [--format json] [--qa|--summary]  Click element by CSS selector or @ref
                                     --js / -j: use HTMLElement.click() (JS fallback)
+                                    --qa/--summary: compact pass/fail QA receipt without full DOM dump
   jsclick <target> <sel|@ref>       JS-only click: el.click() instead of CDP mouse events
                                     Use when overlays or hit-testing block the realistic mouse path.
   clickxy <target> <x> <y> [--format json]  Click at CSS pixel coordinates (see coordinate note below)
@@ -11453,7 +12215,8 @@ Usage: cdp <command> [args]
   viewport <target> [WxH]           Show or set viewport size (e.g. 375x812, 1280x720)
   upload  <target> <selector> <paths> [--format json]  Upload file(s) to <input type="file"> (comma-separated paths)
   text    <target> [selector]       Clean visible text — optional CSS selector to scope
-                                    --root auto|default|<sel>: scope to #root/[data-reactroot]/main/body or selector
+                                    --root auto|body|document|default|<sel>: search root for selector resolution
+                                    On no-match, error includes root/scope and an eval fallback
   table   <target> [selector]       Full table data extraction (tab-separated, no row limit)
   back    <target>                  Navigate back in browser history
   forward <target>                  Navigate forward in browser history
@@ -11496,21 +12259,26 @@ Usage: cdp <command> [args]
   doctor / ready [--format json]    One-call diagnostics: Node version, skill install path,
                                     daemon socket state, fd limit, CDP_PORT/DevToolsActivePort reachability,
                                     debuggable tab inventory, browser permission, Recommendation, and onboarding next steps.
-                                    Starts with Wizard status + current command; JSON includes wizard/checks/recommendation/nextSteps.
+                                    Readiness: ready | usable-with-warnings | blocked.
+                                    Checks expose severity: blocking | warning | advisory | ok.
+                                    Headless CDP sessions treat unconfirmed permission as advisory, not a blocker.
                                     No target required. Exits 1 if any check FAILs.
   keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)
-  open  [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--format json]
+  open  [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]
                                     Open a new tab (default: about:blank)
                                     JSON includes schema/target/approval/recommendation/nextSteps for agents.
+                                    --reuse-url reuses an existing tab matching the URL when unique.
                                     --attach-timeout-ms 0 returns the target handoff without waiting.
                                     --ready-timeout-ms bounds document.readyState waiting after attach.
                                     --ready-selector also waits for a CSS selector before returning.
                                     Note: each new tab triggers a fresh "Allow debugging?" prompt
-  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH]
+  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]
                                     Launch an isolated debug profile (browser: edge|chrome|brave; default edge, port 9222).
                                     --host HOST binds remote debugging address (default 127.0.0.1).
                                     --headless [new|old], --no-sandbox, --disable-gpu help CI/container/headless runs.
                                     --wait-ms N bounds the readiness probe before success.
+                                    Returns ready target prefix + next perceive command when a page is available.
+                                    JSON includes pid/profileDir/port/url/targetId/targetPrefix/readiness/cleanup.
                                     Uses --remote-debugging-port + --user-data-dir; does not touch your main profile.
                                     "spawn" is a short alias.
   dismiss-modal <target>            Close common dialog/modal patterns safely (close button, then Escape) —
@@ -11562,8 +12330,8 @@ DAEMON IPC (for advanced use / scripting)
   elshot, fullshot, scanshot, html, nav, net, mock, clock, throttle, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
   viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
-  record, checkpoint, restore, record-actions, export-playwright, replay, report, qa, verify-click,
-  evalraw, batch, flow, repeat, stop.
+  record, checkpoint, restore, record-actions, export-playwright, replay, report, qa, responsive-audit,
+  verify-click, evalraw, batch, flow, repeat, stop.
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
@@ -11574,9 +12342,10 @@ function helpStr() {
 const COMMANDS = Object.freeze([
   { name: 'help', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text'] },
   { name: 'list', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'target', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'open', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
   { name: 'doctor', aliases: ['ready'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'spawn-debug-browser', aliases: ['spawn'], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'spawn-debug-browser', aliases: ['spawn'], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'attach', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'use', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'forget', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
@@ -11611,6 +12380,7 @@ const COMMANDS = Object.freeze([
   { name: 'replay', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'elshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'qa', aliases: ['qa-page'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
+  { name: 'responsive-audit', aliases: ['visual-check'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'verify-click', aliases: ['verifyclick'], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'click', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'jsclick', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
@@ -11964,6 +12734,7 @@ function parseOpenArgs(args = []) {
   let attachTimeoutMs = DEFAULT_OPEN_ATTACH_TIMEOUT_MS;
   let readyTimeoutMs = null;
   let readySelector = null;
+  let reuseUrl = false;
   for (let i = 0; i < fopts.args.length; i++) {
     const token = fopts.args[i];
     if (token === '--attach-timeout-ms') {
@@ -11980,6 +12751,8 @@ function parseOpenArgs(args = []) {
     } else if (String(token).startsWith('--ready-selector=')) {
       readySelector = String(token).slice('--ready-selector='.length);
       if (!readySelector) throw new Error('open: --ready-selector requires a CSS selector');
+    } else if (token === '--reuse-url') {
+      reuseUrl = true;
     } else if (String(token).startsWith('-')) {
       throw new Error(`open: unknown argument ${token}`);
     } else {
@@ -11993,6 +12766,7 @@ function parseOpenArgs(args = []) {
     attachTimeoutMs,
     readyTimeoutMs: readyTimeoutMs ?? (attachTimeoutMs > 0 ? DEFAULT_OPEN_READY_TIMEOUT_MS : 0),
     readySelector,
+    reuseUrl,
   };
 }
 
@@ -12234,11 +13008,83 @@ async function main() {
     return;
   }
 
+  // Target selection by URL/title (no target prefix required)
+  if (cmd === 'target') {
+    try {
+      const opts = parseTargetSelectArgs(args);
+      let pages;
+      const existingSock = findAnyDaemonSocket();
+      if (existingSock) {
+        try {
+          const conn = await connectToSocket(existingSock);
+          const resp = await sendCommand(conn, { cmd: 'list_raw' });
+          if (resp.ok) pages = JSON.parse(resp.result);
+        } catch {}
+      }
+      if (!pages) {
+        const cdp = new CDP();
+        await cdp.connect(await getWsUrl());
+        pages = await getPages(cdp);
+        cdp.close();
+      }
+      writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
+      const selection = selectPageTarget(pages, opts);
+      console.log(formatTargetSelect(selection, pages, { format: opts.format }));
+      process.stdout.write('', () => process.exit(0));
+      return;
+    } catch (e) {
+      console.error(formatCliError(e, { cmd, format: detectCliErrorFormat(args) }));
+      process.exit(1);
+    }
+  }
+
   // Open new tab
   if (cmd === 'open') {
     const opts = parseOpenArgs(args);
     const url = opts.url;
     if (url !== 'about:blank') validateUrl(url);
+
+    // Reuse an existing tab with the same/similar URL when requested.
+    if (opts.reuseUrl && url !== 'about:blank') {
+      let pages;
+      const existingSock = findAnyDaemonSocket();
+      if (existingSock) {
+        try {
+          const conn = await connectToSocket(existingSock);
+          const resp = await sendCommand(conn, { cmd: 'list_raw' });
+          if (resp.ok) pages = JSON.parse(resp.result);
+        } catch {}
+      }
+      if (!pages) {
+        const cdp = new CDP();
+        await cdp.connect(await getWsUrl());
+        pages = await getPages(cdp);
+        cdp.close();
+      }
+      writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
+      try {
+        const selection = selectPageTarget(pages, { url, exact: false });
+        const model = buildOpenModel({
+          targetId: selection.targetId,
+          url: selection.page.url || url,
+          attached: true,
+          navigation: { attempted: false, ok: true, method: 'reuse-url', href: selection.page.url || url },
+          ready: { attempted: false, ok: true, reason: 'reused-existing-tab' },
+          autoPerceive: { attempted: false, ok: false, reason: 'reuse-url' },
+        });
+        model.reused = true;
+        if (opts.format === 'json') {
+          console.log(formatJson(model));
+          return;
+        }
+        console.log(`Reused existing tab: ${selection.targetPrefix}  ${selection.page.url || url}`);
+        console.log(`Next: cdp perceive ${selection.targetPrefix} -C -d 8`);
+        return;
+      } catch {
+        // No unique match — fall through to open a new tab.
+      }
+    }
+
     const cdp = new CDP();
     await cdp.connect(await getWsUrl());
     const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
@@ -12614,10 +13460,11 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseFrameOnlyRef, parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
-  parseTextArgs, textPageScript, textStr,
+  parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
   parseShotArgs, shotStr,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
   waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
+  listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
   // Screenshot
@@ -12633,8 +13480,14 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   helpStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   detectRuntimeEnvironment, checkRuntimeEnvironment,
-  doctorWizardModel, doctorWizardSummary,
+  doctorWizardModel, doctorWizardSummary, doctorCheckSeverity,
   doctorNextSteps, doctorStatusSummary, buildDoctorModel, formatDoctorOutput,
   formatDoctorReport, runDoctorChecks, doctorStr,
+  // Issues #82-#87 helpers
+  isBlankPageUrl, pageTargetScore, rankPageTargets, matchPageTargets, selectPageTarget,
+  parseTargetSelectArgs, buildTargetSelectModel, formatTargetSelect,
+  parseQaModeArgs, buildQaSummaryModel, formatQaSummaryText, truncateTextLines,
+  parseResponsiveAuditArgs, buildResponsiveAuditModel, formatResponsiveAuditReport,
+  responsiveAuditViewportScript, responsiveAuditStr,
   COMMANDS, NEEDS_TARGET,
 } : undefined;

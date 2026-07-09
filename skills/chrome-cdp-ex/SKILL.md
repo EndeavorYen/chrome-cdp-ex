@@ -8,7 +8,7 @@ description: "Your EYES into the user's live Chrome browser and Electron apps. T
 ## TL;DR — 90% workflow
 
 1. **Readiness:** `cdp doctor` — checks Node, install path, daemon state, fd limit, CDP reachability, browser debugging permission, and prints the next command to run.
-2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`. Use `cdp use <target> --name app` when the same live tab will be reused.
+2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`. When multiple tabs exist, prefer `cdp target --url <substring>` / `cdp target --title <text>` or `cdp open <url> --reuse-url`. Use `cdp use <target> --name app` when the same live tab will be reused.
 3. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, top-level viewport CSS coordinates (fixed/sticky elements are tagged), console health.
 4. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
 5. **Verify/report:** read the automatic action evidence, then use `cdp verify-click <target> @ref --expect-text "Saved"` for semantic interaction checks, `cdp perceive <target> --since-action`, or `cdp report <target>` for handoff; use `cdp report <target> --format json` when a script needs the versioned session memory model. Report handoffs show the latest 20 actions by default; add `--last N` for a smaller window or `--all` when you intentionally need the full timeline. If you used `cdp mock`, `cdp clock`, or `cdp throttle`, confirm the report shows the intended environment state and reset with `cdp mock <target> clear` / `cdp clock <target> reset` / `cdp throttle <target> off`.
@@ -325,6 +325,8 @@ scripts/cdp.mjs overlay <target> [sel|@ref] [--format json]       # detect dialo
 scripts/cdp.mjs report  <target> [--format json]                  # action timeline + evidence + screenshot attachments + JSONL log path
 scripts/cdp.mjs verify-click <target> <sel|@ref> [--expect-text text] [--expect-request pattern] [--format json]
 scripts/cdp.mjs qa <target> [--desktop WxH] [--mobile WxH] [--expect-text text] [--format json]
+scripts/cdp.mjs responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]  # visual-check alias
+scripts/cdp.mjs target --url URL|--title TEXT [--exact] [--format json]  # select page without guessing prefixes
 scripts/cdp.mjs checkpoint <target> [--format json]                # capture URL, cookies, localStorage, and sessionStorage
 scripts/cdp.mjs restore <target> --file <path> [--format json]     # restore a checkpoint artifact; invalidates @refs
 scripts/cdp.mjs record-actions <target> [--format json]           # export action log + mock/clock/throttle environment steps
@@ -521,12 +523,14 @@ scripts/cdp.mjs flow    <target> "<steps>" [--format json] # sequential runner; 
 scripts/cdp.mjs doctor [--format json]         # one-call diagnostics (Node, install, daemon state, CDP, permission)
 scripts/cdp.mjs ready [--format json]          # alias of doctor; exits 1 if any check FAILs
 scripts/cdp.mjs list    [--format json]        # discover tabs; JSON gives schema/pages/recommendation/nextSteps
+scripts/cdp.mjs target --url URL|--title TEXT [--exact] [--format json] # select by URL/title
 scripts/cdp.mjs use <target> --name app        # save a named alias for target reuse
 scripts/cdp.mjs attach --port 9222 --target <target> --name app # explicit alias with CDP endpoint
 scripts/cdp.mjs current [--format json]        # show current alias and saved aliases
 scripts/cdp.mjs forget app                     # remove a saved alias
-scripts/cdp.mjs open    [url] [--format json]  # open new tab + auto-attach; JSON gives approval/recommendation/nextSteps
+scripts/cdp.mjs open    [url] [--reuse-url] [--format json]  # open new tab + auto-attach; --reuse-url reuses matching tab
 scripts/cdp.mjs qa <target> [--desktop WxH] [--mobile WxH] [--format json] # page smoke: screenshots/perception/console/assertions
+scripts/cdp.mjs responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json] # visual-check alias
 scripts/cdp.mjs verify-click <target> <sel|@ref> [--expect-text text] [--expect-request pattern] [--format json]
 scripts/cdp.mjs keepalive <target> <ms>        # keep a tab daemon alive for long background work
 scripts/cdp.mjs stop    [target]               # stop daemon(s)
@@ -859,9 +863,10 @@ scripts/cdp.mjs text <target> "main"              # scope to main content area
 6. `throttle <target> off` — reset the live tab
 
 ### Responsive testing
-1. `perceive <target>` — baseline at current viewport
-2. `viewport <target> 375x812` — switch to mobile (auto-returns perceive diff!)
-3. `viewport <target> 1280x720` — switch back to desktop (auto-returns perceive diff!)
+1. `responsive-audit <target> --format json` — one-shot desktop/mobile audit with overflow, blank, console, controls, screenshots
+2. Or manually: `perceive <target>` — baseline at current viewport
+3. `viewport <target> 375x812` — switch to mobile (auto-returns perceive diff!)
+4. `viewport <target> 1280x720` — switch back to desktop (auto-returns perceive diff!)
 
 ### Visual bug investigation
 1. `perceive <target>` — structure + layout positions + style hints
