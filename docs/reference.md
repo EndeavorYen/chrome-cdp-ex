@@ -40,13 +40,13 @@ For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a tex
 
 Official releases live on GitHub, not the npm registry. Use the release tag, release notes, GitHub Pages proof page, and attached tarball as the publish surface.
 
-Pinned v2.9.1 install:
+Pinned v2.10.0 install:
 
 ```bash
-curl -L -o pi-chrome-cdp-2.9.1.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.9.1/pi-chrome-cdp-2.9.1.tgz
-mkdir -p chrome-cdp-ex-v2.9.1
-tar -xzf pi-chrome-cdp-2.9.1.tgz -C chrome-cdp-ex-v2.9.1 --strip-components=1
-cd chrome-cdp-ex-v2.9.1
+curl -L -o pi-chrome-cdp-2.10.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.10.0/pi-chrome-cdp-2.10.0.tgz
+mkdir -p chrome-cdp-ex-v2.10.0
+tar -xzf pi-chrome-cdp-2.10.0.tgz -C chrome-cdp-ex-v2.10.0 --strip-components=1
+cd chrome-cdp-ex-v2.10.0
 claude --plugin-dir .
 ```
 
@@ -363,7 +363,7 @@ Use `benchmark:campaign` for repeated live testing. It runs sequential rounds wi
 
 Add `--types real-app --real-app-targets dashboard,docs-app,auth-flow` when you need local target classes that behave more like real products. Built-in target profiles are `dashboard`, `docs-app`, `auth-flow`, `data-table`, and `canvas-heavy`; campaign output records `realAppTarget`, `targetClass`, and culprit steps for failures or optimization suspects. These profiles are safe local/test-only fixtures. If you point future target profiles at external URLs, use only owned test tenants or explicit staging environments, never customer data, personal accounts, or production workflows.
 
-The README and GitHub Pages benchmark proof should use a current real-app campaign when making high-difficulty usability claims. For the v2.9.1 front-door snapshot, the campaign command was:
+The README and GitHub Pages benchmark proof should use a current real-app campaign when making high-difficulty usability claims. For the v2.10.0 front-door snapshot, the campaign command was:
 
 ```bash
 npm run benchmark:campaign -- --rounds 3 --types real-app --real-app-targets dashboard,docs-app,auth-flow --settle-ms 0 --json --output real-app-campaign.json

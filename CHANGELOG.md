@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.10.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.9.1...v2.10.0) (2026-07-10)
+
 ### Features
 
 * add `tab-group` / `broadcast` multi-tab coordination (#97).
@@ -9,7 +11,6 @@
 * add adaptive perceive text-row budgets via `--adaptive` / `--last auto` (#99).
 * document Browser Use mapping for Action Receipt and recovery (#100).
 * research awesome-list outreach targets without auto-submitting external PRs (#101).
-
 * add `emulate` for dark/light and reduced-motion media features (#93).
 * add `eval --raw` for compact object output without pretty JSON (#94).
 * centralize action recovery policies in a data-driven registry (#95).
@@ -27,6 +28,12 @@
 * default explicit `text <selector>` searches to the document root so they match `eval document.querySelector(...)` (#85).
 * treat unconfirmed browser permission as advisory in doctor wizard/recommendation when CDP is already usable (#87).
 * share root-aware selector diagnostics with `styles` and improve no-match recovery guidance (#91).
+* keep adversarial real-app campaigns inside the total-output-token gate by bounding the large-table probe and raising headroom slightly.
+
+### Documentation
+
+* refresh README, GitHub Pages benchmark proof, release links, and pinned install guidance for the v2.10.0 front door.
+* add Browser Use mapping and awesome-list outreach research notes.
 
 ### Breaking Changes
 

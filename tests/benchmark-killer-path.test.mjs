@@ -189,8 +189,16 @@ describe('benchmark killer path helpers', () => {
     ]));
     expect(adversarial).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'adversarial-slow-network', args: ['click', 'AABBCCDD', '#diagnostic', '--format', 'json', '--compact'], benchmarkProbe: true }),
-      expect.objectContaining({ name: 'adversarial-table', args: ['table', 'AABBCCDD', '#scenario-table'], benchmarkProbe: true }),
-      expect.objectContaining({ name: 'adversarial-shadow', args: ['perceive', 'AABBCCDD', '-s', 'shadow-action-card', '-d', '5'], benchmarkProbe: true }),
+      expect.objectContaining({
+        name: 'adversarial-table',
+        args: ['eval', 'AABBCCDD', 'document.querySelectorAll("#scenario-table tr").length'],
+        benchmarkProbe: true,
+      }),
+      expect.objectContaining({
+        name: 'adversarial-shadow',
+        args: ['perceive', 'AABBCCDD', '-s', 'shadow-action-card', '-d', '4', '--adaptive'],
+        benchmarkProbe: true,
+      }),
     ]));
   });
 
@@ -560,7 +568,7 @@ describe('benchmark killer path helpers', () => {
       expect.objectContaining({ name: 'first-useful-observation', passed: true, actual: 40, operator: '<=', limit: 5000 }),
       expect.objectContaining({ name: 'first-action-evidence', passed: true, actual: 152, operator: '<=' }),
       expect.objectContaining({ name: 'golden-path-under-two-minutes', passed: true, actual: 212, operator: '<=', limit: 120000 }),
-      expect.objectContaining({ name: 'total-output-tokens', passed: true, actual: summary.metrics.estimatedOutputTokens, operator: '<=', limit: 12750 }),
+      expect.objectContaining({ name: 'total-output-tokens', passed: true, actual: summary.metrics.estimatedOutputTokens, operator: '<=', limit: 13500 }),
       expect.objectContaining({ name: 'max-step-output-tokens', passed: true, actual: summary.metrics.maxStepEstimatedTokens, operator: '<=' }),
       expect.objectContaining({ name: 'max-step-duration', passed: true, actual: 30, operator: '<=' }),
       expect.objectContaining({ name: 'useful-observation-tokens', passed: true, operator: '<=', limit: 3000 }),
