@@ -281,6 +281,7 @@ describe('current open issue contracts', () => {
     expect(toolNames).toEqual(expect.arrayContaining([
       'doctor',
       'open_or_attach',
+      'select_target',
       'list_tabs',
       'perceive',
       'controls',
@@ -292,6 +293,7 @@ describe('current open issue contracts', () => {
       'fill',
       'viewport',
       'qa_page',
+      'responsive_audit',
       'report',
     ]));
     expect(createMcpInitializeResult().serverInfo.name).toBe('chrome-cdp-ex');
@@ -299,14 +301,22 @@ describe('current open issue contracts', () => {
     expect(buildMcpToolCommand('doctor', {})).toEqual(['doctor', '--format', 'json']);
     expect(buildMcpToolCommand('perceive', { target: 'app', depth: 4, cursorInteractive: true }))
       .toEqual(['perceive', 'app', '-d', '4', '-C', '--format', 'json']);
+    expect(buildMcpToolCommand('perceive', { target: 'app', qa: true, maxDiffLines: 12 }))
+      .toEqual(['perceive', 'app', '--qa', '--max-diff-lines', '12', '--format', 'json']);
     expect(buildMcpToolCommand('controls', { target: 'app', selector: '#composer', filter: 'send', limit: 5 }))
       .toEqual(['controls', 'app', '--selector', '#composer', '--filter', 'send', '--limit', '5', '--format', 'json']);
     expect(buildMcpToolCommand('overlay', { target: 'app', selector: '@3' }))
       .toEqual(['overlay', 'app', '@3', '--format', 'json']);
     expect(buildMcpToolCommand('open_or_attach', { target: 'ABC12345', port: 9223 }))
       .toEqual(['use', '--port', '9223', '--target', 'ABC12345']);
+    expect(buildMcpToolCommand('open_or_attach', { url: 'https://example.com', reuseUrl: true, confirm: true }))
+      .toEqual(['open', 'https://example.com', '--reuse-url', '--format', 'json']);
+    expect(buildMcpToolCommand('select_target', { url: '8788', title: 'Lab' }))
+      .toEqual(['target', '--url', '8788', '--title', 'Lab', '--format', 'json']);
     expect(buildMcpToolCommand('click', { target: 'app', selector: 'button.primary', confirm: true }))
       .toEqual(['click', 'app', 'button.primary', '--format', 'json']);
+    expect(buildMcpToolCommand('click', { target: 'app', selector: 'button.primary', qa: true, confirm: true }))
+      .toEqual(['click', 'app', 'button.primary', '--qa', '--format', 'json']);
     expect(buildMcpToolCommand('verify_click', {
       target: 'app',
       selector: 'button.primary',
@@ -344,6 +354,21 @@ describe('current open issue contracts', () => {
       '--expect-text', 'Saved',
       '--format', 'json',
     ]);
+    expect(buildMcpToolCommand('responsive_audit', {
+      target: 'app',
+      viewports: ['1440x900', '390x844'],
+      outDir: '/tmp/audit',
+      maxControls: 5,
+    })).toEqual([
+      'responsive-audit', 'app',
+      '--viewport', '1440x900',
+      '--viewport', '390x844',
+      '--out-dir', '/tmp/audit',
+      '--max-controls', '5',
+      '--format', 'json',
+    ]);
+    expect(buildMcpToolCommand('report', { target: 'app', qa: true, last: 3 }))
+      .toEqual(['report', 'app', '--last', '3', '--qa', '--format', 'json']);
   });
 
   it('serves framed MCP initialize and tool-list requests in order over stdio', async () => {
@@ -545,5 +570,48 @@ describe('issues #82-#87 contracts', () => {
       requiresUserAction: false,
       ask: null,
     });
+  });
+});
+
+
+describe('issues #89-#91 contracts', () => {
+  it('#89 maps new MCP tools for target selection and responsive audit', () => {
+    expect(MCP_TOOL_DEFINITIONS.map(tool => tool.name)).toEqual(expect.arrayContaining([
+      'select_target',
+      'responsive_audit',
+    ]));
+    expect(buildMcpToolCommand('select_target', { url: 'http://127.0.0.1:8788', exact: true }))
+      .toEqual(['target', '--url', 'http://127.0.0.1:8788', '--exact', '--format', 'json']);
+    expect(buildMcpToolCommand('responsive_audit', { target: 'app' }))
+      .toEqual(['responsive-audit', 'app', '--format', 'json']);
+  });
+
+  it('#90 applies max-controls and reports network failures in QA helpers', () => {
+    const script = T.responsiveAuditViewportScript({ maxControls: 2 });
+    expect(script).toContain('slice(0, 2)');
+    expect(script).toContain('maxControls: 2');
+    const fakeBuf = {
+      all: () => ([
+        { status: 200, url: 'https://ok' },
+        { status: 500, url: 'https://fail', failed: true },
+        { status: 404, url: 'https://missing' },
+      ]),
+    };
+    expect(T.countNetworkFailures(fakeBuf)).toBeGreaterThanOrEqual(1);
+    const summary = T.buildQaSummaryModel({
+      page: { url: 'https://app', title: 'App' },
+      console: { errors: 0, exceptions: 0 },
+      network: { failures: T.countNetworkFailures(fakeBuf) },
+      targetPrefix: 'ABC',
+      source: 'perceive',
+    });
+    expect(summary.networkFailures).toBeGreaterThan(0);
+    expect(T.parseResponsiveAuditArgs(['--max-controls', '3']).maxControls).toBe(3);
+  });
+
+  it('#91 provides styles no-match diagnostics with root/scope', () => {
+    // Pure parser parity with text/html root flags.
+    expect(T.parseTextArgs(['--root', 'body', '.chip']).root).toBe('body');
+    expect(T.parseTextArgs(['.chip']).selectors).toEqual(['.chip']);
   });
 });

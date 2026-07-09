@@ -42,7 +42,21 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
         target: stringSchema('Existing CDP target id or prefix to alias.'),
         port: stringSchema('CDP port for the target or browser session.'),
         name: stringSchema('Optional local alias name for later tool calls.'),
+        reuseUrl: booleanSchema('Reuse an existing tab matching the URL when unique.'),
         confirm: booleanSchema('Required when opening a new tab because this mutates browser state.'),
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'select_target',
+    description: 'Select a debuggable page target by URL and/or title substring (or exact match).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: stringSchema('URL or URL substring to match.'),
+        title: stringSchema('Page title or title substring to match.'),
+        exact: booleanSchema('Require exact URL/title match.'),
       },
       additionalProperties: false,
     },
@@ -59,6 +73,8 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
         cursorInteractive: booleanSchema('Include visible clickable controls and @c refs.'),
         selector: stringSchema('Optional CSS selector scope.'),
         sinceAction: booleanSchema('Return the causal diff since the last mutating action.'),
+        qa: booleanSchema('Return a compact QA summary instead of full perception.'),
+        maxDiffLines: { type: 'integer', minimum: 0, maximum: 500, description: 'Truncate long text previews in QA mode.' },
       },
       additionalProperties: false,
     },
@@ -115,6 +131,7 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
         target: stringSchema('Target prefix or named alias.'),
         selector: stringSchema('CSS selector, @ref, or @c ref.'),
         js: booleanSchema('Use HTMLElement.click() fallback instead of CDP mouse events.'),
+        qa: booleanSchema('Return a compact QA summary instead of full action evidence.'),
         confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
       },
       additionalProperties: false,
@@ -203,6 +220,25 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
     },
   },
   {
+    name: 'responsive_audit',
+    description: 'Run a bounded multi-viewport responsive visual audit with overflow/console/control signals.',
+    inputSchema: {
+      type: 'object',
+      required: ['target'],
+      properties: {
+        target: stringSchema('Target prefix or named alias.'),
+        viewports: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional list of WxH viewports. Defaults to desktop + mobile.',
+        },
+        outDir: stringSchema('Optional screenshot output directory outside the repo.'),
+        maxControls: { type: 'integer', minimum: 0, maximum: 100, description: 'Max visible controls sampled per viewport.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'report',
     description: 'Return session action timeline, artifacts, and recovery next steps.',
     inputSchema: {
@@ -212,6 +248,7 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
         target: stringSchema('Target prefix or named alias.'),
         last: { type: 'integer', minimum: 1, maximum: 100, description: 'Latest action count to include.' },
         all: booleanSchema('Include the full action timeline. Can be expensive.'),
+        qa: booleanSchema('Return a compact QA summary instead of the full report.'),
       },
       additionalProperties: false,
     },
@@ -247,7 +284,17 @@ export function buildMcpToolCommand(name, args = {}) {
         return command;
       }
       requireConfirm(args, 'open_or_attach');
-      return ['open', args.url || 'about:blank', '--format', 'json'];
+      const command = ['open', args.url || 'about:blank'];
+      if (args.reuseUrl) command.push('--reuse-url');
+      return optionalFormatJson(command);
+    }
+    case 'select_target': {
+      if (!args.url && !args.title) throw new Error('select_target requires url and/or title');
+      const command = ['target'];
+      if (args.url) command.push('--url', String(args.url));
+      if (args.title) command.push('--title', String(args.title));
+      if (args.exact) command.push('--exact');
+      return optionalFormatJson(command);
     }
     case 'perceive': {
       const command = ['perceive', requireString(args, 'target')];
@@ -255,6 +302,8 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.cursorInteractive) command.push('-C');
       if (args.selector) command.push('--selector', String(args.selector));
       if (args.sinceAction) command.push('--since-action');
+      if (args.qa || args.summary) command.push('--qa');
+      if (args.maxDiffLines != null) command.push('--max-diff-lines', String(args.maxDiffLines));
       return optionalFormatJson(command);
     }
     case 'controls': {
@@ -280,6 +329,7 @@ export function buildMcpToolCommand(name, args = {}) {
       const command = ['click', requireString(args, 'target')];
       if (args.js) command.push('--js');
       command.push(requireString(args, 'selector'));
+      if (args.qa || args.summary) command.push('--qa');
       return optionalFormatJson(command);
     }
     case 'verify_click': {
@@ -323,10 +373,19 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.noConsoleErrors) command.push('--no-console-errors');
       return optionalFormatJson(command);
     }
+    case 'responsive_audit': {
+      const command = ['responsive-audit', requireString(args, 'target')];
+      const viewports = Array.isArray(args.viewports) ? args.viewports : [];
+      for (const size of viewports) command.push('--viewport', String(size));
+      if (args.outDir) command.push('--out-dir', String(args.outDir));
+      if (args.maxControls != null) command.push('--max-controls', String(args.maxControls));
+      return optionalFormatJson(command);
+    }
     case 'report': {
       const command = ['report', requireString(args, 'target')];
       if (args.all) command.push('--all');
       else if (args.last != null) command.push('--last', String(args.last));
+      if (args.qa || args.summary) command.push('--qa');
       return optionalFormatJson(command);
     }
     default:

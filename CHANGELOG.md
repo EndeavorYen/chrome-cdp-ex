@@ -9,12 +9,15 @@
 * add compact `--qa`/`--summary` output modes for perceive, actions, and report (#84).
 * add `responsive-audit` / `visual-check` for bounded desktop/mobile visual QA (#86).
 * refine doctor readiness to `ready | usable-with-warnings | blocked` with severity classification for advisory permission states (#87).
+* expose `select_target`, `responsive_audit`, compact QA flags, and `open --reuse-url` through the MCP adapter (#89).
+* honor `--max-controls` in responsive audits and report live network failure counts in `perceive --qa` summaries (#90).
 
 ### Fixes
 
 * make `text`/`html` selector failures report search root/scope and suggest an `eval` fallback (#85).
 * default explicit `text <selector>` searches to the document root so they match `eval document.querySelector(...)` (#85).
 * treat unconfirmed browser permission as advisory in doctor wizard/recommendation when CDP is already usable (#87).
+* share root-aware selector diagnostics with `styles` and improve no-match recovery guidance (#91).
 
 ### Breaking Changes
 
