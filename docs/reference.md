@@ -120,6 +120,8 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref --qa
 node skills/chrome-cdp-ex/scripts/cdp.mjs report <target> --qa --format json
 ```
 
+MCP tools mirror these workflows: `select_target`, `responsive_audit`, plus `qa` flags on `perceive` / `click` / `report`, and `open_or_attach.reuseUrl`.
+
 ## Action Evidence
 
 Mutating commands such as `click`, `verify-click`, `qa` with `--click`, `fill`, `type`, `press`, `select`, `scroll`, `upload`, `nav`, `back`, `forward`, `reload`, `viewport`, `inject`, `restore`, and `dismiss-modal` return action evidence.

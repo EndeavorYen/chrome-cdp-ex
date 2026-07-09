@@ -142,7 +142,7 @@ scripts/cdp.mjs perceive app -C -d 8             # aliases work anywhere a targe
 node skills/chrome-cdp-ex/scripts/mcp-server.mjs # stdio MCP tools for agent-native workflows
 ```
 
-Use `use` for normal live workflows; use `attach` when you need to record the CDP host/port explicitly. The MCP server exposes doctor, list/open, perception, compact `controls`, overlay diagnosis, screenshot, action, `verify_click`, `dismiss_modal`, `qa_page`, and report tools, with `confirm: true` required before mutating calls.
+Use `use` for normal live workflows; use `attach` when you need to record the CDP host/port explicitly. The MCP server exposes doctor, list/open, `select_target`, perception (with optional `qa`), compact `controls`, overlay diagnosis, screenshot, action, `verify_click`, `dismiss_modal`, `qa_page`, `responsive_audit`, and report tools, with `confirm: true` required before mutating calls.
 
 **WSL2 efficiency tip**: Shell state doesn't persist between Bash calls. To avoid redefining `NODE_WIN` and `CDP` every time, **chain commands with `&&`** in a single Bash call:
 ```bash

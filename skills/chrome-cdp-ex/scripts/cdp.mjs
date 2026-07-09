@@ -3191,7 +3191,8 @@ function parseResponsiveAuditArgs(args = []) {
   return opts;
 }
 
-function responsiveAuditViewportScript() {
+function responsiveAuditViewportScript({ maxControls = 12 } = {}) {
+  const limit = Math.max(0, Math.min(Number(maxControls) || 12, 100));
   return `(function() {
     const doc = document.documentElement;
     const body = document.body;
@@ -3200,13 +3201,14 @@ function responsiveAuditViewportScript() {
     const clientWidth = doc?.clientWidth || window.innerWidth || 0;
     const clientHeight = doc?.clientHeight || window.innerHeight || 0;
     const overflowX = scrollWidth > clientWidth + 1;
-    const controls = Array.from(document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]'))
+    const allControls = Array.from(document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]'))
       .filter(el => {
         const r = el.getBoundingClientRect();
         const style = getComputedStyle(el);
         return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-      })
-      .slice(0, 20)
+      });
+    const controls = allControls
+      .slice(0, ${limit})
       .map(el => ({
         tag: el.tagName.toLowerCase(),
         text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 80),
@@ -3218,11 +3220,18 @@ function responsiveAuditViewportScript() {
       viewport: window.innerWidth + 'x' + window.innerHeight,
       scroll: { width: scrollWidth, height: scrollHeight, clientWidth, clientHeight },
       overflowX,
-      controlCount: controls.length,
+      controlCount: allControls.length,
       controls,
+      controlsTruncated: allControls.length > ${limit},
+      maxControls: ${limit},
       blank,
     });
   })()`;
+}
+
+function countNetworkFailures(netReqBuf = null) {
+  if (!netReqBuf || typeof netReqBuf.all !== 'function') return 0;
+  return netReqBuf.all().filter(isNetworkFailure).length;
 }
 
 function buildResponsiveAuditModel({
@@ -3312,7 +3321,7 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
     const entry = { viewport: size };
     try {
       await viewportStr(cdp, sid, size);
-      const metricsRaw = await evalStr(cdp, sid, responsiveAuditViewportScript());
+      const metricsRaw = await evalStr(cdp, sid, responsiveAuditViewportScript({ maxControls: opts.maxControls }));
       const metrics = JSON.parse(metricsRaw);
       Object.assign(entry, metrics);
       const shotDir = opts.outDir || session.screenshotDir || null;
@@ -7229,12 +7238,32 @@ async function scanshotStr(cdp, sid, targetId) {
   return lines.join('\n');
 }
 
-async function stylesStr(cdp, sid, selector) {
+async function stylesStr(cdp, sid, selectorOrArgs) {
+  // Share root/selector resolution with text/html for consistent diagnostics.
+  let opts;
+  if (Array.isArray(selectorOrArgs)) opts = parseTextArgs(selectorOrArgs);
+  else if (typeof selectorOrArgs === 'string' || selectorOrArgs == null) {
+    opts = parseTextArgs(selectorOrArgs ? [selectorOrArgs] : []);
+  } else opts = { selectors: [], root: null };
+  const selector = opts.selectors[0] || null;
   if (!selector) throw new Error('CSS selector required');
+  const root = opts.root || 'document';
   const expr = `
     (function() {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) return null;
+      function safeQuery(root, sel) { try { return root?.querySelector?.(sel) || null; } catch { return null; } }
+      let scope = document.documentElement;
+      const rootSetting = ${JSON.stringify(root)};
+      if (rootSetting === 'body') scope = document.body || document.documentElement;
+      else if (rootSetting === 'auto' || rootSetting === 'default') {
+        scope = safeQuery(document, '#root') || safeQuery(document, '[data-reactroot]') || safeQuery(document, 'main') || document.body || document.documentElement;
+      } else if (rootSetting !== 'document') {
+        scope = safeQuery(document, rootSetting);
+        if (!scope) return JSON.stringify({ ok: false, root: rootSetting, reason: 'root-not-found' });
+      }
+      const el = scope === document || scope === document.documentElement
+        ? safeQuery(document, ${JSON.stringify(selector)})
+        : (scope.matches && scope.matches(${JSON.stringify(selector)}) ? scope : safeQuery(scope, ${JSON.stringify(selector)}));
+      if (!el) return JSON.stringify({ ok: false, root: rootSetting, selector: ${JSON.stringify(selector)} });
       const cs = window.getComputedStyle(el);
       const props = {};
       const keep = [
@@ -7254,11 +7283,11 @@ async function stylesStr(cdp, sid, selector) {
         'rgb(0, 0, 0)','rgba(0, 0, 0, 0)',
       ]);
       const skipPatterns = [
-        /^0px /,              // 0px none rgb(...)  — default border etc.
-        /^rgba\\(0, ?0, ?0, ?0\\)/, // transparent backgrounds
-        /^0 [01]+ auto$/,     // flex: 0 1 auto
-        /none 0px$/,          // outline: rgb(...) none 0px — no outline
-        /^all$/,              // transition: all — browser default
+        /^0px /,
+        /^rgba\\(0, ?0, ?0, ?0\\)/,
+        /^0 [01]+ auto$/,
+        /none 0px$/,
+        /^all$/,
       ];
       for (const p of keep) {
         const v = cs.getPropertyValue(p);
@@ -7266,15 +7295,31 @@ async function stylesStr(cdp, sid, selector) {
         if (skipPatterns.some(re => re.test(v))) continue;
         props[p] = v;
       }
-      return { tag: el.tagName, id: el.id, cls: el.className?.toString().substring(0, 80), props };
+      return JSON.stringify({
+        ok: true,
+        root: rootSetting,
+        tag: el.tagName,
+        id: el.id,
+        cls: el.className?.toString().substring(0, 80),
+        props,
+      });
     })()
   `;
   const result = await evalStr(cdp, sid, expr);
-  if (result === 'null') throw new Error('Element not found: ' + selector);
-  const r = JSON.parse(result);
+  let parsed;
+  try { parsed = JSON.parse(result); } catch { parsed = null; }
+  if (!parsed || parsed.ok === false) {
+    const rootLabel = parsed?.root || root || 'document';
+    throw new Error(
+      `styles: no element matched within root "${rootLabel}" for selector ${selector}. ` +
+      `Fallback: cdp eval <target> "getComputedStyle(document.querySelector(${JSON.stringify(selector)}))"`
+    );
+  }
+  // Legacy path: eval may still return a plain object if script changes.
+  const r = typeof parsed === 'object' && parsed.props ? parsed : JSON.parse(result);
   const header = '<' + r.tag + '>' + (r.id ? '#' + r.id : '') + (r.cls ? '.' + r.cls.split(' ').join('.') : '');
   const lines = [header];
-  for (const [k, v] of Object.entries(r.props)) {
+  for (const [k, v] of Object.entries(r.props || {})) {
     lines.push('  ' + k + ': ' + v);
   }
   return lines.join('\n');
@@ -11675,7 +11720,7 @@ async function runDaemon(targetId) {
             const summary = buildQaSummaryModel({
               page: { title: page.title, url: page.url },
               console: consoleHealth,
-              network: { failures: 0 },
+              network: { failures: countNetworkFailures(netReqBuf) },
               blank: isBlankPageUrl(page.url),
               targetPrefix: targetPrefixForDisplay(targetId),
               nextCommand: `cdp report ${targetPrefixForDisplay(targetId)}`,
@@ -11783,7 +11828,7 @@ async function runDaemon(targetId) {
         }
         case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
         case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
-        case 'styles': result = await stylesStr(cdp, sessionId, args[0]); break;
+        case 'styles': result = await stylesStr(cdp, sessionId, args); break;
         case 'cookies': result = await cookiesStr(cdp, sessionId); break;
         case 'cookieset': result = await cookieSetStr(cdp, sessionId, args[0]); break;
         case 'cookiedel': result = await cookieDelStr(cdp, sessionId, args[0]); break;
@@ -12228,7 +12273,9 @@ Usage: cdp <command> [args]
   select  <target> <selector> <val> [--format json] Select an option in a <select> element by value
   fullshot <target> [file]          Full-page screenshot (single image — may be hard to read)
   scanshot <target>                 Segmented full-page capture (viewport-sized images, readable)
-  styles  <target> <selector>       Get computed styles for element (filtered to meaningful props)
+  styles  <target> <selector> [--root auto|body|document|<sel>]
+                                    Get computed styles for element (filtered to meaningful props)
+                                    On no-match, error includes root/scope and an eval fallback
   cookies <target>                  List cookies for current page
   cookieset <target> <cookie>       Set a cookie: "name=value" or "name=value; domain=.example.com; secure"
   cookiedel <target> <name>         Delete a cookie by name
@@ -13514,6 +13561,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseTargetSelectArgs, buildTargetSelectModel, formatTargetSelect,
   parseQaModeArgs, buildQaSummaryModel, formatQaSummaryText, truncateTextLines,
   parseResponsiveAuditArgs, buildResponsiveAuditModel, formatResponsiveAuditReport,
-  responsiveAuditViewportScript, responsiveAuditStr,
+  responsiveAuditViewportScript, responsiveAuditStr, countNetworkFailures,
+  stylesStr,
   COMMANDS, NEEDS_TARGET,
 } : undefined;
