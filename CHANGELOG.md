@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Features
+
+* improve multi-tab target selection with `target --url/--title`, list ranking heuristics, and `open --reuse-url` (#82).
+* return spawn-debug-browser target handoff (pid/profile/port/target prefix) with JSON mode and cleanup guidance (#83).
+* add compact `--qa`/`--summary` output modes for perceive, actions, and report (#84).
+* add `responsive-audit` / `visual-check` for bounded desktop/mobile visual QA (#86).
+* refine doctor readiness to `ready | usable-with-warnings | blocked` with severity classification for advisory permission states (#87).
+
+### Fixes
+
+* make `text`/`html` selector failures report search root/scope and suggest an `eval` fallback (#85).
+* default explicit `text <selector>` searches to the document root so they match `eval document.querySelector(...)` (#85).
+* treat unconfirmed browser permission as advisory in doctor wizard/recommendation when CDP is already usable (#87).
+
+### Breaking Changes
+
+* doctor JSON `status` values are now `ready | usable-with-warnings | blocked` (replacing `mostly-ready` / `not-ready`). Prefer the new `readiness` + per-check `severity` fields.
+* `html` no-match now throws instead of returning the soft string `Element not found`.
+
 ## [2.9.1](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.9.0...v2.9.1) (2026-07-08)
 
 ### Documentation

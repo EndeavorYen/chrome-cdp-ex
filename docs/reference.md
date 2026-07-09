@@ -8,8 +8,8 @@ Most workflows start with `doctor -> list -> open -> perceive -> click/fill -> p
 
 | Area | Commands |
 |---|---|
-| Discovery | `help`, `doctor`, `list`, `open`, `spawn-debug-browser`, `attach`, `use`, `forget`, `current`, `stop`, `closetab`, `keepalive` |
-| Perception | `perceive`, `controls`, `summary`, `snap`, `frame`, `overlay`, `text`, `table`, `status`, `console`, `report`, `qa` |
+| Discovery | `help`, `doctor`, `list`, `target`, `open`, `spawn-debug-browser`, `attach`, `use`, `forget`, `current`, `stop`, `closetab`, `keepalive` |
+| Perception | `perceive`, `controls`, `summary`, `snap`, `frame`, `overlay`, `text`, `table`, `status`, `console`, `report`, `qa`, `responsive-audit` |
 | Visual capture | `shot`, `elshot`, `fullshot`, `scanshot`, `diff-shot` |
 | Interaction | `click`, `verify-click`, `jsclick`, `clickxy`, `type`, `press`, `scroll`, `hover`, `fill`, `select`, `upload`, `dialog`, `dismiss-modal` |
 | Waiting and flow | `wait`, `waitfor`, `loadall`, `batch`, `flow`, `repeat` |
@@ -65,6 +65,16 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs forget app
 
 `attach` is the explicit form for recording a target plus `--port` / `--host`; `use` also accepts `9222/<target>` and stores that CDP port for later commands. `list --format json` includes aliases, and text `list` shows aliases next to matching tabs.
 
+When many tabs are open, select by URL/title instead of guessing prefixes:
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs target --url http://127.0.0.1:8788 --format json
+node skills/chrome-cdp-ex/scripts/cdp.mjs target --title "Agent Decision Lab"
+node skills/chrome-cdp-ex/scripts/cdp.mjs open http://127.0.0.1:8788 --reuse-url
+```
+
+`list` ranks non-blank pages first and marks the recommended target. Ambiguous `target` matches return candidate URLs/titles plus exact follow-up commands.
+
 ## Semantic Verification And QA
 
 `verify-click` wraps one click with assertions that agents normally check manually:
@@ -92,6 +102,23 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs qa <target> \
 ```
 
 It captures page info, console health, desktop/mobile screenshots, perception summaries, and optional semantic checks. Add `--click <selector-or-ref>` to include a verified interaction before the final assertions.
+
+For responsive regression checks, use `responsive-audit` (alias `visual-check`):
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs responsive-audit <target> --format json
+node skills/chrome-cdp-ex/scripts/cdp.mjs visual-check <target> --viewport 1440x900 --viewport 390x844 --out-dir /tmp/cdp-audit
+```
+
+It walks a bounded set of viewports (default desktop + mobile), captures screenshots outside the repo by default (session screenshot dir or explicit `--out-dir`), and reports overflow-x, blank-page, console, control counts, and a pass/warn/fail summary.
+
+Compact QA handoffs are also available on common commands:
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --qa --format json
+node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref --qa
+node skills/chrome-cdp-ex/scripts/cdp.mjs report <target> --qa --format json
+```
 
 ## Action Evidence
 
