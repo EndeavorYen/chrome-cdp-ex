@@ -275,119 +275,211 @@ export function buildNoChangeOutcomeRecommendation({
   };
 }
 
+/**
+ * Data-driven recovery policy registry.
+ * Templates describe strategy/priority/verify + ordered command intents.
+ * Concrete CLI strings are resolved in buildActionRecoveryPlan().
+ */
+export const RECOVERY_POLICY_REGISTRY = Object.freeze({
+  'network-failure': {
+    strategy: 'inspect-network',
+    priority: 'high',
+    verify: 'since-action',
+    intents: [
+      { key: 'netlog', reason: 'Inspect failed or pending requests caused by the action.' },
+      { key: 'since-action', reason: 'Verify what the action changed before retrying.' },
+      { key: 'report', reason: 'Preserve the action timeline and diagnostics for handoff.' },
+    ],
+    avoid: ['retrying the same action before checking network state'],
+  },
+  'network-pending': {
+    strategy: 'inspect-network',
+    priority: 'medium',
+    verify: 'since-action',
+    intents: [
+      { key: 'netlog', reason: 'Inspect failed or pending requests caused by the action.' },
+      { key: 'since-action', reason: 'Verify what the action changed before retrying.' },
+      { key: 'report', reason: 'Preserve the action timeline and diagnostics for handoff.' },
+    ],
+    avoid: ['retrying the same action before checking network state'],
+  },
+  exception: {
+    strategy: 'inspect-runtime-errors',
+    priority: 'high',
+    verify: 'since-action',
+    intents: [
+      { key: 'console', reason: 'Inspect page errors triggered by the action.' },
+      { key: 'since-action', reason: 'Verify visible UI changes from the action.' },
+      { key: 'report', reason: 'Preserve the action timeline and diagnostics for handoff.' },
+    ],
+    avoid: [],
+  },
+  'console-error': {
+    strategy: 'inspect-runtime-errors',
+    priority: 'high',
+    verify: 'since-action',
+    intents: [
+      { key: 'console', reason: 'Inspect page errors triggered by the action.' },
+      { key: 'since-action', reason: 'Verify visible UI changes from the action.' },
+      { key: 'report', reason: 'Preserve the action timeline and diagnostics for handoff.' },
+    ],
+    avoid: [],
+  },
+  overlay: {
+    strategy: 'clear-overlay',
+    priority: 'high',
+    verify: 'perceive',
+    intents: [
+      { key: 'overlay', reason: 'Confirm which overlay or dialog blocks the target.' },
+      { key: 'next-or-dismiss', reason: 'Dismiss the blocking modal or overlay safely.' },
+      { key: 'perceive', reason: 'Refresh refs after the overlay changes.' },
+    ],
+    avoid: ['retrying the same click before clearing or re-checking the overlay'],
+  },
+  'wrong-frame': {
+    strategy: 'refresh-frame-context',
+    priority: 'high',
+    verify: 'next-or-perceive',
+    intents: [
+      { key: 'frame', reason: 'List frames and choose the correct frame context.' },
+      { key: 'next-or-perceive', reason: 'Refresh page perception before using refs again.' },
+    ],
+    avoid: ['retrying top-level refs when the control may be inside an iframe'],
+  },
+  'stale-ref': {
+    strategy: 'refresh-perception',
+    priority: 'high',
+    verify: 'next-or-perceive',
+    intents: [
+      { key: 'next-or-perceive', reason: 'Refresh current controls and refs.' },
+      { key: 'status', reason: 'Check navigation, console, and target health if the page changed.' },
+    ],
+    avoid: ['retrying stale @refs before refreshing perception'],
+  },
+  'dom-rewrite': {
+    strategy: 'refresh-perception',
+    priority: 'high',
+    verify: 'next-or-perceive',
+    intents: [
+      { key: 'next-or-perceive', reason: 'Refresh current controls and refs.' },
+      { key: 'status', reason: 'Check navigation, console, and target health if the page changed.' },
+    ],
+    avoid: ['retrying stale @refs before refreshing perception'],
+  },
+  navigation: {
+    strategy: 'refresh-perception',
+    priority: 'high',
+    verify: 'next-or-perceive',
+    intents: [
+      { key: 'next-or-perceive', reason: 'Refresh current controls and refs.' },
+      { key: 'status', reason: 'Check navigation, console, and target health if the page changed.' },
+    ],
+    avoid: ['retrying stale @refs before refreshing perception'],
+  },
+  selector: {
+    strategy: 'refresh-perception',
+    priority: 'medium',
+    verify: 'next-or-perceive',
+    intents: [
+      { key: 'next-or-perceive', reason: 'Refresh current controls and refs.' },
+      { key: 'status', reason: 'Check navigation, console, and target health if the page changed.' },
+    ],
+    avoid: ['retrying stale @refs before refreshing perception'],
+  },
+  timeout: {
+    strategy: 'check-tab-health',
+    priority: 'medium',
+    verify: 'status',
+    intents: [
+      { key: 'next-or-status', reason: 'Check whether the tab and CDP session are still responsive.' },
+      { key: 'since-action', reason: 'If dispatch may have happened, inspect the last-action diff.' },
+      { key: 'report', reason: 'Preserve any partial diagnostics already captured.' },
+    ],
+    avoid: [],
+  },
+  'observation-timeout': {
+    strategy: 'check-tab-health',
+    priority: 'medium',
+    verify: 'status',
+    intents: [
+      { key: 'next-or-status', reason: 'Check whether the tab and CDP session are still responsive.' },
+      { key: 'since-action', reason: 'If dispatch may have happened, inspect the last-action diff.' },
+      { key: 'report', reason: 'Preserve any partial diagnostics already captured.' },
+    ],
+    avoid: [],
+  },
+  'observation-error': {
+    strategy: 'check-tab-health',
+    priority: 'medium',
+    verify: 'status',
+    intents: [
+      { key: 'next-or-status', reason: 'Check whether the tab and CDP session are still responsive.' },
+      { key: 'since-action', reason: 'If dispatch may have happened, inspect the last-action diff.' },
+      { key: 'report', reason: 'Preserve any partial diagnostics already captured.' },
+    ],
+    avoid: [],
+  },
+  default: {
+    strategy: 'refresh-perception',
+    priority: 'medium',
+    verify: 'next-or-perceive',
+    intents: [
+      { key: 'next-or-perceive', reason: 'Refresh perception before choosing the next action.' },
+    ],
+    avoid: [],
+  },
+});
+
+export function listRecoveryPolicyKinds() {
+  return Object.keys(RECOVERY_POLICY_REGISTRY).filter(kind => kind !== 'default').sort();
+}
+
+export function getRecoveryPolicyTemplate(kind) {
+  return RECOVERY_POLICY_REGISTRY[kind] || RECOVERY_POLICY_REGISTRY.default;
+}
+
 export function buildActionRecoveryPlan(diagnosis = {}, { targetId = '<target>', targetInput = '' } = {}) {
   const target = targetId || '<target>';
   const input = recoveryCommandArg(targetInput);
-  const perceiveCommand = `cdp perceive ${target} -C -d 8`;
-  const sinceActionCommand = `cdp perceive ${target} --since-action`;
-  const statusCommand = `cdp status ${target}`;
-  const reportCommand = `cdp report ${target} --format json`;
-  const netlogCommand = `cdp netlog ${target}`;
-  const consoleCommand = `cdp console ${target} --errors`;
-  const frameCommand = `cdp frame ${target} --format json`;
-  const overlayCommand = input ? `cdp overlay ${target} ${input} --format json` : `cdp overlay ${target} --format json`;
-  const dismissCommand = `cdp dismiss-modal ${target}`;
-  const nextCommand = diagnosis.nextCommand || null;
-  const base = {
-    schema: 'chrome-cdp-ex.recovery-policy.v1',
-    strategy: 'refresh-perception',
-    priority: diagnosis.status === 'blocked' ? 'high' : 'medium',
-    commands: [],
-    verifyCommand: perceiveCommand,
-    avoid: [],
+  const commandMap = {
+    perceive: `cdp perceive ${target} -C -d 8`,
+    'since-action': `cdp perceive ${target} --since-action`,
+    status: `cdp status ${target}`,
+    report: `cdp report ${target} --format json`,
+    netlog: `cdp netlog ${target}`,
+    console: `cdp console ${target} --errors`,
+    frame: `cdp frame ${target} --format json`,
+    overlay: input ? `cdp overlay ${target} ${input} --format json` : `cdp overlay ${target} --format json`,
+    dismiss: `cdp dismiss-modal ${target}`,
   };
-
-  switch (diagnosis.kind) {
-    case 'network-failure':
-    case 'network-pending':
-      return {
-        ...base,
-        strategy: 'inspect-network',
-        priority: diagnosis.kind === 'network-failure' ? 'high' : 'medium',
-        commands: uniqueRecoveryCommands([
-          recoveryCommand(netlogCommand, 'Inspect failed or pending requests caused by the action.'),
-          recoveryCommand(sinceActionCommand, 'Verify what the action changed before retrying.'),
-          recoveryCommand(reportCommand, 'Preserve the action timeline and diagnostics for handoff.'),
-        ]),
-        verifyCommand: sinceActionCommand,
-        avoid: ['retrying the same action before checking network state'],
-      };
-    case 'exception':
-    case 'console-error':
-      return {
-        ...base,
-        strategy: 'inspect-runtime-errors',
-        priority: 'high',
-        commands: uniqueRecoveryCommands([
-          recoveryCommand(consoleCommand, 'Inspect page errors triggered by the action.'),
-          recoveryCommand(sinceActionCommand, 'Verify visible UI changes from the action.'),
-          recoveryCommand(reportCommand, 'Preserve the action timeline and diagnostics for handoff.'),
-        ]),
-        verifyCommand: sinceActionCommand,
-      };
-    case 'overlay':
-      return {
-        ...base,
-        strategy: 'clear-overlay',
-        priority: 'high',
-        commands: uniqueRecoveryCommands([
-          recoveryCommand(overlayCommand, 'Confirm which overlay or dialog blocks the target.'),
-          recoveryCommand(nextCommand || dismissCommand, 'Dismiss the blocking modal or overlay safely.'),
-          recoveryCommand(perceiveCommand, 'Refresh refs after the overlay changes.'),
-        ]),
-        verifyCommand: perceiveCommand,
-        avoid: ['retrying the same click before clearing or re-checking the overlay'],
-      };
-    case 'wrong-frame':
-      return {
-        ...base,
-        strategy: 'refresh-frame-context',
-        priority: 'high',
-        commands: uniqueRecoveryCommands([
-          recoveryCommand(frameCommand, 'List frames and choose the correct frame context.'),
-          recoveryCommand(nextCommand || perceiveCommand, 'Refresh page perception before using refs again.'),
-        ]),
-        verifyCommand: nextCommand || perceiveCommand,
-        avoid: ['retrying top-level refs when the control may be inside an iframe'],
-      };
-    case 'stale-ref':
-    case 'dom-rewrite':
-    case 'navigation':
-    case 'selector':
-      return {
-        ...base,
-        strategy: 'refresh-perception',
-        priority: diagnosis.kind === 'selector' ? 'medium' : 'high',
-        commands: uniqueRecoveryCommands([
-          recoveryCommand(nextCommand || perceiveCommand, 'Refresh current controls and refs.'),
-          recoveryCommand(statusCommand, 'Check navigation, console, and target health if the page changed.'),
-        ]),
-        verifyCommand: nextCommand || perceiveCommand,
-        avoid: ['retrying stale @refs before refreshing perception'],
-      };
-    case 'timeout':
-    case 'observation-timeout':
-    case 'observation-error':
-      return {
-        ...base,
-        strategy: 'check-tab-health',
-        priority: 'medium',
-        commands: uniqueRecoveryCommands([
-          recoveryCommand(nextCommand || statusCommand, 'Check whether the tab and CDP session are still responsive.'),
-          recoveryCommand(sinceActionCommand, 'If dispatch may have happened, inspect the last-action diff.'),
-          recoveryCommand(reportCommand, 'Preserve any partial diagnostics already captured.'),
-        ]),
-        verifyCommand: statusCommand,
-      };
-    default:
-      return {
-        ...base,
-        commands: uniqueRecoveryCommands([
-          recoveryCommand(nextCommand || perceiveCommand, 'Refresh perception before choosing the next action.'),
-        ]),
-        verifyCommand: nextCommand || perceiveCommand,
-      };
-  }
+  const nextCommand = diagnosis.nextCommand || null;
+  const resolveIntent = (key) => {
+    if (key === 'next-or-dismiss') return nextCommand || commandMap.dismiss;
+    if (key === 'next-or-perceive') return nextCommand || commandMap.perceive;
+    if (key === 'next-or-status') return nextCommand || commandMap.status;
+    return commandMap[key] || null;
+  };
+  const template = getRecoveryPolicyTemplate(diagnosis.kind);
+  const priority = diagnosis.status === 'blocked'
+    ? 'high'
+    : (template.priority || 'medium');
+  const commands = uniqueRecoveryCommands(
+    (template.intents || []).map(intent => {
+      const command = resolveIntent(intent.key);
+      return command ? recoveryCommand(command, intent.reason) : null;
+    }).filter(Boolean),
+  );
+  const verifyKey = template.verify || 'perceive';
+  const verifyCommand = resolveIntent(verifyKey) || commandMap.perceive;
+  return {
+    schema: 'chrome-cdp-ex.recovery-policy.v1',
+    strategy: template.strategy || 'refresh-perception',
+    priority,
+    commands,
+    verifyCommand,
+    avoid: Array.isArray(template.avoid) ? [...template.avoid] : [],
+    kind: diagnosis.kind || 'unknown',
+  };
 }
 
 export function recoveryCommandsFromDiagnosis(diagnosis = null) {

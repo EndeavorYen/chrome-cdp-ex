@@ -67,14 +67,14 @@
 - [x] `frame` / `frames` — list CDP frame tree with stable `@fN` refs and parse `@fN:M` syntax. Priority: P1.
 - [x] Frame-scoped perception/action refs — `perceive --frame @fN` emits `@fN:M` refs; `click`, `fill`, and `cascade` can resolve them. Priority: P1.
 - [ ] `components` — React/Vue component tree + state inspection. Priority: P2.
-- [ ] `emulate` — dark/light mode emulation. Priority: P2.
+- [x] `emulate` — dark/light mode emulation. Priority: P2.
 - [ ] Browser Use mapping doc — map Action Receipt, no-change recovery, and benchmark-gated handoffs to Browser Use contribution language. Priority: P2.
-- [ ] Recovery policy registry — centralize diagnosis kinds, recovery strategies, priorities, commands, and verify commands. Priority: P2.
+- [x] Recovery policy registry — centralize diagnosis kinds, recovery strategies, priorities, commands, and verify commands. Priority: P2.
 
 ### Polish backlog
 
 - [ ] Adaptive `perceive` line/token budget beyond `--last`, using page density, task context, and error state.
-- [ ] `eval --raw` flag to bypass the auto-`JSON.stringify` of object results.
+- [x] `eval --raw` flag to bypass the auto-`JSON.stringify` of object results.
 - [x] Per-target daemon log file at `<runtime-dir>/cdp-<target>.log` for post-mortem.
 - [x] Session screenshot directory + report attachments.
 

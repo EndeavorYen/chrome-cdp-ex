@@ -615,3 +615,32 @@ describe('issues #89-#91 contracts', () => {
     expect(T.parseTextArgs(['.chip']).selectors).toEqual(['.chip']);
   });
 });
+
+describe('issues #93-#95 contracts', () => {
+  it('#93 builds emulate media-feature models and resets cleanly', () => {
+    expect(T.parseEmulateArgs(['dark']).colorScheme).toBe('dark');
+    expect(T.parseEmulateArgs(['reduced-motion', 'reduce']).reducedMotion).toBe('reduce');
+    expect(T.parseEmulateArgs(['off']).mode).toBe('off');
+    const features = T.buildEmulateFeatures({ colorScheme: 'dark', reducedMotion: 'reduce' });
+    expect(features).toEqual(expect.arrayContaining([
+      { name: 'prefers-color-scheme', value: 'dark' },
+      { name: 'prefers-reduced-motion', value: 'reduce' },
+    ]));
+    const model = T.buildEmulateModel({ colorScheme: 'dark', reducedMotion: null, features }, { targetPrefix: 'ABC12345' });
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.emulate.v1',
+      active: true,
+      colorScheme: 'dark',
+      nextCommand: 'cdp perceive ABC12345 -C -d 8',
+    });
+    expect(T.formatEmulateText(model)).toContain('prefers-color-scheme: dark');
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({ name: 'emulate', needsTarget: true }));
+  });
+
+  it('#94 parses eval --raw and formats compact object output', () => {
+    expect(T.parseEvalArgs(['--raw', '({a:1})'])).toMatchObject({ raw: true, expression: '({a:1})' });
+    expect(T.formatEvalValue({ a: 1, b: 2 }, { raw: false })).toContain('\n');
+    expect(T.formatEvalValue({ a: 1, b: 2 }, { raw: true })).toBe('{"a":1,"b":2}');
+    expect(T.formatEvalValue(undefined, { raw: true })).toBe('');
+  });
+});

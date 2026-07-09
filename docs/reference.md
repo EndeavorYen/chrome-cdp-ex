@@ -13,7 +13,7 @@ Most workflows start with `doctor -> list -> open -> perceive -> click/fill -> p
 | Visual capture | `shot`, `elshot`, `fullshot`, `scanshot`, `diff-shot` |
 | Interaction | `click`, `verify-click`, `jsclick`, `clickxy`, `type`, `press`, `scroll`, `hover`, `fill`, `select`, `upload`, `dialog`, `dismiss-modal` |
 | Waiting and flow | `wait`, `waitfor`, `loadall`, `batch`, `flow`, `repeat` |
-| Navigation | `nav`, `back`, `forward`, `reload`, `viewport` |
+| Navigation | `nav`, `back`, `forward`, `reload`, `viewport`, `emulate` |
 | Inspection | `html`, `eval`, `eval64`, `evalraw`, `call`, `styles`, `net`, `netlog`, `cookies`, `cookieset`, `cookiedel` |
 | Live experiment controls | `inject`, `cascade`, `record`, `mock`, `clock`, `throttle` |
 | Session assets | `checkpoint`, `restore`, `record-actions`, `export-playwright`, `replay` |
@@ -121,6 +121,16 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target> --qa --format json
 ```
 
 MCP tools mirror these workflows: `select_target`, `responsive_audit`, plus `qa` flags on `perceive` / `click` / `report`, and `open_or_attach.reuseUrl`.
+
+## Media emulation
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs emulate <target> dark
+node skills/chrome-cdp-ex/scripts/cdp.mjs emulate <target> reduced-motion reduce
+node skills/chrome-cdp-ex/scripts/cdp.mjs emulate <target> off --format json
+```
+
+`emulate` sets CDP media features (`prefers-color-scheme`, `prefers-reduced-motion`) for dark-mode and motion QA without raw DevTools calls.
 
 ## Action Evidence
 

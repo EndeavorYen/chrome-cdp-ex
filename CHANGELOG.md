@@ -4,6 +4,9 @@
 
 ### Features
 
+* add `emulate` for dark/light and reduced-motion media features (#93).
+* add `eval --raw` for compact object output without pretty JSON (#94).
+* centralize action recovery policies in a data-driven registry (#95).
 * improve multi-tab target selection with `target --url/--title`, list ranking heuristics, and `open --reuse-url` (#82).
 * return spawn-debug-browser target handoff (pid/profile/port/target prefix) with JSON mode and cleanup guidance (#83).
 * add compact `--qa`/`--summary` output modes for perceive, actions, and report (#84).

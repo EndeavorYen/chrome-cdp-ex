@@ -301,6 +301,7 @@ scripts/cdp.mjs fullshot <target> [file]  # single full-page image (may be tiny 
 ```bash
 scripts/cdp.mjs eval <target> <expr>
 scripts/cdp.mjs eval <target> --b64 <base64>   # decode UTF-8 base64 first
+scripts/cdp.mjs eval <target> --raw '{a:1}'      # compact JSON for objects (no pretty print)
 scripts/cdp.mjs eval64 <target> <base64>       # alias for `eval --b64`
 ```
 
@@ -498,6 +499,7 @@ scripts/cdp.mjs cookieset <target> <cookie>            # set cookie: "name=value
 scripts/cdp.mjs cookiedel <target> <name>              # delete cookie by name
 scripts/cdp.mjs dialog  <target> [accept|dismiss]      # show dialog history; set auto-accept or auto-dismiss
 scripts/cdp.mjs viewport <target> [WxH]               # show or set viewport (e.g. 375x812)
+scripts/cdp.mjs emulate <target> dark|light|off        # prefers-color-scheme / reduced-motion media features
 scripts/cdp.mjs upload  <target> <selector> <paths> [--format json] # upload file(s) to input[type=file]
 scripts/cdp.mjs back    <target>                       # navigate back in browser history
 scripts/cdp.mjs forward <target>                       # navigate forward in browser history

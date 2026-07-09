@@ -1159,6 +1159,15 @@ function runtimeExceptionMessage(exceptionDetails) {
   return text || description || 'Unknown runtime exception';
 }
 
+function formatEvalValue(val, { raw = false } = {}) {
+  // Preserve historical evalStr behavior: undefined prints as empty string.
+  if (val === undefined) return '';
+  if (val === null) return 'null';
+  if (typeof val !== 'object') return String(val);
+  // Default: pretty multi-line JSON for agents. --raw keeps a compact single-line encoding.
+  return raw ? JSON.stringify(val) : JSON.stringify(val, null, 2);
+}
+
 async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
   // Auto-wrap: if expression contains `await`, wrap in async IIFE
   let expr = expression;
@@ -1178,7 +1187,7 @@ async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
     throw new Error(runtimeExceptionMessage(result.exceptionDetails));
   }
   const val = result.result.value;
-  return typeof val === 'object' ? JSON.stringify(val, null, 2) : String(val ?? '');
+  return formatEvalValue(val, { raw: options.raw === true });
 }
 
 function maybeAutoWrapEval(expression, autoWrap = false) {
@@ -1231,11 +1240,12 @@ async function callStr(cdp, sid, expression) {
 }
 
 function parseEvalArgs(args) {
-  const opts = { expression: '', fireAndForget: false };
+  const opts = { expression: '', fireAndForget: false, raw: false };
   const rest = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--fire-and-forget' || a === '--faf') opts.fireAndForget = true;
+    else if (a === '--raw') opts.raw = true;
     else if (a === '--b64' || a === '-b') {
       const b64 = (args[++i] || '').trim();
       if (!b64) throw new Error('eval --b64: empty expression. Pass a base64-encoded JS expression.');
@@ -1247,6 +1257,119 @@ function parseEvalArgs(args) {
   if (!opts.expression) opts.expression = rest.join(' ');
   if (!opts.expression) throw new Error('Expression required');
   return opts;
+}
+
+// ---------------------------------------------------------------------------
+// emulate: media feature overrides (dark/light, reduced-motion, ...)
+// ---------------------------------------------------------------------------
+
+function emptyEmulateState() {
+  return {
+    schema: 'chrome-cdp-ex.emulate.v1',
+    colorScheme: null,
+    reducedMotion: null,
+    features: [],
+  };
+}
+
+function parseEmulateArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  const opts = {
+    format: fopts.format,
+    mode: 'status',
+    colorScheme: null,
+    reducedMotion: null,
+  };
+  const tokens = fopts.args;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === 'status' || token === 'show') opts.mode = 'status';
+    else if (token === 'off' || token === 'reset' || token === 'clear') opts.mode = 'off';
+    else if (token === 'dark' || token === 'light' || token === 'no-preference') {
+      opts.mode = 'set';
+      opts.colorScheme = token;
+    } else if (token === 'color-scheme' || token === '--color-scheme') {
+      const value = tokens[++i];
+      if (!value || !['dark', 'light', 'no-preference'].includes(value)) {
+        throw new Error('emulate: color-scheme requires dark|light|no-preference');
+      }
+      opts.mode = 'set';
+      opts.colorScheme = value;
+    } else if (token === 'reduced-motion' || token === '--reduced-motion') {
+      const value = tokens[++i];
+      if (!value || !['reduce', 'no-preference'].includes(value)) {
+        throw new Error('emulate: reduced-motion requires reduce|no-preference');
+      }
+      opts.mode = 'set';
+      opts.reducedMotion = value;
+    } else if (token === 'reduce-motion') {
+      opts.mode = 'set';
+      opts.reducedMotion = 'reduce';
+    } else {
+      throw new Error(`emulate: unknown argument ${token}`);
+    }
+  }
+  return opts;
+}
+
+function buildEmulateFeatures({ colorScheme = null, reducedMotion = null } = {}) {
+  const features = [];
+  if (colorScheme) features.push({ name: 'prefers-color-scheme', value: colorScheme });
+  if (reducedMotion) features.push({ name: 'prefers-reduced-motion', value: reducedMotion });
+  return features;
+}
+
+function buildEmulateModel(state = emptyEmulateState(), { targetPrefix = null, nextCommand = null } = {}) {
+  const features = Array.isArray(state.features) ? state.features : buildEmulateFeatures(state);
+  return {
+    schema: 'chrome-cdp-ex.emulate.v1',
+    targetPrefix,
+    colorScheme: state.colorScheme || null,
+    reducedMotion: state.reducedMotion || null,
+    features,
+    active: features.length > 0,
+    nextCommand: nextCommand || (targetPrefix ? `cdp perceive ${targetPrefix} -C -d 8` : null),
+  };
+}
+
+function formatEmulateText(model) {
+  if (!model.active) {
+    return [
+      'Emulation: off (browser defaults)',
+      model.nextCommand ? `Next: ${model.nextCommand}` : null,
+    ].filter(Boolean).join('\n');
+  }
+  const lines = ['Emulation: active'];
+  if (model.colorScheme) lines.push(`  prefers-color-scheme: ${model.colorScheme}`);
+  if (model.reducedMotion) lines.push(`  prefers-reduced-motion: ${model.reducedMotion}`);
+  if (model.nextCommand) lines.push(`Next: ${model.nextCommand}`);
+  return lines.join('\n');
+}
+
+async function emulateStr(cdp, sid, session, args = [], { targetPrefix = null } = {}) {
+  const opts = parseEmulateArgs(args);
+  session.emulate = session.emulate || emptyEmulateState();
+  if (opts.mode === 'off') {
+    await cdp.send('Emulation.setEmulatedMedia', { features: [] }, sid);
+    session.emulate = emptyEmulateState();
+  } else if (opts.mode === 'set') {
+    const next = {
+      ...session.emulate,
+      colorScheme: opts.colorScheme ?? session.emulate.colorScheme,
+      reducedMotion: opts.reducedMotion ?? session.emulate.reducedMotion,
+    };
+    // Explicitly setting only one feature still replaces the whole media feature list.
+    if (opts.colorScheme != null) next.colorScheme = opts.colorScheme;
+    if (opts.reducedMotion != null) next.reducedMotion = opts.reducedMotion;
+    next.features = buildEmulateFeatures(next);
+    await cdp.send('Emulation.setEmulatedMedia', { features: next.features }, sid);
+    session.emulate = next;
+  }
+  const model = buildEmulateModel(session.emulate, {
+    targetPrefix,
+    nextCommand: targetPrefix ? `cdp perceive ${targetPrefix} -C -d 8` : null,
+  });
+  return opts.format === 'json' ? formatJson(model) : formatEmulateText(model);
 }
 
 // ---------------------------------------------------------------------------
@@ -11467,7 +11590,7 @@ async function runDaemon(targetId) {
             result = await evalFireAndForgetStr(cdp, sessionId, eopts.expression, true);
             result += `\n${extendKeepalive(FIRE_AND_FORGET_KEEPALIVE)} (fire-and-forget default)`;
           } else {
-            result = await evalStr(cdp, sessionId, eopts.expression, true);
+            result = await evalStr(cdp, sessionId, eopts.expression, true, { raw: eopts.raw });
           }
           break;
         }
@@ -11837,6 +11960,10 @@ async function runDaemon(targetId) {
           const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           if (fopts.args[0]) result = await actionFeedback('viewport', () => viewportStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'viewport', label: fopts.args[0], commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts); // auto-diff when resizing
           else result = await viewportStr(cdp, sessionId, args[0]);
+          break;
+        }
+        case 'emulate': {
+          result = await emulateStr(cdp, sessionId, session, args, { targetPrefix: targetPrefixForDisplay(targetId) });
           break;
         }
         case 'upload': {
@@ -12212,6 +12339,7 @@ Usage: cdp <command> [args]
   eval  <target> <expr>             Evaluate JS expression
                                     --b64 / -b <base64>: decode UTF-8 base64 first
                                     (safe transport for CJK / shell-hostile expressions)
+                                    --raw: compact JSON for objects (skip pretty multi-line stringify)
                                     --fire-and-forget: dispatch without awaiting returned promise
   eval64 <target> <base64>          Shorthand for eval --b64; preserves multibyte characters
   call  <target> <expr|fn>          Await expression/function result and print JSON when possible
@@ -12281,6 +12409,11 @@ Usage: cdp <command> [args]
   cookiedel <target> <name>         Delete a cookie by name
   dialog  <target> [accept|dismiss] Show dialog history; set auto-accept (default) or auto-dismiss
   viewport <target> [WxH]           Show or set viewport size (e.g. 375x812, 1280x720)
+  emulate <target> [dark|light|no-preference|off|status]
+                                    Media feature emulation via CDP Emulation.setEmulatedMedia
+                                    color-scheme dark|light|no-preference
+                                    reduced-motion reduce|no-preference
+                                    off/reset clears overrides; JSON returns chrome-cdp-ex.emulate.v1
   upload  <target> <selector> <paths> [--format json]  Upload file(s) to <input type="file"> (comma-separated paths)
   text    <target> [selector]       Clean visible text — optional CSS selector to scope
                                     --root auto|body|document|default|<sel>: search root for selector resolution
@@ -12397,7 +12530,7 @@ DAEMON IPC (for advanced use / scripting)
   Commands mirror the CLI: perceive, status, summary, console, frame, snap, controls, eval, eval64, call, wait, keepalive, shot, diff-shot,
   elshot, fullshot, scanshot, html, nav, net, mock, clock, throttle, click, jsclick, clickxy, hover, type, press,
   scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,
-  viewport, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
+  viewport, emulate, upload, text, table, back, forward, reload, closetab, netlog, inject, cascade,
   record, checkpoint, restore, record-actions, export-playwright, replay, report, qa, responsive-audit,
   verify-click, evalraw, batch, flow, repeat, stop.
   The socket disappears after 20 min of inactivity or when the tab closes.
@@ -12471,6 +12604,7 @@ const COMMANDS = Object.freeze([
   { name: 'batch', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'dialog', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'viewport', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'emulate', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'upload', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
   { name: 'text', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'table', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
@@ -13520,7 +13654,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
   parseFormatArgs, formatJson, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
-  evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, formatCallResult, evalBase64Decode,
+  evalStr, evalFireAndForgetStr, parseEvalArgs, formatEvalValue, callStr, formatCallResult, evalBase64Decode,
+  parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState,
   navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parseRepeatArgs, repeatStr, autoActionJsonArgs,
