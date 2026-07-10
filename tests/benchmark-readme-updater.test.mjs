@@ -215,15 +215,77 @@ Regenerate this table
     const updatedReadme = updateReadmeBenchmarkSnapshot(readme, campaign, { runDate: '2026-07-08' });
     const updatedHtml = updateBenchmarkHtmlSnapshot(html, campaign, { runDate: '2026-07-08' });
 
-    expect(updatedReadme).toContain('| Quality gate | **33/33 pass in each round** |');
+    expect(updatedReadme).toContain('| Quality gate | **33/33 pass in each real-app round** |');
     expect(updatedReadme).toContain('| First action evidence | **3.015s avg** |');
     expect(updatedReadme).toContain('| Max step output | **1,113 tokens** |');
-    expect(updatedReadme).toContain('Local run on 2026-07-08 against three safe local real-app fixtures: dashboard, docs-app, auth-flow.');
+    expect(updatedReadme).toContain('Local run on 2026-07-08 against 3 safe local real-app fixtures: dashboard, docs-app, auth-flow.');
     expect(updatedReadme).toContain('| Golden path complete | 5.218s avg |');
     expect(updatedReadme).toContain('| Action evidence coverage | 6 auto-evidence actions per round; no failed criteria |');
     expect(updatedHtml).toContain('<strong>33/33</strong>');
     expect(updatedHtml).toContain('<strong>3/3</strong><span>real-app targets passed</span>');
     expect(updatedHtml).toContain('<span>5.218s</span>');
     expect(updatedHtml).toContain('<span>10.161s</span>');
+  });
+
+  it('keeps mixed-campaign totals separate from real-app proof counts', () => {
+    const campaign = {
+      schema: 'chrome-cdp-ex.live-campaign.v1',
+      roundsCompleted: 5,
+      passCount: 5,
+      typeSummaries: [
+        { type: 'mcp', rounds: 1, passed: 1 },
+        { type: 'cli', rounds: 1, passed: 1 },
+        {
+          type: 'real-app',
+          rounds: 3,
+          passed: 3,
+          avgTotalMs: 10000,
+          avgFirstUsefulObservationMs: 2000,
+          avgFirstActionEvidenceMs: 2800,
+          avgEstimatedOutputTokens: 12000,
+          avgUsefulObservationTokens: 1500,
+          maxStepEstimatedTokens: 1100,
+          realAppTargets: { targets: ['dashboard', 'docs-app', 'auth-flow'] },
+        },
+      ],
+      rounds: [
+        { type: 'mcp', gatePassed: true },
+        { type: 'cli', gatePassed: true },
+        ...Array.from({ length: 3 }, () => ({
+          type: 'real-app',
+          gatePassed: true,
+          gate: { passed: true, passedCount: 33, total: 33 },
+          metrics: {
+            commandCalls: 24,
+            goldenPathMs: 5000,
+            autoEvidenceActions: 6,
+            realAppTarget: { traits: ['stale-ref'] },
+          },
+        })),
+      ],
+    };
+    const readme = `
+[![Release v2.11.0](release-v2.11.0)](release)
+## Smart Eye Proof
+| Proof point | Latest local run |
+|---|---:|
+| Campaign pass rate | **old** |
+| Real-app targets | **old** |
+## Quick start
+### Latest dogfood snapshot
+Local run on 2026-01-01 against three safe local real-app fixtures: old.
+| Metric | Latest run |
+|---|---:|
+| Real-app targets | old |
+Regenerate this table
+`;
+    const html = '<div class="stat"><strong>old</strong><span>real-app targets passed</span></div>';
+
+    const updatedReadme = updateReadmeBenchmarkSnapshot(readme, campaign, { runDate: '2026-07-10' });
+    const updatedHtml = updateBenchmarkHtmlSnapshot(html, campaign, { runDate: '2026-07-10' });
+
+    expect(updatedReadme).toContain('| Campaign pass rate | **5/5 rounds** |');
+    expect(updatedReadme).toContain('against 3 safe local real-app fixtures');
+    expect(updatedHtml).toContain('<strong>3/3</strong><span>real-app targets passed</span>');
   });
 });

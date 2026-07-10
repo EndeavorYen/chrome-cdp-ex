@@ -194,6 +194,74 @@ async function toolStep({ client, steps, tool, args = {}, command, name = tool, 
   return step;
 }
 
+export function runCliProcess(command, args = [], {
+  cwd = repoRoot,
+  env = process.env,
+  timeout = 30000,
+  maxBuffer = 10 * 1024 * 1024,
+} = {}) {
+  return new Promise(resolveRun => {
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let error = null;
+    let settled = false;
+    const finish = (status, signal = null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolveRun({ status, signal, stdout, stderr, error });
+    };
+    const append = (current, chunk, stream) => {
+      const next = current + chunk.toString();
+      if (Buffer.byteLength(next, 'utf8') > maxBuffer && !error) {
+        error = new Error(`${stream} exceeded ${maxBuffer} bytes`);
+        child.kill('SIGTERM');
+      }
+      return next;
+    };
+    child.stdout.on('data', chunk => { stdout = append(stdout, chunk, 'stdout'); });
+    child.stderr.on('data', chunk => { stderr = append(stderr, chunk, 'stderr'); });
+    child.once('error', spawnError => {
+      error = spawnError;
+      finish(1);
+    });
+    child.once('close', (code, signal) => finish(code ?? 1, signal));
+    const timer = setTimeout(() => {
+      error = new Error(`Process timed out after ${timeout}ms`);
+      child.kill('SIGTERM');
+    }, timeout);
+  });
+}
+
+async function cliStep({ env, steps, args, name = args[0], timeout = 30000 }) {
+  const startedAt = Date.now();
+  const result = await runCliProcess(process.execPath, [cdp, ...args], {
+    cwd: repoRoot,
+    env,
+    timeout,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  const step = {
+    name,
+    command: args,
+    startedAt,
+    endedAt: Date.now(),
+    status: result.status ?? 1,
+    stdout: result.stdout || '',
+    stderr: result.stderr || result.error?.message || '',
+  };
+  steps.push(step);
+  if (step.status !== 0) {
+    throw new Error(`cdp ${args.join(' ')} failed\nSTDOUT:\n${step.stdout}\nSTDERR:\n${step.stderr}`);
+  }
+  return step;
+}
+
 function stepDuration(step = {}) {
   return Math.max(0, (step.endedAt ?? step.startedAt ?? 0) - (step.startedAt ?? 0));
 }
@@ -263,6 +331,15 @@ function gateCriterion(name, passed, actual, limit, recommendation) {
 
 const MCP_TOOL_OUTPUT_TOKENS_MAX = 3200;
 const MCP_USEFUL_OBSERVATION_TOKENS_MAX = 5000;
+export const PROBLEM_FINDING_TASK_ID = 'problem-finding-v1';
+const PROBLEM_FINDING_CHECKPOINTS = Object.freeze([
+  'open',
+  'controls',
+  'overlay',
+  'dismiss-modal',
+  'verify-click',
+  'report',
+]);
 
 export function summarizeMcpBenchmarkRun({ startedAt, endedAt, target = '', steps = [], browser = '', port = null, url = '' } = {}) {
   const normalizedSteps = steps.map(step => {
@@ -334,6 +411,8 @@ export function summarizeMcpBenchmarkRun({ startedAt, endedAt, target = '', step
   return {
     schema: 'chrome-cdp-ex.mcp-benchmark.v1',
     scenario: 'mcp-problem-finding',
+    taskId: PROBLEM_FINDING_TASK_ID,
+    semanticCheckpoints: [...PROBLEM_FINDING_CHECKPOINTS],
     target,
     browser,
     port,
@@ -381,6 +460,103 @@ export function summarizeMcpBenchmarkRun({ startedAt, endedAt, target = '', step
   };
 }
 
+export function summarizeCliBenchmarkRun({ startedAt, endedAt, target = '', steps = [], browser = '', port = null, url = '' } = {}) {
+  const normalizedSteps = steps.map(step => {
+    const text = stepText(step);
+    return {
+      name: step.name,
+      command: step.command || [],
+      commandText: `cdp ${(step.command || []).join(' ')}`,
+      ok: step.status === 0 || Boolean(step.expectedFailure),
+      status: step.status,
+      expectedFailure: Boolean(step.expectedFailure),
+      benchmarkProbe: Boolean(step.benchmarkProbe),
+      startedAt: step.startedAt,
+      endedAt: step.endedAt,
+      durationMs: stepDuration(step),
+      outputChars: text.length,
+      estimatedTokens: estimateTokenCount(text.length),
+      hasUsefulObservation: isUsefulObservation(step),
+      hasActionEvidence: isActionEvidence(step),
+    };
+  });
+  const commandSteps = normalizedSteps.filter(step => !step.benchmarkProbe);
+  const failed = normalizedSteps.find(step => !step.ok);
+  const firstObservation = commandSteps.find(step => step.ok && step.hasUsefulObservation) || null;
+  const firstActionEvidence = commandSteps.find(step => step.ok && step.hasActionEvidence) || null;
+  const outputChars = normalizedSteps.reduce((sum, step) => sum + step.outputChars, 0);
+  const biggestOutputStep = normalizedSteps.reduce((biggest, step) => (
+    !biggest || step.estimatedTokens > biggest.estimatedTokens ? step : biggest
+  ), null);
+  const slowestStep = normalizedSteps.reduce((slowest, step) => (
+    !slowest || step.durationMs > slowest.durationMs ? step : slowest
+  ), null);
+  const usefulObservationTokens = commandSteps
+    .filter(step => step.hasUsefulObservation)
+    .reduce((sum, step) => sum + step.estimatedTokens, 0);
+  const verifyStep = steps.find(step => step.name === 'verify-click');
+  const reportStep = steps.find(step => step.name === 'report');
+  const reportModel = stepModel(reportStep);
+  const criteria = [
+    gateCriterion('run-success', !failed, failed?.name || null, 'no failed step', 'Fix the failed CLI command before comparing routes.'),
+    gateCriterion('command-call-budget', commandSteps.length <= 6, commandSteps.length, '<= 6', 'Keep the matched CLI path to the same six semantic commands as MCP.'),
+    gateCriterion('first-useful-observation', firstObservation && firstObservation.endedAt - startedAt <= 6000, firstObservation ? firstObservation.endedAt - startedAt : null, '<= 6000ms', 'CLI should produce a useful observation within the matched route budget.'),
+    gateCriterion('first-action-evidence', firstActionEvidence && firstActionEvidence.endedAt - startedAt <= 9000, firstActionEvidence ? firstActionEvidence.endedAt - startedAt : null, '<= 9000ms', 'CLI mutating commands should return action evidence without another observe turn.'),
+    gateCriterion('output-token-budget', estimateTokenCount(outputChars) <= 12000, estimateTokenCount(outputChars), '<= 12000 tokens', 'Keep matched CLI output bounded.'),
+    gateCriterion('useful-observation-token-budget', usefulObservationTokens <= MCP_USEFUL_OBSERVATION_TOKENS_MAX, usefulObservationTokens, `<= ${MCP_USEFUL_OBSERVATION_TOKENS_MAX} useful-observation tokens`, 'Keep matched CLI observations compact.'),
+    gateCriterion('cli-command-output-budget', (biggestOutputStep?.estimatedTokens ?? 0) <= MCP_TOOL_OUTPUT_TOKENS_MAX, biggestOutputStep?.estimatedTokens ?? 0, `<= ${MCP_TOOL_OUTPUT_TOKENS_MAX} tokens/command`, 'Keep a single CLI response from dominating the comparison.'),
+    gateCriterion('overlay-recovery-covered', overlayRecoveryCovered(steps), true, 'overlay -> dismiss-modal action', 'The matched CLI path must diagnose and dismiss the same overlay.'),
+    gateCriterion('semantic-verification', semanticVerificationPassed(verifyStep), true, 'verify-click pass', 'The matched CLI path must verify the same click outcome.'),
+    gateCriterion('report-timeline', isReportTimeline(reportStep), true, 'report actions present', 'The matched CLI path must return the same report window.'),
+  ];
+  const passedCount = criteria.filter(criterion => criterion.passed).length;
+  return {
+    schema: 'chrome-cdp-ex.cli-benchmark.v1',
+    scenario: 'cli-problem-finding',
+    taskId: PROBLEM_FINDING_TASK_ID,
+    semanticCheckpoints: [...PROBLEM_FINDING_CHECKPOINTS],
+    target,
+    browser,
+    port,
+    url,
+    success: !failed,
+    failedStep: failed?.name || null,
+    metrics: {
+      totalMs: Math.max(0, (endedAt ?? startedAt ?? 0) - (startedAt ?? 0)),
+      commandCalls: commandSteps.length,
+      firstUsefulObservationMs: firstObservation ? Math.max(0, firstObservation.endedAt - startedAt) : null,
+      firstActionEvidenceMs: firstActionEvidence ? Math.max(0, firstActionEvidence.endedAt - startedAt) : null,
+      goldenPathMs: reportStep && reportModel?.schema === 'chrome-cdp-ex.report.v1'
+        ? Math.max(0, reportStep.endedAt - startedAt)
+        : null,
+      outputChars,
+      estimatedOutputTokens: estimateTokenCount(outputChars),
+      usefulObservationTokens,
+      maxStepEstimatedTokens: biggestOutputStep?.estimatedTokens ?? 0,
+      maxStepDurationMs: slowestStep?.durationMs ?? 0,
+      biggestOutputStep: biggestOutputStep
+        ? { name: biggestOutputStep.name, commandText: biggestOutputStep.commandText, estimatedTokens: biggestOutputStep.estimatedTokens }
+        : null,
+      slowestStep: slowestStep
+        ? { name: slowestStep.name, commandText: slowestStep.commandText, durationMs: slowestStep.durationMs }
+        : null,
+      overlayRecoveryCovered: overlayRecoveryCovered(steps),
+      semanticVerificationPassed: semanticVerificationPassed(verifyStep),
+      reportTimeline: isReportTimeline(reportStep),
+      reportActionCount: Array.isArray(reportModel?.actions) ? reportModel.actions.length : 0,
+    },
+    gate: {
+      schema: 'chrome-cdp-ex.cli-benchmark-gate.v1',
+      profile: 'cli-problem-finding',
+      passed: passedCount === criteria.length,
+      passedCount,
+      total: criteria.length,
+      criteria,
+    },
+    steps: normalizedSteps,
+  };
+}
+
 export function formatMcpBenchmarkReport(summary) {
   const lines = [
     `chrome-cdp-ex MCP benchmark: ${summary.scenario}`,
@@ -415,9 +591,11 @@ export function formatMcpBenchmarkReport(summary) {
 }
 
 export function parseMcpBenchmarkArgs(argv = []) {
-  const opts = { json: false };
-  for (const arg of argv) {
+  const opts = { json: false, route: 'mcp' };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
     if (arg === '--json') opts.json = true;
+    else if (arg === '--route') opts.route = argv[++i] || 'mcp';
   }
   return opts;
 }
@@ -598,8 +776,143 @@ export async function runMcpBenchmark(opts = {}) {
   }
 }
 
+export async function runCliBenchmark(opts = {}) {
+  if (!opts.skipLock) {
+    const port = Number(opts.port || process.env.CDP_CLI_BENCH_PORT || 9336);
+    const serverPort = Number(opts.serverPort || process.env.CDP_CLI_BENCH_HTTP_PORT || 41740);
+    return withLiveBenchmarkLock({
+      name: 'benchmark:cli',
+      port,
+      serverPort,
+      browser: 'auto',
+      profilePrefix: 'chrome-cdp-ex-cli-bench',
+    }, run => runCliBenchmark({
+      ...opts,
+      skipLock: true,
+      port: run.metadata.port,
+      serverPort: run.metadata.serverPort,
+      profileDir: run.metadata.profileDir,
+      liveRun: run,
+    }));
+  }
+  const {
+    port = Number(process.env.CDP_CLI_BENCH_PORT || 9336),
+    serverPort = Number(process.env.CDP_CLI_BENCH_HTTP_PORT || 41740),
+    json = false,
+    profileDir: requestedProfileDir = null,
+    liveRun = null,
+  } = opts;
+  if (!existsSync(cdp)) throw new Error(`cdp script not found: ${cdp}`);
+  if (!existsSync(page)) throw new Error(`smoke page not found: ${page}`);
+  const candidates = browserCandidates();
+  if (candidates.length === 0) throw new Error('no supported Chrome/Edge/Brave browser binary found');
+
+  const [browserPath, browserName] = candidates[0];
+  const profileDir = requestedProfileDir || mkdtempSync(resolve(tmpdir(), `chrome-cdp-ex-cli-bench-${browserName}-`));
+  const steps = [];
+  let browser;
+  let server;
+  let startedAt = Date.now();
+
+  const cleanup = () => {
+    if (browser && !browser.killed) browser.kill('SIGTERM');
+    if (server) server.close();
+    try { rmSync(profileDir, { recursive: true, force: true }); } catch {}
+  };
+
+  try {
+    server = createServer((req, res) => {
+      if (req.url === '/' || req.url === '/smoke-page.html') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(readFileSync(page));
+        return;
+      }
+      if (req.url?.startsWith('/api/fail')) {
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+        res.end('{"ok":false,"error":"cli benchmark diagnostic"}');
+        return;
+      }
+      res.writeHead(404);
+      res.end('not found');
+    });
+    await new Promise((resolveServer, reject) => {
+      server.once('error', reject);
+      server.listen(serverPort, '127.0.0.1', resolveServer);
+    });
+    liveRun?.heartbeat();
+
+    const url = `http://127.0.0.1:${serverPort}/smoke-page.html`;
+    browser = spawn(browserPath, [
+      `--remote-debugging-port=${port}`,
+      `--user-data-dir=${profileDir}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      'about:blank',
+    ], { detached: true, stdio: 'ignore' });
+    browser.unref();
+    liveRun?.heartbeat();
+
+    const env = { ...process.env, CDP_PORT: String(port) };
+    let reachable = false;
+    for (let i = 0; i < 30; i++) {
+      const result = spawnSync(process.execPath, [cdp, 'list'], {
+        cwd: repoRoot,
+        env,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      if (result.status === 0) {
+        reachable = true;
+        break;
+      }
+      await new Promise(resolveWait => setTimeout(resolveWait, 300));
+    }
+    if (!reachable) throw new Error('Browser did not become reachable via cdp list');
+
+    startedAt = Date.now();
+    const open = await cliStep({
+      env,
+      steps,
+      args: ['open', url, '--attach-timeout-ms', '5000', '--ready-timeout-ms', '5000', '--ready-selector', '#combat', '--format', 'json'],
+      name: 'open',
+      timeout: 40000,
+    });
+    const target = stepModel(open)?.targetPrefix;
+    if (!target) throw new Error(`open did not return targetPrefix\n${open.stdout}`);
+
+    await cliStep({ env, steps, args: ['controls', target, '--selector', 'main', '--limit', '12', '--compact', '--format', 'json'], name: 'controls' });
+    await cliStep({ env, steps, args: ['overlay', target, '--format', 'json'], name: 'overlay' });
+    await cliStep({ env, steps, args: ['dismiss-modal', target, '--format', 'json'], name: 'dismiss-modal' });
+    await cliStep({
+      env,
+      steps,
+      args: ['verify-click', target, '#combat', '--expect-text', '戰鬥勝利', '--no-console-errors', '--format', 'json'],
+      name: 'verify-click',
+    });
+    await cliStep({ env, steps, args: ['report', target, '--last', '5', '--format', 'json', '--compact'], name: 'report' });
+
+    const summary = summarizeCliBenchmarkRun({
+      startedAt,
+      endedAt: Date.now(),
+      target,
+      steps,
+      browser: browserName,
+      port,
+      url,
+    });
+    return json ? JSON.stringify(summary, null, 2) : formatMcpBenchmarkReport({
+      ...summary,
+      metrics: { ...summary.metrics, protocolCalls: 0, toolCalls: summary.metrics.commandCalls, biggestToolOutputStep: summary.metrics.biggestOutputStep, actionEvidenceToolCalls: 2 },
+    });
+  } finally {
+    cleanup();
+  }
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
-  runMcpBenchmark(parseMcpBenchmarkArgs(process.argv.slice(2)))
+  const opts = parseMcpBenchmarkArgs(process.argv.slice(2));
+  const runner = opts.route === 'cli' ? runCliBenchmark : runMcpBenchmark;
+  runner(opts)
     .then(out => console.log(out))
     .catch(err => {
       console.error(`MCP benchmark failed: ${err.message || err}`);

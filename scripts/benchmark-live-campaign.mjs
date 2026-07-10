@@ -4,43 +4,37 @@ import { dirname, resolve } from 'path';
 import { pathToFileURL } from 'url';
 
 import { runKillerPathBenchmark, runLargeAppStressBenchmark } from './benchmark-killer-path.mjs';
-import { runMcpBenchmark } from './benchmark-mcp-path.mjs';
+import { runCliBenchmark, runMcpBenchmark } from './benchmark-mcp-path.mjs';
 import { withLiveBenchmarkLock } from './benchmark-run-lock.mjs';
 
-const DEFAULT_TYPES = Object.freeze(['mcp', 'killer']);
-const ALL_TYPES = Object.freeze(['mcp', 'killer', 'large-app', 'real-app']);
+const DEFAULT_TYPES = Object.freeze(['mcp', 'cli']);
+const ALL_TYPES = Object.freeze(['mcp', 'cli', 'killer', 'large-app', 'real-app']);
 const DEFAULT_REAL_APP_TARGETS = Object.freeze(['dashboard', 'docs-app', 'auth-flow']);
-const REAL_APP_BASE_TRAITS = Object.freeze([
-  'overlay',
-  'stale-ref',
-  'iframe',
-  'shadow-dom',
-  'spa-route',
-  'slow-network',
-  'auth-wall',
-  'large-table',
-  'hidden-template',
-]);
 const REAL_APP_TARGET_PROFILES = Object.freeze({
   dashboard: {
     targetClass: 'dashboard',
-    traits: REAL_APP_BASE_TRAITS,
+    traits: Object.freeze(['overlay', 'stale-ref', 'spa-route', 'slow-network', 'large-table']),
+    expectedProbes: Object.freeze(['overlay-json', 'stale-ref-json', 'adversarial-route', 'adversarial-slow-network', 'adversarial-table']),
   },
   'docs-app': {
     targetClass: 'docs',
-    traits: REAL_APP_BASE_TRAITS,
+    traits: Object.freeze(['overlay', 'stale-ref', 'iframe', 'shadow-dom', 'hidden-template']),
+    expectedProbes: Object.freeze(['overlay-json', 'stale-ref-json', 'frame-json', 'adversarial-shadow', 'adversarial-hidden-template']),
   },
   'auth-flow': {
     targetClass: 'auth',
-    traits: REAL_APP_BASE_TRAITS,
+    traits: Object.freeze(['overlay', 'stale-ref', 'iframe', 'slow-network', 'auth-wall']),
+    expectedProbes: Object.freeze(['overlay-json', 'stale-ref-json', 'frame-json', 'adversarial-slow-network', 'adversarial-auth']),
   },
   'data-table': {
     targetClass: 'table',
-    traits: REAL_APP_BASE_TRAITS,
+    traits: Object.freeze(['overlay', 'stale-ref', 'large-table', 'hidden-template']),
+    expectedProbes: Object.freeze(['overlay-json', 'stale-ref-json', 'adversarial-table', 'adversarial-hidden-template']),
   },
   'canvas-heavy': {
     targetClass: 'canvas',
-    traits: REAL_APP_BASE_TRAITS,
+    traits: Object.freeze(['overlay', 'stale-ref', 'canvas', 'spa-route']),
+    expectedProbes: Object.freeze(['overlay-json', 'stale-ref-json', 'adversarial-canvas', 'adversarial-route']),
   },
 });
 const DEFAULT_REGRESSION_THRESHOLDS = Object.freeze({
@@ -102,7 +96,7 @@ function parseRealAppTargets(value) {
   return [...new Set(selected)];
 }
 
-function realAppTargetProfile(name) {
+export function realAppTargetProfile(name) {
   const target = name || DEFAULT_REAL_APP_TARGETS[0];
   const profile = REAL_APP_TARGET_PROFILES[target];
   if (!profile) throw new Error(`unknown real-app target: ${target}`);
@@ -119,6 +113,7 @@ export function parseCampaignArgs(argv = []) {
     settleMs: 250,
     json: false,
     failFast: false,
+    allowFailures: false,
     output: null,
     history: null,
     compareBaseline: null,
@@ -158,6 +153,8 @@ export function parseCampaignArgs(argv = []) {
       opts.json = true;
     } else if (arg === '--fail-fast') {
       opts.failFast = true;
+    } else if (arg === '--allow-failures') {
+      opts.allowFailures = true;
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
@@ -441,9 +438,9 @@ function routeRecommendationForEvidence(evidence = [], mcp = {}, cli = {}) {
 
 export function buildMcpCliRouteRecommendation(rounds = []) {
   const mcp = summarizeRouteRounds(rounds, 'mcp', 'mcp');
-  const cli = summarizeRouteRounds(rounds, 'cli', 'killer');
+  const cli = summarizeRouteRounds(rounds, 'cli', 'cli');
   const excludedRounds = rounds
-    .filter(round => round.type === 'killer' && round.metrics?.adversarialScenario?.enabled === true)
+    .filter(round => round.type === 'killer')
     .map(round => ({ round: round.round, type: round.type, seed: round.seed || round.metrics?.adversarialScenario?.seed || null }));
   const evidence = [
     routeMetricEvidence({
@@ -926,7 +923,7 @@ export function formatCampaignReport(summary) {
     lines.push(`  - cli: ${cli.rounds ?? 0} rounds, pass ${cli.passRate == null ? 'n/a' : `${Math.round(cli.passRate * 100)}%`}, avg total ${formatRouteMetric(cli.avgTotalMs, 'ms')}, avg output ${formatRouteMetric(cli.avgEstimatedOutputTokens, 'tokens')}`);
     lines.push(`  - deltas (mcp - cli): pass ${formatPassRateDelta(routing.deltas?.['pass-rate'])}, avg total ${formatSignedIntegerDelta(routing.deltas?.['avg-total-latency'], 'ms')}, first observation ${formatSignedIntegerDelta(routing.deltas?.['first-useful-observation'], 'ms')}, first action ${formatSignedIntegerDelta(routing.deltas?.['first-action-evidence'], 'ms')}, avg output ${formatSignedIntegerDelta(routing.deltas?.['avg-output-tokens'], 'tokens')}`);
     if (routing.excludedRounds?.length) {
-      lines.push(`  - excluded from route comparison: ${routing.excludedRounds.length} adversarial CLI round(s)`);
+      lines.push(`  - excluded from route comparison: ${routing.excludedRounds.length} killer-path round(s)`);
     }
   }
   if (summary.failurePatterns.length) {
@@ -964,11 +961,57 @@ export function formatCampaignReport(summary) {
   return lines.join('\n');
 }
 
-function decorateRealAppBenchmarkSummary(summary, plan = {}) {
+export function campaignExitCode(summary = {}, { allowFailures = false } = {}) {
+  if (allowFailures) return 0;
+  if (summary.regressionComparison?.status === 'fail') return 1;
+  if ((summary.roundsCompleted ?? 0) !== (summary.plannedRounds ?? 0)) return 1;
+  if ((summary.failCount ?? 0) > 0) return 1;
+  return 0;
+}
+
+export function realAppProbeCoverage(summary = {}, profile = {}) {
+  const expected = Array.isArray(profile.expectedProbes) ? [...profile.expectedProbes] : [];
+  const successfulSteps = new Set((Array.isArray(summary.steps) ? summary.steps : [])
+    .filter(step => step?.ok === true)
+    .map(step => step.name));
+  const observed = expected.filter(probe => successfulSteps.has(probe));
+  const missing = expected.filter(probe => !successfulSteps.has(probe));
+  return {
+    expected,
+    observed,
+    missing,
+    exercised: expected.length > 0 && missing.length === 0,
+  };
+}
+
+export function decorateRealAppBenchmarkSummary(summary, plan = {}) {
   const profile = realAppTargetProfile(plan.realAppTarget);
+  const probeCoverage = realAppProbeCoverage(summary, profile);
+  const criteria = [
+    ...(Array.isArray(summary.gate?.criteria) ? summary.gate.criteria : []),
+    {
+      name: 'real-app-probe-coverage',
+      passed: probeCoverage.exercised,
+      actual: `${probeCoverage.observed.length}/${probeCoverage.expected.length}`,
+      limit: 'all expected probes pass',
+      recommendation: probeCoverage.missing.length
+        ? `Run and pass the missing profile probes: ${probeCoverage.missing.join(', ')}.`
+        : 'Keep each real-app profile tied to its explicit probe contract.',
+    },
+  ];
+  const passedCount = criteria.filter(criterion => criterion?.passed === true).length;
   return {
     ...summary,
     scenario: 'real-app-target',
+    success: summary.success === true && probeCoverage.exercised,
+    failedStep: summary.failedStep || (!probeCoverage.exercised ? 'real-app-probe-coverage' : null),
+    gate: {
+      ...(summary.gate || {}),
+      passed: summary.gate?.passed === true && probeCoverage.exercised,
+      passedCount,
+      total: criteria.length,
+      criteria,
+    },
     metrics: {
       ...(summary.metrics || {}),
       realAppTarget: {
@@ -976,6 +1019,10 @@ function decorateRealAppBenchmarkSummary(summary, plan = {}) {
         name: profile.name,
         targetClass: profile.targetClass,
         traits: profile.traits,
+        expectedProbes: probeCoverage.expected,
+        observedProbes: probeCoverage.observed,
+        missingProbes: probeCoverage.missing,
+        exercised: probeCoverage.exercised,
         safeLocalOnly: true,
         source: 'local-test-fixture',
       },
@@ -990,6 +1037,8 @@ async function runCampaignRound(plan, opts) {
     let raw;
     if (plan.type === 'mcp') {
       raw = await runMcpBenchmark({ port: plan.port, serverPort: plan.serverPort, json: true, skipLock: true });
+    } else if (plan.type === 'cli') {
+      raw = await runCliBenchmark({ port: plan.port, serverPort: plan.serverPort, json: true, skipLock: true });
     } else if (plan.type === 'large-app') {
       raw = await runLargeAppStressBenchmark({ port: plan.port, serverPort: plan.serverPort, json: true, skipLock: true });
     } else if (plan.type === 'real-app') {
@@ -1001,6 +1050,7 @@ async function runCampaignRound(plan, opts) {
         stabilityMs: opts.stabilityMs,
         adversarialSeed: `real-app-${profile.name}`,
         adversarialTraits: profile.traits,
+        adversarialTargetClass: profile.targetClass,
         skipLock: true,
       });
     } else {
@@ -1087,7 +1137,8 @@ export async function runLiveCampaign(opts = {}) {
     mkdirSync(dirname(outputPath), { recursive: true });
     writeFileSync(outputPath, `${JSON.stringify(summary, null, 2)}\n`);
   }
-  return opts.json ? JSON.stringify(summary, null, 2) : formatCampaignReport(summary);
+  const output = opts.json ? JSON.stringify(summary, null, 2) : formatCampaignReport(summary);
+  return opts.returnResult ? { summary, output } : output;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
@@ -1098,8 +1149,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
     console.error(`Live campaign failed: ${error.message || error}`);
     process.exit(1);
   }
-  runLiveCampaign(opts)
-    .then(output => console.log(output))
+  runLiveCampaign({ ...opts, returnResult: true })
+    .then(({ summary, output }) => {
+      console.log(output);
+      process.exitCode = campaignExitCode(summary, { allowFailures: opts.allowFailures });
+    })
     .catch(error => {
       console.error(`Live campaign failed: ${error.message || error}`);
       process.exit(1);

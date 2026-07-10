@@ -9,10 +9,14 @@ import {
   buildCampaignRegressionComparison,
   buildCampaignRoundPlan,
   buildMcpCliRouteRecommendation,
+  campaignExitCode,
   compactCampaignRound,
+  decorateRealAppBenchmarkSummary,
   formatCampaignReport,
   parseCampaignArgs,
   readComparisonBaseline,
+  realAppProbeCoverage,
+  realAppTargetProfile,
   runLiveCampaign,
   summarizeCampaignRun,
 } from '../scripts/benchmark-live-campaign.mjs';
@@ -118,6 +122,20 @@ describe('live campaign benchmark helpers', () => {
     ]);
   });
 
+  it('returns a failing CLI verdict for failed, incomplete, or regressed campaigns', () => {
+    expect(campaignExitCode({ plannedRounds: 3, roundsCompleted: 3, failCount: 0 })).toBe(0);
+    expect(campaignExitCode({ plannedRounds: 3, roundsCompleted: 3, failCount: 1 })).toBe(1);
+    expect(campaignExitCode({ plannedRounds: 3, roundsCompleted: 2, failCount: 0 })).toBe(1);
+    expect(campaignExitCode({
+      plannedRounds: 3,
+      roundsCompleted: 3,
+      failCount: 0,
+      regressionComparison: { status: 'fail' },
+    })).toBe(1);
+    expect(campaignExitCode({ plannedRounds: 3, roundsCompleted: 2, failCount: 1 }, { allowFailures: true })).toBe(0);
+    expect(parseCampaignArgs(['--allow-failures']).allowFailures).toBe(true);
+  });
+
   it('assigns adversarial seeds to killer campaign rounds for replay', () => {
     const opts = parseCampaignArgs([
       '--rounds', '5',
@@ -151,6 +169,63 @@ describe('live campaign benchmark helpers', () => {
       { round: 3, type: 'real-app', port: 9502, serverPort: 9602, realAppTarget: 'auth-flow', targetClass: 'auth' },
       { round: 4, type: 'real-app', port: 9503, serverPort: 9603, realAppTarget: 'dashboard', targetClass: 'dashboard' },
     ]);
+  });
+
+  it('defines distinct real-app traits and required probes for all target classes', () => {
+    const names = ['dashboard', 'docs-app', 'auth-flow', 'data-table', 'canvas-heavy'];
+    const profiles = names.map(name => realAppTargetProfile(name));
+    expect(new Set(profiles.map(profile => profile.traits.join(','))).size).toBe(names.length);
+    expect(profiles.map(profile => profile.targetClass)).toEqual(['dashboard', 'docs', 'auth', 'table', 'canvas']);
+    for (const profile of profiles) {
+      expect(profile.traits.length).toBeGreaterThanOrEqual(3);
+      expect(profile.expectedProbes.length).toBeGreaterThan(0);
+    }
+    expect(realAppTargetProfile('canvas-heavy').traits).toContain('canvas');
+    expect(realAppTargetProfile('auth-flow').traits).toContain('auth-wall');
+    expect(realAppTargetProfile('data-table').traits).toContain('large-table');
+  });
+
+  it('measures real-app coverage from successful named probes instead of inferred traits', () => {
+    const profile = realAppTargetProfile('dashboard');
+    const coverage = realAppProbeCoverage({
+      steps: [
+        { name: 'overlay-json', ok: true },
+        { name: 'stale-ref-json', ok: true },
+        { name: 'adversarial-route', ok: false },
+        { name: 'unrelated-probe', ok: true },
+      ],
+    }, profile);
+
+    expect(coverage.observed).toEqual(['overlay-json', 'stale-ref-json']);
+    expect(coverage.missing).toEqual([
+      'adversarial-route',
+      'adversarial-slow-network',
+      'adversarial-table',
+    ]);
+    expect(coverage.exercised).toBe(false);
+  });
+
+  it('fails a real-app gate when any profile probe is missing or unsuccessful', () => {
+    const decorated = decorateRealAppBenchmarkSummary({
+      success: true,
+      failedStep: null,
+      gate: {
+        passed: true,
+        passedCount: 1,
+        total: 1,
+        criteria: [{ name: 'base-gate', passed: true }],
+      },
+      metrics: {},
+      steps: [{ name: 'overlay-json', ok: true }],
+    }, { realAppTarget: 'dashboard' });
+
+    expect(decorated.success).toBe(false);
+    expect(decorated.failedStep).toBe('real-app-probe-coverage');
+    expect(decorated.gate).toMatchObject({ passed: false, passedCount: 1, total: 2 });
+    expect(decorated.gate.criteria.at(-1)).toMatchObject({
+      name: 'real-app-probe-coverage',
+      passed: false,
+    });
   });
 
   it('compacts benchmark summaries into comparable live round rows', () => {
@@ -336,7 +411,7 @@ describe('live campaign benchmark helpers', () => {
   it('recommends MCP when matched rounds are faster and lower token than CLI', () => {
     const recommendation = buildMcpCliRouteRecommendation([
       routeRound({ round: 1, type: 'mcp', totalMs: 3000, firstUsefulObservationMs: 1200, firstActionEvidenceMs: 2100, estimatedOutputTokens: 7000 }),
-      routeRound({ round: 2, type: 'killer', totalMs: 5200, firstUsefulObservationMs: 2600, firstActionEvidenceMs: 3900, estimatedOutputTokens: 9600 }),
+      routeRound({ round: 2, type: 'cli', totalMs: 5200, firstUsefulObservationMs: 2600, firstActionEvidenceMs: 3900, estimatedOutputTokens: 9600 }),
       routeRound({ round: 3, type: 'killer', adversarial: true, totalMs: 12000, estimatedOutputTokens: 20000 }),
     ]);
 
@@ -356,7 +431,7 @@ describe('live campaign benchmark helpers', () => {
   it('recommends CLI when matched rounds have better pass rate and token cost', () => {
     const recommendation = buildMcpCliRouteRecommendation([
       routeRound({ round: 1, type: 'mcp', success: false, totalMs: 3200, estimatedOutputTokens: 11000 }),
-      routeRound({ round: 2, type: 'killer', success: true, totalMs: 4300, estimatedOutputTokens: 7900 }),
+      routeRound({ round: 2, type: 'cli', success: true, totalMs: 4300, estimatedOutputTokens: 7900 }),
     ]);
 
     expect(recommendation.recommendation).toMatchObject({
@@ -376,7 +451,7 @@ describe('live campaign benchmark helpers', () => {
       plan: [{}, {}],
       rounds: [
         routeRound({ round: 1, type: 'mcp', totalMs: 4000, firstUsefulObservationMs: 1800, firstActionEvidenceMs: 2800, estimatedOutputTokens: 8000 }),
-        routeRound({ round: 2, type: 'killer', totalMs: 4300, firstUsefulObservationMs: 2000, firstActionEvidenceMs: 3100, estimatedOutputTokens: 8200 }),
+        routeRound({ round: 2, type: 'cli', totalMs: 4300, firstUsefulObservationMs: 2000, firstActionEvidenceMs: 3100, estimatedOutputTokens: 8200 }),
       ],
     });
     const report = formatCampaignReport(summary);

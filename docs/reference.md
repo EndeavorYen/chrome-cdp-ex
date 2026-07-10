@@ -40,13 +40,13 @@ For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a tex
 
 Official releases live on GitHub, not the npm registry. Use the release tag, release notes, GitHub Pages proof page, and attached tarball as the publish surface.
 
-Pinned v2.10.0 install:
+Pinned install: [v2.11.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.11.0).
 
 ```bash
-curl -L -o pi-chrome-cdp-2.10.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.10.0/pi-chrome-cdp-2.10.0.tgz
-mkdir -p chrome-cdp-ex-v2.10.0
-tar -xzf pi-chrome-cdp-2.10.0.tgz -C chrome-cdp-ex-v2.10.0 --strip-components=1
-cd chrome-cdp-ex-v2.10.0
+curl -L -o pi-chrome-cdp-2.11.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.11.0/pi-chrome-cdp-2.11.0.tgz
+mkdir -p chrome-cdp-ex-v2.11.0
+tar -xzf pi-chrome-cdp-2.11.0.tgz -C chrome-cdp-ex-v2.11.0 --strip-components=1
+cd chrome-cdp-ex-v2.11.0
 claude --plugin-dir .
 ```
 
@@ -131,19 +131,21 @@ See also [Browser Use mapping](browser-use-mapping.md) and [awesome-list outreac
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs tab-group create auth AABB CC11
 node skills/chrome-cdp-ex/scripts/cdp.mjs broadcast auth perceive -C -d 4
+node skills/chrome-cdp-ex/scripts/cdp.mjs broadcast auth status --format json --full-results
 node skills/chrome-cdp-ex/scripts/cdp.mjs tab-group show auth --format json
 ```
 
-Groups are stored in the CDP runtime directory (not the git repo). Prefer read-only broadcast commands unless mutation is intentional.
+Groups are stored in the CDP runtime directory (not the git repo). Prefer read-only broadcast commands unless mutation is intentional. JSON output bounds each target result or error and preserves a full retry command by default; `--full-results` is the explicit large-payload mode.
 
 ## Components (MVP)
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs components <target> --depth 4
-node skills/chrome-cdp-ex/scripts/cdp.mjs components <target> @3 --format json
+node skills/chrome-cdp-ex/scripts/cdp.mjs components <target> @3 --max-chars 8000 --format json
+node skills/chrome-cdp-ex/scripts/cdp.mjs components <target> "#account-panel" --format json
 ```
 
-Works best with React/Vue dev builds or DevTools hooks. Production minification may strip component names.
+Tree inspection works best with React/Vue dev builds or DevTools hooks. Production minification may strip component names. Targeted props/state inspection with a bare CSS selector or strict `@ref` currently requires React fiber; other detected frameworks fail explicitly instead of returning an unrelated tree. Tree previews and targeted props/state recursively redact sensitive fields and stay bounded by default; `--unsafe-full` deliberately disables those protections for an owned test page.
 
 ## Media emulation
 
@@ -293,13 +295,17 @@ node skills/chrome-cdp-ex/scripts/mcp-server.mjs
 
 It exposes tools for `doctor`, `list_tabs`, `open_or_attach`, `perceive`, `controls`, `overlay`, `screenshot`, `click`, `verify_click`, `dismiss_modal`, `fill`, `viewport`, `qa_page`, and `report`. Mutating tools require `confirm: true`, and the adapter maps each call to the same `cdp.mjs` commands documented above.
 
+Agent-facing defaults are intentionally compact: MCP `perceive` adds `--adaptive`, `controls` adds `--compact`, and bounded `report` calls add `--compact`. Set the matching tool argument to `false` only when the full response is worth the extra context.
+
 Use the MCP benchmark when changing the adapter or tool surface:
 
 ```bash
 npm run benchmark:mcp
+npm run benchmark:cli
+npm run benchmark:campaign -- --rounds 2 --types mcp,cli --json
 ```
 
-The benchmark exercises the live problem-finding path through stdio MCP: open a smoke page, discover compact visible controls, detect a blocking modal, recover with `dismiss_modal`, validate a combat action with `verify_click`, and hand off the action timeline with `report`.
+Both routes execute task `problem-finding-v1` with the same six checkpoints: open, controls, overlay, dismiss-modal, verify-click, and report. Route recommendations compare these matched runs only; Killer Path/adversarial rounds are excluded.
 
 ## Electron
 
@@ -354,26 +360,27 @@ npm run benchmark:campaign -- --rounds 3 --types killer --adversarial-seeds alph
 npm run benchmark:campaign -- --rounds 10 --history ./campaign-history.jsonl
 npm run benchmark:campaign -- --rounds 10 --compare-baseline ./main-campaign.json
 npm run benchmark:campaign -- --types large-app --rounds 1 --json
-npm run benchmark:campaign -- --types real-app --real-app-targets dashboard,docs-app,auth-flow --rounds 3 --json
+npm run benchmark:campaign -- --types real-app --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --rounds 5 --json
+npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --json
 ```
 
 Use [`docs/benchmarks/measured-baselines.example.json`](benchmarks/measured-baselines.example.json) as the checked-in schema fixture for reviewers. Do not publish comparison claims from that example file; regenerate a measured `baselines.json` for the machine and browser under test.
 
-Use `benchmark:campaign` for repeated live testing. It runs sequential rounds with unique CDP and HTTP ports, alternating MCP and Killer Path by default, then reports pass rate, latency, estimated output tokens, first-useful-observation time, and the slowest / largest-output step candidates. Add `--types large-app` to run the high-intensity live SaaS stress fixture with 5000+ DOM nodes, 1000 source table rows, 200+ visible controls, bounded output checks, and truncation metadata coverage.
+Use `benchmark:campaign` for repeated live testing. It runs sequential rounds with unique CDP and HTTP ports, alternating matched MCP and CLI routes by default, then reports pass rate, latency, estimated output tokens, first-useful-observation time, and culprit steps. Failed, incomplete, or regression-fail campaigns exit nonzero; `--allow-failures` is only for intentionally collecting diagnostic output. Add `--types large-app` for the 5000+ DOM node, 1000-row, 200-control bounded-output stress gate.
 
-Add `--types real-app --real-app-targets dashboard,docs-app,auth-flow` when you need local target classes that behave more like real products. Built-in target profiles are `dashboard`, `docs-app`, `auth-flow`, `data-table`, and `canvas-heavy`; campaign output records `realAppTarget`, `targetClass`, and culprit steps for failures or optimization suspects. These profiles are safe local/test-only fixtures. If you point future target profiles at external URLs, use only owned test tenants or explicit staging environments, never customer data, personal accounts, or production workflows.
+Add `--types real-app --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy` when a smoke page is too easy. Each profile has a distinct trait/probe contract, and output records generated coverage, exercised coverage, missing probes, target class, and culprit steps. These are safe local/test-only fixtures. Any future URL-backed profile must use an owned staging/test tenant, never customer data, personal accounts, or production workflows.
 
-The README and GitHub Pages benchmark proof should use a current real-app campaign when making high-difficulty usability claims. For the v2.10.0 front-door snapshot, the campaign command was:
+The README and GitHub Pages benchmark proof should use a current passing mixed campaign when making release-quality usability claims. For the v2.11.0 front-door snapshot, the command was:
 
 ```bash
-npm run benchmark:campaign -- --rounds 3 --types real-app --real-app-targets dashboard,docs-app,auth-flow --settle-ms 0 --json --output real-app-campaign.json
+npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output release-campaign.json
 ```
 
 Killer Path gates include long-session report budget coverage. Any report handoff with 50 or more recorded actions must stay inside its JSON byte budget, expose `latestAction`, keep a bounded non-expensive `timelineWindow`, preserve recovery-critical receipt fields, and point to artifact paths instead of dumping all history.
 
-Campaign summaries include a `routeRecommendation` block. When comparable MCP and CLI rounds are present, it compares pass rate, average total latency, first-useful-observation latency, first-action-evidence latency, and estimated output tokens, then returns `mcp`, `cli`, or `inconclusive` with a confidence level. Deltas are reported as `mcp - cli`; negative latency or token deltas mean MCP used less. Adversarial CLI rounds are excluded from route recommendations so replay stress does not pollute matched-route decisions.
+Campaign summaries include a `routeRecommendation` block. When comparable MCP and CLI rounds are present, it compares pass rate, average total latency, first-useful-observation latency, first-action-evidence latency, and estimated output tokens, then returns `mcp`, `cli`, or `inconclusive` with a confidence level. Deltas are reported as `mcp - cli`; negative latency or token deltas mean MCP used less. Killer Path and adversarial rounds are excluded so replay stress does not pollute the matched-route decision.
 
-Use `--adversarial-seed <seed>` on `benchmark:killer` when you need a replayable high-difficulty browser page. The generated page composes overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, and hidden-template traits while preserving the normal Killer Path selectors. Campaigns can pass `--adversarial-seeds alpha,beta`; failing rounds include the seed and reproduction command in `issueDrafts`.
+Use `--adversarial-seed <seed>` on `benchmark:killer` when you need a replayable high-difficulty browser page. The generated page can compose overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, hidden-template, and canvas traits while preserving normal Killer Path selectors. Campaign failures include the seed and exact reproduction command in `issueDrafts`.
 
 Add `--history <jsonl>` when running self-improvement loops. The campaign appends a compact record for each run and reports deltas against the previous record for pass rate, average output tokens, max step tokens, and slowest-step latency so regressions are visible before opening or merging follow-up fixes.
 

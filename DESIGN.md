@@ -1,10 +1,8 @@
-# Design: Next Features for chrome-cdp-ex
+# Design History And Current Architecture
 
-> Three dimensions of enhancement, released gradually.
-> Each feature addresses a **genuine capability gap** that `eval` or
-> existing commands cannot solve.
+> **TL;DR** — The feature sketches below explain why major commands were designed, but they are historical notes rather than the current roadmap. `README.md`, `docs/reference.md`, `skills/chrome-cdp-ex/SKILL.md`, and `CHANGELOG.md` are the shipped-behavior sources of truth.
 
-## Current Status (2026-04 long-session feedback slice)
+## Current Status (v2.11.0)
 
 | Area | Status | Notes |
 |---|---|---|
@@ -12,11 +10,12 @@
 | `cascade` | Shipped / best-effort | Source locations depend on CDP/source maps; use `styles` for reliable computed values. |
 | `record` | Shipped | Useful for cause→effect and page-settle timelines. |
 | `spawn-debug-browser` | Shipped | Isolated debug profile path for macOS/Edge/Chrome/Brave when remote-debugging toggle is unavailable. |
-| Long-session robustness | Shipped in repair slice | Stale-ref diagnostics, single-char `press`, viewport/fixed coords, text fallback/auto, semantic waits, safe modal dismissal, script-friendly shots. |
-| `emulate`, `frame`, `components` | Future | Do not present old implementation sketches below as current shipped behavior. |
-| Replay/checkpoint/session reports | Future | Larger stateful workflow primitives; intentionally out of current repair slice. |
+| Long-session robustness | Shipped | Stale-ref diagnostics, action receipts, bounded reports, semantic waits, safe modal dismissal, and script-friendly shots. |
+| `emulate`, `frame`, `components` | Shipped | Media emulation, frame-scoped refs, and bounded/redacted React/Vue component inspection. |
+| Replay/checkpoint/session reports | Shipped | Redacted checkpoints, workflow capture/replay, Playwright export, screenshots, and bounded report artifacts. |
+| MCP and live campaigns | Shipped | Stdio MCP tools plus matched CLI/MCP, Killer Path, large-app, and five-profile real-app gates. |
 
-The sections below are design notes and historical sketches. README/SKILL command references are the source of truth for currently shipped commands.
+The sections below are historical design sketches. They can explain intent, but examples may predate current privacy, output-budget, Action Receipt, or recovery contracts.
 
 ---
 
@@ -28,7 +27,9 @@ The sections below are design notes and historical sketches. README/SKILL comman
 | **Cognitive** — 更正確理解 | Understand WHY the page looks/behaves this way | `cascade`, `components` |
 | **Temporal** — 連續情境 | Understand WHAT HAPPENED over time, not just now | `record` |
 
-## Release Plan
+## Original Release Plan (Historical)
+
+This was the early sequencing proposal, not the actual release ledger. See `CHANGELOG.md` for what shipped in each tag.
 
 | Version | Features | Category |
 |---------|----------|----------|

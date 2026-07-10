@@ -107,9 +107,10 @@ function campaignGate(summary, { proof = false } = {}) {
   const first = gates[0];
   const sameGate = first && gates.every(gateModel => gateModel.passedCount === first.passedCount && gateModel.total === first.total);
   if (sameGate) {
+    const roundLabel = primaryCampaignType(summary).type || 'campaign';
     return proof
-      ? `${first.passedCount}/${first.total} pass in each round`
-      : `${first.passedCount}/${first.total} pass in all ${passedRounds.length} rounds`;
+      ? `${first.passedCount}/${first.total} pass in each ${roundLabel} round`
+      : `${first.passedCount}/${first.total} pass in all ${passedRounds.length} ${roundLabel} rounds`;
   }
   if (Number.isFinite(summary.passCount) && Number.isFinite(summary.roundsCompleted)) {
     return `${summary.passCount}/${summary.roundsCompleted} rounds passed`;
@@ -140,14 +141,15 @@ function updateReadmeCampaignSnapshot(readme, summary, { runDate } = {}) {
     throw new Error('campaign gate failed; snapshot not updated');
   }
   const typeSummary = primaryCampaignType(summary);
+  const realAppRounds = campaignRounds(summary, typeSummary.type);
   const targets = campaignTargets(typeSummary);
   const roundCount = `${summary.passCount}/${summary.roundsCompleted} rounds`;
   const goldenPathMs = campaignGoldenPathMs(summary);
 
   let next = readme;
   next = next.replace(
-    /Local run on \d{4}-\d{2}-\d{2} against three safe local real-app fixtures: [^.]+\./,
-    `Local run on ${runDate || new Date().toISOString().slice(0, 10)} against three safe local real-app fixtures: ${targets}.`,
+    /Local run on \d{4}-\d{2}-\d{2} against (?:\w+|\d+) safe local real-app fixtures: [^.]+\./,
+    `Local run on ${runDate || new Date().toISOString().slice(0, 10)} against ${realAppRounds.length} safe local real-app fixtures: ${targets}.`,
   );
 
   const proofStart = '## Smart Eye Proof';
@@ -239,7 +241,8 @@ function updateBenchmarkCampaignHtmlSnapshot(html, summary, { runDate } = {}) {
     /<strong>[^<]+<\/strong>\s*<span>quality gate passed[^<]*<br>\d{4}-\d{2}-\d{2} local run<\/span>/,
     `<strong>${gateText}</strong>\n      <span>quality gate passed in each real-app round<br>${runDate || new Date().toISOString().slice(0, 10)} local run</span>`,
   );
-  next = replaceStat(next, 'real-app targets passed', `${summary.passCount}/${summary.roundsCompleted}`);
+  const passedRealAppRounds = rounds.filter(round => round.gatePassed === true).length;
+  next = replaceStat(next, 'real-app targets passed', `${passedRealAppRounds}/${rounds.length}`);
   next = replaceStat(next, 'first useful observation avg', seconds(typeSummary.avgFirstUsefulObservationMs));
   next = replaceStat(next, 'first action evidence avg', seconds(typeSummary.avgFirstActionEvidenceMs));
   next = replaceStat(next, '<em>useful observation</em> tokens avg', commas(Math.round(typeSummary.avgUsefulObservationTokens || 0)));

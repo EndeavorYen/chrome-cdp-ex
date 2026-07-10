@@ -23,23 +23,23 @@ Start from current state, not memory:
 ```bash
 git status --short --branch
 gh issue list --state open --limit 50
-npm run benchmark:campaign -- --rounds 10 --types mcp,killer,large-app --history ./campaign-history.jsonl --output ./campaign.json
+npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --history ./campaign-history.jsonl --output ./campaign.json
 npm run benchmark:campaign -- --rounds 3 --types killer --adversarial-seeds alpha,beta --output ./adversarial-campaign.json
-npm run benchmark:campaign -- --rounds 3 --types real-app --real-app-targets dashboard,docs-app,auth-flow --output ./real-app-campaign.json
-npm run benchmark:campaign -- --rounds 3 --types mcp,killer --compare-baseline ./main-campaign.json --output ./branch-campaign.json
+npm run benchmark:campaign -- --rounds 5 --types real-app --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --output ./real-app-campaign.json
+npm run benchmark:campaign -- --rounds 2 --types mcp,cli --compare-baseline ./main-campaign.json --output ./branch-campaign.json
 ```
 
 Use `History trend` to compare against the previous campaign. Treat negative pass-rate deltas, rising average output tokens, rising max step tokens, or slower culprit steps as candidates for the next issue. If a campaign fails, inspect `issueDrafts` in the JSON output before writing a new issue by hand.
 
 Use `Regression comparison` before review when you have a saved `main` campaign summary or history record. Treat `warn` as review-required evidence and `fail` as a blocker unless the regression is intentional and documented with a stronger live result.
 
-Use `Route recommendation` to decide whether the next agent workflow should prefer MCP tools or direct CLI commands. Trust high-confidence recommendations when both routes have comparable non-adversarial rounds; treat low confidence or `inconclusive` as a signal to run more matched rounds before changing operator guidance.
+Use `Route recommendation` to decide whether the next agent workflow should prefer MCP tools or direct CLI commands. Recommendations are valid only when both routes ran task `problem-finding-v1` with the same six checkpoints; treat low confidence or `inconclusive` as a signal to run more matched rounds.
 
-Use `real-app` target profiles when synthetic smoke pages are too easy. The built-in profiles are local/test-only and label each round with `realAppTarget` and `targetClass`; treat any future URL-backed target as allowed only for owned staging/test tenants with no personal, customer, or production data.
+Use all five `real-app` target profiles when synthetic smoke pages are too easy. They are distinct local/test-only dashboard, docs, auth, table, and canvas fixtures; require `missingProbes: []` and exercised coverage before calling a profile successful. Any URL-backed target is allowed only for an owned staging/test tenant with no personal, customer, or production data.
 
 Treat failed `long-session-report-budget` gates as merge blockers. They mean the report handoff for many-action sessions either exceeded its byte budget, exposed an expensive full-history window, lost latest-action context, or dropped recovery-critical receipt fields.
 
-Use adversarial seeds when the fixed smoke fixture feels too easy. A seed generates a replayable page with overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, and hidden-template traits, and failed campaign rounds keep the seed in their reproduction command.
+Use adversarial seeds when the fixed smoke fixture feels too easy. A seed can generate overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, hidden-template, and canvas traits, and failed rounds keep the seed in their reproduction command.
 
 ## 2. Open Issues
 
@@ -59,11 +59,12 @@ Create a feature branch from clean `main`, write a failing test for the selected
 npm test
 npm run lint
 npm run check:docs
-npm run benchmark:campaign -- --rounds 2 --types mcp,killer --history /tmp/chrome-cdp-ex-loop-history.jsonl
-npm run benchmark:campaign -- --rounds 2 --types mcp,killer --compare-baseline /tmp/chrome-cdp-ex-main-campaign.json
+npm audit --audit-level=high
+npm run benchmark:campaign -- --rounds 2 --types mcp,cli --history /tmp/chrome-cdp-ex-loop-history.jsonl
+npm run benchmark:campaign -- --rounds 2 --types mcp,cli --compare-baseline /tmp/chrome-cdp-ex-main-campaign.json
 ```
 
-Use the full test suite for merge readiness. Use a focused live campaign for the feature path, and a longer campaign when the issue changes benchmark gates, token budgets, browser isolation, or MCP behavior.
+Use the full test suite for merge readiness. Campaign failures exit nonzero by default; use `--allow-failures` only when you intentionally want a diagnostic artifact from a known-failing run. Use a focused campaign for the changed path and the 10+ round mixed campaign for release readiness.
 
 ## 4. Review And Merge
 

@@ -142,7 +142,7 @@ scripts/cdp.mjs perceive app -C -d 8             # aliases work anywhere a targe
 node skills/chrome-cdp-ex/scripts/mcp-server.mjs # stdio MCP tools for agent-native workflows
 ```
 
-Use `use` for normal live workflows; use `attach` when you need to record the CDP host/port explicitly. The MCP server exposes doctor, list/open, `select_target`, perception (with optional `qa`), compact `controls`, overlay diagnosis, screenshot, action, `verify_click`, `dismiss_modal`, `qa_page`, `responsive_audit`, and report tools, with `confirm: true` required before mutating calls.
+Use `use` for normal live workflows; use `attach` when you need to record the CDP host/port explicitly. The MCP server exposes doctor, list/open, `select_target`, adaptive perception, compact `controls`, overlay diagnosis, screenshot, action, `verify_click`, `dismiss_modal`, `qa_page`, `responsive_audit`, and compact report tools, with `confirm: true` required before mutating calls. MCP defaults are optimized for agent handoff; set the relevant `adaptive` / `compact` argument to `false` only when complete detail is needed.
 
 **WSL2 efficiency tip**: Shell state doesn't persist between Bash calls. To avoid redefining `NODE_WIN` and `CDP` every time, **chain commands with `&&`** in a single Bash call:
 ```bash
@@ -493,7 +493,9 @@ scripts/cdp.mjs fill    <target> <sel|@ref> <text> [--format json] # clear field
 scripts/cdp.mjs fill    <target> --react <sel|@ref> <text> [--format json] # React-controlled input value setter + input/change events
 scripts/cdp.mjs select  <target> <selector> <value> [--format json] # select option (auto-returns perceive diff)
 scripts/cdp.mjs styles  <target> <selector>            # computed styles (meaningful props only)
-scripts/cdp.mjs components <target> [--depth N]     # React/Vue component tree MVP
+scripts/cdp.mjs components <target> [--depth N]     # bounded/redacted React/Vue tree
+scripts/cdp.mjs components <target> @3 --max-chars 8000 --format json # React fiber target
+scripts/cdp.mjs components <target> @3 --unsafe-full # React fiber; explicit sensitive/large opt-in
 scripts/cdp.mjs text    <target> [selector]              # clean text — optional CSS selector to scope
 scripts/cdp.mjs table   <target> [selector]            # full table data (tab-separated, no row limit)
 scripts/cdp.mjs cookies <target>                       # list cookies for current page
@@ -529,7 +531,8 @@ scripts/cdp.mjs ready [--format json]          # alias of doctor; exits 1 if any
 scripts/cdp.mjs list    [--format json]        # discover tabs; JSON gives schema/pages/recommendation/nextSteps
 scripts/cdp.mjs target --url URL|--title TEXT [--exact] [--format json] # select by URL/title
 scripts/cdp.mjs tab-group create app <t1> <t2>   # named multi-tab group
-scripts/cdp.mjs broadcast app perceive -C -d 4   # run one command on each member
+scripts/cdp.mjs broadcast app perceive -C -d 4   # bounded per-target result previews
+scripts/cdp.mjs broadcast app status --format json --full-results # explicit full payloads
 scripts/cdp.mjs use <target> --name app        # save a named alias for target reuse
 scripts/cdp.mjs attach --port 9222 --target <target> --name app # explicit alias with CDP endpoint
 scripts/cdp.mjs current [--format json]        # show current alias and saved aliases
@@ -1069,10 +1072,10 @@ cdp shot <t> --annotate             # red-box overlay using the most recent perc
 
 ```bash
 cdp perceive <t> -C
-cdp controls <t> -s "#composer" --filter send --format json
+cdp controls <t> -s "#composer" --filter send --compact --format json
 ```
 
-`perceive -C` adds a compact visible-controls section for dense composers and query bars, including standard buttons, textboxes, labels, rects, selectors, and non-ARIA clickables. Non-ARIA clickables still get `@c1`, `@c2`… handles. Use `controls` when selector repair needs a bounded JSON inventory scoped to a subtree.
+`perceive -C` adds a compact visible-controls section for dense composers and query bars, including standard buttons, textboxes, labels, rects, selectors, and non-ARIA clickables. Non-ARIA clickables still get `@c1`, `@c2`… handles. Use `controls` when selector repair needs a bounded JSON inventory scoped to a subtree; `--compact` preserves role, label, selector, state, and rectangle while removing duplicate text/title/hint fields.
 
 ### Vite / HMR
 
@@ -1093,7 +1096,7 @@ npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out bas
 npm run benchmark:killer -- --comparison-baselines ./baselines.json
 ```
 
-It launches a disposable debug browser against the local smoke page and measures `doctor -> open -> perceive -> act -> since-action evidence -> report`: command calls, total time, first useful observation time, first action evidence time, golden path completion time, estimated output tokens, useful observation tokens, auto-evidence actions, observed action evidence coverage, observed JSON action evidence completeness, failed-step CLI recovery coverage, observed JSON handoff `nextSteps` coverage, observed JSON handoff `recommendation` coverage, doctor onboarding coverage, JSON report `latestAction` coverage, JSON report `timelineWindow` coverage, verification calls saved, report timeline presence, stale-ref recovery, session stability sample, and differentiator probes for modal/overlay detection, frame refs, CSS source tracing, and HMR/SPA DOM-update diff success/time. The MCP benchmark measures the stdio MCP path separately: tool calls, protocol calls, first useful observation, first action evidence, output tokens, overlay recovery through `dismiss_modal`, semantic verification through `verify_click`, and report handoff. The live benchmark marks `cascade --format json` as a coverage probe for the CSS tracing handoff without charging the single-path command budget. The useful observation token budget counts page perception/diff outputs, not action/report JSON evidence payloads. The default stability sample is 1000ms; use `--stability-ms` for 20-60 minute dogfood windows.
+It launches disposable debug browsers and measures `doctor -> open -> perceive -> act -> since-action evidence -> report`: command calls, latency, output tokens, Action Receipt coverage, recovery handoffs, stale refs, modal/frame/CSS/HMR probes, and report artifacts. `benchmark:mcp` and `benchmark:cli` run the same task id and six semantic checkpoints so route recommendations compare like with like. `benchmark:campaign` can also run Killer Path, 5000+ node large-app stress, and five distinct local real-app profiles (`dashboard`, `docs-app`, `auth-flow`, `data-table`, `canvas-heavy`) with generated and exercised trait coverage. Campaign failures exit nonzero by default; `--allow-failures` is an explicit diagnostic-only override. Local profiles are test fixtures, not external production-app evidence.
 
 The report includes a `chrome-cdp-ex.benchmark-gate.v1` quality gate. The default gate requires a successful run, at most 24 command calls, first useful observation within 5 seconds, golden path completion within 2 minutes, useful observation tokens at or below 3000, at least one auto-evidence action, 100% evidence coverage for every observed mutating command, 100% JSON action evidence completeness with action, target, dispatch, settle, effects deltas, outcome, and verdict, 100% executable recovery coverage for failed steps, 100% top-level `nextSteps` coverage for observed JSON handoffs, 100% `recommendation` coverage for observed JSON handoffs, 100% doctor onboarding coverage with wizard current step, golden path, and readiness checks, a report timeline, 100% `latestAction` coverage for JSON report handoffs with actions, 100% `timelineWindow` coverage for JSON report handoffs with actions, 100% JSON differentiator handoff coverage, 100% differentiator probe success, 100% stale-ref recovery, and a passing session stability sample. Do not make adoption or comparison claims from a failed gate; fix the failed criterion first.
 
