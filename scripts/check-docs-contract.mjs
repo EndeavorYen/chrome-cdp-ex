@@ -107,6 +107,35 @@ function checkReleaseMetadataContract(docs) {
   if (packageModel.version !== pluginModel.version) {
     failures.push(`Release metadata version mismatch: package.json ${packageModel.version} != .claude-plugin/plugin.json ${pluginModel.version}`);
   }
+  const version = packageModel.version;
+  for (const [label, text] of [['README.md', docs.readme], ['docs/reference.md', docs.reference]]) {
+    if (!text) continue;
+    if (!text.includes(`/releases/tag/v${version}`)) {
+      failures.push(`${label} is missing the current release tag v${version}`);
+    }
+    if (!text.includes(`pi-chrome-cdp-${version}.tgz`)) {
+      failures.push(`${label} is missing the current release tarball pi-chrome-cdp-${version}.tgz`);
+    }
+  }
+  return failures;
+}
+
+function checkContributorDocsContract(docs) {
+  const failures = [];
+  const stalePath = 'skills/chrome-cdp/scripts/cdp.mjs';
+  for (const [label, text] of [
+    ['CLAUDE.md', docs.claude],
+    ['CONTRIBUTING.md', docs.contributing],
+    ['DESIGN.md', docs.design],
+  ]) {
+    if (text?.includes(stalePath)) failures.push(`${label} contains stale path: ${stalePath}`);
+  }
+  if (/single-file implementation|~\s*2400\s+lines/i.test(docs.claude || '')) {
+    failures.push('CLAUDE.md contains an obsolete single-file or line-count claim');
+  }
+  if (/\|[^\n]*(?:`emulate`|`frame`|`components`|Replay\/checkpoint\/session reports)[^\n]*\|\s*Future\s*\|/i.test(docs.design || '')) {
+    failures.push('DESIGN.md marks shipped features as Future');
+  }
   return failures;
 }
 
@@ -120,7 +149,9 @@ function checkSelfImprovementLoopContract(docs) {
     '## 3. Implement And Verify',
     '## 4. Review And Merge',
     '## 5. Next-Round Backlog',
-    'npm run benchmark:campaign -- --rounds 10 --types mcp,killer,large-app --history',
+    'npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli',
+    '--real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy',
+    '--allow-failures',
     'gh issue create',
     'npm test',
     'npm run lint',
@@ -229,6 +260,7 @@ export function checkDocsContract(docs, commands) {
 
   failures.push(...validateKillerPathContract(docs.killerPath));
   failures.push(...checkReleaseMetadataContract(docs));
+  failures.push(...checkContributorDocsContract(docs));
   failures.push(...checkSelfImprovementLoopContract(docs));
   return failures;
 }
@@ -243,6 +275,9 @@ function readDocs() {
     killerPath: read('docs/examples/killer-path.md'),
     packageJson: read('package.json'),
     pluginManifest: read('.claude-plugin/plugin.json'),
+    claude: read('CLAUDE.md'),
+    contributing: read('CONTRIBUTING.md'),
+    design: read('DESIGN.md'),
   };
 }
 

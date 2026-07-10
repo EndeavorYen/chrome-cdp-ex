@@ -9,6 +9,9 @@ const skill = readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.me
 const killerPath = readFileSync(new URL('../docs/examples/killer-path.md', import.meta.url), 'utf8');
 const packageJson = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
 const pluginManifest = readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8');
+const claude = readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8');
+const contributing = readFileSync(new URL('../CONTRIBUTING.md', import.meta.url), 'utf8');
+const design = readFileSync(new URL('../DESIGN.md', import.meta.url), 'utf8');
 const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 
 describe('Killer Path docs contract', () => {
@@ -85,11 +88,35 @@ describe('Killer Path docs contract', () => {
       killerPath,
       packageJson,
       pluginManifest: pluginManifest.replace(/"version":\s*"[^"]+"/, '"version": "0.0.0"'),
+      claude,
+      contributing,
+      design,
     };
 
     expect(checkDocsContract(docs, [])).toContain(
       `Release metadata version mismatch: package.json ${packageVersion} != .claude-plugin/plugin.json 0.0.0`,
     );
+  });
+
+  it('rejects stale contributor paths, obsolete line counts, and shipped features marked future', () => {
+    const docs = {
+      readme,
+      reference,
+      selfImprovementLoop,
+      skill,
+      killerPath,
+      packageJson,
+      pluginManifest,
+      claude: `${claude}\n- Single-file implementation: ~2400 lines`,
+      contributing: contributing.replaceAll('skills/chrome-cdp-ex/scripts/cdp.mjs', 'skills/chrome-cdp/scripts/cdp.mjs'),
+      design: `${design}\n| \`emulate\`, \`frame\`, \`components\` | Future |`,
+    };
+
+    expect(checkDocsContract(docs, [])).toEqual(expect.arrayContaining([
+      'CLAUDE.md contains an obsolete single-file or line-count claim',
+      'CONTRIBUTING.md contains stale path: skills/chrome-cdp/scripts/cdp.mjs',
+      'DESIGN.md marks shipped features as Future',
+    ]));
   });
 
   it('allows command reference details outside the README', () => {

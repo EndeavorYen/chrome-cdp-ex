@@ -73,6 +73,8 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
         cursorInteractive: booleanSchema('Include visible clickable controls and @c refs.'),
         selector: stringSchema('Optional CSS selector scope.'),
         sinceAction: booleanSchema('Return the causal diff since the last mutating action.'),
+        adaptive: booleanSchema('Use density/error-aware text-row budgeting. Defaults to true.'),
+        last: { type: 'integer', minimum: 1, maximum: 500, description: 'Explicit text-row budget; overrides adaptive mode.' },
         qa: booleanSchema('Return a compact QA summary instead of full perception.'),
         maxDiffLines: { type: 'integer', minimum: 0, maximum: 500, description: 'Truncate long text previews in QA mode.' },
       },
@@ -90,6 +92,7 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
         selector: stringSchema('Optional CSS selector scope.'),
         filter: stringSchema('Optional visible text/name filter.'),
         limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum controls to return.' },
+        compact: booleanSchema('Return the bounded role/label/selector/rect model. Defaults to true.'),
       },
       additionalProperties: false,
     },
@@ -249,6 +252,7 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
         last: { type: 'integer', minimum: 1, maximum: 100, description: 'Latest action count to include.' },
         all: booleanSchema('Include the full action timeline. Can be expensive.'),
         qa: booleanSchema('Return a compact QA summary instead of the full report.'),
+        compact: booleanSchema('Return compact report JSON. Defaults to true unless all is requested.'),
       },
       additionalProperties: false,
     },
@@ -302,6 +306,8 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.cursorInteractive) command.push('-C');
       if (args.selector) command.push('--selector', String(args.selector));
       if (args.sinceAction) command.push('--since-action');
+      if (args.last != null) command.push('--last', String(args.last));
+      else if (args.adaptive !== false) command.push('--adaptive');
       if (args.qa || args.summary) command.push('--qa');
       if (args.maxDiffLines != null) command.push('--max-diff-lines', String(args.maxDiffLines));
       return optionalFormatJson(command);
@@ -311,6 +317,7 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.selector) command.push('--selector', String(args.selector));
       if (args.filter) command.push('--filter', String(args.filter));
       if (args.limit != null) command.push('--limit', String(args.limit));
+      if (args.compact !== false) command.push('--compact');
       return optionalFormatJson(command);
     }
     case 'overlay': {
@@ -386,6 +393,7 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.all) command.push('--all');
       else if (args.last != null) command.push('--last', String(args.last));
       if (args.qa || args.summary) command.push('--qa');
+      else if (!args.all && args.compact !== false) command.push('--compact');
       return optionalFormatJson(command);
     }
     default:

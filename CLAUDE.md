@@ -1,5 +1,7 @@
 # CLAUDE.md — chrome-cdp-ex
 
+> **TL;DR** — The product runtime is `skills/chrome-cdp-ex/scripts/cdp.mjs`, supported by focused helpers in `scripts/lib/`, a stdio MCP adapter, and release-quality live benchmarks. Preserve the zero-runtime-dependency design, structured handoff contracts, privacy defaults, and evidence-first workflow.
+
 ## Problem-Solving Principles
 
 These principles are **non-negotiable** and apply to every task in this repository.
@@ -11,12 +13,14 @@ These principles are **non-negotiable** and apply to every task in this reposito
 
 ## Project Overview
 
-This is a **Claude Code plugin** that gives LLM agents direct access to the user's running Chrome browser via the Chrome DevTools Protocol (CDP). It connects to existing browser sessions (with login state, cookies, open tabs) — unlike Playwright which launches an isolated browser.
+This is a **Claude Code plugin and portable agent skill** that gives LLM agents direct access to the user's running Chrome browser via the Chrome DevTools Protocol (CDP). It connects to existing browser sessions with login state, cookies, and open tabs; Playwright remains the better choice for clean deterministic test browsers.
 
-- **Single-file implementation**: all logic lives in `skills/chrome-cdp-ex/scripts/cdp.mjs` (~2400 lines, zero npm dependencies)
-- **Skill definition**: `skills/chrome-cdp-ex/SKILL.md` — contains agent instructions, command reference, and workflow patterns
-- **Plugin manifest**: `.claude-plugin/plugin.json`
-- **Node.js 22+** required (uses built-in WebSocket)
+- **Command runtime**: `skills/chrome-cdp-ex/scripts/cdp.mjs` (about 14.5k lines at v2.11.0).
+- **Focused helpers**: `skills/chrome-cdp-ex/scripts/lib/` owns action recovery, receipt surfaces, perception models, reports, and MCP mapping.
+- **MCP server**: `skills/chrome-cdp-ex/scripts/mcp-server.mjs` maps stdio MCP calls to the same CLI runtime.
+- **Skill definition**: `skills/chrome-cdp-ex/SKILL.md` contains agent instructions and the exhaustive command reference.
+- **Plugin manifest**: `.claude-plugin/plugin.json` must match `package.json` version metadata.
+- **Runtime dependencies**: Node.js 22+ and built-ins only; npm packages are development/test tooling.
 
 ## Architecture
 
@@ -27,7 +31,11 @@ CLI invocation
         └─ all other commands  →  per-tab daemon (Unix socket IPC)
               ├─ persistent CDP WebSocket session
               ├─ background ring buffers (console, exceptions, navigations)
+              ├─ structured action receipts and session reports
               └─ NDJSON request/response protocol
+
+stdio MCP client
+  └─► mcp-server.mjs → mcp-adapter.mjs → cdp.mjs command
 ```
 
 Key design decisions:
@@ -39,7 +47,21 @@ Key design decisions:
 ## Coding Conventions
 
 - Pure ESM (`import`/`export`), no CommonJS
-- No external dependencies — only Node.js built-ins
+- No runtime dependencies — only Node.js built-ins in shipped code
 - Functions follow `<name>Str(cdp, sid, ...args) → string` pattern for command implementations
-- New commands require registration in **5 places**: function definition, `handleCommand` switch, `NEEDS_TARGET` set, `USAGE` string, `README.md` command reference
-- Shell-safe output — results are plain text strings, one per line
+- Register commands in `COMMANDS`; `NEEDS_TARGET` is derived from that registry
+- Keep JSON outputs versioned, bounded, redacted by default, and paired with executable recovery or next steps
+- Add explicit `--unsafe-full` / verbose opt-ins only when full sensitive or large output is genuinely useful
+- Update `USAGE`, `SKILL.md`, `docs/reference.md`, tests, and MCP definitions when the public surface changes
+
+## Verification
+
+```bash
+npm test
+npm run lint
+npm run check:docs
+npm audit --audit-level=high
+npm run smoke:live
+```
+
+Changes to browser orchestration, benchmarks, MCP routing, token budgets, or release claims also require a focused live campaign. Release-facing work requires a passing 10+ round mixed campaign, package inspection, PR review, green CI, and a GitHub Release asset; this repository does not publish to npm.

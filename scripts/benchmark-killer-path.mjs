@@ -23,7 +23,21 @@ const ADVERSARIAL_TRAITS = Object.freeze([
   'auth-wall',
   'large-table',
   'hidden-template',
+  'canvas',
 ]);
+
+const ADVERSARIAL_PROBE_BY_TRAIT = Object.freeze({
+  overlay: 'overlay-json',
+  'stale-ref': 'stale-ref-json',
+  iframe: 'frame-json',
+  'shadow-dom': 'adversarial-shadow',
+  'spa-route': 'adversarial-route',
+  'slow-network': 'adversarial-slow-network',
+  'auth-wall': 'adversarial-auth',
+  'large-table': 'adversarial-table',
+  'hidden-template': 'adversarial-hidden-template',
+  canvas: 'adversarial-canvas',
+});
 
 const MUTATING_COMMANDS = new Set([
   'click', 'fill', 'type', 'press', 'select', 'scroll', 'nav', 'back', 'forward',
@@ -290,11 +304,8 @@ function benchmarkAdversarialScenario(scenario = null, steps = []) {
   if (!scenario) return { enabled: false };
   const traits = Array.isArray(scenario.traits) ? scenario.traits : [];
   const stepNames = new Set(steps.map(step => step.name));
-  const exercised = {
-    'slow-network': stepNames.has('adversarial-slow-network'),
-    'large-table': stepNames.has('adversarial-table'),
-    'shadow-dom': stepNames.has('adversarial-shadow'),
-  };
+  const exercised = Object.fromEntries(Object.entries(ADVERSARIAL_PROBE_BY_TRAIT)
+    .map(([trait, probe]) => [trait, stepNames.has(probe)]));
   const exercisedTraits = traits.filter(trait => exercised[trait] === true);
   return {
     enabled: true,
@@ -304,10 +315,10 @@ function benchmarkAdversarialScenario(scenario = null, steps = []) {
     traits,
     replayCommand: scenario.replayCommand || null,
     generatedCoverage: {
-      total: ADVERSARIAL_TRAITS.length,
+      total: traits.length,
       covered: traits.filter(trait => ADVERSARIAL_TRAITS.includes(trait)).length,
-      missing: ADVERSARIAL_TRAITS.filter(trait => !traits.includes(trait)),
-      rate: ADVERSARIAL_TRAITS.length ? traits.filter(trait => ADVERSARIAL_TRAITS.includes(trait)).length / ADVERSARIAL_TRAITS.length : null,
+      missing: traits.filter(trait => !ADVERSARIAL_TRAITS.includes(trait)),
+      rate: traits.length ? traits.filter(trait => ADVERSARIAL_TRAITS.includes(trait)).length / traits.length : null,
     },
     exercisedCoverage: {
       total: Object.keys(exercised).filter(trait => traits.includes(trait)).length,
@@ -1734,14 +1745,14 @@ export function buildBenchmarkGate(summary, limits = DEFAULT_GATE_LIMITS) {
         actual: adversarial.generatedCoverage?.rate ?? null,
         operator: '>=',
         limit: 1,
-        recommendation: 'Generated adversarial scenarios must compose overlay, stale-ref, iframe, shadow DOM, SPA route, slow network, auth wall, large table, and hidden-template traits.',
+        recommendation: 'Generated adversarial scenarios must include every trait selected by the seed or real-app profile.',
       }),
       gateCriterion({
         name: 'adversarial-scenario-exercised',
         actual: adversarial.exercisedCoverage?.rate ?? null,
         operator: '>=',
         limit: 1,
-        recommendation: 'Adversarial runs must exercise at least the live-only slow-network, large-table, and shadow-DOM probes when those traits are generated.',
+        recommendation: 'Adversarial runs must execute the mapped probe for every generated trait, including profile-specific route, auth, template, and canvas probes.',
       }),
       gateCriterion({
         name: 'adversarial-scenario-replay',
@@ -1916,13 +1927,14 @@ export function buildAdversarialScenario(seed = 'default', opts = {}) {
   const hiddenTemplateNodes = opts.hiddenTemplateNodes ?? (traits.includes('hidden-template') ? 120 + (hash % 80) : 0);
   const slowNetworkMs = opts.slowNetworkMs ?? (traits.includes('slow-network') ? 450 + (hash % 350) : 0);
   const routeName = `route-${(hash % 997).toString(36)}`;
-  const targetClass = [
+  const derivedTargetClass = [
     traits.includes('auth-wall') ? 'auth' : null,
     traits.includes('iframe') ? 'iframe' : null,
     traits.includes('shadow-dom') ? 'shadow' : null,
     traits.includes('large-table') ? 'table' : null,
     traits.includes('slow-network') ? 'slow-network' : null,
   ].filter(Boolean).join('+') || 'base';
+  const targetClass = String(opts.targetClass || derivedTargetClass);
   const scenario = {
     schema: 'chrome-cdp-ex.adversarial-scenario.v1',
     seed: normalizedSeed,
@@ -1977,7 +1989,7 @@ export function buildAdversarialScenarioHtml(scenario = { seed: 'default', trait
     [hidden] { display: none !important; }
   </style>
 </head>
-<body data-adversarial-seed="${seed}" data-adversarial-traits="${htmlEscape((scenario.traits || []).join(','))}">
+<body data-adversarial-seed="${seed}" data-adversarial-traits="${htmlEscape((scenario.traits || []).join(','))}" data-target-class="${htmlEscape(scenario.targetClass || 'base')}">
   <main>
     <h1>Adversarial browser scenario ${seed}</h1>
     <p id="scenario-meta">traits: ${htmlEscape((scenario.traits || []).join(', '))}; tableRows=${tableRows}; hiddenTemplateNodes=${hiddenTemplateNodes}; slowNetworkMs=${slowNetworkMs}</p>
@@ -1996,6 +2008,7 @@ export function buildAdversarialScenarioHtml(scenario = { seed: 'default', trait
     ${traits.has('iframe') ? '<iframe title="Adversarial child frame" name="adversarial-child" srcdoc="<main><h2>Adversarial child frame</h2><button id=&quot;child-action&quot;>Child action</button><p id=&quot;child-status&quot;>child:none</p><script>document.getElementById(&quot;child-action&quot;).addEventListener(&quot;click&quot;,()=>{document.getElementById(&quot;child-status&quot;).textContent=&quot;success: child clicked&quot;;});</script></main>"></iframe>' : ''}
     ${traits.has('large-table') ? `<table id="scenario-table" data-source-rows="${tableRows}"><caption>Adversarial large table ${tableRows} rows, renderedRows=${renderedTableRows}</caption><thead><tr><th>account</th><th>status</th><th>owner</th></tr></thead><tbody>${tableBody}<tr><td colspan="3">... ${Math.max(0, tableRows - renderedTableRows)} rows omitted in fixture DOM</td></tr></tbody></table>` : ''}
     ${traits.has('hidden-template') ? `<template id="adversarial-template">${hiddenNodes}</template><section id="hidden-templates" hidden>${hiddenNodes}</section>` : ''}
+    ${traits.has('canvas') ? '<section aria-label="Canvas workspace"><h2>Canvas workspace</h2><canvas id="scenario-canvas" width="640" height="360" aria-label="Interactive chart canvas"></canvas><p id="canvas-status">canvas:ready</p></section>' : ''}
   </main>
   ${traits.has('overlay') ? '<div role="dialog" aria-modal="true" aria-label="Adversarial MOTD" id="motd"><p>Adversarial modal blocks first action</p><button aria-label="Close" id="close-modal" type="button">Close</button></div>' : ''}
   <script>
@@ -2008,6 +2021,7 @@ export function buildAdversarialScenarioHtml(scenario = { seed: 'default', trait
     }
     window.appendLog = appendLog;
     for (let i = 1; i <= 80; i++) appendLog('history #' + i);
+    ${traits.has('canvas') ? "const scenarioCanvas = document.getElementById('scenario-canvas'); const scenarioContext = scenarioCanvas.getContext('2d'); scenarioContext.fillStyle = '#0f766e'; scenarioContext.fillRect(0, 0, scenarioCanvas.width, scenarioCanvas.height); scenarioContext.fillStyle = '#ffffff'; scenarioContext.font = '28px system-ui'; scenarioContext.fillText('chrome-cdp-ex canvas profile', 48, 96);" : ''}
     ${traits.has('shadow-dom') ? "customElements.define('shadow-action-card', class extends HTMLElement { connectedCallback() { const root = this.attachShadow({ mode: 'open' }); root.innerHTML = '<section aria-label=\"Shadow DOM task\"><button id=\"shadow-action\" type=\"button\">Shadow action</button><p id=\"shadow-status\">shadow:none</p></section>'; root.getElementById('shadow-action').addEventListener('click', () => { root.getElementById('shadow-status').textContent = 'shadow:clicked'; appendLog('shadow action clicked'); }); } });" : ''}
     document.getElementById('combat').addEventListener('click', () => {
       appendLog('combat started');
@@ -2537,10 +2551,17 @@ export function buildKillerPathEntryPlan(url) {
   ];
 }
 
-export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entrySteps = 'doctor-list', navUrl = null, adversarial = false } = {}) {
+export function buildKillerPathBenchmarkPlan(target, {
+  stabilityMs = 1000,
+  entrySteps = 'doctor-list',
+  navUrl = null,
+  adversarial = false,
+  adversarialTraits = null,
+} = {}) {
   const hmrMutationScript = '(() => { if (typeof appendLog === "function") { appendLog("hmr panel ready"); return "hmr-added"; } const log = document.querySelector("#combat-log"); const el = document.createElement("p"); el.id = "hmr-panel"; el.textContent = "hmr panel ready"; log?.appendChild(el); if (log) log.scrollTop = log.scrollHeight; return "hmr-added"; })()';
   const actionEvidenceNavUrl = benchmarkHashUrl(navUrl, 'after-action-evidence');
   const plan = [];
+  const traits = adversarial ? new Set(normalizeAdversarialTraits(adversarialTraits)) : new Set();
   if (entrySteps === 'doctor-list') {
     plan.push(
       { args: ['doctor', '--format', 'json'] },
@@ -2553,11 +2574,11 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
     { args: ['perceive', target, '-C', '-d', '8', '--keep-refs', '--last', '20', '--format', 'json'] },
     { args: ['overlay', target] },
     { args: ['overlay', target, '--format', 'json'], name: 'overlay-json', benchmarkProbe: true },
+    { args: ['dismiss-modal', target, '--format', 'json', '--compact'] },
     { args: ['frame', target] },
     { args: ['frame', target, '--format', 'json'], name: 'frame-json', benchmarkProbe: true },
     { args: ['cascade', target, '#custom-clickable', 'cursor'] },
     { args: ['cascade', target, '#custom-clickable', 'cursor', '--format', 'json'], name: 'cascade-json', benchmarkProbe: true },
-    { args: ['dismiss-modal', target, '--format', 'json', '--compact'] },
     { args: ['click', target, '#noop', '--format', 'json', '--compact'], name: 'no-change-json', benchmarkProbe: true },
     { args: ['fill', target, '#cmd', 'look trainer', '--format', 'json', '--compact'] },
     { args: ['click', target, '#combat', '--format', 'json', '--compact'] },
@@ -2567,12 +2588,28 @@ export function buildKillerPathBenchmarkPlan(target, { stabilityMs = 1000, entry
     { args: ['perceive', target, '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-baseline' },
     { args: ['eval', target, hmrMutationScript], name: 'hmr-mutate' },
     { args: ['perceive', target, '--diff', '-s', '#combat-log', '-d', '6', '--last', '20'], name: 'hmr-diff' },
-    ...(adversarial ? [
+    ...(traits.has('slow-network') ? [
       { args: ['click', target, '#diagnostic', '--format', 'json', '--compact'], name: 'adversarial-slow-network', benchmarkProbe: true, timeout: 10000 },
+    ] : []),
+    ...(traits.has('large-table') ? [
       // Bound large-table proof to a row-count probe — dumping full TSV of 100+ rows
       // inflates total-output-tokens without improving the trait signal.
       { args: ['eval', target, 'document.querySelectorAll("#scenario-table tr").length'], name: 'adversarial-table', benchmarkProbe: true },
+    ] : []),
+    ...(traits.has('shadow-dom') ? [
       { args: ['perceive', target, '-s', 'shadow-action-card', '-d', '4', '--adaptive'], name: 'adversarial-shadow', benchmarkProbe: true },
+    ] : []),
+    ...(traits.has('spa-route') ? [
+      { args: ['click', target, '#route-button', '--format', 'json', '--compact'], name: 'adversarial-route', benchmarkProbe: true },
+    ] : []),
+    ...(traits.has('auth-wall') ? [
+      { args: ['click', target, '#refresh-account', '--format', 'json', '--compact'], name: 'adversarial-auth', benchmarkProbe: true },
+    ] : []),
+    ...(traits.has('hidden-template') ? [
+      { args: ['eval', target, 'document.querySelector("#adversarial-template")?.content.querySelectorAll("[data-hidden-template-node]").length ?? 0'], name: 'adversarial-hidden-template', benchmarkProbe: true },
+    ] : []),
+    ...(traits.has('canvas') ? [
+      { args: ['eval', target, '({width:document.querySelector("#scenario-canvas")?.width||0,height:document.querySelector("#scenario-canvas")?.height||0,status:document.querySelector("#canvas-status")?.textContent||null})', '--raw'], name: 'adversarial-canvas', benchmarkProbe: true },
     ] : []),
     { args: ['inject', target, '--css', '#combat-log { outline: 2px solid rgb(37, 99, 235); }', '--format', 'json', '--compact'] },
     ...(actionEvidenceNavUrl ? [{ args: ['nav', target, actionEvidenceNavUrl, '--format', 'json', '--compact'] }] : []),
@@ -2804,6 +2841,7 @@ export async function runKillerPathBenchmark(opts = {}) {
     comparisonBaselinesPath = null,
     adversarialSeed = null,
     adversarialTraits = null,
+    adversarialTargetClass = null,
     profileDir: requestedProfileDir = null,
     liveRun = null,
   } = opts;
@@ -2828,7 +2866,7 @@ export async function runKillerPathBenchmark(opts = {}) {
 
   try {
     const adversarialScenario = adversarialSeed
-      ? buildAdversarialScenario(adversarialSeed, { traits: adversarialTraits })
+      ? buildAdversarialScenario(adversarialSeed, { traits: adversarialTraits, targetClass: adversarialTargetClass })
       : null;
     server = createServer((req, res) => {
       if (adversarialScenario && (req.url === '/' || req.url === adversarialScenario.path)) {
@@ -2921,7 +2959,13 @@ export async function runKillerPathBenchmark(opts = {}) {
     }
     if (!target) throw new Error('open did not produce a benchmark target');
 
-    for (const planned of buildKillerPathBenchmarkPlan(target, { stabilityMs, entrySteps: 'none', navUrl: url, adversarial: Boolean(adversarialScenario) })) {
+    for (const planned of buildKillerPathBenchmarkPlan(target, {
+      stabilityMs,
+      entrySteps: 'none',
+      navUrl: url,
+      adversarial: Boolean(adversarialScenario),
+      adversarialTraits: adversarialScenario?.traits || null,
+    })) {
       const step = await runStep({ ...planned, env, steps });
       if (planned.expectedFailure) {
         assertExpectedFailure(step, planned.expectedPattern);

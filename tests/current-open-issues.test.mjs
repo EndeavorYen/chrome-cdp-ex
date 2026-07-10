@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
+import { runInNewContext } from 'node:vm';
 
 process.env.NODE_ENV = 'test';
 
@@ -300,11 +301,11 @@ describe('current open issue contracts', () => {
     expect(createMcpInitializeResult().serverInfo.version).toBe(packageJson.version);
     expect(buildMcpToolCommand('doctor', {})).toEqual(['doctor', '--format', 'json']);
     expect(buildMcpToolCommand('perceive', { target: 'app', depth: 4, cursorInteractive: true }))
-      .toEqual(['perceive', 'app', '-d', '4', '-C', '--format', 'json']);
+      .toEqual(['perceive', 'app', '-d', '4', '-C', '--adaptive', '--format', 'json']);
     expect(buildMcpToolCommand('perceive', { target: 'app', qa: true, maxDiffLines: 12 }))
-      .toEqual(['perceive', 'app', '--qa', '--max-diff-lines', '12', '--format', 'json']);
+      .toEqual(['perceive', 'app', '--adaptive', '--qa', '--max-diff-lines', '12', '--format', 'json']);
     expect(buildMcpToolCommand('controls', { target: 'app', selector: '#composer', filter: 'send', limit: 5 }))
-      .toEqual(['controls', 'app', '--selector', '#composer', '--filter', 'send', '--limit', '5', '--format', 'json']);
+      .toEqual(['controls', 'app', '--selector', '#composer', '--filter', 'send', '--limit', '5', '--compact', '--format', 'json']);
     expect(buildMcpToolCommand('overlay', { target: 'app', selector: '@3' }))
       .toEqual(['overlay', 'app', '@3', '--format', 'json']);
     expect(buildMcpToolCommand('open_or_attach', { target: 'ABC12345', port: 9223 }))
@@ -691,5 +692,208 @@ describe('issues #97-#101 contracts', () => {
     expect(mapping).toMatch(/recovery/i);
     const outreach = readFileSync('docs/outreach/awesome-lists.md', 'utf8');
     expect(outreach).toMatch(/Do not auto-submit/i);
+  });
+});
+
+describe('v2.11.0 review regressions', () => {
+  it('preserves eval --raw through the top-level CLI argument normalizer', () => {
+    expect(T.normalizeEvalCliArgs(['--raw', '({a:1})'])).toEqual(['--raw', '({a:1})']);
+    expect(T.normalizeEvalCliArgs(['({a:1})', '--raw'])).toEqual(['--raw', '({a:1})']);
+    expect(T.normalizeEvalCliArgs(['--fire-and-forget', '--raw', '({a:1})']))
+      .toEqual(['--fire-and-forget', '--raw', '({a:1})']);
+  });
+
+  it('treats CSS pseudo-class component targets as selectors, not refs', () => {
+    expect(T.parseComponentsArgs(['#root > button:first-child'])).toMatchObject({
+      ref: null,
+      selector: '#root > button:first-child',
+    });
+    expect(T.parseComponentsArgs(['@f2:3'])).toMatchObject({ ref: '@f2:3', selector: null });
+    expect(() => T.parseComponentsArgs(['@scope'])).toThrow('components: invalid ref @scope');
+  });
+
+  it('resolves components @refs through the established object-id contract', async () => {
+    let callFunctionOn = null;
+    const cdp = {
+      async send(method, params) {
+        if (method === 'Runtime.evaluate') {
+          return { result: { value: JSON.stringify({ framework: 'react', version: '18', source: 'test' }) } };
+        }
+        if (method === 'DOM.resolveNode') return { object: { objectId: 'component-node-1' } };
+        if (method === 'Runtime.callFunctionOn') {
+          callFunctionOn = params;
+          return { result: { value: JSON.stringify({
+            ok: true,
+            name: 'SecretPanel',
+            props: { label: 'Inspect' },
+            state: { hook0: false },
+          }) } };
+        }
+        throw new Error(`unexpected method: ${method}`);
+      },
+    };
+    const output = JSON.parse(await T.componentsStr(
+      cdp,
+      'session-1',
+      ['@1', '--format', 'json'],
+      new Map([[1, 123]]),
+      { generation: 1 },
+    ));
+    expect(callFunctionOn?.objectId).toBe('component-node-1');
+    expect(callFunctionOn?.functionDeclaration).toMatch(/^function\s*\(/);
+    expect(output).toMatchObject({ ok: true, name: 'SecretPanel', target: '@1' });
+  });
+
+  it('resolves cursor-interactive component refs to a live DOM object', async () => {
+    let callFunctionOn = null;
+    const cdp = {
+      async send(method, params) {
+        if (method === 'Runtime.evaluate' && params.expression.includes('__REACT_DEVTOOLS_GLOBAL_HOOK__')) {
+          return { result: { value: JSON.stringify({ framework: 'react', version: '18', source: 'test' }) } };
+        }
+        if (method === 'Runtime.evaluate' && params.expression.includes('document.elementFromPoint')) {
+          return { result: { objectId: 'cursor-component-node' } };
+        }
+        if (method === 'Runtime.callFunctionOn') {
+          callFunctionOn = params;
+          return { result: { value: JSON.stringify({ ok: true, name: 'CursorPanel', props: {}, state: {} }) } };
+        }
+        throw new Error(`unexpected method: ${method}`);
+      },
+    };
+
+    const output = JSON.parse(await T.componentsStr(
+      cdp,
+      'session-1',
+      ['@c1', '--format', 'json'],
+      new Map([['c1', { x: 10, y: 20, w: 80, h: 40, sel: '#cursor-panel' }]]),
+      { generation: 1 },
+    ));
+
+    expect(callFunctionOn?.objectId).toBe('cursor-component-node');
+    expect(output).toMatchObject({ ok: true, name: 'CursorPanel', target: '@c1' });
+  });
+
+  it('fails explicitly when targeted component state is unsupported for the detected framework', async () => {
+    const cdp = {
+      async send(method) {
+        if (method === 'Runtime.evaluate') {
+          return { result: { value: JSON.stringify({ framework: 'vue', version: '3.5', source: '__VUE__' }) } };
+        }
+        throw new Error(`unexpected method: ${method}`);
+      },
+    };
+
+    const output = JSON.parse(await T.componentsStr(
+      cdp,
+      'session-1',
+      ['#account-panel', '--format', 'json'],
+      new Map(),
+      { generation: 1 },
+    ));
+
+    expect(output).toMatchObject({
+      framework: 'vue',
+      target: '#account-panel',
+      ok: false,
+      reason: 'target-inspection-unsupported',
+    });
+  });
+
+  it('redacts and bounds component props and state by default', () => {
+    const result = T.sanitizeComponentValue({
+      password: 'hunter2',
+      nested: { sessionToken: 'secret-session-token' },
+      huge: 'x'.repeat(2000),
+    }, { maxChars: 160 });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain('hunter2');
+    expect(serialized).not.toContain('secret-session-token');
+    expect(serialized).toContain('<redacted>');
+    expect(result.truncated).toBe(true);
+    expect(result.originalChars).toBeGreaterThan(160);
+    expect(result.value).toMatchObject({ truncated: true });
+  });
+
+  it('redacts nested secrets from React and Vue component tree previews', () => {
+    function ProfileCard() {}
+    const componentFiber = {
+      type: ProfileCard,
+      memoizedProps: { profile: { token: 'react-nested-secret', name: 'Ada' } },
+      child: null,
+      sibling: null,
+      return: null,
+    };
+    const rootFiber = { type: null, child: componentFiber, sibling: null, return: null };
+    componentFiber.return = rootFiber;
+    const root = { '__reactFiber$test': rootFiber };
+    const reactOutput = runInNewContext(T.reactComponentsTreeScript(2), {
+      document: { querySelectorAll: () => [root] },
+    });
+
+    const vueInstance = {
+      type: { name: 'ProfileCard' },
+      props: { profile: { token: 'vue-nested-secret', name: 'Ada' } },
+      subTree: { component: { subTree: { children: [] } } },
+    };
+    const vueOutput = runInNewContext(T.vueComponentsTreeScript(2), {
+      document: {
+        querySelector: selector => selector === '#app'
+          ? { __vue_app__: { _instance: vueInstance } }
+          : null,
+      },
+    });
+
+    expect(reactOutput).not.toContain('react-nested-secret');
+    expect(vueOutput).not.toContain('vue-nested-secret');
+    expect(reactOutput).toContain('[REDACTED]');
+    expect(vueOutput).toContain('[REDACTED]');
+  });
+
+  it('keeps broadcast retries executable and bounds default result payloads', () => {
+    const resultText = `Filled input\n${'x'.repeat(2000)}`;
+    const errorText = `timeout: ${'y'.repeat(2000)}`;
+    const model = T.buildBroadcastModel({
+      groupName: 'auth',
+      command: 'fill',
+      commandArgs: ['#cmd', 'hello world'],
+      results: [
+        { targetPrefix: 'AAAABBBB', ok: true, result: resultText },
+        { targetPrefix: 'CCCCDDDD', ok: false, error: errorText },
+      ],
+    });
+    expect(model.nextSteps[0]).toBe('cdp fill CCCCDDDD #cmd "hello world"');
+    expect(model.results[0].result).toBeUndefined();
+    expect(model.results[0].resultPreview.length).toBeLessThanOrEqual(240);
+    expect(model.results[0].resultChars).toBe(resultText.length);
+    expect(model.results[1].error).toBeUndefined();
+    expect(model.results[1].errorPreview.length).toBeLessThanOrEqual(240);
+    expect(model.results[1].errorChars).toBe(errorText.length);
+    expect(model.results[1].errorTruncated).toBe(true);
+
+    const full = T.buildBroadcastModel({
+      groupName: 'auth',
+      command: 'fill',
+      commandArgs: ['#cmd', 'hello world'],
+      results: [{ targetPrefix: 'AAAABBBB', ok: true, result: resultText }],
+      fullResults: true,
+    });
+    expect(full.results[0].result).toBe(resultText);
+  });
+
+  it('maps low-token defaults through the MCP adapter', () => {
+    expect(buildMcpToolCommand('perceive', { target: 'AAAABBBB' }))
+      .toEqual(expect.arrayContaining(['--adaptive']));
+    expect(buildMcpToolCommand('controls', { target: 'AAAABBBB' }))
+      .toEqual(expect.arrayContaining(['--compact']));
+    expect(buildMcpToolCommand('report', { target: 'AAAABBBB', last: 5 }))
+      .toEqual(expect.arrayContaining(['--compact']));
+
+    const perceive = MCP_TOOL_DEFINITIONS.find(tool => tool.name === 'perceive');
+    const controls = MCP_TOOL_DEFINITIONS.find(tool => tool.name === 'controls');
+    const report = MCP_TOOL_DEFINITIONS.find(tool => tool.name === 'report');
+    expect(perceive.inputSchema.properties).toHaveProperty('adaptive');
+    expect(controls.inputSchema.properties).toHaveProperty('compact');
+    expect(report.inputSchema.properties).toHaveProperty('compact');
   });
 });

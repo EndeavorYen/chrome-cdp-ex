@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## [2.11.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.10.0...v2.11.0) (2026-07-10)
+
+### Features
+
+* add matched `benchmark:cli` and MCP/CLI route comparisons using the same task id and six semantic checkpoints.
+* make dashboard, docs, auth, table, and canvas real-app profiles distinct, with generated/exercised probe coverage and a real canvas fixture.
+* default MCP perception to adaptive output and MCP controls/reports to compact handoffs.
+* add bounded multi-tab broadcast result/error previews, complete retry commands, and explicit `--full-results` output.
+
+### Fixes
+
+* preserve `eval --raw` through CLI argument normalization.
+* resolve component targets correctly for strict `@ref` handles and arbitrary CSS selectors.
+* recursively redact and bound React/Vue component trees and props/state by default, with explicit `--unsafe-full` and `--max-chars` controls.
+* make failed, incomplete, or regression-fail live campaigns exit nonzero unless `--allow-failures` is explicit.
+* keep CLI benchmark fixture servers responsive by replacing blocking child execution with asynchronous processes.
+* isolate `open` readiness probes from persistent tab daemons and return first action evidence before secondary frame/CSS diagnostics.
+
+### Security And Maintenance
+
+* update Vitest/coverage and transitive Vite, PostCSS, esbuild, and brace-expansion dependencies until `npm audit` reports zero vulnerabilities.
+* add docs contracts for contributor paths, architecture claims, shipped-feature status, release tags, and tarball names.
+
+### Documentation
+
+* refresh README, reference, skill, contributor guidance, design status, self-improvement loop, GitHub Pages proof, install commands, release links, and benchmark claims for v2.11.0.
+
 ## [2.10.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.9.1...v2.10.0) (2026-07-10)
 
 ### Features

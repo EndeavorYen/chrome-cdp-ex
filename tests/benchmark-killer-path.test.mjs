@@ -178,6 +178,30 @@ describe('benchmark killer path helpers', () => {
     expect(html).toContain('id="combat"');
   });
 
+  it('builds a real canvas fixture and a bounded canvas probe', () => {
+    const scenario = buildAdversarialScenario('canvas-profile', {
+      traits: ['overlay', 'stale-ref', 'canvas', 'spa-route'],
+      targetClass: 'canvas',
+    });
+    const html = buildAdversarialScenarioHtml(scenario);
+    const plan = buildKillerPathBenchmarkPlan('AABBCCDD', {
+      entrySteps: 'none',
+      stabilityMs: 0,
+      adversarial: true,
+      adversarialTraits: scenario.traits,
+    });
+
+    expect(scenario.targetClass).toBe('canvas');
+    expect(html).toContain('id="scenario-canvas"');
+    expect(html).toContain('getContext(\'2d\')');
+    expect(plan).toContainEqual(expect.objectContaining({
+      name: 'adversarial-canvas',
+      benchmarkProbe: true,
+    }));
+    expect(plan.map(step => step.name)).not.toContain('adversarial-table');
+    expect(plan.map(step => step.name)).not.toContain('adversarial-shadow');
+  });
+
   it('adds adversarial probes to the killer path only when requested', () => {
     const normal = buildKillerPathBenchmarkPlan('AABBCCDD', { entrySteps: 'none', stabilityMs: 0 });
     const adversarial = buildKillerPathBenchmarkPlan('AABBCCDD', { entrySteps: 'none', stabilityMs: 0, adversarial: true });
@@ -203,7 +227,9 @@ describe('benchmark killer path helpers', () => {
   });
 
   it('summarizes adversarial seed coverage and replay metadata', () => {
-    const scenario = buildAdversarialScenario('round5-beta');
+    const scenario = buildAdversarialScenario('round5-beta', {
+      traits: ['slow-network', 'large-table', 'shadow-dom'],
+    });
     const summary = summarizeBenchmarkRun({
       scenario: 'killer-path',
       startedAt: 0,
@@ -220,7 +246,7 @@ describe('benchmark killer path helpers', () => {
     expect(summary.metrics.adversarialScenario).toMatchObject({
       enabled: true,
       seed: 'round5-beta',
-      generatedCoverage: { total: 9, covered: 9, missing: [], rate: 1 },
+      generatedCoverage: { total: 3, covered: 3, missing: [], rate: 1 },
       exercisedCoverage: { total: 3, covered: 3, missing: [], rate: 1 },
     });
     expect(summary.metrics.adversarialScenario.replayCommand).toContain('--adversarial-seed "round5-beta"');
@@ -2642,6 +2668,20 @@ describe('benchmark killer path helpers', () => {
     expect(plan.find(step => step.args[0] === 'report')?.args).toEqual(['report', 'AABBCCDD', '--last', '1', '--format', 'json', '--compact']);
     expect(plan.find(step => step.name === 'guarded-page')?.args).toEqual(['perceive', 'AABBCCDD', '-s', '#auth-panel', '-d', '4']);
     expect(plan.filter(step => !step.benchmarkProbe).length).toBeLessThanOrEqual(24);
+  });
+
+  it('returns overlay action evidence before secondary frame and cascade diagnostics', () => {
+    const plan = buildKillerPathBenchmarkPlan('AABBCCDD', {
+      stabilityMs: 0,
+      entrySteps: 'none',
+      navUrl: 'http://127.0.0.1:41738/smoke-page.html',
+    });
+    const commandNames = plan.map(step => step.args[0]);
+    const dismissIndex = commandNames.indexOf('dismiss-modal');
+
+    expect(dismissIndex).toBeGreaterThan(commandNames.indexOf('overlay'));
+    expect(dismissIndex).toBeLessThan(commandNames.indexOf('frame'));
+    expect(dismissIndex).toBeLessThan(commandNames.indexOf('cascade'));
   });
 
   it('plans live entry handoff probes for both open and list before perception', () => {

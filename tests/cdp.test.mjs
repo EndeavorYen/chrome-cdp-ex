@@ -5398,6 +5398,7 @@ describe('visible controls inspector', () => {
       selector: '#composer',
       filter: 'edit',
       limit: 10,
+      compact: false,
     });
   });
 
@@ -5984,6 +5985,56 @@ describe('open onboarding guidance', () => {
     expect(script).toContain('location.assign("https://example.com/path?x=\\"quoted\\"")');
     expect(script).toContain('return JSON.stringify');
     expect(script).toContain('location.assign');
+  });
+
+  it('checks open readiness through a disposable direct CDP session', async () => {
+    const calls = [];
+    let closed = false;
+    const client = {
+      async connect(url) { calls.push(['connect', url]); },
+      async send(method, params, sessionId) {
+        calls.push([method, params, sessionId]);
+        if (method === 'Target.attachToTarget') return { sessionId: 'session-1' };
+        if (method === 'Runtime.evaluate') {
+          return {
+            result: {
+              value: JSON.stringify({
+                href: 'https://example.com/app',
+                readyState: 'complete',
+                selectorFound: true,
+              }),
+            },
+          };
+        }
+        throw new Error(`unexpected method ${method}`);
+      },
+      close() { closed = true; },
+    };
+
+    const ready = await T.waitForOpenReady('AABBCCDDEEFF', {
+      timeoutMs: 1000,
+      url: 'https://example.com/app',
+      selector: '#app',
+      createCdp: () => client,
+      getWsUrlFn: async () => 'ws://example.test/devtools/browser/1',
+    });
+
+    expect(ready).toMatchObject({
+      attempted: true,
+      ok: true,
+      href: 'https://example.com/app',
+      readyState: 'complete',
+      selector: '#app',
+      selectorFound: true,
+    });
+    expect(calls.map(call => call[0])).toEqual([
+      'connect',
+      'Target.attachToTarget',
+      'Runtime.evaluate',
+    ]);
+    expect(calls[2][1].expression).toContain('document.querySelector("#app")');
+    expect(calls[2][2]).toBe('session-1');
+    expect(closed).toBe(true);
   });
 
   it('formats a ready continuation after open auto-perceives the page', () => {
