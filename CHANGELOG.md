@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.12.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.11.0...v2.12.0) (2026-07-12)
+
 ### Features
 
 * add console baselines with strict option validation, bounded repeat stop conditions, and flow selector/text assertions (#108, #109).
