@@ -54,6 +54,14 @@ Conditions are re-evaluated after every settled iteration. Cap exhaustion is a
 non-zero result with the full transcript. Stable selectors remain required;
 the loop never remaps stale `@ref` handles.
 
+A halted `flow` is a command failure, including when it runs inside `repeat`.
+The default fail-fast repeat stops on that turn and exits non-zero while
+preserving the failed step and recovery handoff. `--continue` is the explicit
+override for independent iterations and still reports accurate success/failure
+counts. `wait dom stable` and `wait network idle` also fail the flow on timeout;
+their diagnostics identify the timed-out condition and pending request count
+when applicable.
+
 Multi-statement async eval returns a simple trailing expression:
 `eval <target> "const value = await Promise.resolve(42); value"` prints `42`.
 Use an explicit `return` for ambiguous control-flow endings.
