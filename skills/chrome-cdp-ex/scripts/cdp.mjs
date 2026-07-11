@@ -11684,15 +11684,44 @@ function formatSpawnDebugBrowserReadinessFailure(plan, readiness) {
   return lines.join('\n');
 }
 
+async function probeTcpPort({ host = DEFAULT_CDP_HOST, port, timeoutMs = 500, connect = options => net.createConnection(options) } = {}) {
+  if (!Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535) {
+    throw new Error(`spawn-debug-browser: invalid port ${port}`);
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const socket = connect({ host, port: Number(port) });
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket?.removeAllListeners?.();
+      socket?.destroy?.();
+      fn(value);
+    };
+    const timer = setTimeout(() => finish(reject, new Error(`spawn-debug-browser: could not determine whether ${host}:${port} is free (probe timed out).`)), timeoutMs);
+    socket.once('connect', () => finish(resolve, { occupied: true }));
+    socket.once('error', error => {
+      if (error?.code === 'ECONNREFUSED') finish(resolve, { occupied: false });
+      else finish(reject, new Error(`spawn-debug-browser: could not probe ${host}:${port} (${error?.message || error}).`));
+    });
+  });
+}
+
 async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   const platform = deps.platform || process.platform;
   const fs = deps.fs || { existsSync, mkdirSync };
   const launcher = deps.spawn || spawn;
+  const probePort = deps.probeTcpPort || probeTcpPort;
   const waitForCdp = deps.waitForSpawnedCdp || waitForSpawnedCdp;
   const listTargets = deps.listSpawnedDebugTargets || listSpawnedDebugTargets;
   const fetcher = deps.fetcher || fetch;
   const opts = parseSpawnDebugBrowserArgs(args, env);
   const plan = buildSpawnDebugBrowserPlan(opts, platform, fs, env);
+  const portState = await probePort({ host: plan.host, port: plan.port });
+  if (portState?.occupied) {
+    throw new Error(`spawn-debug-browser: port ${plan.port} is already in use on ${plan.host}. Choose another port with --port <N>.`);
+  }
   try { fs.mkdirSync(plan.profileDir, { recursive: true }); } catch {}
   const child = launcher(plan.exe, plan.args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const output = captureSpawnOutput(child);
@@ -14484,6 +14513,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
   parseShotArgs, shotStr,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
+  probeTcpPort,
   waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,

@@ -92,6 +92,7 @@ describe('current open issue contracts', () => {
         spawned.push({ exe, args, opts });
         return child;
       },
+      probeTcpPort: async () => ({ occupied: false }),
       waitForSpawnedCdp: async ({ port }) => ({ ok: true, port, product: 'Chrome/126.0.0.0' }),
     });
 
@@ -125,6 +126,7 @@ describe('current open issue contracts', () => {
       platform: 'linux',
       fs,
       spawn: () => child,
+      probeTcpPort: async () => ({ occupied: false }),
       waitForSpawnedCdp: async () => ({
         ok: false,
         exited: true,
@@ -436,6 +438,7 @@ describe('issues #82-#87 contracts', () => {
         on: () => {},
         once: () => {},
       }),
+      probeTcpPort: async () => ({ occupied: false }),
       waitForSpawnedCdp: async () => ({ ok: true, port: 9444, product: 'Chrome/126' }),
       listSpawnedDebugTargets: async () => ([
         { targetId: 'TARGETID00000001', title: 'Example', url: 'https://example.com', type: 'page' },

@@ -9871,6 +9871,27 @@ describe('detectBrowserPath / buildSpawnDebugBrowserPlan', () => {
 describe('spawnDebugBrowserStr', () => {
   const { spawnDebugBrowserStr } = T;
 
+  it.each([
+    ['responsive CDP listener', { occupied: true, cdpResponsive: true }],
+    ['unresponsive listener', { occupied: true, cdpResponsive: false }],
+  ])('rejects an occupied port before spawning for a %s', async (_label, probeResult) => {
+    let spawnCalls = 0;
+    const fs = { existsSync: () => true, mkdirSync: () => {} };
+
+    await expect(spawnDebugBrowserStr(['chrome', '--port', '9333'], { TMPDIR: '/tmp' }, {
+      fs,
+      platform: 'darwin',
+      probeTcpPort: async () => probeResult,
+      waitForSpawnedCdp: async () => ({ ok: true, port: 9333, product: 'Chrome/126' }),
+      spawn: () => {
+        spawnCalls++;
+        return { pid: 4242, unref() {} };
+      },
+    })).rejects.toThrow(/port 9333 is already in use.*choose another port/i);
+
+    expect(spawnCalls).toBe(0);
+  });
+
   it('reports the launch command and next-step usage', async () => {
     const calls = [];
     const fakeSpawn = (exe, args, _opts) => {
@@ -9882,6 +9903,7 @@ describe('spawnDebugBrowserStr', () => {
       fs,
       spawn: fakeSpawn,
       platform: 'darwin',
+      probeTcpPort: async () => ({ occupied: false }),
       waitForSpawnedCdp: async () => ({ ok: true, port: 9311, product: 'Edge/126' }),
     });
     expect(out).toContain('Spawned edge debug profile on CDP_PORT=9311');
