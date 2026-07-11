@@ -72,13 +72,13 @@ For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a tex
 
 Official releases live on GitHub, not the npm registry. Use the release tag, release notes, GitHub Pages proof page, and attached tarball as the publish surface.
 
-Pinned install: [v2.11.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.11.0).
+Pinned install: [v2.12.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.12.0).
 
 ```bash
-curl -L -o pi-chrome-cdp-2.11.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.11.0/pi-chrome-cdp-2.11.0.tgz
-mkdir -p chrome-cdp-ex-v2.11.0
-tar -xzf pi-chrome-cdp-2.11.0.tgz -C chrome-cdp-ex-v2.11.0 --strip-components=1
-cd chrome-cdp-ex-v2.11.0
+curl -L -o pi-chrome-cdp-2.12.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.12.0/pi-chrome-cdp-2.12.0.tgz
+mkdir -p chrome-cdp-ex-v2.12.0
+tar -xzf pi-chrome-cdp-2.12.0.tgz -C chrome-cdp-ex-v2.12.0 --strip-components=1
+cd chrome-cdp-ex-v2.12.0
 claude --plugin-dir .
 ```
 
@@ -402,7 +402,7 @@ Use `benchmark:campaign` for repeated live testing. It runs sequential rounds wi
 
 Add `--types real-app --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy` when a smoke page is too easy. Each profile has a distinct trait/probe contract, and output records generated coverage, exercised coverage, missing probes, target class, and culprit steps. These are safe local/test-only fixtures. Any future URL-backed profile must use an owned staging/test tenant, never customer data, personal accounts, or production workflows.
 
-The README and GitHub Pages benchmark proof should use a current passing mixed campaign when making release-quality usability claims. For the v2.11.0 front-door snapshot, the command was:
+The README and GitHub Pages benchmark proof should use a current passing mixed campaign when making release-quality usability claims. For the v2.12.0 front-door snapshot, the command was:
 
 ```bash
 npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output release-campaign.json
