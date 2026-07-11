@@ -9,6 +9,7 @@
 ### Fixes
 
 * reject occupied debug-browser ports before launch, return inferred final expressions from multi-statement async eval, and settle smooth scrolling before pointer dispatch (#105, #106, #107).
+* propagate halted flows and fail-fast repeats as command failures, and reject DOM/network wait timeouts instead of reporting false success (#110, #111).
 
 ## [2.11.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.10.0...v2.11.0) (2026-07-10)
 

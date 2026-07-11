@@ -383,12 +383,12 @@ scripts/cdp.mjs flow <target> "click .save; assert selector .saved; assert text 
 scripts/cdp.mjs flow <target> --format json "summary; click #missing; status" # chrome-cdp-ex.flow.v1 action verdict/failure handoff
 ```
 
-Runs the steps in order, halting on the first failure. Text output is a readable step-by-step layout, so you can diff a failing pipeline at a glance. Add `--format json` when another agent or script needs `chrome-cdp-ex.flow.v1` with per-step status/verdict, attention counts for successful action verdicts such as `no-change`, the failed step, skipped downstream steps, classified `Action failure` kind when available, and executable `nextSteps`.
+Runs the steps in order, halting on the first failure. A halted flow exits non-zero, including when nested inside `repeat`, while preserving the readable transcript or `chrome-cdp-ex.flow.v1` handoff. Add `--format json` when another agent or script needs per-step status/verdict, attention counts for successful action verdicts such as `no-change`, the failed step, skipped downstream steps, classified `Action failure` kind when available, and executable `nextSteps`.
 
 - Each step is a normal command, a wait alias, or `assert selector <css>`, `assert selector-missing <css>`, or `assert text <value>`.
 - Wait aliases use the same settle helper as `record --until`:
-  - `wait dom stable` — wait for DOM mutations to quiet for 500ms (max ~10s).
-  - `wait network idle` — wait until pending XHR/Fetch/Document requests drain.
+  - `wait dom stable` — wait for DOM mutations to quiet for 500ms (max ~10s); timeout fails the flow.
+  - `wait network idle` — wait until pending XHR/Fetch/Document requests drain; timeout fails with the pending count.
 - Use `flow` for short pipelines that read top-to-bottom or need ordered failure handoff; use `batch` when you need parallelism or multiple independent command results.
 
 ### Doctor / readiness check
@@ -960,7 +960,7 @@ cdp repeat <t> 3 flow "click button[data-act='attack']; wait dom stable; text .c
 agent loop cannot recurse or corrupt the daemon IPC stream. `flow` *is* allowed
 as the inner command, so a single "turn" can be `click → wait → check log` and
 the outer `repeat` halts on the first turn that fails. Default behaviour is
-fail-fast — the first failing iteration halts the loop and prints which
+fail-fast — the first failing iteration halts the loop, exits non-zero, and prints which
 iteration tripped, so you can re-perceive and adjust before the next attempt.
 Use `--continue` only when later iterations are independent of the failing one
 (e.g. retrying through transient input misses on a hot keyboard handler).

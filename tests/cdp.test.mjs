@@ -8509,6 +8509,33 @@ describe('flowStr', () => {
     expect(out).not.toContain('did summary');
   });
 
+  it('rejects a halted flow at the daemon boundary with the full text handoff', async () => {
+    await expect(flowStr({
+      run: async () => ({ ok: false, error: 'Unknown ref @9\nNext: cdp perceive ABC123 -C -d 8' }),
+      settle: async () => '',
+    }, 'click @9; summary', { targetId: 'ABC123', throwOnFailure: true }))
+      .rejects.toThrow(/Unknown ref @9.*Flow halted at step 1\/2/s);
+  });
+
+  it('rejects a halted JSON flow with its structured failed-step handoff intact', async () => {
+    let error;
+    try {
+      await flowStr({
+        run: async () => ({ ok: false, error: 'Element not found: #missing' }),
+        settle: async () => '',
+      }, 'click #missing; summary', { format: 'json', targetId: 'ABC123', throwOnFailure: true });
+    } catch (caught) {
+      error = caught;
+    }
+    const parsed = JSON.parse(error.message);
+    expect(parsed).toMatchObject({
+      halted: true,
+      counts: { steps: 2, ok: 0, failed: 1, skipped: 1 },
+      failedStep: { index: 1, cmd: 'click', error: 'Element not found: #missing' },
+    });
+    expect(parsed.nextSteps).toEqual(['cdp status ABC123']);
+  });
+
   it('halts when settle helper throws', async () => {
     const run = async () => ({ ok: true, result: 'ok' });
     const settle = async () => { throw new Error('settle exploded'); };
@@ -8933,21 +8960,28 @@ describe('settleFlow', () => {
     expect(out).toBe('network idle');
   });
 
-  it('reports timeout for network idle when requests stay pending', async () => {
+  it('rejects network idle timeout with the pending request count', async () => {
     const cdp = createMockCDP({});
     const pending = new Map([['r1', {}], ['r2', {}]]);
-    const out = await settleFlow(cdp, 'sid', 'network idle', pending, { maxMs: 200, quietMs: 50 });
-    expect(out).toContain('timeout');
-    expect(out).toContain('2 pending');
+    await expect(settleFlow(cdp, 'sid', 'network idle', pending, { maxMs: 200, quietMs: 50 }))
+      .rejects.toThrow(/timed out.*2 pending/i);
   });
 
   it('uses waitForSettle for "dom stable"', async () => {
     // waitForSettle calls evalStr with a Promise. Our mock resolves immediately.
     const cdp = createMockCDP({
-      'Runtime.evaluate': () => ({ result: { value: undefined } }),
+      'Runtime.evaluate': () => ({ result: { value: 'stable' } }),
     });
     const out = await settleFlow(cdp, 'sid', 'dom stable', new Map(), { maxMs: 100 });
     expect(out).toBe('dom stable');
+  });
+
+  it('rejects dom stable timeout instead of reporting successful completion', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: 'timeout' } }),
+    });
+    await expect(settleFlow(cdp, 'sid', 'dom stable', new Map(), { maxMs: 100 }))
+      .rejects.toThrow(/dom stable timed out after 100ms/i);
   });
 });
 
@@ -10485,34 +10519,44 @@ describe('repeatStr', () => {
     expect(out).toMatch(/Done: 3 ok, 0 failed/);
   });
 
-  it('halts on the first error by default (fail-fast)', async () => {
+  it('rejects on the first error by default with the complete fail-fast transcript', async () => {
     let calls = 0;
     const run = async () => {
       calls++;
       if (calls === 2) return { ok: false, error: 'kaboom' };
       return { ok: true, result: 'ok' };
     };
-    const out = await repeatStr({ run }, ['5', 'click', '@1']);
+    let error;
+    try {
+      await repeatStr({ run }, ['5', 'click', '@1']);
+    } catch (caught) {
+      error = caught;
+    }
     expect(calls).toBe(2);
-    expect(out).toMatch(/Repeat halted at iteration 2\/5/);
-    expect(out).toMatch(/✗ kaboom/);
-    expect(out).toMatch(/Done: 1 ok, 1 failed/);
+    expect(error.message).toMatch(/Repeat halted at iteration 2\/5/);
+    expect(error.message).toMatch(/✗ kaboom/);
+    expect(error.message).toMatch(/Done: 1 ok, 1 failed/);
   });
 
   it('does not misreport a conditioned fail-fast halt as cap exhaustion', async () => {
     let calls = 0;
-    const out = await repeatStr({
-      run: async () => {
-        calls++;
-        return { ok: false, error: 'kaboom' };
-      },
-      probeCondition: async () => ({ matched: false, description: 'selector .done exists' }),
-    }, ['5', 'click', '.x', '--until-selector', '.done']);
+    let error;
+    try {
+      await repeatStr({
+        run: async () => {
+          calls++;
+          return { ok: false, error: 'kaboom' };
+        },
+        probeCondition: async () => ({ matched: false, description: 'selector .done exists' }),
+      }, ['5', 'click', '.x', '--until-selector', '.done']);
+    } catch (caught) {
+      error = caught;
+    }
 
     expect(calls).toBe(1);
-    expect(out).toContain('Repeat halted at iteration 1/5');
-    expect(out).toContain('kaboom');
-    expect(out).not.toContain('condition not satisfied after 5 iterations');
+    expect(error.message).toContain('Repeat halted at iteration 1/5');
+    expect(error.message).toContain('kaboom');
+    expect(error.message).not.toContain('condition not satisfied after 5 iterations');
   });
 
   it('keeps going through errors when --continue is passed', async () => {
@@ -10554,10 +10598,16 @@ describe('repeatStr', () => {
       if (calls === 2) return { ok: false, error: 'Flow halted at step 2/3' };
       return { ok: true, result: 'flow ok' };
     };
-    const out = await repeatStr({ run }, ['5', 'flow', 'click @attack; wait dom stable']);
+    let error;
+    try {
+      await repeatStr({ run }, ['5', 'flow', 'click @attack; wait dom stable']);
+    } catch (caught) {
+      error = caught;
+    }
     expect(calls).toBe(2);
-    expect(out).toMatch(/Repeat halted at iteration 2\/5/);
-    expect(out).toMatch(/Done: 1 ok, 1 failed/);
+    expect(error.message).toMatch(/Flow halted at step 2\/3/);
+    expect(error.message).toMatch(/Repeat halted at iteration 2\/5/);
+    expect(error.message).toMatch(/Done: 1 ok, 1 failed/);
   });
 
   it('stops early when a freshly probed condition matches', async () => {

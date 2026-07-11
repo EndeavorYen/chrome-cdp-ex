@@ -5879,14 +5879,14 @@ async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState) {
 
 // Wait for DOM mutations to stop after an action (350ms of silence = settled)
 async function waitForSettle(cdp, sid, timeoutMs = 3000) {
-  await evalStr(cdp, sid, `new Promise(resolve => {
+  return evalStr(cdp, sid, `new Promise(resolve => {
     let timer;
-    const done = () => { obs.disconnect(); resolve(); };
+    const done = () => { obs.disconnect(); resolve('stable'); };
     const reset = () => { clearTimeout(timer); timer = setTimeout(done, 350); };
     const obs = new MutationObserver(reset);
     obs.observe(document.body || document.documentElement, { childList: true, subtree: true, attributes: true });
     timer = setTimeout(done, 350);
-    setTimeout(() => { clearTimeout(timer); obs.disconnect(); resolve(); }, ${timeoutMs});
+    setTimeout(() => { clearTimeout(timer); obs.disconnect(); resolve('timeout'); }, ${timeoutMs});
   })`);
 }
 
@@ -10516,6 +10516,7 @@ async function repeatStr({ run, probeCondition }, args) {
     }
   }
   lines.push(`Done: ${okCount} ok, ${failCount} failed`);
+  if (haltedEarly) throw new Error(lines.join('\n'));
   if (opts.condition && !haltedEarly) {
     lines.push(`repeat: condition not satisfied after ${opts.count} iterations`);
     throw new Error(lines.join('\n'));
@@ -10638,7 +10639,8 @@ async function settleFlow(cdp, sid, what, pendingReqs, opts = {}) {
   const max = opts.maxMs || 10000;
   const quiet = opts.quietMs || 500;
   if (what === 'dom stable') {
-    await waitForSettle(cdp, sid, max);
+    const outcome = await waitForSettle(cdp, sid, max);
+    if (outcome === 'timeout') throw new Error(`wait dom stable timed out after ${max}ms`);
     return 'dom stable';
   }
   if (what === 'network idle') {
@@ -10650,19 +10652,25 @@ async function settleFlow(cdp, sid, what, pendingReqs, opts = {}) {
       else if (Date.now() - lastBusy >= quiet) return 'network idle';
       await sleep(100);
     }
-    return `network idle (timeout, ${pendingReqs?.size || 0} pending)`;
+    throw new Error(`wait network idle timed out after ${max}ms (${pendingReqs?.size || 0} pending requests)`);
   }
   throw new Error(`Unknown wait: "${what}". Use "dom stable" or "network idle".`);
 }
 
-async function flowStr({ run, settle, assertCondition }, input, { format = 'text', targetId = null } = {}) {
+async function flowStr({ run, settle, assertCondition }, input, { format = 'text', targetId = null, throwOnFailure = false } = {}) {
   const steps = parseFlowSteps(input);
   if (steps.length === 0) throw new Error('flow: no steps. Example: flow <target> "click @1; wait dom stable; summary"');
   const lines = [`Flow: ${steps.length} step(s)`];
   const stepResults = [];
   const finish = () => {
-    if (format === 'json') return formatJson(buildFlowResultModel({ targetId, input, steps, stepResults }));
-    return lines.join('\n');
+    const model = buildFlowResultModel({ targetId, input, steps, stepResults });
+    const output = format === 'json' ? formatJson(model) : lines.join('\n');
+    if (throwOnFailure && model.halted) {
+      const error = new Error(output);
+      error.code = 'FLOW_HALTED';
+      throw error;
+    }
+    return output;
   };
   const markSkippedAfter = (startIndex) => {
     for (let j = startIndex; j < steps.length; j++) {
@@ -10707,6 +10715,7 @@ async function flowStr({ run, settle, assertCondition }, input, { format = 'text
         return finish();
       }
     } catch (e) {
+      if (e?.code === 'FLOW_HALTED') throw e;
       stepResults.push(flowStepModel(step, i, { ok: false, error: e.message }));
       markSkippedAfter(i + 1);
       lines.push(`  ✗ ${e.message}`);
@@ -13047,7 +13056,7 @@ async function runDaemon(targetId) {
             run: (step) => handleCommand({ cmd: step.cmd, args: autoActionJsonArgs(step.cmd, step.args || [], fopts.format === 'json') }),
             settle: (what) => settleFlow(cdp, sessionId, what, pendingReqs),
             assertCondition: (condition) => probePageCondition(cdp, sessionId, condition),
-          }, input, { format: fopts.format, targetId });
+          }, input, { format: fopts.format, targetId, throwOnFailure: true });
           break;
         }
         case 'repeat': {
@@ -13452,9 +13461,9 @@ Usage: cdp <command> [args]
                                     Each step is a normal command (e.g. "click @1") or a wait alias:
                                     "wait dom stable" / "wait network idle" — uses settle helper.
                                     Assertions: "assert selector <css>", "assert selector-missing <css>", "assert text <value>".
-                                    Halts on the first failing step; JSON returns chrome-cdp-ex.flow.v1.
+                                    Halts and exits non-zero on the first failing step; JSON preserves chrome-cdp-ex.flow.v1.
                                     Example: flow A7BA "click @1; wait dom stable; summary; console --errors"
-  repeat <target> <N> <cmd> [args]  Run a command up to N times (cap 50). Fail-fast by default.
+  repeat <target> <N> <cmd> [args]  Run a command up to N times (cap 50). Fail-fast exits non-zero.
                                     --continue / -c: keep going through errors and report tally.
                                     --until-selector <css> | --until-selector-missing <css> | --until-text <text>
                                     re-checks after each settled iteration; cap exhaustion exits non-zero.

@@ -539,7 +539,7 @@ if (parsedBatch.failedStep?.cmd !== 'click' || parsedBatch.failedStep?.failureKi
 if (!parsedBatch.nextSteps?.some(nextStep => nextStep.includes('cdp perceive'))) {
   throw new Error(`batch --format json should include an executable recovery next step:\n${batchJsonOut}`);
 }
-const flowJsonOut = step('flow json failure handoff', () => run(['flow', target, '--format', 'json', 'summary; click #missing-flow-json-smoke; status']));
+const flowJsonOut = step('flow json failure handoff exits non-zero', () => runFailure(['flow', target, '--format', 'json', 'summary; click #missing-flow-json-smoke; status']));
 const parsedFlow = JSON.parse(flowJsonOut);
 if (parsedFlow.schema !== 'chrome-cdp-ex.flow.v1' || parsedFlow.counts?.failed !== 1 || parsedFlow.counts?.skipped !== 1) {
   throw new Error(`flow --format json should return structured failure handoff:\n${flowJsonOut}`);
@@ -550,6 +550,20 @@ if (parsedFlow.failedStep?.cmd !== 'click' || parsedFlow.failedStep?.failureKind
 if (!parsedFlow.nextSteps?.some(nextStep => nextStep.includes('cdp perceive'))) {
   throw new Error(`flow --format json should include an executable recovery next step:\n${flowJsonOut}`);
 }
+const nestedFlowRepeatOut = step('repeat halts on failed nested flow', () => runFailure([
+  'repeat', target, '3', 'flow', 'click #missing-repeat-flow-smoke; status',
+]));
+assertIncludes(nestedFlowRepeatOut, '[1/3] ✗', 'nested flow repeat failed turn');
+assertIncludes(nestedFlowRepeatOut, 'Flow halted at step 1/2', 'nested flow failed step');
+assertIncludes(nestedFlowRepeatOut, 'Repeat halted at iteration 1/3', 'nested flow repeat halt');
+if (nestedFlowRepeatOut.includes('[2/3]')) {
+  throw new Error(`repeat should stop before a second failed nested-flow turn:\n${nestedFlowRepeatOut}`);
+}
+const continuedFlowRepeatOut = step('repeat continue reports failed nested flows', () => run([
+  'repeat', target, '2', '--continue', 'flow', 'click #missing-repeat-flow-smoke; status',
+]));
+assertIncludes(continuedFlowRepeatOut, '[2/2] ✗', 'continued nested flow second turn');
+assertIncludes(continuedFlowRepeatOut, 'Done: 0 ok, 2 failed', 'continued nested flow counts');
 const sessionShotOut = step('session shot attachment', () => run(['shot', target, '--quiet']));
 const sessionShotPath = sessionShotOut.split('\n')[0];
 if (sessionShotOut.split('\n').length !== 1 || !sessionShotPath.endsWith('.png') || !existsSync(sessionShotPath)) {

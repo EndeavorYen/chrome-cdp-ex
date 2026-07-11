@@ -140,7 +140,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 - **Existing browser session (preferred):** open `chrome://inspect/#remote-debugging` (or `edge://inspect`) and toggle remote debugging on. Cleanest path; touches no profile state.
 - **Isolated debug profile:** `node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com`. Add `--headless --no-sandbox` for Linux CI, containers, or remote shells without a display.
 - **Safe occupied-port handling:** `spawn-debug-browser` rejects any existing listener before launch and tells you to choose another `--port`.
-- **State-aware loops:** bound variable-length flows with `repeat <target> 20 click .attack --until-text "Battle complete"`; use `flow` assertions for selector/text postconditions and `console --clear` for a fresh diagnostic baseline.
+- **State-aware loops:** bound variable-length flows with `repeat <target> 20 click .attack --until-text "Battle complete"`; halted flows, fail-fast repeat turns, and wait timeouts exit non-zero with their diagnostic transcript. Use `--continue` only for independent iterations, `flow` assertions for selector/text postconditions, and `console --clear` for a fresh diagnostic baseline.
 - **Electron app:** start it with `--remote-debugging-port=<port>` and run with `CDP_PORT=<port>`.
 
 4. Follow the golden path.
