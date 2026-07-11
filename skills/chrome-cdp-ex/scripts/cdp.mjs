@@ -1406,11 +1406,68 @@ function lastTopLevelSemicolon(source) {
   return last;
 }
 
+function codeWithoutStringsAndComments(source) {
+  let output = '';
+  let quote = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    const next = source[i + 1];
+    if (lineComment) {
+      if (char === '\n') {
+        lineComment = false;
+        output += '\n';
+      } else output += ' ';
+      continue;
+    }
+    if (blockComment) {
+      if (char === '*' && next === '/') {
+        output += '  ';
+        blockComment = false;
+        i++;
+      } else output += char === '\n' ? '\n' : ' ';
+      continue;
+    }
+    if (quote) {
+      output += char === '\n' ? '\n' : ' ';
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      output += '  ';
+      lineComment = true;
+      i++;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      output += '  ';
+      blockComment = true;
+      i++;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      output += ' ';
+      quote = char;
+      continue;
+    }
+    output += char;
+  }
+  return output;
+}
+
+function hasExplicitReturnStatement(source) {
+  return /(?:^|[;{}:])\s*return\b/.test(codeWithoutStringsAndComments(source));
+}
+
 function wrapAwaitExpression(expression, autoWrap = false) {
   const source = String(expression || '');
   if (!autoWrap || !/\bawait\b/.test(source)) return source;
   if (!source.includes(';') && !source.includes('\n')) return `(async()=>(${source}))()`;
-  if (/\breturn\b/.test(source)) return `(async()=>{${source}})()`;
+  if (hasExplicitReturnStatement(source)) return `(async()=>{${source}})()`;
 
   const trimmed = source.replace(/;\s*$/, '').trimEnd();
   const separator = lastTopLevelSemicolon(trimmed);
@@ -10430,6 +10487,7 @@ async function repeatStr({ run, probeCondition }, args) {
   const head = `Repeat ${opts.count}× ${opts.cmd}${opts.args.length ? ' ' + opts.args.join(' ') : ''}${opts.continueOnError ? ' (--continue)' : ''}`;
   const lines = [head];
   let okCount = 0, failCount = 0;
+  let haltedEarly = false;
   for (let i = 1; i <= opts.count; i++) {
     const r = await run({ cmd: opts.cmd, args: opts.args.slice() });
     if (r && r.ok) {
@@ -10452,12 +10510,13 @@ async function repeatStr({ run, probeCondition }, args) {
       lines.push(`[${i}/${opts.count}] ✗ ${errText}`);
       if (!opts.continueOnError) {
         lines.push(`Repeat halted at iteration ${i}/${opts.count} (use --continue to keep going).`);
+        haltedEarly = true;
         break;
       }
     }
   }
   lines.push(`Done: ${okCount} ok, ${failCount} failed`);
-  if (opts.condition) {
+  if (opts.condition && !haltedEarly) {
     lines.push(`repeat: condition not satisfied after ${opts.count} iterations`);
     throw new Error(lines.join('\n'));
   }
@@ -11913,7 +11972,8 @@ async function probeTcpPort({ host = DEFAULT_CDP_HOST, port, timeoutMs = 500, co
       settled = true;
       clearTimeout(timer);
       socket?.removeAllListeners?.();
-      socket?.destroy?.();
+      socket?.on?.('error', () => {});
+      try { socket?.destroy?.(); } catch {}
       fn(value);
     };
     const timer = setTimeout(() => finish(reject, new Error(`spawn-debug-browser: could not determine whether ${host}:${port} is free (probe timed out).`)), timeoutMs);

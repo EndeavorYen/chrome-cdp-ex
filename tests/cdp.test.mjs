@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
+import { EventEmitter } from 'events';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const {
@@ -5332,6 +5333,13 @@ describe('evalStr', () => {
     expect(cdp.calls).toHaveLength(0);
   });
 
+  it('does not treat return text inside strings or comments as an explicit return statement', () => {
+    expect(T.wrapAwaitExpression('const msg = "return"; await Promise.resolve(1); msg', true))
+      .toBe('(async()=>{const msg = "return"; await Promise.resolve(1); return (msg);})()');
+    expect(T.wrapAwaitExpression('const value = await Promise.resolve(42); /* return */ value', true))
+      .toBe('(async()=>{const value = await Promise.resolve(42); return (/* return */ value);})()');
+  });
+
   it('should pass awaitPromise and returnByValue to CDP', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': (params) => {
@@ -9977,6 +9985,27 @@ describe('detectBrowserPath / buildSpawnDebugBrowserPlan', () => {
 describe('spawnDebugBrowserStr', () => {
   const { spawnDebugBrowserStr } = T;
 
+  it('keeps an error guard while destroying a connected port probe socket', async () => {
+    class ResetOnDestroySocket extends EventEmitter {
+      destroy() {
+        const error = new Error('read ECONNRESET');
+        error.code = 'ECONNRESET';
+        this.emit('error', error);
+      }
+    }
+    const socket = new ResetOnDestroySocket();
+    const probe = T.probeTcpPort({
+      host: '127.0.0.1',
+      port: 9333,
+      connect: () => {
+        queueMicrotask(() => socket.emit('connect'));
+        return socket;
+      },
+    });
+
+    await expect(probe).resolves.toEqual({ occupied: true });
+  });
+
   it.each([
     ['responsive CDP listener', { occupied: true, cdpResponsive: true }],
     ['unresponsive listener', { occupied: true, cdpResponsive: false }],
@@ -10468,6 +10497,22 @@ describe('repeatStr', () => {
     expect(out).toMatch(/Repeat halted at iteration 2\/5/);
     expect(out).toMatch(/✗ kaboom/);
     expect(out).toMatch(/Done: 1 ok, 1 failed/);
+  });
+
+  it('does not misreport a conditioned fail-fast halt as cap exhaustion', async () => {
+    let calls = 0;
+    const out = await repeatStr({
+      run: async () => {
+        calls++;
+        return { ok: false, error: 'kaboom' };
+      },
+      probeCondition: async () => ({ matched: false, description: 'selector .done exists' }),
+    }, ['5', 'click', '.x', '--until-selector', '.done']);
+
+    expect(calls).toBe(1);
+    expect(out).toContain('Repeat halted at iteration 1/5');
+    expect(out).toContain('kaboom');
+    expect(out).not.toContain('condition not satisfied after 5 iterations');
   });
 
   it('keeps going through errors when --continue is passed', async () => {
