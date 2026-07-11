@@ -4,6 +4,7 @@ node_modules/
 # Misc
 coverage/
 .gstack/
+.worktrees/
 
 # OMC
 .omc

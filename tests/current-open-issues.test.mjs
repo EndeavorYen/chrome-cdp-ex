@@ -38,6 +38,23 @@ function parseMcpFrames(buffer) {
 }
 
 describe('current open issue contracts', () => {
+  it('locks the #106-#109 issue-level helper contracts', async () => {
+    expect(T.wrapAwaitExpression('const value = await Promise.resolve(42); value', true))
+      .toBe('(async()=>{const value = await Promise.resolve(42); return (value);})()');
+    expect(T.scrollSettledRectFunctionDeclaration()).toContain('maxSamples = fullyVisible ? 2 : 60');
+    expect(T.parseConsoleArgs(['--clear', '--format', 'json'])).toEqual({ mode: 'clear', format: 'json' });
+    expect(T.parseRepeatArgs(['20', 'click', '.attack', '--until-text', 'Battle complete'])).toMatchObject({
+      count: 20,
+      cmd: 'click',
+      args: ['.attack'],
+      condition: { kind: 'text', value: 'Battle complete' },
+    });
+    expect(T.parseFlowSteps('assert selector .done; assert text Battle complete')).toEqual([
+      { kind: 'assert', condition: { kind: 'selector-exists', value: '.done' } },
+      { kind: 'assert', condition: { kind: 'text', value: 'Battle complete' } },
+    ]);
+  });
+
   it('registers the issue-driven commands in the CLI metadata', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'verify-click',
@@ -92,6 +109,7 @@ describe('current open issue contracts', () => {
         spawned.push({ exe, args, opts });
         return child;
       },
+      probeTcpPort: async () => ({ occupied: false }),
       waitForSpawnedCdp: async ({ port }) => ({ ok: true, port, product: 'Chrome/126.0.0.0' }),
     });
 
@@ -125,6 +143,7 @@ describe('current open issue contracts', () => {
       platform: 'linux',
       fs,
       spawn: () => child,
+      probeTcpPort: async () => ({ occupied: false }),
       waitForSpawnedCdp: async () => ({
         ok: false,
         exited: true,
@@ -436,6 +455,7 @@ describe('issues #82-#87 contracts', () => {
         on: () => {},
         once: () => {},
       }),
+      probeTcpPort: async () => ({ occupied: false }),
       waitForSpawnedCdp: async () => ({ ok: true, port: 9444, product: 'Chrome/126' }),
       listSpawnedDebugTargets: async () => ([
         { targetId: 'TARGETID00000001', title: 'Example', url: 'https://example.com', type: 'page' },

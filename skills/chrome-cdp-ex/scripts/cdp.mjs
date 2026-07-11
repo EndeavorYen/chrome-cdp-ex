@@ -1358,15 +1358,139 @@ function formatEvalValue(val, { raw = false } = {}) {
   return raw ? JSON.stringify(val) : JSON.stringify(val, null, 2);
 }
 
-async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
-  // Auto-wrap: if expression contains `await`, wrap in async IIFE
-  let expr = expression;
-  if (autoWrap && /\bawait\b/.test(expr)) {
-    // Multi-statement or has semicolons → block body; otherwise expression body
-    expr = expr.includes(';') || expr.includes('\n')
-      ? `(async()=>{${expr}})()`
-      : `(async()=>(${expr}))()`;
+function lastTopLevelSemicolon(source) {
+  let quote = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  let depth = 0;
+  let last = -1;
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    const next = source[i + 1];
+    if (lineComment) {
+      if (char === '\n') lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === '*' && next === '/') {
+        blockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      lineComment = true;
+      i++;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      blockComment = true;
+      i++;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(' || char === '[' || char === '{') depth++;
+    else if (char === ')' || char === ']' || char === '}') depth = Math.max(0, depth - 1);
+    else if (char === ';' && depth === 0) last = i;
   }
+  return last;
+}
+
+function codeWithoutStringsAndComments(source) {
+  let output = '';
+  let quote = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    const next = source[i + 1];
+    if (lineComment) {
+      if (char === '\n') {
+        lineComment = false;
+        output += '\n';
+      } else output += ' ';
+      continue;
+    }
+    if (blockComment) {
+      if (char === '*' && next === '/') {
+        output += '  ';
+        blockComment = false;
+        i++;
+      } else output += char === '\n' ? '\n' : ' ';
+      continue;
+    }
+    if (quote) {
+      output += char === '\n' ? '\n' : ' ';
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      output += '  ';
+      lineComment = true;
+      i++;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      output += '  ';
+      blockComment = true;
+      i++;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      output += ' ';
+      quote = char;
+      continue;
+    }
+    output += char;
+  }
+  return output;
+}
+
+function hasExplicitReturnStatement(source) {
+  return /(?:^|[;{}:])\s*return\b/.test(codeWithoutStringsAndComments(source));
+}
+
+function wrapAwaitExpression(expression, autoWrap = false) {
+  const source = String(expression || '');
+  if (!autoWrap || !/\bawait\b/.test(source)) return source;
+  if (!source.includes(';') && !source.includes('\n')) return `(async()=>(${source}))()`;
+  if (hasExplicitReturnStatement(source)) return `(async()=>{${source}})()`;
+
+  const trimmed = source.replace(/;\s*$/, '').trimEnd();
+  const separator = lastTopLevelSemicolon(trimmed);
+  if (separator < 0) {
+    throw new Error('eval: multi-statement async input is ambiguous; add an explicit return for the desired result.');
+  }
+  const prefix = trimmed.slice(0, separator + 1);
+  const finalExpression = trimmed.slice(separator + 1).trim();
+  if (!finalExpression) {
+    throw new Error('eval: multi-statement async input is ambiguous; add an explicit return for the desired result.');
+  }
+  const wrapped = `(async()=>{${prefix} return (${finalExpression});})()`;
+  try {
+    // Syntax-check only; the returned function is never invoked here.
+    new Function(`return ${wrapped}`);
+  } catch {
+    throw new Error('eval: cannot infer the final async expression safely; add an explicit return for the desired result.');
+  }
+  return wrapped;
+}
+
+async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
+  const expr = wrapAwaitExpression(expression, autoWrap);
   const params = {
     expression: expr, returnByValue: true, awaitPromise: true,
   };
@@ -1381,13 +1505,7 @@ async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
 }
 
 function maybeAutoWrapEval(expression, autoWrap = false) {
-  let expr = expression;
-  if (autoWrap && /\bawait\b/.test(expr)) {
-    expr = expr.includes(';') || expr.includes('\n')
-      ? `(async()=>{${expr}})()`
-      : `(async()=>(${expr}))()`;
-  }
-  return expr;
+  return wrapAwaitExpression(expression, autoWrap);
 }
 
 async function evalFireAndForgetStr(cdp, sid, expression, autoWrap = false) {
@@ -2048,9 +2166,45 @@ async function pageInfoModel(cdp, sid, opts = {}) {
   return { title, url, diagnostic: null };
 }
 
+function parseConsoleArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  if (fopts.args.length > 1) {
+    throw new Error('console: choose exactly one mode: --all, --errors, or --clear.');
+  }
+  const flag = fopts.args[0];
+  const modes = new Map([
+    [undefined, 'new'],
+    ['--all', 'all'],
+    ['--errors', 'errors'],
+    ['--clear', 'clear'],
+  ]);
+  if (!modes.has(flag)) {
+    throw new Error(`console: unknown option ${flag}. Supported options: --all, --errors, --clear, --format text|json.`);
+  }
+  return { mode: modes.get(flag), format: fopts.format };
+}
+
+function clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq) {
+  const cleared = {
+    console: consoleBuf.all().length,
+    exceptions: exceptionBuf.all().length,
+  };
+  consoleBuf.clear();
+  exceptionBuf.clear();
+  lastReadSeq.console = consoleBuf.latest();
+  lastReadSeq.exception = exceptionBuf.latest();
+  return {
+    schema: 'chrome-cdp-ex.console-baseline.v1',
+    mode: 'clear',
+    cleared,
+    message: 'Console baseline cleared (console and exception buffers)',
+  };
+}
+
 function buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag) {
-  const showErrors = flag === '--errors';
-  const showAll = flag === '--all';
+  const mode = flag === '--errors' ? 'errors' : flag === '--all' ? 'all' : flag || 'new';
+  const showErrors = mode === 'errors';
+  const showAll = mode === 'all';
   let entries;
   let exceptions = [];
 
@@ -2148,8 +2302,9 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
 async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag) {
   let entries;
   let exceptions = [];
-  const showErrors = flag === '--errors';
-  const showAll = flag === '--all';
+  const mode = flag === '--errors' ? 'errors' : flag === '--all' ? 'all' : flag || 'new';
+  const showErrors = mode === 'errors';
+  const showAll = mode === 'all';
 
   if (showAll) {
     entries = consoleBuf.all();
@@ -5417,22 +5572,55 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState) {
   }
 }
 
+function scrollSettledRectFunctionDeclaration() {
+  return `async function() {
+    const readRect = () => {
+      const rect = this.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+    };
+    const initial = readRect();
+    const fullyVisible = initial.x >= 0 && initial.y >= 0 &&
+      initial.x + initial.w <= window.innerWidth && initial.y + initial.h <= window.innerHeight;
+    if (!fullyVisible) this.scrollIntoView({ block: 'center', inline: 'center' });
+    const maxSamples = fullyVisible ? 2 : 60;
+    let previous = readRect();
+    let stableSamples = 0;
+    for (let sample = 0; sample < maxSamples; sample++) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const current = readRect();
+      const movement = Math.max(
+        Math.abs(current.x - previous.x),
+        Math.abs(current.y - previous.y),
+        Math.abs(current.w - previous.w),
+        Math.abs(current.h - previous.h),
+      );
+      const currentVisible = current.x >= 0 && current.y >= 0 &&
+        current.x + current.w <= window.innerWidth && current.y + current.h <= window.innerHeight;
+      previous = current;
+      stableSamples = movement < 0.5 ? stableSamples + 1 : 0;
+      if (currentVisible && stableSamples >= 2) break;
+    }
+    return {
+      ...previous,
+      tag: this.tagName,
+      text: (this.textContent || '').trim().substring(0, 80),
+    };
+  }`;
+}
+
 async function resolveRef(cdp, sid, refMap, ref, refState) {
   const frameParsed = parseFrameRef(ref);
   const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
   const result = await cdp.send('Runtime.callFunctionOn', {
     objectId,
-    functionDeclaration: `function() {
-      this.scrollIntoView({ block: 'center', inline: 'center' });
-      const rect = this.getBoundingClientRect();
-      return { x: rect.x, y: rect.y, w: rect.width, h: rect.height, tag: this.tagName, text: this.textContent.trim().substring(0, 80) };
-    }`,
+    functionDeclaration: scrollSettledRectFunctionDeclaration(),
     returnByValue: true,
+    awaitPromise: true,
   }, sid);
   const value = result.result.value || {};
   if (frameParsed) {
     const { entry } = frameScopedBackendNode(refState || {}, frameParsed);
-    const offset = await frameViewportOffset(cdp, sid, entry);
+    const offset = await frameViewportOffset(cdp, sid, entry, { settle: true });
     value.x = (Number(value.x) || 0) + offset.x;
     value.y = (Number(value.y) || 0) + offset.y;
   }
@@ -5625,7 +5813,7 @@ function baselineOutputForActionTarget(refState, fallbackOutput, target = {}) {
   return fallbackOutput;
 }
 
-async function frameViewportOffset(cdp, sid, frameEntry) {
+async function frameViewportOffset(cdp, sid, frameEntry, { settle = false } = {}) {
   if (!frameEntry?.frameId || !frameEntry.parentId) return { x: 0, y: 0 };
   let x = 0;
   let y = 0;
@@ -5635,11 +5823,12 @@ async function frameViewportOffset(cdp, sid, frameEntry) {
     const { object } = await cdp.send('DOM.resolveNode', { backendNodeId: owner.backendNodeId }, sid);
     const res = await cdp.send('Runtime.callFunctionOn', {
       objectId: object.objectId,
-      functionDeclaration: `function() {
+      functionDeclaration: settle ? scrollSettledRectFunctionDeclaration() : `function() {
         const r = this.getBoundingClientRect();
         return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
       }`,
       returnByValue: true,
+      awaitPromise: settle,
     }, sid);
     const rect = res.result.value || {};
     x += Number(rect.x) || 0;
@@ -7125,12 +7314,11 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
     return `Clicked <${r.tag}> "${r.text}" (${selector})`;
   }
   const expr = `
-    (function() {
+    (async function() {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
-      el.scrollIntoView({ block: 'center', inline: 'center' });
-      const rect = el.getBoundingClientRect();
-      return { ok: true, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, tag: el.tagName, text: el.textContent.trim().substring(0, 80) };
+      const rect = await (${scrollSettledRectFunctionDeclaration()}).call(el);
+      return { ok: true, x: rect.x + rect.w / 2, y: rect.y + rect.h / 2, tag: rect.tag, text: rect.text };
     })()
   `;
   const result = await evalStr(cdp, sid, expr);
@@ -10215,13 +10403,64 @@ const REPEAT_CAP = 50;
 // and `repeat`/`stop` are blocked to avoid recursion and IPC corruption.
 const REPEAT_BLOCKED = new Set(['repeat', 'batch', 'stop']);
 
+function parsePageConditionArgs(args = []) {
+  const flags = new Map([
+    ['--until-selector', 'selector-exists'],
+    ['--until-selector-missing', 'selector-missing'],
+    ['--until-text', 'text'],
+  ]);
+  const remainingArgs = [];
+  let condition = null;
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (!flags.has(token)) {
+      remainingArgs.push(token);
+      continue;
+    }
+    const value = args[++i];
+    if (value == null || value === '' || String(value).startsWith('--')) {
+      throw new Error(`repeat: ${token} requires a value.`);
+    }
+    if (condition) {
+      throw new Error('repeat: choose exactly one until condition.');
+    }
+    condition = { kind: flags.get(token), value: String(value) };
+  }
+  return { condition, remainingArgs };
+}
+
+function pageConditionDescription(condition = {}) {
+  if (condition.kind === 'selector-exists') return `selector ${condition.value} exists`;
+  if (condition.kind === 'selector-missing') return `selector ${condition.value} is missing`;
+  if (condition.kind === 'text') return `text includes ${JSON.stringify(condition.value)}`;
+  return 'unknown page condition';
+}
+
+async function probePageCondition(cdp, sid, condition) {
+  if (!condition?.kind || !condition?.value) throw new Error('page condition requires a kind and value');
+  const value = JSON.stringify(condition.value);
+  let expression;
+  if (condition.kind === 'selector-exists' || condition.kind === 'selector-missing') {
+    const negate = condition.kind === 'selector-missing';
+    expression = `JSON.stringify({ matched: ${negate ? '!' : '!!'}document.querySelector(${value}) })`;
+  } else if (condition.kind === 'text') {
+    expression = `JSON.stringify({ matched: ((document.body && document.body.innerText) || '').includes(${value}) })`;
+  } else {
+    throw new Error(`Unknown page condition: ${condition.kind}`);
+  }
+  const raw = await evalStr(cdp, sid, expression);
+  const result = JSON.parse(raw);
+  return { matched: result.matched === true, description: pageConditionDescription(condition) };
+}
+
 function parseRepeatArgs(args) {
   if (!Array.isArray(args) || args.length < 1) {
     throw new Error('repeat requires <count> <cmd> [args...]');
   }
-  const opts = { count: 0, cmd: null, args: [], continueOnError: false };
+  const parsedCondition = parsePageConditionArgs(args);
+  const opts = { count: 0, cmd: null, args: [], continueOnError: false, condition: parsedCondition.condition };
   const positional = [];
-  for (const a of args) {
+  for (const a of parsedCondition.remainingArgs) {
     if (a === '--continue' || a === '-c') opts.continueOnError = true;
     else positional.push(a);
   }
@@ -10243,28 +10482,44 @@ function parseRepeatArgs(args) {
   return opts;
 }
 
-async function repeatStr({ run }, args) {
+async function repeatStr({ run, probeCondition }, args) {
   const opts = parseRepeatArgs(args);
   const head = `Repeat ${opts.count}× ${opts.cmd}${opts.args.length ? ' ' + opts.args.join(' ') : ''}${opts.continueOnError ? ' (--continue)' : ''}`;
   const lines = [head];
   let okCount = 0, failCount = 0;
+  let haltedEarly = false;
   for (let i = 1; i <= opts.count; i++) {
     const r = await run({ cmd: opts.cmd, args: opts.args.slice() });
     if (r && r.ok) {
       okCount++;
       const body = (r.result || '').toString().split('\n')[0].slice(0, 200);
       lines.push(body ? `[${i}/${opts.count}] ok: ${body}` : `[${i}/${opts.count}] ok`);
+      if (opts.condition) {
+        if (typeof probeCondition !== 'function') throw new Error('repeat: condition probe is unavailable');
+        const conditionResult = await probeCondition(opts.condition);
+        lines.push(`  Condition: ${conditionResult.description} — ${conditionResult.matched ? 'matched' : 'not matched'}`);
+        if (conditionResult.matched) {
+          lines.push(`Condition satisfied after iteration ${i}/${opts.count}`);
+          lines.push(`Done: ${okCount} ok, ${failCount} failed`);
+          return lines.join('\n');
+        }
+      }
     } else {
       failCount++;
       const errText = (r && r.error) || 'unknown error';
       lines.push(`[${i}/${opts.count}] ✗ ${errText}`);
       if (!opts.continueOnError) {
         lines.push(`Repeat halted at iteration ${i}/${opts.count} (use --continue to keep going).`);
+        haltedEarly = true;
         break;
       }
     }
   }
   lines.push(`Done: ${okCount} ok, ${failCount} failed`);
+  if (opts.condition && !haltedEarly) {
+    lines.push(`repeat: condition not satisfied after ${opts.count} iterations`);
+    throw new Error(lines.join('\n'));
+  }
   return lines.join('\n');
 }
 
@@ -10278,6 +10533,19 @@ function parseFlowSteps(input) {
       const what = parts.slice(1).join(' ').toLowerCase();
       return { kind: 'wait', what };
     }
+    if (head === 'assert') {
+      const assertionKind = parts[1];
+      const value = parts.slice(2).join(' ').replace(/^(['"])(.*)\1$/, '$2');
+      const kinds = {
+        selector: 'selector-exists',
+        'selector-missing': 'selector-missing',
+        text: 'text',
+      };
+      if (!kinds[assertionKind] || !value) {
+        throw new Error('flow assert: use "assert selector <css>", "assert selector-missing <css>", or "assert text <value>".');
+      }
+      return { kind: 'assert', condition: { kind: kinds[assertionKind], value } };
+    }
     return { kind: 'command', cmd: head, args: parts.slice(1) };
   });
 }
@@ -10289,6 +10557,7 @@ function flowStepModel(step = {}, index = 0, state = {}) {
     ok: state.ok === true,
   };
   if (step.kind === 'wait') base.wait = step.what || '';
+  else if (step.kind === 'assert') base.condition = step.condition || null;
   else {
     base.cmd = step.cmd || '';
     base.args = Array.isArray(step.args) ? step.args : [];
@@ -10386,7 +10655,7 @@ async function settleFlow(cdp, sid, what, pendingReqs, opts = {}) {
   throw new Error(`Unknown wait: "${what}". Use "dom stable" or "network idle".`);
 }
 
-async function flowStr({ run, settle }, input, { format = 'text', targetId = null } = {}) {
+async function flowStr({ run, settle, assertCondition }, input, { format = 'text', targetId = null } = {}) {
   const steps = parseFlowSteps(input);
   if (steps.length === 0) throw new Error('flow: no steps. Example: flow <target> "click @1; wait dom stable; summary"');
   const lines = [`Flow: ${steps.length} step(s)`];
@@ -10404,12 +10673,19 @@ async function flowStr({ run, settle }, input, { format = 'text', targetId = nul
     const step = steps[i];
     const head = step.kind === 'wait'
       ? `[${i + 1}/${steps.length}] wait ${step.what}`
+      : step.kind === 'assert'
+      ? `[${i + 1}/${steps.length}] assert ${pageConditionDescription(step.condition)}`
       : `[${i + 1}/${steps.length}] ${step.cmd}${step.args.length ? ' ' + step.args.join(' ') : ''}`;
     lines.push(head);
     try {
       let body;
       if (step.kind === 'wait') {
         body = await settle(step.what);
+      } else if (step.kind === 'assert') {
+        if (typeof assertCondition !== 'function') throw new Error('flow: assertion probe is unavailable');
+        const assertion = await assertCondition(step.condition);
+        if (!assertion.matched) throw new Error(`Assertion failed: ${assertion.description}`);
+        body = `Assertion passed: ${assertion.description}`;
       } else {
         const r = await run(step);
         if (!r.ok) {
@@ -11684,15 +11960,45 @@ function formatSpawnDebugBrowserReadinessFailure(plan, readiness) {
   return lines.join('\n');
 }
 
+async function probeTcpPort({ host = DEFAULT_CDP_HOST, port, timeoutMs = 500, connect = options => net.createConnection(options) } = {}) {
+  if (!Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535) {
+    throw new Error(`spawn-debug-browser: invalid port ${port}`);
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const socket = connect({ host, port: Number(port) });
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket?.removeAllListeners?.();
+      socket?.on?.('error', () => {});
+      try { socket?.destroy?.(); } catch {}
+      fn(value);
+    };
+    const timer = setTimeout(() => finish(reject, new Error(`spawn-debug-browser: could not determine whether ${host}:${port} is free (probe timed out).`)), timeoutMs);
+    socket.once('connect', () => finish(resolve, { occupied: true }));
+    socket.once('error', error => {
+      if (error?.code === 'ECONNREFUSED') finish(resolve, { occupied: false });
+      else finish(reject, new Error(`spawn-debug-browser: could not probe ${host}:${port} (${error?.message || error}).`));
+    });
+  });
+}
+
 async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   const platform = deps.platform || process.platform;
   const fs = deps.fs || { existsSync, mkdirSync };
   const launcher = deps.spawn || spawn;
+  const probePort = deps.probeTcpPort || probeTcpPort;
   const waitForCdp = deps.waitForSpawnedCdp || waitForSpawnedCdp;
   const listTargets = deps.listSpawnedDebugTargets || listSpawnedDebugTargets;
   const fetcher = deps.fetcher || fetch;
   const opts = parseSpawnDebugBrowserArgs(args, env);
   const plan = buildSpawnDebugBrowserPlan(opts, platform, fs, env);
+  const portState = await probePort({ host: plan.host, port: plan.port });
+  if (portState?.occupied) {
+    throw new Error(`spawn-debug-browser: port ${plan.port} is already in use on ${plan.host}. Choose another port with --port <N>.`);
+  }
   try { fs.mkdirSync(plan.profileDir, { recursive: true }); } catch {}
   const child = launcher(plan.exe, plan.args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const output = captureSpawnOutput(child);
@@ -12352,16 +12658,18 @@ async function runDaemon(targetId) {
           break;
         }
         case 'console': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          if (fopts.format === 'json') {
-            const flag = fopts.args[0];
-            result = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag));
-            if (flag !== '--all' && flag !== '--errors') {
+          const opts = parseConsoleArgs(args);
+          if (opts.mode === 'clear') {
+            const model = clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq);
+            result = opts.format === 'json' ? formatJson(model) : model.message;
+          } else if (opts.format === 'json') {
+            result = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, opts.mode));
+            if (opts.mode === 'new') {
               lastReadSeq.console = consoleBuf.latest();
               lastReadSeq.exception = exceptionBuf.latest();
             }
           } else {
-            result = await consoleStr(consoleBuf, exceptionBuf, lastReadSeq, fopts.args[0]);
+            result = await consoleStr(consoleBuf, exceptionBuf, lastReadSeq, opts.mode);
           }
           break;
         }
@@ -12738,12 +13046,14 @@ async function runDaemon(targetId) {
           result = await flowStr({
             run: (step) => handleCommand({ cmd: step.cmd, args: autoActionJsonArgs(step.cmd, step.args || [], fopts.format === 'json') }),
             settle: (what) => settleFlow(cdp, sessionId, what, pendingReqs),
+            assertCondition: (condition) => probePageCondition(cdp, sessionId, condition),
           }, input, { format: fopts.format, targetId });
           break;
         }
         case 'repeat': {
           result = await repeatStr({
             run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] }),
+            probeCondition: (condition) => probePageCondition(cdp, sessionId, condition),
           }, args);
           break;
         }
@@ -13048,7 +13358,7 @@ Usage: cdp <command> [args]
                                     custom --latency ms --download kbps --upload kbps
   status <target> [--runtime]        Page state + new console/exception entries (primary debug entry point)
                                     --runtime: include Performance.getMetrics counters
-  console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
+  console <target> [--all|--errors|--clear] Console buffer (default: new entries only; --clear: reset console+exception baseline)
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
   report <target> [--last N|--all] [--format json] [--qa|--summary] [--compact]
                                     Session action timeline + evidence summary + JSONL log path
@@ -13141,10 +13451,13 @@ Usage: cdp <command> [args]
   flow  <target> "<steps>" [--format json]  Sequential runner. Steps separated by ";".
                                     Each step is a normal command (e.g. "click @1") or a wait alias:
                                     "wait dom stable" / "wait network idle" — uses settle helper.
+                                    Assertions: "assert selector <css>", "assert selector-missing <css>", "assert text <value>".
                                     Halts on the first failing step; JSON returns chrome-cdp-ex.flow.v1.
                                     Example: flow A7BA "click @1; wait dom stable; summary; console --errors"
   repeat <target> <N> <cmd> [args]  Run a command up to N times (cap 50). Fail-fast by default.
                                     --continue / -c: keep going through errors and report tally.
+                                    --until-selector <css> | --until-selector-missing <css> | --until-text <text>
+                                    re-checks after each settled iteration; cap exhaustion exits non-zero.
                                     Cannot wrap repeat/batch/stop (recursion / IPC corruption).
                                     Can wrap flow for multi-step turn loops, e.g.
                                     repeat A7BA 3 flow "click @1; wait dom stable; text .log"
@@ -13170,6 +13483,7 @@ Usage: cdp <command> [args]
                                     Note: each new tab triggers a fresh "Allow debugging?" prompt
   spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]
                                     Launch an isolated debug profile (browser: edge|chrome|brave; default edge, port 9222).
+                                    Rejects an occupied listener before spawning; choose another --port.
                                     --host HOST binds remote debugging address (default 127.0.0.1).
                                     --headless [new|old], --no-sandbox, --disable-gpu help CI/container/headless runs.
                                     --wait-ms N bounds the readiness probe before success.
@@ -14466,24 +14780,25 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
   injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
-  parseFormatArgs, formatJson, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
-  evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, callStr, formatCallResult, evalBase64Decode,
+  parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
+  evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState,
   navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
-  parseRepeatArgs, repeatStr, autoActionJsonArgs,
+  parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   isBatchParallelUnsafeCommand,
   parseReplayArgs, parseReplayArtifact, replayStepFromAction, replayActionsStr,
   collectDaemonMetadata, assessDaemonFreshness, formatStaleDaemonMessage,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,
-  formatUnknownRefError, resolveRefNode, formatRefRect, isPriorityPerceiveTextLine,
+  formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, formatRefRect, isPriorityPerceiveTextLine,
   parseFrameOnlyRef, parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
   parseShotArgs, shotStr,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
+  probeTcpPort,
   waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,

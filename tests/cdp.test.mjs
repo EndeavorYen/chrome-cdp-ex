@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
+import { EventEmitter } from 'events';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const {
@@ -892,6 +893,37 @@ describe('parseReportArgs', () => {
 });
 
 describe('structured status and console models', () => {
+  it('parses supported console modes and rejects unknown flags', () => {
+    expect(T.parseConsoleArgs([])).toEqual({ mode: 'new', format: 'text' });
+    expect(T.parseConsoleArgs(['--errors'])).toEqual({ mode: 'errors', format: 'text' });
+    expect(T.parseConsoleArgs(['--all', '--format', 'json'])).toEqual({ mode: 'all', format: 'json' });
+    expect(T.parseConsoleArgs(['--clear'])).toEqual({ mode: 'clear', format: 'text' });
+    expect(() => T.parseConsoleArgs(['--wat'])).toThrow(/supported.*--all.*--errors.*--clear/i);
+    expect(() => T.parseConsoleArgs(['--all', '--errors'])).toThrow(/exactly one mode/i);
+  });
+
+  it('clears console and exception baselines while preserving new collection', () => {
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    const lastReadSeq = { console: 0, exception: 0 };
+    consoleBuf.push({ level: 'error', text: 'old error' });
+    exceptionBuf.push({ msg: 'old exception' });
+
+    const model = T.clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq);
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.console-baseline.v1',
+      cleared: { console: 1, exceptions: 1 },
+    });
+    expect(consoleBuf.all()).toEqual([]);
+    expect(exceptionBuf.all()).toEqual([]);
+    expect(lastReadSeq).toEqual({ console: 1, exception: 1 });
+
+    consoleBuf.push({ level: 'error', text: 'new error' });
+    expect(T.buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq).entries.map(entry => entry.text))
+      .toEqual(['new error']);
+  });
+
   it('builds a versioned console model using new entries by default', () => {
     const consoleBuf = new RingBuffer(10);
     const exceptionBuf = new RingBuffer(10);
@@ -5278,6 +5310,36 @@ describe('evalStr', () => {
     await evalStr(cdp, 'sid1', 'const r = await fetch("/api"); return r', true);
   });
 
+  it('returns the final expression from multi-statement async eval input', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        expect(params.expression).toBe('(async()=>{const value = await Promise.resolve(42); return (value);})()');
+        return { result: { value: 42 } };
+      },
+    });
+
+    await expect(evalStr(cdp, 'sid1', 'const value = await Promise.resolve(42); value', true)).resolves.toBe('42');
+  });
+
+  it('rejects an ambiguous multi-statement async eval instead of returning empty success', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => {
+        throw new Error('Runtime.evaluate should not be called');
+      },
+    });
+
+    await expect(evalStr(cdp, 'sid1', 'const value = await Promise.resolve(42); if (value) {}', true))
+      .rejects.toThrow(/add an explicit return/i);
+    expect(cdp.calls).toHaveLength(0);
+  });
+
+  it('does not treat return text inside strings or comments as an explicit return statement', () => {
+    expect(T.wrapAwaitExpression('const msg = "return"; await Promise.resolve(1); msg', true))
+      .toBe('(async()=>{const msg = "return"; await Promise.resolve(1); return (msg);})()');
+    expect(T.wrapAwaitExpression('const value = await Promise.resolve(42); /* return */ value', true))
+      .toBe('(async()=>{const value = await Promise.resolve(42); return (/* return */ value);})()');
+  });
+
   it('should pass awaitPromise and returnByValue to CDP', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': (params) => {
@@ -6445,9 +6507,12 @@ describe('reloadStr', () => {
 describe('clickStr', () => {
   it('should click element by CSS selector', async () => {
     const cdp = createMockCDP({
-      'Runtime.evaluate': () => ({
-        result: { value: { ok: true, x: 100, y: 200, tag: 'BUTTON', text: 'Submit' } },
-      }),
+      'Runtime.evaluate': (params) => {
+        expect(params.expression).toContain('requestAnimationFrame');
+        expect(params.expression).toContain('maxSamples = fullyVisible ? 2 : 60');
+        expect(params.expression).toContain('currentVisible && stableSamples >= 2');
+        return { result: { value: { ok: true, x: 100, y: 200, tag: 'BUTTON', text: 'Submit' } } };
+      },
       'Input.dispatchMouseEvent': () => ({}),
     });
     const result = await clickStr(cdp, 'sid1', '.btn-submit', new Map());
@@ -6460,9 +6525,13 @@ describe('clickStr', () => {
     const refMap = new Map([[1, 101]]);
     const cdp = createMockCDP({
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-      'Runtime.callFunctionOn': () => ({
-        result: { value: { x: 50, y: 60, w: 100, h: 40, tag: 'A', text: 'Link' } },
-      }),
+      'Runtime.callFunctionOn': (params) => {
+        expect(params.functionDeclaration).toContain('requestAnimationFrame');
+        expect(params.functionDeclaration).toContain('maxSamples = fullyVisible ? 2 : 60');
+        expect(params.functionDeclaration).toContain('currentVisible && stableSamples >= 2');
+        expect(params.awaitPromise).toBe(true);
+        return { result: { value: { x: 50, y: 60, w: 100, h: 40, tag: 'A', text: 'Link' } } };
+      },
       'Input.dispatchMouseEvent': () => ({}),
     });
     const result = await clickStr(cdp, 'sid1', '@1', refMap);
@@ -8344,6 +8413,15 @@ describe('parseFlowSteps', () => {
       { kind: 'command', cmd: 'summary', args: [] },
     ]);
   });
+
+  it('parses selector and visible-text assertions as postcondition steps', () => {
+    expect(parseFlowSteps('assert selector .done; assert selector-missing .loading; assert text Battle complete'))
+      .toEqual([
+        { kind: 'assert', condition: { kind: 'selector-exists', value: '.done' } },
+        { kind: 'assert', condition: { kind: 'selector-missing', value: '.loading' } },
+        { kind: 'assert', condition: { kind: 'text', value: 'Battle complete' } },
+      ]);
+  });
 });
 
 // =========================================================================
@@ -8379,6 +8457,42 @@ describe('flowStr', () => {
     expect(settleCalls).toEqual(['dom stable', 'network idle']);
     expect(out).toContain('settled: dom stable');
     expect(out).toContain('settled: network idle');
+  });
+
+  it('runs flow assertions through the shared condition probe', async () => {
+    const conditions = [];
+    const out = await flowStr({
+      run: async () => ({ ok: true, result: 'ok' }),
+      settle: async () => '',
+      assertCondition: async condition => {
+        conditions.push(condition);
+        return { matched: true, description: 'selector .done exists' };
+      },
+    }, 'assert selector .done; summary');
+
+    expect(conditions).toEqual([{ kind: 'selector-exists', value: '.done' }]);
+    expect(out).toContain('Assertion passed: selector .done exists');
+  });
+
+  it('halts and marks downstream steps skipped when a flow assertion fails', async () => {
+    const out = await flowStr({
+      run: async () => ({ ok: true, result: 'unexpected' }),
+      settle: async () => '',
+      assertCondition: async () => ({ matched: false, description: 'text includes "Battle complete"' }),
+    }, 'assert text Battle complete; summary', { format: 'json', targetId: 'ABC123' });
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      halted: true,
+      counts: { steps: 2, ok: 0, failed: 1, skipped: 1 },
+      failedStep: {
+        index: 1,
+        kind: 'assert',
+        ok: false,
+        error: 'Assertion failed: text includes "Battle complete"',
+      },
+    });
+    expect(parsed.steps[1]).toMatchObject({ index: 2, cmd: 'summary', skipped: true });
   });
 
   it('halts immediately on the first failing step', async () => {
@@ -9871,6 +9985,48 @@ describe('detectBrowserPath / buildSpawnDebugBrowserPlan', () => {
 describe('spawnDebugBrowserStr', () => {
   const { spawnDebugBrowserStr } = T;
 
+  it('keeps an error guard while destroying a connected port probe socket', async () => {
+    class ResetOnDestroySocket extends EventEmitter {
+      destroy() {
+        const error = new Error('read ECONNRESET');
+        error.code = 'ECONNRESET';
+        this.emit('error', error);
+      }
+    }
+    const socket = new ResetOnDestroySocket();
+    const probe = T.probeTcpPort({
+      host: '127.0.0.1',
+      port: 9333,
+      connect: () => {
+        queueMicrotask(() => socket.emit('connect'));
+        return socket;
+      },
+    });
+
+    await expect(probe).resolves.toEqual({ occupied: true });
+  });
+
+  it.each([
+    ['responsive CDP listener', { occupied: true, cdpResponsive: true }],
+    ['unresponsive listener', { occupied: true, cdpResponsive: false }],
+  ])('rejects an occupied port before spawning for a %s', async (_label, probeResult) => {
+    let spawnCalls = 0;
+    const fs = { existsSync: () => true, mkdirSync: () => {} };
+
+    await expect(spawnDebugBrowserStr(['chrome', '--port', '9333'], { TMPDIR: '/tmp' }, {
+      fs,
+      platform: 'darwin',
+      probeTcpPort: async () => probeResult,
+      waitForSpawnedCdp: async () => ({ ok: true, port: 9333, product: 'Chrome/126' }),
+      spawn: () => {
+        spawnCalls++;
+        return { pid: 4242, unref() {} };
+      },
+    })).rejects.toThrow(/port 9333 is already in use.*choose another port/i);
+
+    expect(spawnCalls).toBe(0);
+  });
+
   it('reports the launch command and next-step usage', async () => {
     const calls = [];
     const fakeSpawn = (exe, args, _opts) => {
@@ -9882,6 +10038,7 @@ describe('spawnDebugBrowserStr', () => {
       fs,
       spawn: fakeSpawn,
       platform: 'darwin',
+      probeTcpPort: async () => ({ occupied: false }),
       waitForSpawnedCdp: async () => ({ ok: true, port: 9311, product: 'Edge/126' }),
     });
     expect(out).toContain('Spawned edge debug profile on CDP_PORT=9311');
@@ -10265,6 +10422,50 @@ describe('parseRepeatArgs', () => {
     expect(opts.args).toEqual(['click @1; wait dom stable']);
   });
 
+  it('parses one bounded stop condition without forwarding it to the inner command', () => {
+    expect(parseRepeatArgs(['20', 'click', '.attack', '--until-selector', '.battle-end'])).toMatchObject({
+      count: 20,
+      cmd: 'click',
+      args: ['.attack'],
+      condition: { kind: 'selector-exists', value: '.battle-end' },
+    });
+    expect(parseRepeatArgs(['20', '--until-selector-missing', '.loading', 'press', 'space'])).toMatchObject({
+      cmd: 'press',
+      args: ['space'],
+      condition: { kind: 'selector-missing', value: '.loading' },
+    });
+    expect(parseRepeatArgs(['20', 'press', 'space', '--until-text', 'Battle complete']).condition)
+      .toEqual({ kind: 'text', value: 'Battle complete' });
+  });
+
+  it('rejects conflicting or valueless repeat conditions before dispatch', () => {
+    expect(() => parseRepeatArgs(['3', 'press', 'c', '--until-text'])).toThrow(/requires a value/);
+    expect(() => parseRepeatArgs(['3', 'press', 'c', '--until-text', '--continue'])).toThrow(/requires a value/);
+    expect(() => parseRepeatArgs(['3', 'press', 'c', '--until-text', 'done', '--until-selector', '.done']))
+      .toThrow(/exactly one.*condition/i);
+  });
+
+  it('probes selector existence, absence, and visible text through fresh page evaluation', async () => {
+    const expressions = [];
+    const cdp = createMockCDP({
+      'Runtime.evaluate': params => {
+        expressions.push(params.expression);
+        return { result: { value: JSON.stringify({ matched: true }) } };
+      },
+    });
+
+    await expect(T.probePageCondition(cdp, 'sid', { kind: 'selector-exists', value: '.done' }))
+      .resolves.toEqual({ matched: true, description: 'selector .done exists' });
+    await expect(T.probePageCondition(cdp, 'sid', { kind: 'selector-missing', value: '.loading' }))
+      .resolves.toEqual({ matched: true, description: 'selector .loading is missing' });
+    await expect(T.probePageCondition(cdp, 'sid', { kind: 'text', value: '戰鬥結束' }))
+      .resolves.toEqual({ matched: true, description: 'text includes "戰鬥結束"' });
+
+    expect(expressions[0]).toContain('!!document.querySelector(".done")');
+    expect(expressions[1]).toContain('!document.querySelector(".loading")');
+    expect(expressions[2]).toContain("document.body.innerText");
+  });
+
   it('requires a command name after the count', () => {
     expect(() => parseRepeatArgs(['3'])).toThrow(/command name required|repeat requires/);
   });
@@ -10296,6 +10497,22 @@ describe('repeatStr', () => {
     expect(out).toMatch(/Repeat halted at iteration 2\/5/);
     expect(out).toMatch(/✗ kaboom/);
     expect(out).toMatch(/Done: 1 ok, 1 failed/);
+  });
+
+  it('does not misreport a conditioned fail-fast halt as cap exhaustion', async () => {
+    let calls = 0;
+    const out = await repeatStr({
+      run: async () => {
+        calls++;
+        return { ok: false, error: 'kaboom' };
+      },
+      probeCondition: async () => ({ matched: false, description: 'selector .done exists' }),
+    }, ['5', 'click', '.x', '--until-selector', '.done']);
+
+    expect(calls).toBe(1);
+    expect(out).toContain('Repeat halted at iteration 1/5');
+    expect(out).toContain('kaboom');
+    expect(out).not.toContain('condition not satisfied after 5 iterations');
   });
 
   it('keeps going through errors when --continue is passed', async () => {
@@ -10341,6 +10558,29 @@ describe('repeatStr', () => {
     expect(calls).toBe(2);
     expect(out).toMatch(/Repeat halted at iteration 2\/5/);
     expect(out).toMatch(/Done: 1 ok, 1 failed/);
+  });
+
+  it('stops early when a freshly probed condition matches', async () => {
+    let runs = 0;
+    const probeResults = [false, false, true];
+    const out = await repeatStr({
+      run: async () => ({ ok: true, result: `turn ${++runs}` }),
+      probeCondition: async () => ({ matched: probeResults.shift(), description: 'text includes "Battle complete"' }),
+    }, ['10', 'press', 'space', '--until-text', 'Battle complete']);
+
+    expect(runs).toBe(3);
+    expect(out).toContain('Condition satisfied after iteration 3/10');
+    expect(out).toContain('[3/10] ok: turn 3');
+  });
+
+  it('fails distinctly with the transcript when the condition cap is exhausted', async () => {
+    let probes = 0;
+    await expect(repeatStr({
+      run: async () => ({ ok: true, result: 'still fighting' }),
+      probeCondition: async () => ({ matched: false, description: `fresh probe ${++probes}` }),
+    }, ['3', 'click', '.attack', '--until-selector', '.battle-end']))
+      .rejects.toThrow(/\[1\/3\] ok: still fighting.*\[3\/3\] ok: still fighting.*condition not satisfied after 3 iterations/s);
+    expect(probes).toBe(3);
   });
 });
 

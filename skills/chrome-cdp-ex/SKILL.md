@@ -306,6 +306,10 @@ scripts/cdp.mjs eval <target> --raw '{a:1}'      # compact JSON for objects (no 
 scripts/cdp.mjs eval64 <target> <base64>       # alias for `eval --b64`
 ```
 
+Multi-statement async eval returns a simple final expression, so
+`const value = await Promise.resolve(42); value` prints `42`. Use an explicit
+`return` when the final statement is a control block or otherwise ambiguous.
+
 > **Watch out:** avoid index-based selection (`querySelectorAll(...)[i]`) across multiple `eval` calls when the DOM can change between them (e.g. after clicking Ignore, card indices shift). Collect all data in one `eval` or use stable selectors.
 
 > **CJK / shell-hostile expressions:** quote-mangling across bash / zsh / PowerShell makes naive
@@ -321,7 +325,7 @@ The daemon buffers console output, exceptions, and action evidence in the backgr
 ```bash
 scripts/cdp.mjs status  <target> [--format json]                  # page state + new console/exception entries
 scripts/cdp.mjs summary <target> [--format json]                  # token-efficient page overview (~100 tokens)
-scripts/cdp.mjs console <target> [--all|--errors] [--format json] # console buffer (default: unread only)
+scripts/cdp.mjs console <target> [--all|--errors|--clear] [--format json] # console buffer (default: unread only)
 scripts/cdp.mjs frame   <target> [--format json]                  # frame tree with @fN refs (alias: frames)
 scripts/cdp.mjs overlay <target> [sel|@ref] [--format json]       # detect dialogs/overlays and hit-test blockers
 scripts/cdp.mjs report  <target> [--format json]                  # action timeline + evidence + screenshot attachments + JSONL log path
@@ -375,12 +379,13 @@ Executes multiple commands in a single IPC call. Default output is a JSON array 
 ```bash
 scripts/cdp.mjs flow <target> "click @1; wait dom stable; summary; console --errors"
 scripts/cdp.mjs flow <target> "fill @3 hello; click @7; wait network idle; perceive --since-action"
+scripts/cdp.mjs flow <target> "click .save; assert selector .saved; assert text Saved"
 scripts/cdp.mjs flow <target> --format json "summary; click #missing; status" # chrome-cdp-ex.flow.v1 action verdict/failure handoff
 ```
 
 Runs the steps in order, halting on the first failure. Text output is a readable step-by-step layout, so you can diff a failing pipeline at a glance. Add `--format json` when another agent or script needs `chrome-cdp-ex.flow.v1` with per-step status/verdict, attention counts for successful action verdicts such as `no-change`, the failed step, skipped downstream steps, classified `Action failure` kind when available, and executable `nextSteps`.
 
-- Each step is either a normal command (`click @1`, `summary`, `console --errors`, …) or a wait alias.
+- Each step is a normal command, a wait alias, or `assert selector <css>`, `assert selector-missing <css>`, or `assert text <value>`.
 - Wait aliases use the same settle helper as `record --until`:
   - `wait dom stable` — wait for DOM mutations to quiet for 500ms (max ~10s).
   - `wait network idle` — wait until pending XHR/Fetch/Document requests drain.
@@ -943,6 +948,9 @@ cdp record <t> --action click @5 --until "dom stable"
 cdp repeat <t> 5 press space          # advance 5 dialogue beats; halt on first failure
 cdp repeat <t> 8 --continue press c   # fire shortcut 8 times, ignore transient misses
 cdp repeat <t> 3 click @attackBtn     # 3 combat turns; fail-fast preserves diagnosability
+cdp repeat <t> 20 click "button[data-act='attack']" --until-text "戰鬥結束"
+cdp repeat <t> 20 click ".continue" --until-selector "[data-chapter-ending]"
+cdp repeat <t> 20 click ".continue" --until-selector-missing ".loading"
 
 # Multi-step body — wrap a flow as the inner command (one-level nesting OK):
 cdp repeat <t> 3 flow "click button[data-act='attack']; wait dom stable; text .combat-log"
@@ -956,6 +964,9 @@ fail-fast — the first failing iteration halts the loop and prints which
 iteration tripped, so you can re-perceive and adjust before the next attempt.
 Use `--continue` only when later iterations are independent of the failing one
 (e.g. retrying through transient input misses on a hot keyboard handler).
+When an `--until-*` condition is present, `repeat` re-queries the page after
+every settled successful iteration. A match exits early; reaching the finite
+cap without a match exits non-zero and keeps the per-iteration transcript.
 
 **Refs and `repeat`**: refs are not auto-remapped between iterations. If iteration
 1 mutates the DOM enough to invalidate `@5`, iteration 2 will fail with a
