@@ -1358,15 +1358,82 @@ function formatEvalValue(val, { raw = false } = {}) {
   return raw ? JSON.stringify(val) : JSON.stringify(val, null, 2);
 }
 
-async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
-  // Auto-wrap: if expression contains `await`, wrap in async IIFE
-  let expr = expression;
-  if (autoWrap && /\bawait\b/.test(expr)) {
-    // Multi-statement or has semicolons → block body; otherwise expression body
-    expr = expr.includes(';') || expr.includes('\n')
-      ? `(async()=>{${expr}})()`
-      : `(async()=>(${expr}))()`;
+function lastTopLevelSemicolon(source) {
+  let quote = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  let depth = 0;
+  let last = -1;
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    const next = source[i + 1];
+    if (lineComment) {
+      if (char === '\n') lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === '*' && next === '/') {
+        blockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      lineComment = true;
+      i++;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      blockComment = true;
+      i++;
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '(' || char === '[' || char === '{') depth++;
+    else if (char === ')' || char === ']' || char === '}') depth = Math.max(0, depth - 1);
+    else if (char === ';' && depth === 0) last = i;
   }
+  return last;
+}
+
+function wrapAwaitExpression(expression, autoWrap = false) {
+  const source = String(expression || '');
+  if (!autoWrap || !/\bawait\b/.test(source)) return source;
+  if (!source.includes(';') && !source.includes('\n')) return `(async()=>(${source}))()`;
+  if (/\breturn\b/.test(source)) return `(async()=>{${source}})()`;
+
+  const trimmed = source.replace(/;\s*$/, '').trimEnd();
+  const separator = lastTopLevelSemicolon(trimmed);
+  if (separator < 0) {
+    throw new Error('eval: multi-statement async input is ambiguous; add an explicit return for the desired result.');
+  }
+  const prefix = trimmed.slice(0, separator + 1);
+  const finalExpression = trimmed.slice(separator + 1).trim();
+  if (!finalExpression) {
+    throw new Error('eval: multi-statement async input is ambiguous; add an explicit return for the desired result.');
+  }
+  const wrapped = `(async()=>{${prefix} return (${finalExpression});})()`;
+  try {
+    // Syntax-check only; the returned function is never invoked here.
+    new Function(`return ${wrapped}`); // eslint-disable-line no-new-func
+  } catch {
+    throw new Error('eval: cannot infer the final async expression safely; add an explicit return for the desired result.');
+  }
+  return wrapped;
+}
+
+async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
+  const expr = wrapAwaitExpression(expression, autoWrap);
   const params = {
     expression: expr, returnByValue: true, awaitPromise: true,
   };
@@ -1381,13 +1448,7 @@ async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
 }
 
 function maybeAutoWrapEval(expression, autoWrap = false) {
-  let expr = expression;
-  if (autoWrap && /\bawait\b/.test(expr)) {
-    expr = expr.includes(';') || expr.includes('\n')
-      ? `(async()=>{${expr}})()`
-      : `(async()=>(${expr}))()`;
-  }
-  return expr;
+  return wrapAwaitExpression(expression, autoWrap);
 }
 
 async function evalFireAndForgetStr(cdp, sid, expression, autoWrap = false) {
@@ -14496,7 +14557,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
   parseFormatArgs, formatJson, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
-  evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, callStr, formatCallResult, evalBase64Decode,
+  evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState,
   navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,

@@ -5278,6 +5278,29 @@ describe('evalStr', () => {
     await evalStr(cdp, 'sid1', 'const r = await fetch("/api"); return r', true);
   });
 
+  it('returns the final expression from multi-statement async eval input', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        expect(params.expression).toBe('(async()=>{const value = await Promise.resolve(42); return (value);})()');
+        return { result: { value: 42 } };
+      },
+    });
+
+    await expect(evalStr(cdp, 'sid1', 'const value = await Promise.resolve(42); value', true)).resolves.toBe('42');
+  });
+
+  it('rejects an ambiguous multi-statement async eval instead of returning empty success', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => {
+        throw new Error('Runtime.evaluate should not be called');
+      },
+    });
+
+    await expect(evalStr(cdp, 'sid1', 'const value = await Promise.resolve(42); if (value) {}', true))
+      .rejects.toThrow(/add an explicit return/i);
+    expect(cdp.calls).toHaveLength(0);
+  });
+
   it('should pass awaitPromise and returnByValue to CDP', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': (params) => {
