@@ -13926,6 +13926,16 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
   return lines.join('\n');
 }
 
+function formatDaemonCommandError(err, options = {}) {
+  const model = options.format === 'json' && options.cmd === 'flow'
+    ? maybeParseJson(cliErrorMessage(err))
+    : null;
+  if (model?.schema === 'chrome-cdp-ex.flow.v1' && model.halted === true) {
+    return formatJson(model);
+  }
+  return formatCliError(err, options);
+}
+
 function exitCliError(err, { cmd = '', targetPrefix = '', format = 'text', platform = process.platform } = {}) {
   console.error(formatCliError(err, { cmd, targetPrefix, format, platform }));
   process.exit(1);
@@ -14738,7 +14748,7 @@ async function main() {
   if (response.ok) {
     if (response.result) console.log(response.result);
   } else {
-    console.error(formatCliError(response.error, { cmd, targetPrefix, format: cliErrorFormat }));
+    console.error(formatDaemonCommandError(response.error, { cmd, targetPrefix, format: cliErrorFormat }));
     process.exitCode = 1;
   }
 }
@@ -14821,7 +14831,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
-  formatCliError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   helpStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   detectRuntimeEnvironment, checkRuntimeEnvironment,

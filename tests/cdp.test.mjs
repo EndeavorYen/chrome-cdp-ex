@@ -14,7 +14,7 @@ const {
   validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
   formatPageList, buildPerceiveTree, perceivePageScript, perceiveStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, parseControlsArgs, visibleControlsPageScript, controlsStr, formatVisibleControlsText, navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, fillStr, fillReactStr, waitForStr,
-  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs, formatCliError,
+  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs, formatCliError, formatDaemonCommandError,
   formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   statusStr, clearObservationBuffers,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
@@ -6015,6 +6015,31 @@ describe('formatCliError', () => {
     expect(parsed.recovery.strategy).toBe('provide-url');
     expect(parsed.recovery.run).toBe('cdp nav AABBCCDD https://example.com');
     expect(parsed.nextSteps).toEqual(['cdp nav AABBCCDD https://example.com']);
+  });
+});
+
+describe('formatDaemonCommandError', () => {
+  it('preserves a halted flow model as the top-level JSON failure handoff', () => {
+    const flow = {
+      schema: 'chrome-cdp-ex.flow.v1',
+      halted: true,
+      counts: { steps: 2, ok: 0, failed: 1, skipped: 1 },
+      failedStep: { index: 1, cmd: 'click', error: 'Element not found: #missing' },
+      nextSteps: ['cdp perceive ABC123 -C -d 8'],
+    };
+    const parsed = JSON.parse(formatDaemonCommandError(JSON.stringify(flow), {
+      cmd: 'flow', targetPrefix: 'ABC123', format: 'json',
+    }));
+
+    expect(parsed).toEqual(flow);
+  });
+
+  it('keeps ordinary JSON command errors on the cli-error schema', () => {
+    const parsed = JSON.parse(formatDaemonCommandError('Element not found: #missing', {
+      cmd: 'click', targetPrefix: 'ABC123', format: 'json',
+    }));
+
+    expect(parsed).toMatchObject({ schema: 'chrome-cdp-ex.cli-error.v1', ok: false, command: 'click' });
   });
 });
 
