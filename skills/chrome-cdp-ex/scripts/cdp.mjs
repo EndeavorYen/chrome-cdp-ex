@@ -1425,7 +1425,7 @@ function wrapAwaitExpression(expression, autoWrap = false) {
   const wrapped = `(async()=>{${prefix} return (${finalExpression});})()`;
   try {
     // Syntax-check only; the returned function is never invoked here.
-    new Function(`return ${wrapped}`); // eslint-disable-line no-new-func
+    new Function(`return ${wrapped}`);
   } catch {
     throw new Error('eval: cannot infer the final async expression safely; add an explicit return for the desired result.');
   }
