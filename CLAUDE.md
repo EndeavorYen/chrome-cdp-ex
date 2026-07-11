@@ -15,7 +15,7 @@ These principles are **non-negotiable** and apply to every task in this reposito
 
 This is a **Claude Code plugin and portable agent skill** that gives LLM agents direct access to the user's running Chrome browser via the Chrome DevTools Protocol (CDP). It connects to existing browser sessions with login state, cookies, and open tabs; Playwright remains the better choice for clean deterministic test browsers.
 
-- **Command runtime**: `skills/chrome-cdp-ex/scripts/cdp.mjs` (about 14.5k lines at v2.11.0).
+- **Command runtime**: `skills/chrome-cdp-ex/scripts/cdp.mjs` (about 14.9k lines at v2.12.0).
 - **Focused helpers**: `skills/chrome-cdp-ex/scripts/lib/` owns action recovery, receipt surfaces, perception models, reports, and MCP mapping.
 - **MCP server**: `skills/chrome-cdp-ex/scripts/mcp-server.mjs` maps stdio MCP calls to the same CLI runtime.
 - **Skill definition**: `skills/chrome-cdp-ex/SKILL.md` contains agent instructions and the exhaustive command reference.
