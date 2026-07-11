@@ -10343,13 +10343,64 @@ const REPEAT_CAP = 50;
 // and `repeat`/`stop` are blocked to avoid recursion and IPC corruption.
 const REPEAT_BLOCKED = new Set(['repeat', 'batch', 'stop']);
 
+function parsePageConditionArgs(args = []) {
+  const flags = new Map([
+    ['--until-selector', 'selector-exists'],
+    ['--until-selector-missing', 'selector-missing'],
+    ['--until-text', 'text'],
+  ]);
+  const remainingArgs = [];
+  let condition = null;
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (!flags.has(token)) {
+      remainingArgs.push(token);
+      continue;
+    }
+    const value = args[++i];
+    if (value == null || value === '' || String(value).startsWith('--')) {
+      throw new Error(`repeat: ${token} requires a value.`);
+    }
+    if (condition) {
+      throw new Error('repeat: choose exactly one until condition.');
+    }
+    condition = { kind: flags.get(token), value: String(value) };
+  }
+  return { condition, remainingArgs };
+}
+
+function pageConditionDescription(condition = {}) {
+  if (condition.kind === 'selector-exists') return `selector ${condition.value} exists`;
+  if (condition.kind === 'selector-missing') return `selector ${condition.value} is missing`;
+  if (condition.kind === 'text') return `text includes ${JSON.stringify(condition.value)}`;
+  return 'unknown page condition';
+}
+
+async function probePageCondition(cdp, sid, condition) {
+  if (!condition?.kind || !condition?.value) throw new Error('page condition requires a kind and value');
+  const value = JSON.stringify(condition.value);
+  let expression;
+  if (condition.kind === 'selector-exists' || condition.kind === 'selector-missing') {
+    const negate = condition.kind === 'selector-missing';
+    expression = `JSON.stringify({ matched: ${negate ? '!' : '!!'}document.querySelector(${value}) })`;
+  } else if (condition.kind === 'text') {
+    expression = `JSON.stringify({ matched: ((document.body && document.body.innerText) || '').includes(${value}) })`;
+  } else {
+    throw new Error(`Unknown page condition: ${condition.kind}`);
+  }
+  const raw = await evalStr(cdp, sid, expression);
+  const result = JSON.parse(raw);
+  return { matched: result.matched === true, description: pageConditionDescription(condition) };
+}
+
 function parseRepeatArgs(args) {
   if (!Array.isArray(args) || args.length < 1) {
     throw new Error('repeat requires <count> <cmd> [args...]');
   }
-  const opts = { count: 0, cmd: null, args: [], continueOnError: false };
+  const parsedCondition = parsePageConditionArgs(args);
+  const opts = { count: 0, cmd: null, args: [], continueOnError: false, condition: parsedCondition.condition };
   const positional = [];
-  for (const a of args) {
+  for (const a of parsedCondition.remainingArgs) {
     if (a === '--continue' || a === '-c') opts.continueOnError = true;
     else positional.push(a);
   }
@@ -10371,7 +10422,7 @@ function parseRepeatArgs(args) {
   return opts;
 }
 
-async function repeatStr({ run }, args) {
+async function repeatStr({ run, probeCondition }, args) {
   const opts = parseRepeatArgs(args);
   const head = `Repeat ${opts.count}× ${opts.cmd}${opts.args.length ? ' ' + opts.args.join(' ') : ''}${opts.continueOnError ? ' (--continue)' : ''}`;
   const lines = [head];
@@ -10382,6 +10433,16 @@ async function repeatStr({ run }, args) {
       okCount++;
       const body = (r.result || '').toString().split('\n')[0].slice(0, 200);
       lines.push(body ? `[${i}/${opts.count}] ok: ${body}` : `[${i}/${opts.count}] ok`);
+      if (opts.condition) {
+        if (typeof probeCondition !== 'function') throw new Error('repeat: condition probe is unavailable');
+        const conditionResult = await probeCondition(opts.condition);
+        lines.push(`  Condition: ${conditionResult.description} — ${conditionResult.matched ? 'matched' : 'not matched'}`);
+        if (conditionResult.matched) {
+          lines.push(`Condition satisfied after iteration ${i}/${opts.count}`);
+          lines.push(`Done: ${okCount} ok, ${failCount} failed`);
+          return lines.join('\n');
+        }
+      }
     } else {
       failCount++;
       const errText = (r && r.error) || 'unknown error';
@@ -10393,6 +10454,10 @@ async function repeatStr({ run }, args) {
     }
   }
   lines.push(`Done: ${okCount} ok, ${failCount} failed`);
+  if (opts.condition) {
+    lines.push(`repeat: condition not satisfied after ${opts.count} iterations`);
+    throw new Error(lines.join('\n'));
+  }
   return lines.join('\n');
 }
 
@@ -10406,6 +10471,19 @@ function parseFlowSteps(input) {
       const what = parts.slice(1).join(' ').toLowerCase();
       return { kind: 'wait', what };
     }
+    if (head === 'assert') {
+      const assertionKind = parts[1];
+      const value = parts.slice(2).join(' ').replace(/^(['"])(.*)\1$/, '$2');
+      const kinds = {
+        selector: 'selector-exists',
+        'selector-missing': 'selector-missing',
+        text: 'text',
+      };
+      if (!kinds[assertionKind] || !value) {
+        throw new Error('flow assert: use "assert selector <css>", "assert selector-missing <css>", or "assert text <value>".');
+      }
+      return { kind: 'assert', condition: { kind: kinds[assertionKind], value } };
+    }
     return { kind: 'command', cmd: head, args: parts.slice(1) };
   });
 }
@@ -10417,6 +10495,7 @@ function flowStepModel(step = {}, index = 0, state = {}) {
     ok: state.ok === true,
   };
   if (step.kind === 'wait') base.wait = step.what || '';
+  else if (step.kind === 'assert') base.condition = step.condition || null;
   else {
     base.cmd = step.cmd || '';
     base.args = Array.isArray(step.args) ? step.args : [];
@@ -10514,7 +10593,7 @@ async function settleFlow(cdp, sid, what, pendingReqs, opts = {}) {
   throw new Error(`Unknown wait: "${what}". Use "dom stable" or "network idle".`);
 }
 
-async function flowStr({ run, settle }, input, { format = 'text', targetId = null } = {}) {
+async function flowStr({ run, settle, assertCondition }, input, { format = 'text', targetId = null } = {}) {
   const steps = parseFlowSteps(input);
   if (steps.length === 0) throw new Error('flow: no steps. Example: flow <target> "click @1; wait dom stable; summary"');
   const lines = [`Flow: ${steps.length} step(s)`];
@@ -10532,12 +10611,19 @@ async function flowStr({ run, settle }, input, { format = 'text', targetId = nul
     const step = steps[i];
     const head = step.kind === 'wait'
       ? `[${i + 1}/${steps.length}] wait ${step.what}`
+      : step.kind === 'assert'
+      ? `[${i + 1}/${steps.length}] assert ${pageConditionDescription(step.condition)}`
       : `[${i + 1}/${steps.length}] ${step.cmd}${step.args.length ? ' ' + step.args.join(' ') : ''}`;
     lines.push(head);
     try {
       let body;
       if (step.kind === 'wait') {
         body = await settle(step.what);
+      } else if (step.kind === 'assert') {
+        if (typeof assertCondition !== 'function') throw new Error('flow: assertion probe is unavailable');
+        const assertion = await assertCondition(step.condition);
+        if (!assertion.matched) throw new Error(`Assertion failed: ${assertion.description}`);
+        body = `Assertion passed: ${assertion.description}`;
       } else {
         const r = await run(step);
         if (!r.ok) {
@@ -12897,12 +12983,14 @@ async function runDaemon(targetId) {
           result = await flowStr({
             run: (step) => handleCommand({ cmd: step.cmd, args: autoActionJsonArgs(step.cmd, step.args || [], fopts.format === 'json') }),
             settle: (what) => settleFlow(cdp, sessionId, what, pendingReqs),
+            assertCondition: (condition) => probePageCondition(cdp, sessionId, condition),
           }, input, { format: fopts.format, targetId });
           break;
         }
         case 'repeat': {
           result = await repeatStr({
             run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] }),
+            probeCondition: (condition) => probePageCondition(cdp, sessionId, condition),
           }, args);
           break;
         }
@@ -14630,7 +14718,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState,
   navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
-  parseRepeatArgs, repeatStr, autoActionJsonArgs,
+  parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   isBatchParallelUnsafeCommand,
   parseReplayArgs, parseReplayArtifact, replayStepFromAction, replayActionsStr,
   collectDaemonMetadata, assessDaemonFreshness, formatStaleDaemonMessage,

@@ -8403,6 +8403,15 @@ describe('parseFlowSteps', () => {
       { kind: 'command', cmd: 'summary', args: [] },
     ]);
   });
+
+  it('parses selector and visible-text assertions as postcondition steps', () => {
+    expect(parseFlowSteps('assert selector .done; assert selector-missing .loading; assert text Battle complete'))
+      .toEqual([
+        { kind: 'assert', condition: { kind: 'selector-exists', value: '.done' } },
+        { kind: 'assert', condition: { kind: 'selector-missing', value: '.loading' } },
+        { kind: 'assert', condition: { kind: 'text', value: 'Battle complete' } },
+      ]);
+  });
 });
 
 // =========================================================================
@@ -8438,6 +8447,42 @@ describe('flowStr', () => {
     expect(settleCalls).toEqual(['dom stable', 'network idle']);
     expect(out).toContain('settled: dom stable');
     expect(out).toContain('settled: network idle');
+  });
+
+  it('runs flow assertions through the shared condition probe', async () => {
+    const conditions = [];
+    const out = await flowStr({
+      run: async () => ({ ok: true, result: 'ok' }),
+      settle: async () => '',
+      assertCondition: async condition => {
+        conditions.push(condition);
+        return { matched: true, description: 'selector .done exists' };
+      },
+    }, 'assert selector .done; summary');
+
+    expect(conditions).toEqual([{ kind: 'selector-exists', value: '.done' }]);
+    expect(out).toContain('Assertion passed: selector .done exists');
+  });
+
+  it('halts and marks downstream steps skipped when a flow assertion fails', async () => {
+    const out = await flowStr({
+      run: async () => ({ ok: true, result: 'unexpected' }),
+      settle: async () => '',
+      assertCondition: async () => ({ matched: false, description: 'text includes "Battle complete"' }),
+    }, 'assert text Battle complete; summary', { format: 'json', targetId: 'ABC123' });
+    const parsed = JSON.parse(out);
+
+    expect(parsed).toMatchObject({
+      halted: true,
+      counts: { steps: 2, ok: 0, failed: 1, skipped: 1 },
+      failedStep: {
+        index: 1,
+        kind: 'assert',
+        ok: false,
+        error: 'Assertion failed: text includes "Battle complete"',
+      },
+    });
+    expect(parsed.steps[1]).toMatchObject({ index: 2, cmd: 'summary', skipped: true });
   });
 
   it('halts immediately on the first failing step', async () => {
@@ -10346,6 +10391,50 @@ describe('parseRepeatArgs', () => {
     expect(opts.args).toEqual(['click @1; wait dom stable']);
   });
 
+  it('parses one bounded stop condition without forwarding it to the inner command', () => {
+    expect(parseRepeatArgs(['20', 'click', '.attack', '--until-selector', '.battle-end'])).toMatchObject({
+      count: 20,
+      cmd: 'click',
+      args: ['.attack'],
+      condition: { kind: 'selector-exists', value: '.battle-end' },
+    });
+    expect(parseRepeatArgs(['20', '--until-selector-missing', '.loading', 'press', 'space'])).toMatchObject({
+      cmd: 'press',
+      args: ['space'],
+      condition: { kind: 'selector-missing', value: '.loading' },
+    });
+    expect(parseRepeatArgs(['20', 'press', 'space', '--until-text', 'Battle complete']).condition)
+      .toEqual({ kind: 'text', value: 'Battle complete' });
+  });
+
+  it('rejects conflicting or valueless repeat conditions before dispatch', () => {
+    expect(() => parseRepeatArgs(['3', 'press', 'c', '--until-text'])).toThrow(/requires a value/);
+    expect(() => parseRepeatArgs(['3', 'press', 'c', '--until-text', '--continue'])).toThrow(/requires a value/);
+    expect(() => parseRepeatArgs(['3', 'press', 'c', '--until-text', 'done', '--until-selector', '.done']))
+      .toThrow(/exactly one.*condition/i);
+  });
+
+  it('probes selector existence, absence, and visible text through fresh page evaluation', async () => {
+    const expressions = [];
+    const cdp = createMockCDP({
+      'Runtime.evaluate': params => {
+        expressions.push(params.expression);
+        return { result: { value: JSON.stringify({ matched: true }) } };
+      },
+    });
+
+    await expect(T.probePageCondition(cdp, 'sid', { kind: 'selector-exists', value: '.done' }))
+      .resolves.toEqual({ matched: true, description: 'selector .done exists' });
+    await expect(T.probePageCondition(cdp, 'sid', { kind: 'selector-missing', value: '.loading' }))
+      .resolves.toEqual({ matched: true, description: 'selector .loading is missing' });
+    await expect(T.probePageCondition(cdp, 'sid', { kind: 'text', value: '戰鬥結束' }))
+      .resolves.toEqual({ matched: true, description: 'text includes "戰鬥結束"' });
+
+    expect(expressions[0]).toContain('!!document.querySelector(".done")');
+    expect(expressions[1]).toContain('!document.querySelector(".loading")');
+    expect(expressions[2]).toContain("document.body.innerText");
+  });
+
   it('requires a command name after the count', () => {
     expect(() => parseRepeatArgs(['3'])).toThrow(/command name required|repeat requires/);
   });
@@ -10422,6 +10511,29 @@ describe('repeatStr', () => {
     expect(calls).toBe(2);
     expect(out).toMatch(/Repeat halted at iteration 2\/5/);
     expect(out).toMatch(/Done: 1 ok, 1 failed/);
+  });
+
+  it('stops early when a freshly probed condition matches', async () => {
+    let runs = 0;
+    const probeResults = [false, false, true];
+    const out = await repeatStr({
+      run: async () => ({ ok: true, result: `turn ${++runs}` }),
+      probeCondition: async () => ({ matched: probeResults.shift(), description: 'text includes "Battle complete"' }),
+    }, ['10', 'press', 'space', '--until-text', 'Battle complete']);
+
+    expect(runs).toBe(3);
+    expect(out).toContain('Condition satisfied after iteration 3/10');
+    expect(out).toContain('[3/10] ok: turn 3');
+  });
+
+  it('fails distinctly with the transcript when the condition cap is exhausted', async () => {
+    let probes = 0;
+    await expect(repeatStr({
+      run: async () => ({ ok: true, result: 'still fighting' }),
+      probeCondition: async () => ({ matched: false, description: `fresh probe ${++probes}` }),
+    }, ['3', 'click', '.attack', '--until-selector', '.battle-end']))
+      .rejects.toThrow(/\[1\/3\] ok: still fighting.*\[3\/3\] ok: still fighting.*condition not satisfied after 3 iterations/s);
+    expect(probes).toBe(3);
   });
 });
 
