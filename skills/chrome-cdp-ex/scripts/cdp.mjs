@@ -5478,17 +5478,48 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState) {
   }
 }
 
+function scrollSettledRectFunctionDeclaration() {
+  return `async function() {
+    const readRect = () => {
+      const rect = this.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
+    };
+    const initial = readRect();
+    const fullyVisible = initial.x >= 0 && initial.y >= 0 &&
+      initial.x + initial.w <= window.innerWidth && initial.y + initial.h <= window.innerHeight;
+    if (!fullyVisible) this.scrollIntoView({ block: 'center', inline: 'center' });
+    const maxSamples = 12;
+    let previous = readRect();
+    let stableSamples = 0;
+    for (let sample = 0; sample < maxSamples; sample++) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const current = readRect();
+      const movement = Math.max(
+        Math.abs(current.x - previous.x),
+        Math.abs(current.y - previous.y),
+        Math.abs(current.w - previous.w),
+        Math.abs(current.h - previous.h),
+      );
+      previous = current;
+      stableSamples = movement < 0.5 ? stableSamples + 1 : 0;
+      if (stableSamples >= 1) break;
+    }
+    return {
+      ...previous,
+      tag: this.tagName,
+      text: (this.textContent || '').trim().substring(0, 80),
+    };
+  }`;
+}
+
 async function resolveRef(cdp, sid, refMap, ref, refState) {
   const frameParsed = parseFrameRef(ref);
   const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
   const result = await cdp.send('Runtime.callFunctionOn', {
     objectId,
-    functionDeclaration: `function() {
-      this.scrollIntoView({ block: 'center', inline: 'center' });
-      const rect = this.getBoundingClientRect();
-      return { x: rect.x, y: rect.y, w: rect.width, h: rect.height, tag: this.tagName, text: this.textContent.trim().substring(0, 80) };
-    }`,
+    functionDeclaration: scrollSettledRectFunctionDeclaration(),
     returnByValue: true,
+    awaitPromise: true,
   }, sid);
   const value = result.result.value || {};
   if (frameParsed) {
@@ -7186,12 +7217,11 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
     return `Clicked <${r.tag}> "${r.text}" (${selector})`;
   }
   const expr = `
-    (function() {
+    (async function() {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
-      el.scrollIntoView({ block: 'center', inline: 'center' });
-      const rect = el.getBoundingClientRect();
-      return { ok: true, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, tag: el.tagName, text: el.textContent.trim().substring(0, 80) };
+      const rect = await (${scrollSettledRectFunctionDeclaration()}).call(el);
+      return { ok: true, x: rect.x + rect.w / 2, y: rect.y + rect.h / 2, tag: rect.tag, text: rect.text };
     })()
   `;
   const result = await evalStr(cdp, sid, expr);
@@ -14567,7 +14597,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   collectDaemonMetadata, assessDaemonFreshness, formatStaleDaemonMessage,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,
-  formatUnknownRefError, resolveRefNode, formatRefRect, isPriorityPerceiveTextLine,
+  formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, formatRefRect, isPriorityPerceiveTextLine,
   parseFrameOnlyRef, parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,

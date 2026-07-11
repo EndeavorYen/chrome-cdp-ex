@@ -6468,9 +6468,11 @@ describe('reloadStr', () => {
 describe('clickStr', () => {
   it('should click element by CSS selector', async () => {
     const cdp = createMockCDP({
-      'Runtime.evaluate': () => ({
-        result: { value: { ok: true, x: 100, y: 200, tag: 'BUTTON', text: 'Submit' } },
-      }),
+      'Runtime.evaluate': (params) => {
+        expect(params.expression).toContain('requestAnimationFrame');
+        expect(params.expression).toContain('maxSamples = 12');
+        return { result: { value: { ok: true, x: 100, y: 200, tag: 'BUTTON', text: 'Submit' } } };
+      },
       'Input.dispatchMouseEvent': () => ({}),
     });
     const result = await clickStr(cdp, 'sid1', '.btn-submit', new Map());
@@ -6483,9 +6485,12 @@ describe('clickStr', () => {
     const refMap = new Map([[1, 101]]);
     const cdp = createMockCDP({
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-      'Runtime.callFunctionOn': () => ({
-        result: { value: { x: 50, y: 60, w: 100, h: 40, tag: 'A', text: 'Link' } },
-      }),
+      'Runtime.callFunctionOn': (params) => {
+        expect(params.functionDeclaration).toContain('requestAnimationFrame');
+        expect(params.functionDeclaration).toContain('maxSamples = 12');
+        expect(params.awaitPromise).toBe(true);
+        return { result: { value: { x: 50, y: 60, w: 100, h: 40, tag: 'A', text: 'Link' } } };
+      },
       'Input.dispatchMouseEvent': () => ({}),
     });
     const result = await clickStr(cdp, 'sid1', '@1', refMap);
