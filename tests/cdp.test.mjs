@@ -892,6 +892,37 @@ describe('parseReportArgs', () => {
 });
 
 describe('structured status and console models', () => {
+  it('parses supported console modes and rejects unknown flags', () => {
+    expect(T.parseConsoleArgs([])).toEqual({ mode: 'new', format: 'text' });
+    expect(T.parseConsoleArgs(['--errors'])).toEqual({ mode: 'errors', format: 'text' });
+    expect(T.parseConsoleArgs(['--all', '--format', 'json'])).toEqual({ mode: 'all', format: 'json' });
+    expect(T.parseConsoleArgs(['--clear'])).toEqual({ mode: 'clear', format: 'text' });
+    expect(() => T.parseConsoleArgs(['--wat'])).toThrow(/supported.*--all.*--errors.*--clear/i);
+    expect(() => T.parseConsoleArgs(['--all', '--errors'])).toThrow(/exactly one mode/i);
+  });
+
+  it('clears console and exception baselines while preserving new collection', () => {
+    const consoleBuf = new RingBuffer(10);
+    const exceptionBuf = new RingBuffer(10);
+    const lastReadSeq = { console: 0, exception: 0 };
+    consoleBuf.push({ level: 'error', text: 'old error' });
+    exceptionBuf.push({ msg: 'old exception' });
+
+    const model = T.clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq);
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.console-baseline.v1',
+      cleared: { console: 1, exceptions: 1 },
+    });
+    expect(consoleBuf.all()).toEqual([]);
+    expect(exceptionBuf.all()).toEqual([]);
+    expect(lastReadSeq).toEqual({ console: 1, exception: 1 });
+
+    consoleBuf.push({ level: 'error', text: 'new error' });
+    expect(T.buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq).entries.map(entry => entry.text))
+      .toEqual(['new error']);
+  });
+
   it('builds a versioned console model using new entries by default', () => {
     const consoleBuf = new RingBuffer(10);
     const exceptionBuf = new RingBuffer(10);

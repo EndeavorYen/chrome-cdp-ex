@@ -2109,9 +2109,45 @@ async function pageInfoModel(cdp, sid, opts = {}) {
   return { title, url, diagnostic: null };
 }
 
+function parseConsoleArgs(args = []) {
+  const fopts = parseFormatArgs(args, ['text', 'json']);
+  if (fopts.args.length > 1) {
+    throw new Error('console: choose exactly one mode: --all, --errors, or --clear.');
+  }
+  const flag = fopts.args[0];
+  const modes = new Map([
+    [undefined, 'new'],
+    ['--all', 'all'],
+    ['--errors', 'errors'],
+    ['--clear', 'clear'],
+  ]);
+  if (!modes.has(flag)) {
+    throw new Error(`console: unknown option ${flag}. Supported options: --all, --errors, --clear, --format text|json.`);
+  }
+  return { mode: modes.get(flag), format: fopts.format };
+}
+
+function clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq) {
+  const cleared = {
+    console: consoleBuf.all().length,
+    exceptions: exceptionBuf.all().length,
+  };
+  consoleBuf.clear();
+  exceptionBuf.clear();
+  lastReadSeq.console = consoleBuf.latest();
+  lastReadSeq.exception = exceptionBuf.latest();
+  return {
+    schema: 'chrome-cdp-ex.console-baseline.v1',
+    mode: 'clear',
+    cleared,
+    message: 'Console baseline cleared (console and exception buffers)',
+  };
+}
+
 function buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag) {
-  const showErrors = flag === '--errors';
-  const showAll = flag === '--all';
+  const mode = flag === '--errors' ? 'errors' : flag === '--all' ? 'all' : flag || 'new';
+  const showErrors = mode === 'errors';
+  const showAll = mode === 'all';
   let entries;
   let exceptions = [];
 
@@ -2209,8 +2245,9 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
 async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag) {
   let entries;
   let exceptions = [];
-  const showErrors = flag === '--errors';
-  const showAll = flag === '--all';
+  const mode = flag === '--errors' ? 'errors' : flag === '--all' ? 'all' : flag || 'new';
+  const showErrors = mode === 'errors';
+  const showAll = mode === 'all';
 
   if (showAll) {
     entries = consoleBuf.all();
@@ -12472,16 +12509,18 @@ async function runDaemon(targetId) {
           break;
         }
         case 'console': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          if (fopts.format === 'json') {
-            const flag = fopts.args[0];
-            result = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag));
-            if (flag !== '--all' && flag !== '--errors') {
+          const opts = parseConsoleArgs(args);
+          if (opts.mode === 'clear') {
+            const model = clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq);
+            result = opts.format === 'json' ? formatJson(model) : model.message;
+          } else if (opts.format === 'json') {
+            result = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, opts.mode));
+            if (opts.mode === 'new') {
               lastReadSeq.console = consoleBuf.latest();
               lastReadSeq.exception = exceptionBuf.latest();
             }
           } else {
-            result = await consoleStr(consoleBuf, exceptionBuf, lastReadSeq, fopts.args[0]);
+            result = await consoleStr(consoleBuf, exceptionBuf, lastReadSeq, opts.mode);
           }
           break;
         }
@@ -14586,7 +14625,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
   injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
-  parseFormatArgs, formatJson, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
+  parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState,
   navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
