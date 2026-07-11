@@ -82,7 +82,7 @@ const env = { ...process.env, CDP_PORT: String(port) };
 function run(args, opts = {}) {
   const res = spawnSync(process.execPath, [cdp, ...args], { cwd: repoRoot, env, encoding: 'utf8', timeout: opts.timeout || 20000 });
   if (res.status !== 0) {
-    throw new Error(`cdp ${args.join(' ')} failed\nSTDOUT:\n${res.stdout}\nSTDERR:\n${res.stderr}`);
+    throw new Error(`cdp ${args.join(' ')} failed${res.error ? ` (${res.error.message})` : ''}\nSTDOUT:\n${res.stdout}\nSTDERR:\n${res.stderr}`);
   }
   return (res.stdout || '').trim();
 }
@@ -216,6 +216,65 @@ assertIncludes(overlayBlockedOut, 'Next: cdp dismiss-modal', 'overlay dismissal 
 step('dismiss modal', () => assertIncludes(run(['dismiss-modal', target]), 'Dismissed modal', 'dismiss-modal'));
 const overlayClearOut = step('overlay detector clear', () => run(['overlay', target]));
 assertIncludes(overlayClearOut, 'Overlay detector: clear', 'overlay clear');
+
+const asyncEvalOut = step('multi-statement async eval final value', () => run([
+  'eval', target, 'const value = await Promise.resolve(42); value',
+]));
+if (asyncEvalOut !== '42') throw new Error(`multi-statement async eval should return 42, got:\n${asyncEvalOut}`);
+
+step('seed console baseline', () => run(['eval', target, 'console.error("baseline-old-error"); "seeded"']));
+const consoleClearOut = step('console clear baseline', () => run(['console', target, '--clear']));
+assertIncludes(consoleClearOut, 'Console baseline cleared', 'console --clear');
+const consoleEmptyOut = step('console baseline empty', () => run(['console', target, '--all']));
+assertIncludes(consoleEmptyOut, 'Console buffer is empty', 'console after clear');
+const unknownConsoleOut = step('console rejects unknown flags', () => runFailure(['console', target, '--wat']));
+assertIncludes(unknownConsoleOut, 'Supported options', 'console unknown flag');
+step('seed post-baseline console', () => run(['eval', target, 'console.error("after-clear-error"); "seeded"']));
+const consoleAfterClearOut = step('console collects after baseline', () => run(['console', target, '--all']));
+assertIncludes(consoleAfterClearOut, 'after-clear-error', 'console after baseline entry');
+if (consoleAfterClearOut.includes('baseline-old-error')) {
+  throw new Error(`console baseline leaked an old entry:\n${consoleAfterClearOut}`);
+}
+
+const resetLoop = () => run(['eval', target, '(function(){document.querySelectorAll(".battle-end").forEach(el=>el.remove()); const loopStatus=document.querySelector("#loop-status"); loopStatus.dataset.count="0"; loopStatus.textContent="loop:0"; return "reset";})()']);
+step('reset bounded loop fixture', resetLoop);
+const repeatUntilOut = step('repeat until selector', () => run([
+  'repeat', target, '6', 'click', '#loop-attack', '--until-selector', '.battle-end',
+]));
+assertIncludes(repeatUntilOut, 'Condition satisfied after iteration 3/6', 'repeat early success');
+const flowAssertOut = step('flow assertion postconditions', () => run([
+  'flow', target, 'assert selector .battle-end; assert text Battle complete',
+]));
+assertIncludes(flowAssertOut, 'Assertion passed: selector .battle-end exists', 'flow selector assertion');
+assertIncludes(flowAssertOut, 'Assertion passed: text includes "Battle complete"', 'flow text assertion');
+step('reset bounded loop fixture for cap', resetLoop);
+const repeatCapOut = step('repeat condition cap failure', () => runFailure([
+  'repeat', target, '2', 'click', '#loop-attack', '--until-text', 'Never complete',
+]));
+assertIncludes(repeatCapOut, '[1/2] ok:', 'repeat cap transcript');
+assertIncludes(repeatCapOut, 'condition not satisfied after 2 iterations', 'repeat cap failure');
+
+function smoothTargetRef() {
+  const out = run(['perceive', target, '-i', '-d', '8']);
+  const line = out.split('\n').find(candidate => candidate.includes('Smooth target'));
+  const ref = line?.match(/@\d+/)?.[0];
+  if (!ref) throw new Error(`smooth target ref missing:\n${out}`);
+  return ref;
+}
+function verifySmoothClick(viewport) {
+  run(['viewport', target, viewport]);
+  run(['eval', target, 'window.scrollTo(0,0); document.querySelector("#smooth-status").textContent="smooth:not-clicked"; "reset"']);
+  const ref = smoothTargetRef();
+  const click = run(['click', target, ref]);
+  assertIncludes(click, 'Clicked', `smooth click ${viewport}`);
+  const status = run(['eval', target, 'document.querySelector("#smooth-status").textContent']);
+  if (status !== 'smooth:clicked') throw new Error(`one ${ref} click did not update smooth target at ${viewport}: ${status}`);
+}
+step('smooth-scroll @ref desktop', () => verifySmoothClick('1280x720'));
+step('smooth-scroll @ref mobile', () => verifySmoothClick('375x812'));
+step('restore desktop viewport', () => run(['viewport', target, '1280x720']));
+step('restore top-level scroll baseline', () => run(['eval', target, 'document.documentElement.style.scrollBehavior="auto"; window.scrollTo(0,0); "restored"']));
+
 const throttleOut = step('network throttle slow-3g', () => run(['throttle', target, 'slow-3g']));
 assertIncludes(throttleOut, 'Network throttle: slow-3g', 'throttle');
 assertIncludes(throttleOut, 'Next: cdp throttle', 'throttle reset hint');
@@ -603,14 +662,14 @@ if (!Array.isArray(playwrightExportModel.review)) {
 }
 const replayArtifactPath = resolve(profileDir, 'record-actions.json');
 writeFileSync(replayArtifactPath, recordActionsJson);
-const replayOut = step('replay record-actions artifact', () => run(['replay', target, '--file', replayArtifactPath], { timeout: 30000 }));
+const replayOut = step('replay record-actions artifact', () => run(['replay', target, '--file', replayArtifactPath], { timeout: 70000 }));
 assertIncludes(replayOut, 'Replay:', 'replay');
 assertIncludes(replayOut, 'Environment:', 'replay environment');
 assertIncludes(replayOut, 'mock add **/api/mock*', 'replay mock environment');
 assertIncludes(replayOut, 'fill #cmd "look trainer"', 'replay fill');
 assertIncludes(replayOut, 'click #combat', 'replay click');
 assertIncludes(replayOut, 'Done:', 'replay summary');
-const replayJsonOut = step('replay record-actions artifact json', () => run(['replay', target, '--file', replayArtifactPath, '--format', 'json'], { timeout: 30000 }));
+const replayJsonOut = step('replay record-actions artifact json', () => run(['replay', target, '--file', replayArtifactPath, '--format', 'json'], { timeout: 70000 }));
 const parsedReplay = JSON.parse(replayJsonOut);
 if (parsedReplay.schema !== 'chrome-cdp-ex.replay.v1' || parsedReplay.counts?.actions < 1 || parsedReplay.counts?.environment < 1) {
   throw new Error(`replay --format json should return structured replay counts:\n${replayJsonOut}`);

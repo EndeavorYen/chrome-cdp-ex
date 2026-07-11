@@ -6,6 +6,7 @@
   <title>chrome-cdp-ex long-session smoke</title>
   <style>
     :root { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; color: #102133; }
+    html { scroll-behavior: smooth; }
     body { margin: 0; min-height: 2400px; background: #f7fafc; }
     main { max-width: 760px; padding: 32px; }
     .sidebar { position: fixed; right: 24px; top: 96px; width: 220px; padding: 16px; background: #0f172a; color: white; border-radius: 12px; }
@@ -28,6 +29,8 @@
     <button id="combat">Run combat</button>
     <button id="diagnostic">Run diagnostic</button>
     <button id="noop">No visible change</button>
+    <button id="loop-attack">Loop attack</button>
+    <p id="loop-status">loop:0</p>
     <label>Upload evidence <input id="upload-file" aria-label="upload evidence" type="file"></label>
     <p id="upload-status" role="status">upload:none</p>
     <div id="custom-clickable" onclick="appendLog('custom clickable used')">Custom clickable div</div>
@@ -45,6 +48,9 @@
       name="smoke-child"
       srcdoc="<main><h2>Smoke child frame</h2><button id='child-action'>Child action</button><p id='child-status'>child:none</p><script>document.getElementById('child-action').addEventListener('click',()=>{document.getElementById('child-status').textContent='success: child:clicked';});</script></main>">
     </iframe>
+    <div style="height: 1200px" aria-hidden="true"></div>
+    <button id="smooth-target">Smooth target</button>
+    <p id="smooth-status">smooth:not-clicked</p>
   </main>
   <aside class="sidebar">
     <button id="character">角色 (C)</button>
@@ -82,6 +88,21 @@
     });
     document.getElementById('noop').addEventListener('click', () => {
       document.getElementById('noop').blur();
+    });
+    document.getElementById('loop-attack').addEventListener('click', () => {
+      const status = document.getElementById('loop-status');
+      const count = Number(status.dataset.count || 0) + 1;
+      status.dataset.count = String(count);
+      status.textContent = count >= 3 ? 'loop:Battle complete' : 'loop:' + count;
+      if (count >= 3 && !document.querySelector('.battle-end')) {
+        const end = document.createElement('p');
+        end.className = 'battle-end';
+        end.textContent = 'Battle complete';
+        status.after(end);
+      }
+    });
+    document.getElementById('smooth-target').addEventListener('click', () => {
+      document.getElementById('smooth-status').textContent = 'smooth:clicked';
     });
     document.getElementById('refresh-account').addEventListener('click', () => {
       document.getElementById('auth-state').textContent = 'auth state preserved after refresh';

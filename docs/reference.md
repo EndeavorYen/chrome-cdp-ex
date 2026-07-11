@@ -34,6 +34,30 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 
 Use `--format json` when another agent or script needs structured handoff data instead of human text.
 
+## Baselines And Bounded State Checks
+
+Create a fresh diagnostic baseline with `console <target> --clear`. It clears
+both console and uncaught-exception buffers and resets unread cursors; unknown
+console flags fail instead of silently reading the buffer.
+
+For variable-length combat or dialogue, keep the mandatory finite cap and add
+one page condition:
+
+```bash
+cdp repeat <target> 20 click "button[data-act='attack']" --until-text "戰鬥結束"
+cdp repeat <target> 20 click ".continue" --until-selector "[data-ending]"
+cdp repeat <target> 20 click ".continue" --until-selector-missing ".loading"
+cdp flow <target> "click .save; assert selector .saved; assert text Saved"
+```
+
+Conditions are re-evaluated after every settled iteration. Cap exhaustion is a
+non-zero result with the full transcript. Stable selectors remain required;
+the loop never remaps stale `@ref` handles.
+
+Multi-statement async eval returns a simple trailing expression:
+`eval <target> "const value = await Promise.resolve(42); value"` prints `42`.
+Use an explicit `return` for ambiguous control-flow endings.
+
 For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a text-row budget from page density and console errors. Explicit `--last N` always wins.
 
 ## Install And Release Surface

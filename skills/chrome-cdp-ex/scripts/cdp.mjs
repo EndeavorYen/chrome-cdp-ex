@@ -5525,7 +5525,7 @@ function scrollSettledRectFunctionDeclaration() {
     const fullyVisible = initial.x >= 0 && initial.y >= 0 &&
       initial.x + initial.w <= window.innerWidth && initial.y + initial.h <= window.innerHeight;
     if (!fullyVisible) this.scrollIntoView({ block: 'center', inline: 'center' });
-    const maxSamples = 12;
+    const maxSamples = fullyVisible ? 2 : 60;
     let previous = readRect();
     let stableSamples = 0;
     for (let sample = 0; sample < maxSamples; sample++) {
@@ -5537,9 +5537,11 @@ function scrollSettledRectFunctionDeclaration() {
         Math.abs(current.w - previous.w),
         Math.abs(current.h - previous.h),
       );
+      const currentVisible = current.x >= 0 && current.y >= 0 &&
+        current.x + current.w <= window.innerWidth && current.y + current.h <= window.innerHeight;
       previous = current;
       stableSamples = movement < 0.5 ? stableSamples + 1 : 0;
-      if (stableSamples >= 1) break;
+      if (currentVisible && stableSamples >= 2) break;
     }
     return {
       ...previous,
@@ -5561,7 +5563,7 @@ async function resolveRef(cdp, sid, refMap, ref, refState) {
   const value = result.result.value || {};
   if (frameParsed) {
     const { entry } = frameScopedBackendNode(refState || {}, frameParsed);
-    const offset = await frameViewportOffset(cdp, sid, entry);
+    const offset = await frameViewportOffset(cdp, sid, entry, { settle: true });
     value.x = (Number(value.x) || 0) + offset.x;
     value.y = (Number(value.y) || 0) + offset.y;
   }
@@ -5754,7 +5756,7 @@ function baselineOutputForActionTarget(refState, fallbackOutput, target = {}) {
   return fallbackOutput;
 }
 
-async function frameViewportOffset(cdp, sid, frameEntry) {
+async function frameViewportOffset(cdp, sid, frameEntry, { settle = false } = {}) {
   if (!frameEntry?.frameId || !frameEntry.parentId) return { x: 0, y: 0 };
   let x = 0;
   let y = 0;
@@ -5764,11 +5766,12 @@ async function frameViewportOffset(cdp, sid, frameEntry) {
     const { object } = await cdp.send('DOM.resolveNode', { backendNodeId: owner.backendNodeId }, sid);
     const res = await cdp.send('Runtime.callFunctionOn', {
       objectId: object.objectId,
-      functionDeclaration: `function() {
+      functionDeclaration: settle ? scrollSettledRectFunctionDeclaration() : `function() {
         const r = this.getBoundingClientRect();
         return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
       }`,
       returnByValue: true,
+      awaitPromise: settle,
     }, sid);
     const rect = res.result.value || {};
     x += Number(rect.x) || 0;
@@ -13295,7 +13298,7 @@ Usage: cdp <command> [args]
                                     custom --latency ms --download kbps --upload kbps
   status <target> [--runtime]        Page state + new console/exception entries (primary debug entry point)
                                     --runtime: include Performance.getMetrics counters
-  console <target> [--all|--errors] Console buffer (default: new entries only; --all: last 200; --errors: errors+exceptions)
+  console <target> [--all|--errors|--clear] Console buffer (default: new entries only; --clear: reset console+exception baseline)
   summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
   report <target> [--last N|--all] [--format json] [--qa|--summary] [--compact]
                                     Session action timeline + evidence summary + JSONL log path
@@ -13388,10 +13391,13 @@ Usage: cdp <command> [args]
   flow  <target> "<steps>" [--format json]  Sequential runner. Steps separated by ";".
                                     Each step is a normal command (e.g. "click @1") or a wait alias:
                                     "wait dom stable" / "wait network idle" — uses settle helper.
+                                    Assertions: "assert selector <css>", "assert selector-missing <css>", "assert text <value>".
                                     Halts on the first failing step; JSON returns chrome-cdp-ex.flow.v1.
                                     Example: flow A7BA "click @1; wait dom stable; summary; console --errors"
   repeat <target> <N> <cmd> [args]  Run a command up to N times (cap 50). Fail-fast by default.
                                     --continue / -c: keep going through errors and report tally.
+                                    --until-selector <css> | --until-selector-missing <css> | --until-text <text>
+                                    re-checks after each settled iteration; cap exhaustion exits non-zero.
                                     Cannot wrap repeat/batch/stop (recursion / IPC corruption).
                                     Can wrap flow for multi-step turn loops, e.g.
                                     repeat A7BA 3 flow "click @1; wait dom stable; text .log"
@@ -13417,6 +13423,7 @@ Usage: cdp <command> [args]
                                     Note: each new tab triggers a fresh "Allow debugging?" prompt
   spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]
                                     Launch an isolated debug profile (browser: edge|chrome|brave; default edge, port 9222).
+                                    Rejects an occupied listener before spawning; choose another --port.
                                     --host HOST binds remote debugging address (default 127.0.0.1).
                                     --headless [new|old], --no-sandbox, --disable-gpu help CI/container/headless runs.
                                     --wait-ms N bounds the readiness probe before success.

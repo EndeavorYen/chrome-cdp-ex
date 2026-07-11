@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Features
+
+* add console baselines with strict option validation, bounded repeat stop conditions, and flow selector/text assertions (#108, #109).
+
+### Fixes
+
+* reject occupied debug-browser ports before launch, return inferred final expressions from multi-statement async eval, and settle smooth scrolling before pointer dispatch (#105, #106, #107).
+
 ## [2.11.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.10.0...v2.11.0) (2026-07-10)
 
 ### Features

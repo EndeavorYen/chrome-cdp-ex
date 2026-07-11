@@ -6501,7 +6501,8 @@ describe('clickStr', () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': (params) => {
         expect(params.expression).toContain('requestAnimationFrame');
-        expect(params.expression).toContain('maxSamples = 12');
+        expect(params.expression).toContain('maxSamples = fullyVisible ? 2 : 60');
+        expect(params.expression).toContain('currentVisible && stableSamples >= 2');
         return { result: { value: { ok: true, x: 100, y: 200, tag: 'BUTTON', text: 'Submit' } } };
       },
       'Input.dispatchMouseEvent': () => ({}),
@@ -6518,7 +6519,8 @@ describe('clickStr', () => {
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
       'Runtime.callFunctionOn': (params) => {
         expect(params.functionDeclaration).toContain('requestAnimationFrame');
-        expect(params.functionDeclaration).toContain('maxSamples = 12');
+        expect(params.functionDeclaration).toContain('maxSamples = fullyVisible ? 2 : 60');
+        expect(params.functionDeclaration).toContain('currentVisible && stableSamples >= 2');
         expect(params.awaitPromise).toBe(true);
         return { result: { value: { x: 50, y: 60, w: 100, h: 40, tag: 'A', text: 'Link' } } };
       },

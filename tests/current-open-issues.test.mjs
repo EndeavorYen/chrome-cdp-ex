@@ -38,6 +38,23 @@ function parseMcpFrames(buffer) {
 }
 
 describe('current open issue contracts', () => {
+  it('locks the #106-#109 issue-level helper contracts', async () => {
+    expect(T.wrapAwaitExpression('const value = await Promise.resolve(42); value', true))
+      .toBe('(async()=>{const value = await Promise.resolve(42); return (value);})()');
+    expect(T.scrollSettledRectFunctionDeclaration()).toContain('maxSamples = fullyVisible ? 2 : 60');
+    expect(T.parseConsoleArgs(['--clear', '--format', 'json'])).toEqual({ mode: 'clear', format: 'json' });
+    expect(T.parseRepeatArgs(['20', 'click', '.attack', '--until-text', 'Battle complete'])).toMatchObject({
+      count: 20,
+      cmd: 'click',
+      args: ['.attack'],
+      condition: { kind: 'text', value: 'Battle complete' },
+    });
+    expect(T.parseFlowSteps('assert selector .done; assert text Battle complete')).toEqual([
+      { kind: 'assert', condition: { kind: 'selector-exists', value: '.done' } },
+      { kind: 'assert', condition: { kind: 'text', value: 'Battle complete' } },
+    ]);
+  });
+
   it('registers the issue-driven commands in the CLI metadata', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'verify-click',
