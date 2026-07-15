@@ -45,6 +45,14 @@ import {
   formatReportRecommendationLines,
   normalizeReportTargetCommand,
 } from './lib/session-report.mjs';
+import {
+  hasResponsiveFindings,
+  normalizeResponsiveFindings,
+} from './lib/responsive-audit.mjs';
+import {
+  screenshotHealthScript,
+  unavailableScreenshotSanity,
+} from './lib/screenshot-health.mjs';
 
 const TIMEOUT = 15000;
 const SCREENSHOT_TIMEOUT = 30000;
@@ -1730,14 +1738,33 @@ async function screencastFallback(cdp, sid) {
   }
 }
 
-// Returns { data: base64string, fallback: boolean }.
+async function inspectScreenshotFrame(cdp, sid, data) {
+  try {
+    return JSON.parse(await evalStr(cdp, sid, screenshotHealthScript(data), false, { timeoutMs: 2000 }));
+  } catch (error) {
+    return unavailableScreenshotSanity(error?.message || 'inspection-unavailable');
+  }
+}
+
+async function waitForScreenshotPaint(cdp, sid) {
+  try {
+    await evalStr(cdp, sid, 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', false, { timeoutMs: 1000 });
+  } catch {
+    await sleep(32);
+  }
+}
+
+// Returns capture data plus bounded method/retry diagnostics.
 // `params` is passed to Page.captureScreenshot (format, clip, etc.).
-async function captureScreenshot(cdp, sid, params = { format: 'png' }) {
+async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {}) {
+  const inspectFrame = hooks.inspectFrame || (frame => inspectScreenshotFrame(cdp, sid, frame.data));
+  const waitForPaint = hooks.waitForPaint || (() => waitForScreenshotPaint(cdp, sid));
+  let captured;
   // Tier 1: standard captureScreenshot
   if (_screenshotTier <= 1) {
     try {
       const result = await cdp.send('Page.captureScreenshot', params, sid, SCREENSHOT_TIMEOUT);
-      return { data: result.data, fallback: false };
+      captured = { data: result.data, fallback: false, method: 'captureScreenshot' };
     } catch (err) {
       if (!err.message?.startsWith('Timeout:')) throw err;
       _screenshotTier = 2;
@@ -1745,11 +1772,11 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }) {
   }
 
   // Tier 2: captureScreenshot with fromSurface:false (captures from view, not compositor)
-  if (_screenshotTier <= 2) {
+  if (!captured && _screenshotTier <= 2) {
     try {
       const result = await cdp.send('Page.captureScreenshot',
         { ...params, fromSurface: false }, sid, SCREENSHOT_TIMEOUT);
-      return { data: result.data, fallback: true };
+      captured = { data: result.data, fallback: true, method: 'captureScreenshot-fromSurface-false' };
     } catch (err) {
       if (!err.message?.startsWith('Timeout:')) throw err;
       _screenshotTier = 3;
@@ -1757,14 +1784,43 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }) {
   }
 
   // Tier 3: screencast single-frame grab
+  if (!captured) {
+    try {
+      const data = await screencastFallback(cdp, sid);
+      captured = { data, fallback: true, method: 'screencast' };
+    } catch {
+      throw new Error(
+        'Screenshot failed: all methods timed out (Page.captureScreenshot, fromSurface:false, screencast).\n' +
+        'This Electron app may not support CDP screenshots. Use `perceive` for structural analysis instead.'
+      );
+    }
+  }
+
+  const firstFrameSanity = await inspectFrame(captured);
+  if (!firstFrameSanity?.retry || captured.method !== 'captureScreenshot') {
+    return { ...captured, retryCount: 0, sanity: firstFrameSanity };
+  }
+
+  await waitForPaint();
   try {
-    const data = await screencastFallback(cdp, sid);
-    return { data, fallback: true };
-  } catch {
-    throw new Error(
-      'Screenshot failed: all methods timed out (Page.captureScreenshot, fromSurface:false, screencast).\n' +
-      'This Electron app may not support CDP screenshots. Use `perceive` for structural analysis instead.'
-    );
+    const retry = await cdp.send('Page.captureScreenshot', { ...params, fromSurface: false }, sid, SCREENSHOT_TIMEOUT);
+    const sanity = await inspectFrame({ data: retry.data, method: 'captureScreenshot-fromSurface-false' });
+    return {
+      data: retry.data,
+      fallback: true,
+      method: 'captureScreenshot-fromSurface-false',
+      retryCount: 1,
+      sanity,
+      firstFrameSanity,
+    };
+  } catch (error) {
+    return {
+      ...captured,
+      retryCount: 1,
+      sanity: firstFrameSanity,
+      firstFrameSanity,
+      retryError: error?.message || String(error),
+    };
   }
 }
 
@@ -1785,18 +1841,20 @@ function parseShotArgs(args) {
 
 async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
   let filePath = null;
-  let opts = { quiet: false, verbose: false };
+  let opts = { quiet: false, verbose: false, onCapture: null };
   if (filePathOrOpts && typeof filePathOrOpts === 'object' && !Array.isArray(filePathOrOpts)) {
     filePath = filePathOrOpts.filePath || null;
-    opts = { quiet: !!filePathOrOpts.quiet, verbose: !!filePathOrOpts.verbose };
+    opts = { quiet: !!filePathOrOpts.quiet, verbose: !!filePathOrOpts.verbose, onCapture: filePathOrOpts.onCapture || null };
   } else {
     filePath = filePathOrOpts || null;
     if (maybeOpts && typeof maybeOpts === 'object') {
-      opts = { quiet: !!maybeOpts.quiet, verbose: !!maybeOpts.verbose };
+      opts = { quiet: !!maybeOpts.quiet, verbose: !!maybeOpts.verbose, onCapture: maybeOpts.onCapture || null };
     }
   }
   const dpr = await getDpr(cdp, sid);
-  const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png' });
+  const capture = await captureScreenshot(cdp, sid, { format: 'png' });
+  const { data, fallback, method, retryCount = 0, sanity } = capture;
+  opts.onCapture?.(capture);
   const out = filePath || resolve(RUNTIME_DIR, `screenshot-${(targetId || 'unknown').slice(0, 8)}.png`);
   writeFileSync(out, Buffer.from(data, 'base64'));
 
@@ -1804,6 +1862,7 @@ async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
   // path. Verbose adds full coordinate-mapping tutorial. Quiet hides hints.
   const lines = [out];
   if (fallback) lines.push(`(screenshot fallback — Page.captureScreenshot timed out)`);
+  if (retryCount) lines.push(`(screenshot retry=${retryCount} method=${method} reason=${sanity?.reason || 'unknown'})`);
   if (opts.quiet) return lines.join('\n');
   // Default: short DPR hint after the path. (`shot ... --verbose` for the long form.)
   lines.push(`Screenshot saved. DPR=${dpr}${dpr !== 1 ? ` (CSS px = image px / ${dpr})` : ''}`);
@@ -3697,6 +3756,85 @@ function responsiveAuditViewportScript({ maxControls = 12 } = {}) {
         const style = getComputedStyle(el);
         return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
       });
+    const rectModel = rect => ({
+      x: Math.round(rect.x), y: Math.round(rect.y),
+      width: Math.round(rect.width), height: Math.round(rect.height),
+    });
+    const identity = el => {
+      const id = el.id ? '#' + CSS.escape(el.id) : '';
+      const testId = el.getAttribute('data-testid');
+      const selector = id || (testId ? '[data-testid="' + CSS.escape(testId) + '"]' : el.tagName.toLowerCase());
+      const name = (el.getAttribute('aria-label') || el.innerText || el.value || el.title || '').trim().slice(0, 80);
+      return { selector, name };
+    };
+    const nearestScrollable = el => {
+      for (let parent = el.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+        const style = getComputedStyle(parent);
+        const scrollable = parent.scrollWidth > parent.clientWidth + 1 || parent.scrollHeight > parent.clientHeight + 1;
+        const clips = /(auto|scroll|hidden|clip)/.test(style.overflowX + ' ' + style.overflowY);
+        if (scrollable && clips) return parent;
+      }
+      return null;
+    };
+    const intersectionRatio = (a, b) => {
+      const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+      const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+      const area = width * height;
+      const base = Math.max(1, Math.min(a.width * a.height, b.width * b.height));
+      return area / base;
+    };
+    const clippedControls = [];
+    for (const el of allControls.slice(0, 100)) {
+      const container = nearestScrollable(el);
+      if (!container) continue;
+      const elementRect = el.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const visibleRatio = intersectionRatio(elementRect, containerRect);
+      const clippedRatio = Math.max(0, 1 - visibleRatio);
+      if (clippedRatio < 0.20) continue;
+      const role = container.getAttribute('role') || '';
+      const intentional = container.getAttribute('data-cdp-audit-scroll') === 'intentional'
+        || role === 'listbox' || role === 'feed';
+      clippedControls.push({
+        ...identity(el),
+        severity: intentional ? 'info' : 'warning',
+        clippedRatio: Math.round(clippedRatio * 1000) / 1000,
+        elementRect: rectModel(elementRect),
+        containerRect: rectModel(containerRect),
+        suppressed: intentional,
+        suppression: intentional ? 'intentional-scroll-container' : null,
+      });
+      if (clippedControls.length >= ${limit}) break;
+    }
+    const surfaces = Array.from(document.querySelectorAll('body *')).filter(el => {
+      const style = getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && (
+        style.position === 'fixed' || style.position === 'sticky'
+        || el.matches('dialog,[role="dialog"],[aria-modal="true"],[data-cdp-audit-overlay]')
+      );
+    }).slice(0, 80);
+    const overlaps = [];
+    for (const el of allControls.slice(0, 100)) {
+      const elementRect = el.getBoundingClientRect();
+      for (const surface of surfaces) {
+        if (surface === el || surface.contains(el) || el.contains(surface)) continue;
+        const occluderRect = surface.getBoundingClientRect();
+        const overlapRatio = intersectionRatio(elementRect, occluderRect);
+        if (overlapRatio < 0.20) continue;
+        overlaps.push({
+          ...identity(el),
+          occluderSelector: identity(surface).selector,
+          occluderName: identity(surface).name,
+          severity: 'warning',
+          overlapRatio: Math.round(overlapRatio * 1000) / 1000,
+          elementRect: rectModel(elementRect),
+          occluderRect: rectModel(occluderRect),
+        });
+        break;
+      }
+      if (overlaps.length >= ${limit}) break;
+    }
     const controls = allControls
       .slice(0, ${limit})
       .map(el => ({
@@ -3714,6 +3852,8 @@ function responsiveAuditViewportScript({ maxControls = 12 } = {}) {
       controls,
       controlsTruncated: allControls.length > ${limit},
       maxControls: ${limit},
+      clippedControls,
+      overlaps,
       blank,
     });
   })()`;
@@ -3732,9 +3872,10 @@ function buildResponsiveAuditModel({
   errors = [],
 } = {}) {
   const checks = viewports.map(entry => {
+    const findings = normalizeResponsiveFindings(entry);
     let status = 'pass';
     if (entry.error) status = 'fail';
-    else if (entry.blank || entry.overflowX || Number(consoleHealth.errors || 0) > 0) status = 'warn';
+    else if (entry.blank || entry.overflowX || hasResponsiveFindings(findings) || Number(consoleHealth.errors || 0) > 0) status = 'warn';
     return {
       viewport: entry.viewport,
       status,
@@ -3746,6 +3887,8 @@ function buildResponsiveAuditModel({
       scroll: entry.scroll || null,
       controlCount: entry.controlCount ?? null,
       controls: entry.controls || [],
+      findings,
+      screenshotCapture: entry.screenshotCapture || null,
       error: entry.error || null,
     };
   });
@@ -3788,6 +3931,7 @@ function formatResponsiveAuditReport(model) {
     lines.push(`- ${vp.viewport}: ${vp.status}` +
       `${vp.overflowX ? ' overflow-x' : ''}` +
       `${vp.blank ? ' blank' : ''}` +
+      `${vp.findings?.clippedControls?.length || vp.findings?.overlaps?.length ? ` clipped=${vp.findings.clippedControls.length} overlap=${vp.findings.overlaps.length}` : ''}` +
       `${vp.controlCount != null ? ` controls=${vp.controlCount}` : ''}` +
       `${vp.screenshot ? ` shot=${vp.screenshot}` : ''}` +
       `${vp.error ? ` error=${vp.error}` : ''}`);
@@ -3823,8 +3967,16 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
       const path = opts.outDir
         ? resolve(opts.outDir, `responsive-${size.replace(/[^0-9x]/gi, 'x')}-${Date.now()}.png`)
         : nextSessionScreenshotPath(session, `responsive-${size}`);
-      const shot = await shotStr(cdp, sid, path, targetId, { quiet: true });
+      let screenshotCapture = null;
+      const shot = await shotStr(cdp, sid, path, targetId, { quiet: true, onCapture: capture => { screenshotCapture = capture; } });
       entry.screenshot = shot.split('\n')[0];
+      if (screenshotCapture) {
+        entry.screenshotCapture = {
+          method: screenshotCapture.method,
+          retryCount: screenshotCapture.retryCount || 0,
+          sanity: screenshotCapture.sanity || null,
+        };
+      }
       appendSessionScreenshot(session, { kind: 'responsive-audit', path: entry.screenshot, note: size });
       if (!shotDir && !opts.outDir) {
         // default screenshots stay under session dir outside the repo

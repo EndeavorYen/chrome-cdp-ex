@@ -10735,3 +10735,61 @@ describe('formatUnknownRefError recovery wording', () => {
     expect(msg).toMatch(/stable CSS selector in batch\/loops|stable CSS selector/);
   });
 });
+
+describe('transient black screenshot recovery', () => {
+  it('retries one contradictory black frame and returns the valid alternate capture', async () => {
+    resetScreenshotTier();
+    let captures = 0;
+    const cdp = {
+      send: async (method, params) => {
+        expect(method).toBe('Page.captureScreenshot');
+        captures += 1;
+        return { data: captures === 1 ? 'black-frame' : 'valid-frame', params };
+      },
+    };
+    const inspected = [];
+
+    const result = await captureScreenshot(cdp, 'sid', { format: 'png' }, {
+      inspectFrame: async ({ data }) => {
+        inspected.push(data);
+        return data === 'black-frame'
+          ? { retry: true, reason: 'near-black-frame-on-light-page', nearBlackRatio: 0.96, pageTone: 'light' }
+          : { retry: false, reason: 'frame-consistent', nearBlackRatio: 0.02, pageTone: 'light' };
+      },
+      waitForPaint: async () => {},
+    });
+
+    expect(captures).toBe(2);
+    expect(inspected).toEqual(['black-frame', 'valid-frame']);
+    expect(result).toMatchObject({
+      data: 'valid-frame',
+      method: 'captureScreenshot-fromSurface-false',
+      retryCount: 1,
+      sanity: { retry: false, reason: 'frame-consistent' },
+      firstFrameSanity: { retry: true, reason: 'near-black-frame-on-light-page' },
+    });
+  });
+
+  it('does not retry a legitimate dark frame', async () => {
+    resetScreenshotTier();
+    let captures = 0;
+    const cdp = {
+      send: async () => {
+        captures += 1;
+        return { data: 'dark-frame' };
+      },
+    };
+
+    const result = await captureScreenshot(cdp, 'sid', { format: 'png' }, {
+      inspectFrame: async () => ({ retry: false, reason: 'dark-page', nearBlackRatio: 0.97, pageTone: 'dark' }),
+    });
+
+    expect(captures).toBe(1);
+    expect(result).toMatchObject({
+      data: 'dark-frame',
+      method: 'captureScreenshot',
+      retryCount: 0,
+      sanity: { retry: false, reason: 'dark-page' },
+    });
+  });
+});

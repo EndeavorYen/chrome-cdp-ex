@@ -637,6 +637,88 @@ describe('issues #89-#91 contracts', () => {
   });
 });
 
+describe('issue #115 responsive internal geometry contracts', () => {
+  it('warns on bounded clipped controls and material control overlap', () => {
+    const model = T.buildResponsiveAuditModel({
+      targetId: 'ABCDEF0123456789',
+      page: { title: 'App', url: 'http://127.0.0.1:8787' },
+      console: { errors: 0, warnings: 0, exceptions: 0 },
+      viewports: [{
+        viewport: '390x844',
+        url: 'http://127.0.0.1:8787',
+        title: 'App',
+        screenshot: '/tmp/mobile.png',
+        overflowX: false,
+        blank: false,
+        controlCount: 4,
+        clippedControls: [
+          {
+            selector: '#hidden-route',
+            name: 'Continue',
+            severity: 'warning',
+            clippedRatio: 0.75,
+            elementRect: { x: 420, y: 20, width: 100, height: 40 },
+            containerRect: { x: 0, y: 0, width: 390, height: 120 },
+          },
+          {
+            selector: '#intentional-item',
+            name: 'Later item',
+            severity: 'info',
+            suppressed: true,
+            suppression: 'intentional-scroll-container',
+          },
+        ],
+        overlaps: [{
+          selector: '#save',
+          name: 'Save',
+          occluderSelector: '.command-bar',
+          occluderName: 'Commands',
+          severity: 'warning',
+          overlapRatio: 0.4,
+          elementRect: { x: 10, y: 700, width: 120, height: 40 },
+          occluderRect: { x: 0, y: 680, width: 390, height: 80 },
+        }],
+      }],
+    });
+
+    expect(model.verdict).toBe('warn');
+    expect(model.viewports[0].findings).toMatchObject({
+      clippedControls: [expect.objectContaining({ selector: '#hidden-route', clippedRatio: 0.75 })],
+      overlaps: [expect.objectContaining({ selector: '#save', overlapRatio: 0.4 })],
+      suppressed: 1,
+    });
+    expect(model.viewports[0].findings.clippedControls).toHaveLength(1);
+    expect(T.formatResponsiveAuditReport(model)).toContain('clipped=1 overlap=1');
+  });
+
+  it('collects container clipping and overlap evidence in the viewport probe', () => {
+    const script = T.responsiveAuditViewportScript({ maxControls: 4 });
+    expect(script).toContain('nearestScrollable');
+    expect(script).toContain('clippedControls');
+    expect(script).toContain('overlapRatio');
+    expect(script).toContain('data-cdp-audit-scroll');
+  });
+
+  it('keeps clean responsive fixtures passing and carries screenshot capture metadata', () => {
+    const model = T.buildResponsiveAuditModel({
+      targetId: 'ABCDEF0123456789',
+      page: { title: 'Clean', url: 'https://example.test' },
+      console: { errors: 0, warnings: 0, exceptions: 0 },
+      viewports: [{
+        viewport: '1440x900',
+        overflowX: false,
+        blank: false,
+        clippedControls: [],
+        overlaps: [],
+        screenshotCapture: { method: 'captureScreenshot', retryCount: 0 },
+      }],
+    });
+
+    expect(model.verdict).toBe('pass');
+    expect(model.viewports[0].screenshotCapture).toEqual({ method: 'captureScreenshot', retryCount: 0 });
+  });
+});
+
 describe('issues #93-#95 contracts', () => {
   it('#93 builds emulate media-feature models and resets cleanly', () => {
     expect(T.parseEmulateArgs(['dark']).colorScheme).toBe('dark');
