@@ -64,6 +64,82 @@ describe('session report lib', () => {
     });
   });
 
+  it('clears stale recovery after a newer verified successful action', () => {
+    const actionLog = [
+      {
+        action: 'click',
+        target: { targetId: 'FULLTARGET123', input: '#missing' },
+        dispatch: { ok: false },
+        diagnosis: {
+          status: 'blocked',
+          kind: 'target-not-found',
+          recovery: {
+            strategy: 'refresh-perception',
+            priority: 'high',
+            commands: [{ command: 'cdp perceive FULLTARGET123 -C -d 8' }],
+          },
+        },
+      },
+      {
+        action: 'click',
+        target: { targetId: 'FULLTARGET123', input: '#save' },
+        dispatch: { ok: true },
+        settle: { ok: true },
+        diagnosis: { status: 'ok', kind: 'ok' },
+        outcome: { status: 'changed' },
+        verdict: { status: 'pass' },
+      },
+    ];
+
+    const compactRecommendation = buildReportRecommendation(actionLog, 'ABC123', 'FULLTARGET123');
+    const fullRecommendation = buildReportRecommendation([...actionLog], 'ABC123', 'FULLTARGET123');
+
+    expect(compactRecommendation).toEqual(fullRecommendation);
+    expect(compactRecommendation).toMatchObject({
+      source: 'latest-action-success',
+      actionIndex: 2,
+      action: 'click',
+      outcomeStatus: 'changed',
+      strategy: 'recovered-continue',
+      recoveredFromActionIndex: 1,
+      verifyCommand: 'cdp perceive ABC123 --since-action',
+    });
+    expect(compactRecommendation.commands).not.toContain('cdp perceive ABC123 -C -d 8');
+  });
+
+  it('continues to promote an unresolved latest failure', () => {
+    const recommendation = buildReportRecommendation([
+      {
+        action: 'click',
+        target: { targetId: 'FULLTARGET123', input: '#save' },
+        dispatch: { ok: true },
+        diagnosis: { status: 'ok', kind: 'ok' },
+        outcome: { status: 'changed' },
+      },
+      {
+        action: 'click',
+        target: { targetId: 'FULLTARGET123', input: '#missing' },
+        dispatch: { ok: false },
+        diagnosis: {
+          status: 'blocked',
+          kind: 'target-not-found',
+          recovery: {
+            strategy: 'refresh-perception',
+            priority: 'high',
+            commands: [{ command: 'cdp perceive FULLTARGET123 -C -d 8' }],
+          },
+        },
+      },
+    ], 'ABC123', 'FULLTARGET123');
+
+    expect(recommendation).toMatchObject({
+      source: 'latest-action-diagnosis',
+      actionIndex: 2,
+      diagnosisKind: 'target-not-found',
+      strategy: 'refresh-perception',
+    });
+  });
+
   it('formats concise report recommendation lines', () => {
     const lines = formatReportRecommendationLines({
       source: 'latest-action-diagnosis',
