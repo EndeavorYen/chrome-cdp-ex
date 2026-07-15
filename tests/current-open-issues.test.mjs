@@ -916,11 +916,13 @@ describe('issue #119 live target binding contracts', () => {
     }), diagnostic);
 
     expect(JSON.parse(output).targetResolution).toEqual({
-      schema: 'chrome-cdp-ex.target-resolution.v1',
       requestedTargetPrefix: 'CCCCDDDD',
       requestedTargetId: 'CCCCDDDD33334444',
       boundTargetId: 'CCCCDDDD33334444',
       resolvedTargetId: 'CCCCDDDD33334444',
+      resolutionSource: 'live-discovery',
+      status: 'rebound',
+      rebound: true,
     });
     expect(output.length).toBeLessThan(500);
   });
