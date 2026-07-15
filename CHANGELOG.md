@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [2.13.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.12.0...v2.13.0) (2026-07-16)
+
+### Features
+
+* detect bounded internal scroll-container clipping and material fixed/sticky control overlaps in responsive audits, with intentional-scroll suppression and CLI/MCP parity (#115).
+* report screenshot capture method, sanity evidence, and one bounded alternate-surface retry when a near-black frame contradicts a light page (#117).
+
+### Fixes
+
+* clear stale recovery recommendations after a newer verified successful action while preserving unresolved latest-failure guidance (#116).
+* share multi-signal blank-page classification across action QA, perceive QA, page QA, and responsive audit so successful changed actions cannot be marked blank from a missing URL sample (#118).
+* resolve target prefixes from live discovery, validate daemon-bound target identity, retry one target-mismatch rebind, and expose requested/bound/resolved diagnostics in structured CLI and MCP output (#119).
+
 ## [2.12.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.11.0...v2.12.0) (2026-07-12)
 
 ### Features

@@ -2,7 +2,7 @@
 
 > **TL;DR** — The feature sketches below explain why major commands were designed, but they are historical notes rather than the current roadmap. `README.md`, `docs/reference.md`, `skills/chrome-cdp-ex/SKILL.md`, and `CHANGELOG.md` are the shipped-behavior sources of truth.
 
-## Current Status (v2.12.0)
+## Current Status (v2.13.0)
 
 | Area | Status | Notes |
 |---|---|---|
@@ -10,10 +10,11 @@
 | `cascade` | Shipped / best-effort | Source locations depend on CDP/source maps; use `styles` for reliable computed values. |
 | `record` | Shipped | Useful for cause→effect and page-settle timelines. |
 | `spawn-debug-browser` | Shipped | Isolated debug profile path for macOS/Edge/Chrome/Brave when remote-debugging toggle is unavailable. |
-| Long-session robustness | Shipped | Stale-ref diagnostics, action receipts, bounded reports, semantic waits, safe modal dismissal, and script-friendly shots. |
+| Long-session robustness | Shipped | Stale-ref/target-binding diagnostics, action receipts, recovered-report guidance, shared page health, bounded reports, semantic waits, safe modal dismissal, and script-friendly shots. |
 | `emulate`, `frame`, `components` | Shipped | Media emulation, frame-scoped refs, and bounded/redacted React/Vue component inspection. |
 | Replay/checkpoint/session reports | Shipped | Redacted checkpoints, workflow capture/replay, Playwright export, screenshots, and bounded report artifacts. |
 | MCP and live campaigns | Shipped | Stdio MCP tools plus matched CLI/MCP, Killer Path, large-app, and five-profile real-app gates. |
+| Responsive and screenshot health | Shipped | Internal clipping/overlap findings plus bounded contradictory-black-frame recovery. |
 
 The sections below are historical design sketches. They can explain intent, but examples may predate current privacy, output-budget, Action Receipt, or recovery contracts.
 
