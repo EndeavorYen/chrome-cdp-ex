@@ -4,16 +4,25 @@
 
 ## [2.13.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.12.0...v2.13.0) (2026-07-16)
 
-### Features
+v2.13.0 focuses on trustworthy browser evidence during long-running agent sessions. Compared with v2.12.0, visual audits, screenshots, page-health checks, recovery guidance, and target attachment now agree on what the live browser is actually showing.
 
-* detect bounded internal scroll-container clipping and material fixed/sticky control overlaps in responsive audits, with intentional-scroll suppression and CLI/MCP parity (#115).
-* report screenshot capture method, sanity evidence, and one bounded alternate-surface retry when a near-black frame contradicts a light page (#117).
+### What Changed
 
-### Fixes
+* Responsive audits could miss controls clipped inside nested containers or materially occluded by visible fixed, sticky, or dialog surfaces, while intentional scrolling could create noise. Audits now use bounded geometry and visible hit-tested occlusion evidence and suppress intentional scrolling, so operators get more actionable findings without a claim of detecting every overlap (#115).
 
-* clear stale recovery recommendations after a newer verified successful action while preserving unresolved latest-failure guidance (#116).
-* share multi-signal blank-page classification across action QA, perceive QA, page QA, and responsive audit so successful changed actions cannot be marked blank from a missing URL sample (#118).
-* resolve target prefixes from live discovery, validate daemon-bound target identity, retry one target-mismatch rebind, and expose requested/bound/resolved diagnostics in structured CLI and MCP output (#119).
+### Reliability
+
+* Screenshot capture could return a contradictory black frame without distinguishing it from a legitimately dark page. Capture now retries once through an alternate surface only when a near-black frame contradicts a computed light page, then fails closed if the result remains unreliable, so operators do not treat suspect visual evidence as proof (#117).
+* Action, perception, QA, and responsive checks could disagree about page health, including marking a visibly populated page blank when a URL sample was missing. They now share multi-signal page-health evidence and report loading states as indeterminate, so successful actions and populated pages are not rejected by a single missing signal (#118).
+
+### Diagnostics And Handoffs
+
+* Session reports could keep recommending recovery for an older failure after a newer action had been verified successful. Reports now clear stale guidance while retaining recovery for the latest unresolved failure, so handoffs reflect the current session state (#116).
+* Target commands could trust stale daemon bindings before checking live tabs, leaving operators attached to the wrong browser target with little identity evidence. Commands now resolve live tabs first, detect daemon-to-tab mismatches, rebind once, and expose requested, bound, resolved, source, and status diagnostics, so target attachment is both safer and auditable (#119).
+
+### Compatibility
+
+Upgrading from v2.12.0 removes no commands and requires no configuration migration. Existing structured outputs only gain or clarify diagnostics, so current workflows can upgrade without command or configuration changes.
 
 ## [2.12.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.11.0...v2.12.0) (2026-07-12)
 
