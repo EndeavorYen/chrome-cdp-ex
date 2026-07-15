@@ -18,7 +18,7 @@ const {
   formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   statusStr, clearObservationBuffers,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
-  captureScreenshot, screencastFallback, snapshotStr,
+  captureScreenshot, screencastFallback, snapshotStr, formatScreenshotCaptureDiagnostics,
   resetScreenshotTier, getScreenshotTier,
   decodeVLQ, mapLineToSource, stripVitePathQuery, mapStyleSource,
   formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr, autoActionJsonArgs,
@@ -10737,6 +10737,20 @@ describe('formatUnknownRefError recovery wording', () => {
 });
 
 describe('transient black screenshot recovery', () => {
+  it('does not describe a successful sanity retry as a capture timeout', () => {
+    const diagnostics = formatScreenshotCaptureDiagnostics({
+      fallback: true,
+      method: 'captureScreenshot-fromSurface-false',
+      retryCount: 1,
+      sanity: { reason: 'frame-consistent' },
+      firstFrameSanity: { reason: 'near-black-frame-on-light-page' },
+    });
+
+    expect(diagnostics).toContain('screenshot retry=1');
+    expect(diagnostics).toContain('near-black-frame-on-light-page');
+    expect(diagnostics).not.toContain('timed out');
+  });
+
   it('retries one contradictory black frame and returns the valid alternate capture', async () => {
     resetScreenshotTier();
     let captures = 0;

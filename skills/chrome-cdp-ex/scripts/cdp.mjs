@@ -1867,6 +1867,19 @@ function parseShotArgs(args) {
   return opts;
 }
 
+function formatScreenshotCaptureDiagnostics(capture = {}) {
+  const { fallback, method, retryCount = 0, sanity, firstFrameSanity } = capture;
+  const lines = [];
+  if (fallback && retryCount === 0) {
+    lines.push('(screenshot fallback — Page.captureScreenshot timed out)');
+  }
+  if (retryCount) {
+    const reason = firstFrameSanity?.reason || sanity?.reason || 'unknown';
+    lines.push(`(screenshot retry=${retryCount} method=${method} reason=${reason})`);
+  }
+  return lines.join('\n');
+}
+
 async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
   let filePath = null;
   let opts = { quiet: false, verbose: false, onCapture: null };
@@ -1881,7 +1894,7 @@ async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
   }
   const dpr = await getDpr(cdp, sid);
   const capture = await captureScreenshot(cdp, sid, { format: 'png' });
-  const { data, fallback, method, retryCount = 0, sanity } = capture;
+  const { data } = capture;
   opts.onCapture?.(capture);
   const out = filePath || resolve(RUNTIME_DIR, `screenshot-${(targetId || 'unknown').slice(0, 8)}.png`);
   writeFileSync(out, Buffer.from(data, 'base64'));
@@ -1889,8 +1902,8 @@ async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
   // Default output: saved path FIRST so scripts grabbing `head -1` get a clean
   // path. Verbose adds full coordinate-mapping tutorial. Quiet hides hints.
   const lines = [out];
-  if (fallback) lines.push(`(screenshot fallback — Page.captureScreenshot timed out)`);
-  if (retryCount) lines.push(`(screenshot retry=${retryCount} method=${method} reason=${sanity?.reason || 'unknown'})`);
+  const diagnostics = formatScreenshotCaptureDiagnostics(capture);
+  if (diagnostics) lines.push(diagnostics);
   if (opts.quiet) return lines.join('\n');
   // Default: short DPR hint after the path. (`shot ... --verbose` for the long form.)
   lines.push(`Screenshot saved. DPR=${dpr}${dpr !== 1 ? ` (CSS px = image px / ${dpr})` : ''}`);
@@ -15123,7 +15136,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
-  parseShotArgs, shotStr,
+  parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
   probeTcpPort,
   waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
