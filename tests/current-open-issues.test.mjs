@@ -719,6 +719,146 @@ describe('issue #115 responsive internal geometry contracts', () => {
   });
 });
 
+describe('issue #118 shared blank-page classification', () => {
+  it('classifies populated, empty, and loading page signals consistently', () => {
+    expect(T.classifyPageHealth).toBeTypeOf('function');
+
+    expect(T.classifyPageHealth({
+      url: '',
+      readyState: 'complete',
+      visibleTextLength: 24,
+      elementCount: 12,
+      visibleControlCount: 2,
+      bodyRect: { width: 390, height: 844 },
+      changed: true,
+    })).toMatchObject({ status: 'populated', isBlank: false });
+
+    expect(T.classifyPageHealth({
+      url: 'https://example.test/empty',
+      readyState: 'complete',
+      visibleTextLength: 0,
+      elementCount: 3,
+      visibleControlCount: 0,
+      bodyRect: { width: 390, height: 0 },
+      changed: false,
+    })).toMatchObject({ status: 'blank', isBlank: true });
+
+    expect(T.classifyPageHealth({
+      url: 'https://example.test/loading',
+      readyState: 'loading',
+      visibleTextLength: 0,
+      elementCount: 3,
+      visibleControlCount: 0,
+      bodyRect: { width: 390, height: 0 },
+    })).toMatchObject({ status: 'indeterminate', isBlank: false });
+  });
+
+  it('uses populated health evidence instead of treating a missing action URL as blank', () => {
+    const summary = T.buildQaSummaryModel({
+      page: { url: '', title: '' },
+      pageHealth: {
+        status: 'populated',
+        isBlank: false,
+        confidence: 'high',
+        evidence: { visibleTextLength: 24, visibleControlCount: 2, changed: true },
+      },
+      console: { errors: 0, exceptions: 0 },
+      network: { failures: 0 },
+      action: { outcome: 'changed', dispatch: { ok: true }, changed: true },
+      source: 'action',
+    });
+
+    expect(summary.ok).toBe(true);
+    expect(summary.page).toMatchObject({ isBlank: false, healthStatus: 'populated' });
+    expect(summary.pageHealth.evidence).toMatchObject({ changed: true });
+  });
+});
+
+describe('issue #119 live target binding contracts', () => {
+  const livePages = [
+    { targetId: 'AAAABBBB11112222', title: 'Blank', url: 'about:blank' },
+    { targetId: 'CCCCDDDD33334444', title: 'Agent Decision Lab', url: 'http://127.0.0.1:8788/app' },
+  ];
+
+  it('resolves the requested populated target from live discovery instead of a stale blank daemon', () => {
+    expect(T.resolveLiveTargetBinding).toBeTypeOf('function');
+    const binding = T.resolveLiveTargetBinding({
+      requested: 'CCCCDDDD',
+      livePages,
+      daemonBinding: {
+        targetId: 'CCCCDDDD33334444',
+        boundTargetId: 'AAAABBBB11112222',
+      },
+    });
+
+    expect(binding).toMatchObject({
+      schema: 'chrome-cdp-ex.target-resolution.v1',
+      requestedTargetPrefix: 'CCCCDDDD',
+      requestedTargetId: 'CCCCDDDD33334444',
+      boundTargetId: 'AAAABBBB11112222',
+      resolvedTargetId: 'CCCCDDDD33334444',
+      resolutionSource: 'live-discovery',
+      status: 'rebind-required',
+      rebindRequired: true,
+    });
+  });
+
+  it('reuses matching target daemons and preserves ambiguity errors', () => {
+    const binding = T.resolveLiveTargetBinding({
+      requested: 'CCCCDDDD',
+      livePages,
+      daemonBinding: {
+        targetId: 'CCCCDDDD33334444',
+        boundTargetId: 'CCCCDDDD33334444',
+      },
+    });
+    expect(binding).toMatchObject({ status: 'reused', rebindRequired: false });
+
+    expect(() => T.resolveLiveTargetBinding({
+      requested: 'CCCC',
+      livePages: [
+        ...livePages,
+        { targetId: 'CCCCEEEE55556666', title: 'Other', url: 'http://127.0.0.1:8788/other' },
+      ],
+    })).toThrow(/ambiguous/i);
+  });
+
+  it('attaches bounded requested, bound, and resolved ids to structured CLI output', () => {
+    const diagnostic = {
+      schema: 'chrome-cdp-ex.target-resolution.v1',
+      requestedTargetPrefix: 'CCCCDDDD',
+      requestedTargetId: 'CCCCDDDD33334444',
+      boundTargetId: 'CCCCDDDD33334444',
+      resolvedTargetId: 'CCCCDDDD33334444',
+      resolutionSource: 'live-discovery',
+      status: 'rebound',
+      rebindRequired: false,
+      rebound: true,
+    };
+    const output = T.attachTargetResolutionDiagnostics(JSON.stringify({
+      schema: 'chrome-cdp-ex.perception.v1',
+      page: { url: 'http://127.0.0.1:8788/app' },
+    }), diagnostic);
+
+    expect(JSON.parse(output).targetResolution).toEqual(diagnostic);
+  });
+
+  it('treats a daemon bound to a different target as stale', () => {
+    const assessment = T.assessDaemonFreshness({
+      targetPrefix: 'CCCCDDDD',
+      expectedTargetId: 'CCCCDDDD33334444',
+      current: { schema: 'chrome-cdp-ex.daemon-metadata.v1', gitCommit: 'same' },
+      daemon: {
+        schema: 'chrome-cdp-ex.daemon-metadata.v1',
+        gitCommit: 'same',
+        boundTargetId: 'AAAABBBB11112222',
+      },
+    });
+    expect(assessment).toMatchObject({ stale: true, status: 'target-mismatch' });
+    expect(assessment.mismatches).toContainEqual(expect.objectContaining({ field: 'boundTargetId' }));
+  });
+});
+
 describe('issues #93-#95 contracts', () => {
   it('#93 builds emulate media-feature models and resets cleanly', () => {
     expect(T.parseEmulateArgs(['dark']).colorScheme).toBe('dark');

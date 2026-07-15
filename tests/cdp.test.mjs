@@ -10793,3 +10793,31 @@ describe('transient black screenshot recovery', () => {
     });
   });
 });
+
+describe('post-action page health evidence', () => {
+  it('keeps successful changed action QA populated when URL sampling is unavailable', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'ABC12345', input: '#select', label: 'Select' },
+      dispatch: async () => 'clicked',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => '+++ Added\n+ [button] Selected',
+      enrichActionResult: result => {
+        result.effects.pageHealth = {
+          status: 'populated',
+          isBlank: false,
+          confidence: 'high',
+          evidence: { visibleTextLength: 18, visibleControlCount: 1, changed: true },
+        };
+      },
+      format: { format: 'json', qa: true },
+    });
+
+    const model = JSON.parse(out);
+    expect(model.summary).toMatchObject({
+      ok: true,
+      page: { isBlank: false, healthStatus: 'populated' },
+    });
+    expect(model.action.effects.pageHealth).toMatchObject({ status: 'populated', isBlank: false });
+  });
+});
