@@ -55,11 +55,9 @@ export function attachTargetResolutionDiagnostics(result, diagnostic) {
   const targetResolution = {
     schema: diagnostic.schema || TARGET_RESOLUTION_SCHEMA,
     requestedTargetPrefix: diagnostic.requestedTargetPrefix || null,
+    requestedTargetId: diagnostic.requestedTargetId || null,
     boundTargetId: diagnostic.boundTargetId || null,
     resolvedTargetId: diagnostic.resolvedTargetId || null,
-    resolutionSource: diagnostic.resolutionSource || null,
-    status: diagnostic.status || null,
-    rebound: diagnostic.rebound === true,
   };
   const output = { ...parsed, targetResolution };
   return typeof result === 'string' ? JSON.stringify(output, null, 2) : output;

@@ -717,6 +717,71 @@ describe('issue #115 responsive internal geometry contracts', () => {
     expect(model.verdict).toBe('pass');
     expect(model.viewports[0].screenshotCapture).toEqual({ method: 'captureScreenshot', retryCount: 0 });
   });
+
+  it('fails a viewport whose screenshot remains contradictory after retry', () => {
+    const model = T.buildResponsiveAuditModel({
+      targetId: 'ABCDEF0123456789',
+      viewports: [{
+        viewport: '390x844',
+        overflowX: false,
+        blank: false,
+        clippedControls: [],
+        overlaps: [],
+        screenshotCapture: {
+          method: 'captureScreenshot-fromSurface-false',
+          retryCount: 1,
+          sanity: { retry: true, reason: 'near-black-frame-on-light-page' },
+        },
+      }],
+    });
+
+    expect(model.verdict).toBe('fail');
+    expect(model.viewports[0].status).toBe('fail');
+  });
+
+  it('executes the viewport probe without treating hidden surfaces as occluders', () => {
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 40, width: 100, height: 40 };
+    const body = {
+      parentElement: null,
+      innerText: 'Save',
+      textContent: 'Save',
+      getBoundingClientRect: () => ({ ...rect, width: 390, height: 844 }),
+    };
+    const control = {
+      id: 'save', tagName: 'BUTTON', parentElement: body, innerText: 'Save', value: '', title: '',
+      getAttribute: () => null,
+      getBoundingClientRect: () => rect,
+      contains: () => false,
+    };
+    const hiddenSurface = {
+      id: 'hidden-dialog', tagName: 'DIALOG', parentElement: body, innerText: '', value: '', title: '',
+      getAttribute: () => null,
+      getBoundingClientRect: () => rect,
+      contains: () => false,
+      matches: selector => selector.includes('dialog'),
+    };
+    const document = {
+      documentElement: { scrollWidth: 390, scrollHeight: 844, clientWidth: 390, clientHeight: 844 },
+      body,
+      title: 'Fixture',
+      readyState: 'complete',
+      querySelectorAll: selector => selector === 'body *' ? [hiddenSurface]
+        : selector === '*' ? [control, hiddenSurface]
+          : [control],
+      elementFromPoint: () => hiddenSurface,
+    };
+    const output = runInNewContext(T.responsiveAuditViewportScript({ maxControls: 4 }), {
+      document,
+      window: { innerWidth: 390, innerHeight: 844 },
+      location: { href: 'https://example.test' },
+      CSS: { escape: value => value },
+      getComputedStyle: element => element === hiddenSurface
+        ? { position: 'fixed', visibility: 'hidden', display: 'block', opacity: '1', pointerEvents: 'auto', overflowX: 'visible', overflowY: 'visible' }
+        : { position: 'static', visibility: 'visible', display: 'block', opacity: '1', pointerEvents: 'auto', overflowX: 'visible', overflowY: 'visible' },
+    });
+
+    expect(JSON.parse(output).overlaps).toEqual([]);
+  });
 });
 
 describe('issue #118 shared blank-page classification', () => {
@@ -771,6 +836,16 @@ describe('issue #118 shared blank-page classification', () => {
     expect(summary.ok).toBe(true);
     expect(summary.page).toMatchObject({ isBlank: false, healthStatus: 'populated' });
     expect(summary.pageHealth.evidence).toMatchObject({ changed: true });
+  });
+
+  it('renders indeterminate page health as review rather than pass', () => {
+    const model = T.buildQaSummaryModel({
+      page: { title: 'Loading', url: 'https://example.test' },
+      pageHealth: T.classifyPageHealth({ readyState: 'loading' }),
+    });
+
+    expect(model.ok).toBe(false);
+    expect(T.formatQaSummaryText(model)).toContain('Page health: indeterminate');
   });
 });
 
@@ -843,11 +918,9 @@ describe('issue #119 live target binding contracts', () => {
     expect(JSON.parse(output).targetResolution).toEqual({
       schema: 'chrome-cdp-ex.target-resolution.v1',
       requestedTargetPrefix: 'CCCCDDDD',
+      requestedTargetId: 'CCCCDDDD33334444',
       boundTargetId: 'CCCCDDDD33334444',
       resolvedTargetId: 'CCCCDDDD33334444',
-      resolutionSource: 'live-discovery',
-      status: 'rebound',
-      rebound: true,
     });
     expect(output.length).toBeLessThan(500);
   });

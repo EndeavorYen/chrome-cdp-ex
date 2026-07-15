@@ -669,7 +669,7 @@ function buildQaSummaryModel({
     ? !['no-change', 'failed', 'timeout'].includes(action.outcome)
     : action?.changed;
   const changedStatus = changed == null ? 'unknown' : (changed ? 'changed' : 'no-change');
-  const ok = !isBlank && consoleErrors === 0 && networkFailures === 0 && action?.dispatch?.ok !== false;
+  const ok = healthStatus === 'populated' && consoleErrors === 0 && networkFailures === 0 && action?.dispatch?.ok !== false;
   return {
     schema: 'chrome-cdp-ex.qa-summary.v1',
     source,
@@ -694,6 +694,7 @@ function formatQaSummaryText(model) {
     `QA summary: ${model.ok ? 'pass' : 'review'}`,
     `Page: ${model.page?.title || '(untitled)'}`,
     `URL: ${model.page?.url || '(unknown)'}${model.page?.isBlank ? ' (blank)' : ''}`,
+    `Page health: ${model.page?.healthStatus || model.pageHealth?.status || 'indeterminate'}`,
     `Console errors: ${model.consoleErrors}`,
     `Network failures: ${model.networkFailures}`,
     `Changed: ${model.changed}`,
@@ -1830,26 +1831,24 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
   }
 
   await waitForPaint();
+  let retry;
   try {
-    const retry = await cdp.send('Page.captureScreenshot', { ...params, fromSurface: false }, sid, SCREENSHOT_TIMEOUT);
-    const sanity = await inspectFrame({ data: retry.data, method: 'captureScreenshot-fromSurface-false' });
-    return {
-      data: retry.data,
-      fallback: true,
-      method: 'captureScreenshot-fromSurface-false',
-      retryCount: 1,
-      sanity,
-      firstFrameSanity,
-    };
+    retry = await cdp.send('Page.captureScreenshot', { ...params, fromSurface: false }, sid, SCREENSHOT_TIMEOUT);
   } catch (error) {
-    return {
-      ...captured,
-      retryCount: 1,
-      sanity: firstFrameSanity,
-      firstFrameSanity,
-      retryError: error?.message || String(error),
-    };
+    throw new Error(`Screenshot alternate capture failed: ${error?.message || String(error)}`);
   }
+  const sanity = await inspectFrame({ data: retry.data, method: 'captureScreenshot-fromSurface-false' });
+  if (sanity?.retry) {
+    throw new Error(`Screenshot alternate capture still failed sanity check (${sanity.reason || 'contradictory-frame'}).`);
+  }
+  return {
+    data: retry.data,
+    fallback: true,
+    method: 'captureScreenshot-fromSurface-false',
+    retryCount: 1,
+    sanity,
+    firstFrameSanity,
+  };
 }
 
 // Parse `shot` arguments. Returns { filePath, quiet, verbose }.
@@ -3864,7 +3863,13 @@ function responsiveAuditViewportScript({ maxControls = 12 } = {}) {
     const surfaces = Array.from(document.querySelectorAll('body *')).filter(el => {
       const style = getComputedStyle(el);
       const rect = el.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0 && (
+      const visible = style.visibility !== 'hidden'
+        && style.display !== 'none'
+        && Number.parseFloat(style.opacity || '1') > 0.05
+        && style.pointerEvents !== 'none'
+        && !el.hidden
+        && el.getAttribute('aria-hidden') !== 'true';
+      return visible && rect.width > 0 && rect.height > 0 && (
         style.position === 'fixed' || style.position === 'sticky'
         || el.matches('dialog,[role="dialog"],[aria-modal="true"],[data-cdp-audit-overlay]')
       );
@@ -3877,6 +3882,15 @@ function responsiveAuditViewportScript({ maxControls = 12 } = {}) {
         const occluderRect = surface.getBoundingClientRect();
         const overlapRatio = intersectionRatio(elementRect, occluderRect);
         if (overlapRatio < 0.20) continue;
+        const overlapLeft = Math.max(elementRect.left, occluderRect.left);
+        const overlapRight = Math.min(elementRect.right, occluderRect.right);
+        const overlapTop = Math.max(elementRect.top, occluderRect.top);
+        const overlapBottom = Math.min(elementRect.bottom, occluderRect.bottom);
+        const topElement = document.elementFromPoint(
+          (overlapLeft + overlapRight) / 2,
+          (overlapTop + overlapBottom) / 2,
+        );
+        if (topElement !== surface && !surface.contains(topElement)) continue;
         overlaps.push({
           ...identity(el),
           occluderSelector: identity(surface).selector,
@@ -3946,7 +3960,7 @@ function buildResponsiveAuditModel({
         });
     const blank = pageHealth.isBlank === true;
     let status = 'pass';
-    if (entry.error) status = 'fail';
+    if (entry.error || entry.screenshotCapture?.sanity?.retry === true) status = 'fail';
     else if (blank || pageHealth.status === 'indeterminate' || entry.overflowX || hasResponsiveFindings(findings) || Number(consoleHealth.errors || 0) > 0) status = 'warn';
     return {
       viewport: entry.viewport,
@@ -4366,11 +4380,21 @@ function compactActionEffectsModel(effects = {}) {
   compact.exceptionDelta = compactActionDeltaModel(normalizeExceptionDelta(effects.exceptionDelta || {}));
   compact.networkDelta = compactActionDeltaModel(normalizeNetworkDelta(effects.networkDelta || {}), ['failures', 'pending']);
   if (effects.pageHealth) {
+    const healthEvidence = { changed: effects.pageHealth.evidence?.changed === true };
+    if (effects.pageHealth.status !== 'populated') {
+      Object.assign(healthEvidence, {
+        readyState: effects.pageHealth.evidence?.readyState || null,
+        visibleTextLength: effects.pageHealth.evidence?.visibleTextLength ?? null,
+        elementCount: effects.pageHealth.evidence?.elementCount ?? null,
+        visibleControlCount: effects.pageHealth.evidence?.visibleControlCount ?? null,
+        bodyRect: effects.pageHealth.evidence?.bodyRect || null,
+      });
+    }
     compact.pageHealth = {
       status: effects.pageHealth.status || 'indeterminate',
       isBlank: effects.pageHealth.isBlank === true,
       confidence: effects.pageHealth.confidence || 'low',
-      evidence: { changed: effects.pageHealth.evidence?.changed === true },
+      evidence: healthEvidence,
     };
   }
   const failure = compactActionFailureModel(effects.failure);

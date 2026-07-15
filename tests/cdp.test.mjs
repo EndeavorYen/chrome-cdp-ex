@@ -10806,6 +10806,33 @@ describe('transient black screenshot recovery', () => {
       sanity: { retry: false, reason: 'dark-page' },
     });
   });
+
+  it('rejects a persistent contradictory black frame after the bounded retry', async () => {
+    resetScreenshotTier();
+    const cdp = { send: async () => ({ data: 'black-frame' }) };
+
+    await expect(captureScreenshot(cdp, 'sid', { format: 'png' }, {
+      inspectFrame: async () => ({ retry: true, reason: 'near-black-frame-on-light-page' }),
+      waitForPaint: async () => {},
+    })).rejects.toThrow(/still failed sanity check/i);
+  });
+
+  it('rejects when the alternate capture fails instead of returning the known-bad frame', async () => {
+    resetScreenshotTier();
+    let calls = 0;
+    const cdp = {
+      send: async () => {
+        calls += 1;
+        if (calls === 1) return { data: 'black-frame' };
+        throw new Error('alternate capture unavailable');
+      },
+    };
+
+    await expect(captureScreenshot(cdp, 'sid', { format: 'png' }, {
+      inspectFrame: async () => ({ retry: true, reason: 'near-black-frame-on-light-page' }),
+      waitForPaint: async () => {},
+    })).rejects.toThrow(/alternate capture unavailable/i);
+  });
 });
 
 describe('post-action page health evidence', () => {
@@ -10834,5 +10861,37 @@ describe('post-action page health evidence', () => {
     });
     expect(model.action.effects.pageHealth).toMatchObject({ status: 'populated', isBlank: false });
     expect(model.action.effects.pageHealth.evidence).toEqual({ changed: true });
+  });
+
+  it('keeps blank and indeterminate compact evidence reviewable', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'ABC12345', input: '#load', label: 'Load' },
+      dispatch: async () => 'clicked',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => null,
+      enrichActionResult: result => {
+        result.effects.pageHealth = {
+          status: 'indeterminate',
+          isBlank: false,
+          confidence: 'low',
+          evidence: {
+            readyState: 'loading',
+            visibleTextLength: 0,
+            elementCount: 2,
+            visibleControlCount: 0,
+            bodyRect: { width: 390, height: 0 },
+            changed: false,
+          },
+        };
+      },
+      format: { format: 'json' },
+    });
+
+    expect(JSON.parse(out).effects.pageHealth.evidence).toMatchObject({
+      readyState: 'loading',
+      elementCount: 2,
+      bodyRect: { width: 390, height: 0 },
+    });
   });
 });
