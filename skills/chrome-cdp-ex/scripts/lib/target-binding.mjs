@@ -52,7 +52,15 @@ export function attachTargetResolutionDiagnostics(result, diagnostic) {
     return result;
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return result;
-  const output = { ...parsed, targetResolution: diagnostic };
+  const targetResolution = {
+    schema: diagnostic.schema || TARGET_RESOLUTION_SCHEMA,
+    requestedTargetPrefix: diagnostic.requestedTargetPrefix || null,
+    boundTargetId: diagnostic.boundTargetId || null,
+    resolvedTargetId: diagnostic.resolvedTargetId || null,
+    resolutionSource: diagnostic.resolutionSource || null,
+    status: diagnostic.status || null,
+    rebound: diagnostic.rebound === true,
+  };
+  const output = { ...parsed, targetResolution };
   return typeof result === 'string' ? JSON.stringify(output, null, 2) : output;
 }
-

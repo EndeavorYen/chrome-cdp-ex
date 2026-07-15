@@ -4365,7 +4365,14 @@ function compactActionEffectsModel(effects = {}) {
   compact.consoleDelta = compactActionDeltaModel(normalizeConsoleDelta(effects.consoleDelta || {}), ['errors', 'warnings']);
   compact.exceptionDelta = compactActionDeltaModel(normalizeExceptionDelta(effects.exceptionDelta || {}));
   compact.networkDelta = compactActionDeltaModel(normalizeNetworkDelta(effects.networkDelta || {}), ['failures', 'pending']);
-  if (effects.pageHealth) compact.pageHealth = effects.pageHealth;
+  if (effects.pageHealth) {
+    compact.pageHealth = {
+      status: effects.pageHealth.status || 'indeterminate',
+      isBlank: effects.pageHealth.isBlank === true,
+      confidence: effects.pageHealth.confidence || 'low',
+      evidence: { changed: effects.pageHealth.evidence?.changed === true },
+    };
+  }
   const failure = compactActionFailureModel(effects.failure);
   if (failure) compact.failure = failure;
   const diagnosis = compactActionDiagnosisModel(effects.diagnosis);

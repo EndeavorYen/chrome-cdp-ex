@@ -10833,5 +10833,6 @@ describe('post-action page health evidence', () => {
       page: { isBlank: false, healthStatus: 'populated' },
     });
     expect(model.action.effects.pageHealth).toMatchObject({ status: 'populated', isBlank: false });
+    expect(model.action.effects.pageHealth.evidence).toEqual({ changed: true });
   });
 });
