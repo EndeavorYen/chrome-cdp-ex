@@ -87,7 +87,7 @@ Other requirements:
 
 ### Electron screenshot notes
 
-Some Electron builds do not respond to `Page.captureScreenshot` (CDP times out). When this happens, the tool automatically tries fallback methods in order: `fromSurface:false` capture, then screencast single-frame grab. You will see `(screenshot fallback)` or `(fallback)` in the output. Once a fallback is established, subsequent screenshots in the same session skip the failing tier — so `scanshot` (multi-segment) won't waste time retrying. If all screenshot methods fail, the error message will suggest using `perceive` instead. For Electron apps, `perceive` always works regardless of screenshot support.
+Some Electron builds do not respond to `Page.captureScreenshot` (CDP times out). When this happens, the tool automatically tries fallback methods in order: `fromSurface:false` capture, then screencast single-frame grab. It also samples captured pixels: when a near-black frame contradicts a computed light page, it waits two animation frames and retries exactly once with `fromSurface:false`; legitimate dark pages do not retry. Output reports the winning method and retry count. Once a timeout fallback is established, subsequent screenshots in the same session skip the failing tier — so `scanshot` (multi-segment) won't waste time retrying. If all screenshot methods fail, the error message will suggest using `perceive` instead. For Electron apps, `perceive` always works regardless of screenshot support.
 
 ## Agent Instructions
 
@@ -143,6 +143,8 @@ node skills/chrome-cdp-ex/scripts/mcp-server.mjs # stdio MCP tools for agent-nat
 ```
 
 Use `use` for normal live workflows; use `attach` when you need to record the CDP host/port explicitly. The MCP server exposes doctor, list/open, `select_target`, adaptive perception, compact `controls`, overlay diagnosis, screenshot, action, `verify_click`, `dismiss_modal`, `qa_page`, `responsive_audit`, and compact report tools, with `confirm: true` required before mutating calls. MCP defaults are optimized for agent handoff; set the relevant `adaptive` / `compact` argument to `false` only when complete detail is needed.
+
+Ordinary target prefixes are resolved from live target discovery before daemon/cache state. A daemon whose bound target id disagrees with the live result is rebound once; structured CLI/MCP responses include `targetResolution` with requested, bound, and resolved ids. Explicit port aliases retain their saved endpoint contract.
 
 **WSL2 efficiency tip**: Shell state doesn't persist between Bash calls. To avoid redefining `NODE_WIN` and `CDP` every time, **chain commands with `&&`** in a single Bash call:
 ```bash
@@ -296,6 +298,7 @@ scripts/cdp.mjs fullshot <target> [file]  # single full-page image (may be tiny 
 - **`diff-shot`** — first call captures a viewport baseline; later calls save current + diff PNG artifacts and changed-pixel ratio. Use only when structured `perceive`/`cascade` evidence is not enough; it is pixel diff, not semantic diagnosis.
 - **`scanshot`** — scrolls through and captures multiple viewport-sized images with 10% overlap. Use when you need pixel-level verification of an entire page.
 - **`fullshot`** — single image of entire page. **Do NOT use for analysis** — on long pages text becomes unreadably small. Only for non-AI consumption.
+- Screenshot captures report method/retry metadata. A light page with an anomalous near-black frame gets one alternate-surface retry; a legitimately dark page does not.
 
 ### Evaluate JavaScript
 
@@ -342,6 +345,7 @@ scripts/cdp.mjs replay <target> --file <path> [--format json]     # execute repl
 ```
 
 > **Agent tip:** `perceive` already includes summary + console health. Use `status` or `console` only when you need to check for **new** console entries after an action.
+> `perceive --qa`, action QA, `qa`, and `responsive-audit` share the same page-health classifier. Treat `indeterminate` as a bounded loading sample, not as proof that the page is blank.
 > Use `frame`/`frames` when an action is classified as `wrong-frame` or the page contains iframes; it lists stable `@fN` frame refs. Then run `perceive <target> --frame @f2` to assign frame-local element refs such as `@f2:4`. `click`, `fill`, and `cascade` can use those refs directly.
 > Use `overlay <target>` when a click/fill feels blocked or action failure says `overlay`; use `overlay <target> @ref` to ask whether a specific target point is covered. If blocking is reported, run the printed `dismiss-modal` command before retrying.
 > Use `report` when handing off or after a multi-step flow; it summarizes action evidence accumulated in this daemon session, lists session screenshot attachments, and shows the per-target JSONL log path for post-mortem review.

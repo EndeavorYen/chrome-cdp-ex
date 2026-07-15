@@ -33,42 +33,74 @@ export function defaultReportNextSteps(target, hasActions) {
       ];
 }
 
+function isVerifiedSuccessfulAction(entry = {}) {
+  const outcome = entry.outcome?.status || entry.receipt?.outcome || null;
+  const verdict = entry.verdict?.status || null;
+  return entry.dispatch?.ok !== false
+    && entry.settle?.ok !== false
+    && (!entry.diagnosis || entry.diagnosis.status === 'ok')
+    && (outcome === 'changed' || verdict === 'pass');
+}
+
+function priorRecoverableActionIndex(actionLog, beforeIndex) {
+  for (let index = beforeIndex - 1; index >= 0; index--) {
+    const entry = actionLog[index];
+    if (entry?.diagnosis && entry.diagnosis.status !== 'ok') return index + 1;
+    if (entry?.outcome?.status === 'no-change') return index + 1;
+  }
+  return null;
+}
+
 export function buildReportRecommendation(actionLog = [], target, fullTarget = target) {
   for (let i = actionLog.length - 1; i >= 0; i--) {
     const entry = actionLog[i];
     const diagnosis = entry?.diagnosis || null;
-    if (!diagnosis || diagnosis.status === 'ok') continue;
-    const recovery = diagnosis.recovery || null;
-    const sourceTarget = actionTargetCommandId(entry.target || {}) || fullTarget;
-    const commands = normalizeReportTargetCommands(recoveryCommandsFromDiagnosis(diagnosis), sourceTarget, target);
-    const verifyCommand = normalizeReportTargetCommand(recovery?.verifyCommand || diagnosis.nextCommand || null, sourceTarget, target);
-    return {
-      source: 'latest-action-diagnosis',
-      actionIndex: i + 1,
-      action: entry.action || null,
-      diagnosisKind: diagnosis.kind || null,
-      strategy: recovery?.strategy || null,
-      priority: recovery?.priority || null,
-      verifyCommand,
-      commands,
-    };
-  }
-  for (let i = actionLog.length - 1; i >= 0; i--) {
-    const entry = actionLog[i];
-    if (entry?.outcome?.status !== 'no-change') continue;
-    const sourceTarget = actionTargetCommandId(entry.target || {}) || fullTarget;
-    const recommendation = buildNoChangeOutcomeRecommendation({
-      source: 'latest-action-outcome',
-      actionIndex: i + 1,
-      action: entry.action || null,
-      target: sourceTarget,
-      targetInput: actionFailureInput(entry.target || {}),
-    });
-    return {
-      ...recommendation,
-      verifyCommand: normalizeReportTargetCommand(recommendation.verifyCommand || null, sourceTarget, target),
-      commands: normalizeReportTargetCommands(recommendation.commands || [], sourceTarget, target),
-    };
+    if (diagnosis && diagnosis.status !== 'ok') {
+      const recovery = diagnosis.recovery || null;
+      const sourceTarget = actionTargetCommandId(entry.target || {}) || fullTarget;
+      const commands = normalizeReportTargetCommands(recoveryCommandsFromDiagnosis(diagnosis), sourceTarget, target);
+      const verifyCommand = normalizeReportTargetCommand(recovery?.verifyCommand || diagnosis.nextCommand || null, sourceTarget, target);
+      return {
+        source: 'latest-action-diagnosis',
+        actionIndex: i + 1,
+        action: entry.action || null,
+        diagnosisKind: diagnosis.kind || null,
+        strategy: recovery?.strategy || null,
+        priority: recovery?.priority || null,
+        verifyCommand,
+        commands,
+      };
+    }
+    if (entry?.outcome?.status === 'no-change') {
+      const sourceTarget = actionTargetCommandId(entry.target || {}) || fullTarget;
+      const recommendation = buildNoChangeOutcomeRecommendation({
+        source: 'latest-action-outcome',
+        actionIndex: i + 1,
+        action: entry.action || null,
+        target: sourceTarget,
+        targetInput: actionFailureInput(entry.target || {}),
+      });
+      return {
+        ...recommendation,
+        verifyCommand: normalizeReportTargetCommand(recommendation.verifyCommand || null, sourceTarget, target),
+        commands: normalizeReportTargetCommands(recommendation.commands || [], sourceTarget, target),
+      };
+    }
+    if (isVerifiedSuccessfulAction(entry)) {
+      const recoveredFromActionIndex = priorRecoverableActionIndex(actionLog, i);
+      return {
+        source: 'latest-action-success',
+        actionIndex: i + 1,
+        action: entry.action || null,
+        diagnosisKind: null,
+        outcomeStatus: entry.outcome?.status || entry.receipt?.outcome || 'changed',
+        strategy: recoveredFromActionIndex ? 'recovered-continue' : 'continue-or-export',
+        priority: 'medium',
+        recoveredFromActionIndex,
+        verifyCommand: `cdp perceive ${target} --since-action`,
+        commands: defaultReportNextSteps(target, true),
+      };
+    }
   }
   return {
     source: actionLog.length > 0 ? 'session-continuation' : 'onboarding',

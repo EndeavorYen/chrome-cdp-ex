@@ -72,13 +72,13 @@ For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a tex
 
 Official releases live on GitHub, not the npm registry. Use the release tag, release notes, GitHub Pages proof page, and attached tarball as the publish surface.
 
-Pinned install: [v2.12.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.12.0).
+Pinned install: [v2.13.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.13.0).
 
 ```bash
-curl -L -o pi-chrome-cdp-2.12.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.12.0/pi-chrome-cdp-2.12.0.tgz
-mkdir -p chrome-cdp-ex-v2.12.0
-tar -xzf pi-chrome-cdp-2.12.0.tgz -C chrome-cdp-ex-v2.12.0 --strip-components=1
-cd chrome-cdp-ex-v2.12.0
+curl -L -o pi-chrome-cdp-2.13.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.13.0/pi-chrome-cdp-2.13.0.tgz
+mkdir -p chrome-cdp-ex-v2.13.0
+tar -xzf pi-chrome-cdp-2.13.0.tgz -C chrome-cdp-ex-v2.13.0 --strip-components=1
+cd chrome-cdp-ex-v2.13.0
 claude --plugin-dir .
 ```
 
@@ -107,7 +107,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs target --title "Agent Decision Lab"
 node skills/chrome-cdp-ex/scripts/cdp.mjs open http://127.0.0.1:8788 --reuse-url
 ```
 
-`list` ranks non-blank pages first and marks the recommended target. Ambiguous `target` matches return candidate URLs/titles plus exact follow-up commands.
+`list` ranks non-blank pages first and marks the recommended target. Ambiguous `target` matches return candidate URLs/titles plus exact follow-up commands. Target commands resolve ordinary prefixes from live discovery before daemon/cache state, validate the daemon-bound target id, and attempt one bounded rebind on a target mismatch. Structured target-command output includes `targetResolution` with requested, bound, and resolved ids.
 
 ## Semantic Verification And QA
 
@@ -144,7 +144,9 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs responsive-audit <target> --format jso
 node skills/chrome-cdp-ex/scripts/cdp.mjs visual-check <target> --viewport 1440x900 --viewport 390x844 --out-dir /tmp/cdp-audit
 ```
 
-It walks a bounded set of viewports (default desktop + mobile), captures screenshots outside the repo by default (session screenshot dir or explicit `--out-dir`), and reports overflow-x, blank-page, console, control counts, and a pass/warn/fail summary.
+It walks a bounded set of viewports (default desktop + mobile), captures screenshots outside the repo by default (session screenshot dir or explicit `--out-dir`), and reports overflow-x, shared page-health evidence, internally clipped controls, material fixed/sticky overlaps, console health, control counts, and a pass/warn/fail summary. Mark an intentional scroll list with `data-cdp-audit-scroll="intentional"` (or use `role="listbox"` / `role="feed"`) to suppress expected off-viewport items.
+
+Screenshot JSON records the winning capture method and retry count. A near-black frame is retried once with the alternate surface only when computed page appearance is light; legitimate dark pages are not retried.
 
 Compact QA handoffs are also available on common commands:
 
@@ -155,6 +157,8 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target> --qa --format json
 ```
 
 MCP tools mirror these workflows: `select_target`, `responsive_audit`, plus `qa` flags on `perceive` / `click` / `report`, and `open_or_attach.reuseUrl`.
+
+All QA surfaces use the same multi-signal page-health classifier. Visible text, controls, DOM size, body geometry, and a verified changed action override a transient or missing URL sample; loading samples are resampled once and otherwise remain explicit `indeterminate` evidence.
 
 See also [Browser Use mapping](browser-use-mapping.md) and [awesome-list outreach research](outreach/awesome-lists.md).
 

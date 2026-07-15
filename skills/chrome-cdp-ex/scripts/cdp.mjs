@@ -45,6 +45,23 @@ import {
   formatReportRecommendationLines,
   normalizeReportTargetCommand,
 } from './lib/session-report.mjs';
+import {
+  hasResponsiveFindings,
+  normalizeResponsiveFindings,
+} from './lib/responsive-audit.mjs';
+import {
+  screenshotHealthScript,
+  unavailableScreenshotSanity,
+} from './lib/screenshot-health.mjs';
+import {
+  classifyPageHealth,
+  pageHealthScript,
+} from './lib/page-health.mjs';
+import {
+  attachTargetResolutionDiagnostics,
+  completeTargetResolution,
+  resolveLiveTargetBinding,
+} from './lib/target-binding.mjs';
 
 const TIMEOUT = 15000;
 const SCREENSHOT_TIMEOUT = 30000;
@@ -637,25 +654,33 @@ function buildQaSummaryModel({
   network = {},
   action = null,
   blank = null,
+  pageHealth = null,
   nextCommand = null,
   targetPrefix = null,
   source = 'qa-summary',
 } = {}) {
   const url = page.url || '';
   const title = page.title || '';
-  const isBlank = blank == null ? isBlankPageUrl(url) : Boolean(blank);
+  const isBlank = pageHealth?.isBlank ?? (blank == null ? isBlankPageUrl(url) : Boolean(blank));
+  const healthStatus = pageHealth?.status || (isBlank ? 'blank' : 'populated');
   const consoleErrors = Number(consoleHealth.errors || 0) + Number(consoleHealth.exceptions || 0);
   const networkFailures = Number(network.failures || 0);
   const changed = action?.outcome
     ? !['no-change', 'failed', 'timeout'].includes(action.outcome)
     : action?.changed;
   const changedStatus = changed == null ? 'unknown' : (changed ? 'changed' : 'no-change');
-  const ok = !isBlank && consoleErrors === 0 && networkFailures === 0 && action?.dispatch?.ok !== false;
+  const ok = healthStatus === 'populated' && consoleErrors === 0 && networkFailures === 0 && action?.dispatch?.ok !== false;
   return {
     schema: 'chrome-cdp-ex.qa-summary.v1',
     source,
     targetPrefix: targetPrefix || null,
-    page: { url, title, isBlank },
+    page: { url, title, isBlank, healthStatus },
+    pageHealth: pageHealth || {
+      status: healthStatus,
+      isBlank,
+      confidence: blank == null ? 'low' : 'medium',
+      evidence: { url },
+    },
     consoleErrors,
     networkFailures,
     changed: changedStatus,
@@ -669,6 +694,7 @@ function formatQaSummaryText(model) {
     `QA summary: ${model.ok ? 'pass' : 'review'}`,
     `Page: ${model.page?.title || '(untitled)'}`,
     `URL: ${model.page?.url || '(unknown)'}${model.page?.isBlank ? ' (blank)' : ''}`,
+    `Page health: ${model.page?.healthStatus || model.pageHealth?.status || 'indeterminate'}`,
     `Console errors: ${model.consoleErrors}`,
     `Network failures: ${model.networkFailures}`,
     `Changed: ${model.changed}`,
@@ -890,7 +916,7 @@ function comparableMetadataValue(value) {
   return value !== null && value !== undefined && value !== '' && value !== 'unknown';
 }
 
-function assessDaemonFreshness({ targetPrefix = '', current = null, daemon = null } = {}) {
+function assessDaemonFreshness({ targetPrefix = '', expectedTargetId = null, current = null, daemon = null } = {}) {
   const displayTarget = targetPrefixForDisplay(targetPrefix);
   if (!daemon || daemon.schema !== DAEMON_METADATA_SCHEMA) {
     return {
@@ -914,9 +940,15 @@ function assessDaemonFreshness({ targetPrefix = '', current = null, daemon = nul
     }
   }
 
+  if (expectedTargetId && daemon.boundTargetId && daemon.boundTargetId !== expectedTargetId) {
+    mismatches.push({ field: 'boundTargetId', daemon: daemon.boundTargetId, current: expectedTargetId });
+  }
+
+  const targetMismatch = mismatches.some(mismatch => mismatch.field === 'boundTargetId');
+
   return {
     stale: mismatches.length > 0,
-    status: mismatches.length > 0 ? 'stale' : 'current',
+    status: targetMismatch ? 'target-mismatch' : mismatches.length > 0 ? 'stale' : 'current',
     targetPrefix: displayTarget,
     current,
     daemon,
@@ -932,6 +964,11 @@ function formatStaleDaemonMessage(assessment = {}) {
   const target = assessment.targetPrefix || '<target>';
   const currentCommit = metadataCommit(assessment.current);
   const stopCommand = `cdp stop ${target}`;
+  if (assessment.status === 'target-mismatch') {
+    const bound = assessment.daemon?.boundTargetId || 'unknown';
+    const expected = assessment.mismatches?.find(mismatch => mismatch.field === 'boundTargetId')?.current || target;
+    return `Target binding mismatch for ${target}: daemon is bound to ${bound}, resolved live target is ${expected}. Run "${stopCommand}" then retry so the daemon can rebind.`;
+  }
   if (assessment.status === 'missing-metadata') {
     return `Stale daemon for ${target}: daemon metadata missing, current commit ${currentCommit}. Run "${stopCommand}" then rerun the command. If this long-running daemon is intentional, rerun once with ${ALLOW_STALE_DAEMON_FLAG}.`;
   }
@@ -1730,14 +1767,33 @@ async function screencastFallback(cdp, sid) {
   }
 }
 
-// Returns { data: base64string, fallback: boolean }.
+async function inspectScreenshotFrame(cdp, sid, data) {
+  try {
+    return JSON.parse(await evalStr(cdp, sid, screenshotHealthScript(data), false, { timeoutMs: 2000 }));
+  } catch (error) {
+    return unavailableScreenshotSanity(error?.message || 'inspection-unavailable');
+  }
+}
+
+async function waitForScreenshotPaint(cdp, sid) {
+  try {
+    await evalStr(cdp, sid, 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', false, { timeoutMs: 1000 });
+  } catch {
+    await sleep(32);
+  }
+}
+
+// Returns capture data plus bounded method/retry diagnostics.
 // `params` is passed to Page.captureScreenshot (format, clip, etc.).
-async function captureScreenshot(cdp, sid, params = { format: 'png' }) {
+async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {}) {
+  const inspectFrame = hooks.inspectFrame || (frame => inspectScreenshotFrame(cdp, sid, frame.data));
+  const waitForPaint = hooks.waitForPaint || (() => waitForScreenshotPaint(cdp, sid));
+  let captured;
   // Tier 1: standard captureScreenshot
   if (_screenshotTier <= 1) {
     try {
       const result = await cdp.send('Page.captureScreenshot', params, sid, SCREENSHOT_TIMEOUT);
-      return { data: result.data, fallback: false };
+      captured = { data: result.data, fallback: false, method: 'captureScreenshot' };
     } catch (err) {
       if (!err.message?.startsWith('Timeout:')) throw err;
       _screenshotTier = 2;
@@ -1745,11 +1801,11 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }) {
   }
 
   // Tier 2: captureScreenshot with fromSurface:false (captures from view, not compositor)
-  if (_screenshotTier <= 2) {
+  if (!captured && _screenshotTier <= 2) {
     try {
       const result = await cdp.send('Page.captureScreenshot',
         { ...params, fromSurface: false }, sid, SCREENSHOT_TIMEOUT);
-      return { data: result.data, fallback: true };
+      captured = { data: result.data, fallback: true, method: 'captureScreenshot-fromSurface-false' };
     } catch (err) {
       if (!err.message?.startsWith('Timeout:')) throw err;
       _screenshotTier = 3;
@@ -1757,15 +1813,42 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }) {
   }
 
   // Tier 3: screencast single-frame grab
-  try {
-    const data = await screencastFallback(cdp, sid);
-    return { data, fallback: true };
-  } catch {
-    throw new Error(
-      'Screenshot failed: all methods timed out (Page.captureScreenshot, fromSurface:false, screencast).\n' +
-      'This Electron app may not support CDP screenshots. Use `perceive` for structural analysis instead.'
-    );
+  if (!captured) {
+    try {
+      const data = await screencastFallback(cdp, sid);
+      captured = { data, fallback: true, method: 'screencast' };
+    } catch {
+      throw new Error(
+        'Screenshot failed: all methods timed out (Page.captureScreenshot, fromSurface:false, screencast).\n' +
+        'This Electron app may not support CDP screenshots. Use `perceive` for structural analysis instead.'
+      );
+    }
   }
+
+  const firstFrameSanity = await inspectFrame(captured);
+  if (!firstFrameSanity?.retry || captured.method !== 'captureScreenshot') {
+    return { ...captured, retryCount: 0, sanity: firstFrameSanity };
+  }
+
+  await waitForPaint();
+  let retry;
+  try {
+    retry = await cdp.send('Page.captureScreenshot', { ...params, fromSurface: false }, sid, SCREENSHOT_TIMEOUT);
+  } catch (error) {
+    throw new Error(`Screenshot alternate capture failed: ${error?.message || String(error)}`);
+  }
+  const sanity = await inspectFrame({ data: retry.data, method: 'captureScreenshot-fromSurface-false' });
+  if (sanity?.retry) {
+    throw new Error(`Screenshot alternate capture still failed sanity check (${sanity.reason || 'contradictory-frame'}).`);
+  }
+  return {
+    data: retry.data,
+    fallback: true,
+    method: 'captureScreenshot-fromSurface-false',
+    retryCount: 1,
+    sanity,
+    firstFrameSanity,
+  };
 }
 
 // Parse `shot` arguments. Returns { filePath, quiet, verbose }.
@@ -1783,27 +1866,43 @@ function parseShotArgs(args) {
   return opts;
 }
 
+function formatScreenshotCaptureDiagnostics(capture = {}) {
+  const { fallback, method, retryCount = 0, sanity, firstFrameSanity } = capture;
+  const lines = [];
+  if (fallback && retryCount === 0) {
+    lines.push('(screenshot fallback — Page.captureScreenshot timed out)');
+  }
+  if (retryCount) {
+    const reason = firstFrameSanity?.reason || sanity?.reason || 'unknown';
+    lines.push(`(screenshot retry=${retryCount} method=${method} reason=${reason})`);
+  }
+  return lines.join('\n');
+}
+
 async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
   let filePath = null;
-  let opts = { quiet: false, verbose: false };
+  let opts = { quiet: false, verbose: false, onCapture: null };
   if (filePathOrOpts && typeof filePathOrOpts === 'object' && !Array.isArray(filePathOrOpts)) {
     filePath = filePathOrOpts.filePath || null;
-    opts = { quiet: !!filePathOrOpts.quiet, verbose: !!filePathOrOpts.verbose };
+    opts = { quiet: !!filePathOrOpts.quiet, verbose: !!filePathOrOpts.verbose, onCapture: filePathOrOpts.onCapture || null };
   } else {
     filePath = filePathOrOpts || null;
     if (maybeOpts && typeof maybeOpts === 'object') {
-      opts = { quiet: !!maybeOpts.quiet, verbose: !!maybeOpts.verbose };
+      opts = { quiet: !!maybeOpts.quiet, verbose: !!maybeOpts.verbose, onCapture: maybeOpts.onCapture || null };
     }
   }
   const dpr = await getDpr(cdp, sid);
-  const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png' });
+  const capture = await captureScreenshot(cdp, sid, { format: 'png' });
+  const { data } = capture;
+  opts.onCapture?.(capture);
   const out = filePath || resolve(RUNTIME_DIR, `screenshot-${(targetId || 'unknown').slice(0, 8)}.png`);
   writeFileSync(out, Buffer.from(data, 'base64'));
 
   // Default output: saved path FIRST so scripts grabbing `head -1` get a clean
   // path. Verbose adds full coordinate-mapping tutorial. Quiet hides hints.
   const lines = [out];
-  if (fallback) lines.push(`(screenshot fallback — Page.captureScreenshot timed out)`);
+  const diagnostics = formatScreenshotCaptureDiagnostics(capture);
+  if (diagnostics) lines.push(diagnostics);
   if (opts.quiet) return lines.join('\n');
   // Default: short DPR hint after the path. (`shot ... --verbose` for the long form.)
   lines.push(`Screenshot saved. DPR=${dpr}${dpr !== 1 ? ` (CSS px = image px / ${dpr})` : ''}`);
@@ -2164,6 +2263,19 @@ async function pageInfoModel(cdp, sid, opts = {}) {
     return { title, url, diagnostic: buildTargetStatusDiagnostic(e, { targetPrefix: opts.targetPrefix }) };
   }
   return { title, url, diagnostic: null };
+}
+
+async function collectPageHealth(cdp, sid, { changed = false, retryIndeterminate = true } = {}) {
+  const sample = async () => {
+    const signals = JSON.parse(await evalStr(cdp, sid, pageHealthScript(), false, { timeoutMs: STATUS_PAGE_INFO_TIMEOUT }));
+    return classifyPageHealth({ ...signals, changed });
+  };
+  let health = await sample();
+  if (retryIndeterminate && health.status === 'indeterminate') {
+    await sleep(50);
+    health = await sample();
+  }
+  return health;
 }
 
 function parseConsoleArgs(args = []) {
@@ -3434,6 +3546,7 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
         url: result.effects?.page?.url || result.page?.url || '',
         title: result.effects?.page?.title || result.page?.title || '',
       },
+      pageHealth: result.effects?.pageHealth || null,
       console: {
         errors: Number(result.effects?.consoleDelta?.errors || 0),
         exceptions: Number(result.effects?.exceptionDelta?.count || 0),
@@ -3697,13 +3810,115 @@ function responsiveAuditViewportScript({ maxControls = 12 } = {}) {
         const style = getComputedStyle(el);
         return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
       });
+    const rectModel = rect => ({
+      x: Math.round(rect.x), y: Math.round(rect.y),
+      width: Math.round(rect.width), height: Math.round(rect.height),
+    });
+    const identity = el => {
+      const id = el.id ? '#' + CSS.escape(el.id) : '';
+      const testId = el.getAttribute('data-testid');
+      const selector = id || (testId ? '[data-testid="' + CSS.escape(testId) + '"]' : el.tagName.toLowerCase());
+      const name = (el.getAttribute('aria-label') || el.innerText || el.value || el.title || '').trim().slice(0, 80);
+      return { selector, name };
+    };
+    const nearestScrollable = el => {
+      for (let parent = el.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+        const style = getComputedStyle(parent);
+        const scrollable = parent.scrollWidth > parent.clientWidth + 1 || parent.scrollHeight > parent.clientHeight + 1;
+        const clips = /(auto|scroll|hidden|clip)/.test(style.overflowX + ' ' + style.overflowY);
+        if (scrollable && clips) return parent;
+      }
+      return null;
+    };
+    const intersectionRatio = (a, b) => {
+      const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+      const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+      const area = width * height;
+      const base = Math.max(1, Math.min(a.width * a.height, b.width * b.height));
+      return area / base;
+    };
+    const clippedControls = [];
+    for (const el of allControls.slice(0, 100)) {
+      const container = nearestScrollable(el);
+      if (!container) continue;
+      const elementRect = el.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const visibleRatio = intersectionRatio(elementRect, containerRect);
+      const clippedRatio = Math.max(0, 1 - visibleRatio);
+      if (clippedRatio < 0.20) continue;
+      const role = container.getAttribute('role') || '';
+      const intentional = container.getAttribute('data-cdp-audit-scroll') === 'intentional'
+        || role === 'listbox' || role === 'feed';
+      clippedControls.push({
+        ...identity(el),
+        severity: intentional ? 'info' : 'warning',
+        clippedRatio: Math.round(clippedRatio * 1000) / 1000,
+        elementRect: rectModel(elementRect),
+        containerRect: rectModel(containerRect),
+        suppressed: intentional,
+        suppression: intentional ? 'intentional-scroll-container' : null,
+      });
+      if (clippedControls.length >= ${limit}) break;
+    }
+    const surfaces = Array.from(document.querySelectorAll('body *')).filter(el => {
+      const style = getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      const visible = style.visibility !== 'hidden'
+        && style.display !== 'none'
+        && Number.parseFloat(style.opacity || '1') > 0.05
+        && style.pointerEvents !== 'none'
+        && !el.hidden
+        && el.getAttribute('aria-hidden') !== 'true';
+      return visible && rect.width > 0 && rect.height > 0 && (
+        style.position === 'fixed' || style.position === 'sticky'
+        || el.matches('dialog,[role="dialog"],[aria-modal="true"],[data-cdp-audit-overlay]')
+      );
+    }).slice(0, 80);
+    const overlaps = [];
+    for (const el of allControls.slice(0, 100)) {
+      const elementRect = el.getBoundingClientRect();
+      for (const surface of surfaces) {
+        if (surface === el || surface.contains(el) || el.contains(surface)) continue;
+        const occluderRect = surface.getBoundingClientRect();
+        const overlapRatio = intersectionRatio(elementRect, occluderRect);
+        if (overlapRatio < 0.20) continue;
+        const overlapLeft = Math.max(elementRect.left, occluderRect.left);
+        const overlapRight = Math.min(elementRect.right, occluderRect.right);
+        const overlapTop = Math.max(elementRect.top, occluderRect.top);
+        const overlapBottom = Math.min(elementRect.bottom, occluderRect.bottom);
+        const topElement = document.elementFromPoint(
+          (overlapLeft + overlapRight) / 2,
+          (overlapTop + overlapBottom) / 2,
+        );
+        if (topElement !== surface && !surface.contains(topElement)) continue;
+        overlaps.push({
+          ...identity(el),
+          occluderSelector: identity(surface).selector,
+          occluderName: identity(surface).name,
+          severity: 'warning',
+          overlapRatio: Math.round(overlapRatio * 1000) / 1000,
+          elementRect: rectModel(elementRect),
+          occluderRect: rectModel(occluderRect),
+        });
+        break;
+      }
+      if (overlaps.length >= ${limit}) break;
+    }
     const controls = allControls
       .slice(0, ${limit})
       .map(el => ({
         tag: el.tagName.toLowerCase(),
         text: (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 80),
       }));
-    const blank = !(document.body && (document.body.innerText || '').trim()) && document.querySelectorAll('*').length < 8;
+    const bodyRect = body ? body.getBoundingClientRect() : { width: 0, height: 0 };
+    const pageHealthSignals = {
+      url: location.href,
+      readyState: document.readyState,
+      visibleTextLength: body ? (body.innerText || body.textContent || '').trim().length : 0,
+      elementCount: document.querySelectorAll('*').length,
+      visibleControlCount: allControls.length,
+      bodyRect: { width: Math.round(bodyRect.width), height: Math.round(bodyRect.height) },
+    };
     return JSON.stringify({
       url: location.href,
       title: document.title,
@@ -3714,7 +3929,9 @@ function responsiveAuditViewportScript({ maxControls = 12 } = {}) {
       controls,
       controlsTruncated: allControls.length > ${limit},
       maxControls: ${limit},
-      blank,
+      clippedControls,
+      overlaps,
+      pageHealthSignals,
     });
   })()`;
 }
@@ -3732,9 +3949,19 @@ function buildResponsiveAuditModel({
   errors = [],
 } = {}) {
   const checks = viewports.map(entry => {
+    const findings = normalizeResponsiveFindings(entry);
+    const pageHealth = entry.pageHealth || (entry.pageHealthSignals
+      ? classifyPageHealth(entry.pageHealthSignals)
+      : {
+          status: entry.blank ? 'blank' : 'populated',
+          isBlank: Boolean(entry.blank),
+          confidence: 'legacy',
+          evidence: null,
+        });
+    const blank = pageHealth.isBlank === true;
     let status = 'pass';
-    if (entry.error) status = 'fail';
-    else if (entry.blank || entry.overflowX || Number(consoleHealth.errors || 0) > 0) status = 'warn';
+    if (entry.error || entry.screenshotCapture?.sanity?.retry === true) status = 'fail';
+    else if (blank || pageHealth.status === 'indeterminate' || entry.overflowX || hasResponsiveFindings(findings) || Number(consoleHealth.errors || 0) > 0) status = 'warn';
     return {
       viewport: entry.viewport,
       status,
@@ -3742,10 +3969,13 @@ function buildResponsiveAuditModel({
       title: entry.title || page.title || '',
       screenshot: entry.screenshot || null,
       overflowX: Boolean(entry.overflowX),
-      blank: Boolean(entry.blank),
+      blank,
+      pageHealth,
       scroll: entry.scroll || null,
       controlCount: entry.controlCount ?? null,
       controls: entry.controls || [],
+      findings,
+      screenshotCapture: entry.screenshotCapture || null,
       error: entry.error || null,
     };
   });
@@ -3788,6 +4018,7 @@ function formatResponsiveAuditReport(model) {
     lines.push(`- ${vp.viewport}: ${vp.status}` +
       `${vp.overflowX ? ' overflow-x' : ''}` +
       `${vp.blank ? ' blank' : ''}` +
+      `${vp.findings?.clippedControls?.length || vp.findings?.overlaps?.length ? ` clipped=${vp.findings.clippedControls.length} overlap=${vp.findings.overlaps.length}` : ''}` +
       `${vp.controlCount != null ? ` controls=${vp.controlCount}` : ''}` +
       `${vp.screenshot ? ` shot=${vp.screenshot}` : ''}` +
       `${vp.error ? ` error=${vp.error}` : ''}`);
@@ -3823,8 +4054,16 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
       const path = opts.outDir
         ? resolve(opts.outDir, `responsive-${size.replace(/[^0-9x]/gi, 'x')}-${Date.now()}.png`)
         : nextSessionScreenshotPath(session, `responsive-${size}`);
-      const shot = await shotStr(cdp, sid, path, targetId, { quiet: true });
+      let screenshotCapture = null;
+      const shot = await shotStr(cdp, sid, path, targetId, { quiet: true, onCapture: capture => { screenshotCapture = capture; } });
       entry.screenshot = shot.split('\n')[0];
+      if (screenshotCapture) {
+        entry.screenshotCapture = {
+          method: screenshotCapture.method,
+          retryCount: screenshotCapture.retryCount || 0,
+          sanity: screenshotCapture.sanity || null,
+        };
+      }
       appendSessionScreenshot(session, { kind: 'responsive-audit', path: entry.screenshot, note: size });
       if (!shotDir && !opts.outDir) {
         // default screenshots stay under session dir outside the repo
@@ -3845,9 +4084,9 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
   return opts.format === 'json' ? formatJson(model) : formatResponsiveAuditReport(model);
 }
 
-function buildQaPageModel({ targetId = '', page = {}, console: consoleHealth = {}, perception = null, screenshots = {}, action = null, assertions = [], errors = [] } = {}) {
+function buildQaPageModel({ targetId = '', page = {}, pageHealth = null, console: consoleHealth = {}, perception = null, screenshots = {}, action = null, assertions = [], errors = [] } = {}) {
   const checks = {
-    page: page?.url || page?.title ? 'pass' : 'fail',
+    page: pageHealth?.isBlank ? 'fail' : pageHealth?.status === 'indeterminate' ? 'warn' : page?.url || page?.title ? 'pass' : 'fail',
     console: Number(consoleHealth.errors || 0) === 0 && Number(consoleHealth.exceptions || 0) === 0 ? 'pass' : 'fail',
     desktopScreenshot: screenshots.desktop?.path ? 'pass' : 'skip',
     mobileScreenshot: screenshots.mobile?.path ? 'pass' : 'skip',
@@ -3861,6 +4100,7 @@ function buildQaPageModel({ targetId = '', page = {}, console: consoleHealth = {
     targetId,
     targetPrefix: targetPrefixForDisplay(targetId),
     page,
+    pageHealth,
     console: consoleHealth,
     perception,
     screenshots,
@@ -3880,7 +4120,7 @@ function formatQaPageReport(model) {
   const lines = [
     `QA page: ${model.page?.title || '(untitled)'}`,
     `URL: ${model.page?.url || '(unknown)'}`,
-    `Page: ${model.checks.page}`,
+    `Page: ${model.checks.page}${model.pageHealth?.status ? ` (${model.pageHealth.status})` : ''}`,
     `Console: ${model.checks.console}${model.console ? ` (${model.console.errors || 0} errors, ${model.console.warnings || 0} warnings, ${model.console.exceptions || 0} exceptions)` : ''}`,
   ];
   if (model.screenshots?.desktop?.path) lines.push(`Desktop screenshot: ${model.screenshots.desktop.path}`);
@@ -4139,6 +4379,24 @@ function compactActionEffectsModel(effects = {}) {
   compact.consoleDelta = compactActionDeltaModel(normalizeConsoleDelta(effects.consoleDelta || {}), ['errors', 'warnings']);
   compact.exceptionDelta = compactActionDeltaModel(normalizeExceptionDelta(effects.exceptionDelta || {}));
   compact.networkDelta = compactActionDeltaModel(normalizeNetworkDelta(effects.networkDelta || {}), ['failures', 'pending']);
+  if (effects.pageHealth) {
+    const healthEvidence = { changed: effects.pageHealth.evidence?.changed === true };
+    if (effects.pageHealth.status !== 'populated') {
+      Object.assign(healthEvidence, {
+        readyState: effects.pageHealth.evidence?.readyState || null,
+        visibleTextLength: effects.pageHealth.evidence?.visibleTextLength ?? null,
+        elementCount: effects.pageHealth.evidence?.elementCount ?? null,
+        visibleControlCount: effects.pageHealth.evidence?.visibleControlCount ?? null,
+        bodyRect: effects.pageHealth.evidence?.bodyRect || null,
+      });
+    }
+    compact.pageHealth = {
+      status: effects.pageHealth.status || 'indeterminate',
+      isBlank: effects.pageHealth.isBlank === true,
+      confidence: effects.pageHealth.confidence || 'low',
+      evidence: healthEvidence,
+    };
+  }
   const failure = compactActionFailureModel(effects.failure);
   if (failure) compact.failure = failure;
   const diagnosis = compactActionDiagnosisModel(effects.diagnosis);
@@ -12294,7 +12552,11 @@ async function dismissModalStr(cdp, sid) {
 async function runDaemon(targetId) {
   resetScreenshotTier();
   const sp = sockPath(targetId);
-  const daemonMetadata = collectDaemonMetadata();
+  const daemonMetadata = {
+    ...collectDaemonMetadata(),
+    requestedTargetId: targetId,
+    boundTargetId: targetId,
+  };
 
   const cdp = new CDP();
   try {
@@ -12536,10 +12798,14 @@ async function runDaemon(targetId) {
     const observationBaseline = createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf });
     const actionStartedAt = Date.now();
     const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput));
+    let postActionPageHealth = null;
     const observeThenFlush = async () => {
       const text = await observeAfterAction();
       await waitForActionNetworkQuiet(pendingReqs);
       appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
+      postActionPageHealth = await collectPageHealth(cdp, sessionId, {
+        changed: actionDomDiffShowsChange(text),
+      }).catch(() => null);
       return text;
     };
     session.lastAction = { action, target: actionTarget, feedbackPolicy, ts: actionStartedAt, baselineOutput };
@@ -12549,10 +12815,14 @@ async function runDaemon(targetId) {
       dispatch,
       feedbackPolicy,
       observe: observeThenFlush,
-      enrichActionResult: (actionResult) => applyActionObservationDelta(actionResult, buildActionObservationDelta(
-        { consoleBuf, exceptionBuf, netReqBuf },
-        observationBaseline
-      )),
+      enrichActionResult: (actionResult) => {
+        applyActionObservationDelta(actionResult, buildActionObservationDelta(
+          { consoleBuf, exceptionBuf, netReqBuf },
+          observationBaseline
+        ));
+        if (postActionPageHealth) actionResult.effects.pageHealth = postActionPageHealth;
+        return actionResult;
+      },
       onActionResult: (actionResult) => {
         appendSessionActionLog(session, actionResult, { ts: session.lastAction.ts });
         captureActionResult?.(actionResult);
@@ -12786,9 +13056,11 @@ async function runDaemon(targetId) {
               });
             }
           }
+          const pageHealth = await collectPageHealth(cdp, sessionId).catch(() => null);
           const model = buildQaPageModel({
             targetId,
             page: { title: page.title, url: page.url },
+            pageHealth,
             console: consoleHealth,
             perception,
             screenshots,
@@ -12830,6 +13102,7 @@ async function runDaemon(targetId) {
               warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
               exceptions: exceptionBuf.all().length,
             };
+            const pageHealth = await collectPageHealth(cdp, sessionId).catch(() => null);
             let text = '';
             try {
               text = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
@@ -12842,9 +13115,9 @@ async function runDaemon(targetId) {
             }
             const summary = buildQaSummaryModel({
               page: { title: page.title, url: page.url },
+              pageHealth,
               console: consoleHealth,
               network: { failures: countNetworkFailures(netReqBuf) },
-              blank: isBlankPageUrl(page.url),
               targetPrefix: targetPrefixForDisplay(targetId),
               nextCommand: `cdp report ${targetPrefixForDisplay(targetId)}`,
               source: 'perceive',
@@ -13258,21 +13531,60 @@ function sendCommand(conn, req) {
   });
 }
 
-async function assertFreshDaemonConnection(conn, { targetPrefix, currentMetadata }) {
+async function assertFreshDaemonConnection(conn, { targetPrefix, expectedTargetId = null, currentMetadata }) {
   const response = await sendCommand(conn, { cmd: 'meta', args: [] });
   const daemonMetadata = response?.ok ? parseDaemonMetadataResult(response.result) : null;
   const assessment = assessDaemonFreshness({
     targetPrefix,
+    expectedTargetId,
     current: currentMetadata,
     daemon: daemonMetadata,
   });
-  if (assessment.stale) throw new Error(formatStaleDaemonMessage(assessment));
+  if (assessment.stale) {
+    const error = new Error(formatStaleDaemonMessage(assessment));
+    error.assessment = assessment;
+    throw error;
+  }
   return assessment;
 }
 
 // Find any running daemon socket to reuse for list
 function findAnyDaemonSocket() {
   return listDaemonSockets()[0]?.socketPath || null;
+}
+
+async function discoverLivePagesForTargetResolution() {
+  const existingSocket = findAnyDaemonSocket();
+  if (existingSocket) {
+    try {
+      const conn = await connectToSocket(existingSocket);
+      const response = await sendCommand(conn, { cmd: 'list_raw' });
+      if (response.ok) {
+        const pages = JSON.parse(response.result);
+        if (Array.isArray(pages)) return pages;
+      }
+    } catch {}
+  }
+  const cdp = new CDP();
+  await cdp.connect(await getWsUrl());
+  try {
+    return await getPages(cdp);
+  } finally {
+    cdp.close();
+  }
+}
+
+async function readDaemonBinding(targetId) {
+  const daemon = listDaemonSockets().find(entry => entry.targetId === targetId);
+  if (!daemon) return null;
+  try {
+    const conn = await connectToSocket(daemon.socketPath);
+    const response = await sendCommand(conn, { cmd: 'meta', args: [] });
+    const metadata = response?.ok ? parseDaemonMetadataResult(response.result) : null;
+    return metadata ? { targetId: daemon.targetId, ...metadata } : { targetId: daemon.targetId };
+  } catch {
+    return { targetId: daemon.targetId };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -14634,38 +14946,72 @@ async function main() {
     process.exit(1);
   }
 
-  // Resolve prefix → full targetId from cache or running daemon
-  let targetId;
-  let targetAlias = resolveTargetAlias(targetPrefix);
-  const daemonTargetIds = listDaemonSockets().map(d => d.targetId);
-  const daemonMatches = daemonTargetIds.filter(id => id.toUpperCase().startsWith(targetPrefix.toUpperCase()));
-
-  if (targetAlias) {
-    targetId = targetAlias.targetId;
-  } else if (daemonMatches.length > 0) {
-    targetId = resolvePrefix(targetPrefix, daemonTargetIds, 'daemon');
+  // Resolve against live discovery before trusting daemon or cache state.
+  const targetAlias = resolveTargetAlias(targetPrefix);
+  let livePages;
+  if (targetAlias?.port) {
+    const cachedPages = existsSync(PAGES_CACHE) ? JSON.parse(readFileSync(PAGES_CACHE, 'utf8')) : [];
+    const cachedAliasPage = cachedPages.find(page => page.targetId === targetAlias.targetId);
+    livePages = [cachedAliasPage || {
+      targetId: targetAlias.targetId,
+      title: targetAlias.title || '',
+      url: targetAlias.url || '',
+      type: 'page',
+    }];
   } else {
-    if (!existsSync(PAGES_CACHE)) {
-      console.error(formatCliError('No page list cached. Run "cdp list" first.', { cmd, targetPrefix, format: cliErrorFormat }));
-      process.exit(1);
-    }
-    const pages = JSON.parse(readFileSync(PAGES_CACHE, 'utf8'));
-    targetId = resolvePrefix(targetPrefix, pages.map(p => p.targetId), 'target', 'Run "cdp list".');
+    livePages = await discoverLivePagesForTargetResolution();
+    writeFileSync(PAGES_CACHE, JSON.stringify(livePages), { mode: 0o600 });
   }
+  const requestedTargetId = targetAlias?.targetId || targetPrefix;
+  const preliminaryMatches = livePages.filter(page => String(page.targetId || '').toUpperCase().startsWith(String(requestedTargetId).toUpperCase()));
+  const preliminaryTargetId = preliminaryMatches.length === 1 ? preliminaryMatches[0].targetId : null;
+  const daemonBinding = preliminaryTargetId ? await readDaemonBinding(preliminaryTargetId) : null;
+  let targetResolution = resolveLiveTargetBinding({
+    requested: targetPrefix,
+    livePages,
+    daemonBinding,
+    alias: targetAlias,
+  });
+  if (targetAlias?.port) targetResolution.resolutionSource = 'alias';
+  const targetId = targetResolution.resolvedTargetId;
 
   let conn = await getOrStartTabDaemon(targetId, { env: aliasEnv(targetAlias) });
+  let rebound = false;
+  let daemonAssessment = null;
   if (!allowStaleDaemon) {
     try {
-      await assertFreshDaemonConnection(conn, {
+      daemonAssessment = await assertFreshDaemonConnection(conn, {
         targetPrefix: targetPrefixForDisplay(targetId),
+        expectedTargetId: targetId,
         currentMetadata: collectDaemonMetadata(),
       });
     } catch (e) {
-      console.error(formatCliError(e, { cmd, targetPrefix: targetPrefixForDisplay(targetId), format: cliErrorFormat }));
-      process.exit(1);
+      if (e.assessment?.status === 'target-mismatch') {
+        await stopDaemons(targetId);
+        await sleep(100);
+        conn = await getOrStartTabDaemon(targetId, { env: aliasEnv(targetAlias) });
+        try {
+          daemonAssessment = await assertFreshDaemonConnection(conn, {
+            targetPrefix: targetPrefixForDisplay(targetId),
+            expectedTargetId: targetId,
+            currentMetadata: collectDaemonMetadata(),
+          });
+          rebound = true;
+        } catch (retryError) {
+          console.error(formatCliError(retryError, { cmd, targetPrefix: targetPrefixForDisplay(targetId), format: cliErrorFormat }));
+          process.exit(1);
+        }
+      } else {
+        console.error(formatCliError(e, { cmd, targetPrefix: targetPrefixForDisplay(targetId), format: cliErrorFormat }));
+        process.exit(1);
+      }
     }
     conn = await connectToSocket(sockPath(targetId));
   }
+  targetResolution = completeTargetResolution(targetResolution, {
+    boundTargetId: daemonAssessment?.daemon?.boundTargetId || targetId,
+    rebound,
+  });
 
   if (cmd === 'eval') {
     try {
@@ -14746,7 +15092,12 @@ async function main() {
   const response = await sendCommand(conn, { cmd, args: cmdArgs });
 
   if (response.ok) {
-    if (response.result) console.log(response.result);
+    if (response.result) {
+      const output = cliErrorFormat === 'json'
+        ? attachTargetResolutionDiagnostics(response.result, targetResolution)
+        : response.result;
+      console.log(output);
+    }
   } else {
     console.error(formatDaemonCommandError(response.error, { cmd, targetPrefix, format: cliErrorFormat }));
     process.exitCode = 1;
@@ -14808,6 +15159,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isBatchParallelUnsafeCommand,
   parseReplayArgs, parseReplayArtifact, replayStepFromAction, replayActionsStr,
   collectDaemonMetadata, assessDaemonFreshness, formatStaleDaemonMessage,
+  resolveLiveTargetBinding, completeTargetResolution, attachTargetResolutionDiagnostics,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,
   formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, formatRefRect, isPriorityPerceiveTextLine,
@@ -14815,7 +15167,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
-  parseShotArgs, shotStr,
+  parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
   probeTcpPort,
   waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
@@ -14842,6 +15194,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isBlankPageUrl, pageTargetScore, rankPageTargets, matchPageTargets, selectPageTarget,
   parseTargetSelectArgs, buildTargetSelectModel, formatTargetSelect,
   parseQaModeArgs, buildQaSummaryModel, formatQaSummaryText, truncateTextLines,
+  classifyPageHealth, pageHealthScript, collectPageHealth,
   parseResponsiveAuditArgs, buildResponsiveAuditModel, formatResponsiveAuditReport,
   responsiveAuditViewportScript, responsiveAuditStr, countNetworkFailures,
   stylesStr,

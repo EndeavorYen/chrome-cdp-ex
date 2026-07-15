@@ -18,7 +18,7 @@ const {
   formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   statusStr, clearObservationBuffers,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
-  captureScreenshot, screencastFallback, snapshotStr,
+  captureScreenshot, screencastFallback, snapshotStr, formatScreenshotCaptureDiagnostics,
   resetScreenshotTier, getScreenshotTier,
   decodeVLQ, mapLineToSource, stripVitePathQuery, mapStyleSource,
   formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr, autoActionJsonArgs,
@@ -10733,5 +10733,165 @@ describe('formatUnknownRefError recovery wording', () => {
   it('dom-mutation message tells loop authors to switch to selectors', () => {
     const msg = formatUnknownRefError('@31', { generation: 5, invalidationReason: 'dom-mutation' });
     expect(msg).toMatch(/stable CSS selector in batch\/loops|stable CSS selector/);
+  });
+});
+
+describe('transient black screenshot recovery', () => {
+  it('does not describe a successful sanity retry as a capture timeout', () => {
+    const diagnostics = formatScreenshotCaptureDiagnostics({
+      fallback: true,
+      method: 'captureScreenshot-fromSurface-false',
+      retryCount: 1,
+      sanity: { reason: 'frame-consistent' },
+      firstFrameSanity: { reason: 'near-black-frame-on-light-page' },
+    });
+
+    expect(diagnostics).toContain('screenshot retry=1');
+    expect(diagnostics).toContain('near-black-frame-on-light-page');
+    expect(diagnostics).not.toContain('timed out');
+  });
+
+  it('retries one contradictory black frame and returns the valid alternate capture', async () => {
+    resetScreenshotTier();
+    let captures = 0;
+    const cdp = {
+      send: async (method, params) => {
+        expect(method).toBe('Page.captureScreenshot');
+        captures += 1;
+        return { data: captures === 1 ? 'black-frame' : 'valid-frame', params };
+      },
+    };
+    const inspected = [];
+
+    const result = await captureScreenshot(cdp, 'sid', { format: 'png' }, {
+      inspectFrame: async ({ data }) => {
+        inspected.push(data);
+        return data === 'black-frame'
+          ? { retry: true, reason: 'near-black-frame-on-light-page', nearBlackRatio: 0.96, pageTone: 'light' }
+          : { retry: false, reason: 'frame-consistent', nearBlackRatio: 0.02, pageTone: 'light' };
+      },
+      waitForPaint: async () => {},
+    });
+
+    expect(captures).toBe(2);
+    expect(inspected).toEqual(['black-frame', 'valid-frame']);
+    expect(result).toMatchObject({
+      data: 'valid-frame',
+      method: 'captureScreenshot-fromSurface-false',
+      retryCount: 1,
+      sanity: { retry: false, reason: 'frame-consistent' },
+      firstFrameSanity: { retry: true, reason: 'near-black-frame-on-light-page' },
+    });
+  });
+
+  it('does not retry a legitimate dark frame', async () => {
+    resetScreenshotTier();
+    let captures = 0;
+    const cdp = {
+      send: async () => {
+        captures += 1;
+        return { data: 'dark-frame' };
+      },
+    };
+
+    const result = await captureScreenshot(cdp, 'sid', { format: 'png' }, {
+      inspectFrame: async () => ({ retry: false, reason: 'dark-page', nearBlackRatio: 0.97, pageTone: 'dark' }),
+    });
+
+    expect(captures).toBe(1);
+    expect(result).toMatchObject({
+      data: 'dark-frame',
+      method: 'captureScreenshot',
+      retryCount: 0,
+      sanity: { retry: false, reason: 'dark-page' },
+    });
+  });
+
+  it('rejects a persistent contradictory black frame after the bounded retry', async () => {
+    resetScreenshotTier();
+    const cdp = { send: async () => ({ data: 'black-frame' }) };
+
+    await expect(captureScreenshot(cdp, 'sid', { format: 'png' }, {
+      inspectFrame: async () => ({ retry: true, reason: 'near-black-frame-on-light-page' }),
+      waitForPaint: async () => {},
+    })).rejects.toThrow(/still failed sanity check/i);
+  });
+
+  it('rejects when the alternate capture fails instead of returning the known-bad frame', async () => {
+    resetScreenshotTier();
+    let calls = 0;
+    const cdp = {
+      send: async () => {
+        calls += 1;
+        if (calls === 1) return { data: 'black-frame' };
+        throw new Error('alternate capture unavailable');
+      },
+    };
+
+    await expect(captureScreenshot(cdp, 'sid', { format: 'png' }, {
+      inspectFrame: async () => ({ retry: true, reason: 'near-black-frame-on-light-page' }),
+      waitForPaint: async () => {},
+    })).rejects.toThrow(/alternate capture unavailable/i);
+  });
+});
+
+describe('post-action page health evidence', () => {
+  it('keeps successful changed action QA populated when URL sampling is unavailable', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'ABC12345', input: '#select', label: 'Select' },
+      dispatch: async () => 'clicked',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => '+++ Added\n+ [button] Selected',
+      enrichActionResult: result => {
+        result.effects.pageHealth = {
+          status: 'populated',
+          isBlank: false,
+          confidence: 'high',
+          evidence: { visibleTextLength: 18, visibleControlCount: 1, changed: true },
+        };
+      },
+      format: { format: 'json', qa: true },
+    });
+
+    const model = JSON.parse(out);
+    expect(model.summary).toMatchObject({
+      ok: true,
+      page: { isBlank: false, healthStatus: 'populated' },
+    });
+    expect(model.action.effects.pageHealth).toMatchObject({ status: 'populated', isBlank: false });
+    expect(model.action.effects.pageHealth.evidence).toEqual({ changed: true });
+  });
+
+  it('keeps blank and indeterminate compact evidence reviewable', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'ABC12345', input: '#load', label: 'Load' },
+      dispatch: async () => 'clicked',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => null,
+      enrichActionResult: result => {
+        result.effects.pageHealth = {
+          status: 'indeterminate',
+          isBlank: false,
+          confidence: 'low',
+          evidence: {
+            readyState: 'loading',
+            visibleTextLength: 0,
+            elementCount: 2,
+            visibleControlCount: 0,
+            bodyRect: { width: 390, height: 0 },
+            changed: false,
+          },
+        };
+      },
+      format: { format: 'json' },
+    });
+
+    expect(JSON.parse(out).effects.pageHealth.evidence).toMatchObject({
+      readyState: 'loading',
+      elementCount: 2,
+      bodyRect: { width: 390, height: 0 },
+    });
   });
 });

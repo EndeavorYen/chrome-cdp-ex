@@ -3,7 +3,7 @@
 [![81 Commands](https://img.shields.io/badge/commands-81-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
-[![Release v2.12.0](https://img.shields.io/badge/release-v2.12.0-brightgreen)](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.12.0)
+[![Release v2.13.0](https://img.shields.io/badge/release-v2.13.0-brightgreen)](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.13.0)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
 
 > **TL;DR** — The Smart Eye for coding agents. `chrome-cdp-ex` lets an agent see and act inside your real browser: logged-in tabs, page layout, visible styles, action receipts, CSS source tracing, and long-session reports.
@@ -94,13 +94,13 @@ For the shortest first run, use [the Killer Path walkthrough](docs/examples/kill
 
 1. Choose an install source.
 
-Use the GitHub release tarball when you want a pinned v2.12.0 install:
+Use the GitHub release tarball when you want a pinned v2.13.0 install:
 
 ```bash
-curl -L -o pi-chrome-cdp-2.12.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.12.0/pi-chrome-cdp-2.12.0.tgz
-mkdir -p chrome-cdp-ex-v2.12.0
-tar -xzf pi-chrome-cdp-2.12.0.tgz -C chrome-cdp-ex-v2.12.0 --strip-components=1
-cd chrome-cdp-ex-v2.12.0
+curl -L -o pi-chrome-cdp-2.13.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.13.0/pi-chrome-cdp-2.13.0.tgz
+mkdir -p chrome-cdp-ex-v2.13.0
+tar -xzf pi-chrome-cdp-2.13.0.tgz -C chrome-cdp-ex-v2.13.0 --strip-components=1
+cd chrome-cdp-ex-v2.13.0
 ```
 
 The GitHub Release notes publish the final tarball checksum after package validation.
@@ -169,7 +169,7 @@ The important bit is the loop: first perceive the page, then act, then ask what 
 - [Full skill reference](skills/chrome-cdp-ex/SKILL.md) — every command, flag, and troubleshooting path.
 - [Self-improvement loop](docs/self-improvement-loop.md) — the issue -> test -> PR -> review -> merge loop used for repeated live testing.
 - [Benchmark proof](#dogfood-benchmark) — how promotion claims are gated.
-- [v2.12.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.12.0) — release notes, checksum, and package tarball asset.
+- [v2.13.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.13.0) — release notes, checksum, and package tarball asset.
 
 ## How it works
 
