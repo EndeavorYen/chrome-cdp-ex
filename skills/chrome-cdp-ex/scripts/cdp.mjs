@@ -721,16 +721,19 @@ async function getWsUrl() {
     let res;
     try {
       res = await fetch(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const info = await res.json();
+      if (!info.webSocketDebuggerUrl) throw new Error(`CDP on port ${port}: /json/version has no webSocketDebuggerUrl`);
+      _browserInfo = info;
+      // Extract path only — don't trust the hostname in the response (may be "localhost"
+      // while CDP_HOST points elsewhere, e.g. WSL2→Windows)
+      const wsPath = new URL(info.webSocketDebuggerUrl).pathname;
+      return `ws://${host}:${port}${wsPath}`;
     } catch {
-      throw new Error(`Cannot reach CDP on ${host}:${port} — is the app running with --remote-debugging-port=${port}?`);
+      // Fallback: Chrome 136+ or SSH tunnel/websocket-only mode where HTTP endpoints return 404
+      // but direct WebSocket handshake to /devtools/browser succeeds.
+      return `ws://${host}:${port}/devtools/browser`;
     }
-    const info = await res.json();
-    if (!info.webSocketDebuggerUrl) throw new Error(`CDP on port ${port}: /json/version has no webSocketDebuggerUrl`);
-    _browserInfo = info;
-    // Extract path only — don't trust the hostname in the response (may be "localhost"
-    // while CDP_HOST points elsewhere, e.g. WSL2→Windows)
-    const wsPath = new URL(info.webSocketDebuggerUrl).pathname;
-    return `ws://${host}:${port}${wsPath}`;
   }
 
   // DevToolsActivePort file discovery (Chrome, Edge, Brave, etc.)
@@ -11298,6 +11301,19 @@ async function checkCdpReachability({ env = process.env, fetcher = fetch, host =
       }
       return { status: 'OK', label: 'CDP', detail: `${host}:${port} → ${describe(info)}`, host, port: String(port) };
     } catch (e) {
+      // Try WebSocket fallback check
+      try {
+        const wsUrl = `ws://${host}:${port}/devtools/browser`;
+        const ws = new WebSocket(wsUrl);
+        const wsOpen = await new Promise((resolveWs, rejectWs) => {
+          ws.onopen = () => { resolveWs(true); ws.close(); };
+          ws.onerror = (err) => rejectWs(err);
+          setTimeout(() => { ws.close(); rejectWs(new Error('WebSocket timeout')); }, 2000);
+        });
+        if (wsOpen) {
+          return { status: 'OK', label: 'CDP', detail: `${host}:${port} → connected via WebSocket fallback`, host, port: String(port) };
+        }
+      } catch {}
       return {
         status: 'FAIL', label: 'CDP', detail: `cannot reach ${host}:${port} (${e.message})`,
         hint: `start the app with --remote-debugging-port=${port}, or unset CDP_PORT to auto-discover Chrome`,
@@ -11387,43 +11403,67 @@ async function checkBrowserTargets({ cdp = null, env = process.env, fetcher = fe
     };
   }
 
+  let targets = [];
   try {
     const res = await fetcher(`http://${cdpHost}:${port}/json/list`, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const raw = await res.json();
-    const targets = Array.isArray(raw) ? raw.map(normalizeBrowserTargetInfo).filter(isDebuggablePageTarget) : [];
-    if (targets.length === 0) {
+    targets = Array.isArray(raw) ? raw.map(normalizeBrowserTargetInfo).filter(isDebuggablePageTarget) : [];
+  } catch (e) {
+    try {
+      const wsUrl = `ws://${cdpHost}:${port}/devtools/browser`;
+      const ws = new WebSocket(wsUrl);
+      const targetsResult = await new Promise((resolveWs, rejectWs) => {
+        ws.onopen = () => {
+          ws.send(JSON.stringify({ id: 1, method: 'Target.getTargets' }));
+        };
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.id === 1 && data.result?.targetInfos) {
+              resolveWs(data.result.targetInfos);
+            }
+          } catch {}
+        };
+        ws.onerror = (err) => rejectWs(err);
+        setTimeout(() => { ws.close(); rejectWs(new Error('WebSocket timeout')); }, 3000);
+      });
+      ws.close();
+      targets = Array.isArray(targetsResult) ? targetsResult.map(normalizeBrowserTargetInfo).filter(isDebuggablePageTarget) : [];
+    } catch {
       return {
         status: 'WARN',
         label: 'Tabs',
-        detail: 'no debuggable page targets',
-        hint: 'Create one with: cdp open https://example.com',
+        detail: `cannot list debuggable page targets (${e.message})`,
+        hint: 'Run: cdp list. If it is empty, run: cdp open https://example.com',
         targetPrefixes: [],
-        noTargets: true,
       };
     }
-    const prefixLen = getDisplayPrefixLength(targets.map(target => target.targetId));
-    const targetPrefixes = targets.map(target => target.targetId.slice(0, prefixLen));
-    const labels = targets.slice(0, 3).map((target, index) => {
-      const title = target.title || (target.url === 'about:blank' ? '(blank tab)' : target.url || '(untitled)');
-      return `${targetPrefixes[index]} ${title}`.trim();
-    });
-    const suffix = targets.length > labels.length ? `, +${targets.length - labels.length} more` : '';
-    return {
-      status: 'OK',
-      label: 'Tabs',
-      detail: `${targets.length} debuggable page target${targets.length === 1 ? '' : 's'}: ${labels.join(', ')}${suffix}`,
-      targetPrefixes,
-    };
-  } catch (e) {
+  }
+
+  if (targets.length === 0) {
     return {
       status: 'WARN',
       label: 'Tabs',
-      detail: `cannot list debuggable page targets (${e.message})`,
-      hint: 'Run: cdp list. If it is empty, run: cdp open https://example.com',
+      detail: 'no debuggable page targets',
+      hint: 'Create one with: cdp open https://example.com',
       targetPrefixes: [],
+      noTargets: true,
     };
   }
+  const prefixLen = getDisplayPrefixLength(targets.map(target => target.targetId));
+  const targetPrefixes = targets.map(target => target.targetId.slice(0, prefixLen));
+  const labels = targets.slice(0, 3).map((target, index) => {
+    const title = target.title || (target.url === 'about:blank' ? '(blank tab)' : target.url || '(untitled)');
+    return `${targetPrefixes[index]} ${title}`.trim();
+  });
+  const suffix = targets.length > labels.length ? `, +${targets.length - labels.length} more` : '';
+  return {
+    status: 'OK',
+    label: 'Tabs',
+    detail: `${targets.length} debuggable page target${targets.length === 1 ? '' : 's'}: ${labels.join(', ')}${suffix}`,
+    targetPrefixes,
+  };
 }
 
 function checkBrowserPermission({ daemons = null, tabs = null, cdp = null, environment = null } = {}) {
@@ -12030,10 +12070,34 @@ function parseSpawnDebugBrowserArgs(args, env = process.env) {
 async function listSpawnedDebugTargets({ port, host = DEFAULT_CDP_HOST, fetcher = fetch } = {}) {
   try {
     const res = await fetcher(`http://${host}:${port}/json/list`, { signal: AbortSignal.timeout(2000) });
-    if (!res.ok) return [];
-    const raw = await res.json();
-    return Array.isArray(raw)
-      ? raw.map(normalizeBrowserTargetInfo).filter(isDebuggablePageTarget)
+    if (res.ok) {
+      const raw = await res.json();
+      return Array.isArray(raw)
+        ? raw.map(normalizeBrowserTargetInfo).filter(isDebuggablePageTarget)
+        : [];
+    }
+  } catch {}
+  try {
+    const wsUrl = `ws://${host}:${port}/devtools/browser`;
+    const ws = new WebSocket(wsUrl);
+    const targetsResult = await new Promise((resolveWs, rejectWs) => {
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ id: 1, method: 'Target.getTargets' }));
+      };
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.id === 1 && data.result?.targetInfos) {
+            resolveWs(data.result.targetInfos);
+          }
+        } catch {}
+      };
+      ws.onerror = (err) => rejectWs(err);
+      setTimeout(() => { ws.close(); rejectWs(new Error('timeout')); }, 1500);
+    });
+    ws.close();
+    return Array.isArray(targetsResult)
+      ? targetsResult.map(normalizeBrowserTargetInfo).filter(isDebuggablePageTarget)
       : [];
   } catch {
     return [];
@@ -12199,8 +12263,46 @@ async function waitForSpawnedCdp({ port, host = DEFAULT_CDP_HOST, timeoutMs = DE
         };
       }
       lastError = `HTTP ${res.status}`;
+      // Fallback check: if HTTP fails, try websocket check
+      try {
+        const wsUrl = `ws://${host}:${port}/devtools/browser`;
+        const ws = new WebSocket(wsUrl);
+        const wsOpen = await new Promise((resolveWs, rejectWs) => {
+          ws.onopen = () => { resolveWs(true); ws.close(); };
+          ws.onerror = (err) => rejectWs(err);
+          setTimeout(() => { ws.close(); rejectWs(new Error('timeout')); }, 300);
+        });
+        if (wsOpen) {
+          return {
+            ok: true,
+            port,
+            host,
+            product: 'Chrome (WebSocket Fallback)',
+            webSocketDebuggerUrl: wsUrl,
+          };
+        }
+      } catch {}
     } catch (e) {
       lastError = e.message || String(e);
+      // Fallback check on error
+      try {
+        const wsUrl = `ws://${host}:${port}/devtools/browser`;
+        const ws = new WebSocket(wsUrl);
+        const wsOpen = await new Promise((resolveWs, rejectWs) => {
+          ws.onopen = () => { resolveWs(true); ws.close(); };
+          ws.onerror = (err) => rejectWs(err);
+          setTimeout(() => { ws.close(); rejectWs(new Error('timeout')); }, 300);
+        });
+        if (wsOpen) {
+          return {
+            ok: true,
+            port,
+            host,
+            product: 'Chrome (WebSocket Fallback)',
+            webSocketDebuggerUrl: wsUrl,
+          };
+        }
+      } catch {}
     }
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) break;
@@ -12572,6 +12674,8 @@ async function runDaemon(targetId) {
 
   let sessionId;
   try {
+    // Wake up the tab first (avoids timeouts on suspended/inactive background tabs)
+    await cdp.send('Target.activateTarget', { targetId }).catch(() => {});
     const res = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
     sessionId = res.sessionId;
   } catch (e) {
