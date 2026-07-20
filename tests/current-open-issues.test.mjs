@@ -38,6 +38,109 @@ function parseMcpFrames(buffer) {
 }
 
 describe('current open issue contracts', () => {
+  it('#122 keeps operational readiness true for a usable checkout with only an install-path advisory', () => {
+    const model = T.buildDoctorModel([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'WARN', label: 'Skill install', detail: '/tmp/checkout is not installed under ~/.claude/skills' },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Tabs', detail: '1', targetPrefixes: ['AABBCCDD'] },
+      { status: 'OK', label: 'Permission', detail: 'approved', targetPrefixes: ['AABBCCDD'] },
+    ]);
+
+    expect(model).toMatchObject({
+      status: 'usable-with-warnings',
+      ready: true,
+      operationalReady: true,
+      failures: 0,
+      warnings: 0,
+      advisories: 1,
+    });
+    expect(model.checks.find(check => check.label === 'Skill install')?.severity).toBe('advisory');
+
+    const actionableWarning = T.buildDoctorModel([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'WARN', label: 'FD limit', detail: '256 open files' },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Tabs', detail: '1', targetPrefixes: ['AABBCCDD'] },
+      { status: 'OK', label: 'Permission', detail: 'approved', targetPrefixes: ['AABBCCDD'] },
+    ]);
+    expect(actionableWarning).toMatchObject({
+      ready: false,
+      operationalReady: false,
+      warnings: 1,
+    });
+  });
+
+  it('#123 returns a structured stop receipt for stopped and already-stopped targets', async () => {
+    const daemon = {
+      targetId: 'ABCDEF1234567890',
+      socketPath: '/tmp/cdp-ABCDEF1234567890.sock',
+    };
+    const stopped = await T.stopDaemons('ABCDEF12', {
+      list: () => [daemon],
+      connect: async () => ({ end: () => {} }),
+      send: async () => ({ ok: true, result: '' }),
+    });
+    const noop = await T.stopDaemons('ABCDEF12', { list: () => [] });
+    const all = await T.stopDaemons(null, {
+      list: () => [daemon, { targetId: '1234567890ABCDEF', socketPath: '/tmp/cdp-1234567890ABCDEF.sock' }],
+      connect: async () => ({ end: () => {} }),
+      send: async () => ({ ok: true, result: '' }),
+    });
+    const remainingDaemon = { targetId: '1234567890ABCDEF', socketPath: '/tmp/cdp-1234567890ABCDEF.sock' };
+    const repeatedWithOtherSession = await T.stopDaemons('ABCDEF12', {
+      list: () => [remainingDaemon],
+    });
+    const failedCleanup = await T.stopDaemons('ABCDEF12', {
+      list: () => [daemon, remainingDaemon],
+      connect: async () => { throw new Error('ECONNREFUSED'); },
+      unlink: () => { throw new Error('EPERM'); },
+    });
+
+    expect(stopped).toMatchObject({
+      schema: 'chrome-cdp-ex.stop.v1',
+      requestedTarget: 'ABCDEF12',
+      stopped: true,
+      stoppedTargets: ['ABCDEF12'],
+      remainingSessions: 0,
+      noop: false,
+    });
+    expect(noop).toMatchObject({
+      schema: 'chrome-cdp-ex.stop.v1',
+      requestedTarget: 'ABCDEF12',
+      stopped: false,
+      stoppedTargets: [],
+      remainingSessions: 0,
+      noop: true,
+    });
+    expect(all).toMatchObject({
+      requestedTarget: null,
+      stopped: true,
+      stoppedTargets: ['ABCDEF12', '12345678'],
+      remainingSessions: 0,
+      noop: false,
+    });
+    expect(repeatedWithOtherSession).toMatchObject({
+      requestedTarget: 'ABCDEF12',
+      stopped: false,
+      remainingSessions: 1,
+      remainingTargets: ['12345678'],
+      noop: true,
+    });
+    expect(failedCleanup).toMatchObject({
+      requestedTarget: 'ABCDEF12',
+      stopped: false,
+      failedTargets: ['ABCDEF12'],
+      remainingSessions: 2,
+      remainingTargets: ['ABCDEF12', '12345678'],
+      noop: false,
+    });
+    expect(T.formatStopResult(stopped)).toContain('Stopped daemon ABCDEF12; 0 remaining session(s).');
+    expect(T.formatStopResult(noop)).toContain('No active daemon for ABCDEF12; 0 remaining session(s).');
+    expect(T.formatStopResult(all)).toContain('Stopped 2 daemon(s): ABCDEF12, 12345678; 0 remaining session(s).');
+    expect(T.formatStopResult(failedCleanup)).toContain('Failed to stop daemon ABCDEF12; 2 remaining session(s).');
+  });
+
   it('locks the #106-#109 issue-level helper contracts', async () => {
     expect(T.wrapAwaitExpression('const value = await Promise.resolve(42); value', true))
       .toBe('(async()=>{const value = await Promise.resolve(42); return (value);})()');

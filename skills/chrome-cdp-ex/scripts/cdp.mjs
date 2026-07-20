@@ -11843,6 +11843,9 @@ function doctorCheckSeverity(check = {}) {
   if (check.severity) return check.severity;
   if (check.status === 'FAIL') return 'blocking';
   if (check.status === 'WARN') {
+    // Direct checkout invocation is operationally valid even when the skill is
+    // not copied into the conventional Claude installation directory.
+    if (check.label === 'Skill install') return 'advisory';
     // Permission without a live daemon is advisory when CDP/tabs are otherwise usable.
     if (check.label === 'Permission' && !/no target|skipped until/i.test(check.detail || '')) return 'advisory';
     return 'warning';
@@ -11864,7 +11867,8 @@ function doctorStatusSummary(checks) {
   return {
     status: readiness,
     readiness,
-    ready: readiness === 'ready',
+    ready: failures === 0 && warnings === 0,
+    operationalReady: failures === 0 && warnings === 0,
     failures,
     warnings,
     actionableWarnings: warnings,
@@ -13591,29 +13595,89 @@ async function readDaemonBinding(targetId) {
 // Stop daemons
 // ---------------------------------------------------------------------------
 
-async function stopDaemons(targetPrefix) {
-  const daemons = listDaemonSockets();
+function buildStopResult({ requestedTarget = null, daemons = [], stoppedDaemons = [], removedDaemons = stoppedDaemons, failedDaemons = [] } = {}) {
+  const targetIds = daemons.map(daemon => daemon.targetId).filter(Boolean);
+  const prefixLength = targetIds.length ? getDisplayPrefixLength(targetIds) : MIN_TARGET_PREFIX_LEN;
+  const removedIds = new Set(removedDaemons.map(daemon => daemon.targetId));
+  const stoppedTargets = stoppedDaemons.map(daemon => daemon.targetId.slice(0, prefixLength));
+  const failedTargets = failedDaemons.map(daemon => daemon.targetId.slice(0, prefixLength));
+  const remainingTargets = daemons
+    .filter(daemon => !removedIds.has(daemon.targetId))
+    .map(daemon => daemon.targetId.slice(0, prefixLength));
+  return {
+    schema: 'chrome-cdp-ex.stop.v1',
+    requestedTarget,
+    stopped: stoppedTargets.length > 0,
+    stoppedTargets,
+    failedTargets,
+    remainingSessions: remainingTargets.length,
+    remainingTargets,
+    noop: stoppedTargets.length === 0 && failedTargets.length === 0,
+  };
+}
 
+function formatStopResult(model, { format = 'text' } = {}) {
+  if (format === 'json') return formatJson(model);
+  if (model.failedTargets?.length) {
+    if (model.requestedTarget) {
+      return `Failed to stop daemon ${model.failedTargets.join(', ')}; ${model.remainingSessions} remaining session(s).`;
+    }
+    const stopped = model.stoppedTargets?.length
+      ? `Stopped ${model.stoppedTargets.length} daemon(s): ${model.stoppedTargets.join(', ')}; `
+      : '';
+    return `${stopped}Failed to stop daemon(s): ${model.failedTargets.join(', ')}; ${model.remainingSessions} remaining session(s).`;
+  }
+  if (!model.stopped) {
+    const scope = model.requestedTarget ? ` for ${model.requestedTarget}` : 's';
+    return `No active daemon${scope}; ${model.remainingSessions} remaining session(s).`;
+  }
+  if (model.requestedTarget) {
+    return `Stopped daemon ${model.stoppedTargets.join(', ')}; ${model.remainingSessions} remaining session(s).`;
+  }
+  return `Stopped ${model.stoppedTargets.length} daemon(s): ${model.stoppedTargets.join(', ')}; ${model.remainingSessions} remaining session(s).`;
+}
+
+async function stopDaemons(targetPrefix, deps = {}) {
+  const list = deps.list || listDaemonSockets;
+  const connect = deps.connect || connectToSocket;
+  const send = deps.send || sendCommand;
+  const unlink = deps.unlink || unlinkSync;
+  const daemons = list();
+  if (!daemons.length) return buildStopResult({ requestedTarget: targetPrefix || null });
+
+  let selected = daemons;
   if (targetPrefix) {
-    const targetId = resolvePrefix(targetPrefix, daemons.map(d => d.targetId), 'daemon');
-    const daemon = daemons.find(d => d.targetId === targetId);
-    try {
-      const conn = await connectToSocket(daemon.socketPath);
-      await sendCommand(conn, { cmd: 'stop' });
-    } catch {
-      if (!IS_WINDOWS) try { unlinkSync(daemon.socketPath); } catch {}
-    }
-    return;
+    const matches = daemons.filter(daemon => daemon.targetId.toLowerCase().startsWith(String(targetPrefix).toLowerCase()));
+    if (!matches.length) return buildStopResult({ requestedTarget: targetPrefix, daemons });
+    const targetId = resolvePrefix(targetPrefix, daemons.map(daemon => daemon.targetId), 'daemon');
+    selected = [daemons.find(daemon => daemon.targetId === targetId)];
   }
-
-  for (const daemon of daemons) {
+  const stoppedDaemons = [];
+  const removedDaemons = [];
+  const failedDaemons = [];
+  for (const daemon of selected) {
+    let response;
     try {
-      const conn = await connectToSocket(daemon.socketPath);
-      await sendCommand(conn, { cmd: 'stop' });
+      const conn = await connect(daemon.socketPath);
+      response = await send(conn, { cmd: 'stop' });
     } catch {
-      if (!IS_WINDOWS) try { unlinkSync(daemon.socketPath); } catch {}
+      if (!IS_WINDOWS) {
+        try {
+          unlink(daemon.socketPath);
+          removedDaemons.push(daemon);
+        } catch {
+          failedDaemons.push(daemon);
+        }
+      } else {
+        failedDaemons.push(daemon);
+      }
+      continue;
     }
+    if (response?.ok === false) throw new Error(response.error || 'daemon rejected stop');
+    stoppedDaemons.push(daemon);
+    removedDaemons.push(daemon);
   }
+  return buildStopResult({ requestedTarget: targetPrefix || null, daemons, stoppedDaemons, removedDaemons, failedDaemons });
 }
 
 // ---------------------------------------------------------------------------
@@ -13814,7 +13878,7 @@ Usage: cdp <command> [args]
                                     "spawn" is a short alias.
   dismiss-modal <target>            Close common dialog/modal patterns safely (close button, then Escape) —
                                     avoids triggering background shortcuts the way a bare "press Space" does.
-  stop  [target]                    Stop daemon(s)
+  stop  [target] [--format json]    Stop daemon(s) and report stopped targets, remaining sessions, or explicit no-op
 
 ACTION FEEDBACK
   click, verify-click, jsclick, clickxy, fill, type, press, select, scroll,
@@ -13883,7 +13947,7 @@ const COMMANDS = Object.freeze([
   { name: 'use', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'forget', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'current', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'stop', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
+  { name: 'stop', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'perceive', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'snap', aliases: ['snapshot'], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'controls', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
@@ -14836,7 +14900,10 @@ async function main() {
 
   // Stop
   if (cmd === 'stop') {
-    await stopDaemons(args[0]);
+    const fopts = parseFormatArgs(args, ['text', 'json']);
+    if (fopts.args.length > 1) exitCliError(`stop: unknown argument ${fopts.args[1]}`, { cmd, format: fopts.format });
+    const result = await stopDaemons(fopts.args[0]);
+    console.log(formatStopResult(result, { format: fopts.format }));
     return;
   }
 
@@ -15190,6 +15257,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   doctorWizardModel, doctorWizardSummary, doctorCheckSeverity,
   doctorNextSteps, doctorStatusSummary, buildDoctorModel, formatDoctorOutput,
   formatDoctorReport, runDoctorChecks, doctorStr,
+  buildStopResult, formatStopResult, stopDaemons,
   // Issues #82-#87 helpers
   isBlankPageUrl, pageTargetScore, rankPageTargets, matchPageTargets, selectPageTarget,
   parseTargetSelectArgs, buildTargetSelectModel, formatTargetSelect,

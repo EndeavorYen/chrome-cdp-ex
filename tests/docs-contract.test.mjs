@@ -13,6 +13,7 @@ const claude = readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8');
 const contributing = readFileSync(new URL('../CONTRIBUTING.md', import.meta.url), 'utf8');
 const design = readFileSync(new URL('../DESIGN.md', import.meta.url), 'utf8');
 const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+const releaseWorkflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 
 describe('Killer Path docs contract', () => {
   it('accepts the documented first-run golden path', () => {
@@ -155,5 +156,11 @@ describe('Repository release gates', () => {
 
   it('runs the docs contract in CI', () => {
     expect(ciWorkflow).toContain('npm run check:docs');
+  });
+
+  it('publishes the versioned changelog narrative instead of generated commit notes', () => {
+    expect(releaseWorkflow).toContain('CHANGELOG.md');
+    expect(releaseWorkflow).toContain('--notes-file');
+    expect(releaseWorkflow).not.toContain('--generate-notes');
   });
 });

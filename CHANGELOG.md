@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [2.13.1](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.13.0...v2.13.1) (2026-07-20)
+
+v2.13.1 makes readiness and daemon cleanup trustworthy for direct-checkout workflows. Compared with v2.13.0, a usable checkout is no longer rejected solely because it is outside the conventional Claude skill directory, and successful cleanup no longer exits without saying what happened.
+
+### Readiness
+
+* In v2.13.0, `doctor --format json` set `ready: false` whenever any advisory existed, including a missing `~/.claude/skills/chrome-cdp-ex` install path, even when CDP, tabs, and browser permission were working. In v2.13.1, install location remains visible as an advisory while `ready` and the new explicit `operationalReady` field stay true when there are no failures or actionable warnings (#122).
+* Genuine operational warnings still keep readiness false, so this change does not turn low file-descriptor limits, unstable CDP, or other actionable findings into a green result.
+
+### Lifecycle Confirmation
+
+* In v2.13.0, `stop <target>` could stop a daemon successfully with exit code 0 but empty stdout. In v2.13.1, `stop` always returns a confirmation: text mode identifies stopped or failed targets and remaining sessions, while `--format json` returns `chrome-cdp-ex.stop.v1` with `stopped`, `stoppedTargets`, `failedTargets`, `remainingSessions`, `remainingTargets`, and `noop` (#123).
+* Repeating `stop` after cleanup now returns an explicit no-op receipt instead of another silent success.
+
+### Compatibility
+
+No commands were removed and stop exit-code behavior is unchanged. Consumers of doctor JSON should treat `ready` / `operationalReady` as the operational gate and retain `status`, `readiness`, and per-check `severity` for advisory display. Scripts that previously expected empty stdout from `stop` should ignore the new receipt or request and parse `--format json`.
+
 ## [2.13.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.12.0...v2.13.0) (2026-07-16)
 
 v2.13.0 focuses on trustworthy browser evidence during long-running agent sessions. Compared with v2.12.0, visual audits, screenshots, page-health checks, recovery guidance, and target attachment now agree on what the live browser is actually showing.
