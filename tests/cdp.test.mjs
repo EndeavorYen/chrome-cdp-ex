@@ -9471,7 +9471,8 @@ describe('doctorStr', () => {
       schema: 'chrome-cdp-ex.doctor.v1',
       status: 'usable-with-warnings',
       readiness: 'usable-with-warnings',
-      ready: false,
+      ready: true,
+      operationalReady: true,
       failures: 0,
     });
     expect(model.warnings + model.advisories).toBeGreaterThan(0);

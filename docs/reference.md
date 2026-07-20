@@ -72,13 +72,13 @@ For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a tex
 
 Official releases live on GitHub, not the npm registry. Use the release tag, release notes, GitHub Pages proof page, and attached tarball as the publish surface.
 
-Pinned install: [v2.13.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.13.0).
+Pinned install: [v2.13.1 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.13.1).
 
 ```bash
-curl -L -o pi-chrome-cdp-2.13.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.13.0/pi-chrome-cdp-2.13.0.tgz
-mkdir -p chrome-cdp-ex-v2.13.0
-tar -xzf pi-chrome-cdp-2.13.0.tgz -C chrome-cdp-ex-v2.13.0 --strip-components=1
-cd chrome-cdp-ex-v2.13.0
+curl -L -o pi-chrome-cdp-2.13.1.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.13.1/pi-chrome-cdp-2.13.1.tgz
+mkdir -p chrome-cdp-ex-v2.13.1
+tar -xzf pi-chrome-cdp-2.13.1.tgz -C chrome-cdp-ex-v2.13.1 --strip-components=1
+cd chrome-cdp-ex-v2.13.1
 claude --plugin-dir .
 ```
 
@@ -273,6 +273,8 @@ If dispatch succeeds but post-action observation fails internally, the action st
 ## Daemon Freshness
 
 Target commands check per-tab daemon metadata before dispatching work. If an existing daemon was started from an older checkout, or cannot report metadata, the CLI returns a `stale-daemon` recovery model with `cdp stop <target>` and `rerun the original command` in `nextSteps`. Use `--allow-stale-daemon` only for intentional long-running daemon sessions.
+
+`stop [target]` now confirms cleanup instead of succeeding silently. Use `stop <target> --format json` for the versioned `chrome-cdp-ex.stop.v1` receipt, including the requested target, stopped or failed target prefixes, remaining sessions, and an explicit `noop` flag only when no daemon was active.
 
 ## CSS Source Tracing
 
