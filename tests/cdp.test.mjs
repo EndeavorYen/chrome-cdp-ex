@@ -261,7 +261,7 @@ describe('COMMANDS registry', () => {
   it('registers list as a targetless command with text and json output', () => {
     expect(T.COMMANDS).toContainEqual(expect.objectContaining({
       name: 'list',
-      aliases: [],
+      aliases: ['tabs', 'ls'],
       needsTarget: false,
       mutates: false,
       outputFormats: ['text', 'json'],
@@ -418,7 +418,7 @@ describe('helpStr', () => {
 
     expect(out).toContain('Usage: cdp <command> [args]');
     expect(out).toContain('doctor / ready');
-    expect(out).toContain('list [--format json]');
+    expect(out).toContain('list|tabs|ls [--format json]');
     expect(out).toContain('perceive <target>');
     expect(out).toContain('report <target>');
   });

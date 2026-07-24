@@ -1325,4 +1325,159 @@ describe('v2.11.0 review regressions', () => {
     expect(controls.inputSchema.properties).toHaveProperty('compact');
     expect(report.inputSchema.properties).toHaveProperty('compact');
   });
+
+  it('registers key/resize/tabs aliases and suggests near-miss unknown commands (#126/#129)', () => {
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'press',
+      aliases: expect.arrayContaining(['key']),
+    }));
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'viewport',
+      aliases: expect.arrayContaining(['resize']),
+    }));
+    expect(T.COMMANDS).toContainEqual(expect.objectContaining({
+      name: 'list',
+      aliases: expect.arrayContaining(['tabs', 'ls']),
+    }));
+    expect(T.NEEDS_TARGET.has('key')).toBe(true);
+    expect(T.NEEDS_TARGET.has('resize')).toBe(true);
+    expect(T.NEEDS_TARGET.has('tabs')).toBe(false);
+
+    expect(T.suggestCommands('resize')).toEqual(['viewport']);
+    expect(T.suggestCommands('tabs')).toEqual(['list']);
+    expect(T.suggestCommands('tabgroup')).toEqual(['tab-group']);
+    expect(T.suggestCommands('key')).toEqual(['press']);
+
+    const text = T.formatCliError(new Error('Unknown command: resize'), { cmd: 'resize' });
+    expect(text).toContain('Did you mean: viewport?');
+    expect(text).toContain('Strategy: suggest-command');
+    expect(text).toContain('Run: cdp viewport');
+    expect(text).not.toMatch(/Usage: cdp <command>/);
+  });
+
+  it('classifies Playwright :has-text selectors as invalid-selector usage (#127)', () => {
+    const failure = T.classifyActionFailure(
+      new Error(`SyntaxError: Failed to execute 'querySelector' on 'Document': ':has-text("往北")' is not a valid selector.`),
+      { action: 'click', target: { targetId: 'AAAABBBB', input: ':has-text("往北")' } },
+    );
+    expect(failure).toMatchObject({
+      kind: 'invalid-selector',
+    });
+    expect(failure.reason.toLowerCase()).toMatch(/playwright|valid selector|css/);
+    expect(failure.hints.join(' ')).toMatch(/data-testid|@ref|css/i);
+    expect(failure.hints.join(' ')).not.toMatch(/click --text/);
+    // Prefer corrected usage over a full re-perceive as the primary next step.
+    expect(failure.nextCommand).not.toBe('cdp perceive AAAABBBB -C -d 8');
+
+    const text = T.formatActionFailure(
+      new Error(`SyntaxError: Failed to execute 'querySelector' on 'Document': ':has-text("north")' is not a valid selector.`),
+      { action: 'click', target: { targetId: 'AAAABBBB', input: ':has-text("north")' } },
+    );
+    expect(text).toContain('Action failure: invalid-selector');
+    expect(text).not.toContain('Action failure: unknown');
+  });
+
+  it('omits overflow-scrollport-clipped controls from default interactive inventory (#128)', () => {
+    const source = T.visibleControlsCollectorSource();
+    expect(source).toMatch(/nearestScrollable|scrollport|overflow/);
+    expect(source).toMatch(/clipped/);
+
+    const clippedButton = {
+      tagName: 'BUTTON',
+      id: 'exit-south',
+      className: 'exit',
+      disabled: false,
+      tabIndex: 0,
+      innerText: '往南',
+      textContent: '往南',
+      parentElement: null,
+      getAttribute: (name) => ({ role: null, 'aria-label': null, title: null, type: null }[name] ?? null),
+      hasAttribute: () => false,
+      getBoundingClientRect: () => ({ left: 10, top: 381, right: 90, bottom: 434, width: 80, height: 53 }),
+      matches: (selector) => selector.includes('button'),
+      querySelectorAll: () => [],
+    };
+    const scrollport = {
+      tagName: 'DIV',
+      id: 'panel',
+      parentElement: { parentElement: null },
+      scrollWidth: 300,
+      clientWidth: 300,
+      scrollHeight: 452,
+      clientHeight: 256,
+      getAttribute: () => null,
+      getBoundingClientRect: () => ({ left: 0, top: 92, right: 300, bottom: 348, width: 300, height: 256 }),
+    };
+    clippedButton.parentElement = scrollport;
+
+    const sandbox = {
+      window: {
+        innerWidth: 390,
+        innerHeight: 844,
+        CSS: { escape: (value) => String(value) },
+        getComputedStyle: (el) => {
+          if (el === scrollport) {
+            return { display: 'block', visibility: 'visible', opacity: '1', cursor: 'default', overflowX: 'hidden', overflowY: 'auto' };
+          }
+          return { display: 'block', visibility: 'visible', opacity: '1', cursor: 'pointer', overflowX: 'visible', overflowY: 'visible' };
+        },
+      },
+      document: {
+        documentElement: {},
+        body: {},
+        querySelector: (selector) => (selector === '#exit-south' ? clippedButton : null),
+      },
+      CSS: { escape: (value) => String(value) },
+    };
+    sandbox.window.document = sandbox.document;
+    const script = T.visibleControlsPageScript({ selector: '#exit-south', limit: 5 });
+    const model = JSON.parse(runInNewContext(script, sandbox));
+    expect(model.controls).toEqual([]);
+    expect(model.total).toBe(0);
+  });
+
+  it('keys daemon git identity off the script package root, not process.cwd (#130)', async () => {
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cdp-daemon-meta-'));
+    const skillScripts = path.join(tmp, 'skills', 'chrome-cdp-ex', 'scripts');
+    fs.mkdirSync(skillScripts, { recursive: true });
+    const scriptPath = path.join(skillScripts, 'cdp.mjs');
+    fs.writeFileSync(scriptPath, '// fixture\n');
+    const packageJsonPath = path.join(tmp, 'package.json');
+    fs.writeFileSync(packageJsonPath, JSON.stringify({ name: 'pi-chrome-cdp', version: '9.9.9' }));
+    const linkDir = path.join(tmp, 'skill-link');
+    fs.mkdirSync(linkDir, { recursive: true });
+    const linkedScript = path.join(linkDir, 'cdp.mjs');
+    fs.symlinkSync(scriptPath, linkedScript);
+
+    const otherCwd = path.join(tmp, 'other-checkout');
+    fs.mkdirSync(otherCwd, { recursive: true });
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(otherCwd);
+      const metaFromLink = T.collectDaemonMetadata({ scriptPath: linkedScript, now: Date.UTC(2026, 6, 24, 12), pid: 42 });
+      expect(fs.realpathSync(metaFromLink.scriptPath)).toBe(fs.realpathSync(scriptPath));
+      expect(metaFromLink.packageVersion).toBe('9.9.9');
+
+      const orphanRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cdp-daemon-orphan-'));
+      const orphanScript = path.join(orphanRoot, 'orphan.mjs');
+      fs.writeFileSync(orphanScript, '// orphan\n');
+      try {
+        const metaWithoutPackage = T.collectDaemonMetadata({
+          scriptPath: orphanScript,
+          now: Date.UTC(2026, 6, 24, 12),
+          pid: 43,
+        });
+        expect(metaWithoutPackage.gitCommit).toBeNull();
+        expect(metaWithoutPackage.packageVersion).toBeNull();
+      } finally {
+        fs.rmSync(orphanRoot, { recursive: true, force: true });
+      }
+    } finally {
+      process.chdir(previousCwd);
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
