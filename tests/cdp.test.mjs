@@ -1,7 +1,7 @@
 // cdp.test.mjs — Tests for cdp.mjs pure functions
 // Run: npm test
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
@@ -9078,6 +9078,42 @@ describe('checkDaemonSockets', () => {
     expect(r.detail).toContain('2 live');
     expect(r.detail).toContain('AABBCCDD');
     expect(r.detail).toContain('XYZ12345');
+  });
+});
+
+
+describe('getWsUrl websocket-only fallback', () => {
+  const previousPort = process.env.CDP_PORT;
+  const previousHost = process.env.CDP_HOST;
+  afterEach(() => {
+    if (previousPort === undefined) delete process.env.CDP_PORT;
+    else process.env.CDP_PORT = previousPort;
+    if (previousHost === undefined) delete process.env.CDP_HOST;
+    else process.env.CDP_HOST = previousHost;
+  });
+
+  it('falls back to /devtools/browser only when /json/version returns 404', async () => {
+    process.env.CDP_PORT = '9222';
+    process.env.CDP_HOST = '127.0.0.1';
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => ({}) });
+    try {
+      await expect(T.getWsUrl()).resolves.toBe('ws://127.0.0.1:9222/devtools/browser');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('keeps a clear reachability error when the HTTP endpoint is unreachable', async () => {
+    process.env.CDP_PORT = '9222';
+    process.env.CDP_HOST = '127.0.0.1';
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error('ECONNREFUSED'); };
+    try {
+      await expect(T.getWsUrl()).rejects.toThrow(/Cannot reach CDP on 127\.0\.0\.1:9222/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
