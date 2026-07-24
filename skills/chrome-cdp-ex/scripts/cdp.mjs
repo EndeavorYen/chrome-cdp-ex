@@ -721,7 +721,10 @@ async function getWsUrl() {
     let res;
     try {
       res = await fetch(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch {
+      throw new Error(`Cannot reach CDP on ${host}:${port} — is the app running with --remote-debugging-port=${port}?`);
+    }
+    if (res.ok) {
       const info = await res.json();
       if (!info.webSocketDebuggerUrl) throw new Error(`CDP on port ${port}: /json/version has no webSocketDebuggerUrl`);
       _browserInfo = info;
@@ -729,11 +732,14 @@ async function getWsUrl() {
       // while CDP_HOST points elsewhere, e.g. WSL2→Windows)
       const wsPath = new URL(info.webSocketDebuggerUrl).pathname;
       return `ws://${host}:${port}${wsPath}`;
-    } catch {
-      // Fallback: Chrome 136+ or SSH tunnel/websocket-only mode where HTTP endpoints return 404
-      // but direct WebSocket handshake to /devtools/browser succeeds.
+    }
+    // Chrome 136+ / SSH tunnel / websocket-only mode: HTTP discovery returns 404 but
+    // direct WebSocket handshake to /devtools/browser still works. Do not fall back on
+    // other HTTP failures — those usually mean a non-CDP service is bound to the port.
+    if (res.status === 404) {
       return `ws://${host}:${port}/devtools/browser`;
     }
+    throw new Error(`CDP on port ${port}: /json/version returned HTTP ${res.status}`);
   }
 
   // DevToolsActivePort file discovery (Chrome, Edge, Brave, etc.)
@@ -15341,7 +15347,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
   probeTcpPort,
-  waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
+  getWsUrl, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
