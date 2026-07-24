@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [2.13.2](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.13.1...v2.13.2) (2026-07-24)
+
+v2.13.2 hardens live-agent recovery against common misfires and Chrome remote-debugging edge cases. Compared with v2.13.1, near-miss commands stop dumping full help, invalid Playwright selectors and overflow-clipped controls fail closed with clearer next steps, daemon freshness follows the installed script instead of the agent cwd, and websocket-only CDP endpoints plus sleeping tabs recover more reliably.
+
+### Agent Command Recovery
+
+* Unknown near-miss commands such as `resize`, `tabs`, and `key` dumped the full help catalog and burned context. Unknown commands now return a short Did-you-mean recovery, and the common aliases `resize`→`viewport`, `tabs`/`ls`→`list`, and `key`→`press` are registered (#126, #129).
+* Playwright-style `:has-text()` selectors failed `querySelector` and surfaced as opaque `Action failure: unknown`. They are now classified as `invalid-selector` with CSS / `data-testid` / `@ref` recovery instead of inventing unsupported `click --text` (#127).
+
+### Perception And Hit Testing
+
+* Interactive inventory could list controls that were fully clipped inside an overflow scrollport, so agents clicked coordinates that hit a different visible control. Overflow-scrollport-clipped controls are omitted from the default interactive / cursor inventory (#128).
+
+### Daemon Identity And CDP Compatibility
+
+* Invoking the skill script by absolute path after `cd` into another chrome-cdp-ex checkout could false-positive `Stale daemon` because freshness used `process.cwd()` git HEAD when the skill tree lacked a nearby `package.json`. Freshness now follows `realpath(script)` package identity and no longer treats cwd git as a competing identity (#130).
+* Chrome 136+ / SSH websocket-only setups that 404 `/json/version` and `/json/list`, plus sleeping background tabs, could block attach or discovery. Discovery falls back to `/devtools/browser` and `Target.getTargets` when HTTP discovery returns 404, and daemon attach wakes the tab with `Target.activateTarget` (#125). Connection failures still keep the clear `Cannot reach CDP` error; the websocket fallback is limited to HTTP 404.
+
+### Compatibility
+
+No commands were removed. Existing `press`, `viewport`, and `list` callers are unchanged. Consumers that scraped full help text from unknown-command failures should use the Did-you-mean recovery / `cdp help <cmd>` instead. Daemon freshness mismatches that previously appeared after changing cwd into another checkout should stop once both sides run v2.13.2+.
+
 ## [2.13.1](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.13.0...v2.13.1) (2026-07-20)
 
 v2.13.1 makes readiness and daemon cleanup trustworthy for direct-checkout workflows. Compared with v2.13.0, a usable checkout is no longer rejected solely because it is outside the conventional Claude skill directory, and successful cleanup no longer exits without saying what happened.
