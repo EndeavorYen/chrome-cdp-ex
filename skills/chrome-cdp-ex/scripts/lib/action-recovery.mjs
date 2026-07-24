@@ -146,6 +146,27 @@ export function classifyActionFailure(err, { action = 'action', target = {} } = 
   }
 
   if (
+    lower.includes('is not a valid selector') ||
+    lower.includes('invalid selector') ||
+    lower.includes(':has-text(') ||
+    lower.includes(':text(') ||
+    lower.includes(':text-is(') ||
+    (lower.includes('syntaxerror') && lower.includes('selector'))
+  ) {
+    const usage = `cdp ${action || 'click'} ${targetId} <css|#id|[data-testid]|@ref>`;
+    return {
+      ...base,
+      kind: 'invalid-selector',
+      reason: 'The selector is not valid CSS. Playwright text selectors like :has-text() are not supported.',
+      nextCommand: usage,
+      hints: [
+        'Use a CSS selector, data-testid attribute, or an @ref from perceive — not Playwright :has-text()/ :text().',
+        `Discover stable targets with \`${perceiveCommand}\` once, then click by @ref or CSS.`,
+      ],
+    };
+  }
+
+  if (
     lower.includes('element not found') ||
     lower.includes('could not resolve selector') ||
     lower.includes('failed to find element')

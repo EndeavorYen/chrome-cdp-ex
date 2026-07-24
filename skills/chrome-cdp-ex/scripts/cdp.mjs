@@ -7,7 +7,7 @@
 // the CDP session open. Chrome's "Allow debugging" modal fires once per
 // daemon (= once per tab). Daemons auto-exit after 20min idle.
 
-import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync } from 'fs';
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, resolve, delimiter } from 'path';
 import { spawn, spawnSync } from 'child_process';
@@ -896,17 +896,29 @@ function currentGitCommit(cwd) {
   }
 }
 
+function resolveScriptIdentityPath(scriptPath) {
+  if (!scriptPath) return null;
+  try {
+    return realpathSync(scriptPath);
+  } catch {
+    return resolve(scriptPath);
+  }
+}
+
 function collectDaemonMetadata({ scriptPath = process.argv[1], now = Date.now(), pid = process.pid } = {}) {
-  const resolvedScriptPath = scriptPath ? resolve(scriptPath) : null;
+  // Identity must follow the installed/invoked script, never the agent's cwd checkout.
+  const resolvedScriptPath = resolveScriptIdentityPath(scriptPath);
   const scriptStats = resolvedScriptPath ? safeLstat(resolvedScriptPath) : null;
-  const packageJsonPath = findNearestPackageJson(resolvedScriptPath ? dirname(resolvedScriptPath) : process.cwd());
-  const gitCwd = packageJsonPath ? dirname(packageJsonPath) : process.cwd();
+  const packageJsonPath = resolvedScriptPath
+    ? findNearestPackageJson(dirname(resolvedScriptPath))
+    : null;
+  const gitCwd = packageJsonPath ? dirname(packageJsonPath) : null;
   return {
     schema: DAEMON_METADATA_SCHEMA,
     scriptPath: resolvedScriptPath,
     scriptMtimeMs: scriptStats ? scriptStats.mtimeMs : null,
     packageVersion: readPackageVersion(packageJsonPath),
-    gitCommit: currentGitCommit(gitCwd),
+    gitCommit: gitCwd ? currentGitCommit(gitCwd) : null,
     pid,
     startedAt: new Date(now).toISOString(),
   };
@@ -5519,7 +5531,7 @@ function playwrightStepFromCommand(action = {}) {
         ? finish([`await page.mouse.wheel(${xy[0]}, ${xy[1]});`])
         : skip('unsupported scroll arguments');
     }
-    case 'viewport': {
+    case 'viewport': case 'resize': {
       const match = String(args[0] || '').match(/^(\d+)[x×](\d+)$/);
       return match
         ? finish([`await page.setViewportSize({ width: ${Number(match[1])}, height: ${Number(match[2])} });`])
@@ -6341,6 +6353,31 @@ function visibleControlsCollectorSource() {
           return tag;
         }
 
+        function nearestScrollable(el) {
+          for (let parent = el.parentElement; parent && parent !== document.documentElement && parent !== document.body; parent = parent.parentElement) {
+            const style = window.getComputedStyle(parent);
+            const overflow = (style.overflowX || '') + ' ' + (style.overflowY || '');
+            const clips = /(auto|scroll|hidden|clip)/.test(overflow);
+            const scrollable = parent.scrollWidth > parent.clientWidth + 1 || parent.scrollHeight > parent.clientHeight + 1;
+            if (clips && scrollable) return parent;
+          }
+          return null;
+        }
+
+        function isScrollportClipped(el, rect) {
+          const container = nearestScrollable(el);
+          if (!container) return false;
+          const pr = container.getBoundingClientRect();
+          const top = Math.max(rect.top, pr.top);
+          const left = Math.max(rect.left, pr.left);
+          const bottom = Math.min(rect.bottom, pr.bottom);
+          const right = Math.min(rect.right, pr.right);
+          const visibleW = Math.max(0, right - left);
+          const visibleH = Math.max(0, bottom - top);
+          // Fully (or nearly) clipped by an overflow ancestor → not actionable for hit-testing.
+          return visibleW < 2 || visibleH < 2;
+        }
+
         function isVisible(rect, cs) {
           if (!rect || rect.width < 4 || rect.height < 4) return false;
           if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
@@ -6362,6 +6399,7 @@ function visibleControlsCollectorSource() {
           const cs = window.getComputedStyle(el);
           const rect = el.getBoundingClientRect();
           if (!isVisible(rect, cs)) continue;
+          if (isScrollportClipped(el, rect)) continue;
           const role = roleFor(el);
           const clickable = isClickable(el, cs, role);
           const ariaLabel = compactText(el.getAttribute('aria-label'));
@@ -7070,6 +7108,24 @@ ${visibleControlsCollectorSource()}
           if (cs.display === 'none' || cs.visibility === 'hidden') continue;
           const rect = el.getBoundingClientRect();
           if (rect.width < 5 || rect.height < 5) continue;
+          // Overflow scrollports can report on-screen rects that are clipped from hit-testing.
+          {
+            let clipped = false;
+            for (let parent = el.parentElement; parent && parent !== document.documentElement && parent !== document.body; parent = parent.parentElement) {
+              const style = window.getComputedStyle(parent);
+              const overflow = (style.overflowX || '') + ' ' + (style.overflowY || '');
+              const clips = /(auto|scroll|hidden|clip)/.test(overflow);
+              const scrollable = parent.scrollWidth > parent.clientWidth + 1 || parent.scrollHeight > parent.clientHeight + 1;
+              if (!(clips && scrollable)) continue;
+              const pr = parent.getBoundingClientRect();
+              const top = Math.max(rect.top, pr.top);
+              const left = Math.max(rect.left, pr.left);
+              const bottom = Math.min(rect.bottom, pr.bottom);
+              const right = Math.min(rect.right, pr.right);
+              if ((bottom - top) < 2 || (right - left) < 2) { clipped = true; break; }
+            }
+            if (clipped) continue;
+          }
           // Build a CSS selector path for this element
           let sel = el.tagName.toLowerCase();
           if (el.id) sel += '#' + CSS.escape(el.id);
@@ -7573,7 +7629,12 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
   }
   const expr = `
     (async function() {
-      const el = document.querySelector(${JSON.stringify(selector)});
+      let el;
+      try {
+        el = document.querySelector(${JSON.stringify(selector)});
+      } catch (err) {
+        return { ok: false, error: 'Invalid selector: ' + (err && err.message ? err.message : String(err)) };
+      }
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
       const rect = await (${scrollSettledRectFunctionDeclaration()}).call(el);
       return { ok: true, x: rect.x + rect.w / 2, y: rect.y + rect.h / 2, tag: rect.tag, text: rect.text };
@@ -13201,7 +13262,7 @@ async function runDaemon(targetId) {
           result = await actionFeedback('type', () => typeStr(cdp, sessionId, fopts.args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
           break;
         }
-        case 'press': {
+        case 'press': case 'key': {
           const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           result = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
           break;
@@ -13234,7 +13295,7 @@ async function runDaemon(targetId) {
         case 'cookieset': result = await cookieSetStr(cdp, sessionId, args[0]); break;
         case 'cookiedel': result = await cookieDelStr(cdp, sessionId, args[0]); break;
         case 'dialog': result = dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]); break;
-        case 'viewport': {
+        case 'viewport': case 'resize': {
           const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           if (fopts.args[0]) result = await actionFeedback('viewport', () => viewportStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'viewport', label: fopts.args[0], commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts); // auto-diff when resizing
           else result = await viewportStr(cdp, sessionId, args[0]);
@@ -13689,7 +13750,7 @@ const USAGE = `cdp - lightweight Chrome DevTools Protocol CLI (no Puppeteer)
 Usage: cdp <command> [args]
 
   help                              Show this command reference (same as --help)
-  list [--format json]              List open pages (shows unique target prefixes)
+  list|tabs|ls [--format json]      List open pages (shows unique target prefixes)
                                     JSON includes schema/pages/recommendation/nextSteps for agents.
                                     Prefers non-blank pages when recommending the next target (* marker).
   target --url URL|--title TEXT [--exact] [--format json]
@@ -13774,7 +13835,7 @@ Usage: cdp <command> [args]
   clickxy <target> <x> <y> [--format json]  Click at CSS pixel coordinates (see coordinate note below)
   type    <target> <text> [--format json]  Type text at current focus via Input.insertText
                                     Works in cross-origin iframes unlike eval-based approaches
-  press   <target> <key> [--format json]  Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)
+  press|key <target> <key> [--format json]  Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)
   scroll  <target> <dir|x,y> [px] [--format json]  Scroll page (down/up/left/right or x,y offset; default 500px)
   hover   <target> <sel|@ref>       Hover over element (triggers :hover, tooltips, dropdowns)
   waitfor <target> <selector> [ms]  Wait for element (default 10s, max 5min)
@@ -13798,7 +13859,7 @@ Usage: cdp <command> [args]
   cookieset <target> <cookie>       Set a cookie: "name=value" or "name=value; domain=.example.com; secure"
   cookiedel <target> <name>         Delete a cookie by name
   dialog  <target> [accept|dismiss] Show dialog history; set auto-accept (default) or auto-dismiss
-  viewport <target> [WxH]           Show or set viewport size (e.g. 375x812, 1280x720)
+  viewport|resize <target> [WxH]    Show or set viewport size (e.g. 375x812, 1280x720)
   emulate <target> [dark|light|no-preference|off|status]
                                     Media feature emulation via CDP Emulation.setEmulatedMedia
                                     color-scheme dark|light|no-preference
@@ -13936,7 +13997,7 @@ function helpStr() {
 
 const COMMANDS = Object.freeze([
   { name: 'help', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text'] },
-  { name: 'list', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
+  { name: 'list', aliases: ['tabs', 'ls'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'target', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'tab-group', aliases: ['tabgroup'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'broadcast', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
@@ -13983,7 +14044,7 @@ const COMMANDS = Object.freeze([
   { name: 'jsclick', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'clickxy', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'type', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
-  { name: 'press', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'press', aliases: ['key'], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'scroll', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'hover', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'waitfor', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
@@ -14000,7 +14061,7 @@ const COMMANDS = Object.freeze([
   { name: 'evalraw', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
   { name: 'batch', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
   { name: 'dialog', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'viewport', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
+  { name: 'viewport', aliases: ['resize'], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
   { name: 'emulate', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
   { name: 'upload', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
   { name: 'text', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
@@ -14023,6 +14084,54 @@ const NEEDS_TARGET = new Set(
     .filter(command => command.needsTarget)
     .flatMap(command => [command.name, ...command.aliases])
 );
+
+function editDistance(a, b) {
+  const s = String(a || '');
+  const t = String(b || '');
+  const rows = s.length + 1;
+  const cols = t.length + 1;
+  const dp = Array.from({ length: rows }, () => Array(cols).fill(0));
+  for (let i = 0; i < rows; i++) dp[i][0] = i;
+  for (let j = 0; j < cols; j++) dp[0][j] = j;
+  for (let i = 1; i < rows; i++) {
+    for (let j = 1; j < cols; j++) {
+      const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[s.length][t.length];
+}
+
+function suggestCommands(input, { limit = 3, maxDistance = 3 } = {}) {
+  const needle = String(input || '').trim().toLowerCase();
+  if (!needle) return [];
+  // Exact alias → suggest the canonical command name.
+  const exact = commandMeta(needle);
+  if (exact && exact.name !== needle) return [exact.name];
+
+  const scored = [];
+  for (const command of COMMANDS) {
+    const candidates = [command.name, ...(command.aliases || [])];
+    let best = Infinity;
+    for (const name of candidates) {
+      if (name === needle) { best = 0; break; }
+      let score = editDistance(needle, name);
+      if (name.startsWith(needle) || needle.startsWith(name)) score = Math.min(score, 1);
+      if (name.includes(needle) || needle.includes(name)) score = Math.min(score, 2);
+      best = Math.min(best, score);
+    }
+    if (best > 0 && best <= maxDistance) scored.push({ name: command.name, score: best });
+  }
+  scored.sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
+  return scored.slice(0, limit).map(entry => entry.name);
+}
+
+function unknownCommandMessage(cmd) {
+  const suggestions = suggestCommands(cmd);
+  const base = `Unknown command: ${cmd}`;
+  if (!suggestions.length) return base;
+  return `${base}\nDid you mean: ${suggestions.join(' / ')}?`;
+}
 
 function parseTargetAndCommandArgs(cmd, args) {
   let targetPrefix = args[0];
@@ -14210,6 +14319,18 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
     };
   }
   if (lower.includes('unknown command')) {
+    const guessed = String(message || '').match(/unknown command:\s*(\S+)/i)?.[1]
+      || cmd
+      || '';
+    const suggestions = suggestCommands(guessed);
+    if (suggestions.length) {
+      return {
+        kind: 'usage',
+        strategy: 'suggest-command',
+        run: `cdp ${suggestions[0]}`,
+        reason: `Did you mean: ${suggestions.join(' / ')}? Run \`cdp help ${suggestions[0]}\` for usage.`,
+      };
+    }
     return {
       kind: 'usage',
       strategy: 'show-help',
@@ -14591,7 +14712,7 @@ function formatOpenAutoPerceiveFailure(err, targetId) {
 }
 
 async function main() {
-  const [cmd, ...args] = process.argv.slice(2);
+  let [cmd, ...args] = process.argv.slice(2);
 
   // Daemon mode (internal)
   if (cmd === '_daemon') { await runDaemon(args[0]); return; }
@@ -14601,7 +14722,7 @@ async function main() {
   }
 
   // List — use existing daemon if available, otherwise direct
-  if (cmd === 'list' || cmd === 'ls') {
+  if (cmd === 'list' || cmd === 'ls' || cmd === 'tabs') {
     const fopts = parseFormatArgs(args, ['text', 'json']);
     if (fopts.args.length) {
       console.error(formatCliError(`list: unknown argument ${fopts.args[0]}`, { cmd, format: fopts.format }));
@@ -14979,13 +15100,12 @@ async function main() {
   // Page commands — need target prefix
   if (!NEEDS_TARGET.has(cmd)) {
     const cliErrorFormat = detectCliErrorFormat(args);
-    console.error(formatCliError(`Unknown command: ${cmd}`, { cmd, format: cliErrorFormat }));
-    if (cliErrorFormat === 'text') {
-      console.error('');
-      console.log(helpStr());
-    }
+    console.error(formatCliError(unknownCommandMessage(cmd), { cmd, format: cliErrorFormat }));
     process.exit(1);
   }
+
+  // Canonicalize aliases (key→press, resize→viewport, …) before daemon IPC.
+  cmd = commandMeta(cmd)?.name || cmd;
 
   const targetCommandArgs = [...args];
   let allowStaleDaemon = process.env.CDP_ALLOW_STALE_DAEMON === '1';
@@ -15190,7 +15310,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
   parsePerceiveArgs, buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
-  parseControlsArgs, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
+  parseControlsArgs, visibleControlsCollectorSource, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,
@@ -15225,7 +15345,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   isBatchParallelUnsafeCommand,
   parseReplayArgs, parseReplayArtifact, replayStepFromAction, replayActionsStr,
-  collectDaemonMetadata, assessDaemonFreshness, formatStaleDaemonMessage,
+  collectDaemonMetadata, assessDaemonFreshness, formatStaleDaemonMessage, resolveScriptIdentityPath,
+  suggestCommands, unknownCommandMessage, editDistance,
   resolveLiveTargetBinding, completeTargetResolution, attachTargetResolutionDiagnostics,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,

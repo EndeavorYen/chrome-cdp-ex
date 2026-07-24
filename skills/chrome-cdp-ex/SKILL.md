@@ -10,7 +10,7 @@ description: "Your EYES into the user's live Chrome browser and Electron apps. T
 1. **Readiness:** `cdp doctor` — checks Node, install path, daemon state, fd limit, CDP reachability, browser debugging permission, and prints the next command to run.
 2. **Discover/open:** `cdp list`; if empty, `cdp open <url>` or, with user consent, `cdp spawn-debug-browser edge --port 9222 --url <url>`. When multiple tabs exist, prefer `cdp target --url <substring>` / `cdp target --title <text>` or `cdp open <url> --reuse-url`. Use `cdp use <target> --name app` when the same live tab will be reused.
 3. **Observe:** `cdp perceive <target> -C -d 8` — structure, refs, top-level viewport CSS coordinates (fixed/sticky elements are tagged), console health.
-4. **Interact:** `cdp click|fill|press <target> @ref|selector` — `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
+4. **Interact:** `cdp click|fill|press <target> @ref|selector` — keyboard = `press` (alias `key`, not a separate `key` command); viewport alias `resize`; list aliases `tabs`/`ls`. `@ref` is best for the immediate next step after `perceive`; **use a stable CSS selector for long batch/loop scripts** (refs are short-lived handles).
 5. **Verify/report:** read the automatic action evidence, then use `cdp verify-click <target> @ref --expect-text "Saved"` for semantic interaction checks, `cdp perceive <target> --since-action`, or `cdp report <target>` for handoff; use `cdp report <target> --format json` when a script needs the versioned session memory model. Report handoffs show the latest 20 actions by default; add `--last N` for a smaller window or `--all` when you intentionally need the full timeline. If you used `cdp mock`, `cdp clock`, or `cdp throttle`, confirm the report shows the intended environment state and reset with `cdp mock <target> clear` / `cdp clock <target> reset` / `cdp throttle <target> off`.
 
 For long-session game / animation work also reach for `cdp waitfor <target> --any-of "win|lose|escape" 60000 --scope ".combat-log"` and `cdp waitfor <target> --selector-stable ".combat-log" 3000 60000`. To close MOTD-style modals safely without firing background shortcuts, use `cdp dismiss-modal <target>` (it prefers an explicit close button, falls back to Escape — never `press Space`).
@@ -489,7 +489,7 @@ scripts/cdp.mjs net     <target>               # resource timing entries
 scripts/cdp.mjs click   <target> <sel|@ref> [--format json] # click (auto-returns perceive diff)
 scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel coords (auto-returns perceive diff)
 scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
-scripts/cdp.mjs press   <target> <key> [--format json] # press key (Enter/Escape/Tab auto-return perceive diff)
+scripts/cdp.mjs press   <target> <key> [--format json] # press key (alias: key; Enter/Escape/Tab auto-return perceive diff)
 scripts/cdp.mjs scroll  <target> <dir|x,y> [px] [--format json] # scroll page (auto-returns perceive diff)
 scripts/cdp.mjs loadall <target> <selector> [ms]  # click "load more" until gone (default 1500ms between clicks)
 scripts/cdp.mjs hover   <target> <sel|@ref>          # hover element (triggers :hover, tooltips)
@@ -511,7 +511,7 @@ scripts/cdp.mjs cookies <target>                       # list cookies for curren
 scripts/cdp.mjs cookieset <target> <cookie>            # set cookie: "name=value; domain=.example.com; secure"
 scripts/cdp.mjs cookiedel <target> <name>              # delete cookie by name
 scripts/cdp.mjs dialog  <target> [accept|dismiss]      # show dialog history; set auto-accept or auto-dismiss
-scripts/cdp.mjs viewport <target> [WxH]               # show or set viewport (e.g. 375x812)
+scripts/cdp.mjs viewport <target> [WxH]               # show or set viewport (alias: resize; e.g. 375x812)
 scripts/cdp.mjs emulate <target> dark|light|off        # prefers-color-scheme / reduced-motion media features
 scripts/cdp.mjs upload  <target> <selector> <paths> [--format json] # upload file(s) to input[type=file]
 scripts/cdp.mjs back    <target>                       # navigate back in browser history
