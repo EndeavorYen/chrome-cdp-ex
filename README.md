@@ -6,69 +6,76 @@
 [![Release v2.14.0](https://img.shields.io/badge/release-v2.14.0-brightgreen)](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
 
-> **TL;DR** — The Smart Eye for coding agents. `chrome-cdp-ex` lets an agent see and act inside your real browser: logged-in tabs, page layout, visible styles, action receipts, CSS source tracing, and long-session reports.
+> **TL;DR** — Give coding agents eyes and hands on your **already open** Chrome / Edge / Electron session: perceive layout, act with Action Receipts, recover from overlays and stale refs, then hand off a session report.
 
-Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-ex` is for live-page perception when the agent needs to understand the browser you are actually using.
+Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-ex` is for **live-page perception** when the agent needs the browser you are actually using — cookies, login state, and open tabs included.
 
-[![Smart Eye benchmark proof: v2.12.0 mixed campaign, 10/10 rounds, all five real-app profiles, 34/34 quality gate per real-app round](experiment/benchmark-proof.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
+## What's new in v2.14.0
+
+| Area | Change |
+|---|---|
+| Cross-host install | `scripts/setup.mjs` + [INTEGRATIONS.md](INTEGRATIONS.md) for Claude Code, Codex, Cursor, OpenClaw, Hermes, Pi |
+| Slim skill | Always-loaded golden path; deep docs in `references/` |
+| MCP | Curated Tier-1 tools, allowlisted `run_command`, session resources |
+| Release asset | Tarball includes plugin manifest, `bin/chrome-cdp`, and `setup.mjs` |
+
+[Release notes →](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0)
 
 ## Why agents need this
 
-Browser agents usually fail for boring reasons: they cannot tell what changed, they lose context after a click, or they can inspect DOM but not the page humans see. This tool gives them the missing perception layer.
-
-| Pain | What `chrome-cdp-ex` gives the agent |
+| Pain | What this gives the agent |
 |---|---|
-| "I can click, but I cannot really see the page." | Layout, visible text, colors, coordinates, refs, and console health. |
-| "I clicked. Did anything happen?" | Every action returns an Action Receipt with dispatch, settlement, observed delta, blocking signals, and next steps. |
-| "Which CSS rule made this button blue?" | `cascade` traces the visible style back to selector and source line. |
-| "The bug only happens in my logged-in browser." | It connects to real Chrome, Edge, Brave, Electron, or WSL2-to-Windows sessions. |
-| "Exploration disappears after one prompt." | Session logs, screenshots, reports, checkpoints, replay, and Playwright export. |
+| "I can click, but I cannot really see the page." | Layout, visible text, colors, coordinates, refs, console health |
+| "I clicked. Did anything happen?" | Action Receipt: dispatch, settlement, delta, blockers, next steps |
+| "Which CSS rule made this button blue?" | `cascade` traces style back to selector and source line |
+| "The bug only happens in my logged-in browser." | Real Chrome / Edge / Brave / Electron / WSL2→Windows sessions |
+| "Exploration disappears after one prompt." | Reports, checkpoints, replay, Playwright export |
 
-## See it work
+## Proof
 
-[![Redesign experiment result from the chrome-cdp-ex perception run](experiment/final-A.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html)
+[![Last measured Smart Eye campaign (v2.12.0): 10/10 rounds, 34/34 quality gate](experiment/benchmark-proof.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
+
+[![Redesign experiment: richer perception produced the better page](experiment/final-A.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html)
 
 | Proof | Why it matters |
 |---|---|
-| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | The v2.12.0 mixed campaign passed 10/10 rounds across MCP, CLI, Killer Path, large-app stress, and all five real-app profiles. |
-| [Redesign experiment](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html) | Same page, same prompt, same rounds; the agent with richer perception produced the best result. |
-| [Killer Path walkthrough](docs/examples/killer-path.md) | A 60-second route through `doctor -> open -> perceive -> act -> evidence -> report`. |
+| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | Last measured release campaign (**v2.12.0**, 2026-07-12): 10/10 rounds across MCP, CLI, Killer Path, large-app stress, and five real-app profiles |
+| [Redesign experiment](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html) | Same page, same prompt, same rounds — richer perception produced the better result |
+| [Killer Path](docs/examples/killer-path.md) | 60-second route: `doctor → open → perceive → act → evidence → report` |
+
+> Numbers below are from that last measured campaign. v2.14.0 shipped distribution / MCP / skill packaging; regenerate a campaign before publishing new speed or token claims.
 
 ## Use this when
 
-Use `chrome-cdp-ex` when the page already matters and the agent needs useful context before acting.
-
 - The user is already logged in and you do not want to recreate state.
-- The agent needs to understand layout, visible styles, and interactive targets cheaply.
-- You want each click, fill, reload, or upload to explain what changed.
+- The agent needs layout, visible styles, and interactive targets cheaply.
+- Each click / fill should explain what changed.
 - You need a trail: screenshots, logs, reports, checkpoints, replay, or a Playwright draft.
 
 ## Do not use this when
-
-Use Playwright when you need a clean, repeatable browser test from scratch.
 
 | Use Playwright for | Use `chrome-cdp-ex` for |
 |---|---|
 | CI suites in isolated browsers | Live user sessions and authenticated tabs |
 | Deterministic locators and assertions | Agent perception, diagnosis, and recovery |
-| Cross-browser test matrices | Chrome/CDP/Electron inspection |
+| Cross-browser test matrices | Chrome / CDP / Electron inspection |
 | Fresh state per test | Long-session debugging and handoff reports |
 
 ## Five success cases
 
 | Case | What the agent does |
 |---|---|
-| Logged-in dashboard inspection | `doctor -> list -> perceive` reads the real dashboard without relogin or a copied screenshot. |
-| Action evidence after form input | `fill` or `click` returns an Action Receipt so the agent can distinguish dispatched, changed, no-change, failed, and timeout states. |
-| CSS source tracing | `cascade @ref background-color` shows the winning selector and source file/line to edit. |
-| Long-session debugging | `status`, `netlog`, `mock`, `clock`, `throttle`, screenshots, and `report` preserve evidence across a live tab session. |
-| Workflow capture and replay | `checkpoint`, `record-actions`, `export-playwright`, `diff-shot`, and `replay` turn exploration into reusable debugging and regression assets. |
+| Logged-in dashboard inspection | `doctor → list → perceive` on the real dashboard |
+| Action evidence after form input | `fill` / `click` return an Action Receipt (`changed`, `no-change`, `failed`, …) |
+| CSS source tracing | `cascade @ref background-color` → winning selector and source line |
+| Long-session debugging | `status`, `netlog`, `mock` / `clock` / `throttle`, `report` |
+| Workflow capture and replay | `checkpoint`, `record-actions`, `export-playwright`, `replay` |
 
 ## Smart Eye Proof
 
-The release proof measures the agent path this tool is built for: see the page, act, verify, recover, and hand off evidence. For v2.12.0, one 10-round campaign spans matched MCP/CLI routes, Killer Path, a 5000+ node large-app fixture, and five distinct local real-app profiles.
+Measured agent path: see → act → verify → recover → hand off. The last release-quality campaign (v2.12.0) ran 10 rounds: matched MCP/CLI, Killer Path, a 5000+ node large-app fixture, and five local real-app profiles.
 
-| Proof point | Latest local run |
+| Proof point | Last measured run |
 |---|---:|
 | Release proof | **v2.12.0 live campaign** |
 | Real-app targets | **dashboard, docs-app, auth-flow, data-table, canvas-heavy** |
@@ -80,9 +87,7 @@ The release proof measures the agent path this tool is built for: see the page, 
 | Max step output | **1,113 tokens** |
 | Matched MCP / CLI | **100% pass; CLI used 2,481 fewer output tokens** |
 
-[**View the benchmark proof ->**](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) · [**Read the v2.14.0 release notes ->**](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0)
-
-This is not a synthetic unit test. It launches disposable debug browsers, exercises perception, action evidence, recovery, CSS tracing, frame/modal/HMR probes, and report handoff, then blocks promotion claims if the gate fails. Re-run the same campaign with:
+[Benchmark page →](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) · [v2.14.0 product release →](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0)
 
 ```bash
 npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output release-campaign.json
@@ -90,11 +95,11 @@ npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-
 
 ## Quick start
 
-For the shortest first run, use [the Killer Path walkthrough](docs/examples/killer-path.md).
+Shortest first run: [Killer Path](docs/examples/killer-path.md). Host matrix: [INTEGRATIONS.md](INTEGRATIONS.md).
 
-1. Choose an install source.
+### 1. Install
 
-Use the GitHub release tarball when you want a pinned v2.14.0 install:
+**Pinned release (v2.14.0):**
 
 ```bash
 curl -L -o pi-chrome-cdp-2.14.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.14.0/pi-chrome-cdp-2.14.0.tgz
@@ -103,123 +108,99 @@ tar -xzf pi-chrome-cdp-2.14.0.tgz -C chrome-cdp-ex-v2.14.0 --strip-components=1
 cd chrome-cdp-ex-v2.14.0
 ```
 
-The GitHub Release notes publish the final tarball checksum after package validation.
+Checksum is published on the [GitHub Release](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0). This project does **not** publish to the npm registry.
 
-Use source when you want current `main`:
+**Current `main`:**
 
 ```bash
 git clone https://github.com/EndeavorYen/chrome-cdp-ex.git
 cd chrome-cdp-ex
 ```
 
-This project does not publish to the npm registry. GitHub Releases, GitHub Pages, release tags, and release assets are the official publish surfaces.
-
-2. Load the plugin, skill, or MCP server for your host.
-
-Cross-host one-pager: [INTEGRATIONS.md](INTEGRATIONS.md). Per-host guides: [docs/integrations/](docs/integrations/).
+### 2. Wire your agent host
 
 ```bash
-# Detect paths + print route hints
 node scripts/setup.mjs --detect
-
-# Claude Code
-claude --plugin-dir .
-# or: mkdir -p ~/.claude/skills && cp -r skills/chrome-cdp-ex ~/.claude/skills/
-
-# Codex
-mkdir -p ~/.codex/skills && cp -r skills/chrome-cdp-ex ~/.codex/skills/
-
-# Cursor (stdio MCP into ./.cursor/mcp.json)
-node scripts/setup.mjs --for cursor --write
-
-# OpenClaw / Hermes / Pi
-node scripts/setup.mjs --for openclaw
-node scripts/setup.mjs --for hermes
-node scripts/setup.mjs --for pi
+node scripts/setup.mjs --for cursor --write   # Cursor → .cursor/mcp.json
+# Claude:  claude --plugin-dir .
+# Codex:   mkdir -p ~/.codex/skills && cp -r skills/chrome-cdp-ex ~/.codex/skills/
+# Others:  node scripts/setup.mjs --for openclaw|hermes|pi|claude
 ```
 
-3. Run the onboarding check.
+### 3. Ready the browser
 
 ```bash
 node scripts/setup.mjs --verify
-node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
-# or: ./bin/chrome-cdp doctor
+./bin/chrome-cdp doctor
+# or: node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 ```
 
-`doctor` tells you whether the browser is reachable, what to run next, and how to recover common setup issues. If CDP is not ready, use one of these paths:
+If CDP is not reachable:
 
-- **Existing browser session (preferred):** open `chrome://inspect/#remote-debugging` (or `edge://inspect`) and toggle remote debugging on. Cleanest path; touches no profile state.
-- **Isolated debug profile:** `node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com`. Add `--headless --no-sandbox` for Linux CI, containers, or remote shells without a display.
-- **Safe occupied-port handling:** `spawn-debug-browser` rejects any existing listener before launch and tells you to choose another `--port`.
-- **State-aware loops:** bound variable-length flows with `repeat <target> 20 click .attack --until-text "Battle complete"`; halted flows, fail-fast repeat turns, and wait timeouts exit non-zero with their diagnostic transcript. Use `--continue` only for independent iterations, `flow` assertions for selector/text postconditions, and `console --clear` for a fresh diagnostic baseline.
-- **Electron app:** start it with `--remote-debugging-port=<port>` and run with `CDP_PORT=<port>`.
+1. Prefer enabling remote debugging at `chrome://inspect/#remote-debugging` (or `edge://inspect`).
+2. Or, with consent, spawn an isolated profile:  
+   `./bin/chrome-cdp spawn-debug-browser edge --port 9222 --url https://example.com`  
+   (add `--headless --no-sandbox` in CI / headless environments).
+3. For Electron, start with `--remote-debugging-port=<port>` and set `CDP_PORT=<port>`.
 
-4. Follow the golden path.
+### 4. Golden path
 
 ```bash
-node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
-node skills/chrome-cdp-ex/scripts/cdp.mjs list
-node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com   # only if list is empty; add --format json for scripts
-node skills/chrome-cdp-ex/scripts/cdp.mjs use <target> --name app     # optional: reuse the tab as "app" or "current"
-node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
-node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref        # or fill <target> <selector> <text>
-node skills/chrome-cdp-ex/scripts/cdp.mjs verify-click <target> @ref --expect-text "Saved"
-node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
-node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>            # add --format json for agent handoff; --last N / --all controls timeline size
+./bin/chrome-cdp doctor
+./bin/chrome-cdp list
+./bin/chrome-cdp open https://example.com          # if list is empty
+./bin/chrome-cdp use <target> --name app           # optional alias
+./bin/chrome-cdp perceive app -C -d 8
+./bin/chrome-cdp click app @ref                    # or: fill app <selector> <text>
+./bin/chrome-cdp verify-click app @ref --expect-text "Saved"
+./bin/chrome-cdp perceive app --since-action
+./bin/chrome-cdp report app                        # --format json for handoffs
 ```
 
-The important bit is the loop: first perceive the page, then act, then ask what changed because of that action. Use `--format json` when another agent or script needs structured handoff data; action JSON includes `receipt.schema = chrome-cdp-ex.action-receipt.v1`.
+Loop: **perceive → act → ask what changed**. Action JSON uses `receipt.schema = chrome-cdp-ex.action-receipt.v1`.
 
-**Requires:** Node.js 22+ (uses built-in WebSocket). Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
-
-## Deeper docs
-
-- [Killer Path walkthrough](docs/examples/killer-path.md) — fastest way to dogfood the tool.
-- [Product strategy](docs/strategy/agent-browser-vision.md) — why this is an agent perception layer, not another Playwright.
-- [Technical reference](docs/reference.md) — command map, action evidence, semantic assertions, MCP server, Electron, WSL2, and benchmark gates.
-- [Slim skill + references](skills/chrome-cdp-ex/SKILL.md) — always-loaded golden path; deep docs in `references/`.
-- [Integrations](INTEGRATIONS.md) — Claude Code, Codex, Cursor, OpenClaw, Hermes, Pi.
-- [Self-improvement loop](docs/self-improvement-loop.md) — the issue -> test -> PR -> review -> merge loop used for repeated live testing.
-- [Benchmark proof](#dogfood-benchmark) — how promotion claims are gated.
-- [v2.14.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0) — release notes, checksum, and package tarball asset.
+**Requires:** Node.js 22+ (built-in WebSocket). Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
 
 ## How it works
 
-`chrome-cdp-ex` connects to Chrome DevTools Protocol and keeps one lightweight daemon per tab. The daemon preserves session context, collects console/network/navigation evidence, and lets commands return useful next steps instead of a bare success string.
+One lightweight daemon per tab keeps CDP session context, console / network / navigation buffers, and structured next steps.
 
-Most readers only need this loop:
-
-```bash
-doctor -> list -> open -> perceive -> click/fill -> perceive --since-action -> report
+```text
+doctor → list/open → perceive → click/fill → perceive --since-action → report
 ```
-
-See [docs/reference.md](docs/reference.md) for Electron, WSL2, screenshots, CSS tracing, network mocks, checkpoints, replay, export, MCP stdio use, and all 81 commands.
-
-## Command map
 
 | Need | Start with |
 |---|---|
-| Understand the page | `perceive`, `controls`, `summary`, `text` |
-| Act and verify | `click`, `fill`, `press`, `verify-click`, Action Receipt JSON, `perceive --since-action` |
-| Run a UI smoke | `qa` for desktop/mobile screenshots, perception, console health, and optional semantic checks |
-| Reuse live targets | `use`, `attach`, `current`, `forget` for named target aliases such as `app` |
+| Understand the page | `perceive`, `controls`, `summary` |
+| Act and verify | `click`, `fill`, `press`, `verify-click`, Action Receipt, `perceive --since-action` |
+| UI smoke | `qa` |
+| Reuse targets | `use`, `current`, `forget` |
 | Debug live state | `status`, `console`, `netlog`, `report` |
 | Trace styling | `cascade`, `styles`, `inject` |
 | Preserve a session | `checkpoint`, `record-actions`, `export-playwright`, `replay` |
 | Capture visuals | `shot`, `elshot`, `diff-shot` |
-| Agent-native integration | `mcp-server.mjs` exposes stdio MCP tools with adaptive perception and compact controls/report defaults |
+| Agent-native API | stdio MCP via `mcp-server.mjs` |
 
-Full command details are in [docs/reference.md](docs/reference.md) and [skills/chrome-cdp-ex/SKILL.md](skills/chrome-cdp-ex/SKILL.md).
+Full map: [docs/reference.md](docs/reference.md) · always-loaded skill: [SKILL.md](skills/chrome-cdp-ex/SKILL.md) · deep flags: [references/commands.md](skills/chrome-cdp-ex/references/commands.md).
+
+## Docs
+
+- [INTEGRATIONS.md](INTEGRATIONS.md) — Claude Code, Codex, Cursor, OpenClaw, Hermes, Pi
+- [Killer Path](docs/examples/killer-path.md) — fastest dogfood route
+- [Technical reference](docs/reference.md) — commands, MCP, Electron, WSL2, gates
+- [Product strategy](docs/strategy/agent-browser-vision.md) — why this is not another Playwright
+- [Self-improvement loop](docs/self-improvement-loop.md) — issue → test → PR → merge
+- [v2.14.0 release](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0) — notes, checksum, tarball
 
 ## Dogfood benchmark
 
-Use the live benchmark before making performance or adoption claims. [View the visual benchmark proof](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html), then regenerate the raw numbers when command behavior changes.
+Use the live benchmark before publishing performance or adoption claims. Visual proof: [benchmark.html](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html).
 
 ### Latest dogfood snapshot
 
-Local run on 2026-07-12 against 5 safe local real-app fixtures: dashboard, docs-app, auth-flow, data-table, canvas-heavy. The 10-round release campaign also covered matched MCP/CLI, Killer Path, and large-app stress. Timing starts after CDP is reachable; publish competitor deltas only from measured baselines.
+Local run on 2026-07-12 (last measured release campaign, product label v2.12.0) against 5 safe local real-app fixtures: dashboard, docs-app, auth-flow, data-table, canvas-heavy. Timing starts after CDP is reachable. Publish competitor deltas only from measured baselines.
 
-| Metric | Latest run |
+| Metric | Latest measured run |
 |---|---:|
 | Total time | 10.264s avg |
 | Command calls | 24 per round |
@@ -236,18 +217,11 @@ Local run on 2026-07-12 against 5 safe local real-app fixtures: dashboard, docs-
 Regenerate this table after meaningful command, perception, or benchmark changes:
 
 ```bash
-npm run benchmark:killer
-npm run benchmark:mcp
 npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output release-campaign.json
 npm run benchmark:update-readme -- release-campaign.json README.md --html experiment/benchmark.html --date YYYY-MM-DD
-npm run benchmark:killer -- --json > benchmark.json
-npm run benchmark:generic-cdp -- --out generic-cdp-raw.json
-npm run benchmark:playwright -- --out playwright-raw.json
-npm run benchmark:baseline -- playwright-raw.json generic-cdp-raw.json --out baselines.json
-npm run benchmark:killer -- --comparison-baselines ./baselines.json
 ```
 
-A versioned schema example is checked in at [`docs/benchmarks/measured-baselines.example.json`](docs/benchmarks/measured-baselines.example.json). Treat it as a format fixture only; regenerate local measured baselines before publishing comparison deltas.
+Schema fixture: [`docs/benchmarks/measured-baselines.example.json`](docs/benchmarks/measured-baselines.example.json) (format only — regenerate local measured baselines before publishing comparison deltas).
 
 ### Promotion checklist
 
@@ -260,13 +234,11 @@ Do not publish README, marketplace, awesome-list, or social comparison claims un
 - Competitor comparisons use `npm run benchmark:killer -- --comparison-baselines ./baselines.json` with measured baselines, not the planning-only `heuristic-smoke-baseline`.
 - `docs/examples/killer-path.md` still covers real browser perception, failed action recovery, CSS tracing, and export handoff.
 - Workflow handoffs from `record-actions --format json` and `export-playwright --format json` distinguish exported, skipped, review-needed, and live-only steps.
-- If any benchmark gate criterion fails, block promotion and fix the failed criterion before publishing the claim.
+- If any benchmark gate criterion fails, **block promotion** and fix the failed criterion before publishing the claim.
 
-Benchmark methodology and baseline commands are in [docs/reference.md#benchmark-gate](docs/reference.md#benchmark-gate).
+Methodology: [docs/reference.md#benchmark-gate](docs/reference.md#benchmark-gate).
 
-## Contributor Checks
-
-Run these before changing command behavior or docs:
+## Contributor checks
 
 ```bash
 npm test
@@ -278,8 +250,8 @@ npm run smoke:live
 ## Credits
 
 - **Original**: [pasky/chrome-cdp-skill](https://github.com/pasky/chrome-cdp-skill) by Petr Baudis (daemon-per-tab architecture and core CDP client)
-- **Contributors**: [ynezz](https://github.com/ynezz) (Flatpak paths), [Jah-yee](https://github.com/Jah-yee), [Rolf Fredheim](https://github.com/rolfredheim)
-- **This fork**: `@ref` system, perceive-first workflow, action feedback, background observation, realistic input simulation, form automation, WSL2 support, and 29 additional commands
+- **Contributors**: [ynezz](https://github.com/ynezz) (Flatpak paths), [Jah-yee](https://github.com/Jah-yee), [Rolf Fredheim](https://github.com/rolfredheim), [hussainweb](https://github.com/hussainweb)
+- **This fork**: `@ref` system, perceive-first workflow, Action Receipts, MCP adapter, cross-host setup, recovery paths, and an 81-command live-session surface
 
 ## License
 
