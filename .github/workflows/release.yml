@@ -60,6 +60,7 @@ jobs:
           TAG: ${{ steps.version.outputs.version }}
         run: |
           VERSION="${TAG#v}"
+          npm ci
           npm test
           npm run lint
           npm run check:docs
