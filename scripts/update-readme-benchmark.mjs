@@ -148,7 +148,7 @@ function updateReadmeCampaignSnapshot(readme, summary, { runDate } = {}) {
 
   let next = readme;
   next = next.replace(
-    /Local run on \d{4}-\d{2}-\d{2} against (?:\w+|\d+) safe local real-app fixtures: [^.]+\./,
+    /Local run on \d{4}-\d{2}-\d{2}(?:[^.]*?) against (?:\w+|\d+) safe local real-app fixtures: [^.]+\./,
     `Local run on ${runDate || new Date().toISOString().slice(0, 10)} against ${realAppRounds.length} safe local real-app fixtures: ${targets}.`,
   );
 
