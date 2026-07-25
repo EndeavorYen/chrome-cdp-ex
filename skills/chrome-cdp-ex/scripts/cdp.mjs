@@ -12019,10 +12019,12 @@ function buildDoctorModel(checks) {
     recommendation,
     routeRecommendation: {
       schema: 'chrome-cdp-ex.route-recommendation.v1',
+      claude: 'cli',
       cursor: 'mcp',
       'claude-code-skill': 'cli',
       'claude-desktop-mcp': 'mcp',
       codex: 'cli',
+      hermes: 'cli',
       'hermes-shell': 'cli',
       openclaw: 'mcp',
       pi: 'cli',

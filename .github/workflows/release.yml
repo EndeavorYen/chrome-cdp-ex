@@ -34,6 +34,12 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.check.outputs.exists == 'false'
+        with:
+          node-version: '22'
+          cache: npm
+
       - name: Extract release notes from changelog
         if: steps.check.outputs.exists == 'false'
         env:
@@ -63,6 +69,7 @@ jobs:
           tar -tzf "$TARBALL" | grep 'package/.claude-plugin/plugin.json'
           tar -tzf "$TARBALL" | grep 'package/INTEGRATIONS.md'
           tar -tzf "$TARBALL" | grep 'package/bin/chrome-cdp'
+          tar -tzf "$TARBALL" | grep 'package/scripts/setup.mjs'
           CHECKSUM="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
           {
             echo ""
@@ -70,7 +77,7 @@ jobs:
             echo ""
             echo "- Asset: \`$TARBALL\`"
             echo "- SHA-256: \`$CHECKSUM\`"
-            echo "- Includes Claude plugin manifest, INTEGRATIONS.md, bin/chrome-cdp, and skills runtime."
+            echo "- Includes Claude plugin manifest, INTEGRATIONS.md, bin/chrome-cdp, setup.mjs, and skills runtime."
           } >> release-notes.md
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
 

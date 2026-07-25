@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 
 import {
   MCP_TOOL_DEFINITIONS,
+  MCP_RESOURCE_TEMPLATES,
   buildMcpResourceCommand,
   buildMcpToolCommand,
   createMcpInitializeResult,
@@ -80,22 +81,7 @@ async function handleRequest(message) {
       send({
         jsonrpc: '2.0',
         id,
-        result: {
-          resourceTemplates: [
-            {
-              uriTemplate: 'chrome-cdp-ex://session/{target}/report',
-              name: 'session-report',
-              description: 'Compact session report for a target.',
-              mimeType: 'application/json',
-            },
-            {
-              uriTemplate: 'chrome-cdp-ex://session/{target}/screenshot/latest',
-              name: 'session-screenshot-latest',
-              description: 'Capture a fresh viewport screenshot for a target.',
-              mimeType: 'text/plain',
-            },
-          ],
-        },
+        result: { resourceTemplates: MCP_RESOURCE_TEMPLATES.filter(t => t.uriTemplate.includes('{')) },
       });
       return;
     }

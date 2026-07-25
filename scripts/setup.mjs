@@ -99,43 +99,49 @@ export function cursorMcpConfig({ mcpServer = MCP_SERVER, node = process.execPat
   };
 }
 
+function shQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
 export function hostSnippet(host, detect = detectEnvironment()) {
-  const cdp = detect.cdpScript;
+  const cdp = shQuote(detect.cdpScript);
   const mcp = detect.mcpServer;
-  const node = detect.node;
+  const node = shQuote(detect.node);
+  const skillDir = shQuote(detect.skillDir);
+  const repoRoot = shQuote(detect.repoRoot);
   switch (host) {
     case 'claude':
       return [
         `# Claude Code`,
-        `claude --plugin-dir ${detect.repoRoot}`,
+        `claude --plugin-dir ${repoRoot}`,
         `# or global skill:`,
-        `mkdir -p ~/.claude/skills && cp -R ${detect.skillDir} ~/.claude/skills/`,
+        `mkdir -p ~/.claude/skills && cp -R ${skillDir} ~/.claude/skills/`,
         `# then:`,
         `${node} ${cdp} doctor`,
       ].join('\n');
     case 'codex':
       return [
         `# Codex`,
-        `mkdir -p ~/.codex/skills && cp -R ${detect.skillDir} ~/.codex/skills/`,
+        `mkdir -p ~/.codex/skills && cp -R ${skillDir} ~/.codex/skills/`,
         `${node} ${cdp} doctor`,
       ].join('\n');
     case 'cursor':
       return JSON.stringify(cursorMcpConfig({
         mcpServer: mcp,
-        node,
+        node: detect.node,
         cdpPort: detect.cdpPort,
       }), null, 2);
     case 'openclaw':
       return [
         `# OpenClaw — skill copy + MCP registration`,
-        `cp -R ${detect.skillDir} <openclaw-skills-dir>/chrome-cdp-ex`,
+        `cp -R ${skillDir} <openclaw-skills-dir>/chrome-cdp-ex`,
         `# MCP stdio:`,
-        JSON.stringify(cursorMcpConfig({ mcpServer: mcp, node, cdpPort: detect.cdpPort }), null, 2),
+        JSON.stringify(cursorMcpConfig({ mcpServer: mcp, node: detect.node, cdpPort: detect.cdpPort }), null, 2),
       ].join('\n');
     case 'hermes':
       return [
         `# Hermes — prefer CLI`,
-        `cp -R ${detect.skillDir} <hermes-skills-dir>/chrome-cdp-ex`,
+        `cp -R ${skillDir} <hermes-skills-dir>/chrome-cdp-ex`,
         `${node} ${cdp} doctor`,
         `${node} ${cdp} list`,
       ].join('\n');
@@ -154,10 +160,12 @@ export function hostSnippet(host, detect = detectEnvironment()) {
 export function routeRecommendation() {
   return {
     schema: 'chrome-cdp-ex.route-recommendation.v1',
+    claude: 'cli',
     cursor: 'mcp',
     'claude-code-skill': 'cli',
     'claude-desktop-mcp': 'mcp',
     codex: 'cli',
+    hermes: 'cli',
     'hermes-shell': 'cli',
     openclaw: 'mcp',
     pi: 'cli',
@@ -371,7 +379,10 @@ export async function main(argv = process.argv.slice(2)) {
         mcpServer: detect.mcpServer,
         binWrapper: detect.binWrapper,
       },
-      route: routeRecommendation()[host] || routeRecommendation()[`${host}-shell`] || null,
+      route: routeRecommendation()[host]
+        || routeRecommendation()[`${host}-shell`]
+        || routeRecommendation()[`${host}-code-skill`]
+        || null,
       snippet,
       written: null,
     };

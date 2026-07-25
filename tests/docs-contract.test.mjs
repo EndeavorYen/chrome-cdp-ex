@@ -173,6 +173,8 @@ describe('Repository release gates', () => {
     expect(releaseWorkflow).toContain('package/.claude-plugin/plugin.json');
     expect(releaseWorkflow).toContain('package/INTEGRATIONS.md');
     expect(releaseWorkflow).toContain('package/bin/chrome-cdp');
+    expect(releaseWorkflow).toContain('package/scripts/setup.mjs');
+    expect(releaseWorkflow).toContain("node-version: '22'");
     expect(releaseWorkflow).toMatch(/gh release create "\$TAG" "\$TARBALL"/);
   });
 });

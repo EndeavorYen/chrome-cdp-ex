@@ -51,6 +51,7 @@
     "docs/examples/killer-path.md",
     "docs/reference.md",
     "docs/browser-use-mapping.md",
+    "scripts/setup.mjs",
     "skills/"
   ],
   "pi": {

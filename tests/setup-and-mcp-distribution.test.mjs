@@ -108,6 +108,16 @@ describe('MCP Tier-1 + run_command + resources', () => {
       .toThrow(/confirm: true/);
     expect(buildMcpToolCommand('run_command', { command: 'click', args: ['app', '@1'], confirm: true }))
       .toEqual(['click', 'app', '@1']);
+    expect(() => buildMcpToolCommand('run_command', { command: 'batch', args: ['app', 'eval raw'] }))
+      .toThrow(/not allowlisted/);
+    expect(() => buildMcpToolCommand('run_command', {
+      command: 'checkpoint',
+      args: ['app', '--unsafe-full'],
+    })).toThrow(/confirm: true/);
+    expect(() => buildMcpToolCommand('session_checkpoint', {
+      target: 'app',
+      unsafeFull: true,
+    })).toThrow(/confirm: true/);
   });
 
   it('maps resource URIs and advertises resources capability', () => {

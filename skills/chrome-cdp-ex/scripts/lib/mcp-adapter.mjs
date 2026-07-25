@@ -24,9 +24,9 @@ export const MCP_RUN_COMMAND_ALLOWLIST = Object.freeze([
   'wait', 'waitfor', 'loadall',
   'cascade', 'components', 'frame', 'frames', 'text', 'table', 'html', 'styles',
   'net', 'netlog', 'cookies', 'qa', 'responsive-audit', 'visual-check', 'report',
-  'record', 'checkpoint', 'restore', 'record-actions', 'export-playwright', 'replay',
+  'record', 'checkpoint', 'restore', 'record-actions', 'export-playwright',
   'tab-group', 'broadcast', 'spawn-debug-browser', 'spawn', 'attach', 'stop', 'closetab',
-  'keepalive', 'mock', 'clock', 'throttle', 'inject', 'batch', 'flow', 'repeat',
+  'keepalive', 'mock', 'clock', 'throttle', 'inject',
 ]);
 
 export const MCP_RESOURCE_TEMPLATES = Object.freeze([
@@ -453,14 +453,20 @@ function normalizeAllowlistedCommand(name) {
   return raw;
 }
 
-/** Commands that always mutate browser/session state when invoked via run_command. */
+/** Commands that mutate browser/session state or can export secrets via run_command. */
 export const MCP_RUN_COMMAND_MUTATING = Object.freeze(new Set([
   'open', 'attach', 'nav', 'navigate', 'back', 'forward', 'reload', 'click', 'verify-click',
   'jsclick', 'clickxy', 'type', 'press', 'key', 'scroll', 'hover', 'fill', 'select', 'upload',
   'dialog', 'dismiss-modal', 'viewport', 'resize', 'emulate', 'inject', 'mock', 'clock', 'throttle',
-  'restore', 'replay', 'spawn-debug-browser', 'spawn', 'stop', 'closetab', 'batch', 'flow', 'repeat',
-  'broadcast', 'cookieset', 'cookiedel',
+  'restore', 'spawn-debug-browser', 'spawn', 'stop', 'closetab',
+  'broadcast', 'cookieset', 'cookiedel', 'qa', 'responsive-audit', 'visual-check',
+  'checkpoint', 'components', 'cookies',
 ]));
+
+export function argsRequireConfirm(commandName, args = []) {
+  if (MCP_RUN_COMMAND_MUTATING.has(commandName)) return true;
+  return args.some(arg => /^(--unsafe-full|--include-secrets)$/.test(String(arg)));
+}
 
 export function buildMcpResourceCommand(uri) {
   const doctor = uri === 'chrome-cdp-ex://doctor/status';
@@ -662,13 +668,16 @@ export function buildMcpToolCommand(name, args = {}) {
     }
     case 'session_checkpoint': {
       const command = ['checkpoint', requireString(args, 'target')];
-      if (args.unsafeFull) command.push('--unsafe-full');
+      if (args.unsafeFull) {
+        requireConfirm(args, 'session_checkpoint unsafeFull');
+        command.push('--unsafe-full');
+      }
       return optionalFormatJson(command);
     }
     case 'run_command': {
       const commandName = normalizeAllowlistedCommand(args.command);
       const extra = Array.isArray(args.args) ? args.args.map(String) : [];
-      if (MCP_RUN_COMMAND_MUTATING.has(commandName)) requireConfirm(args, `run_command ${commandName}`);
+      if (argsRequireConfirm(commandName, extra)) requireConfirm(args, `run_command ${commandName}`);
       // Disallow nested shell metacharacters by accepting only plain string args.
       for (const arg of extra) {
         if (/[\n\r\0]/.test(arg)) throw new Error('run_command args cannot contain newlines');
