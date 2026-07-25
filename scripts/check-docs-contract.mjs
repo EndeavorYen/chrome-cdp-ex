@@ -231,6 +231,9 @@ export function checkDocsContract(docs, commands) {
   if (!docs.readme.includes('docs/examples/killer-path.md')) {
     failures.push('README is missing a first-run Killer Path example link');
   }
+  if (!docs.readme.includes('INTEGRATIONS.md') && !docs.readme.includes('docs/integrations/')) {
+    failures.push('README is missing cross-host integrations entry point');
+  }
   if (!docs.readme.includes('### Promotion checklist')) {
     failures.push('README is missing benchmark-gated promotion checklist');
   }
@@ -265,13 +268,30 @@ export function checkDocsContract(docs, commands) {
   return failures;
 }
 
+function readSkillCorpus() {
+  const skillDir = 'skills/chrome-cdp-ex';
+  const parts = [readFileSync(`${skillDir}/SKILL.md`, 'utf8')];
+  for (const rel of [
+    'references/commands.md',
+    'references/recipes.md',
+    'references/troubleshooting.md',
+  ]) {
+    try {
+      parts.push(readFileSync(`${skillDir}/${rel}`, 'utf8'));
+    } catch {
+      // Optional during partial checkouts; missing files fail command coverage naturally.
+    }
+  }
+  return parts.join('\n');
+}
+
 function readDocs() {
   const read = path => readFileSync(path, 'utf8');
   return {
     readme: read('README.md'),
     reference: read('docs/reference.md'),
     selfImprovementLoop: read('docs/self-improvement-loop.md'),
-    skill: read('skills/chrome-cdp-ex/SKILL.md'),
+    skill: readSkillCorpus(),
     killerPath: read('docs/examples/killer-path.md'),
     packageJson: read('package.json'),
     pluginManifest: read('.claude-plugin/plugin.json'),

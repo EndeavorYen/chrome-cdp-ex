@@ -4,8 +4,11 @@ import { fileURLToPath } from 'url';
 
 import {
   MCP_TOOL_DEFINITIONS,
+  MCP_RESOURCE_TEMPLATES,
+  buildMcpResourceCommand,
   buildMcpToolCommand,
   createMcpInitializeResult,
+  listMcpResources,
 } from './lib/mcp-adapter.mjs';
 
 const CDP_SCRIPT = fileURLToPath(new URL('./cdp.mjs', import.meta.url));
@@ -71,7 +74,41 @@ async function handleRequest(message) {
       return;
     }
     if (message.method === 'resources/list') {
-      send({ jsonrpc: '2.0', id, result: { resources: [] } });
+      send({ jsonrpc: '2.0', id, result: { resources: listMcpResources() } });
+      return;
+    }
+    if (message.method === 'resources/templates/list') {
+      send({
+        jsonrpc: '2.0',
+        id,
+        result: { resourceTemplates: MCP_RESOURCE_TEMPLATES.filter(t => t.uriTemplate.includes('{')) },
+      });
+      return;
+    }
+    if (message.method === 'resources/read') {
+      const uri = message.params?.uri;
+      if (typeof uri !== 'string' || !uri.trim()) throw new Error('resources/read requires uri');
+      const command = buildMcpResourceCommand(uri.trim());
+      const result = await runCdpCommand(command);
+      const text = result.code === 0
+        ? result.stdout
+        : [result.stderr, result.stdout].filter(Boolean).join('\n');
+      if (result.code !== 0) {
+        send({
+          jsonrpc: '2.0',
+          id,
+          error: { code: -32000, message: text || `Resource read failed for ${uri}` },
+        });
+        return;
+      }
+      const mimeType = uri.includes('/screenshot/') ? 'text/plain' : 'application/json';
+      send({
+        jsonrpc: '2.0',
+        id,
+        result: {
+          contents: [{ uri, mimeType, text }],
+        },
+      });
       return;
     }
     send({

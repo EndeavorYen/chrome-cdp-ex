@@ -14,6 +14,7 @@
 | `emulate`, `frame`, `components` | Shipped | Media emulation, frame-scoped refs, and bounded/redacted React/Vue component inspection. |
 | Replay/checkpoint/session reports | Shipped | Redacted checkpoints, workflow capture/replay, Playwright export, screenshots, and bounded report artifacts. |
 | MCP and live campaigns | Shipped | Stdio MCP tools plus matched CLI/MCP, Killer Path, large-app, and five-profile real-app gates. |
+| Cross-host distribution | Shipped | `setup.mjs`, INTEGRATIONS.md, slim skill + references, curated MCP Tier-1 + `run_command` + resources (#133). |
 | Responsive and screenshot health | Shipped | Internal clipping/overlap findings plus bounded contradictory-black-frame recovery. |
 
 The sections below are historical design sketches. They can explain intent, but examples may predate current privacy, output-budget, Action Receipt, or recovery contracts.

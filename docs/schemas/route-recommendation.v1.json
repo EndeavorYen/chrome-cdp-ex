@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/route-recommendation.v1.json",
+  "title": "chrome-cdp-ex.route-recommendation.v1",
+  "type": "object",
+  "required": ["schema"],
+  "properties": {
+    "schema": { "const": "chrome-cdp-ex.route-recommendation.v1" },
+    "cursor": { "type": "string", "enum": ["mcp", "cli"] },
+    "claude-code-skill": { "type": "string", "enum": ["mcp", "cli"] },
+    "codex": { "type": "string", "enum": ["mcp", "cli"] },
+    "hermes-shell": { "type": "string", "enum": ["mcp", "cli"] },
+    "openclaw": { "type": "string", "enum": ["mcp", "cli"] },
+    "pi": { "type": "string", "enum": ["mcp", "cli"] },
+    "notes": { "type": "string" }
+  },
+  "additionalProperties": true
+}

@@ -34,6 +34,12 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.check.outputs.exists == 'false'
+        with:
+          node-version: '22'
+          cache: npm
+
       - name: Extract release notes from changelog
         if: steps.check.outputs.exists == 'false'
         env:
@@ -47,9 +53,38 @@ jobs:
           ' CHANGELOG.md > release-notes.md
           test -s release-notes.md
 
+      - name: Validate and pack release tarball
+        if: steps.check.outputs.exists == 'false'
+        id: pack
+        env:
+          TAG: ${{ steps.version.outputs.version }}
+        run: |
+          VERSION="${TAG#v}"
+          npm test
+          npm run lint
+          npm run check:docs
+          npm pack
+          TARBALL="pi-chrome-cdp-${VERSION}.tgz"
+          test -f "$TARBALL"
+          tar -tzf "$TARBALL" | grep 'package/.claude-plugin/plugin.json'
+          tar -tzf "$TARBALL" | grep 'package/INTEGRATIONS.md'
+          tar -tzf "$TARBALL" | grep 'package/bin/chrome-cdp'
+          tar -tzf "$TARBALL" | grep 'package/scripts/setup.mjs'
+          CHECKSUM="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
+          {
+            echo ""
+            echo "## Package"
+            echo ""
+            echo "- Asset: \`$TARBALL\`"
+            echo "- SHA-256: \`$CHECKSUM\`"
+            echo "- Includes Claude plugin manifest, INTEGRATIONS.md, bin/chrome-cdp, setup.mjs, and skills runtime."
+          } >> release-notes.md
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+
       - name: Create release
         if: steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.version }}
-        run: gh release create "$TAG" --notes-file release-notes.md --title "$TAG"
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: gh release create "$TAG" "$TARBALL" --notes-file release-notes.md --title "$TAG"

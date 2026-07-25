@@ -114,25 +114,36 @@ cd chrome-cdp-ex
 
 This project does not publish to the npm registry. GitHub Releases, GitHub Pages, release tags, and release assets are the official publish surfaces.
 
-2. Load the plugin or install the skill.
+2. Load the plugin, skill, or MCP server for your host.
+
+Cross-host one-pager: [INTEGRATIONS.md](INTEGRATIONS.md). Per-host guides: [docs/integrations/](docs/integrations/).
 
 ```bash
-# Option A: load in Claude Code for the current project/session
+# Detect paths + print route hints
+node scripts/setup.mjs --detect
+
+# Claude Code
 claude --plugin-dir .
+# or: mkdir -p ~/.claude/skills && cp -r skills/chrome-cdp-ex ~/.claude/skills/
 
-# Option B: install globally for all projects
-mkdir -p ~/.claude/skills
-cp -r skills/chrome-cdp-ex ~/.claude/skills/
+# Codex
+mkdir -p ~/.codex/skills && cp -r skills/chrome-cdp-ex ~/.codex/skills/
 
-# Option C: install as a Codex skill
-mkdir -p ~/.codex/skills
-cp -r skills/chrome-cdp-ex ~/.codex/skills/
+# Cursor (stdio MCP into ./.cursor/mcp.json)
+node scripts/setup.mjs --for cursor --write
+
+# OpenClaw / Hermes / Pi
+node scripts/setup.mjs --for openclaw
+node scripts/setup.mjs --for hermes
+node scripts/setup.mjs --for pi
 ```
 
 3. Run the onboarding check.
 
 ```bash
+node scripts/setup.mjs --verify
 node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
+# or: ./bin/chrome-cdp doctor
 ```
 
 `doctor` tells you whether the browser is reachable, what to run next, and how to recover common setup issues. If CDP is not ready, use one of these paths:
@@ -166,7 +177,8 @@ The important bit is the loop: first perceive the page, then act, then ask what 
 - [Killer Path walkthrough](docs/examples/killer-path.md) — fastest way to dogfood the tool.
 - [Product strategy](docs/strategy/agent-browser-vision.md) — why this is an agent perception layer, not another Playwright.
 - [Technical reference](docs/reference.md) — command map, action evidence, semantic assertions, MCP server, Electron, WSL2, and benchmark gates.
-- [Full skill reference](skills/chrome-cdp-ex/SKILL.md) — every command, flag, and troubleshooting path.
+- [Slim skill + references](skills/chrome-cdp-ex/SKILL.md) — always-loaded golden path; deep docs in `references/`.
+- [Integrations](INTEGRATIONS.md) — Claude Code, Codex, Cursor, OpenClaw, Hermes, Pi.
 - [Self-improvement loop](docs/self-improvement-loop.md) — the issue -> test -> PR -> review -> merge loop used for repeated live testing.
 - [Benchmark proof](#dogfood-benchmark) — how promotion claims are gated.
 - [v2.13.2 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.13.2) — release notes, checksum, and package tarball asset.
