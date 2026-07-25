@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/action-receipt.v1.json",
+  "title": "chrome-cdp-ex.action-receipt.v1",
+  "type": "object",
+  "required": ["schema"],
+  "properties": {
+    "schema": { "const": "chrome-cdp-ex.action-receipt.v1" },
+    "dispatch": { "type": "object" },
+    "settlement": { "type": "object" },
+    "outcome": { "type": ["string", "object"] },
+    "delta": { "type": ["object", "null"] },
+    "blockingSignals": { "type": "array" },
+    "recoveryHint": { "type": ["string", "object", "null"] },
+    "nextSteps": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/doctor.v1.json",
+  "title": "chrome-cdp-ex.doctor.v1",
+  "type": "object",
+  "required": ["schema", "readiness"],
+  "properties": {
+    "schema": { "const": "chrome-cdp-ex.doctor.v1" },
+    "readiness": {
+      "type": "string",
+      "enum": ["ready", "usable-with-warnings", "blocked"]
+    },
+    "ready": { "type": "boolean" },
+    "operationalReady": { "type": "boolean" },
+    "provenCommand": { "type": ["string", "null"] },
+    "recommendation": { "type": "object" },
+    "routeRecommendation": { "type": "object" },
+    "wizard": { "type": "object" },
+    "checks": { "type": "array" },
+    "nextSteps": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": true
+}

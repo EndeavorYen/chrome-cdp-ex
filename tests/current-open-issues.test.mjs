@@ -418,6 +418,15 @@ describe('current open issue contracts', () => {
       'qa_page',
       'responsive_audit',
       'report',
+      'navigate',
+      'press',
+      'wait_for',
+      'cascade',
+      'components',
+      'spawn_debug_browser',
+      'record_snapshot',
+      'session_checkpoint',
+      'run_command',
     ]));
     expect(createMcpInitializeResult().serverInfo.name).toBe('chrome-cdp-ex');
     expect(createMcpInitializeResult().serverInfo.version).toBe(packageJson.version);

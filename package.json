@@ -10,14 +10,19 @@
     "chrome",
     "cdp",
     "browser",
-    "devtools"
+    "devtools",
+    "mcp"
   ],
   "type": "module",
   "license": "MIT",
+  "bin": {
+    "chrome-cdp": "bin/chrome-cdp"
+  },
   "scripts": {
     "test": "NODE_ENV=test vitest run",
     "lint": "eslint .",
     "check:docs": "node scripts/check-docs-contract.mjs",
+    "setup": "node scripts/setup.mjs",
     "smoke:live": "node scripts/live-smoke.mjs",
     "benchmark:killer": "node scripts/benchmark-killer-path.mjs",
     "benchmark:mcp": "node scripts/benchmark-mcp-path.mjs",
@@ -38,6 +43,14 @@
   "files": [
     "CHANGELOG.md",
     "README.md",
+    "INTEGRATIONS.md",
+    "bin/",
+    ".claude-plugin/",
+    "docs/integrations/",
+    "docs/schemas/",
+    "docs/examples/killer-path.md",
+    "docs/reference.md",
+    "docs/browser-use-mapping.md",
     "skills/"
   ],
   "pi": {

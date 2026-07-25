@@ -18,7 +18,7 @@ This is a **Claude Code plugin and portable agent skill** that gives LLM agents 
 - **Command runtime**: `skills/chrome-cdp-ex/scripts/cdp.mjs`.
 - **Focused helpers**: `skills/chrome-cdp-ex/scripts/lib/` owns action recovery, receipt surfaces, perception models, reports, page/screenshot/responsive health, target binding, and MCP mapping.
 - **MCP server**: `skills/chrome-cdp-ex/scripts/mcp-server.mjs` maps stdio MCP calls to the same CLI runtime.
-- **Skill definition**: `skills/chrome-cdp-ex/SKILL.md` contains agent instructions and the exhaustive command reference.
+- **Skill definition**: `skills/chrome-cdp-ex/SKILL.md` is the always-loaded golden path; exhaustive command docs live in `skills/chrome-cdp-ex/references/`.
 - **Plugin manifest**: `.claude-plugin/plugin.json` must match `package.json` version metadata.
 - **Runtime dependencies**: Node.js 22+ and built-ins only; npm packages are development/test tooling.
 

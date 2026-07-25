@@ -331,7 +331,7 @@ For agent-native workflows, run the stdio MCP adapter:
 node skills/chrome-cdp-ex/scripts/mcp-server.mjs
 ```
 
-It exposes tools for `doctor`, `list_tabs`, `open_or_attach`, `perceive`, `controls`, `overlay`, `screenshot`, `click`, `verify_click`, `dismiss_modal`, `fill`, `viewport`, `qa_page`, and `report`. Mutating tools require `confirm: true`, and the adapter maps each call to the same `cdp.mjs` commands documented above.
+It exposes curated tools for the killer path plus Tier-1 workflow coverage: `doctor`, `list_tabs`, `open_or_attach`, `select_target`, `perceive`, `controls`, `overlay`, `screenshot`, `click`, `verify_click`, `dismiss_modal`, `fill`, `viewport`, `qa_page`, `responsive_audit`, `report`, `navigate`, `press`, `wait_for`, `cascade`, `components`, `spawn_debug_browser`, `record_snapshot`, `session_checkpoint`, and allowlisted `run_command`. Mutating tools require `confirm: true`. MCP also advertises resources such as `chrome-cdp-ex://doctor/status` and session report/screenshot templates so large handoffs need not ride only on tool results.
 
 Agent-facing defaults are intentionally compact: MCP `perceive` adds `--adaptive`, `controls` adds `--compact`, and bounded `report` calls add `--compact`. Set the matching tool argument to `false` only when the full response is worth the extra context.
 
@@ -434,4 +434,4 @@ Publish comparison claims only when `gate.passed` is true and competitor baselin
 
 ## More Detail
 
-The canonical exhaustive reference is [skills/chrome-cdp-ex/SKILL.md](../skills/chrome-cdp-ex/SKILL.md). Keep this page readable; put command-by-command edge cases there.
+The always-loaded agent skill is [skills/chrome-cdp-ex/SKILL.md](../skills/chrome-cdp-ex/SKILL.md). Exhaustive command edge cases live in [skills/chrome-cdp-ex/references/commands.md](../skills/chrome-cdp-ex/references/commands.md). Cross-host install lives in [INTEGRATIONS.md](../INTEGRATIONS.md) and [docs/integrations/](integrations/).

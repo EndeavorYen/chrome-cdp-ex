@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Cross-host distribution
+
+* Add `scripts/setup.mjs` (`--detect`, `--for <host>`, `--verify`) plus `INTEGRATIONS.md` and `docs/integrations/` for Claude Code, Codex, Cursor, OpenClaw, Hermes, and Pi (#133).
+* Ship `bin/chrome-cdp` PATH shim and include `.claude-plugin/`, `INTEGRATIONS.md`, and `bin/` in the release tarball `files` list; release workflow packs and attaches the validated asset (#133).
+* Split the always-loaded skill: slim `SKILL.md` with on-demand `references/{commands,recipes,troubleshooting}.md` and thin `hosts/*` overlays (#133).
+
+### MCP
+
+* Expand curated MCP tools with Tier-1 workflow coverage (`navigate`, `press`, `wait_for`, `cascade`, `components`, `spawn_debug_browser`, `record_snapshot`, `session_checkpoint`) plus allowlisted `run_command` (#133).
+* Advertise MCP resources / templates for doctor status and per-session report/screenshot reads (#133).
+
+### Doctor / contracts
+
+* `doctor --format json` includes `routeRecommendation` for host-aware CLI vs MCP defaults (#133).
+* Publish starter JSON Schemas under `docs/schemas/` for action receipts, doctor, and route recommendation (#133).
+
 ## [2.13.2](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.13.1...v2.13.2) (2026-07-24)
 
 v2.13.2 hardens live-agent recovery against common misfires and Chrome remote-debugging edge cases. Compared with v2.13.1, near-miss commands stop dumping full help, invalid Playwright selectors and overflow-clipped controls fail closed with clearer next steps, daemon freshness follows the installed script instead of the agent cwd, and websocket-only CDP endpoints plus sleeping tabs recover more reliably.

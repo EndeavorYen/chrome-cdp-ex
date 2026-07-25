@@ -121,11 +121,15 @@ describe('Killer Path docs contract', () => {
   });
 
   it('allows command reference details outside the README', () => {
+    const skillCorpus = [
+      skill,
+      readFileSync(new URL('../skills/chrome-cdp-ex/references/commands.md', import.meta.url), 'utf8'),
+    ].join('\n');
     const docs = {
       readme: readme.replaceAll('mock', ''),
       reference,
       selfImprovementLoop,
-      skill,
+      skill: skillCorpus,
       killerPath,
     };
 
@@ -162,5 +166,13 @@ describe('Repository release gates', () => {
     expect(releaseWorkflow).toContain('CHANGELOG.md');
     expect(releaseWorkflow).toContain('--notes-file');
     expect(releaseWorkflow).not.toContain('--generate-notes');
+  });
+
+  it('packs and attaches a release tarball that includes plugin + integrations assets', () => {
+    expect(releaseWorkflow).toContain('npm pack');
+    expect(releaseWorkflow).toContain('package/.claude-plugin/plugin.json');
+    expect(releaseWorkflow).toContain('package/INTEGRATIONS.md');
+    expect(releaseWorkflow).toContain('package/bin/chrome-cdp');
+    expect(releaseWorkflow).toMatch(/gh release create "\$TAG" "\$TARBALL"/);
   });
 });

@@ -12017,6 +12017,17 @@ function buildDoctorModel(checks) {
     provenCommand,
     wizard: doctorWizardModel(checks),
     recommendation,
+    routeRecommendation: {
+      schema: 'chrome-cdp-ex.route-recommendation.v1',
+      cursor: 'mcp',
+      'claude-code-skill': 'cli',
+      'claude-desktop-mcp': 'mcp',
+      codex: 'cli',
+      'hermes-shell': 'cli',
+      openclaw: 'mcp',
+      pi: 'cli',
+      notes: 'Matched MCP/CLI campaigns favor CLI for output tokens; MCP is the portable host socket.',
+    },
     checks: annotatedChecks,
     nextSteps: doctorNextStepCommands(checks),
   };
