@@ -169,6 +169,7 @@ describe('Repository release gates', () => {
   });
 
   it('packs and attaches a release tarball that includes plugin + integrations assets', () => {
+    expect(releaseWorkflow).toContain('npm ci');
     expect(releaseWorkflow).toContain('npm pack');
     expect(releaseWorkflow).toContain('package/.claude-plugin/plugin.json');
     expect(releaseWorkflow).toContain('package/INTEGRATIONS.md');
