@@ -2,7 +2,7 @@
 
 > **TL;DR** — The feature sketches below explain why major commands were designed, but they are historical notes rather than the current roadmap. `README.md`, `docs/reference.md`, `skills/chrome-cdp-ex/SKILL.md`, and `CHANGELOG.md` are the shipped-behavior sources of truth.
 
-## Current Status (v2.13.2)
+## Current Status (v2.14.0)
 
 | Area | Status | Notes |
 |---|---|---|

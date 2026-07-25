@@ -3,7 +3,7 @@
 [![81 Commands](https://img.shields.io/badge/commands-81-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
-[![Release v2.13.2](https://img.shields.io/badge/release-v2.13.2-brightgreen)](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.13.2)
+[![Release v2.14.0](https://img.shields.io/badge/release-v2.14.0-brightgreen)](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
 
 > **TL;DR** — The Smart Eye for coding agents. `chrome-cdp-ex` lets an agent see and act inside your real browser: logged-in tabs, page layout, visible styles, action receipts, CSS source tracing, and long-session reports.
@@ -80,7 +80,7 @@ The release proof measures the agent path this tool is built for: see the page, 
 | Max step output | **1,113 tokens** |
 | Matched MCP / CLI | **100% pass; CLI used 2,481 fewer output tokens** |
 
-[**View the benchmark proof ->**](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) · [**Read the v2.13.2 release notes ->**](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.13.2)
+[**View the benchmark proof ->**](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) · [**Read the v2.14.0 release notes ->**](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0)
 
 This is not a synthetic unit test. It launches disposable debug browsers, exercises perception, action evidence, recovery, CSS tracing, frame/modal/HMR probes, and report handoff, then blocks promotion claims if the gate fails. Re-run the same campaign with:
 
@@ -94,13 +94,13 @@ For the shortest first run, use [the Killer Path walkthrough](docs/examples/kill
 
 1. Choose an install source.
 
-Use the GitHub release tarball when you want a pinned v2.13.2 install:
+Use the GitHub release tarball when you want a pinned v2.14.0 install:
 
 ```bash
-curl -L -o pi-chrome-cdp-2.13.2.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.13.2/pi-chrome-cdp-2.13.2.tgz
-mkdir -p chrome-cdp-ex-v2.13.2
-tar -xzf pi-chrome-cdp-2.13.2.tgz -C chrome-cdp-ex-v2.13.2 --strip-components=1
-cd chrome-cdp-ex-v2.13.2
+curl -L -o pi-chrome-cdp-2.14.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.14.0/pi-chrome-cdp-2.14.0.tgz
+mkdir -p chrome-cdp-ex-v2.14.0
+tar -xzf pi-chrome-cdp-2.14.0.tgz -C chrome-cdp-ex-v2.14.0 --strip-components=1
+cd chrome-cdp-ex-v2.14.0
 ```
 
 The GitHub Release notes publish the final tarball checksum after package validation.
@@ -181,7 +181,7 @@ The important bit is the loop: first perceive the page, then act, then ask what 
 - [Integrations](INTEGRATIONS.md) — Claude Code, Codex, Cursor, OpenClaw, Hermes, Pi.
 - [Self-improvement loop](docs/self-improvement-loop.md) — the issue -> test -> PR -> review -> merge loop used for repeated live testing.
 - [Benchmark proof](#dogfood-benchmark) — how promotion claims are gated.
-- [v2.13.2 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.13.2) — release notes, checksum, and package tarball asset.
+- [v2.14.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0) — release notes, checksum, and package tarball asset.
 
 ## How it works
 

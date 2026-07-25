@@ -2,21 +2,30 @@
 
 ## [Unreleased]
 
+## [2.14.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.13.2...v2.14.0) (2026-07-25)
+
+v2.14.0 makes chrome-cdp-ex installable and usable across agent hosts without forking the runtime. Compared with v2.13.2, a single `setup.mjs` bootstrap plus INTEGRATIONS docs cover Claude Code, Codex, Cursor, OpenClaw, Hermes, and Pi; the always-loaded skill is slim with on-demand references; MCP gains curated Tier-1 workflow tools, an allowlisted `run_command` escape hatch, and resources; and release tarballs finally include the Claude plugin manifest, setup script, and `bin/chrome-cdp` shim.
+
 ### Cross-host distribution
 
 * Add `scripts/setup.mjs` (`--detect`, `--for <host>`, `--verify`) plus `INTEGRATIONS.md` and `docs/integrations/` for Claude Code, Codex, Cursor, OpenClaw, Hermes, and Pi (#133).
-* Ship `bin/chrome-cdp` PATH shim and include `.claude-plugin/`, `INTEGRATIONS.md`, and `bin/` in the release tarball `files` list; release workflow packs and attaches the validated asset (#133).
+* Ship `bin/chrome-cdp` PATH shim and include `.claude-plugin/`, `INTEGRATIONS.md`, `bin/`, and `scripts/setup.mjs` in the release tarball; the release workflow packs and attaches the validated asset on Node 22 (#133).
 * Split the always-loaded skill: slim `SKILL.md` with on-demand `references/{commands,recipes,troubleshooting}.md` and thin `hosts/*` overlays (#133).
 
 ### MCP
 
 * Expand curated MCP tools with Tier-1 workflow coverage (`navigate`, `press`, `wait_for`, `cascade`, `components`, `spawn_debug_browser`, `record_snapshot`, `session_checkpoint`) plus allowlisted `run_command` (#133).
 * Advertise MCP resources / templates for doctor status and per-session report/screenshot reads (#133).
+* Harden the MCP escape hatch: omit composite `batch`/`flow`/`repeat`/`replay` from the allowlist, and require `confirm: true` for `--unsafe-full` / sensitive exports (#133, #134).
 
 ### Doctor / contracts
 
 * `doctor --format json` includes `routeRecommendation` for host-aware CLI vs MCP defaults (#133).
 * Publish starter JSON Schemas under `docs/schemas/` for action receipts, doctor, and route recommendation (#133).
+
+### Compatibility
+
+No CLI commands were removed. Existing Claude Code / Codex skill copy paths still work. Agents that previously loaded the full mega-`SKILL.md` now get the golden path by default and should open `references/commands.md` for exhaustive flags. MCP clients gain new tools; mutating tools and sensitive `run_command` calls still require `confirm: true`. Release consumers must use the v2.14.0+ tarball if they need `setup.mjs`, the plugin manifest, or `bin/chrome-cdp` inside the packed asset.
 
 ## [2.13.2](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.13.1...v2.13.2) (2026-07-24)
 
