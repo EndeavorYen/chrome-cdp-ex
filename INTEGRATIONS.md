@@ -26,16 +26,18 @@ Short CLI wrapper (no npm install required):
 
 ## Host matrix
 
-| Host | Recommended route | Setup |
-|------|-------------------|--------|
-| Claude Code | CLI skill / plugin | `claude --plugin-dir .` or copy to `~/.claude/skills/` |
-| Codex | CLI skill | copy to `~/.codex/skills/` |
-| Cursor | MCP | `setup.mjs --for cursor --write` → `.cursor/mcp.json` |
-| OpenClaw | MCP (+ skill) | see `docs/integrations/openclaw.md` |
-| Hermes | CLI | see `docs/integrations/hermes.md` |
-| Pi | CLI / `pi.skills` | package metadata already points at `./skills` |
+Evidence status is intentionally narrower than installation support. `documented` means the route is maintained in this release; `setup-smoke` means configuration/bootstrap was exercised; `live-validated` requires the full perceive → act → receipt → since-action → report loop. The [versioned manifest](docs/benchmarks/host-validation.v1.json) is authoritative.
 
-Details: [docs/integrations/](docs/integrations/) · Host overlays: [skills/chrome-cdp-ex/hosts/](skills/chrome-cdp-ex/hosts/) · Schemas: [docs/schemas/](docs/schemas/)
+| Host | Recommended route | Evidence status | Last validation | Setup / evidence |
+|------|-------------------|-----------------|-----------------|------------------|
+| Claude Code | CLI skill / plugin | documented | 2026-08-12 | `claude --plugin-dir .` or [guide](docs/integrations/claude.md) |
+| Codex | CLI skill | live-validated | 2026-08-12 | [Codex Killer Path](docs/examples/codex-killer-path.md) |
+| Cursor | MCP | documented | 2026-08-12 | `setup.mjs --for cursor --write` → `.cursor/mcp.json` |
+| OpenClaw | MCP (+ skill) | documented | 2026-08-12 | [guide](docs/integrations/openclaw.md) |
+| Hermes | CLI | documented | 2026-08-12 | [guide](docs/integrations/hermes.md) |
+| Pi | CLI / `pi.skills` | documented | 2026-08-12 | [guide](docs/integrations/pi.md) |
+
+Details: [docs/integrations/](docs/integrations/) · Host overlays: [skills/chrome-cdp-ex/hosts/](skills/chrome-cdp-ex/hosts/) · Schemas: [docs/schemas/](docs/schemas/) · [Validation manifest](docs/benchmarks/host-validation.v1.json)
 
 ## Golden path
 

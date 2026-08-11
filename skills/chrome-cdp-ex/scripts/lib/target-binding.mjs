@@ -52,7 +52,18 @@ export function attachTargetResolutionDiagnostics(result, diagnostic) {
     return result;
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return result;
-  const targetResolution = {
+  const stableTargetId = diagnostic.resolvedTargetId || null;
+  const canCollapseStableTarget = parsed.mode === 'compact'
+    && stableTargetId
+    && diagnostic.requestedTargetId === stableTargetId
+    && diagnostic.boundTargetId === stableTargetId
+    && diagnostic.rebound !== true;
+  const targetResolution = canCollapseStableTarget ? {
+    requestedTargetPrefix: diagnostic.requestedTargetPrefix || null,
+    targetId: stableTargetId,
+    status: diagnostic.status || null,
+    rebound: false,
+  } : {
     requestedTargetPrefix: diagnostic.requestedTargetPrefix || null,
     requestedTargetId: diagnostic.requestedTargetId || null,
     boundTargetId: diagnostic.boundTargetId || null,
@@ -62,5 +73,6 @@ export function attachTargetResolutionDiagnostics(result, diagnostic) {
     rebound: diagnostic.rebound === true,
   };
   const output = { ...parsed, targetResolution };
-  return typeof result === 'string' ? JSON.stringify(output, null, 2) : output;
+  if (typeof result !== 'string') return output;
+  return parsed.mode === 'compact' ? JSON.stringify(output) : JSON.stringify(output, null, 2);
 }

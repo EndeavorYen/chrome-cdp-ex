@@ -1581,30 +1581,38 @@ describe('ActionResult', () => {
       dispatch: async () => 'Clicked #save',
       feedbackPolicy: 'settle-diff',
       observe: async () => longDiff,
-      enrichActionResult: (result) => T.applyActionObservationDelta(result, {
-        console: {
-          count: 5,
-          errors: 0,
-          warnings: 0,
-          entries: Array.from({ length: 5 }, (_, index) => ({
-            level: 'log',
-            text: `low signal console row ${index}`,
-            loc: `app.js:${index + 1}`,
-          })),
-        },
-        exceptions: { count: 0, entries: [] },
-        network: {
-          count: 5,
-          failures: 0,
-          pending: 0,
-          entries: Array.from({ length: 5 }, (_, index) => ({
-            method: 'GET',
-            url: `https://example.com/api/row-${index}?cacheBust=${index}`,
-            status: 200,
-            duration: 10 + index,
-          })),
-        },
-      }),
+      enrichActionResult: (result) => {
+        T.applyActionObservationDelta(result, {
+          console: {
+            count: 5,
+            errors: 0,
+            warnings: 0,
+            entries: Array.from({ length: 5 }, (_, index) => ({
+              level: 'log',
+              text: `low signal console row ${index}`,
+              loc: `app.js:${index + 1}`,
+            })),
+          },
+          exceptions: { count: 0, entries: [] },
+          network: {
+            count: 5,
+            failures: 0,
+            pending: 0,
+            entries: Array.from({ length: 5 }, (_, index) => ({
+              method: 'GET',
+              url: `https://example.com/api/row-${index}?cacheBust=${index}`,
+              status: 200,
+              duration: 10 + index,
+            })),
+          },
+        });
+        result.effects.pageHealth = {
+          status: 'populated',
+          isBlank: false,
+          confidence: 'high',
+          evidence: { changed: false, visibleTextLength: 2400, elementCount: 180 },
+        };
+      },
     };
 
     const fullOut = await T.runActionWithFeedback({ ...options, format: 'json' });
@@ -1649,9 +1657,51 @@ describe('ActionResult', () => {
       ],
     });
     expect(parsed.effects).not.toHaveProperty('domDiff');
+    expect(parsed.effects).not.toHaveProperty('pageHealth');
     expect(parsed.effects.consoleDelta).toMatchObject({ count: 5, errors: 0, warnings: 0 });
     expect(parsed.effects.networkDelta).toMatchObject({ count: 5, failures: 0, pending: 0 });
     expect(compactOut.length).toBeLessThan(fullOut.length);
+    expect(compactOut).not.toContain('\n');
+  });
+
+  it('keeps actionable page-health evidence in compact JSON action handoffs', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: async () => 'Clicked #save',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => 'No changes detected',
+      enrichActionResult: (result) => {
+        result.effects.pageHealth = {
+          status: 'blank',
+          isBlank: true,
+          confidence: 'high',
+          evidence: {
+            changed: true,
+            readyState: 'complete',
+            visibleTextLength: 0,
+            elementCount: 3,
+            visibleControlCount: 0,
+            bodyRect: { width: 1280, height: 720 },
+          },
+        };
+      },
+      format: { format: 'json', compact: true },
+    });
+
+    expect(JSON.parse(out).effects.pageHealth).toEqual({
+      status: 'blank',
+      isBlank: true,
+      confidence: 'high',
+      evidence: {
+        changed: true,
+        readyState: 'complete',
+        visibleTextLength: 0,
+        elementCount: 3,
+        visibleControlCount: 0,
+        bodyRect: { width: 1280, height: 720 },
+      },
+    });
   });
 
   it('keeps a compact evidence marker when an action has no DOM diff', async () => {

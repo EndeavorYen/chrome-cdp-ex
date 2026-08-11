@@ -3592,7 +3592,10 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
     }
     return formatQaSummaryText(summary);
   }
-  if (format === 'json') return formatJson(compactActionResultForJson(result, { compact }));
+  if (format === 'json') {
+    const model = compactActionResultForJson(result, { compact });
+    return compact ? JSON.stringify(model) : formatJson(model);
+  }
   let text = dispatchText ? `${dispatchText}\n---\n${formatActionText(result)}` : formatActionText(result);
   if (maxDiffLines != null) text = truncateTextLines(text, maxDiffLines);
   if (!timeoutError) return text;
@@ -4400,7 +4403,12 @@ function compactActionEffectsModel(effects = {}) {
   compact.consoleDelta = compactActionDeltaModel(normalizeConsoleDelta(effects.consoleDelta || {}), ['errors', 'warnings']);
   compact.exceptionDelta = compactActionDeltaModel(normalizeExceptionDelta(effects.exceptionDelta || {}));
   compact.networkDelta = compactActionDeltaModel(normalizeNetworkDelta(effects.networkDelta || {}), ['failures', 'pending']);
-  if (effects.pageHealth) {
+  const pageHealthIsActionable = effects.pageHealth && (
+    effects.pageHealth.status !== 'populated'
+    || effects.pageHealth.isBlank === true
+    || effects.pageHealth.evidence?.changed === true
+  );
+  if (pageHealthIsActionable) {
     const healthEvidence = { changed: effects.pageHealth.evidence?.changed === true };
     if (effects.pageHealth.status !== 'populated') {
       Object.assign(healthEvidence, {
