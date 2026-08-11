@@ -50,9 +50,15 @@
     "docs/integrations/",
     "docs/schemas/",
     "docs/examples/killer-path.md",
+    "docs/examples/codex-killer-path.md",
+    "docs/benchmarks/host-validation.v1.json",
     "docs/reference.md",
     "docs/browser-use-mapping.md",
+    "experiment/codex-killer-path-demo-poster.png",
+    "experiment/codex-killer-path-demo.html",
+    "experiment/codex-killer-path-demo.mp4",
     "scripts/setup.mjs",
+    "scripts/check-host-validation.mjs",
     "skills/"
   ],
   "pi": {

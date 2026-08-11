@@ -137,7 +137,7 @@ Expected: PASS.
 - Modify: `README.md`
 - Modify: `experiment/benchmark.html`
 - Modify: `experiment/benchmark-proof.png`
-- Local-only artifact: `/tmp/chrome-cdp-ex-phase0/release-campaign-v2.14.0.json`
+- Local-only artifact: `/tmp/chrome-cdp-ex-phase0/release-campaign-v2.14.0-postfix.json`
 
 **Interfaces:**
 - Consumes: `npm run benchmark:campaign` and `npm run benchmark:update-readme`.
@@ -155,7 +155,7 @@ Run:
 
 ```bash
 mkdir -p /tmp/chrome-cdp-ex-phase0
-npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output /tmp/chrome-cdp-ex-phase0/release-campaign-v2.14.0.json
+npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output /tmp/chrome-cdp-ex-phase0/release-campaign-v2.14.0-postfix.json
 ```
 
 Expected: schema `chrome-cdp-ex.live-campaign.v1`, 10 completed rounds, 10 passing rounds, and no failed gate criteria.
@@ -165,7 +165,7 @@ Expected: schema `chrome-cdp-ex.live-campaign.v1`, 10 completed rounds, 10 passi
 Run:
 
 ```bash
-npm run benchmark:update-readme -- /tmp/chrome-cdp-ex-phase0/release-campaign-v2.14.0.json README.md --html experiment/benchmark.html --date 2026-08-12
+npm run benchmark:update-readme -- /tmp/chrome-cdp-ex-phase0/release-campaign-v2.14.0-postfix.json README.md --html experiment/benchmark.html --date 2026-08-12
 ```
 
 Regenerate `experiment/benchmark-proof.png` from the updated safe local benchmark page using the repository's browser tooling or a deterministic screenshot command.

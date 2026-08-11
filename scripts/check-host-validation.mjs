@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync } from 'fs';
-import { resolve } from 'path';
+import { existsSync, readFileSync, realpathSync, statSync } from 'fs';
+import { isAbsolute, relative, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 import { SUPPORTED_HOSTS } from './setup.mjs';
@@ -25,7 +25,15 @@ function rootPath(rootDir) {
 
 function isIsoDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false;
-  return new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function staysWithin(rootDir, candidate) {
+  const pathFromRoot = relative(rootDir, candidate);
+  return pathFromRoot !== '..'
+    && !pathFromRoot.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
+    && !isAbsolute(pathFromRoot);
 }
 
 export function validateHostValidation(manifest, {
@@ -45,6 +53,8 @@ export function validateHostValidation(manifest, {
   }
 
   const hosts = Array.isArray(manifest?.hosts) ? manifest.hosts : [];
+  const repositoryRoot = resolve(rootPath(rootDir));
+  const realRepositoryRoot = realpathSync(repositoryRoot);
   const seen = new Set();
   for (const host of hosts) {
     const name = String(host?.name || 'missing');
@@ -54,9 +64,29 @@ export function validateHostValidation(manifest, {
       errors.push(`Host ${name} has unsupported status ${host?.status || 'missing'}`);
     }
     const evidence = Array.isArray(host?.evidence) ? host.evidence : [];
+    if (evidence.length === 0) {
+      errors.push(`Host ${name} evidence must be a non-empty array of repository-relative files`);
+    }
     for (const evidencePath of evidence) {
-      if (!existsSync(resolve(rootPath(rootDir), evidencePath))) {
+      if (typeof evidencePath !== 'string' || evidencePath.length === 0 || isAbsolute(evidencePath)) {
+        errors.push(`Host ${name} evidence path must be repository-relative: ${String(evidencePath)}`);
+        continue;
+      }
+      const resolvedEvidencePath = resolve(repositoryRoot, evidencePath);
+      if (!staysWithin(repositoryRoot, resolvedEvidencePath)) {
+        errors.push(`Host ${name} evidence path must stay within the repository: ${evidencePath}`);
+        continue;
+      }
+      if (!existsSync(resolvedEvidencePath)) {
         errors.push(`Host ${name} evidence path does not exist: ${evidencePath}`);
+        continue;
+      }
+      if (!staysWithin(realRepositoryRoot, realpathSync(resolvedEvidencePath))) {
+        errors.push(`Host ${name} evidence path must stay within the repository: ${evidencePath}`);
+        continue;
+      }
+      if (!statSync(resolvedEvidencePath).isFile()) {
+        errors.push(`Host ${name} evidence path must be a file: ${evidencePath}`);
       }
     }
     if (host?.status === 'live-validated') {

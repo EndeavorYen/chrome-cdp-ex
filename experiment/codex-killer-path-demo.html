@@ -74,7 +74,7 @@
     <header><div class="brand">Step 1 · Perceive</div><div class="time">00:15—00:24</div></header>
     <main class="grid">
       <div><div class="eyebrow">Structured perception</div><h2>See controls, layout, and health.</h2><div class="flow"><div class="step">doctor</div><span class="arrow">→</span><div class="step on">perceive</div><span class="arrow">→</span><div class="step">act</div><span class="arrow">→</span><div class="step">report</div></div></div>
-      <div class="terminal"><span class="prompt">$</span> cdp perceive 35D7E4B7 -C -d 8 --format json<br><br><span class="key">schema</span>: chrome-cdp-ex.perceive.v1<br><span class="key">page</span>: chrome-cdp-ex long-session smoke<br><span class="key">console.errors</span>: <span class="ok">0</span><br><span class="key">refs</span>: @1 textbox · @2 button · …</div>
+      <div class="terminal"><span class="prompt">$</span> ./bin/chrome-cdp perceive 35D7E4B7 -C -d 8 --format json<br><br><span class="key">schema</span>: chrome-cdp-ex.perceive.v1<br><span class="key">page</span>: chrome-cdp-ex long-session smoke<br><span class="key">console.errors</span>: <span class="ok">0</span><br><span class="key">refs</span>: @1 textbox · @2 button · …</div>
     </main>
     <footer><span>Observed live: <strong>10 interactive refs</strong></span><span>Coordinate space: <strong>viewport CSS px</strong></span></footer>
   </section>
@@ -83,7 +83,7 @@
     <header><div class="brand">Step 2 · Act</div><div class="time">00:24—00:33</div></header>
     <main>
       <div class="eyebrow">Mutation with automatic evidence</div><h2>Act once. Get the receipt automatically.</h2>
-      <div class="terminal" style="margin-top:26px"><span class="prompt">$</span> cdp fill 35D7E4B7 '#cmd' 'look trainer' --format json --compact<br><br><span class="key">dispatch.ok</span>: <span class="ok">true</span> &nbsp; <span class="key">settlement.state</span>: settled<br><span class="key">outcome.status</span>: <span class="ok">changed</span> &nbsp; <span class="key">receipt.sequence</span>: 1</div>
+      <div class="terminal" style="margin-top:26px"><span class="prompt">$</span> ./bin/chrome-cdp fill 35D7E4B7 '#cmd' 'look trainer' --format json --compact<br><br><span class="key">dispatch.ok</span>: <span class="ok">true</span> &nbsp; <span class="key">settlement.state</span>: settled<br><span class="key">outcome.status</span>: <span class="ok">changed</span> &nbsp; <span class="key">receipt.sequence</span>: 1</div>
     </main>
     <footer><span>No extra “did it work?” call required</span><span>Action: <strong>fill</strong></span></footer>
   </section>
@@ -101,7 +101,7 @@
     <header><div class="brand">Step 4 · Since action</div><div class="time">00:42—00:51</div></header>
     <main>
       <div class="eyebrow">Ask a causal question</div><h2>What changed <span class="cyan">since that action</span>?</h2>
-      <div class="terminal" style="margin-top:26px"><span class="prompt">$</span> cdp perceive 35D7E4B7 --since-action --format json<br><br><span class="key">schema</span>: chrome-cdp-ex.perceive-diff.v1<br><span class="key">mode</span>: since-action<br><span class="key">recommendation.commands</span>: report · record-actions</div>
+      <div class="terminal" style="margin-top:26px"><span class="prompt">$</span> ./bin/chrome-cdp perceive 35D7E4B7 --since-action --format json<br><br><span class="key">schema</span>: chrome-cdp-ex.perceive-diff.v1<br><span class="key">mode</span>: since-action<br><span class="key">recommendation.commands</span>: report · record-actions</div>
     </main>
     <footer><span>Fresh refs when the DOM changes</span><span>Recovery remains executable</span></footer>
   </section>

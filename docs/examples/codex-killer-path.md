@@ -98,7 +98,7 @@ This is host-route evidence from one Codex session and one safe local fixture. I
 The host route is complemented by the ten-round mixed campaign:
 
 ```bash
-npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output /tmp/chrome-cdp-ex-phase0/release-campaign-v2.14.0.json
+npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output /tmp/chrome-cdp-ex-phase0/release-campaign-v2.14.0-postfix.json
 ```
 
 The campaign and the Codex host route prove different things: the campaign gates runtime quality across multiple paths and fixtures; the host record proves how Codex reaches that runtime. Neither substitutes for independent user adoption.

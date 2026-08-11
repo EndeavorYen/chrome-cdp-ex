@@ -30,6 +30,24 @@ describe('host validation CLI', () => {
     expect(result.stdout).toContain('Host validation OK: 6 hosts, product v2.14.0');
     expect(result.stderr).toBe('');
   });
+
+  it('ships the checker and every newly linked evidence asset in the package', () => {
+    const result = spawnSync('npm', ['pack', '--dry-run', '--json'], {
+      cwd: new URL('..', import.meta.url),
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(0);
+    const packedPaths = JSON.parse(result.stdout)[0].files.map(file => file.path);
+    expect(packedPaths).toEqual(expect.arrayContaining([
+      'docs/benchmarks/host-validation.v1.json',
+      'docs/examples/codex-killer-path.md',
+      'experiment/codex-killer-path-demo-poster.png',
+      'experiment/codex-killer-path-demo.html',
+      'experiment/codex-killer-path-demo.mp4',
+      'scripts/check-host-validation.mjs',
+    ]));
+  });
 });
 
 describe('host validation manifest', () => {
@@ -74,6 +92,16 @@ describe('host validation manifest', () => {
     );
   });
 
+  it('reports semantically invalid ISO dates without throwing', () => {
+    const manifest = structuredClone(checkedInManifest);
+    manifest.validatedAt = '2026-13-01';
+
+    expect(() => validate(manifest)).not.toThrow();
+    expect(validate(manifest)).toContain(
+      'Host validation validatedAt must be an ISO date (YYYY-MM-DD)',
+    );
+  });
+
   it('rejects missing repository evidence paths', () => {
     const manifest = structuredClone(checkedInManifest);
     manifest.hosts[1].evidence = ['docs/examples/not-present.md'];
@@ -81,6 +109,18 @@ describe('host validation manifest', () => {
     expect(validate(manifest)).toContain(
       'Host codex evidence path does not exist: docs/examples/not-present.md',
     );
+  });
+
+  it.each([
+    [[], 'Host codex evidence must be a non-empty array of repository-relative files'],
+    [['/tmp/evidence.md'], 'Host codex evidence path must be repository-relative: /tmp/evidence.md'],
+    [['../outside.md'], 'Host codex evidence path must stay within the repository: ../outside.md'],
+    [['docs'], 'Host codex evidence path must be a file: docs'],
+  ])('rejects non-portable evidence %j', (evidence, expectedError) => {
+    const manifest = structuredClone(checkedInManifest);
+    manifest.hosts[1].evidence = evidence;
+
+    expect(validate(manifest)).toContain(expectedError);
   });
 
   it('requires the full evidence loop before live-validated status', () => {
