@@ -33,17 +33,18 @@ Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-
 
 ## Proof
 
-[![Last measured Smart Eye campaign (v2.12.0): 10/10 rounds, 34/34 quality gate](experiment/benchmark-proof.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
+[![Last measured Smart Eye campaign (v2.14.0): 10/10 rounds, 34/34 real-app quality gate](experiment/benchmark-proof.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
 
 [![Redesign experiment: richer perception produced the better page](experiment/final-A.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html)
 
 | Proof | Why it matters |
 |---|---|
-| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | Last measured release campaign (**v2.12.0**, 2026-07-12): 10/10 rounds across MCP, CLI, Killer Path, large-app stress, and five real-app profiles |
+| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | Last measured release campaign (**v2.14.0**, 2026-08-12): 10/10 rounds across MCP, CLI, Killer Path, 5,200-node large-app stress, and five safe local real-app profiles |
 | [Redesign experiment](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html) | Same page, same prompt, same rounds — richer perception produced the better result |
 | [Killer Path](docs/examples/killer-path.md) | 60-second route: `doctor → open → perceive → act → evidence → report` |
+| Validated with Codex | [Poster](experiment/codex-killer-path-demo-poster.png) · [60-second MP4](experiment/codex-killer-path-demo.mp4) · [reproducible Killer Path](docs/examples/codex-killer-path.md) · [versioned host manifest](docs/benchmarks/host-validation.v1.json) |
 
-> Numbers below are from that last measured campaign. v2.14.0 shipped distribution / MCP / skill packaging; regenerate a campaign before publishing new speed or token claims.
+> Numbers below are from that v2.14.0 campaign. The five real-app profiles are safe local fixtures, not external production-app evidence.
 
 ## Use this when
 
@@ -73,19 +74,19 @@ Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-
 
 ## Smart Eye Proof
 
-Measured agent path: see → act → verify → recover → hand off. The last release-quality campaign (v2.12.0) ran 10 rounds: matched MCP/CLI, Killer Path, a 5000+ node large-app fixture, and five local real-app profiles.
+Measured agent path: see → act → verify → recover → hand off. The v2.14.0 release-quality campaign ran 10 rounds: matched MCP/CLI, Killer Path, a 5,200-node large-app fixture, and five safe local real-app profiles.
 
 | Proof point | Last measured run |
 |---|---:|
-| Release proof | **v2.12.0 live campaign** |
+| Release proof | **v2.14.0 live campaign** |
 | Real-app targets | **dashboard, docs-app, auth-flow, data-table, canvas-heavy** |
 | Campaign pass rate | **10/10 rounds** |
 | Quality gate | **34/34 pass in each real-app round** |
-| First useful observation | **2.225s avg** |
-| First action evidence | **2.902s avg** |
-| Useful observation tokens | **1,564 avg** |
-| Max step output | **1,113 tokens** |
-| Matched MCP / CLI | **100% pass; CLI used 2,481 fewer output tokens** |
+| First useful observation | **2.155s avg** |
+| First action evidence | **2.840s avg** |
+| Useful observation tokens | **1,732 avg** |
+| Max step output | **1,075 tokens** |
+| Matched MCP / CLI | **100% pass; CLI used 3,830 fewer output tokens on average** |
 
 [Benchmark page →](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) · [v2.14.0 product release →](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0)
 
@@ -186,6 +187,7 @@ Full map: [docs/reference.md](docs/reference.md) · always-loaded skill: [SKILL.
 ## Docs
 
 - [INTEGRATIONS.md](INTEGRATIONS.md) — Claude Code, Codex, Cursor, OpenClaw, Hermes, Pi
+- [Codex Killer Path](docs/examples/codex-killer-path.md) — host route, safe-fixture boundary, and required evidence
 - [Killer Path](docs/examples/killer-path.md) — fastest dogfood route
 - [Technical reference](docs/reference.md) — commands, MCP, Electron, WSL2, gates
 - [Product strategy](docs/strategy/agent-browser-vision.md) — why this is not another Playwright
@@ -198,17 +200,17 @@ Use the live benchmark before publishing performance or adoption claims. Visual 
 
 ### Latest dogfood snapshot
 
-Local run on 2026-07-12 (last measured release campaign, product label v2.12.0) against 5 safe local real-app fixtures: dashboard, docs-app, auth-flow, data-table, canvas-heavy. Timing starts after CDP is reachable. Publish competitor deltas only from measured baselines.
+Local run on 2026-08-12 for v2.14.0 against 5 safe local real-app fixtures: dashboard, docs-app, auth-flow, data-table, canvas-heavy. Timing starts after CDP is reachable. Publish competitor deltas only from measured baselines.
 
 | Metric | Latest measured run |
 |---|---:|
-| Total time | 10.264s avg |
+| Total time | 11.284s avg |
 | Command calls | 24 per round |
-| First useful observation | 2.225s avg |
-| First action evidence | 2.902s avg |
-| Golden path complete | 5.353s avg |
-| Estimated output tokens | 12,323 avg |
-| Useful observation tokens | 1,564 avg |
+| First useful observation | 2.155s avg |
+| First action evidence | 2.840s avg |
+| Golden path complete | 5.945s avg |
+| Estimated output tokens | 11,422 avg |
+| Useful observation tokens | 1,732 avg |
 | Action evidence coverage | 6 auto-evidence actions per round; no failed criteria |
 | Real-app targets | dashboard, docs-app, auth-flow, data-table, canvas-heavy |
 | Stale-ref recovery | covered by all real-app adversarial profiles |

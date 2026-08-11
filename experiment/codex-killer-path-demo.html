@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1280, initial-scale=1">
+  <title>chrome-cdp-ex · Codex Killer Path demo</title>
+  <style>
+    :root { --bg:#050908; --panel:#0d1412; --line:#24342e; --ink:#f4f1e8; --muted:#aab5af; --cyan:#56e0dd; --lime:#a8f05c; --amber:#ffc85a; }
+    * { box-sizing: border-box; }
+    html, body { width:1280px; height:720px; margin:0; overflow:hidden; background:var(--bg); color:var(--ink); }
+    body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body::before { content:""; position:fixed; inset:0; opacity:.22; background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px); background-size:80px 80px; }
+    .scene { position:absolute; inset:0; padding:58px 72px 48px; display:none; }
+    .scene.active { display:grid; grid-template-rows:auto 1fr auto; gap:28px; }
+    header, footer { display:flex; align-items:center; justify-content:space-between; position:relative; z-index:1; }
+    .brand { color:var(--cyan); font:700 15px/1 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.16em; text-transform:uppercase; }
+    .time { color:var(--muted); font:600 14px/1 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    main { position:relative; z-index:1; display:grid; align-content:center; }
+    h1 { margin:0; max-width:1060px; font-size:72px; line-height:.98; letter-spacing:-.052em; }
+    h2 { margin:0 0 22px; font-size:51px; line-height:1.02; letter-spacing:-.04em; }
+    p { margin:0; color:var(--muted); font-size:24px; line-height:1.45; }
+    .accent { color:var(--lime); }
+    .cyan { color:var(--cyan); }
+    .amber { color:var(--amber); }
+    .grid { display:grid; grid-template-columns:1.05fr .95fr; gap:28px; align-items:stretch; }
+    .panel { background:linear-gradient(135deg,rgba(18,27,24,.96),rgba(8,13,12,.96)); border:1px solid var(--line); border-radius:18px; padding:30px; }
+    .terminal { background:#020403; border:1px solid #2a4038; border-radius:16px; padding:26px 28px; color:#c9d6cf; font:500 19px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; box-shadow:0 22px 70px rgba(0,0,0,.32); }
+    .prompt { color:var(--lime); }
+    .key { color:var(--cyan); }
+    .ok { color:var(--lime); }
+    .dim { color:#788780; }
+    .eyebrow { margin-bottom:18px; color:var(--amber); font:700 15px/1 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.14em; text-transform:uppercase; }
+    .statline { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:28px; }
+    .stat { border:1px solid var(--line); border-radius:13px; padding:18px; background:rgba(13,20,18,.86); }
+    .stat b { display:block; color:var(--ink); font-size:28px; }
+    .stat span { color:var(--muted); font-size:14px; }
+    .flow { display:flex; gap:10px; align-items:center; margin-top:28px; }
+    .step { flex:1; border:1px solid var(--line); border-radius:12px; padding:17px 10px; text-align:center; color:var(--muted); font:650 15px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .step.on { color:#07100b; background:var(--lime); border-color:var(--lime); }
+    .arrow { color:var(--cyan); font-size:20px; }
+    .receipt { display:grid; grid-template-columns:170px 1fr; gap:10px 18px; font:500 18px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .receipt dt { color:var(--muted); }
+    .receipt dd { margin:0; color:var(--ink); }
+    .badge { display:inline-flex; align-items:center; gap:9px; border:1px solid var(--lime); border-radius:999px; padding:10px 15px; color:var(--lime); font:700 15px/1 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .badge::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--lime); box-shadow:0 0 16px var(--lime); }
+    .boundary { border-left:3px solid var(--amber); padding-left:20px; color:var(--muted); font-size:18px; line-height:1.45; }
+    footer { color:var(--muted); font-size:15px; }
+    footer strong { color:var(--ink); }
+  </style>
+</head>
+<body>
+  <!-- Deterministic source. Exact claims: v2.14.0 campaign artifact measured 2026-08-12; Codex host manifest live-validated on one disposable local fixture. -->
+  <section class="scene" data-scene="1">
+    <header><div class="brand">chrome-cdp-ex · Codex Killer Path</div><div class="time">00:00—00:07</div></header>
+    <main>
+      <div class="badge" style="width:max-content;margin-bottom:24px">v2.14.0 live-validated with Codex</div>
+      <div class="eyebrow">The browser-agent gap</div>
+      <h1>Agents can click.<br>Can they <span class="accent">prove</span> what changed?</h1>
+      <p style="margin-top:26px;max-width:850px">Use the browser you already have open—then return evidence an agent can reason about.</p>
+    </main>
+    <footer><strong>Real page state → agent-readable evidence</strong><span>Safe local fixture · no personal browser data</span></footer>
+  </section>
+
+  <section class="scene" data-scene="2">
+    <header><div class="brand">chrome-cdp-ex · Codex route</div><div class="time">00:07—00:15</div></header>
+    <main class="grid">
+      <div><div class="eyebrow">One CLI skill</div><h2>Give Codex eyes and hands.</h2><p>The same zero-dependency runtime works from a normal Codex skill directory.</p></div>
+      <div class="terminal"><span class="prompt">$</span> mkdir -p ~/.codex/skills<br><span class="prompt">$</span> cp -R skills/chrome-cdp-ex ~/.codex/skills/<br><span class="prompt">$</span> node scripts/setup.mjs --for codex<br><br><span class="ok">✓ CLI route ready</span><br><span class="dim">MCP remains optional</span></div>
+    </main>
+    <footer><span>Route: <strong>CLI skill</strong></span><span>Product: <strong>v2.14.0</strong></span></footer>
+  </section>
+
+  <section class="scene" data-scene="3">
+    <header><div class="brand">Step 1 · Perceive</div><div class="time">00:15—00:24</div></header>
+    <main class="grid">
+      <div><div class="eyebrow">Structured perception</div><h2>See controls, layout, and health.</h2><div class="flow"><div class="step">doctor</div><span class="arrow">→</span><div class="step on">perceive</div><span class="arrow">→</span><div class="step">act</div><span class="arrow">→</span><div class="step">report</div></div></div>
+      <div class="terminal"><span class="prompt">$</span> cdp perceive 35D7E4B7 -C -d 8 --format json<br><br><span class="key">schema</span>: chrome-cdp-ex.perceive.v1<br><span class="key">page</span>: chrome-cdp-ex long-session smoke<br><span class="key">console.errors</span>: <span class="ok">0</span><br><span class="key">refs</span>: @1 textbox · @2 button · …</div>
+    </main>
+    <footer><span>Observed live: <strong>10 interactive refs</strong></span><span>Coordinate space: <strong>viewport CSS px</strong></span></footer>
+  </section>
+
+  <section class="scene" data-scene="4">
+    <header><div class="brand">Step 2 · Act</div><div class="time">00:24—00:33</div></header>
+    <main>
+      <div class="eyebrow">Mutation with automatic evidence</div><h2>Act once. Get the receipt automatically.</h2>
+      <div class="terminal" style="margin-top:26px"><span class="prompt">$</span> cdp fill 35D7E4B7 '#cmd' 'look trainer' --format json --compact<br><br><span class="key">dispatch.ok</span>: <span class="ok">true</span> &nbsp; <span class="key">settlement.state</span>: settled<br><span class="key">outcome.status</span>: <span class="ok">changed</span> &nbsp; <span class="key">receipt.sequence</span>: 1</div>
+    </main>
+    <footer><span>No extra “did it work?” call required</span><span>Action: <strong>fill</strong></span></footer>
+  </section>
+
+  <section class="scene" data-scene="5">
+    <header><div class="brand">Step 3 · Action Receipt</div><div class="time">00:33—00:42</div></header>
+    <main class="grid">
+      <div><div class="eyebrow">Causal evidence</div><h2>Dispatch is not the same as success.</h2><p>A receipt separates what was sent, how the page settled, what changed, and what to do next.</p></div>
+      <div class="panel"><dl class="receipt"><dt>schema</dt><dd class="cyan">chrome-cdp-ex.action-receipt.v1</dd><dt>dispatch</dt><dd>ok · fill</dd><dt>settlement</dt><dd class="accent">settled</dd><dt>outcome</dt><dd class="accent">changed</dd><dt>observed delta</dt><dd>textbox value updated</dd><dt>next step</dt><dd>report / record-actions</dd></dl></div>
+    </main>
+    <footer><span>Changed · no-change · failed · attention</span><span>Every state stays reviewable</span></footer>
+  </section>
+
+  <section class="scene" data-scene="6">
+    <header><div class="brand">Step 4 · Since action</div><div class="time">00:42—00:51</div></header>
+    <main>
+      <div class="eyebrow">Ask a causal question</div><h2>What changed <span class="cyan">since that action</span>?</h2>
+      <div class="terminal" style="margin-top:26px"><span class="prompt">$</span> cdp perceive 35D7E4B7 --since-action --format json<br><br><span class="key">schema</span>: chrome-cdp-ex.perceive-diff.v1<br><span class="key">mode</span>: since-action<br><span class="key">recommendation.commands</span>: report · record-actions</div>
+    </main>
+    <footer><span>Fresh refs when the DOM changes</span><span>Recovery remains executable</span></footer>
+  </section>
+
+  <section class="scene" data-scene="7">
+    <header><div class="brand">Step 5 · Report and handoff</div><div class="time">00:51—01:00</div></header>
+    <main class="grid">
+      <div><div class="badge">v2.14.0 live-validated with Codex</div><h2 style="margin-top:24px">A complete trail, ready for the next agent.</h2><p><span class="accent">10/10</span> mixed runtime campaign rounds passed. <span class="accent">34/34</span> checks passed in each of five safe real-app fixture rounds.</p></div>
+      <div class="panel"><div class="eyebrow">Claim boundary</div><div class="boundary">Live validation covers the <strong>Codex CLI-skill route</strong> on one disposable local fixture. Other hosts remain documented—not claimed as live-tested. Benchmark proof is not user-adoption proof.</div><div class="statline"><div class="stat"><b>2</b><span>actions in report</span></div><div class="stat"><b>5/5</b><span>fixture profiles</span></div><div class="stat"><b>0</b><span>personal tabs used</span></div></div></div>
+    </main>
+    <footer><strong>doctor → perceive → act → receipt → since-action → report</strong><span>github.com/EndeavorYen/chrome-cdp-ex</span></footer>
+  </section>
+
+  <script>
+    const requested = Number(new URLSearchParams(location.search).get('scene') || location.hash.replace('#scene-', '') || 1);
+    const selected = document.querySelector(`[data-scene="${Math.min(7, Math.max(1, requested))}"]`);
+    selected?.classList.add('active');
+  </script>
+</body>
+</html>

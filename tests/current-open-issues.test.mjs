@@ -1039,6 +1039,56 @@ describe('issue #119 live target binding contracts', () => {
     expect(output.length).toBeLessThan(500);
   });
 
+  it('collapses identical target ids in compact CLI output', () => {
+    const targetId = 'CCCCDDDD33334444';
+    const output = T.attachTargetResolutionDiagnostics(JSON.stringify({
+      schema: 'chrome-cdp-ex.action.v1',
+      mode: 'compact',
+      action: 'click',
+    }), {
+      requestedTargetPrefix: 'CCCCDDDD',
+      requestedTargetId: targetId,
+      boundTargetId: targetId,
+      resolvedTargetId: targetId,
+      resolutionSource: 'live-discovery',
+      status: 'reused',
+      rebound: false,
+    });
+
+    expect(JSON.parse(output).targetResolution).toEqual({
+      requestedTargetPrefix: 'CCCCDDDD',
+      targetId,
+      status: 'reused',
+      rebound: false,
+    });
+    expect(output.length).toBeLessThan(300);
+    expect(output).not.toContain('\n');
+  });
+
+  it('keeps full target diagnostics in compact output when the target changed', () => {
+    const output = T.attachTargetResolutionDiagnostics(JSON.stringify({
+      schema: 'chrome-cdp-ex.action.v1',
+      mode: 'compact',
+      action: 'click',
+    }), {
+      requestedTargetPrefix: 'CCCCDDDD',
+      requestedTargetId: 'CCCCDDDD33334444',
+      boundTargetId: 'AAAABBBB11112222',
+      resolvedTargetId: 'CCCCDDDD33334444',
+      resolutionSource: 'live-discovery',
+      status: 'rebound',
+      rebound: true,
+    });
+
+    expect(JSON.parse(output).targetResolution).toMatchObject({
+      requestedTargetId: 'CCCCDDDD33334444',
+      boundTargetId: 'AAAABBBB11112222',
+      resolvedTargetId: 'CCCCDDDD33334444',
+      status: 'rebound',
+      rebound: true,
+    });
+  });
+
   it('treats a daemon bound to a different target as stale', () => {
     const assessment = T.assessDaemonFreshness({
       targetPrefix: 'CCCCDDDD',

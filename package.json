@@ -22,6 +22,7 @@
     "test": "NODE_ENV=test vitest run",
     "lint": "eslint .",
     "check:docs": "node scripts/check-docs-contract.mjs",
+    "check:host-validation": "node scripts/check-host-validation.mjs",
     "setup": "node scripts/setup.mjs",
     "smoke:live": "node scripts/live-smoke.mjs",
     "benchmark:killer": "node scripts/benchmark-killer-path.mjs",

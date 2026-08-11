@@ -179,3 +179,26 @@ describe('Repository release gates', () => {
     expect(releaseWorkflow).toMatch(/gh release create "\$TAG" "\$TARBALL"/);
   });
 });
+
+describe('Codex for OSS evidence baseline', () => {
+  it('records dated, claim-safe maintenance and ecosystem evidence', () => {
+    const evidence = readFileSync(new URL('../docs/outreach/codex-for-oss-evidence.md', import.meta.url), 'utf8');
+
+    for (const expected of [
+      '2026-08-12',
+      '12 stars',
+      '84 issues',
+      '53 pull requests',
+      '18 cumulative release-asset downloads',
+      '40 unique visitors',
+      '49 unique cloners',
+      '22 GitHub code-search references',
+      'https://openai.com/form/codex-for-oss/',
+      'https://github.com/EndeavorYen/chrome-cdp-ex/pull/125',
+    ]) {
+      expect(evidence).toContain(expected);
+    }
+    expect(evidence).toMatch(/mirrors? or indexes?/i);
+    expect(evidence).toMatch(/not.*adoption/i);
+  });
+});

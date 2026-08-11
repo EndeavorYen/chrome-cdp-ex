@@ -1,0 +1,60 @@
+{
+  "schema": "chrome-cdp-ex.host-validation.v1",
+  "productVersion": "2.14.0",
+  "validatedAt": "2026-08-12",
+  "environment": {
+    "host": "Codex",
+    "route": "cli-skill",
+    "browserScope": "disposable-local-fixture"
+  },
+  "hosts": [
+    {
+      "name": "claude",
+      "status": "documented",
+      "route": "cli",
+      "evidence": ["docs/integrations/claude.md"]
+    },
+    {
+      "name": "codex",
+      "status": "live-validated",
+      "route": "cli",
+      "capabilities": {
+        "install": true,
+        "doctor": true,
+        "perceive": true,
+        "act": true,
+        "actionReceipt": true,
+        "sinceAction": true,
+        "report": true
+      },
+      "evidence": [
+        "docs/integrations/codex.md",
+        "docs/examples/codex-killer-path.md"
+      ]
+    },
+    {
+      "name": "cursor",
+      "status": "documented",
+      "route": "mcp",
+      "evidence": ["docs/integrations/cursor.md"]
+    },
+    {
+      "name": "openclaw",
+      "status": "documented",
+      "route": "mcp",
+      "evidence": ["docs/integrations/openclaw.md"]
+    },
+    {
+      "name": "hermes",
+      "status": "documented",
+      "route": "cli",
+      "evidence": ["docs/integrations/hermes.md"]
+    },
+    {
+      "name": "pi",
+      "status": "documented",
+      "route": "cli",
+      "evidence": ["docs/integrations/pi.md"]
+    }
+  ]
+}
