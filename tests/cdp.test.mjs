@@ -212,8 +212,22 @@ describe('COMMANDS registry', () => {
     expect(T.isBatchParallelUnsafeCommand('snapshot')).toBe(true);
   });
 
+  it('uses catalog authorization and kind to reject parallel side effects hidden by legacy mutates', () => {
+    for (const name of [
+      'eval', 'evalraw', 'hover', 'loadall', 'dialog', 'console', 'netlog',
+      'shot', 'screenshot', 'diff-shot', 'diffshot', 'fullshot', 'cookies',
+      'checkpoint', 'components', 'report', 'batch', 'flow', 'repeat',
+      'not-a-command',
+    ]) {
+      expect(T.isBatchParallelUnsafeCommand(name), name).toBe(true);
+    }
+    expect(T.isBatchParallelUnsafeCommand('status')).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('frame')).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('frames')).toBe(true);
+  });
+
   it('keeps read-only extraction commands safe for parallel batch execution', () => {
-    for (const name of ['elshot', 'html', 'text', 'table', 'styles', 'cookies', 'summary', 'console', 'status']) {
+    for (const name of ['controls', 'elshot', 'html', 'text', 'table', 'styles', 'summary', 'net', 'network', 'wait', 'waitfor']) {
       expect(T.isBatchParallelUnsafeCommand(name)).toBe(false);
     }
   });

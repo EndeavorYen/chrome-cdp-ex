@@ -10815,12 +10815,15 @@ function commandMeta(cmd) {
   return COMMANDS.find(command => command.name === cmd || (command.aliases || []).includes(cmd)) || null;
 }
 
-const BATCH_PARALLEL_READ_STATE_COMMANDS = new Set(['perceive', 'snap', 'snapshot']);
+const BATCH_PARALLEL_SHARED_STATE_READ_COMMANDS = new Set(['perceive', 'snap', 'frame', 'status']);
 
 function isBatchParallelUnsafeCommand(cmd) {
-  const meta = commandMeta(cmd);
-  if (meta?.mutates === true) return true;
-  return BATCH_PARALLEL_READ_STATE_COMMANDS.has(cmd);
+  const command = COMMAND_SURFACE.resolve(cmd);
+  if (!command) return true;
+  if (command.kind !== 'read'
+    || command.authorization !== 'standard'
+    || command.evidencePolicy !== 'none') return true;
+  return BATCH_PARALLEL_SHARED_STATE_READ_COMMANDS.has(command.name);
 }
 
 function autoActionJsonArgs(cmd, args = [], enabled = false) {
