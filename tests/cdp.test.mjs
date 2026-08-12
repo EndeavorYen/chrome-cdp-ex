@@ -5057,7 +5057,7 @@ describe('frame tree helpers', () => {
       },
       'Runtime.callFunctionOn': (params) => {
         if (params.objectId === 'child-button') {
-          return { result: { value: { x: 10, y: 5, w: 100, h: 20, tag: 'BUTTON', text: 'Pay now' } } };
+          return { result: { value: { connected: true, x: 10, y: 5, w: 100, h: 20, tag: 'BUTTON', text: 'Pay now' } } };
         }
         if (params.objectId === 'frame-owner') {
           return { result: { value: { x: 50, y: 40, w: 300, h: 200 } } };
@@ -6680,7 +6680,7 @@ describe('clickStr', () => {
         expect(params.functionDeclaration).toContain('maxSamples = fullyVisible ? 2 : 60');
         expect(params.functionDeclaration).toContain('currentVisible && stableSamples >= 2');
         expect(params.awaitPromise).toBe(true);
-        return { result: { value: { x: 50, y: 60, w: 100, h: 40, tag: 'A', text: 'Link' } } };
+        return { result: { value: { connected: true, x: 50, y: 60, w: 100, h: 40, tag: 'A', text: 'Link' } } };
       },
       'Input.dispatchMouseEvent': () => ({}),
     });
@@ -6721,9 +6721,15 @@ describe('clickStr', () => {
           return { result: { value: connectedObjects.has(objectId) } };
         }
         if (objectId === 'detached-alpha') {
-          return { result: { value: { x: 0, y: 0, w: 0, h: 0, tag: 'BUTTON', text: 'Review Alpha' } } };
+          return { result: { value: {
+            ...(functionDeclaration.includes('isConnected') ? { connected: false } : {}),
+            x: 0, y: 0, w: 0, h: 0, tag: 'BUTTON', text: 'Review Alpha',
+          } } };
         }
-        return { result: { value: { x: 40, y: 72, w: 120, h: 32, tag: 'BUTTON', text: 'Review Alpha' } } };
+        return { result: { value: {
+          ...(functionDeclaration.includes('isConnected') ? { connected: true } : {}),
+          x: 40, y: 72, w: 120, h: 32, tag: 'BUTTON', text: 'Review Alpha',
+        } } };
       },
       'Input.dispatchMouseEvent': ({ type, x, y }) => {
         if (type === 'mouseReleased' && x === 100 && y === 88) appAttempts += 1;
@@ -8095,7 +8101,7 @@ describe('recordStr', () => {
       },
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
       'Runtime.callFunctionOn': () => ({
-        result: { value: { x: 10, y: 20, w: 20, h: 10, tag: 'BUTTON', text: 'Go' } },
+        result: { value: { connected: true, x: 10, y: 20, w: 20, h: 10, tag: 'BUTTON', text: 'Go' } },
       }),
       'Input.dispatchMouseEvent': () => ({}),
     });

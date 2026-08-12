@@ -5986,14 +5986,22 @@ function formatUnknownRefError(ref, state = {}) {
   return `Unknown ref: ${ref}. Run "perceive" to refresh refs, or use a stable CSS selector for long loops.`;
 }
 
+function invalidateRefMapping(refMap, ref, refState) {
+  if (refState) {
+    refState.invalidatedAt = Date.now();
+    refState.invalidationReason = 'dom-mutation';
+  }
+  const frameParsed = parseFrameRef(ref);
+  if (frameParsed) frameScopedRefEntry(refState || {}, frameParsed)?.refs?.delete(frameParsed.refIndex);
+  else refMap.delete(parseInt(ref.slice(1)));
+}
+
 async function resolveRefNode(cdp, sid, refMap, ref, refState) {
   const frameParsed = parseFrameRef(ref);
   let num = null;
-  let frameEntry = null;
   let backendNodeId;
   if (frameParsed) {
     const scoped = frameScopedBackendNode(refState || {}, frameParsed);
-    frameEntry = scoped.entry;
     backendNodeId = scoped.backendNodeId;
   } else {
     num = parseInt(ref.slice(1));
@@ -6009,18 +6017,16 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState) {
     // The ref existed in this daemon, but the backend node can no longer be
     // resolved. That is the common "DOM rewrote the element after perceive"
     // stale-ref case; classify it distinctly instead of surfacing raw CDP text.
-    if (refState) {
-      refState.invalidatedAt = Date.now();
-      refState.invalidationReason = 'dom-mutation';
-    }
-    if (frameParsed) frameEntry?.refs?.delete(frameParsed.refIndex);
-    else refMap.delete(num);
+    invalidateRefMapping(refMap, ref, refState);
     throw new Error(formatUnknownRefError(ref, refState || {}) + ` Original CDP error: ${e.message}`);
   }
 }
 
 function scrollSettledRectFunctionDeclaration() {
   return `async function() {
+    const connectedToOwningDocument = () => this.isConnected === true &&
+      !!this.ownerDocument && this.getRootNode({ composed: true }) === this.ownerDocument;
+    if (!connectedToOwningDocument()) return { connected: false };
     const readRect = () => {
       const rect = this.getBoundingClientRect();
       return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
@@ -6048,6 +6054,7 @@ function scrollSettledRectFunctionDeclaration() {
       if (currentVisible && stableSamples >= 2) break;
     }
     return {
+      connected: connectedToOwningDocument(),
       ...previous,
       tag: this.tagName,
       text: (this.textContent || '').trim().substring(0, 80),
@@ -6065,6 +6072,13 @@ async function resolveRef(cdp, sid, refMap, ref, refState) {
     awaitPromise: true,
   }, sid);
   const value = result.result.value || {};
+  if (value.connected !== true) {
+    invalidateRefMapping(refMap, ref, refState);
+    throw new Error(
+      formatUnknownRefError(ref, refState || {}) +
+      ' Original CDP error: resolved backend node is detached from its owning document.'
+    );
+  }
   if (frameParsed) {
     const { entry } = frameScopedBackendNode(refState || {}, frameParsed);
     const offset = await frameViewportOffset(cdp, sid, entry, { settle: true });
