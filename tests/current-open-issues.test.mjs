@@ -1113,6 +1113,19 @@ describe('issue #119 live target binding contracts', () => {
 });
 
 describe('issue #141 perceive target/document readiness', () => {
+  const persistentMismatchMessage = [
+    'perceive: target/document readiness mismatch;',
+    'targetId=ABC12345FULLTARGET;',
+    'requestedTargetId=ABC12345FULLTARGET;',
+    'resolvedTargetId=ABC12345FULLTARGET;',
+    'boundTargetId=ABC12345FULLTARGET;',
+    'advertisedUrl=https://example.test/start;',
+    'observedUrl=about:srcdoc;',
+    'readyState=interactive;',
+    'attempts=3/3;',
+    'elapsedMs=18.',
+  ].join(' ');
+
   function createHandler({
     advertisedUrl = 'https://example.test/start',
     states = [{ url: 'https://example.test/start', readyState: 'complete' }],
@@ -1210,10 +1223,43 @@ describe('issue #141 perceive target/document readiness', () => {
       ],
     });
 
-    await expect(fixture.handler({ args })).rejects.toThrow(
-      /targetId=ABC12345FULLTARGET; advertisedUrl=https:\/\/example\.test\/start; observedUrl=about:srcdoc; readyState=interactive; attempts=3\/3; elapsedMs=18/
-    );
+    await expect(fixture.handler({ args })).rejects.toThrow(persistentMismatchMessage);
     expect(fixture.waits).toEqual([7, 11]);
+  });
+
+  it('formats a readiness mismatch as an executable perceive retry instead of a status loop', () => {
+    const output = T.formatCliError(new Error(persistentMismatchMessage), {
+      cmd: 'perceive',
+      targetPrefix: 'ABC12345',
+    });
+
+    expect(output).toContain('Kind: loading');
+    expect(output).toContain('Strategy: retry-perceive');
+    expect(output).toContain('Run: cdp perceive ABC12345 -C -d 8');
+    expect(output).toContain('Next: cdp perceive ABC12345 -C -d 8');
+    expect(output).not.toContain('cdp status');
+  });
+
+  it('builds the same bounded perceive retry in the structured CLI error model', () => {
+    const model = T.buildCliErrorModel(new Error(persistentMismatchMessage), {
+      cmd: 'perceive',
+      targetPrefix: 'ABC12345',
+    });
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.cli-error.v1',
+      ok: false,
+      command: 'perceive',
+      targetPrefix: 'ABC12345',
+      error: { message: persistentMismatchMessage },
+      recovery: {
+        kind: 'loading',
+        strategy: 'retry-perceive',
+        run: 'cdp perceive ABC12345 -C -d 8',
+      },
+      nextSteps: ['cdp perceive ABC12345 -C -d 8'],
+    });
+    expect(model.recovery.run).not.toContain('status');
   });
 
   it.each([

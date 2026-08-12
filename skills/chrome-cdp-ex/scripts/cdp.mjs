@@ -15527,8 +15527,8 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       reason: 'The command is missing required input; provide the required argument instead of retrying unchanged.',
     };
   }
-  return targetPrefix
-    ? {
+  return lower.includes('target/document readiness mismatch') ? perceiveReadinessRecovery(target)
+    : targetPrefix ? {
         kind: 'unknown',
         strategy: 'inspect-status',
         run: `cdp status ${targetPrefix}`,
@@ -16579,6 +16579,15 @@ async function main(options = {}) {
   }
 }
 
+function perceiveReadinessRecovery(target) {
+  return {
+    kind: 'loading',
+    strategy: 'retry-perceive',
+    run: `cdp perceive ${target} -C -d 8`,
+    reason: 'Target metadata advertises an HTTP(S) page, but the renderer stayed blank through bounded readiness sampling. Retry perceive without navigating.',
+  };
+}
+
 const PERCEIVE_READINESS_DELAYS_MS = Object.freeze([0, 250, 500, 1000]);
 
 async function readPerceiveTargetMetadata(cdp, targetId) {
@@ -16632,7 +16641,8 @@ async function ensurePerceiveTargetReady({ cdp, sessionId, targetId, ops = {} })
   const readyState = String(observed?.readyState || 'unknown');
   throw new Error(
     'perceive: target/document readiness mismatch; ' +
-    `targetId=${targetId}; advertisedUrl=${advertisedUrl}; observedUrl=${observedUrl}; ` +
+    `targetId=${targetId}; requestedTargetId=${targetId}; resolvedTargetId=${targetId}; ` +
+    `boundTargetId=${targetId}; advertisedUrl=${advertisedUrl}; observedUrl=${observedUrl}; ` +
     `readyState=${readyState}; attempts=${delays.length}/${delays.length}; elapsedMs=${Math.max(0, now() - startedAt)}. ` +
     'The target metadata advertises a loaded HTTP(S) page while its renderer is still blank; retry the same perceive command.'
   );
