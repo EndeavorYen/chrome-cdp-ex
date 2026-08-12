@@ -67,6 +67,51 @@ const FAILED_ACTION = {
 
 const FAILED_ACTION_JSON = JSON.stringify(FAILED_ACTION, null, 2);
 
+const FAILED_CLICK_ACTION = {
+  ...FAILED_ACTION,
+  action: 'click',
+  target: {
+    targetId: 'ABC12345',
+    input: '#save',
+    resolvedBy: 'selector-or-ref',
+    label: '#save',
+  },
+  dispatch: {
+    ok: false,
+    method: 'click',
+    error: 'Element not found: #save',
+  },
+  effects: {
+    ...FAILED_ACTION.effects,
+    failure: {
+      ...FAILED_ACTION.effects.failure,
+      originalMessage: 'Element not found: #save',
+    },
+  },
+};
+
+function semanticInteraction(actionResult, { textMatched = false } = {}) {
+  return cdpTest.buildSemanticInteractionModel(actionResult, {
+    selector: '#save',
+    expectText: 'Saved',
+    evidence: 'concise',
+  }, { textMatched });
+}
+
+function qaPageWith(action) {
+  return cdpTest.buildQaPageModel({
+    targetId: 'ABC12345',
+    page: { title: 'Fixture', url: 'https://example.com/' },
+    pageHealth: { status: 'populated', isBlank: false },
+    console: { errors: 0, warnings: 0, exceptions: 0 },
+    perception: { captured: true, summary: 'Fixture' },
+    screenshots: {},
+    action,
+    assertions: [],
+    errors: [],
+  });
+}
+
 function runMainWithStdout(stdout) {
   return async ({ console }) => {
     console.log(stdout);
@@ -211,6 +256,128 @@ describe('hard action dispatch exit contract (#143)', () => {
         isError: true,
       },
     }]);
+  });
+
+  it('returns non-zero for documented verify-click JSON when click dispatch failed', async () => {
+    const model = semanticInteraction(FAILED_CLICK_ACTION);
+    const output = JSON.stringify(model, null, 2);
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.semantic-interaction.v1',
+      action: 'click',
+      dispatch: { ok: false, error: 'Element not found: #save' },
+      verdict: 'fail',
+      actionEvidence: null,
+    });
+    await expect(executeCdpCli(
+      ['verify-click', 'ABC12345', '#save', '--expect-text', 'Saved', '--format', 'json'],
+      {
+        runMain: async ({ console }) => {
+          console.log(cdpTest.formatActionWorkflowCommandOutput(model, { format: 'json' }));
+        },
+      },
+    )).resolves.toEqual({ code: 1, stdout: output, stderr: '' });
+  });
+
+  it('returns non-zero for documented qa --click JSON when nested click dispatch failed', async () => {
+    const action = semanticInteraction(FAILED_CLICK_ACTION);
+    const model = qaPageWith(action);
+    const output = JSON.stringify(model, null, 2);
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.qa-page.v1',
+      action: {
+        schema: 'chrome-cdp-ex.semantic-interaction.v1',
+        action: 'click',
+        dispatch: { ok: false, error: 'Element not found: #save' },
+        verdict: 'fail',
+      },
+      verdict: 'fail',
+    });
+    await expect(executeCdpCli(
+      ['qa', 'ABC12345', '--click', '#save', '--expect-text', 'Saved', '--format', 'json'],
+      {
+        runMain: async ({ console }) => {
+          console.log(cdpTest.formatActionWorkflowCommandOutput(model, { format: 'json' }));
+        },
+      },
+    )).resolves.toEqual({ code: 1, stdout: output, stderr: '' });
+  });
+
+  it.each([
+    ['verify-click', model => model, ['verify-click', 'ABC12345', '#save', '--expect-text', 'Saved']],
+    ['qa --click', qaPageWith, ['qa', 'ABC12345', '--click', '#save', '--expect-text', 'Saved']],
+  ])('returns non-zero for documented %s text when click dispatch failed', async (_label, wrap, command) => {
+    const model = wrap(semanticInteraction(FAILED_CLICK_ACTION));
+
+    const result = await executeCdpCli(command, {
+      runMain: async ({ console }) => {
+        console.log(cdpTest.formatActionWorkflowCommandOutput(model, {
+          format: 'text',
+          text: () => model.schema === 'chrome-cdp-ex.qa-page.v1'
+            ? cdpTest.formatQaPageReport(model)
+            : cdpTest.formatSemanticInteractionResult(model),
+        }));
+      },
+    });
+
+    expect(result).toMatchObject({ code: 1, stdout: '' });
+    expect(result.stderr).toContain('Element not found: #save');
+  });
+
+  it.each([
+    ['verify-click assertion failure', model => model, [
+      'verify-click', 'ABC12345', '#save', '--expect-text', 'Saved', '--format', 'json',
+    ]],
+    ['qa --click assertion failure', qaPageWith, [
+      'qa', 'ABC12345', '--click', '#save', '--expect-text', 'Saved', '--format', 'json',
+    ]],
+  ])('keeps %s as transport success when click dispatch succeeded', async (_label, wrap, command) => {
+    const dispatched = {
+      ...FAILED_CLICK_ACTION,
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 40 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+      outcome: { status: 'no-change', changed: false, needsAttention: true },
+      verdict: { status: 'investigate', canContinue: false, needsRecovery: true },
+    };
+    const interaction = semanticInteraction(dispatched, { textMatched: false });
+    const model = wrap(interaction);
+    const output = JSON.stringify(model, null, 2);
+
+    expect(interaction).toMatchObject({ dispatch: { ok: true }, verdict: 'fail' });
+    await expect(executeCdpCli(command, {
+      runMain: async ({ console }) => {
+        console.log(cdpTest.formatActionWorkflowCommandOutput(model, { format: 'json' }));
+      },
+    })).resolves.toEqual({ code: 0, stdout: output, stderr: '' });
+  });
+
+  it.each([
+    ['verify-click', model => model, ['verify-click', 'ABC12345', '#save', '--expect-text', 'Saved']],
+    ['qa --click', qaPageWith, ['qa', 'ABC12345', '--click', '#save', '--expect-text', 'Saved']],
+  ])('keeps %s text assertion failure as transport success after dispatch', async (_label, wrap, command) => {
+    const dispatched = {
+      ...FAILED_CLICK_ACTION,
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 40 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+      outcome: { status: 'no-change', changed: false, needsAttention: true },
+      verdict: { status: 'investigate', canContinue: false, needsRecovery: true },
+    };
+    const model = wrap(semanticInteraction(dispatched, { textMatched: false }));
+    const text = model.schema === 'chrome-cdp-ex.qa-page.v1'
+      ? cdpTest.formatQaPageReport(model)
+      : cdpTest.formatSemanticInteractionResult(model);
+
+    await expect(executeCdpCli(command, {
+      runMain: async ({ console }) => {
+        console.log(cdpTest.formatActionWorkflowCommandOutput(model, {
+          format: 'text',
+          text: () => text,
+        }));
+      },
+    })).resolves.toEqual({ code: 0, stdout: text, stderr: '' });
   });
 
   it.each([

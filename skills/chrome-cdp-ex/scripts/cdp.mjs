@@ -3806,6 +3806,15 @@ function formatSemanticInteractionResult(model) {
   return lines.join('\n');
 }
 
+function formatActionWorkflowCommandOutput(model, { format = 'text', text = '' } = {}) {
+  if (format === 'json') return formatJson(model);
+  const { action, dispatch } = actionDispatchSemanticsFromModel(model);
+  if (dispatch?.ok === false) {
+    throw new Error(actionDispatchFailureMessage(action, dispatch));
+  }
+  return typeof text === 'function' ? text() : text;
+}
+
 function parseQaArgs(args = []) {
   const fopts = parseFormatArgs(args, ['text', 'json']);
   const opts = {
@@ -4311,7 +4320,10 @@ async function qaPageStr({
     assertions,
     errors,
   });
-  return qopts.format === 'json' ? formatJson(model) : formatQaPageReport(model);
+  return formatActionWorkflowCommandOutput(model, {
+    format: qopts.format,
+    text: () => formatQaPageReport(model),
+  });
 }
 
 async function pageContainsText(cdp, sid, text) {
@@ -10749,23 +10761,46 @@ function maybeParseJson(value) {
   try { return JSON.parse(trimmed); } catch { return null; }
 }
 
+function actionDispatchSemanticsFromModel(model = null) {
+  if (!model || typeof model !== 'object' || Array.isArray(model)) {
+    return { action: null, dispatch: null };
+  }
+  if (model.schema === 'chrome-cdp-ex.action.v1') {
+    return { action: model, dispatch: model.dispatch || null };
+  }
+  if (model.schema === 'chrome-cdp-ex.semantic-interaction.v1') {
+    const action = model.actionEvidence?.schema === 'chrome-cdp-ex.action.v1'
+      ? model.actionEvidence
+      : null;
+    return { action, dispatch: model.dispatch || action?.dispatch || null };
+  }
+  if (model.schema === 'chrome-cdp-ex.qa-page.v1'
+    && model.action?.schema === 'chrome-cdp-ex.semantic-interaction.v1') {
+    return actionDispatchSemanticsFromModel(model.action);
+  }
+  if (model.action?.schema === 'chrome-cdp-ex.action.v1') {
+    return { action: model.action, dispatch: model.action.dispatch || null };
+  }
+  return { action: null, dispatch: null };
+}
+
+function actionDispatchFailureMessage(action = null, dispatch = null) {
+  return dispatch?.error
+    || action?.effects?.failure?.originalMessage
+    || action?.effects?.failure?.reason
+    || 'Action dispatch failed';
+}
+
 function classifyCommandResultSemantics(result = null) {
   const transportOk = result?.ok === true
     || (Number.isInteger(result?.code) && result.code === 0);
   const output = Object.hasOwn(result || {}, 'result') ? result.result : result?.stdout;
   const model = maybeParseJson(output);
-  const action = model?.schema === 'chrome-cdp-ex.action.v1'
-    ? model
-    : model?.action?.schema === 'chrome-cdp-ex.action.v1'
-      ? model.action
-      : null;
-  const dispatchFailed = action?.dispatch?.ok === false;
+  const { action, dispatch } = actionDispatchSemanticsFromModel(model);
+  const dispatchFailed = dispatch?.ok === false;
   const error = result?.error
     || (dispatchFailed
-      ? action.dispatch?.error
-        || action.effects?.failure?.originalMessage
-        || action.effects?.failure?.reason
-        || 'Action dispatch failed'
+      ? actionDispatchFailureMessage(action, dispatch)
       : null);
   return {
     ok: transportOk && !dispatchFailed,
@@ -10774,6 +10809,7 @@ function classifyCommandResultSemantics(result = null) {
     error,
     model,
     action,
+    dispatch,
   };
 }
 
@@ -13779,9 +13815,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         ? await pageContainsText(cdp, sessionId, vopts.expectText).catch(() => false)
         : false;
       const model = buildSemanticInteractionModel(captured || {}, vopts, { textMatched });
-      const value = vopts.format === 'json'
-        ? formatJson(model)
-        : `${formatSemanticInteractionResult(model)}${vopts.evidence === 'full' && captured ? `\n---\n${formatActionText(captured)}` : ''}`;
+      const value = formatActionWorkflowCommandOutput(model, {
+        format: vopts.format,
+        text: () => `${formatSemanticInteractionResult(model)}${vopts.evidence === 'full' && captured ? `\n---\n${formatActionText(captured)}` : ''}`,
+      });
       return commandResult(value, { kind: 'action-receipt' });
     },
     viewport: async args => {
@@ -16744,7 +16781,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   classifyActionFailure, formatActionFailure,
   buildActionRecoveryPlan,
   createActionResult, buildActionReceipt, formatActionText, runActionWithFeedback,
-  parseVerifyClickArgs, buildSemanticInteractionModel, formatSemanticInteractionResult,
+  parseVerifyClickArgs, buildSemanticInteractionModel, formatSemanticInteractionResult, formatActionWorkflowCommandOutput,
   parseQaArgs, buildQaPageModel, formatQaPageReport,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest,
