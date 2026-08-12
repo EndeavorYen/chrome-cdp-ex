@@ -1,0 +1,2917 @@
+{
+  "cliCases": [
+    {
+      "argv": [],
+      "exitCode": 0,
+      "id": "no-args-help",
+      "stderr": "",
+      "stdout": "cdp - lightweight Chrome DevTools Protocol CLI (no Puppeteer)\n\nUsage: cdp <command> [args]\n\n  help                              Show this command reference (same as --help)\n  list|tabs|ls [--format json]      List open pages (shows unique target prefixes)\n                                    JSON includes schema/pages/recommendation/nextSteps for agents.\n                                    Prefers non-blank pages when recommending the next target (* marker).\n  target --url URL|--title TEXT [--exact] [--format json]\n                                    Select a page target by URL/title substring (or exact match).\n                                    Ambiguous matches return candidate URLs/titles and follow-up commands.\n  tab-group list|create|add|remove|delete|show [--format json]\n                                    Named multi-tab groups stored outside the repo (runtime dir).\n                                    create <name> [targets...] | add/remove <name> <target> | show/delete <name>\n  broadcast <group> <cmd> [args...] [--format json] [--full-results]\n                                    Run one command against every member of a tab-group.\n                                    JSON bounds per-target previews; --full-results opts into complete payloads.\n  use <target> --name <alias>        Save a named target alias (also becomes current)\n                                    Accepts 9222/<target> to bind a CDP port to the alias.\n  attach --port N --target <id> --name <alias>  Explicitly save an alias with host/port metadata\n  current [--format json]            Show current alias plus saved aliases\n  forget <alias>                     Remove a saved alias\n  perceive <target> [flags] [--format json]  Full page perception with @ref indices + coordinates\n                                    --diff: show only changes since last perceive\n                                    --since-action: show changes caused by the last mutating command\n                                    --qa / --summary: compact QA summary (url/title/blank/console/next)\n                                    --max-diff-lines N: truncate long text output\n                                    --adaptive / --last auto: density+error aware text-row budget\n                                    --last N: keep last N text rows (explicit wins over adaptive)\n                                    JSON includes structured refs plus recommendation/nextSteps.\n                                    JSON with --diff/--since-action returns chrome-cdp-ex.perceive-diff.v1\n                                    --frame @fN / -F @fN: perceive inside an iframe; refs become @fN:M\n                                    -s <sel> / --selector: scope to CSS selector subtree\n                                    -i / --interactive: only show interactive elements\n                                    -d N / --depth N: limit tree depth\n                                    -C / --cursor-interactive: include non-ARIA clickable elements (@c refs)\n  snap  <target> [--full]           Accessibility tree snapshot (compact by default, --full for complete)\n  controls <target> [-s selector] [--filter text] [--limit N] [--compact] [--format json]\n                                    Bounded visible controls inventory for selector/debugging repair\n  eval  <target> <expr>             Evaluate JS expression\n                                    --b64 / -b <base64>: decode UTF-8 base64 first\n                                    (safe transport for CJK / shell-hostile expressions)\n                                    --raw: compact JSON for objects (skip pretty multi-line stringify)\n                                    --fire-and-forget: dispatch without awaiting returned promise\n  eval64 <target> <base64>          Shorthand for eval --b64; preserves multibyte characters\n  call  <target> <expr|fn>          Await expression/function result and print JSON when possible\n  elshot <target> <sel|@ref>        Element screenshot: captures element by CSS selector or @ref\n  shot  <target> [file|--annotate]  Viewport screenshot; --annotate (-a) overlays @ref labels\n  diff-shot <target> [--reset] [--threshold pct]  Compare current screenshot against last diff-shot baseline\n  html  <target> [selector]         Get HTML (full page or CSS selector)\n  nav   <target> <url> [--format json]  Navigate to URL and wait for load completion\n  mock  <target> [add|clear]        Mock matching network requests in this live tab\n                                    add <urlPattern> --status code --body text [--content-type type]\n  clock <target> [freeze|offset|reset]  Override Date/time in this live tab\n                                    freeze --at date-or-epoch-ms | offset --ms delta\n  throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  Emulate network conditions for this tab\n                                    custom --latency ms --download kbps --upload kbps\n  status <target> [--runtime]        Page state + new console/exception entries (primary debug entry point)\n                                    --runtime: include Performance.getMetrics counters\n  console <target> [--all|--errors|--clear] Console buffer (default: new entries only; --clear: reset console+exception baseline)\n  summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)\n  report <target> [--last N|--all] [--format json] [--qa|--summary] [--compact]\n                                    Session action timeline + evidence summary + JSONL log path\n                                    --qa/--summary returns a compact chrome-cdp-ex.qa-summary.v1 handoff\n  checkpoint <target> [--unsafe-full] [--format json]  Capture URL plus redacted cookies/storage; unsafe-full keeps restorable secrets\n  restore <target> --file <path> [--format json]  Restore a checkpoint artifact into the live page\n  restore <target> --json <json> [--format json]  Restore an inline checkpoint JSON artifact\n  record-actions <target>           Export action log + mock/clock/throttle environment as text or JSON\n  export-playwright <target> [--format json]  Export current workflow as a Playwright spec draft or JSON handoff\n  replay <target> --file <path> [--format json]  Replay environment controls + actions against the live page\n  replay <target> --json <json> [--format json]  Replay an inline record-actions JSON artifact\n  frame <target> [--format json]     List page frames with stable @fN refs (alias: frames)\n  overlay <target> [sel|@ref] [--format json]  Detect visible dialogs/overlays and target blockers\n  qa <target> [--desktop WxH] [--mobile WxH] [--format json]  Live UI smoke: page info, console health, screenshots, perception, assertions\n                                    Optional: --click <sel|@ref> --expect-text text --expect-request pattern\n  responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]\n                                    Built-in responsive visual audit (alias: visual-check).\n                                    Defaults to desktop 1440x900 + mobile 390x844.\n                                    Collects screenshot, overflow-x, scroll metrics, controls, blank/console signals.\n  verify-click <target> <sel|@ref> [--format json]  Click once and assert text/network/console outcomes\n                                    --expect-text text --expect-request pattern --expect-status code --no-console-errors\n  net   <target>                    Network performance entries\n  click   <target> <sel|@ref> [--format json] [--qa|--summary]  Click element by CSS selector or @ref\n                                    --js / -j: use HTMLElement.click() (JS fallback)\n                                    --qa/--summary: compact pass/fail QA receipt without full DOM dump\n  jsclick <target> <sel|@ref>       JS-only click: el.click() instead of CDP mouse events\n                                    Use when overlays or hit-testing block the realistic mouse path.\n  clickxy <target> <x> <y> [--format json]  Click at CSS pixel coordinates (see coordinate note below)\n  type    <target> <text> [--format json]  Type text at current focus via Input.insertText\n                                    Works in cross-origin iframes unlike eval-based approaches\n  press|key <target> <key> [--format json]  Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)\n  scroll  <target> <dir|x,y> [px] [--format json]  Scroll page (down/up/left/right or x,y offset; default 500px)\n  hover   <target> <sel|@ref>       Hover over element (triggers :hover, tooltips, dropdowns)\n  waitfor <target> <selector> [ms]  Wait for element (default 10s, max 5min)\n  waitfor <target> --gone <sel|@ref> [ms]  Wait for element to DISAPPEAR (streaming end)\n  waitfor <target> --text \"str\" [--scope sel] [ms]  Wait for text to appear on page\n  loadall <target> <selector> [ms]  Repeatedly click a \"load more\" button until it disappears\n                                    Optional interval in ms between clicks (default 1500)\n  wait    <target> <ms>             Delay inside cdp (also: cdp wait <ms> [target])\n  fill    <target> <sel|@ref> <txt> [--format json] Clear field and type text (for form filling)\n                                    --react: native value setter + input/change events\n  select  <target> <selector> <val> [--format json] Select an option in a <select> element by value\n  fullshot <target> [file]          Full-page screenshot (single image — may be hard to read)\n  scanshot <target>                 Segmented full-page capture (viewport-sized images, readable)\n  styles  <target> <selector> [--root auto|body|document|<sel>]\n                                    Get computed styles for element (filtered to meaningful props)\n                                    On no-match, error includes root/scope and an eval fallback\n  components <target> [--depth N] [@ref|selector] [--max-chars N] [--unsafe-full] [--format json]\n                                    React/Vue component tree; targeted props/state requires React fiber.\n                                    Props/state are bounded and redacted unless --unsafe-full is explicit.\n  cookies <target>                  List cookies for current page\n  cookieset <target> <cookie>       Set a cookie: \"name=value\" or \"name=value; domain=.example.com; secure\"\n  cookiedel <target> <name>         Delete a cookie by name\n  dialog  <target> [accept|dismiss] Show dialog history; set auto-accept (default) or auto-dismiss\n  viewport|resize <target> [WxH]    Show or set viewport size (e.g. 375x812, 1280x720)\n  emulate <target> [dark|light|no-preference|off|status]\n                                    Media feature emulation via CDP Emulation.setEmulatedMedia\n                                    color-scheme dark|light|no-preference\n                                    reduced-motion reduce|no-preference\n                                    off/reset clears overrides; JSON returns chrome-cdp-ex.emulate.v1\n  upload  <target> <selector> <paths> [--format json]  Upload file(s) to <input type=\"file\"> (comma-separated paths)\n  text    <target> [selector]       Clean visible text — optional CSS selector to scope\n                                    --root auto|body|document|default|<sel>: search root for selector resolution\n                                    On no-match, error includes root/scope and an eval fallback\n  table   <target> [selector]       Full table data extraction (tab-separated, no row limit)\n  back    <target>                  Navigate back in browser history\n  forward <target>                  Navigate forward in browser history\n  reload  <target>                  Reload current page and clear console/exception/navigation buffers\n  closetab <target>                 Close a browser tab\n  netlog  <target> [--clear]        Network request log (XHR/Fetch/Document with status + timing)\n  inject <target> <flag> [content]   Live CSS/JS injection with tracking and removal\n                                    --css \"<text>\"   Inject inline <style>\n                                    --css-file <url> Inject <link rel=\"stylesheet\">\n                                    --js-file <url>  Inject <script src> and wait for load\n                                    --remove [id]    Remove injected element(s) (all, or by id)\n  cascade <target> <sel|@ref> [prop] [--format json] CSS origin tracing — shows which rules apply, source file + line\n                                    Optional: filter to one property (e.g. \"background-color\"); JSON returns chrome-cdp-ex.cascade.v1\n  record <target> [ms]              Record a short timeline of DOM/console/network/navigation events\n  record <target> --action click @5 Record events around an action (click/press/fill/select/type/scroll/nav)\n  record <target> --until \"dom stable\"|\"network idle\"  Record until page quiets (max 30s)\n  evalraw <target> <method> [json]  Send a raw CDP command; returns JSON result\n                                    e.g. evalraw <t> \"DOM.getDocument\" '{}'\n  batch <target> <cmds> [--parallel] [--format json] Execute multiple commands in one call\n                                    --format json returns chrome-cdp-ex.batch.v1 failure handoff\n                                    Pipe syntax: 'fill @3 hello | fill @5 world | click @7'\n                                    JSON syntax: '[{\"cmd\":\"click\",\"args\":[\"@1\"]},{\"cmd\":\"perceive\",\"args\":[\"--diff\"]}]'\n                                    --parallel  Run read-only/extraction commands concurrently (mutating commands are rejected)\n                                    --plain     Human-readable per-step output (default: pretty JSON)\n                                    --compact   One line per step (head + first line of result)\n  flow  <target> \"<steps>\" [--format json]  Sequential runner. Steps separated by \";\".\n                                    Each step is a normal command (e.g. \"click @1\") or a wait alias:\n                                    \"wait dom stable\" / \"wait network idle\" — uses settle helper.\n                                    Assertions: \"assert selector <css>\", \"assert selector-missing <css>\", \"assert text <value>\".\n                                    Halts and exits non-zero on the first failing step; JSON preserves chrome-cdp-ex.flow.v1.\n                                    Example: flow A7BA \"click @1; wait dom stable; summary; console --errors\"\n  repeat <target> <N> <cmd> [args]  Run a command up to N times (cap 50). Fail-fast exits non-zero.\n                                    --continue / -c: keep going through errors and report tally.\n                                    --until-selector <css> | --until-selector-missing <css> | --until-text <text>\n                                    re-checks after each settled iteration; cap exhaustion exits non-zero.\n                                    Cannot wrap repeat/batch/stop (recursion / IPC corruption).\n                                    Can wrap flow for multi-step turn loops, e.g.\n                                    repeat A7BA 3 flow \"click @1; wait dom stable; text .log\"\n                                    Useful for advancing MUD dialogue (\"repeat 5 press space\"),\n                                    retry-style probes, or short keypress sequences. Re-perceive\n                                    between iterations if the DOM changes — refs are not auto-remapped.\n                                    Example: repeat A7BA 5 press c\n  doctor / ready [--format json]    One-call diagnostics: Node version, skill install path,\n                                    daemon socket state, fd limit, CDP_PORT/DevToolsActivePort reachability,\n                                    debuggable tab inventory, browser permission, Recommendation, and onboarding next steps.\n                                    Readiness: ready | usable-with-warnings | blocked.\n                                    Checks expose severity: blocking | warning | advisory | ok.\n                                    Headless CDP sessions treat unconfirmed permission as advisory, not a blocker.\n                                    No target required. Exits 1 if any check FAILs.\n  keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)\n  open  [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n                                    Open a new tab (default: about:blank)\n                                    JSON includes schema/target/approval/recommendation/nextSteps for agents.\n                                    --reuse-url reuses an existing tab matching the URL when unique.\n                                    --attach-timeout-ms 0 returns the target handoff without waiting.\n                                    --ready-timeout-ms bounds document.readyState waiting after attach.\n                                    --ready-selector also waits for a CSS selector before returning.\n                                    Note: each new tab triggers a fresh \"Allow debugging?\" prompt\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n                                    Launch an isolated debug profile (browser: edge|chrome|brave; default edge, port 9222).\n                                    Rejects an occupied listener before spawning; choose another --port.\n                                    --host HOST binds remote debugging address (default 127.0.0.1).\n                                    --headless [new|old], --no-sandbox, --disable-gpu help CI/container/headless runs.\n                                    --wait-ms N bounds the readiness probe before success.\n                                    Returns ready target prefix + next perceive command when a page is available.\n                                    JSON includes pid/profileDir/port/url/targetId/targetPrefix/readiness/cleanup.\n                                    Uses --remote-debugging-port + --user-data-dir; does not touch your main profile.\n                                    \"spawn\" is a short alias.\n  dismiss-modal <target>            Close common dialog/modal patterns safely (close button, then Escape) —\n                                    avoids triggering background shortcuts the way a bare \"press Space\" does.\n  stop  [target] [--format json]    Stop daemon(s) and report stopped targets, remaining sessions, or explicit no-op\n\nACTION FEEDBACK\n  click, verify-click, jsclick, clickxy, fill, type, press, select, scroll,\n  upload, inject, dismiss-modal, and viewport (when resizing) automatically wait for DOM to\n  settle and return compact action evidence plus a perceive diff.\n  qa returns a semantic QA report and includes action evidence when --click is used.\n  back, forward, and nav return action evidence plus a full perceive.\n  reload returns action evidence plus a bounded lightweight page observation.\n  Each mutating action also snapshots console/exception/network buffers before\n  dispatch and reports compact deltas such as console errors, failed requests,\n  or requests still pending after the action observation window.\n  If that post-action observation times out after the action was sent, the\n  command reports success with \"observation timed out\" instead of a pure timeout.\n  No need to manually run perceive or perceive --diff after these actions.\n  To re-check what the last action changed, run perceive --since-action.\n\n<target> is a unique targetId prefix from \"cdp list\" or a saved alias from\n\"cdp use <target> --name app\". If a prefix is ambiguous, use more characters.\n\nCOORDINATE SYSTEM\n  shot captures the viewport at the device's native resolution.\n  The screenshot image size = CSS pixels × DPR (device pixel ratio).\n  For CDP Input events (clickxy, etc.) you need CSS pixels, not image pixels.\n\n    CSS pixels = screenshot image pixels / DPR\n\n  shot prints the DPR and an example conversion for the current page.\n  Typical Retina (DPR=2): CSS px ≈ screenshot px × 0.5\n  If your viewer rescales the image further, account for that scaling too.\n\nEVAL SAFETY NOTE\n  Avoid index-based DOM selection (querySelectorAll(...)[i]) across multiple\n  eval calls when the list can change between calls (e.g. after clicking\n  \"Ignore\" buttons on a feed — indices shift). Prefer stable selectors or\n  collect all data in a single eval.\n\nDAEMON IPC (for advanced use / scripting)\n  Each tab runs a persistent daemon at Unix socket in the runtime dir (see below).\n  Protocol: newline-delimited JSON (one JSON object per line, UTF-8).\n    Request:  {\"id\":<number>, \"cmd\":\"<command>\", \"args\":[\"arg1\",\"arg2\",...]}\n    Response: {\"id\":<number>, \"ok\":true,  \"result\":\"<string>\"}\n           or {\"id\":<number>, \"ok\":false, \"error\":\"<message>\"}\n  Commands mirror the CLI: perceive, status, summary, console, frame, snap, controls, eval, eval64, call, wait, keepalive, shot, diff-shot,\n  elshot, fullshot, scanshot, html, nav, net, mock, clock, throttle, click, jsclick, clickxy, hover, type, press,\n  scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,\n  viewport, emulate, upload, text, table, components, back, forward, reload, closetab, netlog, inject, cascade,\n  record, checkpoint, restore, record-actions, export-playwright, replay, report, qa, responsive-audit,\n  verify-click, evalraw, batch, flow, repeat, stop.\n  The socket disappears after 20 min of inactivity or when the tab closes."
+    },
+    {
+      "argv": [
+        "help"
+      ],
+      "exitCode": 0,
+      "id": "help",
+      "stderr": "",
+      "stdout": "cdp - lightweight Chrome DevTools Protocol CLI (no Puppeteer)\n\nUsage: cdp <command> [args]\n\n  help                              Show this command reference (same as --help)\n  list|tabs|ls [--format json]      List open pages (shows unique target prefixes)\n                                    JSON includes schema/pages/recommendation/nextSteps for agents.\n                                    Prefers non-blank pages when recommending the next target (* marker).\n  target --url URL|--title TEXT [--exact] [--format json]\n                                    Select a page target by URL/title substring (or exact match).\n                                    Ambiguous matches return candidate URLs/titles and follow-up commands.\n  tab-group list|create|add|remove|delete|show [--format json]\n                                    Named multi-tab groups stored outside the repo (runtime dir).\n                                    create <name> [targets...] | add/remove <name> <target> | show/delete <name>\n  broadcast <group> <cmd> [args...] [--format json] [--full-results]\n                                    Run one command against every member of a tab-group.\n                                    JSON bounds per-target previews; --full-results opts into complete payloads.\n  use <target> --name <alias>        Save a named target alias (also becomes current)\n                                    Accepts 9222/<target> to bind a CDP port to the alias.\n  attach --port N --target <id> --name <alias>  Explicitly save an alias with host/port metadata\n  current [--format json]            Show current alias plus saved aliases\n  forget <alias>                     Remove a saved alias\n  perceive <target> [flags] [--format json]  Full page perception with @ref indices + coordinates\n                                    --diff: show only changes since last perceive\n                                    --since-action: show changes caused by the last mutating command\n                                    --qa / --summary: compact QA summary (url/title/blank/console/next)\n                                    --max-diff-lines N: truncate long text output\n                                    --adaptive / --last auto: density+error aware text-row budget\n                                    --last N: keep last N text rows (explicit wins over adaptive)\n                                    JSON includes structured refs plus recommendation/nextSteps.\n                                    JSON with --diff/--since-action returns chrome-cdp-ex.perceive-diff.v1\n                                    --frame @fN / -F @fN: perceive inside an iframe; refs become @fN:M\n                                    -s <sel> / --selector: scope to CSS selector subtree\n                                    -i / --interactive: only show interactive elements\n                                    -d N / --depth N: limit tree depth\n                                    -C / --cursor-interactive: include non-ARIA clickable elements (@c refs)\n  snap  <target> [--full]           Accessibility tree snapshot (compact by default, --full for complete)\n  controls <target> [-s selector] [--filter text] [--limit N] [--compact] [--format json]\n                                    Bounded visible controls inventory for selector/debugging repair\n  eval  <target> <expr>             Evaluate JS expression\n                                    --b64 / -b <base64>: decode UTF-8 base64 first\n                                    (safe transport for CJK / shell-hostile expressions)\n                                    --raw: compact JSON for objects (skip pretty multi-line stringify)\n                                    --fire-and-forget: dispatch without awaiting returned promise\n  eval64 <target> <base64>          Shorthand for eval --b64; preserves multibyte characters\n  call  <target> <expr|fn>          Await expression/function result and print JSON when possible\n  elshot <target> <sel|@ref>        Element screenshot: captures element by CSS selector or @ref\n  shot  <target> [file|--annotate]  Viewport screenshot; --annotate (-a) overlays @ref labels\n  diff-shot <target> [--reset] [--threshold pct]  Compare current screenshot against last diff-shot baseline\n  html  <target> [selector]         Get HTML (full page or CSS selector)\n  nav   <target> <url> [--format json]  Navigate to URL and wait for load completion\n  mock  <target> [add|clear]        Mock matching network requests in this live tab\n                                    add <urlPattern> --status code --body text [--content-type type]\n  clock <target> [freeze|offset|reset]  Override Date/time in this live tab\n                                    freeze --at date-or-epoch-ms | offset --ms delta\n  throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  Emulate network conditions for this tab\n                                    custom --latency ms --download kbps --upload kbps\n  status <target> [--runtime]        Page state + new console/exception entries (primary debug entry point)\n                                    --runtime: include Performance.getMetrics counters\n  console <target> [--all|--errors|--clear] Console buffer (default: new entries only; --clear: reset console+exception baseline)\n  summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)\n  report <target> [--last N|--all] [--format json] [--qa|--summary] [--compact]\n                                    Session action timeline + evidence summary + JSONL log path\n                                    --qa/--summary returns a compact chrome-cdp-ex.qa-summary.v1 handoff\n  checkpoint <target> [--unsafe-full] [--format json]  Capture URL plus redacted cookies/storage; unsafe-full keeps restorable secrets\n  restore <target> --file <path> [--format json]  Restore a checkpoint artifact into the live page\n  restore <target> --json <json> [--format json]  Restore an inline checkpoint JSON artifact\n  record-actions <target>           Export action log + mock/clock/throttle environment as text or JSON\n  export-playwright <target> [--format json]  Export current workflow as a Playwright spec draft or JSON handoff\n  replay <target> --file <path> [--format json]  Replay environment controls + actions against the live page\n  replay <target> --json <json> [--format json]  Replay an inline record-actions JSON artifact\n  frame <target> [--format json]     List page frames with stable @fN refs (alias: frames)\n  overlay <target> [sel|@ref] [--format json]  Detect visible dialogs/overlays and target blockers\n  qa <target> [--desktop WxH] [--mobile WxH] [--format json]  Live UI smoke: page info, console health, screenshots, perception, assertions\n                                    Optional: --click <sel|@ref> --expect-text text --expect-request pattern\n  responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]\n                                    Built-in responsive visual audit (alias: visual-check).\n                                    Defaults to desktop 1440x900 + mobile 390x844.\n                                    Collects screenshot, overflow-x, scroll metrics, controls, blank/console signals.\n  verify-click <target> <sel|@ref> [--format json]  Click once and assert text/network/console outcomes\n                                    --expect-text text --expect-request pattern --expect-status code --no-console-errors\n  net   <target>                    Network performance entries\n  click   <target> <sel|@ref> [--format json] [--qa|--summary]  Click element by CSS selector or @ref\n                                    --js / -j: use HTMLElement.click() (JS fallback)\n                                    --qa/--summary: compact pass/fail QA receipt without full DOM dump\n  jsclick <target> <sel|@ref>       JS-only click: el.click() instead of CDP mouse events\n                                    Use when overlays or hit-testing block the realistic mouse path.\n  clickxy <target> <x> <y> [--format json]  Click at CSS pixel coordinates (see coordinate note below)\n  type    <target> <text> [--format json]  Type text at current focus via Input.insertText\n                                    Works in cross-origin iframes unlike eval-based approaches\n  press|key <target> <key> [--format json]  Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)\n  scroll  <target> <dir|x,y> [px] [--format json]  Scroll page (down/up/left/right or x,y offset; default 500px)\n  hover   <target> <sel|@ref>       Hover over element (triggers :hover, tooltips, dropdowns)\n  waitfor <target> <selector> [ms]  Wait for element (default 10s, max 5min)\n  waitfor <target> --gone <sel|@ref> [ms]  Wait for element to DISAPPEAR (streaming end)\n  waitfor <target> --text \"str\" [--scope sel] [ms]  Wait for text to appear on page\n  loadall <target> <selector> [ms]  Repeatedly click a \"load more\" button until it disappears\n                                    Optional interval in ms between clicks (default 1500)\n  wait    <target> <ms>             Delay inside cdp (also: cdp wait <ms> [target])\n  fill    <target> <sel|@ref> <txt> [--format json] Clear field and type text (for form filling)\n                                    --react: native value setter + input/change events\n  select  <target> <selector> <val> [--format json] Select an option in a <select> element by value\n  fullshot <target> [file]          Full-page screenshot (single image — may be hard to read)\n  scanshot <target>                 Segmented full-page capture (viewport-sized images, readable)\n  styles  <target> <selector> [--root auto|body|document|<sel>]\n                                    Get computed styles for element (filtered to meaningful props)\n                                    On no-match, error includes root/scope and an eval fallback\n  components <target> [--depth N] [@ref|selector] [--max-chars N] [--unsafe-full] [--format json]\n                                    React/Vue component tree; targeted props/state requires React fiber.\n                                    Props/state are bounded and redacted unless --unsafe-full is explicit.\n  cookies <target>                  List cookies for current page\n  cookieset <target> <cookie>       Set a cookie: \"name=value\" or \"name=value; domain=.example.com; secure\"\n  cookiedel <target> <name>         Delete a cookie by name\n  dialog  <target> [accept|dismiss] Show dialog history; set auto-accept (default) or auto-dismiss\n  viewport|resize <target> [WxH]    Show or set viewport size (e.g. 375x812, 1280x720)\n  emulate <target> [dark|light|no-preference|off|status]\n                                    Media feature emulation via CDP Emulation.setEmulatedMedia\n                                    color-scheme dark|light|no-preference\n                                    reduced-motion reduce|no-preference\n                                    off/reset clears overrides; JSON returns chrome-cdp-ex.emulate.v1\n  upload  <target> <selector> <paths> [--format json]  Upload file(s) to <input type=\"file\"> (comma-separated paths)\n  text    <target> [selector]       Clean visible text — optional CSS selector to scope\n                                    --root auto|body|document|default|<sel>: search root for selector resolution\n                                    On no-match, error includes root/scope and an eval fallback\n  table   <target> [selector]       Full table data extraction (tab-separated, no row limit)\n  back    <target>                  Navigate back in browser history\n  forward <target>                  Navigate forward in browser history\n  reload  <target>                  Reload current page and clear console/exception/navigation buffers\n  closetab <target>                 Close a browser tab\n  netlog  <target> [--clear]        Network request log (XHR/Fetch/Document with status + timing)\n  inject <target> <flag> [content]   Live CSS/JS injection with tracking and removal\n                                    --css \"<text>\"   Inject inline <style>\n                                    --css-file <url> Inject <link rel=\"stylesheet\">\n                                    --js-file <url>  Inject <script src> and wait for load\n                                    --remove [id]    Remove injected element(s) (all, or by id)\n  cascade <target> <sel|@ref> [prop] [--format json] CSS origin tracing — shows which rules apply, source file + line\n                                    Optional: filter to one property (e.g. \"background-color\"); JSON returns chrome-cdp-ex.cascade.v1\n  record <target> [ms]              Record a short timeline of DOM/console/network/navigation events\n  record <target> --action click @5 Record events around an action (click/press/fill/select/type/scroll/nav)\n  record <target> --until \"dom stable\"|\"network idle\"  Record until page quiets (max 30s)\n  evalraw <target> <method> [json]  Send a raw CDP command; returns JSON result\n                                    e.g. evalraw <t> \"DOM.getDocument\" '{}'\n  batch <target> <cmds> [--parallel] [--format json] Execute multiple commands in one call\n                                    --format json returns chrome-cdp-ex.batch.v1 failure handoff\n                                    Pipe syntax: 'fill @3 hello | fill @5 world | click @7'\n                                    JSON syntax: '[{\"cmd\":\"click\",\"args\":[\"@1\"]},{\"cmd\":\"perceive\",\"args\":[\"--diff\"]}]'\n                                    --parallel  Run read-only/extraction commands concurrently (mutating commands are rejected)\n                                    --plain     Human-readable per-step output (default: pretty JSON)\n                                    --compact   One line per step (head + first line of result)\n  flow  <target> \"<steps>\" [--format json]  Sequential runner. Steps separated by \";\".\n                                    Each step is a normal command (e.g. \"click @1\") or a wait alias:\n                                    \"wait dom stable\" / \"wait network idle\" — uses settle helper.\n                                    Assertions: \"assert selector <css>\", \"assert selector-missing <css>\", \"assert text <value>\".\n                                    Halts and exits non-zero on the first failing step; JSON preserves chrome-cdp-ex.flow.v1.\n                                    Example: flow A7BA \"click @1; wait dom stable; summary; console --errors\"\n  repeat <target> <N> <cmd> [args]  Run a command up to N times (cap 50). Fail-fast exits non-zero.\n                                    --continue / -c: keep going through errors and report tally.\n                                    --until-selector <css> | --until-selector-missing <css> | --until-text <text>\n                                    re-checks after each settled iteration; cap exhaustion exits non-zero.\n                                    Cannot wrap repeat/batch/stop (recursion / IPC corruption).\n                                    Can wrap flow for multi-step turn loops, e.g.\n                                    repeat A7BA 3 flow \"click @1; wait dom stable; text .log\"\n                                    Useful for advancing MUD dialogue (\"repeat 5 press space\"),\n                                    retry-style probes, or short keypress sequences. Re-perceive\n                                    between iterations if the DOM changes — refs are not auto-remapped.\n                                    Example: repeat A7BA 5 press c\n  doctor / ready [--format json]    One-call diagnostics: Node version, skill install path,\n                                    daemon socket state, fd limit, CDP_PORT/DevToolsActivePort reachability,\n                                    debuggable tab inventory, browser permission, Recommendation, and onboarding next steps.\n                                    Readiness: ready | usable-with-warnings | blocked.\n                                    Checks expose severity: blocking | warning | advisory | ok.\n                                    Headless CDP sessions treat unconfirmed permission as advisory, not a blocker.\n                                    No target required. Exits 1 if any check FAILs.\n  keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)\n  open  [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n                                    Open a new tab (default: about:blank)\n                                    JSON includes schema/target/approval/recommendation/nextSteps for agents.\n                                    --reuse-url reuses an existing tab matching the URL when unique.\n                                    --attach-timeout-ms 0 returns the target handoff without waiting.\n                                    --ready-timeout-ms bounds document.readyState waiting after attach.\n                                    --ready-selector also waits for a CSS selector before returning.\n                                    Note: each new tab triggers a fresh \"Allow debugging?\" prompt\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n                                    Launch an isolated debug profile (browser: edge|chrome|brave; default edge, port 9222).\n                                    Rejects an occupied listener before spawning; choose another --port.\n                                    --host HOST binds remote debugging address (default 127.0.0.1).\n                                    --headless [new|old], --no-sandbox, --disable-gpu help CI/container/headless runs.\n                                    --wait-ms N bounds the readiness probe before success.\n                                    Returns ready target prefix + next perceive command when a page is available.\n                                    JSON includes pid/profileDir/port/url/targetId/targetPrefix/readiness/cleanup.\n                                    Uses --remote-debugging-port + --user-data-dir; does not touch your main profile.\n                                    \"spawn\" is a short alias.\n  dismiss-modal <target>            Close common dialog/modal patterns safely (close button, then Escape) —\n                                    avoids triggering background shortcuts the way a bare \"press Space\" does.\n  stop  [target] [--format json]    Stop daemon(s) and report stopped targets, remaining sessions, or explicit no-op\n\nACTION FEEDBACK\n  click, verify-click, jsclick, clickxy, fill, type, press, select, scroll,\n  upload, inject, dismiss-modal, and viewport (when resizing) automatically wait for DOM to\n  settle and return compact action evidence plus a perceive diff.\n  qa returns a semantic QA report and includes action evidence when --click is used.\n  back, forward, and nav return action evidence plus a full perceive.\n  reload returns action evidence plus a bounded lightweight page observation.\n  Each mutating action also snapshots console/exception/network buffers before\n  dispatch and reports compact deltas such as console errors, failed requests,\n  or requests still pending after the action observation window.\n  If that post-action observation times out after the action was sent, the\n  command reports success with \"observation timed out\" instead of a pure timeout.\n  No need to manually run perceive or perceive --diff after these actions.\n  To re-check what the last action changed, run perceive --since-action.\n\n<target> is a unique targetId prefix from \"cdp list\" or a saved alias from\n\"cdp use <target> --name app\". If a prefix is ambiguous, use more characters.\n\nCOORDINATE SYSTEM\n  shot captures the viewport at the device's native resolution.\n  The screenshot image size = CSS pixels × DPR (device pixel ratio).\n  For CDP Input events (clickxy, etc.) you need CSS pixels, not image pixels.\n\n    CSS pixels = screenshot image pixels / DPR\n\n  shot prints the DPR and an example conversion for the current page.\n  Typical Retina (DPR=2): CSS px ≈ screenshot px × 0.5\n  If your viewer rescales the image further, account for that scaling too.\n\nEVAL SAFETY NOTE\n  Avoid index-based DOM selection (querySelectorAll(...)[i]) across multiple\n  eval calls when the list can change between calls (e.g. after clicking\n  \"Ignore\" buttons on a feed — indices shift). Prefer stable selectors or\n  collect all data in a single eval.\n\nDAEMON IPC (for advanced use / scripting)\n  Each tab runs a persistent daemon at Unix socket in the runtime dir (see below).\n  Protocol: newline-delimited JSON (one JSON object per line, UTF-8).\n    Request:  {\"id\":<number>, \"cmd\":\"<command>\", \"args\":[\"arg1\",\"arg2\",...]}\n    Response: {\"id\":<number>, \"ok\":true,  \"result\":\"<string>\"}\n           or {\"id\":<number>, \"ok\":false, \"error\":\"<message>\"}\n  Commands mirror the CLI: perceive, status, summary, console, frame, snap, controls, eval, eval64, call, wait, keepalive, shot, diff-shot,\n  elshot, fullshot, scanshot, html, nav, net, mock, clock, throttle, click, jsclick, clickxy, hover, type, press,\n  scroll, fill, select, waitfor, loadall, styles, cookies, cookieset, cookiedel, dialog,\n  viewport, emulate, upload, text, table, components, back, forward, reload, closetab, netlog, inject, cascade,\n  record, checkpoint, restore, record-actions, export-playwright, replay, report, qa, responsive-audit,\n  verify-click, evalraw, batch, flow, repeat, stop.\n  The socket disappears after 20 min of inactivity or when the tab closes."
+    },
+    {
+      "argv": [
+        "perceev"
+      ],
+      "exitCode": 1,
+      "id": "unknown-command-suggestion",
+      "stderr": "Error: Unknown command: perceev\nDid you mean: perceive?\nRecovery:\n  Kind: usage\n  Strategy: suggest-command\n  Run: cdp perceive\n  Reason: Did you mean: perceive? Run `cdp help perceive` for usage.\nNext: cdp perceive",
+      "stdout": ""
+    },
+    {
+      "argv": [
+        "list",
+        "--bogus"
+      ],
+      "exitCode": 1,
+      "id": "invalid-list-argument",
+      "stderr": "Error: list: unknown argument --bogus\nRecovery:\n  Kind: unknown\n  Strategy: run-doctor\n  Run: cdp doctor\n  Reason: The failure was not classified; check browser setup and available targets.\nNext: cdp doctor",
+      "stdout": ""
+    },
+    {
+      "argv": [
+        "list",
+        "--format",
+        "yaml"
+      ],
+      "exitCode": 1,
+      "id": "invalid-format",
+      "stderr": "Error: format must be text or json\nRecovery:\n  Kind: unknown\n  Strategy: run-doctor\n  Run: cdp doctor\n  Reason: The failure was not classified; check browser setup and available targets.\nNext: cdp doctor",
+      "stdout": ""
+    },
+    {
+      "argv": [
+        "perceive"
+      ],
+      "exitCode": 1,
+      "id": "missing-target",
+      "stderr": "Error: target ID required. Run \"cdp list\" first.\nRecovery:\n  Kind: target-resolution\n  Strategy: rediscover-target\n  Run: cdp list  # if empty: cdp open https://example.com\n  Then: cdp open https://example.com\n  Reason: The requested tab target could not be resolved from the current page list.\nNext: cdp list  # if empty: cdp open https://example.com",
+      "stdout": ""
+    }
+  ],
+  "commands": [
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "help",
+      "needsTarget": false,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "tabs",
+        "ls"
+      ],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "list",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "target",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "tabgroup"
+      ],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "tab-group",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "broadcast",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "full-perceive",
+      "mutates": true,
+      "name": "open",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "ready"
+      ],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "doctor",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "spawn"
+      ],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "spawn-debug-browser",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "attach",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "use",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "forget",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "current",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "stop",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "perceive",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "snapshot"
+      ],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "snap",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "controls",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "eval",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "eval64",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "call",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "wait",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "keepalive",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "screenshot"
+      ],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "shot",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "diffshot"
+      ],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "diff-shot",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "html",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "navigate"
+      ],
+      "feedbackPolicy": "full-perceive",
+      "mutates": true,
+      "name": "nav",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "network"
+      ],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "net",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "network-mock"
+      ],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "mock",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "time-travel"
+      ],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "clock",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "network-throttle"
+      ],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "throttle",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "status",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "console",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "summary",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "frames"
+      ],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "frame",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "overlays"
+      ],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "overlay",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "report",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "checkpoint",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "restore",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "recordactions"
+      ],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "record-actions",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "export-pw"
+      ],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "export-playwright",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "replay",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "elshot",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "qa-page"
+      ],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "qa",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "visual-check"
+      ],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "responsive-audit",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "verifyclick"
+      ],
+      "feedbackPolicy": "settle-diff",
+      "mutates": true,
+      "name": "verify-click",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "settle-diff",
+      "mutates": true,
+      "name": "click",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "settle-diff",
+      "mutates": true,
+      "name": "jsclick",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "settle-diff",
+      "mutates": true,
+      "name": "clickxy",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "settle-diff",
+      "mutates": true,
+      "name": "type",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "key"
+      ],
+      "feedbackPolicy": "settle-diff",
+      "mutates": true,
+      "name": "press",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "settle-diff",
+      "mutates": true,
+      "name": "scroll",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "hover",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "waitfor",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "loadall",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "settle-diff",
+      "mutates": true,
+      "name": "fill",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "settle-diff",
+      "mutates": true,
+      "name": "select",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "fullshot",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "scanshot",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "styles",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "components",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "cookies",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "cookieset",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "cookiedel",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "evalraw",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "batch",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "dialog",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "resize"
+      ],
+      "feedbackPolicy": "settle-diff",
+      "mutates": true,
+      "name": "viewport",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "emulate",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "state-change",
+      "mutates": true,
+      "name": "upload",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "text",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "table",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "full-perceive",
+      "mutates": true,
+      "name": "back",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "full-perceive",
+      "mutates": true,
+      "name": "forward",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "state-change",
+      "mutates": true,
+      "name": "reload",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "report-only",
+      "mutates": true,
+      "name": "closetab",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "netlog",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": "state-change",
+      "mutates": true,
+      "name": "inject",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "cascade",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "record",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "flow",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "feedbackPolicy": null,
+      "mutates": false,
+      "name": "repeat",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "dismissmodal"
+      ],
+      "feedbackPolicy": "settle-diff",
+      "mutates": true,
+      "name": "dismiss-modal",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    }
+  ],
+  "mcp": {
+    "invalidCases": [
+      {
+        "args": {
+          "selector": "@1",
+          "target": "fixture"
+        },
+        "error": "click requires confirm: true",
+        "id": "mutation-without-confirm",
+        "kind": "tool",
+        "tool": "click"
+      },
+      {
+        "args": {
+          "selector": "#app",
+          "target": "fixture"
+        },
+        "error": "components requires confirm: true",
+        "id": "sensitive-read-without-confirm",
+        "kind": "tool",
+        "tool": "components"
+      },
+      {
+        "args": {
+          "target": "fixture"
+        },
+        "error": "session_checkpoint requires confirm: true",
+        "id": "checkpoint-without-confirm",
+        "kind": "tool",
+        "tool": "session_checkpoint"
+      },
+      {
+        "args": {},
+        "error": "target is required",
+        "id": "missing-required-argument",
+        "kind": "tool",
+        "tool": "perceive"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "--name",
+            "saved"
+          ],
+          "command": "use"
+        },
+        "error": "run_command use requires confirm: true",
+        "id": "run-command-use-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "saved"
+          ],
+          "command": "forget"
+        },
+        "error": "run_command forget requires confirm: true",
+        "id": "run-command-forget-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "create",
+            "saved"
+          ],
+          "command": "tab-group"
+        },
+        "error": "run_command tab-group requires confirm: true",
+        "id": "run-command-tab-group-mutation-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            ".more"
+          ],
+          "command": "loadall"
+        },
+        "error": "run_command loadall requires confirm: true",
+        "id": "run-command-loadall-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "--action",
+            "click",
+            "@1"
+          ],
+          "command": "record"
+        },
+        "error": "run_command record requires confirm: true",
+        "id": "run-command-record-action-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "60000"
+          ],
+          "command": "keepalive"
+        },
+        "error": "run_command keepalive requires confirm: true",
+        "id": "run-command-keepalive-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "--clear"
+          ],
+          "command": "console"
+        },
+        "error": "run_command console requires confirm: true",
+        "id": "run-command-console-clear-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "--clear"
+          ],
+          "command": "netlog"
+        },
+        "error": "run_command netlog requires confirm: true",
+        "id": "run-command-netlog-clear-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "--reset"
+          ],
+          "command": "diff-shot"
+        },
+        "error": "run_command diff-shot requires confirm: true",
+        "id": "run-command-diff-shot-reset-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "/tmp/explicit.png"
+          ],
+          "command": "shot"
+        },
+        "error": "run_command shot requires confirm: true",
+        "id": "run-command-shot-path-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "/tmp/explicit-full.png"
+          ],
+          "command": "fullshot"
+        },
+        "error": "run_command fullshot requires confirm: true",
+        "id": "run-command-fullshot-path-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "path": "/tmp/explicit.png",
+          "target": "fixture"
+        },
+        "error": "screenshot path requires confirm: true",
+        "id": "screenshot-path-without-confirm",
+        "kind": "tool",
+        "tool": "screenshot"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture"
+          ],
+          "command": "rm"
+        },
+        "error": "run_command command not allowlisted: rm",
+        "id": "run-command-not-allowlisted",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "bad\narg"
+          ],
+          "command": "help"
+        },
+        "error": "run_command args cannot contain newlines",
+        "id": "run-command-newline",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {},
+        "error": "Unknown MCP tool: not_a_tool",
+        "id": "unknown-tool",
+        "kind": "tool",
+        "tool": "not_a_tool"
+      },
+      {
+        "error": "Unknown MCP resource URI: chrome-cdp-ex://unknown",
+        "id": "unknown-resource",
+        "kind": "resource",
+        "uri": "chrome-cdp-ex://unknown"
+      }
+    ],
+    "mappingCases": [
+      {
+        "args": {},
+        "command": [
+          "doctor",
+          "--format",
+          "json"
+        ],
+        "id": "doctor",
+        "tool": "doctor"
+      },
+      {
+        "args": {},
+        "command": [
+          "list",
+          "--format",
+          "json"
+        ],
+        "id": "list-tabs",
+        "tool": "list_tabs"
+      },
+      {
+        "args": {
+          "name": "fixture",
+          "target": "fixture-target"
+        },
+        "command": [
+          "use",
+          "--target",
+          "fixture-target",
+          "--name",
+          "fixture"
+        ],
+        "id": "open-attach-alias",
+        "tool": "open_or_attach"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "url": "https://example.test/"
+        },
+        "command": [
+          "open",
+          "https://example.test/",
+          "--format",
+          "json"
+        ],
+        "id": "open-new-tab",
+        "tool": "open_or_attach"
+      },
+      {
+        "args": {
+          "exact": true,
+          "url": "example.test"
+        },
+        "command": [
+          "target",
+          "--url",
+          "example.test",
+          "--exact",
+          "--format",
+          "json"
+        ],
+        "id": "select-target",
+        "tool": "select_target"
+      },
+      {
+        "args": {
+          "cursorInteractive": true,
+          "depth": 4,
+          "target": "fixture"
+        },
+        "command": [
+          "perceive",
+          "fixture",
+          "-d",
+          "4",
+          "-C",
+          "--adaptive",
+          "--format",
+          "json"
+        ],
+        "id": "perceive",
+        "tool": "perceive"
+      },
+      {
+        "args": {
+          "limit": 10,
+          "target": "fixture"
+        },
+        "command": [
+          "controls",
+          "fixture",
+          "--limit",
+          "10",
+          "--compact",
+          "--format",
+          "json"
+        ],
+        "id": "controls",
+        "tool": "controls"
+      },
+      {
+        "args": {
+          "selector": "@1",
+          "target": "fixture"
+        },
+        "command": [
+          "overlay",
+          "fixture",
+          "@1",
+          "--format",
+          "json"
+        ],
+        "id": "overlay",
+        "tool": "overlay"
+      },
+      {
+        "args": {
+          "annotate": true,
+          "target": "fixture"
+        },
+        "command": [
+          "shot",
+          "fixture",
+          "--annotate"
+        ],
+        "id": "screenshot",
+        "tool": "screenshot"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "selector": "@1",
+          "target": "fixture"
+        },
+        "command": [
+          "click",
+          "fixture",
+          "@1",
+          "--format",
+          "json"
+        ],
+        "id": "click",
+        "tool": "click"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "expectText": "Done",
+          "selector": "@1",
+          "target": "fixture"
+        },
+        "command": [
+          "verify-click",
+          "fixture",
+          "@1",
+          "--expect-text",
+          "Done",
+          "--format",
+          "json"
+        ],
+        "id": "verify-click",
+        "tool": "verify_click"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "target": "fixture"
+        },
+        "command": [
+          "dismiss-modal",
+          "fixture",
+          "--format",
+          "json"
+        ],
+        "id": "dismiss-modal",
+        "tool": "dismiss_modal"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "selector": "#name",
+          "target": "fixture",
+          "text": "Ada"
+        },
+        "command": [
+          "fill",
+          "fixture",
+          "#name",
+          "Ada",
+          "--format",
+          "json"
+        ],
+        "id": "fill",
+        "tool": "fill"
+      },
+      {
+        "args": {
+          "target": "fixture"
+        },
+        "command": [
+          "viewport",
+          "fixture"
+        ],
+        "id": "viewport-read",
+        "tool": "viewport"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "size": "1280x720",
+          "target": "fixture"
+        },
+        "command": [
+          "viewport",
+          "fixture",
+          "1280x720",
+          "--format",
+          "json"
+        ],
+        "id": "viewport-set",
+        "tool": "viewport"
+      },
+      {
+        "args": {
+          "desktop": "1280x720",
+          "target": "fixture"
+        },
+        "command": [
+          "qa",
+          "fixture",
+          "--desktop",
+          "1280x720",
+          "--format",
+          "json"
+        ],
+        "id": "qa-page",
+        "tool": "qa_page"
+      },
+      {
+        "args": {
+          "target": "fixture",
+          "viewports": [
+            "390x844",
+            "1280x720"
+          ]
+        },
+        "command": [
+          "responsive-audit",
+          "fixture",
+          "--viewport",
+          "390x844",
+          "--viewport",
+          "1280x720",
+          "--format",
+          "json"
+        ],
+        "id": "responsive-audit",
+        "tool": "responsive_audit"
+      },
+      {
+        "args": {
+          "last": 3,
+          "target": "fixture"
+        },
+        "command": [
+          "report",
+          "fixture",
+          "--last",
+          "3",
+          "--compact",
+          "--format",
+          "json"
+        ],
+        "id": "report",
+        "tool": "report"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "target": "fixture",
+          "url": "https://example.test/next"
+        },
+        "command": [
+          "nav",
+          "fixture",
+          "https://example.test/next",
+          "--format",
+          "json"
+        ],
+        "id": "navigate",
+        "tool": "navigate"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "key": "Enter",
+          "target": "fixture"
+        },
+        "command": [
+          "press",
+          "fixture",
+          "Enter",
+          "--format",
+          "json"
+        ],
+        "id": "press",
+        "tool": "press"
+      },
+      {
+        "args": {
+          "target": "fixture",
+          "text": "Ready",
+          "timeoutMs": 500
+        },
+        "command": [
+          "waitfor",
+          "fixture",
+          "--text",
+          "Ready",
+          "500"
+        ],
+        "id": "wait-for-text",
+        "tool": "wait_for"
+      },
+      {
+        "args": {
+          "anyOf": "Ready|Done",
+          "scope": "#app",
+          "target": "fixture",
+          "timeoutMs": 500
+        },
+        "command": [
+          "waitfor",
+          "fixture",
+          "--any-of",
+          "Ready|Done",
+          "--scope",
+          "#app",
+          "500"
+        ],
+        "id": "wait-for-any",
+        "tool": "wait_for"
+      },
+      {
+        "args": {
+          "selectorStable": "#app",
+          "stableMs": 250,
+          "target": "fixture",
+          "timeoutMs": 500
+        },
+        "command": [
+          "waitfor",
+          "fixture",
+          "--selector-stable",
+          "#app",
+          "250",
+          "500"
+        ],
+        "id": "wait-for-stable",
+        "tool": "wait_for"
+      },
+      {
+        "args": {
+          "property": "color",
+          "selector": "@1",
+          "target": "fixture"
+        },
+        "command": [
+          "cascade",
+          "fixture",
+          "@1",
+          "color",
+          "--format",
+          "json"
+        ],
+        "id": "cascade",
+        "tool": "cascade"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "selector": "#app",
+          "target": "fixture"
+        },
+        "command": [
+          "components",
+          "fixture",
+          "#app",
+          "--format",
+          "json"
+        ],
+        "id": "components",
+        "tool": "components"
+      },
+      {
+        "args": {
+          "browser": "edge",
+          "confirm": true,
+          "headless": true,
+          "port": 9222
+        },
+        "command": [
+          "spawn-debug-browser",
+          "edge",
+          "--port",
+          "9222",
+          "--headless"
+        ],
+        "id": "spawn-debug-browser",
+        "tool": "spawn_debug_browser"
+      },
+      {
+        "args": {
+          "durationMs": 250,
+          "target": "fixture"
+        },
+        "command": [
+          "record",
+          "fixture",
+          "250"
+        ],
+        "id": "record-snapshot",
+        "tool": "record_snapshot"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "target": "fixture"
+        },
+        "command": [
+          "checkpoint",
+          "fixture",
+          "--format",
+          "json"
+        ],
+        "id": "session-checkpoint",
+        "tool": "session_checkpoint"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "target": "fixture",
+          "unsafeFull": true
+        },
+        "command": [
+          "checkpoint",
+          "fixture",
+          "--unsafe-full",
+          "--format",
+          "json"
+        ],
+        "id": "session-checkpoint-unsafe",
+        "tool": "session_checkpoint"
+      },
+      {
+        "args": {
+          "args": [],
+          "command": "help"
+        },
+        "command": [
+          "help"
+        ],
+        "id": "run-command-read",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "@1"
+          ],
+          "command": "click",
+          "confirm": true
+        },
+        "command": [
+          "click",
+          "fixture",
+          "@1"
+        ],
+        "id": "run-command-mutation",
+        "tool": "run_command"
+      }
+    ],
+    "protocolVersion": "2024-11-05",
+    "resourceMappings": [
+      {
+        "command": [
+          "doctor",
+          "--format",
+          "json"
+        ],
+        "uri": "chrome-cdp-ex://doctor/status"
+      },
+      {
+        "command": [
+          "report",
+          "fixture",
+          "--compact",
+          "--format",
+          "json"
+        ],
+        "uri": "chrome-cdp-ex://session/fixture/report"
+      },
+      {
+        "command": [
+          "shot",
+          "fixture"
+        ],
+        "uri": "chrome-cdp-ex://session/fixture/screenshot/latest"
+      }
+    ],
+    "resourceTemplates": [
+      {
+        "description": "Structured doctor readiness model (JSON).",
+        "mimeType": "application/json",
+        "name": "doctor-status",
+        "uriTemplate": "chrome-cdp-ex://doctor/status"
+      },
+      {
+        "description": "Compact session report for a target.",
+        "mimeType": "application/json",
+        "name": "session-report",
+        "uriTemplate": "chrome-cdp-ex://session/{target}/report"
+      },
+      {
+        "description": "Capture a fresh viewport screenshot path/result for a target.",
+        "mimeType": "text/plain",
+        "name": "session-screenshot-latest",
+        "uriTemplate": "chrome-cdp-ex://session/{target}/screenshot/latest"
+      }
+    ],
+    "resources": [
+      {
+        "description": "Structured doctor readiness model (JSON).",
+        "mimeType": "application/json",
+        "name": "doctor-status",
+        "uri": "chrome-cdp-ex://doctor/status"
+      }
+    ],
+    "runCommandAllowlist": [
+      "attach",
+      "back",
+      "broadcast",
+      "cascade",
+      "checkpoint",
+      "click",
+      "clickxy",
+      "clock",
+      "closetab",
+      "components",
+      "console",
+      "controls",
+      "cookies",
+      "current",
+      "dialog",
+      "diff-shot",
+      "diffshot",
+      "dismiss-modal",
+      "doctor",
+      "elshot",
+      "emulate",
+      "export-playwright",
+      "fill",
+      "forget",
+      "forward",
+      "frame",
+      "frames",
+      "fullshot",
+      "help",
+      "hover",
+      "html",
+      "inject",
+      "jsclick",
+      "keepalive",
+      "key",
+      "list",
+      "loadall",
+      "ls",
+      "mock",
+      "nav",
+      "navigate",
+      "net",
+      "netlog",
+      "open",
+      "overlay",
+      "perceive",
+      "press",
+      "qa",
+      "ready",
+      "record",
+      "record-actions",
+      "reload",
+      "report",
+      "resize",
+      "responsive-audit",
+      "restore",
+      "scanshot",
+      "screenshot",
+      "scroll",
+      "select",
+      "shot",
+      "snap",
+      "snapshot",
+      "spawn",
+      "spawn-debug-browser",
+      "status",
+      "stop",
+      "styles",
+      "summary",
+      "tab-group",
+      "table",
+      "tabs",
+      "target",
+      "text",
+      "throttle",
+      "type",
+      "upload",
+      "use",
+      "verify-click",
+      "viewport",
+      "visual-check",
+      "wait",
+      "waitfor"
+    ],
+    "runCommandMutating": [
+      "attach",
+      "back",
+      "broadcast",
+      "checkpoint",
+      "click",
+      "clickxy",
+      "clock",
+      "closetab",
+      "components",
+      "cookies",
+      "dialog",
+      "dismiss-modal",
+      "emulate",
+      "fill",
+      "forget",
+      "forward",
+      "hover",
+      "inject",
+      "jsclick",
+      "keepalive",
+      "key",
+      "loadall",
+      "mock",
+      "nav",
+      "navigate",
+      "open",
+      "press",
+      "qa",
+      "reload",
+      "resize",
+      "responsive-audit",
+      "restore",
+      "scroll",
+      "select",
+      "spawn",
+      "spawn-debug-browser",
+      "stop",
+      "throttle",
+      "type",
+      "upload",
+      "use",
+      "verify-click",
+      "viewport",
+      "visual-check"
+    ],
+    "serverVersion": "2.15.0",
+    "tools": [
+      {
+        "description": "Run chrome-cdp-ex readiness diagnostics and return structured setup guidance.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "name": "doctor"
+      },
+      {
+        "description": "List debuggable browser tabs and named target aliases.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "name": "list_tabs"
+      },
+      {
+        "description": "Open a URL in a debuggable tab, or register a named alias for an existing target.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "description": "Required when opening a new tab because this mutates browser state.",
+              "type": "boolean"
+            },
+            "name": {
+              "description": "Optional local alias name for later tool calls.",
+              "type": "string"
+            },
+            "port": {
+              "description": "CDP port for the target or browser session.",
+              "type": "string"
+            },
+            "reuseUrl": {
+              "description": "Reuse an existing tab matching the URL when unique.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Existing CDP target id or prefix to alias.",
+              "type": "string"
+            },
+            "url": {
+              "description": "HTTP(S) URL to open. Omit when only attaching an alias.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "name": "open_or_attach"
+      },
+      {
+        "description": "Select a debuggable page target by URL and/or title substring (or exact match).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "exact": {
+              "description": "Require exact URL/title match.",
+              "type": "boolean"
+            },
+            "title": {
+              "description": "Page title or title substring to match.",
+              "type": "string"
+            },
+            "url": {
+              "description": "URL or URL substring to match.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "name": "select_target"
+      },
+      {
+        "description": "Capture structured page perception with refs, layout, and console health.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "adaptive": {
+              "description": "Use density/error-aware text-row budgeting. Defaults to true.",
+              "type": "boolean"
+            },
+            "cursorInteractive": {
+              "description": "Include visible clickable controls and @c refs.",
+              "type": "boolean"
+            },
+            "depth": {
+              "description": "Tree depth limit.",
+              "maximum": 20,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "last": {
+              "description": "Explicit text-row budget; overrides adaptive mode.",
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "maxDiffLines": {
+              "description": "Truncate long text previews in QA mode.",
+              "maximum": 500,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "qa": {
+              "description": "Return a compact QA summary instead of full perception.",
+              "type": "boolean"
+            },
+            "selector": {
+              "description": "Optional CSS selector scope.",
+              "type": "string"
+            },
+            "sinceAction": {
+              "description": "Return the causal diff since the last mutating action.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "perceive"
+      },
+      {
+        "description": "Return a compact list of visible controls for low-token target discovery.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "compact": {
+              "description": "Return the bounded role/label/selector/rect model. Defaults to true.",
+              "type": "boolean"
+            },
+            "filter": {
+              "description": "Optional visible text/name filter.",
+              "type": "string"
+            },
+            "limit": {
+              "description": "Maximum controls to return.",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "selector": {
+              "description": "Optional CSS selector scope.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "controls"
+      },
+      {
+        "description": "Detect dialogs, overlays, and hit-test blockers for the page or a target point.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "selector": {
+              "description": "Optional CSS selector, @ref, or @c ref to test for coverage.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "overlay"
+      },
+      {
+        "description": "Capture a viewport screenshot for a target.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "annotate": {
+              "description": "Overlay @ref boxes on the screenshot.",
+              "type": "boolean"
+            },
+            "confirm": {
+              "description": "Required when path selects an explicit filesystem destination.",
+              "type": "boolean"
+            },
+            "path": {
+              "description": "Optional output path.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "screenshot"
+      },
+      {
+        "description": "Click a selector or @ref and return action evidence. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "js": {
+              "description": "Use HTMLElement.click() fallback instead of CDP mouse events.",
+              "type": "boolean"
+            },
+            "qa": {
+              "description": "Return a compact QA summary instead of full action evidence.",
+              "type": "boolean"
+            },
+            "selector": {
+              "description": "CSS selector, @ref, or @c ref.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "selector",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "click"
+      },
+      {
+        "description": "Click once and assert expected text, network request/status, and console health. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "evidence": {
+              "description": "Text evidence detail level.",
+              "enum": [
+                "concise",
+                "full"
+              ],
+              "type": "string"
+            },
+            "expectRequest": {
+              "description": "Expected network request, e.g. POST /api/save.",
+              "type": "string"
+            },
+            "expectStatus": {
+              "description": "Expected HTTP status for the matched request.",
+              "maximum": 599,
+              "minimum": 100,
+              "type": "integer"
+            },
+            "expectText": {
+              "description": "Expected text after the click.",
+              "type": "string"
+            },
+            "noConsoleErrors": {
+              "description": "Fail if action console/exception errors appear.",
+              "type": "boolean"
+            },
+            "selector": {
+              "description": "CSS selector, @ref, or @c ref.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "selector",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "verify_click"
+      },
+      {
+        "description": "Close common dialogs/modals safely and return action evidence. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "dismiss_modal"
+      },
+      {
+        "description": "Fill a field by selector or @ref and return action evidence. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "react": {
+              "description": "Use native value setter plus input/change events.",
+              "type": "boolean"
+            },
+            "selector": {
+              "description": "CSS selector or @ref.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            },
+            "text": {
+              "description": "Text to enter. Sensitive values are redacted by cdp action artifacts.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "selector",
+            "target",
+            "text"
+          ],
+          "type": "object"
+        },
+        "name": "fill"
+      },
+      {
+        "description": "Read or set viewport size. Setting size requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "description": "Required when size is provided because this mutates viewport state.",
+              "type": "boolean"
+            },
+            "size": {
+              "description": "Optional viewport size, for example 1440x900.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "viewport"
+      },
+      {
+        "description": "Run page, console, screenshot, and optional semantic interaction QA.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "click": {
+              "description": "Optional selector/ref to click as part of QA. Requires confirm: true.",
+              "type": "string"
+            },
+            "confirm": {
+              "description": "Required when click is provided because this mutates browser state.",
+              "type": "boolean"
+            },
+            "desktop": {
+              "description": "Desktop viewport size, for example 1440x900.",
+              "type": "string"
+            },
+            "expectRequest": {
+              "description": "Expected network request, e.g. POST /api/save.",
+              "type": "string"
+            },
+            "expectStatus": {
+              "description": "Expected HTTP status for the matched request.",
+              "maximum": 599,
+              "minimum": 100,
+              "type": "integer"
+            },
+            "expectText": {
+              "description": "Expected text after the optional action.",
+              "type": "string"
+            },
+            "mobile": {
+              "description": "Mobile viewport size, for example 390x844.",
+              "type": "string"
+            },
+            "noConsoleErrors": {
+              "description": "Fail the QA report if action console/exception errors appear.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "qa_page"
+      },
+      {
+        "description": "Run a bounded multi-viewport responsive visual audit with overflow/console/control signals.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "maxControls": {
+              "description": "Max visible controls sampled per viewport.",
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "outDir": {
+              "description": "Optional screenshot output directory outside the repo.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            },
+            "viewports": {
+              "description": "Optional list of WxH viewports. Defaults to desktop + mobile.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "responsive_audit"
+      },
+      {
+        "description": "Return session action timeline, artifacts, and recovery next steps.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "description": "Include the full action timeline. Can be expensive.",
+              "type": "boolean"
+            },
+            "compact": {
+              "description": "Return compact report JSON. Defaults to true unless all is requested.",
+              "type": "boolean"
+            },
+            "last": {
+              "description": "Latest action count to include.",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "qa": {
+              "description": "Return a compact QA summary instead of the full report.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "report"
+      },
+      {
+        "description": "Navigate a target to a URL and wait for load. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            },
+            "url": {
+              "description": "HTTP(S) URL to open.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "target",
+            "url"
+          ],
+          "type": "object"
+        },
+        "name": "navigate"
+      },
+      {
+        "description": "Send a key press to the page. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "key": {
+              "description": "Key name, for example Enter, Escape, Tab.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "key",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "press"
+      },
+      {
+        "description": "Wait for text, selector stability, or other waitfor conditions.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "anyOf": {
+              "description": "Pipe-delimited alternatives, e.g. win|lose|escape.",
+              "type": "string"
+            },
+            "scope": {
+              "description": "Optional CSS scope selector.",
+              "type": "string"
+            },
+            "selectorStable": {
+              "description": "CSS selector that must remain stable.",
+              "type": "string"
+            },
+            "stableMs": {
+              "description": "Stability window ms for selectorStable.",
+              "maximum": 120000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            },
+            "text": {
+              "description": "Wait until this text appears.",
+              "type": "string"
+            },
+            "timeoutMs": {
+              "description": "Overall timeout ms.",
+              "maximum": 300000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "wait_for"
+      },
+      {
+        "description": "Trace a computed CSS property back to the winning selector and source.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "property": {
+              "description": "CSS property to trace. Defaults to color when omitted by CLI behavior; prefer an explicit property.",
+              "type": "string"
+            },
+            "selector": {
+              "description": "CSS selector, @ref, or @c ref.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "selector",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "cascade"
+      },
+      {
+        "description": "Inspect React/Vue component tree hooks when available for a selector/@ref. Requires confirm: true because props/state can contain sensitive data.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge sensitive props/state access.",
+              "type": "boolean"
+            },
+            "selector": {
+              "description": "Optional CSS selector, @ref, or component cursor.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "components"
+      },
+      {
+        "description": "Launch an isolated debug browser profile. Requires confirm: true and user consent.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "browser": {
+              "description": "Browser id: edge, chrome, chromium, brave, vivaldi.",
+              "type": "string"
+            },
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge launching a browser.",
+              "type": "boolean"
+            },
+            "headless": {
+              "description": "Launch headless (CI/containers).",
+              "type": "boolean"
+            },
+            "noSandbox": {
+              "description": "Pass --no-sandbox (Linux CI).",
+              "type": "boolean"
+            },
+            "port": {
+              "description": "Remote debugging port.",
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "url": {
+              "description": "Optional initial URL.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm"
+          ],
+          "type": "object"
+        },
+        "name": "spawn_debug_browser"
+      },
+      {
+        "description": "Record a short temporal timeline of DOM/network/console activity.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "durationMs": {
+              "description": "Recording window in ms.",
+              "maximum": 120000,
+              "minimum": 100,
+              "type": "integer"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "record_snapshot"
+      },
+      {
+        "description": "Capture a redacted session checkpoint for handoff/restore.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true because checkpoints read session storage and cookies.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            },
+            "unsafeFull": {
+              "description": "Include restorable secrets. Explicit opt-in only.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "confirm",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "session_checkpoint"
+      },
+      {
+        "description": "Escape hatch: run an allowlisted chrome-cdp-ex CLI command. Mutating commands require confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "args": {
+              "description": "Positional/flag args after the command name.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "command": {
+              "description": "Allowlisted CLI command name. One of: help, doctor, ready, list, tabs, ls, target, open, use, current, forget, perceive, controls, overlay, snap, snapshot, summary, status, console, shot, screenshot, elshot, fullshot, scanshot, diff-shot, diffshot, click, verify-click, jsclick, clickxy, type, press, key, scroll, hover, fill, select, upload, dialog, dismiss-modal, nav, navigate, back, forward, reload, viewport, resize, emulate, wait, waitfor, loadall, cascade, components, frame, frames, text, table, html, styles, net, netlog, cookies, qa, responsive-audit, visual-check, report, record, checkpoint, restore, record-actions, export-playwright, tab-group, broadcast, spawn-debug-browser, spawn, attach, stop, closetab, keepalive, mock, clock, throttle, inject",
+              "type": "string"
+            },
+            "confirm": {
+              "description": "Required when the command mutates state, is sensitive, raw, composite, or writes to a caller-selected destination.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        },
+        "name": "run_command"
+      }
+    ]
+  },
+  "package": {
+    "bin": {
+      "chrome-cdp": "bin/chrome-cdp"
+    },
+    "engines": null,
+    "files": [
+      "CHANGELOG.md",
+      "README.md",
+      "INTEGRATIONS.md",
+      "bin/",
+      ".claude-plugin/",
+      "docs/integrations/",
+      "docs/schemas/",
+      "docs/architecture/runtime-v3.md",
+      "docs/adr/0001-runtime-v3-contract-first-strangler.md",
+      "docs/contracts/",
+      "docs/examples/killer-path.md",
+      "docs/examples/codex-killer-path.md",
+      "docs/benchmarks/host-validation.v1.json",
+      "docs/benchmarks/measured-baselines.example.json",
+      "docs/reference.md",
+      "docs/browser-use-mapping.md",
+      "docs/self-improvement-loop.md",
+      "docs/strategy/agent-browser-vision.md",
+      "experiment/codex-killer-path-demo-poster.png",
+      "experiment/codex-killer-path-demo.html",
+      "experiment/codex-killer-path-demo.mp4",
+      "scripts/setup.mjs",
+      "scripts/check-host-validation.mjs",
+      "scripts/check-release-package.mjs",
+      "scripts/check-public-contracts.mjs",
+      "skills/"
+    ],
+    "name": "pi-chrome-cdp",
+    "requiredReleaseEntries": [
+      "package/.claude-plugin/plugin.json",
+      "package/INTEGRATIONS.md",
+      "package/README.md",
+      "package/bin/chrome-cdp",
+      "package/docs/adr/0001-runtime-v3-contract-first-strangler.md",
+      "package/docs/architecture/runtime-v3.md",
+      "package/docs/benchmarks/host-validation.v1.json",
+      "package/docs/contracts/README.md",
+      "package/docs/contracts/v2.15.0/package-entries.v1.json",
+      "package/docs/contracts/v2.15.0/public-contracts.v1.json",
+      "package/docs/contracts/v2.15.0/runtime-dispatch.v1.json",
+      "package/docs/examples/codex-killer-path.md",
+      "package/experiment/codex-killer-path-demo-poster.png",
+      "package/experiment/codex-killer-path-demo.html",
+      "package/experiment/codex-killer-path-demo.mp4",
+      "package/package.json",
+      "package/scripts/check-host-validation.mjs",
+      "package/scripts/check-public-contracts.mjs",
+      "package/scripts/check-release-package.mjs",
+      "package/scripts/setup.mjs",
+      "package/skills/chrome-cdp-ex/SKILL.md",
+      "package/skills/chrome-cdp-ex/scripts/cdp.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/action-evidence.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/action-receipt-surfaces.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/browser-resources.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/browser-supervisor.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/cdp-domains.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/command-application.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/command-dispatch.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/command-surface.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/daemon-action-handlers.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/daemon-read-handlers.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/page-health.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/perception-model.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/responsive-audit.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/screenshot-health.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/session-report.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/target-binding.mjs",
+      "package/skills/chrome-cdp-ex/scripts/mcp-server.mjs"
+    ],
+    "version": "2.15.0"
+  },
+  "productVersion": "2.15.0",
+  "schema": "chrome-cdp-ex.public-contracts.v1",
+  "schemas": [
+    {
+      "document": {
+        "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/action-receipt.v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "properties": {
+          "blockingSignals": {
+            "type": "array"
+          },
+          "delta": {
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "dispatch": {
+            "type": "object"
+          },
+          "nextSteps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "outcome": {
+            "type": [
+              "object",
+              "string"
+            ]
+          },
+          "recoveryHint": {
+            "type": [
+              "null",
+              "object",
+              "string"
+            ]
+          },
+          "schema": {
+            "const": "chrome-cdp-ex.action-receipt.v1"
+          },
+          "settlement": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "schema"
+        ],
+        "title": "chrome-cdp-ex.action-receipt.v1",
+        "type": "object"
+      },
+      "id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/action-receipt.v1.json",
+      "path": "docs/schemas/action-receipt.v1.json"
+    },
+    {
+      "document": {
+        "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/doctor.v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "properties": {
+          "checks": {
+            "type": "array"
+          },
+          "nextSteps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "operationalReady": {
+            "type": "boolean"
+          },
+          "provenCommand": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "readiness": {
+            "enum": [
+              "blocked",
+              "ready",
+              "usable-with-warnings"
+            ],
+            "type": "string"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "recommendation": {
+            "type": "object"
+          },
+          "routeRecommendation": {
+            "type": "object"
+          },
+          "schema": {
+            "const": "chrome-cdp-ex.doctor.v1"
+          },
+          "wizard": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "readiness",
+          "schema"
+        ],
+        "title": "chrome-cdp-ex.doctor.v1",
+        "type": "object"
+      },
+      "id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/doctor.v1.json",
+      "path": "docs/schemas/doctor.v1.json"
+    },
+    {
+      "document": {
+        "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/route-recommendation.v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "properties": {
+          "claude-code-skill": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "codex": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "cursor": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "hermes-shell": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "openclaw": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "pi": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "schema": {
+            "const": "chrome-cdp-ex.route-recommendation.v1"
+          }
+        },
+        "required": [
+          "schema"
+        ],
+        "title": "chrome-cdp-ex.route-recommendation.v1",
+        "type": "object"
+      },
+      "id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/route-recommendation.v1.json",
+      "path": "docs/schemas/route-recommendation.v1.json"
+    }
+  ]
+}
