@@ -45,9 +45,10 @@ exact-method CDP domains now replace duplicated authority without removing the
   preserving 0600 artifact writes and explicit-path confirmation. QA filesystem
   commands `qa`/`qa-page` and `responsive-audit`/`visual-check` now use that
   boundary too, require MCP confirmation before viewport/file effects, and keep
-  every screenshot private and task-contained. The remaining 15 catalog commands are explicitly
-  retained on the characterized legacy route until parity permits migration.
-  Add immutable public browser resources, private
+  every screenshot private and task-contained. All 68 target commands now use
+  the catalog-derived application dispatcher; the 13 targetless commands remain
+  explicit CLI adapters and only five daemon protocol groups remain outside the
+  application surface. Add immutable public browser resources, private
   handles, a shared-key BrowserSupervisor with bounded stale recovery, extracted
   daemon transport, and direct in-process MCP routing with no CLI subprocess
   fallback.
@@ -73,6 +74,11 @@ exact-method CDP domains now replace duplicated authority without removing the
   after all seven capability checks passed. The manifest explicitly marks that
   evidence as not current-tree proof.
 * Add a safe 60-second Codex demo, poster, and machine-readable evidence boundary. The fixture uses no personal tabs, cookies, credentials, or authenticated browser state.
+* Add source-bound Runtime v3 validation on disposable Chrome for Testing and
+  loopback pages. The current-tree proof covers 69 live commands, 56 direct-MCP
+  extraction parities, supervisor stale-target recovery, five typed-domain/raw
+  denials, and nine fail-closed application/signal injections with complete
+  cleanup.
 
 ### Agent output and target evidence
 
@@ -83,7 +89,7 @@ exact-method CDP domains now replace duplicated authority without removing the
 
 * Ship the host checker, manifest, Codex Killer Path, demo media, plugin manifest, CLI shim, setup script, skill contract, CLI/MCP runtimes, and direct runtime libraries in the official tarball.
 * Add an executable release-package checker that inspects the actual tarball for
-  43 release-critical entries and verifies the exact 69-entry inventory plus
+  44 release-critical entries and verifies the exact 70-entry inventory plus
   every repository-relative README link; the release workflow runs tests, lint,
   docs, host validation, public contracts, and this artifact check before
   calculating the checksum and attaching the package.

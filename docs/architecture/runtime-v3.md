@@ -1,6 +1,7 @@
 # Browser Runtime v3 Architecture
 
-Status: Runtime v3 application dispatch is implemented through Phase 7 Task 5.
+Status: Runtime v3 application dispatch and current-tree all-route evidence are
+implemented through Phase 7 Task 6.
 The final all-route evidence and release-candidate gates remain pending.
 
 Runtime v3 is a compatibility-preserving refactor of chrome-cdp-ex, not a new
@@ -153,8 +154,9 @@ across all target-command families and representative targetless adapters.
 5. Phase 6 gives command metadata one owner and converges generated CLI, MCP,
    docs, permissions, and typed CDP domains.
 6. Phase 7 moved all 68 target commands behind the catalog-derived application
-   dispatcher and removed only superseded dispatch paths. Its remaining work is
-   the all-route evidence and full Runtime v3 release-candidate gate.
+   dispatcher, removed only superseded dispatch paths, and accepted source-bound
+   disposable all-route/failure evidence. Its remaining work is the full Runtime
+   v3 release-candidate gate.
 
 At every step, the compatibility facade stays executable. A failed fixture,
 live scenario, package gate, or independent review blocks removal of the old
