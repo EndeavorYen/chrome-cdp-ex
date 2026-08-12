@@ -12,6 +12,11 @@ import { createDaemonActionHandlers } from '../skills/chrome-cdp-ex/scripts/lib/
 import { createDaemonReadHandlers } from '../skills/chrome-cdp-ex/scripts/lib/daemon-read-handlers.mjs';
 import { __test__ as cdpTest } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
 
+const ACTION_COMMANDS = Object.freeze([
+  'clickxy', 'dismiss-modal', 'fill', 'hover', 'jsclick',
+  'press', 'scroll', 'select', 'type', 'verify-click',
+]);
+
 function spec(overrides = {}) {
   return {
     name: 'perceive',
@@ -708,8 +713,8 @@ describe('Phase 4 daemon dispatch seam', () => {
     });
     expect(preflight.registry.list()).toHaveLength(81);
     expect(Object.keys(preflight.routeOwners)).toHaveLength(81);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(28);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(53);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(33);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(48);
     expect(Object.isFrozen(preflight)).toBe(true);
     expect(Object.isFrozen(preflight.handlerBuilders)).toBe(true);
     expect(Object.values(builders).every(builder => builder.mock.calls.length === 0)).toBe(true);
@@ -814,6 +819,19 @@ describe('Phase 4 daemon dispatch seam', () => {
     expect(context.handlers.click).not.toHaveBeenCalled();
   });
 
+  it.each(ACTION_COMMANDS)('binds %s to mutation authorization and a live target', command => {
+    const mutates = command !== 'hover';
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command, policy: 'mutation', mutates, targetBound: true,
+    })).toEqual({ allowed: true, code: 'legacy-daemon' });
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command, policy: 'mutation', mutates, targetBound: false,
+    })).toEqual({ allowed: false, code: 'target-not-bound' });
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command, policy: 'standard', mutates, targetBound: true,
+    })).toEqual({ allowed: false, code: 'policy-denied' });
+  });
+
   it('supports the exact request shape used by sequential batch and flow recursion', async () => {
     const context = routeFixture();
     const dispatcher = createCommandDispatcher({
@@ -847,10 +865,11 @@ describe('Phase 4 daemon dispatch seam', () => {
       'snap', 'controls', 'frame', 'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
       'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies',
       'fill', 'hover', 'press', 'scroll', 'select',
+      'clickxy', 'dismiss-modal', 'jsclick', 'type', 'verify-click',
     ]);
     const preflight = cdpTest.preflightDaemonApplication();
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(28);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(53);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(33);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(48);
     const readHandlers = createDaemonReadHandlers({
       cascade: async args => `cascade:${args.join('|')}`,
       checkpoint: async args => `checkpoint:${args.join('|')}`,
@@ -881,7 +900,7 @@ describe('Phase 4 daemon dispatch seam', () => {
       }),
       ...readHandlers,
       ...createDaemonActionHandlers(Object.fromEntries(
-        ['fill', 'hover', 'press', 'scroll', 'select'].map(name => [name, async args => commandResult(`${name}:${args.join('|')}`, name === 'hover' ? null : { kind: 'action-receipt' })]),
+        ACTION_COMMANDS.map(name => [name, async args => commandResult(`${name}:${args.join('|')}`, name === 'hover' ? null : { kind: 'action-receipt' })]),
       )),
     };
     const dispatcher = createCommandDispatcher({
@@ -947,7 +966,7 @@ describe('Phase 4 daemon dispatch seam', () => {
     await expect(cdpTest.executePhase4DaemonRoute({
       cmd: 'cookies', args: [], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'cookies:' });
-    for (const name of ['fill', 'hover', 'press', 'scroll', 'select']) {
+    for (const name of ACTION_COMMANDS) {
       await expect(cdpTest.executePhase4DaemonRoute({
         cmd: name, args: ['fixture'], targetBound: true,
       }, dispatcher)).resolves.toEqual({ handled: true, result: `${name}:fixture` });
@@ -1006,7 +1025,7 @@ describe('Phase 4 daemon dispatch seam', () => {
   });
 
   it('binds each production action builder to exactly its named capability', async () => {
-    const capabilities = Object.fromEntries(['fill', 'hover', 'press', 'scroll', 'select'].map(name => [
+    const capabilities = Object.fromEntries(ACTION_COMMANDS.map(name => [
       name, vi.fn(async () => commandResult(`${name}-only`, name === 'hover' ? null : { kind: 'action-receipt' })),
     ]));
     const builders = cdpTest.preflightDaemonApplication().handlerBuilders;

@@ -19,8 +19,11 @@ const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const cdpPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
 const pagePath = resolve(rootDir, 'scripts/smoke-page.html');
 const EXPECTED_TITLE = 'chrome-cdp-ex long-session smoke';
-const ACTION_PARITY_COMMANDS = new Set(['press', 'fill', 'hover', 'scroll', 'select']);
-const ACTION_STATE_EXPRESSION = "({title:document.title,modalHidden:document.querySelector('#motd')?.hidden===true,shortcut:document.querySelector('#shortcut-status')?.textContent,inputValue:document.querySelector('#cmd')?.value,selectValue:document.querySelector('#phase7-select')?.value,scrollY:Math.round(window.scrollY)})";
+const ACTION_PARITY_COMMANDS = new Set([
+  'clickxy', 'dismiss-modal', 'fill', 'hover', 'jsclick',
+  'press', 'scroll', 'select', 'type', 'verify-click',
+]);
+const ACTION_STATE_EXPRESSION = "({title:document.title,modalHidden:document.querySelector('#motd')?.hidden===true,shortcut:document.querySelector('#shortcut-status')?.textContent,inputValue:document.querySelector('#cmd')?.value,selectValue:document.querySelector('#phase7-select')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector('#phase7-js-status')?.textContent,coordStatus:document.querySelector('#phase7-coord-status')?.textContent,authState:document.querySelector('#auth-state')?.textContent})";
 
 export function phase4RuntimeBase({ platform = process.platform, tempDir = tmpdir() } = {}) {
   return platform === 'win32' ? tempDir : '/tmp';
@@ -72,10 +75,17 @@ export function buildPhase4SliceCommands(targetPrefix) {
     ]),
     immutableCommand('checkpoint', ['checkpoint', targetPrefix]),
     immutableCommand('cookies', ['cookies', targetPrefix]),
+    immutableCommand('verify-click', [
+      'verify-click', targetPrefix, '#refresh-account', '--expect-text', 'auth state preserved after refresh', '--format', 'json',
+    ]),
     immutableCommand('fill', ['fill', targetPrefix, '#cmd', 'phase7 input', '--format', 'json']),
+    immutableCommand('type', ['type', targetPrefix, ' +typed', '--format', 'json']),
     immutableCommand('hover', ['hover', targetPrefix, '#refresh-account']),
     immutableCommand('scroll', ['scroll', targetPrefix, 'down', '100', '--format', 'json']),
     immutableCommand('select', ['select', targetPrefix, '#phase7-select', 'two', '--format', 'json']),
+    immutableCommand('jsclick', ['jsclick', targetPrefix, '#phase7-reopen', '--format', 'json']),
+    immutableCommand('dismiss-modal', ['dismiss-modal', targetPrefix, '--format', 'json']),
+    immutableCommand('clickxy', ['clickxy', targetPrefix, '64', '322', '--format', 'json']),
     immutableCommand('press', ['press', targetPrefix, 'c', '--format', 'json']),
     immutableCommand('evalraw', [
       'evalraw',
@@ -112,12 +122,15 @@ export function assertPhase4ActionState(fixtureState, { expectedTitle, modalHidd
   if (!fixtureState
     || typeof fixtureState !== 'object'
     || Array.isArray(fixtureState)
-    || Object.keys(fixtureState).sort().join(',') !== 'inputValue,modalHidden,scrollY,selectValue,shortcut,title'
+    || Object.keys(fixtureState).sort().join(',') !== 'authState,coordStatus,inputValue,jsStatus,modalHidden,scrollY,selectValue,shortcut,title'
     || fixtureState.title !== expectedTitle
     || fixtureState.modalHidden !== modalHidden
     || fixtureState.shortcut !== 'shortcut:c'
-    || fixtureState.inputValue !== 'phase7 input'
+    || fixtureState.inputValue !== 'phase7 input +typed'
     || fixtureState.selectValue !== 'two'
+    || fixtureState.jsStatus !== 'jsclick:reopened'
+    || fixtureState.coordStatus !== 'clickxy:clicked'
+    || fixtureState.authState !== 'auth state preserved after refresh'
     || !finiteNonNegativeInteger(fixtureState.scrollY)
     || fixtureState.scrollY < 1) {
     throw new Error(`action fixture state is invalid: ${JSON.stringify(fixtureState).slice(0, 1200)}`);
@@ -174,6 +187,24 @@ function validTargetResolution(value, targetPrefix, targetId) {
     && typeof targetId === 'string'
     && targetId.startsWith(targetPrefix)
     && value.requestedTargetId === targetId
+    && value.boundTargetId === targetId
+    && value.resolvedTargetId === targetId
+    && value.resolutionSource === 'live-discovery'
+    && ['started', 'reused'].includes(value.status)
+    && value.rebound === false;
+}
+
+function validActionTargetResolution(value, targetPrefix) {
+  if (!exactKeys(value, [
+    'requestedTargetPrefix', 'requestedTargetId', 'boundTargetId',
+    'resolvedTargetId', 'resolutionSource', 'status', 'rebound',
+  ])) return false;
+  const targetId = value.requestedTargetId;
+  const requestMatches = value.requestedTargetPrefix === targetPrefix
+    ? typeof targetId === 'string' && targetId.startsWith(targetPrefix)
+    : value.requestedTargetPrefix === targetId;
+  return requestMatches
+    && typeof targetId === 'string' && /^[A-F0-9]{12,64}$/i.test(targetId)
     && value.boundTargetId === targetId
     && value.resolvedTargetId === targetId
     && value.resolutionSource === 'live-discovery'
@@ -471,7 +502,7 @@ function validateStep(id, stdout, {
     }
     return null;
   }
-  if (['click', 'fill', 'press', 'scroll', 'select'].includes(id)) {
+  if (['click', 'clickxy', 'dismiss-modal', 'fill', 'jsclick', 'press', 'scroll', 'select', 'type'].includes(id)) {
     if (model?.schema !== 'chrome-cdp-ex.action.v1' || model?.action !== id) {
       throw new Error(`${id} schema is invalid`);
     }
@@ -487,6 +518,28 @@ function validateStep(id, stdout, {
       throw new Error(`${id} outcome is invalid: ${JSON.stringify({ outcome, model }).slice(0, 1600)}`);
     }
     return outcome;
+  }
+  if (id === 'verify-click') {
+    const assertion = model?.assertions?.[0];
+    if (!exactKeys(model, [
+      'schema', 'action', 'target', 'dispatch', 'settlement', 'outcome',
+      'verdict', 'assertions', 'matchedRequest', 'actionEvidence', 'targetResolution',
+    ])
+      || model.schema !== 'chrome-cdp-ex.semantic-interaction.v1'
+      || model.action !== 'click'
+      || model.target !== '#refresh-account'
+      || model.dispatch?.ok !== true
+      || model.verdict !== 'pass'
+      || !Array.isArray(model.assertions) || model.assertions.length !== 1
+      || assertion?.kind !== 'text'
+      || assertion?.expected !== 'auth state preserved after refresh'
+      || assertion?.status !== 'pass'
+      || model.matchedRequest !== null
+      || model.actionEvidence !== null
+      || !validActionTargetResolution(model.targetResolution, targetPrefix)) {
+      throw new Error(`verify-click fixture output is invalid: ${JSON.stringify(model).slice(0, 1600)}`);
+    }
+    return model.outcome;
   }
   if (id === 'report') {
     if (model?.schema !== 'chrome-cdp-ex.qa-summary.v1' || model?.source !== 'report') {
@@ -547,7 +600,8 @@ export async function runPhase4SliceSession({
       if (['html', 'text', 'table', 'net', 'status', 'summary', 'snap', 'controls', 'frame',
         'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
         'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies',
-        'press', 'fill', 'hover', 'scroll', 'select'].includes(command.id)) {
+        'press', 'fill', 'hover', 'scroll', 'select',
+        'clickxy', 'dismiss-modal', 'jsclick', 'type', 'verify-click'].includes(command.id)) {
         const mcpOutput = await runMcpCommand(command);
         if (!ACTION_PARITY_COMMANDS.has(command.id) && mcpOutput !== stdout) {
           throw new Error(`MCP ${command.id} output differs from CLI`);
@@ -846,7 +900,11 @@ export async function runDisposablePhase4Slices() {
             arguments: {
               command: command.id,
               args: commandArgs,
-              ...(['components', 'checkpoint', 'cookies', 'press', 'fill', 'hover', 'scroll', 'select'].includes(command.id)
+              ...([
+                'components', 'checkpoint', 'cookies',
+                'clickxy', 'dismiss-modal', 'fill', 'hover', 'jsclick',
+                'press', 'scroll', 'select', 'type', 'verify-click',
+              ].includes(command.id)
                 ? { confirm: true }
                 : {}),
             },
@@ -860,9 +918,17 @@ export async function runDisposablePhase4Slices() {
         }
         const text = response?.result?.content?.[0]?.text;
         if (typeof text !== 'string') throw new Error(`MCP ${command.id} returned no text`);
+        if (command.id === 'verify-click') {
+          const resolution = JSON.parse(text).targetResolution;
+          if (resolution?.requestedTargetId !== mcpTargetId
+            || resolution?.boundTargetId !== mcpTargetId
+            || resolution?.resolvedTargetId !== mcpTargetId) {
+            throw new Error('MCP verify-click target resolution escaped the independent target');
+          }
+        }
         if (command.id === 'press') {
           const state = JSON.parse(runCdp(['eval', mcpTargetPrefix, ACTION_STATE_EXPRESSION], env, 5_000));
-          assertPhase4ActionState(state, { expectedTitle: EXPECTED_TITLE, modalHidden: false });
+          assertPhase4ActionState(state, { expectedTitle: EXPECTED_TITLE, modalHidden: true });
         }
         return text.trim();
       };

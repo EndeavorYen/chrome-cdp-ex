@@ -25,26 +25,26 @@ describe('Runtime v3 final dispatch characterization', () => {
         aliases: 23,
         targetCommands: 68,
         targetlessCommands: 13,
-        applicationCommands: 28,
-        legacyDaemonCommands: 40,
-        daemonGroups: 49,
+        applicationCommands: 33,
+        legacyDaemonCommands: 35,
+        daemonGroups: 44,
       },
       applicationCommands: [
-        'cascade', 'checkpoint', 'click', 'components', 'controls', 'cookies', 'evalraw', 'export-playwright', 'fill', 'frame', 'hover', 'html', 'net',
+        'cascade', 'checkpoint', 'click', 'clickxy', 'components', 'controls', 'cookies', 'dismiss-modal', 'evalraw', 'export-playwright', 'fill', 'frame', 'hover', 'html', 'jsclick', 'net',
         'overlay', 'perceive', 'press', 'record-actions', 'report', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
-        'table', 'text', 'wait', 'waitfor',
+        'table', 'text', 'type', 'verify-click', 'wait', 'waitfor',
       ],
     });
     expect(fixture.targetless.map(command => command.name)).toEqual([
       'help', 'list', 'target', 'tab-group', 'broadcast', 'open', 'doctor',
       'spawn-debug-browser', 'attach', 'use', 'forget', 'current', 'stop',
     ]);
-    expect(fixture.deletionAllowlist).toHaveLength(40);
+    expect(fixture.deletionAllowlist).toHaveLength(35);
     expect(fixture.deletionAllowlist.map(entry => entry.name)).not.toEqual(
       expect.arrayContaining([
-        'cascade', 'checkpoint', 'click', 'components', 'controls', 'cookies', 'evalraw', 'export-playwright', 'fill', 'frame', 'hover', 'html', 'net',
+        'cascade', 'checkpoint', 'click', 'clickxy', 'components', 'controls', 'cookies', 'dismiss-modal', 'evalraw', 'export-playwright', 'fill', 'frame', 'hover', 'html', 'jsclick', 'net',
         'overlay', 'perceive', 'press', 'record-actions', 'report', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
-        'table', 'text', 'wait', 'waitfor',
+        'table', 'text', 'type', 'verify-click', 'wait', 'waitfor',
       ]),
     );
     expect(fixture.daemonGroups.filter(group => group.owner === 'daemon-protocol').map(group => group.labels))
@@ -158,6 +158,14 @@ describe('Runtime v3 final dispatch characterization', () => {
         "const exportPlaywrightBuilder = applicationPreflight.handlerBuilders['export-playwright'];",
         "const exportPlaywrightBuilder = applicationPreflight.handlerBuilders['record-actions'];",
       ),
+      source.replace(
+        "const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];",
+        "const dismissModalBuilder = applicationPreflight.handlerBuilders['verify-click'];",
+      ),
+      source.replace(
+        "const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];",
+        "const verifyClickBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];",
+      ),
     ]) {
       expect(buildRuntimeDispatchInventory(mutation)).not.toEqual(fixture);
     }
@@ -176,6 +184,14 @@ describe('Runtime v3 final dispatch characterization', () => {
     expect(() => buildRuntimeDispatchInventory(source.replace(
       'const actionCapabilities = {',
       'if (true) { const actionCapabilities = {}; }\n  const actionCapabilities = {',
+    ))).toThrow(/direct runDaemon const|exactly once/);
+    expect(() => buildRuntimeDispatchInventory(source.replace(
+      "const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];",
+      "if (true) { const dismissModalBuilder = applicationPreflight.handlerBuilders['verify-click']; }\n  const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];",
+    ))).toThrow(/direct runDaemon const|exactly once/);
+    expect(() => buildRuntimeDispatchInventory(source.replace(
+      "const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];",
+      "if (true) { const verifyClickBuilder = applicationPreflight.handlerBuilders['dismiss-modal']; }\n  const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];",
     ))).toThrow(/direct runDaemon const|exactly once/);
     for (const mutation of [
       source.replace("cmd === '-h'", "cmd === '--planted-help'"),
@@ -207,7 +223,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 49 daemon groups');
+    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 44 daemon groups');
   });
 
   it('keeps the complete policy-class distribution visible before deletion', () => {

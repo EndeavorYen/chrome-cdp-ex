@@ -12794,6 +12794,7 @@ const MIGRATED_DAEMON_COMMANDS = Object.freeze([
   'snap', 'controls', 'frame', 'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
   'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies',
   'fill', 'hover', 'press', 'scroll', 'select',
+  'clickxy', 'dismiss-modal', 'jsclick', 'type', 'verify-click',
 ]);
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPhase4PerceiveHandler(context),
@@ -12824,6 +12825,11 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
   press: capabilities => createDaemonActionHandlers(capabilities).press,
   scroll: capabilities => createDaemonActionHandlers(capabilities).scroll,
   select: capabilities => createDaemonActionHandlers(capabilities).select,
+  clickxy: capabilities => createDaemonActionHandlers(capabilities).clickxy,
+  'dismiss-modal': capabilities => createDaemonActionHandlers(capabilities)['dismiss-modal'],
+  jsclick: capabilities => createDaemonActionHandlers(capabilities).jsclick,
+  type: capabilities => createDaemonActionHandlers(capabilities).type,
+  'verify-click': capabilities => createDaemonActionHandlers(capabilities)['verify-click'],
 });
 
 function preflightDaemonApplication(input = {}) {
@@ -13229,7 +13235,19 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   };
   const recordActionsBuilder = applicationPreflight.handlerBuilders['record-actions'];
   const exportPlaywrightBuilder = applicationPreflight.handlerBuilders['export-playwright'];
+  const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];
+  const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];
   const actionCapabilities = {
+    clickxy: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: `${fopts.args[0]},${fopts.args[1]}`, resolvedBy: 'coordinates', label: `${fopts.args[0]},${fopts.args[1]}`, commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    'dismiss-modal': async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
     fill: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const fargs = fopts.args;
@@ -13239,6 +13257,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       return commandResult(value, { kind: 'action-receipt' });
     },
     hover: async args => commandResult(await hoverStr(cdp, sessionId, args[0], refMap, refState), null),
+    jsclick: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, fopts.args[0], refMap, refState), { input: fopts.args[0], resolvedBy: 'selector-or-ref', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
     press: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
@@ -13252,6 +13275,32 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     select: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback('select', () => selectStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    type: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('type', () => typeStr(cdp, sessionId, fopts.args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    'verify-click': async args => {
+      const vopts = parseVerifyClickArgs(args);
+      let captured = null;
+      await actionFeedback(
+        'click',
+        () => clickStr(cdp, sessionId, vopts.selector, refMap, refState),
+        { input: vopts.selector, resolvedBy: 'selector-or-ref', label: vopts.selector || '', commandArgs: [vopts.selector] },
+        'settle-diff',
+        null,
+        'json',
+        result => { captured = result; },
+      );
+      const textMatched = vopts.expectText
+        ? await pageContainsText(cdp, sessionId, vopts.expectText).catch(() => false)
+        : false;
+      const model = buildSemanticInteractionModel(captured || {}, vopts, { textMatched });
+      const value = vopts.format === 'json'
+        ? formatJson(model)
+        : `${formatSemanticInteractionResult(model)}${vopts.evidence === 'full' && captured ? `\n---\n${formatActionText(captured)}` : ''}`;
       return commandResult(value, { kind: 'action-receipt' });
     },
   };
@@ -13301,6 +13350,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     press: applicationPreflight.handlerBuilders.press(actionCapabilities),
     scroll: applicationPreflight.handlerBuilders.scroll(actionCapabilities),
     select: applicationPreflight.handlerBuilders.select(actionCapabilities),
+    clickxy: applicationPreflight.handlerBuilders.clickxy(actionCapabilities),
+    'dismiss-modal': dismissModalBuilder(actionCapabilities),
+    jsclick: applicationPreflight.handlerBuilders.jsclick(actionCapabilities),
+    type: applicationPreflight.handlerBuilders.type(actionCapabilities),
+    'verify-click': verifyClickBuilder(actionCapabilities),
   };
   const phase4Context = createCommandDispatcher({
     registry: phase4Registry,
@@ -13521,25 +13575,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           break;
         }
         case 'elshot': result = await elshotStr(cdp, sessionId, args[0], targetId, refMap, refState); break;
-        case 'verify-click': case 'verifyclick': {
-          const vopts = parseVerifyClickArgs(args);
-          let captured = null;
-          await actionFeedback(
-            'click',
-            () => clickStr(cdp, sessionId, vopts.selector, refMap, refState),
-            { input: vopts.selector, resolvedBy: 'selector-or-ref', label: vopts.selector || '', commandArgs: [vopts.selector] },
-            'settle-diff',
-            null,
-            'json',
-            result => { captured = result; }
-          );
-          const textMatched = vopts.expectText ? await pageContainsText(cdp, sessionId, vopts.expectText).catch(() => false) : false;
-          const model = buildSemanticInteractionModel(captured || {}, vopts, { textMatched });
-          result = vopts.format === 'json'
-            ? formatJson(model)
-            : `${formatSemanticInteractionResult(model)}${vopts.evidence === 'full' && captured ? `\n---\n${formatActionText(captured)}` : ''}`;
-          break;
-        }
         case 'click': {
           const route = await executePhase4DaemonRoute({
             cmd: 'click',
@@ -13547,21 +13582,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
             targetBound: Boolean(targetId),
           }, phase4Context);
           result = route.result;
-          break;
-        }
-        case 'jsclick': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, fopts.args[0], refMap, refState), { input: fopts.args[0], resolvedBy: 'selector-or-ref', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
-          break;
-        }
-        case 'clickxy': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: `${fopts.args[0]},${fopts.args[1]}`, resolvedBy: 'coordinates', label: `${fopts.args[0]},${fopts.args[1]}`, commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
-          break;
-        }
-        case 'type': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('type', () => typeStr(cdp, sessionId, fopts.args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
           break;
         }
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
@@ -13618,11 +13638,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           break;
         }
         case 'record': result = await recordStr(cdp, sessionId, args, refMap); break;
-        case 'dismiss-modal': case 'dismissmodal': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }, 'settle-diff', null, fopts);
-          break;
-        }
         case 'evalraw': {
           const route = await executePhase4DaemonRoute({
             cmd: 'evalraw',
@@ -14980,7 +14995,10 @@ function createPhase4EvalrawHandler({ evalRaw }) {
 function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound }) {
   if (!targetBound) return { allowed: false, code: 'target-not-bound' };
   const actionMutates = command === 'hover' ? mutates === false : mutates === true;
-  const allowed = (['click', 'fill', 'hover', 'press', 'scroll', 'select'].includes(command)
+  const allowed = ([
+    'click', 'clickxy', 'dismiss-modal', 'fill', 'hover', 'jsclick',
+    'press', 'scroll', 'select', 'type', 'verify-click',
+  ].includes(command)
       && policy === 'mutation' && actionMutates)
     || (command === 'evalraw' && policy === 'raw-cdp' && mutates === false)
     || (['components', 'checkpoint', 'cookies'].includes(command)

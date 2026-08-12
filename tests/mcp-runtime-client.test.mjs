@@ -96,6 +96,21 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     expect(executeCli).not.toHaveBeenCalled();
   });
 
+  it.each(['clickxy', 'dismiss-modal', 'jsclick', 'type', 'verify-click'])(
+    'rejects run_command %s without confirmation before RuntimeClient execution',
+    async command => {
+      const executeCli = vi.fn();
+      const state = handlerWith(executeCli);
+      await state.handle({
+        jsonrpc: '2.0', id: 40, method: 'tools/call',
+        params: { name: 'run_command', arguments: { command, args: ['fixture'] } },
+      });
+      expect(state.sent[0].error).toMatchObject({ code: -32000 });
+      expect(state.sent[0].error.message).toMatch(/confirm: true/i);
+      expect(executeCli).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     ['session_checkpoint', Object.assign(Object.create({ confirm: true }), { target: 'fixture' })],
     ['run_command', Object.assign(Object.create({ confirm: true }), {

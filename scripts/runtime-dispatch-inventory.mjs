@@ -99,7 +99,13 @@ function collectDaemonGroups(source) {
   let genericApplicationCalls = 0;
   const applicationWiring = Object.create(null);
   const applicationWiringNames = [
-    'readCapabilities', 'recordActionsBuilder', 'exportPlaywrightBuilder', 'actionCapabilities', 'phase4Handlers',
+    'readCapabilities',
+    'recordActionsBuilder',
+    'exportPlaywrightBuilder',
+    'dismissModalBuilder',
+    'verifyClickBuilder',
+    'actionCapabilities',
+    'phase4Handlers',
   ];
   const rule = {
     create(context) {

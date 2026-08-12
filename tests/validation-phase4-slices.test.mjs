@@ -151,7 +151,7 @@ function fixtureOutput(id) {
       page: { title: TITLE, url: 'http://127.0.0.1:41758/validation-phase4.html' },
     });
   }
-  if (['click', 'fill', 'press', 'scroll', 'select'].includes(id)) {
+  if (['click', 'clickxy', 'dismiss-modal', 'fill', 'jsclick', 'press', 'scroll', 'select', 'type'].includes(id)) {
     return JSON.stringify({
       schema: 'chrome-cdp-ex.action.v1',
       action: id,
@@ -165,6 +165,13 @@ function fixtureOutput(id) {
       },
     });
   }
+  if (id === 'verify-click') return JSON.stringify({
+    schema: 'chrome-cdp-ex.semantic-interaction.v1',
+    action: 'click', target: '#refresh-account', dispatch: { ok: true },
+    settlement: { status: 'settled' }, outcome: 'changed', verdict: 'pass',
+    assertions: [{ kind: 'text', expected: 'auth state preserved after refresh', status: 'pass', message: '"auth state preserved after refresh" matched' }],
+    matchedRequest: null, actionEvidence: null, targetResolution: targetResolution(),
+  });
   if (id === 'hover') return 'Hovering over <BUTTON> at CSS (640, 320)';
   if (id === 'report') {
     return JSON.stringify({
@@ -183,9 +190,12 @@ function fixtureOutput(id) {
         title: TITLE,
         modalHidden: true,
         shortcut: 'shortcut:c',
-        inputValue: 'phase7 input',
+        inputValue: 'phase7 input +typed',
         selectValue: 'two',
         scrollY: 100,
+        jsStatus: 'jsclick:reopened',
+        coordStatus: 'clickxy:clicked',
+        authState: 'auth state preserved after refresh',
       },
     },
   });
@@ -204,7 +214,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     }, url, TITLE)).toMatchObject({ targetPrefix: TARGET, title: TITLE, url });
   });
 
-  it('freezes the exact bounded twenty-eight-command route and final fixture-state raw expression', () => {
+  it('freezes the exact bounded thirty-three-command route and final fixture-state raw expression', () => {
     expect(buildPhase4SliceCommands(TARGET)).toEqual([
       { id: 'perceive', args: ['perceive', TARGET, '--format', 'json'] },
       { id: 'click', args: ['click', TARGET, '#close-modal', '--format', 'json'] },
@@ -234,10 +244,18 @@ describe('Phase 4 disposable core-slice scenario', () => {
       { id: 'cascade', args: ['cascade', TARGET, '#auth-panel', 'padding-top', '--format', 'json'] },
       { id: 'checkpoint', args: ['checkpoint', TARGET] },
       { id: 'cookies', args: ['cookies', TARGET] },
+      {
+        id: 'verify-click',
+        args: ['verify-click', TARGET, '#refresh-account', '--expect-text', 'auth state preserved after refresh', '--format', 'json'],
+      },
       { id: 'fill', args: ['fill', TARGET, '#cmd', 'phase7 input', '--format', 'json'] },
+      { id: 'type', args: ['type', TARGET, ' +typed', '--format', 'json'] },
       { id: 'hover', args: ['hover', TARGET, '#refresh-account'] },
       { id: 'scroll', args: ['scroll', TARGET, 'down', '100', '--format', 'json'] },
       { id: 'select', args: ['select', TARGET, '#phase7-select', 'two', '--format', 'json'] },
+      { id: 'jsclick', args: ['jsclick', TARGET, '#phase7-reopen', '--format', 'json'] },
+      { id: 'dismiss-modal', args: ['dismiss-modal', TARGET, '--format', 'json'] },
+      { id: 'clickxy', args: ['clickxy', TARGET, '64', '322', '--format', 'json'] },
       { id: 'press', args: ['press', TARGET, 'c', '--format', 'json'] },
       {
         id: 'evalraw',
@@ -245,7 +263,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
           'evalraw',
           TARGET,
           'Runtime.evaluate',
-          '{"expression":"({title:document.title,modalHidden:document.querySelector(\'#motd\')?.hidden===true,shortcut:document.querySelector(\'#shortcut-status\')?.textContent,inputValue:document.querySelector(\'#cmd\')?.value,selectValue:document.querySelector(\'#phase7-select\')?.value,scrollY:Math.round(window.scrollY)})","returnByValue":true}',
+          '{"expression":"({title:document.title,modalHidden:document.querySelector(\'#motd\')?.hidden===true,shortcut:document.querySelector(\'#shortcut-status\')?.textContent,inputValue:document.querySelector(\'#cmd\')?.value,selectValue:document.querySelector(\'#phase7-select\')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector(\'#phase7-js-status\')?.textContent,coordStatus:document.querySelector(\'#phase7-coord-status\')?.textContent,authState:document.querySelector(\'#auth-state\')?.textContent})","returnByValue":true}',
         ],
       },
     ]);
@@ -334,19 +352,21 @@ describe('Phase 4 disposable core-slice scenario', () => {
         'perceive', 'click', 'report', 'html', 'text', 'table', 'net', 'status', 'summary',
         'snap', 'controls', 'frame', 'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
         'wait', 'waitfor', 'cascade',
-        'checkpoint', 'cookies', 'fill', 'hover', 'scroll', 'select', 'press', 'evalraw',
+        'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
+        'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw',
       ],
       title: TITLE,
       clickOutcome: 'changed',
       reportActions: 1,
-      extractionParity: 24,
+      extractionParity: 29,
     });
     expect(runCommand.mock.calls.map(([command]) => command)).toEqual(commands);
     expect(runMcpCommand.mock.calls.map(([command]) => command.id)).toEqual([
       'html', 'text', 'table', 'net', 'status', 'summary', 'snap', 'controls', 'frame',
       'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
       'wait', 'waitfor', 'cascade',
-      'checkpoint', 'cookies', 'fill', 'hover', 'scroll', 'select', 'press',
+      'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
+      'jsclick', 'dismiss-modal', 'clickxy', 'press',
     ]);
     expect(cleanup).toHaveBeenCalledOnce();
   });
@@ -355,7 +375,8 @@ describe('Phase 4 disposable core-slice scenario', () => {
     'perceive', 'click', 'report', 'html', 'text', 'table', 'net', 'status', 'summary',
     'snap', 'controls', 'frame', 'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
     'wait', 'waitfor', 'cascade',
-    'checkpoint', 'cookies', 'fill', 'hover', 'scroll', 'select', 'press', 'evalraw',
+    'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
+    'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw',
   ])('fails at %s and still runs cleanup exactly once', async failureId => {
     const runCommand = vi.fn(async command => {
       if (command.id === failureId) throw new Error(`forced ${failureId} failure`);
@@ -388,6 +409,15 @@ describe('Phase 4 disposable core-slice scenario', () => {
       schema: 'chrome-cdp-ex.action.v1', action: 'fill', dispatch: { ok: false },
       receipt: { schema: 'chrome-cdp-ex.action-receipt.v1', outcome: 'changed' },
     }), 'fill dispatch'],
+    ['jsclick', JSON.stringify({
+      schema: 'chrome-cdp-ex.action.v1', action: 'jsclick', dispatch: { ok: false },
+      receipt: { schema: 'chrome-cdp-ex.action-receipt.v1', outcome: 'changed' },
+    }), 'jsclick dispatch'],
+    ['verify-click', JSON.stringify({
+      ...JSON.parse(fixtureOutput('verify-click')),
+      verdict: 'fail',
+      assertions: [{ kind: 'text', expected: 'auth state preserved after refresh', status: 'fail' }],
+    }), 'verify-click fixture output'],
     ['hover', 'hovered the wrong fixture', 'hover fixture output'],
     ['net', 'TOTALLY WRONG NETWORK OUTPUT', 'net fixture output'],
     ['status', JSON.stringify({
@@ -455,7 +485,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
         return JSON.stringify(model);
       },
       cleanup,
-    })).resolves.toMatchObject({ extractionParity: 24 });
+    })).resolves.toMatchObject({ extractionParity: 29 });
     expect(cleanup).toHaveBeenCalledOnce();
   });
 

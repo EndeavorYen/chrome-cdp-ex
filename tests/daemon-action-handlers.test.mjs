@@ -2,9 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createDaemonActionHandlers } from '../skills/chrome-cdp-ex/scripts/lib/daemon-action-handlers.mjs';
 
+const ACTION_COMMANDS = Object.freeze([
+  'clickxy', 'dismiss-modal', 'fill', 'hover', 'jsclick',
+  'press', 'scroll', 'select', 'type', 'verify-click',
+]);
+
 function fixture() {
   const capabilities = Object.fromEntries(
-    ['fill', 'hover', 'press', 'scroll', 'select'].map(name => [
+    ACTION_COMMANDS.map(name => [
       name, vi.fn(async args => ({ value: `${name}:${args.join('|')}`, evidence: { kind: 'action-receipt' } })),
     ]),
   );
@@ -12,9 +17,9 @@ function fixture() {
 }
 
 describe('daemon action handlers', () => {
-  it('constructs the exact immutable first action cohort', () => {
+  it('constructs the exact immutable accepted action cohorts', () => {
     const { handlers } = fixture();
-    expect(Object.keys(handlers)).toEqual(['fill', 'hover', 'press', 'scroll', 'select']);
+    expect(Object.keys(handlers)).toEqual(ACTION_COMMANDS);
     expect(Object.isFrozen(handlers)).toBe(true);
     expect(Object.values(handlers).every(Object.isFrozen)).toBe(true);
   });
