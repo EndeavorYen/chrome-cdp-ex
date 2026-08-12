@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
   <title>chrome-cdp-ex long-session smoke</title>
   <style>
     :root { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; color: #102133; }
@@ -17,7 +18,7 @@
     #custom-clickable { cursor: pointer; display: inline-block; padding: 8px 12px; background: #fde68a; border-radius: 8px; }
     [role="dialog"] { position: fixed; inset: 20% auto auto 50%; transform: translateX(-50%); background: white; border: 2px solid #0f172a; padding: 20px; z-index: 20; box-shadow: 0 20px 60px #0005; }
     [hidden] { display: none !important; }
-    /*# sourceURL=/tmp/chrome-cdp-ex-smoke.css */
+    /*# sourceURL=chrome-cdp-ex-smoke.css */
   </style>
 </head>
 <body>
@@ -26,6 +27,13 @@
     <h1>chrome-cdp-ex long-session smoke</h1>
     <p>This page simulates 3y-Mud-style logs, modal dismissal, fixed controls, and keyboard shortcuts.</p>
     <input id="cmd" aria-label="command input" placeholder="look 訓練師">
+    <label>Phase 7 mode
+      <select id="phase7-select" aria-label="phase 7 mode">
+        <option value="one">One</option>
+        <option value="two">Two</option>
+      </select>
+    </label>
+    <p id="select-status">select:one</p>
     <button id="combat">Run combat</button>
     <button id="diagnostic">Run diagnostic</button>
     <button id="noop">No visible change</button>
@@ -61,6 +69,10 @@
     <button aria-label="關閉" id="close-modal">關閉</button>
   </div>
   <script>
+    localStorage.setItem('theme', 'fixture-light');
+    localStorage.setItem('authToken', 'fixture-secret');
+    sessionStorage.setItem('phase', 'fixture');
+    document.cookie = 'phase7_fixture=fixture-value; SameSite=Lax';
     const log = document.getElementById('combat-log');
     function appendLog(text) {
       const p = document.createElement('p');
@@ -107,6 +119,11 @@
     document.getElementById('refresh-account').addEventListener('click', () => {
       document.getElementById('auth-state').textContent = 'auth state preserved after refresh';
       appendLog('authenticated dashboard refreshed');
+    });
+    document.getElementById('phase7-select').addEventListener('change', (event) => {
+      document.getElementById('select-status').textContent = 'select:' + event.target.value;
+      document.getElementById('cmd').blur();
+      event.target.blur();
     });
     document.getElementById('upload-file').addEventListener('change', (e) => {
       const names = Array.from(e.target.files || []).map(file => file.name).join(', ') || 'none';

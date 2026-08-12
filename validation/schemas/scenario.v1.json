@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/validation/schemas/scenario.v1.json",
+  "title": "chrome-cdp-ex Validation Scenario v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "owner", "tags", "runner", "expect", "risk"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "title": { "type": "string", "minLength": 1 },
+    "owner": { "type": "string", "minLength": 1 },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+      "uniqueItems": true
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "entrypoint", "args"],
+      "properties": {
+        "kind": { "const": "node" },
+        "entrypoint": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "sourceDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    },
+    "expect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exitCodes"],
+      "properties": {
+        "exitCodes": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 1, "uniqueItems": true },
+        "stdoutIncludes": { "type": "array", "items": { "type": "string" } },
+        "stderrIncludes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["units", "timeoutMs", "maxOutputBytes", "network", "browser", "mutation", "maxAttempts"],
+      "properties": {
+        "units": { "type": "integer", "minimum": 1 },
+        "timeoutMs": { "type": "integer", "minimum": 1 },
+        "maxOutputBytes": { "type": "integer", "minimum": 64 },
+        "network": { "enum": ["none", "loopback"] },
+        "browser": { "enum": ["none", "disposable-local"] },
+        "mutation": { "enum": ["none", "task-created-files"] },
+        "maxAttempts": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "classificationHints": {
+      "type": "array",
+      "items": { "enum": ["product", "flake", "environment", "scenario"] },
+      "uniqueItems": true
+    }
+  }
+}
