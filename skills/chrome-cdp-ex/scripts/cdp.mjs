@@ -12798,7 +12798,7 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   return formatSpawnDebugBrowserOutput(model, { format: 'json' });
 }
 
-function overlayDetectorScript({ targetPoint = null } = {}) {
+function overlayDetectorScript({ targetPoint = null, objectBoundTarget = false } = {}) {
   const targetJson = JSON.stringify(targetPoint && ['input', 'x', 'y', 'descriptor'].reduce((snapshot, key) => { const property = Object.getOwnPropertyDescriptor(targetPoint, key); if (property && Object.hasOwn(property, 'value')) snapshot[key] = property.value; return snapshot; }, Object.create(null))); return `(function() {
     const targetPoint = ${targetJson};
     const vw = window.innerWidth || 0;
@@ -12852,7 +12852,7 @@ function overlayDetectorScript({ targetPoint = null } = {}) {
     function isDialog(el) {
       return el.matches('[role="dialog"], dialog, [aria-modal="true"]');
     }
-    const targetElement = (typeof Element === 'function' && this instanceof Element ? this : null) || (targetPoint && typeof targetPoint.input === 'string' && !targetPoint.input.startsWith('@') ? document.querySelector(targetPoint.input) : null);
+    const targetElement = ${objectBoundTarget ? 'this' : 'null'} || (targetPoint && typeof targetPoint.input === 'string' && !targetPoint.input.startsWith('@') ? document.querySelector(targetPoint.input) : null);
     const seen = new Set(), overlays = [];
     function add(el, kind) {
       const dialog = isDialog(el); if (!visible(el) || seen.has(el) || (!dialog && targetElement && (el === targetElement || targetElement.contains(el)))) return;
@@ -12972,7 +12972,7 @@ async function overlayStr(cdp, sid, targetId, args = [], refMap = new Map(), ref
   const fopts = parseFormatArgs(args, ['text', 'json']), targetArg = fopts.args[0] || null;
   const { targetPoint, objectId } = await resolveOverlayTargetPoint(cdp, sid, targetArg, refMap, refState);
   const raw = objectId && !parseFrameRef(targetArg)
-    ? await resolveRefRectNoScroll(cdp, sid, refMap, targetArg, refState, { objectId, functionDeclaration: `function() { return ${overlayDetectorScript({ targetPoint })}; }` })
+    ? await resolveRefRectNoScroll(cdp, sid, refMap, targetArg, refState, { objectId, functionDeclaration: `function() { return ${overlayDetectorScript({ targetPoint, objectBoundTarget: true })}; }` })
     : await evalStr(cdp, sid, overlayDetectorScript({ targetPoint }));
   const model = JSON.parse(raw);
   if (model.blocking && !model.nextCommand) model.nextCommand = `cdp dismiss-modal ${targetId}`;

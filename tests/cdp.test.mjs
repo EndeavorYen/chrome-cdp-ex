@@ -10597,6 +10597,7 @@ describe('overlay detector', () => {
       targetPoint,
       topElement: target,
       targetContext: target,
+      source: T.overlayDetectorScript({ targetPoint, objectBoundTarget: true }),
     });
 
     expect(oracleTopElement).toBe(target);
