@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createDaemonActionHandlers } from '../skills/chrome-cdp-ex/scripts/lib/daemon-action-handlers.mjs';
 
 const ACTION_COMMANDS = Object.freeze([
-  'back', 'clickxy', 'clock', 'dismiss-modal', 'fill', 'forward', 'hover', 'jsclick',
-  'mock', 'nav', 'press', 'reload', 'scroll', 'select', 'throttle', 'type', 'verify-click',
+  'back', 'clickxy', 'clock', 'dismiss-modal', 'emulate', 'fill', 'forward', 'hover', 'jsclick',
+  'mock', 'nav', 'press', 'reload', 'scroll', 'select', 'throttle', 'type', 'verify-click', 'viewport',
 ]);
 
 function fixture() {

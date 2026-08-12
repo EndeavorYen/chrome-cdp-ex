@@ -99,6 +99,7 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
   it.each([
     'back', 'clickxy', 'dismiss-modal', 'forward', 'jsclick', 'nav',
     'navigate', 'reload', 'type', 'verify-click', 'mock', 'clock', 'throttle',
+    'emulate', 'resize',
   ])(
     'rejects run_command %s without confirmation before RuntimeClient execution',
     async command => {

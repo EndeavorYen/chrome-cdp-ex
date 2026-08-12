@@ -20,8 +20,8 @@ const pagePath = resolve(rootDir, 'scripts/smoke-page.html');
 const serverPath = resolve(rootDir, 'scripts/validation-loopback-server.mjs');
 const EXPECTED_TITLE = 'chrome-cdp-ex long-session smoke';
 const ACTION_PARITY_COMMANDS = new Set([
-  'back', 'clickxy', 'clock', 'dismiss-modal', 'fill', 'forward', 'hover', 'jsclick',
-  'mock', 'nav', 'press', 'reload', 'scroll', 'select', 'throttle', 'type', 'verify-click',
+  'back', 'clickxy', 'clock', 'dismiss-modal', 'emulate', 'fill', 'forward', 'hover', 'jsclick',
+  'mock', 'nav', 'press', 'reload', 'scroll', 'select', 'throttle', 'type', 'verify-click', 'viewport',
 ]);
 const ACTION_STATE_EXPRESSION = "({title:document.title,modalHidden:document.querySelector('#motd')?.hidden===true,shortcut:document.querySelector('#shortcut-status')?.textContent,inputValue:document.querySelector('#cmd')?.value,selectValue:document.querySelector('#phase7-select')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector('#phase7-js-status')?.textContent,coordStatus:document.querySelector('#phase7-coord-status')?.textContent,authState:document.querySelector('#auth-state')?.textContent})";
 const RELOAD_STATE_EXPRESSION = "JSON.stringify({url:location.href,loadCount:Number(/^phase7-load:(\\d+)$/.exec(window.name)?.[1]),marker:document.querySelector('#phase7-load-generation')?.textContent})";
@@ -116,6 +116,10 @@ export function buildPhase4SliceCommands(
     immutableCommand('clock', [
       'clock', targetPrefix, 'freeze', '--at', '2020-01-02T03:04:05.000Z', '--format', 'json',
     ]),
+    immutableCommand('viewport', ['viewport', targetPrefix, '390x844', '--format', 'json']),
+    immutableCommand('emulate', [
+      'emulate', targetPrefix, 'dark', 'reduced-motion', 'reduce', '--format', 'json',
+    ]),
   ]);
 }
 
@@ -169,6 +173,27 @@ export function assertPhase4EnvironmentEffect(id, raw) {
   throw new Error(`unknown environment effect ${id}`);
 }
 
+export function assertPhase4RenderingEffect(id, raw) {
+  let value;
+  try { value = JSON.parse(raw); } catch { value = null; }
+  if (id === 'viewport') {
+    if (!exactKeys(value, ['width', 'height', 'dpr'])
+      || value.width !== 390 || value.height !== 844
+      || !Number.isFinite(value.dpr) || value.dpr <= 0 || value.dpr > 8) {
+      throw new Error(`viewport live effect is invalid: ${String(raw).slice(0, 160)}`);
+    }
+    return '390x844';
+  }
+  if (id === 'emulate') {
+    if (!exactKeys(value, ['dark', 'reducedMotion'])
+      || value.dark !== true || value.reducedMotion !== true) {
+      throw new Error(`emulate live effect is invalid: ${String(raw).slice(0, 160)}`);
+    }
+    return 'dark+reduce';
+  }
+  throw new Error(`unknown rendering effect ${id}`);
+}
+
 function environmentEffectExpression(id) {
   if (id === 'mock') {
     return "fetch('/api/mock').then(async response => JSON.stringify({status:response.status,body:await response.text()}))";
@@ -179,6 +204,13 @@ function environmentEffectExpression(id) {
 
 function environmentEffectCommand(id, targetPrefix) {
   return [id === 'throttle' ? 'call' : 'eval', targetPrefix, environmentEffectExpression(id)];
+}
+
+export function buildPhase4RenderingEffectCommand(id, targetPrefix) {
+  const expression = id === 'viewport'
+    ? 'JSON.stringify({width:Math.round(visualViewport.width),height:Math.round(visualViewport.height),dpr:devicePixelRatio})'
+    : "JSON.stringify({dark:matchMedia('(prefers-color-scheme: dark)').matches,reducedMotion:matchMedia('(prefers-reduced-motion: reduce)').matches})";
+  return ['eval', targetPrefix, expression];
 }
 
 function parseStepJson(id, stdout) {
@@ -584,7 +616,7 @@ function validateStep(id, stdout, {
     }
     return null;
   }
-  if (['back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'jsclick', 'nav', 'press', 'reload', 'scroll', 'select', 'type'].includes(id)) {
+  if (['back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'jsclick', 'nav', 'press', 'reload', 'scroll', 'select', 'type', 'viewport'].includes(id)) {
     if (model?.schema !== 'chrome-cdp-ex.action.v1' || model?.action !== id) {
       throw new Error(`${id} schema is invalid`);
     }
@@ -643,6 +675,25 @@ function validateStep(id, stdout, {
       || model.profile !== 'fast-3g' || model.offline !== false
       || model.latencyMs !== 150 || model.downloadKbps !== 1600 || model.uploadKbps !== 750) {
       throw new Error(`throttle fixture output is invalid: ${JSON.stringify(model).slice(0, 1200)}`);
+    }
+    return model.schema;
+  }
+  if (id === 'emulate') {
+    if (!exactKeys(model, [
+      'schema', 'targetPrefix', 'colorScheme', 'reducedMotion', 'features',
+      'active', 'nextCommand', 'targetResolution',
+    ])
+      || model.schema !== 'chrome-cdp-ex.emulate.v1'
+      || typeof model.targetPrefix !== 'string' || !/^[A-F0-9]{4,64}$/i.test(model.targetPrefix)
+      || model.colorScheme !== 'dark' || model.reducedMotion !== 'reduce'
+      || JSON.stringify(model.features) !== JSON.stringify([
+        { name: 'prefers-color-scheme', value: 'dark' },
+        { name: 'prefers-reduced-motion', value: 'reduce' },
+      ])
+      || model.active !== true
+      || model.nextCommand !== `cdp perceive ${model.targetPrefix} -C -d 8`
+      || !validActionTargetResolution(model.targetResolution, targetPrefix)) {
+      throw new Error(`emulate fixture output is invalid: ${JSON.stringify(model).slice(0, 1200)}`);
     }
     return model.schema;
   }
@@ -713,7 +764,7 @@ export async function runPhase4SliceSession({
         'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies',
         'press', 'fill', 'hover', 'scroll', 'select',
         'back', 'clickxy', 'clock', 'dismiss-modal', 'forward', 'jsclick', 'mock', 'nav',
-        'reload', 'throttle', 'type', 'verify-click'].includes(command.id)) {
+        'reload', 'throttle', 'type', 'verify-click', 'viewport', 'emulate'].includes(command.id)) {
         const mcpOutput = await runMcpCommand(command);
         if (!ACTION_PARITY_COMMANDS.has(command.id) && mcpOutput !== stdout) {
           throw new Error(`MCP ${command.id} output differs from CLI`);
@@ -1050,7 +1101,7 @@ export async function runDisposablePhase4Slices() {
                 'components', 'checkpoint', 'cookies',
                 'back', 'clickxy', 'clock', 'dismiss-modal', 'fill', 'forward',
                 'hover', 'jsclick', 'mock', 'nav', 'press', 'reload', 'scroll',
-                'select', 'throttle', 'type', 'verify-click',
+                'select', 'throttle', 'type', 'verify-click', 'viewport', 'emulate',
               ].includes(command.id)
                 ? { confirm: true }
                 : {}),
@@ -1089,6 +1140,10 @@ export async function runDisposablePhase4Slices() {
           const effect = runCdp(environmentEffectCommand(command.id, mcpTargetPrefix), env, 7_000);
           assertPhase4EnvironmentEffect(command.id, effect);
         }
+        if (['viewport', 'emulate'].includes(command.id)) {
+          const effect = runCdp(buildPhase4RenderingEffectCommand(command.id, mcpTargetPrefix), env, 5_000);
+          assertPhase4RenderingEffect(command.id, effect);
+        }
         return text.trim();
       };
       const result = await runPhase4SliceSession({
@@ -1109,6 +1164,10 @@ export async function runDisposablePhase4Slices() {
           if (['mock', 'clock', 'throttle'].includes(command.id)) {
             const effect = runCdp(environmentEffectCommand(command.id, targetPrefix), env, 7_000);
             assertPhase4EnvironmentEffect(command.id, effect);
+          }
+          if (['viewport', 'emulate'].includes(command.id)) {
+            const effect = runCdp(buildPhase4RenderingEffectCommand(command.id, targetPrefix), env, 5_000);
+            assertPhase4RenderingEffect(command.id, effect);
           }
           return output;
         },

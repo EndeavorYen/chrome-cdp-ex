@@ -333,6 +333,13 @@ function domainInvocations() {
       invoke: cdp => cdpTest.emulateStr(cdp, 'SESSION', state(), ['--color-scheme', 'dark']),
     },
     {
+      domain: 'EmulationViewport',
+      methods: ['Emulation.setDeviceMetricsOverride'],
+      callDigest: 'c1137e0c2333e27b839cea599e14ed71aafcf777299ffb2d723537dee3cdf6f7',
+      result: 'Viewport resized to 390×844 (mobile mode)',
+      invoke: cdp => cdpTest.viewportStr(cdp, 'SESSION', '390x844'),
+    },
+    {
       domain: 'Fetch',
       methods: ['Fetch.enable'],
       callDigest: '7ce0097e37ca30df94f4fdb6249406ba57d0b6ebf299a909a4aea9ece121e9e6',

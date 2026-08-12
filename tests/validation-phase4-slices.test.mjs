@@ -9,9 +9,11 @@ import {
   assertPhase4EnvironmentEffect,
   assertPhase4NavigationState,
   assertPhase4ReloadState,
+  assertPhase4RenderingEffect,
   assertPhase4OutputPrivacy,
   assertPhase4TargetReady,
   buildPhase4SliceCommands,
+  buildPhase4RenderingEffectCommand,
   createPhase4Cancellation,
   launchLoopbackFixtureServer,
   monitorDisposableBrowser,
@@ -159,7 +161,7 @@ function fixtureOutput(id) {
       page: { title: TITLE, url: 'http://127.0.0.1:41758/validation-phase4.html' },
     });
   }
-  if (['back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'jsclick', 'nav', 'press', 'reload', 'scroll', 'select', 'type'].includes(id)) {
+  if (['back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'jsclick', 'nav', 'press', 'reload', 'scroll', 'select', 'type', 'viewport'].includes(id)) {
     return JSON.stringify({
       schema: 'chrome-cdp-ex.action.v1',
       action: id,
@@ -191,6 +193,16 @@ function fixtureOutput(id) {
   if (id === 'throttle') return JSON.stringify({
     schema: 'chrome-cdp-ex.throttle.v1', mode: 'apply', profile: 'fast-3g',
     offline: false, latencyMs: 150, downloadKbps: 1600, uploadKbps: 750,
+  });
+  if (id === 'emulate') return JSON.stringify({
+    schema: 'chrome-cdp-ex.emulate.v1', targetPrefix: TARGET,
+    colorScheme: 'dark', reducedMotion: 'reduce',
+    features: [
+      { name: 'prefers-color-scheme', value: 'dark' },
+      { name: 'prefers-reduced-motion', value: 'reduce' },
+    ],
+    active: true, nextCommand: `cdp perceive ${TARGET} -C -d 8`,
+    targetResolution: targetResolution(),
   });
   if (id === 'hover') return 'Hovering over <BUTTON> at CSS (640, 320)';
   if (id === 'report') {
@@ -266,7 +278,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     }, url, TITLE)).toMatchObject({ targetPrefix: TARGET, title: TITLE, url });
   });
 
-  it('freezes the exact bounded forty-command route and final fixture-state raw expression', () => {
+  it('freezes the exact bounded forty-two-command route and final fixture-state raw expression', () => {
     expect(buildPhase4SliceCommands(TARGET, NAV_URL)).toEqual([
       { id: 'perceive', args: ['perceive', TARGET, '--format', 'json'] },
       { id: 'click', args: ['click', TARGET, '#close-modal', '--format', 'json'] },
@@ -328,6 +340,8 @@ describe('Phase 4 disposable core-slice scenario', () => {
       },
       { id: 'throttle', args: ['throttle', TARGET, 'fast-3g', '--format', 'json'] },
       { id: 'clock', args: ['clock', TARGET, 'freeze', '--at', '2020-01-02T03:04:05.000Z', '--format', 'json'] },
+      { id: 'viewport', args: ['viewport', TARGET, '390x844', '--format', 'json'] },
+      { id: 'emulate', args: ['emulate', TARGET, 'dark', 'reduced-motion', 'reduce', '--format', 'json'] },
     ]);
     expect(Object.isFrozen(buildPhase4SliceCommands(TARGET, NAV_URL))).toBe(true);
   });
@@ -361,6 +375,17 @@ describe('Phase 4 disposable core-slice scenario', () => {
     expect(() => assertPhase4EnvironmentEffect('mock', '{"status":404,"body":"not found"}')).toThrow(/mock live/);
     expect(() => assertPhase4EnvironmentEffect('clock', '1577934245001')).toThrow(/clock live/);
     expect(() => assertPhase4EnvironmentEffect('throttle', '{"durationMs":10,"status":200,"body":"throttle-ok"}')).toThrow(/throttle live/);
+  });
+
+  it('requires independently observed viewport and media-query effects', () => {
+    expect(buildPhase4RenderingEffectCommand('viewport', TARGET)).toEqual([
+      'eval', TARGET,
+      'JSON.stringify({width:Math.round(visualViewport.width),height:Math.round(visualViewport.height),dpr:devicePixelRatio})',
+    ]);
+    expect(assertPhase4RenderingEffect('viewport', '{"width":390,"height":844,"dpr":1}')).toBe('390x844');
+    expect(assertPhase4RenderingEffect('emulate', '{"dark":true,"reducedMotion":true}')).toBe('dark+reduce');
+    expect(() => assertPhase4RenderingEffect('viewport', '{"width":1280,"height":720,"dpr":1}')).toThrow(/viewport live/);
+    expect(() => assertPhase4RenderingEffect('emulate', '{"dark":false,"reducedMotion":true}')).toThrow(/emulate live/);
   });
 
   it('drains bounded browser stderr and captures spawn errors without an unhandled event', () => {
@@ -483,12 +508,12 @@ describe('Phase 4 disposable core-slice scenario', () => {
         'wait', 'waitfor', 'cascade',
         'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
         'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw',
-        'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock',
+        'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
       ],
       title: TITLE,
       clickOutcome: 'changed',
       reportActions: 1,
-      extractionParity: 36,
+      extractionParity: 38,
     });
     expect(runCommand.mock.calls.map(([command]) => command)).toEqual(commands);
     expect(runMcpCommand.mock.calls.map(([command]) => command.id)).toEqual([
@@ -497,7 +522,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
       'wait', 'waitfor', 'cascade',
       'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
       'jsclick', 'dismiss-modal', 'clickxy', 'press',
-      'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock',
+      'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
     ]);
     expect(cleanup).toHaveBeenCalledOnce();
   });
@@ -508,7 +533,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     'wait', 'waitfor', 'cascade',
     'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
     'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw',
-    'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock',
+    'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
   ])('fails at %s and still runs cleanup exactly once', async failureId => {
     const runCommand = vi.fn(async command => {
       if (command.id === failureId) throw new Error(`forced ${failureId} failure`);
@@ -575,6 +600,11 @@ describe('Phase 4 disposable core-slice scenario', () => {
     }), 'cascade fixture output'],
     ['checkpoint', 'Checkpoint captured\nURL: wrong', 'checkpoint fixture output'],
     ['cookies', 'sid  TOPSECRET  example.test  session', 'cookies fixture output'],
+    ['viewport', JSON.stringify({
+      schema: 'chrome-cdp-ex.action.v1', action: 'viewport', dispatch: { ok: false },
+      receipt: { schema: 'chrome-cdp-ex.action-receipt.v1', outcome: 'changed' },
+    }), 'viewport dispatch'],
+    ['emulate', JSON.stringify({ schema: 'chrome-cdp-ex.emulate.v1', active: false }), 'emulate fixture output'],
   ])('rejects an invalid %s handoff and cleans up', async (invalidId, invalidOutput, expectedMessage) => {
     const cleanup = vi.fn(async () => {});
     await expect(runPhase4SliceSession({
@@ -617,7 +647,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
         return JSON.stringify(model);
       },
       cleanup,
-    })).resolves.toMatchObject({ extractionParity: 36 });
+    })).resolves.toMatchObject({ extractionParity: 38 });
     expect(cleanup).toHaveBeenCalledOnce();
   });
 

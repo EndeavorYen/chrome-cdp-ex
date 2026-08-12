@@ -25,26 +25,26 @@ describe('Runtime v3 final dispatch characterization', () => {
         aliases: 23,
         targetCommands: 68,
         targetlessCommands: 13,
-        applicationCommands: 40,
-        legacyDaemonCommands: 28,
-        daemonGroups: 37,
+        applicationCommands: 42,
+        legacyDaemonCommands: 26,
+        daemonGroups: 35,
       },
       applicationCommands: [
-        'back', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'controls', 'cookies', 'dismiss-modal', 'evalraw', 'export-playwright', 'fill', 'forward', 'frame', 'hover', 'html', 'jsclick', 'mock', 'nav', 'net',
+        'back', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'controls', 'cookies', 'dismiss-modal', 'emulate', 'evalraw', 'export-playwright', 'fill', 'forward', 'frame', 'hover', 'html', 'jsclick', 'mock', 'nav', 'net',
         'overlay', 'perceive', 'press', 'record-actions', 'reload', 'report', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
-        'table', 'text', 'throttle', 'type', 'verify-click', 'wait', 'waitfor',
+        'table', 'text', 'throttle', 'type', 'verify-click', 'viewport', 'wait', 'waitfor',
       ],
     });
     expect(fixture.targetless.map(command => command.name)).toEqual([
       'help', 'list', 'target', 'tab-group', 'broadcast', 'open', 'doctor',
       'spawn-debug-browser', 'attach', 'use', 'forget', 'current', 'stop',
     ]);
-    expect(fixture.deletionAllowlist).toHaveLength(28);
+    expect(fixture.deletionAllowlist).toHaveLength(26);
     expect(fixture.deletionAllowlist.map(entry => entry.name)).not.toEqual(
       expect.arrayContaining([
-        'back', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'controls', 'cookies', 'dismiss-modal', 'evalraw', 'export-playwright', 'fill', 'forward', 'frame', 'hover', 'html', 'jsclick', 'mock', 'nav', 'net',
+        'back', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'controls', 'cookies', 'dismiss-modal', 'emulate', 'evalraw', 'export-playwright', 'fill', 'forward', 'frame', 'hover', 'html', 'jsclick', 'mock', 'nav', 'net',
         'overlay', 'perceive', 'press', 'record-actions', 'reload', 'report', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
-        'table', 'text', 'throttle', 'type', 'verify-click', 'wait', 'waitfor',
+        'table', 'text', 'throttle', 'type', 'verify-click', 'viewport', 'wait', 'waitfor',
       ]),
     );
     expect(fixture.daemonGroups.filter(group => group.owner === 'daemon-protocol').map(group => group.labels))
@@ -182,6 +182,14 @@ describe('Runtime v3 final dispatch characterization', () => {
         'mock: applicationPreflight.handlerBuilders.mock(actionCapabilities),',
         'mock: applicationPreflight.handlerBuilders.clock(actionCapabilities),',
       ),
+      source.replace(
+        'emulate: applicationPreflight.handlerBuilders.emulate(actionCapabilities),',
+        'emulate: applicationPreflight.handlerBuilders.viewport(actionCapabilities),',
+      ),
+      source.replace(
+        'viewport: applicationPreflight.handlerBuilders.viewport(actionCapabilities),',
+        'viewport: applicationPreflight.handlerBuilders.emulate(actionCapabilities),',
+      ),
     ]) {
       expect(buildRuntimeDispatchInventory(mutation)).not.toEqual(fixture);
     }
@@ -239,7 +247,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 37 daemon groups');
+    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 35 daemon groups');
   });
 
   it('keeps the complete policy-class distribution visible before deletion', () => {

@@ -12797,6 +12797,7 @@ const MIGRATED_DAEMON_COMMANDS = Object.freeze([
   'clickxy', 'dismiss-modal', 'jsclick', 'type', 'verify-click',
   'back', 'forward', 'nav', 'reload',
   'clock', 'mock', 'throttle',
+  'emulate', 'viewport',
 ]);
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPhase4PerceiveHandler(context),
@@ -12839,6 +12840,8 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
   clock: capabilities => createDaemonActionHandlers(capabilities).clock,
   mock: capabilities => createDaemonActionHandlers(capabilities).mock,
   throttle: capabilities => createDaemonActionHandlers(capabilities).throttle,
+  emulate: capabilities => createDaemonActionHandlers(capabilities).emulate,
+  viewport: capabilities => createDaemonActionHandlers(capabilities).viewport,
 });
 
 function preflightDaemonApplication(input = {}) {
@@ -13266,6 +13269,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const value = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }, 'settle-diff', null, fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
+    emulate: async args => commandResult(
+      await emulateStr(cdp, sessionId, session, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
+      { kind: 'action-receipt' },
+    ),
     fill: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const fargs = fopts.args;
@@ -13354,6 +13361,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         : `${formatSemanticInteractionResult(model)}${vopts.evidence === 'full' && captured ? `\n---\n${formatActionText(captured)}` : ''}`;
       return commandResult(value, { kind: 'action-receipt' });
     },
+    viewport: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = fopts.args[0]
+        ? await actionFeedback('viewport', () => viewportStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'viewport', label: fopts.args[0], commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts)
+        : await viewportStr(cdp, sessionId);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
   };
   const phase4Handlers = {
     report: applicationPreflight.handlerBuilders.report({ session }),
@@ -13413,6 +13427,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     clock: applicationPreflight.handlerBuilders.clock(actionCapabilities),
     mock: applicationPreflight.handlerBuilders.mock(actionCapabilities),
     throttle: applicationPreflight.handlerBuilders.throttle(actionCapabilities),
+    emulate: applicationPreflight.handlerBuilders.emulate(actionCapabilities),
+    viewport: applicationPreflight.handlerBuilders.viewport(actionCapabilities),
   };
   const phase4Context = createCommandDispatcher({
     registry: phase4Registry,
@@ -13633,16 +13649,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         case 'cookieset': result = await cookieSetStr(cdp, sessionId, args[0]); break;
         case 'cookiedel': result = await cookieDelStr(cdp, sessionId, args[0]); break;
         case 'dialog': result = dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]); break;
-        case 'viewport': case 'resize': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          if (fopts.args[0]) result = await actionFeedback('viewport', () => viewportStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'viewport', label: fopts.args[0], commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts); // auto-diff when resizing
-          else result = await viewportStr(cdp, sessionId, args[0]);
-          break;
-        }
-        case 'emulate': {
-          result = await emulateStr(cdp, sessionId, session, args, { targetPrefix: targetPrefixForDisplay(targetId) });
-          break;
-        }
         case 'upload': {
           const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           result = await actionFeedback('upload', () => uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'state-change', null, fopts);
@@ -15015,8 +15021,8 @@ function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound })
   const actionMutates = command === 'hover' ? mutates === false : mutates === true;
   const allowed = ([
     'back', 'click', 'clickxy', 'clock', 'dismiss-modal', 'fill', 'forward', 'hover',
-    'jsclick', 'mock', 'nav', 'press', 'reload', 'scroll', 'select', 'throttle',
-    'type', 'verify-click',
+    'emulate', 'jsclick', 'mock', 'nav', 'press', 'reload', 'scroll', 'select',
+    'throttle', 'type', 'verify-click', 'viewport',
   ].includes(command)
       && policy === 'mutation' && actionMutates)
     || (command === 'evalraw' && policy === 'raw-cdp' && mutates === false)
@@ -16428,7 +16434,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, sendCommand, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
   parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
-  parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState,
+  parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
