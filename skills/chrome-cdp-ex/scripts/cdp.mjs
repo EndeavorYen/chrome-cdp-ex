@@ -12801,6 +12801,7 @@ const MIGRATED_DAEMON_COMMANDS = Object.freeze([
   'cookiedel', 'cookieset', 'dialog', 'keepalive', 'netlog',
   'eval', 'eval64', 'call',
   'console', 'record',
+  'batch', 'flow', 'repeat', 'replay',
 ]);
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPhase4PerceiveHandler(context),
@@ -12855,6 +12856,13 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
   call: capabilities => async ({ args }) => capabilities.call(args),
   console: capabilities => createDaemonReadHandlers(capabilities).console,
   record: capabilities => createDaemonReadHandlers(capabilities).record,
+  batch: capabilities => async ({ args }) => commandResult(await capabilities.batch(args), null),
+  flow: capabilities => async ({ args }) => commandResult(await capabilities.flow(args), null),
+  repeat: capabilities => async ({ args }) => commandResult(await capabilities.repeat(args), null),
+  replay: capabilities => async ({ args }) => commandResult(
+    await capabilities.replay(args),
+    { kind: 'action-receipt' },
+  ),
 });
 
 function preflightDaemonApplication(input = {}) {
@@ -13434,6 +13442,54 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       return commandResult(value, { kind: 'action-receipt' });
     },
   };
+  const workflowCapabilities = {
+    batch: async args => {
+      const parsedBatch = parseBatchArgs(args);
+      const { commands, parallel } = parsedBatch;
+      if (!commands.length) throw new Error('batch: no commands provided');
+      const blocked = commands.filter(command => BATCH_BLOCKED.has(command.cmd));
+      if (blocked.length) throw new Error(`batch: ${blocked.map(command => command.cmd).join(', ')} not allowed inside batch`);
+      if (parallel) {
+        const unsafe = commands.filter(command => isBatchParallelUnsafeCommand(command.cmd));
+        if (unsafe.length) throw new Error(`batch --parallel: ${[...new Set(unsafe.map(command => command.cmd))].join(', ')} mutate shared state — use sequential batch`);
+      }
+      const autoActionJson = parsedBatch.output === 'model';
+      const runOne = async command => {
+        const nested = await handleCommand({
+          cmd: command.cmd,
+          args: autoActionJsonArgs(command.cmd, command.args || [], autoActionJson),
+        });
+        return { cmd: command.cmd, ok: nested.ok, result: nested.result, error: nested.error };
+      };
+      let results;
+      if (parallel) {
+        results = await Promise.all(commands.map(runOne));
+      } else {
+        results = [];
+        for (const command of commands) results.push(await runOne(command));
+      }
+      const format = parsedBatch.output === 'legacy-json' ? 'json' : parsedBatch.output;
+      return formatBatchResults(results, format, { targetId, mode: parallel ? 'parallel' : 'sequential' });
+    },
+    flow: async args => {
+      const fopts = parseFormatArgs(args, ['text', 'json']);
+      return flowStr({
+        run: step => handleCommand({
+          cmd: step.cmd,
+          args: autoActionJsonArgs(step.cmd, step.args || [], fopts.format === 'json'),
+        }),
+        settle: what => settleFlow(cdp, sessionId, what, pendingReqs),
+        assertCondition: condition => probePageCondition(cdp, sessionId, condition),
+      }, fopts.args.join(' '), { format: fopts.format, targetId, throwOnFailure: true });
+    },
+    repeat: args => repeatStr({
+      run: step => handleCommand({ cmd: step.cmd, args: step.args || [] }),
+      probeCondition: condition => probePageCondition(cdp, sessionId, condition),
+    }, args),
+    replay: args => replayActionsStr({
+      run: step => handleCommand({ cmd: step.cmd, args: step.args || [] }),
+    }, args),
+  };
   const phase4Handlers = {
     report: applicationPreflight.handlerBuilders.report({ session }),
     click: applicationPreflight.handlerBuilders.click({
@@ -13504,6 +13560,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     call: applicationPreflight.handlerBuilders.call(scriptCapabilities),
     console: applicationPreflight.handlerBuilders.console(readCapabilities),
     record: applicationPreflight.handlerBuilders.record(readCapabilities),
+    batch: applicationPreflight.handlerBuilders.batch(workflowCapabilities),
+    flow: applicationPreflight.handlerBuilders.flow(workflowCapabilities),
+    repeat: applicationPreflight.handlerBuilders.repeat(workflowCapabilities),
+    replay: applicationPreflight.handlerBuilders.replay(workflowCapabilities),
   };
   const phase4Context = createCommandDispatcher({
     registry: phase4Registry,
@@ -13706,60 +13766,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
             targetBound: Boolean(targetId),
           }, phase4Context);
           result = route.result;
-          break;
-        }
-        case 'batch': {
-          let parsedBatch;
-          try {
-            parsedBatch = parseBatchArgs(args);
-          } catch (e) {
-            return { ok: false, error: e.message };
-          }
-          const { commands, parallel } = parsedBatch;
-          if (!commands.length) return { ok: false, error: 'batch: no commands provided' };
-          const blocked = commands.filter(c => BATCH_BLOCKED.has(c.cmd));
-          if (blocked.length) return { ok: false, error: `batch: ${blocked.map(c => c.cmd).join(', ')} not allowed inside batch` };
-          if (parallel) {
-            const unsafe = commands.filter(c => isBatchParallelUnsafeCommand(c.cmd));
-            if (unsafe.length) return { ok: false, error: `batch --parallel: ${[...new Set(unsafe.map(c => c.cmd))].join(', ')} mutate shared state — use sequential batch` };
-          }
-          const autoActionJson = parsedBatch.output === 'model';
-          const runOne = async (c) => {
-            const sub = await handleCommand({ cmd: c.cmd, args: autoActionJsonArgs(c.cmd, c.args || [], autoActionJson) });
-            return { cmd: c.cmd, ok: sub.ok, result: sub.result, error: sub.error };
-          };
-          let results;
-          if (parallel) {
-            results = await Promise.all(commands.map(runOne));
-          } else {
-            results = [];
-            for (const c of commands) results.push(await runOne(c));
-          }
-          const fmt = parsedBatch.output === 'legacy-json' ? 'json' : parsedBatch.output;
-          result = formatBatchResults(results, fmt, { targetId, mode: parallel ? 'parallel' : 'sequential' });
-          break;
-        }
-        case 'flow': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          const input = fopts.args.join(' ');
-          result = await flowStr({
-            run: (step) => handleCommand({ cmd: step.cmd, args: autoActionJsonArgs(step.cmd, step.args || [], fopts.format === 'json') }),
-            settle: (what) => settleFlow(cdp, sessionId, what, pendingReqs),
-            assertCondition: (condition) => probePageCondition(cdp, sessionId, condition),
-          }, input, { format: fopts.format, targetId, throwOnFailure: true });
-          break;
-        }
-        case 'repeat': {
-          result = await repeatStr({
-            run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] }),
-            probeCondition: (condition) => probePageCondition(cdp, sessionId, condition),
-          }, args);
-          break;
-        }
-        case 'replay': {
-          result = await replayActionsStr({
-            run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] }),
-          }, args);
           break;
         }
         case 'restore': {
@@ -15067,6 +15073,9 @@ function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound })
       && policy === 'mutation' && actionMutates)
     || (['console', 'netlog', 'record'].includes(command)
       && policy === 'conditional' && mutates === false)
+    || (['batch', 'flow', 'repeat'].includes(command)
+      && policy === 'composite' && mutates === false)
+    || (command === 'replay' && policy === 'mutation' && mutates === true)
     || (['eval', 'eval64', 'call'].includes(command)
       && policy === 'raw-script' && mutates === false)
     || (command === 'evalraw' && policy === 'raw-cdp' && mutates === false)

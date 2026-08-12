@@ -115,6 +115,21 @@ export function buildPhase4SliceCommands(
     ]),
     immutableCommand('console', ['console', targetPrefix, '--clear']),
     immutableCommand('record', ['record', targetPrefix, '100']),
+    immutableCommand('batch', [
+      'batch', targetPrefix, 'text #auth-state | wait 25', '--compact',
+    ]),
+    immutableCommand('flow', [
+      'flow', targetPrefix, 'text #auth-state; assert text "auth state preserved after refresh"',
+    ]),
+    immutableCommand('repeat', ['repeat', targetPrefix, '2', 'wait', '25']),
+    immutableCommand('replay', [
+      'replay', targetPrefix, '--format', 'json', '--json', JSON.stringify({
+        schema: 'chrome-cdp-ex.record-actions.v1',
+        actions: [{
+          index: 1, action: 'wait', command: ['wait', '25'], replayable: true, needsInput: [],
+        }],
+      }),
+    ]),
     immutableCommand('cookieset', ['cookieset', targetPrefix, 'phase7_mutation=fixture']),
     immutableCommand('cookiedel', ['cookiedel', targetPrefix, 'phase7_mutation']),
     immutableCommand('dialog', ['dialog', targetPrefix, 'dismiss']),
@@ -442,6 +457,53 @@ function validateStep(id, stdout, {
       throw new Error(`record fixture output is invalid: ${JSON.stringify(stdout.slice(0, 1200))}`);
     }
     return 'recorded click';
+  }
+  if (id === 'batch') {
+    if (stdout !== '[1] text: auth state preserved after refresh\n[2] wait: Waited 25ms') {
+      throw new Error(`batch fixture output is invalid: ${JSON.stringify(stdout)}`);
+    }
+    return stdout;
+  }
+  if (id === 'flow') {
+    const expected = [
+      'Flow: 2 step(s)',
+      '[1/2] text #auth-state',
+      '  auth state preserved after refresh',
+      '[2/2] assert text includes "auth state preserved after refresh"',
+      '  Assertion passed: text includes "auth state preserved after refresh"',
+    ].join('\n');
+    if (stdout !== expected) throw new Error(`flow fixture output is invalid: ${JSON.stringify(stdout)}`);
+    return stdout;
+  }
+  if (id === 'repeat') {
+    const expected = [
+      'Repeat 2× wait 25',
+      '[1/2] ok: Waited 25ms',
+      '[2/2] ok: Waited 25ms',
+      'Done: 2 ok, 0 failed',
+    ].join('\n');
+    if (stdout !== expected) throw new Error(`repeat fixture output is invalid: ${JSON.stringify(stdout)}`);
+    return stdout;
+  }
+  if (id === 'replay') {
+    const model = parseStepJson(id, stdout);
+    if (!exactKeys(model, [
+      'schema', 'source', 'sourceTargetId', 'sourceSessionId', 'continueOnError',
+      'halted', 'counts', 'steps', 'failedStep', 'nextSteps', 'targetResolution',
+    ]) || model.schema !== 'chrome-cdp-ex.replay.v1'
+      || model.source !== 'inline JSON' || model.sourceTargetId !== null || model.sourceSessionId !== null
+      || model.continueOnError !== false || model.halted !== false
+      || !exactKeys(model.counts, ['environment', 'actions', 'total', 'ok', 'failed', 'skipped'])
+      || model.counts.environment !== 0 || model.counts.actions !== 1 || model.counts.total !== 1
+      || model.counts.ok !== 1 || model.counts.failed !== 0 || model.counts.skipped !== 0
+      || !Array.isArray(model.steps) || model.steps.length !== 1
+      || model.steps[0]?.phase !== 'action' || model.steps[0]?.commandText !== 'wait 25'
+      || model.steps[0]?.ok !== true || model.steps[0]?.skipped !== false
+      || model.failedStep !== null || !Array.isArray(model.nextSteps) || model.nextSteps.length !== 0
+      || !validTargetResolution(model.targetResolution, targetPrefix, model.targetResolution?.requestedTargetId)) {
+      throw new Error(`replay fixture output is invalid: ${JSON.stringify(model).slice(0, 1200)}`);
+    }
+    return 'replayed wait';
   }
   if (id === 'checkpoint') {
     const expected = [

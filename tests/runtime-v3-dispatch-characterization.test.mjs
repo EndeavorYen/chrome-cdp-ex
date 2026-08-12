@@ -25,13 +25,13 @@ describe('Runtime v3 final dispatch characterization', () => {
         aliases: 23,
         targetCommands: 68,
         targetlessCommands: 13,
-        applicationCommands: 52,
-        legacyDaemonCommands: 16,
-        daemonGroups: 25,
+        applicationCommands: 56,
+        legacyDaemonCommands: 12,
+        daemonGroups: 21,
       },
       applicationCommands: [
-        'back', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'forward', 'frame', 'hover', 'html', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
-        'overlay', 'perceive', 'press', 'record', 'record-actions', 'reload', 'report', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
+        'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'hover', 'html', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
+        'overlay', 'perceive', 'press', 'record', 'record-actions', 'reload', 'repeat', 'replay', 'report', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
         'table', 'text', 'throttle', 'type', 'verify-click', 'viewport', 'wait', 'waitfor',
       ],
     });
@@ -39,11 +39,11 @@ describe('Runtime v3 final dispatch characterization', () => {
       'help', 'list', 'target', 'tab-group', 'broadcast', 'open', 'doctor',
       'spawn-debug-browser', 'attach', 'use', 'forget', 'current', 'stop',
     ]);
-    expect(fixture.deletionAllowlist).toHaveLength(16);
+    expect(fixture.deletionAllowlist).toHaveLength(12);
     expect(fixture.deletionAllowlist.map(entry => entry.name)).not.toEqual(
       expect.arrayContaining([
-        'back', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'forward', 'frame', 'hover', 'html', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
-        'overlay', 'perceive', 'press', 'record', 'record-actions', 'reload', 'report', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
+        'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'hover', 'html', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
+        'overlay', 'perceive', 'press', 'record', 'record-actions', 'reload', 'repeat', 'replay', 'report', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
         'table', 'text', 'throttle', 'type', 'verify-click', 'viewport', 'wait', 'waitfor',
       ]),
     );
@@ -88,17 +88,17 @@ describe('Runtime v3 final dispatch characterization', () => {
 
   it('fails closed on an unknown route, duplicate route, missing route, or edited branch', () => {
     expect(() => buildRuntimeDispatchInventory(
-      source.replace("case 'batch': {", "case 'planted': {"),
+      source.replace("case 'shot': case 'screenshot': {", "case 'planted': case 'screenshot': {"),
     )).toThrow(/unknown route|missing daemon routes|recursive daemon routes/);
     expect(() => buildRuntimeDispatchInventory(
-      source.replace("case 'batch': {", "case 'batch': case 'batch': {"),
+      source.replace("case 'shot': case 'screenshot': {", "case 'shot': case 'shot': case 'screenshot': {"),
     )).toThrow(/duplicate daemon route labels/);
     expect(() => buildRuntimeDispatchInventory(
-      source.replace("case 'batch': {", "case 'planted-batch': {"),
+      source.replace("case 'shot': case 'screenshot': {", "case 'planted-shot': case 'screenshot': {"),
     )).toThrow(/unknown route|spellings missing daemon routes|recursive daemon routes/);
     const edited = buildRuntimeDispatchInventory(source.replace(
-      "case 'batch': {",
-      "case 'batch': { /* characterized edit */",
+      "case 'shot': case 'screenshot': {",
+      "case 'shot': case 'screenshot': { /* characterized edit */",
     ));
     expect(edited).not.toEqual(fixture);
     expect(() => buildRuntimeDispatchInventory(source.replace(
@@ -110,17 +110,17 @@ describe('Runtime v3 final dispatch characterization', () => {
       "if (cmd === 'planted-direct') return finish(0);\n  if (cmd === '_daemon')",
     ))).toThrow(/direct CLI routes/);
     expect(() => buildRuntimeDispatchInventory(source.replace(
-      'run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] })',
-      'run: (step) => globalThis.handleCommand({ cmd: step.cmd, args: step.args || [] })',
-    ))).toThrow(/recursive daemon routes/);
+      'run: step => handleCommand({ cmd: step.cmd, args: step.args || [] })',
+      'run: step => globalThis.handleCommand({ cmd: step.cmd, args: step.args || [] })',
+    ))).toThrow(/recursive daemon routes|workflow capability repeat/);
     expect(() => buildRuntimeDispatchInventory(source.replace(
       'const route = await executePhase4DaemonRoute({',
       'const route = await fakeLegacyRoute({',
     ))).toThrow(/application ownership|general application dispatch/);
     expect(() => buildRuntimeDispatchInventory(source.replace(
-      'const sub = await handleCommand({ cmd: c.cmd, args: autoActionJsonArgs(c.cmd, c.args || [], autoActionJson) });',
-      "await handleCommand({ cmd: 'summary', args: [] });\n            const sub = await handleCommand({ cmd: c.cmd, args: autoActionJsonArgs(c.cmd, c.args || [], autoActionJson) });",
-    ))).toThrow(/recursive daemon routes|handleCommand exactly 1 times/);
+      'const nested = await handleCommand({',
+      "await handleCommand({ cmd: 'summary', args: [] });\n        const nested = await handleCommand({",
+    ))).toThrow(/workflow capability batch must call handleCommand exactly once/);
     expect(() => buildRuntimeDispatchInventory(source.replace(
       "case 'report': {\n          const route = await executePhase4DaemonRoute({",
       "case 'report': {\n          await executePhase4DaemonRoute({ cmd: 'report', args, targetBound: true }, phase4Context);\n          const route = await executePhase4DaemonRoute({",
@@ -222,8 +222,24 @@ describe('Runtime v3 final dispatch characterization', () => {
         'eval: async args => {',
         'eval: async args => commandResult(await callStr(cdp, sessionId, args.join(\' \')), null),\n    plantedEval: async args => {',
       ),
+      source.replace(
+        'batch: capabilities => async ({ args }) => commandResult(await capabilities.batch(args), null),',
+        'batch: capabilities => async ({ args }) => commandResult(await capabilities.flow(args), null),',
+      ),
+      source.replace(
+        'batch: async args => {',
+        'batch: async args => workflowCapabilities.flow(args),\n    plantedBatch: async args => {',
+      ),
+      source.replace(
+        'replay: applicationPreflight.handlerBuilders.replay(workflowCapabilities),',
+        'replay: applicationPreflight.handlerBuilders.repeat(workflowCapabilities),',
+      ),
     ]) {
-      expect(buildRuntimeDispatchInventory(mutation)).not.toEqual(fixture);
+      try {
+        expect(buildRuntimeDispatchInventory(mutation)).not.toEqual(fixture);
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+      }
     }
     const builderStart = source.indexOf('const DAEMON_HANDLER_BUILDERS =');
     const builderEnd = source.indexOf('\n\nfunction preflightDaemonApplication', builderStart);
@@ -244,6 +260,10 @@ describe('Runtime v3 final dispatch characterization', () => {
     expect(() => buildRuntimeDispatchInventory(source.replace(
       'const scriptCapabilities = {',
       'if (true) { const scriptCapabilities = {}; }\n  const scriptCapabilities = {',
+    ))).toThrow(/direct runDaemon const|exactly once/);
+    expect(() => buildRuntimeDispatchInventory(source.replace(
+      'const workflowCapabilities = {',
+      'if (true) { const workflowCapabilities = {}; }\n  const workflowCapabilities = {',
     ))).toThrow(/direct runDaemon const|exactly once/);
     expect(() => buildRuntimeDispatchInventory(source.replace(
       "const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];",
@@ -283,7 +303,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 25 daemon groups');
+    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 21 daemon groups');
   });
 
   it('keeps the complete policy-class distribution visible before deletion', () => {

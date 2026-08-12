@@ -96,6 +96,7 @@ function collectDaemonGroups(source) {
   let functionNode = null;
   let dispatchNode = null;
   const directCallsByCaseLine = new Map();
+  const workflowCalls = new Map();
   let genericApplicationCalls = 0;
   const applicationWiring = Object.create(null);
   const applicationWiringNames = [
@@ -106,6 +107,7 @@ function collectDaemonGroups(source) {
     'verifyClickBuilder',
     'scriptCapabilities',
     'actionCapabilities',
+    'workflowCapabilities',
     'phase4Handlers',
   ];
   const rule = {
@@ -171,6 +173,21 @@ function collectDaemonGroups(source) {
         CallExpression(node) {
           if (node.callee.type !== 'Identifier') return;
           if (!['executePhase4DaemonRoute', 'handleCommand'].includes(node.callee.name)) return;
+          const ancestors = sourceCode.getAncestors(node);
+          const workflowDeclarator = [...ancestors].reverse().find(ancestor => ancestor.type === 'VariableDeclarator'
+            && ancestor.id?.type === 'Identifier' && ancestor.id.name === 'workflowCapabilities');
+          if (node.callee.name === 'handleCommand' && workflowDeclarator) {
+            const property = [...ancestors].reverse().find(ancestor => ancestor.type === 'Property'
+              && ancestor.parent === workflowDeclarator.init);
+            if (!property || property.computed || property.kind !== 'init') {
+              throw new Error('workflow recursive call must belong to one direct capability property');
+            }
+            const name = property.key.type === 'Identifier' ? property.key.name : property.key.value;
+            const calls = workflowCalls.get(name) || { count: 0, source: sourceCode.getText(property), line: property.loc.start.line };
+            calls.count += 1;
+            workflowCalls.set(name, calls);
+            return;
+          }
           const branch = [...sourceCode.getAncestors(node)].reverse().find(ancestor => ancestor.type === 'SwitchCase');
           const owner = [...sourceCode.getAncestors(node)].reverse().find(ancestor => ancestor.type === 'FunctionDeclaration');
           if (owner?.id?.name !== 'handleCommand') return;
@@ -212,12 +229,29 @@ function collectDaemonGroups(source) {
       applicationWiringNames.map(name => applicationWiring[name]).join('\0'),
     ),
   };
+  const recursiveEdges = ['batch', 'flow', 'repeat', 'replay'].map(name => {
+    const call = workflowCalls.get(name);
+    if (!call || call.count !== 1) {
+      throw new Error(`workflow capability ${name} must call handleCommand exactly once`);
+    }
+    return {
+      from: name,
+      to: 'handleCommand',
+      line: call.line,
+      sourceDigest: digest(call.source),
+    };
+  });
+  const unexpectedWorkflowCalls = [...workflowCalls.keys()].filter(name => !['batch', 'flow', 'repeat', 'replay'].includes(name));
+  if (unexpectedWorkflowCalls.length) {
+    throw new Error(`unexpected recursive workflow capabilities: ${unexpectedWorkflowCalls.join(', ')}`);
+  }
   return {
     groups: groups.map(group => ({
       ...group,
       directCalls: [...(directCallsByCaseLine.get(group.line) || [])],
     })),
     wrapper,
+    recursiveEdges,
   };
 }
 
@@ -291,23 +325,14 @@ export function buildRuntimeDispatchInventory(source = readFileSync(cdpPath, 'ut
   for (const command of COMMAND_SURFACE.commands) {
     for (const spelling of [command.name, ...command.aliases]) bySpelling.set(spelling, command);
   }
-  const { groups: rawDaemonGroups, wrapper: daemonWrapper } = collectDaemonGroups(source);
-  const recursiveEdges = rawDaemonGroups
-    .filter(group => group.directCalls.filter(call => call === 'handleCommand').length === 1)
-    .map(group => ({
-      from: group.labels[0],
-      to: 'handleCommand',
-      line: group.line,
-      sourceDigest: digest(group.consequentSource),
-    }));
+  const { groups: rawDaemonGroups, wrapper: daemonWrapper, recursiveEdges } = collectDaemonGroups(source);
   if (JSON.stringify(recursiveEdges.map(edge => edge.from).sort())
     !== JSON.stringify(['batch', 'flow', 'repeat', 'replay'])) {
     throw new Error('recursive daemon routes must be exact direct handleCommand calls');
   }
   for (const group of rawDaemonGroups) {
     const count = group.directCalls.filter(call => call === 'handleCommand').length;
-    const expected = ['batch', 'flow', 'repeat', 'replay'].includes(group.labels[0]) ? 1 : 0;
-    if (count !== expected) throw new Error(`daemon branch ${group.labels.join('/')} must call handleCommand exactly ${expected} times`);
+    if (count !== 0) throw new Error(`daemon branch ${group.labels.join('/')} must not call handleCommand directly`);
   }
   const daemonGroups = rawDaemonGroups.map(({ consequentSource: _consequentSource, directCalls, ...group }) => {
     if (group.labels[0] === '<default>') return { ...group, owner: 'unknown-command', commands: [] };

@@ -35,7 +35,9 @@ exact-method CDP domains now replace duplicated authority without removing the
   through the same authorization and application-dispatch boundary while
   remaining MCP-inaccessible. Conditional observation controls `console` and
   `record` now share the same application boundary while preserving their
-  clear/action confirmation rules; the remaining 29 catalog commands are explicitly
+  clear/action confirmation rules. Recursive workflows `batch`, `flow`,
+  `repeat`, and `replay` now re-enter that same dispatcher for every nested
+  step; the remaining 25 catalog commands are explicitly
   retained on the characterized legacy route until parity permits migration.
   Add immutable public browser resources, private
   handles, a shared-key BrowserSupervisor with bounded stale recovery, extracted

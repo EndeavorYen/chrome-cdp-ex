@@ -18,6 +18,7 @@ const ACTION_COMMANDS = Object.freeze([
   'reload', 'scroll', 'select', 'throttle', 'type', 'verify-click', 'viewport',
 ]);
 const SCRIPT_COMMANDS = Object.freeze(['eval', 'eval64', 'call']);
+const WORKFLOW_COMMANDS = Object.freeze(['batch', 'flow', 'repeat', 'replay']);
 
 function spec(overrides = {}) {
   return {
@@ -715,8 +716,8 @@ describe('Phase 4 daemon dispatch seam', () => {
     });
     expect(preflight.registry.list()).toHaveLength(81);
     expect(Object.keys(preflight.routeOwners)).toHaveLength(81);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(52);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(29);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(56);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(25);
     expect(Object.isFrozen(preflight)).toBe(true);
     expect(Object.isFrozen(preflight.handlerBuilders)).toBe(true);
     expect(Object.values(builders).every(builder => builder.mock.calls.length === 0)).toBe(true);
@@ -847,6 +848,24 @@ describe('Phase 4 daemon dispatch seam', () => {
     })).toEqual({ allowed: false, code: 'policy-denied' });
   });
 
+  it.each(['batch', 'flow', 'repeat'])('binds %s to composite authorization and a live target', command => {
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command, policy: 'composite', mutates: false, targetBound: true,
+    })).toEqual({ allowed: true, code: 'legacy-daemon' });
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command, policy: 'mutation', mutates: false, targetBound: true,
+    })).toEqual({ allowed: false, code: 'policy-denied' });
+  });
+
+  it('binds replay to mutation authorization and a live target', () => {
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command: 'replay', policy: 'mutation', mutates: true, targetBound: true,
+    })).toEqual({ allowed: true, code: 'legacy-daemon' });
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command: 'replay', policy: 'mutation', mutates: true, targetBound: false,
+    })).toEqual({ allowed: false, code: 'target-not-bound' });
+  });
+
   it.each(['console', 'record'])('binds %s to conditional authorization and a live target', command => {
     expect(cdpTest.authorizePhase4DaemonCommand({
       command, policy: 'conditional', mutates: false, targetBound: true,
@@ -899,10 +918,11 @@ describe('Phase 4 daemon dispatch seam', () => {
       'cookiedel', 'cookieset', 'dialog', 'keepalive', 'netlog',
       'eval', 'eval64', 'call',
       'console', 'record',
+      'batch', 'flow', 'repeat', 'replay',
     ]);
     const preflight = cdpTest.preflightDaemonApplication();
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(52);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(29);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(56);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(25);
     const readHandlers = createDaemonReadHandlers({
       cascade: async args => `cascade:${args.join('|')}`,
       checkpoint: async args => `checkpoint:${args.join('|')}`,
@@ -942,6 +962,12 @@ describe('Phase 4 daemon dispatch seam', () => {
       )),
       ...Object.fromEntries(SCRIPT_COMMANDS.map(name => [
         name, async ({ args }) => commandResult(`${name}:${args.join('|')}`, null),
+      ])),
+      ...Object.fromEntries(WORKFLOW_COMMANDS.map(name => [
+        name, async ({ args }) => commandResult(
+          `${name}:${args.join('|')}`,
+          name === 'replay' ? { kind: 'action-receipt' } : null,
+        ),
       ])),
     };
     const dispatcher = createCommandDispatcher({
@@ -1019,6 +1045,11 @@ describe('Phase 4 daemon dispatch seam', () => {
       }, dispatcher)).resolves.toEqual({ handled: true, result: `${name}:fixture` });
     }
     for (const name of SCRIPT_COMMANDS) {
+      await expect(cdpTest.executePhase4DaemonRoute({
+        cmd: name, args: ['fixture'], targetBound: true,
+      }, dispatcher)).resolves.toEqual({ handled: true, result: `${name}:fixture` });
+    }
+    for (const name of WORKFLOW_COMMANDS) {
       await expect(cdpTest.executePhase4DaemonRoute({
         cmd: name, args: ['fixture'], targetBound: true,
       }, dispatcher)).resolves.toEqual({ handled: true, result: `${name}:fixture` });
@@ -1102,6 +1133,20 @@ describe('Phase 4 daemon dispatch seam', () => {
     for (const name of SCRIPT_COMMANDS) {
       await expect(builders[name](capabilities)({ args: ['one', 'two'] }))
         .resolves.toMatchObject({ value: `${name}:one|two`, evidence: null });
+      expect(capabilities[name]).toHaveBeenCalledExactlyOnceWith(['one', 'two']);
+    }
+  });
+
+  it('binds each production workflow builder to exactly its named capability and evidence policy', async () => {
+    const capabilities = Object.fromEntries(WORKFLOW_COMMANDS.map(name => [
+      name, vi.fn(async args => `${name}:${args.join('|')}`),
+    ]));
+    const builders = cdpTest.preflightDaemonApplication().handlerBuilders;
+    for (const name of WORKFLOW_COMMANDS) {
+      await expect(builders[name](capabilities)({ args: ['one', 'two'] })).resolves.toEqual({
+        value: `${name}:one|two`,
+        evidence: name === 'replay' ? { kind: 'action-receipt' } : null,
+      });
       expect(capabilities[name]).toHaveBeenCalledExactlyOnceWith(['one', 'two']);
     }
   });

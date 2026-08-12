@@ -67,6 +67,20 @@ function fixtureOutput(id) {
   if (id === 'call') return '{\n  "phase7": "call"\n}';
   if (id === 'console') return 'Console baseline cleared (console and exception buffers)';
   if (id === 'record') return 'Record timeline (100ms)\n  (no DOM, console, exception, navigation, or XHR/Fetch/Document network events observed)';
+  if (id === 'batch') return '[1] text: auth state preserved after refresh\n[2] wait: Waited 25ms';
+  if (id === 'flow') return 'Flow: 2 step(s)\n[1/2] text #auth-state\n  auth state preserved after refresh\n[2/2] assert text includes "auth state preserved after refresh"\n  Assertion passed: text includes "auth state preserved after refresh"';
+  if (id === 'repeat') return 'Repeat 2× wait 25\n[1/2] ok: Waited 25ms\n[2/2] ok: Waited 25ms\nDone: 2 ok, 0 failed';
+  if (id === 'replay') return JSON.stringify({
+    schema: 'chrome-cdp-ex.replay.v1', source: 'inline JSON', sourceTargetId: null,
+    sourceSessionId: null, continueOnError: false, halted: false,
+    counts: { environment: 0, actions: 1, total: 1, ok: 1, failed: 0, skipped: 0 },
+    steps: [{
+      phase: 'action', index: 1, total: 1, command: ['wait', '25'],
+      commandText: 'wait 25', ok: true, skipped: false, resultPreview: 'Waited 25ms',
+    }],
+    failedStep: null, nextSteps: [],
+    targetResolution: targetResolution(),
+  });
   if (id === 'snap') return `[RootWebArea] ${TITLE}\n  [button] Refresh account\n\n(Hint: \`snap\` gives only the raw AX tree. Use \`perceive\` instead for layout, @refs, style hints, and console health — it is the recommended starting command.)`;
   if (id === 'styles') return '<SECTION>#auth-panel\n  background-color: rgb(240, 253, 244)\n  padding: 12px\n  border: 1px solid rgb(187, 247, 208)';
   if (id === 'overlay') return JSON.stringify({
@@ -347,6 +361,16 @@ describe('Phase 4 disposable core-slice scenario', () => {
       { id: 'call', args: ['call', TARGET, 'async () => ({ phase7: "call" })'] },
       { id: 'console', args: ['console', TARGET, '--clear'] },
       { id: 'record', args: ['record', TARGET, '100'] },
+      { id: 'batch', args: ['batch', TARGET, 'text #auth-state | wait 25', '--compact'] },
+      { id: 'flow', args: ['flow', TARGET, 'text #auth-state; assert text "auth state preserved after refresh"'] },
+      { id: 'repeat', args: ['repeat', TARGET, '2', 'wait', '25'] },
+      {
+        id: 'replay',
+        args: ['replay', TARGET, '--format', 'json', '--json', JSON.stringify({
+          schema: 'chrome-cdp-ex.record-actions.v1',
+          actions: [{ index: 1, action: 'wait', command: ['wait', '25'], replayable: true, needsInput: [] }],
+        })],
+      },
       { id: 'cookieset', args: ['cookieset', TARGET, 'phase7_mutation=fixture'] },
       { id: 'cookiedel', args: ['cookiedel', TARGET, 'phase7_mutation'] },
       { id: 'dialog', args: ['dialog', TARGET, 'dismiss'] },
@@ -542,6 +566,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
         'wait', 'waitfor', 'cascade',
         'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
         'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw', 'eval', 'eval64', 'call', 'console', 'record',
+        'batch', 'flow', 'repeat', 'replay',
         'cookieset', 'cookiedel', 'dialog', 'keepalive', 'netlog',
         'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
       ],
@@ -570,6 +595,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     'checkpoint', 'cookies', 'cookieset', 'cookiedel', 'dialog', 'keepalive', 'netlog',
     'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
     'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw', 'eval', 'eval64', 'call', 'console', 'record',
+    'batch', 'flow', 'repeat', 'replay',
     'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
   ])('fails at %s and still runs cleanup exactly once', async failureId => {
     const runCommand = vi.fn(async command => {
@@ -647,6 +673,10 @@ describe('Phase 4 disposable core-slice scenario', () => {
     ['call', '{"phase7":"wrong"}', 'call fixture output'],
     ['console', 'Console entries cleared', 'console fixture output'],
     ['record', 'Record timeline (250ms)', 'record fixture output'],
+    ['batch', '[1] text: wrong', 'batch fixture output'],
+    ['flow', 'Flow: 1 step(s)', 'flow fixture output'],
+    ['repeat', 'Repeat 1× wait 25', 'repeat fixture output'],
+    ['replay', JSON.stringify({ schema: 'chrome-cdp-ex.replay.v1' }), 'replay fixture output'],
     ['viewport', JSON.stringify({
       schema: 'chrome-cdp-ex.action.v1', action: 'viewport', dispatch: { ok: false },
       receipt: { schema: 'chrome-cdp-ex.action-receipt.v1', outcome: 'changed' },
