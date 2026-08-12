@@ -125,6 +125,14 @@ describe('Runtime v3 final dispatch characterization', () => {
       'loadall: applicationPreflight.handlerBuilders.closetab(actionCapabilities),',
     ))).not.toEqual(fixture);
     expect(() => buildRuntimeDispatchInventory(source.replace(
+      '  loadall: capabilities => createDaemonActionHandlers(capabilities).loadall,\n',
+      '',
+    ))).toThrow(/exactly cover.*68 target commands/);
+    expect(buildRuntimeDispatchInventory(source.replace(
+      'if (!sameStringArray(builderNames, expectedNames)) {',
+      'if (false && !sameStringArray(builderNames, expectedNames)) {',
+    ))).not.toEqual(fixture);
+    expect(() => buildRuntimeDispatchInventory(source.replace(
       "case 'meta': {",
       "case 'meta': case 'summary': {",
     ))).toThrow(/protocol route mixed/);
@@ -153,9 +161,9 @@ describe('Runtime v3 final dispatch characterization', () => {
       expect(error.message).toMatch(/duplicate daemon route labels: report/);
     }
     expect(() => buildRuntimeDispatchInventory(source.replace(
-      "'perceive', 'click', 'report', 'evalraw', 'html', 'text', 'table',",
-      "'perceive', 'click', 'report', 'evalraw', 'html', 'text', 'planted',",
-    ))).toThrow(/unknown commands/);
+      'loadall: capabilities => createDaemonActionHandlers(capabilities).loadall,',
+      'planted: capabilities => createDaemonActionHandlers(capabilities).loadall,',
+    ))).toThrow(/exactly cover.*68 target commands/);
     expect(() => buildRuntimeDispatchInventory(source.replace(
       'const applicationRoute = phase4Context.route(cmd);',
       "await executePhase4DaemonRoute({ cmd: 'html', args, targetBound: true }, phase4Context);\n      const applicationRoute = phase4Context.route(cmd);",
@@ -334,7 +342,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       "return { ok: false, error: e.message || String(e) };\n    }\n    // default: return { ok: false, error: `Unknown command: ${cmd}` };\n  }",
     ).replace("return { ok: true, result: result ?? '' };", "return { ok: true, result: 'planted' };");
     expect(buildRuntimeDispatchInventory(markerCollision)).not.toEqual(fixture);
-  }, 30_000);
+  }, 45_000);
 
   it('keeps check mode read-only and rejects stale fixture/source drift', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--check'], {

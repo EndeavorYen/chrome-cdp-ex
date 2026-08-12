@@ -32,15 +32,14 @@ function functionName(sourceCode, node) {
 
 function collectApplicationCommands(source) {
   let commands = null;
-  let migratedSource = null;
   let buildersSource = null;
+  let preflightSource = null;
   const rule = {
     create(context) {
       const sourceCode = context.sourceCode;
       return {
         VariableDeclarator(node) {
-          if (node.id?.type !== 'Identifier') return;
-          if (!['DAEMON_HANDLER_BUILDERS', 'MIGRATED_DAEMON_COMMANDS'].includes(node.id.name)) return;
+          if (node.id?.type !== 'Identifier' || node.id.name !== 'DAEMON_HANDLER_BUILDERS') return;
           const ancestors = sourceCode.getAncestors(node);
           const declaration = ancestors.at(-1);
           const program = ancestors.at(-2);
@@ -48,27 +47,40 @@ function collectApplicationCommands(source) {
             || declaration.declarations.length !== 1 || program?.type !== 'Program') {
             throw new Error(`${node.id.name} must be one unique top-level const declaration`);
           }
-          if (node.id.name === 'DAEMON_HANDLER_BUILDERS') {
-            if (buildersSource !== null) throw new Error('DAEMON_HANDLER_BUILDERS must be declared exactly once');
-            buildersSource = sourceCode.getText(node);
-            return;
-          }
-          if (migratedSource !== null) throw new Error('MIGRATED_DAEMON_COMMANDS must be declared exactly once');
-          migratedSource = sourceCode.getText(node);
+          if (buildersSource !== null) throw new Error('DAEMON_HANDLER_BUILDERS must be declared exactly once');
+          buildersSource = sourceCode.getText(node);
           const call = node.init;
-          const array = call?.type === 'CallExpression'
+          const object = call?.type === 'CallExpression'
             && call.callee?.type === 'MemberExpression'
             && call.callee.object?.name === 'Object'
             && call.callee.property?.name === 'freeze'
             ? call.arguments[0]
             : null;
-          if (array?.type !== 'ArrayExpression') throw new Error('MIGRATED_DAEMON_COMMANDS must freeze one literal array');
-          commands = array.elements.map((element, index) => {
-            if (element?.type !== 'Literal' || typeof element.value !== 'string') {
-              throw new Error(`MIGRATED_DAEMON_COMMANDS[${index}] must be a string literal`);
+          if (object?.type !== 'ObjectExpression') {
+            throw new Error('DAEMON_HANDLER_BUILDERS must freeze one literal object');
+          }
+          commands = object.properties.map((property, index) => {
+            if (property?.type !== 'Property' || property.kind !== 'init' || property.method
+              || property.computed && property.key?.type !== 'Literal') {
+              throw new Error(`DAEMON_HANDLER_BUILDERS[${index}] must be one static data property`);
             }
-            return element.value;
+            if (property.key?.type === 'Identifier') return property.key.name;
+            if (property.key?.type === 'Literal' && typeof property.key.value === 'string') {
+              return property.key.value;
+            }
+            throw new Error(`DAEMON_HANDLER_BUILDERS[${index}] must have a static string key`);
           });
+        },
+        FunctionDeclaration(node) {
+          if (node.id?.name !== 'preflightDaemonApplication') return;
+          const ancestors = sourceCode.getAncestors(node);
+          if (ancestors.length !== 1 || ancestors[0]?.type !== 'Program') {
+            throw new Error('preflightDaemonApplication must be one unique top-level function');
+          }
+          if (preflightSource !== null) {
+            throw new Error('preflightDaemonApplication must be declared exactly once');
+          }
+          preflightSource = sourceCode.getText(node);
         },
       };
     },
@@ -79,15 +91,21 @@ function collectApplicationCommands(source) {
     rules: { 'inventory/applications': 'error' },
   });
   if (messages.length) throw new Error(messages.map(message => message.message).join('\n'));
-  if (!commands) throw new Error('MIGRATED_DAEMON_COMMANDS was not found');
+  if (!commands) throw new Error('DAEMON_HANDLER_BUILDERS was not found');
   if (!buildersSource) throw new Error('DAEMON_HANDLER_BUILDERS was not found');
-  const canonical = new Set(COMMAND_SURFACE.commands.map(command => command.name));
-  if (new Set(commands).size !== commands.length) throw new Error('MIGRATED_DAEMON_COMMANDS contains duplicates');
-  const unknown = commands.filter(command => !canonical.has(command));
-  if (unknown.length) throw new Error(`MIGRATED_DAEMON_COMMANDS contains unknown commands: ${unknown.join(', ')}`);
+  if (!preflightSource) throw new Error('preflightDaemonApplication was not found');
+  if (new Set(commands).size !== commands.length) throw new Error('DAEMON_HANDLER_BUILDERS contains duplicates');
+  const expected = COMMAND_SURFACE.commands
+    .filter(command => command.needsTarget)
+    .map(command => command.name)
+    .sort();
+  const actual = [...commands].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`DAEMON_HANDLER_BUILDERS must exactly cover all ${expected.length} target commands`);
+  }
   return {
     commands: new Set(commands),
-    authorityDigest: digest(`${migratedSource}\0${buildersSource}`),
+    authorityDigest: digest(`${buildersSource}\0${preflightSource}`),
   };
 }
 

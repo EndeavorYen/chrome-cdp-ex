@@ -709,7 +709,7 @@ describe('Phase 4 daemon dispatch seam', () => {
 
   it('preflights the complete registry and exact migrated handler ownership without invoking factories', () => {
     const builders = Object.fromEntries(
-      cdpTest.MIGRATED_DAEMON_COMMANDS.map(name => [name, vi.fn()]),
+      cdpTest.DAEMON_APPLICATION_COMMANDS.map(name => [name, vi.fn()]),
     );
     const preflight = cdpTest.preflightDaemonApplication({
       commands: cdpTest.COMMANDS,
@@ -740,7 +740,7 @@ describe('Phase 4 daemon dispatch seam', () => {
 
   it('rejects preflight option and daemon request prototypes/accessors before authority reads', async () => {
     const builders = Object.fromEntries(
-      cdpTest.MIGRATED_DAEMON_COMMANDS.map(name => [name, vi.fn()]),
+      cdpTest.DAEMON_APPLICATION_COMMANDS.map(name => [name, vi.fn()]),
     );
     expect(() => cdpTest.preflightDaemonApplication(Object.create({
       commands: cdpTest.COMMANDS,
@@ -907,24 +907,10 @@ describe('Phase 4 daemon dispatch seam', () => {
   });
 
   it('routes the accepted read cohorts through the complete dispatcher without legacy fallthrough', async () => {
-    expect(cdpTest.MIGRATED_DAEMON_COMMANDS).toEqual([
-      'perceive', 'click', 'report', 'evalraw', 'html', 'text', 'table', 'net', 'status', 'summary',
-      'snap', 'controls', 'frame', 'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
-      'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies',
-      'fill', 'hover', 'press', 'scroll', 'select',
-      'clickxy', 'dismiss-modal', 'jsclick', 'type', 'verify-click',
-      'back', 'forward', 'nav', 'reload',
-      'clock', 'mock', 'throttle',
-      'emulate', 'viewport',
-      'cookiedel', 'cookieset', 'dialog', 'keepalive', 'netlog',
-      'eval', 'eval64', 'call',
-      'console', 'record',
-      'batch', 'flow', 'repeat', 'replay',
-      'inject', 'restore', 'upload',
-      'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
-      'qa', 'responsive-audit',
-      'closetab', 'loadall',
-    ]);
+    expect(cdpTest.DAEMON_APPLICATION_COMMANDS).toEqual(
+      cdpTest.COMMANDS.filter(command => command.needsTarget).map(command => command.name).sort(),
+    );
+    expect(cdpTest).not.toHaveProperty('MIGRATED_DAEMON_COMMANDS');
     const preflight = cdpTest.preflightDaemonApplication();
     expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(68);
     expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(13);

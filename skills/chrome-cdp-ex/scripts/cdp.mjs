@@ -12973,24 +12973,6 @@ async function dismissModalStr(cdp, sid) {
 // Per-tab daemon
 // ---------------------------------------------------------------------------
 
-const MIGRATED_DAEMON_COMMANDS = Object.freeze([
-  'perceive', 'click', 'report', 'evalraw', 'html', 'text', 'table', 'net', 'status', 'summary',
-  'snap', 'controls', 'frame', 'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
-  'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies',
-  'fill', 'hover', 'press', 'scroll', 'select',
-  'clickxy', 'dismiss-modal', 'jsclick', 'type', 'verify-click',
-  'back', 'forward', 'nav', 'reload',
-  'clock', 'mock', 'throttle',
-  'emulate', 'viewport',
-  'cookiedel', 'cookieset', 'dialog', 'keepalive', 'netlog',
-  'eval', 'eval64', 'call',
-  'console', 'record',
-  'batch', 'flow', 'repeat', 'replay',
-  'inject', 'restore', 'upload',
-  'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
-  'qa', 'responsive-audit',
-  'closetab', 'loadall',
-]);
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPhase4PerceiveHandler(context),
   click: context => createPhase4ClickHandler(context),
@@ -13064,6 +13046,7 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
   closetab: capabilities => createDaemonActionHandlers(capabilities).closetab,
   loadall: capabilities => createDaemonActionHandlers(capabilities).loadall,
 });
+const DAEMON_APPLICATION_COMMANDS = Object.freeze(Object.keys(DAEMON_HANDLER_BUILDERS).sort());
 
 function preflightDaemonApplication(input = {}) {
   const options = snapshotPhase4DataObject(input, 'application preflight options');
@@ -13078,9 +13061,12 @@ function preflightDaemonApplication(input = {}) {
   const registry = createPhase4CommandRegistry(commands);
   const builders = snapshotPhase4DataObject(handlerBuilders, 'handlerBuilders');
   const builderNames = Object.keys(builders).sort();
-  const expectedNames = [...MIGRATED_DAEMON_COMMANDS].sort();
+  const expectedNames = registry.list()
+    .filter(command => command.needsTarget)
+    .map(command => command.name)
+    .sort();
   if (!sameStringArray(builderNames, expectedNames)) {
-    throw new Error('handlerBuilders: must exactly own the migrated daemon commands');
+    throw new Error(`handlerBuilders: must exactly own all ${expectedNames.length} target application commands`);
   }
   for (const name of expectedNames) {
     if (typeof builders[name] !== 'function') throw new Error(`handlerBuilders.${name}: handler factory is required`);
@@ -13089,9 +13075,8 @@ function preflightDaemonApplication(input = {}) {
   if (registry.list().length !== COMMAND_SURFACE.commands.length) {
     throw new Error('commands: application registry must own the complete command surface');
   }
-  const migrated = new Set(expectedNames);
   const routeOwners = Object.freeze(Object.fromEntries(
-    registry.list().map(command => [command.name, migrated.has(command.name) ? 'application' : 'legacy']),
+    registry.list().map(command => [command.name, command.needsTarget ? 'application' : 'legacy']),
   ));
   return Object.freeze({
     registry,
@@ -16702,7 +16687,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseComponentsArgs, frameworkDetectorScript, reactComponentsTreeScript, vueComponentsTreeScript,
   sanitizeComponentValue, sanitizeComponentResult, componentsStr, chooseAdaptivePerceiveLast,
   COMMANDS, NEEDS_TARGET, commandMeta, buildPhase4CommandSpecs, createPhase4CommandRegistry,
-  MIGRATED_DAEMON_COMMANDS, DAEMON_HANDLER_BUILDERS, preflightDaemonApplication,
+  DAEMON_APPLICATION_COMMANDS, DAEMON_HANDLER_BUILDERS, preflightDaemonApplication,
   createPhase4ReportHandler, createPhase4PerceiveHandler,
   createPhase4ClickHandler, createPhase4EvalrawHandler,
   authorizePhase4DaemonCommand, executePhase4CompatibilityCommand, executePhase4DaemonRoute,

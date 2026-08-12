@@ -668,7 +668,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
     const direct = async (entry, fail = false) => {
       const canonical = entry.canonical || entry.cmd;
       const key = entry.key || entry.cmd;
-      expect(cdpTest.MIGRATED_DAEMON_COMMANDS).toContain(canonical);
+      expect(cdpTest.DAEMON_APPLICATION_COMMANDS).toContain(canonical);
       const evidence = {
         perceive: null,
         report: { kind: 'session-report' },
@@ -719,7 +719,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       });
       const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
       const preflight = cdpTest.preflightDaemonApplication();
-      const handlers = Object.fromEntries(cdpTest.MIGRATED_DAEMON_COMMANDS.map(name => [
+      const handlers = Object.fromEntries(cdpTest.DAEMON_APPLICATION_COMMANDS.map(name => [
         name,
         name === canonical
           ? handler
