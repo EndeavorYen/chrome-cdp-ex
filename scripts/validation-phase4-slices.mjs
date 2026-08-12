@@ -20,8 +20,8 @@ const pagePath = resolve(rootDir, 'scripts/smoke-page.html');
 const serverPath = resolve(rootDir, 'scripts/validation-loopback-server.mjs');
 const EXPECTED_TITLE = 'chrome-cdp-ex long-session smoke';
 const ACTION_PARITY_COMMANDS = new Set([
-  'back', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'hover', 'jsclick',
-  'nav', 'press', 'reload', 'scroll', 'select', 'type', 'verify-click',
+  'back', 'clickxy', 'clock', 'dismiss-modal', 'fill', 'forward', 'hover', 'jsclick',
+  'mock', 'nav', 'press', 'reload', 'scroll', 'select', 'throttle', 'type', 'verify-click',
 ]);
 const ACTION_STATE_EXPRESSION = "({title:document.title,modalHidden:document.querySelector('#motd')?.hidden===true,shortcut:document.querySelector('#shortcut-status')?.textContent,inputValue:document.querySelector('#cmd')?.value,selectValue:document.querySelector('#phase7-select')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector('#phase7-js-status')?.textContent,coordStatus:document.querySelector('#phase7-coord-status')?.textContent,authState:document.querySelector('#auth-state')?.textContent})";
 const RELOAD_STATE_EXPRESSION = "JSON.stringify({url:location.href,loadCount:Number(/^phase7-load:(\\d+)$/.exec(window.name)?.[1]),marker:document.querySelector('#phase7-load-generation')?.textContent})";
@@ -108,6 +108,14 @@ export function buildPhase4SliceCommands(
     immutableCommand('back', ['back', targetPrefix, '--format', 'json']),
     immutableCommand('forward', ['forward', targetPrefix, '--format', 'json']),
     immutableCommand('reload', ['reload', targetPrefix, '--format', 'json']),
+    immutableCommand('mock', [
+      'mock', targetPrefix, 'add', '**/api/mock', '--status', '201',
+      '--body', 'fixture-mock', '--content-type', 'text/plain', '--format', 'json',
+    ]),
+    immutableCommand('throttle', ['throttle', targetPrefix, 'fast-3g', '--format', 'json']),
+    immutableCommand('clock', [
+      'clock', targetPrefix, 'freeze', '--at', '2020-01-02T03:04:05.000Z', '--format', 'json',
+    ]),
   ]);
 }
 
@@ -132,6 +140,45 @@ export function assertPhase4ReloadState(value, { navigationUrl }) {
     throw new Error('reload generation state is invalid');
   }
   return value.loadCount;
+}
+
+export function assertPhase4EnvironmentEffect(id, raw) {
+  if (id === 'mock') {
+    let value;
+    try { value = JSON.parse(raw); } catch { value = null; }
+    if (!exactKeys(value, ['status', 'body']) || value.status !== 201 || value.body !== 'fixture-mock') {
+      throw new Error('mock live effect is invalid');
+    }
+    return value.status;
+  }
+  if (id === 'clock') {
+    if (Number(raw) !== 1_577_934_245_000) throw new Error('clock live effect is invalid');
+    return Number(raw);
+  }
+  if (id === 'throttle') {
+    let value;
+    try { value = JSON.parse(raw); } catch { value = null; }
+    const durationMs = value?.durationMs;
+    if (!exactKeys(value, ['durationMs', 'status', 'body'])
+      || value.status !== 200 || value.body !== 'throttle-ok'
+      || !Number.isFinite(durationMs) || durationMs < 100 || durationMs > 5_000) {
+      throw new Error(`throttle live effect is invalid: ${String(raw).slice(0, 80)}`);
+    }
+    return durationMs;
+  }
+  throw new Error(`unknown environment effect ${id}`);
+}
+
+function environmentEffectExpression(id) {
+  if (id === 'mock') {
+    return "fetch('/api/mock').then(async response => JSON.stringify({status:response.status,body:await response.text()}))";
+  }
+  if (id === 'clock') return 'Date.now()';
+  return "async function(){const start=performance.now();const response=await fetch('/api/throttle-probe?phase7=1',{cache:'no-store'});return {durationMs:Math.round(performance.now()-start),status:response.status,body:await response.text()}}";
+}
+
+function environmentEffectCommand(id, targetPrefix) {
+  return [id === 'throttle' ? 'call' : 'eval', targetPrefix, environmentEffectExpression(id)];
 }
 
 function parseStepJson(id, stdout) {
@@ -576,6 +623,29 @@ function validateStep(id, stdout, {
     }
     return model.outcome;
   }
+  if (id === 'mock') {
+    if (model?.schema !== 'chrome-cdp-ex.mock.v1' || model?.mode !== 'add'
+      || !Array.isArray(model.rules) || model.rules.length !== 1
+      || model.rules[0]?.urlPattern !== '**/api/mock' || model.rules[0]?.status !== 201) {
+      throw new Error(`mock fixture output is invalid: ${JSON.stringify(model).slice(0, 1200)}`);
+    }
+    return model.schema;
+  }
+  if (id === 'clock') {
+    if (model?.schema !== 'chrome-cdp-ex.clock.v1' || model?.mode !== 'apply'
+      || model.profile !== 'freeze' || model.atMs !== 1_577_934_245_000) {
+      throw new Error(`clock fixture output is invalid: ${JSON.stringify(model).slice(0, 1200)}`);
+    }
+    return model.schema;
+  }
+  if (id === 'throttle') {
+    if (model?.schema !== 'chrome-cdp-ex.throttle.v1' || model?.mode !== 'apply'
+      || model.profile !== 'fast-3g' || model.offline !== false
+      || model.latencyMs !== 150 || model.downloadKbps !== 1600 || model.uploadKbps !== 750) {
+      throw new Error(`throttle fixture output is invalid: ${JSON.stringify(model).slice(0, 1200)}`);
+    }
+    return model.schema;
+  }
   if (id === 'report') {
     if (model?.schema !== 'chrome-cdp-ex.qa-summary.v1' || model?.source !== 'report') {
       throw new Error('report schema is invalid');
@@ -642,8 +712,8 @@ export async function runPhase4SliceSession({
         'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
         'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies',
         'press', 'fill', 'hover', 'scroll', 'select',
-        'back', 'clickxy', 'dismiss-modal', 'forward', 'jsclick', 'nav',
-        'reload', 'type', 'verify-click'].includes(command.id)) {
+        'back', 'clickxy', 'clock', 'dismiss-modal', 'forward', 'jsclick', 'mock', 'nav',
+        'reload', 'throttle', 'type', 'verify-click'].includes(command.id)) {
         const mcpOutput = await runMcpCommand(command);
         if (!ACTION_PARITY_COMMANDS.has(command.id) && mcpOutput !== stdout) {
           throw new Error(`MCP ${command.id} output differs from CLI`);
@@ -978,9 +1048,9 @@ export async function runDisposablePhase4Slices() {
               args: commandArgs,
               ...([
                 'components', 'checkpoint', 'cookies',
-                'back', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'hover',
-                'jsclick', 'nav', 'press', 'reload', 'scroll', 'select', 'type',
-                'verify-click',
+                'back', 'clickxy', 'clock', 'dismiss-modal', 'fill', 'forward',
+                'hover', 'jsclick', 'mock', 'nav', 'press', 'reload', 'scroll',
+                'select', 'throttle', 'type', 'verify-click',
               ].includes(command.id)
                 ? { confirm: true }
                 : {}),
@@ -1015,6 +1085,10 @@ export async function runDisposablePhase4Slices() {
           const state = JSON.parse(runCdp(['eval', mcpTargetPrefix, RELOAD_STATE_EXPRESSION], env, 5_000));
           assertPhase4ReloadState(state, { navigationUrl: mcpNavigationUrl });
         }
+        if (['mock', 'clock', 'throttle'].includes(command.id)) {
+          const effect = runCdp(environmentEffectCommand(command.id, mcpTargetPrefix), env, 7_000);
+          assertPhase4EnvironmentEffect(command.id, effect);
+        }
         return text.trim();
       };
       const result = await runPhase4SliceSession({
@@ -1031,6 +1105,10 @@ export async function runDisposablePhase4Slices() {
           if (command.id === 'reload') {
             const state = JSON.parse(runCdp(['eval', targetPrefix, RELOAD_STATE_EXPRESSION], env, 5_000));
             assertPhase4ReloadState(state, { navigationUrl });
+          }
+          if (['mock', 'clock', 'throttle'].includes(command.id)) {
+            const effect = runCdp(environmentEffectCommand(command.id, targetPrefix), env, 7_000);
+            assertPhase4EnvironmentEffect(command.id, effect);
           }
           return output;
         },

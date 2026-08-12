@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   assertPhase4ActionState,
+  assertPhase4EnvironmentEffect,
   assertPhase4NavigationState,
   assertPhase4ReloadState,
   assertPhase4OutputPrivacy,
@@ -179,6 +180,18 @@ function fixtureOutput(id) {
     assertions: [{ kind: 'text', expected: 'auth state preserved after refresh', status: 'pass', message: '"auth state preserved after refresh" matched' }],
     matchedRequest: null, actionEvidence: null, targetResolution: targetResolution(),
   });
+  if (id === 'mock') return JSON.stringify({
+    schema: 'chrome-cdp-ex.mock.v1', mode: 'add',
+    rules: [{ urlPattern: '**/api/mock', status: 201 }],
+  });
+  if (id === 'clock') return JSON.stringify({
+    schema: 'chrome-cdp-ex.clock.v1', mode: 'apply', profile: 'freeze',
+    atMs: 1577934245000,
+  });
+  if (id === 'throttle') return JSON.stringify({
+    schema: 'chrome-cdp-ex.throttle.v1', mode: 'apply', profile: 'fast-3g',
+    offline: false, latencyMs: 150, downloadKbps: 1600, uploadKbps: 750,
+  });
   if (id === 'hover') return 'Hovering over <BUTTON> at CSS (640, 320)';
   if (id === 'report') {
     return JSON.stringify({
@@ -227,11 +240,14 @@ describe('Phase 4 disposable core-slice scenario', () => {
       const cli = await fetch(`${base}/validation-phase4.html`);
       const mcp = await fetch(`${base}/validation-phase4.html?route=mcp`);
       const denied = await fetch(`${base}/private`);
+      const throttle = await fetch(`${base}/api/throttle-probe?fixture=1`);
       expect(cli.status).toBe(200);
       expect(mcp.status).toBe(200);
       expect(await cli.text()).toContain(TITLE);
       expect(await mcp.text()).toContain(TITLE);
       expect(denied.status).toBe(404);
+      expect(throttle.status).toBe(200);
+      expect(await throttle.text()).toBe('throttle-ok');
     } finally {
       await new Promise(resolve => server.close(resolve));
     }
@@ -250,7 +266,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     }, url, TITLE)).toMatchObject({ targetPrefix: TARGET, title: TITLE, url });
   });
 
-  it('freezes the exact bounded thirty-seven-command route and final fixture-state raw expression', () => {
+  it('freezes the exact bounded forty-command route and final fixture-state raw expression', () => {
     expect(buildPhase4SliceCommands(TARGET, NAV_URL)).toEqual([
       { id: 'perceive', args: ['perceive', TARGET, '--format', 'json'] },
       { id: 'click', args: ['click', TARGET, '#close-modal', '--format', 'json'] },
@@ -306,6 +322,12 @@ describe('Phase 4 disposable core-slice scenario', () => {
       { id: 'back', args: ['back', TARGET, '--format', 'json'] },
       { id: 'forward', args: ['forward', TARGET, '--format', 'json'] },
       { id: 'reload', args: ['reload', TARGET, '--format', 'json'] },
+      {
+        id: 'mock',
+        args: ['mock', TARGET, 'add', '**/api/mock', '--status', '201', '--body', 'fixture-mock', '--content-type', 'text/plain', '--format', 'json'],
+      },
+      { id: 'throttle', args: ['throttle', TARGET, 'fast-3g', '--format', 'json'] },
+      { id: 'clock', args: ['clock', TARGET, 'freeze', '--at', '2020-01-02T03:04:05.000Z', '--format', 'json'] },
     ]);
     expect(Object.isFrozen(buildPhase4SliceCommands(TARGET, NAV_URL))).toBe(true);
   });
@@ -330,6 +352,15 @@ describe('Phase 4 disposable core-slice scenario', () => {
     expect(() => assertPhase4ReloadState({
       url: URL, loadCount: 2, marker: 'load:2',
     }, { navigationUrl: NAV_URL })).toThrow(/reload generation/);
+  });
+
+  it('requires independently observed mock, clock, and throttle effects', () => {
+    expect(assertPhase4EnvironmentEffect('mock', '{"status":201,"body":"fixture-mock"}')).toBe(201);
+    expect(assertPhase4EnvironmentEffect('clock', '1577934245000')).toBe(1577934245000);
+    expect(assertPhase4EnvironmentEffect('throttle', '{"durationMs":150,"status":200,"body":"throttle-ok"}')).toBe(150);
+    expect(() => assertPhase4EnvironmentEffect('mock', '{"status":404,"body":"not found"}')).toThrow(/mock live/);
+    expect(() => assertPhase4EnvironmentEffect('clock', '1577934245001')).toThrow(/clock live/);
+    expect(() => assertPhase4EnvironmentEffect('throttle', '{"durationMs":10,"status":200,"body":"throttle-ok"}')).toThrow(/throttle live/);
   });
 
   it('drains bounded browser stderr and captures spawn errors without an unhandled event', () => {
@@ -452,12 +483,12 @@ describe('Phase 4 disposable core-slice scenario', () => {
         'wait', 'waitfor', 'cascade',
         'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
         'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw',
-        'nav', 'back', 'forward', 'reload',
+        'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock',
       ],
       title: TITLE,
       clickOutcome: 'changed',
       reportActions: 1,
-      extractionParity: 33,
+      extractionParity: 36,
     });
     expect(runCommand.mock.calls.map(([command]) => command)).toEqual(commands);
     expect(runMcpCommand.mock.calls.map(([command]) => command.id)).toEqual([
@@ -466,7 +497,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
       'wait', 'waitfor', 'cascade',
       'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
       'jsclick', 'dismiss-modal', 'clickxy', 'press',
-      'nav', 'back', 'forward', 'reload',
+      'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock',
     ]);
     expect(cleanup).toHaveBeenCalledOnce();
   });
@@ -477,7 +508,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     'wait', 'waitfor', 'cascade',
     'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
     'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw',
-    'nav', 'back', 'forward', 'reload',
+    'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock',
   ])('fails at %s and still runs cleanup exactly once', async failureId => {
     const runCommand = vi.fn(async command => {
       if (command.id === failureId) throw new Error(`forced ${failureId} failure`);
@@ -586,7 +617,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
         return JSON.stringify(model);
       },
       cleanup,
-    })).resolves.toMatchObject({ extractionParity: 33 });
+    })).resolves.toMatchObject({ extractionParity: 36 });
     expect(cleanup).toHaveBeenCalledOnce();
   });
 

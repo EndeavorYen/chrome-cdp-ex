@@ -1,6 +1,6 @@
 const COMMANDS = Object.freeze([
-  'back', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'hover', 'jsclick',
-  'nav', 'press', 'reload', 'scroll', 'select', 'type', 'verify-click',
+  'back', 'clickxy', 'clock', 'dismiss-modal', 'fill', 'forward', 'hover', 'jsclick',
+  'mock', 'nav', 'press', 'reload', 'scroll', 'select', 'throttle', 'type', 'verify-click',
 ]);
 const CONTEXT_KEYS = new Set(['args', 'targetBound', 'spec', 'authorization']);
 const MAX_ARGS = 256;

@@ -19,6 +19,11 @@ export function createValidationLoopbackServer({ port, pagePath }) {
       response.end(page);
       return;
     }
+    if (request.url?.startsWith('/api/throttle-probe')) {
+      response.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
+      response.end('throttle-ok');
+      return;
+    }
     response.writeHead(404);
     response.end('not found');
   });
