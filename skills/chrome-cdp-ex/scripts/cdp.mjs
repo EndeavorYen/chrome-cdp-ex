@@ -15101,7 +15101,7 @@ function createPerceiveCommandHandler({
   const buildPerceiveModel = ops.perceiveModel || perceiveModel;
   const buildPerceiveDiff = ops.perceiveDiffModel || perceiveDiffModel;
   return async ({ args }) => {
-    const fopts = parseQaModeArgs(args, ['text', 'json']);
+    const fopts = parseQaModeArgs(args, ['text', 'json']); await ensurePerceiveTargetReady({ cdp, sessionId, targetId, ops });
     const popts = parsePerceiveArgs(fopts.args);
     const targetPrefix = targetPrefixForDisplay(targetId);
     popts.targetPrefix = targetPrefix;
@@ -16577,6 +16577,65 @@ async function main(options = {}) {
     console.error(formatDaemonCommandError(response.error, { cmd, targetPrefix, format: cliErrorFormat }));
     process.exitCode = 1;
   }
+}
+
+const PERCEIVE_READINESS_DELAYS_MS = Object.freeze([0, 250, 500, 1000]);
+
+async function readPerceiveTargetMetadata(cdp, targetId) {
+  const pages = await getPages(cdp);
+  return pages.find(page => page.targetId === targetId) || null;
+}
+
+async function readPerceiveDocumentState(cdp, sid) {
+  const value = await evalStr(
+    cdp,
+    sid,
+    'JSON.stringify({ url: window.location.href, readyState: document.readyState })',
+    false,
+    { timeoutMs: STATUS_PAGE_INFO_TIMEOUT },
+  );
+  const state = JSON.parse(value);
+  return {
+    url: String(state?.url || ''),
+    readyState: String(state?.readyState || 'unknown'),
+  };
+}
+
+async function ensurePerceiveTargetReady({ cdp, sessionId, targetId, ops = {} }) {
+  const readTargetMetadata = ops.readPerceiveTargetMetadata || readPerceiveTargetMetadata;
+  const readDocumentState = ops.readPerceiveDocumentState || readPerceiveDocumentState;
+  const sampleDelaysMs = ops.perceiveReadinessDelaysMs || PERCEIVE_READINESS_DELAYS_MS;
+  const wait = ops.sleep || sleep;
+  const now = ops.now || Date.now;
+  let target;
+  try {
+    target = await readTargetMetadata(cdp, targetId);
+  } catch {
+    return;
+  }
+  const advertisedUrl = String(target?.url || '').trim();
+  if (!/^https?:\/\//i.test(advertisedUrl)) return;
+
+  const delays = Array.isArray(sampleDelaysMs) && sampleDelaysMs.length
+    ? sampleDelaysMs
+    : PERCEIVE_READINESS_DELAYS_MS;
+  const startedAt = now();
+  let observed = { url: '', readyState: 'unknown' };
+  for (let index = 0; index < delays.length; index++) {
+    const delayMs = Math.max(0, Number(delays[index]) || 0);
+    if (delayMs > 0) await wait(delayMs);
+    observed = await readDocumentState(cdp, sessionId);
+    if (!isBlankPageUrl(observed?.url)) return;
+  }
+
+  const observedUrl = String(observed?.url || '');
+  const readyState = String(observed?.readyState || 'unknown');
+  throw new Error(
+    'perceive: target/document readiness mismatch; ' +
+    `targetId=${targetId}; advertisedUrl=${advertisedUrl}; observedUrl=${observedUrl}; ` +
+    `readyState=${readyState}; attempts=${delays.length}/${delays.length}; elapsedMs=${Math.max(0, now() - startedAt)}. ` +
+    'The target metadata advertises a loaded HTTP(S) page while its renderer is still blank; retry the same perceive command.'
+  );
 }
 
 const isDirectRun = process.argv[1]
