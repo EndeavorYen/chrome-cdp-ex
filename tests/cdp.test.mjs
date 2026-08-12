@@ -10385,7 +10385,7 @@ describe('overlay detector', () => {
     return element;
   }
 
-  function runOverlayPageFixture({ elements, targetPoint, topElement, targetContext = null, source = null }) {
+  function runOverlayPageFixture({ elements, targetPoint, topElement, targetContext = null, source = null, elementConstructor = null }) {
     const previousWindow = globalThis.window;
     const previousDocument = globalThis.document;
     const previousCss = globalThis.CSS;
@@ -10404,7 +10404,7 @@ describe('overlay detector', () => {
     };
     globalThis.CSS = { escape: (value) => String(value) };
     globalThis.getComputedStyle = (element) => element.__style;
-    globalThis.Element = class FixtureElement {
+    globalThis.Element = elementConstructor || class FixtureElement {
       static [Symbol.hasInstance](value) {
         return elements.includes(value);
       }
@@ -10986,6 +10986,73 @@ describe('overlay detector', () => {
       nextCommand: null,
     });
     expect(model.target).not.toHaveProperty('objectId');
+  });
+
+  it.each([
+    ['a forged class', class PageControlledElement {}],
+    ['a non-constructible arrow', () => null],
+  ])('keeps plain @ref identity trusted when page Element is %s', async (_label, elementConstructor) => {
+    const target = overlayFixtureElement({
+      id: 'trusted-ref-action',
+      tagName: 'BUTTON',
+      text: 'Continue with trusted ref',
+      position: 'fixed',
+      zIndex: '20',
+      rect: { x: 1120, y: 800, w: 240, h: 48 },
+    });
+    const targetPoint = {
+      input: '@4',
+      x: 1240,
+      y: 824,
+      descriptor: '<BUTTON> "Continue with trusted ref"',
+    };
+    const refMap = new Map([[4, 444]]);
+    let detectorSource = null;
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => ({ object: { objectId: 'trusted-ref-object' } }),
+      'Runtime.callFunctionOn': (params) => {
+        if (!params.functionDeclaration.includes('chrome-cdp-ex.overlays.v1')) {
+          return { result: { value: {
+            x: 1120,
+            y: 800,
+            w: 240,
+            h: 48,
+            tag: 'BUTTON',
+            text: 'Continue with trusted ref',
+          } } };
+        }
+        detectorSource = params.functionDeclaration;
+        const { model } = runOverlayPageFixture({
+          elements: [target],
+          targetPoint,
+          topElement: target,
+          targetContext: target,
+          source: `(${params.functionDeclaration}).call(this)`,
+          elementConstructor,
+        });
+        return { result: { value: JSON.stringify(model) } };
+      },
+      'Runtime.evaluate': () => {
+        throw new Error('plain @ref overlay identity must remain object-bound');
+      },
+    });
+
+    const out = JSON.parse(await T.overlayStr(
+      cdp,
+      'sid1',
+      'abc123',
+      ['@4', '--format', 'json'],
+      refMap,
+      {},
+    ));
+
+    expect(detectorSource).toContain('chrome-cdp-ex.overlays.v1');
+    expect(detectorSource).not.toContain('instanceof Element');
+    expect(out).toMatchObject({
+      blocking: false,
+      overlayCount: 0,
+      target: { input: '@4', blocked: false },
+    });
   });
 
   it('keeps the @ref object capability out of detector source under inherited toJSON', async () => {
