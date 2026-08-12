@@ -179,6 +179,25 @@ describe('Phase 5 disposable supervisor scenario', () => {
     })).toThrow(/viewport|structure/);
   });
 
+  it('keeps semantic parity strict while allowing the disposable client boundary to change viewport height', () => {
+    const mcp = JSON.parse(perception('ABC12345'));
+    mcp.viewport.height = 777;
+    expect(assertPhase5SemanticParity(perception('ABC12345'), JSON.stringify(mcp), {
+      expectedTitle: TITLE,
+      expectedUrl: URL,
+      expectedCliTargetPrefix: 'ABC12345',
+      expectedMcpTargetPrefix: 'ABC12345',
+    })).toMatchObject({ schema: 'chrome-cdp-ex.perceive.v1' });
+
+    mcp.viewport.width = 1279;
+    expect(() => assertPhase5SemanticParity(perception('ABC12345'), JSON.stringify(mcp), {
+      expectedTitle: TITLE,
+      expectedUrl: URL,
+      expectedCliTargetPrefix: 'ABC12345',
+      expectedMcpTargetPrefix: 'ABC12345',
+    })).toThrow(/viewport/);
+  });
+
   it('runs the exact discovery-through-rebind sequence and always cleans up', async () => {
     const fixture = steps();
     await expect(runPhase5SupervisorSession(fixture)).resolves.toMatchObject({

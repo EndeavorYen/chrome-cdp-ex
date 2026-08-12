@@ -52,7 +52,9 @@ export function assertPhase5SemanticParity(cliOutput, mcpOutput, options) {
     if (model?.page?.url !== expectedUrl) throw new Error(`${label} perception URL is invalid`);
     if (model?.viewport?.coordinateSpace !== 'viewport-css-px'
       || !Number.isFinite(model.viewport.width)
-      || !Number.isFinite(model.viewport.height)) {
+      || model.viewport.width <= 0
+      || !Number.isFinite(model.viewport.height)
+      || model.viewport.height <= 0) {
       throw new Error(`${label} perception viewport is invalid`);
     }
     if (!Number.isInteger(model?.refs?.generation)
@@ -71,7 +73,6 @@ export function assertPhase5SemanticParity(cliOutput, mcpOutput, options) {
       viewport: {
         coordinateSpace: model.viewport.coordinateSpace,
         width: model.viewport.width,
-        height: model.viewport.height,
       },
       console: model.console,
       nodes: model.nodes.map(node => ({ role: node?.role ?? null, name: node?.name ?? null })),
@@ -79,7 +80,10 @@ export function assertPhase5SemanticParity(cliOutput, mcpOutput, options) {
     });
   }
   if (JSON.stringify(projections[0]) !== JSON.stringify(projections[1])) {
-    throw new Error('CLI and MCP perception semantics differ');
+    const differing = Object.keys(projections[0]).filter(key => (
+      JSON.stringify(projections[0][key]) !== JSON.stringify(projections[1][key])
+    ));
+    throw new Error(`CLI and MCP perception semantics differ: ${differing.join(',')}`);
   }
   return { schema: cli.schema, title: cli.page.title, url: cli.page.url };
 }
