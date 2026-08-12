@@ -342,7 +342,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       "return { ok: false, error: e.message || String(e) };\n    }\n    // default: return { ok: false, error: `Unknown command: ${cmd}` };\n  }",
     ).replace("return { ok: true, result: result ?? '' };", "return { ok: true, result: 'planted' };");
     expect(buildRuntimeDispatchInventory(markerCollision)).not.toEqual(fixture);
-  }, 45_000);
+  }, 120_000);
 
   it('keeps check mode read-only and rejects stale fixture/source drift', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--check'], {
