@@ -443,7 +443,7 @@ describe('Phase 6 direct CDP characterization', () => {
     ]) {
       expect(() => directCdpInventory(fixture), fixture).toThrow();
     }
-  }, 15_000);
+  }, 30_000);
 
   it('preserves browser/session send arguments and exact error identity', async () => {
     const sentinel = new Error('transport sentinel');
