@@ -25,6 +25,15 @@ node scripts/setup.mjs --verify
 
 The [Codex Killer Path](../examples/codex-killer-path.md) separates the host route from the runtime benchmark and uses a disposable local fixture. The [host-validation manifest](../benchmarks/host-validation.v1.json) is the source of truth for the current evidence status; installation support alone is not labeled live validation.
 
-Current evidence: **live-validated on 2026-08-12** through the CLI-skill route, using a copied disposable skill directory and an isolated local debug-browser fixture. See the Killer Path for the observed schemas and claim boundary.
+Phase 1 candidate v2.15.0 evidence status: **live-validated** on 2026-08-12
+through the CLI-skill route, using that exact packed candidate copied into a
+disposable Codex skill directory and an isolated local debug-browser fixture.
+Its identity digest begins `sha256:802f7add`. Phase 2 initially changed only
+package/contract metadata, but later Runtime v3 phases changed runtime and
+candidate inputs substantially. The Phase 1 result is historical for that
+earlier tree and must not be presented as current-tree or release proof. The
+newer Runtime v3 live scenarios validate disposable CLI/MCP/runtime behavior,
+not the full Codex installation campaign. See the Killer Path for the observed
+schemas and claim boundary.
 
 See also: `skills/chrome-cdp-ex/hosts/codex.md`.

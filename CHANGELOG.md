@@ -2,6 +2,93 @@
 
 ## [Unreleased]
 
+## [2.15.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.14.0...v2.15.0) (2026-08-12)
+
+v2.15.0 turns the post-v2.14 work into a claim-honest Codex and cross-host
+release and a contract-first Runtime v3 release candidate. It adds one
+disposable-fixture Codex route, a versioned six-host evidence manifest, a
+60-second demo, compact action output, stronger target diagnostics, and release
+gates that validate the actual attached tarball. Internally, public contracts,
+local evidence, shared application execution, supervised per-tab runtimes,
+direct MCP routing, single-owner command metadata, generated surfaces, and
+exact-method CDP domains now replace duplicated authority without removing the
+81-command compatibility surface.
+
+### Runtime v3 contracts and routing
+
+* Freeze all 81 canonical commands, 23 aliases, public schemas, representative
+  CLI behavior, MCP mappings, and exact package inventory in versioned v2.15
+  fixtures.
+* Add a bounded local Validation Lab with explicit risk budgets, source-bound
+  mode-0600 evidence, replay, redaction, fingerprints, failure classification,
+  duplicate detection, and regression promotion. Live proofs use only
+  disposable Chrome for Testing and loopback fixtures.
+* Route `perceive`, `click`, `report`, and governed `evalraw` through the shared
+  application contract behind a complete immutable 81-command dispatcher;
+  `html`, `text`, `table`, `net`/`network`, `status`, `summary`, `snap`/`snapshot`,
+  `controls`, `frame`/`frames`, `overlay`/`overlays`, `styles`, `components`,
+  `record-actions`/`recordactions`, `export-playwright`/`export-pw`, `wait`,
+  `waitfor`, `cascade`, `checkpoint`, and `cookies` now use explicit read
+  capabilities, and the remaining 58 commands are explicitly
+  retained on the characterized legacy route until parity permits migration.
+  Add immutable public browser resources, private
+  handles, a shared-key BrowserSupervisor with bounded stale recovery, extracted
+  daemon transport, and direct in-process MCP routing with no CLI subprocess
+  fallback.
+* Make one dependency-free catalog the owner of command policy, aliases, help,
+  domains, MCP tools/resources, and the escape-hatch allowlist. Generate bounded
+  README/reference indexes from that owner while keeping explanatory prose
+  hand-authored.
+* Route all reviewed normal CDP calls through exact-method domain clients. Raw
+  CDP remains a separately authorized gateway whose audit records method and
+  side-effect class only, never params or results.
+* Tighten MCP confirmation from catalog policy: mutating/session-state forms,
+  composite/raw/script commands, sensitive reads, clear/reset operations,
+  long-running controls, and explicit screenshot output paths fail closed
+  unless confirmed. Read-only forms such as exact tab-group list/show and
+  default screenshot output remain unconfirmed.
+
+### Codex and cross-host evidence
+
+* Add a reproducible Codex Killer Path covering disposable installation, doctor, perception, one safe mutation, Action Receipt, `perceive --since-action`, and report handoff.
+* Add a versioned host-validation manifest and checker for Claude Code, Codex,
+  Cursor, OpenClaw, Hermes, and Pi. Only the Codex CLI-skill route is marked
+  `live-validated`, bound to the exact historical Phase 1 candidate identity
+  after all seven capability checks passed. The manifest explicitly marks that
+  evidence as not current-tree proof.
+* Add a safe 60-second Codex demo, poster, and machine-readable evidence boundary. The fixture uses no personal tabs, cookies, credentials, or authenticated browser state.
+
+### Agent output and target evidence
+
+* Emit compact action JSON as a single line and omit non-actionable populated-page health noise so agent handoffs consume less output without losing failure evidence.
+* Collapse stable compact target-binding diagnostics while preserving requested, bound, resolved, source, status, and rebound details whenever target identity is ambiguous or changes.
+
+### Release and documentation
+
+* Ship the host checker, manifest, Codex Killer Path, demo media, plugin manifest, CLI shim, setup script, skill contract, CLI/MCP runtimes, and direct runtime libraries in the official tarball.
+* Add an executable release-package checker that inspects the actual tarball for
+  42 release-critical entries and verifies the exact 68-entry inventory plus
+  every repository-relative README link; the release workflow runs tests, lint,
+  docs, host validation, public contracts, and this artifact check before
+  calculating the checksum and attaching the package.
+* Redesign the README first screen around already-open browser access, six host routes, a clickable Codex demo, a direct Killer Path, the Playwright boundary, and explicit separation of local-fixture proof, ecosystem recognition, and adoption.
+
+### Validation hardening
+
+* Reject invalid calendar dates, empty or absolute evidence paths, repository escapes including symlink escapes, missing files, and directories in the host manifest without crashing.
+* Package-content tests exercise the real npm tarball and a deliberately incomplete tarball instead of inferring release completeness from repository paths.
+* Bind release-campaign artifacts to the package version and a deterministic SHA-256 identity of the runtime/benchmark candidate. Public proof promotion now rejects truncated rounds, failures, incomplete gates, wrong route/profile inventories, missing identity, and source-digest drift.
+
+### Security and compatibility
+
+* The shipped runtime remains zero-dependency, and `npm audit --omit=dev` reports zero production vulnerabilities. The development toolchain currently reports three high-severity transitive findings through Vitest/coverage/ESLint (`brace-expansion`, `postcss`, and `nanoid`); they do not ship as runtime dependencies and remain tracked release risk.
+* No CLI commands, aliases, public JSON schemas, Action Receipt fields, or
+  supported host setup routes are removed. MCP confirmation is intentionally
+  stricter for catalog-classified mutation, sensitive, raw/script, composite,
+  clear/reset, long-running, and explicit-output-path forms; callers should pass
+  `confirm: true` for those operations. The per-tab daemon remains the owner of
+  tab-scoped state behind the new supervisor/application boundaries.
+
 ## [2.14.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.13.2...v2.14.0) (2026-07-25)
 
 v2.14.0 makes chrome-cdp-ex installable and usable across agent hosts without forking the runtime. Compared with v2.13.2, a single `setup.mjs` bootstrap plus INTEGRATIONS docs cover Claude Code, Codex, Cursor, OpenClaw, Hermes, and Pi; the always-loaded skill is slim with on-demand references; MCP gains curated Tier-1 workflow tools, an allowlisted `run_command` escape hatch, and resources; and release tarballs finally include the Claude plugin manifest, setup script, and `bin/chrome-cdp` shim.

@@ -1,11 +1,14 @@
 {
   "schema": "chrome-cdp-ex.host-validation.v1",
-  "productVersion": "2.14.0",
+  "productVersion": "2.15.0",
   "validatedAt": "2026-08-12",
   "environment": {
     "host": "Codex",
     "route": "cli-skill",
-    "browserScope": "disposable-local-fixture"
+    "browserScope": "disposable-local-fixture",
+    "evidenceScope": "historical-candidate",
+    "currentTree": false,
+    "candidateIdentity": "sha256:802f7add9391ab693f2cb9e477914ece3b81cc20ada08023706f4f212120675f"
   },
   "hosts": [
     {
@@ -17,6 +20,7 @@
     {
       "name": "codex",
       "status": "live-validated",
+      "evidenceScope": "historical-candidate",
       "route": "cli",
       "capabilities": {
         "install": true,

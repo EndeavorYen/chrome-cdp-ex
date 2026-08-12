@@ -6,14 +6,24 @@ This is the reproducible validation route for using `chrome-cdp-ex` as a Codex s
 
 | Field | Value |
 |---|---|
-| Product | `chrome-cdp-ex` v2.14.0 |
+| Product | `chrome-cdp-ex` v2.15.0 |
 | Host | Codex |
 | Route | CLI skill |
 | Validation date | 2026-08-12 |
 | Browser scope | Disposable local fixture |
 | Personal browser state | Not accessed |
 
-`Validated with Codex` means this Codex session completed installation/setup, live perception, a mutation with an Action Receipt, causal follow-up perception, and report handoff against the safe fixture. It does not mean a native Codex plugin exists, every Codex surface was tested, or a personal logged-in page was recorded.
+The exact packed Phase 1 candidate for v2.15.0 completed installation/setup,
+live perception, a mutation with an Action Receipt, causal follow-up perception,
+and report handoff against the safe fixture. Its identity digest begins
+`sha256:802f7add`. Phase 2 initially changed package/contract metadata without
+changing runtime or benchmark inputs; later Runtime v3 phases changed the
+runtime and candidate identity substantially. This Phase 1 Codex result is
+therefore historical evidence for a specific earlier tree, not current-tree or
+release proof. Current Runtime v3 live evidence uses disposable fixtures but is
+not a rerun of the full Codex installation campaign. `Validated with Codex`
+does not mean a native Codex plugin exists, every Codex surface was tested, or a
+personal logged-in page was recorded.
 
 ## 1. Install the skill without changing a personal Codex home
 
@@ -78,7 +88,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs fill <target> @ref "Codex validation" 
 
 The checked-in host manifest may use `live-validated` only when all seven capability fields are true and its evidence paths resolve.
 
-### Observed v2.14.0 result (2026-08-12)
+### Observed v2.15.0 result (2026-08-12)
 
 The copied disposable Codex skill completed the full loop against `scripts/smoke-page.html` in an isolated headless Edge profile:
 
@@ -98,9 +108,9 @@ This is host-route evidence from one Codex session and one safe local fixture. I
 The host route is complemented by the ten-round mixed campaign:
 
 ```bash
-npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output /tmp/chrome-cdp-ex-phase0/release-campaign-v2.14.0-postfix.json
+npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output .local/codex-for-oss/artifacts/phase-1/release-campaign-v2.15.0.json
 ```
 
 The campaign and the Codex host route prove different things: the campaign gates runtime quality across multiple paths and fixtures; the host record proves how Codex reaches that runtime. Neither substitutes for independent user adoption.
 
-Observed v2.14.0 campaign result on 2026-08-12: **10/10 rounds passed**, including **5/5 real-app profiles** with **34/34 checks in each real-app round**. The raw campaign artifact is intentionally local-only because it contains machine-local timing and target identifiers.
+Observed v2.15.0 campaign result on 2026-08-12: **10/10 rounds passed**, including **5/5 real-app profiles** with **34/34 checks in each real-app round**. The raw campaign artifact is intentionally local-only because it contains machine-local timing and target identifiers.

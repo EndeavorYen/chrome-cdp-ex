@@ -26,12 +26,18 @@ Short CLI wrapper (no npm install required):
 
 ## Host matrix
 
-Evidence status is intentionally narrower than installation support. `documented` means the route is maintained in this release; `setup-smoke` means configuration/bootstrap was exercised; `live-validated` requires the full perceive → act → receipt → since-action → report loop. The [versioned manifest](docs/benchmarks/host-validation.v1.json) is authoritative.
+Evidence status is intentionally narrower than installation support.
+`documented` means the route is maintained in this release; `setup-smoke` means
+configuration/bootstrap was exercised; `live-validated` requires the full
+perceive → act → receipt → since-action → report loop on the candidate named by
+the manifest. The [versioned manifest](docs/benchmarks/host-validation.v1.json)
+is authoritative for that historical evidence scope; it explicitly does not
+claim the current Runtime v3 tree completed the full Codex host campaign.
 
 | Host | Recommended route | Evidence status | Last validation | Setup / evidence |
 |------|-------------------|-----------------|-----------------|------------------|
 | Claude Code | CLI skill / plugin | documented | 2026-08-12 | `claude --plugin-dir .` or [guide](docs/integrations/claude.md) |
-| Codex | CLI skill | live-validated | 2026-08-12 | [Codex Killer Path](docs/examples/codex-killer-path.md) |
+| Codex | CLI skill | live-validated (historical candidate) | v2.15.0 candidate: 2026-08-12 | [Codex Killer Path](docs/examples/codex-killer-path.md) |
 | Cursor | MCP | documented | 2026-08-12 | `setup.mjs --for cursor --write` → `.cursor/mcp.json` |
 | OpenClaw | MCP (+ skill) | documented | 2026-08-12 | [guide](docs/integrations/openclaw.md) |
 | Hermes | CLI | documented | 2026-08-12 | [guide](docs/integrations/hermes.md) |
