@@ -10390,6 +10390,7 @@ describe('overlay detector', () => {
     const previousDocument = globalThis.document;
     const previousCss = globalThis.CSS;
     const previousGetComputedStyle = globalThis.getComputedStyle;
+    const previousElement = Object.getOwnPropertyDescriptor(globalThis, 'Element');
     const pointInside = (point, element) => {
       const rect = element.getBoundingClientRect();
       return point.x >= rect.left && point.x <= rect.right
@@ -10403,6 +10404,11 @@ describe('overlay detector', () => {
     };
     globalThis.CSS = { escape: (value) => String(value) };
     globalThis.getComputedStyle = (element) => element.__style;
+    globalThis.Element = class FixtureElement {
+      static [Symbol.hasInstance](value) {
+        return elements.includes(value);
+      }
+    };
     globalThis.document = {
       querySelector: (selector) => elements.find(element => `#${element.id}` === selector) || null,
       querySelectorAll: (selector) => selector === 'body *'
@@ -10421,6 +10427,8 @@ describe('overlay detector', () => {
       globalThis.document = previousDocument;
       globalThis.CSS = previousCss;
       globalThis.getComputedStyle = previousGetComputedStyle;
+      if (previousElement) Object.defineProperty(globalThis, 'Element', previousElement);
+      else delete globalThis.Element;
     }
   }
 
@@ -10466,6 +10474,62 @@ describe('overlay detector', () => {
       },
       overlays: [],
       nextCommand: null,
+    });
+  });
+
+  it('does not mistake an ambient Window getBoundingClientRect accessor for selector target identity', async () => {
+    const target = overlayFixtureElement({
+      id: 'ambient-safe-action',
+      tagName: 'BUTTON',
+      text: 'Continue safely',
+      position: 'fixed',
+      zIndex: '20',
+      rect: { x: 1120, y: 800, w: 240, h: 48 },
+    });
+    const targetPoint = {
+      input: '#ambient-safe-action',
+      x: 1240,
+      y: 824,
+      descriptor: '<BUTTON> "Continue safely"',
+    };
+    let ambientRectReads = 0;
+    const ambientWindow = {};
+    Object.defineProperty(ambientWindow, 'getBoundingClientRect', {
+      get() {
+        ambientRectReads += 1;
+        return () => ({ x: 0, y: 0, width: 1440, height: 900 });
+      },
+    });
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        if (!params.expression.includes('chrome-cdp-ex.overlays.v1')) {
+          return { result: { value: JSON.stringify({ ok: true, ...targetPoint }) } };
+        }
+        const { model } = runOverlayPageFixture({
+          elements: [target],
+          targetPoint,
+          topElement: target,
+          targetContext: ambientWindow,
+          source: params.expression,
+        });
+        return { result: { value: JSON.stringify(model) } };
+      },
+    });
+
+    const out = JSON.parse(await T.overlayStr(
+      cdp,
+      'sid1',
+      'abc123',
+      ['#ambient-safe-action', '--format', 'json'],
+      new Map(),
+      {},
+    ));
+
+    expect(ambientRectReads).toBe(0);
+    expect(out).toMatchObject({
+      blocking: false,
+      overlayCount: 0,
+      target: { input: '#ambient-safe-action', blocked: false },
     });
   });
 
@@ -10922,6 +10986,59 @@ describe('overlay detector', () => {
       nextCommand: null,
     });
     expect(model.target).not.toHaveProperty('objectId');
+  });
+
+  it('keeps the @ref object capability out of detector source under inherited toJSON', async () => {
+    const refMap = new Map([[4, 444]]);
+    const objectId = 'remote-capability-must-stay-private';
+    const clearModel = '{"schema":"chrome-cdp-ex.overlays.v1","viewport":{"width":1440,"height":900},"target":{"input":"@4","x":60,"y":40,"descriptor":"<BUTTON> \\"Submit\\"","blocked":false,"topElement":null},"overlayCount":0,"blocking":false,"overlays":[],"nextCommand":null}';
+    let detectorSource = null;
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => ({ object: { objectId } }),
+      'Runtime.callFunctionOn': (params) => {
+        if (params.functionDeclaration.includes('chrome-cdp-ex.overlays.v1')) {
+          detectorSource = params.functionDeclaration;
+          return { result: { value: clearModel } };
+        }
+        return { result: { value: {
+          x: 20,
+          y: 30,
+          w: 80,
+          h: 20,
+          tag: 'BUTTON',
+          text: 'Submit',
+        } } };
+      },
+    });
+    const previousToJSON = Object.getOwnPropertyDescriptor(Object.prototype, 'toJSON');
+    Object.defineProperty(Object.prototype, 'toJSON', {
+      configurable: true,
+      value() {
+        const exposed = { ...this };
+        if ('objectId' in this) exposed.objectId = this.objectId;
+        return exposed;
+      },
+    });
+
+    let out;
+    try {
+      out = JSON.parse(await T.overlayStr(
+        cdp,
+        'sid1',
+        'abc123',
+        ['@4', '--format', 'json'],
+        refMap,
+        {},
+      ));
+    } finally {
+      if (previousToJSON) Object.defineProperty(Object.prototype, 'toJSON', previousToJSON);
+      else delete Object.prototype.toJSON;
+    }
+
+    expect(detectorSource).toContain('chrome-cdp-ex.overlays.v1');
+    expect(detectorSource).not.toContain(objectId);
+    expect(out.target).toMatchObject({ input: '@4', blocked: false });
+    expect(out.target).not.toHaveProperty('objectId');
   });
 
   it('returns versioned overlay JSON for tool-calling agents', async () => {
