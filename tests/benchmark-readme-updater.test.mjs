@@ -247,7 +247,7 @@ Regenerate this table
     expect(updatedHtml).toContain('<span>10.278s</span>');
   });
 
-  it('promotes current proof copy and release identity with a passing campaign', () => {
+  it('promotes current benchmark copy without relabeling host-installation evidence', () => {
     const { campaign, identity } = releaseCampaignFixture();
     const readme = `
 [![Release v2.15.0](release-v2.15.0)](release)
@@ -280,7 +280,7 @@ Regenerate this table
     const updatedReadme = updateReadmeBenchmarkSnapshot(readme, campaign, options);
     const updatedHtml = updateBenchmarkHtmlSnapshot(html, campaign, options);
 
-    expect(updatedReadme).toContain('v2.15.0 live-validated the Codex CLI-skill route on one disposable local fixture');
+    expect(updatedReadme).toContain('v2.14.0 previously live-validated the Codex CLI-skill route on one disposable local fixture');
     expect(updatedReadme).toContain('v2.15.0 mixed local campaign passed 10/10 rounds');
     expect(updatedReadme).toContain('Latest measured release: local run on 2026-08-12 for v2.15.0 against 5 safe local real-app fixtures');
     expect(updatedReadme).not.toContain('must rerun');
@@ -294,7 +294,7 @@ Regenerate this table
     expect(updatedHtml).not.toContain('previous-release baseline');
   });
 
-  it('promotes an explicitly historical Phase 1 candidate after a fresh exact-tree campaign', () => {
+  it('promotes an explicitly historical benchmark while preserving the Phase 1 host boundary', () => {
     const { campaign, identity } = releaseCampaignFixture();
     const readme = `
 [![Release v2.15.0](release-v2.15.0)](release)
@@ -319,6 +319,7 @@ Regenerate this table
       <p class="lead">Phase 1 candidate measurement: <strong>v2.15.0</strong> (2026-08-12). It passed 10/10 rounds. A fresh campaign is required before any current-tree or release claim.</p>
       <strong>old</strong>
       <span>quality gate passed in each real-app round<br>2026-08-12 local run · v2.15.0 Phase 1 candidate</span>
+      <a class="link" href="https://github.com/example/releases/tag/v2.15.0">v2.15.0 Phase 1 candidate measurement</a>
     `;
     const options = { runDate: '2026-08-13', releaseVersion: '2.15.0', currentCandidate: identity };
 
@@ -326,9 +327,11 @@ Regenerate this table
     const updatedHtml = updateBenchmarkHtmlSnapshot(html, campaign, options);
 
     expect(updatedReadme).toContain('Latest measured release: the v2.15.0 mixed local campaign passed 10/10 rounds');
-    expect(updatedReadme).not.toContain('historical for the current tree');
+    expect(updatedReadme).toContain('Phase 1 candidate evidence: v2.15.0 live-validated the Codex CLI-skill route');
+    expect(updatedReadme).toContain('historical for the current tree');
     expect(updatedReadme).not.toContain('rerun required');
     expect(updatedHtml).toContain('Smart Eye benchmark · latest measured release');
+    expect(updatedHtml).toContain('releases/tag/v2.15.0">v2.15.0 measured campaign</a>');
     expect(updatedHtml).not.toContain('historical for current tree');
     expect(updatedHtml).not.toContain('fresh campaign is required');
   });

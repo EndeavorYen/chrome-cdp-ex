@@ -18,14 +18,14 @@
 
 Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-ex` is for **live-page perception** when the agent needs the browser you are actually using, plus Action Receipts, recovery guidance, and a session handoff.
 
-> **Evidence boundary:** Phase 1 candidate evidence: v2.15.0 live-validated the Codex CLI-skill route on one disposable local fixture. Candidate digest sha256:802f7add…; these measurements are historical for the current tree. A fresh campaign is required before any current-tree or release claim. Claude Code, Cursor, OpenClaw, Hermes, and Pi have documented install routes; this does not claim that every route was live-tested. Benchmark "real-app" profiles are local fixtures, not external production apps.
+> **Evidence boundary:** Phase 1 candidate evidence live-validated the Codex CLI-skill route on one disposable local fixture, but that full installation loop is historical for the current tree. The current Runtime v3 benchmark below passed on the exact candidate; it does not replace a full Codex host-installation rerun. Claude Code, Cursor, OpenClaw, Hermes, and Pi have documented install routes; this does not claim that every route was live-tested. Benchmark "real-app" profiles are local fixtures, not external production apps.
 
 ## Proof, with boundaries
 
 | Evidence | What it proves |
 |---|---|
 | [Codex demo and reproducible route](docs/examples/codex-killer-path.md) | One disposable-fixture loop completed `doctor → open → perceive → act → evidence → report`; the [host manifest](docs/benchmarks/host-validation.v1.json) records the boundary |
-| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | Phase 1 candidate measurement: the v2.15.0 mixed local campaign passed 10/10 rounds, including five local fixture profiles. Historical for the current tree; rerun required before release. |
+| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | Latest measured release: the v2.15.0 mixed local campaign passed 10/10 rounds, including five local fixture profiles — not external production apps |
 | [Redesign experiment](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html) | On the controlled comparison page, richer perception produced the stronger redesign |
 | [Curated ecosystem listing](https://github.com/hesreallyhim/awesome-claude-code#providers-runtime--integration-infrastructure) | `awesome-claude-code` independently lists the project for its live-session perception and benchmark rigor; recognition is not adoption |
 
@@ -263,16 +263,16 @@ Use the live benchmark before publishing performance or adoption claims. Visual 
 
 ### Latest dogfood snapshot
 
-Phase 1 candidate snapshot: local run on 2026-08-12 for v2.15.0 against 5 safe local real-app fixtures: dashboard, docs-app, auth-flow, data-table, canvas-heavy. These are not external production apps. Historical for the current tree; rerun required before release. Timing starts after CDP is reachable. Publish competitor deltas only from measured baselines.
+Latest measured release: local run on 2026-08-12 for v2.15.0 against 5 safe local real-app fixtures: dashboard, docs-app, auth-flow, data-table, canvas-heavy. These are not external production apps. Timing starts after CDP is reachable. Publish competitor deltas only from measured baselines.
 
 | Metric | Latest measured run |
 |---|---:|
-| Total time | 10.303s avg |
+| Total time | 10.706s avg |
 | Command calls | 24 per round |
-| First useful observation | 2.141s avg |
-| First action evidence | 2.831s avg |
-| Golden path complete | 5.341s avg |
-| Estimated output tokens | 11,422 avg |
+| First useful observation | 2.165s avg |
+| First action evidence | 2.893s avg |
+| Golden path complete | 5.493s avg |
+| Estimated output tokens | 11,429 avg |
 | Useful observation tokens | 1,732 avg |
 | Action evidence coverage | 6 auto-evidence actions per round; no failed criteria |
 | Real-app targets | dashboard, docs-app, auth-flow, data-table, canvas-heavy |

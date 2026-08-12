@@ -180,10 +180,13 @@ function requiredReleaseVersion(value) {
   return explicitReleaseVersion(value);
 }
 
-function requirePromotedProofCopy(original, updated, surface) {
+function requirePromotedProofCopy(original, updated, surface, { preserveHostEvidence = false } = {}) {
   const promotionBlocker = /Previous-release baseline|previous-release baseline|Phase 1 candidate|historical for (?:the )?current tree|must rerun|rerun required|fresh campaign is required/;
-  const hadPromotionBlocker = promotionBlocker.test(original);
-  const hasPromotionBlocker = promotionBlocker.test(updated);
+  const benchmarkScope = text => preserveHostEvidence
+    ? text.replace(/^> \*\*Evidence boundary:\*\*.*$/m, '')
+    : text;
+  const hadPromotionBlocker = promotionBlocker.test(benchmarkScope(original));
+  const hasPromotionBlocker = promotionBlocker.test(benchmarkScope(updated));
   if (hadPromotionBlocker && hasPromotionBlocker) {
     throw new Error(`${surface} release identity was not promoted; snapshot not updated`);
   }
@@ -273,14 +276,6 @@ function updateReadmeCampaignSnapshot(readme, summary, { runDate, releaseVersion
 
   let next = readme;
   next = next.replace(
-    /> \*\*Evidence boundary:\*\* Phase 1 candidate evidence: v[\d.]+ live-validated the Codex CLI-skill route on one disposable local fixture\. Candidate digest sha256:[a-f0-9]+…; these measurements are historical for the current tree\. A fresh campaign is required before any current-tree or release claim\./,
-    `> **Evidence boundary:** ${measuredVersionLabel} live-validated the Codex CLI-skill route on one disposable local fixture.`,
-  );
-  next = next.replace(
-    /> \*\*Evidence boundary:\*\* v[\d.]+ previously live-validated the Codex CLI-skill route on one disposable local fixture\. The current v[\d.]+ manifest remains `documented` until this exact candidate is rerun\./,
-    `> **Evidence boundary:** ${measuredVersionLabel} live-validated the Codex CLI-skill route on one disposable local fixture.`,
-  );
-  next = next.replace(
     /(\| \[Smart Eye benchmark\]\([^\n]+\) \| )Previous-release baseline: the v[\d.]+ mixed local campaign passed \d+\/\d+ rounds, including five local fixture profiles — not external production apps; v[\d.]+ must rerun before promotion( \|)/,
     `$1Latest measured release: the ${measuredVersionLabel} mixed local campaign passed ${summary.passCount}/${summary.roundsCompleted} rounds, including five local fixture profiles — not external production apps$2`,
   );
@@ -325,7 +320,7 @@ function updateReadmeCampaignSnapshot(readme, summary, { runDate, releaseVersion
   next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'Real-app targets', targets);
   next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'Stale-ref recovery', campaignTraitCoverage(summary, 'stale-ref'));
   next = replaceMetricInSection(next, snapshotStart, snapshotEnd, 'Quality gate', campaignGate(summary));
-  requirePromotedProofCopy(readme, next, 'README');
+  requirePromotedProofCopy(readme, next, 'README', { preserveHostEvidence: true });
   return next;
 }
 
@@ -405,6 +400,7 @@ function updateBenchmarkCampaignHtmlSnapshot(html, summary, { runDate, releaseVe
     );
     next = next.replace(/releases\/tag\/v[\d.]+">v[\d.]+ product<\/a>/, `releases/tag/${measuredVersionLabel}">${measuredVersionLabel} product</a>`);
     next = next.replace(/releases\/tag\/v[\d.]+">v[\d.]+ measured campaign<\/a>/, `releases/tag/${measuredVersionLabel}">${measuredVersionLabel} measured campaign</a>`);
+    next = next.replace(/releases\/tag\/v[\d.]+">v[\d.]+ Phase 1 candidate measurement<\/a>/, `releases/tag/${measuredVersionLabel}">${measuredVersionLabel} measured campaign</a>`);
   }
   next = next.replace(
     /<strong>[^<]+<\/strong>\s*<span>quality gate passed[^<]*<br>\d{4}-\d{2}-\d{2} local run(?: · v[\d.]+ (?:previous baseline|Phase 1 candidate))?<\/span>/,

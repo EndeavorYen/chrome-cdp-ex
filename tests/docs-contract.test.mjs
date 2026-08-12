@@ -192,7 +192,7 @@ describe('Repository release gates', () => {
     expect(architecture).not.toContain('77 explicitly enumerated legacy command routes');
   });
 
-  it('labels Phase 1 live evidence as historical for the Phase 2 tree', () => {
+  it('keeps Phase 1 host evidence historical while promoting only the exact-tree runtime benchmark', () => {
     const codexIntegration = readFileSync(new URL('../docs/integrations/codex.md', import.meta.url), 'utf8');
     const codexKillerPath = readFileSync(new URL('../docs/examples/codex-killer-path.md', import.meta.url), 'utf8');
 
@@ -200,8 +200,10 @@ describe('Repository release gates', () => {
       expect(surface).toContain('Phase 1 candidate');
     }
     expect(readme).toContain('historical for the current tree');
-    expect(readFileSync(new URL('../experiment/benchmark.html', import.meta.url), 'utf8'))
-      .toContain('historical for current tree');
+    expect(readme).toContain('current Runtime v3 benchmark');
+    const benchmark = readFileSync(new URL('../experiment/benchmark.html', import.meta.url), 'utf8');
+    expect(benchmark).toContain('Smart Eye benchmark · latest measured release');
+    expect(benchmark).not.toContain('historical for current tree');
   });
 
   it('runs CI for pull requests targeting main and dev', () => {
