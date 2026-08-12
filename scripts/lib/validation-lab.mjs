@@ -56,6 +56,7 @@ const VALIDATION_SOURCE_PATHS = Object.freeze([
   'package-lock.json',
   'README.md',
   'docs/reference.md',
+  'docs/contracts/v2.15.0',
   'scripts',
   'skills/chrome-cdp-ex/references/commands.md',
   'skills/chrome-cdp-ex/scripts',

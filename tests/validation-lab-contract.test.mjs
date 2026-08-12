@@ -82,6 +82,7 @@ describe('validation lab registry contract', () => {
       'phase4-core-slices',
       'phase5-supervisor',
       'phase6-convergence',
+      'phase7-runtime-v3',
       'public-contracts',
     ]);
     expect(actual.scenarios.filter(entry => entry.tags.includes('default')).every(entry =>
@@ -107,6 +108,9 @@ describe('validation lab registry contract', () => {
       'package-lock.json',
       'README.md',
       'docs/reference.md',
+      'docs/contracts/v2.15.0/runtime-dispatch.v1.json',
+      'docs/contracts/v2.15.0/package-entries.v1.json',
+      'docs/contracts/v2.15.0/public-contracts.v1.json',
       'skills/chrome-cdp-ex/references/commands.md',
       'scripts/candidate-identity.mjs',
       'scripts/benchmark-run-lock.mjs',
@@ -136,6 +140,9 @@ describe('validation lab registry contract', () => {
         'skills/chrome-cdp-ex/scripts/cdp.mjs',
         'README.md',
         'docs/reference.md',
+        'docs/contracts/v2.15.0/runtime-dispatch.v1.json',
+        'docs/contracts/v2.15.0/package-entries.v1.json',
+        'docs/contracts/v2.15.0/public-contracts.v1.json',
         'skills/chrome-cdp-ex/references/commands.md',
         'scripts/validation-phase5-supervisor.mjs',
         'scripts/validation-phase6-convergence.mjs',
@@ -312,6 +319,33 @@ describe('validation lab risk planner', () => {
     expect(() => planValidationRun(canonical, { ids: ['phase6-convergence'] }, budget(limits)))
       .toThrow('live requires allowLive');
     expect(planValidationRun(canonical, { ids: ['phase6-convergence'] }, budget({
+      ...limits,
+      allowLive: true,
+    })).selected).toHaveLength(1);
+  });
+
+  it('keeps the shipped Phase 7 Runtime v3 proof live-only, one-attempt, and explicitly authorized', () => {
+    const canonical = validateScenarioRegistry(JSON.parse(readFileSync(registryPath, 'utf8')), { rootDir });
+    const phase7 = canonical.scenarios.find(entry => entry.id === 'phase7-runtime-v3');
+    expect(phase7.tags).toEqual(['live', 'phase7']);
+    expect(phase7.runner.entrypoint).toBe('scripts/validation-phase7-runtime-v3.mjs');
+    expect(phase7.risk).toEqual({
+      units: 20,
+      timeoutMs: 600_000,
+      maxOutputBytes: 262_144,
+      network: 'loopback',
+      browser: 'disposable-local',
+      mutation: 'task-created-files',
+      maxAttempts: 1,
+    });
+    const limits = {
+      maxRiskUnits: 20,
+      maxDurationMs: 600_000,
+      maxOutputBytes: 300_000,
+    };
+    expect(() => planValidationRun(canonical, { ids: ['phase7-runtime-v3'] }, budget(limits)))
+      .toThrow('live requires allowLive');
+    expect(planValidationRun(canonical, { ids: ['phase7-runtime-v3'] }, budget({
       ...limits,
       allowLive: true,
     })).selected).toHaveLength(1);

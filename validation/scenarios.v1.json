@@ -65,6 +65,37 @@
       "risk": { "units": 10, "timeoutMs": 300000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1 }
     },
     {
+      "id": "phase7-runtime-v3",
+      "title": "Phase 7 Runtime v3 all-route and failure evidence",
+      "owner": "maintainers",
+      "tags": [
+        "live",
+        "phase7"
+      ],
+      "runner": {
+        "kind": "node",
+        "entrypoint": "scripts/validation-phase7-runtime-v3.mjs",
+        "args": []
+      },
+      "expect": {
+        "exitCodes": [
+          0
+        ],
+        "stdoutIncludes": [
+          "Runtime v3 evidence OK:"
+        ]
+      },
+      "risk": {
+        "units": 20,
+        "timeoutMs": 600000,
+        "maxOutputBytes": 262144,
+        "network": "loopback",
+        "browser": "disposable-local",
+        "mutation": "task-created-files",
+        "maxAttempts": 1
+      }
+    },
+    {
       "id": "controlled-failure",
       "title": "Controlled redaction failure",
       "owner": "maintainers",
