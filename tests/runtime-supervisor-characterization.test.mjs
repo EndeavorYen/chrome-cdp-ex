@@ -717,7 +717,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
         if (fail) throw new Error(failures.get(key));
         return commandResult(outputs.get(key), evidence);
       });
-      const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
+      const registry = cdpTest.createApplicationCommandRegistry(cdpTest.COMMANDS);
       const preflight = cdpTest.preflightDaemonApplication();
       const handlers = Object.fromEntries(cdpTest.DAEMON_APPLICATION_COMMANDS.map(name => [
         name,
@@ -767,9 +767,9 @@ describe('Phase 5 current MCP process boundary characterization', () => {
         registry,
         owners: preflight.routeOwners,
         handlers,
-        authorize: cdpTest.authorizePhase4DaemonCommand,
+        authorize: cdpTest.authorizeDaemonApplicationCommand,
       });
-      const routed = await cdpTest.executePhase4DaemonRoute({
+      const routed = await cdpTest.executeDaemonApplicationRoute({
         cmd: entry.cmd,
         args: entry.args,
         targetBound: true,

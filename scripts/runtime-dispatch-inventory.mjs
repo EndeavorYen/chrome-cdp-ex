@@ -128,7 +128,7 @@ function collectDaemonGroups(source) {
     'scriptCapabilities',
     'actionCapabilities',
     'workflowCapabilities',
-    'phase4Handlers',
+    'applicationHandlers',
   ];
   const rule = {
     create(context) {
@@ -192,7 +192,7 @@ function collectDaemonGroups(source) {
         },
         CallExpression(node) {
           if (node.callee.type !== 'Identifier') return;
-          if (!['executePhase4DaemonRoute', 'handleCommand'].includes(node.callee.name)) return;
+          if (!['executeDaemonApplicationRoute', 'handleCommand'].includes(node.callee.name)) return;
           const ancestors = sourceCode.getAncestors(node);
           const workflowDeclarator = [...ancestors].reverse().find(ancestor => ancestor.type === 'VariableDeclarator'
             && ancestor.id?.type === 'Identifier' && ancestor.id.name === 'workflowCapabilities');
@@ -212,7 +212,7 @@ function collectDaemonGroups(source) {
           const owner = [...sourceCode.getAncestors(node)].reverse().find(ancestor => ancestor.type === 'FunctionDeclaration');
           if (owner?.id?.name !== 'handleCommand') return;
           if (!branch) {
-            if (node.callee.name === 'executePhase4DaemonRoute') genericApplicationCalls += 1;
+            if (node.callee.name === 'executeDaemonApplicationRoute') genericApplicationCalls += 1;
             return;
           }
           const calls = directCallsByCaseLine.get(branch.loc.start.line) || [];
@@ -368,7 +368,7 @@ export function buildRuntimeDispatchInventory(source = readFileSync(cdpPath, 'ut
     if (!protocol && canonical.length !== 1) {
       throw new Error(`daemon branch ${group.labels.join('/')} does not resolve to one command`);
     }
-    const applicationCallCount = directCalls.filter(call => call === 'executePhase4DaemonRoute').length;
+    const applicationCallCount = directCalls.filter(call => call === 'executeDaemonApplicationRoute').length;
     const expectedApplicationCalls = canonical.some(name => applicationCommandSet.has(name)) ? 1 : 0;
     if (applicationCallCount !== expectedApplicationCalls) {
       throw new Error(`daemon branch ${group.labels.join('/')} application ownership is invalid`);

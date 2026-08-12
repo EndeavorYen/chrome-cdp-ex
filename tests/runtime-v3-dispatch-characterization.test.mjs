@@ -145,7 +145,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       'run: step => globalThis.handleCommand({ cmd: step.cmd, args: step.args || [] })',
     ))).toThrow(/recursive daemon routes|workflow capability repeat/);
     expect(() => buildRuntimeDispatchInventory(source.replace(
-      'const route = await executePhase4DaemonRoute({',
+      'const route = await executeDaemonApplicationRoute({',
       'const route = await fakeLegacyRoute({',
     ))).toThrow(/application ownership|general application dispatch/);
     expect(() => buildRuntimeDispatchInventory(source.replace(
@@ -155,7 +155,7 @@ describe('Runtime v3 final dispatch characterization', () => {
     try {
       expect(buildRuntimeDispatchInventory(source.replace(
         "case 'stop': return { ok: true, result: '', stopAfter: true };",
-        "case 'report': {\n          const route = await executePhase4DaemonRoute({ cmd: 'report', args, targetBound: Boolean(targetId) }, phase4Context);\n          result = route.result;\n          break;\n        }\n        case 'stop': return { ok: true, result: '', stopAfter: true };",
+        "case 'report': {\n          const route = await executeDaemonApplicationRoute({ cmd: 'report', args, targetBound: Boolean(targetId) }, applicationDispatcher);\n          result = route.result;\n          break;\n        }\n        case 'stop': return { ok: true, result: '', stopAfter: true };",
       ))).not.toEqual(fixture);
     } catch (error) {
       expect(error.message).toMatch(/duplicate daemon route labels: report/);
@@ -165,8 +165,8 @@ describe('Runtime v3 final dispatch characterization', () => {
       'planted: capabilities => createDaemonActionHandlers(capabilities).loadall,',
     ))).toThrow(/exactly cover.*68 target commands/);
     expect(() => buildRuntimeDispatchInventory(source.replace(
-      'const applicationRoute = phase4Context.route(cmd);',
-      "await executePhase4DaemonRoute({ cmd: 'html', args, targetBound: true }, phase4Context);\n      const applicationRoute = phase4Context.route(cmd);",
+      'const applicationRoute = applicationDispatcher.route(cmd);',
+      "await executeDaemonApplicationRoute({ cmd: 'html', args, targetBound: true }, applicationDispatcher);\n      const applicationRoute = applicationDispatcher.route(cmd);",
     ))).toThrow(/exactly one general application dispatch/);
     for (const mutation of [
       source.replace(

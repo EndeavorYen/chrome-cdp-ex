@@ -150,8 +150,35 @@ describe('Phase 4 command specifications', () => {
 });
 
 describe('Phase 4 specs derived from the public command owner', () => {
+  it('exports final application-core names without Phase-specific compatibility symbols', () => {
+    for (const name of [
+      'buildApplicationCommandSpecs',
+      'createApplicationCommandRegistry',
+      'createReportCommandHandler',
+      'createPerceiveCommandHandler',
+      'createClickCommandHandler',
+      'createEvalrawCommandHandler',
+      'authorizeDaemonApplicationCommand',
+      'executeDaemonApplicationRoute',
+    ]) {
+      expect(cdpTest[name], name).toBeTypeOf('function');
+    }
+    for (const name of [
+      'buildPhase4CommandSpecs',
+      'createPhase4CommandRegistry',
+      'createPhase4ReportHandler',
+      'createPhase4PerceiveHandler',
+      'createPhase4ClickHandler',
+      'createPhase4EvalrawHandler',
+      'authorizePhase4DaemonCommand',
+      'executePhase4DaemonRoute',
+    ]) {
+      expect(cdpTest, name).not.toHaveProperty(name);
+    }
+  });
+
   it('derives all 81 deterministic specs with byte-equivalent public metadata', () => {
-    const specs = cdpTest.buildPhase4CommandSpecs(cdpTest.COMMANDS);
+    const specs = cdpTest.buildApplicationCommandSpecs(cdpTest.COMMANDS);
     expect(specs).toHaveLength(81);
     expect(specs.map(entry => entry.name)).toEqual(
       cdpTest.COMMANDS.map(entry => entry.name).sort(),
@@ -177,7 +204,7 @@ describe('Phase 4 specs derived from the public command owner', () => {
       });
     }
 
-    const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
+    const registry = cdpTest.createApplicationCommandRegistry(cdpTest.COMMANDS);
     expect(registry.list()).toEqual(specs);
     expect(registry.resolve('report')?.kind).toBe('evidence');
     expect(registry.resolve('evalraw')?.authorization).toBe('raw-cdp');
@@ -196,43 +223,43 @@ describe('Phase 4 specs derived from the public command owner', () => {
   ])('rejects %s drift from COMMANDS authority', (_label, mutate, message) => {
     const commands = structuredClone(cdpTest.COMMANDS);
     mutate(commands);
-    expect(() => cdpTest.buildPhase4CommandSpecs(commands)).toThrow(message);
+    expect(() => cdpTest.buildApplicationCommandSpecs(commands)).toThrow(message);
   });
 
   it('rejects a missing or duplicate slice command', () => {
     const missing = structuredClone(cdpTest.COMMANDS).filter(item => item.name !== 'report');
-    expect(() => cdpTest.buildPhase4CommandSpecs(missing)).toThrow(/exactly 81/);
+    expect(() => cdpTest.buildApplicationCommandSpecs(missing)).toThrow(/exactly 81/);
     const duplicate = structuredClone(cdpTest.COMMANDS);
     duplicate[0] = structuredClone(duplicate.find(item => item.name === 'report'));
-    expect(() => cdpTest.buildPhase4CommandSpecs(duplicate)).toThrow('help.name');
+    expect(() => cdpTest.buildApplicationCommandSpecs(duplicate)).toThrow('help.name');
   });
 
   it('rejects extra records, extra fields, custom arrays, and oversized projections before registry creation', () => {
     const planted = structuredClone(cdpTest.COMMANDS);
     planted.push({ ...structuredClone(planted[0]), name: 'planted', aliases: [] });
-    expect(() => cdpTest.buildPhase4CommandSpecs(planted)).toThrow(/81-item array limit|exactly 81/);
+    expect(() => cdpTest.buildApplicationCommandSpecs(planted)).toThrow(/81-item array limit|exactly 81/);
 
     const extraField = structuredClone(cdpTest.COMMANDS);
     extraField[0].planted = true;
-    expect(() => cdpTest.buildPhase4CommandSpecs(extraField)).toThrow(/planted.*not allowed/);
+    expect(() => cdpTest.buildApplicationCommandSpecs(extraField)).toThrow(/planted.*not allowed/);
 
     const customPrototype = structuredClone(cdpTest.COMMANDS);
     Object.setPrototypeOf(customPrototype, Object.create(Array.prototype));
-    expect(() => cdpTest.buildPhase4CommandSpecs(customPrototype)).toThrow(/plain array/);
+    expect(() => cdpTest.buildApplicationCommandSpecs(customPrototype)).toThrow(/plain array/);
 
     const oversized = Array.from({ length: 100000 }, () => cdpTest.COMMANDS[0]);
-    expect(() => cdpTest.buildPhase4CommandSpecs(oversized)).toThrow(/81-item array limit/);
+    expect(() => cdpTest.buildApplicationCommandSpecs(oversized)).toThrow(/81-item array limit/);
 
     for (const value of [null, undefined]) {
       const optionalExtra = structuredClone(cdpTest.COMMANDS);
       optionalExtra.find(command => command.name === 'help').feedbackPolicy = value;
-      expect(() => cdpTest.buildPhase4CommandSpecs(optionalExtra)).toThrow(/help\.feedbackPolicy.*not allowed/);
+      expect(() => cdpTest.buildApplicationCommandSpecs(optionalExtra)).toThrow(/help\.feedbackPolicy.*not allowed/);
     }
 
     const nonEnumerable = structuredClone(cdpTest.COMMANDS);
     const help = nonEnumerable.find(command => command.name === 'help');
     Object.defineProperty(help, 'name', { value: 'help', enumerable: false });
-    expect(() => cdpTest.buildPhase4CommandSpecs(nonEnumerable)).toThrow(/name.*enumerable/);
+    expect(() => cdpTest.buildApplicationCommandSpecs(nonEnumerable)).toThrow(/name.*enumerable/);
   });
 
   it('rejects accessor, symbol, and prototype-backed command candidates before comparison', () => {
@@ -246,16 +273,16 @@ describe('Phase 4 specs derived from the public command owner', () => {
         return reads === 1;
       },
     });
-    expect(() => cdpTest.buildPhase4CommandSpecs(accessor)).toThrow(/accessor|data propert/i);
+    expect(() => cdpTest.buildApplicationCommandSpecs(accessor)).toThrow(/accessor|data propert/i);
 
     const symbol = structuredClone(cdpTest.COMMANDS);
     symbol.find(item => item.name === 'report')[Symbol('aliases')] = ['bypass'];
-    expect(() => cdpTest.buildPhase4CommandSpecs(symbol)).toThrow(/symbol|not allowed/i);
+    expect(() => cdpTest.buildApplicationCommandSpecs(symbol)).toThrow(/symbol|not allowed/i);
 
     const inherited = structuredClone(cdpTest.COMMANDS);
     const index = inherited.findIndex(item => item.name === 'evalraw');
     inherited[index] = Object.assign(Object.create({ mutates: true }), inherited[index]);
-    expect(() => cdpTest.buildPhase4CommandSpecs(inherited)).toThrow(/plain data object|prototype/i);
+    expect(() => cdpTest.buildApplicationCommandSpecs(inherited)).toThrow(/plain data object|prototype/i);
   });
 });
 
@@ -539,8 +566,8 @@ describe('Phase 4 report compatibility slice', () => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(session.createdAt + 1234);
     try {
       const expected = cdpTest.formatSessionReport(session, options);
-      const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
-      const handler = cdpTest.createPhase4ReportHandler(session);
+      const registry = cdpTest.createApplicationCommandRegistry(cdpTest.COMMANDS);
+      const handler = cdpTest.createReportCommandHandler(session);
       const actual = await executeApplicationValue({
         name: 'report', args, targetBound: true,
       }, {
@@ -554,17 +581,17 @@ describe('Phase 4 report compatibility slice', () => {
   });
 
   it('preserves the established report unknown-argument failure', async () => {
-    const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
+    const registry = cdpTest.createApplicationCommandRegistry(cdpTest.COMMANDS);
     await expect(executeApplicationValue({
       name: 'report', args: ['--unknown'], targetBound: true,
     }, {
       registry,
-      handlers: { report: cdpTest.createPhase4ReportHandler(reportSession()) },
+      handlers: { report: cdpTest.createReportCommandHandler(reportSession()) },
     })).rejects.toThrow('report: unknown argument --unknown');
   });
 
   it('invokes exactly one report handler and exposes only its legacy value', async () => {
-    const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
+    const registry = cdpTest.createApplicationCommandRegistry(cdpTest.COMMANDS);
     const handler = vi.fn(async () => commandResult('legacy report\n', { kind: 'session-report' }));
     const actual = await executeApplicationValue({
       name: 'report', args: [], targetBound: true,
@@ -599,7 +626,7 @@ describe('Phase 4 perceive compatibility slice', () => {
       ops,
       ...overrides,
     };
-    return { handler: cdpTest.createPhase4PerceiveHandler(inputs), inputs, ops };
+    return { handler: cdpTest.createPerceiveCommandHandler(inputs), inputs, ops };
   }
 
   it('preserves text output, max-line truncation, and reference state wiring', async () => {
@@ -669,14 +696,14 @@ describe('Phase 4 click compatibility slice', () => {
       expect(format).toMatchObject({ format: 'json', compact: !javascriptFallback });
       return dispatch();
     });
-    const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
-    const handler = cdpTest.createPhase4ClickHandler({ actionFeedback, click, jsClick });
+    const registry = cdpTest.createApplicationCommandRegistry(cdpTest.COMMANDS);
+    const handler = cdpTest.createClickCommandHandler({ actionFeedback, click, jsClick });
     const actual = await executeApplicationValue({
       name: 'click', args, targetBound: true,
     }, {
       registry,
       handlers: { click: handler },
-      authorize: cdpTest.authorizePhase4DaemonCommand,
+      authorize: cdpTest.authorizeDaemonApplicationCommand,
     });
 
     expect(actual).toBe(`${javascriptFallback ? 'js' : 'normal'}:${selector}`);
@@ -686,10 +713,10 @@ describe('Phase 4 click compatibility slice', () => {
   });
 
   it('fails closed when the compatibility authorizer lacks a bound target', async () => {
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command: 'click', policy: 'mutation', mutates: true, targetBound: false,
     })).toEqual({ allowed: false, code: 'target-not-bound' });
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command: 'perceive', policy: 'mutation', mutates: true, targetBound: true,
     })).toEqual({ allowed: false, code: 'policy-denied' });
   });
@@ -697,7 +724,7 @@ describe('Phase 4 click compatibility slice', () => {
 
 describe('Phase 4 daemon dispatch seam', () => {
   function routeFixture() {
-    const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
+    const registry = cdpTest.createApplicationCommandRegistry(cdpTest.COMMANDS);
     const handlers = {
       perceive: vi.fn(async () => commandResult('perceive-value', null)),
       report: vi.fn(async () => commandResult('report-value', { kind: 'session-report' })),
@@ -763,14 +790,14 @@ describe('Phase 4 daemon dispatch seam', () => {
     const context = routeFixture();
     const dispatcher = createCommandDispatcher({
       ...context,
-      authorize: cdpTest.authorizePhase4DaemonCommand,
+      authorize: cdpTest.authorizeDaemonApplicationCommand,
     });
     const cmdRead = vi.fn(() => 'perceive');
     const request = { args: [], targetBound: true };
     Object.defineProperty(request, 'cmd', { enumerable: true, get: cmdRead });
-    await expect(cdpTest.executePhase4DaemonRoute(request, dispatcher)).rejects.toThrow(/data property/);
+    await expect(cdpTest.executeDaemonApplicationRoute(request, dispatcher)).rejects.toThrow(/data property/);
     expect(cmdRead).not.toHaveBeenCalled();
-    await expect(cdpTest.executePhase4DaemonRoute(
+    await expect(cdpTest.executeDaemonApplicationRoute(
       Object.create({ cmd: 'perceive', args: [], targetBound: true }),
       dispatcher,
     )).rejects.toThrow(/plain data object/);
@@ -780,7 +807,7 @@ describe('Phase 4 daemon dispatch seam', () => {
     const context = routeFixture();
     const dispatcher = createCommandDispatcher({
       ...context,
-      authorize: cdpTest.authorizePhase4DaemonCommand,
+      authorize: cdpTest.authorizeDaemonApplicationCommand,
     });
     const cases = [
       ['perceive', [], 'perceive-value'],
@@ -789,12 +816,12 @@ describe('Phase 4 daemon dispatch seam', () => {
       ['evalraw', ['DOM.getDocument', '{}'], 'evalraw-value'],
     ];
     for (const [cmd, args, expected] of cases) {
-      await expect(cdpTest.executePhase4DaemonRoute({ cmd, args, targetBound: true }, dispatcher))
+      await expect(cdpTest.executeDaemonApplicationRoute({ cmd, args, targetBound: true }, dispatcher))
         .resolves.toEqual({ handled: true, result: expected });
       expect(context.handlers[cmd]).toHaveBeenCalledOnce();
     }
 
-    await expect(cdpTest.executePhase4DaemonRoute({ cmd: 'summary', args: [], targetBound: true }, dispatcher))
+    await expect(cdpTest.executeDaemonApplicationRoute({ cmd: 'summary', args: [], targetBound: true }, dispatcher))
       .resolves.toEqual({ handled: false, result: null });
     expect(Object.values(context.handlers).every(handler => handler.mock.calls.length === 1)).toBe(true);
   });
@@ -803,13 +830,13 @@ describe('Phase 4 daemon dispatch seam', () => {
     const context = routeFixture();
     const dispatcher = createCommandDispatcher({
       ...context,
-      authorize: cdpTest.authorizePhase4DaemonCommand,
+      authorize: cdpTest.authorizeDaemonApplicationCommand,
     });
     const migrated = new Set(Object.keys(context.handlers));
     const legacy = cdpTest.COMMANDS.filter(command => !migrated.has(command.name));
     expect(legacy).toHaveLength(77);
     for (const command of legacy) {
-      await expect(cdpTest.executePhase4DaemonRoute({
+      await expect(cdpTest.executeDaemonApplicationRoute({
         cmd: command.name,
         args: [],
         targetBound: command.needsTarget,
@@ -824,7 +851,7 @@ describe('Phase 4 daemon dispatch seam', () => {
       ...context,
       authorize: () => ({ allowed: false, code: 'policy-denied' }),
     });
-    await expect(cdpTest.executePhase4DaemonRoute(
+    await expect(cdpTest.executeDaemonApplicationRoute(
       { cmd: 'click', args: ['#save'], targetBound: true },
       dispatcher,
     )).rejects.toThrow('authorization denied');
@@ -834,55 +861,55 @@ describe('Phase 4 daemon dispatch seam', () => {
   it.each(ACTION_COMMANDS)('binds %s to mutation authorization and a live target', command => {
     const mutates = !['dialog', 'hover', 'keepalive', 'loadall', 'netlog'].includes(command);
     const policy = command === 'netlog' ? 'conditional' : 'mutation';
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy, mutates, targetBound: true,
     })).toEqual({ allowed: true, code: 'legacy-daemon' });
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy, mutates, targetBound: false,
     })).toEqual({ allowed: false, code: 'target-not-bound' });
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: policy === 'mutation' ? 'standard' : 'mutation', mutates, targetBound: true,
     })).toEqual({ allowed: false, code: 'policy-denied' });
   });
 
   it.each(SCRIPT_COMMANDS)('binds %s to raw-script authorization and a live target', command => {
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'raw-script', mutates: false, targetBound: true,
     })).toEqual({ allowed: true, code: 'legacy-daemon' });
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'raw-script', mutates: false, targetBound: false,
     })).toEqual({ allowed: false, code: 'target-not-bound' });
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'mutation', mutates: false, targetBound: true,
     })).toEqual({ allowed: false, code: 'policy-denied' });
   });
 
   it.each(['batch', 'flow', 'repeat'])('binds %s to composite authorization and a live target', command => {
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'composite', mutates: false, targetBound: true,
     })).toEqual({ allowed: true, code: 'legacy-daemon' });
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'mutation', mutates: false, targetBound: true,
     })).toEqual({ allowed: false, code: 'policy-denied' });
   });
 
   it('binds replay to mutation authorization and a live target', () => {
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command: 'replay', policy: 'mutation', mutates: true, targetBound: true,
     })).toEqual({ allowed: true, code: 'legacy-daemon' });
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command: 'replay', policy: 'mutation', mutates: true, targetBound: false,
     })).toEqual({ allowed: false, code: 'target-not-bound' });
   });
 
   it.each(['console', 'record'])('binds %s to conditional authorization and a live target', command => {
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'conditional', mutates: false, targetBound: true,
     })).toEqual({ allowed: true, code: 'legacy-daemon' });
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'conditional', mutates: false, targetBound: false,
     })).toEqual({ allowed: false, code: 'target-not-bound' });
-    expect(cdpTest.authorizePhase4DaemonCommand({
+    expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'standard', mutates: false, targetBound: true,
     })).toEqual({ allowed: false, code: 'policy-denied' });
   });
@@ -891,10 +918,10 @@ describe('Phase 4 daemon dispatch seam', () => {
     const context = routeFixture();
     const dispatcher = createCommandDispatcher({
       ...context,
-      authorize: cdpTest.authorizePhase4DaemonCommand,
+      authorize: cdpTest.authorizeDaemonApplicationCommand,
     });
     const route = async step => {
-      const routed = await cdpTest.executePhase4DaemonRoute({
+      const routed = await cdpTest.executeDaemonApplicationRoute({
         cmd: step.cmd,
         args: step.args || [],
         targetBound: true,
@@ -978,98 +1005,98 @@ describe('Phase 4 daemon dispatch seam', () => {
       registry: preflight.registry,
       owners: preflight.routeOwners,
       handlers,
-      authorize: cdpTest.authorizePhase4DaemonCommand,
+      authorize: cdpTest.authorizeDaemonApplicationCommand,
     });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'html', args: ['main'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'html:main' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'text', args: ['--auto'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'text:--auto' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'table', args: [], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'table:' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'network', args: [], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'net:' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'status', args: ['--format', 'json'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'status:--format|json' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'summary', args: [], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'summary:' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'snapshot', args: ['--full'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'snap:--full' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'controls', args: ['--format', 'json'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'controls:--format|json' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'frames', args: ['--format', 'json'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'frame:--format|json' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'overlays', args: ['--format', 'json'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'overlay:--format|json' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'styles', args: ['#auth-panel'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'styles:#auth-panel' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'components', args: ['#auth-panel'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'components:#auth-panel' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'recordactions', args: ['--format', 'json'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'record-actions:--format|json' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'export-pw', args: ['--test-name', 'fixture'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'export-playwright:--test-name|fixture' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'wait', args: ['25'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'wait:25' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'waitfor', args: ['--text', 'Ready', '500'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'waitfor:--text|Ready|500' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'cascade', args: ['#auth-panel', 'color', '--format', 'json'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'cascade:#auth-panel|color|--format|json' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'checkpoint', args: ['--format', 'json'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'checkpoint:--format|json' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'cookies', args: [], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'cookies:' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'screenshot', args: ['--quiet'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'shot:--quiet' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'diffshot', args: ['--format', 'json'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'diff-shot:--format|json' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'elshot', args: ['#auth-panel'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'elshot:#auth-panel' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'fullshot', args: [], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'fullshot:' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'scanshot', args: [], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'scanshot:' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'console', args: ['--clear'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'console:--clear' });
-    await expect(cdpTest.executePhase4DaemonRoute({
+    await expect(cdpTest.executeDaemonApplicationRoute({
       cmd: 'record', args: ['500'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'record:500' });
     for (const name of ACTION_COMMANDS) {
-      await expect(cdpTest.executePhase4DaemonRoute({
+      await expect(cdpTest.executeDaemonApplicationRoute({
         cmd: name, args: ['fixture'], targetBound: true,
       }, dispatcher)).resolves.toEqual({ handled: true, result: `${name}:fixture` });
     }
     for (const name of SCRIPT_COMMANDS) {
-      await expect(cdpTest.executePhase4DaemonRoute({
+      await expect(cdpTest.executeDaemonApplicationRoute({
         cmd: name, args: ['fixture'], targetBound: true,
       }, dispatcher)).resolves.toEqual({ handled: true, result: `${name}:fixture` });
     }
     for (const name of WORKFLOW_COMMANDS) {
-      await expect(cdpTest.executePhase4DaemonRoute({
+      await expect(cdpTest.executeDaemonApplicationRoute({
         cmd: name, args: ['fixture'], targetBound: true,
       }, dispatcher)).resolves.toEqual({ handled: true, result: `${name}:fixture` });
     }
@@ -1226,14 +1253,14 @@ describe('Phase 4 evalraw compatibility slice', () => {
     ['Experimental.mystery', undefined, 'unknown'],
   ])('preserves %s output while keeping trusted audit metadata internal', async (method, params, sideEffectClass) => {
     const evalRaw = vi.fn(async (actualMethod, actualParams) => `legacy:${actualMethod}:${actualParams ?? ''}\n`);
-    const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
-    const handler = cdpTest.createPhase4EvalrawHandler({ evalRaw });
+    const registry = cdpTest.createApplicationCommandRegistry(cdpTest.COMMANDS);
+    const handler = cdpTest.createEvalrawCommandHandler({ evalRaw });
     const actual = await executeApplicationValue({
       name: 'evalraw', args: params === undefined ? [method] : [method, params], targetBound: true,
     }, {
       registry,
       handlers: { evalraw: handler },
-      authorize: cdpTest.authorizePhase4DaemonCommand,
+      authorize: cdpTest.authorizeDaemonApplicationCommand,
     });
 
     expect(evalRaw).toHaveBeenCalledWith(
@@ -1252,7 +1279,7 @@ describe('Phase 4 evalraw compatibility slice', () => {
       if (params === '{bad') throw new Error('Invalid JSON params: {bad');
       return 'unused';
     });
-    const handler = cdpTest.createPhase4EvalrawHandler({ evalRaw });
+    const handler = cdpTest.createEvalrawCommandHandler({ evalRaw });
     await expect(handler({ args: [] })).rejects.toThrow('CDP method required');
     await expect(handler({ args: ['DOM.getDocument', '{bad'] })).rejects.toThrow('Invalid JSON params: {bad');
   });

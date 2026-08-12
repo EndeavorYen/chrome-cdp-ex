@@ -12973,10 +12973,10 @@ async function dismissModalStr(cdp, sid) {
 // ---------------------------------------------------------------------------
 
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
-  perceive: context => createPhase4PerceiveHandler(context),
-  click: context => createPhase4ClickHandler(context),
-  report: context => createPhase4ReportHandler(context.session),
-  evalraw: context => createPhase4EvalrawHandler(context),
+  perceive: context => createPerceiveCommandHandler(context),
+  click: context => createClickCommandHandler(context),
+  report: context => createReportCommandHandler(context.session),
+  evalraw: context => createEvalrawCommandHandler(context),
   html: capabilities => createDaemonReadHandlers(capabilities).html,
   text: capabilities => createDaemonReadHandlers(capabilities).text,
   table: capabilities => createDaemonReadHandlers(capabilities).table,
@@ -13048,7 +13048,7 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
 const DAEMON_APPLICATION_COMMANDS = Object.freeze(Object.keys(DAEMON_HANDLER_BUILDERS).sort());
 
 function preflightDaemonApplication(input = {}) {
-  const options = snapshotPhase4DataObject(input, 'application preflight options');
+  const options = snapshotApplicationDataObject(input, 'application preflight options');
   const allowedOptions = new Set(['commands', 'handlerBuilders']);
   for (const key of Object.keys(options)) {
     if (!allowedOptions.has(key)) throw new Error(`application preflight options.${key}: is not allowed`);
@@ -13057,8 +13057,8 @@ function preflightDaemonApplication(input = {}) {
   const handlerBuilders = Object.hasOwn(options, 'handlerBuilders')
     ? options.handlerBuilders
     : DAEMON_HANDLER_BUILDERS;
-  const registry = createPhase4CommandRegistry(commands);
-  const builders = snapshotPhase4DataObject(handlerBuilders, 'handlerBuilders');
+  const registry = createApplicationCommandRegistry(commands);
+  const builders = snapshotApplicationDataObject(handlerBuilders, 'handlerBuilders');
   const builderNames = Object.keys(builders).sort();
   const expectedNames = registry.list()
     .filter(command => command.needsTarget)
@@ -13372,7 +13372,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     });
   }
 
-  const phase4Registry = applicationPreflight.registry;
+  const applicationRegistry = applicationPreflight.registry;
   const readCapabilities = {
     cascade: args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
@@ -13804,7 +13804,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       run: step => handleCommand({ cmd: step.cmd, args: step.args || [] }),
     }, args),
   };
-  const phase4Handlers = {
+  const applicationHandlers = {
     report: applicationPreflight.handlerBuilders.report({ session }),
     click: applicationPreflight.handlerBuilders.click({
       actionFeedback,
@@ -13891,11 +13891,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     closetab: applicationPreflight.handlerBuilders.closetab(actionCapabilities),
     loadall: applicationPreflight.handlerBuilders.loadall(actionCapabilities),
   };
-  const phase4Context = createCommandDispatcher({
-    registry: phase4Registry,
+  const applicationDispatcher = createCommandDispatcher({
+    registry: applicationRegistry,
     owners: applicationPreflight.routeOwners,
-    handlers: phase4Handlers,
-    authorize: authorizePhase4DaemonCommand,
+    handlers: applicationHandlers,
+    authorize: authorizeDaemonApplicationCommand,
   });
 
   // Handle a command
@@ -13903,13 +13903,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     resetIdle();
     try {
       let result;
-      const applicationRoute = phase4Context.route(cmd);
+      const applicationRoute = applicationDispatcher.route(cmd);
       if (applicationRoute?.owner === 'application') {
-        const route = await executePhase4DaemonRoute({
+        const route = await executeDaemonApplicationRoute({
           cmd,
           args,
           targetBound: Boolean(targetId),
-        }, phase4Context);
+        }, applicationDispatcher);
         return { ok: true, result: route.result ?? '' };
       }
       switch (cmd) {
@@ -14963,7 +14963,7 @@ function sameStringArray(left, right) {
     && left.every((value, index) => value === right[index]);
 }
 
-function snapshotPhase4DataObject(input, path) {
+function snapshotApplicationDataObject(input, path) {
   if (!input || Array.isArray(input) || typeof input !== 'object') throw new Error(`${path}: must be a plain data object`);
   const prototype = Object.getPrototypeOf(input);
   if (prototype !== Object.prototype && prototype !== null) throw new Error(`${path}: must be a plain data object without a custom prototype`);
@@ -14983,7 +14983,7 @@ function snapshotPhase4DataObject(input, path) {
   return snapshot;
 }
 
-function snapshotPhase4Array(input, path, { max = 256 } = {}) {
+function snapshotApplicationArray(input, path, { max = 256 } = {}) {
   if (!Array.isArray(input)) throw new Error(`${path}: must be an array`);
   if (Object.getPrototypeOf(input) !== Array.prototype) throw new Error(`${path}: must be a plain array`);
   if (!Number.isSafeInteger(input.length) || input.length > max) throw new Error(`${path}: exceeds the ${max}-item array limit`);
@@ -15003,10 +15003,10 @@ function snapshotPhase4Array(input, path, { max = 256 } = {}) {
   return values;
 }
 
-function buildPhase4CommandSpecs(commands) {
+function buildApplicationCommandSpecs(commands) {
   const authority = new Map(COMMAND_SURFACE.commands.map(command => [command.name, command]));
-  const candidates = snapshotPhase4Array(commands, 'commands', { max: authority.size })
-    .map((command, index) => snapshotPhase4DataObject(command, `commands[${index}]`));
+  const candidates = snapshotApplicationArray(commands, 'commands', { max: authority.size })
+    .map((command, index) => snapshotApplicationDataObject(command, `commands[${index}]`));
   if (candidates.length !== authority.size) throw new Error(`commands: expected exactly ${authority.size} authoritative records`);
   const allowedKeys = new Set(['name', 'aliases', 'needsTarget', 'mutates', 'feedbackPolicy', 'outputFormats']);
   const requiredKeys = new Set(['name', 'aliases', 'needsTarget', 'mutates', 'outputFormats']);
@@ -15039,7 +15039,7 @@ function buildPhase4CommandSpecs(commands) {
     }
     const arrays = {};
     for (const field of ['aliases', 'outputFormats']) {
-      arrays[field] = snapshotPhase4Array(command[field], `${name}.${field}`);
+      arrays[field] = snapshotApplicationArray(command[field], `${name}.${field}`);
       if (!sameStringArray(arrays[field], canonical[field])) {
         throw new Error(`${name}.${field}: drifted from COMMANDS authority`);
       }
@@ -15059,11 +15059,11 @@ function buildPhase4CommandSpecs(commands) {
   return Object.freeze(specs);
 }
 
-function createPhase4CommandRegistry(commands) {
-  return createCommandRegistry(buildPhase4CommandSpecs(commands));
+function createApplicationCommandRegistry(commands) {
+  return createCommandRegistry(buildApplicationCommandSpecs(commands));
 }
 
-function createPhase4ReportHandler(session) {
+function createReportCommandHandler(session) {
   return async ({ args }) => {
     const fopts = parseFormatArgs(args, ['text', 'json']);
     const ropts = parseReportArgs(fopts.args);
@@ -15077,7 +15077,7 @@ function createPhase4ReportHandler(session) {
   };
 }
 
-function createPhase4PerceiveHandler({
+function createPerceiveCommandHandler({
   cdp,
   sessionId,
   targetId,
@@ -15149,7 +15149,7 @@ function createPhase4PerceiveHandler({
   };
 }
 
-function createPhase4ClickHandler({ actionFeedback, click, jsClick }) {
+function createClickCommandHandler({ actionFeedback, click, jsClick }) {
   return async ({ args }) => {
     const fopts = parseCompactFormatArgs(args, ['text', 'json']);
     const cargs = fopts.args;
@@ -15187,7 +15187,7 @@ function createPhase4ClickHandler({ actionFeedback, click, jsClick }) {
   };
 }
 
-function createPhase4EvalrawHandler({ evalRaw }) {
+function createEvalrawCommandHandler({ evalRaw }) {
   return async ({ args, authorization }) => {
     const method = args[0];
     const value = await evalRaw(method, args[1], authorization);
@@ -15199,7 +15199,7 @@ function createPhase4EvalrawHandler({ evalRaw }) {
   };
 }
 
-function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound }) {
+function authorizeDaemonApplicationCommand({ command, policy, mutates, targetBound }) {
   if (!targetBound) return { allowed: false, code: 'target-not-bound' };
   const actionMutates = ['dialog', 'hover', 'keepalive', 'loadall'].includes(command)
     ? mutates === false
@@ -15226,9 +15226,9 @@ function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound })
     : { allowed: false, code: 'policy-denied' };
 }
 
-async function executePhase4DaemonRoute(requestInput, context) {
+async function executeDaemonApplicationRoute(requestInput, context) {
   inspectCommandDispatcher(context);
-  const request = snapshotPhase4DataObject(requestInput, 'daemon route request');
+  const request = snapshotApplicationDataObject(requestInput, 'daemon route request');
   const expectedKeys = new Set(['cmd', 'args', 'targetBound']);
   for (const key of Object.keys(request)) {
     if (!expectedKeys.has(key)) throw new Error(`daemon route request.${key}: is not allowed`);
@@ -16681,9 +16681,9 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseBroadcastArgs, buildBroadcastModel, formatBroadcastResult,
   parseComponentsArgs, frameworkDetectorScript, reactComponentsTreeScript, vueComponentsTreeScript,
   sanitizeComponentValue, sanitizeComponentResult, componentsStr, chooseAdaptivePerceiveLast,
-  COMMANDS, NEEDS_TARGET, commandMeta, buildPhase4CommandSpecs, createPhase4CommandRegistry,
+  COMMANDS, NEEDS_TARGET, commandMeta, buildApplicationCommandSpecs, createApplicationCommandRegistry,
   DAEMON_APPLICATION_COMMANDS, DAEMON_HANDLER_BUILDERS, preflightDaemonApplication,
-  createPhase4ReportHandler, createPhase4PerceiveHandler,
-  createPhase4ClickHandler, createPhase4EvalrawHandler,
-  authorizePhase4DaemonCommand, executePhase4DaemonRoute,
+  createReportCommandHandler, createPerceiveCommandHandler,
+  createClickCommandHandler, createEvalrawCommandHandler,
+  authorizeDaemonApplicationCommand, executeDaemonApplicationRoute,
 } : undefined;
