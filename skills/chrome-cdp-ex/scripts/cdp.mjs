@@ -12853,15 +12853,21 @@ function overlayDetectorScript({ targetPoint = null } = {}) {
       return el.matches('[role="dialog"], dialog, [aria-modal="true"]');
     }
     const targetElement = this && typeof this.getBoundingClientRect === 'function' ? this : targetPoint && typeof targetPoint.input === 'string' && !targetPoint.input.startsWith('@') ? document.querySelector(targetPoint.input) : null;
-    const seen = new Set(), overlays = [];
+    const seen = new Set(), overlays = [], selfTargetOverlays = new Set();
     function add(el, kind) {
-      if (!visible(el) || seen.has(el) || (!isDialog(el) && targetElement && (el === targetElement || targetElement.contains(el)))) return;
+      const dialog = isDialog(el);
+      const targetOwnsElement = !!targetElement && (el === targetElement || targetElement.contains(el));
+      if (!visible(el) || seen.has(el) || (!dialog && targetOwnsElement)) return;
       seen.add(el);
       const info = elementInfo(el, kind, targetPoint);
       const hasPointer = info.pointerEvents !== 'none';
-      const blocksTarget = !!targetPoint && info.coversTarget && hasPointer && (info.topAtTarget || isDialog(el));
-      const blocksPage = !targetPoint && hasPointer && (isDialog(el) || info.coversViewport);
-      if (isDialog(el) || blocksTarget || blocksPage) overlays.push({ ...info, blocking: blocksTarget || blocksPage || isDialog(el) });
+      const blocksTarget = !!targetPoint && info.coversTarget && hasPointer && (info.topAtTarget || dialog);
+      const blocksPage = !targetPoint && hasPointer && (dialog || info.coversViewport);
+      if (dialog || blocksTarget || blocksPage) {
+        const overlay = { ...info, blocking: blocksTarget || blocksPage || dialog };
+        if (dialog && el === targetElement) selfTargetOverlays.add(overlay);
+        overlays.push(overlay);
+      }
     }
     for (const el of document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')) add(el, 'dialog');
     for (const el of document.querySelectorAll('body *')) {
@@ -12881,7 +12887,7 @@ function overlayDetectorScript({ targetPoint = null } = {}) {
     if (targetPoint) {
       const top = document.elementFromPoint(targetPoint.x, targetPoint.y);
       if (top) target.topElement = elementInfo(top, isDialog(top) ? 'dialog' : 'top-element', targetPoint);
-      const blocker = overlays.find(o => o.coversTarget && (o.topAtTarget || o.kind === 'dialog' || o.blocking));
+      const blocker = overlays.find(o => !selfTargetOverlays.has(o) && o.coversTarget && (o.topAtTarget || o.kind === 'dialog' || o.blocking));
       if (blocker) {
         target.blocked = true;
         target.topElement = { kind: blocker.kind, selector: blocker.selector, text: blocker.label || blocker.text || blocker.tag };
@@ -12972,7 +12978,7 @@ async function resolveOverlayTargetPoint(cdp, sid, targetArg, refMap, refState) 
 async function overlayStr(cdp, sid, targetId, args = [], refMap = new Map(), refState = null) {
   const fopts = parseFormatArgs(args, ['text', 'json']), targetArg = fopts.args[0] || null;
   const targetPoint = await resolveOverlayTargetPoint(cdp, sid, targetArg, refMap, refState);
-  const raw = targetPoint?.objectId
+  const raw = targetPoint?.objectId && !parseFrameRef(targetArg)
     ? await resolveRefRectNoScroll(cdp, sid, refMap, targetArg, refState, { objectId: targetPoint.objectId, functionDeclaration: `function() { return ${overlayDetectorScript({ targetPoint })}; }` })
     : await evalStr(cdp, sid, overlayDetectorScript({ targetPoint }));
   const model = JSON.parse(raw);
