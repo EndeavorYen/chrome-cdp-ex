@@ -10385,7 +10385,7 @@ describe('overlay detector', () => {
     return element;
   }
 
-  function runOverlayPageFixture({ elements, targetPoint, topElement, targetContext = null }) {
+  function runOverlayPageFixture({ elements, targetPoint, topElement, targetContext = null, source = null }) {
     const previousWindow = globalThis.window;
     const previousDocument = globalThis.document;
     const previousCss = globalThis.CSS;
@@ -10413,7 +10413,7 @@ describe('overlay detector', () => {
     try {
       const runPageScript = Function('source', 'return eval(source);');
       return {
-        model: JSON.parse(runPageScript.call(targetContext, T.overlayDetectorScript({ targetPoint }))),
+        model: JSON.parse(runPageScript.call(targetContext, source || T.overlayDetectorScript({ targetPoint }))),
         oracleTopElement: hitTest(targetPoint.x, targetPoint.y),
       };
     } finally {
@@ -10636,6 +10636,163 @@ describe('overlay detector', () => {
     expect(model.overlays).toContainEqual(expect.objectContaining({
       kind: 'dialog',
       selector: '#confirm-dialog',
+      blocking: true,
+    }));
+  });
+
+  it('detects a parent dialog over a frame-scoped target in the top document', async () => {
+    const frameOwner = overlayFixtureElement({
+      id: 'checkout-frame',
+      tagName: 'IFRAME',
+      rect: { x: 50, y: 40, w: 300, h: 200 },
+    });
+    const parentDialog = overlayFixtureElement({
+      id: 'parent-dialog',
+      tagName: 'DIALOG',
+      text: 'Parent confirmation',
+      position: 'fixed',
+      zIndex: '40',
+      role: 'dialog',
+      ariaModal: 'true',
+      rect: { x: 80, y: 20, w: 220, h: 120 },
+    });
+    const targetPoint = {
+      input: '@f2:1',
+      x: 110,
+      y: 55,
+      descriptor: '<BUTTON> "Pay now"',
+    };
+    const refState = {
+      frameRefs: new Map([['@f2', {
+        frameRef: '@f2',
+        frameId: 'checkout-frame-id',
+        parentId: 'main-frame-id',
+        refs: new Map([[1, 222]]),
+      }]]),
+    };
+    let detectorRealm = null;
+    const cdp = createMockCDP({
+      'DOM.resolveNode': (params) => {
+        if (params.backendNodeId === 222) return { object: { objectId: 'child-button' } };
+        if (params.backendNodeId === 333) return { object: { objectId: 'frame-owner' } };
+        throw new Error(`unexpected backend node ${params.backendNodeId}`);
+      },
+      'DOM.getFrameOwner': () => ({ backendNodeId: 333 }),
+      'Runtime.callFunctionOn': (params) => {
+        if (params.objectId === 'child-button' && !params.functionDeclaration.includes('chrome-cdp-ex.overlays.v1')) {
+          return { result: { value: { x: 10, y: 5, w: 100, h: 20, tag: 'BUTTON', text: 'Pay now' } } };
+        }
+        if (params.objectId === 'frame-owner') {
+          return { result: { value: { x: 50, y: 40, w: 300, h: 200 } } };
+        }
+        detectorRealm = 'child';
+        return { result: { value: JSON.stringify({
+          schema: 'chrome-cdp-ex.overlays.v1',
+          viewport: { width: 300, height: 200 },
+          target: { ...targetPoint, blocked: false, topElement: null },
+          overlayCount: 0,
+          blocking: false,
+          overlays: [],
+          nextCommand: null,
+        }) } };
+      },
+      'Runtime.evaluate': (params) => {
+        detectorRealm = 'parent';
+        const { model } = runOverlayPageFixture({
+          elements: [frameOwner, parentDialog],
+          targetPoint,
+          topElement: parentDialog,
+          source: params.expression,
+        });
+        return { result: { value: JSON.stringify(model) } };
+      },
+    });
+
+    const out = JSON.parse(await T.overlayStr(
+      cdp,
+      'sid1',
+      'abc123',
+      ['@f2:1', '--format', 'json'],
+      new Map(),
+      refState,
+    ));
+
+    expect(detectorRealm).toBe('parent');
+    expect(out).toMatchObject({
+      schema: 'chrome-cdp-ex.overlays.v1',
+      viewport: { width: 1440, height: 900 },
+      blocking: true,
+      target: {
+        input: '@f2:1',
+        x: 110,
+        y: 55,
+        blocked: true,
+        topElement: { kind: 'dialog', selector: '#parent-dialog' },
+      },
+      nextCommand: 'cdp dismiss-modal abc123',
+    });
+    expect(out.overlays).toContainEqual(expect.objectContaining({
+      kind: 'dialog',
+      selector: '#parent-dialog',
+      blocking: true,
+    }));
+  });
+
+  it('keeps a targeted dialog page-blocking without treating it as its own target blocker', async () => {
+    const dialog = overlayFixtureElement({
+      id: 'target-dialog',
+      tagName: 'DIALOG',
+      text: 'Review changes',
+      position: 'fixed',
+      zIndex: '40',
+      role: 'dialog',
+      ariaModal: 'true',
+      rect: { x: 520, y: 330, w: 400, h: 240 },
+    });
+    const targetPoint = {
+      input: '#target-dialog',
+      x: 720,
+      y: 450,
+      descriptor: '<DIALOG> "Review changes"',
+    };
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        if (!params.expression.includes('chrome-cdp-ex.overlays.v1')) {
+          return { result: { value: JSON.stringify({ ok: true, ...targetPoint }) } };
+        }
+        const { model, oracleTopElement } = runOverlayPageFixture({
+          elements: [dialog],
+          targetPoint,
+          topElement: dialog,
+          source: params.expression,
+        });
+        expect(oracleTopElement).toBe(dialog);
+        return { result: { value: JSON.stringify(model) } };
+      },
+    });
+
+    const out = JSON.parse(await T.overlayStr(
+      cdp,
+      'sid1',
+      'abc123',
+      ['#target-dialog', '--format', 'json'],
+      new Map(),
+      {},
+    ));
+
+    expect(out).toMatchObject({
+      schema: 'chrome-cdp-ex.overlays.v1',
+      blocking: true,
+      overlayCount: 1,
+      target: {
+        input: '#target-dialog',
+        blocked: false,
+      },
+      nextCommand: 'cdp dismiss-modal abc123',
+    });
+    expect(out.overlays).toContainEqual(expect.objectContaining({
+      kind: 'dialog',
+      selector: '#target-dialog',
       blocking: true,
     }));
   });
