@@ -25,13 +25,13 @@ describe('Runtime v3 final dispatch characterization', () => {
         aliases: 23,
         targetCommands: 68,
         targetlessCommands: 13,
-        applicationCommands: 59,
-        legacyDaemonCommands: 9,
-        daemonGroups: 18,
+        applicationCommands: 64,
+        legacyDaemonCommands: 4,
+        daemonGroups: 13,
       },
       applicationCommands: [
-        'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'hover', 'html', 'inject', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
-        'overlay', 'perceive', 'press', 'record', 'record-actions', 'reload', 'repeat', 'replay', 'report', 'restore', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
+        'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'diff-shot', 'dismiss-modal', 'elshot', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'fullshot', 'hover', 'html', 'inject', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
+        'overlay', 'perceive', 'press', 'record', 'record-actions', 'reload', 'repeat', 'replay', 'report', 'restore', 'scanshot', 'scroll', 'select', 'shot', 'snap', 'status', 'styles', 'summary',
         'table', 'text', 'throttle', 'type', 'upload', 'verify-click', 'viewport', 'wait', 'waitfor',
       ],
     });
@@ -39,12 +39,13 @@ describe('Runtime v3 final dispatch characterization', () => {
       'help', 'list', 'target', 'tab-group', 'broadcast', 'open', 'doctor',
       'spawn-debug-browser', 'attach', 'use', 'forget', 'current', 'stop',
     ]);
-    expect(fixture.deletionAllowlist).toHaveLength(9);
+    expect(fixture.deletionAllowlist).toHaveLength(4);
     expect(fixture.deletionAllowlist.map(entry => entry.name)).not.toEqual(
       expect.arrayContaining([
         'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'hover', 'html', 'inject', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
         'overlay', 'perceive', 'press', 'record', 'record-actions', 'reload', 'repeat', 'replay', 'report', 'restore', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
         'table', 'text', 'throttle', 'type', 'upload', 'verify-click', 'viewport', 'wait', 'waitfor',
+        'diff-shot', 'elshot', 'fullshot', 'scanshot', 'shot',
       ]),
     );
     expect(fixture.daemonGroups.filter(group => group.owner === 'daemon-protocol').map(group => group.labels))
@@ -87,20 +88,22 @@ describe('Runtime v3 final dispatch characterization', () => {
   });
 
   it('fails closed on an unknown route, duplicate route, missing route, or edited branch', () => {
-    expect(() => buildRuntimeDispatchInventory(
-      source.replace("case 'shot': case 'screenshot': {", "case 'planted': case 'screenshot': {"),
-    )).toThrow(/unknown route|missing daemon routes|recursive daemon routes/);
-    expect(() => buildRuntimeDispatchInventory(
-      source.replace("case 'shot': case 'screenshot': {", "case 'shot': case 'shot': case 'screenshot': {"),
-    )).toThrow(/duplicate daemon route labels/);
-    expect(() => buildRuntimeDispatchInventory(
-      source.replace("case 'shot': case 'screenshot': {", "case 'planted-shot': case 'screenshot': {"),
-    )).toThrow(/unknown route|spellings missing daemon routes|recursive daemon routes/);
-    const edited = buildRuntimeDispatchInventory(source.replace(
-      "case 'shot': case 'screenshot': {",
-      "case 'shot': case 'screenshot': { /* characterized edit */",
-    ));
-    expect(edited).not.toEqual(fixture);
+    expect(buildRuntimeDispatchInventory(source.replace(
+      'shot: capabilities => createDaemonReadHandlers(capabilities).shot,',
+      'shot: capabilities => createDaemonReadHandlers(capabilities).fullshot,',
+    ))).not.toEqual(fixture);
+    expect(buildRuntimeDispatchInventory(source.replace(
+      "'diff-shot': args => diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args)),",
+      "'diff-shot': args => scanshotStr(cdp, sessionId, targetId),",
+    ))).not.toEqual(fixture);
+    expect(buildRuntimeDispatchInventory(source.replace(
+      'scanshot: applicationPreflight.handlerBuilders.scanshot(readCapabilities),',
+      'scanshot: applicationPreflight.handlerBuilders.fullshot(readCapabilities),',
+    ))).not.toEqual(fixture);
+    expect(buildRuntimeDispatchInventory(source.replace(
+      "const diffShotBuilder = applicationPreflight.handlerBuilders['diff-shot'];",
+      "const diffShotBuilder = applicationPreflight.handlerBuilders['record-actions'];",
+    ))).not.toEqual(fixture);
     expect(() => buildRuntimeDispatchInventory(source.replace(
       "case 'meta': {",
       "case 'meta': case 'summary': {",
@@ -315,7 +318,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 18 daemon groups');
+    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 13 daemon groups');
   });
 
   it('keeps the complete policy-class distribution visible before deletion', () => {

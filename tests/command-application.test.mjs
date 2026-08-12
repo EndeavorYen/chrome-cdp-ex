@@ -716,8 +716,8 @@ describe('Phase 4 daemon dispatch seam', () => {
     });
     expect(preflight.registry.list()).toHaveLength(81);
     expect(Object.keys(preflight.routeOwners)).toHaveLength(81);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(59);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(22);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(64);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(17);
     expect(Object.isFrozen(preflight)).toBe(true);
     expect(Object.isFrozen(preflight.handlerBuilders)).toBe(true);
     expect(Object.values(builders).every(builder => builder.mock.calls.length === 0)).toBe(true);
@@ -920,10 +920,11 @@ describe('Phase 4 daemon dispatch seam', () => {
       'console', 'record',
       'batch', 'flow', 'repeat', 'replay',
       'inject', 'restore', 'upload',
+      'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
     ]);
     const preflight = cdpTest.preflightDaemonApplication();
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(59);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(22);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(64);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(17);
     const readHandlers = createDaemonReadHandlers({
       cascade: async args => `cascade:${args.join('|')}`,
       checkpoint: async args => `checkpoint:${args.join('|')}`,
@@ -932,7 +933,10 @@ describe('Phase 4 daemon dispatch seam', () => {
       controls: async args => `controls:${args.join('|')}`,
       cookies: async args => `cookies:${args.join('|')}`,
       'export-playwright': async args => `export-playwright:${args.join('|')}`,
+      'diff-shot': async args => `diff-shot:${args.join('|')}`,
+      elshot: async args => `elshot:${args.join('|')}`,
       frame: async args => `frame:${args.join('|')}`,
+      fullshot: async args => `fullshot:${args.join('|')}`,
       html: async args => `html:${args.join('|')}`,
       text: async args => `text:${args.join('|')}`,
       table: async selector => `table:${selector ?? ''}`,
@@ -940,6 +944,8 @@ describe('Phase 4 daemon dispatch seam', () => {
       overlay: async args => `overlay:${args.join('|')}`,
       record: async args => `record:${args.join('|')}`,
       'record-actions': async args => `record-actions:${args.join('|')}`,
+      scanshot: async args => `scanshot:${args.join('|')}`,
+      shot: async args => `shot:${args.join('|')}`,
       snap: async args => `snap:${args.join('|')}`,
       status: async args => `status:${args.join('|')}`,
       styles: async args => `styles:${args.join('|')}`,
@@ -1035,6 +1041,21 @@ describe('Phase 4 daemon dispatch seam', () => {
       cmd: 'cookies', args: [], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'cookies:' });
     await expect(cdpTest.executePhase4DaemonRoute({
+      cmd: 'screenshot', args: ['--quiet'], targetBound: true,
+    }, dispatcher)).resolves.toEqual({ handled: true, result: 'shot:--quiet' });
+    await expect(cdpTest.executePhase4DaemonRoute({
+      cmd: 'diffshot', args: ['--format', 'json'], targetBound: true,
+    }, dispatcher)).resolves.toEqual({ handled: true, result: 'diff-shot:--format|json' });
+    await expect(cdpTest.executePhase4DaemonRoute({
+      cmd: 'elshot', args: ['#auth-panel'], targetBound: true,
+    }, dispatcher)).resolves.toEqual({ handled: true, result: 'elshot:#auth-panel' });
+    await expect(cdpTest.executePhase4DaemonRoute({
+      cmd: 'fullshot', args: [], targetBound: true,
+    }, dispatcher)).resolves.toEqual({ handled: true, result: 'fullshot:' });
+    await expect(cdpTest.executePhase4DaemonRoute({
+      cmd: 'scanshot', args: [], targetBound: true,
+    }, dispatcher)).resolves.toEqual({ handled: true, result: 'scanshot:' });
+    await expect(cdpTest.executePhase4DaemonRoute({
       cmd: 'console', args: ['--clear'], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'console:--clear' });
     await expect(cdpTest.executePhase4DaemonRoute({
@@ -1065,8 +1086,11 @@ describe('Phase 4 daemon dispatch seam', () => {
       console: vi.fn(async () => 'console-only'),
       controls: vi.fn(async () => 'controls-only'),
       cookies: vi.fn(async () => 'cookies-only'),
+      'diff-shot': vi.fn(async () => 'diff-shot-only'),
+      elshot: vi.fn(async () => 'elshot-only'),
       'export-playwright': vi.fn(async () => 'export-playwright-only'),
       frame: vi.fn(async () => 'frame-only'),
+      fullshot: vi.fn(async () => 'fullshot-only'),
       html: vi.fn(async () => 'html-only'),
       text: vi.fn(async () => 'text-only'),
       table: vi.fn(async () => 'table-only'),
@@ -1074,6 +1098,8 @@ describe('Phase 4 daemon dispatch seam', () => {
       overlay: vi.fn(async () => 'overlay-only'),
       record: vi.fn(async () => 'record-only'),
       'record-actions': vi.fn(async () => 'record-actions-only'),
+      scanshot: vi.fn(async () => 'scanshot-only'),
+      shot: vi.fn(async () => 'shot-only'),
       snap: vi.fn(async () => 'snap-only'),
       status: vi.fn(async () => 'status-only'),
       styles: vi.fn(async () => 'styles-only'),
@@ -1086,6 +1112,7 @@ describe('Phase 4 daemon dispatch seam', () => {
       'html', 'text', 'table', 'net', 'status', 'summary', 'snap', 'controls', 'frame',
       'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
       'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies', 'console', 'record',
+      'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
     ]) {
       const handler = builders[name](capabilities);
       const result = await handler({ args: name === 'table' ? ['#grid'] : ['main'] });
@@ -1107,6 +1134,11 @@ describe('Phase 4 daemon dispatch seam', () => {
     expect(capabilities.record).toHaveBeenCalledOnce();
     expect(capabilities['record-actions']).toHaveBeenCalledOnce();
     expect(capabilities['export-playwright']).toHaveBeenCalledOnce();
+    expect(capabilities.shot).toHaveBeenCalledOnce();
+    expect(capabilities['diff-shot']).toHaveBeenCalledOnce();
+    expect(capabilities.elshot).toHaveBeenCalledOnce();
+    expect(capabilities.fullshot).toHaveBeenCalledOnce();
+    expect(capabilities.scanshot).toHaveBeenCalledOnce();
     expect(capabilities.wait).toHaveBeenCalledOnce();
     expect(capabilities.waitfor).toHaveBeenCalledOnce();
     expect(capabilities.cascade).toHaveBeenCalledOnce();

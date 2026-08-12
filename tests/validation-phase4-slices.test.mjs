@@ -13,6 +13,7 @@ import {
   assertPhase4NavigationState,
   assertPhase4ReloadState,
   assertPhase4RenderingEffect,
+  assertPhase4ScanshotBoundary,
   assertPhase4OutputPrivacy,
   assertPhase4TargetReady,
   buildPhase4SliceCommands,
@@ -24,6 +25,7 @@ import {
   monitorDisposableBrowser,
   phase4RuntimeBase,
   runPhase4SliceSession,
+  withPhase4ScanshotFixture,
 } from '../scripts/validation-phase4-slices.mjs';
 import { createValidationLoopbackServer } from '../scripts/validation-loopback-server.mjs';
 
@@ -403,6 +405,49 @@ describe('Phase 4 disposable core-slice scenario', () => {
       { id: 'emulate', args: ['emulate', TARGET, 'dark', 'reduced-motion', 'reduce', '--format', 'json'] },
     ]);
     expect(Object.isFrozen(buildPhase4SliceCommands(TARGET, NAV_URL))).toBe(true);
+  });
+
+  it('adds the screenshot family as one exact bounded live-only slice', () => {
+    const commands = buildPhase4SliceCommands(TARGET, NAV_URL, {
+      shotPath: '/tmp/phase7-shot.png',
+      fullshotPath: '/tmp/phase7-fullshot.png',
+      includeScreenshots: true,
+    });
+    expect(commands.filter(command => [
+      'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
+    ].includes(command.id))).toEqual([
+      { id: 'shot', args: ['shot', TARGET, '/tmp/phase7-shot.png', '--quiet'] },
+      { id: 'elshot', args: ['elshot', TARGET, '#auth-panel'] },
+      { id: 'fullshot', args: ['fullshot', TARGET, '/tmp/phase7-fullshot.png'] },
+      { id: 'diff-shot', args: ['diff-shot', TARGET, '--reset', '--format', 'json'] },
+      { id: 'diff-shot', args: ['diff-shot', TARGET, '--keep-baseline', '--format', 'json'] },
+      { id: 'scanshot', args: ['scanshot', TARGET] },
+    ]);
+    expect(commands).toHaveLength(65);
+  });
+
+  it('bounds scanshot to a real multi-segment fixture and always restores the page', async () => {
+    expect(assertPhase4ScanshotBoundary(JSON.stringify({
+      mode: 'bounded', scrollHeight: 719, viewportHeight: 356,
+    }), 'bounded')).toBe(3);
+    expect(assertPhase4ScanshotBoundary(JSON.stringify({
+      mode: 'restored', scrollHeight: 2752, viewportHeight: 356,
+    }), 'restored')).toBe(9);
+    expect(() => assertPhase4ScanshotBoundary(JSON.stringify({
+      mode: 'bounded', scrollHeight: 2400, viewportHeight: 356,
+    }), 'bounded')).toThrow(/scanshot boundary/);
+
+    const evaluations = [];
+    await expect(withPhase4ScanshotFixture({
+      evaluate: expression => {
+        evaluations.push(expression);
+        return JSON.stringify(evaluations.length === 1
+          ? { mode: 'bounded', scrollHeight: 719, viewportHeight: 356 }
+          : { mode: 'restored', scrollHeight: 2752, viewportHeight: 356 });
+      },
+      execute: () => { throw new Error('capture failed'); },
+    })).rejects.toThrow('capture failed');
+    expect(evaluations).toHaveLength(2);
   });
 
   it('binds each navigation action to the exact disposable history state', () => {

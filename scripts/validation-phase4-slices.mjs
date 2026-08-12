@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir, userInfo } from 'os';
-import { resolve } from 'path';
+import { relative, resolve, sep } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 import { withLiveBenchmarkLock } from './benchmark-run-lock.mjs';
@@ -23,13 +23,123 @@ const ACTION_PARITY_COMMANDS = new Set([
   'back', 'clickxy', 'clock', 'dismiss-modal', 'emulate', 'fill', 'forward', 'hover', 'jsclick',
   'dialog', 'keepalive', 'mock', 'nav', 'netlog', 'press', 'reload', 'scroll', 'select',
   'console', 'inject', 'restore', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
+  'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
 ]);
 const SEMANTIC_PARITY_COMMANDS = new Set(['record']);
 const ACTION_STATE_EXPRESSION = "({title:document.title,modalHidden:document.querySelector('#motd')?.hidden===true,shortcut:document.querySelector('#shortcut-status')?.textContent,inputValue:document.querySelector('#cmd')?.value,selectValue:document.querySelector('#phase7-select')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector('#phase7-js-status')?.textContent,coordStatus:document.querySelector('#phase7-coord-status')?.textContent,authState:document.querySelector('#auth-state')?.textContent})";
 const RELOAD_STATE_EXPRESSION = "JSON.stringify({url:location.href,loadCount:Number(/^phase7-load:(\\d+)$/.exec(window.name)?.[1]),marker:document.querySelector('#phase7-load-generation')?.textContent})";
+const BOUND_SCANSHOT_EXPRESSION = `(() => {
+  const body = document.body;
+  const main = document.querySelector('main');
+  const spacer = document.querySelector('main > div[aria-hidden="true"]');
+  const root = document.documentElement;
+  if (!body || !main || !spacer || globalThis.__phase7ScanshotFixture) {
+    throw new Error('scanshot fixture boundary is unavailable');
+  }
+  globalThis.__phase7ScanshotFixture = {
+    bodyMinHeight: body.style.minHeight,
+    mainMaxHeight: main.style.maxHeight,
+    mainHeight: main.style.height,
+    mainOverflow: main.style.overflow,
+    spacerDisplay: spacer.style.display,
+    scrollBehavior: root.style.scrollBehavior,
+  };
+  body.style.minHeight = '0';
+  main.style.height = Math.ceil(window.innerHeight * 1.8) + 'px';
+  main.style.maxHeight = main.style.height;
+  main.style.overflow = 'hidden';
+  spacer.style.display = 'none';
+  root.style.scrollBehavior = 'auto';
+  window.scrollTo(0, 0);
+  return JSON.stringify({
+    mode: 'bounded',
+    scrollHeight: root.scrollHeight,
+    viewportHeight: window.innerHeight,
+  });
+})()`;
+const RESTORE_SCANSHOT_EXPRESSION = `(() => {
+  const body = document.body;
+  const main = document.querySelector('main');
+  const spacer = document.querySelector('main > div[aria-hidden="true"]');
+  const root = document.documentElement;
+  const saved = globalThis.__phase7ScanshotFixture;
+  if (!body || !main || !spacer || !saved) throw new Error('scanshot fixture state is unavailable');
+  body.style.minHeight = saved.bodyMinHeight;
+  main.style.maxHeight = saved.mainMaxHeight;
+  main.style.height = saved.mainHeight;
+  main.style.overflow = saved.mainOverflow;
+  spacer.style.display = saved.spacerDisplay;
+  root.style.scrollBehavior = saved.scrollBehavior;
+  delete globalThis.__phase7ScanshotFixture;
+  return JSON.stringify({
+    mode: 'restored',
+    scrollHeight: root.scrollHeight,
+    viewportHeight: window.innerHeight,
+  });
+})()`;
 
 export function phase4RuntimeBase({ platform = process.platform, tempDir = tmpdir() } = {}) {
   return platform === 'win32' ? tempDir : '/tmp';
+}
+
+function scanshotSegmentCount(scrollHeight, viewportHeight) {
+  const overlap = Math.round(viewportHeight * 0.1);
+  const step = viewportHeight - overlap;
+  const segments = [];
+  for (let y = 0; y < scrollHeight; y += step) segments.push(y);
+  if (segments.length > 1) {
+    const lastY = segments[segments.length - 1];
+    if (scrollHeight - lastY < viewportHeight * 0.3) {
+      segments.pop();
+      const bottomY = Math.max(0, scrollHeight - viewportHeight);
+      if (bottomY > segments[segments.length - 1]) segments.push(bottomY);
+    }
+  }
+  return segments.length;
+}
+
+export function assertPhase4ScanshotBoundary(raw, expectedMode) {
+  let value;
+  try { value = JSON.parse(raw); } catch { value = null; }
+  if (!exactKeys(value, ['mode', 'scrollHeight', 'viewportHeight'])
+    || value.mode !== expectedMode
+    || !Number.isInteger(value.scrollHeight) || value.scrollHeight < 1
+    || !Number.isInteger(value.viewportHeight) || value.viewportHeight < 1) {
+    throw new Error('scanshot boundary state is invalid');
+  }
+  const segments = scanshotSegmentCount(value.scrollHeight, value.viewportHeight);
+  if ((expectedMode === 'bounded' && (segments < 2 || segments > 3))
+    || (expectedMode === 'restored' && segments < 4)) {
+    throw new Error('scanshot boundary did not preserve the intended segment range');
+  }
+  return segments;
+}
+
+export async function withPhase4ScanshotFixture({ evaluate, execute } = {}) {
+  if (typeof evaluate !== 'function' || typeof execute !== 'function') {
+    throw new Error('scanshot fixture requires evaluate and execute');
+  }
+  const prepared = evaluate(BOUND_SCANSHOT_EXPRESSION);
+  let result;
+  let primaryError = null;
+  try {
+    assertPhase4ScanshotBoundary(prepared, 'bounded');
+    result = await execute();
+  } catch (error) {
+    primaryError = error;
+  }
+  let restoreError = null;
+  try {
+    assertPhase4ScanshotBoundary(evaluate(RESTORE_SCANSHOT_EXPRESSION), 'restored');
+  } catch (error) {
+    restoreError = error;
+  }
+  if (primaryError && restoreError) {
+    throw new AggregateError([primaryError, restoreError], primaryError.message);
+  }
+  if (primaryError) throw primaryError;
+  if (restoreError) throw restoreError;
+  return result;
 }
 
 function immutableCommand(id, args) {
@@ -50,6 +160,9 @@ export function buildPhase4SliceCommands(
   {
     uploadPath = 'phase7-upload.txt',
     restorePath = 'phase7-checkpoint.json',
+    shotPath = 'phase7-shot.png',
+    fullshotPath = 'phase7-fullshot.png',
+    includeScreenshots = false,
   } = {},
 ) {
   if (typeof targetPrefix !== 'string' || !/^[A-Za-z0-9]{4,64}$/.test(targetPrefix)) {
@@ -59,7 +172,7 @@ export function buildPhase4SliceCommands(
     || !/^http:\/\/127\.0\.0\.1:\d+\/validation-phase4\.html(?:\?route=mcp)?#phase7-navigation$/.test(navigationUrl)) {
     throw new Error('navigationUrl must be the bounded loopback navigation fixture');
   }
-  for (const [name, value] of Object.entries({ uploadPath, restorePath })) {
+  for (const [name, value] of Object.entries({ uploadPath, restorePath, shotPath, fullshotPath })) {
     if (typeof value !== 'string' || value.length < 1 || Buffer.byteLength(value, 'utf8') > 4096) {
       throw new Error(`${name} must be a bounded file path`);
     }
@@ -142,9 +255,18 @@ export function buildPhase4SliceCommands(
     immutableCommand('upload', [
       'upload', targetPrefix, '#upload-file', uploadPath, '--format', 'json',
     ]),
+    ...(includeScreenshots ? [
+      immutableCommand('shot', ['shot', targetPrefix, shotPath, '--quiet']),
+      immutableCommand('elshot', ['elshot', targetPrefix, '#auth-panel']),
+      immutableCommand('fullshot', ['fullshot', targetPrefix, fullshotPath]),
+      immutableCommand('diff-shot', ['diff-shot', targetPrefix, '--reset', '--format', 'json']),
+    ] : []),
     immutableCommand('inject', [
       'inject', targetPrefix, '--css', '#auth-panel { outline: 7px solid rgb(1, 2, 3); }', '--format', 'json',
     ]),
+    ...(includeScreenshots ? [
+      immutableCommand('diff-shot', ['diff-shot', targetPrefix, '--keep-baseline', '--format', 'json']),
+    ] : []),
     immutableCommand('restore', [
       'restore', targetPrefix, '--file', restorePath, '--format', 'json',
     ]),
@@ -169,6 +291,9 @@ export function buildPhase4SliceCommands(
     immutableCommand('emulate', [
       'emulate', targetPrefix, 'dark', 'reduced-motion', 'reduce', '--format', 'json',
     ]),
+    ...(includeScreenshots ? [
+      immutableCommand('scanshot', ['scanshot', targetPrefix]),
+    ] : []),
   ]);
 }
 
@@ -380,12 +505,24 @@ function privacyProjection(value) {
   }));
 }
 
-export function assertPhase4OutputPrivacy(id, stdout) {
+function projectAllowedArtifactPaths(value, allowedPaths) {
+  if (typeof value === 'string') {
+    return allowedPaths.reduce((output, allowed) => output.split(allowed).join('<task-artifact>'), value);
+  }
+  if (Array.isArray(value)) return value.map(child => projectAllowedArtifactPaths(child, allowedPaths));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+    key, projectAllowedArtifactPaths(child, allowedPaths),
+  ]));
+}
+
+export function assertPhase4OutputPrivacy(id, stdout, { allowedPaths = [] } = {}) {
   if (typeof stdout !== 'string') throw new Error(`${id} output must be a string`);
   let projected = stdout;
   let parsed = null;
   try { parsed = JSON.parse(stdout); } catch {}
   if (parsed !== null) projected = privacyProjection(parsed);
+  projected = projectAllowedArtifactPaths(projected, allowedPaths);
   const redacted = redactEvidence(projected, {
     homeDirs: [userInfo().homedir],
     tempDirs: [tmpdir()],
@@ -395,6 +532,19 @@ export function assertPhase4OutputPrivacy(id, stdout) {
     throw new Error(`${id} output contains credential-bearing or machine-local material`);
   }
   return stdout;
+}
+
+function assertPrivatePngArtifact(path, artifactRoot) {
+  if (typeof path !== 'string' || typeof artifactRoot !== 'string') throw new Error('screenshot artifact path is invalid');
+  const root = resolve(artifactRoot);
+  const absolute = resolve(path);
+  const child = relative(root, absolute);
+  if (!child || child.startsWith(`..${sep}`) || child === '..') throw new Error('screenshot artifact escaped task runtime');
+  const stat = statSync(absolute);
+  if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error('screenshot artifact is not a private file');
+  const signature = readFileSync(absolute).subarray(0, 8).toString('hex');
+  if (signature !== '89504e470d0a1a0a') throw new Error('screenshot artifact is not PNG');
+  return absolute;
 }
 
 function validTargetResolution(value, targetPrefix, targetId) {
@@ -436,8 +586,9 @@ function validateStep(id, stdout, {
   expectedTitle,
   expectedUrl,
   expectedSessionIdentity = null,
+  artifactRoot = null,
 }) {
-  assertPhase4OutputPrivacy(id, stdout);
+  assertPhase4OutputPrivacy(id, stdout, { allowedPaths: artifactRoot ? [artifactRoot] : [] });
   const expectedExtraction = {
     html: '<p id="auth-state">auth state preserved</p>',
     text: 'auth state preserved',
@@ -492,6 +643,29 @@ function validateStep(id, stdout, {
   if (id === 'netlog') {
     if (stdout !== 'Network log cleared') throw new Error(`netlog fixture output is invalid: ${JSON.stringify(stdout)}`);
     return stdout;
+  }
+  if (id === 'shot') return assertPrivatePngArtifact(stdout.split('\n')[0], artifactRoot);
+  if (id === 'elshot') {
+    const lines = stdout.split('\n');
+    if (!stdout.slice(lines[0].length + 1).startsWith('Element screenshot of <SECTION>#auth-panel')) {
+      throw new Error(`elshot fixture output is invalid: ${JSON.stringify(stdout)}`);
+    }
+    return assertPrivatePngArtifact(lines[0], artifactRoot);
+  }
+  if (id === 'fullshot') {
+    const lines = stdout.split('\n');
+    if (lines.length !== 3 || !lines[1].startsWith('Full-page screenshot saved. Size: ')) {
+      throw new Error(`fullshot fixture output is invalid: ${JSON.stringify(stdout)}`);
+    }
+    return assertPrivatePngArtifact(lines[0], artifactRoot);
+  }
+  if (id === 'scanshot') {
+    const paths = stdout.split('\n').filter(line => /^ {2}\[\d+\/\d+\] /.test(line)).map(line => line.replace(/^ {2}\[\d+\/\d+\] /, ''));
+    if (!/^Captured \d+ segment\(s\)/.test(stdout) || paths.length < 1) {
+      throw new Error(`scanshot fixture output is invalid: ${JSON.stringify(stdout)}`);
+    }
+    paths.forEach(path => assertPrivatePngArtifact(path, artifactRoot));
+    return paths.length;
   }
   if (id === 'eval') {
     if (stdout !== 'phase7-eval') throw new Error(`eval fixture output is invalid: ${JSON.stringify(stdout)}`);
@@ -607,6 +781,30 @@ function validateStep(id, stdout, {
     return '<SECTION>#auth-panel';
   }
   const model = parseStepJson(id, stdout);
+  if (id === 'diff-shot') {
+    if (model?.schema !== 'chrome-cdp-ex.diff-shot.v1'
+      || typeof model.targetId !== 'string' || !/^[A-F0-9]{12,64}$/i.test(model.targetId)
+      || model.targetId !== model.targetResolution?.requestedTargetId
+      || !validActionTargetResolution(model.targetResolution, targetPrefix)) {
+      throw new Error(`diff-shot fixture output is invalid: ${JSON.stringify(model).slice(0, 1200)}`);
+    }
+    assertPrivatePngArtifact(model.baselinePath, artifactRoot);
+    if (model.baselineCaptured === true) {
+      if (model.currentPath !== model.baselinePath || model.diffPath !== null
+        || model.changedPixels !== 0 || model.totalPixels !== 0) {
+        throw new Error('diff-shot baseline state is invalid');
+      }
+      return 'baseline';
+    }
+    assertPrivatePngArtifact(model.currentPath, artifactRoot);
+    assertPrivatePngArtifact(model.diffPath, artifactRoot);
+    if (model.baselineCaptured !== false || !Number.isInteger(model.changedPixels)
+      || model.changedPixels < 1 || !Number.isInteger(model.totalPixels)
+      || model.totalPixels < model.changedPixels || model.advancedBaseline !== false) {
+      throw new Error('diff-shot comparison state is invalid');
+    }
+    return 'diff';
+  }
   if (id === 'cascade') {
     const property = model.properties?.[0];
     const rule = property?.rules?.[0];
@@ -950,6 +1148,9 @@ export async function runPhase4SliceSession({
   navigationUrl = 'http://127.0.0.1:41758/validation-phase4.html#phase7-navigation',
   uploadPath = 'phase7-upload.txt',
   restorePath = 'phase7-checkpoint.json',
+  shotPath = 'phase7-shot.png',
+  fullshotPath = 'phase7-fullshot.png',
+  artifactRoot = null,
   runCommand,
   runMcpCommand,
   cleanup,
@@ -965,7 +1166,9 @@ export async function runPhase4SliceSession({
     let title = null;
     let extractionParity = 0;
     let sessionIdentity = null;
-    const commands = buildPhase4SliceCommands(targetPrefix, navigationUrl, { uploadPath, restorePath });
+    const commands = buildPhase4SliceCommands(targetPrefix, navigationUrl, {
+      uploadPath, restorePath, shotPath, fullshotPath, includeScreenshots: Boolean(artifactRoot),
+    });
     for (const command of commands) {
       let stdout;
       try {
@@ -974,7 +1177,7 @@ export async function runPhase4SliceSession({
         throw new Error(`${command.id}: ${error.message}`, { cause: error });
       }
       const value = validateStep(command.id, stdout, {
-        targetPrefix, expectedTitle, expectedUrl, expectedSessionIdentity: sessionIdentity,
+        targetPrefix, expectedTitle, expectedUrl, expectedSessionIdentity: sessionIdentity, artifactRoot,
       });
       if (command.id === 'click') clickOutcome = value;
       if (command.id === 'report') reportActions = value;
@@ -985,7 +1188,8 @@ export async function runPhase4SliceSession({
         'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies', 'console', 'record', 'dialog', 'keepalive', 'netlog',
         'press', 'fill', 'hover', 'inject', 'restore', 'scroll', 'select', 'upload',
         'back', 'clickxy', 'clock', 'dismiss-modal', 'forward', 'jsclick', 'mock', 'nav',
-        'reload', 'throttle', 'type', 'verify-click', 'viewport', 'emulate'].includes(command.id)) {
+        'reload', 'throttle', 'type', 'verify-click', 'viewport', 'emulate',
+        'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot'].includes(command.id)) {
         const mcpOutput = await runMcpCommand(command);
         if (!ACTION_PARITY_COMMANDS.has(command.id)
           && !SEMANTIC_PARITY_COMMANDS.has(command.id)
@@ -997,6 +1201,7 @@ export async function runPhase4SliceSession({
           expectedTitle,
           expectedUrl,
           expectedSessionIdentity: sessionIdentity,
+          artifactRoot,
         });
         extractionParity += 1;
       }
@@ -1184,6 +1389,10 @@ export async function runDisposablePhase4Slices() {
     const uploadPath = resolve(runtimeDir, 'phase7-upload.txt');
     const restorePath = resolve(runtimeDir, 'phase7-checkpoint.json');
     const mcpRestorePath = resolve(runtimeDir, 'phase7-mcp-checkpoint.json');
+    const shotPath = resolve(runtimeDir, 'phase7-shot.png');
+    const mcpShotPath = resolve(runtimeDir, 'phase7-mcp-shot.png');
+    const fullshotPath = resolve(runtimeDir, 'phase7-fullshot.png');
+    const mcpFullshotPath = resolve(runtimeDir, 'phase7-mcp-fullshot.png');
     writeFileSync(uploadPath, 'phase7 upload fixture\n', { mode: 0o600 });
     const checkpointFor = pageUrl => JSON.stringify({
       schema: 'chrome-cdp-ex.checkpoint.v1',
@@ -1317,6 +1526,8 @@ export async function runDisposablePhase4Slices() {
         runtimeClient: createRuntimeClient({ executeCli: command => executeCdpCli(command) }),
         sendMessage: message => sent.push(message),
       });
+      let mcpDiffShotCount = 0;
+      let cliDiffShotCount = 0;
       const runMcpCommand = async command => {
         ensureActive();
         sent.length = 0;
@@ -1325,36 +1536,48 @@ export async function runDisposablePhase4Slices() {
           commandArgs[0] = mcpTargetId;
         }
         if (command.id === 'restore') commandArgs[2] = mcpRestorePath;
+        if (command.id === 'shot') commandArgs[1] = mcpShotPath;
+        if (command.id === 'fullshot') commandArgs[1] = mcpFullshotPath;
         if (command.id === 'nav') commandArgs[1] = mcpNavigationUrl;
         const handler = ACTION_PARITY_COMMANDS.has(command.id) ? mcpActionHandler : mcpHandler;
-        await handler({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'tools/call',
-          params: {
-            name: 'run_command',
-            arguments: {
-              command: command.id,
-              args: commandArgs,
-              ...([
-                'components', 'checkpoint', 'cookies', 'console', 'record',
-                'back', 'clickxy', 'clock', 'dialog', 'dismiss-modal', 'fill', 'forward',
-                'hover', 'inject', 'jsclick', 'keepalive', 'mock', 'nav', 'netlog', 'press', 'reload', 'restore', 'scroll',
-                'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport', 'emulate',
-              ].includes(command.id)
-                ? { confirm: true }
-                : {}),
+        const invokeMcp = async () => {
+          await handler({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: {
+              name: 'run_command',
+              arguments: {
+                command: command.id,
+                args: commandArgs,
+                ...([
+                  'components', 'checkpoint', 'cookies', 'console', 'record',
+                  'back', 'clickxy', 'clock', 'dialog', 'dismiss-modal', 'fill', 'forward',
+                  'hover', 'inject', 'jsclick', 'keepalive', 'mock', 'nav', 'netlog', 'press', 'reload', 'restore', 'scroll',
+                  'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport', 'emulate',
+                  'shot', 'diff-shot', 'fullshot',
+                ].includes(command.id)
+                  ? { confirm: true }
+                  : {}),
+              },
             },
-          },
-        });
-        ensureActive();
-        const response = sent[0];
-        if (response?.error) throw new Error(`MCP ${command.id} failed: ${response.error.message}`);
-        if (response?.result?.isError) {
-          throw new Error(`MCP ${command.id} failed: ${response.result.content?.[0]?.text || 'unknown error'}`);
-        }
-        const text = response?.result?.content?.[0]?.text;
-        if (typeof text !== 'string') throw new Error(`MCP ${command.id} returned no text`);
+          });
+          ensureActive();
+          const response = sent[0];
+          if (response?.error) throw new Error(`MCP ${command.id} failed: ${response.error.message}`);
+          if (response?.result?.isError) {
+            throw new Error(`MCP ${command.id} failed: ${response.result.content?.[0]?.text || 'unknown error'}`);
+          }
+          const responseText = response?.result?.content?.[0]?.text;
+          if (typeof responseText !== 'string') throw new Error(`MCP ${command.id} returned no text`);
+          return responseText;
+        };
+        const text = command.id === 'scanshot'
+          ? await withPhase4ScanshotFixture({
+            evaluate: expression => runCdp(['eval', mcpTargetPrefix, expression], env, 5_000),
+            execute: invokeMcp,
+          })
+          : await invokeMcp();
         if (command.id === 'verify-click') {
           const resolution = JSON.parse(text).targetResolution;
           if (resolution?.requestedTargetId !== mcpTargetId
@@ -1386,14 +1609,14 @@ export async function runDisposablePhase4Slices() {
         if (['upload', 'inject', 'restore'].includes(command.id)) {
           const effect = runCdp(buildPhase4ExternalInputEffectCommand(command.id, mcpTargetPrefix), env, 5_000);
           assertPhase4ExternalInputEffect(command.id, effect, { expectedUrl: mcpUrl });
-          if (command.id === 'inject') {
-            const removed = runCdp(['inject', mcpTargetId, '--remove', '--format', 'json'], env, 5_000);
-            validateStep('inject', removed, { targetPrefix, expectedTitle: EXPECTED_TITLE, expectedUrl: mcpUrl });
-            assertPhase4InjectionRemoved(runCdp([
-              'eval', mcpTargetPrefix,
-              "JSON.stringify({count:document.querySelectorAll('[data-cdp-inject]').length})",
-            ], env, 5_000));
-          }
+        }
+        if (command.id === 'diff-shot' && ++mcpDiffShotCount === 2) {
+          const removed = runCdp(['inject', mcpTargetId, '--remove', '--format', 'json'], env, 5_000);
+          validateStep('inject', removed, { targetPrefix, expectedTitle: EXPECTED_TITLE, expectedUrl: mcpUrl });
+          assertPhase4InjectionRemoved(runCdp([
+            'eval', mcpTargetPrefix,
+            "JSON.stringify({count:document.querySelectorAll('[data-cdp-inject]').length})",
+          ], env, 5_000));
         }
         if (['dialog', 'keepalive', 'netlog'].includes(command.id)) {
           if (runCdp(['eval', mcpTargetPrefix, 'true'], env, 5_000) !== 'true') {
@@ -1409,8 +1632,16 @@ export async function runDisposablePhase4Slices() {
         navigationUrl,
         uploadPath,
         restorePath,
-        runCommand: command => {
-          const output = runCdp(command.args, env);
+        shotPath,
+        fullshotPath,
+        artifactRoot: runtimeDir,
+        runCommand: async command => {
+          const output = command.id === 'scanshot'
+            ? await withPhase4ScanshotFixture({
+              evaluate: expression => runCdp(['eval', targetPrefix, expression], env, 5_000),
+              execute: () => runCdp(command.args, env),
+            })
+            : runCdp(command.args, env);
           if (['nav', 'back', 'forward'].includes(command.id)) {
             const actualUrl = runCdp(['eval', targetPrefix, 'location.href'], env, 5_000);
             assertPhase4NavigationState(command.id, actualUrl, { baseUrl: url, navigationUrl });
@@ -1434,14 +1665,14 @@ export async function runDisposablePhase4Slices() {
           if (['upload', 'inject', 'restore'].includes(command.id)) {
             const effect = runCdp(buildPhase4ExternalInputEffectCommand(command.id, targetPrefix), env, 5_000);
             assertPhase4ExternalInputEffect(command.id, effect, { expectedUrl: url });
-            if (command.id === 'inject') {
-              const removed = runCdp(['inject', targetPrefix, '--remove', '--format', 'json'], env, 5_000);
-              validateStep('inject', removed, { targetPrefix, expectedTitle: EXPECTED_TITLE, expectedUrl: url });
-              assertPhase4InjectionRemoved(runCdp([
-                'eval', targetPrefix,
-                "JSON.stringify({count:document.querySelectorAll('[data-cdp-inject]').length})",
-              ], env, 5_000));
-            }
+          }
+          if (command.id === 'diff-shot' && ++cliDiffShotCount === 2) {
+            const removed = runCdp(['inject', targetPrefix, '--remove', '--format', 'json'], env, 5_000);
+            validateStep('inject', removed, { targetPrefix, expectedTitle: EXPECTED_TITLE, expectedUrl: url });
+            assertPhase4InjectionRemoved(runCdp([
+              'eval', targetPrefix,
+              "JSON.stringify({count:document.querySelectorAll('[data-cdp-inject]').length})",
+            ], env, 5_000));
           }
           if (['dialog', 'keepalive', 'netlog'].includes(command.id)) {
             if (runCdp(['eval', targetPrefix, 'true'], env, 5_000) !== 'true') {

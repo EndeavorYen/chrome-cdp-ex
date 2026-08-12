@@ -12883,6 +12883,7 @@ const MIGRATED_DAEMON_COMMANDS = Object.freeze([
   'console', 'record',
   'batch', 'flow', 'repeat', 'replay',
   'inject', 'restore', 'upload',
+  'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
 ]);
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPhase4PerceiveHandler(context),
@@ -12947,6 +12948,11 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
   inject: capabilities => createDaemonActionHandlers(capabilities).inject,
   restore: capabilities => createDaemonActionHandlers(capabilities).restore,
   upload: capabilities => createDaemonActionHandlers(capabilities).upload,
+  shot: capabilities => createDaemonReadHandlers(capabilities).shot,
+  'diff-shot': capabilities => createDaemonReadHandlers(capabilities)['diff-shot'],
+  elshot: capabilities => createDaemonReadHandlers(capabilities).elshot,
+  fullshot: capabilities => createDaemonReadHandlers(capabilities).fullshot,
+  scanshot: capabilities => createDaemonReadHandlers(capabilities).scanshot,
 });
 
 function preflightDaemonApplication(input = {}) {
@@ -13315,11 +13321,14 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       return controlsStr(cdp, sessionId, { ...copts, format: fopts.format });
     },
     cookies: () => cookiesStr(cdp, sessionId),
+    'diff-shot': args => diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args)),
+    elshot: args => elshotStr(cdp, sessionId, args[0], targetId, refMap, refState),
     'export-playwright': args => formatExportPlaywright(session, parseExportPlaywrightArgs(args)),
     frame: async args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
       return framesStr(cdp, sessionId, { format: fopts.format });
     },
+    fullshot: args => fullshotStr(cdp, sessionId, args[0], targetId),
     html: args => htmlStr(cdp, sessionId, args),
     text: args => textStr(cdp, sessionId, args),
     table: selector => tableStr(cdp, sessionId, selector),
@@ -13329,6 +13338,28 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     'record-actions': args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
       return formatRecordActions(session, { format: fopts.format });
+    },
+    scanshot: () => scanshotStr(cdp, sessionId, targetId),
+    shot: async args => {
+      if (args[0] === '--annotate' || args[0] === '-a') {
+        const output = await annotshotStr(cdp, sessionId, targetId, refMap);
+        appendSessionScreenshot(session, {
+          kind: 'annotshot',
+          path: output.split('\n')[0],
+          note: 'annotated refs',
+        });
+        return output;
+      }
+      const sopts = parseShotArgs(args);
+      const filePath = sopts.filePath || nextSessionScreenshotPath(session, 'shot');
+      if (!sopts.filePath) ensureSessionScreenshotDir(session);
+      const output = await shotStr(cdp, sessionId, filePath, targetId, { quiet: sopts.quiet, verbose: sopts.verbose });
+      appendSessionScreenshot(session, {
+        kind: 'shot',
+        path: output.split('\n')[0],
+        note: sopts.filePath ? 'custom path' : 'session screenshot',
+      });
+      return output;
     },
     snap: args => snapshotStr(cdp, sessionId, args[0] !== '--full'),
     status: async args => {
@@ -13371,6 +13402,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const exportPlaywrightBuilder = applicationPreflight.handlerBuilders['export-playwright'];
   const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];
   const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];
+  const diffShotBuilder = applicationPreflight.handlerBuilders['diff-shot'];
   const scriptCapabilities = {
     eval: async args => {
       const eopts = parseEvalArgs(args);
@@ -13730,6 +13762,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     inject: applicationPreflight.handlerBuilders.inject(actionCapabilities),
     restore: applicationPreflight.handlerBuilders.restore(actionCapabilities),
     upload: applicationPreflight.handlerBuilders.upload(actionCapabilities),
+    shot: applicationPreflight.handlerBuilders.shot(readCapabilities),
+    'diff-shot': diffShotBuilder(readCapabilities),
+    elshot: applicationPreflight.handlerBuilders.elshot(readCapabilities),
+    fullshot: applicationPreflight.handlerBuilders.fullshot(readCapabilities),
+    scanshot: applicationPreflight.handlerBuilders.scanshot(readCapabilities),
   };
   const phase4Context = createCommandDispatcher({
     registry: phase4Registry,
@@ -13765,31 +13802,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         case 'list_raw': {
           const pages = await getPages(cdp);
           result = JSON.stringify(pages);
-          break;
-        }
-        case 'shot': case 'screenshot': {
-          if (args[0] === '--annotate' || args[0] === '-a') {
-            result = await annotshotStr(cdp, sessionId, targetId, refMap);
-            appendSessionScreenshot(session, {
-              kind: 'annotshot',
-              path: result.split('\n')[0],
-              note: 'annotated refs',
-            });
-          } else {
-            const sopts = parseShotArgs(args);
-            const filePath = sopts.filePath || nextSessionScreenshotPath(session, 'shot');
-            if (!sopts.filePath) ensureSessionScreenshotDir(session);
-            result = await shotStr(cdp, sessionId, filePath, targetId, { quiet: sopts.quiet, verbose: sopts.verbose });
-            appendSessionScreenshot(session, {
-              kind: 'shot',
-              path: result.split('\n')[0],
-              note: sopts.filePath ? 'custom path' : 'session screenshot',
-            });
-          }
-          break;
-        }
-        case 'diff-shot': case 'diffshot': {
-          result = await diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args));
           break;
         }
         case 'report': {
@@ -13901,7 +13913,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           result = route.result;
           break;
         }
-        case 'elshot': result = await elshotStr(cdp, sessionId, args[0], targetId, refMap, refState); break;
         case 'click': {
           const route = await executePhase4DaemonRoute({
             cmd: 'click',
@@ -13912,8 +13923,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           break;
         }
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
-        case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
-        case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
         case 'closetab': result = await closetabStr(cdp, targetId); break;
         case 'evalraw': {
           const route = await executePhase4DaemonRoute({
@@ -15208,7 +15217,7 @@ function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound })
     'type', 'upload', 'verify-click', 'viewport',
   ].includes(command)
       && policy === 'mutation' && actionMutates)
-    || (['console', 'netlog', 'record'].includes(command)
+    || (['console', 'diff-shot', 'fullshot', 'netlog', 'record', 'shot'].includes(command)
       && policy === 'conditional' && mutates === false)
     || (['batch', 'flow', 'repeat'].includes(command)
       && policy === 'composite' && mutates === false)

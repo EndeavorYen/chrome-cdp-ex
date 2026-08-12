@@ -181,16 +181,19 @@ and `netlog`; the thirteenth moved raw-script `eval`, `eval64`, and `call`.
 The fourteenth moved conditional observation controls `console` and `record`.
 The fifteenth moved recursive workflows `batch`, `flow`, `repeat`, and `replay`.
 The sixteenth moved external-input mutations `upload`, `inject`, and `restore`
-with path/content-redacted Action Receipt targets. The current checked boundary
-has 18 daemon groups, 59 application-owned handlers, and 9 remaining switch-branch
-deletion candidates.
+with path/content-redacted Action Receipt targets. The seventeenth moved
+screenshot capture `shot`/`screenshot`, `diff-shot`/`diffshot`, `elshot`,
+`fullshot`, and `scanshot` while preserving explicit-path policy and private
+artifact modes. The current checked boundary has 13 daemon groups, 64
+application-owned handlers, and 4 remaining switch-branch deletion candidates.
 
 The daemon now preflights a complete, immutable route-owner map before runtime
 effects and constructs one branded dispatcher from it. All 81 canonical names
 and 23 aliases resolve through that boundary; the four Phase 4 commands, the
 six accepted read cohorts, the first six action cohorts, the raw-script,
 conditional observation-control, recursive-workflow, and external-input
-mutation cohorts execute application handlers, while the other 22 catalog
+mutation cohorts plus the screenshot capture cohort execute application
+handlers, while the other 17 catalog
 commands return an explicit
 `handled: false` result to the characterized legacy switch. This is a routing
 and cardinality guarantee, not a claim that the remaining handlers have moved.

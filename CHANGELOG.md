@@ -39,8 +39,11 @@ exact-method CDP domains now replace duplicated authority without removing the
   `repeat`, and `replay` now re-enter that same dispatcher for every nested
   step. External-input mutations `upload`, `inject`, and `restore` now use the
   same confirmation, Action Receipt, and privacy boundary; checkpoint JSON,
-  paths, and injected content are redacted from action evidence. The remaining
-  22 catalog commands are explicitly
+  paths, and injected content are redacted from action evidence. Screenshot
+  capture commands `shot`/`screenshot`, `diff-shot`/`diffshot`, `elshot`,
+  `fullshot`, and `scanshot` now use the same application boundary while
+  preserving 0600 artifact writes and explicit-path confirmation. The remaining
+  17 catalog commands are explicitly
   retained on the characterized legacy route until parity permits migration.
   Add immutable public browser resources, private
   handles, a shared-key BrowserSupervisor with bounded stale recovery, extracted
