@@ -6,6 +6,11 @@ import {
 } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
 import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
+import {
+  commandResult,
+  createCommandRegistry,
+} from '../skills/chrome-cdp-ex/scripts/lib/command-application.mjs';
+import { createCommandDispatcher } from '../skills/chrome-cdp-ex/scripts/lib/command-dispatch.mjs';
 
 const FAILED_ACTION = {
   schema: 'chrome-cdp-ex.action.v1',
@@ -78,6 +83,86 @@ function replayArtifact(actions) {
 }
 
 describe('hard action dispatch exit contract (#143)', () => {
+  it('makes the daemon application route additive-fail while preserving the Action Result bytes', async () => {
+    const registry = createCommandRegistry([{
+      name: 'nav',
+      aliases: [],
+      needsTarget: true,
+      mutates: true,
+      feedbackPolicy: 'full-perceive',
+      outputFormats: ['text', 'json'],
+      kind: 'mutation',
+      authorization: 'mutation',
+      evidencePolicy: 'action-receipt',
+    }]);
+    const dispatcher = createCommandDispatcher({
+      registry,
+      owners: { nav: 'application' },
+      handlers: {
+        nav: async () => commandResult(FAILED_ACTION_JSON, { kind: 'action-receipt' }),
+      },
+      authorize: () => ({ allowed: true, code: 'fixture' }),
+    });
+
+    await expect(cdpTest.executeDaemonApplicationRoute({
+      cmd: 'nav',
+      args: ['https://example.com/', '--format', 'json'],
+      targetBound: true,
+    }, dispatcher)).resolves.toEqual({
+      handled: true,
+      ok: false,
+      result: FAILED_ACTION_JSON,
+      error: 'Timeout: Page.navigate',
+    });
+  });
+
+  it('writes additive daemon failures to CLI stdout and reserves stderr for ordinary errors', () => {
+    const stdout = [];
+    const stderr = [];
+    const processLike = { exitCode: 0, platform: 'darwin' };
+    const consoleLike = {
+      log: value => stdout.push(value),
+      error: value => stderr.push(value),
+    };
+
+    cdpTest.emitTargetCommandResponse?.({
+      ok: false,
+      result: FAILED_ACTION_JSON,
+      error: 'Timeout: Page.navigate',
+    }, {
+      cmd: 'nav',
+      targetPrefix: 'ABC12345',
+      format: 'json',
+      targetResolution: null,
+      console: consoleLike,
+      process: processLike,
+    });
+
+    expect({ stdout, stderr, exitCode: processLike.exitCode }).toEqual({
+      stdout: [FAILED_ACTION_JSON],
+      stderr: [],
+      exitCode: 1,
+    });
+
+    stdout.length = 0;
+    stderr.length = 0;
+    processLike.exitCode = 0;
+    cdpTest.emitTargetCommandResponse({
+      ok: false,
+      error: 'Element not found: #missing',
+    }, {
+      cmd: 'click',
+      targetPrefix: 'ABC12345',
+      format: 'text',
+      console: consoleLike,
+      process: processLike,
+    });
+    expect(stdout).toEqual([]);
+    expect(stderr).toHaveLength(1);
+    expect(stderr[0]).toContain('Element not found: #missing');
+    expect(processLike.exitCode).toBe(1);
+  });
+
   it('preserves the complete JSON Action Result while in-process CLI execution returns non-zero', async () => {
     const result = await executeCdpCli(
       ['nav', 'ABC12345', 'https://example.com/', '--format', 'json'],
@@ -185,6 +270,33 @@ describe('hard action dispatch exit contract (#143)', () => {
         command: ['nav', 'https://example.com/'],
         ok: false,
         error: 'Timeout: Page.navigate',
+      },
+    });
+  });
+
+  it('keeps failed Action Result evidence when flow receives the additive daemon response', async () => {
+    const output = await cdpTest.flowStr({
+      run: async () => ({
+        ok: false,
+        result: FAILED_ACTION_JSON,
+        error: 'Timeout: Page.navigate',
+      }),
+      settle: async () => '',
+    }, 'nav https://example.com/; summary', {
+      format: 'json',
+      targetId: 'ABC12345',
+    });
+    const model = JSON.parse(output);
+
+    expect(model.failedStep).toMatchObject({
+      ok: false,
+      error: 'Timeout: Page.navigate',
+      failureKind: 'timeout',
+      verdict: {
+        status: 'blocked',
+        canContinue: false,
+        needsRecovery: true,
+        primaryNextStep: 'cdp status ABC12345',
       },
     });
   });

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Agent reliability
+
+* Preserve failed JSON Action Results while returning a non-zero CLI status and
+  MCP `isError: true` when `dispatch.ok` is false. Nested replay/repeat steps now
+  fail fast on the same semantic result; dispatched `no-change`, `attention`,
+  and post-dispatch observation timeouts retain their existing transport-success
+  semantics (#143).
+
 ## [2.15.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.14.0...v2.15.0) (2026-08-12)
 
 v2.15.0 turns the post-v2.14 work into a claim-honest Codex and cross-host

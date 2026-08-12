@@ -10749,6 +10749,34 @@ function maybeParseJson(value) {
   try { return JSON.parse(trimmed); } catch { return null; }
 }
 
+function classifyCommandResultSemantics(result = null) {
+  const transportOk = result?.ok === true
+    || (Number.isInteger(result?.code) && result.code === 0);
+  const output = Object.hasOwn(result || {}, 'result') ? result.result : result?.stdout;
+  const model = maybeParseJson(output);
+  const action = model?.schema === 'chrome-cdp-ex.action.v1'
+    ? model
+    : model?.action?.schema === 'chrome-cdp-ex.action.v1'
+      ? model.action
+      : null;
+  const dispatchFailed = action?.dispatch?.ok === false;
+  const error = result?.error
+    || (dispatchFailed
+      ? action.dispatch?.error
+        || action.effects?.failure?.originalMessage
+        || action.effects?.failure?.reason
+        || 'Action dispatch failed'
+      : null);
+  return {
+    ok: transportOk && !dispatchFailed,
+    transportOk,
+    dispatchFailed,
+    error,
+    model,
+    action,
+  };
+}
+
 function extractLabeledLine(text, label) {
   const re = new RegExp(`^${label}:\\s*(.+)$`, 'm');
   return String(text || '').match(re)?.[1]?.trim() || null;
@@ -10833,12 +10861,13 @@ function autoActionJsonArgs(cmd, args = [], enabled = false) {
 }
 
 function batchStepModel(result = {}, index = 0) {
-  const actionModel = maybeParseJson(result.result);
-  const actionFailure = actionModel?.schema === 'chrome-cdp-ex.action.v1' && actionModel.dispatch?.ok === false;
+  const semantics = classifyCommandResultSemantics(result);
+  const actionModel = semantics.action;
+  const actionFailure = semantics.dispatchFailed;
   const diagnosis = diagnosisFromActionModel(actionModel);
   const verdict = verdictFromActionModel(actionModel);
-  const errorText = result.error || (actionFailure ? actionModel.dispatch?.error : null) || '';
-  const ok = result.ok === true && !actionFailure;
+  const errorText = semantics.error || '';
+  const ok = semantics.ok;
   const failureKind = actionFailure
     ? actionModel.effects?.failure?.kind || null
     : extractLabeledLine(errorText, 'Action failure');
@@ -11060,7 +11089,8 @@ async function repeatStr({ run, probeCondition }, args) {
   let haltedEarly = false;
   for (let i = 1; i <= opts.count; i++) {
     const r = await run({ cmd: opts.cmd, args: opts.args.slice() });
-    if (r && r.ok) {
+    const semantics = classifyCommandResultSemantics(r);
+    if (semantics.ok) {
       okCount++;
       const body = (r.result || '').toString().split('\n')[0].slice(0, 200);
       lines.push(body ? `[${i}/${opts.count}] ok: ${body}` : `[${i}/${opts.count}] ok`);
@@ -11076,7 +11106,7 @@ async function repeatStr({ run, probeCondition }, args) {
       }
     } else {
       failCount++;
-      const errText = (r && r.error) || 'unknown error';
+      const errText = semantics.error || 'unknown error';
       lines.push(`[${i}/${opts.count}] ✗ ${errText}`);
       if (!opts.continueOnError) {
         lines.push(`Repeat halted at iteration ${i}/${opts.count} (use --continue to keep going).`);
@@ -11122,10 +11152,11 @@ function parseFlowSteps(input) {
 }
 
 function flowStepModel(step = {}, index = 0, state = {}) {
+  const semantics = classifyCommandResultSemantics(state);
   const base = {
     index: index + 1,
     kind: step.kind || 'command',
-    ok: state.ok === true,
+    ok: semantics.ok,
   };
   if (step.kind === 'wait') base.wait = step.what || '';
   else if (step.kind === 'assert') base.condition = step.condition || null;
@@ -11138,28 +11169,23 @@ function flowStepModel(step = {}, index = 0, state = {}) {
     base.skipped = true;
     return base;
   }
+  const actionModel = semantics.action;
+  const diagnosis = diagnosisFromActionModel(actionModel);
+  const verdict = verdictFromActionModel(actionModel);
+  if (diagnosis) base.diagnosis = diagnosis;
+  if (verdict) base.verdict = verdict;
   if (base.ok) {
-    const actionModel = maybeParseJson(state.result);
-    const actionFailure = actionModel?.schema === 'chrome-cdp-ex.action.v1' && actionModel.dispatch?.ok === false;
-    const diagnosis = diagnosisFromActionModel(actionModel);
-    const verdict = verdictFromActionModel(actionModel);
     base.resultPreview = firstNonEmptyLine(state.result);
-    if (diagnosis) base.diagnosis = diagnosis;
-    if (verdict) base.verdict = verdict;
-    if (actionFailure) {
-      base.ok = false;
-      base.error = actionModel.dispatch?.error || 'Action dispatch failed';
-      if (actionModel.effects?.failure?.kind) base.failureKind = actionModel.effects.failure.kind;
-      if (actionModel.nextHint || actionModel.effects?.failure?.nextCommand) {
-        base.nextCommand = actionModel.nextHint || actionModel.effects.failure.nextCommand;
-      }
-    }
     return base;
   }
-  const errorText = String(state.error || 'unknown error');
+  const errorText = String(semantics.error || 'unknown error');
   base.error = errorText;
-  const failureKind = extractLabeledLine(errorText, 'Action failure');
-  const nextCommand = extractLabeledLine(errorText, 'Next');
+  const failureKind = semantics.dispatchFailed
+    ? actionModel.effects?.failure?.kind || null
+    : extractLabeledLine(errorText, 'Action failure');
+  const nextCommand = semantics.dispatchFailed
+    ? actionModel.nextHint || actionModel.effects?.failure?.nextCommand || null
+    : extractLabeledLine(errorText, 'Next');
   if (failureKind) base.failureKind = failureKind;
   if (nextCommand) base.nextCommand = nextCommand;
   return base;
@@ -11267,7 +11293,11 @@ async function flowStr({ run, settle, assertCondition }, input, { format = 'text
       } else {
         const r = await run(step);
         if (!r.ok) {
-          stepResults.push(flowStepModel(step, i, { ok: false, error: r.error }));
+          stepResults.push(flowStepModel(step, i, {
+            ok: false,
+            result: r.result,
+            error: r.error,
+          }));
           markSkippedAfter(i + 1);
           lines.push(`  ✗ ${r.error}`);
           lines.push(`Flow halted at step ${i + 1}/${steps.length}`);
@@ -11447,7 +11477,8 @@ async function replayActionsStr({ run }, args) {
     }
     lines.push(`${label} ${step.commandText}`);
     const result = await run({ cmd: step.cmd, args: step.args });
-    if (result?.ok) {
+    const semantics = classifyCommandResultSemantics(result);
+    if (semantics.ok) {
       model.counts.ok++;
       const body = (result.result || '').toString().split('\n')[0].slice(0, 240);
       if (body) lines.push(`  ok: ${body}`);
@@ -11456,7 +11487,7 @@ async function replayActionsStr({ run }, args) {
       return true;
     }
     model.counts.failed++;
-    const error = result?.error || 'unknown error';
+    const error = semantics.error || 'unknown error';
     lines.push(`  ✗ ${error}`);
     const failedStep = recordStep(phase, index, totalCount, step, { ok: false, error });
     if (!model.failedStep) model.failedStep = failedStep;
@@ -13915,6 +13946,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           args,
           targetBound: Boolean(targetId),
         }, applicationDispatcher);
+        if (route.ok === false) {
+          return { ok: false, result: route.result, error: route.error };
+        }
         return { ok: true, result: route.result ?? '' };
       }
       switch (cmd) {
@@ -15246,6 +15280,15 @@ async function executeDaemonApplicationRoute(requestInput, context) {
     args: request.args,
     targetBound: request.targetBound,
   });
+  const semantics = classifyCommandResultSemantics({ ok: true, result: route.result });
+  if (semantics.dispatchFailed) {
+    return {
+      handled: route.handled,
+      ok: false,
+      result: route.result,
+      error: semantics.error,
+    };
+  }
   return {
     handled: route.handled,
     result: route.result,
@@ -15961,7 +16004,37 @@ export async function executeCdpCli(command, { runMain = main, hostProcess = pro
       code = 1;
     }
   }
-  return { code, stdout: stdout.trim(), stderr: stderr.trim() };
+  const normalized = { code, stdout: stdout.trim(), stderr: stderr.trim() };
+  if (normalized.code === 0 && classifyCommandResultSemantics(normalized).dispatchFailed) {
+    normalized.code = 1;
+  }
+  return normalized;
+}
+
+function emitTargetCommandResponse(response, {
+  cmd,
+  targetPrefix,
+  format = 'text',
+  targetResolution = null,
+  console = globalThis.console,
+  process = globalThis.process,
+} = {}) {
+  const hasResult = response?.result !== undefined
+    && response?.result !== null
+    && response.result !== '';
+  if (hasResult) {
+    const output = format === 'json' && targetResolution
+      ? attachTargetResolutionDiagnostics(response.result, targetResolution)
+      : response.result;
+    console.log(output);
+    const semantics = classifyCommandResultSemantics({ ok: response?.ok === true, result: output });
+    if (response?.ok === false || semantics.dispatchFailed) process.exitCode = 1;
+    return;
+  }
+  if (response?.ok === false) {
+    console.error(formatDaemonCommandError(response.error, { cmd, targetPrefix, format }));
+    process.exitCode = 1;
+  }
 }
 
 async function main(options = {}) {
@@ -16566,17 +16639,14 @@ async function main(options = {}) {
     rebound,
   });
 
-  if (response.ok) {
-    if (response.result) {
-      const output = cliErrorFormat === 'json'
-        ? attachTargetResolutionDiagnostics(response.result, targetResolution)
-        : response.result;
-      console.log(output);
-    }
-  } else {
-    console.error(formatDaemonCommandError(response.error, { cmd, targetPrefix, format: cliErrorFormat }));
-    process.exitCode = 1;
-  }
+  emitTargetCommandResponse(response, {
+    cmd,
+    targetPrefix,
+    format: cliErrorFormat,
+    targetResolution,
+    console,
+    process,
+  });
 }
 
 function perceiveReadinessRecovery(target) {
@@ -16701,6 +16771,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, loadAllStr, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
+  classifyCommandResultSemantics,
+  emitTargetCommandResponse,
   isBatchParallelUnsafeCommand,
   parseReplayArgs, parseReplayArtifact, replayStepFromAction, replayActionsStr,
   collectDaemonMetadata, assessDaemonFreshness, formatStaleDaemonMessage, resolveScriptIdentityPath,
