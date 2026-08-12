@@ -188,6 +188,8 @@ describe('Repository release gates', () => {
     expect(architecture).toContain('five daemon protocol groups');
     expect(architecture).toContain('Intentional compatibility components retained');
     expect(architecture).toContain('None is retained merely as a fallback');
+    expect(architecture).toContain('currently implements public `browser`, `page`, and `frame` resources');
+    expect(architecture).toMatch(/Future graph extensions may add\s+browser contexts, DOM\/accessibility nodes/);
     expect(architecture).not.toContain('remaining target architecture');
     expect(architecture).not.toContain('77 explicitly enumerated legacy command routes');
   });

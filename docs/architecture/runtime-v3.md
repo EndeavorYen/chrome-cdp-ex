@@ -95,11 +95,13 @@ The daemon switch retains exactly five protocol groups: `meta`, `list`,
 
 ## Browser Resource Graph
 
-Runtime v3 uses typed resources rather than one universal browser node tree.
-Examples include browser, browser context, page target, frame, DOM node,
-accessibility node, network request, storage scope, screenshot, recording, and
-evidence bundle. Resources share an envelope—kind, stable identity where
-possible, revision, capabilities, and links—but retain domain-specific payloads.
+Runtime v3 uses typed resources rather than one universal browser node tree. It
+currently implements public `browser`, `page`, and `frame` resources. They share
+an envelope—kind, stable identity where possible, revision, capabilities, and
+links—but retain domain-specific payloads. Future graph extensions may add
+browser contexts, DOM/accessibility nodes, network requests, storage scopes,
+screenshots, recordings, and evidence bundles only through separately reviewed
+resource kinds and payload contracts; those kinds are not implemented today.
 
 The public boundary is:
 
