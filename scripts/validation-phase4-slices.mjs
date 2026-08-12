@@ -21,7 +21,8 @@ const serverPath = resolve(rootDir, 'scripts/validation-loopback-server.mjs');
 const EXPECTED_TITLE = 'chrome-cdp-ex long-session smoke';
 const ACTION_PARITY_COMMANDS = new Set([
   'back', 'clickxy', 'clock', 'dismiss-modal', 'emulate', 'fill', 'forward', 'hover', 'jsclick',
-  'mock', 'nav', 'press', 'reload', 'scroll', 'select', 'throttle', 'type', 'verify-click', 'viewport',
+  'dialog', 'keepalive', 'mock', 'nav', 'netlog', 'press', 'reload', 'scroll', 'select',
+  'throttle', 'type', 'verify-click', 'viewport',
 ]);
 const ACTION_STATE_EXPRESSION = "({title:document.title,modalHidden:document.querySelector('#motd')?.hidden===true,shortcut:document.querySelector('#shortcut-status')?.textContent,inputValue:document.querySelector('#cmd')?.value,selectValue:document.querySelector('#phase7-select')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector('#phase7-js-status')?.textContent,coordStatus:document.querySelector('#phase7-coord-status')?.textContent,authState:document.querySelector('#auth-state')?.textContent})";
 const RELOAD_STATE_EXPRESSION = "JSON.stringify({url:location.href,loadCount:Number(/^phase7-load:(\\d+)$/.exec(window.name)?.[1]),marker:document.querySelector('#phase7-load-generation')?.textContent})";
@@ -104,6 +105,11 @@ export function buildPhase4SliceCommands(
         returnByValue: true,
       }),
     ]),
+    immutableCommand('cookieset', ['cookieset', targetPrefix, 'phase7_mutation=fixture']),
+    immutableCommand('cookiedel', ['cookiedel', targetPrefix, 'phase7_mutation']),
+    immutableCommand('dialog', ['dialog', targetPrefix, 'dismiss']),
+    immutableCommand('keepalive', ['keepalive', targetPrefix, '1000']),
+    immutableCommand('netlog', ['netlog', targetPrefix, '--clear']),
     immutableCommand('nav', ['nav', targetPrefix, navigationUrl, '--format', 'json']),
     immutableCommand('back', ['back', targetPrefix, '--format', 'json']),
     immutableCommand('forward', ['forward', targetPrefix, '--format', 'json']),
@@ -192,6 +198,19 @@ export function assertPhase4RenderingEffect(id, raw) {
     return 'dark+reduce';
   }
   throw new Error(`unknown rendering effect ${id}`);
+}
+
+export function buildPhase4CookieEffectCommand(id, targetPrefix) {
+  if (!['cookieset', 'cookiedel'].includes(id)) throw new Error(`unknown cookie effect ${id}`);
+  const found = "document.cookie.split('; ').includes('phase7_mutation=fixture')";
+  return ['eval', targetPrefix, id === 'cookieset' ? found : `!(${found})`];
+}
+
+export function assertPhase4CookieEffect(id, raw) {
+  if (!['cookieset', 'cookiedel'].includes(id) || raw !== 'true') {
+    throw new Error(`${id} cookie effect is invalid`);
+  }
+  return true;
 }
 
 function environmentEffectExpression(id) {
@@ -360,6 +379,32 @@ function validateStep(id, stdout, {
     if (!/^Hovering over <BUTTON> at CSS \(\d+, \d+\)$/.test(stdout)) {
       throw new Error(`hover fixture output is invalid: ${JSON.stringify(stdout)}`);
     }
+    return stdout;
+  }
+  if (id === 'cookieset') {
+    if (stdout !== 'Cookie set: phase7_mutation=fixture (domain: 127.0.0.1)') {
+      throw new Error(`cookieset fixture output is invalid: ${JSON.stringify(stdout)}`);
+    }
+    return stdout;
+  }
+  if (id === 'cookiedel') {
+    if (stdout !== 'Cookie deleted: phase7_mutation') throw new Error(`cookiedel fixture output is invalid: ${JSON.stringify(stdout)}`);
+    return stdout;
+  }
+  if (id === 'dialog') {
+    if (stdout !== 'Dialog auto-accept: OFF (dialogs will be dismissed/rejected)') {
+      throw new Error(`dialog fixture output is invalid: ${JSON.stringify(stdout)}`);
+    }
+    return stdout;
+  }
+  if (id === 'keepalive') {
+    if (!/^Daemon keepalive extended for 1000ms \(until \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\)$/.test(stdout)) {
+      throw new Error(`keepalive fixture output is invalid: ${JSON.stringify(stdout)}`);
+    }
+    return stdout;
+  }
+  if (id === 'netlog') {
+    if (stdout !== 'Network log cleared') throw new Error(`netlog fixture output is invalid: ${JSON.stringify(stdout)}`);
     return stdout;
   }
   if (id === 'checkpoint') {
@@ -761,7 +806,7 @@ export async function runPhase4SliceSession({
       if (command.id === 'record-actions') sessionIdentity = value;
       if (['html', 'text', 'table', 'net', 'status', 'summary', 'snap', 'controls', 'frame',
         'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
-        'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies',
+        'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies', 'dialog', 'keepalive', 'netlog',
         'press', 'fill', 'hover', 'scroll', 'select',
         'back', 'clickxy', 'clock', 'dismiss-modal', 'forward', 'jsclick', 'mock', 'nav',
         'reload', 'throttle', 'type', 'verify-click', 'viewport', 'emulate'].includes(command.id)) {
@@ -1099,8 +1144,8 @@ export async function runDisposablePhase4Slices() {
               args: commandArgs,
               ...([
                 'components', 'checkpoint', 'cookies',
-                'back', 'clickxy', 'clock', 'dismiss-modal', 'fill', 'forward',
-                'hover', 'jsclick', 'mock', 'nav', 'press', 'reload', 'scroll',
+                'back', 'clickxy', 'clock', 'dialog', 'dismiss-modal', 'fill', 'forward',
+                'hover', 'jsclick', 'keepalive', 'mock', 'nav', 'netlog', 'press', 'reload', 'scroll',
                 'select', 'throttle', 'type', 'verify-click', 'viewport', 'emulate',
               ].includes(command.id)
                 ? { confirm: true }
@@ -1144,6 +1189,11 @@ export async function runDisposablePhase4Slices() {
           const effect = runCdp(buildPhase4RenderingEffectCommand(command.id, mcpTargetPrefix), env, 5_000);
           assertPhase4RenderingEffect(command.id, effect);
         }
+        if (['dialog', 'keepalive', 'netlog'].includes(command.id)) {
+          if (runCdp(['eval', mcpTargetPrefix, 'true'], env, 5_000) !== 'true') {
+            throw new Error(`MCP ${command.id} left the target runtime unavailable`);
+          }
+        }
         return text.trim();
       };
       const result = await runPhase4SliceSession({
@@ -1168,6 +1218,15 @@ export async function runDisposablePhase4Slices() {
           if (['viewport', 'emulate'].includes(command.id)) {
             const effect = runCdp(buildPhase4RenderingEffectCommand(command.id, targetPrefix), env, 5_000);
             assertPhase4RenderingEffect(command.id, effect);
+          }
+          if (['cookieset', 'cookiedel'].includes(command.id)) {
+            const effect = runCdp(buildPhase4CookieEffectCommand(command.id, targetPrefix), env, 5_000);
+            assertPhase4CookieEffect(command.id, effect);
+          }
+          if (['dialog', 'keepalive', 'netlog'].includes(command.id)) {
+            if (runCdp(['eval', targetPrefix, 'true'], env, 5_000) !== 'true') {
+              throw new Error(`${command.id} left the target runtime unavailable`);
+            }
           }
           return output;
         },

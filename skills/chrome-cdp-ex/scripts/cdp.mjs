@@ -12798,6 +12798,7 @@ const MIGRATED_DAEMON_COMMANDS = Object.freeze([
   'back', 'forward', 'nav', 'reload',
   'clock', 'mock', 'throttle',
   'emulate', 'viewport',
+  'cookiedel', 'cookieset', 'dialog', 'keepalive', 'netlog',
 ]);
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPhase4PerceiveHandler(context),
@@ -12842,6 +12843,11 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
   throttle: capabilities => createDaemonActionHandlers(capabilities).throttle,
   emulate: capabilities => createDaemonActionHandlers(capabilities).emulate,
   viewport: capabilities => createDaemonActionHandlers(capabilities).viewport,
+  cookiedel: capabilities => createDaemonActionHandlers(capabilities).cookiedel,
+  cookieset: capabilities => createDaemonActionHandlers(capabilities).cookieset,
+  dialog: capabilities => createDaemonActionHandlers(capabilities).dialog,
+  keepalive: capabilities => createDaemonActionHandlers(capabilities).keepalive,
+  netlog: capabilities => createDaemonActionHandlers(capabilities).netlog,
 });
 
 function preflightDaemonApplication(input = {}) {
@@ -13264,6 +13270,18 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       await clockStr(cdp, sessionId, session, args),
       { kind: 'action-receipt' },
     ),
+    cookiedel: async args => commandResult(
+      await cookieDelStr(cdp, sessionId, args[0]),
+      { kind: 'action-receipt' },
+    ),
+    cookieset: async args => commandResult(
+      await cookieSetStr(cdp, sessionId, args[0]),
+      { kind: 'action-receipt' },
+    ),
+    dialog: async args => commandResult(
+      dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]),
+      null,
+    ),
     'dismiss-modal': async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }, 'settle-diff', null, fopts);
@@ -13287,6 +13305,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const value = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, fopts.args[0], refMap, refState), { input: fopts.args[0], resolvedBy: 'selector-or-ref', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
+    keepalive: async args => commandResult(
+      extendKeepalive(parseDelayMs(args[0], { name: 'keepalive duration' })),
+      null,
+    ),
     mock: async args => commandResult(
       await mockStr(cdp, sessionId, session, args),
       { kind: 'action-receipt' },
@@ -13301,6 +13323,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const value = await actionFeedback('nav', () => navStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'url', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'full-perceive', observeFullPerceive, fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
+    netlog: async args => commandResult(netlogStr(netReqBuf, args[0]), null),
     press: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
@@ -13429,6 +13452,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     throttle: applicationPreflight.handlerBuilders.throttle(actionCapabilities),
     emulate: applicationPreflight.handlerBuilders.emulate(actionCapabilities),
     viewport: applicationPreflight.handlerBuilders.viewport(actionCapabilities),
+    cookiedel: applicationPreflight.handlerBuilders.cookiedel(actionCapabilities),
+    cookieset: applicationPreflight.handlerBuilders.cookieset(actionCapabilities),
+    dialog: applicationPreflight.handlerBuilders.dialog(actionCapabilities),
+    keepalive: applicationPreflight.handlerBuilders.keepalive(actionCapabilities),
+    netlog: applicationPreflight.handlerBuilders.netlog(actionCapabilities),
   };
   const phase4Context = createCommandDispatcher({
     registry: phase4Registry,
@@ -13482,7 +13510,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           break;
         }
         case 'call': result = await callStr(cdp, sessionId, args.join(' ')); break;
-        case 'keepalive': result = extendKeepalive(parseDelayMs(args[0], { name: 'keepalive duration' })); break;
         case 'shot': case 'screenshot': {
           if (args[0] === '--annotate' || args[0] === '-a') {
             result = await annotshotStr(cdp, sessionId, targetId, refMap);
@@ -13646,16 +13673,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
         case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
-        case 'cookieset': result = await cookieSetStr(cdp, sessionId, args[0]); break;
-        case 'cookiedel': result = await cookieDelStr(cdp, sessionId, args[0]); break;
-        case 'dialog': result = dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]); break;
         case 'upload': {
           const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           result = await actionFeedback('upload', () => uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'state-change', null, fopts);
           break;
         }
         case 'closetab': result = await closetabStr(cdp, targetId); break;
-        case 'netlog': result = netlogStr(netReqBuf, args[0]); break;
         case 'inject': {
           const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           result = await actionFeedback('inject', () => injectStr(cdp, sessionId, fopts.args), { input: fopts.args[0] || '', resolvedBy: 'command', label: fopts.args[0] || 'inject', commandArgs: fopts.args }, 'state-change', null, fopts);
@@ -15018,13 +15041,17 @@ function createPhase4EvalrawHandler({ evalRaw }) {
 
 function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound }) {
   if (!targetBound) return { allowed: false, code: 'target-not-bound' };
-  const actionMutates = command === 'hover' ? mutates === false : mutates === true;
+  const actionMutates = ['dialog', 'hover', 'keepalive'].includes(command)
+    ? mutates === false
+    : mutates === true;
   const allowed = ([
     'back', 'click', 'clickxy', 'clock', 'dismiss-modal', 'fill', 'forward', 'hover',
-    'emulate', 'jsclick', 'mock', 'nav', 'press', 'reload', 'scroll', 'select',
-    'throttle', 'type', 'verify-click', 'viewport',
+    'cookiedel', 'cookieset', 'dialog', 'emulate', 'jsclick', 'keepalive', 'mock',
+    'nav', 'press', 'reload', 'scroll', 'select', 'throttle', 'type', 'verify-click',
+    'viewport',
   ].includes(command)
       && policy === 'mutation' && actionMutates)
+    || (command === 'netlog' && policy === 'conditional' && mutates === false)
     || (command === 'evalraw' && policy === 'raw-cdp' && mutates === false)
     || (['components', 'checkpoint', 'cookies'].includes(command)
       && policy === 'sensitive-read' && mutates === false);

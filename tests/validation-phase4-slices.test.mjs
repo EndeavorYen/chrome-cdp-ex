@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   assertPhase4ActionState,
+  assertPhase4CookieEffect,
   assertPhase4EnvironmentEffect,
   assertPhase4NavigationState,
   assertPhase4ReloadState,
@@ -13,6 +14,7 @@ import {
   assertPhase4OutputPrivacy,
   assertPhase4TargetReady,
   buildPhase4SliceCommands,
+  buildPhase4CookieEffectCommand,
   buildPhase4RenderingEffectCommand,
   createPhase4Cancellation,
   launchLoopbackFixtureServer,
@@ -55,6 +57,11 @@ function fixtureOutput(id) {
     'Next: use `checkpoint --unsafe-full --format json` only when restore fidelity is required.',
   ].join('\n');
   if (id === 'cookies') return 'phase7_fixture  fixture-value  127.0.0.1  session  Lax';
+  if (id === 'cookieset') return 'Cookie set: phase7_mutation=fixture (domain: 127.0.0.1)';
+  if (id === 'cookiedel') return 'Cookie deleted: phase7_mutation';
+  if (id === 'dialog') return 'Dialog auto-accept: OFF (dialogs will be dismissed/rejected)';
+  if (id === 'keepalive') return 'Daemon keepalive extended for 1000ms (until 2026-08-12T09:00:00.000Z)';
+  if (id === 'netlog') return 'Network log cleared';
   if (id === 'snap') return `[RootWebArea] ${TITLE}\n  [button] Refresh account\n\n(Hint: \`snap\` gives only the raw AX tree. Use \`perceive\` instead for layout, @refs, style hints, and console health — it is the recommended starting command.)`;
   if (id === 'styles') return '<SECTION>#auth-panel\n  background-color: rgb(240, 253, 244)\n  padding: 12px\n  border: 1px solid rgb(187, 247, 208)';
   if (id === 'overlay') return JSON.stringify({
@@ -278,7 +285,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     }, url, TITLE)).toMatchObject({ targetPrefix: TARGET, title: TITLE, url });
   });
 
-  it('freezes the exact bounded forty-two-command route and final fixture-state raw expression', () => {
+  it('freezes the exact bounded forty-seven-command route and final fixture-state raw expression', () => {
     expect(buildPhase4SliceCommands(TARGET, NAV_URL)).toEqual([
       { id: 'perceive', args: ['perceive', TARGET, '--format', 'json'] },
       { id: 'click', args: ['click', TARGET, '#close-modal', '--format', 'json'] },
@@ -330,6 +337,11 @@ describe('Phase 4 disposable core-slice scenario', () => {
           '{"expression":"({title:document.title,modalHidden:document.querySelector(\'#motd\')?.hidden===true,shortcut:document.querySelector(\'#shortcut-status\')?.textContent,inputValue:document.querySelector(\'#cmd\')?.value,selectValue:document.querySelector(\'#phase7-select\')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector(\'#phase7-js-status\')?.textContent,coordStatus:document.querySelector(\'#phase7-coord-status\')?.textContent,authState:document.querySelector(\'#auth-state\')?.textContent})","returnByValue":true}',
         ],
       },
+      { id: 'cookieset', args: ['cookieset', TARGET, 'phase7_mutation=fixture'] },
+      { id: 'cookiedel', args: ['cookiedel', TARGET, 'phase7_mutation'] },
+      { id: 'dialog', args: ['dialog', TARGET, 'dismiss'] },
+      { id: 'keepalive', args: ['keepalive', TARGET, '1000'] },
+      { id: 'netlog', args: ['netlog', TARGET, '--clear'] },
       { id: 'nav', args: ['nav', TARGET, NAV_URL, '--format', 'json'] },
       { id: 'back', args: ['back', TARGET, '--format', 'json'] },
       { id: 'forward', args: ['forward', TARGET, '--format', 'json'] },
@@ -386,6 +398,18 @@ describe('Phase 4 disposable core-slice scenario', () => {
     expect(assertPhase4RenderingEffect('emulate', '{"dark":true,"reducedMotion":true}')).toBe('dark+reduce');
     expect(() => assertPhase4RenderingEffect('viewport', '{"width":1280,"height":720,"dpr":1}')).toThrow(/viewport live/);
     expect(() => assertPhase4RenderingEffect('emulate', '{"dark":false,"reducedMotion":true}')).toThrow(/emulate live/);
+  });
+
+  it('requires independently observed cookie set and delete effects', () => {
+    expect(buildPhase4CookieEffectCommand('cookieset', TARGET)).toEqual([
+      'eval', TARGET, "document.cookie.split('; ').includes('phase7_mutation=fixture')",
+    ]);
+    expect(buildPhase4CookieEffectCommand('cookiedel', TARGET)).toEqual([
+      'eval', TARGET, "!(document.cookie.split('; ').includes('phase7_mutation=fixture'))",
+    ]);
+    expect(assertPhase4CookieEffect('cookieset', 'true')).toBe(true);
+    expect(assertPhase4CookieEffect('cookiedel', 'true')).toBe(true);
+    expect(() => assertPhase4CookieEffect('cookieset', 'false')).toThrow(/cookie effect/);
   });
 
   it('drains bounded browser stderr and captures spawn errors without an unhandled event', () => {
@@ -508,12 +532,13 @@ describe('Phase 4 disposable core-slice scenario', () => {
         'wait', 'waitfor', 'cascade',
         'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
         'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw',
+        'cookieset', 'cookiedel', 'dialog', 'keepalive', 'netlog',
         'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
       ],
       title: TITLE,
       clickOutcome: 'changed',
       reportActions: 1,
-      extractionParity: 38,
+      extractionParity: 41,
     });
     expect(runCommand.mock.calls.map(([command]) => command)).toEqual(commands);
     expect(runMcpCommand.mock.calls.map(([command]) => command.id)).toEqual([
@@ -521,7 +546,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
       'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
       'wait', 'waitfor', 'cascade',
       'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
-      'jsclick', 'dismiss-modal', 'clickxy', 'press',
+      'jsclick', 'dismiss-modal', 'clickxy', 'press', 'dialog', 'keepalive', 'netlog',
       'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
     ]);
     expect(cleanup).toHaveBeenCalledOnce();
@@ -531,7 +556,8 @@ describe('Phase 4 disposable core-slice scenario', () => {
     'perceive', 'click', 'report', 'html', 'text', 'table', 'net', 'status', 'summary',
     'snap', 'controls', 'frame', 'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
     'wait', 'waitfor', 'cascade',
-    'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
+    'checkpoint', 'cookies', 'cookieset', 'cookiedel', 'dialog', 'keepalive', 'netlog',
+    'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
     'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw',
     'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
   ])('fails at %s and still runs cleanup exactly once', async failureId => {
@@ -600,6 +626,11 @@ describe('Phase 4 disposable core-slice scenario', () => {
     }), 'cascade fixture output'],
     ['checkpoint', 'Checkpoint captured\nURL: wrong', 'checkpoint fixture output'],
     ['cookies', 'sid  TOPSECRET  example.test  session', 'cookies fixture output'],
+    ['cookieset', 'Cookie set: wrong=value (domain: 127.0.0.1)', 'cookieset fixture output'],
+    ['cookiedel', 'Cookie deleted: wrong', 'cookiedel fixture output'],
+    ['dialog', 'Dialog auto-accept: ON (default)', 'dialog fixture output'],
+    ['keepalive', 'Daemon keepalive extended for 2000ms', 'keepalive fixture output'],
+    ['netlog', 'No network requests captured', 'netlog fixture output'],
     ['viewport', JSON.stringify({
       schema: 'chrome-cdp-ex.action.v1', action: 'viewport', dispatch: { ok: false },
       receipt: { schema: 'chrome-cdp-ex.action-receipt.v1', outcome: 'changed' },
@@ -647,7 +678,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
         return JSON.stringify(model);
       },
       cleanup,
-    })).resolves.toMatchObject({ extractionParity: 38 });
+    })).resolves.toMatchObject({ extractionParity: 41 });
     expect(cleanup).toHaveBeenCalledOnce();
   });
 

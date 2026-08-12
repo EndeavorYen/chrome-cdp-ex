@@ -29,7 +29,9 @@ exact-method CDP domains now replace duplicated authority without removing the
   `controls`, `frame`/`frames`, `overlay`/`overlays`, `styles`, `components`,
   `record-actions`/`recordactions`, `export-playwright`/`export-pw`, `wait`,
   `waitfor`, `cascade`, `checkpoint`, and `cookies` now use explicit read
-  capabilities, and the remaining 58 commands are explicitly
+  capabilities. Six reviewed action cohorts now also route through explicit
+  application capabilities, through `cookieset`, `cookiedel`, `dialog`,
+  `keepalive`, and `netlog`; the remaining 34 catalog commands are explicitly
   retained on the characterized legacy route until parity permits migration.
   Add immutable public browser resources, private
   handles, a shared-key BrowserSupervisor with bounded stale recovery, extracted
