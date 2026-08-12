@@ -2,7 +2,7 @@
 // Run: npm test
 
 import { afterEach, describe, it, expect, beforeEach } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
 import { EventEmitter } from 'events';
@@ -7935,7 +7935,9 @@ describe('recordStr', () => {
         return { result: { value: JSON.stringify({ totals: {}, labels: [], count: 0 }) } };
       },
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-      'Runtime.callFunctionOn': () => ({ result: { value: { x: 10, y: 20 } } }),
+      'Runtime.callFunctionOn': () => ({
+        result: { value: { x: 10, y: 20, w: 20, h: 10, tag: 'BUTTON', text: 'Go' } },
+      }),
       'Input.dispatchMouseEvent': () => ({}),
     });
     const result = await recordStr(cdp, 'sid1', ['--action', 'click', '@1'], new Map([[1, 123]]));
@@ -9962,10 +9964,15 @@ describe('shotStr', () => {
       'Runtime.evaluate': () => ({ result: { value: 1 } }),
       'Page.captureScreenshot': () => ({ data: Buffer.from('PNG').toString('base64') }),
     });
-    // Use OS temp file path to avoid touching the real RUNTIME_DIR
-    const path = `/tmp/cdp-test-${Date.now()}.png`;
-    const out = await shotStr(cdp, 'sid1', path, 'TARGETID', { quiet: false });
-    expect(out.split('\n')[0]).toBe(path);
+    const dir = mkdtempSync(resolve(tmpdir(), 'cdp-shot-mode-'));
+    try {
+      const path = resolve(dir, 'capture.png');
+      const out = await shotStr(cdp, 'sid1', path, 'TARGETID', { quiet: false });
+      expect(out.split('\n')[0]).toBe(path);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('with --quiet returns ONLY the saved path', async () => {
