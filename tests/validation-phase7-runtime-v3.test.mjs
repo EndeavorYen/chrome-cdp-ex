@@ -62,7 +62,7 @@ describe('Phase 7 Runtime v3 final evidence', () => {
     await expect(proveRuntimeV3InjectedFailures()).resolves.toEqual(proof().failures);
   });
 
-  it('runs injected boundaries before the two disposable live routes', async () => {
+  it('runs fail-closed injections before live effects and loads domain proof after task-local runtimes', async () => {
     const order = [];
     const steps = {
       proveBoundaries: vi.fn(async () => { order.push('boundaries'); return proof().boundaries; }),
@@ -71,21 +71,22 @@ describe('Phase 7 Runtime v3 final evidence', () => {
       runPhase5: vi.fn(async () => { order.push('phase5'); return PHASE5; }),
     };
     await expect(runRuntimeV3EvidenceSession(steps)).resolves.toEqual(assertRuntimeV3Evidence(proof()));
-    expect(order).toEqual(['boundaries', 'failures', 'phase4', 'phase5']);
+    expect(order).toEqual(['failures', 'phase4', 'phase5', 'boundaries']);
   });
 
   it('fails without running later live effects when a prior boundary fails', async () => {
     const sentinel = new Error('boundary failed');
     const steps = {
-      proveBoundaries: vi.fn(async () => { throw sentinel; }),
-      proveFailures: vi.fn(),
+      proveBoundaries: vi.fn(),
+      proveFailures: vi.fn(async () => { throw sentinel; }),
       runPhase4: vi.fn(),
       runPhase5: vi.fn(),
     };
     await expect(runRuntimeV3EvidenceSession(steps)).rejects.toBe(sentinel);
-    expect(steps.proveFailures).not.toHaveBeenCalled();
+    expect(steps.proveFailures).toHaveBeenCalledOnce();
     expect(steps.runPhase4).not.toHaveBeenCalled();
     expect(steps.runPhase5).not.toHaveBeenCalled();
+    expect(steps.proveBoundaries).not.toHaveBeenCalled();
   });
 
   it('sets cancellation before cleanup and reports exact signal identity', async () => {

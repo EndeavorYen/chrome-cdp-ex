@@ -7,7 +7,6 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { buildRuntimeDispatchInventory } from './runtime-dispatch-inventory.mjs';
 import { runDisposablePhase4Slices } from './validation-phase4-slices.mjs';
 import { runDisposablePhase5Supervisor } from './validation-phase5-supervisor.mjs';
-import { provePhase6InjectedBoundaries } from './validation-phase6-convergence.mjs';
 import {
   commandResult,
   createCommandRegistry,
@@ -259,16 +258,19 @@ export async function runRuntimeV3EvidenceSession(steps = {}) {
   for (const name of ['proveBoundaries', 'proveFailures', 'runPhase4', 'runPhase5']) {
     if (typeof steps[name] !== 'function') throw new Error(`Runtime v3 ${name} step is required`);
   }
-  const boundaries = await steps.proveBoundaries();
   const failures = await steps.proveFailures();
   const phase4 = await steps.runPhase4();
   const phase5 = await steps.runPhase5();
+  const boundaries = await steps.proveBoundaries();
   return assertRuntimeV3Evidence({ phase4, phase5, boundaries, failures });
 }
 
 export async function runDisposableRuntimeV3Evidence() {
   return runRuntimeV3EvidenceSession({
-    proveBoundaries: provePhase6InjectedBoundaries,
+    proveBoundaries: async () => {
+      const { provePhase6InjectedBoundaries } = await import('./validation-phase6-convergence.mjs');
+      return provePhase6InjectedBoundaries();
+    },
     proveFailures: proveRuntimeV3InjectedFailures,
     runPhase4: runDisposablePhase4Slices,
     runPhase5: runDisposablePhase5Supervisor,
