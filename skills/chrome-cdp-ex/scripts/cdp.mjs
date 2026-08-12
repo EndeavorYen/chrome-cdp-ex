@@ -6292,12 +6292,12 @@ async function frameViewportOffset(cdp, sid, frameEntry, { settle = false } = {}
   return { x, y };
 }
 
-async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState) {
+async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, options = {}) {
   const frameParsed = parseFrameRef(ref);
-  const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
+  const objectId = options.objectId || await resolveRefNode(cdp, sid, refMap, ref, refState);
   const result = await cdpDomains(cdp).Runtime.callFunctionOn( {
     objectId,
-    functionDeclaration: `function() {
+    functionDeclaration: options.functionDeclaration || `function() {
       const rect = this.getBoundingClientRect();
       const cs = (typeof getComputedStyle === 'function') ? getComputedStyle(this) : null;
       return {
@@ -6315,13 +6315,14 @@ async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState) {
     returnByValue: true,
   }, sid);
   const value = result.result.value || {};
+  if (options.functionDeclaration) return value;
   if (frameParsed) {
     const { entry } = frameScopedBackendNode(refState || {}, frameParsed);
     const offset = await frameViewportOffset(cdp, sid, entry);
     value.x = (Number(value.x) || 0) + offset.x;
     value.y = (Number(value.y) || 0) + offset.y;
   }
-  return value;
+  return { rect: value, objectId };
 }
 
 // Wait for DOM mutations to stop after an action (350ms of silence = settled)
@@ -12797,9 +12798,8 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   return formatSpawnDebugBrowserOutput(model, { format: 'json' });
 }
 
-function overlayDetectorScript({ targetPoint = null } = {}) {
-  const targetJson = JSON.stringify(targetPoint || null);
-  return `(function() {
+function overlayDetectorScript({ targetPoint = null, objectBoundTarget = false } = {}) {
+  const targetJson = JSON.stringify(targetPoint && ['input', 'x', 'y', 'descriptor'].reduce((snapshot, key) => { const property = Object.getOwnPropertyDescriptor(targetPoint, key); if (property && Object.hasOwn(property, 'value')) snapshot[key] = property.value; return snapshot; }, Object.create(null))); return `(function() {
     const targetPoint = ${targetJson};
     const vw = window.innerWidth || 0;
     const vh = window.innerHeight || 0;
@@ -12852,16 +12852,16 @@ function overlayDetectorScript({ targetPoint = null } = {}) {
     function isDialog(el) {
       return el.matches('[role="dialog"], dialog, [aria-modal="true"]');
     }
-    const seen = new Set();
-    const overlays = [];
+    const targetElement = ${objectBoundTarget ? 'this' : 'null'} || (targetPoint && typeof targetPoint.input === 'string' && !targetPoint.input.startsWith('@') ? document.querySelector(targetPoint.input) : null);
+    const seen = new Set(), overlays = [];
     function add(el, kind) {
-      if (!visible(el) || seen.has(el)) return;
+      const dialog = isDialog(el); if (!visible(el) || seen.has(el) || (!dialog && targetElement && (el === targetElement || targetElement.contains(el)))) return;
       seen.add(el);
       const info = elementInfo(el, kind, targetPoint);
       const hasPointer = info.pointerEvents !== 'none';
-      const blocksTarget = !!targetPoint && info.coversTarget && hasPointer && (info.topAtTarget || isDialog(el));
-      const blocksPage = !targetPoint && hasPointer && (isDialog(el) || info.coversViewport);
-      if (isDialog(el) || blocksTarget || blocksPage) overlays.push({ ...info, blocking: blocksTarget || blocksPage || isDialog(el) });
+      const blocksTarget = !!targetPoint && info.coversTarget && hasPointer && (info.topAtTarget || dialog);
+      const blocksPage = !targetPoint && hasPointer && (dialog || info.coversViewport);
+      if (dialog || blocksTarget || blocksPage) overlays.push(Object.defineProperty({ ...info, blocking: blocksTarget || blocksPage || dialog }, 'targetSelf', { value: dialog && el === targetElement }));
     }
     for (const el of document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')) add(el, 'dialog');
     for (const el of document.querySelectorAll('body *')) {
@@ -12881,7 +12881,7 @@ function overlayDetectorScript({ targetPoint = null } = {}) {
     if (targetPoint) {
       const top = document.elementFromPoint(targetPoint.x, targetPoint.y);
       if (top) target.topElement = elementInfo(top, isDialog(top) ? 'dialog' : 'top-element', targetPoint);
-      const blocker = overlays.find(o => o.coversTarget && (o.topAtTarget || o.kind === 'dialog' || o.blocking));
+      const blocker = overlays.find(o => !o.targetSelf && o.coversTarget && (o.topAtTarget || o.kind === 'dialog' || o.blocking));
       if (blocker) {
         target.blocked = true;
         target.topElement = { kind: blocker.kind, selector: blocker.selector, text: blocker.label || blocker.text || blocker.tag };
@@ -12897,8 +12897,7 @@ function overlayDetectorScript({ targetPoint = null } = {}) {
       overlays: overlays.slice(0, 10),
       nextCommand: null,
     });
-  })()`;
-}
+  }).call(this)`; }
 
 function formatOverlayRect(rect = {}) {
   return `(${Math.round(rect.x || 0)},${Math.round(rect.y || 0)} ${Math.round(rect.w || 0)}×${Math.round(rect.h || 0)})`;
@@ -12941,15 +12940,15 @@ function formatOverlayReport(model, targetId) {
 }
 
 async function resolveOverlayTargetPoint(cdp, sid, targetArg, refMap, refState) {
-  if (!targetArg) return null;
+  if (!targetArg) return { targetPoint: null, objectId: null };
   if (isRef(targetArg)) {
-    const rect = await resolveRefRectNoScroll(cdp, sid, refMap, targetArg, refState);
-    return {
+    const { rect, objectId } = await resolveRefRectNoScroll(cdp, sid, refMap, targetArg, refState);
+    return { targetPoint: {
       input: targetArg,
       x: Math.round((Number(rect.x) || 0) + (Number(rect.w) || 0) / 2),
       y: Math.round((Number(rect.y) || 0) + (Number(rect.h) || 0) / 2),
       descriptor: `<${rect.tag || '?'}> "${rect.text || ''}"`,
-    };
+    }, objectId };
   }
   const raw = await evalStr(cdp, sid, `(function() {
     const el = document.querySelector(${JSON.stringify(targetArg)});
@@ -12966,14 +12965,15 @@ async function resolveOverlayTargetPoint(cdp, sid, targetArg, refMap, refState) 
   const parsed = JSON.parse(raw);
   if (!parsed.ok) throw new Error(parsed.error);
   delete parsed.ok;
-  return parsed;
+  return { targetPoint: parsed, objectId: null };
 }
 
 async function overlayStr(cdp, sid, targetId, args = [], refMap = new Map(), refState = null) {
-  const fopts = parseFormatArgs(args, ['text', 'json']);
-  const targetArg = fopts.args[0] || null;
-  const targetPoint = await resolveOverlayTargetPoint(cdp, sid, targetArg, refMap, refState);
-  const raw = await evalStr(cdp, sid, overlayDetectorScript({ targetPoint }));
+  const fopts = parseFormatArgs(args, ['text', 'json']), targetArg = fopts.args[0] || null;
+  const { targetPoint, objectId } = await resolveOverlayTargetPoint(cdp, sid, targetArg, refMap, refState);
+  const raw = objectId && !parseFrameRef(targetArg)
+    ? await resolveRefRectNoScroll(cdp, sid, refMap, targetArg, refState, { objectId, functionDeclaration: `function() { return ${overlayDetectorScript({ targetPoint, objectBoundTarget: true })}; }` })
+    : await evalStr(cdp, sid, overlayDetectorScript({ targetPoint }));
   const model = JSON.parse(raw);
   if (model.blocking && !model.nextCommand) model.nextCommand = `cdp dismiss-modal ${targetId}`;
   if (fopts.format === 'json') return formatJson(model);

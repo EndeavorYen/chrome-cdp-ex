@@ -10332,12 +10332,534 @@ describe('dismissModalStr', () => {
 // =========================================================================
 
 describe('overlay detector', () => {
+  function overlayFixtureElement({
+    id,
+    tagName = 'DIV',
+    text = '',
+    position = 'static',
+    pointerEvents = 'auto',
+    zIndex = 'auto',
+    role = null,
+    ariaModal = null,
+    rect,
+    parent = null,
+  }) {
+    const element = {
+      id,
+      tagName,
+      className: '',
+      textContent: text,
+      parentElement: parent,
+      __style: {
+        display: 'block',
+        visibility: 'visible',
+        opacity: '1',
+        position,
+        pointerEvents,
+        zIndex,
+      },
+      getBoundingClientRect: () => ({
+        x: rect.x,
+        y: rect.y,
+        left: rect.x,
+        top: rect.y,
+        right: rect.x + rect.w,
+        bottom: rect.y + rect.h,
+        width: rect.w,
+        height: rect.h,
+      }),
+      getAttribute: (name) => ({
+        role,
+        'aria-modal': ariaModal,
+        'aria-label': null,
+        'aria-labelledby': null,
+      }[name] ?? null),
+      matches: () => tagName === 'DIALOG' || role === 'dialog' || ariaModal === 'true',
+      contains(other) {
+        for (let current = other; current; current = current.parentElement) {
+          if (current === element) return true;
+        }
+        return false;
+      },
+    };
+    return element;
+  }
+
+  function runOverlayPageFixture({ elements, targetPoint, topElement, targetContext = null, source = null, elementConstructor = null }) {
+    const previousWindow = globalThis.window;
+    const previousDocument = globalThis.document;
+    const previousCss = globalThis.CSS;
+    const previousGetComputedStyle = globalThis.getComputedStyle;
+    const previousElement = Object.getOwnPropertyDescriptor(globalThis, 'Element');
+    const pointInside = (point, element) => {
+      const rect = element.getBoundingClientRect();
+      return point.x >= rect.left && point.x <= rect.right
+        && point.y >= rect.top && point.y <= rect.bottom;
+    };
+    const hitTest = (x, y) => (pointInside({ x, y }, topElement) ? topElement : null);
+    globalThis.window = {
+      innerWidth: 1440,
+      innerHeight: 900,
+      devicePixelRatio: 2,
+    };
+    globalThis.CSS = { escape: (value) => String(value) };
+    globalThis.getComputedStyle = (element) => element.__style;
+    globalThis.Element = elementConstructor || class FixtureElement {
+      static [Symbol.hasInstance](value) {
+        return elements.includes(value);
+      }
+    };
+    globalThis.document = {
+      querySelector: (selector) => elements.find(element => `#${element.id}` === selector) || null,
+      querySelectorAll: (selector) => selector === 'body *'
+        ? elements
+        : elements.filter(element => element.matches(selector)),
+      elementFromPoint: hitTest,
+    };
+    try {
+      const runPageScript = Function('source', 'return eval(source);');
+      return {
+        model: JSON.parse(runPageScript.call(targetContext, source || T.overlayDetectorScript({ targetPoint }))),
+        oracleTopElement: hitTest(targetPoint.x, targetPoint.y),
+      };
+    } finally {
+      globalThis.window = previousWindow;
+      globalThis.document = previousDocument;
+      globalThis.CSS = previousCss;
+      globalThis.getComputedStyle = previousGetComputedStyle;
+      if (previousElement) Object.defineProperty(globalThis, 'Element', previousElement);
+      else delete globalThis.Element;
+    }
+  }
+
   it('builds a page-side script that scans dialogs and hit-test blockers', () => {
     const script = T.overlayDetectorScript({ targetPoint: { input: '@4', x: 10, y: 20 } });
     expect(script).toMatch(/elementFromPoint/);
     expect(script).toMatch(/aria-modal/);
     expect(script).toMatch(/role="dialog"/);
     expect(script).toContain('"input":"@4"');
+  });
+
+  it('does not classify a fixed target as its own blocking overlay', () => {
+    const target = overlayFixtureElement({
+      id: 'clear-action',
+      tagName: 'BUTTON',
+      text: 'Clear bottom action',
+      position: 'fixed',
+      zIndex: '20',
+      rect: { x: 1120, y: 800, w: 240, h: 48 },
+    });
+    const targetPoint = {
+      input: '#clear-action',
+      x: 1240,
+      y: 824,
+      descriptor: '<BUTTON> "Clear bottom action"',
+    };
+
+    const { model, oracleTopElement } = runOverlayPageFixture({
+      elements: [target],
+      targetPoint,
+      topElement: target,
+    });
+
+    expect(oracleTopElement).toBe(target);
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.overlays.v1',
+      viewport: { width: 1440, height: 900 },
+      overlayCount: 0,
+      blocking: false,
+      target: {
+        input: '#clear-action',
+        blocked: false,
+      },
+      overlays: [],
+      nextCommand: null,
+    });
+  });
+
+  it('does not mistake an ambient Window getBoundingClientRect accessor for selector target identity', async () => {
+    const target = overlayFixtureElement({
+      id: 'ambient-safe-action',
+      tagName: 'BUTTON',
+      text: 'Continue safely',
+      position: 'fixed',
+      zIndex: '20',
+      rect: { x: 1120, y: 800, w: 240, h: 48 },
+    });
+    const targetPoint = {
+      input: '#ambient-safe-action',
+      x: 1240,
+      y: 824,
+      descriptor: '<BUTTON> "Continue safely"',
+    };
+    let ambientRectReads = 0;
+    const ambientWindow = {};
+    Object.defineProperty(ambientWindow, 'getBoundingClientRect', {
+      get() {
+        ambientRectReads += 1;
+        return () => ({ x: 0, y: 0, width: 1440, height: 900 });
+      },
+    });
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        if (!params.expression.includes('chrome-cdp-ex.overlays.v1')) {
+          return { result: { value: JSON.stringify({ ok: true, ...targetPoint }) } };
+        }
+        const { model } = runOverlayPageFixture({
+          elements: [target],
+          targetPoint,
+          topElement: target,
+          targetContext: ambientWindow,
+          source: params.expression,
+        });
+        return { result: { value: JSON.stringify(model) } };
+      },
+    });
+
+    const out = JSON.parse(await T.overlayStr(
+      cdp,
+      'sid1',
+      'abc123',
+      ['#ambient-safe-action', '--format', 'json'],
+      new Map(),
+      {},
+    ));
+
+    expect(ambientRectReads).toBe(0);
+    expect(out).toMatchObject({
+      blocking: false,
+      overlayCount: 0,
+      target: { input: '#ambient-safe-action', blocked: false },
+    });
+  });
+
+  it('treats a descendant hit inside a sticky target as reachable', () => {
+    const target = overlayFixtureElement({
+      id: 'sticky-action',
+      tagName: 'BUTTON',
+      text: 'Save',
+      position: 'sticky',
+      zIndex: '10',
+      rect: { x: 100, y: 40, w: 160, h: 48 },
+    });
+    const icon = overlayFixtureElement({
+      id: 'save-icon',
+      tagName: 'SPAN',
+      text: '✓',
+      rect: { x: 170, y: 54, w: 20, h: 20 },
+      parent: target,
+    });
+    const targetPoint = {
+      input: '#sticky-action',
+      x: 180,
+      y: 64,
+      descriptor: '<BUTTON> "Save"',
+    };
+
+    const { model, oracleTopElement } = runOverlayPageFixture({
+      elements: [target, icon],
+      targetPoint,
+      topElement: icon,
+    });
+
+    expect(oracleTopElement).toBe(icon);
+    expect(model).toMatchObject({
+      overlayCount: 0,
+      blocking: false,
+      target: {
+        input: '#sticky-action',
+        blocked: false,
+        topElement: { selector: '#save-icon' },
+      },
+      overlays: [],
+      nextCommand: null,
+    });
+  });
+
+  it('does not classify a fixed @ref target as its own blocker', () => {
+    const target = overlayFixtureElement({
+      id: 'ref-action',
+      tagName: 'BUTTON',
+      text: 'Continue with ref',
+      position: 'fixed',
+      zIndex: '20',
+      rect: { x: 1120, y: 800, w: 240, h: 48 },
+    });
+    const targetPoint = {
+      input: '@4',
+      x: 1240,
+      y: 824,
+      descriptor: '<BUTTON> "Continue with ref"',
+    };
+
+    const { model, oracleTopElement } = runOverlayPageFixture({
+      elements: [target],
+      targetPoint,
+      topElement: target,
+      targetContext: target,
+      source: T.overlayDetectorScript({ targetPoint, objectBoundTarget: true }),
+    });
+
+    expect(oracleTopElement).toBe(target);
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.overlays.v1',
+      overlayCount: 0,
+      blocking: false,
+      target: {
+        input: '@4',
+        blocked: false,
+      },
+      overlays: [],
+      nextCommand: null,
+    });
+  });
+
+  it('keeps a distinct fixed occluder blocking the target', () => {
+    const target = overlayFixtureElement({
+      id: 'covered-action',
+      tagName: 'BUTTON',
+      text: 'Continue',
+      position: 'fixed',
+      zIndex: '10',
+      rect: { x: 1120, y: 800, w: 240, h: 48 },
+    });
+    const occluder = overlayFixtureElement({
+      id: 'blocking-overlay',
+      text: 'Cookie settings',
+      position: 'fixed',
+      zIndex: '30',
+      rect: { x: 1080, y: 770, w: 320, h: 100 },
+    });
+    const targetPoint = {
+      input: '#covered-action',
+      x: 1240,
+      y: 824,
+      descriptor: '<BUTTON> "Continue"',
+    };
+
+    const { model, oracleTopElement } = runOverlayPageFixture({
+      elements: [target, occluder],
+      targetPoint,
+      topElement: occluder,
+    });
+
+    expect(oracleTopElement).toBe(occluder);
+    expect(model).toMatchObject({
+      blocking: true,
+      target: {
+        blocked: true,
+        topElement: { kind: 'overlay', selector: '#blocking-overlay' },
+      },
+    });
+    expect(model.overlays).toContainEqual(expect.objectContaining({
+      kind: 'overlay',
+      selector: '#blocking-overlay',
+      blocking: true,
+    }));
+  });
+
+  it('keeps a dialog that owns the target hit point blocking', () => {
+    const target = overlayFixtureElement({
+      id: 'dialog-covered-action',
+      tagName: 'BUTTON',
+      text: 'Delete',
+      position: 'fixed',
+      zIndex: '10',
+      rect: { x: 620, y: 410, w: 200, h: 48 },
+    });
+    const dialog = overlayFixtureElement({
+      id: 'confirm-dialog',
+      tagName: 'DIALOG',
+      text: 'Confirm deletion',
+      position: 'fixed',
+      zIndex: '40',
+      role: 'dialog',
+      ariaModal: 'true',
+      rect: { x: 520, y: 330, w: 400, h: 240 },
+    });
+    const targetPoint = {
+      input: '#dialog-covered-action',
+      x: 720,
+      y: 434,
+      descriptor: '<BUTTON> "Delete"',
+    };
+
+    const { model, oracleTopElement } = runOverlayPageFixture({
+      elements: [target, dialog],
+      targetPoint,
+      topElement: dialog,
+    });
+
+    expect(oracleTopElement).toBe(dialog);
+    expect(model).toMatchObject({
+      blocking: true,
+      target: {
+        blocked: true,
+        topElement: { kind: 'dialog', selector: '#confirm-dialog' },
+      },
+    });
+    expect(model.overlays).toContainEqual(expect.objectContaining({
+      kind: 'dialog',
+      selector: '#confirm-dialog',
+      blocking: true,
+    }));
+  });
+
+  it('detects a parent dialog over a frame-scoped target in the top document', async () => {
+    const frameOwner = overlayFixtureElement({
+      id: 'checkout-frame',
+      tagName: 'IFRAME',
+      rect: { x: 50, y: 40, w: 300, h: 200 },
+    });
+    const parentDialog = overlayFixtureElement({
+      id: 'parent-dialog',
+      tagName: 'DIALOG',
+      text: 'Parent confirmation',
+      position: 'fixed',
+      zIndex: '40',
+      role: 'dialog',
+      ariaModal: 'true',
+      rect: { x: 80, y: 20, w: 220, h: 120 },
+    });
+    const targetPoint = {
+      input: '@f2:1',
+      x: 110,
+      y: 55,
+      descriptor: '<BUTTON> "Pay now"',
+    };
+    const refState = {
+      frameRefs: new Map([['@f2', {
+        frameRef: '@f2',
+        frameId: 'checkout-frame-id',
+        parentId: 'main-frame-id',
+        refs: new Map([[1, 222]]),
+      }]]),
+    };
+    let detectorRealm = null;
+    const cdp = createMockCDP({
+      'DOM.resolveNode': (params) => {
+        if (params.backendNodeId === 222) return { object: { objectId: 'child-button' } };
+        if (params.backendNodeId === 333) return { object: { objectId: 'frame-owner' } };
+        throw new Error(`unexpected backend node ${params.backendNodeId}`);
+      },
+      'DOM.getFrameOwner': () => ({ backendNodeId: 333 }),
+      'Runtime.callFunctionOn': (params) => {
+        if (params.objectId === 'child-button' && !params.functionDeclaration.includes('chrome-cdp-ex.overlays.v1')) {
+          return { result: { value: { x: 10, y: 5, w: 100, h: 20, tag: 'BUTTON', text: 'Pay now' } } };
+        }
+        if (params.objectId === 'frame-owner') {
+          return { result: { value: { x: 50, y: 40, w: 300, h: 200 } } };
+        }
+        detectorRealm = 'child';
+        return { result: { value: JSON.stringify({
+          schema: 'chrome-cdp-ex.overlays.v1',
+          viewport: { width: 300, height: 200 },
+          target: { ...targetPoint, blocked: false, topElement: null },
+          overlayCount: 0,
+          blocking: false,
+          overlays: [],
+          nextCommand: null,
+        }) } };
+      },
+      'Runtime.evaluate': (params) => {
+        detectorRealm = 'parent';
+        const { model } = runOverlayPageFixture({
+          elements: [frameOwner, parentDialog],
+          targetPoint,
+          topElement: parentDialog,
+          source: params.expression,
+        });
+        return { result: { value: JSON.stringify(model) } };
+      },
+    });
+
+    const out = JSON.parse(await T.overlayStr(
+      cdp,
+      'sid1',
+      'abc123',
+      ['@f2:1', '--format', 'json'],
+      new Map(),
+      refState,
+    ));
+
+    expect(detectorRealm).toBe('parent');
+    expect(out).toMatchObject({
+      schema: 'chrome-cdp-ex.overlays.v1',
+      viewport: { width: 1440, height: 900 },
+      blocking: true,
+      target: {
+        input: '@f2:1',
+        x: 110,
+        y: 55,
+        blocked: true,
+        topElement: { kind: 'dialog', selector: '#parent-dialog' },
+      },
+      nextCommand: 'cdp dismiss-modal abc123',
+    });
+    expect(out.overlays).toContainEqual(expect.objectContaining({
+      kind: 'dialog',
+      selector: '#parent-dialog',
+      blocking: true,
+    }));
+  });
+
+  it('keeps a targeted dialog page-blocking without treating it as its own target blocker', async () => {
+    const dialog = overlayFixtureElement({
+      id: 'target-dialog',
+      tagName: 'DIALOG',
+      text: 'Review changes',
+      position: 'fixed',
+      zIndex: '40',
+      role: 'dialog',
+      ariaModal: 'true',
+      rect: { x: 520, y: 330, w: 400, h: 240 },
+    });
+    const targetPoint = {
+      input: '#target-dialog',
+      x: 720,
+      y: 450,
+      descriptor: '<DIALOG> "Review changes"',
+    };
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        if (!params.expression.includes('chrome-cdp-ex.overlays.v1')) {
+          return { result: { value: JSON.stringify({ ok: true, ...targetPoint }) } };
+        }
+        const { model, oracleTopElement } = runOverlayPageFixture({
+          elements: [dialog],
+          targetPoint,
+          topElement: dialog,
+          source: params.expression,
+        });
+        expect(oracleTopElement).toBe(dialog);
+        return { result: { value: JSON.stringify(model) } };
+      },
+    });
+
+    const out = JSON.parse(await T.overlayStr(
+      cdp,
+      'sid1',
+      'abc123',
+      ['#target-dialog', '--format', 'json'],
+      new Map(),
+      {},
+    ));
+
+    expect(out).toMatchObject({
+      schema: 'chrome-cdp-ex.overlays.v1',
+      blocking: true,
+      overlayCount: 1,
+      target: {
+        input: '#target-dialog',
+        blocked: false,
+      },
+      nextCommand: 'cdp dismiss-modal abc123',
+    });
+    expect(out.overlays).toContainEqual(expect.objectContaining({
+      kind: 'dialog',
+      selector: '#target-dialog',
+      blocking: true,
+    }));
   });
 
   it('formats a clear page when no blocking overlay is visible', async () => {
@@ -10361,48 +10883,45 @@ describe('overlay detector', () => {
 
   it('reports a blocking dialog and concrete dismissal command for a target ref', async () => {
     const refMap = new Map([[4, 444]]);
+    const detectorModel = {
+      schema: 'chrome-cdp-ex.overlays.v1',
+      viewport: { width: 800, height: 600 },
+      target: {
+        input: '@4',
+        x: 60,
+        y: 40,
+        descriptor: '<BUTTON> "Submit"',
+        blocked: true,
+        topElement: { kind: 'dialog', selector: '#motd', text: 'MOTD' },
+      },
+      overlayCount: 1,
+      blocking: true,
+      overlays: [{
+        kind: 'dialog',
+        selector: '#motd',
+        role: 'dialog',
+        label: 'MOTD',
+        text: 'Press any key',
+        pointerEvents: 'auto',
+        zIndex: '20',
+        rect: { x: 100, y: 90, w: 320, h: 180 },
+        coversTarget: true,
+        topAtCenter: true,
+      }],
+      nextCommand: 'cdp dismiss-modal abc123',
+    };
+    const detectorResult = (source) => {
+      expect(source).toContain('"input":"@4"');
+      expect(source).toContain('"x":60');
+      expect(source).toContain('"y":40');
+      return { result: { value: JSON.stringify(detectorModel) } };
+    };
     const cdp = createMockCDP({
       'DOM.resolveNode': () => ({ object: { objectId: 'target-button' } }),
-      'Runtime.callFunctionOn': () => ({ result: { value: {
-        x: 20,
-        y: 30,
-        w: 80,
-        h: 20,
-        tag: 'BUTTON',
-        text: 'Submit',
-      } } }),
-      'Runtime.evaluate': (params) => {
-        expect(params.expression).toContain('"input":"@4"');
-        expect(params.expression).toContain('"x":60');
-        expect(params.expression).toContain('"y":40');
-        return { result: { value: JSON.stringify({
-          schema: 'chrome-cdp-ex.overlays.v1',
-          viewport: { width: 800, height: 600 },
-          target: {
-            input: '@4',
-            x: 60,
-            y: 40,
-            descriptor: '<BUTTON> "Submit"',
-            blocked: true,
-            topElement: { kind: 'dialog', selector: '#motd', text: 'MOTD' },
-          },
-          overlayCount: 1,
-          blocking: true,
-          overlays: [{
-            kind: 'dialog',
-            selector: '#motd',
-            role: 'dialog',
-            label: 'MOTD',
-            text: 'Press any key',
-            pointerEvents: 'auto',
-            zIndex: '20',
-            rect: { x: 100, y: 90, w: 320, h: 180 },
-            coversTarget: true,
-            topAtCenter: true,
-          }],
-          nextCommand: 'cdp dismiss-modal abc123',
-        }) } };
-      },
+      'Runtime.callFunctionOn': (params) => params.functionDeclaration.includes('chrome-cdp-ex.overlays.v1')
+        ? detectorResult(params.functionDeclaration)
+        : ({ result: { value: { x: 20, y: 30, w: 80, h: 20, tag: 'BUTTON', text: 'Submit' } } }),
+      'Runtime.evaluate': (params) => detectorResult(params.expression),
     });
 
     const out = await T.overlayStr(cdp, 'sid1', 'abc123', ['@4'], refMap, {});
@@ -10410,6 +10929,184 @@ describe('overlay detector', () => {
     expect(out).toContain('Target: @4 at (60,40) — blocked by [dialog] #motd "MOTD"');
     expect(out).toContain('1. [dialog] #motd role=dialog z=20 pointer=auto rect=(100,90 320×180)');
     expect(out).toContain('Next: cdp dismiss-modal abc123');
+  });
+
+  it('runs the detector against the resolved @ref node without exposing its object id', async () => {
+    const refMap = new Map([[4, 444]]);
+    let detectorCall = null;
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => ({ object: { objectId: 'target-button-object' } }),
+      'Runtime.callFunctionOn': (params) => {
+        if (params.functionDeclaration.includes('getBoundingClientRect')
+          && !params.functionDeclaration.includes('chrome-cdp-ex.overlays.v1')) {
+          return { result: { value: {
+            x: 20,
+            y: 30,
+            w: 80,
+            h: 20,
+            tag: 'BUTTON',
+            text: 'Submit',
+          } } };
+        }
+        detectorCall = params;
+        return { result: { value: JSON.stringify({
+          schema: 'chrome-cdp-ex.overlays.v1',
+          viewport: { width: 1440, height: 900 },
+          target: {
+            input: '@4',
+            x: 60,
+            y: 40,
+            descriptor: '<BUTTON> "Submit"',
+            blocked: false,
+            topElement: { kind: 'top-element', selector: '#submit', text: 'Submit' },
+          },
+          overlayCount: 0,
+          blocking: false,
+          overlays: [],
+          nextCommand: null,
+        }) } };
+      },
+      'Runtime.evaluate': () => {
+        throw new Error('@ref overlay identity must not fall back to Runtime.evaluate');
+      },
+    });
+
+    const out = await T.overlayStr(cdp, 'sid1', 'abc123', ['@4', '--format', 'json'], refMap, {});
+    const model = JSON.parse(out);
+
+    expect(detectorCall).toMatchObject({
+      objectId: 'target-button-object',
+      returnByValue: true,
+    });
+    expect(detectorCall.functionDeclaration).toContain('chrome-cdp-ex.overlays.v1');
+    expect(detectorCall.functionDeclaration).not.toContain('target-button-object');
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.overlays.v1',
+      blocking: false,
+      target: { input: '@4', blocked: false },
+      nextCommand: null,
+    });
+    expect(model.target).not.toHaveProperty('objectId');
+  });
+
+  it.each([
+    ['a forged class', class PageControlledElement {}],
+    ['a non-constructible arrow', () => null],
+  ])('keeps plain @ref identity trusted when page Element is %s', async (_label, elementConstructor) => {
+    const target = overlayFixtureElement({
+      id: 'trusted-ref-action',
+      tagName: 'BUTTON',
+      text: 'Continue with trusted ref',
+      position: 'fixed',
+      zIndex: '20',
+      rect: { x: 1120, y: 800, w: 240, h: 48 },
+    });
+    const targetPoint = {
+      input: '@4',
+      x: 1240,
+      y: 824,
+      descriptor: '<BUTTON> "Continue with trusted ref"',
+    };
+    const refMap = new Map([[4, 444]]);
+    let detectorSource = null;
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => ({ object: { objectId: 'trusted-ref-object' } }),
+      'Runtime.callFunctionOn': (params) => {
+        if (!params.functionDeclaration.includes('chrome-cdp-ex.overlays.v1')) {
+          return { result: { value: {
+            x: 1120,
+            y: 800,
+            w: 240,
+            h: 48,
+            tag: 'BUTTON',
+            text: 'Continue with trusted ref',
+          } } };
+        }
+        detectorSource = params.functionDeclaration;
+        const { model } = runOverlayPageFixture({
+          elements: [target],
+          targetPoint,
+          topElement: target,
+          targetContext: target,
+          source: `(${params.functionDeclaration}).call(this)`,
+          elementConstructor,
+        });
+        return { result: { value: JSON.stringify(model) } };
+      },
+      'Runtime.evaluate': () => {
+        throw new Error('plain @ref overlay identity must remain object-bound');
+      },
+    });
+
+    const out = JSON.parse(await T.overlayStr(
+      cdp,
+      'sid1',
+      'abc123',
+      ['@4', '--format', 'json'],
+      refMap,
+      {},
+    ));
+
+    expect(detectorSource).toContain('chrome-cdp-ex.overlays.v1');
+    expect(detectorSource).not.toContain('instanceof Element');
+    expect(out).toMatchObject({
+      blocking: false,
+      overlayCount: 0,
+      target: { input: '@4', blocked: false },
+    });
+  });
+
+  it('keeps the @ref object capability out of detector source under inherited toJSON', async () => {
+    const refMap = new Map([[4, 444]]);
+    const objectId = 'remote-capability-must-stay-private';
+    const clearModel = '{"schema":"chrome-cdp-ex.overlays.v1","viewport":{"width":1440,"height":900},"target":{"input":"@4","x":60,"y":40,"descriptor":"<BUTTON> \\"Submit\\"","blocked":false,"topElement":null},"overlayCount":0,"blocking":false,"overlays":[],"nextCommand":null}';
+    let detectorSource = null;
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => ({ object: { objectId } }),
+      'Runtime.callFunctionOn': (params) => {
+        if (params.functionDeclaration.includes('chrome-cdp-ex.overlays.v1')) {
+          detectorSource = params.functionDeclaration;
+          return { result: { value: clearModel } };
+        }
+        return { result: { value: {
+          x: 20,
+          y: 30,
+          w: 80,
+          h: 20,
+          tag: 'BUTTON',
+          text: 'Submit',
+        } } };
+      },
+    });
+    const previousToJSON = Object.getOwnPropertyDescriptor(Object.prototype, 'toJSON');
+    Object.defineProperty(Object.prototype, 'toJSON', {
+      configurable: true,
+      value() {
+        const exposed = { ...this };
+        if ('objectId' in this) exposed.objectId = this.objectId;
+        return exposed;
+      },
+    });
+
+    let out;
+    try {
+      out = JSON.parse(await T.overlayStr(
+        cdp,
+        'sid1',
+        'abc123',
+        ['@4', '--format', 'json'],
+        refMap,
+        {},
+      ));
+    } finally {
+      if (previousToJSON) Object.defineProperty(Object.prototype, 'toJSON', previousToJSON);
+      else delete Object.prototype.toJSON;
+    }
+
+    expect(detectorSource).toContain('chrome-cdp-ex.overlays.v1');
+    expect(detectorSource).not.toContain(objectId);
+    expect(out.target).toMatchObject({ input: '@4', blocked: false });
+    expect(out.target).not.toHaveProperty('objectId');
   });
 
   it('returns versioned overlay JSON for tool-calling agents', async () => {
