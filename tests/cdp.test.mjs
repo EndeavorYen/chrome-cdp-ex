@@ -216,7 +216,7 @@ describe('COMMANDS registry', () => {
     for (const name of [
       'eval', 'evalraw', 'hover', 'loadall', 'dialog', 'console', 'netlog',
       'shot', 'screenshot', 'diff-shot', 'diffshot', 'fullshot', 'cookies',
-      'checkpoint', 'components', 'report', 'batch', 'flow', 'repeat',
+      'elshot', 'scanshot', 'checkpoint', 'components', 'report', 'batch', 'flow', 'repeat',
       'not-a-command',
     ]) {
       expect(T.isBatchParallelUnsafeCommand(name), name).toBe(true);
@@ -227,7 +227,7 @@ describe('COMMANDS registry', () => {
   });
 
   it('keeps read-only extraction commands safe for parallel batch execution', () => {
-    for (const name of ['controls', 'elshot', 'html', 'text', 'table', 'styles', 'summary', 'net', 'network', 'wait', 'waitfor']) {
+    for (const name of ['controls', 'html', 'text', 'table', 'styles', 'summary', 'net', 'network', 'wait', 'waitfor']) {
       expect(T.isBatchParallelUnsafeCommand(name)).toBe(false);
     }
   });

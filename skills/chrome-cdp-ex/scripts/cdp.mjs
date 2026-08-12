@@ -10815,7 +10815,9 @@ function commandMeta(cmd) {
   return COMMANDS.find(command => command.name === cmd || (command.aliases || []).includes(cmd)) || null;
 }
 
-const BATCH_PARALLEL_SHARED_STATE_READ_COMMANDS = new Set(['perceive', 'snap', 'frame', 'status']);
+const BATCH_PARALLEL_SAFE_READ_COMMANDS = new Set([
+  'controls', 'html', 'text', 'table', 'styles', 'summary', 'net', 'wait', 'waitfor',
+]);
 
 function isBatchParallelUnsafeCommand(cmd) {
   const command = COMMAND_SURFACE.resolve(cmd);
@@ -10823,7 +10825,7 @@ function isBatchParallelUnsafeCommand(cmd) {
   if (command.kind !== 'read'
     || command.authorization !== 'standard'
     || command.evidencePolicy !== 'none') return true;
-  return BATCH_PARALLEL_SHARED_STATE_READ_COMMANDS.has(command.name);
+  return !BATCH_PARALLEL_SAFE_READ_COMMANDS.has(command.name);
 }
 
 function autoActionJsonArgs(cmd, args = [], enabled = false) {
