@@ -598,6 +598,29 @@ describe('hard action dispatch exit contract (#143)', () => {
       });
     });
 
+    it('keeps the real CLI response emitter successful for action-shaped read output', () => {
+      const stdout = [];
+      const stderr = [];
+      const processLike = { exitCode: 0, platform: 'darwin' };
+
+      cdpTest.emitTargetCommandResponse({ ok: true, result: PAGE_ACTION_JSON }, {
+        cmd: 'text',
+        targetPrefix: 'ABC12345',
+        format: 'text',
+        console: {
+          log: value => stdout.push(value),
+          error: value => stderr.push(value),
+        },
+        process: processLike,
+      });
+
+      expect({ stdout, stderr, exitCode: processLike.exitCode }).toEqual({
+        stdout: [PAGE_ACTION_JSON],
+        stderr: [],
+        exitCode: 0,
+      });
+    });
+
     it('keeps batch and flow read output successful when it resembles action evidence', async () => {
       const batch = JSON.parse(cdpTest.formatBatchResults([{
         cmd: 'text',

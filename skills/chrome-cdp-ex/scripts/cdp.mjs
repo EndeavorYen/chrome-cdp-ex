@@ -10791,11 +10791,18 @@ function actionDispatchFailureMessage(action = null, dispatch = null) {
     || 'Action dispatch failed';
 }
 
-function classifyCommandResultSemantics(result = null) {
+function commandOwnsActionEvidence(command = null) {
+  const record = COMMAND_SURFACE.resolve(command);
+  return record?.kind === 'mutation'
+    && record.evidencePolicy === 'action-receipt'
+    && record.feedbackPolicy !== null;
+}
+
+function classifyCommandResultSemantics(result = null, { command = null } = {}) {
   const transportOk = result?.ok === true
     || (Number.isInteger(result?.code) && result.code === 0);
   const output = Object.hasOwn(result || {}, 'result') ? result.result : result?.stdout;
-  const model = maybeParseJson(output);
+  const model = commandOwnsActionEvidence(command) ? maybeParseJson(output) : null;
   const { action, dispatch } = actionDispatchSemanticsFromModel(model);
   const dispatchFailed = dispatch?.ok === false;
   const error = result?.error
@@ -10897,7 +10904,7 @@ function autoActionJsonArgs(cmd, args = [], enabled = false) {
 }
 
 function batchStepModel(result = {}, index = 0) {
-  const semantics = classifyCommandResultSemantics(result);
+  const semantics = classifyCommandResultSemantics(result, { command: result.cmd });
   const actionModel = semantics.action;
   const actionFailure = semantics.dispatchFailed;
   const diagnosis = diagnosisFromActionModel(actionModel);
@@ -10905,10 +10912,10 @@ function batchStepModel(result = {}, index = 0) {
   const errorText = semantics.error || '';
   const ok = semantics.ok;
   const failureKind = actionFailure
-    ? actionModel.effects?.failure?.kind || null
+    ? actionModel?.effects?.failure?.kind || null
     : extractLabeledLine(errorText, 'Action failure');
   const nextCommand = actionFailure
-    ? actionModel.nextHint || actionModel.effects?.failure?.nextCommand || null
+    ? actionModel?.nextHint || actionModel?.effects?.failure?.nextCommand || null
     : extractLabeledLine(errorText, 'Next');
   const step = {
     index: index + 1,
@@ -11125,7 +11132,7 @@ async function repeatStr({ run, probeCondition }, args) {
   let haltedEarly = false;
   for (let i = 1; i <= opts.count; i++) {
     const r = await run({ cmd: opts.cmd, args: opts.args.slice() });
-    const semantics = classifyCommandResultSemantics(r);
+    const semantics = classifyCommandResultSemantics(r, { command: opts.cmd });
     if (semantics.ok) {
       okCount++;
       const body = (r.result || '').toString().split('\n')[0].slice(0, 200);
@@ -11188,7 +11195,7 @@ function parseFlowSteps(input) {
 }
 
 function flowStepModel(step = {}, index = 0, state = {}) {
-  const semantics = classifyCommandResultSemantics(state);
+  const semantics = classifyCommandResultSemantics(state, { command: step.cmd });
   const base = {
     index: index + 1,
     kind: step.kind || 'command',
@@ -11217,10 +11224,10 @@ function flowStepModel(step = {}, index = 0, state = {}) {
   const errorText = String(semantics.error || 'unknown error');
   base.error = errorText;
   const failureKind = semantics.dispatchFailed
-    ? actionModel.effects?.failure?.kind || null
+    ? actionModel?.effects?.failure?.kind || null
     : extractLabeledLine(errorText, 'Action failure');
   const nextCommand = semantics.dispatchFailed
-    ? actionModel.nextHint || actionModel.effects?.failure?.nextCommand || null
+    ? actionModel?.nextHint || actionModel?.effects?.failure?.nextCommand || null
     : extractLabeledLine(errorText, 'Next');
   if (failureKind) base.failureKind = failureKind;
   if (nextCommand) base.nextCommand = nextCommand;
@@ -11513,7 +11520,7 @@ async function replayActionsStr({ run }, args) {
     }
     lines.push(`${label} ${step.commandText}`);
     const result = await run({ cmd: step.cmd, args: step.args });
-    const semantics = classifyCommandResultSemantics(result);
+    const semantics = classifyCommandResultSemantics(result, { command: step.cmd });
     if (semantics.ok) {
       model.counts.ok++;
       const body = (result.result || '').toString().split('\n')[0].slice(0, 240);
@@ -15317,7 +15324,10 @@ async function executeDaemonApplicationRoute(requestInput, context) {
     args: request.args,
     targetBound: request.targetBound,
   });
-  const semantics = classifyCommandResultSemantics({ ok: true, result: route.result });
+  const semantics = classifyCommandResultSemantics(
+    { ok: true, result: route.result },
+    { command: request.cmd },
+  );
   if (semantics.dispatchFailed) {
     return {
       handled: route.handled,
@@ -16042,7 +16052,8 @@ export async function executeCdpCli(command, { runMain = main, hostProcess = pro
     }
   }
   const normalized = { code, stdout: stdout.trim(), stderr: stderr.trim() };
-  if (normalized.code === 0 && classifyCommandResultSemantics(normalized).dispatchFailed) {
+  if (normalized.code === 0
+    && classifyCommandResultSemantics(normalized, { command: command[0] }).dispatchFailed) {
     normalized.code = 1;
   }
   return normalized;
@@ -16064,7 +16075,10 @@ function emitTargetCommandResponse(response, {
       ? attachTargetResolutionDiagnostics(response.result, targetResolution)
       : response.result;
     console.log(output);
-    const semantics = classifyCommandResultSemantics({ ok: response?.ok === true, result: output });
+    const semantics = classifyCommandResultSemantics(
+      { ok: response?.ok === true, result: output },
+      { command: cmd },
+    );
     if (response?.ok === false || semantics.dispatchFailed) process.exitCode = 1;
     return;
   }
