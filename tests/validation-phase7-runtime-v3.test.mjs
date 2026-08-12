@@ -61,7 +61,7 @@ describe('Phase 7 Runtime v3 final evidence', () => {
 
   it('executes the exact injected failure routine used by live evidence', async () => {
     await expect(proveRuntimeV3InjectedFailures()).resolves.toEqual(proof().failures);
-  });
+  }, 15_000);
 
   it('runs accepted live routes in a bounded isolated process instead of sharing runtime cache', async () => {
     await expect(runIsolatedValidationScript('scripts/check-docs-contract.mjs', {

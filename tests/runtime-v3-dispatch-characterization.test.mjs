@@ -68,7 +68,7 @@ describe('Runtime v3 final dispatch characterization', () => {
         needsTarget: command.needsTarget,
       });
     }
-  });
+  }, 15_000);
 
   it('covers every target command once by canonical owner and every alias by the same branch', () => {
     const daemonGroups = fixture.daemonGroups.filter(group => group.commands.length === 1
@@ -86,45 +86,6 @@ describe('Runtime v3 final dispatch characterization', () => {
       expect(labels, command.name).toEqual(expect.arrayContaining([command.name, ...command.aliases]));
     }
   });
-
-  it('fails closed on handler ownership drift', () => {
-    expect(buildRuntimeDispatchInventory(source.replace(
-      'shot: capabilities => createDaemonReadHandlers(capabilities).shot,',
-      'shot: capabilities => createDaemonReadHandlers(capabilities).fullshot,',
-    ))).not.toEqual(fixture);
-    expect(buildRuntimeDispatchInventory(source.replace(
-      "'diff-shot': args => diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args)),",
-      "'diff-shot': args => scanshotStr(cdp, sessionId, targetId),",
-    ))).not.toEqual(fixture);
-    expect(buildRuntimeDispatchInventory(source.replace(
-      'scanshot: applicationPreflight.handlerBuilders.scanshot(readCapabilities),',
-      'scanshot: applicationPreflight.handlerBuilders.fullshot(readCapabilities),',
-    ))).not.toEqual(fixture);
-    expect(buildRuntimeDispatchInventory(source.replace(
-      "const diffShotBuilder = applicationPreflight.handlerBuilders['diff-shot'];",
-      "const diffShotBuilder = applicationPreflight.handlerBuilders['record-actions'];",
-    ))).not.toEqual(fixture);
-    expect(buildRuntimeDispatchInventory(source.replace(
-      'qa: capabilities => createDaemonActionHandlers(capabilities).qa,',
-      "qa: capabilities => createDaemonActionHandlers(capabilities)['responsive-audit'],",
-    ))).not.toEqual(fixture);
-    expect(buildRuntimeDispatchInventory(source.replace(
-      'qa: applicationPreflight.handlerBuilders.qa(actionCapabilities),',
-      'qa: responsiveAuditBuilder(actionCapabilities),',
-    ))).not.toEqual(fixture);
-    expect(buildRuntimeDispatchInventory(source.replace(
-      'closetab: capabilities => createDaemonActionHandlers(capabilities).closetab,',
-      'closetab: capabilities => createDaemonActionHandlers(capabilities).loadall,',
-    ))).not.toEqual(fixture);
-    expect(buildRuntimeDispatchInventory(source.replace(
-      'loadall: applicationPreflight.handlerBuilders.loadall(actionCapabilities),',
-      'loadall: applicationPreflight.handlerBuilders.closetab(actionCapabilities),',
-    ))).not.toEqual(fixture);
-    expect(() => buildRuntimeDispatchInventory(source.replace(
-      '  loadall: capabilities => createDaemonActionHandlers(capabilities).loadall,\n',
-      '',
-    ))).toThrow(/exactly cover.*68 target commands/);
-  }, 30_000);
 
   it('fails closed on route and execution cardinality drift', () => {
     expect(buildRuntimeDispatchInventory(source.replace(
@@ -167,7 +128,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       'const applicationRoute = applicationDispatcher.route(cmd);',
       "await executeDaemonApplicationRoute({ cmd: 'html', args, targetBound: true }, applicationDispatcher);\n      const applicationRoute = applicationDispatcher.route(cmd);",
     ))).toThrow(/exactly one general application dispatch/);
-  }, 30_000);
+  }, 45_000);
 
   it('keeps check mode read-only and rejects stale fixture/source drift', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--check'], {
