@@ -8,6 +8,8 @@ import {
   assertPhase4ActionState,
   assertPhase4CookieEffect,
   assertPhase4EnvironmentEffect,
+  assertPhase4ExternalInputEffect,
+  assertPhase4InjectionRemoved,
   assertPhase4NavigationState,
   assertPhase4ReloadState,
   assertPhase4RenderingEffect,
@@ -15,6 +17,7 @@ import {
   assertPhase4TargetReady,
   buildPhase4SliceCommands,
   buildPhase4CookieEffectCommand,
+  buildPhase4ExternalInputEffectCommand,
   buildPhase4RenderingEffectCommand,
   createPhase4Cancellation,
   launchLoopbackFixtureServer,
@@ -187,10 +190,16 @@ function fixtureOutput(id) {
       page: { title: TITLE, url: 'http://127.0.0.1:41758/validation-phase4.html' },
     });
   }
-  if (['back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'jsclick', 'nav', 'press', 'reload', 'scroll', 'select', 'type', 'viewport'].includes(id)) {
+  if (['back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav', 'press', 'reload', 'restore', 'scroll', 'select', 'type', 'upload', 'viewport'].includes(id)) {
+    const sensitiveTargets = {
+      inject: { targetId: TARGET_ID, input: '--css', commandArgs: ['--css', '<redacted>'], redacted: ['commandArgs'] },
+      restore: { targetId: TARGET_ID, input: 'checkpoint', commandArgs: ['--file', '[checkpoint-path-redacted]'], redacted: ['commandArgs'] },
+      upload: { targetId: TARGET_ID, input: '#upload-file', commandArgs: ['#upload-file', '<redacted>'], redacted: ['commandArgs'] },
+    };
     return JSON.stringify({
       schema: 'chrome-cdp-ex.action.v1',
       action: id,
+      ...(sensitiveTargets[id] ? { target: sensitiveTargets[id] } : {}),
       targetSummary: id,
       dispatch: { ok: true, method: id === 'press' ? 'Input.dispatchKeyEvent' : 'fixture' },
       settlement: { ok: true },
@@ -199,6 +208,7 @@ function fixtureOutput(id) {
         schema: 'chrome-cdp-ex.action-receipt.v1',
         outcome: 'changed',
       },
+      ...(sensitiveTargets[id] ? { targetResolution: targetResolution() } : {}),
     });
   }
   if (id === 'verify-click') return JSON.stringify({
@@ -304,7 +314,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     }, url, TITLE)).toMatchObject({ targetPrefix: TARGET, title: TITLE, url });
   });
 
-  it('freezes the exact bounded fifty-two-command route and final fixture-state raw expression', () => {
+  it('freezes the exact bounded fifty-nine-command route and final fixture-state raw expression', () => {
     expect(buildPhase4SliceCommands(TARGET, NAV_URL)).toEqual([
       { id: 'perceive', args: ['perceive', TARGET, '--format', 'json'] },
       { id: 'click', args: ['click', TARGET, '#close-modal', '--format', 'json'] },
@@ -371,6 +381,9 @@ describe('Phase 4 disposable core-slice scenario', () => {
           actions: [{ index: 1, action: 'wait', command: ['wait', '25'], replayable: true, needsInput: [] }],
         })],
       },
+      { id: 'upload', args: ['upload', TARGET, '#upload-file', 'phase7-upload.txt', '--format', 'json'] },
+      { id: 'inject', args: ['inject', TARGET, '--css', '#auth-panel { outline: 7px solid rgb(1, 2, 3); }', '--format', 'json'] },
+      { id: 'restore', args: ['restore', TARGET, '--file', 'phase7-checkpoint.json', '--format', 'json'] },
       { id: 'cookieset', args: ['cookieset', TARGET, 'phase7_mutation=fixture'] },
       { id: 'cookiedel', args: ['cookiedel', TARGET, 'phase7_mutation'] },
       { id: 'dialog', args: ['dialog', TARGET, 'dismiss'] },
@@ -444,6 +457,30 @@ describe('Phase 4 disposable core-slice scenario', () => {
     expect(assertPhase4CookieEffect('cookieset', 'true')).toBe(true);
     expect(assertPhase4CookieEffect('cookiedel', 'true')).toBe(true);
     expect(() => assertPhase4CookieEffect('cookieset', 'false')).toThrow(/cookie effect/);
+  });
+
+  it('requires independently observed upload, injection, removal, and restore effects', () => {
+    expect(buildPhase4ExternalInputEffectCommand('upload', TARGET)).toEqual([
+      'eval', TARGET,
+      "JSON.stringify({name:document.querySelector('#upload-file')?.files?.[0]?.name||null,status:document.querySelector('#upload-status')?.textContent||null})",
+    ]);
+    expect(assertPhase4ExternalInputEffect('upload', JSON.stringify({
+      name: 'phase7-upload.txt', status: 'upload:phase7-upload.txt',
+    }))).toBe('phase7-upload.txt');
+    expect(assertPhase4ExternalInputEffect('inject', JSON.stringify({ count: 1, outlineWidth: '7px' }))).toBe(1);
+    expect(assertPhase4ExternalInputEffect('restore', JSON.stringify({
+      url: URL, theme: 'phase7-restored', phase: 'phase7-restored',
+    }), { expectedUrl: URL })).toBe('phase7-restored');
+    expect(assertPhase4InjectionRemoved(JSON.stringify({ count: 0 }))).toBe(true);
+    expect(() => assertPhase4ExternalInputEffect('upload', JSON.stringify({
+      name: '/Users/alice/private.txt', status: 'upload:private.txt',
+    }))).toThrow(/upload live effect/);
+    expect(() => assertPhase4ExternalInputEffect('inject', JSON.stringify({ count: 0, outlineWidth: '0px' })))
+      .toThrow(/inject live effect/);
+    expect(() => assertPhase4ExternalInputEffect('restore', JSON.stringify({
+      url: URL, theme: 'fixture-light', phase: 'fixture',
+    }), { expectedUrl: URL })).toThrow(/restore live effect/);
+    expect(() => assertPhase4InjectionRemoved(JSON.stringify({ count: 1 }))).toThrow(/removal/);
   });
 
   it('drains bounded browser stderr and captures spawn errors without an unhandled event', () => {
@@ -567,13 +604,14 @@ describe('Phase 4 disposable core-slice scenario', () => {
         'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
         'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw', 'eval', 'eval64', 'call', 'console', 'record',
         'batch', 'flow', 'repeat', 'replay',
+        'upload', 'inject', 'restore',
         'cookieset', 'cookiedel', 'dialog', 'keepalive', 'netlog',
         'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
       ],
       title: TITLE,
       clickOutcome: 'changed',
       reportActions: 1,
-      extractionParity: 43,
+      extractionParity: 46,
     });
     expect(runCommand.mock.calls.map(([command]) => command)).toEqual(commands);
     expect(runMcpCommand.mock.calls.map(([command]) => command.id)).toEqual([
@@ -582,6 +620,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
       'wait', 'waitfor', 'cascade',
       'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
       'jsclick', 'dismiss-modal', 'clickxy', 'press', 'console', 'record',
+      'upload', 'inject', 'restore',
       'dialog', 'keepalive', 'netlog',
       'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
     ]);
@@ -596,6 +635,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
     'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw', 'eval', 'eval64', 'call', 'console', 'record',
     'batch', 'flow', 'repeat', 'replay',
+    'upload', 'inject', 'restore',
     'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
   ])('fails at %s and still runs cleanup exactly once', async failureId => {
     const runCommand = vi.fn(async command => {
@@ -677,6 +717,9 @@ describe('Phase 4 disposable core-slice scenario', () => {
     ['flow', 'Flow: 1 step(s)', 'flow fixture output'],
     ['repeat', 'Repeat 1× wait 25', 'repeat fixture output'],
     ['replay', JSON.stringify({ schema: 'chrome-cdp-ex.replay.v1' }), 'replay fixture output'],
+    ['upload', JSON.stringify({ schema: 'chrome-cdp-ex.action.v1', action: 'upload', dispatch: { ok: false }, receipt: { schema: 'chrome-cdp-ex.action-receipt.v1' } }), 'upload dispatch'],
+    ['inject', JSON.stringify({ schema: 'chrome-cdp-ex.action.v1', action: 'inject', dispatch: { ok: false }, receipt: { schema: 'chrome-cdp-ex.action-receipt.v1' } }), 'inject dispatch'],
+    ['restore', JSON.stringify({ schema: 'chrome-cdp-ex.action.v1', action: 'restore', dispatch: { ok: false }, receipt: { schema: 'chrome-cdp-ex.action-receipt.v1' } }), 'restore dispatch'],
     ['viewport', JSON.stringify({
       schema: 'chrome-cdp-ex.action.v1', action: 'viewport', dispatch: { ok: false },
       receipt: { schema: 'chrome-cdp-ex.action-receipt.v1', outcome: 'changed' },
@@ -724,7 +767,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
         return JSON.stringify(model);
       },
       cleanup,
-    })).resolves.toMatchObject({ extractionParity: 43 });
+    })).resolves.toMatchObject({ extractionParity: 46 });
     expect(cleanup).toHaveBeenCalledOnce();
   });
 

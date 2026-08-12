@@ -25,26 +25,26 @@ describe('Runtime v3 final dispatch characterization', () => {
         aliases: 23,
         targetCommands: 68,
         targetlessCommands: 13,
-        applicationCommands: 56,
-        legacyDaemonCommands: 12,
-        daemonGroups: 21,
+        applicationCommands: 59,
+        legacyDaemonCommands: 9,
+        daemonGroups: 18,
       },
       applicationCommands: [
-        'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'hover', 'html', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
-        'overlay', 'perceive', 'press', 'record', 'record-actions', 'reload', 'repeat', 'replay', 'report', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
-        'table', 'text', 'throttle', 'type', 'verify-click', 'viewport', 'wait', 'waitfor',
+        'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'hover', 'html', 'inject', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
+        'overlay', 'perceive', 'press', 'record', 'record-actions', 'reload', 'repeat', 'replay', 'report', 'restore', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
+        'table', 'text', 'throttle', 'type', 'upload', 'verify-click', 'viewport', 'wait', 'waitfor',
       ],
     });
     expect(fixture.targetless.map(command => command.name)).toEqual([
       'help', 'list', 'target', 'tab-group', 'broadcast', 'open', 'doctor',
       'spawn-debug-browser', 'attach', 'use', 'forget', 'current', 'stop',
     ]);
-    expect(fixture.deletionAllowlist).toHaveLength(12);
+    expect(fixture.deletionAllowlist).toHaveLength(9);
     expect(fixture.deletionAllowlist.map(entry => entry.name)).not.toEqual(
       expect.arrayContaining([
-        'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'hover', 'html', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
-        'overlay', 'perceive', 'press', 'record', 'record-actions', 'reload', 'repeat', 'replay', 'report', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
-        'table', 'text', 'throttle', 'type', 'verify-click', 'viewport', 'wait', 'waitfor',
+        'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'hover', 'html', 'inject', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
+        'overlay', 'perceive', 'press', 'record', 'record-actions', 'reload', 'repeat', 'replay', 'report', 'restore', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
+        'table', 'text', 'throttle', 'type', 'upload', 'verify-click', 'viewport', 'wait', 'waitfor',
       ]),
     );
     expect(fixture.daemonGroups.filter(group => group.owner === 'daemon-protocol').map(group => group.labels))
@@ -234,6 +234,18 @@ describe('Runtime v3 final dispatch characterization', () => {
         'replay: applicationPreflight.handlerBuilders.replay(workflowCapabilities),',
         'replay: applicationPreflight.handlerBuilders.repeat(workflowCapabilities),',
       ),
+      source.replace(
+        'upload: capabilities => createDaemonActionHandlers(capabilities).upload,',
+        'upload: capabilities => createDaemonActionHandlers(capabilities).inject,',
+      ),
+      source.replace(
+        'inject: applicationPreflight.handlerBuilders.inject(actionCapabilities),',
+        'inject: applicationPreflight.handlerBuilders.restore(actionCapabilities),',
+      ),
+      source.replace(
+        'restore: async args => {',
+        'restore: async args => actionCapabilities.upload(args),\n    plantedRestore: async args => {',
+      ),
     ]) {
       try {
         expect(buildRuntimeDispatchInventory(mutation)).not.toEqual(fixture);
@@ -303,7 +315,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 21 daemon groups');
+    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 18 daemon groups');
   });
 
   it('keeps the complete policy-class distribution visible before deletion', () => {

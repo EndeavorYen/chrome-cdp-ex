@@ -180,16 +180,18 @@ The eighth moved `jsclick`, `clickxy`, `type`, `verify-click`, and
 and `netlog`; the thirteenth moved raw-script `eval`, `eval64`, and `call`.
 The fourteenth moved conditional observation controls `console` and `record`.
 The fifteenth moved recursive workflows `batch`, `flow`, `repeat`, and `replay`.
-The current checked boundary has 21 daemon groups,
-56 application-owned handlers, and 12 remaining switch-branch
+The sixteenth moved external-input mutations `upload`, `inject`, and `restore`
+with path/content-redacted Action Receipt targets. The current checked boundary
+has 18 daemon groups, 59 application-owned handlers, and 9 remaining switch-branch
 deletion candidates.
 
 The daemon now preflights a complete, immutable route-owner map before runtime
 effects and constructs one branded dispatcher from it. All 81 canonical names
 and 23 aliases resolve through that boundary; the four Phase 4 commands, the
-six accepted read cohorts, the first six action cohorts, the raw-script cohort,
-and the conditional observation-control cohort execute application handlers,
-while the other 25 catalog commands return an explicit
+six accepted read cohorts, the first six action cohorts, the raw-script,
+conditional observation-control, recursive-workflow, and external-input
+mutation cohorts execute application handlers, while the other 22 catalog
+commands return an explicit
 `handled: false` result to the characterized legacy switch. This is a routing
 and cardinality guarantee, not a claim that the remaining handlers have moved.
 

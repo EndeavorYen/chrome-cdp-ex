@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir, userInfo } from 'os';
 import { resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -22,7 +22,7 @@ const EXPECTED_TITLE = 'chrome-cdp-ex long-session smoke';
 const ACTION_PARITY_COMMANDS = new Set([
   'back', 'clickxy', 'clock', 'dismiss-modal', 'emulate', 'fill', 'forward', 'hover', 'jsclick',
   'dialog', 'keepalive', 'mock', 'nav', 'netlog', 'press', 'reload', 'scroll', 'select',
-  'console', 'throttle', 'type', 'verify-click', 'viewport',
+  'console', 'inject', 'restore', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
 ]);
 const SEMANTIC_PARITY_COMMANDS = new Set(['record']);
 const ACTION_STATE_EXPRESSION = "({title:document.title,modalHidden:document.querySelector('#motd')?.hidden===true,shortcut:document.querySelector('#shortcut-status')?.textContent,inputValue:document.querySelector('#cmd')?.value,selectValue:document.querySelector('#phase7-select')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector('#phase7-js-status')?.textContent,coordStatus:document.querySelector('#phase7-coord-status')?.textContent,authState:document.querySelector('#auth-state')?.textContent})";
@@ -47,6 +47,10 @@ export function assertPhase4TargetReady(model, url, expectedTitle = EXPECTED_TIT
 export function buildPhase4SliceCommands(
   targetPrefix,
   navigationUrl = 'http://127.0.0.1:41758/validation-phase4.html#phase7-navigation',
+  {
+    uploadPath = 'phase7-upload.txt',
+    restorePath = 'phase7-checkpoint.json',
+  } = {},
 ) {
   if (typeof targetPrefix !== 'string' || !/^[A-Za-z0-9]{4,64}$/.test(targetPrefix)) {
     throw new Error('targetPrefix must be a bounded target identifier');
@@ -54,6 +58,11 @@ export function buildPhase4SliceCommands(
   if (typeof navigationUrl !== 'string'
     || !/^http:\/\/127\.0\.0\.1:\d+\/validation-phase4\.html(?:\?route=mcp)?#phase7-navigation$/.test(navigationUrl)) {
     throw new Error('navigationUrl must be the bounded loopback navigation fixture');
+  }
+  for (const [name, value] of Object.entries({ uploadPath, restorePath })) {
+    if (typeof value !== 'string' || value.length < 1 || Buffer.byteLength(value, 'utf8') > 4096) {
+      throw new Error(`${name} must be a bounded file path`);
+    }
   }
   return Object.freeze([
     immutableCommand('perceive', ['perceive', targetPrefix, '--format', 'json']),
@@ -129,6 +138,15 @@ export function buildPhase4SliceCommands(
           index: 1, action: 'wait', command: ['wait', '25'], replayable: true, needsInput: [],
         }],
       }),
+    ]),
+    immutableCommand('upload', [
+      'upload', targetPrefix, '#upload-file', uploadPath, '--format', 'json',
+    ]),
+    immutableCommand('inject', [
+      'inject', targetPrefix, '--css', '#auth-panel { outline: 7px solid rgb(1, 2, 3); }', '--format', 'json',
+    ]),
+    immutableCommand('restore', [
+      'restore', targetPrefix, '--file', restorePath, '--format', 'json',
     ]),
     immutableCommand('cookieset', ['cookieset', targetPrefix, 'phase7_mutation=fixture']),
     immutableCommand('cookiedel', ['cookiedel', targetPrefix, 'phase7_mutation']),
@@ -235,6 +253,49 @@ export function assertPhase4CookieEffect(id, raw) {
   if (!['cookieset', 'cookiedel'].includes(id) || raw !== 'true') {
     throw new Error(`${id} cookie effect is invalid`);
   }
+  return true;
+}
+
+export function buildPhase4ExternalInputEffectCommand(id, targetPrefix) {
+  const expressions = {
+    upload: "JSON.stringify({name:document.querySelector('#upload-file')?.files?.[0]?.name||null,status:document.querySelector('#upload-status')?.textContent||null})",
+    inject: "JSON.stringify({count:document.querySelectorAll('[data-cdp-inject]').length,outlineWidth:getComputedStyle(document.querySelector('#auth-panel')).outlineWidth})",
+    restore: "JSON.stringify({url:location.href,theme:localStorage.getItem('theme'),phase:sessionStorage.getItem('phase')})",
+  };
+  if (!Object.hasOwn(expressions, id)) throw new Error(`unknown external-input effect ${id}`);
+  return ['eval', targetPrefix, expressions[id]];
+}
+
+export function assertPhase4ExternalInputEffect(id, raw, { expectedUrl } = {}) {
+  let value;
+  try { value = JSON.parse(raw); } catch { value = null; }
+  if (id === 'upload') {
+    if (!exactKeys(value, ['name', 'status'])
+      || value.name !== 'phase7-upload.txt' || value.status !== 'upload:phase7-upload.txt') {
+      throw new Error(`upload live effect is invalid: ${String(raw).slice(0, 160)}`);
+    }
+    return value.name;
+  }
+  if (id === 'inject') {
+    if (!exactKeys(value, ['count', 'outlineWidth']) || value.count !== 1 || value.outlineWidth !== '7px') {
+      throw new Error(`inject live effect is invalid: ${String(raw).slice(0, 160)}`);
+    }
+    return value.count;
+  }
+  if (id === 'restore') {
+    if (!exactKeys(value, ['url', 'theme', 'phase']) || value.url !== expectedUrl
+      || value.theme !== 'phase7-restored' || value.phase !== 'phase7-restored') {
+      throw new Error(`restore live effect is invalid: ${String(raw).slice(0, 160)}`);
+    }
+    return value.theme;
+  }
+  throw new Error(`unknown external-input effect ${id}`);
+}
+
+export function assertPhase4InjectionRemoved(raw) {
+  let value;
+  try { value = JSON.parse(raw); } catch { value = null; }
+  if (!exactKeys(value, ['count']) || value.count !== 0) throw new Error('inject removal effect is invalid');
   return true;
 }
 
@@ -759,7 +820,7 @@ function validateStep(id, stdout, {
     }
     return null;
   }
-  if (['back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'jsclick', 'nav', 'press', 'reload', 'scroll', 'select', 'type', 'viewport'].includes(id)) {
+  if (['back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav', 'press', 'reload', 'restore', 'scroll', 'select', 'type', 'upload', 'viewport'].includes(id)) {
     if (model?.schema !== 'chrome-cdp-ex.action.v1' || model?.action !== id) {
       throw new Error(`${id} schema is invalid`);
     }
@@ -773,6 +834,21 @@ function validateStep(id, stdout, {
     const allowedOutcomes = id === 'click' ? ['changed', 'dispatched'] : ['changed', 'dispatched', 'no-change'];
     if (!allowedOutcomes.includes(outcome)) {
       throw new Error(`${id} outcome is invalid: ${JSON.stringify({ outcome, model }).slice(0, 1600)}`);
+    }
+    if (['inject', 'restore', 'upload'].includes(id)) {
+      const expectedArgs = {
+        restore: ['--file', '[checkpoint-path-redacted]'],
+        upload: ['#upload-file', '<redacted>'],
+      }[id];
+      const commandArgsValid = id === 'inject'
+        ? [['--css', '<redacted>'], ['--remove']]
+          .some(args => JSON.stringify(model?.target?.commandArgs) === JSON.stringify(args))
+        : JSON.stringify(model?.target?.commandArgs) === JSON.stringify(expectedArgs);
+      if (!commandArgsValid
+        || !Array.isArray(model?.target?.redacted) || !model.target.redacted.includes('commandArgs')
+        || !validActionTargetResolution(model.targetResolution, targetPrefix)) {
+        throw new Error(`${id} privacy or target binding is invalid: ${JSON.stringify(model).slice(0, 1600)}`);
+      }
     }
     return outcome;
   }
@@ -872,6 +948,8 @@ export async function runPhase4SliceSession({
   expectedTitle = EXPECTED_TITLE,
   expectedUrl,
   navigationUrl = 'http://127.0.0.1:41758/validation-phase4.html#phase7-navigation',
+  uploadPath = 'phase7-upload.txt',
+  restorePath = 'phase7-checkpoint.json',
   runCommand,
   runMcpCommand,
   cleanup,
@@ -887,7 +965,7 @@ export async function runPhase4SliceSession({
     let title = null;
     let extractionParity = 0;
     let sessionIdentity = null;
-    const commands = buildPhase4SliceCommands(targetPrefix, navigationUrl);
+    const commands = buildPhase4SliceCommands(targetPrefix, navigationUrl, { uploadPath, restorePath });
     for (const command of commands) {
       let stdout;
       try {
@@ -905,7 +983,7 @@ export async function runPhase4SliceSession({
       if (['html', 'text', 'table', 'net', 'status', 'summary', 'snap', 'controls', 'frame',
         'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
         'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies', 'console', 'record', 'dialog', 'keepalive', 'netlog',
-        'press', 'fill', 'hover', 'scroll', 'select',
+        'press', 'fill', 'hover', 'inject', 'restore', 'scroll', 'select', 'upload',
         'back', 'clickxy', 'clock', 'dismiss-modal', 'forward', 'jsclick', 'mock', 'nav',
         'reload', 'throttle', 'type', 'verify-click', 'viewport', 'emulate'].includes(command.id)) {
         const mcpOutput = await runMcpCommand(command);
@@ -1103,6 +1181,21 @@ export async function runDisposablePhase4Slices() {
     const mcpNavigationUrl = `${mcpUrl}#phase7-navigation`;
     const runtimeDir = mkdtempSync(resolve(phase4RuntimeBase(), 'chrome-cdp-p4-'));
     const localAppData = resolve(runtimeDir, 'localappdata');
+    const uploadPath = resolve(runtimeDir, 'phase7-upload.txt');
+    const restorePath = resolve(runtimeDir, 'phase7-checkpoint.json');
+    const mcpRestorePath = resolve(runtimeDir, 'phase7-mcp-checkpoint.json');
+    writeFileSync(uploadPath, 'phase7 upload fixture\n', { mode: 0o600 });
+    const checkpointFor = pageUrl => JSON.stringify({
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      page: { url: pageUrl, title: EXPECTED_TITLE, origin: new URL(pageUrl).origin },
+      storage: {
+        localStorage: { theme: 'phase7-restored' },
+        sessionStorage: { phase: 'phase7-restored' },
+      },
+      cookies: [],
+    });
+    writeFileSync(restorePath, checkpointFor(url), { mode: 0o600 });
+    writeFileSync(mcpRestorePath, checkpointFor(mcpUrl), { mode: 0o600 });
     let server = null;
     let stopServer = null;
     let browser = null;
@@ -1231,6 +1324,7 @@ export async function runDisposablePhase4Slices() {
         if (ACTION_PARITY_COMMANDS.has(command.id)) {
           commandArgs[0] = mcpTargetId;
         }
+        if (command.id === 'restore') commandArgs[2] = mcpRestorePath;
         if (command.id === 'nav') commandArgs[1] = mcpNavigationUrl;
         const handler = ACTION_PARITY_COMMANDS.has(command.id) ? mcpActionHandler : mcpHandler;
         await handler({
@@ -1245,8 +1339,8 @@ export async function runDisposablePhase4Slices() {
               ...([
                 'components', 'checkpoint', 'cookies', 'console', 'record',
                 'back', 'clickxy', 'clock', 'dialog', 'dismiss-modal', 'fill', 'forward',
-                'hover', 'jsclick', 'keepalive', 'mock', 'nav', 'netlog', 'press', 'reload', 'scroll',
-                'select', 'throttle', 'type', 'verify-click', 'viewport', 'emulate',
+                'hover', 'inject', 'jsclick', 'keepalive', 'mock', 'nav', 'netlog', 'press', 'reload', 'restore', 'scroll',
+                'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport', 'emulate',
               ].includes(command.id)
                 ? { confirm: true }
                 : {}),
@@ -1289,6 +1383,18 @@ export async function runDisposablePhase4Slices() {
           const effect = runCdp(buildPhase4RenderingEffectCommand(command.id, mcpTargetPrefix), env, 5_000);
           assertPhase4RenderingEffect(command.id, effect);
         }
+        if (['upload', 'inject', 'restore'].includes(command.id)) {
+          const effect = runCdp(buildPhase4ExternalInputEffectCommand(command.id, mcpTargetPrefix), env, 5_000);
+          assertPhase4ExternalInputEffect(command.id, effect, { expectedUrl: mcpUrl });
+          if (command.id === 'inject') {
+            const removed = runCdp(['inject', mcpTargetId, '--remove', '--format', 'json'], env, 5_000);
+            validateStep('inject', removed, { targetPrefix, expectedTitle: EXPECTED_TITLE, expectedUrl: mcpUrl });
+            assertPhase4InjectionRemoved(runCdp([
+              'eval', mcpTargetPrefix,
+              "JSON.stringify({count:document.querySelectorAll('[data-cdp-inject]').length})",
+            ], env, 5_000));
+          }
+        }
         if (['dialog', 'keepalive', 'netlog'].includes(command.id)) {
           if (runCdp(['eval', mcpTargetPrefix, 'true'], env, 5_000) !== 'true') {
             throw new Error(`MCP ${command.id} left the target runtime unavailable`);
@@ -1301,6 +1407,8 @@ export async function runDisposablePhase4Slices() {
         expectedTitle: EXPECTED_TITLE,
         expectedUrl: url,
         navigationUrl,
+        uploadPath,
+        restorePath,
         runCommand: command => {
           const output = runCdp(command.args, env);
           if (['nav', 'back', 'forward'].includes(command.id)) {
@@ -1322,6 +1430,18 @@ export async function runDisposablePhase4Slices() {
           if (['cookieset', 'cookiedel'].includes(command.id)) {
             const effect = runCdp(buildPhase4CookieEffectCommand(command.id, targetPrefix), env, 5_000);
             assertPhase4CookieEffect(command.id, effect);
+          }
+          if (['upload', 'inject', 'restore'].includes(command.id)) {
+            const effect = runCdp(buildPhase4ExternalInputEffectCommand(command.id, targetPrefix), env, 5_000);
+            assertPhase4ExternalInputEffect(command.id, effect, { expectedUrl: url });
+            if (command.id === 'inject') {
+              const removed = runCdp(['inject', targetPrefix, '--remove', '--format', 'json'], env, 5_000);
+              validateStep('inject', removed, { targetPrefix, expectedTitle: EXPECTED_TITLE, expectedUrl: url });
+              assertPhase4InjectionRemoved(runCdp([
+                'eval', targetPrefix,
+                "JSON.stringify({count:document.querySelectorAll('[data-cdp-inject]').length})",
+              ], env, 5_000));
+            }
           }
           if (['dialog', 'keepalive', 'netlog'].includes(command.id)) {
             if (runCdp(['eval', targetPrefix, 'true'], env, 5_000) !== 'true') {

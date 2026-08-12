@@ -5183,6 +5183,67 @@ describe('checkpoint / restore', () => {
     expect(parsed.artifact.page.url).toBe('https://example.com/app');
   });
 
+  it('redacts checkpoint JSON and file paths from restore action evidence', () => {
+    expect(T.redactRestoreCommandArgs(['--json', '{"token":"secret"}', '--format', 'json']))
+      .toEqual(['--json', '[checkpoint-json-redacted]']);
+    expect(T.redactRestoreCommandArgs(['--file', '/Users/alice/private/checkpoint.json']))
+      .toEqual(['--file', '[checkpoint-path-redacted]']);
+    expect(T.redactRestoreCommandArgs(['/Users/alice/private/checkpoint.json']))
+      .toEqual(['[checkpoint-path-redacted]']);
+    expect(T.redactRestoreCommandArgs(['{"schema":"chrome-cdp-ex.checkpoint.v1","token":"TOPSECRET"}']))
+      .toEqual(['[checkpoint-json-redacted]']);
+  });
+
+  it('redacts external-input paths, URLs, and payloads from action errors without rewriting unrelated failures', async () => {
+    const path = '/Users/alice/private/checkpoint.json';
+    const exposed = new Error(`ENOENT: no such file or directory, open '${path}'`);
+    const redacted = T.redactRestoreActionError(exposed, ['--file', path]);
+    expect(redacted).not.toBe(exposed);
+    expect(redacted.message).toBe("ENOENT: no such file or directory, open '[checkpoint-path-redacted]'");
+    expect(redacted.cause).toBe(exposed);
+
+    const positional = T.redactRestoreActionError(exposed, [path]);
+    expect(positional.message).not.toContain('/Users/alice');
+
+    const checkpointJson = '{"schema":"TOPSECRET","page":{"url":"https://private.example.test/token"}}';
+    const inline = T.redactRestoreActionError(
+      new Error('restore: unsupported checkpoint schema TOPSECRET at https://private.example.test/token'),
+      [checkpointJson],
+    );
+    expect(inline.message).not.toContain('TOPSECRET');
+    expect(inline.message).not.toContain('private.example.test');
+
+    const upload = T.redactExternalInputActionError(
+      new Error(`upload failed for ${path}`),
+      'upload',
+      ['#file', `${path},/home/alice/second.txt`],
+    );
+    expect(upload.message).not.toContain('/Users/alice');
+    expect(upload.message).not.toContain('/home/alice');
+
+    const inject = T.redactExternalInputActionError(
+      new Error('Failed to load stylesheet: https://private.example.test/style.css?token=TOPSECRET'),
+      'inject',
+      ['--css-file', 'https://private.example.test/style.css?token=TOPSECRET'],
+    );
+    expect(inject.message).not.toContain('private.example.test');
+    expect(inject.message).not.toContain('TOPSECRET');
+
+    const receipt = JSON.parse(await T.runActionWithFeedback({
+      action: 'upload',
+      target: { input: '#file', resolvedBy: 'selector', label: '#file', commandArgs: ['#file', '<redacted>'] },
+      dispatch: async () => { throw upload; },
+      feedbackPolicy: 'state-change',
+      observe: async () => '',
+      format: 'json',
+    }));
+    expect(JSON.stringify(receipt)).not.toContain('/Users/alice');
+    expect(JSON.stringify(receipt)).not.toContain('/home/alice');
+
+    const unrelated = new Error('restore: unsupported checkpoint schema wrong');
+    expect(T.redactRestoreActionError(unrelated, ['--file', path])).toBe(unrelated);
+  });
+
   it('restores cookies, URL, and storage from a checkpoint artifact', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': () => ({ result: { value: 'restored' } }),

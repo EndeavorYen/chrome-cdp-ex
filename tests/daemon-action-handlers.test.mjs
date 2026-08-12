@@ -4,8 +4,8 @@ import { createDaemonActionHandlers } from '../skills/chrome-cdp-ex/scripts/lib/
 
 const ACTION_COMMANDS = Object.freeze([
   'back', 'clickxy', 'clock', 'cookiedel', 'cookieset', 'dialog', 'dismiss-modal', 'emulate',
-  'fill', 'forward', 'hover', 'jsclick', 'keepalive', 'mock', 'nav', 'netlog', 'press',
-  'reload', 'scroll', 'select', 'throttle', 'type', 'verify-click', 'viewport',
+  'fill', 'forward', 'hover', 'inject', 'jsclick', 'keepalive', 'mock', 'nav', 'netlog', 'press',
+  'reload', 'restore', 'scroll', 'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
 ]);
 
 function fixture() {

@@ -8870,6 +8870,10 @@ function parseRestoreArgs(args, { reader = readFileSync } = {}) {
 }
 
 function redactRestoreCommandArgs(args = []) {
+  const positionalRaw = args.join(' ').trim();
+  if (args.length && !args.some(arg => arg === '--json' || arg === '--file' || arg === '-f')) {
+    return [positionalRaw.startsWith('{') ? '[checkpoint-json-redacted]' : '[checkpoint-path-redacted]'];
+  }
   const out = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -8879,10 +8883,86 @@ function redactRestoreCommandArgs(args = []) {
       break;
     }
     if (arg === '--file' || arg === '-f') {
-      if (args[i + 1]) out.push(args[++i]);
+      if (args[i + 1]) {
+        i += 1;
+        out.push('[checkpoint-path-redacted]');
+      }
     }
   }
   return out.length ? out : ['restore'];
+}
+
+function collectExternalInputStrings(value, out, depth = 0) {
+  if (depth > 8 || out.length >= 64) return;
+  if (typeof value === 'string') {
+    if (value) out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectExternalInputStrings(item, out, depth + 1);
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) collectExternalInputStrings(item, out, depth + 1);
+  }
+}
+
+function redactExternalInputActionError(error, action, args = []) {
+  const original = actionFailureMessage(error);
+  let message = original;
+  const replacements = [];
+  if (action === 'upload' && args[1]) {
+    replacements.push([args[1], '[upload-path-redacted]']);
+    for (const filePath of args[1].split(',').map(value => value.trim()).filter(Boolean)) {
+      replacements.push([filePath, '[upload-path-redacted]']);
+    }
+  } else if (action === 'inject' && args.length > 1) {
+    const payload = args.slice(1).join(' ').trim();
+    if (payload) {
+      const marker = args[0] === '--css' ? '[inject-content-redacted]' : '[inject-url-redacted]';
+      replacements.push([payload, marker]);
+    }
+  } else if (action === 'restore') {
+    let inlineJson = null;
+    for (let i = 0; i < args.length; i += 1) {
+      if ((args[i] === '--file' || args[i] === '-f') && args[i + 1]) {
+        replacements.push([args[i + 1], '[checkpoint-path-redacted]']);
+        i += 1;
+      } else if (args[i] === '--json') {
+        inlineJson = args.slice(i + 1).join(' ').trim();
+        break;
+      }
+    }
+    if (!args.some(arg => arg === '--json' || arg === '--file' || arg === '-f')) {
+      const positional = args.join(' ').trim();
+      if (positional.startsWith('{')) inlineJson = positional;
+      else if (args[0]) replacements.push([args[0], '[checkpoint-path-redacted]']);
+    }
+    if (inlineJson) {
+      replacements.push([inlineJson, '[checkpoint-json-redacted]']);
+      try {
+        const values = [];
+        collectExternalInputStrings(JSON.parse(inlineJson), values);
+        for (const value of values) replacements.push([value, '[checkpoint-value-redacted]']);
+      } catch {}
+    }
+  }
+  replacements.sort((left, right) => right[0].length - left[0].length);
+  for (const [value, marker] of replacements) {
+    if (value) message = message.split(value).join(marker);
+  }
+  message = message
+    .replace(/\b(?:https?|file):\/\/[^\s'"\])]+/gi, '[external-url-redacted]')
+    .replace(/(^|[\s'"])((?:\/(?!\/)[^\s'"]+)+|[A-Za-z]:\\[^\s'"]+)/g, '$1[external-path-redacted]');
+  if (message === original) return error;
+  const redacted = new Error(message, { cause: error });
+  redacted.name = error?.name || 'Error';
+  if (error?.code !== undefined) redacted.code = error.code;
+  return redacted;
+}
+
+function redactRestoreActionError(error, args = []) {
+  return redactExternalInputActionError(error, 'restore', args);
 }
 
 function checkpointCookieToSetCookieParams(cookie, url) {
@@ -12802,6 +12882,7 @@ const MIGRATED_DAEMON_COMMANDS = Object.freeze([
   'eval', 'eval64', 'call',
   'console', 'record',
   'batch', 'flow', 'repeat', 'replay',
+  'inject', 'restore', 'upload',
 ]);
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPhase4PerceiveHandler(context),
@@ -12863,6 +12944,9 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
     await capabilities.replay(args),
     { kind: 'action-receipt' },
   ),
+  inject: capabilities => createDaemonActionHandlers(capabilities).inject,
+  restore: capabilities => createDaemonActionHandlers(capabilities).restore,
+  upload: capabilities => createDaemonActionHandlers(capabilities).upload,
 });
 
 function preflightDaemonApplication(input = {}) {
@@ -13350,6 +13434,31 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       return commandResult(value, { kind: 'action-receipt' });
     },
     hover: async args => commandResult(await hoverStr(cdp, sessionId, args[0], refMap, refState), null),
+    inject: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const safeCommandArgs = fopts.args.map((arg, index) => index === 0 ? arg : '<redacted>');
+      const value = await actionFeedback(
+        'inject',
+        async () => {
+          try {
+            return await injectStr(cdp, sessionId, fopts.args);
+          } catch (error) {
+            throw redactExternalInputActionError(error, 'inject', fopts.args);
+          }
+        },
+        {
+          input: fopts.args[0] || '',
+          resolvedBy: 'command',
+          label: fopts.args[0] || 'inject',
+          commandArgs: safeCommandArgs,
+          redacted: ['commandArgs'],
+        },
+        'state-change',
+        null,
+        fopts,
+      );
+      return commandResult(value, { kind: 'action-receipt' });
+    },
     jsclick: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, fopts.args[0], refMap, refState), { input: fopts.args[0], resolvedBy: 'selector-or-ref', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
@@ -13394,6 +13503,36 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
+    restore: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const safeCommandArgs = redactRestoreCommandArgs(fopts.args);
+      const value = await actionFeedback(
+        'restore',
+        async () => {
+          let restoreResult;
+          try {
+            restoreResult = await restoreCheckpointStr(cdp, sessionId, fopts.args);
+          } catch (error) {
+            throw redactRestoreActionError(error, fopts.args);
+          }
+          clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
+          session.pageGeneration += 1;
+          invalidateSessionRefs(session, 'navigation');
+          return restoreResult;
+        },
+        {
+          input: 'checkpoint',
+          resolvedBy: 'artifact',
+          label: 'checkpoint',
+          commandArgs: safeCommandArgs,
+          redacted: ['commandArgs'],
+        },
+        'report-only',
+        null,
+        fopts,
+      );
+      return commandResult(value, { kind: 'action-receipt' });
+    },
     scroll: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback('scroll', () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: [fopts.args[0], fopts.args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: fopts.args[0] || 'scroll', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
@@ -13411,6 +13550,30 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     type: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback('type', () => typeStr(cdp, sessionId, fopts.args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    upload: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback(
+        'upload',
+        async () => {
+          try {
+            return await uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1]);
+          } catch (error) {
+            throw redactExternalInputActionError(error, 'upload', fopts.args);
+          }
+        },
+        {
+          input: fopts.args[0],
+          resolvedBy: 'selector',
+          label: fopts.args[0] || '',
+          commandArgs: [fopts.args[0], '<redacted>'],
+          redacted: ['commandArgs'],
+        },
+        'state-change',
+        null,
+        fopts,
+      );
       return commandResult(value, { kind: 'action-receipt' });
     },
     'verify-click': async args => {
@@ -13564,6 +13727,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     flow: applicationPreflight.handlerBuilders.flow(workflowCapabilities),
     repeat: applicationPreflight.handlerBuilders.repeat(workflowCapabilities),
     replay: applicationPreflight.handlerBuilders.replay(workflowCapabilities),
+    inject: applicationPreflight.handlerBuilders.inject(actionCapabilities),
+    restore: applicationPreflight.handlerBuilders.restore(actionCapabilities),
+    upload: applicationPreflight.handlerBuilders.upload(actionCapabilities),
   };
   const phase4Context = createCommandDispatcher({
     registry: phase4Registry,
@@ -13748,17 +13914,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
         case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
         case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
-        case 'upload': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('upload', () => uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'state-change', null, fopts);
-          break;
-        }
         case 'closetab': result = await closetabStr(cdp, targetId); break;
-        case 'inject': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('inject', () => injectStr(cdp, sessionId, fopts.args), { input: fopts.args[0] || '', resolvedBy: 'command', label: fopts.args[0] || 'inject', commandArgs: fopts.args }, 'state-change', null, fopts);
-          break;
-        }
         case 'evalraw': {
           const route = await executePhase4DaemonRoute({
             cmd: 'evalraw',
@@ -13766,25 +13922,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
             targetBound: Boolean(targetId),
           }, phase4Context);
           result = route.result;
-          break;
-        }
-        case 'restore': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          const safeCommandArgs = redactRestoreCommandArgs(fopts.args);
-          result = await actionFeedback(
-            'restore',
-            async () => {
-              const restoreResult = await restoreCheckpointStr(cdp, sessionId, fopts.args);
-              clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
-              session.pageGeneration += 1;
-              invalidateSessionRefs(session, 'navigation');
-              return restoreResult;
-            },
-            { input: 'checkpoint', resolvedBy: 'artifact', label: 'checkpoint', commandArgs: safeCommandArgs },
-            'report-only',
-            null,
-            fopts
-          );
           break;
         }
         case 'stop': return { ok: true, result: '', stopAfter: true };
@@ -15067,8 +15204,8 @@ function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound })
   const allowed = ([
     'back', 'click', 'clickxy', 'clock', 'dismiss-modal', 'fill', 'forward', 'hover',
     'cookiedel', 'cookieset', 'dialog', 'emulate', 'jsclick', 'keepalive', 'mock',
-    'nav', 'press', 'reload', 'scroll', 'select', 'throttle', 'type', 'verify-click',
-    'viewport',
+    'inject', 'nav', 'press', 'reload', 'restore', 'scroll', 'select', 'throttle',
+    'type', 'upload', 'verify-click', 'viewport',
   ].includes(command)
       && policy === 'mutation' && actionMutates)
     || (['console', 'netlog', 'record'].includes(command)
@@ -16476,7 +16613,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   playwrightStepFromCommand, formatPlaywrightSpecFromRecordActions, formatExportPlaywright,
   parseDiffShotArgs, diffShotCompareScript, formatDiffShotResult, diffShotStr,
   checkpointPageScript, sanitizeCheckpointCookies, sanitizeCheckpointStorage, parseCheckpointArgs, checkpointModel, checkpointStr,
-  parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs,
+  parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs, redactExternalInputActionError, redactRestoreActionError,
   checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,
   // Command implementations
   getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr,
