@@ -1,8 +1,8 @@
 import { commandResult } from './command-application.mjs';
 
 const COMMANDS = Object.freeze([
-  'cascade', 'checkpoint', 'components', 'controls', 'cookies', 'export-playwright', 'frame', 'html', 'net', 'overlay',
-  'record-actions', 'snap', 'status', 'styles', 'summary', 'table', 'text',
+  'cascade', 'checkpoint', 'components', 'console', 'controls', 'cookies', 'export-playwright', 'frame', 'html', 'net', 'overlay',
+  'record', 'record-actions', 'snap', 'status', 'styles', 'summary', 'table', 'text',
   'wait', 'waitfor',
 ]);
 const HANDLER_CONTEXT_KEYS = new Set(['args', 'targetBound', 'spec', 'authorization']);
@@ -74,6 +74,7 @@ export function createDaemonReadHandlers(input) {
     cascade: async context => commandResult(await capabilities.cascade(snapshotArgs(context)), null),
     checkpoint: async context => commandResult(await capabilities.checkpoint(snapshotArgs(context)), null),
     components: async context => commandResult(await capabilities.components(snapshotArgs(context)), null),
+    console: async context => commandResult(await capabilities.console(snapshotArgs(context)), null),
     controls: async context => commandResult(await capabilities.controls(snapshotArgs(context)), null),
     cookies: async context => commandResult(await capabilities.cookies(snapshotArgs(context)), null),
     'export-playwright': async context => commandResult(await capabilities['export-playwright'](snapshotArgs(context)), null),
@@ -81,6 +82,7 @@ export function createDaemonReadHandlers(input) {
     html: async context => commandResult(await capabilities.html(snapshotArgs(context)), null),
     net: async context => commandResult(await capabilities.net(snapshotArgs(context)), null),
     overlay: async context => commandResult(await capabilities.overlay(snapshotArgs(context)), null),
+    record: async context => commandResult(await capabilities.record(snapshotArgs(context)), null),
     'record-actions': async context => commandResult(await capabilities['record-actions'](snapshotArgs(context)), null),
     snap: async context => commandResult(await capabilities.snap(snapshotArgs(context)), null),
     status: async context => commandResult(await capabilities.status(snapshotArgs(context)), null),

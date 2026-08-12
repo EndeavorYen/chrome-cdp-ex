@@ -715,8 +715,8 @@ describe('Phase 4 daemon dispatch seam', () => {
     });
     expect(preflight.registry.list()).toHaveLength(81);
     expect(Object.keys(preflight.routeOwners)).toHaveLength(81);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(50);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(31);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(52);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(29);
     expect(Object.isFrozen(preflight)).toBe(true);
     expect(Object.isFrozen(preflight.handlerBuilders)).toBe(true);
     expect(Object.values(builders).every(builder => builder.mock.calls.length === 0)).toBe(true);
@@ -847,6 +847,18 @@ describe('Phase 4 daemon dispatch seam', () => {
     })).toEqual({ allowed: false, code: 'policy-denied' });
   });
 
+  it.each(['console', 'record'])('binds %s to conditional authorization and a live target', command => {
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command, policy: 'conditional', mutates: false, targetBound: true,
+    })).toEqual({ allowed: true, code: 'legacy-daemon' });
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command, policy: 'conditional', mutates: false, targetBound: false,
+    })).toEqual({ allowed: false, code: 'target-not-bound' });
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command, policy: 'standard', mutates: false, targetBound: true,
+    })).toEqual({ allowed: false, code: 'policy-denied' });
+  });
+
   it('supports the exact request shape used by sequential batch and flow recursion', async () => {
     const context = routeFixture();
     const dispatcher = createCommandDispatcher({
@@ -886,14 +898,16 @@ describe('Phase 4 daemon dispatch seam', () => {
       'emulate', 'viewport',
       'cookiedel', 'cookieset', 'dialog', 'keepalive', 'netlog',
       'eval', 'eval64', 'call',
+      'console', 'record',
     ]);
     const preflight = cdpTest.preflightDaemonApplication();
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(50);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(31);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(52);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(29);
     const readHandlers = createDaemonReadHandlers({
       cascade: async args => `cascade:${args.join('|')}`,
       checkpoint: async args => `checkpoint:${args.join('|')}`,
       components: async args => `components:${args.join('|')}`,
+      console: async args => `console:${args.join('|')}`,
       controls: async args => `controls:${args.join('|')}`,
       cookies: async args => `cookies:${args.join('|')}`,
       'export-playwright': async args => `export-playwright:${args.join('|')}`,
@@ -903,6 +917,7 @@ describe('Phase 4 daemon dispatch seam', () => {
       table: async selector => `table:${selector ?? ''}`,
       net: async args => `net:${args.join('|')}`,
       overlay: async args => `overlay:${args.join('|')}`,
+      record: async args => `record:${args.join('|')}`,
       'record-actions': async args => `record-actions:${args.join('|')}`,
       snap: async args => `snap:${args.join('|')}`,
       status: async args => `status:${args.join('|')}`,
@@ -992,6 +1007,12 @@ describe('Phase 4 daemon dispatch seam', () => {
     await expect(cdpTest.executePhase4DaemonRoute({
       cmd: 'cookies', args: [], targetBound: true,
     }, dispatcher)).resolves.toEqual({ handled: true, result: 'cookies:' });
+    await expect(cdpTest.executePhase4DaemonRoute({
+      cmd: 'console', args: ['--clear'], targetBound: true,
+    }, dispatcher)).resolves.toEqual({ handled: true, result: 'console:--clear' });
+    await expect(cdpTest.executePhase4DaemonRoute({
+      cmd: 'record', args: ['500'], targetBound: true,
+    }, dispatcher)).resolves.toEqual({ handled: true, result: 'record:500' });
     for (const name of ACTION_COMMANDS) {
       await expect(cdpTest.executePhase4DaemonRoute({
         cmd: name, args: ['fixture'], targetBound: true,
@@ -1009,6 +1030,7 @@ describe('Phase 4 daemon dispatch seam', () => {
       cascade: vi.fn(async () => 'cascade-only'),
       checkpoint: vi.fn(async () => 'checkpoint-only'),
       components: vi.fn(async () => 'components-only'),
+      console: vi.fn(async () => 'console-only'),
       controls: vi.fn(async () => 'controls-only'),
       cookies: vi.fn(async () => 'cookies-only'),
       'export-playwright': vi.fn(async () => 'export-playwright-only'),
@@ -1018,6 +1040,7 @@ describe('Phase 4 daemon dispatch seam', () => {
       table: vi.fn(async () => 'table-only'),
       net: vi.fn(async () => 'net-only'),
       overlay: vi.fn(async () => 'overlay-only'),
+      record: vi.fn(async () => 'record-only'),
       'record-actions': vi.fn(async () => 'record-actions-only'),
       snap: vi.fn(async () => 'snap-only'),
       status: vi.fn(async () => 'status-only'),
@@ -1030,7 +1053,7 @@ describe('Phase 4 daemon dispatch seam', () => {
     for (const name of [
       'html', 'text', 'table', 'net', 'status', 'summary', 'snap', 'controls', 'frame',
       'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
-      'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies',
+      'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies', 'console', 'record',
     ]) {
       const handler = builders[name](capabilities);
       const result = await handler({ args: name === 'table' ? ['#grid'] : ['main'] });
@@ -1048,6 +1071,8 @@ describe('Phase 4 daemon dispatch seam', () => {
     expect(capabilities.overlay).toHaveBeenCalledOnce();
     expect(capabilities.styles).toHaveBeenCalledOnce();
     expect(capabilities.components).toHaveBeenCalledOnce();
+    expect(capabilities.console).toHaveBeenCalledOnce();
+    expect(capabilities.record).toHaveBeenCalledOnce();
     expect(capabilities['record-actions']).toHaveBeenCalledOnce();
     expect(capabilities['export-playwright']).toHaveBeenCalledOnce();
     expect(capabilities.wait).toHaveBeenCalledOnce();

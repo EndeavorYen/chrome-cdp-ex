@@ -11,6 +11,7 @@ describe('daemon extraction read handlers', () => {
       checkpoint: vi.fn(async args => `checkpoint:${args.join('|')}`),
       controls: vi.fn(async args => `controls:${args.join('|')}`),
       components: vi.fn(async args => `components:${args.join('|')}`),
+      console: vi.fn(async args => `console:${args.join('|')}`),
       cookies: vi.fn(async args => `cookies:${args.join('|')}`),
       'export-playwright': vi.fn(async args => `export-playwright:${args.join('|')}`),
       frame: vi.fn(async args => `frame:${args.join('|')}`),
@@ -18,6 +19,7 @@ describe('daemon extraction read handlers', () => {
       net: vi.fn(async args => `net:${args.join('|')}`),
       overlay: vi.fn(async args => `overlay:${args.join('|')}`),
       'record-actions': vi.fn(async args => `record-actions:${args.join('|')}`),
+      record: vi.fn(async args => `record:${args.join('|')}`),
       status: vi.fn(async args => `status:${args.join('|')}`),
       styles: vi.fn(async args => `styles:${args.join('|')}`),
       summary: vi.fn(async args => `summary:${args.join('|')}`),
@@ -33,8 +35,8 @@ describe('daemon extraction read handlers', () => {
   it('constructs the exact immutable accepted read cohorts', () => {
     const { handlers } = fixture();
     expect(Object.keys(handlers)).toEqual([
-      'cascade', 'checkpoint', 'components', 'controls', 'cookies', 'export-playwright', 'frame', 'html', 'net', 'overlay',
-      'record-actions', 'snap', 'status', 'styles', 'summary', 'table', 'text',
+      'cascade', 'checkpoint', 'components', 'console', 'controls', 'cookies', 'export-playwright', 'frame', 'html', 'net', 'overlay',
+      'record', 'record-actions', 'snap', 'status', 'styles', 'summary', 'table', 'text',
       'wait', 'waitfor',
     ]);
     expect(Object.isFrozen(handlers)).toBe(true);
@@ -55,6 +57,8 @@ describe('daemon extraction read handlers', () => {
     const overlay = await handlers.overlay({ args: ['--format', 'json'] });
     const styles = await handlers.styles({ args: ['#auth-panel'] });
     const components = await handlers.components({ args: ['#auth-panel'] });
+    const consoleOutput = await handlers.console({ args: ['--clear', '--format', 'json'] });
+    const record = await handlers.record({ args: ['500', '--action', 'click', '#refresh-account'] });
     const recordActions = await handlers['record-actions']({ args: ['--format', 'json'] });
     const exportPlaywright = await handlers['export-playwright']({ args: ['--test-name', 'fixture'] });
     const cascade = await handlers.cascade({ args: ['#auth-panel', 'color', '--format', 'json'] });
@@ -74,6 +78,8 @@ describe('daemon extraction read handlers', () => {
     expect(overlay.value).toBe('overlay:--format|json');
     expect(styles.value).toBe('styles:#auth-panel');
     expect(components.value).toBe('components:#auth-panel');
+    expect(consoleOutput.value).toBe('console:--clear|--format|json');
+    expect(record.value).toBe('record:500|--action|click|#refresh-account');
     expect(recordActions.value).toBe('record-actions:--format|json');
     expect(exportPlaywright.value).toBe('export-playwright:--test-name|fixture');
     expect(cascade.value).toBe('cascade:#auth-panel|color|--format|json');
@@ -93,6 +99,8 @@ describe('daemon extraction read handlers', () => {
     expect(capabilities.overlay).toHaveBeenCalledWith(['--format', 'json']);
     expect(capabilities.styles).toHaveBeenCalledWith(['#auth-panel']);
     expect(capabilities.components).toHaveBeenCalledWith(['#auth-panel']);
+    expect(capabilities.console).toHaveBeenCalledWith(['--clear', '--format', 'json']);
+    expect(capabilities.record).toHaveBeenCalledWith(['500', '--action', 'click', '#refresh-account']);
     expect(capabilities['record-actions']).toHaveBeenCalledWith(['--format', 'json']);
     expect(capabilities['export-playwright']).toHaveBeenCalledWith(['--test-name', 'fixture']);
     expect(capabilities.cascade).toHaveBeenCalledWith(['#auth-panel', 'color', '--format', 'json']);
@@ -113,8 +121,8 @@ describe('daemon extraction read handlers', () => {
 
   it('rejects missing, extra, accessor, symbol, prototype, and non-function capabilities before reads', () => {
     const valid = {
-      cascade: vi.fn(), checkpoint: vi.fn(), components: vi.fn(), controls: vi.fn(), cookies: vi.fn(), 'export-playwright': vi.fn(), frame: vi.fn(), html: vi.fn(),
-      net: vi.fn(), overlay: vi.fn(), 'record-actions': vi.fn(), snap: vi.fn(), status: vi.fn(),
+      cascade: vi.fn(), checkpoint: vi.fn(), components: vi.fn(), console: vi.fn(), controls: vi.fn(), cookies: vi.fn(), 'export-playwright': vi.fn(), frame: vi.fn(), html: vi.fn(),
+      net: vi.fn(), overlay: vi.fn(), record: vi.fn(), 'record-actions': vi.fn(), snap: vi.fn(), status: vi.fn(),
       styles: vi.fn(), summary: vi.fn(), text: vi.fn(), table: vi.fn(), wait: vi.fn(), waitfor: vi.fn(),
     };
     expect(() => createDaemonReadHandlers({ ...valid, net: undefined })).toThrow(/function/);

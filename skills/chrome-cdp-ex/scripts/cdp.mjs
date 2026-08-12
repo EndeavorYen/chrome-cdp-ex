@@ -12800,6 +12800,7 @@ const MIGRATED_DAEMON_COMMANDS = Object.freeze([
   'emulate', 'viewport',
   'cookiedel', 'cookieset', 'dialog', 'keepalive', 'netlog',
   'eval', 'eval64', 'call',
+  'console', 'record',
 ]);
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPhase4PerceiveHandler(context),
@@ -12852,6 +12853,8 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
   eval: capabilities => async ({ args }) => capabilities.eval(args),
   eval64: capabilities => async ({ args }) => capabilities.eval64(args),
   call: capabilities => async ({ args }) => capabilities.call(args),
+  console: capabilities => createDaemonReadHandlers(capabilities).console,
+  record: capabilities => createDaemonReadHandlers(capabilities).record,
 });
 
 function preflightDaemonApplication(input = {}) {
@@ -13198,6 +13201,22 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       return output;
     },
     components: args => componentsStr(cdp, sessionId, args, refMap, refState),
+    console: async args => {
+      const opts = parseConsoleArgs(args);
+      if (opts.mode === 'clear') {
+        const model = clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq);
+        return opts.format === 'json' ? formatJson(model) : model.message;
+      }
+      if (opts.format === 'json') {
+        const output = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, opts.mode));
+        if (opts.mode === 'new') {
+          lastReadSeq.console = consoleBuf.latest();
+          lastReadSeq.exception = exceptionBuf.latest();
+        }
+        return output;
+      }
+      return consoleStr(consoleBuf, exceptionBuf, lastReadSeq, opts.mode);
+    },
     controls: async args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
       const copts = parseControlsArgs(fopts.args);
@@ -13214,6 +13233,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     table: selector => tableStr(cdp, sessionId, selector),
     net: () => netStr(cdp, sessionId),
     overlay: args => overlayStr(cdp, sessionId, targetId, args, refMap, refState),
+    record: args => recordStr(cdp, sessionId, args, refMap),
     'record-actions': args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
       return formatRecordActions(session, { format: fopts.format });
@@ -13482,6 +13502,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     eval: applicationPreflight.handlerBuilders.eval(scriptCapabilities),
     eval64: applicationPreflight.handlerBuilders.eval64(scriptCapabilities),
     call: applicationPreflight.handlerBuilders.call(scriptCapabilities),
+    console: applicationPreflight.handlerBuilders.console(readCapabilities),
+    record: applicationPreflight.handlerBuilders.record(readCapabilities),
   };
   const phase4Context = createCommandDispatcher({
     registry: phase4Registry,
@@ -13542,22 +13564,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         }
         case 'diff-shot': case 'diffshot': {
           result = await diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args));
-          break;
-        }
-        case 'console': {
-          const opts = parseConsoleArgs(args);
-          if (opts.mode === 'clear') {
-            const model = clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq);
-            result = opts.format === 'json' ? formatJson(model) : model.message;
-          } else if (opts.format === 'json') {
-            result = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, opts.mode));
-            if (opts.mode === 'new') {
-              lastReadSeq.console = consoleBuf.latest();
-              lastReadSeq.exception = exceptionBuf.latest();
-            }
-          } else {
-            result = await consoleStr(consoleBuf, exceptionBuf, lastReadSeq, opts.mode);
-          }
           break;
         }
         case 'report': {
@@ -13693,7 +13699,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           result = await actionFeedback('inject', () => injectStr(cdp, sessionId, fopts.args), { input: fopts.args[0] || '', resolvedBy: 'command', label: fopts.args[0] || 'inject', commandArgs: fopts.args }, 'state-change', null, fopts);
           break;
         }
-        case 'record': result = await recordStr(cdp, sessionId, args, refMap); break;
         case 'evalraw': {
           const route = await executePhase4DaemonRoute({
             cmd: 'evalraw',
@@ -15060,7 +15065,8 @@ function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound })
     'viewport',
   ].includes(command)
       && policy === 'mutation' && actionMutates)
-    || (command === 'netlog' && policy === 'conditional' && mutates === false)
+    || (['console', 'netlog', 'record'].includes(command)
+      && policy === 'conditional' && mutates === false)
     || (['eval', 'eval64', 'call'].includes(command)
       && policy === 'raw-script' && mutates === false)
     || (command === 'evalraw' && policy === 'raw-cdp' && mutates === false)

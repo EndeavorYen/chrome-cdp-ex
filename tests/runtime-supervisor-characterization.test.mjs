@@ -414,6 +414,8 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       ['eval', '3'],
       ['eval64', '多語'],
       ['call', '{"ok":true}'],
+      ['console', 'Console baseline cleared'],
+      ['record', 'Record timeline (100ms)'],
       ['summary', 'Fixture — https://fixture.test/'],
       ['fill', '{"schema":"fixture.fill","changed":true}'],
       ['hover', 'Hovered #fixture'],
@@ -480,6 +482,8 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       ['eval', 'eval fixture failure'],
       ['eval64', 'eval64 fixture failure'],
       ['call', 'call fixture failure'],
+      ['console', 'console fixture failure'],
+      ['record', 'record fixture failure'],
       ['summary', 'summary fixture failure'],
       ['fill', 'fill fixture failure'],
       ['hover', 'hover fixture failure'],
@@ -546,6 +550,8 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       { cmd: 'eval', args: ['1 + 2'], mcpDenied: 'run_command command not allowlisted: eval' },
       { cmd: 'eval64', args: [Buffer.from('"多語"').toString('base64')], mcpDenied: 'run_command command not allowlisted: eval64' },
       { cmd: 'call', args: ['Promise.resolve({ok:true})'], mcpDenied: 'run_command command not allowlisted: call' },
+      { cmd: 'console', args: ['--clear'], tool: 'run_command', toolArgs: { command: 'console', args: ['fixture', '--clear'], confirm: true } },
+      { cmd: 'record', args: ['100'], tool: 'record_snapshot', toolArgs: { target: 'fixture', durationMs: 100 } },
       { cmd: 'summary', args: [], tool: 'run_command', toolArgs: { command: 'summary', args: ['fixture'] } },
       { cmd: 'fill', args: ['#fixture', 'value', '--format', 'json'], tool: 'fill', toolArgs: { target: 'fixture', selector: '#fixture', text: 'value', confirm: true } },
       { cmd: 'hover', args: ['#fixture'], tool: 'run_command', toolArgs: { command: 'hover', args: ['fixture', '#fixture'], confirm: true } },
@@ -673,6 +679,8 @@ describe('Phase 5 current MCP process boundary characterization', () => {
         eval: null,
         eval64: null,
         call: null,
+        console: null,
+        record: null,
       }[canonical];
       const handler = vi.fn(async () => {
         if (fail) throw new Error(failures.get(key));
@@ -716,6 +724,8 @@ describe('Phase 5 current MCP process boundary characterization', () => {
             eval: null,
             eval64: null,
             call: null,
+            console: null,
+            record: null,
           }[name])),
       ]));
       const dispatcher = createCommandDispatcher({

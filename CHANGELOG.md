@@ -33,7 +33,9 @@ exact-method CDP domains now replace duplicated authority without removing the
   application capabilities, through `cookieset`, `cookiedel`, `dialog`,
   `keepalive`, and `netlog`. Raw-script `eval`, `eval64`, and `call` now pass
   through the same authorization and application-dispatch boundary while
-  remaining MCP-inaccessible; the remaining 31 catalog commands are explicitly
+  remaining MCP-inaccessible. Conditional observation controls `console` and
+  `record` now share the same application boundary while preserving their
+  clear/action confirmation rules; the remaining 29 catalog commands are explicitly
   retained on the characterized legacy route until parity permits migration.
   Add immutable public browser resources, private
   handles, a shared-key BrowserSupervisor with bounded stale recovery, extracted
@@ -71,7 +73,7 @@ exact-method CDP domains now replace duplicated authority without removing the
 
 * Ship the host checker, manifest, Codex Killer Path, demo media, plugin manifest, CLI shim, setup script, skill contract, CLI/MCP runtimes, and direct runtime libraries in the official tarball.
 * Add an executable release-package checker that inspects the actual tarball for
-  42 release-critical entries and verifies the exact 68-entry inventory plus
+  43 release-critical entries and verifies the exact 69-entry inventory plus
   every repository-relative README link; the release workflow runs tests, lint,
   docs, host validation, public contracts, and this artifact check before
   calculating the checksum and attaching the package.

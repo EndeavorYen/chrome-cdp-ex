@@ -22,8 +22,9 @@ const EXPECTED_TITLE = 'chrome-cdp-ex long-session smoke';
 const ACTION_PARITY_COMMANDS = new Set([
   'back', 'clickxy', 'clock', 'dismiss-modal', 'emulate', 'fill', 'forward', 'hover', 'jsclick',
   'dialog', 'keepalive', 'mock', 'nav', 'netlog', 'press', 'reload', 'scroll', 'select',
-  'throttle', 'type', 'verify-click', 'viewport',
+  'console', 'throttle', 'type', 'verify-click', 'viewport',
 ]);
+const SEMANTIC_PARITY_COMMANDS = new Set(['record']);
 const ACTION_STATE_EXPRESSION = "({title:document.title,modalHidden:document.querySelector('#motd')?.hidden===true,shortcut:document.querySelector('#shortcut-status')?.textContent,inputValue:document.querySelector('#cmd')?.value,selectValue:document.querySelector('#phase7-select')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector('#phase7-js-status')?.textContent,coordStatus:document.querySelector('#phase7-coord-status')?.textContent,authState:document.querySelector('#auth-state')?.textContent})";
 const RELOAD_STATE_EXPRESSION = "JSON.stringify({url:location.href,loadCount:Number(/^phase7-load:(\\d+)$/.exec(window.name)?.[1]),marker:document.querySelector('#phase7-load-generation')?.textContent})";
 
@@ -112,6 +113,8 @@ export function buildPhase4SliceCommands(
     immutableCommand('call', [
       'call', targetPrefix, 'async () => ({ phase7: "call" })',
     ]),
+    immutableCommand('console', ['console', targetPrefix, '--clear']),
+    immutableCommand('record', ['record', targetPrefix, '100']),
     immutableCommand('cookieset', ['cookieset', targetPrefix, 'phase7_mutation=fixture']),
     immutableCommand('cookiedel', ['cookiedel', targetPrefix, 'phase7_mutation']),
     immutableCommand('dialog', ['dialog', targetPrefix, 'dismiss']),
@@ -425,6 +428,20 @@ function validateStep(id, stdout, {
   if (id === 'call') {
     if (stdout !== '{\n  "phase7": "call"\n}') throw new Error(`call fixture output is invalid: ${JSON.stringify(stdout)}`);
     return stdout;
+  }
+  if (id === 'console') {
+    if (stdout !== 'Console baseline cleared (console and exception buffers)') {
+      throw new Error(`console fixture output is invalid: ${JSON.stringify(stdout)}`);
+    }
+    return stdout;
+  }
+  if (id === 'record') {
+    const lines = stdout.split('\n');
+    if (!/^Record timeline \(\d+ms\)$/.test(lines[0] || '')
+      || lines.length < 2 || !lines.slice(1).every(line => line.trim().length > 0)) {
+      throw new Error(`record fixture output is invalid: ${JSON.stringify(stdout.slice(0, 1200))}`);
+    }
+    return 'recorded click';
   }
   if (id === 'checkpoint') {
     const expected = [
@@ -825,12 +842,14 @@ export async function runPhase4SliceSession({
       if (command.id === 'record-actions') sessionIdentity = value;
       if (['html', 'text', 'table', 'net', 'status', 'summary', 'snap', 'controls', 'frame',
         'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
-        'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies', 'dialog', 'keepalive', 'netlog',
+        'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies', 'console', 'record', 'dialog', 'keepalive', 'netlog',
         'press', 'fill', 'hover', 'scroll', 'select',
         'back', 'clickxy', 'clock', 'dismiss-modal', 'forward', 'jsclick', 'mock', 'nav',
         'reload', 'throttle', 'type', 'verify-click', 'viewport', 'emulate'].includes(command.id)) {
         const mcpOutput = await runMcpCommand(command);
-        if (!ACTION_PARITY_COMMANDS.has(command.id) && mcpOutput !== stdout) {
+        if (!ACTION_PARITY_COMMANDS.has(command.id)
+          && !SEMANTIC_PARITY_COMMANDS.has(command.id)
+          && mcpOutput !== stdout) {
           throw new Error(`MCP ${command.id} output differs from CLI`);
         }
         validateStep(command.id, mcpOutput, {
@@ -1162,7 +1181,7 @@ export async function runDisposablePhase4Slices() {
               command: command.id,
               args: commandArgs,
               ...([
-                'components', 'checkpoint', 'cookies',
+                'components', 'checkpoint', 'cookies', 'console', 'record',
                 'back', 'clickxy', 'clock', 'dialog', 'dismiss-modal', 'fill', 'forward',
                 'hover', 'jsclick', 'keepalive', 'mock', 'nav', 'netlog', 'press', 'reload', 'scroll',
                 'select', 'throttle', 'type', 'verify-click', 'viewport', 'emulate',

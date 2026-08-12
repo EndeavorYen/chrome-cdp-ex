@@ -65,6 +65,8 @@ function fixtureOutput(id) {
   if (id === 'eval') return 'phase7-eval';
   if (id === 'eval64') return '多語';
   if (id === 'call') return '{\n  "phase7": "call"\n}';
+  if (id === 'console') return 'Console baseline cleared (console and exception buffers)';
+  if (id === 'record') return 'Record timeline (100ms)\n  (no DOM, console, exception, navigation, or XHR/Fetch/Document network events observed)';
   if (id === 'snap') return `[RootWebArea] ${TITLE}\n  [button] Refresh account\n\n(Hint: \`snap\` gives only the raw AX tree. Use \`perceive\` instead for layout, @refs, style hints, and console health — it is the recommended starting command.)`;
   if (id === 'styles') return '<SECTION>#auth-panel\n  background-color: rgb(240, 253, 244)\n  padding: 12px\n  border: 1px solid rgb(187, 247, 208)';
   if (id === 'overlay') return JSON.stringify({
@@ -288,7 +290,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     }, url, TITLE)).toMatchObject({ targetPrefix: TARGET, title: TITLE, url });
   });
 
-  it('freezes the exact bounded forty-seven-command route and final fixture-state raw expression', () => {
+  it('freezes the exact bounded fifty-two-command route and final fixture-state raw expression', () => {
     expect(buildPhase4SliceCommands(TARGET, NAV_URL)).toEqual([
       { id: 'perceive', args: ['perceive', TARGET, '--format', 'json'] },
       { id: 'click', args: ['click', TARGET, '#close-modal', '--format', 'json'] },
@@ -343,6 +345,8 @@ describe('Phase 4 disposable core-slice scenario', () => {
       { id: 'eval', args: ['eval', TARGET, '"phase7-eval"'] },
       { id: 'eval64', args: ['eval64', TARGET, Buffer.from('"多語"', 'utf8').toString('base64')] },
       { id: 'call', args: ['call', TARGET, 'async () => ({ phase7: "call" })'] },
+      { id: 'console', args: ['console', TARGET, '--clear'] },
+      { id: 'record', args: ['record', TARGET, '100'] },
       { id: 'cookieset', args: ['cookieset', TARGET, 'phase7_mutation=fixture'] },
       { id: 'cookiedel', args: ['cookiedel', TARGET, 'phase7_mutation'] },
       { id: 'dialog', args: ['dialog', TARGET, 'dismiss'] },
@@ -537,14 +541,14 @@ describe('Phase 4 disposable core-slice scenario', () => {
         'snap', 'controls', 'frame', 'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
         'wait', 'waitfor', 'cascade',
         'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
-        'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw', 'eval', 'eval64', 'call',
+        'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw', 'eval', 'eval64', 'call', 'console', 'record',
         'cookieset', 'cookiedel', 'dialog', 'keepalive', 'netlog',
         'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
       ],
       title: TITLE,
       clickOutcome: 'changed',
       reportActions: 1,
-      extractionParity: 41,
+      extractionParity: 43,
     });
     expect(runCommand.mock.calls.map(([command]) => command)).toEqual(commands);
     expect(runMcpCommand.mock.calls.map(([command]) => command.id)).toEqual([
@@ -552,7 +556,8 @@ describe('Phase 4 disposable core-slice scenario', () => {
       'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
       'wait', 'waitfor', 'cascade',
       'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
-      'jsclick', 'dismiss-modal', 'clickxy', 'press', 'dialog', 'keepalive', 'netlog',
+      'jsclick', 'dismiss-modal', 'clickxy', 'press', 'console', 'record',
+      'dialog', 'keepalive', 'netlog',
       'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
     ]);
     expect(cleanup).toHaveBeenCalledOnce();
@@ -564,7 +569,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     'wait', 'waitfor', 'cascade',
     'checkpoint', 'cookies', 'cookieset', 'cookiedel', 'dialog', 'keepalive', 'netlog',
     'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
-    'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw', 'eval', 'eval64', 'call',
+    'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw', 'eval', 'eval64', 'call', 'console', 'record',
     'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
   ])('fails at %s and still runs cleanup exactly once', async failureId => {
     const runCommand = vi.fn(async command => {
@@ -640,6 +645,8 @@ describe('Phase 4 disposable core-slice scenario', () => {
     ['eval', 'wrong-eval', 'eval fixture output'],
     ['eval64', 'wrong-eval64', 'eval64 fixture output'],
     ['call', '{"phase7":"wrong"}', 'call fixture output'],
+    ['console', 'Console entries cleared', 'console fixture output'],
+    ['record', 'Record timeline (250ms)', 'record fixture output'],
     ['viewport', JSON.stringify({
       schema: 'chrome-cdp-ex.action.v1', action: 'viewport', dispatch: { ok: false },
       receipt: { schema: 'chrome-cdp-ex.action-receipt.v1', outcome: 'changed' },
@@ -687,7 +694,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
         return JSON.stringify(model);
       },
       cleanup,
-    })).resolves.toMatchObject({ extractionParity: 41 });
+    })).resolves.toMatchObject({ extractionParity: 43 });
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
