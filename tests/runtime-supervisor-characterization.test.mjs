@@ -435,6 +435,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       ['mock', '{"schema":"fixture.mock","rules":1}'],
       ['network-mock', '{"schema":"fixture.network-mock","rules":1}'],
       ['clock', '{"schema":"fixture.clock","profile":"freeze"}'],
+      ['closetab', 'Closed tab: ABCDEF01'],
       ['time-travel', '{"schema":"fixture.time-travel","profile":"freeze"}'],
       ['throttle', '{"schema":"fixture.throttle","profile":"fast-3g"}'],
       ['network-throttle', '{"schema":"fixture.network-throttle","profile":"fast-3g"}'],
@@ -446,6 +447,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       ['cookiedel', 'Cookie deleted: fixture_cookie'],
       ['dialog', 'Dialog auto-accept: off'],
       ['keepalive', 'Keepalive extended by 1000ms'],
+      ['loadall', 'Clicked "#load-more" 2 time(s) until it disappeared'],
       ['netlog', 'No network requests recorded.'],
       ['html', '<main>Fixture</main>'],
       ['text', 'Fixture text'],
@@ -507,6 +509,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       ['mock', 'mock fixture failure'],
       ['network-mock', 'network mock alias fixture failure'],
       ['clock', 'clock fixture failure'],
+      ['closetab', 'closetab fixture failure'],
       ['time-travel', 'time travel alias fixture failure'],
       ['throttle', 'throttle fixture failure'],
       ['network-throttle', 'network throttle alias fixture failure'],
@@ -518,6 +521,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       ['cookiedel', 'cookiedel fixture failure'],
       ['dialog', 'dialog fixture failure'],
       ['keepalive', 'keepalive fixture failure'],
+      ['loadall', 'loadall fixture failure'],
       ['netlog', 'netlog fixture failure'],
       ['html', 'html fixture failure'],
       ['text', 'text fixture failure'],
@@ -582,6 +586,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       { cmd: 'mock', args: ['add', '**/api/mock', '--status', '201', '--body', 'fixture', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'mock', args: ['fixture', 'add', '**/api/mock', '--status', '201', '--body', 'fixture', '--format', 'json'], confirm: true } },
       { key: 'network-mock', cmd: 'network-mock', canonical: 'mock', args: [], mcpDenied: 'run_command command not allowlisted: network-mock' },
       { cmd: 'clock', args: ['freeze', '--at', '2020-01-02T03:04:05.000Z', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'clock', args: ['fixture', 'freeze', '--at', '2020-01-02T03:04:05.000Z', '--format', 'json'], confirm: true } },
+      { cmd: 'closetab', args: [], tool: 'run_command', toolArgs: { command: 'closetab', args: ['fixture'], confirm: true } },
       { key: 'time-travel', cmd: 'time-travel', canonical: 'clock', args: [], mcpDenied: 'run_command command not allowlisted: time-travel' },
       { cmd: 'throttle', args: ['fast-3g', '--format', 'json'], tool: 'run_command', toolArgs: { command: 'throttle', args: ['fixture', 'fast-3g', '--format', 'json'], confirm: true } },
       { key: 'network-throttle', cmd: 'network-throttle', canonical: 'throttle', args: [], mcpDenied: 'run_command command not allowlisted: network-throttle' },
@@ -596,6 +601,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       { cmd: 'cookiedel', args: ['fixture_cookie'], mcpDenied: 'run_command command not allowlisted: cookiedel' },
       { cmd: 'dialog', args: ['off'], tool: 'run_command', toolArgs: { command: 'dialog', args: ['fixture', 'off'], confirm: true } },
       { cmd: 'keepalive', args: ['1000'], tool: 'run_command', toolArgs: { command: 'keepalive', args: ['fixture', '1000'], confirm: true } },
+      { cmd: 'loadall', args: ['#load-more', '25'], tool: 'run_command', toolArgs: { command: 'loadall', args: ['fixture', '#load-more', '25'], confirm: true } },
       { cmd: 'netlog', args: [], tool: 'run_command', toolArgs: { command: 'netlog', args: ['fixture'] } },
       { cmd: 'html', args: ['main'], tool: 'run_command', toolArgs: { command: 'html', args: ['fixture', 'main'] } },
       { cmd: 'text', args: ['--auto'], tool: 'run_command', toolArgs: { command: 'text', args: ['fixture', '--auto'] } },
@@ -662,10 +668,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
     const direct = async (entry, fail = false) => {
       const canonical = entry.canonical || entry.cmd;
       const key = entry.key || entry.cmd;
-      if (!cdpTest.MIGRATED_DAEMON_COMMANDS.includes(canonical)) {
-        if (fail) throw new Error(failures.get(key));
-        return outputs.get(key);
-      }
+      expect(cdpTest.MIGRATED_DAEMON_COMMANDS).toContain(canonical);
       const evidence = {
         perceive: null,
         report: { kind: 'session-report' },
@@ -687,6 +690,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
         reload: { kind: 'action-receipt' },
         mock: { kind: 'action-receipt' },
         clock: { kind: 'action-receipt' },
+        closetab: { kind: 'action-receipt' },
         throttle: { kind: 'action-receipt' },
         viewport: { kind: 'action-receipt' },
         emulate: { kind: 'action-receipt' },
@@ -694,6 +698,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
         cookiedel: { kind: 'action-receipt' },
         dialog: null,
         keepalive: null,
+        loadall: null,
         netlog: null,
         evalraw: {
           kind: 'raw-audit',
@@ -738,6 +743,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
             reload: { kind: 'action-receipt' },
             mock: { kind: 'action-receipt' },
             clock: { kind: 'action-receipt' },
+            closetab: { kind: 'action-receipt' },
             throttle: { kind: 'action-receipt' },
             viewport: { kind: 'action-receipt' },
             emulate: { kind: 'action-receipt' },
@@ -745,6 +751,7 @@ describe('Phase 5 current MCP process boundary characterization', () => {
             cookiedel: { kind: 'action-receipt' },
             dialog: null,
             keepalive: null,
+            loadall: null,
             netlog: null,
             evalraw: { kind: 'raw-audit', method: 'DOM.getDocument', sideEffectClass: 'read-only' },
             eval: null,

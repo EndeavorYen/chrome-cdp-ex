@@ -13,8 +13,8 @@ import { createDaemonReadHandlers } from '../skills/chrome-cdp-ex/scripts/lib/da
 import { __test__ as cdpTest } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
 
 const ACTION_COMMANDS = Object.freeze([
-  'back', 'clickxy', 'clock', 'cookiedel', 'cookieset', 'dialog', 'dismiss-modal', 'emulate',
-  'fill', 'forward', 'hover', 'inject', 'jsclick', 'keepalive', 'mock', 'nav', 'netlog', 'press',
+  'back', 'clickxy', 'clock', 'closetab', 'cookiedel', 'cookieset', 'dialog', 'dismiss-modal', 'emulate',
+  'fill', 'forward', 'hover', 'inject', 'jsclick', 'keepalive', 'loadall', 'mock', 'nav', 'netlog', 'press',
   'qa', 'reload', 'responsive-audit', 'restore', 'scroll', 'select', 'throttle', 'type', 'upload',
   'verify-click', 'viewport',
 ]);
@@ -717,8 +717,8 @@ describe('Phase 4 daemon dispatch seam', () => {
     });
     expect(preflight.registry.list()).toHaveLength(81);
     expect(Object.keys(preflight.routeOwners)).toHaveLength(81);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(66);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(15);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(68);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(13);
     expect(Object.isFrozen(preflight)).toBe(true);
     expect(Object.isFrozen(preflight.handlerBuilders)).toBe(true);
     expect(Object.values(builders).every(builder => builder.mock.calls.length === 0)).toBe(true);
@@ -824,7 +824,7 @@ describe('Phase 4 daemon dispatch seam', () => {
   });
 
   it.each(ACTION_COMMANDS)('binds %s to mutation authorization and a live target', command => {
-    const mutates = !['dialog', 'hover', 'keepalive', 'netlog'].includes(command);
+    const mutates = !['dialog', 'hover', 'keepalive', 'loadall', 'netlog'].includes(command);
     const policy = command === 'netlog' ? 'conditional' : 'mutation';
     expect(cdpTest.authorizePhase4DaemonCommand({
       command, policy, mutates, targetBound: true,
@@ -923,10 +923,11 @@ describe('Phase 4 daemon dispatch seam', () => {
       'inject', 'restore', 'upload',
       'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
       'qa', 'responsive-audit',
+      'closetab', 'loadall',
     ]);
     const preflight = cdpTest.preflightDaemonApplication();
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(66);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(15);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(68);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(13);
     const readHandlers = createDaemonReadHandlers({
       cascade: async args => `cascade:${args.join('|')}`,
       checkpoint: async args => `checkpoint:${args.join('|')}`,
@@ -966,7 +967,7 @@ describe('Phase 4 daemon dispatch seam', () => {
       ...createDaemonActionHandlers(Object.fromEntries(
         ACTION_COMMANDS.map(name => [name, async args => commandResult(
           `${name}:${args.join('|')}`,
-          ['dialog', 'hover', 'keepalive', 'netlog'].includes(name) ? null : { kind: 'action-receipt' },
+          ['dialog', 'hover', 'keepalive', 'loadall', 'netlog'].includes(name) ? null : { kind: 'action-receipt' },
         )]),
       )),
       ...Object.fromEntries(SCRIPT_COMMANDS.map(name => [
@@ -1078,6 +1079,43 @@ describe('Phase 4 daemon dispatch seam', () => {
         cmd: name, args: ['fixture'], targetBound: true,
       }, dispatcher)).resolves.toEqual({ handled: true, result: `${name}:fixture` });
     }
+  });
+
+  it('preserves the final target lifecycle command behavior and CDP call identity', async () => {
+    const calls = [];
+    let loadProbe = 0;
+    const cdp = {
+      send: async (method, params, sessionId) => {
+        calls.push({ method, params, sessionId });
+        if (method === 'Runtime.evaluate') {
+          loadProbe += 1;
+          return {
+            result: {
+              value: loadProbe <= 2
+                ? { x: 20 + loadProbe, y: 40 + loadProbe }
+                : null,
+            },
+          };
+        }
+        return {};
+      },
+    };
+
+    await expect(cdpTest.loadAllStr(cdp, 'session-1', '#load-more', 0))
+      .resolves.toBe('Clicked "#load-more" 2 time(s) until it disappeared');
+    expect(calls.filter(call => call.method === 'Runtime.evaluate')).toHaveLength(3);
+    expect(calls.filter(call => call.method === 'Input.dispatchMouseEvent')).toHaveLength(6);
+    expect(calls.filter(call => call.method === 'Input.dispatchMouseEvent').map(call => call.params.type))
+      .toEqual(['mouseMoved', 'mousePressed', 'mouseReleased', 'mouseMoved', 'mousePressed', 'mouseReleased']);
+    expect(calls.every(call => call.sessionId === 'session-1')).toBe(true);
+
+    await expect(cdpTest.closetabStr(cdp, 'ABCDEF0123456789'))
+      .resolves.toBe('Closed tab: ABCDEF01');
+    expect(calls.at(-1)).toEqual({
+      method: 'Target.closeTarget',
+      params: { targetId: 'ABCDEF0123456789' },
+      sessionId: undefined,
+    });
   });
 
   it('binds each production extraction builder to exactly its named capability', async () => {

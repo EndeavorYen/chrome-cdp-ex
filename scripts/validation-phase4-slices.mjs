@@ -25,6 +25,7 @@ const ACTION_PARITY_COMMANDS = new Set([
   'console', 'inject', 'restore', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
   'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
   'qa', 'responsive-audit',
+  'loadall', 'closetab',
 ]);
 const SEMANTIC_PARITY_COMMANDS = new Set(['record']);
 const ACTION_STATE_EXPRESSION = "({title:document.title,modalHidden:document.querySelector('#motd')?.hidden===true,shortcut:document.querySelector('#shortcut-status')?.textContent,inputValue:document.querySelector('#cmd')?.value,selectValue:document.querySelector('#phase7-select')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector('#phase7-js-status')?.textContent,coordStatus:document.querySelector('#phase7-coord-status')?.textContent,authState:document.querySelector('#auth-state')?.textContent})";
@@ -78,6 +79,43 @@ const RESTORE_SCANSHOT_EXPRESSION = `(() => {
     viewportHeight: window.innerHeight,
   });
 })()`;
+const PREPARE_LOADALL_EXPRESSION = `(() => {
+  document.getElementById('phase7-load-more')?.remove();
+  document.getElementById('phase7-loadall-state')?.remove();
+  const modal = document.getElementById('motd');
+  if (modal) modal.hidden = true;
+  const state = document.createElement('p');
+  state.id = 'phase7-loadall-state';
+  state.dataset.count = '0';
+  state.textContent = 'loadall:0';
+  const button = document.createElement('button');
+  button.id = 'phase7-load-more';
+  button.textContent = 'Load more';
+  button.style.cssText = 'position:fixed;left:24px;bottom:24px;z-index:2147483646;';
+  button.addEventListener('click', () => {
+    const count = Number(state.dataset.count || 0) + 1;
+    state.dataset.count = String(count);
+    state.textContent = 'loadall:' + count;
+    if (count >= 2) button.remove();
+  });
+  document.querySelector('main')?.append(state, button);
+  button.scrollIntoView({ block: 'center', inline: 'center' });
+  const rect = button.getBoundingClientRect();
+  const hitId = document.elementFromPoint(
+    rect.x + rect.width / 2,
+    rect.y + rect.height / 2,
+  )?.id || '';
+  return JSON.stringify({
+    count: 0,
+    present: true,
+    hitId,
+    modalHidden: modal?.hidden === true,
+  });
+})()`;
+const LOADALL_STATE_EXPRESSION = `JSON.stringify({
+  count: Number(document.getElementById('phase7-loadall-state')?.dataset.count || -1),
+  present: Boolean(document.getElementById('phase7-load-more')),
+})`;
 
 export function phase4RuntimeBase({ platform = process.platform, tempDir = tmpdir() } = {}) {
   return platform === 'win32' ? tempDir : '/tmp';
@@ -153,6 +191,37 @@ export function assertPhase4TargetReady(model, url, expectedTitle = EXPECTED_TIT
   if (page?.title !== expectedTitle) throw new Error('disposable loopback page is not ready');
   if (!observation.targetPrefix) throw new Error('disposable target prefix is missing');
   return { ...observation, title: page.title, targetId: page.targetId || null };
+}
+
+export function assertPhase4LoadAllState(value, { count = 2, present = false } = {}) {
+  if (!exactKeys(value, ['count', 'present'])
+    || value.count !== count
+    || value.present !== present) {
+    throw new Error('loadall live state is invalid');
+  }
+  return value.count;
+}
+
+export function assertPhase4LoadAllReady(value) {
+  if (!exactKeys(value, ['count', 'hitId', 'modalHidden', 'present'])
+    || value.count !== 0
+    || value.present !== true
+    || value.hitId !== 'phase7-load-more'
+    || value.modalHidden !== true) {
+    throw new Error('loadall fixture is not interactable');
+  }
+  return true;
+}
+
+export function assertPhase4TargetClosed(pages, targetId) {
+  if (!Array.isArray(pages)) throw new Error('closed target list is invalid');
+  if (typeof targetId !== 'string' || !/^[A-F0-9]{12,64}$/i.test(targetId)) {
+    throw new Error('closed target identity is invalid');
+  }
+  if (pages.some(page => page?.id === targetId || page?.targetId === targetId)) {
+    throw new Error('target is still open');
+  }
+  return true;
 }
 
 export function buildPhase4SliceCommands(
@@ -307,6 +376,8 @@ export function buildPhase4SliceCommands(
     ...(includeScreenshots ? [
       immutableCommand('scanshot', ['scanshot', targetPrefix]),
     ] : []),
+    immutableCommand('loadall', ['loadall', targetPrefix, '#phase7-load-more', '25']),
+    immutableCommand('closetab', ['closetab', targetPrefix]),
   ]);
 }
 
@@ -738,6 +809,18 @@ function validateStep(id, stdout, {
   if (id === 'keepalive') {
     if (!/^Daemon keepalive extended for 1000ms \(until \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\)$/.test(stdout)) {
       throw new Error(`keepalive fixture output is invalid: ${JSON.stringify(stdout)}`);
+    }
+    return stdout;
+  }
+  if (id === 'loadall') {
+    if (stdout !== 'Clicked "#phase7-load-more" 2 time(s) until it disappeared') {
+      throw new Error(`loadall fixture output is invalid: ${JSON.stringify(stdout)}`);
+    }
+    return stdout;
+  }
+  if (id === 'closetab') {
+    if (stdout !== `Closed tab: ${targetPrefix.slice(0, 8)}`) {
+      throw new Error(`closetab fixture output is invalid: ${JSON.stringify(stdout)}`);
     }
     return stdout;
   }
@@ -1250,6 +1333,7 @@ function validateStep(id, stdout, {
 
 export async function runPhase4SliceSession({
   targetPrefix,
+  mcpTargetPrefix = targetPrefix,
   expectedTitle = EXPECTED_TITLE,
   expectedUrl,
   navigationUrl = 'http://127.0.0.1:41758/validation-phase4.html#phase7-navigation',
@@ -1303,7 +1387,8 @@ export async function runPhase4SliceSession({
         'press', 'fill', 'hover', 'inject', 'restore', 'scroll', 'select', 'upload',
         'back', 'clickxy', 'clock', 'dismiss-modal', 'forward', 'jsclick', 'mock', 'nav',
         'reload', 'throttle', 'type', 'verify-click', 'viewport', 'emulate',
-        'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot', 'qa', 'responsive-audit'].includes(command.id)) {
+        'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot', 'qa', 'responsive-audit',
+        'loadall', 'closetab'].includes(command.id)) {
         const mcpOutput = await runMcpCommand(command);
         if (!ACTION_PARITY_COMMANDS.has(command.id)
           && !SEMANTIC_PARITY_COMMANDS.has(command.id)
@@ -1311,7 +1396,7 @@ export async function runPhase4SliceSession({
           throw new Error(`MCP ${command.id} output differs from CLI`);
         }
         validateStep(command.id, mcpOutput, {
-          targetPrefix,
+          targetPrefix: ACTION_PARITY_COMMANDS.has(command.id) ? mcpTargetPrefix : targetPrefix,
           expectedTitle,
           expectedUrl,
           expectedSessionIdentity: sessionIdentity,
@@ -1480,6 +1565,24 @@ async function discoverDisposableTarget({ browser, diagnostics, port, url, env }
   throw new Error(`CDP_REACHABILITY: ${lastError}`);
 }
 
+async function waitForTargetClosed({ port, targetId }) {
+  let lastError = 'target is still open';
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/json/list`, {
+        signal: AbortSignal.timeout(500),
+      });
+      if (!response.ok) throw new Error(`CDP target list returned ${response.status}`);
+      assertPhase4TargetClosed(await response.json(), targetId);
+      return true;
+    } catch (error) {
+      lastError = error.message;
+      await delay(100);
+    }
+  }
+  throw new Error(`closetab target did not close: ${lastError}`);
+}
+
 export async function runDisposablePhase4Slices() {
   if (!existsSync(cdpPath) || !existsSync(pagePath)) throw new Error('Phase 4 validation fixtures are missing');
   const candidate = discoverBrowserCandidates()[0];
@@ -1526,6 +1629,7 @@ export async function runDisposablePhase4Slices() {
     let browser = null;
     let browserDiagnostics = null;
     let targetPrefix = null;
+    let targetId = null;
     let mcpTargetPrefix = null;
     let mcpTargetId = null;
     const targetPrefixes = new Set();
@@ -1606,6 +1710,7 @@ export async function runDisposablePhase4Slices() {
       });
       ensureActive();
       targetPrefix = observation.targetPrefix;
+      targetId = observation.targetId;
       targetPrefixes.add(targetPrefix);
       const created = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(mcpUrl)}`, {
         method: 'PUT',
@@ -1660,6 +1765,10 @@ export async function runDisposablePhase4Slices() {
           commandArgs[outDirIndex + 1] = mcpResponsiveOutDir;
         }
         if (command.id === 'nav') commandArgs[1] = mcpNavigationUrl;
+        if (command.id === 'loadall') {
+          const prepared = JSON.parse(runCdp(['eval', mcpTargetPrefix, PREPARE_LOADALL_EXPRESSION], env, 5_000));
+          assertPhase4LoadAllReady(prepared);
+        }
         const handler = ACTION_PARITY_COMMANDS.has(command.id) ? mcpActionHandler : mcpHandler;
         const invokeMcp = async () => {
           await handler({
@@ -1678,6 +1787,7 @@ export async function runDisposablePhase4Slices() {
                   'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport', 'emulate',
                   'shot', 'diff-shot', 'fullshot',
                   'qa', 'responsive-audit',
+                  'loadall', 'closetab',
                 ].includes(command.id)
                   ? { confirm: true }
                   : {}),
@@ -1745,10 +1855,22 @@ export async function runDisposablePhase4Slices() {
             throw new Error(`MCP ${command.id} left the target runtime unavailable`);
           }
         }
+        if (command.id === 'loadall') {
+          const state = JSON.parse(runCdp(['eval', mcpTargetPrefix, LOADALL_STATE_EXPRESSION], env, 5_000));
+          assertPhase4LoadAllState(state);
+        }
+        if (command.id === 'closetab') {
+          if (text.trim() !== `Closed tab: ${mcpTargetId.slice(0, 8)}`) {
+            throw new Error('MCP closetab closed an unexpected target');
+          }
+          await waitForTargetClosed({ port, targetId: mcpTargetId });
+          targetPrefixes.delete(mcpTargetPrefix);
+        }
         return text.trim();
       };
       const result = await runPhase4SliceSession({
         targetPrefix,
+        mcpTargetPrefix,
         expectedTitle: EXPECTED_TITLE,
         expectedUrl: url,
         navigationUrl,
@@ -1759,6 +1881,10 @@ export async function runDisposablePhase4Slices() {
         responsiveOutDir,
         artifactRoot: runtimeDir,
         runCommand: async command => {
+          if (command.id === 'loadall') {
+            const prepared = JSON.parse(runCdp(['eval', targetPrefix, PREPARE_LOADALL_EXPRESSION], env, 5_000));
+            assertPhase4LoadAllReady(prepared);
+          }
           const output = command.id === 'scanshot'
             ? await withPhase4ScanshotFixture({
               evaluate: expression => runCdp(['eval', targetPrefix, expression], env, 5_000),
@@ -1801,6 +1927,17 @@ export async function runDisposablePhase4Slices() {
             if (runCdp(['eval', targetPrefix, 'true'], env, 5_000) !== 'true') {
               throw new Error(`${command.id} left the target runtime unavailable`);
             }
+          }
+          if (command.id === 'loadall') {
+            const state = JSON.parse(runCdp(['eval', targetPrefix, LOADALL_STATE_EXPRESSION], env, 5_000));
+            assertPhase4LoadAllState(state);
+          }
+          if (command.id === 'closetab') {
+            if (output !== `Closed tab: ${targetId.slice(0, 8)}`) {
+              throw new Error('closetab closed an unexpected target');
+            }
+            await waitForTargetClosed({ port, targetId });
+            targetPrefixes.delete(targetPrefix);
           }
           return output;
         },

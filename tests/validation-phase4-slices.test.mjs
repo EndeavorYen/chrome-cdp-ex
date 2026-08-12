@@ -13,6 +13,8 @@ import {
   assertPhase4EnvironmentEffect,
   assertPhase4ExternalInputEffect,
   assertPhase4InjectionRemoved,
+  assertPhase4LoadAllReady,
+  assertPhase4LoadAllState,
   assertPhase4NavigationState,
   assertPhase4ReloadState,
   assertPhase4RenderingEffect,
@@ -21,6 +23,7 @@ import {
   assertPhase4QaFilesystem,
   assertPhase4ResponsiveFilesystem,
   assertPhase4TargetReady,
+  assertPhase4TargetClosed,
   buildPhase4SliceCommands,
   buildPhase4CookieEffectCommand,
   buildPhase4ExternalInputEffectCommand,
@@ -71,6 +74,8 @@ function fixtureOutput(id) {
   if (id === 'cookiedel') return 'Cookie deleted: phase7_mutation';
   if (id === 'dialog') return 'Dialog auto-accept: OFF (dialogs will be dismissed/rejected)';
   if (id === 'keepalive') return 'Daemon keepalive extended for 1000ms (until 2026-08-12T09:00:00.000Z)';
+  if (id === 'loadall') return 'Clicked "#phase7-load-more" 2 time(s) until it disappeared';
+  if (id === 'closetab') return `Closed tab: ${TARGET.slice(0, 8)}`;
   if (id === 'netlog') return 'Network log cleared';
   if (id === 'eval') return 'phase7-eval';
   if (id === 'eval64') return '多語';
@@ -408,6 +413,8 @@ describe('Phase 4 disposable core-slice scenario', () => {
       { id: 'clock', args: ['clock', TARGET, 'freeze', '--at', '2020-01-02T03:04:05.000Z', '--format', 'json'] },
       { id: 'viewport', args: ['viewport', TARGET, '390x844', '--format', 'json'] },
       { id: 'emulate', args: ['emulate', TARGET, 'dark', 'reduced-motion', 'reduce', '--format', 'json'] },
+      { id: 'loadall', args: ['loadall', TARGET, '#phase7-load-more', '25'] },
+      { id: 'closetab', args: ['closetab', TARGET] },
     ]);
     expect(Object.isFrozen(buildPhase4SliceCommands(TARGET, NAV_URL))).toBe(true);
   });
@@ -428,7 +435,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
       { id: 'diff-shot', args: ['diff-shot', TARGET, '--keep-baseline', '--format', 'json'] },
       { id: 'scanshot', args: ['scanshot', TARGET] },
     ]);
-    expect(commands).toHaveLength(65);
+    expect(commands).toHaveLength(67);
   });
 
   it('adds only the bounded QA filesystem family when explicitly enabled', () => {
@@ -452,7 +459,39 @@ describe('Phase 4 disposable core-slice scenario', () => {
         ],
       },
     ]);
-    expect(commands).toHaveLength(61);
+    expect(commands).toHaveLength(63);
+  });
+
+  it('requires loadall to click exactly twice and remove the live selector', () => {
+    expect(assertPhase4LoadAllReady({
+      count: 0,
+      present: true,
+      hitId: 'phase7-load-more',
+      modalHidden: true,
+    })).toBe(true);
+    expect(() => assertPhase4LoadAllReady({
+      count: 0,
+      present: true,
+      hitId: 'motd',
+      modalHidden: false,
+    })).toThrow(/loadall fixture is not interactable/);
+    expect(() => assertPhase4LoadAllReady({
+      count: 0,
+      present: true,
+      hitId: 'phase7-load-more',
+      modalHidden: true,
+      extra: true,
+    })).toThrow(/loadall fixture is not interactable/);
+    expect(assertPhase4LoadAllState({ count: 2, present: false })).toBe(2);
+    expect(() => assertPhase4LoadAllState({ count: 1, present: false })).toThrow(/loadall/);
+    expect(() => assertPhase4LoadAllState({ count: 2, present: true })).toThrow(/loadall/);
+    expect(() => assertPhase4LoadAllState({ count: 2, present: false, extra: true })).toThrow(/loadall/);
+  });
+
+  it('requires the exact closed target to disappear from CDP discovery', () => {
+    expect(assertPhase4TargetClosed([], TARGET_ID)).toBe(true);
+    expect(() => assertPhase4TargetClosed([{ id: TARGET_ID }], TARGET_ID)).toThrow(/target is still open/);
+    expect(() => assertPhase4TargetClosed({}, TARGET_ID)).toThrow(/target list/);
   });
 
   it('requires exact target-bound private QA and responsive audit artifacts', () => {
@@ -725,11 +764,12 @@ describe('Phase 4 disposable core-slice scenario', () => {
         'upload', 'inject', 'restore',
         'cookieset', 'cookiedel', 'dialog', 'keepalive', 'netlog',
         'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
+        'loadall', 'closetab',
       ],
       title: TITLE,
       clickOutcome: 'changed',
       reportActions: 1,
-      extractionParity: 46,
+      extractionParity: 48,
     });
     expect(runCommand.mock.calls.map(([command]) => command)).toEqual(commands);
     expect(runMcpCommand.mock.calls.map(([command]) => command.id)).toEqual([
@@ -741,6 +781,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
       'upload', 'inject', 'restore',
       'dialog', 'keepalive', 'netlog',
       'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
+      'loadall', 'closetab',
     ]);
     expect(cleanup).toHaveBeenCalledOnce();
   });
@@ -755,6 +796,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     'batch', 'flow', 'repeat', 'replay',
     'upload', 'inject', 'restore',
     'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
+    'loadall', 'closetab',
   ])('fails at %s and still runs cleanup exactly once', async failureId => {
     const runCommand = vi.fn(async command => {
       if (command.id === failureId) throw new Error(`forced ${failureId} failure`);
@@ -797,6 +839,8 @@ describe('Phase 4 disposable core-slice scenario', () => {
       assertions: [{ kind: 'text', expected: 'auth state preserved after refresh', status: 'fail' }],
     }), 'verify-click fixture output'],
     ['hover', 'hovered the wrong fixture', 'hover fixture output'],
+    ['loadall', 'Clicked "#phase7-load-more" 1 time(s) until it disappeared', 'loadall fixture output'],
+    ['closetab', 'Closed tab: FFFFFFFF', 'closetab fixture output'],
     ['net', 'TOTALLY WRONG NETWORK OUTPUT', 'net fixture output'],
     ['status', JSON.stringify({
       schema: 'chrome-cdp-ex.status.v1', page: { title: TITLE, url: URL },
@@ -885,7 +929,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
         return JSON.stringify(model);
       },
       cleanup,
-    })).resolves.toMatchObject({ extractionParity: 46 });
+    })).resolves.toMatchObject({ extractionParity: 48 });
     expect(cleanup).toHaveBeenCalledOnce();
   });
 

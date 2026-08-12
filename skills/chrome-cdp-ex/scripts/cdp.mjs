@@ -12989,6 +12989,7 @@ const MIGRATED_DAEMON_COMMANDS = Object.freeze([
   'inject', 'restore', 'upload',
   'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
   'qa', 'responsive-audit',
+  'closetab', 'loadall',
 ]);
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPhase4PerceiveHandler(context),
@@ -13060,6 +13061,8 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
   scanshot: capabilities => createDaemonReadHandlers(capabilities).scanshot,
   qa: capabilities => createDaemonActionHandlers(capabilities).qa,
   'responsive-audit': capabilities => createDaemonActionHandlers(capabilities)['responsive-audit'],
+  closetab: capabilities => createDaemonActionHandlers(capabilities).closetab,
+  loadall: capabilities => createDaemonActionHandlers(capabilities).loadall,
 });
 
 function preflightDaemonApplication(input = {}) {
@@ -13544,6 +13547,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       await clockStr(cdp, sessionId, session, args),
       { kind: 'action-receipt' },
     ),
+    closetab: async () => commandResult(
+      await closetabStr(cdp, targetId),
+      { kind: 'action-receipt' },
+    ),
     cookiedel: async args => commandResult(
       await cookieDelStr(cdp, sessionId, args[0]),
       { kind: 'action-receipt' },
@@ -13606,6 +13613,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     },
     keepalive: async args => commandResult(
       extendKeepalive(parseDelayMs(args[0], { name: 'keepalive duration' })),
+      null,
+    ),
+    loadall: async args => commandResult(
+      await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500),
       null,
     ),
     mock: async args => commandResult(
@@ -13893,6 +13904,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     scanshot: applicationPreflight.handlerBuilders.scanshot(readCapabilities),
     qa: applicationPreflight.handlerBuilders.qa(actionCapabilities),
     'responsive-audit': responsiveAuditBuilder(actionCapabilities),
+    closetab: applicationPreflight.handlerBuilders.closetab(actionCapabilities),
+    loadall: applicationPreflight.handlerBuilders.loadall(actionCapabilities),
   };
   const phase4Context = createCommandDispatcher({
     registry: phase4Registry,
@@ -13957,8 +13970,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           result = route.result;
           break;
         }
-        case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
-        case 'closetab': result = await closetabStr(cdp, targetId); break;
         case 'evalraw': {
           const route = await executePhase4DaemonRoute({
             cmd: 'evalraw',
@@ -15242,13 +15253,13 @@ function createPhase4EvalrawHandler({ evalRaw }) {
 
 function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound }) {
   if (!targetBound) return { allowed: false, code: 'target-not-bound' };
-  const actionMutates = ['dialog', 'hover', 'keepalive'].includes(command)
+  const actionMutates = ['dialog', 'hover', 'keepalive', 'loadall'].includes(command)
     ? mutates === false
     : mutates === true;
   const allowed = ([
-    'back', 'click', 'clickxy', 'clock', 'dismiss-modal', 'fill', 'forward', 'hover',
+    'back', 'click', 'clickxy', 'clock', 'closetab', 'dismiss-modal', 'fill', 'forward', 'hover',
     'cookiedel', 'cookieset', 'dialog', 'emulate', 'jsclick', 'keepalive', 'mock',
-    'inject', 'nav', 'press', 'qa', 'reload', 'responsive-audit', 'restore', 'scroll',
+    'inject', 'loadall', 'nav', 'press', 'qa', 'reload', 'responsive-audit', 'restore', 'scroll',
     'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
   ].includes(command)
       && policy === 'mutation' && actionMutates)
@@ -16669,7 +16680,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, loadAllStr, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   isBatchParallelUnsafeCommand,
