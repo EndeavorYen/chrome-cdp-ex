@@ -25,12 +25,12 @@ describe('Runtime v3 final dispatch characterization', () => {
         aliases: 23,
         targetCommands: 68,
         targetlessCommands: 13,
-        applicationCommands: 47,
-        legacyDaemonCommands: 21,
-        daemonGroups: 30,
+        applicationCommands: 50,
+        legacyDaemonCommands: 18,
+        daemonGroups: 27,
       },
       applicationCommands: [
-        'back', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'evalraw', 'export-playwright', 'fill', 'forward', 'frame', 'hover', 'html', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
+        'back', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'forward', 'frame', 'hover', 'html', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
         'overlay', 'perceive', 'press', 'record-actions', 'reload', 'report', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
         'table', 'text', 'throttle', 'type', 'verify-click', 'viewport', 'wait', 'waitfor',
       ],
@@ -39,10 +39,10 @@ describe('Runtime v3 final dispatch characterization', () => {
       'help', 'list', 'target', 'tab-group', 'broadcast', 'open', 'doctor',
       'spawn-debug-browser', 'attach', 'use', 'forget', 'current', 'stop',
     ]);
-    expect(fixture.deletionAllowlist).toHaveLength(21);
+    expect(fixture.deletionAllowlist).toHaveLength(18);
     expect(fixture.deletionAllowlist.map(entry => entry.name)).not.toEqual(
       expect.arrayContaining([
-        'back', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'evalraw', 'export-playwright', 'fill', 'forward', 'frame', 'hover', 'html', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
+        'back', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'components', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'dismiss-modal', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'forward', 'frame', 'hover', 'html', 'jsclick', 'keepalive', 'mock', 'nav', 'net', 'netlog',
         'overlay', 'perceive', 'press', 'record-actions', 'reload', 'report', 'scroll', 'select', 'snap', 'status', 'styles', 'summary',
         'table', 'text', 'throttle', 'type', 'verify-click', 'viewport', 'wait', 'waitfor',
       ]),
@@ -198,6 +198,14 @@ describe('Runtime v3 final dispatch characterization', () => {
         'netlog: applicationPreflight.handlerBuilders.netlog(actionCapabilities),',
         'netlog: applicationPreflight.handlerBuilders.dialog(actionCapabilities),',
       ),
+      source.replace(
+        'eval: applicationPreflight.handlerBuilders.eval(scriptCapabilities),',
+        'eval: applicationPreflight.handlerBuilders.call(scriptCapabilities),',
+      ),
+      source.replace(
+        'eval: async args => {',
+        'eval: async args => commandResult(await callStr(cdp, sessionId, args.join(\' \')), null),\n    plantedEval: async args => {',
+      ),
     ]) {
       expect(buildRuntimeDispatchInventory(mutation)).not.toEqual(fixture);
     }
@@ -216,6 +224,10 @@ describe('Runtime v3 final dispatch characterization', () => {
     expect(() => buildRuntimeDispatchInventory(source.replace(
       'const actionCapabilities = {',
       'if (true) { const actionCapabilities = {}; }\n  const actionCapabilities = {',
+    ))).toThrow(/direct runDaemon const|exactly once/);
+    expect(() => buildRuntimeDispatchInventory(source.replace(
+      'const scriptCapabilities = {',
+      'if (true) { const scriptCapabilities = {}; }\n  const scriptCapabilities = {',
     ))).toThrow(/direct runDaemon const|exactly once/);
     expect(() => buildRuntimeDispatchInventory(source.replace(
       "const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];",
@@ -255,7 +267,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 30 daemon groups');
+    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 27 daemon groups');
   });
 
   it('keeps the complete policy-class distribution visible before deletion', () => {

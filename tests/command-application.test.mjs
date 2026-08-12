@@ -17,6 +17,7 @@ const ACTION_COMMANDS = Object.freeze([
   'fill', 'forward', 'hover', 'jsclick', 'keepalive', 'mock', 'nav', 'netlog', 'press',
   'reload', 'scroll', 'select', 'throttle', 'type', 'verify-click', 'viewport',
 ]);
+const SCRIPT_COMMANDS = Object.freeze(['eval', 'eval64', 'call']);
 
 function spec(overrides = {}) {
   return {
@@ -714,8 +715,8 @@ describe('Phase 4 daemon dispatch seam', () => {
     });
     expect(preflight.registry.list()).toHaveLength(81);
     expect(Object.keys(preflight.routeOwners)).toHaveLength(81);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(47);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(34);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(50);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(31);
     expect(Object.isFrozen(preflight)).toBe(true);
     expect(Object.isFrozen(preflight.handlerBuilders)).toBe(true);
     expect(Object.values(builders).every(builder => builder.mock.calls.length === 0)).toBe(true);
@@ -834,6 +835,18 @@ describe('Phase 4 daemon dispatch seam', () => {
     })).toEqual({ allowed: false, code: 'policy-denied' });
   });
 
+  it.each(SCRIPT_COMMANDS)('binds %s to raw-script authorization and a live target', command => {
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command, policy: 'raw-script', mutates: false, targetBound: true,
+    })).toEqual({ allowed: true, code: 'legacy-daemon' });
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command, policy: 'raw-script', mutates: false, targetBound: false,
+    })).toEqual({ allowed: false, code: 'target-not-bound' });
+    expect(cdpTest.authorizePhase4DaemonCommand({
+      command, policy: 'mutation', mutates: false, targetBound: true,
+    })).toEqual({ allowed: false, code: 'policy-denied' });
+  });
+
   it('supports the exact request shape used by sequential batch and flow recursion', async () => {
     const context = routeFixture();
     const dispatcher = createCommandDispatcher({
@@ -872,10 +885,11 @@ describe('Phase 4 daemon dispatch seam', () => {
       'clock', 'mock', 'throttle',
       'emulate', 'viewport',
       'cookiedel', 'cookieset', 'dialog', 'keepalive', 'netlog',
+      'eval', 'eval64', 'call',
     ]);
     const preflight = cdpTest.preflightDaemonApplication();
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(47);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(34);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(50);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(31);
     const readHandlers = createDaemonReadHandlers({
       cascade: async args => `cascade:${args.join('|')}`,
       checkpoint: async args => `checkpoint:${args.join('|')}`,
@@ -911,6 +925,9 @@ describe('Phase 4 daemon dispatch seam', () => {
           ['dialog', 'hover', 'keepalive', 'netlog'].includes(name) ? null : { kind: 'action-receipt' },
         )]),
       )),
+      ...Object.fromEntries(SCRIPT_COMMANDS.map(name => [
+        name, async ({ args }) => commandResult(`${name}:${args.join('|')}`, null),
+      ])),
     };
     const dispatcher = createCommandDispatcher({
       registry: preflight.registry,
@@ -980,6 +997,11 @@ describe('Phase 4 daemon dispatch seam', () => {
         cmd: name, args: ['fixture'], targetBound: true,
       }, dispatcher)).resolves.toEqual({ handled: true, result: `${name}:fixture` });
     }
+    for (const name of SCRIPT_COMMANDS) {
+      await expect(cdpTest.executePhase4DaemonRoute({
+        cmd: name, args: ['fixture'], targetBound: true,
+      }, dispatcher)).resolves.toEqual({ handled: true, result: `${name}:fixture` });
+    }
   });
 
   it('binds each production extraction builder to exactly its named capability', async () => {
@@ -1044,6 +1066,18 @@ describe('Phase 4 daemon dispatch seam', () => {
     for (const name of Object.keys(capabilities)) {
       await expect(builders[name](capabilities)({ args: ['fixture'] })).resolves.toMatchObject({ value: `${name}-only` });
       expect(capabilities[name]).toHaveBeenCalledExactlyOnceWith(['fixture']);
+    }
+  });
+
+  it('binds each production raw-script builder to exactly its named capability', async () => {
+    const capabilities = Object.fromEntries(SCRIPT_COMMANDS.map(name => [
+      name, vi.fn(async args => commandResult(`${name}:${args.join('|')}`, null)),
+    ]));
+    const builders = cdpTest.preflightDaemonApplication().handlerBuilders;
+    for (const name of SCRIPT_COMMANDS) {
+      await expect(builders[name](capabilities)({ args: ['one', 'two'] }))
+        .resolves.toMatchObject({ value: `${name}:one|two`, evidence: null });
+      expect(capabilities[name]).toHaveBeenCalledExactlyOnceWith(['one', 'two']);
     }
   });
 });

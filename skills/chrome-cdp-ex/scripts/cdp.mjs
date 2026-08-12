@@ -12799,6 +12799,7 @@ const MIGRATED_DAEMON_COMMANDS = Object.freeze([
   'clock', 'mock', 'throttle',
   'emulate', 'viewport',
   'cookiedel', 'cookieset', 'dialog', 'keepalive', 'netlog',
+  'eval', 'eval64', 'call',
 ]);
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPhase4PerceiveHandler(context),
@@ -12848,6 +12849,9 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
   dialog: capabilities => createDaemonActionHandlers(capabilities).dialog,
   keepalive: capabilities => createDaemonActionHandlers(capabilities).keepalive,
   netlog: capabilities => createDaemonActionHandlers(capabilities).netlog,
+  eval: capabilities => async ({ args }) => capabilities.eval(args),
+  eval64: capabilities => async ({ args }) => capabilities.eval64(args),
+  call: capabilities => async ({ args }) => capabilities.call(args),
 });
 
 function preflightDaemonApplication(input = {}) {
@@ -13255,6 +13259,24 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const exportPlaywrightBuilder = applicationPreflight.handlerBuilders['export-playwright'];
   const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];
   const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];
+  const scriptCapabilities = {
+    eval: async args => {
+      const eopts = parseEvalArgs(args);
+      let value;
+      if (eopts.fireAndForget) {
+        value = await evalFireAndForgetStr(cdp, sessionId, eopts.expression, true);
+        value += `\n${extendKeepalive(FIRE_AND_FORGET_KEEPALIVE)} (fire-and-forget default)`;
+      } else {
+        value = await evalStr(cdp, sessionId, eopts.expression, true, { raw: eopts.raw });
+      }
+      return commandResult(value, null);
+    },
+    eval64: async args => commandResult(
+      await evalStr(cdp, sessionId, evalBase64Decode(args[0]), true),
+      null,
+    ),
+    call: async args => commandResult(await callStr(cdp, sessionId, args.join(' ')), null),
+  };
   const actionCapabilities = {
     back: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
@@ -13457,6 +13479,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     dialog: applicationPreflight.handlerBuilders.dialog(actionCapabilities),
     keepalive: applicationPreflight.handlerBuilders.keepalive(actionCapabilities),
     netlog: applicationPreflight.handlerBuilders.netlog(actionCapabilities),
+    eval: applicationPreflight.handlerBuilders.eval(scriptCapabilities),
+    eval64: applicationPreflight.handlerBuilders.eval64(scriptCapabilities),
+    call: applicationPreflight.handlerBuilders.call(scriptCapabilities),
   };
   const phase4Context = createCommandDispatcher({
     registry: phase4Registry,
@@ -13494,22 +13519,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           result = JSON.stringify(pages);
           break;
         }
-        case 'eval': {
-          const eopts = parseEvalArgs(args);
-          if (eopts.fireAndForget) {
-            result = await evalFireAndForgetStr(cdp, sessionId, eopts.expression, true);
-            result += `\n${extendKeepalive(FIRE_AND_FORGET_KEEPALIVE)} (fire-and-forget default)`;
-          } else {
-            result = await evalStr(cdp, sessionId, eopts.expression, true, { raw: eopts.raw });
-          }
-          break;
-        }
-        case 'eval64': {
-          const decoded = evalBase64Decode(args[0]);
-          result = await evalStr(cdp, sessionId, decoded, true);
-          break;
-        }
-        case 'call': result = await callStr(cdp, sessionId, args.join(' ')); break;
         case 'shot': case 'screenshot': {
           if (args[0] === '--annotate' || args[0] === '-a') {
             result = await annotshotStr(cdp, sessionId, targetId, refMap);
@@ -15052,6 +15061,8 @@ function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound })
   ].includes(command)
       && policy === 'mutation' && actionMutates)
     || (command === 'netlog' && policy === 'conditional' && mutates === false)
+    || (['eval', 'eval64', 'call'].includes(command)
+      && policy === 'raw-script' && mutates === false)
     || (command === 'evalraw' && policy === 'raw-cdp' && mutates === false)
     || (['components', 'checkpoint', 'cookies'].includes(command)
       && policy === 'sensitive-read' && mutates === false);

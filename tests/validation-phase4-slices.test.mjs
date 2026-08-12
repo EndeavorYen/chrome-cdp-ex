@@ -62,6 +62,9 @@ function fixtureOutput(id) {
   if (id === 'dialog') return 'Dialog auto-accept: OFF (dialogs will be dismissed/rejected)';
   if (id === 'keepalive') return 'Daemon keepalive extended for 1000ms (until 2026-08-12T09:00:00.000Z)';
   if (id === 'netlog') return 'Network log cleared';
+  if (id === 'eval') return 'phase7-eval';
+  if (id === 'eval64') return '多語';
+  if (id === 'call') return '{\n  "phase7": "call"\n}';
   if (id === 'snap') return `[RootWebArea] ${TITLE}\n  [button] Refresh account\n\n(Hint: \`snap\` gives only the raw AX tree. Use \`perceive\` instead for layout, @refs, style hints, and console health — it is the recommended starting command.)`;
   if (id === 'styles') return '<SECTION>#auth-panel\n  background-color: rgb(240, 253, 244)\n  padding: 12px\n  border: 1px solid rgb(187, 247, 208)';
   if (id === 'overlay') return JSON.stringify({
@@ -337,6 +340,9 @@ describe('Phase 4 disposable core-slice scenario', () => {
           '{"expression":"({title:document.title,modalHidden:document.querySelector(\'#motd\')?.hidden===true,shortcut:document.querySelector(\'#shortcut-status\')?.textContent,inputValue:document.querySelector(\'#cmd\')?.value,selectValue:document.querySelector(\'#phase7-select\')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector(\'#phase7-js-status\')?.textContent,coordStatus:document.querySelector(\'#phase7-coord-status\')?.textContent,authState:document.querySelector(\'#auth-state\')?.textContent})","returnByValue":true}',
         ],
       },
+      { id: 'eval', args: ['eval', TARGET, '"phase7-eval"'] },
+      { id: 'eval64', args: ['eval64', TARGET, Buffer.from('"多語"', 'utf8').toString('base64')] },
+      { id: 'call', args: ['call', TARGET, 'async () => ({ phase7: "call" })'] },
       { id: 'cookieset', args: ['cookieset', TARGET, 'phase7_mutation=fixture'] },
       { id: 'cookiedel', args: ['cookiedel', TARGET, 'phase7_mutation'] },
       { id: 'dialog', args: ['dialog', TARGET, 'dismiss'] },
@@ -531,7 +537,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
         'snap', 'controls', 'frame', 'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
         'wait', 'waitfor', 'cascade',
         'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
-        'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw',
+        'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw', 'eval', 'eval64', 'call',
         'cookieset', 'cookiedel', 'dialog', 'keepalive', 'netlog',
         'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
       ],
@@ -558,7 +564,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     'wait', 'waitfor', 'cascade',
     'checkpoint', 'cookies', 'cookieset', 'cookiedel', 'dialog', 'keepalive', 'netlog',
     'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
-    'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw',
+    'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw', 'eval', 'eval64', 'call',
     'nav', 'back', 'forward', 'reload', 'mock', 'throttle', 'clock', 'viewport', 'emulate',
   ])('fails at %s and still runs cleanup exactly once', async failureId => {
     const runCommand = vi.fn(async command => {
@@ -631,6 +637,9 @@ describe('Phase 4 disposable core-slice scenario', () => {
     ['dialog', 'Dialog auto-accept: ON (default)', 'dialog fixture output'],
     ['keepalive', 'Daemon keepalive extended for 2000ms', 'keepalive fixture output'],
     ['netlog', 'No network requests captured', 'netlog fixture output'],
+    ['eval', 'wrong-eval', 'eval fixture output'],
+    ['eval64', 'wrong-eval64', 'eval64 fixture output'],
+    ['call', '{"phase7":"wrong"}', 'call fixture output'],
     ['viewport', JSON.stringify({
       schema: 'chrome-cdp-ex.action.v1', action: 'viewport', dispatch: { ok: false },
       receipt: { schema: 'chrome-cdp-ex.action-receipt.v1', outcome: 'changed' },

@@ -177,15 +177,16 @@ The eighth moved `jsclick`, `clickxy`, `type`, `verify-click`, and
 `reload`; the tenth moved `mock`/`network-mock`, `clock`/`time-travel`, and
 `throttle`/`network-throttle`; the eleventh moved `viewport`/`resize` and
 `emulate`; the twelfth moved `cookieset`, `cookiedel`, `dialog`, `keepalive`,
-and `netlog`. The current checked boundary has 30 daemon groups,
-47 application-owned handlers, and 21 remaining switch-branch
+and `netlog`; the thirteenth moved raw-script `eval`, `eval64`, and `call`.
+The current checked boundary has 27 daemon groups,
+50 application-owned handlers, and 18 remaining switch-branch
 deletion candidates.
 
 The daemon now preflights a complete, immutable route-owner map before runtime
 effects and constructs one branded dispatcher from it. All 81 canonical names
 and 23 aliases resolve through that boundary; the four Phase 4 commands, the
-six accepted read cohorts, and the first six action cohorts execute application
-handlers, while the other 34 catalog commands return an explicit
+six accepted read cohorts, the first six action cohorts, and the raw-script
+cohort execute application handlers, while the other 31 catalog commands return an explicit
 `handled: false` result to the characterized legacy switch. This is a routing
 and cardinality guarantee, not a claim that the remaining handlers have moved.
 

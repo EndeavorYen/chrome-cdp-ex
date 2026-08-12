@@ -104,6 +104,7 @@ function collectDaemonGroups(source) {
     'exportPlaywrightBuilder',
     'dismissModalBuilder',
     'verifyClickBuilder',
+    'scriptCapabilities',
     'actionCapabilities',
     'phase4Handlers',
   ];

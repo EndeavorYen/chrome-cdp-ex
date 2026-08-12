@@ -105,6 +105,13 @@ export function buildPhase4SliceCommands(
         returnByValue: true,
       }),
     ]),
+    immutableCommand('eval', ['eval', targetPrefix, '"phase7-eval"']),
+    immutableCommand('eval64', [
+      'eval64', targetPrefix, Buffer.from('"多語"', 'utf8').toString('base64'),
+    ]),
+    immutableCommand('call', [
+      'call', targetPrefix, 'async () => ({ phase7: "call" })',
+    ]),
     immutableCommand('cookieset', ['cookieset', targetPrefix, 'phase7_mutation=fixture']),
     immutableCommand('cookiedel', ['cookiedel', targetPrefix, 'phase7_mutation']),
     immutableCommand('dialog', ['dialog', targetPrefix, 'dismiss']),
@@ -405,6 +412,18 @@ function validateStep(id, stdout, {
   }
   if (id === 'netlog') {
     if (stdout !== 'Network log cleared') throw new Error(`netlog fixture output is invalid: ${JSON.stringify(stdout)}`);
+    return stdout;
+  }
+  if (id === 'eval') {
+    if (stdout !== 'phase7-eval') throw new Error(`eval fixture output is invalid: ${JSON.stringify(stdout)}`);
+    return stdout;
+  }
+  if (id === 'eval64') {
+    if (stdout !== '多語') throw new Error(`eval64 fixture output is invalid: ${JSON.stringify(stdout)}`);
+    return stdout;
+  }
+  if (id === 'call') {
+    if (stdout !== '{\n  "phase7": "call"\n}') throw new Error(`call fixture output is invalid: ${JSON.stringify(stdout)}`);
     return stdout;
   }
   if (id === 'checkpoint') {
