@@ -168,7 +168,9 @@ describe('Runtime v3 final dispatch characterization', () => {
       'const applicationRoute = applicationDispatcher.route(cmd);',
       "await executeDaemonApplicationRoute({ cmd: 'html', args, targetBound: true }, applicationDispatcher);\n      const applicationRoute = applicationDispatcher.route(cmd);",
     ))).toThrow(/exactly one general application dispatch/);
-    for (const mutation of [
+  }, 30_000);
+
+  it.each([
       source.replace(
         'html: capabilities => createDaemonReadHandlers(capabilities).html,',
         'html: capabilities => createDaemonReadHandlers(capabilities).text,',
@@ -281,13 +283,15 @@ describe('Runtime v3 final dispatch characterization', () => {
         'restore: async args => {',
         'restore: async args => actionCapabilities.upload(args),\n    plantedRestore: async args => {',
       ),
-    ]) {
-      try {
-        expect(buildRuntimeDispatchInventory(mutation)).not.toEqual(fixture);
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-      }
+  ])('detects handler and capability wiring mutation %#', mutation => {
+    try {
+      expect(buildRuntimeDispatchInventory(mutation)).not.toEqual(fixture);
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
     }
+  }, 15_000);
+
+  it('rejects shadowed handler and capability authority', () => {
     const builderStart = source.indexOf('const DAEMON_HANDLER_BUILDERS =');
     const builderEnd = source.indexOf('\n\nfunction preflightDaemonApplication', builderStart);
     const originalBuilders = source.slice(builderStart, builderEnd);
@@ -320,6 +324,9 @@ describe('Runtime v3 final dispatch characterization', () => {
       "const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];",
       "if (true) { const verifyClickBuilder = applicationPreflight.handlerBuilders['dismiss-modal']; }\n  const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];",
     ))).toThrow(/direct runDaemon const|exactly once/);
+  }, 30_000);
+
+  it('binds the CLI and daemon routing spine', () => {
     for (const mutation of [
       source.replace("cmd === '-h'", "cmd === '--planted-help'"),
       source.replace("if (cmd === '_daemon')", "if (cmd === '_planted-daemon')"),
@@ -342,7 +349,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       "return { ok: false, error: e.message || String(e) };\n    }\n    // default: return { ok: false, error: `Unknown command: ${cmd}` };\n  }",
     ).replace("return { ok: true, result: result ?? '' };", "return { ok: true, result: 'planted' };");
     expect(buildRuntimeDispatchInventory(markerCollision)).not.toEqual(fixture);
-  }, 120_000);
+  }, 30_000);
 
   it('keeps check mode read-only and rejects stale fixture/source drift', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--check'], {
