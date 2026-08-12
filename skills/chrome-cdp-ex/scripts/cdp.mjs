@@ -6324,6 +6324,7 @@ async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, options =
   }
   return { rect: value, objectId };
 }
+
 // Wait for DOM mutations to stop after an action (350ms of silence = settled)
 async function waitForSettle(cdp, sid, timeoutMs = 3000) {
   return evalStr(cdp, sid, `new Promise(resolve => {
@@ -12798,15 +12799,7 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
 }
 
 function overlayDetectorScript({ targetPoint = null } = {}) {
-  const targetSnapshot = targetPoint ? Object.create(null) : null;
-  if (targetSnapshot) {
-    for (const key of ['input', 'x', 'y', 'descriptor']) {
-      const property = Object.getOwnPropertyDescriptor(targetPoint, key);
-      if (property && Object.hasOwn(property, 'value')) targetSnapshot[key] = property.value;
-    }
-  }
-  const targetJson = JSON.stringify(targetSnapshot);
-  return `(function() {
+  const targetJson = JSON.stringify(targetPoint && ['input', 'x', 'y', 'descriptor'].reduce((snapshot, key) => { const property = Object.getOwnPropertyDescriptor(targetPoint, key); if (property && Object.hasOwn(property, 'value')) snapshot[key] = property.value; return snapshot; }, Object.create(null))); return `(function() {
     const targetPoint = ${targetJson};
     const vw = window.innerWidth || 0;
     const vh = window.innerHeight || 0;
@@ -12859,23 +12852,16 @@ function overlayDetectorScript({ targetPoint = null } = {}) {
     function isDialog(el) {
       return el.matches('[role="dialog"], dialog, [aria-modal="true"]');
     }
-    const boundTarget = typeof Element === 'function' && this instanceof Element ? this : null;
-    const targetElement = boundTarget || (targetPoint && typeof targetPoint.input === 'string' && !targetPoint.input.startsWith('@') ? document.querySelector(targetPoint.input) : null);
-    const seen = new Set(), overlays = [], selfTargetOverlays = new Set();
+    const targetElement = (typeof Element === 'function' && this instanceof Element ? this : null) || (targetPoint && typeof targetPoint.input === 'string' && !targetPoint.input.startsWith('@') ? document.querySelector(targetPoint.input) : null);
+    const seen = new Set(), overlays = [];
     function add(el, kind) {
-      const dialog = isDialog(el);
-      const targetOwnsElement = !!targetElement && (el === targetElement || targetElement.contains(el));
-      if (!visible(el) || seen.has(el) || (!dialog && targetOwnsElement)) return;
+      const dialog = isDialog(el); if (!visible(el) || seen.has(el) || (!dialog && targetElement && (el === targetElement || targetElement.contains(el)))) return;
       seen.add(el);
       const info = elementInfo(el, kind, targetPoint);
       const hasPointer = info.pointerEvents !== 'none';
       const blocksTarget = !!targetPoint && info.coversTarget && hasPointer && (info.topAtTarget || dialog);
       const blocksPage = !targetPoint && hasPointer && (dialog || info.coversViewport);
-      if (dialog || blocksTarget || blocksPage) {
-        const overlay = { ...info, blocking: blocksTarget || blocksPage || dialog };
-        if (dialog && el === targetElement) selfTargetOverlays.add(overlay);
-        overlays.push(overlay);
-      }
+      if (dialog || blocksTarget || blocksPage) overlays.push(Object.defineProperty({ ...info, blocking: blocksTarget || blocksPage || dialog }, 'targetSelf', { value: dialog && el === targetElement }));
     }
     for (const el of document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')) add(el, 'dialog');
     for (const el of document.querySelectorAll('body *')) {
@@ -12895,7 +12881,7 @@ function overlayDetectorScript({ targetPoint = null } = {}) {
     if (targetPoint) {
       const top = document.elementFromPoint(targetPoint.x, targetPoint.y);
       if (top) target.topElement = elementInfo(top, isDialog(top) ? 'dialog' : 'top-element', targetPoint);
-      const blocker = overlays.find(o => !selfTargetOverlays.has(o) && o.coversTarget && (o.topAtTarget || o.kind === 'dialog' || o.blocking));
+      const blocker = overlays.find(o => !o.targetSelf && o.coversTarget && (o.topAtTarget || o.kind === 'dialog' || o.blocking));
       if (blocker) {
         target.blocked = true;
         target.topElement = { kind: blocker.kind, selector: blocker.selector, text: blocker.label || blocker.text || blocker.tag };
@@ -12911,8 +12897,7 @@ function overlayDetectorScript({ targetPoint = null } = {}) {
       overlays: overlays.slice(0, 10),
       nextCommand: null,
     });
-  }).call(this)`;
-}
+  }).call(this)`; }
 
 function formatOverlayRect(rect = {}) {
   return `(${Math.round(rect.x || 0)},${Math.round(rect.y || 0)} ${Math.round(rect.w || 0)}×${Math.round(rect.h || 0)})`;
@@ -12958,15 +12943,12 @@ async function resolveOverlayTargetPoint(cdp, sid, targetArg, refMap, refState) 
   if (!targetArg) return { targetPoint: null, objectId: null };
   if (isRef(targetArg)) {
     const { rect, objectId } = await resolveRefRectNoScroll(cdp, sid, refMap, targetArg, refState);
-    return {
-      targetPoint: {
-        input: targetArg,
-        x: Math.round((Number(rect.x) || 0) + (Number(rect.w) || 0) / 2),
-        y: Math.round((Number(rect.y) || 0) + (Number(rect.h) || 0) / 2),
-        descriptor: `<${rect.tag || '?'}> "${rect.text || ''}"`,
-      },
-      objectId,
-    };
+    return { targetPoint: {
+      input: targetArg,
+      x: Math.round((Number(rect.x) || 0) + (Number(rect.w) || 0) / 2),
+      y: Math.round((Number(rect.y) || 0) + (Number(rect.h) || 0) / 2),
+      descriptor: `<${rect.tag || '?'}> "${rect.text || ''}"`,
+    }, objectId };
   }
   const raw = await evalStr(cdp, sid, `(function() {
     const el = document.querySelector(${JSON.stringify(targetArg)});
@@ -12997,6 +12979,7 @@ async function overlayStr(cdp, sid, targetId, args = [], refMap = new Map(), ref
   if (fopts.format === 'json') return formatJson(model);
   return formatOverlayReport(model, targetId);
 }
+
 // ---------------------------------------------------------------------------
 // dismiss-modal: close common dialog/modal patterns without firing background
 // shortcuts. Reviewer feedback: pressing Space to close a "press any key" MOTD
