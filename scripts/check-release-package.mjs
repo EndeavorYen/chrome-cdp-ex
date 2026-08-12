@@ -12,6 +12,7 @@ export const REQUIRED_RELEASE_ENTRIES = [
   'package/docs/benchmarks/host-validation.v1.json',
   'package/docs/architecture/runtime-v3.md',
   'package/docs/adr/0001-runtime-v3-contract-first-strangler.md',
+  'package/docs/adr/0003-runtime-v3-application-dispatch.md',
   'package/docs/contracts/README.md',
   'package/docs/contracts/v2.15.0/public-contracts.v1.json',
   'package/docs/contracts/v2.15.0/package-entries.v1.json',

@@ -54,6 +54,7 @@
     "docs/schemas/",
     "docs/architecture/runtime-v3.md",
     "docs/adr/0001-runtime-v3-contract-first-strangler.md",
+    "docs/adr/0003-runtime-v3-application-dispatch.md",
     "docs/contracts/",
     "docs/examples/killer-path.md",
     "docs/examples/codex-killer-path.md",

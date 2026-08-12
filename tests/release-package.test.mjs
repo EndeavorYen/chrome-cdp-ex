@@ -25,6 +25,7 @@ const requiredEntries = [
   'docs/benchmarks/host-validation.v1.json',
   'docs/architecture/runtime-v3.md',
   'docs/adr/0001-runtime-v3-contract-first-strangler.md',
+  'docs/adr/0003-runtime-v3-application-dispatch.md',
   'docs/contracts/README.md',
   'docs/contracts/v2.15.0/public-contracts.v1.json',
   'docs/contracts/v2.15.0/package-entries.v1.json',
@@ -143,7 +144,7 @@ describe('release package checker', () => {
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Release package OK: 43 required entries');
+    expect(result.stdout).toContain('Release package OK: 44 required entries');
   });
 
   it('rejects an artifact that omits a release-critical entry', () => {

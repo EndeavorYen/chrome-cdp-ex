@@ -19,6 +19,7 @@ const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.me
 const releaseWorkflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 const runtimeV3ArchitectureUrl = new URL('../docs/architecture/runtime-v3.md', import.meta.url);
 const runtimeV3AdrUrl = new URL('../docs/adr/0001-runtime-v3-contract-first-strangler.md', import.meta.url);
+const runtimeV3FinalAdrUrl = new URL('../docs/adr/0003-runtime-v3-application-dispatch.md', import.meta.url);
 const publicContractsReadmeUrl = new URL('../docs/contracts/README.md', import.meta.url);
 
 describe('Killer Path docs contract', () => {
@@ -172,15 +173,23 @@ describe('Repository release gates', () => {
 
     expect(existsSync(runtimeV3ArchitectureUrl)).toBe(true);
     expect(existsSync(runtimeV3AdrUrl)).toBe(true);
+    expect(existsSync(runtimeV3FinalAdrUrl)).toBe(true);
     expect(existsSync(publicContractsReadmeUrl)).toBe(true);
     expect(files).toEqual(expect.arrayContaining([
       'docs/architecture/runtime-v3.md',
       'docs/adr/0001-runtime-v3-contract-first-strangler.md',
+      'docs/adr/0003-runtime-v3-application-dispatch.md',
       'docs/contracts/',
     ]));
-    expect(readFileSync(runtimeV3ArchitectureUrl, 'utf8')).toMatch(
-      /representative browser-independent CLI\s+exit and error behavior/,
-    );
+    const architecture = readFileSync(runtimeV3ArchitectureUrl, 'utf8');
+    expect(architecture).toMatch(/representative browser-independent CLI\s+exit and error behavior/);
+    expect(architecture).toContain('68 application handlers');
+    expect(architecture).toContain('13 targetless CLI adapters');
+    expect(architecture).toContain('five daemon protocol groups');
+    expect(architecture).toContain('Intentional compatibility components retained');
+    expect(architecture).toContain('None is retained merely as a fallback');
+    expect(architecture).not.toContain('remaining target architecture');
+    expect(architecture).not.toContain('77 explicitly enumerated legacy command routes');
   });
 
   it('labels Phase 1 live evidence as historical for the Phase 2 tree', () => {

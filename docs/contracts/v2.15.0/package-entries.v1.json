@@ -7,6 +7,7 @@
     "package/README.md",
     "package/bin/chrome-cdp",
     "package/docs/adr/0001-runtime-v3-contract-first-strangler.md",
+    "package/docs/adr/0003-runtime-v3-application-dispatch.md",
     "package/docs/architecture/runtime-v3.md",
     "package/docs/benchmarks/host-validation.v1.json",
     "package/docs/benchmarks/measured-baselines.example.json",

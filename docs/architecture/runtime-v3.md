@@ -1,14 +1,13 @@
 # Browser Runtime v3 Architecture
 
-Status: Phase 2 contract freeze, Phase 3 Validation Lab, Phase 4 command-core
-slices, Phase 5 resource supervision/direct MCP routing, and Phase 6
-single-owner surfaces/exact CDP domains are implemented.
+Status: Runtime v3 application dispatch is implemented through Phase 7 Task 5.
+The final all-route evidence and release-candidate gates remain pending.
 
 Runtime v3 is a compatibility-preserving refactor of chrome-cdp-ex, not a new
 browser engine. The current v2.15 runtime keeps one resident daemon per tab.
-CLI still enters through `cdp.mjs`; MCP now invokes an in-process runtime client
+CLI still enters through `cdp.mjs`; MCP invokes an in-process runtime client
 instead of spawning the CLI for each tool request. The components below state
-both the implemented boundary and the remaining target architecture.
+the implemented boundary that the final release-candidate evidence must prove.
 
 ## Why change
 
@@ -56,26 +55,28 @@ CLI adapter                 MCP adapter
         typed CDP domain clients and transport
 ```
 
-Adapters parse and render. They do not own command behavior. Phase 4 added an
-immutable `CommandSpec` registry and shared application `execute()` boundary for
-`perceive`, `click`, `report`, and `evalraw`. Phase 6 makes the dependency-free
-command surface the single immutable owner of all 81 command policy, alias,
-help, domain, and MCP records. Runtime `COMMANDS`, target routing, application
-specs, generated help/index regions, and MCP definitions derive from that
-validated owner. Phase 5 added immutable public browser
+Adapters parse and render. They do not own target-command behavior. The
+dependency-free command surface is the single immutable owner of all 81 command
+policy, alias, help, domain, and MCP records. Runtime `COMMANDS`, target routing,
+application specs, generated help/index regions, and MCP definitions derive
+from that validated owner. All 68 target commands execute through one branded,
+catalog-derived application dispatcher. The other 13 commands are intentional
+targetless CLI adapters for help, discovery, browser/runtime lifecycle, tab
+groups, broadcast, and target selection. Phase 5 added immutable public browser
 resources and locator plans, a private resolved-handle boundary, supervised
 per-tab daemon reuse/recovery, and a direct in-process MCP runtime client. The
-daemon compatibility adapter preserves v2.15 output while the internal
-execution record carries bounded policy and evidence metadata.
+compatibility renderers preserve v2.15 output while internal execution records
+carry bounded policy and evidence metadata.
 
 ## Current implementation boundary
 
-Phase 4 ships the dependency-free application core and routes one read, one
-mutation, one evidence, and one raw-CDP command through it. Mutation and raw-CDP
-routes fail closed without the daemon's explicit compatibility authorization;
-raw audit metadata records only the method and a conservative side-effect
-class. A disposable Chrome for Testing scenario exercises the four real
-CLI/daemon routes without using a personal profile or authenticated state.
+The dependency-free application core validates exact command specs, route
+owners, handlers, authorization decisions, results, and evidence before
+execution. Daemon startup derives all 68 target handlers from the catalog and
+fails before browser/runtime effects if coverage differs. Mutations, sensitive
+reads, scripts, composite workflows, and raw CDP retain explicit fail-closed
+policy. Raw audit metadata records only the method and conservative side-effect
+class, never params or results.
 
 Phase 5 implements the first bounded resource graph and locator-plan contracts,
 the browser supervisor around existing per-tab daemons, extracted daemon
@@ -84,12 +85,12 @@ evidence exercises CLI and direct MCP parity, daemon stop/restart, stale target
 replacement, bounded re-resolution, action evidence, and cleanup. The existing
 per-tab daemon remains the owner of tab-scoped runtime state.
 
-Phase 6 also routes every normal, reviewed CDP call through exact-method domain
-clients. The separately branded raw gateway is available only after raw-CDP
-authorization and records method plus side-effect class without params or
-results. The compatibility facade and 77 explicitly enumerated legacy command
-routes remain executable; removing only superseded dispatch paths is Phase 7
-work.
+Every normal reviewed CDP call routes through exact-method domain clients. The
+separately branded raw gateway is available only after raw-CDP authorization
+and records method plus side-effect class without params or results. Superseded
+target-command switch branches and duplicate Phase-specific wrappers are gone.
+The daemon switch retains exactly five protocol groups: `meta`, `list`,
+`list_raw`, `stop`, and fail-closed unknown-command handling.
 
 ## Browser Resource Graph
 
@@ -138,7 +139,7 @@ and routing. Each tab runtime retains tab-scoped state such as refs, action
 history, console/network buffers, and recordings. MCP calls the same in-process
 CLI/runtime boundary through a strict `RuntimeClient`; there is no fallback that
 spawns the CLI. Compatibility tests and disposable-browser evidence prove parity
-for the migrated and representative legacy commands.
+across all target-command families and representative targetless adapters.
 
 ## Migration sequence
 
@@ -151,8 +152,9 @@ for the migrated and representative legacy commands.
    per-request CLI spawn after parity evidence.
 5. Phase 6 gives command metadata one owner and converges generated CLI, MCP,
    docs, permissions, and typed CDP domains.
-6. Phase 7 removes only superseded dispatch paths and runs the full Runtime v3
-   release-candidate gate.
+6. Phase 7 moved all 68 target commands behind the catalog-derived application
+   dispatcher and removed only superseded dispatch paths. Its remaining work is
+   the all-route evidence and full Runtime v3 release-candidate gate.
 
 At every step, the compatibility facade stays executable. A failed fixture,
 live scenario, package gate, or independent review blocks removal of the old
@@ -186,27 +188,41 @@ screenshot capture `shot`/`screenshot`, `diff-shot`/`diffshot`, `elshot`,
 `fullshot`, and `scanshot` while preserving explicit-path policy and private
 artifact modes. The eighteenth moved the QA filesystem family `qa`/`qa-page`
 and `responsive-audit`/`visual-check`, preserving private screenshots, exact
-target binding, viewport effects, and MCP confirmation. The current checked
-boundary has 11 daemon groups, 66 application-owned handlers, and 2 remaining
-switch-branch deletion candidates.
+target binding, viewport effects, and MCP confirmation. The nineteenth moved
+`closetab` and `loadall`, preserving exact target closure and bounded load-all
+interaction. The final checked Task 5 boundary has 68 application handlers,
+13 targetless CLI adapters, and zero target-command deletion candidates. It
+retains five daemon protocol groups.
 
-The daemon now preflights a complete, immutable route-owner map before runtime
+The daemon preflights a complete immutable route-owner map before runtime
 effects and constructs one branded dispatcher from it. All 81 canonical names
-and 23 aliases resolve through that boundary; the four Phase 4 commands, the
-six accepted read cohorts, the first six action cohorts, the raw-script,
-conditional observation-control, recursive-workflow, and external-input
-mutation cohorts plus the screenshot capture cohort execute application
-handlers; the QA filesystem cohort does too, while the other 15 catalog
-commands return an explicit
-`handled: false` result to the characterized legacy switch. This is a routing
-and cardinality guarantee, not a claim that the remaining handlers have moved.
+and 23 aliases resolve through that boundary. Every target command has exactly
+one application handler. Each targetless command returns an explicit
+`handled: false` adapter result and stays in the reviewed direct CLI routing
+spine; it never falls through to a target-command switch.
 
-Only a listed legacy `handleCommand` branch may be deleted, and only after its
-replacement passes direct CLI, daemon-wire, recursive workflow, MCP, policy,
-output/error, and live evidence parity. Protocol controls (`meta`, `list`,
-`list_raw`, and daemon `stop`), daemon state and event buffers, parsers,
-renderers, browser operations, target resolution, BrowserSupervisor topology,
-typed CDP domains, and the raw gateway remain explicitly retained authorities.
+The checked deletion inventory is empty. Protocol controls (`meta`, `list`,
+`list_raw`, daemon `stop`, and unknown-command failure), daemon state and event
+buffers, request/response envelopes, parsers, renderers, browser operations,
+target resolution, BrowserSupervisor topology, typed CDP domains, and the raw
+gateway remain explicitly retained authorities. Importing the MCP/runtime
+surface installs no stdin listener and performs no filesystem mutation,
+process-global mutation, browser or subprocess launch, or socket creation;
+those effects begin only after an explicit command or direct-run server entry.
+
+### Intentional compatibility components retained
+
+- the 13 targetless CLI adapters and target-resolution routing spine;
+- the five daemon protocol groups and per-tab session, ref, action, console,
+  network, environment, screenshot, and recording state;
+- daemon transport framing, bounded request/response envelopes, parsing, and
+  v2.15 text/JSON/error renderers;
+- BrowserSupervisor discovery, shared-runtime ownership, stop/close, and one
+  bounded stale-target recovery;
+- exact-method typed CDP clients and the separately authorized raw gateway.
+
+Each item has a current catalog, protocol, lifecycle, compatibility, or privacy
+owner. None is retained merely as a fallback to a removed command switch.
 
 ## Non-goals
 

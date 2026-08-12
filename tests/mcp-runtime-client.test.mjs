@@ -28,23 +28,62 @@ function handlerWith(executeCli) {
 }
 
 describe('Phase 5 direct RuntimeClient MCP adapter', () => {
-  it('imports MCP without changing the host umask or creating a runtime directory', () => {
+  it('imports MCP without filesystem, process-global, stdin, browser, socket, or subprocess effects', () => {
     const runtimeRoot = mkdtempSync(join(tmpdir(), 'chrome-cdp-mcp-import-'));
     try {
       const moduleUrl = new URL('../skills/chrome-cdp-ex/scripts/mcp-server.mjs', import.meta.url).href;
       const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
-        import { existsSync } from 'fs';
+        import childProcess from 'node:child_process';
+        import fs from 'node:fs';
+        import net from 'node:net';
+        import { syncBuiltinESMExports } from 'node:module';
+        const effects = [];
+        const blocked = name => (..._args) => {
+          effects.push(name);
+          throw new Error('import effect: ' + name);
+        };
+        for (const name of ['appendFileSync', 'writeFileSync', 'unlinkSync', 'mkdirSync', 'rmSync', 'renameSync']) {
+          fs[name] = blocked('fs.' + name);
+        }
+        for (const name of ['spawn', 'spawnSync', 'exec', 'execFile', 'fork']) {
+          childProcess[name] = blocked('child_process.' + name);
+        }
+        for (const name of ['createConnection', 'connect', 'createServer']) {
+          net[name] = blocked('net.' + name);
+        }
+        syncBuiltinESMExports();
+        globalThis.WebSocket = class ImportWebSocket {
+          constructor() { throw new Error('import effect: WebSocket'); }
+        };
         process.umask(0o022);
-        const before = process.umask();
+        const stdinCounts = () => Object.fromEntries(
+          process.stdin.eventNames().map(name => [String(name), process.stdin.listenerCount(name)]),
+        );
+        const before = {
+          argv: [...process.argv],
+          env: Object.entries(process.env).sort(),
+          exitCode: process.exitCode ?? null,
+          stdin: stdinCounts(),
+          umask: process.umask(),
+        };
         await import(${JSON.stringify(moduleUrl)});
-        const after = process.umask();
-        console.log(JSON.stringify({ before, after, created: existsSync(process.env.XDG_RUNTIME_DIR + '/cdp') }));
+        const after = {
+          argv: [...process.argv],
+          env: Object.entries(process.env).sort(),
+          exitCode: process.exitCode ?? null,
+          stdin: stdinCounts(),
+          umask: process.umask(),
+        };
+        console.log(JSON.stringify({ before, after, effects, created: fs.existsSync(process.env.XDG_RUNTIME_DIR + '/cdp') }));
       `], {
         encoding: 'utf8',
         env: { ...process.env, XDG_RUNTIME_DIR: runtimeRoot, NODE_ENV: 'test' },
       });
       expect(child.status).toBe(0);
-      expect(JSON.parse(child.stdout)).toEqual({ before: 0o22, after: 0o22, created: false });
+      const result = JSON.parse(child.stdout);
+      expect(result.after).toEqual(result.before);
+      expect(result.effects).toEqual([]);
+      expect(result.created).toBe(false);
       expect(existsSync(join(runtimeRoot, 'cdp'))).toBe(false);
     } finally {
       rmSync(runtimeRoot, { recursive: true, force: true });
