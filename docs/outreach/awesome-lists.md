@@ -1,8 +1,8 @@
 # Awesome-list and directory outreach research
 
-Status: research note only. **Do not auto-submit external PRs** from agents without explicit human approval.
+Status: research note only. **Do not auto-submit external changes** from agents without explicit human approval.
 
-Phase status: **Phase 0 evidence prerequisite complete locally**. Before any Phase 1 submission, refresh [the Codex for OSS evidence baseline](codex-for-oss-evidence.md), verify the destination's current contribution rules, and request explicit approval for each external post or pull request.
+Phase status: **Phase 8A evidence prerequisite complete locally; Phase 8B public-surface correction approved**. Before each external action, refresh [the Codex for OSS evidence baseline](codex-for-oss-evidence.md), verify the destination's current contribution rules, and retain a separate approval boundary for community posts and application submission.
 
 ## Product one-liner (draft)
 
@@ -12,7 +12,7 @@ Phase status: **Phase 0 evidence prerequisite complete locally**. Before any Pha
 
 | Target | Why relevant | Notes / eligibility |
 |---|---|---|
-| [awesome-claude-code](https://github.com/hesreallyhim/awesome-claude-code) (and forks) | Already curated; description is stale at 68 commands / Claude-only positioning | Phase 1: propose a narrow cross-agent description refresh after explicit approval |
+| [awesome-claude-code](https://github.com/hesreallyhim/awesome-claude-code) (and forks) | Already curated; description is stale at 68 commands / Claude-only positioning | Comment on existing issue #1157 with the approved neutral 81-command description; its current CONTRIBUTING guide says not to open a recommendation PR |
 | Awesome Codex Skills lists | Codex CLI-skill route is now live-validated | Phase 1: submit only to an active, relevant list with the Codex Killer Path proof |
 | [awesome-mcp-servers](https://github.com/modelcontextprotocol/servers) / community MCP lists | MCP stdio server | List as community server; link repo + MCP tool summary |
 | [awesome-browser-automation](https://github.com/atinfo/awesome-test-automation) / Playwright-adjacent lists | Browser automation category | Position as live-session attach, not E2E replacement |
@@ -28,31 +28,28 @@ gh search repos "awesome claude code" --sort stars --limit 10
 gh search repos "awesome mcp servers" --sort stars --limit 10
 ```
 
-## Draft PR blurb
+## Draft description-refresh comment
 
 ```markdown
-### chrome-cdp-ex
-
-Give AI coding agents access to your **live** Chrome/Edge/Electron tabs (login state, cookies, open pages) through a zero-dependency CDP CLI + optional MCP server.
-
-- Perceive layout/refs/console without screenshot-first workflows
-- Mutating actions return Action Receipts (dispatch, settlement, outcome, recovery)
-- Doctor readiness, responsive audit, multi-tab groups, React/Vue components MVP
-
-Repo: https://github.com/EndeavorYen/chrome-cdp-ex
+Since the entry was curated, chrome-cdp-ex has evolved into an 81-command,
+zero-runtime-dependency browser runtime with documented setup for Claude Code,
+Codex, Cursor, OpenClaw, Hermes, and Pi. It connects agents to an already-open
+Chrome, Edge, or Electron session and provides live-page perception, Action
+Receipts, CSS source tracing, session reports, replay, and Playwright export.
+Validation remains source-bound to disposable fixtures and does not imply broad
+adoption or six-host live testing.
 ```
 
 ## Submission checklist (human)
 
-1. Verify the list’s contribution guide and section headings.
-2. Confirm license/badge requirements.
-3. Use a fresh branch against the *list* repo; do not force-push.
-4. Link a release or README section that stays stable (`v2.9.x` or main docs).
-5. Avoid over-claiming benchmarks; point at the live gate docs.
-6. Treat the Codex host manifest, 60-second safe demo, and fresh evidence baseline as submission prerequisites.
+1. Verify the list’s contribution guide immediately before acting.
+2. Use existing issue #1157; do not open a resource recommendation PR.
+3. Link the stable v2.15.0 release and current README.
+4. Avoid over-claiming benchmarks; point at the explicit evidence boundary.
+5. Treat the Codex host manifest, 60-second safe demo, and fresh evidence baseline as prerequisites.
 
 ## Out of scope for agents
 
-- Opening external PRs without user confirmation
+- Opening external PRs or posting issue comments without user confirmation
 - Spamming multiple lists in one day
 - Claiming npm registry install as the primary path (this project publishes via GitHub Releases)

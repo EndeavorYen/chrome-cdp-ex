@@ -10,29 +10,30 @@ Application: [Codex for Open Source](https://openai.com/form/codex-for-oss/). Op
 |---|---:|---|
 | Repository | [EndeavorYen/chrome-cdp-ex](https://github.com/EndeavorYen/chrome-cdp-ex) | Public MIT project; GitHub Releases are the official distribution surface |
 | GitHub interest | 12 stars, 0 forks | Small direct audience; do not imply broad adoption |
-| Maintenance history | 84 issues, 53 pull requests | Repository-wide closed + open totals, not current backlog |
-| Releases | 17 releases | Release cadence, not install count |
-| Release assets | 18 cumulative release-asset downloads | GitHub asset counter only; excludes source archives and clones |
-| Current release asset | 6 downloads for `v2.14.0` | Not unique users and not monthly downloads |
+| Maintenance history | 84 issues, 55 pull requests | Repository-wide totals; current issue and PR backlogs are both zero |
+| Releases | 18 releases | Release cadence, not install count |
+| Package assets | 16 cumulative `.tgz` downloads | GitHub asset counter only; excludes source archives and clones |
+| Current release asset | 0 downloads for `v2.15.0` immediately after publication | Not unique users and not monthly downloads |
 | External contribution | [PR #125](https://github.com/EndeavorYen/chrome-cdp-ex/pull/125), merged from `hussainweb` | One verified external merged pull request |
-| 14-day traffic | 70 views / 40 unique visitors | Maintainer-only GitHub traffic window; refresh before use |
-| 14-day clones | 73 clones / 49 unique cloners | Clone events are not installs or retained users |
+| 14-day traffic | 71 views / 41 unique visitors | Maintainer-only GitHub traffic window; refresh before use |
+| 14-day clones | 79 clones / 51 unique cloners | Clone events are not installs or retained users |
 | GitHub code search | 22 GitHub code-search references | Most results are mirrors or indexes; this is discoverability, not adoption |
 
 ## Ecosystem recognition
 
-`chrome-cdp-ex` is currently curated in [hesreallyhim/awesome-claude-code](https://github.com/hesreallyhim/awesome-claude-code) under “Providers, Runtime & Integration Infrastructure.” On 2026-08-12 that index had 52,132 stars and 4,555 forks.
+`chrome-cdp-ex` is currently curated in [hesreallyhim/awesome-claude-code](https://github.com/hesreallyhim/awesome-claude-code) under “Providers, Runtime & Integration Infrastructure.” At the Phase 8A snapshot that index had 52,197 stars and 4,559 forks.
 
-The listing calls the project rigorous about its claims and mentions the dogfood benchmark gate. It still describes the older “Claude Code skill (68 commands)” shape, while v2.14.0 is an 81-command cross-host runtime. The list's popularity belongs to the list, not to this repository; it is third-party curation evidence, not a `chrome-cdp-ex` star or usage count.
+The listing calls the project rigorous about its claims and mentions the dogfood benchmark gate. It still describes the older “Claude Code skill (68 commands)” shape, while v2.15.0 is an 81-command cross-agent runtime with six documented host routes. The list's popularity belongs to the list, not to this repository; it is third-party curation evidence, not a `chrome-cdp-ex` star or usage count.
 
 The 22 code-search references break down mostly into Awesome-list mirrors, trackers, and indexes. A few independent references exist, but the aggregate must not be described as 22 downstream users.
 
 ## Current technical proof
 
-- v2.14.0 passed a fresh 10/10-round mixed campaign on 2026-08-12: MCP, CLI, Killer Path, 5,200-node large-app stress, and five safe local real-app profiles.
+- The exact v2.15.0 release candidate passed a fresh 10/10-round mixed campaign on 2026-08-12: MCP, CLI, Killer Path, 5,200-node large-app stress, and five safe local real-app profiles.
 - Each of the five real-app rounds passed 34/34 gates.
-- The Codex CLI-skill route is `live-validated` against one disposable local fixture: install, doctor, perceive, act, Action Receipt, `since-action`, and report.
-- Claude Code, Cursor, OpenClaw, Hermes, and Pi remain documented routes; Phase 0 does not claim they were live-tested.
+- The Codex CLI-skill route is historically `live-validated` against one disposable local fixture: install, doctor, perceive, act, Action Receipt, `since-action`, and report. That host-installation run predates the current tree.
+- Current Runtime v3 proof covers disposable Chrome for Testing and loopback fixtures on the exact release candidate; it is not a full six-host installation test.
+- Claude Code, Cursor, OpenClaw, Hermes, and Pi remain documented routes; the project does not claim they were all live-tested.
 
 These measurements prove maintenance discipline and current runtime behavior. They do not prove production adoption.
 
@@ -46,7 +47,7 @@ The strongest honest case is not “this repo already has hundreds of users.” 
 4. Codex is a first-class validated host rather than a branding-only mention; and
 5. the project uses fail-closed benchmark gates to keep public claims evidence-bound.
 
-The main application weakness remains direct usage. Twelve stars and 18 asset downloads are modest. Anecdotes about successful applicants at 100–200 stars are not an official eligibility rule, and acquiring low-intent stars would not establish meaningful usage. Phase 1 promotion should seek qualified users, reproducible feedback, and independent workflow evidence.
+The main application weakness remains direct usage. Twelve stars and 16 package-asset downloads are modest. Anecdotes about successful applicants at 100–200 stars are not an official eligibility rule, and acquiring low-intent stars would not establish meaningful usage. Phase 8 promotion should seek qualified users, reproducible feedback, and independent workflow evidence.
 
 ## Refresh commands
 
@@ -64,6 +65,6 @@ gh api --method GET search/code -f q='"github.com/EndeavorYen/chrome-cdp-ex"' --
 gh api repos/hesreallyhim/awesome-claude-code --jq '{stars:.stargazers_count,forks:.forks_count,updated_at}'
 ```
 
-## Phase 0 handoff
+## Phase 8 handoff
 
-Phase 0 prepares evidence but performs no external action. Any application submission, Awesome-list update, community post, release, commit, push, or pull request still requires an explicit separate decision.
+Phase 8A refreshed this evidence without external action. Phase 8B may correct public metadata and request an Awesome-list description refresh only after explicit approval. Community publication and Codex for OSS submission remain separate later approvals.
