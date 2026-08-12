@@ -418,10 +418,10 @@ describe('Phase 4 command results and execution', () => {
     await expect(executeCommand(request, {
       registry,
       handlers: { click: async () => commandResult('clicked', { kind: 'action-receipt' }) },
-      authorize: () => ({ allowed: true, code: 'legacy-daemon' }),
+      authorize: () => ({ allowed: true, code: 'daemon-application' }),
     })).rejects.toThrow(/accessor|data propert/i);
 
-    const decision = { code: 'legacy-daemon' };
+    const decision = { code: 'daemon-application' };
     Object.defineProperty(decision, 'allowed', {
       enumerable: true,
       get() { return true; },
@@ -453,10 +453,10 @@ describe('Phase 4 command results and execution', () => {
       handlers: { click: handler },
       authorize: decision => {
         expect(decision).toEqual({ command: 'click', policy: 'mutation', mutates: true, targetBound: true });
-        return { allowed: true, code: 'legacy-daemon' };
+        return { allowed: true, code: 'daemon-application' };
       },
     });
-    expect(execution.authorization).toEqual({ policy: 'mutation', allowed: true, code: 'legacy-daemon' });
+    expect(execution.authorization).toEqual({ policy: 'mutation', allowed: true, code: 'daemon-application' });
     expect(handler).toHaveBeenCalledOnce();
   });
 
@@ -476,7 +476,7 @@ describe('Phase 4 command results and execution', () => {
           sideEffectClass: 'potentially-mutating',
         }),
       },
-      authorize: () => ({ allowed: true, code: 'legacy-daemon' }),
+      authorize: () => ({ allowed: true, code: 'daemon-application' }),
     });
 
     expect(execution.evidence).toEqual({
@@ -506,7 +506,7 @@ describe('Phase 4 command results and execution', () => {
     }, {
       registry,
       handlers: { evalraw: async () => commandResult('result', evidence) },
-      authorize: () => ({ allowed: true, code: 'legacy-daemon' }),
+      authorize: () => ({ allowed: true, code: 'daemon-application' }),
     });
     await expect(run({
       kind: 'raw-audit', method: 'DOM.getDocument', sideEffectClass: 'read-only',
@@ -525,7 +525,7 @@ describe('Phase 4 command results and execution', () => {
     await expect(executeCommand({ name: 'click', args: [], targetBound: true }, {
       registry,
       handlers: { click: async () => commandResult('clicked', null) },
-      authorize: () => ({ allowed: true, code: 'legacy-daemon' }),
+      authorize: () => ({ allowed: true, code: 'daemon-application' }),
     })).rejects.toThrow('evidence');
   });
 
@@ -737,7 +737,7 @@ describe('Phase 4 daemon dispatch seam', () => {
     };
     const owners = Object.fromEntries(registry.list().map(command => [
       command.name,
-      Object.hasOwn(handlers, command.name) ? 'application' : 'legacy',
+      Object.hasOwn(handlers, command.name) ? 'application' : 'adapter',
     ]));
     return { registry, handlers, owners };
   }
@@ -753,7 +753,7 @@ describe('Phase 4 daemon dispatch seam', () => {
     expect(preflight.registry.list()).toHaveLength(81);
     expect(Object.keys(preflight.routeOwners)).toHaveLength(81);
     expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(68);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(13);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'adapter')).toHaveLength(13);
     expect(Object.isFrozen(preflight)).toBe(true);
     expect(Object.isFrozen(preflight.handlerBuilders)).toBe(true);
     expect(Object.values(builders).every(builder => builder.mock.calls.length === 0)).toBe(true);
@@ -863,7 +863,7 @@ describe('Phase 4 daemon dispatch seam', () => {
     const policy = command === 'netlog' ? 'conditional' : 'mutation';
     expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy, mutates, targetBound: true,
-    })).toEqual({ allowed: true, code: 'legacy-daemon' });
+    })).toEqual({ allowed: true, code: 'daemon-application' });
     expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy, mutates, targetBound: false,
     })).toEqual({ allowed: false, code: 'target-not-bound' });
@@ -875,7 +875,7 @@ describe('Phase 4 daemon dispatch seam', () => {
   it.each(SCRIPT_COMMANDS)('binds %s to raw-script authorization and a live target', command => {
     expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'raw-script', mutates: false, targetBound: true,
-    })).toEqual({ allowed: true, code: 'legacy-daemon' });
+    })).toEqual({ allowed: true, code: 'daemon-application' });
     expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'raw-script', mutates: false, targetBound: false,
     })).toEqual({ allowed: false, code: 'target-not-bound' });
@@ -887,7 +887,7 @@ describe('Phase 4 daemon dispatch seam', () => {
   it.each(['batch', 'flow', 'repeat'])('binds %s to composite authorization and a live target', command => {
     expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'composite', mutates: false, targetBound: true,
-    })).toEqual({ allowed: true, code: 'legacy-daemon' });
+    })).toEqual({ allowed: true, code: 'daemon-application' });
     expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'mutation', mutates: false, targetBound: true,
     })).toEqual({ allowed: false, code: 'policy-denied' });
@@ -896,7 +896,7 @@ describe('Phase 4 daemon dispatch seam', () => {
   it('binds replay to mutation authorization and a live target', () => {
     expect(cdpTest.authorizeDaemonApplicationCommand({
       command: 'replay', policy: 'mutation', mutates: true, targetBound: true,
-    })).toEqual({ allowed: true, code: 'legacy-daemon' });
+    })).toEqual({ allowed: true, code: 'daemon-application' });
     expect(cdpTest.authorizeDaemonApplicationCommand({
       command: 'replay', policy: 'mutation', mutates: true, targetBound: false,
     })).toEqual({ allowed: false, code: 'target-not-bound' });
@@ -905,7 +905,7 @@ describe('Phase 4 daemon dispatch seam', () => {
   it.each(['console', 'record'])('binds %s to conditional authorization and a live target', command => {
     expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'conditional', mutates: false, targetBound: true,
-    })).toEqual({ allowed: true, code: 'legacy-daemon' });
+    })).toEqual({ allowed: true, code: 'daemon-application' });
     expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'conditional', mutates: false, targetBound: false,
     })).toEqual({ allowed: false, code: 'target-not-bound' });
@@ -926,7 +926,7 @@ describe('Phase 4 daemon dispatch seam', () => {
         args: step.args || [],
         targetBound: true,
       }, dispatcher);
-      return routed.handled ? { ok: true, result: routed.result } : { ok: false, error: 'legacy' };
+      return routed.handled ? { ok: true, result: routed.result } : { ok: false, error: 'adapter' };
     };
 
     const parsed = cdpTest.parseBatchArgs(['perceive --format json | report --format json']);
@@ -948,7 +948,7 @@ describe('Phase 4 daemon dispatch seam', () => {
     expect(cdpTest).not.toHaveProperty('MIGRATED_DAEMON_COMMANDS');
     const preflight = cdpTest.preflightDaemonApplication();
     expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(68);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(13);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'adapter')).toHaveLength(13);
     const readHandlers = createDaemonReadHandlers({
       cascade: async args => `cascade:${args.join('|')}`,
       checkpoint: async args => `checkpoint:${args.join('|')}`,

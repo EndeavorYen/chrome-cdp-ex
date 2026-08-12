@@ -80,7 +80,7 @@
     "wait",
     "waitfor"
   ],
-  "applicationAuthorityDigest": "sha256:083b19c9c683fb483d9286edde80947d72f231d04985dcfcc6d89c0d438867b9",
+  "applicationAuthorityDigest": "sha256:c0cfb5fcaac825a9a640243d1854edee7e07b6f0dc0aa2c828ecd3284f6b0d65",
   "targetless": [
     {
       "name": "help",

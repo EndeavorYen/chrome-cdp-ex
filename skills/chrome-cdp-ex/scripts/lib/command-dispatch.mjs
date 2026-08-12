@@ -4,7 +4,7 @@ import {
   inspectCommandRegistry,
 } from './command-application.mjs';
 
-const ROUTE_OWNERS = new Set(['application', 'legacy']);
+const ROUTE_OWNERS = new Set(['application', 'adapter']);
 const DISPATCHERS = new WeakSet();
 const OPTION_KEYS = new Set(['registry', 'owners', 'handlers', 'authorize']);
 
@@ -41,7 +41,7 @@ function snapshotOwners(input, specs) {
   }
   const owners = Object.create(null);
   for (const name of expected) {
-    if (!ROUTE_OWNERS.has(values[name])) fail(`owners.${name}`, 'must be application or legacy');
+    if (!ROUTE_OWNERS.has(values[name])) fail(`owners.${name}`, 'must be application or adapter');
     Object.defineProperty(owners, name, {
       value: values[name], enumerable: true, configurable: false, writable: false,
     });
@@ -92,7 +92,7 @@ export function createCommandDispatcher(input = {}) {
       const requestSnapshot = defineCommandRequest(request);
       const spec = registry.resolve(requestSnapshot.name);
       if (!spec) fail('request.name', `unknown command ${requestSnapshot.name}`);
-      if (ownerSnapshot[spec.name] === 'legacy') {
+      if (ownerSnapshot[spec.name] === 'adapter') {
         return Object.freeze({ handled: false, command: spec.name, result: null });
       }
       const execution = await executeCommand({

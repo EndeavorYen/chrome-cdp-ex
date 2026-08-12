@@ -13075,7 +13075,7 @@ function preflightDaemonApplication(input = {}) {
     throw new Error('commands: application registry must own the complete command surface');
   }
   const routeOwners = Object.freeze(Object.fromEntries(
-    registry.list().map(command => [command.name, command.needsTarget ? 'application' : 'legacy']),
+    registry.list().map(command => [command.name, command.needsTarget ? 'application' : 'adapter']),
   ));
   return Object.freeze({
     registry,
@@ -15222,7 +15222,7 @@ function authorizeDaemonApplicationCommand({ command, policy, mutates, targetBou
     || (['components', 'checkpoint', 'cookies'].includes(command)
       && policy === 'sensitive-read' && mutates === false);
   return allowed
-    ? { allowed: true, code: 'legacy-daemon' }
+    ? { allowed: true, code: 'daemon-application' }
     : { allowed: false, code: 'policy-denied' };
 }
 

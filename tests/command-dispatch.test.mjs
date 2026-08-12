@@ -21,13 +21,13 @@ function spec(name, { aliases = [], kind = 'read' } = {}) {
 
 function fixture(overrides = {}) {
   const registry = createCommandRegistry([
-    spec('legacy', { aliases: ['old'] }),
+    spec('adapter', { aliases: ['old'] }),
     spec('perceive', { aliases: ['see'] }),
   ]);
   const handler = vi.fn(async ({ args }) => commandResult(args.join(':'), null));
   const options = {
     registry,
-    owners: { legacy: 'legacy', perceive: 'application' },
+    owners: { adapter: 'adapter', perceive: 'application' },
     handlers: { perceive: handler },
     ...overrides,
   };
@@ -39,15 +39,15 @@ describe('complete command route dispatcher', () => {
     const { registry, options } = fixture();
     expect(() => createCommandDispatcher({ ...options, registry: { list: () => [] } })).toThrow(/registry/);
     expect(() => createCommandDispatcher({ ...options, owners: { perceive: 'application' } })).toThrow(/exactly cover/);
-    expect(() => createCommandDispatcher({ ...options, owners: { ...options.owners, planted: 'legacy' } })).toThrow(/exactly cover/);
-    expect(() => createCommandDispatcher({ ...options, owners: { ...options.owners, legacy: 'unknown' } })).toThrow(/application or legacy/);
+    expect(() => createCommandDispatcher({ ...options, owners: { ...options.owners, planted: 'adapter' } })).toThrow(/exactly cover/);
+    expect(() => createCommandDispatcher({ ...options, owners: { ...options.owners, adapter: 'unknown' } })).toThrow(/application or adapter/);
     expect(() => createCommandDispatcher({ ...options, handlers: {} })).toThrow(/exactly cover/);
-    expect(() => createCommandDispatcher({ ...options, handlers: { perceive: options.handlers.perceive, legacy: vi.fn() } })).toThrow(/exactly cover/);
+    expect(() => createCommandDispatcher({ ...options, handlers: { perceive: options.handlers.perceive, adapter: vi.fn() } })).toThrow(/exactly cover/);
     expect(createCommandDispatcher(options).list()).toEqual([
-      { command: 'legacy', owner: 'legacy' },
+      { command: 'adapter', owner: 'adapter' },
       { command: 'perceive', owner: 'application' },
     ]);
-    expect(registry.resolve('old').name).toBe('legacy');
+    expect(registry.resolve('old').name).toBe('adapter');
   });
 
   it('rejects top-level option prototypes, accessors, symbols, and extra keys before authority reads', () => {
@@ -63,7 +63,7 @@ describe('complete command route dispatcher', () => {
   });
 
   it.each([
-    ['owners', Object.create({ legacy: 'legacy', perceive: 'application' })],
+    ['owners', Object.create({ adapter: 'adapter', perceive: 'application' })],
     ['handlers', Object.create({ perceive: () => {} })],
   ])('rejects prototype-backed %s', (key, value) => {
     const { options } = fixture();
@@ -72,10 +72,10 @@ describe('complete command route dispatcher', () => {
 
   it('rejects accessor, symbol, sparse/array, and non-function authority input', () => {
     const { options } = fixture();
-    const accessor = { legacy: 'legacy' };
+    const accessor = { adapter: 'adapter' };
     Object.defineProperty(accessor, 'perceive', { get: () => 'application', enumerable: true });
     expect(() => createCommandDispatcher({ ...options, owners: accessor })).toThrow(/data property/);
-    const symbol = { ...options.owners, [Symbol('x')]: 'legacy' };
+    const symbol = { ...options.owners, [Symbol('x')]: 'adapter' };
     expect(() => createCommandDispatcher({ ...options, owners: symbol })).toThrow(/symbol/);
     expect(() => createCommandDispatcher({ ...options, owners: [] })).toThrow(/plain data object/);
     expect(() => createCommandDispatcher({ ...options, handlers: { perceive: true } })).toThrow(/function/);
@@ -92,29 +92,29 @@ describe('complete command route dispatcher', () => {
     await expect(dispatcher.execute(Object.create({ name: 'perceive' }))).rejects.toThrow(/plain data object/);
     const customArgs = ['x'];
     Object.setPrototypeOf(customArgs, { planted: true });
-    await expect(dispatcher.execute({ name: 'legacy', args: customArgs, targetBound: true }))
+    await expect(dispatcher.execute({ name: 'adapter', args: customArgs, targetBound: true }))
       .rejects.toThrow(/array prototype/);
   });
 
-  it('canonicalizes aliases and returns legacy routes without handler or authorization', async () => {
+  it('canonicalizes aliases and returns adapter routes without handler or authorization', async () => {
     const authorize = vi.fn(async () => ({ allowed: true, code: 'unused' }));
     const { handler, options } = fixture({ authorize });
     const dispatcher = createCommandDispatcher(options);
     expect(dispatcher.route('see')).toEqual({ command: 'perceive', owner: 'application' });
-    expect(dispatcher.route('old')).toEqual({ command: 'legacy', owner: 'legacy' });
+    expect(dispatcher.route('old')).toEqual({ command: 'adapter', owner: 'adapter' });
     await expect(dispatcher.execute({ name: 'old', args: [], targetBound: false })).resolves.toEqual({
-      handled: false, command: 'legacy', result: null,
+      handled: false, command: 'adapter', result: null,
     });
     expect(handler).not.toHaveBeenCalled();
     expect(authorize).not.toHaveBeenCalled();
   });
 
-  it('preserves repeated ordered argv for both legacy and application routes', async () => {
+  it('preserves repeated ordered argv for both adapter and application routes', async () => {
     const { handler, options } = fixture();
     const dispatcher = createCommandDispatcher(options);
     const args = ['--selector', 'body', '--exclude', 'body'];
-    await expect(dispatcher.execute({ name: 'legacy', args, targetBound: true })).resolves.toEqual({
-      handled: false, command: 'legacy', result: null,
+    await expect(dispatcher.execute({ name: 'adapter', args, targetBound: true })).resolves.toEqual({
+      handled: false, command: 'adapter', result: null,
     });
     await expect(dispatcher.execute({ name: 'perceive', args, targetBound: true })).resolves.toEqual({
       handled: true, command: 'perceive', result: args.join(':'),
@@ -159,19 +159,19 @@ describe('complete command route dispatcher', () => {
   });
 
   it('supports a reentrant call through the same dispatcher without sharing request state', async () => {
-    const registry = createCommandRegistry([spec('legacy'), spec('perceive')]);
+    const registry = createCommandRegistry([spec('adapter'), spec('perceive')]);
     let dispatcher;
     const perceive = vi.fn(async ({ args }) => {
-      const nested = await dispatcher.execute({ name: 'legacy', args: ['nested'], targetBound: true });
+      const nested = await dispatcher.execute({ name: 'adapter', args: ['nested'], targetBound: true });
       return commandResult(`${args[0]}:${nested.command}:${nested.handled}`, null);
     });
     dispatcher = createCommandDispatcher({
       registry,
-      owners: { legacy: 'legacy', perceive: 'application' },
+      owners: { adapter: 'adapter', perceive: 'application' },
       handlers: { perceive },
     });
     await expect(dispatcher.execute({ name: 'perceive', args: ['outer'], targetBound: true }))
-      .resolves.toEqual({ handled: true, command: 'perceive', result: 'outer:legacy:false' });
+      .resolves.toEqual({ handled: true, command: 'perceive', result: 'outer:adapter:false' });
     expect(perceive).toHaveBeenCalledOnce();
   });
 });
