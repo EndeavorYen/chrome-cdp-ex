@@ -13943,42 +13943,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           result = JSON.stringify(pages);
           break;
         }
-        case 'report': {
-          const route = await executePhase4DaemonRoute({
-            cmd: 'report',
-            args,
-            targetBound: Boolean(targetId),
-          }, phase4Context);
-          result = route.result;
-          break;
-        }
-        case 'perceive': {
-          const route = await executePhase4DaemonRoute({
-            cmd: 'perceive',
-            args,
-            targetBound: Boolean(targetId),
-          }, phase4Context);
-          result = route.result;
-          break;
-        }
-        case 'click': {
-          const route = await executePhase4DaemonRoute({
-            cmd: 'click',
-            args,
-            targetBound: Boolean(targetId),
-          }, phase4Context);
-          result = route.result;
-          break;
-        }
-        case 'evalraw': {
-          const route = await executePhase4DaemonRoute({
-            cmd: 'evalraw',
-            args,
-            targetBound: Boolean(targetId),
-          }, phase4Context);
-          result = route.result;
-          break;
-        }
         case 'stop': return { ok: true, result: '', stopAfter: true };
         default: return { ok: false, error: `Unknown command: ${cmd}` };
       }

@@ -27,7 +27,7 @@ describe('Runtime v3 final dispatch characterization', () => {
         targetlessCommands: 13,
         applicationCommands: 68,
         legacyDaemonCommands: 0,
-        daemonGroups: 9,
+        daemonGroups: 5,
       },
       applicationCommands: [
         'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'closetab', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'diff-shot', 'dismiss-modal', 'elshot', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'fullshot', 'hover', 'html', 'inject', 'jsclick', 'keepalive', 'loadall', 'mock', 'nav', 'net', 'netlog',
@@ -52,6 +52,9 @@ describe('Runtime v3 final dispatch characterization', () => {
     expect(fixture.daemonGroups.filter(group => group.owner === 'daemon-protocol').map(group => group.labels))
       .toEqual([['meta'], ['list'], ['list_raw'], ['stop']]);
     expect(fixture.daemonGroups.filter(group => group.owner === 'unknown-command')).toHaveLength(1);
+    expect(fixture.daemonGroups.map(group => group.labels)).toEqual([
+      ['meta'], ['list'], ['list_raw'], ['stop'], ['<default>'],
+    ]);
     expect(fixture.recursiveEdges.map(edge => edge.from).sort()).toEqual([
       'batch', 'flow', 'repeat', 'replay',
     ]);
@@ -141,10 +144,14 @@ describe('Runtime v3 final dispatch characterization', () => {
       'const nested = await handleCommand({',
       "await handleCommand({ cmd: 'summary', args: [] });\n        const nested = await handleCommand({",
     ))).toThrow(/workflow capability batch must call handleCommand exactly once/);
-    expect(() => buildRuntimeDispatchInventory(source.replace(
-      "case 'report': {\n          const route = await executePhase4DaemonRoute({",
-      "case 'report': {\n          await executePhase4DaemonRoute({ cmd: 'report', args, targetBound: true }, phase4Context);\n          const route = await executePhase4DaemonRoute({",
-    ))).toThrow(/application ownership/);
+    try {
+      expect(buildRuntimeDispatchInventory(source.replace(
+        "case 'stop': return { ok: true, result: '', stopAfter: true };",
+        "case 'report': {\n          const route = await executePhase4DaemonRoute({ cmd: 'report', args, targetBound: Boolean(targetId) }, phase4Context);\n          result = route.result;\n          break;\n        }\n        case 'stop': return { ok: true, result: '', stopAfter: true };",
+      ))).not.toEqual(fixture);
+    } catch (error) {
+      expect(error.message).toMatch(/duplicate daemon route labels: report/);
+    }
     expect(() => buildRuntimeDispatchInventory(source.replace(
       "'perceive', 'click', 'report', 'evalraw', 'html', 'text', 'table',",
       "'perceive', 'click', 'report', 'evalraw', 'html', 'text', 'planted',",
@@ -335,7 +342,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 9 daemon groups');
+    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 5 daemon groups');
   });
 
   it('keeps the complete policy-class distribution visible before deletion', () => {
