@@ -4,6 +4,7 @@ import {
   assertRuntimeV3Evidence,
   createRuntimeV3Cancellation,
   proveRuntimeV3InjectedFailures,
+  runIsolatedValidationScript,
   runRuntimeV3EvidenceSession,
 } from '../scripts/validation-phase7-runtime-v3.mjs';
 
@@ -60,6 +61,15 @@ describe('Phase 7 Runtime v3 final evidence', () => {
 
   it('executes the exact injected failure routine used by live evidence', async () => {
     await expect(proveRuntimeV3InjectedFailures()).resolves.toEqual(proof().failures);
+  });
+
+  it('runs accepted live routes in a bounded isolated process instead of sharing runtime cache', async () => {
+    await expect(runIsolatedValidationScript('scripts/check-docs-contract.mjs', {
+      timeoutMs: 5_000,
+    })).resolves.toContain('Docs contract OK: 81 commands checked');
+    await expect(runIsolatedValidationScript('validation/fixtures/controlled-failure.mjs', {
+      timeoutMs: 5_000,
+    })).rejects.toThrow(/exited 23/);
   });
 
   it('runs fail-closed injections before live effects and loads domain proof after task-local runtimes', async () => {

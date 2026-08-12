@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 
+import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 import { buildRuntimeDispatchInventory } from './runtime-dispatch-inventory.mjs';
-import { runDisposablePhase4Slices } from './validation-phase4-slices.mjs';
-import { runDisposablePhase5Supervisor } from './validation-phase5-supervisor.mjs';
 import {
   commandResult,
   createCommandRegistry,
@@ -48,6 +47,88 @@ const EXPECTED_BOUNDARIES = Object.freeze({
 
 function exact(value, expected) {
   return JSON.stringify(value) === JSON.stringify(expected);
+}
+
+export function runIsolatedValidationScript(entrypoint, {
+  timeoutMs,
+  maxOutputBytes = 262_144,
+  spawnChild = spawn,
+} = {}) {
+  if (typeof entrypoint !== 'string' || !entrypoint || entrypoint.startsWith('/') || entrypoint.includes('..')) {
+    throw new Error('isolated validation entrypoint must be repository-relative');
+  }
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) throw new Error('isolated validation timeoutMs is required');
+  if (!Number.isInteger(maxOutputBytes) || maxOutputBytes < 1024) throw new Error('isolated validation maxOutputBytes is invalid');
+  return new Promise((resolveRun, rejectRun) => {
+    const child = spawnChild(process.execPath, [resolve(rootDir, entrypoint)], {
+      cwd: rootDir,
+      env: process.env,
+      shell: false,
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let failure = null;
+    let cancelled = null;
+    let forceTimer = null;
+    const append = (current, chunk, label) => {
+      const next = Buffer.concat([current, Buffer.from(chunk)]);
+      if (next.length > maxOutputBytes) {
+        failure ||= new Error(`${entrypoint} exceeded ${label} output bound`);
+        child.kill('SIGTERM');
+        return next.subarray(0, maxOutputBytes);
+      }
+      return next;
+    };
+    child.stdout?.on('data', chunk => { stdout = append(stdout, chunk, 'stdout'); });
+    child.stderr?.on('data', chunk => { stderr = append(stderr, chunk, 'stderr'); });
+    const onSignal = signal => {
+      cancelled = signal;
+      child.kill(signal);
+      forceTimer ||= setTimeout(() => child.kill('SIGKILL'), 5_000);
+    };
+    process.once('SIGINT', onSignal);
+    process.once('SIGTERM', onSignal);
+    const timer = setTimeout(() => {
+      failure ||= new Error(`${entrypoint} timed out after ${timeoutMs}ms`);
+      child.kill('SIGTERM');
+      forceTimer ||= setTimeout(() => child.kill('SIGKILL'), 5_000);
+    }, timeoutMs);
+    const finish = () => {
+      clearTimeout(timer);
+      if (forceTimer) clearTimeout(forceTimer);
+      process.off('SIGINT', onSignal);
+      process.off('SIGTERM', onSignal);
+    };
+    child.once('error', error => {
+      finish();
+      rejectRun(error);
+    });
+    child.once('close', (code, signal) => {
+      finish();
+      const out = stdout.toString('utf8').trim();
+      const err = stderr.toString('utf8').trim();
+      if (cancelled) {
+        process.exitCode = cancelled === 'SIGTERM' ? 143 : 130;
+        rejectRun(new Error(`${entrypoint} cancelled by ${cancelled}`));
+        return;
+      }
+      if (failure) {
+        rejectRun(failure);
+        return;
+      }
+      if (code !== 0) {
+        rejectRun(new Error(`${entrypoint} exited ${code ?? signal}: ${err || out || 'no output'}`));
+        return;
+      }
+      if (err) {
+        rejectRun(new Error(`${entrypoint} wrote unexpected stderr: ${err}`));
+        return;
+      }
+      resolveRun(out);
+    });
+  });
 }
 
 function readSpec(name, aliases = []) {
@@ -272,8 +353,12 @@ export async function runDisposableRuntimeV3Evidence() {
       return provePhase6InjectedBoundaries();
     },
     proveFailures: proveRuntimeV3InjectedFailures,
-    runPhase4: runDisposablePhase4Slices,
-    runPhase5: runDisposablePhase5Supervisor,
+    runPhase4: () => runIsolatedValidationScript('scripts/validation-phase4-slices.mjs', {
+      timeoutMs: 240_000,
+    }),
+    runPhase5: () => runIsolatedValidationScript('scripts/validation-phase5-supervisor.mjs', {
+      timeoutMs: 300_000,
+    }),
   });
 }
 
@@ -282,6 +367,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
     console.log(`Runtime v3 evidence OK: ${result.commands} commands, ${result.mcpParities} MCP parities, supervisor ${result.recovery}, ${result.denials} domain denials, ${result.failClosed} fail-closed injections`);
   }).catch(error => {
     console.error(`Runtime v3 evidence failed: ${error.message}`);
-    process.exitCode = 1;
+    if (process.exitCode !== 130 && process.exitCode !== 143) process.exitCode = 1;
   });
 }
