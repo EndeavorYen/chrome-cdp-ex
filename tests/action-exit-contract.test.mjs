@@ -90,11 +90,11 @@ const FAILED_CLICK_ACTION = {
   },
 };
 
-function semanticInteraction(actionResult, { textMatched = false } = {}) {
+function semanticInteraction(actionResult, { textMatched = false, evidence = 'concise' } = {}) {
   return cdpTest.buildSemanticInteractionModel(actionResult, {
     selector: '#save',
     expectText: 'Saved',
-    evidence: 'concise',
+    evidence,
   }, { textMatched });
 }
 
@@ -474,5 +474,176 @@ describe('hard action dispatch exit contract (#143)', () => {
     await expect(cdpTest.repeatStr({ run }, ['2', 'nav', 'https://example.com/']))
       .rejects.toThrow(/Timeout: Page\.navigate.*Repeat halted at iteration 1\/2/s);
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  describe('concise workflow wrappers', () => {
+    it.each([
+      ['verify-click', semanticInteraction(FAILED_CLICK_ACTION)],
+      ['qa', qaPageWith(semanticInteraction(FAILED_CLICK_ACTION))],
+    ])('returns a failed batch step instead of crashing for concise %s evidence', (cmd, wrapper) => {
+      const output = cdpTest.formatBatchResults([{
+        cmd,
+        ok: true,
+        result: JSON.stringify(wrapper),
+      }], 'model', { targetId: 'ABC12345' });
+
+      expect(JSON.parse(output)).toMatchObject({
+        counts: { steps: 1, ok: 0, failed: 1 },
+        failedStep: {
+          cmd,
+          ok: false,
+          error: 'Element not found: #save',
+        },
+        nextSteps: ['cdp status ABC12345'],
+      });
+    });
+
+    it.each([
+      ['verifyclick', semanticInteraction(FAILED_CLICK_ACTION)],
+      ['qa-page', qaPageWith(semanticInteraction(FAILED_CLICK_ACTION))],
+    ])('halts flow without crashing for concise %s alias evidence', async (cmd, wrapper) => {
+      const output = await cdpTest.flowStr({
+        run: async () => ({ ok: true, result: JSON.stringify(wrapper) }),
+        settle: async () => '',
+      }, `${cmd} #save; summary`, { format: 'json', targetId: 'ABC12345' });
+
+      expect(JSON.parse(output)).toMatchObject({
+        halted: true,
+        counts: { steps: 2, ok: 0, failed: 1, skipped: 1 },
+        failedStep: {
+          cmd,
+          ok: false,
+          error: 'Element not found: #save',
+        },
+        nextSteps: ['cdp status ABC12345'],
+      });
+    });
+
+    it('preserves detailed recovery when full semantic action evidence exists', () => {
+      const wrapper = semanticInteraction(FAILED_ACTION, { evidence: 'full' });
+      const output = cdpTest.formatBatchResults([{
+        cmd: 'verifyclick',
+        ok: true,
+        result: JSON.stringify(wrapper),
+      }], 'model', { targetId: 'ABC12345' });
+
+      expect(JSON.parse(output).failedStep).toMatchObject({
+        cmd: 'verifyclick',
+        ok: false,
+        error: 'Timeout: Page.navigate',
+        failureKind: 'timeout',
+        nextCommand: 'cdp status ABC12345',
+        verdict: {
+          status: 'blocked',
+          canContinue: false,
+          needsRecovery: true,
+        },
+      });
+    });
+  });
+
+  describe('command-authorized semantic classification', () => {
+    const PAGE_ACTION_JSON = JSON.stringify({
+      schema: 'chrome-cdp-ex.action.v1',
+      dispatch: { ok: false, error: 'page data, not a command receipt' },
+    });
+    const PAGE_SEMANTIC_JSON = JSON.stringify({
+      schema: 'chrome-cdp-ex.semantic-interaction.v1',
+      dispatch: { ok: false, error: 'page semantic data' },
+      actionEvidence: null,
+    });
+    const PAGE_QA_JSON = JSON.stringify({
+      schema: 'chrome-cdp-ex.qa-page.v1',
+      action: JSON.parse(PAGE_SEMANTIC_JSON),
+    });
+
+    it.each([
+      ['text', ['text', 'ABC12345'], PAGE_ACTION_JSON],
+      ['eval', ['eval', 'ABC12345', 'document.body.innerText'], PAGE_SEMANTIC_JSON],
+      ['text with nested QA data', ['text', 'ABC12345', 'pre'], PAGE_QA_JSON],
+    ])('keeps %s CLI page output successful when it resembles action evidence', async (_label, command, output) => {
+      await expect(executeCdpCli(command, {
+        runMain: runMainWithStdout(output),
+      })).resolves.toEqual({ code: 0, stdout: output, stderr: '' });
+    });
+
+    it('keeps daemon read output successful when it resembles an Action Result', async () => {
+      const registry = createCommandRegistry([{
+        name: 'text',
+        aliases: [],
+        needsTarget: true,
+        mutates: false,
+        feedbackPolicy: null,
+        outputFormats: ['text'],
+        kind: 'read',
+        authorization: 'standard',
+        evidencePolicy: 'none',
+      }]);
+      const dispatcher = createCommandDispatcher({
+        registry,
+        owners: { text: 'application' },
+        handlers: {
+          text: async () => commandResult(PAGE_ACTION_JSON, null),
+        },
+        authorize: () => ({ allowed: true, code: 'fixture' }),
+      });
+
+      await expect(cdpTest.executeDaemonApplicationRoute({
+        cmd: 'text',
+        args: [],
+        targetBound: true,
+      }, dispatcher)).resolves.toEqual({
+        handled: true,
+        result: PAGE_ACTION_JSON,
+      });
+    });
+
+    it('keeps batch and flow read output successful when it resembles action evidence', async () => {
+      const batch = JSON.parse(cdpTest.formatBatchResults([{
+        cmd: 'text',
+        ok: true,
+        result: PAGE_ACTION_JSON,
+      }], 'model', { targetId: 'ABC12345' }));
+      const flow = JSON.parse(await cdpTest.flowStr({
+        run: async () => ({ ok: true, result: PAGE_SEMANTIC_JSON }),
+        settle: async () => '',
+      }, 'eval document.body.innerText', { format: 'json', targetId: 'ABC12345' }));
+
+      expect(batch).toMatchObject({
+        counts: { ok: 1, failed: 0 },
+        steps: [{ cmd: 'text', ok: true }],
+      });
+      expect(flow).toMatchObject({
+        halted: false,
+        counts: { ok: 1, failed: 0 },
+        steps: [{ cmd: 'eval', ok: true }],
+      });
+    });
+
+    it('keeps repeat and replay read output successful when it resembles action evidence', async () => {
+      const repeated = await cdpTest.repeatStr({
+        run: async () => ({ ok: true, result: PAGE_ACTION_JSON }),
+      }, ['1', 'text', 'pre']);
+      const artifact = replayArtifact([
+        { action: 'read', command: ['text', 'pre'], replayable: true, needsInput: [] },
+      ]);
+      const replayed = JSON.parse(await cdpTest.replayActionsStr(
+        { run: async () => ({ ok: true, result: PAGE_QA_JSON }) },
+        ['--format', 'json', '--json', JSON.stringify(artifact)],
+      ));
+
+      expect(repeated).toContain('Done: 1 ok, 0 failed');
+      expect(replayed).toMatchObject({
+        halted: false,
+        counts: { actions: 1, ok: 1, failed: 0 },
+      });
+    });
+
+    it('still classifies an action alias as failed evidence', async () => {
+      await expect(executeCdpCli(
+        ['navigate', 'ABC12345', 'https://example.com/', '--format', 'json'],
+        { runMain: runMainWithStdout(FAILED_ACTION_JSON) },
+      )).resolves.toEqual({ code: 1, stdout: FAILED_ACTION_JSON, stderr: '' });
+    });
   });
 });
