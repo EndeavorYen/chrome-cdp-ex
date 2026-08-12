@@ -1,434 +1,79 @@
 import { readFileSync } from 'fs';
+import {
+  COMMAND_SURFACE,
+  MCP_RESOURCE_TEMPLATES,
+  MCP_RESOURCE_RECORDS,
+  MCP_RUN_COMMAND_ALLOWLIST,
+  MCP_TOOL_DEFINITIONS,
+  MCP_TOOL_MAPPER_BY_NAME,
+} from './command-surface.mjs';
+
+export {
+  MCP_RESOURCE_TEMPLATES,
+  MCP_RUN_COMMAND_ALLOWLIST,
+  MCP_TOOL_DEFINITIONS,
+};
 
 export const MCP_PROTOCOL_VERSION = '2024-11-05';
 export const MCP_SERVER_VERSION = JSON.parse(
   readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8'),
 ).version;
 
-function stringSchema(description, extra = {}) {
-  return { type: 'string', description, ...extra };
+const MAX_MCP_DATA_DEPTH = 32;
+const MAX_MCP_DATA_NODES = 10_000;
+const MAX_MCP_ARRAY_ITEMS = 4_096;
+const MAX_MCP_OBJECT_KEYS = 256;
+
+export function snapshotMcpData(value, path = 'mcp', state = { nodes: 0, depth: 0 }) {
+  state.nodes += 1;
+  if (state.nodes > MAX_MCP_DATA_NODES) throw new Error(`${path}: exceeds the MCP data node limit`);
+  if (state.depth > MAX_MCP_DATA_DEPTH) throw new Error(`${path}: exceeds the MCP data depth limit`);
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'object') throw new Error(`${path}: must contain JSON data only`);
+  const prototype = Object.getPrototypeOf(value);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some(key => typeof key === 'symbol')) throw new Error(`${path}: symbol keys are not allowed`);
+  const nextState = { nodes: state.nodes, depth: state.depth + 1 };
+  if (Array.isArray(value)) {
+    if (prototype !== Array.prototype) throw new Error(`${path}: must use the standard array prototype`);
+    if (value.length > MAX_MCP_ARRAY_ITEMS) throw new Error(`${path}: exceeds the MCP array item limit`);
+    const output = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[index];
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) {
+        throw new Error(`${path}[${index}]: must be an own data value`);
+      }
+      if (descriptor.enumerable !== true) throw new Error(`${path}[${index}]: must be enumerable JSON data`);
+      output.push(snapshotMcpData(descriptor.value, `${path}[${index}]`, nextState));
+      state.nodes = nextState.nodes;
+    }
+    for (const key of keys) {
+      if (key !== 'length' && !/^\d+$/.test(key)) throw new Error(`${path}.${key}: is not allowed`);
+    }
+    return Object.freeze(output);
+  }
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error(`${path}: must be a plain data object`);
+  }
+  if (keys.length > MAX_MCP_OBJECT_KEYS) throw new Error(`${path}: exceeds the MCP object key limit`);
+  const output = Object.create(null);
+  for (const key of keys) {
+    const descriptor = descriptors[key];
+    if (!Object.hasOwn(descriptor, 'value')) throw new Error(`${path}.${key}: must be an own data value`);
+    if (descriptor.enumerable !== true) throw new Error(`${path}.${key}: must be enumerable JSON data`);
+    Object.defineProperty(output, key, {
+      value: snapshotMcpData(descriptor.value, `${path}.${key}`, nextState),
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+    state.nodes = nextState.nodes;
+  }
+  return Object.freeze(output);
 }
 
-function booleanSchema(description, extra = {}) {
-  return { type: 'boolean', description, ...extra };
-}
-
-/** Allowlisted CLI commands for the MCP run_command escape hatch. */
-export const MCP_RUN_COMMAND_ALLOWLIST = Object.freeze([
-  'help', 'doctor', 'ready', 'list', 'tabs', 'ls', 'target', 'open', 'use', 'current', 'forget',
-  'perceive', 'controls', 'overlay', 'snap', 'snapshot', 'summary', 'status', 'console',
-  'shot', 'screenshot', 'elshot', 'fullshot', 'scanshot', 'diff-shot', 'diffshot',
-  'click', 'verify-click', 'jsclick', 'clickxy', 'type', 'press', 'key', 'scroll', 'hover',
-  'fill', 'select', 'upload', 'dialog', 'dismiss-modal',
-  'nav', 'navigate', 'back', 'forward', 'reload', 'viewport', 'resize', 'emulate',
-  'wait', 'waitfor', 'loadall',
-  'cascade', 'components', 'frame', 'frames', 'text', 'table', 'html', 'styles',
-  'net', 'netlog', 'cookies', 'qa', 'responsive-audit', 'visual-check', 'report',
-  'record', 'checkpoint', 'restore', 'record-actions', 'export-playwright',
-  'tab-group', 'broadcast', 'spawn-debug-browser', 'spawn', 'attach', 'stop', 'closetab',
-  'keepalive', 'mock', 'clock', 'throttle', 'inject',
-]);
-
-export const MCP_RESOURCE_TEMPLATES = Object.freeze([
-  {
-    uriTemplate: 'chrome-cdp-ex://doctor/status',
-    name: 'doctor-status',
-    description: 'Structured doctor readiness model (JSON).',
-    mimeType: 'application/json',
-  },
-  {
-    uriTemplate: 'chrome-cdp-ex://session/{target}/report',
-    name: 'session-report',
-    description: 'Compact session report for a target.',
-    mimeType: 'application/json',
-  },
-  {
-    uriTemplate: 'chrome-cdp-ex://session/{target}/screenshot/latest',
-    name: 'session-screenshot-latest',
-    description: 'Capture a fresh viewport screenshot path/result for a target.',
-    mimeType: 'text/plain',
-  },
-]);
-
-export const MCP_TOOL_DEFINITIONS = Object.freeze([
-  {
-    name: 'doctor',
-    description: 'Run chrome-cdp-ex readiness diagnostics and return structured setup guidance.',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'list_tabs',
-    description: 'List debuggable browser tabs and named target aliases.',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'open_or_attach',
-    description: 'Open a URL in a debuggable tab, or register a named alias for an existing target.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        url: stringSchema('HTTP(S) URL to open. Omit when only attaching an alias.'),
-        target: stringSchema('Existing CDP target id or prefix to alias.'),
-        port: stringSchema('CDP port for the target or browser session.'),
-        name: stringSchema('Optional local alias name for later tool calls.'),
-        reuseUrl: booleanSchema('Reuse an existing tab matching the URL when unique.'),
-        confirm: booleanSchema('Required when opening a new tab because this mutates browser state.'),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'select_target',
-    description: 'Select a debuggable page target by URL and/or title substring (or exact match).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        url: stringSchema('URL or URL substring to match.'),
-        title: stringSchema('Page title or title substring to match.'),
-        exact: booleanSchema('Require exact URL/title match.'),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'perceive',
-    description: 'Capture structured page perception with refs, layout, and console health.',
-    inputSchema: {
-      type: 'object',
-      required: ['target'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        depth: { type: 'integer', minimum: 1, maximum: 20, description: 'Tree depth limit.' },
-        cursorInteractive: booleanSchema('Include visible clickable controls and @c refs.'),
-        selector: stringSchema('Optional CSS selector scope.'),
-        sinceAction: booleanSchema('Return the causal diff since the last mutating action.'),
-        adaptive: booleanSchema('Use density/error-aware text-row budgeting. Defaults to true.'),
-        last: { type: 'integer', minimum: 1, maximum: 500, description: 'Explicit text-row budget; overrides adaptive mode.' },
-        qa: booleanSchema('Return a compact QA summary instead of full perception.'),
-        maxDiffLines: { type: 'integer', minimum: 0, maximum: 500, description: 'Truncate long text previews in QA mode.' },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'controls',
-    description: 'Return a compact list of visible controls for low-token target discovery.',
-    inputSchema: {
-      type: 'object',
-      required: ['target'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        selector: stringSchema('Optional CSS selector scope.'),
-        filter: stringSchema('Optional visible text/name filter.'),
-        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum controls to return.' },
-        compact: booleanSchema('Return the bounded role/label/selector/rect model. Defaults to true.'),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'overlay',
-    description: 'Detect dialogs, overlays, and hit-test blockers for the page or a target point.',
-    inputSchema: {
-      type: 'object',
-      required: ['target'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        selector: stringSchema('Optional CSS selector, @ref, or @c ref to test for coverage.'),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'screenshot',
-    description: 'Capture a viewport screenshot for a target.',
-    inputSchema: {
-      type: 'object',
-      required: ['target'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        path: stringSchema('Optional output path.'),
-        annotate: booleanSchema('Overlay @ref boxes on the screenshot.'),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'click',
-    description: 'Click a selector or @ref and return action evidence. Requires confirm: true.',
-    inputSchema: {
-      type: 'object',
-      required: ['target', 'selector', 'confirm'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        selector: stringSchema('CSS selector, @ref, or @c ref.'),
-        js: booleanSchema('Use HTMLElement.click() fallback instead of CDP mouse events.'),
-        qa: booleanSchema('Return a compact QA summary instead of full action evidence.'),
-        confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'verify_click',
-    description: 'Click once and assert expected text, network request/status, and console health. Requires confirm: true.',
-    inputSchema: {
-      type: 'object',
-      required: ['target', 'selector', 'confirm'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        selector: stringSchema('CSS selector, @ref, or @c ref.'),
-        expectText: stringSchema('Expected text after the click.'),
-        expectRequest: stringSchema('Expected network request, e.g. POST /api/save.'),
-        expectStatus: { type: 'integer', minimum: 100, maximum: 599, description: 'Expected HTTP status for the matched request.' },
-        noConsoleErrors: booleanSchema('Fail if action console/exception errors appear.'),
-        evidence: stringSchema('Text evidence detail level.', { enum: ['concise', 'full'] }),
-        confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'dismiss_modal',
-    description: 'Close common dialogs/modals safely and return action evidence. Requires confirm: true.',
-    inputSchema: {
-      type: 'object',
-      required: ['target', 'confirm'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'fill',
-    description: 'Fill a field by selector or @ref and return action evidence. Requires confirm: true.',
-    inputSchema: {
-      type: 'object',
-      required: ['target', 'selector', 'text', 'confirm'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        selector: stringSchema('CSS selector or @ref.'),
-        text: stringSchema('Text to enter. Sensitive values are redacted by cdp action artifacts.'),
-        react: booleanSchema('Use native value setter plus input/change events.'),
-        confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'viewport',
-    description: 'Read or set viewport size. Setting size requires confirm: true.',
-    inputSchema: {
-      type: 'object',
-      required: ['target'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        size: stringSchema('Optional viewport size, for example 1440x900.'),
-        confirm: booleanSchema('Required when size is provided because this mutates viewport state.'),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'qa_page',
-    description: 'Run page, console, screenshot, and optional semantic interaction QA.',
-    inputSchema: {
-      type: 'object',
-      required: ['target'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        desktop: stringSchema('Desktop viewport size, for example 1440x900.'),
-        mobile: stringSchema('Mobile viewport size, for example 390x844.'),
-        click: stringSchema('Optional selector/ref to click as part of QA. Requires confirm: true.'),
-        expectRequest: stringSchema('Expected network request, e.g. POST /api/save.'),
-        expectStatus: { type: 'integer', minimum: 100, maximum: 599, description: 'Expected HTTP status for the matched request.' },
-        expectText: stringSchema('Expected text after the optional action.'),
-        noConsoleErrors: booleanSchema('Fail the QA report if action console/exception errors appear.'),
-        confirm: booleanSchema('Required when click is provided because this mutates browser state.'),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'responsive_audit',
-    description: 'Run a bounded multi-viewport responsive visual audit with overflow/console/control signals.',
-    inputSchema: {
-      type: 'object',
-      required: ['target'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        viewports: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Optional list of WxH viewports. Defaults to desktop + mobile.',
-        },
-        outDir: stringSchema('Optional screenshot output directory outside the repo.'),
-        maxControls: { type: 'integer', minimum: 0, maximum: 100, description: 'Max visible controls sampled per viewport.' },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'report',
-    description: 'Return session action timeline, artifacts, and recovery next steps.',
-    inputSchema: {
-      type: 'object',
-      required: ['target'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        last: { type: 'integer', minimum: 1, maximum: 100, description: 'Latest action count to include.' },
-        all: booleanSchema('Include the full action timeline. Can be expensive.'),
-        qa: booleanSchema('Return a compact QA summary instead of the full report.'),
-        compact: booleanSchema('Return compact report JSON. Defaults to true unless all is requested.'),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'navigate',
-    description: 'Navigate a target to a URL and wait for load. Requires confirm: true.',
-    inputSchema: {
-      type: 'object',
-      required: ['target', 'url', 'confirm'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        url: stringSchema('HTTP(S) URL to open.'),
-        confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'press',
-    description: 'Send a key press to the page. Requires confirm: true.',
-    inputSchema: {
-      type: 'object',
-      required: ['target', 'key', 'confirm'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        key: stringSchema('Key name, for example Enter, Escape, Tab.'),
-        confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'wait_for',
-    description: 'Wait for text, selector stability, or other waitfor conditions.',
-    inputSchema: {
-      type: 'object',
-      required: ['target'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        text: stringSchema('Wait until this text appears.'),
-        anyOf: stringSchema('Pipe-delimited alternatives, e.g. win|lose|escape.'),
-        selectorStable: stringSchema('CSS selector that must remain stable.'),
-        stableMs: { type: 'integer', minimum: 0, maximum: 120000, description: 'Stability window ms for selectorStable.' },
-        timeoutMs: { type: 'integer', minimum: 0, maximum: 300000, description: 'Overall timeout ms.' },
-        scope: stringSchema('Optional CSS scope selector.'),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'cascade',
-    description: 'Trace a computed CSS property back to the winning selector and source.',
-    inputSchema: {
-      type: 'object',
-      required: ['target', 'selector'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        selector: stringSchema('CSS selector, @ref, or @c ref.'),
-        property: stringSchema('CSS property to trace. Defaults to color when omitted by CLI behavior; prefer an explicit property.'),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'components',
-    description: 'Inspect React/Vue component tree hooks when available for a selector/@ref.',
-    inputSchema: {
-      type: 'object',
-      required: ['target'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        selector: stringSchema('Optional CSS selector, @ref, or component cursor.'),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'spawn_debug_browser',
-    description: 'Launch an isolated debug browser profile. Requires confirm: true and user consent.',
-    inputSchema: {
-      type: 'object',
-      required: ['confirm'],
-      properties: {
-        browser: stringSchema('Browser id: edge, chrome, chromium, brave, vivaldi.'),
-        port: { type: 'integer', minimum: 1, maximum: 65535, description: 'Remote debugging port.' },
-        url: stringSchema('Optional initial URL.'),
-        headless: booleanSchema('Launch headless (CI/containers).'),
-        noSandbox: booleanSchema('Pass --no-sandbox (Linux CI).'),
-        confirm: booleanSchema('Must be true to acknowledge launching a browser.', { const: true }),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'record_snapshot',
-    description: 'Record a short temporal timeline of DOM/network/console activity.',
-    inputSchema: {
-      type: 'object',
-      required: ['target'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        durationMs: { type: 'integer', minimum: 100, maximum: 120000, description: 'Recording window in ms.' },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'session_checkpoint',
-    description: 'Capture a redacted session checkpoint for handoff/restore.',
-    inputSchema: {
-      type: 'object',
-      required: ['target'],
-      properties: {
-        target: stringSchema('Target prefix or named alias.'),
-        unsafeFull: booleanSchema('Include restorable secrets. Explicit opt-in only.'),
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'run_command',
-    description: 'Escape hatch: run an allowlisted chrome-cdp-ex CLI command. Mutating commands require confirm: true.',
-    inputSchema: {
-      type: 'object',
-      required: ['command'],
-      properties: {
-        command: stringSchema(`Allowlisted CLI command name. One of: ${MCP_RUN_COMMAND_ALLOWLIST.join(', ')}`),
-        args: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Positional/flag args after the command name.',
-        },
-        confirm: booleanSchema('Required when the command mutates browser/session state.'),
-      },
-      additionalProperties: false,
-    },
-  },
-]);
 
 function requireString(args, key) {
   const value = args?.[key];
@@ -453,49 +98,103 @@ function normalizeAllowlistedCommand(name) {
   return raw;
 }
 
-/** Commands that mutate browser/session state or can export secrets via run_command. */
-export const MCP_RUN_COMMAND_MUTATING = Object.freeze(new Set([
-  'open', 'attach', 'nav', 'navigate', 'back', 'forward', 'reload', 'click', 'verify-click',
-  'jsclick', 'clickxy', 'type', 'press', 'key', 'scroll', 'hover', 'fill', 'select', 'upload',
-  'dialog', 'dismiss-modal', 'viewport', 'resize', 'emulate', 'inject', 'mock', 'clock', 'throttle',
-  'restore', 'spawn-debug-browser', 'spawn', 'stop', 'closetab',
-  'broadcast', 'cookieset', 'cookiedel', 'qa', 'responsive-audit', 'visual-check',
-  'checkpoint', 'components', 'cookies',
-]));
+const ALWAYS_CONFIRM_AUTHORIZATION = new Set(['mutation', 'sensitive-read', 'raw-script', 'raw-cdp']);
+
+/** Compatibility export, now derived from the reviewed command authorization owner. */
+export const MCP_RUN_COMMAND_MUTATING = Object.freeze(new Set(
+  MCP_RUN_COMMAND_ALLOWLIST.filter(spelling => {
+    const command = COMMAND_SURFACE.resolve(spelling);
+    return command && ALWAYS_CONFIRM_AUTHORIZATION.has(command.authorization);
+  }),
+));
+
+function tabGroupRequiresConfirm(args) {
+  const normalized = [];
+  let formatCount = 0;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index]);
+    if (arg !== '--format') {
+      normalized.push(arg);
+      continue;
+    }
+    formatCount += 1;
+    const format = args[index + 1];
+    if (formatCount > 1 || (format !== 'text' && format !== 'json')) return true;
+    index += 1;
+  }
+  const action = String(normalized[0] || '').toLowerCase();
+  if (action === 'list') return normalized.length !== 1;
+  if (action === 'show') return normalized.length !== 2 || !normalized[1];
+  return true;
+}
 
 export function argsRequireConfirm(commandName, args = []) {
-  if (MCP_RUN_COMMAND_MUTATING.has(commandName)) return true;
+  const command = COMMAND_SURFACE.resolve(commandName);
+  if (!command) throw new Error(`unknown command policy: ${commandName}`);
+  if (ALWAYS_CONFIRM_AUTHORIZATION.has(command.authorization)) return true;
+  if (command.authorization === 'composite') return true;
+  if (command.authorization === 'conditional') {
+    if (command.name === 'tab-group') return tabGroupRequiresConfirm(args);
+    if (command.name === 'record') return args.includes('--action');
+    if (command.name === 'console' || command.name === 'netlog') return args.includes('--clear');
+    if (command.name === 'diff-shot') return args.includes('--reset');
+    if (command.name === 'shot') {
+      if (!args[0]) return true;
+      const safeFlags = new Set(['--annotate', '-a', '--quiet', '-q', '--verbose', '-v']);
+      return args.slice(1).some(arg => !safeFlags.has(String(arg)));
+    }
+    if (command.name === 'fullshot') return args.length !== 1 || !args[0];
+    return true;
+  }
   return args.some(arg => /^(--unsafe-full|--include-secrets)$/.test(String(arg)));
 }
 
 export function buildMcpResourceCommand(uri) {
-  const doctor = uri === 'chrome-cdp-ex://doctor/status';
-  if (doctor) return ['doctor', '--format', 'json'];
-  const report = uri.match(/^chrome-cdp-ex:\/\/session\/([^/]+)\/report$/);
-  if (report) return ['report', decodeURIComponent(report[1]), '--compact', '--format', 'json'];
-  const shot = uri.match(/^chrome-cdp-ex:\/\/session\/([^/]+)\/screenshot\/latest$/);
-  if (shot) return ['shot', decodeURIComponent(shot[1])];
+  return resolveMcpResource(uri).command;
+}
+
+export function resolveMcpResource(uri) {
+  let match = null;
+  let resource = null;
+  for (const candidate of MCP_RESOURCE_RECORDS) {
+    const pattern = candidate.uriTemplate
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      .replace('\\{target\\}', '([^/]+)');
+    const candidateMatch = String(uri).match(new RegExp(`^${pattern}$`));
+    if (candidateMatch) {
+      resource = candidate;
+      match = candidateMatch;
+      break;
+    }
+  }
+  let command = null;
+  if (resource?.mapper === 'doctor-status') command = ['doctor', '--format', 'json'];
+  if (resource?.mapper === 'session-report') command = ['report', decodeURIComponent(match[1]), '--compact', '--format', 'json'];
+  if (resource?.mapper === 'session-screenshot-latest') command = ['shot', decodeURIComponent(match[1])];
+  if (command) return Object.freeze({ command: Object.freeze(command), mimeType: resource.mimeType, record: resource });
   throw new Error(`Unknown MCP resource URI: ${uri}`);
 }
 
 export function listMcpResources() {
-  return [
-    {
-      uri: 'chrome-cdp-ex://doctor/status',
-      name: 'doctor-status',
-      description: 'Structured doctor readiness model (JSON).',
-      mimeType: 'application/json',
-    },
-  ];
+  return Object.freeze(MCP_RESOURCE_RECORDS
+    .filter(resource => !resource.uriTemplate.includes('{'))
+    .map(resource => Object.freeze({
+      uri: resource.uriTemplate,
+      name: resource.name,
+      description: resource.description,
+      mimeType: resource.mimeType,
+    })));
 }
 
 export function buildMcpToolCommand(name, args = {}) {
-  switch (name) {
+  args = snapshotMcpData(args, 'mcp.arguments');
+  const mapper = Object.hasOwn(MCP_TOOL_MAPPER_BY_NAME, name) ? MCP_TOOL_MAPPER_BY_NAME[name] : null;
+  switch (mapper) {
     case 'doctor':
       return ['doctor', '--format', 'json'];
-    case 'list_tabs':
+    case 'list-tabs':
       return ['list', '--format', 'json'];
-    case 'open_or_attach': {
+    case 'open-or-attach': {
       if (args.target || args.name || args.port) {
         const command = ['use'];
         if (args.port) command.push('--port', String(args.port));
@@ -508,7 +207,7 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.reuseUrl) command.push('--reuse-url');
       return optionalFormatJson(command);
     }
-    case 'select_target': {
+    case 'select-target': {
       if (!args.url && !args.title) throw new Error('select_target requires url and/or title');
       const command = ['target'];
       if (args.url) command.push('--url', String(args.url));
@@ -542,6 +241,7 @@ export function buildMcpToolCommand(name, args = {}) {
       return optionalFormatJson(command);
     }
     case 'screenshot': {
+      if (args.path) requireConfirm(args, 'screenshot path');
       const command = ['shot', requireString(args, 'target')];
       if (args.annotate) command.push('--annotate');
       if (args.path) command.push(String(args.path));
@@ -555,7 +255,7 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.qa || args.summary) command.push('--qa');
       return optionalFormatJson(command);
     }
-    case 'verify_click': {
+    case 'verify-click': {
       requireConfirm(args, 'verify_click');
       const command = ['verify-click', requireString(args, 'target'), requireString(args, 'selector')];
       if (args.expectText) command.push('--expect-text', String(args.expectText));
@@ -565,7 +265,7 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.evidence) command.push('--evidence', String(args.evidence));
       return optionalFormatJson(command);
     }
-    case 'dismiss_modal': {
+    case 'dismiss-modal': {
       requireConfirm(args, 'dismiss_modal');
       return ['dismiss-modal', requireString(args, 'target'), '--format', 'json'];
     }
@@ -584,8 +284,8 @@ export function buildMcpToolCommand(name, args = {}) {
       }
       return args.size ? optionalFormatJson(command) : command;
     }
-    case 'qa_page': {
-      if (args.click) requireConfirm(args, 'qa_page click');
+    case 'qa-page': {
+      requireConfirm(args, 'qa_page');
       const command = ['qa', requireString(args, 'target')];
       if (args.desktop) command.push('--desktop', String(args.desktop));
       if (args.mobile) command.push('--mobile', String(args.mobile));
@@ -596,7 +296,8 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.noConsoleErrors) command.push('--no-console-errors');
       return optionalFormatJson(command);
     }
-    case 'responsive_audit': {
+    case 'responsive-audit': {
+      requireConfirm(args, 'responsive_audit');
       const command = ['responsive-audit', requireString(args, 'target')];
       const viewports = Array.isArray(args.viewports) ? args.viewports : [];
       for (const size of viewports) command.push('--viewport', String(size));
@@ -620,7 +321,7 @@ export function buildMcpToolCommand(name, args = {}) {
       requireConfirm(args, 'press');
       return optionalFormatJson(['press', requireString(args, 'target'), requireString(args, 'key')]);
     }
-    case 'wait_for': {
+    case 'wait-for': {
       const command = ['waitfor', requireString(args, 'target')];
       if (args.anyOf) {
         command.push('--any-of', String(args.anyOf));
@@ -648,11 +349,12 @@ export function buildMcpToolCommand(name, args = {}) {
       return optionalFormatJson(command);
     }
     case 'components': {
+      requireConfirm(args, 'components');
       const command = ['components', requireString(args, 'target')];
       if (args.selector) command.push(String(args.selector));
       return optionalFormatJson(command);
     }
-    case 'spawn_debug_browser': {
+    case 'spawn-debug-browser': {
       requireConfirm(args, 'spawn_debug_browser');
       const command = ['spawn-debug-browser', String(args.browser || 'edge')];
       if (args.port != null) command.push('--port', String(args.port));
@@ -661,20 +363,20 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.noSandbox) command.push('--no-sandbox');
       return command;
     }
-    case 'record_snapshot': {
+    case 'record-snapshot': {
       const command = ['record', requireString(args, 'target')];
       if (args.durationMs != null) command.push(String(args.durationMs));
       return command;
     }
-    case 'session_checkpoint': {
+    case 'session-checkpoint': {
+      requireConfirm(args, 'session_checkpoint');
       const command = ['checkpoint', requireString(args, 'target')];
       if (args.unsafeFull) {
-        requireConfirm(args, 'session_checkpoint unsafeFull');
         command.push('--unsafe-full');
       }
       return optionalFormatJson(command);
     }
-    case 'run_command': {
+    case 'run-command': {
       const commandName = normalizeAllowlistedCommand(args.command);
       const extra = Array.isArray(args.args) ? args.args.map(String) : [];
       if (argsRequireConfirm(commandName, extra)) requireConfirm(args, `run_command ${commandName}`);

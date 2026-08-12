@@ -177,6 +177,96 @@ All commands use `scripts/cdp.mjs`. The `<target>` is a **unique** targetId pref
 scripts/cdp.mjs help                         # show the command reference
 ```
 
+### Generated canonical index
+
+<!-- chrome-cdp-ex:generated-command-surface:start -->
+_Generated from the immutable command catalog; edit command metadata at its source, not this region._
+
+| Command | Synopsis | Catalog policy |
+|---|---|---|
+| `help` | `help` | `read / standard` |
+| `list` | `list\|tabs\|ls [--format json]` | `read / standard` |
+| `target` | `target --url URL\|--title TEXT [--exact] [--format json]` | `read / standard` |
+| `tab-group` | `tab-group list\|create\|add\|remove\|delete\|show [--format json]` | `conditional-mutation / conditional` |
+| `broadcast` | `broadcast <group> <cmd> [args...] [--format json] [--full-results]` | `mutation / mutation` |
+| `use` | `use <target> --name <alias>` | `protected-mutation / mutation` |
+| `attach` | `attach --port N --target <id> --name <alias>` | `protected-mutation / mutation` |
+| `current` | `current [--format json]` | `read / standard` |
+| `forget` | `forget <alias>` | `protected-mutation / mutation` |
+| `perceive` | `perceive <target> [flags] [--format json]` | `read / standard` |
+| `snap` | `snap <target> [--full]` | `read / standard` |
+| `controls` | `controls <target> [-s selector] [--filter text] [--limit N] [--compact] [--format json]` | `read / standard` |
+| `eval` | `eval <target> <expr>` | `script / raw-script` |
+| `eval64` | `eval64 <target> <base64>` | `script / raw-script` |
+| `call` | `call <target> <expr\|fn>` | `script / raw-script` |
+| `elshot` | `elshot <target> <sel\|@ref>` | `read / standard` |
+| `shot` | `shot <target> [file\|--annotate]` | `conditional-mutation / conditional` |
+| `diff-shot` | `diff-shot <target> [--reset] [--threshold pct]` | `conditional-mutation / conditional` |
+| `html` | `html <target> [selector]` | `read / standard` |
+| `nav` | `nav <target> <url> [--format json]` | `mutation / mutation` |
+| `mock` | `mock <target> [add\|clear]` | `mutation / mutation` |
+| `clock` | `clock <target> [freeze\|offset\|reset]` | `mutation / mutation` |
+| `throttle` | `throttle <target> [off\|offline\|slow-3g\|fast-3g\|lte\|custom]` | `mutation / mutation` |
+| `status` | `status <target> [--runtime]` | `read / standard` |
+| `console` | `console <target> [--all\|--errors\|--clear]` | `conditional-mutation / conditional` |
+| `summary` | `summary <target>` | `read / standard` |
+| `report` | `report <target> [--last N\|--all] [--format json] [--qa\|--summary] [--compact]` | `evidence / standard` |
+| `checkpoint` | `checkpoint <target> [--unsafe-full] [--format json]` | `sensitive-read / sensitive-read` |
+| `restore` | `restore <target> --file <path> [--format json]` | `mutation / mutation` |
+| `record-actions` | `record-actions <target>` | `read / standard` |
+| `export-playwright` | `export-playwright <target> [--format json]` | `read / standard` |
+| `replay` | `replay <target> --file <path> [--format json]` | `mutation / mutation` |
+| `frame` | `frame <target> [--format json]` | `read / standard` |
+| `overlay` | `overlay <target> [sel\|@ref] [--format json]` | `read / standard` |
+| `qa` | `qa <target> [--desktop WxH] [--mobile WxH] [--format json]` | `mutation / mutation` |
+| `responsive-audit` | `responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]` | `mutation / mutation` |
+| `verify-click` | `verify-click <target> <sel\|@ref> [--format json]` | `mutation / mutation` |
+| `net` | `net <target>` | `read / standard` |
+| `click` | `click <target> <sel\|@ref> [--format json] [--qa\|--summary]` | `mutation / mutation` |
+| `jsclick` | `jsclick <target> <sel\|@ref>` | `mutation / mutation` |
+| `clickxy` | `clickxy <target> <x> <y> [--format json]` | `mutation / mutation` |
+| `type` | `type <target> <text> [--format json]` | `mutation / mutation` |
+| `press` | `press\|key <target> <key> [--format json]` | `mutation / mutation` |
+| `scroll` | `scroll <target> <dir\|x,y> [px] [--format json]` | `mutation / mutation` |
+| `hover` | `hover <target> <sel\|@ref>` | `protected-mutation / mutation` |
+| `waitfor` | `waitfor <target> <selector> [ms]` | `read / standard` |
+| `loadall` | `loadall <target> <selector> [ms]` | `protected-mutation / mutation` |
+| `wait` | `wait <target> <ms>` | `read / standard` |
+| `fill` | `fill <target> <sel\|@ref> <txt> [--format json]` | `mutation / mutation` |
+| `select` | `select <target> <selector> <val> [--format json]` | `mutation / mutation` |
+| `fullshot` | `fullshot <target> [file]` | `conditional-mutation / conditional` |
+| `scanshot` | `scanshot <target>` | `read / standard` |
+| `styles` | `styles <target> <selector> [--root auto\|body\|document\|<sel>]` | `read / standard` |
+| `components` | `components <target> [--depth N] [@ref\|selector] [--max-chars N] [--unsafe-full] [--format json]` | `sensitive-read / sensitive-read` |
+| `cookies` | `cookies <target>` | `sensitive-read / sensitive-read` |
+| `cookieset` | `cookieset <target> <cookie>` | `mutation / mutation` |
+| `cookiedel` | `cookiedel <target> <name>` | `mutation / mutation` |
+| `dialog` | `dialog <target> [accept\|dismiss]` | `protected-mutation / mutation` |
+| `viewport` | `viewport\|resize <target> [WxH]` | `mutation / mutation` |
+| `emulate` | `emulate <target> [dark\|light\|no-preference\|off\|status]` | `mutation / mutation` |
+| `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
+| `text` | `text <target> [selector]` | `read / standard` |
+| `table` | `table <target> [selector]` | `read / standard` |
+| `back` | `back <target>` | `mutation / mutation` |
+| `forward` | `forward <target>` | `mutation / mutation` |
+| `reload` | `reload <target>` | `mutation / mutation` |
+| `closetab` | `closetab <target>` | `mutation / mutation` |
+| `netlog` | `netlog <target> [--clear]` | `conditional-mutation / conditional` |
+| `inject` | `inject <target> <flag> [content]` | `mutation / mutation` |
+| `cascade` | `cascade <target> <sel\|@ref> [prop] [--format json]` | `read / standard` |
+| `record` | `record <target> [ms]` | `conditional-mutation / conditional` |
+| `evalraw` | `evalraw <target> <method> [json]` | `raw-cdp / raw-cdp` |
+| `batch` | `batch <target> <cmds> [--parallel] [--format json]` | `composite / composite` |
+| `flow` | `flow <target> "<steps>" [--format json]` | `composite / composite` |
+| `repeat` | `repeat <target> <N> <cmd> [args]` | `composite / composite` |
+| `doctor` | `doctor / ready [--format json]` | `read / standard` |
+| `keepalive` | `keepalive <target> <ms>` | `protected-mutation / mutation` |
+| `open` | `open [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]` | `mutation / mutation` |
+| `spawn-debug-browser` | `spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]` | `mutation / mutation` |
+| `dismiss-modal` | `dismiss-modal <target>` | `mutation / mutation` |
+| `stop` | `stop [target] [--format json]` | `mutation / mutation` |
+<!-- chrome-cdp-ex:generated-command-surface:end -->
+
 ### Perceive page (recommended starting point)
 
 ```bash

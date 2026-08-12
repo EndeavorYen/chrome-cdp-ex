@@ -662,6 +662,12 @@ describe('live campaign benchmark helpers', () => {
 
     expect(summary).toMatchObject({
       schema: 'chrome-cdp-ex.live-campaign.v1',
+      candidate: {
+        schema: 'chrome-cdp-ex.candidate-identity.v1',
+        productVersion: '2.15.0',
+        algorithm: 'sha256',
+        sourceDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      },
       plannedRounds: 2,
       roundsCompleted: 2,
       passCount: 2,

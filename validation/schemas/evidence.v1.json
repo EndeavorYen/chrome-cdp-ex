@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/validation/schemas/evidence.v1.json",
+  "title": "chrome-cdp-ex Validation Evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "redacted", "scenario", "scenarioDigest", "registryDigest", "ok", "attempts",
+    "classification", "classificationConfidence", "classificationReasons", "fingerprint", "replay",
+    "duplicateOf", "redactionCounts"
+  ],
+  "properties": {
+    "schema": { "const": "chrome-cdp-ex.validation-evidence.v1" },
+    "redacted": { "const": true },
+    "scenario": {
+      "allOf": [
+        { "$ref": "scenario.v1.json" },
+        {
+          "properties": {
+            "runner": { "required": ["sourceDigest"] }
+          }
+        }
+      ]
+    },
+    "scenarioDigest": { "$ref": "#/$defs/digest" },
+    "registryDigest": { "$ref": "#/$defs/digest" },
+    "ok": { "type": "boolean" },
+    "attempts": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/attempt" }
+    },
+    "classification": { "enum": ["product", "flake", "environment", "scenario", null] },
+    "classificationConfidence": { "enum": ["not-applicable", "low", "medium", "high"] },
+    "classificationReasons": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "fingerprint": { "$ref": "#/$defs/digest" },
+    "replay": {
+      "const": ["node", "scripts/validation-lab.mjs", "replay", "--bundle", "<bundle>", "--out-dir", "<out-dir>"]
+    },
+    "duplicateOf": { "type": ["string", "null"] },
+    "redactionCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["credential", "identifier", "path", "sensitiveKey"],
+      "properties": {
+        "credential": { "type": "integer", "minimum": 0 },
+        "identifier": { "type": "integer", "minimum": 0 },
+        "path": { "type": "integer", "minimum": 0 },
+        "sensitiveKey": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "nullableString": { "type": ["string", "null"] },
+    "stream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "preview", "previewBytes", "observedBytes", "observedOmittedBytes",
+        "redactedOmittedBytes", "sha256", "digestScope", "truncated"
+      ],
+      "properties": {
+        "preview": { "type": "string" },
+        "previewBytes": { "type": "integer", "minimum": 0 },
+        "observedBytes": { "type": "integer", "minimum": 0 },
+        "observedOmittedBytes": { "type": "integer", "minimum": 0 },
+        "redactedOmittedBytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/digest" },
+        "digestScope": { "const": "redacted-preview" },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ok", "status", "signal", "timedOut", "outputOverflow", "spawnError", "cleanupError",
+        "durationMs", "failedPhase", "failedCheck", "failureMessage", "stdout", "stderr"
+      ],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "status": { "type": ["integer", "null"] },
+        "signal": { "$ref": "#/$defs/nullableString" },
+        "timedOut": { "type": "boolean" },
+        "outputOverflow": { "type": "boolean" },
+        "spawnError": { "$ref": "#/$defs/nullableString" },
+        "cleanupError": { "$ref": "#/$defs/nullableString" },
+        "durationMs": { "type": "number", "minimum": 0 },
+        "failedPhase": { "$ref": "#/$defs/nullableString" },
+        "failedCheck": { "$ref": "#/$defs/nullableString" },
+        "failureMessage": { "type": "string" },
+        "stdout": { "$ref": "#/$defs/stream" },
+        "stderr": { "$ref": "#/$defs/stream" }
+      }
+    }
+  }
+}

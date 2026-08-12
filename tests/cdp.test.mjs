@@ -2,7 +2,7 @@
 // Run: npm test
 
 import { afterEach, describe, it, expect, beforeEach } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
 import { EventEmitter } from 'events';
@@ -212,8 +212,22 @@ describe('COMMANDS registry', () => {
     expect(T.isBatchParallelUnsafeCommand('snapshot')).toBe(true);
   });
 
+  it('uses catalog authorization and kind to reject parallel side effects hidden by legacy mutates', () => {
+    for (const name of [
+      'eval', 'evalraw', 'hover', 'loadall', 'dialog', 'console', 'netlog',
+      'shot', 'screenshot', 'diff-shot', 'diffshot', 'fullshot', 'cookies',
+      'elshot', 'scanshot', 'checkpoint', 'components', 'report', 'batch', 'flow', 'repeat',
+      'not-a-command',
+    ]) {
+      expect(T.isBatchParallelUnsafeCommand(name), name).toBe(true);
+    }
+    expect(T.isBatchParallelUnsafeCommand('status')).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('frame')).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('frames')).toBe(true);
+  });
+
   it('keeps read-only extraction commands safe for parallel batch execution', () => {
-    for (const name of ['elshot', 'html', 'text', 'table', 'styles', 'cookies', 'summary', 'console', 'status']) {
+    for (const name of ['controls', 'html', 'text', 'table', 'styles', 'summary', 'net', 'network', 'wait', 'waitfor']) {
       expect(T.isBatchParallelUnsafeCommand(name)).toBe(false);
     }
   });
@@ -5183,6 +5197,67 @@ describe('checkpoint / restore', () => {
     expect(parsed.artifact.page.url).toBe('https://example.com/app');
   });
 
+  it('redacts checkpoint JSON and file paths from restore action evidence', () => {
+    expect(T.redactRestoreCommandArgs(['--json', '{"token":"secret"}', '--format', 'json']))
+      .toEqual(['--json', '[checkpoint-json-redacted]']);
+    expect(T.redactRestoreCommandArgs(['--file', '/Users/alice/private/checkpoint.json']))
+      .toEqual(['--file', '[checkpoint-path-redacted]']);
+    expect(T.redactRestoreCommandArgs(['/Users/alice/private/checkpoint.json']))
+      .toEqual(['[checkpoint-path-redacted]']);
+    expect(T.redactRestoreCommandArgs(['{"schema":"chrome-cdp-ex.checkpoint.v1","token":"TOPSECRET"}']))
+      .toEqual(['[checkpoint-json-redacted]']);
+  });
+
+  it('redacts external-input paths, URLs, and payloads from action errors without rewriting unrelated failures', async () => {
+    const path = '/Users/alice/private/checkpoint.json';
+    const exposed = new Error(`ENOENT: no such file or directory, open '${path}'`);
+    const redacted = T.redactRestoreActionError(exposed, ['--file', path]);
+    expect(redacted).not.toBe(exposed);
+    expect(redacted.message).toBe("ENOENT: no such file or directory, open '[checkpoint-path-redacted]'");
+    expect(redacted.cause).toBe(exposed);
+
+    const positional = T.redactRestoreActionError(exposed, [path]);
+    expect(positional.message).not.toContain('/Users/alice');
+
+    const checkpointJson = '{"schema":"TOPSECRET","page":{"url":"https://private.example.test/token"}}';
+    const inline = T.redactRestoreActionError(
+      new Error('restore: unsupported checkpoint schema TOPSECRET at https://private.example.test/token'),
+      [checkpointJson],
+    );
+    expect(inline.message).not.toContain('TOPSECRET');
+    expect(inline.message).not.toContain('private.example.test');
+
+    const upload = T.redactExternalInputActionError(
+      new Error(`upload failed for ${path}`),
+      'upload',
+      ['#file', `${path},/home/alice/second.txt`],
+    );
+    expect(upload.message).not.toContain('/Users/alice');
+    expect(upload.message).not.toContain('/home/alice');
+
+    const inject = T.redactExternalInputActionError(
+      new Error('Failed to load stylesheet: https://private.example.test/style.css?token=TOPSECRET'),
+      'inject',
+      ['--css-file', 'https://private.example.test/style.css?token=TOPSECRET'],
+    );
+    expect(inject.message).not.toContain('private.example.test');
+    expect(inject.message).not.toContain('TOPSECRET');
+
+    const receipt = JSON.parse(await T.runActionWithFeedback({
+      action: 'upload',
+      target: { input: '#file', resolvedBy: 'selector', label: '#file', commandArgs: ['#file', '<redacted>'] },
+      dispatch: async () => { throw upload; },
+      feedbackPolicy: 'state-change',
+      observe: async () => '',
+      format: 'json',
+    }));
+    expect(JSON.stringify(receipt)).not.toContain('/Users/alice');
+    expect(JSON.stringify(receipt)).not.toContain('/home/alice');
+
+    const unrelated = new Error('restore: unsupported checkpoint schema wrong');
+    expect(T.redactRestoreActionError(unrelated, ['--file', path])).toBe(unrelated);
+  });
+
   it('restores cookies, URL, and storage from a checkpoint artifact', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': () => ({ result: { value: 'restored' } }),
@@ -7935,7 +8010,9 @@ describe('recordStr', () => {
         return { result: { value: JSON.stringify({ totals: {}, labels: [], count: 0 }) } };
       },
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-      'Runtime.callFunctionOn': () => ({ result: { value: { x: 10, y: 20 } } }),
+      'Runtime.callFunctionOn': () => ({
+        result: { value: { x: 10, y: 20, w: 20, h: 10, tag: 'BUTTON', text: 'Go' } },
+      }),
       'Input.dispatchMouseEvent': () => ({}),
     });
     const result = await recordStr(cdp, 'sid1', ['--action', 'click', '@1'], new Map([[1, 123]]));
@@ -9962,10 +10039,15 @@ describe('shotStr', () => {
       'Runtime.evaluate': () => ({ result: { value: 1 } }),
       'Page.captureScreenshot': () => ({ data: Buffer.from('PNG').toString('base64') }),
     });
-    // Use OS temp file path to avoid touching the real RUNTIME_DIR
-    const path = `/tmp/cdp-test-${Date.now()}.png`;
-    const out = await shotStr(cdp, 'sid1', path, 'TARGETID', { quiet: false });
-    expect(out.split('\n')[0]).toBe(path);
+    const dir = mkdtempSync(resolve(tmpdir(), 'cdp-shot-mode-'));
+    try {
+      const path = resolve(dir, 'capture.png');
+      const out = await shotStr(cdp, 'sid1', path, 'TARGETID', { quiet: false });
+      expect(out.split('\n')[0]).toBe(path);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('with --quiet returns ONLY the saved path', async () => {

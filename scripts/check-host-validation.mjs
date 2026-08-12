@@ -51,6 +51,11 @@ export function validateHostValidation(manifest, {
   if (!isIsoDate(manifest?.validatedAt)) {
     errors.push('Host validation validatedAt must be an ISO date (YYYY-MM-DD)');
   }
+  if (manifest?.environment?.evidenceScope !== 'historical-candidate'
+    || manifest?.environment?.currentTree !== false
+    || !/^sha256:[a-f0-9]{64}$/.test(manifest?.environment?.candidateIdentity || '')) {
+    errors.push('Host validation must bind its historical candidate identity and currentTree=false');
+  }
 
   const hosts = Array.isArray(manifest?.hosts) ? manifest.hosts : [];
   const repositoryRoot = resolve(rootPath(rootDir));
@@ -90,6 +95,9 @@ export function validateHostValidation(manifest, {
       }
     }
     if (host?.status === 'live-validated') {
+      if (host?.evidenceScope !== manifest?.environment?.evidenceScope) {
+        errors.push(`Host ${name} live validation scope must match the manifest environment`);
+      }
       for (const capability of LIVE_CAPABILITIES) {
         if (host?.capabilities?.[capability] !== true) {
           errors.push(`Host ${name} is live-validated without capability ${capability}`);

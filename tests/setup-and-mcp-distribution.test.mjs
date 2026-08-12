@@ -87,14 +87,18 @@ describe('MCP Tier-1 + run_command + resources', () => {
       .toEqual(['waitfor', 'app', '--text', 'Saved', '5000']);
     expect(buildMcpToolCommand('cascade', { target: 'app', selector: '@3', property: 'color' }))
       .toEqual(['cascade', 'app', '@3', 'color', '--format', 'json']);
-    expect(buildMcpToolCommand('components', { target: 'app', selector: '@c1' }))
+    expect(() => buildMcpToolCommand('components', { target: 'app', selector: '@c1' }))
+      .toThrow('components requires confirm: true');
+    expect(buildMcpToolCommand('components', { target: 'app', selector: '@c1', confirm: true }))
       .toEqual(['components', 'app', '@c1', '--format', 'json']);
     expect(buildMcpToolCommand('spawn_debug_browser', {
       browser: 'edge', port: 9222, url: 'https://example.com', confirm: true,
     })).toEqual(['spawn-debug-browser', 'edge', '--port', '9222', '--url', 'https://example.com']);
     expect(buildMcpToolCommand('record_snapshot', { target: 'app', durationMs: 1000 }))
       .toEqual(['record', 'app', '1000']);
-    expect(buildMcpToolCommand('session_checkpoint', { target: 'app' }))
+    expect(() => buildMcpToolCommand('session_checkpoint', { target: 'app' }))
+      .toThrow(/confirm: true/);
+    expect(buildMcpToolCommand('session_checkpoint', { target: 'app', confirm: true }))
       .toEqual(['checkpoint', 'app', '--format', 'json']);
   });
 
@@ -108,6 +112,36 @@ describe('MCP Tier-1 + run_command + resources', () => {
       .toThrow(/confirm: true/);
     expect(buildMcpToolCommand('run_command', { command: 'click', args: ['app', '@1'], confirm: true }))
       .toEqual(['click', 'app', '@1']);
+    for (const [command, args] of [
+      ['use', ['app', '--name', 'saved']],
+      ['forget', ['saved']],
+      ['tab-group', ['create', 'saved']],
+      ['tab-group', ['--format', 'json', 'create', 'saved']],
+      ['tab-group', ['--format', 'text', '--format', 'json', 'list']],
+      ['loadall', ['app', '.more']],
+      ['record', ['app', '--action', 'click', '@1']],
+      ['keepalive', ['app', '60000']],
+      ['console', ['app', '--clear']],
+      ['netlog', ['app', '--clear']],
+      ['diff-shot', ['app', '--reset']],
+      ['shot', ['app', '/tmp/explicit.png']],
+      ['fullshot', ['app', '/tmp/explicit-full.png']],
+    ]) {
+      expect(() => buildMcpToolCommand('run_command', { command, args }), command)
+        .toThrow(/confirm: true/);
+    }
+    expect(buildMcpToolCommand('run_command', { command: 'tab-group', args: ['list'] }))
+      .toEqual(['tab-group', 'list']);
+    expect(buildMcpToolCommand('run_command', {
+      command: 'tab-group', args: ['--format', 'json', 'show', 'saved'],
+    })).toEqual(['tab-group', '--format', 'json', 'show', 'saved']);
+    expect(buildMcpToolCommand('run_command', { command: 'console', args: ['app', '--errors'] }))
+      .toEqual(['console', 'app', '--errors']);
+    expect(buildMcpToolCommand('run_command', { command: 'shot', args: ['app', '--annotate'] }))
+      .toEqual(['shot', 'app', '--annotate']);
+    expect(buildMcpToolCommand('run_command', {
+      command: 'use', args: ['app', '--name', 'saved'], confirm: true,
+    })).toEqual(['use', 'app', '--name', 'saved']);
     expect(() => buildMcpToolCommand('run_command', { command: 'batch', args: ['app', 'eval raw'] }))
       .toThrow(/not allowlisted/);
     expect(() => buildMcpToolCommand('run_command', {
@@ -118,6 +152,15 @@ describe('MCP Tier-1 + run_command + resources', () => {
       target: 'app',
       unsafeFull: true,
     })).toThrow(/confirm: true/);
+    expect(() => buildMcpToolCommand('screenshot', {
+      target: 'app',
+      path: '/tmp/explicit.png',
+    })).toThrow(/confirm: true/);
+    expect(buildMcpToolCommand('screenshot', {
+      target: 'app',
+      path: '/tmp/explicit.png',
+      confirm: true,
+    })).toEqual(['shot', 'app', '/tmp/explicit.png']);
   });
 
   it('maps resource URIs and advertises resources capability', () => {

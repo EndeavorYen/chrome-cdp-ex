@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import { readFileSync } from 'fs';
-import { pathToFileURL } from 'url';
+import { dirname, resolve } from 'path';
+import { fileURLToPath, pathToFileURL } from 'url';
+import { generateCommandSurfaces } from './generate-command-surfaces.mjs';
+
+const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 process.env.NODE_ENV = 'test';
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
@@ -270,14 +274,14 @@ export function checkDocsContract(docs, commands) {
 
 function readSkillCorpus() {
   const skillDir = 'skills/chrome-cdp-ex';
-  const parts = [readFileSync(`${skillDir}/SKILL.md`, 'utf8')];
+  const parts = [readFileSync(resolve(ROOT_DIR, skillDir, 'SKILL.md'), 'utf8')];
   for (const rel of [
     'references/commands.md',
     'references/recipes.md',
     'references/troubleshooting.md',
   ]) {
     try {
-      parts.push(readFileSync(`${skillDir}/${rel}`, 'utf8'));
+      parts.push(readFileSync(resolve(ROOT_DIR, skillDir, rel), 'utf8'));
     } catch {
       // Optional during partial checkouts; missing files fail command coverage naturally.
     }
@@ -286,7 +290,7 @@ function readSkillCorpus() {
 }
 
 function readDocs() {
-  const read = path => readFileSync(path, 'utf8');
+  const read = path => readFileSync(resolve(ROOT_DIR, path), 'utf8');
   return {
     readme: read('README.md'),
     reference: read('docs/reference.md'),
@@ -302,7 +306,13 @@ function readDocs() {
 }
 
 export function runDocsContract() {
-  return checkDocsContract(readDocs(), T.COMMANDS);
+  const failures = checkDocsContract(readDocs(), T.COMMANDS);
+  try {
+    generateCommandSurfaces({ rootDir: ROOT_DIR });
+  } catch (error) {
+    failures.push(error.message || String(error));
+  }
+  return failures;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

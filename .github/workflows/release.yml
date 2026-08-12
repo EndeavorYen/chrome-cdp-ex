@@ -64,13 +64,13 @@ jobs:
           npm test
           npm run lint
           npm run check:docs
+          npm run check:host-validation
+          npm run check:contracts
           npm pack
           TARBALL="pi-chrome-cdp-${VERSION}.tgz"
           test -f "$TARBALL"
-          tar -tzf "$TARBALL" | grep 'package/.claude-plugin/plugin.json'
-          tar -tzf "$TARBALL" | grep 'package/INTEGRATIONS.md'
-          tar -tzf "$TARBALL" | grep 'package/bin/chrome-cdp'
-          tar -tzf "$TARBALL" | grep 'package/scripts/setup.mjs'
+          npm run check:contracts -- --tarball "$TARBALL"
+          npm run check:release-package -- "$TARBALL"
           CHECKSUM="$(shasum -a 256 "$TARBALL" | awk '{print $1}')"
           {
             echo ""
@@ -78,7 +78,7 @@ jobs:
             echo ""
             echo "- Asset: \`$TARBALL\`"
             echo "- SHA-256: \`$CHECKSUM\`"
-            echo "- Includes Claude plugin manifest, INTEGRATIONS.md, bin/chrome-cdp, setup.mjs, and skills runtime."
+            echo "- Includes cross-host manifests, validation scripts, Codex Killer Path evidence, demo media, CLI shim, setup script, and skills runtime."
           } >> release-notes.md
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
 

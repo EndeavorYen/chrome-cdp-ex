@@ -11,8 +11,28 @@ import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, re
 import { homedir } from 'os';
 import { dirname, resolve, delimiter } from 'path';
 import { spawn, spawnSync } from 'child_process';
+import { createHash } from 'crypto';
+import { format as formatValue } from 'util';
+import { fileURLToPath } from 'url';
 import net from 'net';
 import { autoActionJsonArgs as autoActionJsonArgsForCommands } from './lib/action-evidence.mjs';
+import {
+  classifyRawCdpMethod,
+  commandResult,
+  createCommandRegistry,
+  defineCommandSpec,
+} from './lib/command-application.mjs';
+import {
+  createCommandDispatcher,
+  inspectCommandDispatcher,
+} from './lib/command-dispatch.mjs';
+import { createDaemonReadHandlers } from './lib/daemon-read-handlers.mjs';
+import { createDaemonActionHandlers } from './lib/daemon-action-handlers.mjs';
+import {
+  bindCdpTransport,
+  createCdpDomains,
+  createRawCdpGateway,
+} from './lib/cdp-domains.mjs';
 import {
   receiptForActionJson,
   receiptForReport,
@@ -58,10 +78,23 @@ import {
   pageHealthScript,
 } from './lib/page-health.mjs';
 import {
+  connectToDaemon,
+  daemonEndpointForPlatform,
+  ipcTimeoutForRequest,
+  requestDaemon,
+} from './lib/daemon-transport.mjs';
+import {
   attachTargetResolutionDiagnostics,
   completeTargetResolution,
   resolveLiveTargetBinding,
 } from './lib/target-binding.mjs';
+import { createBrowserSupervisor } from './lib/browser-supervisor.mjs';
+import { createLocatorPlan } from './lib/browser-resources.mjs';
+import {
+  COMMAND_SURFACE,
+  isCommandSurface,
+  projectCliCommands,
+} from './lib/command-surface.mjs';
 
 const TIMEOUT = 15000;
 const SCREENSHOT_TIMEOUT = 30000;
@@ -87,14 +120,11 @@ const MAX_ENVIRONMENT_LOG_ENTRIES = 100;
 const MAX_SCREENSHOT_ENTRIES = 100;
 const MAX_NETWORK_MOCK_HITS = 50;
 const IS_WINDOWS = process.platform === 'win32';
-if (!IS_WINDOWS) process.umask(0o077);
 const RUNTIME_DIR = IS_WINDOWS
   ? resolve(process.env.LOCALAPPDATA || resolve(homedir(), 'AppData', 'Local'), 'cdp')
   : process.env.XDG_RUNTIME_DIR
     ? resolve(process.env.XDG_RUNTIME_DIR, 'cdp')
     : resolve(homedir(), '.cache', 'cdp');
-try { mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 }); } catch {}
-const SOCK_PREFIX = resolve(RUNTIME_DIR, 'cdp-');
 const PAGES_CACHE = resolve(RUNTIME_DIR, 'pages.json');
 const ALIASES_CACHE = resolve(RUNTIME_DIR, 'aliases.json');
 const DAEMON_METADATA_SCHEMA = 'chrome-cdp-ex.daemon-metadata.v1';
@@ -112,8 +142,11 @@ class RingBuffer {
 }
 
 function sockPath(targetId) {
-  if (IS_WINDOWS) return `\\\\.\\pipe\\cdp-${targetId}`;
-  return `${SOCK_PREFIX}${targetId}.sock`;
+  return daemonEndpointForPlatform(targetId, { runtimeDir: RUNTIME_DIR });
+}
+
+function ensureRuntimeDir() {
+  try { mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 }); } catch {}
 }
 
 function emptyAliasStore() {
@@ -1164,12 +1197,23 @@ class CDP {
   close() { this.#ws.close(); }
 }
 
+const CDP_DOMAIN_CLIENTS = new WeakMap();
+
+function cdpDomains(cdp) {
+  let clients = CDP_DOMAIN_CLIENTS.get(cdp);
+  if (!clients) {
+    clients = createCdpDomains(bindCdpTransport(cdp));
+    CDP_DOMAIN_CLIENTS.set(cdp, clients);
+  }
+  return clients;
+}
+
 // ---------------------------------------------------------------------------
 // Command implementations — return strings, take (cdp, sessionId)
 // ---------------------------------------------------------------------------
 
 async function getPages(cdp) {
-  const { targetInfos } = await cdp.send('Target.getTargets');
+  const { targetInfos } = await cdpDomains(cdp).Target.getTargets();
   // Keep regular page targets, including about:blank so agents always have a
   // usable handle. Skip chrome://, edge://, and devtools:// internal pages.
   return targetInfos.filter(t => t.type === 'page'
@@ -1314,7 +1358,7 @@ function orderedAxChildren(node, nodesById, childrenByParent) {
 }
 
 async function snapshotStr(cdp, sid, compact = false) {
-  const { nodes } = await cdp.send('Accessibility.getFullAXTree', {}, sid);
+  const { nodes } = await cdpDomains(cdp).Accessibility.getFullAXTree( {}, sid);
   const nodesById = new Map(nodes.map(node => [node.nodeId, node]));
   const childrenByParent = new Map();
   for (const node of nodes) {
@@ -1554,7 +1598,7 @@ async function evalStr(cdp, sid, expression, autoWrap = false, options = {}) {
   };
   if (options.contextId != null) params.contextId = options.contextId;
   if (options.uniqueContextId != null) params.uniqueContextId = options.uniqueContextId;
-  const result = await cdp.send('Runtime.evaluate', params, sid, options.timeoutMs);
+  const result = await cdpDomains(cdp).Runtime.evaluate( params, sid, options.timeoutMs);
   if (result.exceptionDetails) {
     throw new Error(runtimeExceptionMessage(result.exceptionDetails));
   }
@@ -1568,7 +1612,7 @@ function maybeAutoWrapEval(expression, autoWrap = false) {
 
 async function evalFireAndForgetStr(cdp, sid, expression, autoWrap = false) {
   if (!expression) throw new Error('Expression required');
-  await cdp.send('Runtime.evaluate', {
+  await cdpDomains(cdp).Runtime.evaluate( {
     expression: maybeAutoWrapEval(expression, autoWrap),
     returnByValue: false,
     awaitPromise: false,
@@ -1594,7 +1638,7 @@ async function callStr(cdp, sid, expression) {
     let result = (typeof value === 'function') ? value() : value;
     return await result;
   })()`;
-  const result = await cdp.send('Runtime.evaluate', {
+  const result = await cdpDomains(cdp).Runtime.evaluate( {
     expression: wrapped,
     returnByValue: true,
     awaitPromise: true,
@@ -1738,7 +1782,7 @@ async function emulateStr(cdp, sid, session, args = [], { targetPrefix = null } 
   const opts = parseEmulateArgs(args);
   session.emulate = session.emulate || emptyEmulateState();
   if (opts.mode === 'off') {
-    await cdp.send('Emulation.setEmulatedMedia', { features: [] }, sid);
+    await cdpDomains(cdp).Emulation.setEmulatedMedia( { features: [] }, sid);
     session.emulate = emptyEmulateState();
   } else if (opts.mode === 'set') {
     const next = {
@@ -1750,7 +1794,7 @@ async function emulateStr(cdp, sid, session, args = [], { targetPrefix = null } 
     if (opts.colorScheme != null) next.colorScheme = opts.colorScheme;
     if (opts.reducedMotion != null) next.reducedMotion = opts.reducedMotion;
     next.features = buildEmulateFeatures(next);
-    await cdp.send('Emulation.setEmulatedMedia', { features: next.features }, sid);
+    await cdpDomains(cdp).Emulation.setEmulatedMedia( { features: next.features }, sid);
     session.emulate = next;
   }
   const model = buildEmulateModel(session.emulate, {
@@ -1777,14 +1821,14 @@ function getScreenshotTier() { return _screenshotTier; }
 async function screencastFallback(cdp, sid) {
   const frame = cdp.waitForEvent('Page.screencastFrame', SCREENSHOT_TIMEOUT);
   try {
-    await cdp.send('Page.startScreencast', { format: 'png', quality: 100, everyNthFrame: 1 }, sid);
+    await cdpDomains(cdp).Page.startScreencast( { format: 'png', quality: 100, everyNthFrame: 1 }, sid);
     const result = await frame.promise;
     // Acknowledge so the screencast doesn't stall
-    cdp.send('Page.screencastFrameAck', { sessionId: result.sessionId }, sid).catch(() => {});
+    cdpDomains(cdp).Page.screencastFrameAck( { sessionId: result.sessionId }, sid).catch(() => {});
     return result.data;
   } finally {
     frame.cancel();
-    cdp.send('Page.stopScreencast', {}, sid).catch(() => {});
+    cdpDomains(cdp).Page.stopScreencast( {}, sid).catch(() => {});
   }
 }
 
@@ -1813,7 +1857,7 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
   // Tier 1: standard captureScreenshot
   if (_screenshotTier <= 1) {
     try {
-      const result = await cdp.send('Page.captureScreenshot', params, sid, SCREENSHOT_TIMEOUT);
+      const result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, SCREENSHOT_TIMEOUT);
       captured = { data: result.data, fallback: false, method: 'captureScreenshot' };
     } catch (err) {
       if (!err.message?.startsWith('Timeout:')) throw err;
@@ -1824,7 +1868,7 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
   // Tier 2: captureScreenshot with fromSurface:false (captures from view, not compositor)
   if (!captured && _screenshotTier <= 2) {
     try {
-      const result = await cdp.send('Page.captureScreenshot',
+      const result = await cdpDomains(cdp).Page.captureScreenshot(
         { ...params, fromSurface: false }, sid, SCREENSHOT_TIMEOUT);
       captured = { data: result.data, fallback: true, method: 'captureScreenshot-fromSurface-false' };
     } catch (err) {
@@ -1854,7 +1898,7 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
   await waitForPaint();
   let retry;
   try {
-    retry = await cdp.send('Page.captureScreenshot', { ...params, fromSurface: false }, sid, SCREENSHOT_TIMEOUT);
+    retry = await cdpDomains(cdp).Page.captureScreenshot( { ...params, fromSurface: false }, sid, SCREENSHOT_TIMEOUT);
   } catch (error) {
     throw new Error(`Screenshot alternate capture failed: ${error?.message || String(error)}`);
   }
@@ -1917,7 +1961,7 @@ async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
   const { data } = capture;
   opts.onCapture?.(capture);
   const out = filePath || resolve(RUNTIME_DIR, `screenshot-${(targetId || 'unknown').slice(0, 8)}.png`);
-  writeFileSync(out, Buffer.from(data, 'base64'));
+  writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
 
   // Default output: saved path FIRST so scripts grabbing `head -1` get a clean
   // path. Verbose adds full coordinate-mapping tutorial. Quiet hides hints.
@@ -2082,7 +2126,7 @@ async function diffShotStr(cdp, sid, session, opts = {}) {
   const reset = opts.reset || !session.diffShot?.baselineData;
   const paths = nextDiffShotArtifactPaths(session);
   if (reset) {
-    writeFileSync(paths.baselinePath, Buffer.from(shot.data, 'base64'));
+    writeFileSync(paths.baselinePath, Buffer.from(shot.data, 'base64'), { mode: 0o600 });
     session.diffShot = {
       ...(session.diffShot || {}),
       baselineData: shot.data,
@@ -2107,10 +2151,10 @@ async function diffShotStr(cdp, sid, session, opts = {}) {
     return opts.format === 'json' ? formatJson(model) : formatDiffShotResult(model);
   }
 
-  writeFileSync(paths.currentPath, Buffer.from(shot.data, 'base64'));
+  writeFileSync(paths.currentPath, Buffer.from(shot.data, 'base64'), { mode: 0o600 });
   const compareRaw = await evalStr(cdp, sid, diffShotCompareScript(session.diffShot.baselineData, shot.data));
   const compare = JSON.parse(compareRaw);
-  writeFileSync(paths.diffPath, Buffer.from(compare.diffPngBase64, 'base64'));
+  writeFileSync(paths.diffPath, Buffer.from(compare.diffPngBase64, 'base64'), { mode: 0o600 });
   appendSessionScreenshot(session, { kind: 'diff-shot-current', path: paths.currentPath, note: 'current capture' });
   appendSessionScreenshot(session, { kind: 'diff-shot-diff', path: paths.diffPath, note: 'pixel diff' });
   const priorBaselinePath = session.diffShot.baselinePath;
@@ -2211,9 +2255,9 @@ async function waitForDocumentReady(cdp, sid, timeoutMs = NAVIGATION_TIMEOUT, op
 
 async function navStr(cdp, sid, url) {
   validateUrl(url);
-  await cdp.send('Page.enable', {}, sid);
+  await cdpDomains(cdp).Page.enable( {}, sid);
   const loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
-  const result = await cdp.send('Page.navigate', { url }, sid);
+  const result = await cdpDomains(cdp).Page.navigate( { url }, sid);
   if (result.errorText) {
     loadEvent.cancel();
     throw new Error(result.errorText);
@@ -2246,8 +2290,8 @@ function formatMetricValue(name, value) {
 }
 
 async function runtimeMetricsStr(cdp, sid) {
-  try { await cdp.send('Performance.enable', {}, sid); } catch {}
-  const { metrics = [] } = await cdp.send('Performance.getMetrics', {}, sid);
+  try { await cdpDomains(cdp).Performance.enable( {}, sid); } catch {}
+  const { metrics = [] } = await cdpDomains(cdp).Performance.getMetrics( {}, sid);
   const wanted = ['Documents', 'Frames', 'JSEventListeners', 'Nodes', 'JSHeapUsedSize', 'Tasks'];
   const byName = new Map(metrics.map(m => [m.name, m.value]));
   const lines = ['Runtime metrics (Performance.getMetrics):'];
@@ -4166,6 +4210,110 @@ function formatQaPageReport(model) {
   return lines.join('\n');
 }
 
+async function qaPageStr({
+  cdp,
+  sid,
+  session,
+  targetId,
+  consoleBuf,
+  exceptionBuf,
+  refMap,
+  lastPerceiveStore,
+  refState,
+  actionFeedback,
+}, args = []) {
+  const qopts = parseQaArgs(args);
+  const errors = [];
+  const page = await pageInfoModel(cdp, sid, { targetPrefix: targetPrefixForDisplay(targetId) });
+  const consoleHealth = {
+    errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
+    warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+    exceptions: exceptionBuf.all().length,
+  };
+  const screenshots = {};
+  for (const [kind, size] of [['desktop', qopts.desktop], ['mobile', qopts.mobile]]) {
+    if (!size) continue;
+    try {
+      await viewportStr(cdp, sid, size);
+      ensureSessionScreenshotDir(session);
+      const path = nextSessionScreenshotPath(session, kind);
+      const shot = await shotStr(cdp, sid, path, targetId, { quiet: true });
+      appendSessionScreenshot(session, { kind: `qa-${kind}`, path: shot.split('\n')[0], note: size });
+      screenshots[kind] = { viewport: size, path: shot.split('\n')[0] };
+    } catch (error) {
+      errors.push(`${kind} screenshot: ${error.message}`);
+    }
+  }
+  let perception = null;
+  try {
+    const text = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
+      cursorInteractive: true,
+      maxDepth: 4,
+      targetPrefix: targetPrefixForDisplay(targetId),
+    }, refState);
+    perception = { captured: true, summary: text.split('\n').slice(0, 6).join('\n') };
+  } catch (error) {
+    perception = { captured: false, error: error.message };
+    errors.push(`perceive: ${error.message}`);
+  }
+  let action = null;
+  const assertions = [];
+  if (qopts.click) {
+    let captured = null;
+    await actionFeedback(
+      'click',
+      () => clickStr(cdp, sid, qopts.click, refMap, refState),
+      { input: qopts.click, resolvedBy: 'selector-or-ref', label: qopts.click || '', commandArgs: [qopts.click] },
+      'settle-diff',
+      null,
+      'json',
+      result => { captured = result; },
+    );
+    const textMatched = qopts.expectText
+      ? await pageContainsText(cdp, sid, qopts.expectText).catch(() => false)
+      : false;
+    action = buildSemanticInteractionModel(captured || {}, {
+      selector: qopts.click,
+      expectRequest: qopts.expectRequest,
+      expectStatus: qopts.expectStatus,
+      expectText: qopts.expectText,
+      noConsoleErrors: qopts.noConsoleErrors,
+      evidence: 'concise',
+    }, { textMatched });
+  } else {
+    if (qopts.expectText) {
+      const textMatched = await pageContainsText(cdp, sid, qopts.expectText).catch(() => false);
+      assertions.push({
+        kind: 'text',
+        expected: qopts.expectText,
+        status: textMatched ? 'pass' : 'fail',
+        message: textMatched ? `"${qopts.expectText}" matched` : `"${qopts.expectText}" not found`,
+      });
+    }
+    if (qopts.expectRequest) {
+      assertions.push({
+        kind: 'request',
+        expected: qopts.expectRequest,
+        status: 'fail',
+        message: '--expect-request requires --click so the command can collect action network evidence',
+      });
+    }
+  }
+  const pageHealth = await collectPageHealth(cdp, sid).catch(() => null);
+  const model = buildQaPageModel({
+    targetId,
+    page: { title: page.title, url: page.url },
+    pageHealth,
+    console: consoleHealth,
+    perception,
+    screenshots,
+    action,
+    assertions,
+    errors,
+  });
+  return qopts.format === 'json' ? formatJson(model) : formatQaPageReport(model);
+}
+
 async function pageContainsText(cdp, sid, text) {
   if (!text) return false;
   const raw = await evalStr(cdp, sid, `(function() {
@@ -5843,7 +5991,7 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState) {
     backendNodeId = refMap.get(num);
   }
   try {
-    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }, sid, REF_RESOLVE_TIMEOUT);
+    const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId }, sid, REF_RESOLVE_TIMEOUT);
     return object.objectId;
   } catch (e) {
     // The ref existed in this daemon, but the backend node can no longer be
@@ -5898,7 +6046,7 @@ function scrollSettledRectFunctionDeclaration() {
 async function resolveRef(cdp, sid, refMap, ref, refState) {
   const frameParsed = parseFrameRef(ref);
   const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
-  const result = await cdp.send('Runtime.callFunctionOn', {
+  const result = await cdpDomains(cdp).Runtime.callFunctionOn( {
     objectId,
     functionDeclaration: scrollSettledRectFunctionDeclaration(),
     returnByValue: true,
@@ -6006,7 +6154,7 @@ function formatFrameTreeText(frames = []) {
 }
 
 async function framesModel(cdp, sid) {
-  const result = await cdp.send('Page.getFrameTree', {}, sid);
+  const result = await cdpDomains(cdp).Page.getFrameTree( {}, sid);
   const frames = flattenFrameTree(result.frameTree);
   return {
     schema: 'chrome-cdp-ex.frames.v1',
@@ -6033,7 +6181,7 @@ async function resolveFrameRef(cdp, sid, frameRef) {
 }
 
 async function createFrameExecutionContext(cdp, sid, frameId) {
-  const res = await cdp.send('Page.createIsolatedWorld', {
+  const res = await cdpDomains(cdp).Page.createIsolatedWorld( {
     frameId,
     worldName: 'chrome-cdp-ex',
     grantUniveralAccess: false,
@@ -6106,9 +6254,9 @@ async function frameViewportOffset(cdp, sid, frameEntry, { settle = false } = {}
   let y = 0;
   let current = frameEntry;
   for (let guard = 0; current?.frameId && current.parentId && guard < 8; guard++) {
-    const owner = await cdp.send('DOM.getFrameOwner', { frameId: current.frameId }, sid);
-    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId: owner.backendNodeId }, sid);
-    const res = await cdp.send('Runtime.callFunctionOn', {
+    const owner = await cdpDomains(cdp).DOM.getFrameOwner( { frameId: current.frameId }, sid);
+    const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId: owner.backendNodeId }, sid);
+    const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
       objectId: object.objectId,
       functionDeclaration: settle ? scrollSettledRectFunctionDeclaration() : `function() {
         const r = this.getBoundingClientRect();
@@ -6135,7 +6283,7 @@ async function frameViewportOffset(cdp, sid, frameEntry, { settle = false } = {}
 async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState) {
   const frameParsed = parseFrameRef(ref);
   const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
-  const result = await cdp.send('Runtime.callFunctionOn', {
+  const result = await cdpDomains(cdp).Runtime.callFunctionOn( {
     objectId,
     functionDeclaration: `function() {
       const rect = this.getBoundingClientRect();
@@ -6512,7 +6660,7 @@ function formatVisibleControlsText(model) {
 }
 
 async function controlsStr(cdp, sid, opts = {}) {
-  const result = await cdp.send('Runtime.evaluate', {
+  const result = await cdpDomains(cdp).Runtime.evaluate( {
     expression: visibleControlsPageScript(opts),
     returnByValue: true,
     awaitPromise: false,
@@ -7184,20 +7332,20 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   // Get AX tree nodes and page metadata + layout map in parallel
   // Hoist DOM.getDocument so scope and exclude can share it
   const needsDocument = !frame && (scopeSelector || excludeSelector);
-  const docRootPromise = needsDocument ? cdp.send('DOM.getDocument', {}, sid) : null;
+  const docRootPromise = needsDocument ? cdpDomains(cdp).DOM.getDocument( {}, sid) : null;
   let scopeBackendNodeIds = null;
   const axPromise = frame
-    ? cdp.send('Accessibility.getFullAXTree', { frameId: frame.id }, sid)
+    ? cdpDomains(cdp).Accessibility.getFullAXTree( { frameId: frame.id }, sid)
     : scopeSelector
     ? (async () => {
         const { root } = await docRootPromise;
-        const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: scopeSelector }, sid);
+        const { nodeId } = await cdpDomains(cdp).DOM.querySelector( { nodeId: root.nodeId, selector: scopeSelector }, sid);
         if (!nodeId) throw new Error(`Scope selector not found: ${scopeSelector}`);
-        const { node } = await cdp.send('DOM.describeNode', { nodeId, depth: -1, pierce: true }, sid);
+        const { node } = await cdpDomains(cdp).DOM.describeNode( { nodeId, depth: -1, pierce: true }, sid);
         scopeBackendNodeIds = collectDomBackendNodeIds(node);
-        return cdp.send('Accessibility.getFullAXTree', {}, sid);
+        return cdpDomains(cdp).Accessibility.getFullAXTree( {}, sid);
       })()
-    : cdp.send('Accessibility.getFullAXTree', {}, sid);
+    : cdpDomains(cdp).Accessibility.getFullAXTree( {}, sid);
   const [axResult, metaJson] = await Promise.all([
     axPromise,
     evalStr(cdp, sid, perceivePageScript(cursorInteractive), false, frameExecutionContextId != null ? { contextId: frameExecutionContextId } : {})
@@ -7222,10 +7370,10 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   if (excludeSelector) {
     const { root } = await docRootPromise;
     const excludedBackendNodeIds = new Set();
-    const exNodes = await cdp.send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: excludeSelector }, sid);
+    const exNodes = await cdpDomains(cdp).DOM.querySelectorAll( { nodeId: root.nodeId, selector: excludeSelector }, sid);
     if (exNodes.nodeIds) {
       const results = await Promise.allSettled(
-        exNodes.nodeIds.map(nid => cdp.send('DOM.describeNode', { nodeId: nid }, sid))
+        exNodes.nodeIds.map(nid => cdpDomains(cdp).DOM.describeNode( { nodeId: nid }, sid))
       );
       for (const r of results) {
         if (r.status === 'fulfilled' && r.value.node.backendNodeId)
@@ -7286,8 +7434,8 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     : { x: 0, y: 0 };
   if (refNodeIds.length > 0) {
     const results = await Promise.allSettled(refNodeIds.map(async ({ ref, backendDOMNodeId }) => {
-      const { object } = await cdp.send('DOM.resolveNode', { backendNodeId: backendDOMNodeId }, sid);
-      const res = await cdp.send('Runtime.callFunctionOn', {
+      const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId: backendDOMNodeId }, sid);
+      const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
         objectId: object.objectId,
         functionDeclaration: `function() {
           const r = this.getBoundingClientRect();
@@ -7519,7 +7667,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
     const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png', clip });
     const prefix = (targetId || 'unknown').slice(0, 8);
     const out = resolve(RUNTIME_DIR, `elshot-${prefix}-ref${selector.slice(1)}.png`);
-    writeFileSync(out, Buffer.from(data, 'base64'));
+    writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
     const fb = fallback ? ' (fallback)' : '';
     return `${out}\nElement screenshot of <${r.tag}> "${r.text}" (${selector}) — ${Math.round(r.w)}×${Math.round(r.h)} CSS px${fb}`;
   }
@@ -7557,7 +7705,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
   const prefix = (targetId || 'unknown').slice(0, 8);
   const selSafe = selector.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 30);
   const out = resolve(RUNTIME_DIR, `elshot-${prefix}-${selSafe}.png`);
-  writeFileSync(out, Buffer.from(data, 'base64'));
+  writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
 
   const desc = `<${r.tag}>${r.id ? '#' + r.id : ''} "${r.text}"`;
   const fb = fallback ? ' (fallback)' : '';
@@ -7567,10 +7715,10 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
 // Shared: dispatch a realistic mouse click at CSS pixel coordinates
 async function dispatchClick(cdp, sid, x, y) {
   const base = { x, y, button: 'left', clickCount: 1, modifiers: 0 };
-  await cdp.send('Input.dispatchMouseEvent', { ...base, type: 'mouseMoved' }, sid);
-  await cdp.send('Input.dispatchMouseEvent', { ...base, type: 'mousePressed' }, sid);
+  await cdpDomains(cdp).Input.dispatchMouseEvent( { ...base, type: 'mouseMoved' }, sid);
+  await cdpDomains(cdp).Input.dispatchMouseEvent( { ...base, type: 'mousePressed' }, sid);
   await sleep(50);
-  await cdp.send('Input.dispatchMouseEvent', { ...base, type: 'mouseReleased' }, sid);
+  await cdpDomains(cdp).Input.dispatchMouseEvent( { ...base, type: 'mouseReleased' }, sid);
 }
 
 // Shared: get device pixel ratio
@@ -7585,16 +7733,16 @@ async function getDpr(cdp, sid) {
 
 async function resolveSelectorNode(cdp, sid, selector) {
   if (!selector) throw new Error('CSS selector required');
-  try { await cdp.send('DOM.enable', {}, sid); } catch {}
-  const { root } = await cdp.send('DOM.getDocument', {}, sid);
+  try { await cdpDomains(cdp).DOM.enable( {}, sid); } catch {}
+  const { root } = await cdpDomains(cdp).DOM.getDocument( {}, sid);
   let result;
   try {
-    result = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector }, sid);
+    result = await cdpDomains(cdp).DOM.querySelector( { nodeId: root.nodeId, selector }, sid);
   } catch (e) {
     throw new Error(`Invalid selector: ${selector}. ${e.message}`);
   }
   if (!result.nodeId) throw new Error('Element not found: ' + selector);
-  const { object } = await cdp.send('DOM.resolveNode', { nodeId: result.nodeId }, sid);
+  const { object } = await cdpDomains(cdp).DOM.resolveNode( { nodeId: result.nodeId }, sid);
   return object.objectId;
 }
 
@@ -7611,7 +7759,7 @@ async function jsClickStr(cdp, sid, selector, refMap, refState) {
     ? await resolveRefNode(cdp, sid, refMap, selector, refState)
     : await resolveSelectorNode(cdp, sid, selector);
   try {
-    const res = await cdp.send('Runtime.callFunctionOn', {
+    const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
       objectId,
       functionDeclaration: `function() {
         this.scrollIntoView({ block: 'center', inline: 'center' });
@@ -7676,7 +7824,7 @@ async function clickXyStr(cdp, sid, x, y) {
 // Type text using Input.insertText (works in cross-origin iframes, unlike eval)
 async function typeStr(cdp, sid, text) {
   if (text == null || text === '') throw new Error('text required');
-  await cdp.send('Input.insertText', { text }, sid);
+  await cdpDomains(cdp).Input.insertText( { text }, sid);
   return `Typed ${text.length} characters`;
 }
 
@@ -7778,13 +7926,13 @@ async function pressStr(cdp, sid, keyName) {
     nativeVirtualKeyCode: mapped.keyCode,
     modifiers,
   };
-  await cdp.send('Input.dispatchKeyEvent', { ...base, type: 'keyDown' }, sid);
+  await cdpDomains(cdp).Input.dispatchKeyEvent( { ...base, type: 'keyDown' }, sid);
   // For printable single characters, send a `char` event so the page receives input
   // (mirrors what real keyboards do for letter / digit / punctuation keys).
   if (mapped.key.length === 1 && mapped.code !== 'Space' && mapped.key !== ' ') {
-    await cdp.send('Input.dispatchKeyEvent', { ...base, type: 'char', text: mapped.key, unmodifiedText: mapped.key }, sid);
+    await cdpDomains(cdp).Input.dispatchKeyEvent( { ...base, type: 'char', text: mapped.key, unmodifiedText: mapped.key }, sid);
   }
-  await cdp.send('Input.dispatchKeyEvent', { ...base, type: 'keyUp' }, sid);
+  await cdpDomains(cdp).Input.dispatchKeyEvent( { ...base, type: 'keyUp' }, sid);
   return `Pressed ${mapped.key}`;
 }
 
@@ -7810,7 +7958,7 @@ async function hoverStr(cdp, sid, selector, refMap, refState) {
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState);
     const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
-    await cdp.send('Input.dispatchMouseEvent', { x: cx, y: cy, type: 'mouseMoved', button: 'none', modifiers: 0 }, sid);
+    await cdpDomains(cdp).Input.dispatchMouseEvent( { x: cx, y: cy, type: 'mouseMoved', button: 'none', modifiers: 0 }, sid);
     return `Hovering over <${r.tag}> at CSS (${Math.round(cx)}, ${Math.round(cy)}) (${selector})`;
   }
   const expr = `
@@ -7825,7 +7973,7 @@ async function hoverStr(cdp, sid, selector, refMap, refState) {
   const result = await evalStr(cdp, sid, expr);
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(r.error);
-  await cdp.send('Input.dispatchMouseEvent', { x: r.x, y: r.y, type: 'mouseMoved', button: 'none', modifiers: 0 }, sid);
+  await cdpDomains(cdp).Input.dispatchMouseEvent( { x: r.x, y: r.y, type: 'mouseMoved', button: 'none', modifiers: 0 }, sid);
   return `Hovering over <${r.tag}> at CSS (${Math.round(r.x)}, ${Math.round(r.y)})`;
 }
 
@@ -7924,9 +8072,9 @@ async function waitForStr(cdp, sid, args, refMap, refState) {
       if (!backendNodeId) throw new Error(formatUnknownRefError(selector, refState || {}));
       while (Date.now() < deadline) {
         try {
-          const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }, sid);
+          const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId }, sid);
           // Node still exists — check if it's connected and visible
-          const res = await cdp.send('Runtime.callFunctionOn', {
+          const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
             objectId: object.objectId,
             functionDeclaration: `function() { return this.isConnected && this.offsetParent !== null; }`,
             returnByValue: true,
@@ -7999,7 +8147,7 @@ async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
   const objectId = isRef(selector)
     ? await resolveRefNode(cdp, sid, refMap, selector, refState)
     : await resolveSelectorNode(cdp, sid, selector);
-  const res = await cdp.send('Runtime.callFunctionOn', {
+  const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
     objectId,
     functionDeclaration: `function(value) {
       const el = this;
@@ -8038,12 +8186,12 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
   if (opts.react) return fillReactStr(cdp, sid, selector, text, refMap, refState);
   if (isRef(selector)) {
     const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
-    await cdp.send('Runtime.callFunctionOn', {
+    await cdpDomains(cdp).Runtime.callFunctionOn( {
       objectId,
       functionDeclaration: `function() { this.scrollIntoView({block:'center'}); this.focus(); this.value=''; this.dispatchEvent(new Event('input',{bubbles:true})); }`,
       returnByValue: true,
     }, sid);
-    await cdp.send('Input.insertText', { text }, sid);
+    await cdpDomains(cdp).Input.insertText( { text }, sid);
     return `Filled ${selector} with "${formatInputTextPreview(text)}"`;
   }
   // Focus via JS (more reliable than mouse events for input focus) + get element info
@@ -8062,7 +8210,7 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(r.error);
   // Insert text into the now-focused, cleared field
-  await cdp.send('Input.insertText', { text }, sid);
+  await cdpDomains(cdp).Input.insertText( { text }, sid);
   return `Filled <${r.tag}> with "${formatInputTextPreview(text)}"`;
 }
 
@@ -8089,7 +8237,7 @@ async function selectStr(cdp, sid, selector, value) {
 
 async function fullshotStr(cdp, sid, filePath, targetId) {
   const dpr = await getDpr(cdp, sid);
-  const metrics = await cdp.send('Page.getLayoutMetrics', {}, sid);
+  const metrics = await cdpDomains(cdp).Page.getLayoutMetrics( {}, sid);
   const width = metrics.cssContentSize?.width || metrics.contentSize?.width || 1280;
   const height = metrics.cssContentSize?.height || metrics.contentSize?.height || 800;
 
@@ -8099,7 +8247,7 @@ async function fullshotStr(cdp, sid, filePath, targetId) {
   }, clip);
 
   const out = filePath || resolve(RUNTIME_DIR, `fullshot-${(targetId || 'unknown').slice(0, 8)}.png`);
-  writeFileSync(out, Buffer.from(data, 'base64'));
+  writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
 
   const fb = fallback ? ' (screenshot fallback — Page.captureScreenshot not available)' : '';
   return `${out}\nFull-page screenshot saved. Size: ${width}x${height} CSS px, DPR: ${dpr}${fb}\nNote: large pages produce tiny text. Use 'scanshot' for readable segmented capture.`;
@@ -8149,7 +8297,7 @@ async function scanshotStr(cdp, sid, targetId) {
     const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png' });
     if (fallback) usedFallback = true;
     const out = resolve(RUNTIME_DIR, `scanshot-${prefix}-${i + 1}.png`);
-    writeFileSync(out, Buffer.from(data, 'base64'));
+    writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
     files.push(out);
   }
 
@@ -8543,7 +8691,7 @@ function reactComponentAtElementScript() {
 async function resolveComponentRefObjectId(cdp, sid, ref, refMap, refState) {
   if (!isCursorRef(ref)) return resolveRefNode(cdp, sid, refMap, ref, refState);
   const rect = resolveCursorRef(refMap, ref, refState);
-  const result = await cdp.send('Runtime.evaluate', {
+  const result = await cdpDomains(cdp).Runtime.evaluate( {
     expression: `document.elementFromPoint(${rect.x + rect.w / 2}, ${rect.y + rect.h / 2})`,
     returnByValue: false,
     awaitPromise: false,
@@ -8594,7 +8742,7 @@ async function componentsStr(cdp, sid, args = [], refMap = new Map(), refState =
       try {
         const objectId = await resolveComponentRefObjectId(cdp, sid, opts.ref, refMap, refState);
         if (objectId && detection.framework === 'react') {
-            const result = await cdp.send('Runtime.callFunctionOn', {
+            const result = await cdpDomains(cdp).Runtime.callFunctionOn( {
               objectId,
               functionDeclaration: `function() { return (${reactComponentAtElementScript()})(this); }`,
               returnByValue: true,
@@ -8656,7 +8804,7 @@ async function componentsStr(cdp, sid, args = [], refMap = new Map(), refState =
 }
 
 async function cookiesStr(cdp, sid) {
-  const { cookies } = await cdp.send('Network.getCookies', {}, sid);
+  const { cookies } = await cdpDomains(cdp).Network.getCookies( {}, sid);
   if (!cookies || cookies.length === 0) return 'No cookies';
   // Dynamic column width based on actual cookie names
   const nameW = Math.min(Math.max(...cookies.map(c => c.name.length)) + 2, 32);
@@ -8736,7 +8884,7 @@ async function checkpointModel(cdp, sid, { now = Date.now(), unsafeFullCapture =
   }
   let cookies = [];
   try {
-    const res = await cdp.send('Network.getCookies', {}, sid);
+    const res = await cdpDomains(cdp).Network.getCookies( {}, sid);
     cookies = sanitizeCheckpointCookies(res.cookies || [], { redactValues: !unsafeFullCapture });
   } catch {}
   return {
@@ -8825,6 +8973,10 @@ function parseRestoreArgs(args, { reader = readFileSync } = {}) {
 }
 
 function redactRestoreCommandArgs(args = []) {
+  const positionalRaw = args.join(' ').trim();
+  if (args.length && !args.some(arg => arg === '--json' || arg === '--file' || arg === '-f')) {
+    return [positionalRaw.startsWith('{') ? '[checkpoint-json-redacted]' : '[checkpoint-path-redacted]'];
+  }
   const out = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -8834,10 +8986,86 @@ function redactRestoreCommandArgs(args = []) {
       break;
     }
     if (arg === '--file' || arg === '-f') {
-      if (args[i + 1]) out.push(args[++i]);
+      if (args[i + 1]) {
+        i += 1;
+        out.push('[checkpoint-path-redacted]');
+      }
     }
   }
   return out.length ? out : ['restore'];
+}
+
+function collectExternalInputStrings(value, out, depth = 0) {
+  if (depth > 8 || out.length >= 64) return;
+  if (typeof value === 'string') {
+    if (value) out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectExternalInputStrings(item, out, depth + 1);
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const item of Object.values(value)) collectExternalInputStrings(item, out, depth + 1);
+  }
+}
+
+function redactExternalInputActionError(error, action, args = []) {
+  const original = actionFailureMessage(error);
+  let message = original;
+  const replacements = [];
+  if (action === 'upload' && args[1]) {
+    replacements.push([args[1], '[upload-path-redacted]']);
+    for (const filePath of args[1].split(',').map(value => value.trim()).filter(Boolean)) {
+      replacements.push([filePath, '[upload-path-redacted]']);
+    }
+  } else if (action === 'inject' && args.length > 1) {
+    const payload = args.slice(1).join(' ').trim();
+    if (payload) {
+      const marker = args[0] === '--css' ? '[inject-content-redacted]' : '[inject-url-redacted]';
+      replacements.push([payload, marker]);
+    }
+  } else if (action === 'restore') {
+    let inlineJson = null;
+    for (let i = 0; i < args.length; i += 1) {
+      if ((args[i] === '--file' || args[i] === '-f') && args[i + 1]) {
+        replacements.push([args[i + 1], '[checkpoint-path-redacted]']);
+        i += 1;
+      } else if (args[i] === '--json') {
+        inlineJson = args.slice(i + 1).join(' ').trim();
+        break;
+      }
+    }
+    if (!args.some(arg => arg === '--json' || arg === '--file' || arg === '-f')) {
+      const positional = args.join(' ').trim();
+      if (positional.startsWith('{')) inlineJson = positional;
+      else if (args[0]) replacements.push([args[0], '[checkpoint-path-redacted]']);
+    }
+    if (inlineJson) {
+      replacements.push([inlineJson, '[checkpoint-json-redacted]']);
+      try {
+        const values = [];
+        collectExternalInputStrings(JSON.parse(inlineJson), values);
+        for (const value of values) replacements.push([value, '[checkpoint-value-redacted]']);
+      } catch {}
+    }
+  }
+  replacements.sort((left, right) => right[0].length - left[0].length);
+  for (const [value, marker] of replacements) {
+    if (value) message = message.split(value).join(marker);
+  }
+  message = message
+    .replace(/\b(?:https?|file):\/\/[^\s'"\])]+/gi, '[external-url-redacted]')
+    .replace(/(^|[\s'"])((?:\/(?!\/)[^\s'"]+)+|[A-Za-z]:\\[^\s'"]+)/g, '$1[external-path-redacted]');
+  if (message === original) return error;
+  const redacted = new Error(message, { cause: error });
+  redacted.name = error?.name || 'Error';
+  if (error?.code !== undefined) redacted.code = error.code;
+  return redacted;
+}
+
+function redactRestoreActionError(error, args = []) {
+  return redactExternalInputActionError(error, 'restore', args);
 }
 
 function checkpointCookieToSetCookieParams(cookie, url) {
@@ -8863,10 +9091,10 @@ function restoreStorageScript(storage = {}) {
 }
 
 async function navigateForRestore(cdp, sid, url) {
-  await cdp.send('Page.enable', {}, sid).catch(() => {});
+  await cdpDomains(cdp).Page.enable( {}, sid).catch(() => {});
   let loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
   try {
-    const nav = await cdp.send('Page.navigate', { url }, sid, 5000);
+    const nav = await cdpDomains(cdp).Page.navigate( { url }, sid, 5000);
     if (nav.errorText) {
       loadEvent.cancel();
       throw new Error(nav.errorText);
@@ -8893,7 +9121,7 @@ async function restoreCheckpointStr(cdp, sid, args) {
   const cookies = sanitizeCheckpointCookies(artifact.cookies || []);
   let cookieSet = 0;
   for (const cookie of cookies) {
-    const result = await cdp.send('Network.setCookie', checkpointCookieToSetCookieParams(cookie, url), sid);
+    const result = await cdpDomains(cdp).Network.setCookie( checkpointCookieToSetCookieParams(cookie, url), sid);
     if (result && result.success === false) throw new Error(`restore: failed to set cookie ${cookie.name}`);
     cookieSet++;
   }
@@ -8946,8 +9174,8 @@ async function annotshotStr(cdp, sid, targetId, refMap) {
   // Resolve all refs in parallel to get bounding rects
   const refEntries = [...refMap.entries()];
   const settled = await Promise.allSettled(refEntries.map(async ([num, backendNodeId]) => {
-    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId }, sid);
-    const result = await cdp.send('Runtime.callFunctionOn', {
+    const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId }, sid);
+    const result = await cdpDomains(cdp).Runtime.callFunctionOn( {
       objectId: object.objectId,
       functionDeclaration: `function() { const r = this.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; }`,
       returnByValue: true,
@@ -8986,7 +9214,7 @@ async function annotshotStr(cdp, sid, targetId, refMap) {
     const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png' });
     const prefix = (targetId || 'unknown').slice(0, 8);
     const out = resolve(RUNTIME_DIR, `annotshot-${prefix}.png`);
-    writeFileSync(out, Buffer.from(data, 'base64'));
+    writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
 
     const fb = fallback ? ' (fallback)' : '';
     return `${out}\nAnnotated screenshot with ${entries.length} ref labels. Use refs (@1, @2...) from perceive output to identify elements.${fb}`;
@@ -8996,14 +9224,15 @@ async function annotshotStr(cdp, sid, targetId, refMap) {
 }
 
 // Send a raw CDP command and return the result as JSON
-async function evalRawStr(cdp, sid, method, paramsJson) {
+async function evalRawStr(cdp, sid, method, paramsJson, authorization) {
   if (!method) throw new Error('CDP method required (e.g. "DOM.getDocument")');
   let params = {};
   if (paramsJson) {
     try { params = JSON.parse(paramsJson); }
     catch { throw new Error(`Invalid JSON params: ${paramsJson}`); }
   }
-  const result = await cdp.send(method, params, sid);
+  const gateway = createRawCdpGateway(bindCdpTransport(cdp), authorization);
+  const result = await gateway.execute(params, sid);
   return JSON.stringify(result, null, 2);
 }
 
@@ -9144,10 +9373,10 @@ function formatMockText(model) {
 async function applyNetworkMocks(cdp, sid, session) {
   const rules = session.networkMocks || [];
   if (!rules.length) {
-    await cdp.send('Fetch.disable', {}, sid);
+    await cdpDomains(cdp).Fetch.disable( {}, sid);
     return;
   }
-  await cdp.send('Fetch.enable', {
+  await cdpDomains(cdp).Fetch.enable( {
     patterns: rules.map(rule => ({ urlPattern: rule.urlPattern, requestStage: 'Request' })),
   }, sid);
 }
@@ -9156,10 +9385,10 @@ async function handleMockRequestPaused(cdp, sid, session, params = {}) {
   const request = params.request || {};
   const rule = findNetworkMockRule(session, request);
   if (!rule) {
-    await cdp.send('Fetch.continueRequest', { requestId: params.requestId }, sid);
+    await cdpDomains(cdp).Fetch.continueRequest( { requestId: params.requestId }, sid);
     return null;
   }
-  await cdp.send('Fetch.fulfillRequest', {
+  await cdpDomains(cdp).Fetch.fulfillRequest( {
     requestId: params.requestId,
     responseCode: rule.status,
     responseHeaders: [{ name: 'content-type', value: rule.contentType }],
@@ -9355,7 +9584,7 @@ function formatClockText(model) {
 async function removeClockScriptIfNeeded(cdp, sid, session) {
   const identifier = session.clock?.scriptIdentifier;
   if (identifier) {
-    await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier }, sid);
+    await cdpDomains(cdp).Page.removeScriptToEvaluateOnNewDocument( { identifier }, sid);
   }
 }
 
@@ -9364,8 +9593,8 @@ async function clockStr(cdp, sid, session, args = []) {
   if (parsed.mode === 'apply') {
     await removeClockScriptIfNeeded(cdp, sid, session);
     const source = clockPageScript(parsed);
-    const added = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source }, sid);
-    await cdp.send('Runtime.evaluate', { expression: source, returnByValue: true, awaitPromise: true }, sid);
+    const added = await cdpDomains(cdp).Page.addScriptToEvaluateOnNewDocument( { source }, sid);
+    await cdpDomains(cdp).Runtime.evaluate( { expression: source, returnByValue: true, awaitPromise: true }, sid);
     session.clock = {
       profile: parsed.profile,
       atMs: parsed.profile === 'freeze' ? parsed.atMs : null,
@@ -9376,7 +9605,7 @@ async function clockStr(cdp, sid, session, args = []) {
     appendSessionEnvironmentLog(session, { kind: 'clock', ts: session.clock.appliedAt, action: 'apply', clock: session.clock });
   } else if (parsed.mode === 'reset') {
     await removeClockScriptIfNeeded(cdp, sid, session);
-    await cdp.send('Runtime.evaluate', { expression: clockPageScript(parsed), returnByValue: true, awaitPromise: true }, sid);
+    await cdpDomains(cdp).Runtime.evaluate( { expression: clockPageScript(parsed), returnByValue: true, awaitPromise: true }, sid);
     appendSessionEnvironmentLog(session, { kind: 'clock', ts: Date.now(), action: 'reset' });
     session.clock = null;
   }
@@ -9488,8 +9717,8 @@ function formatThrottleText(model) {
 async function throttleStr(cdp, sid, session, args = []) {
   const parsed = parseThrottleArgs(args);
   if (parsed.mode === 'apply') {
-    await cdp.send('Network.enable', {}, sid);
-    await cdp.send('Network.emulateNetworkConditions', parsed.cdpParams, sid);
+    await cdpDomains(cdp).Network.enable( {}, sid);
+    await cdpDomains(cdp).Network.emulateNetworkConditions( parsed.cdpParams, sid);
     session.networkThrottle = {
       profile: parsed.profile,
       offline: parsed.offline,
@@ -9562,7 +9791,7 @@ async function viewportStr(cdp, sid, size) {
   const match = size.match(/^(\d+)[x×](\d+)$/);
   if (!match) throw new Error('Format: <width>x<height> (e.g. 375x812, 1280x720)');
   const width = parseInt(match[1]), height = parseInt(match[2]);
-  await cdp.send('Emulation.setDeviceMetricsOverride', {
+  await cdpDomains(cdp).Emulation.setDeviceMetricsOverride( {
     width, height, deviceScaleFactor: 0, mobile: width <= 768,
   }, sid);
   return `Viewport resized to ${width}×${height}${width <= 768 ? ' (mobile mode)' : ''}`;
@@ -9592,7 +9821,7 @@ async function cookieSetStr(cdp, sid, cookieStr) {
   if (!cookie.domain) cookie.domain = loc.hostname;
   cookie.url = loc.href;
 
-  const { success } = await cdp.send('Network.setCookie', cookie, sid);
+  const { success } = await cdpDomains(cdp).Network.setCookie( cookie, sid);
   if (!success) throw new Error(`Failed to set cookie: ${name}`);
   return `Cookie set: ${name}=${value.substring(0, 30)}${value.length > 30 ? '...' : ''} (domain: ${cookie.domain})`;
 }
@@ -9600,7 +9829,7 @@ async function cookieSetStr(cdp, sid, cookieStr) {
 async function cookieDelStr(cdp, sid, name) {
   if (!name) throw new Error('Cookie name required');
   const url = await evalStr(cdp, sid, 'window.location.href');
-  await cdp.send('Network.deleteCookies', { name, url }, sid);
+  await cdpDomains(cdp).Network.deleteCookies( { name, url }, sid);
   return `Cookie deleted: ${name}`;
 }
 
@@ -9608,16 +9837,16 @@ async function uploadStr(cdp, sid, selector, filePaths) {
   if (!selector) throw new Error('CSS selector for <input type="file"> required');
   if (!filePaths) throw new Error('File path(s) required (comma-separated for multiple)');
   const files = filePaths.split(',').map(f => f.trim());
-  const { root } = await cdp.send('DOM.getDocument', {}, sid);
-  const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector }, sid);
+  const { root } = await cdpDomains(cdp).DOM.getDocument( {}, sid);
+  const { nodeId } = await cdpDomains(cdp).DOM.querySelector( { nodeId: root.nodeId, selector }, sid);
   if (!nodeId) throw new Error('Element not found: ' + selector);
   // Validate it's a file input — attributes is a flat [name, value, name, value, ...] array
-  const { node } = await cdp.send('DOM.describeNode', { nodeId }, sid);
+  const { node } = await cdpDomains(cdp).DOM.describeNode( { nodeId }, sid);
   const attrs = node.attributes || [];
   const typeIdx = attrs.indexOf('type');
   if (node.nodeName !== 'INPUT' || typeIdx === -1 || attrs[typeIdx + 1] !== 'file')
     throw new Error('Element is not an <input type="file">');
-  await cdp.send('DOM.setFileInputFiles', { files, nodeId }, sid);
+  await cdpDomains(cdp).DOM.setFileInputFiles( { files, nodeId }, sid);
   return `Uploaded ${files.length} file(s) to ${selector}: ${files.join(', ')}`;
 }
 
@@ -9817,21 +10046,21 @@ async function tableStr(cdp, sid, selector) {
 
 // --- Navigation history ---
 async function historyNavStr(cdp, sid, direction) {
-  const { currentIndex, entries } = await cdp.send('Page.getNavigationHistory', {}, sid);
+  const { currentIndex, entries } = await cdpDomains(cdp).Page.getNavigationHistory( {}, sid);
   const targetIdx = currentIndex + direction;
   if (targetIdx < 0) throw new Error('No previous page in history');
   if (targetIdx >= entries.length) throw new Error('No forward page in history');
-  await cdp.send('Page.navigateToHistoryEntry', { entryId: entries[targetIdx].id }, sid);
+  await cdpDomains(cdp).Page.navigateToHistoryEntry( { entryId: entries[targetIdx].id }, sid);
   await sleep(500);
   const url = await evalStr(cdp, sid, 'window.location.href');
   return `Navigated ${direction < 0 ? 'back' : 'forward'} to: ${url}`;
 }
 
 async function reloadStr(cdp, sid) {
-  await cdp.send('Page.enable', {}, sid);
+  await cdpDomains(cdp).Page.enable( {}, sid);
   const loadEvent = cdp.waitForEvent('Page.loadEventFired', RELOAD_EVENT_TIMEOUT);
   try {
-    await cdp.send('Page.reload', {}, sid, RELOAD_DISPATCH_TIMEOUT);
+    await cdpDomains(cdp).Page.reload( {}, sid, RELOAD_DISPATCH_TIMEOUT);
   } catch (e) {
     if (!isTimeoutError(e, ['Page.reload'])) throw e;
   }
@@ -9850,7 +10079,7 @@ async function reloadStr(cdp, sid) {
 }
 
 async function observeReloadPage(cdp, sid) {
-  const result = await cdp.send('Runtime.evaluate', {
+  const result = await cdpDomains(cdp).Runtime.evaluate( {
     expression: `JSON.stringify({
       title: document.title || '',
       url: window.location.href || '',
@@ -10082,10 +10311,10 @@ async function recordStr(cdp, sid, args, refs) {
   // click/fill failure, CDP error). Leaking listeners would pollute future
   // record/timeline runs on the same daemon.
   try {
-    try { await cdp.send('Runtime.enable', {}, sid); } catch {}
-    try { await cdp.send('Page.enable', {}, sid); } catch {}
-    try { await cdp.send('DOM.enable', {}, sid); } catch {}
-    try { await cdp.send('Network.enable', {}, sid); } catch {}
+    try { await cdpDomains(cdp).Runtime.enable( {}, sid); } catch {}
+    try { await cdpDomains(cdp).Page.enable( {}, sid); } catch {}
+    try { await cdpDomains(cdp).DOM.enable( {}, sid); } catch {}
+    try { await cdpDomains(cdp).Network.enable( {}, sid); } catch {}
     await installRecordMutationObserver(cdp, sid);
 
     let actionText = null;
@@ -10235,7 +10464,7 @@ async function resolveStyleSource(cdp, sid, rule) {
   const range = rule.style.range;
   const genLine0 = range ? range.startLine : 0;
   let header;
-  try { header = await cdp.send('CSS.getStyleSheetText', { styleSheetId: sheetId }, sid); } catch {}
+  try { header = await cdpDomains(cdp).CSS.getStyleSheetText( { styleSheetId: sheetId }, sid); } catch {}
   return mapStyleSource(header?.text || '', sheetId, genLine0);
 }
 
@@ -10244,9 +10473,9 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts =
 
   // CSS.getMatchedStylesForNode requires these domains/document state. Enable
   // them inside cascade so the first call works even before evalraw/perceive.
-  try { await cdp.send('DOM.enable', {}, sid); } catch {}
-  try { await cdp.send('CSS.enable', {}, sid); } catch {}
-  const { root } = await cdp.send('DOM.getDocument', {}, sid);
+  try { await cdpDomains(cdp).DOM.enable( {}, sid); } catch {}
+  try { await cdpDomains(cdp).CSS.enable( {}, sid); } catch {}
+  const { root } = await cdpDomains(cdp).DOM.getDocument( {}, sid);
 
   // Resolve element to DOM nodeId
   let nodeId;
@@ -10260,11 +10489,11 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts =
       backendNodeId = refMap.get(num);
       if (!backendNodeId) throw new Error(formatUnknownRefError(selector, refState || {}));
     }
-    const { nodeIds } = await cdp.send('DOM.pushNodesByBackendIdsToFrontend',
+    const { nodeIds } = await cdpDomains(cdp).DOM.pushNodesByBackendIdsToFrontend(
       { backendNodeIds: [backendNodeId] }, sid);
     nodeId = nodeIds[0];
   } else {
-    const result = await cdp.send('DOM.querySelector',
+    const result = await cdpDomains(cdp).DOM.querySelector(
       { nodeId: root.nodeId, selector }, sid);
     if (!result.nodeId) throw new Error('Element not found: ' + selector);
     nodeId = result.nodeId;
@@ -10272,8 +10501,8 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts =
 
   // Get matched styles + computed style in parallel
   const [matched, computed] = await Promise.all([
-    cdp.send('CSS.getMatchedStylesForNode', { nodeId }, sid),
-    cdp.send('CSS.getComputedStyleForNode', { nodeId }, sid),
+    cdpDomains(cdp).CSS.getMatchedStylesForNode( { nodeId }, sid),
+    cdpDomains(cdp).CSS.getComputedStyleForNode( { nodeId }, sid),
   ]);
 
   // Build computed value lookup
@@ -10503,7 +10732,7 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts =
 
 // --- Tab close ---
 async function closetabStr(cdp, targetId) {
-  await cdp.send('Target.closeTarget', { targetId });
+  await cdpDomains(cdp).Target.closeTarget( { targetId });
   return `Closed tab: ${targetId.slice(0, 8)}`;
 }
 
@@ -10586,12 +10815,17 @@ function commandMeta(cmd) {
   return COMMANDS.find(command => command.name === cmd || (command.aliases || []).includes(cmd)) || null;
 }
 
-const BATCH_PARALLEL_READ_STATE_COMMANDS = new Set(['perceive', 'snap', 'snapshot']);
+const BATCH_PARALLEL_SAFE_READ_COMMANDS = new Set([
+  'controls', 'html', 'text', 'table', 'styles', 'summary', 'net', 'wait', 'waitfor',
+]);
 
 function isBatchParallelUnsafeCommand(cmd) {
-  const meta = commandMeta(cmd);
-  if (meta?.mutates === true) return true;
-  return BATCH_PARALLEL_READ_STATE_COMMANDS.has(cmd);
+  const command = COMMAND_SURFACE.resolve(cmd);
+  if (!command) return true;
+  if (command.kind !== 'read'
+    || command.authorization !== 'standard'
+    || command.evidencePolicy !== 'none') return true;
+  return !BATCH_PARALLEL_SAFE_READ_COMMANDS.has(command.name);
 }
 
 function autoActionJsonArgs(cmd, args = [], enabled = false) {
@@ -12743,7 +12977,127 @@ async function dismissModalStr(cdp, sid) {
 // Per-tab daemon
 // ---------------------------------------------------------------------------
 
-async function runDaemon(targetId) {
+const DAEMON_HANDLER_BUILDERS = Object.freeze({
+  perceive: context => createPerceiveCommandHandler(context),
+  click: context => createClickCommandHandler(context),
+  report: context => createReportCommandHandler(context.session),
+  evalraw: context => createEvalrawCommandHandler(context),
+  html: capabilities => createDaemonReadHandlers(capabilities).html,
+  text: capabilities => createDaemonReadHandlers(capabilities).text,
+  table: capabilities => createDaemonReadHandlers(capabilities).table,
+  net: capabilities => createDaemonReadHandlers(capabilities).net,
+  status: capabilities => createDaemonReadHandlers(capabilities).status,
+  summary: capabilities => createDaemonReadHandlers(capabilities).summary,
+  snap: capabilities => createDaemonReadHandlers(capabilities).snap,
+  controls: capabilities => createDaemonReadHandlers(capabilities).controls,
+  frame: capabilities => createDaemonReadHandlers(capabilities).frame,
+  overlay: capabilities => createDaemonReadHandlers(capabilities).overlay,
+  styles: capabilities => createDaemonReadHandlers(capabilities).styles,
+  components: capabilities => createDaemonReadHandlers(capabilities).components,
+  'record-actions': capabilities => createDaemonReadHandlers(capabilities)['record-actions'],
+  'export-playwright': capabilities => createDaemonReadHandlers(capabilities)['export-playwright'],
+  wait: capabilities => createDaemonReadHandlers(capabilities).wait,
+  waitfor: capabilities => createDaemonReadHandlers(capabilities).waitfor,
+  cascade: capabilities => createDaemonReadHandlers(capabilities).cascade,
+  checkpoint: capabilities => createDaemonReadHandlers(capabilities).checkpoint,
+  cookies: capabilities => createDaemonReadHandlers(capabilities).cookies,
+  fill: capabilities => createDaemonActionHandlers(capabilities).fill,
+  hover: capabilities => createDaemonActionHandlers(capabilities).hover,
+  press: capabilities => createDaemonActionHandlers(capabilities).press,
+  scroll: capabilities => createDaemonActionHandlers(capabilities).scroll,
+  select: capabilities => createDaemonActionHandlers(capabilities).select,
+  clickxy: capabilities => createDaemonActionHandlers(capabilities).clickxy,
+  'dismiss-modal': capabilities => createDaemonActionHandlers(capabilities)['dismiss-modal'],
+  jsclick: capabilities => createDaemonActionHandlers(capabilities).jsclick,
+  type: capabilities => createDaemonActionHandlers(capabilities).type,
+  'verify-click': capabilities => createDaemonActionHandlers(capabilities)['verify-click'],
+  back: capabilities => createDaemonActionHandlers(capabilities).back,
+  forward: capabilities => createDaemonActionHandlers(capabilities).forward,
+  nav: capabilities => createDaemonActionHandlers(capabilities).nav,
+  reload: capabilities => createDaemonActionHandlers(capabilities).reload,
+  clock: capabilities => createDaemonActionHandlers(capabilities).clock,
+  mock: capabilities => createDaemonActionHandlers(capabilities).mock,
+  throttle: capabilities => createDaemonActionHandlers(capabilities).throttle,
+  emulate: capabilities => createDaemonActionHandlers(capabilities).emulate,
+  viewport: capabilities => createDaemonActionHandlers(capabilities).viewport,
+  cookiedel: capabilities => createDaemonActionHandlers(capabilities).cookiedel,
+  cookieset: capabilities => createDaemonActionHandlers(capabilities).cookieset,
+  dialog: capabilities => createDaemonActionHandlers(capabilities).dialog,
+  keepalive: capabilities => createDaemonActionHandlers(capabilities).keepalive,
+  netlog: capabilities => createDaemonActionHandlers(capabilities).netlog,
+  eval: capabilities => async ({ args }) => capabilities.eval(args),
+  eval64: capabilities => async ({ args }) => capabilities.eval64(args),
+  call: capabilities => async ({ args }) => capabilities.call(args),
+  console: capabilities => createDaemonReadHandlers(capabilities).console,
+  record: capabilities => createDaemonReadHandlers(capabilities).record,
+  batch: capabilities => async ({ args }) => commandResult(await capabilities.batch(args), null),
+  flow: capabilities => async ({ args }) => commandResult(await capabilities.flow(args), null),
+  repeat: capabilities => async ({ args }) => commandResult(await capabilities.repeat(args), null),
+  replay: capabilities => async ({ args }) => commandResult(
+    await capabilities.replay(args),
+    { kind: 'action-receipt' },
+  ),
+  inject: capabilities => createDaemonActionHandlers(capabilities).inject,
+  restore: capabilities => createDaemonActionHandlers(capabilities).restore,
+  upload: capabilities => createDaemonActionHandlers(capabilities).upload,
+  shot: capabilities => createDaemonReadHandlers(capabilities).shot,
+  'diff-shot': capabilities => createDaemonReadHandlers(capabilities)['diff-shot'],
+  elshot: capabilities => createDaemonReadHandlers(capabilities).elshot,
+  fullshot: capabilities => createDaemonReadHandlers(capabilities).fullshot,
+  scanshot: capabilities => createDaemonReadHandlers(capabilities).scanshot,
+  qa: capabilities => createDaemonActionHandlers(capabilities).qa,
+  'responsive-audit': capabilities => createDaemonActionHandlers(capabilities)['responsive-audit'],
+  closetab: capabilities => createDaemonActionHandlers(capabilities).closetab,
+  loadall: capabilities => createDaemonActionHandlers(capabilities).loadall,
+});
+const DAEMON_APPLICATION_COMMANDS = Object.freeze(Object.keys(DAEMON_HANDLER_BUILDERS).sort());
+
+function preflightDaemonApplication(input = {}) {
+  const options = snapshotApplicationDataObject(input, 'application preflight options');
+  const allowedOptions = new Set(['commands', 'handlerBuilders']);
+  for (const key of Object.keys(options)) {
+    if (!allowedOptions.has(key)) throw new Error(`application preflight options.${key}: is not allowed`);
+  }
+  const commands = Object.hasOwn(options, 'commands') ? options.commands : COMMANDS;
+  const handlerBuilders = Object.hasOwn(options, 'handlerBuilders')
+    ? options.handlerBuilders
+    : DAEMON_HANDLER_BUILDERS;
+  const registry = createApplicationCommandRegistry(commands);
+  const builders = snapshotApplicationDataObject(handlerBuilders, 'handlerBuilders');
+  const builderNames = Object.keys(builders).sort();
+  const expectedNames = registry.list()
+    .filter(command => command.needsTarget)
+    .map(command => command.name)
+    .sort();
+  if (!sameStringArray(builderNames, expectedNames)) {
+    throw new Error(`handlerBuilders: must exactly own all ${expectedNames.length} target application commands`);
+  }
+  for (const name of expectedNames) {
+    if (typeof builders[name] !== 'function') throw new Error(`handlerBuilders.${name}: handler factory is required`);
+    if (!registry.resolve(name)) throw new Error(`handlerBuilders.${name}: command is missing from registry`);
+  }
+  if (registry.list().length !== COMMAND_SURFACE.commands.length) {
+    throw new Error('commands: application registry must own the complete command surface');
+  }
+  const routeOwners = Object.freeze(Object.fromEntries(
+    registry.list().map(command => [command.name, command.needsTarget ? 'application' : 'adapter']),
+  ));
+  return Object.freeze({
+    registry,
+    routeOwners,
+    handlerBuilders: Object.freeze(builders),
+  });
+}
+
+async function enableDaemonDomains(cdp, sessionId) {
+  try { await cdpDomains(cdp).Runtime.enable( {}, sessionId); } catch {}
+  try { await cdpDomains(cdp).Page.enable( {}, sessionId); } catch {}
+  try { await cdpDomains(cdp).DOM.enable( {}, sessionId); } catch {}
+  try { await cdpDomains(cdp).CSS.enable( {}, sessionId); } catch {}
+  try { await cdpDomains(cdp).Network.enable( {}, sessionId); } catch {}
+}
+
+async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {
   resetScreenshotTier();
   const sp = sockPath(targetId);
   const daemonMetadata = {
@@ -12763,8 +13117,8 @@ async function runDaemon(targetId) {
   let sessionId;
   try {
     // Wake up the tab first (avoids timeouts on suspended/inactive background tabs)
-    await cdp.send('Target.activateTarget', { targetId }).catch(() => {});
-    const res = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+    await cdpDomains(cdp).Target.activateTarget( { targetId }).catch(() => {});
+    const res = await cdpDomains(cdp).Target.attachToTarget( { targetId, flatten: true });
     sessionId = res.sessionId;
   } catch (e) {
     process.stderr.write(`Daemon: attach failed: ${e.message}\n`);
@@ -12797,11 +13151,7 @@ async function runDaemon(targetId) {
   };
 
   // Enable domains for background collection and ref resolution
-  try { await cdp.send('Runtime.enable', {}, sessionId); } catch {}
-  try { await cdp.send('Page.enable', {}, sessionId); } catch {}
-  try { await cdp.send('DOM.enable', {}, sessionId); } catch {}
-  try { await cdp.send('CSS.enable', {}, sessionId); } catch {}
-  try { await cdp.send('Network.enable', {}, sessionId); } catch {}
+  await enableDaemonDomains(cdp, sessionId);
 
   cdp.onEvent('Runtime.consoleAPICalled', (params) => {
     const level = params.type || 'log';
@@ -12908,7 +13258,7 @@ async function runDaemon(targetId) {
 
   cdp.onEvent('Fetch.requestPaused', (params) => {
     handleMockRequestPaused(cdp, sessionId, session, params).catch(() => {
-      cdp.send('Fetch.continueRequest', { requestId: params.requestId }, sessionId).catch(() => {});
+      cdpDomains(cdp).Fetch.continueRequest( { requestId: params.requestId }, sessionId).catch(() => {});
     });
   });
 
@@ -12918,7 +13268,7 @@ async function runDaemon(targetId) {
   const dialogAutoAcceptRef = { value: true }; // auto-dismiss by default to prevent page lockups
   cdp.onEvent('Page.javascriptDialogOpening', (params) => {
     dialogBuf.push({ type: params.type, message: params.message, ts: Date.now() });
-    cdp.send('Page.handleJavaScriptDialog', {
+    cdpDomains(cdp).Page.handleJavaScriptDialog( {
       accept: dialogAutoAcceptRef.value,
       promptText: dialogAutoAcceptRef.value ? params.defaultPrompt || '' : undefined,
     }, sessionId).catch(() => {});
@@ -13027,11 +13377,546 @@ async function runDaemon(targetId) {
     });
   }
 
+  const applicationRegistry = applicationPreflight.registry;
+  const readCapabilities = {
+    cascade: args => {
+      const fopts = parseFormatArgs(args, ['text', 'json']);
+      return cascadeStr(cdp, sessionId, fopts.args[0], fopts.args[1], refMap, refState, { format: fopts.format });
+    },
+    checkpoint: async args => {
+      const fopts = parseFormatArgs(args, ['text', 'json']);
+      const copts = parseCheckpointArgs(fopts.args);
+      if (copts.args.length) throw new Error(`checkpoint: unknown argument ${copts.args[0]}`);
+      const output = await checkpointStr(cdp, sessionId, {
+        format: fopts.format,
+        unsafeFullCapture: copts.unsafeFullCapture,
+      });
+      appendSessionEventLog(session, {
+        kind: 'checkpoint',
+        url: output.includes('URL: ') ? output.split('URL: ')[1]?.split('\n')[0] : undefined,
+      });
+      return output;
+    },
+    components: args => componentsStr(cdp, sessionId, args, refMap, refState),
+    console: async args => {
+      const opts = parseConsoleArgs(args);
+      if (opts.mode === 'clear') {
+        const model = clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq);
+        return opts.format === 'json' ? formatJson(model) : model.message;
+      }
+      if (opts.format === 'json') {
+        const output = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, opts.mode));
+        if (opts.mode === 'new') {
+          lastReadSeq.console = consoleBuf.latest();
+          lastReadSeq.exception = exceptionBuf.latest();
+        }
+        return output;
+      }
+      return consoleStr(consoleBuf, exceptionBuf, lastReadSeq, opts.mode);
+    },
+    controls: async args => {
+      const fopts = parseFormatArgs(args, ['text', 'json']);
+      const copts = parseControlsArgs(fopts.args);
+      return controlsStr(cdp, sessionId, { ...copts, format: fopts.format });
+    },
+    cookies: () => cookiesStr(cdp, sessionId),
+    'diff-shot': args => diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args)),
+    elshot: args => elshotStr(cdp, sessionId, args[0], targetId, refMap, refState),
+    'export-playwright': args => formatExportPlaywright(session, parseExportPlaywrightArgs(args)),
+    frame: async args => {
+      const fopts = parseFormatArgs(args, ['text', 'json']);
+      return framesStr(cdp, sessionId, { format: fopts.format });
+    },
+    fullshot: args => fullshotStr(cdp, sessionId, args[0], targetId),
+    html: args => htmlStr(cdp, sessionId, args),
+    text: args => textStr(cdp, sessionId, args),
+    table: selector => tableStr(cdp, sessionId, selector),
+    net: () => netStr(cdp, sessionId),
+    overlay: args => overlayStr(cdp, sessionId, targetId, args, refMap, refState),
+    record: args => recordStr(cdp, sessionId, args, refMap),
+    'record-actions': args => {
+      const fopts = parseFormatArgs(args, ['text', 'json']);
+      return formatRecordActions(session, { format: fopts.format });
+    },
+    scanshot: () => scanshotStr(cdp, sessionId, targetId),
+    shot: async args => {
+      if (args[0] === '--annotate' || args[0] === '-a') {
+        const output = await annotshotStr(cdp, sessionId, targetId, refMap);
+        appendSessionScreenshot(session, {
+          kind: 'annotshot',
+          path: output.split('\n')[0],
+          note: 'annotated refs',
+        });
+        return output;
+      }
+      const sopts = parseShotArgs(args);
+      const filePath = sopts.filePath || nextSessionScreenshotPath(session, 'shot');
+      if (!sopts.filePath) ensureSessionScreenshotDir(session);
+      const output = await shotStr(cdp, sessionId, filePath, targetId, { quiet: sopts.quiet, verbose: sopts.verbose });
+      appendSessionScreenshot(session, {
+        kind: 'shot',
+        path: output.split('\n')[0],
+        note: sopts.filePath ? 'custom path' : 'session screenshot',
+      });
+      return output;
+    },
+    snap: args => snapshotStr(cdp, sessionId, args[0] !== '--full'),
+    status: async args => {
+      const fopts = parseFormatArgs(args, ['text', 'json']);
+      if (fopts.format === 'json') {
+        const runtime = fopts.args.includes('--runtime')
+          ? await runtimeMetricsStr(cdp, sessionId).catch(e => ({ unavailable: e.message }))
+          : null;
+        const page = await pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) });
+        const output = formatJson(buildStatusModel({
+          targetId,
+          page: { title: page.title, url: page.url },
+          consoleBuf,
+          exceptionBuf,
+          navBuf,
+          lastReadSeq,
+          runtime,
+          diagnostic: page.diagnostic || null,
+        }));
+        lastReadSeq.console = consoleBuf.latest();
+        lastReadSeq.exception = exceptionBuf.latest();
+        return output;
+      }
+      return statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq, {
+        runtime: fopts.args.includes('--runtime'),
+        targetPrefix: targetPrefixForDisplay(targetId),
+      });
+    },
+    styles: args => stylesStr(cdp, sessionId, args),
+    summary: async args => {
+      const fopts = parseFormatArgs(args, ['text', 'json']);
+      return fopts.format === 'json'
+        ? formatJson(await summaryModel(cdp, sessionId, consoleBuf, exceptionBuf))
+        : summaryStr(cdp, sessionId, consoleBuf, exceptionBuf);
+    },
+    wait: args => waitStr(args[0]),
+    waitfor: args => waitForStr(cdp, sessionId, args, refMap, refState),
+  };
+  const recordActionsBuilder = applicationPreflight.handlerBuilders['record-actions'];
+  const exportPlaywrightBuilder = applicationPreflight.handlerBuilders['export-playwright'];
+  const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];
+  const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];
+  const diffShotBuilder = applicationPreflight.handlerBuilders['diff-shot'];
+  const responsiveAuditBuilder = applicationPreflight.handlerBuilders['responsive-audit'];
+  const scriptCapabilities = {
+    eval: async args => {
+      const eopts = parseEvalArgs(args);
+      let value;
+      if (eopts.fireAndForget) {
+        value = await evalFireAndForgetStr(cdp, sessionId, eopts.expression, true);
+        value += `\n${extendKeepalive(FIRE_AND_FORGET_KEEPALIVE)} (fire-and-forget default)`;
+      } else {
+        value = await evalStr(cdp, sessionId, eopts.expression, true, { raw: eopts.raw });
+      }
+      return commandResult(value, null);
+    },
+    eval64: async args => commandResult(
+      await evalStr(cdp, sessionId, evalBase64Decode(args[0]), true),
+      null,
+    ),
+    call: async args => commandResult(await callStr(cdp, sessionId, args.join(' ')), null),
+  };
+  const actionCapabilities = {
+    back: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('back', () => historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    clickxy: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: `${fopts.args[0]},${fopts.args[1]}`, resolvedBy: 'coordinates', label: `${fopts.args[0]},${fopts.args[1]}`, commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    clock: async args => commandResult(
+      await clockStr(cdp, sessionId, session, args),
+      { kind: 'action-receipt' },
+    ),
+    closetab: async () => commandResult(
+      await closetabStr(cdp, targetId),
+      { kind: 'action-receipt' },
+    ),
+    cookiedel: async args => commandResult(
+      await cookieDelStr(cdp, sessionId, args[0]),
+      { kind: 'action-receipt' },
+    ),
+    cookieset: async args => commandResult(
+      await cookieSetStr(cdp, sessionId, args[0]),
+      { kind: 'action-receipt' },
+    ),
+    dialog: async args => commandResult(
+      dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]),
+      null,
+    ),
+    'dismiss-modal': async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    emulate: async args => commandResult(
+      await emulateStr(cdp, sessionId, session, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
+      { kind: 'action-receipt' },
+    ),
+    fill: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const fargs = fopts.args;
+      const value = fargs[0] === '--react'
+        ? await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[1], fargs[2], refMap, refState, { react: true }), { input: fargs[1], resolvedBy: 'selector-or-ref', label: fargs[1] || '', commandArgs: ['--react', fargs[1], fargs[2]] }, 'settle-diff', null, fopts)
+        : await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[0], fargs[1], refMap, refState), { input: fargs[0], resolvedBy: 'selector-or-ref', label: fargs[0] || '', commandArgs: [fargs[0], fargs[1]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    hover: async args => commandResult(await hoverStr(cdp, sessionId, args[0], refMap, refState), null),
+    inject: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const safeCommandArgs = fopts.args.map((arg, index) => index === 0 ? arg : '<redacted>');
+      const value = await actionFeedback(
+        'inject',
+        async () => {
+          try {
+            return await injectStr(cdp, sessionId, fopts.args);
+          } catch (error) {
+            throw redactExternalInputActionError(error, 'inject', fopts.args);
+          }
+        },
+        {
+          input: fopts.args[0] || '',
+          resolvedBy: 'command',
+          label: fopts.args[0] || 'inject',
+          commandArgs: safeCommandArgs,
+          redacted: ['commandArgs'],
+        },
+        'state-change',
+        null,
+        fopts,
+      );
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    jsclick: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, fopts.args[0], refMap, refState), { input: fopts.args[0], resolvedBy: 'selector-or-ref', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    keepalive: async args => commandResult(
+      extendKeepalive(parseDelayMs(args[0], { name: 'keepalive duration' })),
+      null,
+    ),
+    loadall: async args => commandResult(
+      await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500),
+      null,
+    ),
+    mock: async args => commandResult(
+      await mockStr(cdp, sessionId, session, args),
+      { kind: 'action-receipt' },
+    ),
+    forward: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('forward', () => historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    nav: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('nav', () => navStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'url', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'full-perceive', observeFullPerceive, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    netlog: async args => commandResult(netlogStr(netReqBuf, args[0]), null),
+    press: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    qa: async args => commandResult(await qaPageStr({
+      cdp,
+      sid: sessionId,
+      session,
+      targetId,
+      consoleBuf,
+      exceptionBuf,
+      refMap,
+      lastPerceiveStore,
+      refState,
+      actionFeedback,
+    }, args), { kind: 'action-receipt' }),
+    reload: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('reload', () => reloadActionDispatch({
+        cdp,
+        sessionId,
+        session,
+        consoleBuf,
+        exceptionBuf,
+        navBuf,
+        netReqBuf,
+        pendingReqs,
+        lastReadSeq,
+      }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    'responsive-audit': async args => commandResult(
+      await responsiveAuditStr(cdp, sessionId, session, targetId, consoleBuf, exceptionBuf, args),
+      { kind: 'action-receipt' },
+    ),
+    restore: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const safeCommandArgs = redactRestoreCommandArgs(fopts.args);
+      const value = await actionFeedback(
+        'restore',
+        async () => {
+          let restoreResult;
+          try {
+            restoreResult = await restoreCheckpointStr(cdp, sessionId, fopts.args);
+          } catch (error) {
+            throw redactRestoreActionError(error, fopts.args);
+          }
+          clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
+          session.pageGeneration += 1;
+          invalidateSessionRefs(session, 'navigation');
+          return restoreResult;
+        },
+        {
+          input: 'checkpoint',
+          resolvedBy: 'artifact',
+          label: 'checkpoint',
+          commandArgs: safeCommandArgs,
+          redacted: ['commandArgs'],
+        },
+        'report-only',
+        null,
+        fopts,
+      );
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    scroll: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('scroll', () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: [fopts.args[0], fopts.args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: fopts.args[0] || 'scroll', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    select: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('select', () => selectStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    throttle: async args => commandResult(
+      await throttleStr(cdp, sessionId, session, args),
+      { kind: 'action-receipt' },
+    ),
+    type: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('type', () => typeStr(cdp, sessionId, fopts.args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    upload: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback(
+        'upload',
+        async () => {
+          try {
+            return await uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1]);
+          } catch (error) {
+            throw redactExternalInputActionError(error, 'upload', fopts.args);
+          }
+        },
+        {
+          input: fopts.args[0],
+          resolvedBy: 'selector',
+          label: fopts.args[0] || '',
+          commandArgs: [fopts.args[0], '<redacted>'],
+          redacted: ['commandArgs'],
+        },
+        'state-change',
+        null,
+        fopts,
+      );
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    'verify-click': async args => {
+      const vopts = parseVerifyClickArgs(args);
+      let captured = null;
+      await actionFeedback(
+        'click',
+        () => clickStr(cdp, sessionId, vopts.selector, refMap, refState),
+        { input: vopts.selector, resolvedBy: 'selector-or-ref', label: vopts.selector || '', commandArgs: [vopts.selector] },
+        'settle-diff',
+        null,
+        'json',
+        result => { captured = result; },
+      );
+      const textMatched = vopts.expectText
+        ? await pageContainsText(cdp, sessionId, vopts.expectText).catch(() => false)
+        : false;
+      const model = buildSemanticInteractionModel(captured || {}, vopts, { textMatched });
+      const value = vopts.format === 'json'
+        ? formatJson(model)
+        : `${formatSemanticInteractionResult(model)}${vopts.evidence === 'full' && captured ? `\n---\n${formatActionText(captured)}` : ''}`;
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    viewport: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = fopts.args[0]
+        ? await actionFeedback('viewport', () => viewportStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'viewport', label: fopts.args[0], commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts)
+        : await viewportStr(cdp, sessionId);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+  };
+  const workflowCapabilities = {
+    batch: async args => {
+      const parsedBatch = parseBatchArgs(args);
+      const { commands, parallel } = parsedBatch;
+      if (!commands.length) throw new Error('batch: no commands provided');
+      const blocked = commands.filter(command => BATCH_BLOCKED.has(command.cmd));
+      if (blocked.length) throw new Error(`batch: ${blocked.map(command => command.cmd).join(', ')} not allowed inside batch`);
+      if (parallel) {
+        const unsafe = commands.filter(command => isBatchParallelUnsafeCommand(command.cmd));
+        if (unsafe.length) throw new Error(`batch --parallel: ${[...new Set(unsafe.map(command => command.cmd))].join(', ')} mutate shared state — use sequential batch`);
+      }
+      const autoActionJson = parsedBatch.output === 'model';
+      const runOne = async command => {
+        const nested = await handleCommand({
+          cmd: command.cmd,
+          args: autoActionJsonArgs(command.cmd, command.args || [], autoActionJson),
+        });
+        return { cmd: command.cmd, ok: nested.ok, result: nested.result, error: nested.error };
+      };
+      let results;
+      if (parallel) {
+        results = await Promise.all(commands.map(runOne));
+      } else {
+        results = [];
+        for (const command of commands) results.push(await runOne(command));
+      }
+      const format = parsedBatch.output === 'legacy-json' ? 'json' : parsedBatch.output;
+      return formatBatchResults(results, format, { targetId, mode: parallel ? 'parallel' : 'sequential' });
+    },
+    flow: async args => {
+      const fopts = parseFormatArgs(args, ['text', 'json']);
+      return flowStr({
+        run: step => handleCommand({
+          cmd: step.cmd,
+          args: autoActionJsonArgs(step.cmd, step.args || [], fopts.format === 'json'),
+        }),
+        settle: what => settleFlow(cdp, sessionId, what, pendingReqs),
+        assertCondition: condition => probePageCondition(cdp, sessionId, condition),
+      }, fopts.args.join(' '), { format: fopts.format, targetId, throwOnFailure: true });
+    },
+    repeat: args => repeatStr({
+      run: step => handleCommand({ cmd: step.cmd, args: step.args || [] }),
+      probeCondition: condition => probePageCondition(cdp, sessionId, condition),
+    }, args),
+    replay: args => replayActionsStr({
+      run: step => handleCommand({ cmd: step.cmd, args: step.args || [] }),
+    }, args),
+  };
+  const applicationHandlers = {
+    report: applicationPreflight.handlerBuilders.report({ session }),
+    click: applicationPreflight.handlerBuilders.click({
+      actionFeedback,
+      click: selector => clickStr(cdp, sessionId, selector, refMap, refState),
+      jsClick: selector => jsClickStr(cdp, sessionId, selector, refMap, refState),
+    }),
+    evalraw: applicationPreflight.handlerBuilders.evalraw({
+      evalRaw: (method, params, authorization) => evalRawStr(cdp, sessionId, method, params, authorization),
+    }),
+    perceive: applicationPreflight.handlerBuilders.perceive({
+      cdp,
+      sessionId,
+      targetId,
+      session,
+      consoleBuf,
+      exceptionBuf,
+      netReqBuf,
+      refMap,
+      lastPerceiveStore,
+      refState,
+    }),
+    html: applicationPreflight.handlerBuilders.html(readCapabilities),
+    text: applicationPreflight.handlerBuilders.text(readCapabilities),
+    table: applicationPreflight.handlerBuilders.table(readCapabilities),
+    net: applicationPreflight.handlerBuilders.net(readCapabilities),
+    status: applicationPreflight.handlerBuilders.status(readCapabilities),
+    summary: applicationPreflight.handlerBuilders.summary(readCapabilities),
+    snap: applicationPreflight.handlerBuilders.snap(readCapabilities),
+    controls: applicationPreflight.handlerBuilders.controls(readCapabilities),
+    frame: applicationPreflight.handlerBuilders.frame(readCapabilities),
+    overlay: applicationPreflight.handlerBuilders.overlay(readCapabilities),
+    styles: applicationPreflight.handlerBuilders.styles(readCapabilities),
+    components: applicationPreflight.handlerBuilders.components(readCapabilities),
+    'record-actions': recordActionsBuilder(readCapabilities),
+    'export-playwright': exportPlaywrightBuilder(readCapabilities),
+    wait: applicationPreflight.handlerBuilders.wait(readCapabilities),
+    waitfor: applicationPreflight.handlerBuilders.waitfor(readCapabilities),
+    cascade: applicationPreflight.handlerBuilders.cascade(readCapabilities),
+    checkpoint: applicationPreflight.handlerBuilders.checkpoint(readCapabilities),
+    cookies: applicationPreflight.handlerBuilders.cookies(readCapabilities),
+    fill: applicationPreflight.handlerBuilders.fill(actionCapabilities),
+    hover: applicationPreflight.handlerBuilders.hover(actionCapabilities),
+    press: applicationPreflight.handlerBuilders.press(actionCapabilities),
+    scroll: applicationPreflight.handlerBuilders.scroll(actionCapabilities),
+    select: applicationPreflight.handlerBuilders.select(actionCapabilities),
+    clickxy: applicationPreflight.handlerBuilders.clickxy(actionCapabilities),
+    'dismiss-modal': dismissModalBuilder(actionCapabilities),
+    jsclick: applicationPreflight.handlerBuilders.jsclick(actionCapabilities),
+    type: applicationPreflight.handlerBuilders.type(actionCapabilities),
+    'verify-click': verifyClickBuilder(actionCapabilities),
+    back: applicationPreflight.handlerBuilders.back(actionCapabilities),
+    forward: applicationPreflight.handlerBuilders.forward(actionCapabilities),
+    nav: applicationPreflight.handlerBuilders.nav(actionCapabilities),
+    reload: applicationPreflight.handlerBuilders.reload(actionCapabilities),
+    clock: applicationPreflight.handlerBuilders.clock(actionCapabilities),
+    mock: applicationPreflight.handlerBuilders.mock(actionCapabilities),
+    throttle: applicationPreflight.handlerBuilders.throttle(actionCapabilities),
+    emulate: applicationPreflight.handlerBuilders.emulate(actionCapabilities),
+    viewport: applicationPreflight.handlerBuilders.viewport(actionCapabilities),
+    cookiedel: applicationPreflight.handlerBuilders.cookiedel(actionCapabilities),
+    cookieset: applicationPreflight.handlerBuilders.cookieset(actionCapabilities),
+    dialog: applicationPreflight.handlerBuilders.dialog(actionCapabilities),
+    keepalive: applicationPreflight.handlerBuilders.keepalive(actionCapabilities),
+    netlog: applicationPreflight.handlerBuilders.netlog(actionCapabilities),
+    eval: applicationPreflight.handlerBuilders.eval(scriptCapabilities),
+    eval64: applicationPreflight.handlerBuilders.eval64(scriptCapabilities),
+    call: applicationPreflight.handlerBuilders.call(scriptCapabilities),
+    console: applicationPreflight.handlerBuilders.console(readCapabilities),
+    record: applicationPreflight.handlerBuilders.record(readCapabilities),
+    batch: applicationPreflight.handlerBuilders.batch(workflowCapabilities),
+    flow: applicationPreflight.handlerBuilders.flow(workflowCapabilities),
+    repeat: applicationPreflight.handlerBuilders.repeat(workflowCapabilities),
+    replay: applicationPreflight.handlerBuilders.replay(workflowCapabilities),
+    inject: applicationPreflight.handlerBuilders.inject(actionCapabilities),
+    restore: applicationPreflight.handlerBuilders.restore(actionCapabilities),
+    upload: applicationPreflight.handlerBuilders.upload(actionCapabilities),
+    shot: applicationPreflight.handlerBuilders.shot(readCapabilities),
+    'diff-shot': diffShotBuilder(readCapabilities),
+    elshot: applicationPreflight.handlerBuilders.elshot(readCapabilities),
+    fullshot: applicationPreflight.handlerBuilders.fullshot(readCapabilities),
+    scanshot: applicationPreflight.handlerBuilders.scanshot(readCapabilities),
+    qa: applicationPreflight.handlerBuilders.qa(actionCapabilities),
+    'responsive-audit': responsiveAuditBuilder(actionCapabilities),
+    closetab: applicationPreflight.handlerBuilders.closetab(actionCapabilities),
+    loadall: applicationPreflight.handlerBuilders.loadall(actionCapabilities),
+  };
+  const applicationDispatcher = createCommandDispatcher({
+    registry: applicationRegistry,
+    owners: applicationPreflight.routeOwners,
+    handlers: applicationHandlers,
+    authorize: authorizeDaemonApplicationCommand,
+  });
+
   // Handle a command
   async function handleCommand({ cmd, args }) {
     resetIdle();
     try {
       let result;
+      const applicationRoute = applicationDispatcher.route(cmd);
+      if (applicationRoute?.owner === 'application') {
+        const route = await executeDaemonApplicationRoute({
+          cmd,
+          args,
+          targetBound: Boolean(targetId),
+        }, applicationDispatcher);
+        return { ok: true, result: route.result ?? '' };
+      }
       switch (cmd) {
         case 'meta': {
           result = formatJson(daemonMetadata);
@@ -13045,519 +13930,6 @@ async function runDaemon(targetId) {
         case 'list_raw': {
           const pages = await getPages(cdp);
           result = JSON.stringify(pages);
-          break;
-        }
-        case 'snap': case 'snapshot': result = await snapshotStr(cdp, sessionId, args[0] !== '--full'); break;
-        case 'eval': {
-          const eopts = parseEvalArgs(args);
-          if (eopts.fireAndForget) {
-            result = await evalFireAndForgetStr(cdp, sessionId, eopts.expression, true);
-            result += `\n${extendKeepalive(FIRE_AND_FORGET_KEEPALIVE)} (fire-and-forget default)`;
-          } else {
-            result = await evalStr(cdp, sessionId, eopts.expression, true, { raw: eopts.raw });
-          }
-          break;
-        }
-        case 'eval64': {
-          const decoded = evalBase64Decode(args[0]);
-          result = await evalStr(cdp, sessionId, decoded, true);
-          break;
-        }
-        case 'call': result = await callStr(cdp, sessionId, args.join(' ')); break;
-        case 'wait': result = await waitStr(args[0]); break;
-        case 'keepalive': result = extendKeepalive(parseDelayMs(args[0], { name: 'keepalive duration' })); break;
-        case 'shot': case 'screenshot': {
-          if (args[0] === '--annotate' || args[0] === '-a') {
-            result = await annotshotStr(cdp, sessionId, targetId, refMap);
-            appendSessionScreenshot(session, {
-              kind: 'annotshot',
-              path: result.split('\n')[0],
-              note: 'annotated refs',
-            });
-          } else {
-            const sopts = parseShotArgs(args);
-            const filePath = sopts.filePath || nextSessionScreenshotPath(session, 'shot');
-            if (!sopts.filePath) ensureSessionScreenshotDir(session);
-            result = await shotStr(cdp, sessionId, filePath, targetId, { quiet: sopts.quiet, verbose: sopts.verbose });
-            appendSessionScreenshot(session, {
-              kind: 'shot',
-              path: result.split('\n')[0],
-              note: sopts.filePath ? 'custom path' : 'session screenshot',
-            });
-          }
-          break;
-        }
-        case 'diff-shot': case 'diffshot': {
-          result = await diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args));
-          break;
-        }
-        case 'html': result = await htmlStr(cdp, sessionId, args); break;
-        case 'nav': case 'navigate': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback(
-            'nav',
-            () => navStr(cdp, sessionId, fopts.args[0]),
-            { input: fopts.args[0], resolvedBy: 'url', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] },
-            'full-perceive',
-            observeFullPerceive,
-            fopts
-          );
-          break;
-        }
-        case 'net': case 'network': result = await netStr(cdp, sessionId); break;
-        case 'mock': case 'network-mock': result = await mockStr(cdp, sessionId, session, args); break;
-        case 'clock': case 'time-travel': result = await clockStr(cdp, sessionId, session, args); break;
-        case 'throttle': case 'network-throttle': result = await throttleStr(cdp, sessionId, session, args); break;
-        case 'status': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          if (fopts.format === 'json') {
-            const runtime = fopts.args.includes('--runtime')
-              ? await runtimeMetricsStr(cdp, sessionId).catch(e => ({ unavailable: e.message }))
-              : null;
-            const page = await pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) });
-            result = formatJson(buildStatusModel({
-              targetId,
-              page: { title: page.title, url: page.url },
-              consoleBuf,
-              exceptionBuf,
-              navBuf,
-              lastReadSeq,
-              runtime,
-              diagnostic: page.diagnostic || null,
-            }));
-            lastReadSeq.console = consoleBuf.latest();
-            lastReadSeq.exception = exceptionBuf.latest();
-          } else {
-            result = await statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq, { runtime: fopts.args.includes('--runtime'), targetPrefix: targetPrefixForDisplay(targetId) });
-          }
-          break;
-        }
-        case 'console': {
-          const opts = parseConsoleArgs(args);
-          if (opts.mode === 'clear') {
-            const model = clearConsoleBaseline(consoleBuf, exceptionBuf, lastReadSeq);
-            result = opts.format === 'json' ? formatJson(model) : model.message;
-          } else if (opts.format === 'json') {
-            result = formatJson(buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, opts.mode));
-            if (opts.mode === 'new') {
-              lastReadSeq.console = consoleBuf.latest();
-              lastReadSeq.exception = exceptionBuf.latest();
-            }
-          } else {
-            result = await consoleStr(consoleBuf, exceptionBuf, lastReadSeq, opts.mode);
-          }
-          break;
-        }
-        case 'summary': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = fopts.format === 'json'
-            ? formatJson(await summaryModel(cdp, sessionId, consoleBuf, exceptionBuf))
-            : await summaryStr(cdp, sessionId, consoleBuf, exceptionBuf);
-          break;
-        }
-        case 'frame': case 'frames': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await framesStr(cdp, sessionId, { format: fopts.format });
-          break;
-        }
-        case 'overlay': case 'overlays': {
-          result = await overlayStr(cdp, sessionId, targetId, args, refMap, refState);
-          break;
-        }
-        case 'report': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          const ropts = parseReportArgs(fopts.args);
-          if (ropts.args.length) throw new Error(`report: unknown argument ${ropts.args[0]}`);
-          result = formatSessionReport(session, {
-            format: fopts.format,
-            lastActions: ropts.lastActions,
-            compact: ropts.compact,
-            qa: ropts.qa,
-          });
-          break;
-        }
-        case 'responsive-audit': case 'visual-check': {
-          result = await responsiveAuditStr(cdp, sessionId, session, targetId, consoleBuf, exceptionBuf, args);
-          break;
-        }
-        case 'qa': case 'qa-page': {
-          const qopts = parseQaArgs(args);
-          const errors = [];
-          const page = await pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) });
-          const consoleHealth = {
-            errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
-            warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
-            exceptions: exceptionBuf.all().length,
-          };
-          const screenshots = {};
-          for (const [kind, size] of [['desktop', qopts.desktop], ['mobile', qopts.mobile]]) {
-            if (!size) continue;
-            try {
-              await viewportStr(cdp, sessionId, size);
-              ensureSessionScreenshotDir(session);
-              const path = nextSessionScreenshotPath(session, kind);
-              const shot = await shotStr(cdp, sessionId, path, targetId, { quiet: true });
-              appendSessionScreenshot(session, { kind: `qa-${kind}`, path: shot.split('\n')[0], note: size });
-              screenshots[kind] = { viewport: size, path: shot.split('\n')[0] };
-            } catch (e) {
-              errors.push(`${kind} screenshot: ${e.message}`);
-            }
-          }
-          let perception = null;
-          try {
-            const text = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, { cursorInteractive: true, maxDepth: 4, targetPrefix: targetPrefixForDisplay(targetId) }, refState);
-            perception = { captured: true, summary: text.split('\n').slice(0, 6).join('\n') };
-          } catch (e) {
-            perception = { captured: false, error: e.message };
-            errors.push(`perceive: ${e.message}`);
-          }
-          let action = null;
-          const assertions = [];
-          if (qopts.click) {
-            let captured = null;
-            await actionFeedback(
-              'click',
-              () => clickStr(cdp, sessionId, qopts.click, refMap, refState),
-              { input: qopts.click, resolvedBy: 'selector-or-ref', label: qopts.click || '', commandArgs: [qopts.click] },
-              'settle-diff',
-              null,
-              'json',
-              result => { captured = result; }
-            );
-            const textMatched = qopts.expectText ? await pageContainsText(cdp, sessionId, qopts.expectText).catch(() => false) : false;
-            action = buildSemanticInteractionModel(captured || {}, {
-              selector: qopts.click,
-              expectRequest: qopts.expectRequest,
-              expectStatus: qopts.expectStatus,
-              expectText: qopts.expectText,
-              noConsoleErrors: qopts.noConsoleErrors,
-              evidence: 'concise',
-            }, { textMatched });
-          } else {
-            if (qopts.expectText) {
-              const textMatched = await pageContainsText(cdp, sessionId, qopts.expectText).catch(() => false);
-              assertions.push({
-                kind: 'text',
-                expected: qopts.expectText,
-                status: textMatched ? 'pass' : 'fail',
-                message: textMatched ? `"${qopts.expectText}" matched` : `"${qopts.expectText}" not found`,
-              });
-            }
-            if (qopts.expectRequest) {
-              assertions.push({
-                kind: 'request',
-                expected: qopts.expectRequest,
-                status: 'fail',
-                message: '--expect-request requires --click so the command can collect action network evidence',
-              });
-            }
-          }
-          const pageHealth = await collectPageHealth(cdp, sessionId).catch(() => null);
-          const model = buildQaPageModel({
-            targetId,
-            page: { title: page.title, url: page.url },
-            pageHealth,
-            console: consoleHealth,
-            perception,
-            screenshots,
-            action,
-            assertions,
-            errors,
-          });
-          result = qopts.format === 'json' ? formatJson(model) : formatQaPageReport(model);
-          break;
-        }
-        case 'checkpoint': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          const copts = parseCheckpointArgs(fopts.args);
-          if (copts.args.length) throw new Error(`checkpoint: unknown argument ${copts.args[0]}`);
-          result = await checkpointStr(cdp, sessionId, { format: fopts.format, unsafeFullCapture: copts.unsafeFullCapture });
-          appendSessionEventLog(session, { kind: 'checkpoint', url: result.includes('URL: ') ? result.split('URL: ')[1]?.split('\n')[0] : undefined });
-          break;
-        }
-        case 'record-actions': case 'recordactions': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = formatRecordActions(session, { format: fopts.format });
-          break;
-        }
-        case 'export-playwright': case 'export-pw': {
-          result = formatExportPlaywright(session, parseExportPlaywrightArgs(args));
-          break;
-        }
-        case 'perceive': {
-          const fopts = parseQaModeArgs(args, ['text', 'json']);
-          const popts = parsePerceiveArgs(fopts.args);
-          popts.targetPrefix = targetPrefixForDisplay(targetId);
-          if (popts.sinceAction) {
-            popts.diffBaseline = session.lastAction?.baselineOutput || null;
-          }
-          if (fopts.qa) {
-            const page = await pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) });
-            const consoleHealth = {
-              errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
-              warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
-              exceptions: exceptionBuf.all().length,
-            };
-            const pageHealth = await collectPageHealth(cdp, sessionId).catch(() => null);
-            let text = '';
-            try {
-              text = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
-                ...popts,
-                interactive: true,
-                maxDepth: Math.min(popts.maxDepth || 8, 6),
-              }, refState);
-            } catch (e) {
-              text = e.message || String(e);
-            }
-            const summary = buildQaSummaryModel({
-              page: { title: page.title, url: page.url },
-              pageHealth,
-              console: consoleHealth,
-              network: { failures: countNetworkFailures(netReqBuf) },
-              targetPrefix: targetPrefixForDisplay(targetId),
-              nextCommand: `cdp report ${targetPrefixForDisplay(targetId)}`,
-              source: 'perceive',
-            });
-            if (fopts.format === 'json') {
-              result = formatJson({
-                summary,
-                perceptionPreview: truncateTextLines(text, fopts.maxDiffLines ?? 20),
-              });
-            } else {
-              result = formatQaSummaryText(summary);
-            }
-            break;
-          }
-          result = fopts.format === 'json' && (popts.sinceAction || popts.diff)
-            ? formatJson(await perceiveDiffModel(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
-            : fopts.format === 'json'
-            ? formatPerceptionJson(await perceiveModel(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
-            : await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState);
-          if (fopts.maxDiffLines != null && fopts.format !== 'json') {
-            result = truncateTextLines(result, fopts.maxDiffLines);
-          }
-          break;
-        }
-        case 'controls': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          const copts = parseControlsArgs(fopts.args);
-          result = await controlsStr(cdp, sessionId, { ...copts, format: fopts.format });
-          break;
-        }
-        case 'elshot': result = await elshotStr(cdp, sessionId, args[0], targetId, refMap, refState); break;
-        case 'verify-click': case 'verifyclick': {
-          const vopts = parseVerifyClickArgs(args);
-          let captured = null;
-          await actionFeedback(
-            'click',
-            () => clickStr(cdp, sessionId, vopts.selector, refMap, refState),
-            { input: vopts.selector, resolvedBy: 'selector-or-ref', label: vopts.selector || '', commandArgs: [vopts.selector] },
-            'settle-diff',
-            null,
-            'json',
-            result => { captured = result; }
-          );
-          const textMatched = vopts.expectText ? await pageContainsText(cdp, sessionId, vopts.expectText).catch(() => false) : false;
-          const model = buildSemanticInteractionModel(captured || {}, vopts, { textMatched });
-          result = vopts.format === 'json'
-            ? formatJson(model)
-            : `${formatSemanticInteractionResult(model)}${vopts.evidence === 'full' && captured ? `\n---\n${formatActionText(captured)}` : ''}`;
-          break;
-        }
-        case 'click': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          const cargs = fopts.args;
-          // `click --js <selector|@ref>` switches to the JS-fallback path that
-          // calls HTMLElement.click() instead of dispatching CDP mouse events.
-          // Useful when overlays or weird hit testing block the realistic
-          // mouse path; opt-in only so default behaviour is unchanged.
-          if (cargs[0] === '--js' || cargs[0] === '-j') {
-            result = await actionFeedback('click', () => jsClickStr(cdp, sessionId, cargs[1], refMap, refState), { input: cargs[1], resolvedBy: 'selector-or-ref', label: cargs[1] || '', commandArgs: ['--js', cargs[1]] }, 'settle-diff', null, fopts);
-          } else {
-            result = await actionFeedback('click', () => clickStr(cdp, sessionId, cargs[0], refMap, refState), { input: cargs[0], resolvedBy: 'selector-or-ref', label: cargs[0] || '', commandArgs: [cargs[0]] }, 'settle-diff', null, fopts);
-          }
-          break;
-        }
-        case 'jsclick': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, fopts.args[0], refMap, refState), { input: fopts.args[0], resolvedBy: 'selector-or-ref', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
-          break;
-        }
-        case 'clickxy': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: `${fopts.args[0]},${fopts.args[1]}`, resolvedBy: 'coordinates', label: `${fopts.args[0]},${fopts.args[1]}`, commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
-          break;
-        }
-        case 'type': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('type', () => typeStr(cdp, sessionId, fopts.args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
-          break;
-        }
-        case 'press': case 'key': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
-          break;
-        }
-        case 'scroll': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('scroll', () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: [fopts.args[0], fopts.args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: fopts.args[0] || 'scroll', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
-          break;
-        }
-        case 'hover': result = await hoverStr(cdp, sessionId, args[0], refMap, refState); break;
-        case 'waitfor': result = await waitForStr(cdp, sessionId, args, refMap, refState); break;
-        case 'loadall': result = await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500); break;
-        case 'fill': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          const fargs = fopts.args;
-          if (fargs[0] === '--react') result = await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[1], fargs[2], refMap, refState, { react: true }), { input: fargs[1], resolvedBy: 'selector-or-ref', label: fargs[1] || '', commandArgs: ['--react', fargs[1], fargs[2]] }, 'settle-diff', null, fopts);
-          else result = await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[0], fargs[1], refMap, refState), { input: fargs[0], resolvedBy: 'selector-or-ref', label: fargs[0] || '', commandArgs: [fargs[0], fargs[1]] }, 'settle-diff', null, fopts);
-          break;
-        }
-        case 'select': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('select', () => selectStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
-          break;
-        }
-        case 'fullshot': result = await fullshotStr(cdp, sessionId, args[0], targetId); break;
-        case 'scanshot': result = await scanshotStr(cdp, sessionId, targetId); break;
-        case 'styles': result = await stylesStr(cdp, sessionId, args); break;
-        case 'components': result = await componentsStr(cdp, sessionId, args, refMap, refState); break;
-        case 'cookies': result = await cookiesStr(cdp, sessionId); break;
-        case 'cookieset': result = await cookieSetStr(cdp, sessionId, args[0]); break;
-        case 'cookiedel': result = await cookieDelStr(cdp, sessionId, args[0]); break;
-        case 'dialog': result = dialogStr(dialogBuf, dialogAutoAcceptRef, args[0]); break;
-        case 'viewport': case 'resize': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          if (fopts.args[0]) result = await actionFeedback('viewport', () => viewportStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'viewport', label: fopts.args[0], commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts); // auto-diff when resizing
-          else result = await viewportStr(cdp, sessionId, args[0]);
-          break;
-        }
-        case 'emulate': {
-          result = await emulateStr(cdp, sessionId, session, args, { targetPrefix: targetPrefixForDisplay(targetId) });
-          break;
-        }
-        case 'upload': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('upload', () => uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'state-change', null, fopts);
-          break;
-        }
-        case 'text': result = await textStr(cdp, sessionId, args); break;
-        case 'table': result = await tableStr(cdp, sessionId, args[0]); break;
-        case 'back': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('back', () => historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts);
-          break;
-        }
-        case 'forward': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('forward', () => historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts);
-          break;
-        }
-        case 'reload': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('reload', () => reloadActionDispatch({
-            cdp,
-            sessionId,
-            session,
-            consoleBuf,
-            exceptionBuf,
-            navBuf,
-            netReqBuf,
-            pendingReqs,
-            lastReadSeq,
-          }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts);
-          break;
-        }
-        case 'closetab': result = await closetabStr(cdp, targetId); break;
-        case 'netlog': result = netlogStr(netReqBuf, args[0]); break;
-        case 'inject': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('inject', () => injectStr(cdp, sessionId, fopts.args), { input: fopts.args[0] || '', resolvedBy: 'command', label: fopts.args[0] || 'inject', commandArgs: fopts.args }, 'state-change', null, fopts);
-          break;
-        }
-        case 'record': result = await recordStr(cdp, sessionId, args, refMap); break;
-        case 'cascade': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          result = await cascadeStr(cdp, sessionId, fopts.args[0], fopts.args[1], refMap, refState, { format: fopts.format });
-          break;
-        }
-        case 'dismiss-modal': case 'dismissmodal': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('dismiss-modal', () => dismissModalStr(cdp, sessionId), { input: 'modal', resolvedBy: 'dialog', label: 'modal', commandArgs: [] }, 'settle-diff', null, fopts);
-          break;
-        }
-        case 'evalraw': result = await evalRawStr(cdp, sessionId, args[0], args[1]); break;
-        case 'batch': {
-          let parsedBatch;
-          try {
-            parsedBatch = parseBatchArgs(args);
-          } catch (e) {
-            return { ok: false, error: e.message };
-          }
-          const { commands, parallel } = parsedBatch;
-          if (!commands.length) return { ok: false, error: 'batch: no commands provided' };
-          const blocked = commands.filter(c => BATCH_BLOCKED.has(c.cmd));
-          if (blocked.length) return { ok: false, error: `batch: ${blocked.map(c => c.cmd).join(', ')} not allowed inside batch` };
-          if (parallel) {
-            const unsafe = commands.filter(c => isBatchParallelUnsafeCommand(c.cmd));
-            if (unsafe.length) return { ok: false, error: `batch --parallel: ${[...new Set(unsafe.map(c => c.cmd))].join(', ')} mutate shared state — use sequential batch` };
-          }
-          const autoActionJson = parsedBatch.output === 'model';
-          const runOne = async (c) => {
-            const sub = await handleCommand({ cmd: c.cmd, args: autoActionJsonArgs(c.cmd, c.args || [], autoActionJson) });
-            return { cmd: c.cmd, ok: sub.ok, result: sub.result, error: sub.error };
-          };
-          let results;
-          if (parallel) {
-            results = await Promise.all(commands.map(runOne));
-          } else {
-            results = [];
-            for (const c of commands) results.push(await runOne(c));
-          }
-          const fmt = parsedBatch.output === 'legacy-json' ? 'json' : parsedBatch.output;
-          result = formatBatchResults(results, fmt, { targetId, mode: parallel ? 'parallel' : 'sequential' });
-          break;
-        }
-        case 'flow': {
-          const fopts = parseFormatArgs(args, ['text', 'json']);
-          const input = fopts.args.join(' ');
-          result = await flowStr({
-            run: (step) => handleCommand({ cmd: step.cmd, args: autoActionJsonArgs(step.cmd, step.args || [], fopts.format === 'json') }),
-            settle: (what) => settleFlow(cdp, sessionId, what, pendingReqs),
-            assertCondition: (condition) => probePageCondition(cdp, sessionId, condition),
-          }, input, { format: fopts.format, targetId, throwOnFailure: true });
-          break;
-        }
-        case 'repeat': {
-          result = await repeatStr({
-            run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] }),
-            probeCondition: (condition) => probePageCondition(cdp, sessionId, condition),
-          }, args);
-          break;
-        }
-        case 'replay': {
-          result = await replayActionsStr({
-            run: (step) => handleCommand({ cmd: step.cmd, args: step.args || [] }),
-          }, args);
-          break;
-        }
-        case 'restore': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          const safeCommandArgs = redactRestoreCommandArgs(fopts.args);
-          result = await actionFeedback(
-            'restore',
-            async () => {
-              const restoreResult = await restoreCheckpointStr(cdp, sessionId, fopts.args);
-              clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
-              session.pageGeneration += 1;
-              invalidateSessionRefs(session, 'navigation');
-              return restoreResult;
-            },
-            { input: 'checkpoint', resolvedBy: 'artifact', label: 'checkpoint', commandArgs: safeCommandArgs },
-            'report-only',
-            null,
-            fopts
-          );
           break;
         }
         case 'stop': return { ok: true, result: '', stopAfter: true };
@@ -13625,40 +13997,31 @@ async function runDaemon(targetId) {
 // ---------------------------------------------------------------------------
 
 function connectToSocket(sp, { timeoutMs = 5000 } = {}) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const conn = net.connect(sp);
-    const settle = (fn) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      conn.off('connect', onConnect);
-      conn.off('error', onError);
-      fn();
-    };
-    const onConnect = () => settle(() => resolve(conn));
-    const onError = (error) => settle(() => reject(error));
-    const timer = setTimeout(() => {
-      settle(() => {
-        conn.destroy();
-        reject(new Error(`Timed out connecting to daemon socket: ${sp}`));
-      });
-    }, timeoutMs);
-    conn.on('connect', onConnect);
-    conn.on('error', onError);
-  });
+  return connectToDaemon(sp, { timeoutMs });
 }
 
 async function getOrStartTabDaemon(targetId, opts = {}) {
-  const sp = sockPath(targetId);
+  const platform = opts.platform || process.platform;
+  const sp = daemonEndpointForPlatform(targetId, {
+    platform,
+    runtimeDir: opts.runtimeDir || RUNTIME_DIR,
+  });
+  const connect = opts.connect || connectToSocket;
+  const unlink = opts.unlink || unlinkSync;
+  const spawnProcess = opts.spawnProcess || spawn;
+  const delay = opts.delay || sleep;
+  const retries = opts.retries ?? DAEMON_CONNECT_RETRIES;
+  const retryDelayMs = opts.retryDelayMs ?? DAEMON_CONNECT_DELAY;
+  const execPath = opts.execPath || process.execPath;
+  const scriptPath = opts.scriptPath || process.argv[1];
   // Try existing daemon
-  try { return await connectToSocket(sp); } catch {}
+  try { return await connect(sp); } catch {}
 
   // Clean stale socket
-  if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
+  if (platform !== 'win32') try { unlink(sp); } catch {}
 
   // Spawn daemon
-  const child = spawn(process.execPath, [process.argv[1], '_daemon', targetId], {
+  const child = spawnProcess(execPath, [scriptPath, '_daemon', targetId], {
     detached: true,
     stdio: 'ignore',
     env: opts.env || process.env,
@@ -13666,65 +14029,15 @@ async function getOrStartTabDaemon(targetId, opts = {}) {
   child.unref();
 
   // Wait for socket (includes time for user to click Allow)
-  for (let i = 0; i < DAEMON_CONNECT_RETRIES; i++) {
-    await sleep(DAEMON_CONNECT_DELAY);
-    try { return await connectToSocket(sp); } catch {}
+  for (let i = 0; i < retries; i++) {
+    await delay(retryDelayMs);
+    try { return await connect(sp); } catch {}
   }
   throw new Error('Daemon failed to start — did you click Allow in Chrome?');
 }
 
-const IPC_TIMEOUT = 120000; // 2 minutes — generous for slow commands like scanshot
-
-function ipcTimeoutForRequest(req) {
-  if (Number.isFinite(req?.timeoutMs) && req.timeoutMs > 0) {
-    return Math.min(Math.max(100, Math.trunc(req.timeoutMs)), IPC_TIMEOUT);
-  }
-  if (req?.cmd !== 'wait') return IPC_TIMEOUT;
-  try {
-    const waitMs = parseDelayMs(req.args?.[0], { name: 'wait duration', max: 60 * 60 * 1000 });
-    return Math.max(IPC_TIMEOUT, waitMs + 5000);
-  } catch {
-    return IPC_TIMEOUT;
-  }
-}
-
 function sendCommand(conn, req) {
-  return new Promise((resolve, reject) => {
-    let buf = '';
-    let settled = false;
-
-    const settle = (fn) => { if (settled) return; settled = true; cleanup(); clearTimeout(timer); fn(); };
-
-    const cleanup = () => {
-      conn.off('data', onData);
-      conn.off('error', onError);
-      conn.off('end', onEnd);
-      conn.off('close', onClose);
-    };
-
-    const onData = (chunk) => {
-      buf += chunk.toString();
-      const idx = buf.indexOf('\n');
-      if (idx === -1) return;
-      settle(() => { resolve(JSON.parse(buf.slice(0, idx))); conn.end(); });
-    };
-
-    const onError = (error) => settle(() => reject(error));
-    const onEnd = () => settle(() => reject(new Error(`Connection closed before response. The daemon for this tab may have crashed or exited (idle timeout, page closed, or browser disconnect). Re-run "perceive <target>" to restart it; check ${RUNTIME_DIR} for stale sockets if this repeats.`)));
-    const onClose = () => settle(() => reject(new Error(`Connection closed before response. The daemon for this tab may have crashed or exited (idle timeout, page closed, or browser disconnect). Re-run "perceive <target>" to restart it; check ${RUNTIME_DIR} for stale sockets if this repeats.`)));
-
-    const timeoutMs = ipcTimeoutForRequest(req);
-    const timer = setTimeout(() => {
-      settle(() => { conn.destroy(); reject(new Error(`IPC timeout: command "${req.cmd}" took longer than ${timeoutMs / 1000}s`)); });
-    }, timeoutMs);
-
-    conn.on('data', onData);
-    conn.on('error', onError);
-    conn.on('end', onEnd);
-    conn.on('close', onClose);
-    req.id = 1;
-    conn.write(JSON.stringify(req) + '\n');
-  });
+  return requestDaemon(conn, req, { runtimeDir: RUNTIME_DIR });
 }
 
 async function assertFreshDaemonConnection(conn, { targetPrefix, expectedTargetId = null, currentMetadata }) {
@@ -13876,29 +14189,515 @@ async function stopDaemons(targetPrefix, deps = {}) {
 // Main
 // ---------------------------------------------------------------------------
 
-const USAGE = `cdp - lightweight Chrome DevTools Protocol CLI (no Puppeteer)
+const CLI_HELP_LAYOUT = Object.freeze([
+  {
+    "name": "help",
+    "headGap": 1,
+    "summaryGap": 30,
+    "summaryIndent": null
+  },
+  {
+    "name": "list",
+    "headGap": 1,
+    "summaryGap": 6,
+    "summaryIndent": null
+  },
+  {
+    "name": "target",
+    "headGap": 1,
+    "summaryGap": null,
+    "summaryIndent": 36
+  },
+  {
+    "name": "tab-group",
+    "headGap": 1,
+    "summaryGap": null,
+    "summaryIndent": 36
+  },
+  {
+    "name": "broadcast",
+    "headGap": 1,
+    "summaryGap": null,
+    "summaryIndent": 36
+  },
+  {
+    "name": "use",
+    "headGap": 1,
+    "summaryGap": 8,
+    "summaryIndent": null
+  },
+  {
+    "name": "attach",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "current",
+    "headGap": 1,
+    "summaryGap": 12,
+    "summaryIndent": null
+  },
+  {
+    "name": "forget",
+    "headGap": 1,
+    "summaryGap": 21,
+    "summaryIndent": null
+  },
+  {
+    "name": "perceive",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "snap",
+    "headGap": 2,
+    "summaryGap": 11,
+    "summaryIndent": null
+  },
+  {
+    "name": "controls",
+    "headGap": 1,
+    "summaryGap": null,
+    "summaryIndent": 36
+  },
+  {
+    "name": "eval",
+    "headGap": 2,
+    "summaryGap": 13,
+    "summaryIndent": null
+  },
+  {
+    "name": "eval64",
+    "headGap": 1,
+    "summaryGap": 10,
+    "summaryIndent": null
+  },
+  {
+    "name": "call",
+    "headGap": 2,
+    "summaryGap": 10,
+    "summaryIndent": null
+  },
+  {
+    "name": "elshot",
+    "headGap": 1,
+    "summaryGap": 8,
+    "summaryIndent": null
+  },
+  {
+    "name": "shot",
+    "headGap": 2,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "diff-shot",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "html",
+    "headGap": 2,
+    "summaryGap": 9,
+    "summaryIndent": null
+  },
+  {
+    "name": "nav",
+    "headGap": 3,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "mock",
+    "headGap": 2,
+    "summaryGap": 8,
+    "summaryIndent": null
+  },
+  {
+    "name": "clock",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "throttle",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "status",
+    "headGap": 1,
+    "summaryGap": 8,
+    "summaryIndent": null
+  },
+  {
+    "name": "console",
+    "headGap": 1,
+    "summaryGap": 1,
+    "summaryIndent": null
+  },
+  {
+    "name": "summary",
+    "headGap": 1,
+    "summaryGap": 18,
+    "summaryIndent": null
+  },
+  {
+    "name": "report",
+    "headGap": 1,
+    "summaryGap": null,
+    "summaryIndent": 36
+  },
+  {
+    "name": "checkpoint",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "restore",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "record-actions",
+    "headGap": 1,
+    "summaryGap": 11,
+    "summaryIndent": null
+  },
+  {
+    "name": "export-playwright",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "replay",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "frame",
+    "headGap": 1,
+    "summaryGap": 5,
+    "summaryIndent": null
+  },
+  {
+    "name": "overlay",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "qa",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "responsive-audit",
+    "headGap": 1,
+    "summaryGap": null,
+    "summaryIndent": 36
+  },
+  {
+    "name": "verify-click",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "net",
+    "headGap": 3,
+    "summaryGap": 20,
+    "summaryIndent": null
+  },
+  {
+    "name": "click",
+    "headGap": 3,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "jsclick",
+    "headGap": 1,
+    "summaryGap": 7,
+    "summaryIndent": null
+  },
+  {
+    "name": "clickxy",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "type",
+    "headGap": 4,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "press",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "scroll",
+    "headGap": 2,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "hover",
+    "headGap": 3,
+    "summaryGap": 7,
+    "summaryIndent": null
+  },
+  {
+    "name": "waitfor",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "loadall",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "wait",
+    "headGap": 4,
+    "summaryGap": 13,
+    "summaryIndent": null
+  },
+  {
+    "name": "fill",
+    "headGap": 4,
+    "summaryGap": 1,
+    "summaryIndent": null
+  },
+  {
+    "name": "select",
+    "headGap": 2,
+    "summaryGap": 1,
+    "summaryIndent": null
+  },
+  {
+    "name": "fullshot",
+    "headGap": 1,
+    "summaryGap": 10,
+    "summaryIndent": null
+  },
+  {
+    "name": "scanshot",
+    "headGap": 1,
+    "summaryGap": 17,
+    "summaryIndent": null
+  },
+  {
+    "name": "styles",
+    "headGap": 2,
+    "summaryGap": null,
+    "summaryIndent": 36
+  },
+  {
+    "name": "components",
+    "headGap": 1,
+    "summaryGap": null,
+    "summaryIndent": 36
+  },
+  {
+    "name": "cookies",
+    "headGap": 1,
+    "summaryGap": 18,
+    "summaryIndent": null
+  },
+  {
+    "name": "cookieset",
+    "headGap": 1,
+    "summaryGap": 7,
+    "summaryIndent": null
+  },
+  {
+    "name": "cookiedel",
+    "headGap": 1,
+    "summaryGap": 9,
+    "summaryIndent": null
+  },
+  {
+    "name": "dialog",
+    "headGap": 2,
+    "summaryGap": 1,
+    "summaryIndent": null
+  },
+  {
+    "name": "viewport",
+    "headGap": 1,
+    "summaryGap": 4,
+    "summaryIndent": null
+  },
+  {
+    "name": "emulate",
+    "headGap": 1,
+    "summaryGap": null,
+    "summaryIndent": 36
+  },
+  {
+    "name": "upload",
+    "headGap": 2,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "text",
+    "headGap": 4,
+    "summaryGap": 7,
+    "summaryIndent": null
+  },
+  {
+    "name": "table",
+    "headGap": 3,
+    "summaryGap": 7,
+    "summaryIndent": null
+  },
+  {
+    "name": "back",
+    "headGap": 4,
+    "summaryGap": 18,
+    "summaryIndent": null
+  },
+  {
+    "name": "forward",
+    "headGap": 1,
+    "summaryGap": 18,
+    "summaryIndent": null
+  },
+  {
+    "name": "reload",
+    "headGap": 2,
+    "summaryGap": 18,
+    "summaryIndent": null
+  },
+  {
+    "name": "closetab",
+    "headGap": 1,
+    "summaryGap": 17,
+    "summaryIndent": null
+  },
+  {
+    "name": "netlog",
+    "headGap": 2,
+    "summaryGap": 8,
+    "summaryIndent": null
+  },
+  {
+    "name": "inject",
+    "headGap": 1,
+    "summaryGap": 3,
+    "summaryIndent": null
+  },
+  {
+    "name": "cascade",
+    "headGap": 1,
+    "summaryGap": 1,
+    "summaryIndent": null
+  },
+  {
+    "name": "record",
+    "headGap": 1,
+    "summaryGap": 14,
+    "summaryIndent": null
+  },
+  {
+    "name": "evalraw",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "batch",
+    "headGap": 1,
+    "summaryGap": 1,
+    "summaryIndent": null
+  },
+  {
+    "name": "flow",
+    "headGap": 2,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "repeat",
+    "headGap": 1,
+    "summaryGap": 2,
+    "summaryIndent": null
+  },
+  {
+    "name": "doctor",
+    "headGap": 1,
+    "summaryGap": 4,
+    "summaryIndent": null
+  },
+  {
+    "name": "keepalive",
+    "headGap": 1,
+    "summaryGap": 11,
+    "summaryIndent": null
+  },
+  {
+    "name": "open",
+    "headGap": 2,
+    "summaryGap": null,
+    "summaryIndent": 36
+  },
+  {
+    "name": "spawn-debug-browser",
+    "headGap": 1,
+    "summaryGap": null,
+    "summaryIndent": 36
+  },
+  {
+    "name": "dismiss-modal",
+    "headGap": 1,
+    "summaryGap": 12,
+    "summaryIndent": null
+  },
+  {
+    "name": "stop",
+    "headGap": 2,
+    "summaryGap": 4,
+    "summaryIndent": null
+  }
+].map(record => Object.freeze(record)));
+
+const CLI_HELP_TEMPLATE = `cdp - lightweight Chrome DevTools Protocol CLI (no Puppeteer)
 
 Usage: cdp <command> [args]
 
-  help                              Show this command reference (same as --help)
-  list|tabs|ls [--format json]      List open pages (shows unique target prefixes)
+{{command:help}}
+{{command:list}}
                                     JSON includes schema/pages/recommendation/nextSteps for agents.
                                     Prefers non-blank pages when recommending the next target (* marker).
-  target --url URL|--title TEXT [--exact] [--format json]
-                                    Select a page target by URL/title substring (or exact match).
+{{command:target}}
                                     Ambiguous matches return candidate URLs/titles and follow-up commands.
-  tab-group list|create|add|remove|delete|show [--format json]
-                                    Named multi-tab groups stored outside the repo (runtime dir).
+{{command:tab-group}}
                                     create <name> [targets...] | add/remove <name> <target> | show/delete <name>
-  broadcast <group> <cmd> [args...] [--format json] [--full-results]
-                                    Run one command against every member of a tab-group.
+{{command:broadcast}}
                                     JSON bounds per-target previews; --full-results opts into complete payloads.
-  use <target> --name <alias>        Save a named target alias (also becomes current)
+{{command:use}}
                                     Accepts 9222/<target> to bind a CDP port to the alias.
-  attach --port N --target <id> --name <alias>  Explicitly save an alias with host/port metadata
-  current [--format json]            Show current alias plus saved aliases
-  forget <alias>                     Remove a saved alias
-  perceive <target> [flags] [--format json]  Full page perception with @ref indices + coordinates
+{{command:attach}}
+{{command:current}}
+{{command:forget}}
+{{command:perceive}}
                                     --diff: show only changes since last perceive
                                     --since-action: show changes caused by the last mutating command
                                     --qa / --summary: compact QA summary (url/title/blank/console/next)
@@ -13912,126 +14711,120 @@ Usage: cdp <command> [args]
                                     -i / --interactive: only show interactive elements
                                     -d N / --depth N: limit tree depth
                                     -C / --cursor-interactive: include non-ARIA clickable elements (@c refs)
-  snap  <target> [--full]           Accessibility tree snapshot (compact by default, --full for complete)
-  controls <target> [-s selector] [--filter text] [--limit N] [--compact] [--format json]
-                                    Bounded visible controls inventory for selector/debugging repair
-  eval  <target> <expr>             Evaluate JS expression
+{{command:snap}}
+{{command:controls}}
+{{command:eval}}
                                     --b64 / -b <base64>: decode UTF-8 base64 first
                                     (safe transport for CJK / shell-hostile expressions)
                                     --raw: compact JSON for objects (skip pretty multi-line stringify)
                                     --fire-and-forget: dispatch without awaiting returned promise
-  eval64 <target> <base64>          Shorthand for eval --b64; preserves multibyte characters
-  call  <target> <expr|fn>          Await expression/function result and print JSON when possible
-  elshot <target> <sel|@ref>        Element screenshot: captures element by CSS selector or @ref
-  shot  <target> [file|--annotate]  Viewport screenshot; --annotate (-a) overlays @ref labels
-  diff-shot <target> [--reset] [--threshold pct]  Compare current screenshot against last diff-shot baseline
-  html  <target> [selector]         Get HTML (full page or CSS selector)
-  nav   <target> <url> [--format json]  Navigate to URL and wait for load completion
-  mock  <target> [add|clear]        Mock matching network requests in this live tab
+{{command:eval64}}
+{{command:call}}
+{{command:elshot}}
+{{command:shot}}
+{{command:diff-shot}}
+{{command:html}}
+{{command:nav}}
+{{command:mock}}
                                     add <urlPattern> --status code --body text [--content-type type]
-  clock <target> [freeze|offset|reset]  Override Date/time in this live tab
+{{command:clock}}
                                     freeze --at date-or-epoch-ms | offset --ms delta
-  throttle <target> [off|offline|slow-3g|fast-3g|lte|custom]  Emulate network conditions for this tab
+{{command:throttle}}
                                     custom --latency ms --download kbps --upload kbps
-  status <target> [--runtime]        Page state + new console/exception entries (primary debug entry point)
+{{command:status}}
                                     --runtime: include Performance.getMetrics counters
-  console <target> [--all|--errors|--clear] Console buffer (default: new entries only; --clear: reset console+exception baseline)
-  summary <target>                  Token-efficient page overview (interactive elements, scroll, console health)
-  report <target> [--last N|--all] [--format json] [--qa|--summary] [--compact]
-                                    Session action timeline + evidence summary + JSONL log path
+{{command:console}}
+{{command:summary}}
+{{command:report}}
                                     --qa/--summary returns a compact chrome-cdp-ex.qa-summary.v1 handoff
-  checkpoint <target> [--unsafe-full] [--format json]  Capture URL plus redacted cookies/storage; unsafe-full keeps restorable secrets
-  restore <target> --file <path> [--format json]  Restore a checkpoint artifact into the live page
+{{command:checkpoint}}
+{{command:restore}}
   restore <target> --json <json> [--format json]  Restore an inline checkpoint JSON artifact
-  record-actions <target>           Export action log + mock/clock/throttle environment as text or JSON
-  export-playwright <target> [--format json]  Export current workflow as a Playwright spec draft or JSON handoff
-  replay <target> --file <path> [--format json]  Replay environment controls + actions against the live page
+{{command:record-actions}}
+{{command:export-playwright}}
+{{command:replay}}
   replay <target> --json <json> [--format json]  Replay an inline record-actions JSON artifact
-  frame <target> [--format json]     List page frames with stable @fN refs (alias: frames)
-  overlay <target> [sel|@ref] [--format json]  Detect visible dialogs/overlays and target blockers
-  qa <target> [--desktop WxH] [--mobile WxH] [--format json]  Live UI smoke: page info, console health, screenshots, perception, assertions
+{{command:frame}}
+{{command:overlay}}
+{{command:qa}}
                                     Optional: --click <sel|@ref> --expect-text text --expect-request pattern
-  responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]
-                                    Built-in responsive visual audit (alias: visual-check).
+{{command:responsive-audit}}
                                     Defaults to desktop 1440x900 + mobile 390x844.
                                     Collects screenshot, overflow-x, scroll metrics, controls, blank/console signals.
-  verify-click <target> <sel|@ref> [--format json]  Click once and assert text/network/console outcomes
+{{command:verify-click}}
                                     --expect-text text --expect-request pattern --expect-status code --no-console-errors
-  net   <target>                    Network performance entries
-  click   <target> <sel|@ref> [--format json] [--qa|--summary]  Click element by CSS selector or @ref
+{{command:net}}
+{{command:click}}
                                     --js / -j: use HTMLElement.click() (JS fallback)
                                     --qa/--summary: compact pass/fail QA receipt without full DOM dump
-  jsclick <target> <sel|@ref>       JS-only click: el.click() instead of CDP mouse events
+{{command:jsclick}}
                                     Use when overlays or hit-testing block the realistic mouse path.
-  clickxy <target> <x> <y> [--format json]  Click at CSS pixel coordinates (see coordinate note below)
-  type    <target> <text> [--format json]  Type text at current focus via Input.insertText
+{{command:clickxy}}
+{{command:type}}
                                     Works in cross-origin iframes unlike eval-based approaches
-  press|key <target> <key> [--format json]  Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)
-  scroll  <target> <dir|x,y> [px] [--format json]  Scroll page (down/up/left/right or x,y offset; default 500px)
-  hover   <target> <sel|@ref>       Hover over element (triggers :hover, tooltips, dropdowns)
-  waitfor <target> <selector> [ms]  Wait for element (default 10s, max 5min)
+{{command:press}}
+{{command:scroll}}
+{{command:hover}}
+{{command:waitfor}}
   waitfor <target> --gone <sel|@ref> [ms]  Wait for element to DISAPPEAR (streaming end)
   waitfor <target> --text "str" [--scope sel] [ms]  Wait for text to appear on page
-  loadall <target> <selector> [ms]  Repeatedly click a "load more" button until it disappears
+{{command:loadall}}
                                     Optional interval in ms between clicks (default 1500)
-  wait    <target> <ms>             Delay inside cdp (also: cdp wait <ms> [target])
-  fill    <target> <sel|@ref> <txt> [--format json] Clear field and type text (for form filling)
+{{command:wait}}
+{{command:fill}}
                                     --react: native value setter + input/change events
-  select  <target> <selector> <val> [--format json] Select an option in a <select> element by value
-  fullshot <target> [file]          Full-page screenshot (single image — may be hard to read)
-  scanshot <target>                 Segmented full-page capture (viewport-sized images, readable)
-  styles  <target> <selector> [--root auto|body|document|<sel>]
-                                    Get computed styles for element (filtered to meaningful props)
+{{command:select}}
+{{command:fullshot}}
+{{command:scanshot}}
+{{command:styles}}
                                     On no-match, error includes root/scope and an eval fallback
-  components <target> [--depth N] [@ref|selector] [--max-chars N] [--unsafe-full] [--format json]
-                                    React/Vue component tree; targeted props/state requires React fiber.
+{{command:components}}
                                     Props/state are bounded and redacted unless --unsafe-full is explicit.
-  cookies <target>                  List cookies for current page
-  cookieset <target> <cookie>       Set a cookie: "name=value" or "name=value; domain=.example.com; secure"
-  cookiedel <target> <name>         Delete a cookie by name
-  dialog  <target> [accept|dismiss] Show dialog history; set auto-accept (default) or auto-dismiss
-  viewport|resize <target> [WxH]    Show or set viewport size (e.g. 375x812, 1280x720)
-  emulate <target> [dark|light|no-preference|off|status]
-                                    Media feature emulation via CDP Emulation.setEmulatedMedia
+{{command:cookies}}
+{{command:cookieset}}
+{{command:cookiedel}}
+{{command:dialog}}
+{{command:viewport}}
+{{command:emulate}}
                                     color-scheme dark|light|no-preference
                                     reduced-motion reduce|no-preference
                                     off/reset clears overrides; JSON returns chrome-cdp-ex.emulate.v1
-  upload  <target> <selector> <paths> [--format json]  Upload file(s) to <input type="file"> (comma-separated paths)
-  text    <target> [selector]       Clean visible text — optional CSS selector to scope
+{{command:upload}}
+{{command:text}}
                                     --root auto|body|document|default|<sel>: search root for selector resolution
                                     On no-match, error includes root/scope and an eval fallback
-  table   <target> [selector]       Full table data extraction (tab-separated, no row limit)
-  back    <target>                  Navigate back in browser history
-  forward <target>                  Navigate forward in browser history
-  reload  <target>                  Reload current page and clear console/exception/navigation buffers
-  closetab <target>                 Close a browser tab
-  netlog  <target> [--clear]        Network request log (XHR/Fetch/Document with status + timing)
-  inject <target> <flag> [content]   Live CSS/JS injection with tracking and removal
+{{command:table}}
+{{command:back}}
+{{command:forward}}
+{{command:reload}}
+{{command:closetab}}
+{{command:netlog}}
+{{command:inject}}
                                     --css "<text>"   Inject inline <style>
                                     --css-file <url> Inject <link rel="stylesheet">
                                     --js-file <url>  Inject <script src> and wait for load
                                     --remove [id]    Remove injected element(s) (all, or by id)
-  cascade <target> <sel|@ref> [prop] [--format json] CSS origin tracing — shows which rules apply, source file + line
+{{command:cascade}}
                                     Optional: filter to one property (e.g. "background-color"); JSON returns chrome-cdp-ex.cascade.v1
-  record <target> [ms]              Record a short timeline of DOM/console/network/navigation events
+{{command:record}}
   record <target> --action click @5 Record events around an action (click/press/fill/select/type/scroll/nav)
   record <target> --until "dom stable"|"network idle"  Record until page quiets (max 30s)
-  evalraw <target> <method> [json]  Send a raw CDP command; returns JSON result
+{{command:evalraw}}
                                     e.g. evalraw <t> "DOM.getDocument" '{}'
-  batch <target> <cmds> [--parallel] [--format json] Execute multiple commands in one call
+{{command:batch}}
                                     --format json returns chrome-cdp-ex.batch.v1 failure handoff
                                     Pipe syntax: 'fill @3 hello | fill @5 world | click @7'
                                     JSON syntax: '[{"cmd":"click","args":["@1"]},{"cmd":"perceive","args":["--diff"]}]'
                                     --parallel  Run read-only/extraction commands concurrently (mutating commands are rejected)
                                     --plain     Human-readable per-step output (default: pretty JSON)
                                     --compact   One line per step (head + first line of result)
-  flow  <target> "<steps>" [--format json]  Sequential runner. Steps separated by ";".
+{{command:flow}}
                                     Each step is a normal command (e.g. "click @1") or a wait alias:
                                     "wait dom stable" / "wait network idle" — uses settle helper.
                                     Assertions: "assert selector <css>", "assert selector-missing <css>", "assert text <value>".
                                     Halts and exits non-zero on the first failing step; JSON preserves chrome-cdp-ex.flow.v1.
                                     Example: flow A7BA "click @1; wait dom stable; summary; console --errors"
-  repeat <target> <N> <cmd> [args]  Run a command up to N times (cap 50). Fail-fast exits non-zero.
+{{command:repeat}}
                                     --continue / -c: keep going through errors and report tally.
                                     --until-selector <css> | --until-selector-missing <css> | --until-text <text>
                                     re-checks after each settled iteration; cap exhaustion exits non-zero.
@@ -14042,24 +14835,22 @@ Usage: cdp <command> [args]
                                     retry-style probes, or short keypress sequences. Re-perceive
                                     between iterations if the DOM changes — refs are not auto-remapped.
                                     Example: repeat A7BA 5 press c
-  doctor / ready [--format json]    One-call diagnostics: Node version, skill install path,
+{{command:doctor}}
                                     daemon socket state, fd limit, CDP_PORT/DevToolsActivePort reachability,
                                     debuggable tab inventory, browser permission, Recommendation, and onboarding next steps.
                                     Readiness: ready | usable-with-warnings | blocked.
                                     Checks expose severity: blocking | warning | advisory | ok.
                                     Headless CDP sessions treat unconfirmed permission as advisory, not a blocker.
                                     No target required. Exits 1 if any check FAILs.
-  keepalive <target> <ms>           Extend this tab daemon lifetime (fire-and-forget eval extends 1h)
-  open  [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]
-                                    Open a new tab (default: about:blank)
+{{command:keepalive}}
+{{command:open}}
                                     JSON includes schema/target/approval/recommendation/nextSteps for agents.
                                     --reuse-url reuses an existing tab matching the URL when unique.
                                     --attach-timeout-ms 0 returns the target handoff without waiting.
                                     --ready-timeout-ms bounds document.readyState waiting after attach.
                                     --ready-selector also waits for a CSS selector before returning.
                                     Note: each new tab triggers a fresh "Allow debugging?" prompt
-  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]
-                                    Launch an isolated debug profile (browser: edge|chrome|brave; default edge, port 9222).
+{{command:spawn-debug-browser}}
                                     Rejects an occupied listener before spawning; choose another --port.
                                     --host HOST binds remote debugging address (default 127.0.0.1).
                                     --headless [new|old], --no-sandbox, --disable-gpu help CI/container/headless runs.
@@ -14068,9 +14859,9 @@ Usage: cdp <command> [args]
                                     JSON includes pid/profileDir/port/url/targetId/targetPrefix/readiness/cleanup.
                                     Uses --remote-debugging-port + --user-data-dir; does not touch your main profile.
                                     "spawn" is a short alias.
-  dismiss-modal <target>            Close common dialog/modal patterns safely (close button, then Escape) —
+{{command:dismiss-modal}}
                                     avoids triggering background shortcuts the way a bare "press Space" does.
-  stop  [target] [--format json]    Stop daemon(s) and report stopped targets, remaining sessions, or explicit no-op
+{{command:stop}}
 
 ACTION FEEDBACK
   click, verify-click, jsclick, clickxy, fill, type, press, select, scroll,
@@ -14122,93 +14913,344 @@ DAEMON IPC (for advanced use / scripting)
   The socket disappears after 20 min of inactivity or when the tab closes.
 `;
 
+function renderCliHelp(surface = COMMAND_SURFACE, template = CLI_HELP_TEMPLATE) {
+  if (!isCommandSurface(surface)) {
+    throw new Error('CLI help surface: validated command surface required');
+  }
+  const markers = [...String(template).matchAll(/\{\{command:([^}]+)}}/g)].map(match => match[1]);
+  if (surface.commands.length !== CLI_HELP_LAYOUT.length) {
+    throw new Error(`CLI help surface: expected exactly ${CLI_HELP_LAYOUT.length} commands`);
+  }
+  const expected = [...surface.commands]
+    .sort((left, right) => left.help.order - right.help.order)
+    .map(command => command.name);
+  for (const name of markers) {
+    if (!surface.resolve(name)) throw new Error(`CLI help template: unknown command marker ${name}`);
+  }
+  if (markers.length !== expected.length || new Set(markers).size !== markers.length) {
+    throw new Error('CLI help template: every help marker must appear exactly once');
+  }
+  if (!markers.every((name, index) => name === expected[index])) {
+    throw new Error('CLI help template: command marker order drifted');
+  }
+  let output = String(template);
+  const layoutByName = new Map(CLI_HELP_LAYOUT.map(record => [record.name, record]));
+  if (layoutByName.size !== CLI_HELP_LAYOUT.length) throw new Error('CLI help layout: duplicate command name');
+  for (const name of expected) {
+    const record = layoutByName.get(name);
+    if (!record) throw new Error(`CLI help layout: missing whitespace record for ${name}`);
+    const command = surface.resolve(name);
+    const tokens = command.help.synopsis.trim().split(/\s+/);
+    const synopsis = tokens.length === 1
+      ? tokens[0]
+      : `${tokens[0]}${' '.repeat(record.headGap)}${tokens.slice(1).join(' ')}`;
+    const row = record.summaryGap === null
+      ? `  ${synopsis}\n${' '.repeat(record.summaryIndent)}${command.help.summary}`
+      : `  ${synopsis}${' '.repeat(record.summaryGap)}${command.help.summary}`;
+    output = output.replace(`{{command:${record.name}}}`, row);
+  }
+  if (/\{\{command:/.test(output)) throw new Error('CLI help template: unresolved command marker');
+  return output;
+}
+
+const USAGE = renderCliHelp(COMMAND_SURFACE);
+
 function helpStr() {
   return USAGE;
 }
 
-const COMMANDS = Object.freeze([
-  { name: 'help', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text'] },
-  { name: 'list', aliases: ['tabs', 'ls'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'target', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'tab-group', aliases: ['tabgroup'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'broadcast', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
-  { name: 'open', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
-  { name: 'doctor', aliases: ['ready'], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'spawn-debug-browser', aliases: ['spawn'], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
-  { name: 'attach', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'use', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'forget', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'current', aliases: [], needsTarget: false, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'stop', aliases: [], needsTarget: false, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
-  { name: 'perceive', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'snap', aliases: ['snapshot'], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'controls', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'eval', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'eval64', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'call', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'wait', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'keepalive', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'shot', aliases: ['screenshot'], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'diff-shot', aliases: ['diffshot'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'html', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'nav', aliases: ['navigate'], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
-  { name: 'net', aliases: ['network'], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'mock', aliases: ['network-mock'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
-  { name: 'clock', aliases: ['time-travel'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
-  { name: 'throttle', aliases: ['network-throttle'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
-  { name: 'status', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'console', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'summary', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'frame', aliases: ['frames'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'overlay', aliases: ['overlays'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'report', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'checkpoint', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'restore', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
-  { name: 'record-actions', aliases: ['recordactions'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'export-playwright', aliases: ['export-pw'], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'replay', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
-  { name: 'elshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'qa', aliases: ['qa-page'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
-  { name: 'responsive-audit', aliases: ['visual-check'], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
-  { name: 'verify-click', aliases: ['verifyclick'], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
-  { name: 'click', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
-  { name: 'jsclick', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
-  { name: 'clickxy', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
-  { name: 'type', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
-  { name: 'press', aliases: ['key'], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
-  { name: 'scroll', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
-  { name: 'hover', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'waitfor', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'loadall', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'fill', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
-  { name: 'select', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
-  { name: 'fullshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'scanshot', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'styles', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'components', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'cookies', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'cookieset', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
-  { name: 'cookiedel', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
-  { name: 'evalraw', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'batch', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'dialog', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'viewport', aliases: ['resize'], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
-  { name: 'emulate', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text', 'json'] },
-  { name: 'upload', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
-  { name: 'text', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'table', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'back', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
-  { name: 'forward', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'full-perceive', outputFormats: ['text', 'json'] },
-  { name: 'reload', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
-  { name: 'closetab', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'report-only', outputFormats: ['text'] },
-  { name: 'netlog', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'inject', aliases: [], needsTarget: true, mutates: true, feedbackPolicy: 'state-change', outputFormats: ['text', 'json'] },
-  { name: 'cascade', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'record', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'flow', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text', 'json'] },
-  { name: 'repeat', aliases: [], needsTarget: true, mutates: false, outputFormats: ['text'] },
-  { name: 'dismiss-modal', aliases: ['dismissmodal'], needsTarget: true, mutates: true, feedbackPolicy: 'settle-diff', outputFormats: ['text', 'json'] },
-]);
+const COMMANDS = projectCliCommands(COMMAND_SURFACE);
+
+function sameStringArray(left, right) {
+  return Array.isArray(left)
+    && Array.isArray(right)
+    && left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
+function snapshotApplicationDataObject(input, path) {
+  if (!input || Array.isArray(input) || typeof input !== 'object') throw new Error(`${path}: must be a plain data object`);
+  const prototype = Object.getPrototypeOf(input);
+  if (prototype !== Object.prototype && prototype !== null) throw new Error(`${path}: must be a plain data object without a custom prototype`);
+  const snapshot = Object.create(null);
+  for (const key of Reflect.ownKeys(input)) {
+    if (typeof key === 'symbol') throw new Error(`${path}: symbol keys are not allowed`);
+    const descriptor = Object.getOwnPropertyDescriptor(input, key);
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new Error(`${path}.${key}: must be an own data property, not an accessor`);
+    if (descriptor.enumerable !== true) throw new Error(`${path}.${key}: must be enumerable`);
+    Object.defineProperty(snapshot, key, {
+      value: descriptor.value,
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+  }
+  return snapshot;
+}
+
+function snapshotApplicationArray(input, path, { max = 256 } = {}) {
+  if (!Array.isArray(input)) throw new Error(`${path}: must be an array`);
+  if (Object.getPrototypeOf(input) !== Array.prototype) throw new Error(`${path}: must be a plain array`);
+  if (!Number.isSafeInteger(input.length) || input.length > max) throw new Error(`${path}: exceeds the ${max}-item array limit`);
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key === 'symbol') throw new Error(`${path}: symbol keys are not allowed`);
+    if (key === 'length') continue;
+    if (!/^\d+$/.test(key)) throw new Error(`${path}.${key}: is not allowed`);
+    if (!Object.hasOwn(descriptors[key], 'value')) throw new Error(`${path}[${key}]: must be a data property, not an accessor`);
+  }
+  const values = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const descriptor = descriptors[index];
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new Error(`${path}[${index}]: must be an own data property`);
+    values.push(descriptor.value);
+  }
+  return values;
+}
+
+function buildApplicationCommandSpecs(commands) {
+  const authority = new Map(COMMAND_SURFACE.commands.map(command => [command.name, command]));
+  const candidates = snapshotApplicationArray(commands, 'commands', { max: authority.size })
+    .map((command, index) => snapshotApplicationDataObject(command, `commands[${index}]`));
+  if (candidates.length !== authority.size) throw new Error(`commands: expected exactly ${authority.size} authoritative records`);
+  const allowedKeys = new Set(['name', 'aliases', 'needsTarget', 'mutates', 'feedbackPolicy', 'outputFormats']);
+  const requiredKeys = new Set(['name', 'aliases', 'needsTarget', 'mutates', 'outputFormats']);
+  for (const [index, command] of candidates.entries()) {
+    for (const key of Reflect.ownKeys(command)) {
+      if (!allowedKeys.has(key)) throw new Error(`commands[${index}].${key}: is not allowed`);
+    }
+    for (const key of requiredKeys) {
+      if (!Object.hasOwn(command, key)) throw new Error(`commands[${index}].${key}: is required`);
+    }
+    if (!authority.has(command.name)) throw new Error(`commands[${index}].name: unknown command ${command.name}`);
+  }
+  const specs = [];
+  for (const name of [...authority.keys()].sort()) {
+    const matches = candidates.filter(command => command.name === name);
+    if (matches.length !== 1) throw new Error(`${name}.name: expected exactly one command from command-surface authority`);
+    const command = matches[0];
+    const canonical = authority.get(name);
+    const hasFeedbackPolicy = Object.hasOwn(command, 'feedbackPolicy');
+    const expectsFeedbackPolicy = canonical.feedbackPolicy !== null;
+    if (hasFeedbackPolicy !== expectsFeedbackPolicy) {
+      throw new Error(`${name}.feedbackPolicy: ${expectsFeedbackPolicy ? 'is required' : 'is not allowed'}`);
+    }
+    for (const field of ['needsTarget', 'mutates']) {
+      if (command[field] !== canonical[field]) throw new Error(`${name}.${field}: drifted from COMMANDS authority`);
+    }
+    const feedbackPolicy = command.feedbackPolicy ?? null;
+    if (feedbackPolicy !== (canonical.feedbackPolicy ?? null)) {
+      throw new Error(`${name}.feedbackPolicy: drifted from COMMANDS authority`);
+    }
+    const arrays = {};
+    for (const field of ['aliases', 'outputFormats']) {
+      arrays[field] = snapshotApplicationArray(command[field], `${name}.${field}`);
+      if (!sameStringArray(arrays[field], canonical[field])) {
+        throw new Error(`${name}.${field}: drifted from COMMANDS authority`);
+      }
+    }
+    specs.push(defineCommandSpec({
+      name: command.name,
+      aliases: arrays.aliases,
+      needsTarget: command.needsTarget,
+      mutates: command.mutates,
+      feedbackPolicy,
+      outputFormats: arrays.outputFormats,
+      kind: canonical.kind,
+      authorization: canonical.authorization,
+      evidencePolicy: canonical.evidencePolicy,
+    }));
+  }
+  return Object.freeze(specs);
+}
+
+function createApplicationCommandRegistry(commands) {
+  return createCommandRegistry(buildApplicationCommandSpecs(commands));
+}
+
+function createReportCommandHandler(session) {
+  return async ({ args }) => {
+    const fopts = parseFormatArgs(args, ['text', 'json']);
+    const ropts = parseReportArgs(fopts.args);
+    if (ropts.args.length) throw new Error(`report: unknown argument ${ropts.args[0]}`);
+    return commandResult(formatSessionReport(session, {
+      format: fopts.format,
+      lastActions: ropts.lastActions,
+      compact: ropts.compact,
+      qa: ropts.qa,
+    }), { kind: 'session-report' });
+  };
+}
+
+function createPerceiveCommandHandler({
+  cdp,
+  sessionId,
+  targetId,
+  session,
+  consoleBuf,
+  exceptionBuf,
+  netReqBuf,
+  refMap,
+  lastPerceiveStore,
+  refState,
+  ops = {},
+}) {
+  const pageInfo = ops.pageInfoModel || pageInfoModel;
+  const collectHealth = ops.collectPageHealth || collectPageHealth;
+  const perceiveText = ops.perceiveText || perceiveStr;
+  const buildPerceiveModel = ops.perceiveModel || perceiveModel;
+  const buildPerceiveDiff = ops.perceiveDiffModel || perceiveDiffModel;
+  return async ({ args }) => {
+    const fopts = parseQaModeArgs(args, ['text', 'json']);
+    const popts = parsePerceiveArgs(fopts.args);
+    const targetPrefix = targetPrefixForDisplay(targetId);
+    popts.targetPrefix = targetPrefix;
+    if (popts.sinceAction) popts.diffBaseline = session.lastAction?.baselineOutput || null;
+    let value;
+    if (fopts.qa) {
+      const page = await pageInfo(cdp, sessionId, { targetPrefix });
+      const consoleHealth = {
+        errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
+        warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+        exceptions: exceptionBuf.all().length,
+      };
+      const pageHealth = await collectHealth(cdp, sessionId).catch(() => null);
+      let text = '';
+      try {
+        text = await perceiveText(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
+          ...popts,
+          interactive: true,
+          maxDepth: Math.min(popts.maxDepth || 8, 6),
+        }, refState);
+      } catch (error) {
+        text = error.message || String(error);
+      }
+      const summary = buildQaSummaryModel({
+        page: { title: page.title, url: page.url },
+        pageHealth,
+        console: consoleHealth,
+        network: { failures: countNetworkFailures(netReqBuf) },
+        targetPrefix,
+        nextCommand: `cdp report ${targetPrefix}`,
+        source: 'perceive',
+      });
+      value = fopts.format === 'json'
+        ? formatJson({
+            summary,
+            perceptionPreview: truncateTextLines(text, fopts.maxDiffLines ?? 20),
+          })
+        : formatQaSummaryText(summary);
+    } else {
+      value = fopts.format === 'json' && (popts.sinceAction || popts.diff)
+        ? formatJson(await buildPerceiveDiff(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
+        : fopts.format === 'json'
+        ? formatPerceptionJson(await buildPerceiveModel(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
+        : await perceiveText(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState);
+      if (fopts.maxDiffLines != null && fopts.format !== 'json') {
+        value = truncateTextLines(value, fopts.maxDiffLines);
+      }
+    }
+    return commandResult(value, null);
+  };
+}
+
+function createClickCommandHandler({ actionFeedback, click, jsClick }) {
+  return async ({ args }) => {
+    const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+    const cargs = fopts.args;
+    let value;
+    if (cargs[0] === '--js' || cargs[0] === '-j') {
+      value = await actionFeedback(
+        'click',
+        () => jsClick(cargs[1]),
+        {
+          input: cargs[1],
+          resolvedBy: 'selector-or-ref',
+          label: cargs[1] || '',
+          commandArgs: ['--js', cargs[1]],
+        },
+        'settle-diff',
+        null,
+        fopts
+      );
+    } else {
+      value = await actionFeedback(
+        'click',
+        () => click(cargs[0]),
+        {
+          input: cargs[0],
+          resolvedBy: 'selector-or-ref',
+          label: cargs[0] || '',
+          commandArgs: [cargs[0]],
+        },
+        'settle-diff',
+        null,
+        fopts
+      );
+    }
+    return commandResult(value, { kind: 'action-receipt' });
+  };
+}
+
+function createEvalrawCommandHandler({ evalRaw }) {
+  return async ({ args, authorization }) => {
+    const method = args[0];
+    const value = await evalRaw(method, args[1], authorization);
+    return commandResult(value, {
+      kind: 'raw-audit',
+      method,
+      sideEffectClass: classifyRawCdpMethod(method),
+    });
+  };
+}
+
+function authorizeDaemonApplicationCommand({ command, policy, mutates, targetBound }) {
+  if (!targetBound) return { allowed: false, code: 'target-not-bound' };
+  const actionMutates = ['dialog', 'hover', 'keepalive', 'loadall'].includes(command)
+    ? mutates === false
+    : mutates === true;
+  const allowed = ([
+    'back', 'click', 'clickxy', 'clock', 'closetab', 'dismiss-modal', 'fill', 'forward', 'hover',
+    'cookiedel', 'cookieset', 'dialog', 'emulate', 'jsclick', 'keepalive', 'mock',
+    'inject', 'loadall', 'nav', 'press', 'qa', 'reload', 'responsive-audit', 'restore', 'scroll',
+    'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
+  ].includes(command)
+      && policy === 'mutation' && actionMutates)
+    || (['console', 'diff-shot', 'fullshot', 'netlog', 'record', 'shot'].includes(command)
+      && policy === 'conditional' && mutates === false)
+    || (['batch', 'flow', 'repeat'].includes(command)
+      && policy === 'composite' && mutates === false)
+    || (command === 'replay' && policy === 'mutation' && mutates === true)
+    || (['eval', 'eval64', 'call'].includes(command)
+      && policy === 'raw-script' && mutates === false)
+    || (command === 'evalraw' && policy === 'raw-cdp' && mutates === false)
+    || (['components', 'checkpoint', 'cookies'].includes(command)
+      && policy === 'sensitive-read' && mutates === false);
+  return allowed
+    ? { allowed: true, code: 'daemon-application' }
+    : { allowed: false, code: 'policy-denied' };
+}
+
+async function executeDaemonApplicationRoute(requestInput, context) {
+  inspectCommandDispatcher(context);
+  const request = snapshotApplicationDataObject(requestInput, 'daemon route request');
+  const expectedKeys = new Set(['cmd', 'args', 'targetBound']);
+  for (const key of Object.keys(request)) {
+    if (!expectedKeys.has(key)) throw new Error(`daemon route request.${key}: is not allowed`);
+  }
+  for (const key of expectedKeys) {
+    if (!Object.hasOwn(request, key)) throw new Error(`daemon route request.${key}: is required`);
+  }
+  const route = await context.execute({
+    name: request.cmd,
+    args: request.args,
+    targetBound: request.targetBound,
+  });
+  return {
+    handled: route.handled,
+    result: route.result,
+  };
+}
 
 const NEEDS_TARGET = new Set(
   COMMANDS
@@ -14564,11 +15606,6 @@ function formatDaemonCommandError(err, options = {}) {
   return formatCliError(err, options);
 }
 
-function exitCliError(err, { cmd = '', targetPrefix = '', format = 'text', platform = process.platform } = {}) {
-  console.error(formatCliError(err, { cmd, targetPrefix, format, platform }));
-  process.exit(1);
-}
-
 function argsWithoutFormat(args = []) {
   try {
     return parseFormatArgs(args, ['text', 'json']).args;
@@ -14653,8 +15690,8 @@ async function waitForOpenReady(targetId, {
     try {
       const probeTimeoutMs = Math.min(1000, Math.max(100, deadline - Date.now()));
       await cdp.connect(await getWsUrlFn());
-      const attached = await cdp.send('Target.attachToTarget', { targetId, flatten: true }, undefined, probeTimeoutMs);
-      const result = await cdp.send('Runtime.evaluate', {
+      const attached = await cdpDomains(cdp).Target.attachToTarget( { targetId, flatten: true }, undefined, probeTimeoutMs);
+      const result = await cdpDomains(cdp).Runtime.evaluate( {
         expression: openReadyProbeScript(selector),
         returnByValue: true,
         awaitPromise: false,
@@ -14694,16 +15731,21 @@ function openNavigationScript(url) {
   })()`;
 }
 
-async function waitForOpenTargetUrl(targetId, url, timeoutMs = 1000) {
+async function waitForOpenTargetUrl(targetId, url, timeoutMs = 1000, {
+  createCdp = () => new CDP(),
+  getWsUrlFn = getWsUrl,
+  now = Date.now,
+  sleepFn = sleep,
+} = {}) {
   if (!url || url === 'about:blank') return { ok: true, href: 'about:blank' };
-  const deadline = Date.now() + Math.max(0, timeoutMs);
+  const deadline = now() + Math.max(0, timeoutMs);
   let lastHref = null;
   let lastError = null;
-  while (Date.now() <= deadline) {
-    const cdp = new CDP();
+  while (now() <= deadline) {
+    const cdp = createCdp();
     try {
-      await cdp.connect(await getWsUrl());
-      const { targetInfos } = await cdp.send('Target.getTargets', {}, undefined, Math.min(1000, Math.max(100, deadline - Date.now() + 100)));
+      await cdp.connect(await getWsUrlFn());
+      const { targetInfos } = await cdpDomains(cdp).Target.getTargets( {}, undefined, Math.min(1000, Math.max(100, deadline - now() + 100)));
       const target = (targetInfos || []).find(t => t.targetId === targetId);
       lastHref = target?.url || null;
       if (lastHref === url) return { ok: true, href: lastHref };
@@ -14712,36 +15754,42 @@ async function waitForOpenTargetUrl(targetId, url, timeoutMs = 1000) {
     } finally {
       try { cdp.close(); } catch {}
     }
-    const remainingMs = deadline - Date.now();
+    const remainingMs = deadline - now();
     if (remainingMs <= 0) break;
-    await sleep(Math.min(100, remainingMs));
+    await sleepFn(Math.min(100, remainingMs));
   }
   return { ok: false, href: lastHref, error: lastError };
 }
 
-async function navigateOpenTarget(targetId, sp, url) {
+async function navigateOpenTarget(targetId, sp, url, {
+  createCdp = () => new CDP(),
+  getWsUrlFn = getWsUrl,
+  waitForOpenTargetUrlFn = waitForOpenTargetUrl,
+  connectToSocketFn = connectToSocket,
+  sendCommandFn = sendCommand,
+} = {}) {
   if (!url || url === 'about:blank') return { attempted: false, ok: true, reason: 'about:blank' };
   const attempts = [];
-  const initialUrl = await waitForOpenTargetUrl(targetId, url, 1500);
+  const initialUrl = await waitForOpenTargetUrlFn(targetId, url, 1500);
   if (initialUrl.ok) {
     return { attempted: true, ok: true, method: 'Target.createTarget', href: initialUrl.href, error: null };
   }
-  const cdp = new CDP();
+  const cdp = createCdp();
   try {
-    await cdp.connect(await getWsUrl());
-    await cdp.send('Target.activateTarget', { targetId }, undefined, 5000).catch(() => {});
-    const attached = await cdp.send('Target.attachToTarget', { targetId, flatten: true }, undefined, 5000);
+    await cdp.connect(await getWsUrlFn());
+    await cdpDomains(cdp).Target.activateTarget( { targetId }, undefined, 5000).catch(() => {});
+    const attached = await cdpDomains(cdp).Target.attachToTarget( { targetId, flatten: true }, undefined, 5000);
     const sid = attached.sessionId;
-    await cdp.send('Page.enable', {}, sid, 2000).catch(() => {});
+    await cdpDomains(cdp).Page.enable( {}, sid, 2000).catch(() => {});
     try {
-      const nav = await cdp.send('Page.navigate', { url }, sid, 5000);
+      const nav = await cdpDomains(cdp).Page.navigate( { url }, sid, 5000);
       if (nav?.errorText) throw new Error(nav.errorText);
       return { attempted: true, ok: true, method: 'Page.navigate', error: null };
     } catch (e) {
       attempts.push({ method: 'Page.navigate', error: e.message || String(e) });
     }
     try {
-      await cdp.send('Runtime.evaluate', {
+      await cdpDomains(cdp).Runtime.evaluate( {
         expression: openNavigationScript(url),
         returnByValue: false,
         awaitPromise: false,
@@ -14756,15 +15804,15 @@ async function navigateOpenTarget(targetId, sp, url) {
     try { cdp.close(); } catch {}
   }
 
-  const afterDirectUrl = await waitForOpenTargetUrl(targetId, url, 1500);
+  const afterDirectUrl = await waitForOpenTargetUrlFn(targetId, url, 1500);
   if (afterDirectUrl.ok) {
     return { attempted: true, ok: true, method: 'Target.url-observed', href: afterDirectUrl.href, attempts, error: null };
   }
 
   let conn = null;
   try {
-    conn = await connectToSocket(sp);
-    const resp = await sendCommand(conn, { cmd: 'eval', args: [openNavigationScript(url)] });
+    conn = await connectToSocketFn(sp);
+    const resp = await sendCommandFn(conn, { cmd: 'eval', args: [openNavigationScript(url)] });
     return {
       attempted: true,
       ok: resp.ok === true,
@@ -14774,7 +15822,7 @@ async function navigateOpenTarget(targetId, sp, url) {
     };
   } catch (e) {
     attempts.push({ method: 'daemon eval location.assign', error: e.message || String(e) });
-    const afterDaemonUrl = await waitForOpenTargetUrl(targetId, url, 1500);
+    const afterDaemonUrl = await waitForOpenTargetUrlFn(targetId, url, 1500);
     if (afterDaemonUrl.ok) {
       return { attempted: true, ok: true, method: 'Target.url-observed', href: afterDaemonUrl.href, attempts, error: null };
     }
@@ -14842,14 +15890,98 @@ function formatOpenAutoPerceiveFailure(err, targetId) {
   ].join('\n');
 }
 
-async function main() {
-  let [cmd, ...args] = process.argv.slice(2);
+function buildExactTargetSupervisorCandidates(pages, currentTargetId, browserIdentity) {
+  return pages.map(page => ({
+    resource: {
+      schema: 'chrome-cdp-ex.resource-ref.v1',
+      kind: 'page',
+      id: `page-${createHash('sha256').update(String(page.targetId)).digest('hex').slice(0, 16)}`,
+      revision: 0,
+      capabilities: ['execute'],
+      links: [{ relation: 'browser', ...browserIdentity }],
+    },
+    targetId: page.targetId,
+    aliases: [],
+    // Exact-target CLI routing does not need arbitrary page URLs. Keeping
+    // them out avoids unrelated long/data URLs influencing target binding.
+    url: '',
+    current: page.targetId === currentTargetId,
+    browser: browserIdentity,
+  }));
+}
+
+function cdpRuntimeIdentity(processLike = process) {
+  return Object.freeze({
+    execPath: processLike.execPath,
+    scriptPath: fileURLToPath(import.meta.url),
+  });
+}
+
+class CliExitSignal extends Error {
+  constructor(code) {
+    super(`CLI exit ${code}`);
+    this.code = Number(code) || 0;
+  }
+}
+
+export async function executeCdpCli(command, { runMain = main, hostProcess = process } = {}) {
+  const argv = [...command];
+  let stdout = '';
+  let stderr = '';
+  const write = channel => (chunk, encoding, callback) => {
+    if (typeof encoding === 'function') callback = encoding;
+    if (channel === 'stdout') stdout += String(chunk);
+    else stderr += String(chunk);
+    callback?.();
+    return true;
+  };
+  const cliProcess = Object.create(hostProcess);
+  Object.defineProperties(cliProcess, {
+    argv: { value: [hostProcess.execPath, fileURLToPath(import.meta.url), ...argv], writable: true },
+    env: { value: hostProcess.env, writable: true },
+    exitCode: { value: 0, writable: true },
+    stdout: { value: Object.freeze({ write: write('stdout') }) },
+    stderr: { value: Object.freeze({ write: write('stderr') }) },
+    exit: { value: code => { throw new CliExitSignal(code); } },
+  });
+  const cliConsole = Object.freeze({
+    log: (...values) => { stdout += `${formatValue(...values)}\n`; },
+    error: (...values) => { stderr += `${formatValue(...values)}\n`; },
+  });
+  let code = 0;
+  try {
+    await runMain({ argv, process: cliProcess, console: cliConsole });
+    code = Number(cliProcess.exitCode) || 0;
+  } catch (error) {
+    if (error instanceof CliExitSignal) {
+      code = error.code;
+    } else {
+      const [cmd, ...args] = argv;
+      cliConsole.error(formatCliError(error, { cmd, format: detectCliErrorFormat(args) }));
+      code = 1;
+    }
+  }
+  return { code, stdout: stdout.trim(), stderr: stderr.trim() };
+}
+
+async function main(options = {}) {
+  const process = options.process || globalThis.process;
+  const console = options.console || globalThis.console;
+  const finish = code => options.process ? (process.exitCode = code) : process.exit(code);
+  const runtimeIdentity = cdpRuntimeIdentity(process);
+  const applicationPreflight = preflightDaemonApplication();
+  ensureRuntimeDir();
+  const exitCliError = (err, { cmd = '', targetPrefix = '', format = 'text', platform = process.platform } = {}) => {
+    console.error(formatCliError(err, { cmd, targetPrefix, format, platform }));
+    process.exit(1);
+  };
+  let [cmd, ...args] = options.argv || process.argv.slice(2);
 
   // Daemon mode (internal)
-  if (cmd === '_daemon') { await runDaemon(args[0]); return; }
+  if (cmd === '_daemon') { await runDaemon(args[0], applicationPreflight); return; }
 
   if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
-    console.log(helpStr()); process.exit(0);
+    console.log(helpStr()); return finish(0);
   }
 
   // List — use existing daemon if available, otherwise direct
@@ -14857,7 +15989,7 @@ async function main() {
     const fopts = parseFormatArgs(args, ['text', 'json']);
     if (fopts.args.length) {
       console.error(formatCliError(`list: unknown argument ${fopts.args[0]}`, { cmd, format: fopts.format }));
-      process.exit(1);
+      return finish(1);
     }
     let pages;
     const existingSock = findAnyDaemonSocket();
@@ -14878,8 +16010,8 @@ async function main() {
     writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
     const aliasStore = readTargetAliases();
     console.log(formatPageListOutput(pages, _browserInfo, { format: fopts.format, aliases: aliasStore.aliases }));
-    process.stdout.write('', () => process.exit(0));
-    return;
+    await new Promise(resolveWrite => process.stdout.write('', resolveWrite));
+    return finish(0);
   }
 
   // tab-group management (no target required)
@@ -14889,7 +16021,7 @@ async function main() {
       let store = readTabGroups();
       if (opts.action === 'list') {
         console.log(formatTabGroupStore(store, { format: opts.format }));
-        process.exit(0);
+        return finish(0);
       }
       if (opts.action === 'create') {
         const [name, ...members] = opts.args;
@@ -14897,7 +16029,7 @@ async function main() {
         store = upsertTabGroup(store, { name, members });
         writeTabGroups(store);
         console.log(formatTabGroup(store.groups[normalizeTabGroupName(name)], { format: opts.format }));
-        process.exit(0);
+        return finish(0);
       }
       if (opts.action === 'add') {
         const [name, member] = opts.args;
@@ -14905,7 +16037,7 @@ async function main() {
         store = upsertTabGroup(store, { name, members: [member] });
         writeTabGroups(store);
         console.log(formatTabGroup(store.groups[normalizeTabGroupName(name)], { format: opts.format }));
-        process.exit(0);
+        return finish(0);
       }
       if (opts.action === 'remove') {
         const [name, member] = opts.args;
@@ -14913,7 +16045,7 @@ async function main() {
         store = removeTabGroupMember(store, name, member);
         writeTabGroups(store);
         console.log(formatTabGroup(store.groups[normalizeTabGroupName(name)], { format: opts.format }));
-        process.exit(0);
+        return finish(0);
       }
       if (opts.action === 'delete') {
         const [name] = opts.args;
@@ -14923,7 +16055,7 @@ async function main() {
         console.log(opts.format === 'json'
           ? formatJson({ schema: 'chrome-cdp-ex.tab-group-delete.v1', removed: normalizeTabGroupName(name) })
           : `Deleted tab group ${normalizeTabGroupName(name)}`);
-        process.exit(0);
+        return finish(0);
       }
       if (opts.action === 'show') {
         const [name] = opts.args;
@@ -14931,11 +16063,11 @@ async function main() {
         const group = getTabGroup(store, name);
         if (!group) throw new Error(`tab-group: unknown group "${normalizeTabGroupName(name)}"`);
         console.log(formatTabGroup(group, { format: opts.format }));
-        process.exit(0);
+        return finish(0);
       }
     } catch (e) {
       console.error(formatCliError(e, { cmd: 'tab-group', format: detectCliErrorFormat(args) }));
-      process.exit(1);
+      return finish(1);
     }
   }
 
@@ -14966,7 +16098,10 @@ async function main() {
             }
           }
           entry.targetPrefix = targetPrefixForDisplay(targetId);
-          const conn = await getOrStartTabDaemon(targetId, { env: aliasEnv(alias) });
+          const conn = await getOrStartTabDaemon(targetId, {
+            env: aliasEnv(alias),
+            ...runtimeIdentity,
+          });
           const resp = await sendCommand(conn, { cmd: opts.command, args: opts.commandArgs });
           try { conn.end(); } catch {}
           if (resp.ok) {
@@ -14988,10 +16123,10 @@ async function main() {
         fullResults: opts.fullResults,
       });
       console.log(opts.format === 'json' ? formatJson(model) : formatBroadcastResult(model));
-      process.exit(model.failed ? 1 : 0);
+      return finish(model.failed ? 1 : 0);
     } catch (e) {
       console.error(formatCliError(e, { cmd: 'broadcast', format: detectCliErrorFormat(args) }));
-      process.exit(1);
+      return finish(1);
     }
   }
 
@@ -15017,11 +16152,11 @@ async function main() {
       writeFileSync(PAGES_CACHE, JSON.stringify(pages), { mode: 0o600 });
       const selection = selectPageTarget(pages, opts);
       console.log(formatTargetSelect(selection, pages, { format: opts.format }));
-      process.stdout.write('', () => process.exit(0));
-      return;
+      await new Promise(resolveWrite => process.stdout.write('', resolveWrite));
+      return finish(0);
     } catch (e) {
       console.error(formatCliError(e, { cmd, format: detectCliErrorFormat(args) }));
-      process.exit(1);
+      return finish(1);
     }
   }
 
@@ -15072,14 +16207,14 @@ async function main() {
         // Ambiguous matches: fail closed so agents do not open yet another duplicate.
         if (/pages matched/i.test(e.message || '')) {
           console.error(formatCliError(e, { cmd: 'open', format: opts.format }));
-          process.exit(1);
+          return finish(1);
         }
       }
     }
 
     const cdp = new CDP();
     await cdp.connect(await getWsUrl());
-    const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+    const { targetId } = await cdpDomains(cdp).Target.createTarget( { url: 'about:blank' });
     // Refresh cache; new tab may not appear in getTargets immediately, so add it manually
     const pages = await getPages(cdp);
     if (!pages.some(p => p.targetId === targetId)) {
@@ -15097,7 +16232,7 @@ async function main() {
     }
     const sp = sockPath(targetId);
     if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
-    const child = spawn(process.execPath, [process.argv[1], '_daemon', targetId], {
+    const child = spawn(runtimeIdentity.execPath, [runtimeIdentity.scriptPath, '_daemon', targetId], {
       detached: true,
       stdio: 'ignore',
     });
@@ -15164,11 +16299,11 @@ async function main() {
     const fopts = parseFormatArgs(args, ['text', 'json']);
     if (fopts.args.length) {
       console.error(formatCliError(`doctor: unknown argument ${fopts.args[0]}`, { cmd, format: fopts.format }));
-      process.exit(1);
+      return finish(1);
     }
     const checks = await runDoctorChecks();
     console.log(formatDoctorOutput(checks, { format: fopts.format }));
-    process.exit(checks.some(check => check.status === 'FAIL') ? 1 : 0);
+    return finish(checks.some(check => check.status === 'FAIL') ? 1 : 0);
   }
 
   // spawn-debug-browser / spawn — launch isolated debug profile (no target)
@@ -15176,10 +16311,10 @@ async function main() {
     try {
       const out = await spawnDebugBrowserStr(args);
       console.log(out);
-      process.exit(0);
+      return finish(0);
     } catch (e) {
       console.error(formatCliError(e, { cmd }));
-      process.exit(1);
+      return finish(1);
     }
   }
 
@@ -15195,11 +16330,11 @@ async function main() {
       });
       writeTargetAliases(next);
       console.log(formatAliasRecord(next.aliases[normalizeAliasName(parsed.name)], { format: parsed.format }));
-      process.exit(0);
+      return finish(0);
     } catch (e) {
       const format = detectCliErrorFormat(args);
       console.error(formatCliError(e, { cmd, format }));
-      process.exit(1);
+      return finish(1);
     }
   }
 
@@ -15212,14 +16347,14 @@ async function main() {
     console.log(fopts.format === 'json'
       ? formatJson({ schema: 'chrome-cdp-ex.alias-forget.v1', removed: name, current: next.current })
       : `Forgot @${name}`);
-    process.exit(0);
+    return finish(0);
   }
 
   if (cmd === 'current') {
     const fopts = parseFormatArgs(args, ['text', 'json']);
     if (fopts.args.length) exitCliError(`current: unknown argument ${fopts.args[0]}`, { cmd, format: fopts.format });
     console.log(formatCurrentAlias(readTargetAliases(), { format: fopts.format }));
-    process.exit(0);
+    return finish(0);
   }
 
   // Targetless wait: avoids shell sleep policy for simple delays.
@@ -15232,7 +16367,7 @@ async function main() {
   if (!NEEDS_TARGET.has(cmd)) {
     const cliErrorFormat = detectCliErrorFormat(args);
     console.error(formatCliError(unknownCommandMessage(cmd), { cmd, format: cliErrorFormat }));
-    process.exit(1);
+    return finish(1);
   }
 
   // Canonicalize aliases (key→press, resize→viewport, …) before daemon IPC.
@@ -15256,12 +16391,12 @@ async function main() {
       cmdArgs = fopts.args.slice(1);
     } catch (e) {
       console.error(formatCliError(e, { cmd }));
-      process.exit(1);
+      return finish(1);
     }
   }
   if (!targetPrefix) {
     console.error(formatCliError('target ID required. Run "cdp list" first.', { cmd, format: cliErrorFormat }));
-    process.exit(1);
+    return finish(1);
   }
 
   // Resolve against live discovery before trusting daemon or cache state.
@@ -15293,44 +16428,56 @@ async function main() {
   if (targetAlias?.port) targetResolution.resolutionSource = 'alias';
   const targetId = targetResolution.resolvedTargetId;
 
-  let conn = await getOrStartTabDaemon(targetId, { env: aliasEnv(targetAlias) });
   let rebound = false;
   let daemonAssessment = null;
-  if (!allowStaleDaemon) {
-    try {
-      daemonAssessment = await assertFreshDaemonConnection(conn, {
-        targetPrefix: targetPrefixForDisplay(targetId),
-        expectedTargetId: targetId,
-        currentMetadata: collectDaemonMetadata(),
+  const browserIdentity = { kind: 'browser', id: 'browser-runtime', revision: 0 };
+  const runtimeSupervisor = createBrowserSupervisor({
+    discover: async () => {
+      const pages = targetAlias?.port ? livePages : await discoverLivePagesForTargetResolution();
+      return buildExactTargetSupervisorCandidates(pages, targetId, browserIdentity);
+    },
+    endpointFor: resolvedTargetId => sockPath(resolvedTargetId),
+    open: async (resolvedTargetId, endpoint) => ({
+      targetId: resolvedTargetId,
+      endpoint,
+      initialConnection: await getOrStartTabDaemon(resolvedTargetId, {
+        env: aliasEnv(targetAlias),
+        ...runtimeIdentity,
+      }),
+    }),
+    inspect: async runtime => {
+      if (allowStaleDaemon) return { boundTargetId: runtime.targetId, endpoint: runtime.endpoint };
+      daemonAssessment = await assertFreshDaemonConnection(runtime.initialConnection, {
+        targetPrefix: targetPrefixForDisplay(runtime.targetId),
+        expectedTargetId: runtime.targetId,
+        currentMetadata: collectDaemonMetadata({ scriptPath: runtimeIdentity.scriptPath }),
       });
-    } catch (e) {
-      if (e.assessment?.status === 'target-mismatch') {
-        await stopDaemons(targetId);
-        await sleep(100);
-        conn = await getOrStartTabDaemon(targetId, { env: aliasEnv(targetAlias) });
-        try {
-          daemonAssessment = await assertFreshDaemonConnection(conn, {
-            targetPrefix: targetPrefixForDisplay(targetId),
-            expectedTargetId: targetId,
-            currentMetadata: collectDaemonMetadata(),
-          });
-          rebound = true;
-        } catch (retryError) {
-          console.error(formatCliError(retryError, { cmd, targetPrefix: targetPrefixForDisplay(targetId), format: cliErrorFormat }));
-          process.exit(1);
-        }
-      } else {
-        console.error(formatCliError(e, { cmd, targetPrefix: targetPrefixForDisplay(targetId), format: cliErrorFormat }));
-        process.exit(1);
+      return {
+        boundTargetId: daemonAssessment?.daemon?.boundTargetId || runtime.targetId,
+        endpoint: runtime.endpoint,
+      };
+    },
+    request: async (runtime, request) => {
+      if (allowStaleDaemon && runtime.initialConnection) {
+        const connection = runtime.initialConnection;
+        runtime.initialConnection = null;
+        return sendCommand(connection, request);
       }
-    }
-    conn = await connectToSocket(sockPath(targetId));
-  }
-  targetResolution = completeTargetResolution(targetResolution, {
-    boundTargetId: daemonAssessment?.daemon?.boundTargetId || targetId,
-    rebound,
+      return sendCommand(await connectToSocket(runtime.endpoint), request);
+    },
+    stop: async resolvedTargetId => {
+      await stopDaemons(resolvedTargetId);
+      await sleep(100);
+      rebound = true;
+    },
   });
-
+  const runtimeHandle = await runtimeSupervisor.resolve(createLocatorPlan({
+    schema: 'chrome-cdp-ex.locator-plan.v1',
+    strategy: 'exact-target',
+    value: targetId,
+    scope: browserIdentity,
+    fallbacks: [],
+  }));
   if (cmd === 'eval') {
     try {
       cmdArgs = normalizeEvalCliArgs(cmdArgs);
@@ -15407,7 +16554,17 @@ async function main() {
     if (!checkArgs[0]) exitCliError('URL required', { cmd, targetPrefix, format: cliErrorFormat });
   }
 
-  const response = await sendCommand(conn, { cmd, args: cmdArgs });
+  let response;
+  try {
+    response = await runtimeSupervisor.execute(runtimeHandle, { cmd, args: cmdArgs });
+  } catch (error) {
+    console.error(formatCliError(error, { cmd, targetPrefix: targetPrefixForDisplay(targetId), format: cliErrorFormat }));
+    return finish(1);
+  }
+  targetResolution = completeTargetResolution(targetResolution, {
+    boundTargetId: daemonAssessment?.daemon?.boundTargetId || targetId,
+    rebound,
+  });
 
   if (response.ok) {
     if (response.result) {
@@ -15422,8 +16579,9 @@ async function main() {
   }
 }
 
-// Test exports — only available when NODE_ENV=test to avoid side effects
-if (process.env.NODE_ENV !== 'test') {
+const isDirectRun = process.argv[1]
+  && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (isDirectRun) {
   main().catch(e => {
     const [cmd, ...args] = process.argv.slice(2);
     console.error(formatCliError(e, { cmd, format: detectCliErrorFormat(args) }));
@@ -15434,7 +16592,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Data structures
   RingBuffer, CDP,
   // Utilities
-  resolvePrefix, getDisplayPrefixLength, sockPath, isRef, validateUrl,
+  resolvePrefix, getDisplayPrefixLength, daemonEndpointForPlatform, sockPath, isRef, validateUrl,
   emptyAliasStore, readTargetAliases, writeTargetAliases, upsertTargetAlias,
   removeTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
   // AX tree helpers
@@ -15459,26 +16617,30 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   playwrightStepFromCommand, formatPlaywrightSpecFromRecordActions, formatExportPlaywright,
   parseDiffShotArgs, diffShotCompareScript, formatDiffShotResult, diffShotStr,
   checkpointPageScript, sanitizeCheckpointCookies, sanitizeCheckpointStorage, parseCheckpointArgs, checkpointModel, checkpointStr,
-  parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs,
+  parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs, redactExternalInputActionError, redactRestoreActionError,
   checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,
   // Command implementations
-  formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr,
+  getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr,
   parseMockArgs, formatNetworkMocksSummary, buildMockModel, formatMockText, mockStr, handleMockRequestPaused,
   parseClockArgs, clockPageScript, formatClockSummary, buildClockModel, formatClockText, clockStr,
   parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
   injectStr, cascadeStr, recordStr, parseRecordArgs,
-  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
+  isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, sendCommand, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
   parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
-  parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, snapshotStr,
+  parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, loadAllStr, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   isBatchParallelUnsafeCommand,
   parseReplayArgs, parseReplayArtifact, replayStepFromAction, replayActionsStr,
   collectDaemonMetadata, assessDaemonFreshness, formatStaleDaemonMessage, resolveScriptIdentityPath,
+  enableDaemonDomains,
+  getOrStartTabDaemon,
   suggestCommands, unknownCommandMessage, editDistance,
   resolveLiveTargetBinding, completeTargetResolution, attachTargetResolutionDiagnostics,
+  buildExactTargetSupervisorCandidates,
+  cdpRuntimeIdentity,
   // 3y-mud feedback additions
   KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,
   formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, formatRefRect, isPriorityPerceiveTextLine,
@@ -15502,8 +16664,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
-  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
-  helpStr,
+  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  CLI_HELP_LAYOUT, CLI_HELP_TEMPLATE, renderCliHelp, helpStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   detectRuntimeEnvironment, checkRuntimeEnvironment,
   doctorWizardModel, doctorWizardSummary, doctorCheckSeverity,
@@ -15524,5 +16686,9 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseBroadcastArgs, buildBroadcastModel, formatBroadcastResult,
   parseComponentsArgs, frameworkDetectorScript, reactComponentsTreeScript, vueComponentsTreeScript,
   sanitizeComponentValue, sanitizeComponentResult, componentsStr, chooseAdaptivePerceiveLast,
-  COMMANDS, NEEDS_TARGET,
+  COMMANDS, NEEDS_TARGET, commandMeta, buildApplicationCommandSpecs, createApplicationCommandRegistry,
+  DAEMON_APPLICATION_COMMANDS, DAEMON_HANDLER_BUILDERS, preflightDaemonApplication,
+  createReportCommandHandler, createPerceiveCommandHandler,
+  createClickCommandHandler, createEvalrawCommandHandler,
+  authorizeDaemonApplicationCommand, executeDaemonApplicationRoute,
 } : undefined;

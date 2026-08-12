@@ -6,6 +6,7 @@ import { pathToFileURL } from 'url';
 import { runKillerPathBenchmark, runLargeAppStressBenchmark } from './benchmark-killer-path.mjs';
 import { runCliBenchmark, runMcpBenchmark } from './benchmark-mcp-path.mjs';
 import { withLiveBenchmarkLock } from './benchmark-run-lock.mjs';
+import { buildCandidateIdentity } from './candidate-identity.mjs';
 
 const DEFAULT_TYPES = Object.freeze(['mcp', 'cli']);
 const ALL_TYPES = Object.freeze(['mcp', 'cli', 'killer', 'large-app', 'real-app']);
@@ -55,6 +56,7 @@ const ROUTE_RECOMMENDATION_THRESHOLDS = Object.freeze({
   avgFirstActionEvidenceMs: 500,
   avgEstimatedOutputTokens: 250,
 });
+const CURRENT_CANDIDATE_IDENTITY = Object.freeze(buildCandidateIdentity());
 
 function parsePositiveInt(value, name, { min = 1, max = 100 } = {}) {
   const raw = String(value ?? '').trim();
@@ -608,7 +610,14 @@ export function buildCampaignIssueDrafts(rounds = [], artifacts = {}) {
     });
 }
 
-export function summarizeCampaignRun({ startedAt, endedAt, rounds = [], plan = [], artifacts = {} } = {}) {
+export function summarizeCampaignRun({
+  startedAt,
+  endedAt,
+  rounds = [],
+  plan = [],
+  artifacts = {},
+  candidate = CURRENT_CANDIDATE_IDENTITY,
+} = {}) {
   const passCount = rounds.filter(round => round.success).length;
   const typeSummaries = [...new Set(rounds.map(round => round.type))]
     .map(type => summarizeRoundsForType(rounds, type));
@@ -626,6 +635,7 @@ export function summarizeCampaignRun({ startedAt, endedAt, rounds = [], plan = [
     }));
   return {
     schema: 'chrome-cdp-ex.live-campaign.v1',
+    candidate,
     startedAt: startedAt || null,
     endedAt: endedAt || null,
     durationMs: startedAt && endedAt ? Math.max(0, Date.parse(endedAt) - Date.parse(startedAt)) : null,

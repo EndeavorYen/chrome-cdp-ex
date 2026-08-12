@@ -1,0 +1,109 @@
+{
+  "schema": "chrome-cdp-ex.validation-registry.v1",
+  "scenarios": [
+    {
+      "id": "public-contracts",
+      "title": "Public contract baseline",
+      "owner": "maintainers",
+      "tags": ["contract", "default"],
+      "runner": { "kind": "node", "entrypoint": "scripts/check-public-contracts.mjs", "args": ["--version", "2.15.0"] },
+      "expect": { "exitCodes": [0], "stdoutIncludes": ["Public contracts OK:"] },
+      "risk": { "units": 1, "timeoutMs": 30000, "maxOutputBytes": 65536, "network": "none", "browser": "none", "mutation": "none", "maxAttempts": 1 }
+    },
+    {
+      "id": "docs-contract",
+      "title": "Documentation contract",
+      "owner": "maintainers",
+      "tags": ["contract", "default"],
+      "runner": { "kind": "node", "entrypoint": "scripts/check-docs-contract.mjs", "args": [] },
+      "expect": { "exitCodes": [0], "stdoutIncludes": ["Docs contract OK:"] },
+      "risk": { "units": 1, "timeoutMs": 30000, "maxOutputBytes": 65536, "network": "none", "browser": "none", "mutation": "none", "maxAttempts": 1 }
+    },
+    {
+      "id": "host-validation",
+      "title": "Host validation baseline",
+      "owner": "maintainers",
+      "tags": ["contract", "default"],
+      "runner": { "kind": "node", "entrypoint": "scripts/check-host-validation.mjs", "args": [] },
+      "expect": { "exitCodes": [0], "stdoutIncludes": ["Host validation OK:"] },
+      "risk": { "units": 1, "timeoutMs": 30000, "maxOutputBytes": 65536, "network": "none", "browser": "none", "mutation": "none", "maxAttempts": 1 }
+    },
+    {
+      "id": "disposable-live-boundary",
+      "title": "Disposable local browser boundary",
+      "owner": "maintainers",
+      "tags": ["live"],
+      "runner": { "kind": "node", "entrypoint": "scripts/validation-live-boundary.mjs", "args": [] },
+      "expect": { "exitCodes": [0], "stdoutIncludes": ["Disposable live boundary OK:"] },
+      "risk": { "units": 4, "timeoutMs": 180000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1 }
+    },
+    {
+      "id": "phase4-core-slices",
+      "title": "Phase 4 disposable command slices",
+      "owner": "maintainers",
+      "tags": ["live", "phase4"],
+      "runner": { "kind": "node", "entrypoint": "scripts/validation-phase4-slices.mjs", "args": [] },
+      "expect": { "exitCodes": [0], "stdoutIncludes": ["Phase 4 core slices OK:"] },
+      "risk": { "units": 8, "timeoutMs": 240000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1 }
+    },
+    {
+      "id": "phase5-supervisor",
+      "title": "Phase 5 disposable supervisor and direct MCP",
+      "owner": "maintainers",
+      "tags": ["live", "phase5"],
+      "runner": { "kind": "node", "entrypoint": "scripts/validation-phase5-supervisor.mjs", "args": [] },
+      "expect": { "exitCodes": [0], "stdoutIncludes": ["Phase 5 supervisor OK:"] },
+      "risk": { "units": 10, "timeoutMs": 300000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1 }
+    },
+    {
+      "id": "phase6-convergence",
+      "title": "Phase 6 disposable surface and domain convergence",
+      "owner": "maintainers",
+      "tags": ["live", "phase6"],
+      "runner": { "kind": "node", "entrypoint": "scripts/validation-phase6-convergence.mjs", "args": [] },
+      "expect": { "exitCodes": [0], "stdoutIncludes": ["Phase 6 convergence OK:"] },
+      "risk": { "units": 10, "timeoutMs": 300000, "maxOutputBytes": 262144, "network": "loopback", "browser": "disposable-local", "mutation": "task-created-files", "maxAttempts": 1 }
+    },
+    {
+      "id": "phase7-runtime-v3",
+      "title": "Phase 7 Runtime v3 all-route and failure evidence",
+      "owner": "maintainers",
+      "tags": [
+        "live",
+        "phase7"
+      ],
+      "runner": {
+        "kind": "node",
+        "entrypoint": "scripts/validation-phase7-runtime-v3.mjs",
+        "args": []
+      },
+      "expect": {
+        "exitCodes": [
+          0
+        ],
+        "stdoutIncludes": [
+          "Runtime v3 evidence OK:"
+        ]
+      },
+      "risk": {
+        "units": 20,
+        "timeoutMs": 600000,
+        "maxOutputBytes": 262144,
+        "network": "loopback",
+        "browser": "disposable-local",
+        "mutation": "task-created-files",
+        "maxAttempts": 1
+      }
+    },
+    {
+      "id": "controlled-failure",
+      "title": "Controlled redaction failure",
+      "owner": "maintainers",
+      "tags": ["fixture-only"],
+      "runner": { "kind": "node", "entrypoint": "validation/fixtures/controlled-failure.mjs", "args": [] },
+      "expect": { "exitCodes": [0] },
+      "risk": { "units": 1, "timeoutMs": 5000, "maxOutputBytes": 8192, "network": "none", "browser": "none", "mutation": "none", "maxAttempts": 1 },
+      "classificationHints": ["scenario"]
+    }
+  ]
+}

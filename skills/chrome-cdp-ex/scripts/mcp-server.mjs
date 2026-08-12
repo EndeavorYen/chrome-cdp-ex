@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-import { spawn } from 'child_process';
+import { resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 import {
   MCP_TOOL_DEFINITIONS,
   MCP_RESOURCE_TEMPLATES,
-  buildMcpResourceCommand,
   buildMcpToolCommand,
   createMcpInitializeResult,
   listMcpResources,
+  resolveMcpResource,
+  snapshotMcpData,
 } from './lib/mcp-adapter.mjs';
-
-const CDP_SCRIPT = fileURLToPath(new URL('./cdp.mjs', import.meta.url));
+import { createRuntimeClient, isRuntimeClient } from './lib/runtime-client.mjs';
 
 function encodeMessage(payload) {
   const body = JSON.stringify(payload);
@@ -22,108 +22,107 @@ function send(payload) {
   process.stdout.write(encodeMessage(payload));
 }
 
-function runCdpCommand(command) {
-  return new Promise(resolve => {
-    const child = spawn(process.execPath, [CDP_SCRIPT, ...command], {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
-    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-    child.on('close', code => {
-      resolve({
-        code,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-      });
-    });
-  });
-}
+const defaultRuntimeClient = createRuntimeClient();
 
-async function handleRequest(message) {
-  if (!message || typeof message !== 'object') return;
-  if (message.method?.startsWith('notifications/')) return;
-  const id = message.id;
-  try {
-    if (message.method === 'initialize') {
-      send({ jsonrpc: '2.0', id, result: createMcpInitializeResult() });
+export function createMcpRequestHandler({
+  runtimeClient = defaultRuntimeClient,
+  sendMessage = send,
+} = {}) {
+  if (!isRuntimeClient(runtimeClient)) throw new Error('mcp.runtimeClient: must be a branded RuntimeClient');
+  return async function handleRequest(message) {
+    if (!message || typeof message !== 'object') return;
+    try {
+      message = snapshotMcpData(message, 'mcp.request');
+    } catch (error) {
+      sendMessage({ jsonrpc: '2.0', id: null, error: { code: -32600, message: error.message } });
       return;
     }
-    if (message.method === 'tools/list') {
-      send({ jsonrpc: '2.0', id, result: { tools: MCP_TOOL_DEFINITIONS } });
+    if (typeof message.method !== 'string' || !message.method) {
+      sendMessage({ jsonrpc: '2.0', id: message.id ?? null, error: { code: -32600, message: 'mcp.request.method: must be a non-empty string' } });
       return;
     }
-    if (message.method === 'tools/call') {
-      const name = message.params?.name;
-      const args = message.params?.arguments || {};
-      const command = buildMcpToolCommand(name, args);
-      const result = await runCdpCommand(command);
-      const text = result.code === 0
-        ? result.stdout
-        : [result.stderr, result.stdout].filter(Boolean).join('\n');
-      send({
-        jsonrpc: '2.0',
-        id,
-        result: {
-          content: [{ type: 'text', text }],
-          isError: result.code !== 0,
-        },
-      });
-      return;
-    }
-    if (message.method === 'resources/list') {
-      send({ jsonrpc: '2.0', id, result: { resources: listMcpResources() } });
-      return;
-    }
-    if (message.method === 'resources/templates/list') {
-      send({
-        jsonrpc: '2.0',
-        id,
-        result: { resourceTemplates: MCP_RESOURCE_TEMPLATES.filter(t => t.uriTemplate.includes('{')) },
-      });
-      return;
-    }
-    if (message.method === 'resources/read') {
-      const uri = message.params?.uri;
-      if (typeof uri !== 'string' || !uri.trim()) throw new Error('resources/read requires uri');
-      const command = buildMcpResourceCommand(uri.trim());
-      const result = await runCdpCommand(command);
-      const text = result.code === 0
-        ? result.stdout
-        : [result.stderr, result.stdout].filter(Boolean).join('\n');
-      if (result.code !== 0) {
-        send({
+    if (message.method.startsWith('notifications/')) return;
+    const id = message.id;
+    try {
+      if (message.method === 'initialize') {
+        sendMessage({ jsonrpc: '2.0', id, result: createMcpInitializeResult() });
+        return;
+      }
+      if (message.method === 'tools/list') {
+        sendMessage({ jsonrpc: '2.0', id, result: { tools: MCP_TOOL_DEFINITIONS } });
+        return;
+      }
+      if (message.method === 'tools/call') {
+        const name = message.params?.name;
+        const args = message.params?.arguments || {};
+        const command = buildMcpToolCommand(name, args);
+        const result = await runtimeClient.execute(command);
+        const text = result.code === 0
+          ? result.stdout
+          : [result.stderr, result.stdout].filter(Boolean).join('\n');
+        sendMessage({
           jsonrpc: '2.0',
           id,
-          error: { code: -32000, message: text || `Resource read failed for ${uri}` },
+          result: {
+            content: [{ type: 'text', text }],
+            isError: result.code !== 0,
+          },
         });
         return;
       }
-      const mimeType = uri.includes('/screenshot/') ? 'text/plain' : 'application/json';
-      send({
+      if (message.method === 'resources/list') {
+        sendMessage({ jsonrpc: '2.0', id, result: { resources: listMcpResources() } });
+        return;
+      }
+      if (message.method === 'resources/templates/list') {
+        sendMessage({
+          jsonrpc: '2.0',
+          id,
+          result: { resourceTemplates: MCP_RESOURCE_TEMPLATES.filter(t => t.uriTemplate.includes('{')) },
+        });
+        return;
+      }
+      if (message.method === 'resources/read') {
+        const uri = message.params?.uri;
+        if (typeof uri !== 'string' || !uri.trim()) throw new Error('resources/read requires uri');
+        const resource = resolveMcpResource(uri.trim());
+        const result = await runtimeClient.execute(resource.command);
+        const text = result.code === 0
+          ? result.stdout
+          : [result.stderr, result.stdout].filter(Boolean).join('\n');
+        if (result.code !== 0) {
+          sendMessage({
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32000, message: text || `Resource read failed for ${uri}` },
+          });
+          return;
+        }
+        sendMessage({
+          jsonrpc: '2.0',
+          id,
+          result: {
+            contents: [{ uri, mimeType: resource.mimeType, text }],
+          },
+        });
+        return;
+      }
+      sendMessage({
         jsonrpc: '2.0',
         id,
-        result: {
-          contents: [{ uri, mimeType, text }],
-        },
+        error: { code: -32601, message: `Method not found: ${message.method}` },
       });
-      return;
+    } catch (e) {
+      sendMessage({
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32000, message: e.message || String(e) },
+      });
     }
-    send({
-      jsonrpc: '2.0',
-      id,
-      error: { code: -32601, message: `Method not found: ${message.method}` },
-    });
-  } catch (e) {
-    send({
-      jsonrpc: '2.0',
-      id,
-      error: { code: -32000, message: e.message || String(e) },
-    });
-  }
+  };
 }
+
+const handleRequest = createMcpRequestHandler();
 
 let buffer = Buffer.alloc(0);
 let requestQueue = Promise.resolve();
@@ -170,9 +169,13 @@ function parseBufferedMessages() {
   return messages;
 }
 
-process.stdin.on('data', chunk => {
-  buffer = Buffer.concat([buffer, chunk]);
-  for (const message of parseBufferedMessages()) {
-    enqueueRequest(message);
-  }
-});
+const isDirectRun = process.argv[1]
+  && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (isDirectRun) {
+  process.stdin.on('data', chunk => {
+    buffer = Buffer.concat([buffer, chunk]);
+    for (const message of parseBufferedMessages()) {
+      enqueueRequest(message);
+    }
+  });
+}

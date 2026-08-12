@@ -5,6 +5,10 @@ import { describe, expect, it } from 'vitest';
 import { validateHostValidation } from '../scripts/check-host-validation.mjs';
 
 const rootDir = new URL('..', import.meta.url);
+const packageJson = JSON.parse(readFileSync(
+  new URL('../package.json', import.meta.url),
+  'utf8',
+));
 const checkedInManifest = JSON.parse(readFileSync(
   new URL('../docs/benchmarks/host-validation.v1.json', import.meta.url),
   'utf8',
@@ -13,7 +17,7 @@ const supportedHosts = ['claude', 'codex', 'cursor', 'openclaw', 'hermes', 'pi']
 
 function validate(manifest) {
   return validateHostValidation(manifest, {
-    packageVersion: '2.14.0',
+    packageVersion: packageJson.version,
     supportedHosts,
     rootDir,
   });
@@ -27,7 +31,7 @@ describe('host validation CLI', () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Host validation OK: 6 hosts, product v2.14.0');
+    expect(result.stdout).toContain(`Host validation OK: 6 hosts, product v${packageJson.version}`);
     expect(result.stderr).toBe('');
   });
 
@@ -60,7 +64,7 @@ describe('host validation manifest', () => {
     manifest.productVersion = '2.13.1';
 
     expect(validate(manifest)).toContain(
-      'Host validation productVersion 2.13.1 does not match package version 2.14.0',
+      `Host validation productVersion 2.13.1 does not match package version ${packageJson.version}`,
     );
   });
 
@@ -138,6 +142,20 @@ describe('host validation manifest', () => {
 
     expect(validate(manifest)).toContain(
       'Host codex is live-validated without capability sinceAction',
+    );
+  });
+
+  it('binds live validation to the historical candidate instead of the current tree', () => {
+    expect(checkedInManifest.environment).toMatchObject({
+      evidenceScope: 'historical-candidate',
+      currentTree: false,
+      candidateIdentity: 'sha256:802f7add9391ab693f2cb9e477914ece3b81cc20ada08023706f4f212120675f',
+    });
+    const manifest = structuredClone(checkedInManifest);
+    manifest.environment.currentTree = true;
+    delete manifest.environment.candidateIdentity;
+    expect(validate(manifest)).toContain(
+      'Host validation must bind its historical candidate identity and currentTree=false',
     );
   });
 });
