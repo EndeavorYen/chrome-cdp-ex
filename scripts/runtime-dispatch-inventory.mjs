@@ -106,6 +106,7 @@ function collectDaemonGroups(source) {
     'dismissModalBuilder',
     'verifyClickBuilder',
     'diffShotBuilder',
+    'responsiveAuditBuilder',
     'scriptCapabilities',
     'actionCapabilities',
     'workflowCapabilities',

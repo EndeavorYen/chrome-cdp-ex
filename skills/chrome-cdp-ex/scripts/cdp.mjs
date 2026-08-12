@@ -4211,6 +4211,110 @@ function formatQaPageReport(model) {
   return lines.join('\n');
 }
 
+async function qaPageStr({
+  cdp,
+  sid,
+  session,
+  targetId,
+  consoleBuf,
+  exceptionBuf,
+  refMap,
+  lastPerceiveStore,
+  refState,
+  actionFeedback,
+}, args = []) {
+  const qopts = parseQaArgs(args);
+  const errors = [];
+  const page = await pageInfoModel(cdp, sid, { targetPrefix: targetPrefixForDisplay(targetId) });
+  const consoleHealth = {
+    errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
+    warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+    exceptions: exceptionBuf.all().length,
+  };
+  const screenshots = {};
+  for (const [kind, size] of [['desktop', qopts.desktop], ['mobile', qopts.mobile]]) {
+    if (!size) continue;
+    try {
+      await viewportStr(cdp, sid, size);
+      ensureSessionScreenshotDir(session);
+      const path = nextSessionScreenshotPath(session, kind);
+      const shot = await shotStr(cdp, sid, path, targetId, { quiet: true });
+      appendSessionScreenshot(session, { kind: `qa-${kind}`, path: shot.split('\n')[0], note: size });
+      screenshots[kind] = { viewport: size, path: shot.split('\n')[0] };
+    } catch (error) {
+      errors.push(`${kind} screenshot: ${error.message}`);
+    }
+  }
+  let perception = null;
+  try {
+    const text = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
+      cursorInteractive: true,
+      maxDepth: 4,
+      targetPrefix: targetPrefixForDisplay(targetId),
+    }, refState);
+    perception = { captured: true, summary: text.split('\n').slice(0, 6).join('\n') };
+  } catch (error) {
+    perception = { captured: false, error: error.message };
+    errors.push(`perceive: ${error.message}`);
+  }
+  let action = null;
+  const assertions = [];
+  if (qopts.click) {
+    let captured = null;
+    await actionFeedback(
+      'click',
+      () => clickStr(cdp, sid, qopts.click, refMap, refState),
+      { input: qopts.click, resolvedBy: 'selector-or-ref', label: qopts.click || '', commandArgs: [qopts.click] },
+      'settle-diff',
+      null,
+      'json',
+      result => { captured = result; },
+    );
+    const textMatched = qopts.expectText
+      ? await pageContainsText(cdp, sid, qopts.expectText).catch(() => false)
+      : false;
+    action = buildSemanticInteractionModel(captured || {}, {
+      selector: qopts.click,
+      expectRequest: qopts.expectRequest,
+      expectStatus: qopts.expectStatus,
+      expectText: qopts.expectText,
+      noConsoleErrors: qopts.noConsoleErrors,
+      evidence: 'concise',
+    }, { textMatched });
+  } else {
+    if (qopts.expectText) {
+      const textMatched = await pageContainsText(cdp, sid, qopts.expectText).catch(() => false);
+      assertions.push({
+        kind: 'text',
+        expected: qopts.expectText,
+        status: textMatched ? 'pass' : 'fail',
+        message: textMatched ? `"${qopts.expectText}" matched` : `"${qopts.expectText}" not found`,
+      });
+    }
+    if (qopts.expectRequest) {
+      assertions.push({
+        kind: 'request',
+        expected: qopts.expectRequest,
+        status: 'fail',
+        message: '--expect-request requires --click so the command can collect action network evidence',
+      });
+    }
+  }
+  const pageHealth = await collectPageHealth(cdp, sid).catch(() => null);
+  const model = buildQaPageModel({
+    targetId,
+    page: { title: page.title, url: page.url },
+    pageHealth,
+    console: consoleHealth,
+    perception,
+    screenshots,
+    action,
+    assertions,
+    errors,
+  });
+  return qopts.format === 'json' ? formatJson(model) : formatQaPageReport(model);
+}
+
 async function pageContainsText(cdp, sid, text) {
   if (!text) return false;
   const raw = await evalStr(cdp, sid, `(function() {
@@ -12884,6 +12988,7 @@ const MIGRATED_DAEMON_COMMANDS = Object.freeze([
   'batch', 'flow', 'repeat', 'replay',
   'inject', 'restore', 'upload',
   'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
+  'qa', 'responsive-audit',
 ]);
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPhase4PerceiveHandler(context),
@@ -12953,6 +13058,8 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
   elshot: capabilities => createDaemonReadHandlers(capabilities).elshot,
   fullshot: capabilities => createDaemonReadHandlers(capabilities).fullshot,
   scanshot: capabilities => createDaemonReadHandlers(capabilities).scanshot,
+  qa: capabilities => createDaemonActionHandlers(capabilities).qa,
+  'responsive-audit': capabilities => createDaemonActionHandlers(capabilities)['responsive-audit'],
 });
 
 function preflightDaemonApplication(input = {}) {
@@ -13403,6 +13510,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];
   const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];
   const diffShotBuilder = applicationPreflight.handlerBuilders['diff-shot'];
+  const responsiveAuditBuilder = applicationPreflight.handlerBuilders['responsive-audit'];
   const scriptCapabilities = {
     eval: async args => {
       const eopts = parseEvalArgs(args);
@@ -13520,6 +13628,18 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const value = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
+    qa: async args => commandResult(await qaPageStr({
+      cdp,
+      sid: sessionId,
+      session,
+      targetId,
+      consoleBuf,
+      exceptionBuf,
+      refMap,
+      lastPerceiveStore,
+      refState,
+      actionFeedback,
+    }, args), { kind: 'action-receipt' }),
     reload: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback('reload', () => reloadActionDispatch({
@@ -13535,6 +13655,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
+    'responsive-audit': async args => commandResult(
+      await responsiveAuditStr(cdp, sessionId, session, targetId, consoleBuf, exceptionBuf, args),
+      { kind: 'action-receipt' },
+    ),
     restore: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const safeCommandArgs = redactRestoreCommandArgs(fopts.args);
@@ -13767,6 +13891,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     elshot: applicationPreflight.handlerBuilders.elshot(readCapabilities),
     fullshot: applicationPreflight.handlerBuilders.fullshot(readCapabilities),
     scanshot: applicationPreflight.handlerBuilders.scanshot(readCapabilities),
+    qa: applicationPreflight.handlerBuilders.qa(actionCapabilities),
+    'responsive-audit': responsiveAuditBuilder(actionCapabilities),
   };
   const phase4Context = createCommandDispatcher({
     registry: phase4Registry,
@@ -13811,97 +13937,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
             targetBound: Boolean(targetId),
           }, phase4Context);
           result = route.result;
-          break;
-        }
-        case 'responsive-audit': case 'visual-check': {
-          result = await responsiveAuditStr(cdp, sessionId, session, targetId, consoleBuf, exceptionBuf, args);
-          break;
-        }
-        case 'qa': case 'qa-page': {
-          const qopts = parseQaArgs(args);
-          const errors = [];
-          const page = await pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) });
-          const consoleHealth = {
-            errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
-            warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
-            exceptions: exceptionBuf.all().length,
-          };
-          const screenshots = {};
-          for (const [kind, size] of [['desktop', qopts.desktop], ['mobile', qopts.mobile]]) {
-            if (!size) continue;
-            try {
-              await viewportStr(cdp, sessionId, size);
-              ensureSessionScreenshotDir(session);
-              const path = nextSessionScreenshotPath(session, kind);
-              const shot = await shotStr(cdp, sessionId, path, targetId, { quiet: true });
-              appendSessionScreenshot(session, { kind: `qa-${kind}`, path: shot.split('\n')[0], note: size });
-              screenshots[kind] = { viewport: size, path: shot.split('\n')[0] };
-            } catch (e) {
-              errors.push(`${kind} screenshot: ${e.message}`);
-            }
-          }
-          let perception = null;
-          try {
-            const text = await perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, { cursorInteractive: true, maxDepth: 4, targetPrefix: targetPrefixForDisplay(targetId) }, refState);
-            perception = { captured: true, summary: text.split('\n').slice(0, 6).join('\n') };
-          } catch (e) {
-            perception = { captured: false, error: e.message };
-            errors.push(`perceive: ${e.message}`);
-          }
-          let action = null;
-          const assertions = [];
-          if (qopts.click) {
-            let captured = null;
-            await actionFeedback(
-              'click',
-              () => clickStr(cdp, sessionId, qopts.click, refMap, refState),
-              { input: qopts.click, resolvedBy: 'selector-or-ref', label: qopts.click || '', commandArgs: [qopts.click] },
-              'settle-diff',
-              null,
-              'json',
-              result => { captured = result; }
-            );
-            const textMatched = qopts.expectText ? await pageContainsText(cdp, sessionId, qopts.expectText).catch(() => false) : false;
-            action = buildSemanticInteractionModel(captured || {}, {
-              selector: qopts.click,
-              expectRequest: qopts.expectRequest,
-              expectStatus: qopts.expectStatus,
-              expectText: qopts.expectText,
-              noConsoleErrors: qopts.noConsoleErrors,
-              evidence: 'concise',
-            }, { textMatched });
-          } else {
-            if (qopts.expectText) {
-              const textMatched = await pageContainsText(cdp, sessionId, qopts.expectText).catch(() => false);
-              assertions.push({
-                kind: 'text',
-                expected: qopts.expectText,
-                status: textMatched ? 'pass' : 'fail',
-                message: textMatched ? `"${qopts.expectText}" matched` : `"${qopts.expectText}" not found`,
-              });
-            }
-            if (qopts.expectRequest) {
-              assertions.push({
-                kind: 'request',
-                expected: qopts.expectRequest,
-                status: 'fail',
-                message: '--expect-request requires --click so the command can collect action network evidence',
-              });
-            }
-          }
-          const pageHealth = await collectPageHealth(cdp, sessionId).catch(() => null);
-          const model = buildQaPageModel({
-            targetId,
-            page: { title: page.title, url: page.url },
-            pageHealth,
-            console: consoleHealth,
-            perception,
-            screenshots,
-            action,
-            assertions,
-            errors,
-          });
-          result = qopts.format === 'json' ? formatJson(model) : formatQaPageReport(model);
           break;
         }
         case 'perceive': {
@@ -15213,8 +15248,8 @@ function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound })
   const allowed = ([
     'back', 'click', 'clickxy', 'clock', 'dismiss-modal', 'fill', 'forward', 'hover',
     'cookiedel', 'cookieset', 'dialog', 'emulate', 'jsclick', 'keepalive', 'mock',
-    'inject', 'nav', 'press', 'reload', 'restore', 'scroll', 'select', 'throttle',
-    'type', 'upload', 'verify-click', 'viewport',
+    'inject', 'nav', 'press', 'qa', 'reload', 'responsive-audit', 'restore', 'scroll',
+    'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
   ].includes(command)
       && policy === 'mutation' && actionMutates)
     || (['console', 'diff-shot', 'fullshot', 'netlog', 'record', 'shot'].includes(command)

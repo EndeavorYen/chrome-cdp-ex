@@ -1,6 +1,9 @@
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import { createServer as createProbeServer } from 'http';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -15,6 +18,8 @@ import {
   assertPhase4RenderingEffect,
   assertPhase4ScanshotBoundary,
   assertPhase4OutputPrivacy,
+  assertPhase4QaFilesystem,
+  assertPhase4ResponsiveFilesystem,
   assertPhase4TargetReady,
   buildPhase4SliceCommands,
   buildPhase4CookieEffectCommand,
@@ -424,6 +429,74 @@ describe('Phase 4 disposable core-slice scenario', () => {
       { id: 'scanshot', args: ['scanshot', TARGET] },
     ]);
     expect(commands).toHaveLength(65);
+  });
+
+  it('adds only the bounded QA filesystem family when explicitly enabled', () => {
+    const commands = buildPhase4SliceCommands(TARGET, NAV_URL, {
+      responsiveOutDir: '/tmp/phase7-responsive-audit',
+      includeQa: true,
+    });
+    expect(commands.filter(command => ['qa', 'responsive-audit'].includes(command.id))).toEqual([
+      {
+        id: 'qa',
+        args: [
+          'qa', TARGET, '--desktop', '800x600', '--mobile', '390x844',
+          '--expect-text', 'auth state preserved', '--format', 'json',
+        ],
+      },
+      {
+        id: 'responsive-audit',
+        args: [
+          'responsive-audit', TARGET, '--viewport', '800x600', '--out-dir',
+          '/tmp/phase7-responsive-audit', '--max-controls', '5', '--format', 'json',
+        ],
+      },
+    ]);
+    expect(commands).toHaveLength(61);
+  });
+
+  it('requires exact target-bound private QA and responsive audit artifacts', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'phase4-qa-test-'));
+    try {
+      const paths = ['desktop.png', 'mobile.png', 'responsive.png'].map(name => resolve(root, name));
+      for (const path of paths) writeFileSync(path, Buffer.from('89504e470d0a1a0a', 'hex'), { mode: 0o600 });
+      const resolution = targetResolution();
+      const page = { title: TITLE, url: NAV_URL };
+      const pageHealth = { status: 'populated', isBlank: false };
+      expect(assertPhase4QaFilesystem({
+        schema: 'chrome-cdp-ex.qa-page.v1', targetId: TARGET_ID, targetPrefix: TARGET,
+        page, pageHealth, console: { errors: 0, warnings: 0, exceptions: 0 },
+        perception: { captured: true, summary: 'fixture' },
+        screenshots: {
+          desktop: { viewport: '800x600', path: paths[0] },
+          mobile: { viewport: '390x844', path: paths[1] },
+        },
+        action: null,
+        assertions: [{ kind: 'text', status: 'pass', expected: 'auth state preserved after refresh' }],
+        errors: [],
+        checks: {
+          page: 'pass', console: 'pass', desktopScreenshot: 'pass', mobileScreenshot: 'pass',
+          assertions: 'pass', action: 'skip',
+        },
+        verdict: 'pass', nextSteps: ['report', 'perceive'], targetResolution: resolution,
+      }, { targetPrefix: TARGET, expectedTitle: TITLE, artifactRoot: root })).toBe('pass');
+      expect(assertPhase4ResponsiveFilesystem({
+        schema: 'chrome-cdp-ex.responsive-audit.v1', targetId: TARGET_ID, targetPrefix: TARGET,
+        page, console: { errors: 0, warnings: 0, exceptions: 0 },
+        viewports: [{
+          viewport: '800x600', status: 'pass', url: NAV_URL, title: TITLE,
+          screenshot: paths[2], pageHealth, controlCount: 1, controls: [{}],
+          findings: { clippedControls: [], overlaps: [] }, error: null,
+        }],
+        errors: [], verdict: 'pass', summary: { pass: 1, warn: 0, fail: 0 },
+        nextSteps: ['shot', 'perceive', 'report'], targetResolution: resolution,
+      }, { targetPrefix: TARGET, expectedTitle: TITLE, artifactRoot: root })).toBe('pass');
+      expect(() => assertPhase4QaFilesystem({
+        schema: 'chrome-cdp-ex.qa-page.v1', targetId: TARGET_ID, targetPrefix: TARGET,
+      }, { targetPrefix: TARGET, expectedTitle: TITLE, artifactRoot: root })).toThrow(/qa fixture/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('bounds scanshot to a real multi-segment fixture and always restores the page', async () => {

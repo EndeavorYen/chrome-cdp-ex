@@ -184,8 +184,11 @@ The sixteenth moved external-input mutations `upload`, `inject`, and `restore`
 with path/content-redacted Action Receipt targets. The seventeenth moved
 screenshot capture `shot`/`screenshot`, `diff-shot`/`diffshot`, `elshot`,
 `fullshot`, and `scanshot` while preserving explicit-path policy and private
-artifact modes. The current checked boundary has 13 daemon groups, 64
-application-owned handlers, and 4 remaining switch-branch deletion candidates.
+artifact modes. The eighteenth moved the QA filesystem family `qa`/`qa-page`
+and `responsive-audit`/`visual-check`, preserving private screenshots, exact
+target binding, viewport effects, and MCP confirmation. The current checked
+boundary has 11 daemon groups, 66 application-owned handlers, and 2 remaining
+switch-branch deletion candidates.
 
 The daemon now preflights a complete, immutable route-owner map before runtime
 effects and constructs one branded dispatcher from it. All 81 canonical names
@@ -193,7 +196,7 @@ and 23 aliases resolve through that boundary; the four Phase 4 commands, the
 six accepted read cohorts, the first six action cohorts, the raw-script,
 conditional observation-control, recursive-workflow, and external-input
 mutation cohorts plus the screenshot capture cohort execute application
-handlers, while the other 17 catalog
+handlers; the QA filesystem cohort does too, while the other 15 catalog
 commands return an explicit
 `handled: false` result to the characterized legacy switch. This is a routing
 and cardinality guarantee, not a claim that the remaining handlers have moved.

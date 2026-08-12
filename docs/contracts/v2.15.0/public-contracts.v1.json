@@ -998,6 +998,24 @@
         "tool": "session_checkpoint"
       },
       {
+        "args": {
+          "target": "fixture"
+        },
+        "error": "qa_page requires confirm: true",
+        "id": "qa-page-without-confirm",
+        "kind": "tool",
+        "tool": "qa_page"
+      },
+      {
+        "args": {
+          "target": "fixture"
+        },
+        "error": "responsive_audit requires confirm: true",
+        "id": "responsive-audit-without-confirm",
+        "kind": "tool",
+        "tool": "responsive_audit"
+      },
+      {
         "args": {},
         "error": "target is required",
         "id": "missing-required-argument",
@@ -1423,6 +1441,7 @@
       },
       {
         "args": {
+          "confirm": true,
           "desktop": "1280x720",
           "target": "fixture"
         },
@@ -1439,6 +1458,7 @@
       },
       {
         "args": {
+          "confirm": true,
           "target": "fixture",
           "viewports": [
             "390x844",
@@ -2270,7 +2290,8 @@
               "type": "string"
             },
             "confirm": {
-              "description": "Required when click is provided because this mutates browser state.",
+              "const": true,
+              "description": "Must be true because QA changes viewport state and captures artifacts.",
               "type": "boolean"
             },
             "desktop": {
@@ -2305,6 +2326,7 @@
             }
           },
           "required": [
+            "confirm",
             "target"
           ],
           "type": "object"
@@ -2316,6 +2338,11 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true because the audit changes viewport state and captures artifacts.",
+              "type": "boolean"
+            },
             "maxControls": {
               "description": "Max visible controls sampled per viewport.",
               "maximum": 100,
@@ -2339,6 +2366,7 @@
             }
           },
           "required": [
+            "confirm",
             "target"
           ],
           "type": "object"

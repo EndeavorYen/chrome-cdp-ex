@@ -473,6 +473,10 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       ['cascade', '{"schema":"fixture.cascade","property":"color"}'],
       ['checkpoint', 'Checkpoint captured\nPrivacy: default-redacted'],
       ['cookies', 'fixture_cookie  fixture-value'],
+      ['qa', '{"schema":"fixture.qa","verdict":"pass"}'],
+      ['qa-page', '{"schema":"fixture.qa","verdict":"pass","alias":true}'],
+      ['responsive-audit', '{"schema":"fixture.responsive","verdict":"pass"}'],
+      ['visual-check', '{"schema":"fixture.responsive","verdict":"pass","alias":true}'],
     ]);
     const failures = new Map([
       ['perceive', 'perceive fixture failure'],
@@ -541,6 +545,10 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       ['cascade', 'cascade fixture failure'],
       ['checkpoint', 'checkpoint fixture failure'],
       ['cookies', 'cookies fixture failure'],
+      ['qa', 'qa fixture failure'],
+      ['qa-page', 'qa alias fixture failure'],
+      ['responsive-audit', 'responsive audit fixture failure'],
+      ['visual-check', 'visual check alias fixture failure'],
     ]);
     const cases = [
       { cmd: 'perceive', args: ['--format', 'json'], tool: 'perceive', toolArgs: { target: 'fixture', adaptive: false } },
@@ -633,6 +641,22 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       { cmd: 'cascade', args: ['#auth-panel', 'color', '--format', 'json'], tool: 'cascade', toolArgs: { target: 'fixture', selector: '#auth-panel', property: 'color' } },
       { cmd: 'checkpoint', args: [], tool: 'session_checkpoint', toolArgs: { target: 'fixture', confirm: true } },
       { cmd: 'cookies', args: [], tool: 'run_command', toolArgs: { command: 'cookies', args: ['fixture'], confirm: true } },
+      {
+        cmd: 'qa', args: ['--desktop', '800x600', '--mobile', '390x844', '--format', 'json'],
+        tool: 'qa_page', toolArgs: { target: 'fixture', desktop: '800x600', mobile: '390x844', confirm: true },
+      },
+      {
+        key: 'qa-page', cmd: 'qa-page', canonical: 'qa', args: ['--format', 'json'],
+        mcpDenied: 'run_command command not allowlisted: qa-page',
+      },
+      {
+        cmd: 'responsive-audit', args: ['--viewport', '800x600', '--format', 'json'],
+        tool: 'responsive_audit', toolArgs: { target: 'fixture', viewports: ['800x600'], confirm: true },
+      },
+      {
+        key: 'visual-check', cmd: 'visual-check', canonical: 'responsive-audit', args: ['--format', 'json'],
+        mcpDenied: 'run_command visual-check requires confirm: true',
+      },
     ];
 
     const direct = async (entry, fail = false) => {
@@ -681,6 +705,8 @@ describe('Phase 5 current MCP process boundary characterization', () => {
         call: null,
         console: null,
         record: null,
+        qa: { kind: 'action-receipt' },
+        'responsive-audit': { kind: 'action-receipt' },
       }[canonical];
       const handler = vi.fn(async () => {
         if (fail) throw new Error(failures.get(key));
@@ -726,6 +752,8 @@ describe('Phase 5 current MCP process boundary characterization', () => {
             call: null,
             console: null,
             record: null,
+            qa: { kind: 'action-receipt' },
+            'responsive-audit': { kind: 'action-receipt' },
           }[name])),
       ]));
       const dispatcher = createCommandDispatcher({

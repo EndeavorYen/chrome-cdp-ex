@@ -24,6 +24,7 @@ const ACTION_PARITY_COMMANDS = new Set([
   'dialog', 'keepalive', 'mock', 'nav', 'netlog', 'press', 'reload', 'scroll', 'select',
   'console', 'inject', 'restore', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
   'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
+  'qa', 'responsive-audit',
 ]);
 const SEMANTIC_PARITY_COMMANDS = new Set(['record']);
 const ACTION_STATE_EXPRESSION = "({title:document.title,modalHidden:document.querySelector('#motd')?.hidden===true,shortcut:document.querySelector('#shortcut-status')?.textContent,inputValue:document.querySelector('#cmd')?.value,selectValue:document.querySelector('#phase7-select')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector('#phase7-js-status')?.textContent,coordStatus:document.querySelector('#phase7-coord-status')?.textContent,authState:document.querySelector('#auth-state')?.textContent})";
@@ -162,7 +163,9 @@ export function buildPhase4SliceCommands(
     restorePath = 'phase7-checkpoint.json',
     shotPath = 'phase7-shot.png',
     fullshotPath = 'phase7-fullshot.png',
+    responsiveOutDir = 'phase7-responsive-audit',
     includeScreenshots = false,
+    includeQa = false,
   } = {},
 ) {
   if (typeof targetPrefix !== 'string' || !/^[A-Za-z0-9]{4,64}$/.test(targetPrefix)) {
@@ -172,7 +175,7 @@ export function buildPhase4SliceCommands(
     || !/^http:\/\/127\.0\.0\.1:\d+\/validation-phase4\.html(?:\?route=mcp)?#phase7-navigation$/.test(navigationUrl)) {
     throw new Error('navigationUrl must be the bounded loopback navigation fixture');
   }
-  for (const [name, value] of Object.entries({ uploadPath, restorePath, shotPath, fullshotPath })) {
+  for (const [name, value] of Object.entries({ uploadPath, restorePath, shotPath, fullshotPath, responsiveOutDir })) {
     if (typeof value !== 'string' || value.length < 1 || Buffer.byteLength(value, 'utf8') > 4096) {
       throw new Error(`${name} must be a bounded file path`);
     }
@@ -291,6 +294,16 @@ export function buildPhase4SliceCommands(
     immutableCommand('emulate', [
       'emulate', targetPrefix, 'dark', 'reduced-motion', 'reduce', '--format', 'json',
     ]),
+    ...(includeQa ? [
+      immutableCommand('qa', [
+        'qa', targetPrefix, '--desktop', '800x600', '--mobile', '390x844',
+        '--expect-text', 'auth state preserved', '--format', 'json',
+      ]),
+      immutableCommand('responsive-audit', [
+        'responsive-audit', targetPrefix, '--viewport', '800x600', '--out-dir', responsiveOutDir,
+        '--max-controls', '5', '--format', 'json',
+      ]),
+    ] : []),
     ...(includeScreenshots ? [
       immutableCommand('scanshot', ['scanshot', targetPrefix]),
     ] : []),
@@ -547,6 +560,94 @@ function assertPrivatePngArtifact(path, artifactRoot) {
   return absolute;
 }
 
+function validQaPageUrl(value) {
+  return typeof value === 'string'
+    && /^http:\/\/127\.0\.0\.1:\d+\/validation-phase4\.html(?:\?route=mcp)?#phase7-navigation$/.test(value);
+}
+
+export function assertPhase4QaFilesystem(model, { targetPrefix, expectedTitle, artifactRoot } = {}) {
+  if (!exactKeys(model, [
+    'schema', 'targetId', 'targetPrefix', 'page', 'pageHealth', 'console', 'perception',
+    'screenshots', 'action', 'assertions', 'errors', 'checks', 'verdict', 'nextSteps',
+    'targetResolution',
+  ])
+    || model.schema !== 'chrome-cdp-ex.qa-page.v1'
+    || !validActionTargetResolution(model.targetResolution, targetPrefix)
+    || model.targetId !== model.targetResolution.requestedTargetId
+    || model.targetPrefix !== model.targetId.slice(0, 8)
+    || !exactKeys(model.page, ['title', 'url'])
+    || model.page.title !== expectedTitle || !validQaPageUrl(model.page.url)
+    || model.pageHealth?.isBlank !== false || model.pageHealth?.status !== 'populated'
+    || !exactKeys(model.console, ['errors', 'warnings', 'exceptions'])
+    || model.console.errors !== 0 || model.console.exceptions !== 0
+    || model.perception?.captured !== true
+    || model.action !== null
+    || !Array.isArray(model.assertions) || model.assertions.length !== 1
+    || model.assertions[0]?.kind !== 'text' || model.assertions[0]?.status !== 'pass'
+    || !Array.isArray(model.errors) || model.errors.length !== 0
+    || !exactKeys(model.checks, [
+      'page', 'console', 'desktopScreenshot', 'mobileScreenshot', 'assertions', 'action',
+    ])
+    || model.checks.page !== 'pass' || model.checks.console !== 'pass'
+    || model.checks.desktopScreenshot !== 'pass' || model.checks.mobileScreenshot !== 'pass'
+    || model.checks.assertions !== 'pass' || model.checks.action !== 'skip'
+    || model.verdict !== 'pass'
+    || !Array.isArray(model.nextSteps) || model.nextSteps.length !== 2) {
+    throw new Error(`qa fixture output is invalid: ${JSON.stringify(model).slice(0, 1600)}`);
+  }
+  const expectedScreenshots = { desktop: '800x600', mobile: '390x844' };
+  if (!exactKeys(model.screenshots, Object.keys(expectedScreenshots))) {
+    throw new Error('qa screenshot inventory is invalid');
+  }
+  for (const [name, viewport] of Object.entries(expectedScreenshots)) {
+    const screenshot = model.screenshots[name];
+    if (!exactKeys(screenshot, ['viewport', 'path']) || screenshot.viewport !== viewport) {
+      throw new Error(`qa ${name} screenshot metadata is invalid`);
+    }
+    assertPrivatePngArtifact(screenshot.path, artifactRoot);
+  }
+  return model.verdict;
+}
+
+export function assertPhase4ResponsiveFilesystem(model, { targetPrefix, expectedTitle, artifactRoot } = {}) {
+  if (!exactKeys(model, [
+    'schema', 'targetId', 'targetPrefix', 'page', 'console', 'viewports', 'errors',
+    'verdict', 'summary', 'nextSteps', 'targetResolution',
+  ])
+    || model.schema !== 'chrome-cdp-ex.responsive-audit.v1'
+    || !validActionTargetResolution(model.targetResolution, targetPrefix)
+    || model.targetId !== model.targetResolution.requestedTargetId
+    || model.targetPrefix !== model.targetId.slice(0, 8)
+    || !exactKeys(model.page, ['title', 'url'])
+    || model.page.title !== expectedTitle || !validQaPageUrl(model.page.url)
+    || !exactKeys(model.console, ['errors', 'warnings', 'exceptions'])
+    || model.console.errors !== 0 || model.console.exceptions !== 0
+    || !Array.isArray(model.viewports) || model.viewports.length !== 1
+    || !Array.isArray(model.errors) || model.errors.length !== 0
+    || !['pass', 'warn'].includes(model.verdict)
+    || !exactKeys(model.summary, ['pass', 'warn', 'fail'])
+    || model.summary.fail !== 0 || model.summary.pass + model.summary.warn !== 1
+    || !Array.isArray(model.nextSteps) || model.nextSteps.length !== 3) {
+    throw new Error(`responsive-audit fixture output is invalid: ${JSON.stringify(model).slice(0, 1600)}`);
+  }
+  const viewport = model.viewports[0];
+  if (viewport?.viewport !== '800x600'
+    || viewport.status !== model.verdict
+    || viewport.url !== model.page.url
+    || viewport.title !== expectedTitle
+    || viewport.pageHealth?.isBlank !== false
+    || viewport.pageHealth?.status !== 'populated'
+    || !Number.isInteger(viewport.controlCount) || viewport.controlCount < 1
+    || !Array.isArray(viewport.controls) || viewport.controls.length > 5
+    || !viewport.findings || !Array.isArray(viewport.findings.clippedControls)
+    || !Array.isArray(viewport.findings.overlaps)
+    || viewport.error !== null) {
+    throw new Error(`responsive-audit viewport output is invalid: ${JSON.stringify(viewport).slice(0, 1600)}`);
+  }
+  assertPrivatePngArtifact(viewport.screenshot, artifactRoot);
+  return model.verdict;
+}
+
 function validTargetResolution(value, targetPrefix, targetId) {
   return exactKeys(value, [
     'requestedTargetPrefix', 'requestedTargetId', 'boundTargetId',
@@ -781,6 +882,12 @@ function validateStep(id, stdout, {
     return '<SECTION>#auth-panel';
   }
   const model = parseStepJson(id, stdout);
+  if (id === 'qa') {
+    return assertPhase4QaFilesystem(model, { targetPrefix, expectedTitle, artifactRoot });
+  }
+  if (id === 'responsive-audit') {
+    return assertPhase4ResponsiveFilesystem(model, { targetPrefix, expectedTitle, artifactRoot });
+  }
   if (id === 'diff-shot') {
     if (model?.schema !== 'chrome-cdp-ex.diff-shot.v1'
       || typeof model.targetId !== 'string' || !/^[A-F0-9]{12,64}$/i.test(model.targetId)
@@ -1150,6 +1257,7 @@ export async function runPhase4SliceSession({
   restorePath = 'phase7-checkpoint.json',
   shotPath = 'phase7-shot.png',
   fullshotPath = 'phase7-fullshot.png',
+  responsiveOutDir = 'phase7-responsive-audit',
   artifactRoot = null,
   runCommand,
   runMcpCommand,
@@ -1167,7 +1275,13 @@ export async function runPhase4SliceSession({
     let extractionParity = 0;
     let sessionIdentity = null;
     const commands = buildPhase4SliceCommands(targetPrefix, navigationUrl, {
-      uploadPath, restorePath, shotPath, fullshotPath, includeScreenshots: Boolean(artifactRoot),
+      uploadPath,
+      restorePath,
+      shotPath,
+      fullshotPath,
+      responsiveOutDir,
+      includeScreenshots: Boolean(artifactRoot),
+      includeQa: Boolean(artifactRoot),
     });
     for (const command of commands) {
       let stdout;
@@ -1189,7 +1303,7 @@ export async function runPhase4SliceSession({
         'press', 'fill', 'hover', 'inject', 'restore', 'scroll', 'select', 'upload',
         'back', 'clickxy', 'clock', 'dismiss-modal', 'forward', 'jsclick', 'mock', 'nav',
         'reload', 'throttle', 'type', 'verify-click', 'viewport', 'emulate',
-        'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot'].includes(command.id)) {
+        'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot', 'qa', 'responsive-audit'].includes(command.id)) {
         const mcpOutput = await runMcpCommand(command);
         if (!ACTION_PARITY_COMMANDS.has(command.id)
           && !SEMANTIC_PARITY_COMMANDS.has(command.id)
@@ -1393,6 +1507,8 @@ export async function runDisposablePhase4Slices() {
     const mcpShotPath = resolve(runtimeDir, 'phase7-mcp-shot.png');
     const fullshotPath = resolve(runtimeDir, 'phase7-fullshot.png');
     const mcpFullshotPath = resolve(runtimeDir, 'phase7-mcp-fullshot.png');
+    const responsiveOutDir = resolve(runtimeDir, 'phase7-responsive-audit');
+    const mcpResponsiveOutDir = resolve(runtimeDir, 'phase7-mcp-responsive-audit');
     writeFileSync(uploadPath, 'phase7 upload fixture\n', { mode: 0o600 });
     const checkpointFor = pageUrl => JSON.stringify({
       schema: 'chrome-cdp-ex.checkpoint.v1',
@@ -1538,6 +1654,11 @@ export async function runDisposablePhase4Slices() {
         if (command.id === 'restore') commandArgs[2] = mcpRestorePath;
         if (command.id === 'shot') commandArgs[1] = mcpShotPath;
         if (command.id === 'fullshot') commandArgs[1] = mcpFullshotPath;
+        if (command.id === 'responsive-audit') {
+          const outDirIndex = commandArgs.indexOf('--out-dir');
+          if (outDirIndex < 0) throw new Error('responsive-audit MCP output directory is missing');
+          commandArgs[outDirIndex + 1] = mcpResponsiveOutDir;
+        }
         if (command.id === 'nav') commandArgs[1] = mcpNavigationUrl;
         const handler = ACTION_PARITY_COMMANDS.has(command.id) ? mcpActionHandler : mcpHandler;
         const invokeMcp = async () => {
@@ -1556,6 +1677,7 @@ export async function runDisposablePhase4Slices() {
                   'hover', 'inject', 'jsclick', 'keepalive', 'mock', 'nav', 'netlog', 'press', 'reload', 'restore', 'scroll',
                   'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport', 'emulate',
                   'shot', 'diff-shot', 'fullshot',
+                  'qa', 'responsive-audit',
                 ].includes(command.id)
                   ? { confirm: true }
                   : {}),
@@ -1634,6 +1756,7 @@ export async function runDisposablePhase4Slices() {
         restorePath,
         shotPath,
         fullshotPath,
+        responsiveOutDir,
         artifactRoot: runtimeDir,
         runCommand: async command => {
           const output = command.id === 'scanshot'

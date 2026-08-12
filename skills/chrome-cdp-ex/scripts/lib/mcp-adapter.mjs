@@ -285,7 +285,7 @@ export function buildMcpToolCommand(name, args = {}) {
       return args.size ? optionalFormatJson(command) : command;
     }
     case 'qa-page': {
-      if (args.click) requireConfirm(args, 'qa_page click');
+      requireConfirm(args, 'qa_page');
       const command = ['qa', requireString(args, 'target')];
       if (args.desktop) command.push('--desktop', String(args.desktop));
       if (args.mobile) command.push('--mobile', String(args.mobile));
@@ -297,6 +297,7 @@ export function buildMcpToolCommand(name, args = {}) {
       return optionalFormatJson(command);
     }
     case 'responsive-audit': {
+      requireConfirm(args, 'responsive_audit');
       const command = ['responsive-audit', requireString(args, 'target')];
       const viewports = Array.isArray(args.viewports) ? args.viewports : [];
       for (const size of viewports) command.push('--viewport', String(size));

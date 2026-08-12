@@ -580,7 +580,7 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
     description: 'Run page, console, screenshot, and optional semantic interaction QA.',
     inputSchema: {
       type: 'object',
-      required: ['target'],
+      required: ['target', 'confirm'],
       properties: {
         target: stringSchema('Target prefix or named alias.'),
         desktop: stringSchema('Desktop viewport size, for example 1440x900.'),
@@ -590,7 +590,7 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
         expectStatus: { type: 'integer', minimum: 100, maximum: 599, description: 'Expected HTTP status for the matched request.' },
         expectText: stringSchema('Expected text after the optional action.'),
         noConsoleErrors: booleanSchema('Fail the QA report if action console/exception errors appear.'),
-        confirm: booleanSchema('Required when click is provided because this mutates browser state.'),
+        confirm: booleanSchema('Must be true because QA changes viewport state and captures artifacts.', { const: true }),
       },
       additionalProperties: false,
     },
@@ -600,7 +600,7 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
     description: 'Run a bounded multi-viewport responsive visual audit with overflow/console/control signals.',
     inputSchema: {
       type: 'object',
-      required: ['target'],
+      required: ['target', 'confirm'],
       properties: {
         target: stringSchema('Target prefix or named alias.'),
         viewports: {
@@ -610,6 +610,7 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
         },
         outDir: stringSchema('Optional screenshot output directory outside the repo.'),
         maxControls: { type: 'integer', minimum: 0, maximum: 100, description: 'Max visible controls sampled per viewport.' },
+        confirm: booleanSchema('Must be true because the audit changes viewport state and captures artifacts.', { const: true }),
       },
       additionalProperties: false,
     },
@@ -924,7 +925,7 @@ function surfaceDigest(value) {
 }
 
 export const COMMAND_SURFACE_IDENTITY = 'c1d427f4efd5a3a33a3b877efefbec8a62fc61d2b1823e13bba5e80dddca7b42';
-export const MCP_SURFACE_IDENTITY = '7fdc002433f8c7e6a8a7461338b7851609ffb37e68860df162519a14076558d2';
+export const MCP_SURFACE_IDENTITY = '4c3c13af2408a8d5507ca5445d524ff4f0b48964ae4234bc8d4f6297a613acd9';
 if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
   fail('commands', 'reviewed catalog identity drifted');
 }

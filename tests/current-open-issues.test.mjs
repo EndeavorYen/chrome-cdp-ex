@@ -486,11 +486,14 @@ describe('current open issue contracts', () => {
       '--expect-text', 'Saved',
       '--format', 'json',
     ]);
+    expect(() => buildMcpToolCommand('qa_page', { target: 'app' }))
+      .toThrow(/confirm: true/);
     expect(buildMcpToolCommand('responsive_audit', {
       target: 'app',
       viewports: ['1440x900', '390x844'],
       outDir: '/tmp/audit',
       maxControls: 5,
+      confirm: true,
     })).toEqual([
       'responsive-audit', 'app',
       '--viewport', '1440x900',
@@ -499,6 +502,8 @@ describe('current open issue contracts', () => {
       '--max-controls', '5',
       '--format', 'json',
     ]);
+    expect(() => buildMcpToolCommand('responsive_audit', { target: 'app' }))
+      .toThrow(/confirm: true/);
     expect(buildMcpToolCommand('report', { target: 'app', qa: true, last: 3 }))
       .toEqual(['report', 'app', '--last', '3', '--qa', '--format', 'json']);
   });
@@ -715,7 +720,9 @@ describe('issues #89-#91 contracts', () => {
     ]));
     expect(buildMcpToolCommand('select_target', { url: 'http://127.0.0.1:8788', exact: true }))
       .toEqual(['target', '--url', 'http://127.0.0.1:8788', '--exact', '--format', 'json']);
-    expect(buildMcpToolCommand('responsive_audit', { target: 'app' }))
+    expect(() => buildMcpToolCommand('responsive_audit', { target: 'app' }))
+      .toThrow(/confirm: true/);
+    expect(buildMcpToolCommand('responsive_audit', { target: 'app', confirm: true }))
       .toEqual(['responsive-audit', 'app', '--format', 'json']);
   });
 

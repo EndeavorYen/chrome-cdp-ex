@@ -15,7 +15,8 @@ import { __test__ as cdpTest } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
 const ACTION_COMMANDS = Object.freeze([
   'back', 'clickxy', 'clock', 'cookiedel', 'cookieset', 'dialog', 'dismiss-modal', 'emulate',
   'fill', 'forward', 'hover', 'inject', 'jsclick', 'keepalive', 'mock', 'nav', 'netlog', 'press',
-  'reload', 'restore', 'scroll', 'select', 'throttle', 'type', 'upload', 'verify-click', 'viewport',
+  'qa', 'reload', 'responsive-audit', 'restore', 'scroll', 'select', 'throttle', 'type', 'upload',
+  'verify-click', 'viewport',
 ]);
 const SCRIPT_COMMANDS = Object.freeze(['eval', 'eval64', 'call']);
 const WORKFLOW_COMMANDS = Object.freeze(['batch', 'flow', 'repeat', 'replay']);
@@ -716,8 +717,8 @@ describe('Phase 4 daemon dispatch seam', () => {
     });
     expect(preflight.registry.list()).toHaveLength(81);
     expect(Object.keys(preflight.routeOwners)).toHaveLength(81);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(64);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(17);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(66);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(15);
     expect(Object.isFrozen(preflight)).toBe(true);
     expect(Object.isFrozen(preflight.handlerBuilders)).toBe(true);
     expect(Object.values(builders).every(builder => builder.mock.calls.length === 0)).toBe(true);
@@ -921,10 +922,11 @@ describe('Phase 4 daemon dispatch seam', () => {
       'batch', 'flow', 'repeat', 'replay',
       'inject', 'restore', 'upload',
       'shot', 'diff-shot', 'elshot', 'fullshot', 'scanshot',
+      'qa', 'responsive-audit',
     ]);
     const preflight = cdpTest.preflightDaemonApplication();
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(64);
-    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(17);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'application')).toHaveLength(66);
+    expect(Object.values(preflight.routeOwners).filter(owner => owner === 'legacy')).toHaveLength(15);
     const readHandlers = createDaemonReadHandlers({
       cascade: async args => `cascade:${args.join('|')}`,
       checkpoint: async args => `checkpoint:${args.join('|')}`,

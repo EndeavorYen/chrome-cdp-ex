@@ -42,8 +42,10 @@ exact-method CDP domains now replace duplicated authority without removing the
   paths, and injected content are redacted from action evidence. Screenshot
   capture commands `shot`/`screenshot`, `diff-shot`/`diffshot`, `elshot`,
   `fullshot`, and `scanshot` now use the same application boundary while
-  preserving 0600 artifact writes and explicit-path confirmation. The remaining
-  17 catalog commands are explicitly
+  preserving 0600 artifact writes and explicit-path confirmation. QA filesystem
+  commands `qa`/`qa-page` and `responsive-audit`/`visual-check` now use that
+  boundary too, require MCP confirmation before viewport/file effects, and keep
+  every screenshot private and task-contained. The remaining 15 catalog commands are explicitly
   retained on the characterized legacy route until parity permits migration.
   Add immutable public browser resources, private
   handles, a shared-key BrowserSupervisor with bounded stale recovery, extracted
@@ -58,7 +60,7 @@ exact-method CDP domains now replace duplicated authority without removing the
   side-effect class only, never params or results.
 * Tighten MCP confirmation from catalog policy: mutating/session-state forms,
   composite/raw/script commands, sensitive reads, clear/reset operations,
-  long-running controls, and explicit screenshot output paths fail closed
+  long-running controls, QA filesystem commands, and explicit screenshot output paths fail closed
   unless confirmed. Read-only forms such as exact tab-group list/show and
   default screenshot output remain unconfirmed.
 

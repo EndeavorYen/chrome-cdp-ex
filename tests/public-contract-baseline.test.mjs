@@ -89,6 +89,8 @@ describe('public contract baseline', () => {
       'mutation-without-confirm',
       'sensitive-read-without-confirm',
       'checkpoint-without-confirm',
+      'qa-page-without-confirm',
+      'responsive-audit-without-confirm',
       'missing-required-argument',
       'run-command-use-without-confirm',
       'run-command-forget-without-confirm',
