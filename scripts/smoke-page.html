@@ -68,12 +68,16 @@
   <aside class="sidebar">
     <button id="character">角色 (C)</button>
     <p id="shortcut-status">shortcut:none</p>
+    <p id="phase7-load-generation">load:pending</p>
   </aside>
   <div role="dialog" aria-modal="true" aria-label="MOTD" id="motd">
     <p>按任意鍵繼續 — smoke modal</p>
     <button aria-label="關閉" id="close-modal">關閉</button>
   </div>
   <script>
+    const phase7LoadGeneration = Number(/^phase7-load:(\d+)$/.exec(window.name)?.[1] || 0) + 1;
+    window.name = 'phase7-load:' + phase7LoadGeneration;
+    document.getElementById('phase7-load-generation').textContent = 'load:' + phase7LoadGeneration;
     localStorage.setItem('theme', 'fixture-light');
     localStorage.setItem('authToken', 'fixture-secret');
     sessionStorage.setItem('phase', 'fixture');

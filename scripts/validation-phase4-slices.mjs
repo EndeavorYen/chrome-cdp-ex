@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
-import { createServer } from 'http';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir, userInfo } from 'os';
 import { resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
@@ -18,12 +17,14 @@ import { redactEvidence } from './lib/validation-lab.mjs';
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const cdpPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
 const pagePath = resolve(rootDir, 'scripts/smoke-page.html');
+const serverPath = resolve(rootDir, 'scripts/validation-loopback-server.mjs');
 const EXPECTED_TITLE = 'chrome-cdp-ex long-session smoke';
 const ACTION_PARITY_COMMANDS = new Set([
-  'clickxy', 'dismiss-modal', 'fill', 'hover', 'jsclick',
-  'press', 'scroll', 'select', 'type', 'verify-click',
+  'back', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'hover', 'jsclick',
+  'nav', 'press', 'reload', 'scroll', 'select', 'type', 'verify-click',
 ]);
 const ACTION_STATE_EXPRESSION = "({title:document.title,modalHidden:document.querySelector('#motd')?.hidden===true,shortcut:document.querySelector('#shortcut-status')?.textContent,inputValue:document.querySelector('#cmd')?.value,selectValue:document.querySelector('#phase7-select')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector('#phase7-js-status')?.textContent,coordStatus:document.querySelector('#phase7-coord-status')?.textContent,authState:document.querySelector('#auth-state')?.textContent})";
+const RELOAD_STATE_EXPRESSION = "JSON.stringify({url:location.href,loadCount:Number(/^phase7-load:(\\d+)$/.exec(window.name)?.[1]),marker:document.querySelector('#phase7-load-generation')?.textContent})";
 
 export function phase4RuntimeBase({ platform = process.platform, tempDir = tmpdir() } = {}) {
   return platform === 'win32' ? tempDir : '/tmp';
@@ -41,9 +42,16 @@ export function assertPhase4TargetReady(model, url, expectedTitle = EXPECTED_TIT
   return { ...observation, title: page.title, targetId: page.targetId || null };
 }
 
-export function buildPhase4SliceCommands(targetPrefix) {
+export function buildPhase4SliceCommands(
+  targetPrefix,
+  navigationUrl = 'http://127.0.0.1:41758/validation-phase4.html#phase7-navigation',
+) {
   if (typeof targetPrefix !== 'string' || !/^[A-Za-z0-9]{4,64}$/.test(targetPrefix)) {
     throw new Error('targetPrefix must be a bounded target identifier');
+  }
+  if (typeof navigationUrl !== 'string'
+    || !/^http:\/\/127\.0\.0\.1:\d+\/validation-phase4\.html(?:\?route=mcp)?#phase7-navigation$/.test(navigationUrl)) {
+    throw new Error('navigationUrl must be the bounded loopback navigation fixture');
   }
   return Object.freeze([
     immutableCommand('perceive', ['perceive', targetPrefix, '--format', 'json']),
@@ -96,7 +104,34 @@ export function buildPhase4SliceCommands(targetPrefix) {
         returnByValue: true,
       }),
     ]),
+    immutableCommand('nav', ['nav', targetPrefix, navigationUrl, '--format', 'json']),
+    immutableCommand('back', ['back', targetPrefix, '--format', 'json']),
+    immutableCommand('forward', ['forward', targetPrefix, '--format', 'json']),
+    immutableCommand('reload', ['reload', targetPrefix, '--format', 'json']),
   ]);
+}
+
+export function assertPhase4NavigationState(id, actualUrl, { baseUrl, navigationUrl }) {
+  const expected = {
+    nav: navigationUrl,
+    back: baseUrl,
+    forward: navigationUrl,
+    reload: navigationUrl,
+  }[id];
+  if (!expected || actualUrl !== expected) {
+    throw new Error(`${id} navigation state is invalid`);
+  }
+  return actualUrl;
+}
+
+export function assertPhase4ReloadState(value, { navigationUrl }) {
+  if (!exactKeys(value, ['url', 'loadCount', 'marker'])
+    || value.url !== navigationUrl
+    || value.loadCount !== 2
+    || value.marker !== 'load:2') {
+    throw new Error('reload generation state is invalid');
+  }
+  return value.loadCount;
 }
 
 function parseStepJson(id, stdout) {
@@ -502,7 +537,7 @@ function validateStep(id, stdout, {
     }
     return null;
   }
-  if (['click', 'clickxy', 'dismiss-modal', 'fill', 'jsclick', 'press', 'scroll', 'select', 'type'].includes(id)) {
+  if (['back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'jsclick', 'nav', 'press', 'reload', 'scroll', 'select', 'type'].includes(id)) {
     if (model?.schema !== 'chrome-cdp-ex.action.v1' || model?.action !== id) {
       throw new Error(`${id} schema is invalid`);
     }
@@ -572,6 +607,7 @@ export async function runPhase4SliceSession({
   targetPrefix,
   expectedTitle = EXPECTED_TITLE,
   expectedUrl,
+  navigationUrl = 'http://127.0.0.1:41758/validation-phase4.html#phase7-navigation',
   runCommand,
   runMcpCommand,
   cleanup,
@@ -587,9 +623,14 @@ export async function runPhase4SliceSession({
     let title = null;
     let extractionParity = 0;
     let sessionIdentity = null;
-    const commands = buildPhase4SliceCommands(targetPrefix);
+    const commands = buildPhase4SliceCommands(targetPrefix, navigationUrl);
     for (const command of commands) {
-      const stdout = await runCommand(command);
+      let stdout;
+      try {
+        stdout = await runCommand(command);
+      } catch (error) {
+        throw new Error(`${command.id}: ${error.message}`, { cause: error });
+      }
       const value = validateStep(command.id, stdout, {
         targetPrefix, expectedTitle, expectedUrl, expectedSessionIdentity: sessionIdentity,
       });
@@ -601,7 +642,8 @@ export async function runPhase4SliceSession({
         'overlay', 'styles', 'components', 'record-actions', 'export-playwright',
         'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies',
         'press', 'fill', 'hover', 'scroll', 'select',
-        'clickxy', 'dismiss-modal', 'jsclick', 'type', 'verify-click'].includes(command.id)) {
+        'back', 'clickxy', 'dismiss-modal', 'forward', 'jsclick', 'nav',
+        'reload', 'type', 'verify-click'].includes(command.id)) {
         const mcpOutput = await runMcpCommand(command);
         if (!ACTION_PARITY_COMMANDS.has(command.id) && mcpOutput !== stdout) {
           throw new Error(`MCP ${command.id} output differs from CLI`);
@@ -678,11 +720,6 @@ async function stopBrowser(child) {
   }
 }
 
-async function closeServer(server) {
-  if (!server?.listening) return;
-  await new Promise((resolveClose, reject) => server.close(error => error ? reject(error) : resolveClose()));
-}
-
 export function monitorDisposableBrowser(child, { maxBytes = 4096 } = {}) {
   if (!child || typeof child.once !== 'function' || !Number.isInteger(maxBytes) || maxBytes <= 0) {
     throw new Error('browser diagnostic monitor requires a child and positive maxBytes');
@@ -699,6 +736,46 @@ export function monitorDisposableBrowser(child, { maxBytes = 4096 } = {}) {
     error: () => spawnError,
     stderr: () => stderr,
   });
+}
+
+export function launchLoopbackFixtureServer({
+  port,
+  pagePath: fixturePath,
+  spawnChild = spawn,
+  stopChild = stopBrowser,
+  sleep = delay,
+} = {}) {
+  const child = spawnChild(process.execPath, [serverPath, String(port), fixturePath], {
+    detached: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const diagnostics = monitorDisposableBrowser(child);
+  let stopping = null;
+  const stop = () => {
+    stopping ||= stopChild(child);
+    return stopping;
+  };
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', chunk => { stdout = `${stdout}${chunk}`.slice(-4096); });
+  const ready = (async () => {
+    try {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        if (stdout.includes(`READY ${port}\n`)) return diagnostics;
+        if (diagnostics.error()) throw diagnostics.error();
+        if (child.exitCode !== null || child.signalCode !== null) {
+          throw new Error(`validation loopback server exited: ${diagnostics.stderr().trim() || child.exitCode || child.signalCode}`);
+        }
+        await sleep(25);
+      }
+      throw new Error('validation loopback server readiness timed out');
+    } catch (error) {
+      await stop().catch(() => {});
+      throw error;
+    }
+  })();
+  return Object.freeze({ child, ready, stop });
 }
 
 function spawnCdp(args, env, timeout = 30_000) {
@@ -756,17 +833,12 @@ export async function runDisposablePhase4Slices() {
     const { port, serverPort, profileDir } = run.metadata;
     const url = `http://127.0.0.1:${serverPort}/validation-phase4.html`;
     const mcpUrl = `${url}?route=mcp`;
+    const navigationUrl = `${url}#phase7-navigation`;
+    const mcpNavigationUrl = `${mcpUrl}#phase7-navigation`;
     const runtimeDir = mkdtempSync(resolve(phase4RuntimeBase(), 'chrome-cdp-p4-'));
     const localAppData = resolve(runtimeDir, 'localappdata');
-    const server = createServer((request, response) => {
-      if (request.url === '/validation-phase4.html' || request.url === '/validation-phase4.html?route=mcp') {
-        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-        response.end(readFileSync(pagePath));
-        return;
-      }
-      response.writeHead(404);
-      response.end('not found');
-    });
+    let server = null;
+    let stopServer = null;
     let browser = null;
     let browserDiagnostics = null;
     let targetPrefix = null;
@@ -793,7 +865,10 @@ export async function runDisposablePhase4Slices() {
         for (const prefix of targetPrefixes) {
           try { spawnCdp(['stop', prefix], env, 5_000); } catch (error) { failures.push(error); }
         }
-        const settled = await Promise.allSettled([stopBrowser(browser), closeServer(server)]);
+        const settled = await Promise.allSettled([
+          stopBrowser(browser),
+          stopServer ? stopServer() : stopBrowser(server),
+        ]);
         for (const entry of settled) if (entry.status === 'rejected') failures.push(entry.reason);
         try {
           rmSync(profileDir, { recursive: true, force: true });
@@ -826,10 +901,10 @@ export async function runDisposablePhase4Slices() {
     process.once('SIGINT', onSignal);
     try {
       ensureActive();
-      await new Promise((resolveListen, reject) => {
-        server.once('error', reject);
-        server.listen(serverPort, '127.0.0.1', resolveListen);
-      });
+      const launchedServer = launchLoopbackFixtureServer({ port: serverPort, pagePath });
+      server = launchedServer.child;
+      stopServer = launchedServer.stop;
+      await launchedServer.ready;
       ensureActive();
       browser = spawn(browserPath, buildDisposableBrowserArgs({ port, profileDir, url }), {
         detached: false,
@@ -890,6 +965,7 @@ export async function runDisposablePhase4Slices() {
         if (ACTION_PARITY_COMMANDS.has(command.id)) {
           commandArgs[0] = mcpTargetId;
         }
+        if (command.id === 'nav') commandArgs[1] = mcpNavigationUrl;
         const handler = ACTION_PARITY_COMMANDS.has(command.id) ? mcpActionHandler : mcpHandler;
         await handler({
           jsonrpc: '2.0',
@@ -902,8 +978,9 @@ export async function runDisposablePhase4Slices() {
               args: commandArgs,
               ...([
                 'components', 'checkpoint', 'cookies',
-                'clickxy', 'dismiss-modal', 'fill', 'hover', 'jsclick',
-                'press', 'scroll', 'select', 'type', 'verify-click',
+                'back', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'hover',
+                'jsclick', 'nav', 'press', 'reload', 'scroll', 'select', 'type',
+                'verify-click',
               ].includes(command.id)
                 ? { confirm: true }
                 : {}),
@@ -930,13 +1007,33 @@ export async function runDisposablePhase4Slices() {
           const state = JSON.parse(runCdp(['eval', mcpTargetPrefix, ACTION_STATE_EXPRESSION], env, 5_000));
           assertPhase4ActionState(state, { expectedTitle: EXPECTED_TITLE, modalHidden: true });
         }
+        if (['nav', 'back', 'forward'].includes(command.id)) {
+          const actualUrl = runCdp(['eval', mcpTargetPrefix, 'location.href'], env, 5_000);
+          assertPhase4NavigationState(command.id, actualUrl, { baseUrl: mcpUrl, navigationUrl: mcpNavigationUrl });
+        }
+        if (command.id === 'reload') {
+          const state = JSON.parse(runCdp(['eval', mcpTargetPrefix, RELOAD_STATE_EXPRESSION], env, 5_000));
+          assertPhase4ReloadState(state, { navigationUrl: mcpNavigationUrl });
+        }
         return text.trim();
       };
       const result = await runPhase4SliceSession({
         targetPrefix,
         expectedTitle: EXPECTED_TITLE,
         expectedUrl: url,
-        runCommand: command => runCdp(command.args, env),
+        navigationUrl,
+        runCommand: command => {
+          const output = runCdp(command.args, env);
+          if (['nav', 'back', 'forward'].includes(command.id)) {
+            const actualUrl = runCdp(['eval', targetPrefix, 'location.href'], env, 5_000);
+            assertPhase4NavigationState(command.id, actualUrl, { baseUrl: url, navigationUrl });
+          }
+          if (command.id === 'reload') {
+            const state = JSON.parse(runCdp(['eval', targetPrefix, RELOAD_STATE_EXPRESSION], env, 5_000));
+            assertPhase4ReloadState(state, { navigationUrl });
+          }
+          return output;
+        },
         runMcpCommand,
         cleanup,
       });

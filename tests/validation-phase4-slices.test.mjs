@@ -1,23 +1,30 @@
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import { createServer as createProbeServer } from 'http';
+import { fileURLToPath } from 'url';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   assertPhase4ActionState,
+  assertPhase4NavigationState,
+  assertPhase4ReloadState,
   assertPhase4OutputPrivacy,
   assertPhase4TargetReady,
   buildPhase4SliceCommands,
   createPhase4Cancellation,
+  launchLoopbackFixtureServer,
   monitorDisposableBrowser,
   phase4RuntimeBase,
   runPhase4SliceSession,
 } from '../scripts/validation-phase4-slices.mjs';
+import { createValidationLoopbackServer } from '../scripts/validation-loopback-server.mjs';
 
 const TARGET = 'ABC12345';
 const TARGET_ID = `${TARGET}6789`;
 const SESSION_ID = 'B361FE026EC722325854623516F3EF83';
 const TITLE = 'chrome-cdp-ex long-session smoke';
 const URL = 'http://127.0.0.1:41758/validation-phase4.html';
+const NAV_URL = `${URL}#phase7-navigation`;
 
 function targetResolution() {
   return {
@@ -151,7 +158,7 @@ function fixtureOutput(id) {
       page: { title: TITLE, url: 'http://127.0.0.1:41758/validation-phase4.html' },
     });
   }
-  if (['click', 'clickxy', 'dismiss-modal', 'fill', 'jsclick', 'press', 'scroll', 'select', 'type'].includes(id)) {
+  if (['back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'jsclick', 'nav', 'press', 'reload', 'scroll', 'select', 'type'].includes(id)) {
     return JSON.stringify({
       schema: 'chrome-cdp-ex.action.v1',
       action: id,
@@ -202,6 +209,35 @@ function fixtureOutput(id) {
 }
 
 describe('Phase 4 disposable core-slice scenario', () => {
+  it('serves only the two fixed loopback fixture routes from an immutable page snapshot', async () => {
+    const probe = createProbeServer();
+    await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
+    const port = probe.address().port;
+    await new Promise(resolve => probe.close(resolve));
+    const server = createValidationLoopbackServer({
+      port,
+      pagePath: fileURLToPath(new globalThis.URL('../scripts/smoke-page.html', import.meta.url)),
+    });
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, '127.0.0.1', resolve);
+    });
+    try {
+      const base = `http://127.0.0.1:${port}`;
+      const cli = await fetch(`${base}/validation-phase4.html`);
+      const mcp = await fetch(`${base}/validation-phase4.html?route=mcp`);
+      const denied = await fetch(`${base}/private`);
+      expect(cli.status).toBe(200);
+      expect(mcp.status).toBe(200);
+      expect(await cli.text()).toContain(TITLE);
+      expect(await mcp.text()).toContain(TITLE);
+      expect(denied.status).toBe(404);
+    } finally {
+      await new Promise(resolve => server.close(resolve));
+    }
+    expect(() => createValidationLoopbackServer({ port: 0, pagePath: 'fixture' })).toThrow(/port/);
+  });
+
   it('waits for the exact loopback document title before spending a slice command', () => {
     const url = 'http://127.0.0.1:41758/validation-phase4.html';
     expect(() => assertPhase4TargetReady({
@@ -214,8 +250,8 @@ describe('Phase 4 disposable core-slice scenario', () => {
     }, url, TITLE)).toMatchObject({ targetPrefix: TARGET, title: TITLE, url });
   });
 
-  it('freezes the exact bounded thirty-three-command route and final fixture-state raw expression', () => {
-    expect(buildPhase4SliceCommands(TARGET)).toEqual([
+  it('freezes the exact bounded thirty-seven-command route and final fixture-state raw expression', () => {
+    expect(buildPhase4SliceCommands(TARGET, NAV_URL)).toEqual([
       { id: 'perceive', args: ['perceive', TARGET, '--format', 'json'] },
       { id: 'click', args: ['click', TARGET, '#close-modal', '--format', 'json'] },
       { id: 'report', args: ['report', TARGET, '--qa', '--format', 'json'] },
@@ -266,8 +302,34 @@ describe('Phase 4 disposable core-slice scenario', () => {
           '{"expression":"({title:document.title,modalHidden:document.querySelector(\'#motd\')?.hidden===true,shortcut:document.querySelector(\'#shortcut-status\')?.textContent,inputValue:document.querySelector(\'#cmd\')?.value,selectValue:document.querySelector(\'#phase7-select\')?.value,scrollY:Math.round(window.scrollY),jsStatus:document.querySelector(\'#phase7-js-status\')?.textContent,coordStatus:document.querySelector(\'#phase7-coord-status\')?.textContent,authState:document.querySelector(\'#auth-state\')?.textContent})","returnByValue":true}',
         ],
       },
+      { id: 'nav', args: ['nav', TARGET, NAV_URL, '--format', 'json'] },
+      { id: 'back', args: ['back', TARGET, '--format', 'json'] },
+      { id: 'forward', args: ['forward', TARGET, '--format', 'json'] },
+      { id: 'reload', args: ['reload', TARGET, '--format', 'json'] },
     ]);
-    expect(Object.isFrozen(buildPhase4SliceCommands(TARGET))).toBe(true);
+    expect(Object.isFrozen(buildPhase4SliceCommands(TARGET, NAV_URL))).toBe(true);
+  });
+
+  it('binds each navigation action to the exact disposable history state', () => {
+    expect(assertPhase4NavigationState('nav', NAV_URL, { baseUrl: URL, navigationUrl: NAV_URL })).toBe(NAV_URL);
+    expect(assertPhase4NavigationState('back', URL, { baseUrl: URL, navigationUrl: NAV_URL })).toBe(URL);
+    expect(assertPhase4NavigationState('forward', NAV_URL, { baseUrl: URL, navigationUrl: NAV_URL })).toBe(NAV_URL);
+    expect(assertPhase4NavigationState('reload', NAV_URL, { baseUrl: URL, navigationUrl: NAV_URL })).toBe(NAV_URL);
+    expect(() => assertPhase4NavigationState('back', NAV_URL, {
+      baseUrl: URL, navigationUrl: NAV_URL,
+    })).toThrow(/navigation state/);
+  });
+
+  it('requires reload to advance the isolated page generation exactly once', () => {
+    expect(assertPhase4ReloadState({
+      url: NAV_URL, loadCount: 2, marker: 'load:2',
+    }, { navigationUrl: NAV_URL })).toBe(2);
+    expect(() => assertPhase4ReloadState({
+      url: NAV_URL, loadCount: 1, marker: 'load:1',
+    }, { navigationUrl: NAV_URL })).toThrow(/reload generation/);
+    expect(() => assertPhase4ReloadState({
+      url: URL, loadCount: 2, marker: 'load:2',
+    }, { navigationUrl: NAV_URL })).toThrow(/reload generation/);
   });
 
   it('drains bounded browser stderr and captures spawn errors without an unhandled event', () => {
@@ -333,8 +395,43 @@ describe('Phase 4 disposable core-slice scenario', () => {
     expect(exit).toHaveBeenCalledWith(143);
   });
 
+  it('publishes a loopback child before readiness so signal cleanup stops it exactly once', async () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.exitCode = null;
+    child.signalCode = null;
+    let releaseReadiness;
+    const readinessGate = new Promise(resolve => { releaseReadiness = resolve; });
+    const stopChild = vi.fn(async () => {});
+    const launched = launchLoopbackFixtureServer({
+      port: 41758,
+      pagePath: '/fixture/page.html',
+      spawnChild: () => child,
+      stopChild,
+      sleep: () => readinessGate,
+    });
+    const server = launched.child;
+    let cleaning = null;
+    const cleanup = () => {
+      cleaning ||= launched.stop();
+      return cleaning;
+    };
+    const cancellation = createPhase4Cancellation({ cleanup, exit: vi.fn() });
+    const signal = cancellation.onSignal('SIGTERM');
+    expect(server).toBe(child);
+    expect(stopChild).toHaveBeenCalledOnce();
+    child.stdout.write('READY 41758\n');
+    releaseReadiness();
+    await launched.ready;
+    await signal;
+    await cleanup();
+    expect(stopChild).toHaveBeenCalledOnce();
+    expect(() => cancellation.ensureActive()).toThrow(/cancelled/);
+  });
+
   it('validates every public handoff and always cleans up after success', async () => {
-    const commands = buildPhase4SliceCommands(TARGET);
+    const commands = buildPhase4SliceCommands(TARGET, NAV_URL);
     const runCommand = vi.fn(async command => fixtureOutput(command.id));
     const runMcpCommand = vi.fn(async command => fixtureOutput(command.id));
     const cleanup = vi.fn(async () => {});
@@ -343,6 +440,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
       targetPrefix: TARGET,
       expectedTitle: TITLE,
       expectedUrl: URL,
+      navigationUrl: NAV_URL,
       runCommand,
       runMcpCommand,
       cleanup,
@@ -354,11 +452,12 @@ describe('Phase 4 disposable core-slice scenario', () => {
         'wait', 'waitfor', 'cascade',
         'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
         'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw',
+        'nav', 'back', 'forward', 'reload',
       ],
       title: TITLE,
       clickOutcome: 'changed',
       reportActions: 1,
-      extractionParity: 29,
+      extractionParity: 33,
     });
     expect(runCommand.mock.calls.map(([command]) => command)).toEqual(commands);
     expect(runMcpCommand.mock.calls.map(([command]) => command.id)).toEqual([
@@ -367,6 +466,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
       'wait', 'waitfor', 'cascade',
       'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
       'jsclick', 'dismiss-modal', 'clickxy', 'press',
+      'nav', 'back', 'forward', 'reload',
     ]);
     expect(cleanup).toHaveBeenCalledOnce();
   });
@@ -377,6 +477,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
     'wait', 'waitfor', 'cascade',
     'checkpoint', 'cookies', 'verify-click', 'fill', 'type', 'hover', 'scroll', 'select',
     'jsclick', 'dismiss-modal', 'clickxy', 'press', 'evalraw',
+    'nav', 'back', 'forward', 'reload',
   ])('fails at %s and still runs cleanup exactly once', async failureId => {
     const runCommand = vi.fn(async command => {
       if (command.id === failureId) throw new Error(`forced ${failureId} failure`);
@@ -485,7 +586,7 @@ describe('Phase 4 disposable core-slice scenario', () => {
         return JSON.stringify(model);
       },
       cleanup,
-    })).resolves.toMatchObject({ extractionParity: 29 });
+    })).resolves.toMatchObject({ extractionParity: 33 });
     expect(cleanup).toHaveBeenCalledOnce();
   });
 

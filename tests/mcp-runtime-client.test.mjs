@@ -96,7 +96,10 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     expect(executeCli).not.toHaveBeenCalled();
   });
 
-  it.each(['clickxy', 'dismiss-modal', 'jsclick', 'type', 'verify-click'])(
+  it.each([
+    'back', 'clickxy', 'dismiss-modal', 'forward', 'jsclick', 'nav',
+    'navigate', 'reload', 'type', 'verify-click',
+  ])(
     'rejects run_command %s without confirmation before RuntimeClient execution',
     async command => {
       const executeCli = vi.fn();

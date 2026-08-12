@@ -12795,6 +12795,7 @@ const MIGRATED_DAEMON_COMMANDS = Object.freeze([
   'wait', 'waitfor', 'cascade', 'checkpoint', 'cookies',
   'fill', 'hover', 'press', 'scroll', 'select',
   'clickxy', 'dismiss-modal', 'jsclick', 'type', 'verify-click',
+  'back', 'forward', 'nav', 'reload',
 ]);
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPhase4PerceiveHandler(context),
@@ -12830,6 +12831,10 @@ const DAEMON_HANDLER_BUILDERS = Object.freeze({
   jsclick: capabilities => createDaemonActionHandlers(capabilities).jsclick,
   type: capabilities => createDaemonActionHandlers(capabilities).type,
   'verify-click': capabilities => createDaemonActionHandlers(capabilities)['verify-click'],
+  back: capabilities => createDaemonActionHandlers(capabilities).back,
+  forward: capabilities => createDaemonActionHandlers(capabilities).forward,
+  nav: capabilities => createDaemonActionHandlers(capabilities).nav,
+  reload: capabilities => createDaemonActionHandlers(capabilities).reload,
 });
 
 function preflightDaemonApplication(input = {}) {
@@ -13238,6 +13243,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];
   const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];
   const actionCapabilities = {
+    back: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('back', () => historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
     clickxy: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback('clickxy', () => clickXyStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: `${fopts.args[0]},${fopts.args[1]}`, resolvedBy: 'coordinates', label: `${fopts.args[0]},${fopts.args[1]}`, commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
@@ -13262,9 +13272,34 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const value = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, fopts.args[0], refMap, refState), { input: fopts.args[0], resolvedBy: 'selector-or-ref', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
+    forward: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('forward', () => historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    nav: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('nav', () => navStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'url', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'full-perceive', observeFullPerceive, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
     press: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
+      return commandResult(value, { kind: 'action-receipt' });
+    },
+    reload: async args => {
+      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      const value = await actionFeedback('reload', () => reloadActionDispatch({
+        cdp,
+        sessionId,
+        session,
+        consoleBuf,
+        exceptionBuf,
+        navBuf,
+        netReqBuf,
+        pendingReqs,
+        lastReadSeq,
+      }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
     scroll: async args => {
@@ -13355,6 +13390,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     jsclick: applicationPreflight.handlerBuilders.jsclick(actionCapabilities),
     type: applicationPreflight.handlerBuilders.type(actionCapabilities),
     'verify-click': verifyClickBuilder(actionCapabilities),
+    back: applicationPreflight.handlerBuilders.back(actionCapabilities),
+    forward: applicationPreflight.handlerBuilders.forward(actionCapabilities),
+    nav: applicationPreflight.handlerBuilders.nav(actionCapabilities),
+    reload: applicationPreflight.handlerBuilders.reload(actionCapabilities),
   };
   const phase4Context = createCommandDispatcher({
     registry: phase4Registry,
@@ -13432,18 +13471,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         }
         case 'diff-shot': case 'diffshot': {
           result = await diffShotStr(cdp, sessionId, session, parseDiffShotArgs(args));
-          break;
-        }
-        case 'nav': case 'navigate': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback(
-            'nav',
-            () => navStr(cdp, sessionId, fopts.args[0]),
-            { input: fopts.args[0], resolvedBy: 'url', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] },
-            'full-perceive',
-            observeFullPerceive,
-            fopts
-          );
           break;
         }
         case 'mock': case 'network-mock': result = await mockStr(cdp, sessionId, session, args); break;
@@ -13603,31 +13630,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         case 'upload': {
           const fopts = parseCompactFormatArgs(args, ['text', 'json']);
           result = await actionFeedback('upload', () => uploadStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'state-change', null, fopts);
-          break;
-        }
-        case 'back': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('back', () => historyNavStr(cdp, sessionId, -1), { input: 'back', resolvedBy: 'history', label: 'back', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts);
-          break;
-        }
-        case 'forward': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('forward', () => historyNavStr(cdp, sessionId, +1), { input: 'forward', resolvedBy: 'history', label: 'forward', commandArgs: [] }, 'full-perceive', observeFullPerceive, fopts);
-          break;
-        }
-        case 'reload': {
-          const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-          result = await actionFeedback('reload', () => reloadActionDispatch({
-            cdp,
-            sessionId,
-            session,
-            consoleBuf,
-            exceptionBuf,
-            navBuf,
-            netReqBuf,
-            pendingReqs,
-            lastReadSeq,
-          }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts);
           break;
         }
         case 'closetab': result = await closetabStr(cdp, targetId); break;
@@ -14996,8 +14998,8 @@ function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound })
   if (!targetBound) return { allowed: false, code: 'target-not-bound' };
   const actionMutates = command === 'hover' ? mutates === false : mutates === true;
   const allowed = ([
-    'click', 'clickxy', 'dismiss-modal', 'fill', 'hover', 'jsclick',
-    'press', 'scroll', 'select', 'type', 'verify-click',
+    'back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'hover',
+    'jsclick', 'nav', 'press', 'reload', 'scroll', 'select', 'type', 'verify-click',
   ].includes(command)
       && policy === 'mutation' && actionMutates)
     || (command === 'evalraw' && policy === 'raw-cdp' && mutates === false)
