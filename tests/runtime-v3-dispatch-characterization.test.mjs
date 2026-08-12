@@ -1,18 +1,14 @@
 import { spawnSync } from 'child_process';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 
 import { buildRuntimeDispatchInventory } from '../scripts/runtime-dispatch-inventory.mjs';
 import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
-
-const rootDir = fileURLToPath(new URL('..', import.meta.url));
-const sourcePath = join(rootDir, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
-const fixturePath = join(rootDir, 'docs/contracts/v2.15.0/runtime-dispatch.v1.json');
-const scriptPath = join(rootDir, 'scripts/runtime-dispatch-inventory.mjs');
-const source = readFileSync(sourcePath, 'utf8');
-const fixture = JSON.parse(readFileSync(fixturePath, 'utf8'));
+import {
+  fixture,
+  rootDir,
+  scriptPath,
+  source,
+} from './runtime-v3-dispatch-test-helpers.mjs';
 
 describe('Runtime v3 final dispatch characterization', () => {
   it('freezes the exact 81-command daemon/CLI ownership graph and deletion allowlist', () => {
@@ -91,7 +87,7 @@ describe('Runtime v3 final dispatch characterization', () => {
     }
   });
 
-  it('fails closed on an unknown route, duplicate route, missing route, or edited branch', () => {
+  it('fails closed on handler ownership drift', () => {
     expect(buildRuntimeDispatchInventory(source.replace(
       'shot: capabilities => createDaemonReadHandlers(capabilities).shot,',
       'shot: capabilities => createDaemonReadHandlers(capabilities).fullshot,',
@@ -110,7 +106,7 @@ describe('Runtime v3 final dispatch characterization', () => {
     ))).not.toEqual(fixture);
     expect(buildRuntimeDispatchInventory(source.replace(
       'qa: capabilities => createDaemonActionHandlers(capabilities).qa,',
-      'qa: capabilities => createDaemonActionHandlers(capabilities)[\'responsive-audit\'],',
+      "qa: capabilities => createDaemonActionHandlers(capabilities)['responsive-audit'],",
     ))).not.toEqual(fixture);
     expect(buildRuntimeDispatchInventory(source.replace(
       'qa: applicationPreflight.handlerBuilders.qa(actionCapabilities),',
@@ -128,6 +124,9 @@ describe('Runtime v3 final dispatch characterization', () => {
       '  loadall: capabilities => createDaemonActionHandlers(capabilities).loadall,\n',
       '',
     ))).toThrow(/exactly cover.*68 target commands/);
+  }, 30_000);
+
+  it('fails closed on route and execution cardinality drift', () => {
     expect(buildRuntimeDispatchInventory(source.replace(
       'if (!sameStringArray(builderNames, expectedNames)) {',
       'if (false && !sameStringArray(builderNames, expectedNames)) {',
@@ -168,187 +167,6 @@ describe('Runtime v3 final dispatch characterization', () => {
       'const applicationRoute = applicationDispatcher.route(cmd);',
       "await executeDaemonApplicationRoute({ cmd: 'html', args, targetBound: true }, applicationDispatcher);\n      const applicationRoute = applicationDispatcher.route(cmd);",
     ))).toThrow(/exactly one general application dispatch/);
-  }, 30_000);
-
-  it.each([
-      source.replace(
-        'html: capabilities => createDaemonReadHandlers(capabilities).html,',
-        'html: capabilities => createDaemonReadHandlers(capabilities).text,',
-      ),
-      source.replace(
-        'html: args => htmlStr(cdp, sessionId, args),',
-        'html: args => textStr(cdp, sessionId, args),',
-      ),
-      source.replace(
-        'html: args => htmlStr(cdp, sessionId, args),',
-        'html: async args => { await htmlStr(cdp, sessionId, args); return htmlStr(cdp, sessionId, args); },',
-      ),
-      source.replace(
-        'console: capabilities => createDaemonReadHandlers(capabilities).console,',
-        'console: capabilities => createDaemonReadHandlers(capabilities).record,',
-      ),
-      source.replace(
-        'record: capabilities => createDaemonReadHandlers(capabilities).record,',
-        'record: capabilities => createDaemonReadHandlers(capabilities).console,',
-      ),
-      source.replace(
-        'console: async args => {',
-        'console: async args => recordStr(cdp, sessionId, args, refMap),\n    plantedConsole: async args => {',
-      ),
-      source.replace(
-        'record: args => recordStr(cdp, sessionId, args, refMap),',
-        'record: args => consoleStr(consoleBuf, exceptionBuf, lastReadSeq, args[0]),',
-      ),
-      source.replace(
-        "? await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[1], fargs[2], refMap, refState, { react: true })",
-        "? await actionFeedback('fill', () => selectStr(cdp, sessionId, fargs[1], fargs[2])",
-      ),
-      source.replace(
-        "const recordActionsBuilder = applicationPreflight.handlerBuilders['record-actions'];",
-        "const recordActionsBuilder = applicationPreflight.handlerBuilders['export-playwright'];",
-      ),
-      source.replace(
-        "const exportPlaywrightBuilder = applicationPreflight.handlerBuilders['export-playwright'];",
-        "const exportPlaywrightBuilder = applicationPreflight.handlerBuilders['record-actions'];",
-      ),
-      source.replace(
-        "const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];",
-        "const dismissModalBuilder = applicationPreflight.handlerBuilders['verify-click'];",
-      ),
-      source.replace(
-        "const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];",
-        "const verifyClickBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];",
-      ),
-      source.replace(
-        'back: applicationPreflight.handlerBuilders.back(actionCapabilities),',
-        'back: applicationPreflight.handlerBuilders.forward(actionCapabilities),',
-      ),
-      source.replace(
-        'nav: applicationPreflight.handlerBuilders.nav(actionCapabilities),',
-        'nav: applicationPreflight.handlerBuilders.reload(actionCapabilities),',
-      ),
-      source.replace(
-        'clock: applicationPreflight.handlerBuilders.clock(actionCapabilities),',
-        'clock: applicationPreflight.handlerBuilders.throttle(actionCapabilities),',
-      ),
-      source.replace(
-        'mock: applicationPreflight.handlerBuilders.mock(actionCapabilities),',
-        'mock: applicationPreflight.handlerBuilders.clock(actionCapabilities),',
-      ),
-      source.replace(
-        'emulate: applicationPreflight.handlerBuilders.emulate(actionCapabilities),',
-        'emulate: applicationPreflight.handlerBuilders.viewport(actionCapabilities),',
-      ),
-      source.replace(
-        'viewport: applicationPreflight.handlerBuilders.viewport(actionCapabilities),',
-        'viewport: applicationPreflight.handlerBuilders.emulate(actionCapabilities),',
-      ),
-      source.replace(
-        'cookieset: applicationPreflight.handlerBuilders.cookieset(actionCapabilities),',
-        'cookieset: applicationPreflight.handlerBuilders.cookiedel(actionCapabilities),',
-      ),
-      source.replace(
-        'netlog: applicationPreflight.handlerBuilders.netlog(actionCapabilities),',
-        'netlog: applicationPreflight.handlerBuilders.dialog(actionCapabilities),',
-      ),
-      source.replace(
-        'eval: applicationPreflight.handlerBuilders.eval(scriptCapabilities),',
-        'eval: applicationPreflight.handlerBuilders.call(scriptCapabilities),',
-      ),
-      source.replace(
-        'eval: async args => {',
-        'eval: async args => commandResult(await callStr(cdp, sessionId, args.join(\' \')), null),\n    plantedEval: async args => {',
-      ),
-      source.replace(
-        'batch: capabilities => async ({ args }) => commandResult(await capabilities.batch(args), null),',
-        'batch: capabilities => async ({ args }) => commandResult(await capabilities.flow(args), null),',
-      ),
-      source.replace(
-        'batch: async args => {',
-        'batch: async args => workflowCapabilities.flow(args),\n    plantedBatch: async args => {',
-      ),
-      source.replace(
-        'replay: applicationPreflight.handlerBuilders.replay(workflowCapabilities),',
-        'replay: applicationPreflight.handlerBuilders.repeat(workflowCapabilities),',
-      ),
-      source.replace(
-        'upload: capabilities => createDaemonActionHandlers(capabilities).upload,',
-        'upload: capabilities => createDaemonActionHandlers(capabilities).inject,',
-      ),
-      source.replace(
-        'inject: applicationPreflight.handlerBuilders.inject(actionCapabilities),',
-        'inject: applicationPreflight.handlerBuilders.restore(actionCapabilities),',
-      ),
-      source.replace(
-        'restore: async args => {',
-        'restore: async args => actionCapabilities.upload(args),\n    plantedRestore: async args => {',
-      ),
-  ])('detects handler and capability wiring mutation %#', mutation => {
-    try {
-      expect(buildRuntimeDispatchInventory(mutation)).not.toEqual(fixture);
-    } catch (error) {
-      expect(error).toBeInstanceOf(Error);
-    }
-  }, 15_000);
-
-  it('rejects shadowed handler and capability authority', () => {
-    const builderStart = source.indexOf('const DAEMON_HANDLER_BUILDERS =');
-    const builderEnd = source.indexOf('\n\nfunction preflightDaemonApplication', builderStart);
-    const originalBuilders = source.slice(builderStart, builderEnd);
-    const shadowedAuthority = `${source.replace(
-      'html: capabilities => createDaemonReadHandlers(capabilities).html,',
-      'html: capabilities => createDaemonReadHandlers(capabilities).text,',
-    )}\nfunction plantedAuthority() {\n  ${originalBuilders}\n}\n`;
-    expect(() => buildRuntimeDispatchInventory(shadowedAuthority)).toThrow(/top-level|exactly once/);
-    expect(() => buildRuntimeDispatchInventory(source.replace(
-      'const readCapabilities = {',
-      'if (true) { const readCapabilities = {}; }\n  const readCapabilities = {',
-    ))).toThrow(/direct runDaemon const|exactly once/);
-    expect(() => buildRuntimeDispatchInventory(source.replace(
-      'const actionCapabilities = {',
-      'if (true) { const actionCapabilities = {}; }\n  const actionCapabilities = {',
-    ))).toThrow(/direct runDaemon const|exactly once/);
-    expect(() => buildRuntimeDispatchInventory(source.replace(
-      'const scriptCapabilities = {',
-      'if (true) { const scriptCapabilities = {}; }\n  const scriptCapabilities = {',
-    ))).toThrow(/direct runDaemon const|exactly once/);
-    expect(() => buildRuntimeDispatchInventory(source.replace(
-      'const workflowCapabilities = {',
-      'if (true) { const workflowCapabilities = {}; }\n  const workflowCapabilities = {',
-    ))).toThrow(/direct runDaemon const|exactly once/);
-    expect(() => buildRuntimeDispatchInventory(source.replace(
-      "const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];",
-      "if (true) { const dismissModalBuilder = applicationPreflight.handlerBuilders['verify-click']; }\n  const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];",
-    ))).toThrow(/direct runDaemon const|exactly once/);
-    expect(() => buildRuntimeDispatchInventory(source.replace(
-      "const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];",
-      "if (true) { const verifyClickBuilder = applicationPreflight.handlerBuilders['dismiss-modal']; }\n  const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];",
-    ))).toThrow(/direct runDaemon const|exactly once/);
-  }, 30_000);
-
-  it('binds the CLI and daemon routing spine', () => {
-    for (const mutation of [
-      source.replace("cmd === '-h'", "cmd === '--planted-help'"),
-      source.replace("if (cmd === '_daemon')", "if (cmd === '_planted-daemon')"),
-      source.replace("if (cmd === 'target')", "if (cmd === '_planted-target')"),
-      source.replace("if (cmd === 'wait' &&", "if (cmd === '_planted-wait' &&"),
-      source.replace('async function handleCommand({ cmd, args }) {\n    resetIdle();', "async function handleCommand({ cmd, args }) {\n    resetIdle();\n    cmd = 'summary';"),
-      source.replace("return { ok: true, result: result ?? '' };", "return { ok: true, result: 'planted' };"),
-      source.replace('return finish(1);\n  }\n\n  // Canonicalize aliases', 'return finish(0);\n  }\n\n  // Canonicalize aliases'),
-      source.replace('cmd = commandMeta(cmd)?.name || cmd;', 'cmd = cmd;'),
-      source.replace('const response = await runtimeSupervisor.execute(runtimeHandle, { cmd, args: cmdArgs });', "const response = { ok: true, result: 'planted' };")
-    ]) {
-      try {
-        expect(buildRuntimeDispatchInventory(mutation)).not.toEqual(fixture);
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-      }
-    }
-    const markerCollision = source.replace(
-      "return { ok: false, error: e.message || String(e) };\n    }\n  }",
-      "return { ok: false, error: e.message || String(e) };\n    }\n    // default: return { ok: false, error: `Unknown command: ${cmd}` };\n  }",
-    ).replace("return { ok: true, result: result ?? '' };", "return { ok: true, result: 'planted' };");
-    expect(buildRuntimeDispatchInventory(markerCollision)).not.toEqual(fixture);
   }, 30_000);
 
   it('keeps check mode read-only and rejects stale fixture/source drift', () => {
