@@ -13,7 +13,7 @@ Phase status: **Phase 8A evidence prerequisite complete locally; Phase 8B public
 | Target | Why relevant | Notes / eligibility |
 |---|---|---|
 | [awesome-claude-code](https://github.com/hesreallyhim/awesome-claude-code) (and forks) | Already curated; description is stale at 68 commands / Claude-only positioning | Comment on existing issue #1157 with the approved neutral 81-command description; its current CONTRIBUTING guide says not to open a recommendation PR |
-| Awesome Codex Skills lists | Codex CLI-skill route is now live-validated | Phase 1: submit only to an active, relevant list with the Codex Killer Path proof |
+| Awesome Codex Skills lists | Codex CLI-skill installation was live-validated on the historical Phase 1 candidate; current Runtime v3 fixture proof is separate | Submit only to an active, relevant list with the exact evidence boundary and Codex Killer Path |
 | [awesome-mcp-servers](https://github.com/modelcontextprotocol/servers) / community MCP lists | MCP stdio server | List as community server; link repo + MCP tool summary |
 | [awesome-browser-automation](https://github.com/atinfo/awesome-test-automation) / Playwright-adjacent lists | Browser automation category | Position as live-session attach, not E2E replacement |
 | Claude Code plugin marketplaces / directories | Plugin install path | Already has `.claude-plugin/plugin.json`; follow marketplace rules |
