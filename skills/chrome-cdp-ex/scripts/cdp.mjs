@@ -21,7 +21,6 @@ import {
   commandResult,
   createCommandRegistry,
   defineCommandSpec,
-  executeCommand,
 } from './lib/command-application.mjs';
 import {
   createCommandDispatcher,
@@ -15227,10 +15226,6 @@ function authorizePhase4DaemonCommand({ command, policy, mutates, targetBound })
     : { allowed: false, code: 'policy-denied' };
 }
 
-async function executePhase4CompatibilityCommand(request, context) {
-  return (await executeCommand(request, context)).value;
-}
-
 async function executePhase4DaemonRoute(requestInput, context) {
   inspectCommandDispatcher(context);
   const request = snapshotPhase4DataObject(requestInput, 'daemon route request');
@@ -16690,5 +16685,5 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   DAEMON_APPLICATION_COMMANDS, DAEMON_HANDLER_BUILDERS, preflightDaemonApplication,
   createPhase4ReportHandler, createPhase4PerceiveHandler,
   createPhase4ClickHandler, createPhase4EvalrawHandler,
-  authorizePhase4DaemonCommand, executePhase4CompatibilityCommand, executePhase4DaemonRoute,
+  authorizePhase4DaemonCommand, executePhase4DaemonRoute,
 } : undefined;

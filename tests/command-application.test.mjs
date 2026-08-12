@@ -21,6 +21,10 @@ const ACTION_COMMANDS = Object.freeze([
 const SCRIPT_COMMANDS = Object.freeze(['eval', 'eval64', 'call']);
 const WORKFLOW_COMMANDS = Object.freeze(['batch', 'flow', 'repeat', 'replay']);
 
+async function executeApplicationValue(request, context) {
+  return (await executeCommand(request, context)).value;
+}
+
 function spec(overrides = {}) {
   return {
     name: 'perceive',
@@ -515,6 +519,10 @@ describe('Phase 4 command results and execution', () => {
 });
 
 describe('Phase 4 report compatibility slice', () => {
+  it('uses the application result directly without a production compatibility value wrapper', () => {
+    expect(cdpTest).not.toHaveProperty('executePhase4CompatibilityCommand');
+  });
+
   function reportSession() {
     const session = cdpTest.createSessionState({ targetId: 'ABC12345', sessionId: 'session-private' });
     cdpTest.initializeSessionLog(session);
@@ -533,7 +541,7 @@ describe('Phase 4 report compatibility slice', () => {
       const expected = cdpTest.formatSessionReport(session, options);
       const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
       const handler = cdpTest.createPhase4ReportHandler(session);
-      const actual = await cdpTest.executePhase4CompatibilityCommand({
+      const actual = await executeApplicationValue({
         name: 'report', args, targetBound: true,
       }, {
         registry,
@@ -547,7 +555,7 @@ describe('Phase 4 report compatibility slice', () => {
 
   it('preserves the established report unknown-argument failure', async () => {
     const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
-    await expect(cdpTest.executePhase4CompatibilityCommand({
+    await expect(executeApplicationValue({
       name: 'report', args: ['--unknown'], targetBound: true,
     }, {
       registry,
@@ -558,7 +566,7 @@ describe('Phase 4 report compatibility slice', () => {
   it('invokes exactly one report handler and exposes only its legacy value', async () => {
     const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
     const handler = vi.fn(async () => commandResult('legacy report\n', { kind: 'session-report' }));
-    const actual = await cdpTest.executePhase4CompatibilityCommand({
+    const actual = await executeApplicationValue({
       name: 'report', args: [], targetBound: true,
     }, { registry, handlers: { report: handler } });
     expect(handler).toHaveBeenCalledOnce();
@@ -663,7 +671,7 @@ describe('Phase 4 click compatibility slice', () => {
     });
     const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
     const handler = cdpTest.createPhase4ClickHandler({ actionFeedback, click, jsClick });
-    const actual = await cdpTest.executePhase4CompatibilityCommand({
+    const actual = await executeApplicationValue({
       name: 'click', args, targetBound: true,
     }, {
       registry,
@@ -1220,7 +1228,7 @@ describe('Phase 4 evalraw compatibility slice', () => {
     const evalRaw = vi.fn(async (actualMethod, actualParams) => `legacy:${actualMethod}:${actualParams ?? ''}\n`);
     const registry = cdpTest.createPhase4CommandRegistry(cdpTest.COMMANDS);
     const handler = cdpTest.createPhase4EvalrawHandler({ evalRaw });
-    const actual = await cdpTest.executePhase4CompatibilityCommand({
+    const actual = await executeApplicationValue({
       name: 'evalraw', args: params === undefined ? [method] : [method, params], targetBound: true,
     }, {
       registry,
