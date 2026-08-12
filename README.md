@@ -267,11 +267,11 @@ Latest measured release: local run on 2026-08-12 for v2.15.0 against 5 safe loca
 
 | Metric | Latest measured run |
 |---|---:|
-| Total time | 10.743s avg |
+| Total time | 10.686s avg |
 | Command calls | 24 per round |
-| First useful observation | 2.206s avg |
-| First action evidence | 2.935s avg |
-| Golden path complete | 5.573s avg |
+| First useful observation | 2.213s avg |
+| First action evidence | 2.941s avg |
+| Golden path complete | 5.538s avg |
 | Estimated output tokens | 11,429 avg |
 | Useful observation tokens | 1,732 avg |
 | Action evidence coverage | 6 auto-evidence actions per round; no failed criteria |
