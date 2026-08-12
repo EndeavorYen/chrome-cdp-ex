@@ -1,7 +1,7 @@
 // cdp.test.mjs — Tests for cdp.mjs pure functions
 // Run: npm test
 
-import { afterEach, describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
@@ -6687,6 +6687,90 @@ describe('clickStr', () => {
     const result = await clickStr(cdp, 'sid1', '@1', refMap);
     expect(result).toContain('Clicked');
     expect(result).toContain('@1');
+  });
+
+  it('fails a detached @ref after replaceChildren before dispatch or pre-action churn observation', async () => {
+    const oldNodes = [
+      { nodeId: 'root-0', role: { value: 'RootWebArea' }, name: { value: 'Reviews' }, childIds: ['alpha-0'] },
+      { nodeId: 'alpha-0', parentId: 'root-0', role: { value: 'button' }, name: { value: 'Review Alpha' }, backendDOMNodeId: 101 },
+    ];
+    const freshNodes = [
+      { nodeId: 'root-1', role: { value: 'RootWebArea' }, name: { value: 'Reviews' }, childIds: ['charlie-1', 'alpha-1'] },
+      { nodeId: 'charlie-1', parentId: 'root-1', role: { value: 'button' }, name: { value: 'Review Charlie' }, backendDOMNodeId: 201 },
+      { nodeId: 'alpha-1', parentId: 'root-1', role: { value: 'button' }, name: { value: 'Review Alpha' }, backendDOMNodeId: 202 },
+    ];
+    const refMap = new Map();
+    const refState = { generation: 1, invalidationReason: null };
+    const meta = { layoutMap: {}, styleHints: {} };
+    buildPerceiveTree(oldNodes, meta, refMap);
+    expect(refMap.get(1)).toBe(101);
+
+    // Harness-only replaceChildren: the old backend node still resolves, but is detached.
+    let appAttempts = 0;
+    const connectedObjects = new Set(['fresh-charlie', 'fresh-alpha']);
+    const cdp = createMockCDP({
+      'DOM.resolveNode': ({ backendNodeId }) => ({
+        object: {
+          objectId: backendNodeId === 101
+            ? 'detached-alpha'
+            : backendNodeId === 202 ? 'fresh-alpha' : 'fresh-charlie',
+        },
+      }),
+      'Runtime.callFunctionOn': ({ objectId, functionDeclaration }) => {
+        if (!functionDeclaration.includes('requestAnimationFrame')) {
+          return { result: { value: connectedObjects.has(objectId) } };
+        }
+        if (objectId === 'detached-alpha') {
+          return { result: { value: { x: 0, y: 0, w: 0, h: 0, tag: 'BUTTON', text: 'Review Alpha' } } };
+        }
+        return { result: { value: { x: 40, y: 72, w: 120, h: 32, tag: 'BUTTON', text: 'Review Alpha' } } };
+      },
+      'Input.dispatchMouseEvent': ({ type, x, y }) => {
+        if (type === 'mouseReleased' && x === 100 && y === 88) appAttempts += 1;
+        return {};
+      },
+    });
+    const observe = vi.fn(async () => '+++ Added\n+ [button] Review Charlie @1');
+    let captured = null;
+    const output = await T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'ABC12345', input: '@1', resolvedBy: 'selector-or-ref', label: '@1' },
+      dispatch: () => clickStr(cdp, 'sid1', '@1', refMap, refState),
+      feedbackPolicy: 'settle-diff',
+      observe,
+      onActionResult: result => { captured = result; },
+      format: { format: 'json', compact: true },
+    });
+    const result = JSON.parse(output);
+    const processLike = { exitCode: 0, platform: 'darwin' };
+    T.emitTargetCommandResponse({ ok: true, result: output }, {
+      cmd: 'click',
+      targetPrefix: 'ABC12345',
+      format: 'json',
+      console: { log: () => {}, error: () => {} },
+      process: processLike,
+    });
+
+    expect(result.dispatch).toMatchObject({ ok: false, method: 'click' });
+    expect(result.effects).toMatchObject({
+      domDiff: null,
+      failure: {
+        kind: 'stale-ref',
+        nextCommand: 'cdp perceive ABC12345 -C -d 8',
+      },
+    });
+    expect(result.outcome).toMatchObject({ status: 'failed', changed: false });
+    expect(captured.dispatch.ok).toBe(false);
+    expect(cdp.calls.filter(call => call.method.startsWith('Input.dispatch'))).toEqual([]);
+    expect(appAttempts).toBe(0);
+    expect(observe).not.toHaveBeenCalled();
+    expect(processLike.exitCode).toBe(1);
+
+    // A fresh perceive replaces, rather than remaps, the stale ref authority.
+    buildPerceiveTree(freshNodes, meta, refMap);
+    expect(refMap.get(2)).toBe(202);
+    await clickStr(cdp, 'sid1', '@2', refMap, refState);
+    expect(appAttempts).toBe(1);
   });
 
   it('should click cursor-interactive @c refs using saved viewport coordinates', async () => {
