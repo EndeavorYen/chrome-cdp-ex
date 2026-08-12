@@ -18,6 +18,96 @@ Most workflows start with `doctor -> list -> open -> perceive -> click/fill -> p
 | Live experiment controls | `inject`, `cascade`, `record`, `mock`, `clock`, `throttle` |
 | Session assets | `checkpoint`, `restore`, `record-actions`, `export-playwright`, `replay` |
 
+### Generated canonical index
+
+<!-- chrome-cdp-ex:generated-command-surface:start -->
+_Generated from the immutable command catalog; edit command metadata at its source, not this region._
+
+| Command | Synopsis | Catalog policy |
+|---|---|---|
+| `help` | `help` | `read / standard` |
+| `list` | `list\|tabs\|ls [--format json]` | `read / standard` |
+| `target` | `target --url URL\|--title TEXT [--exact] [--format json]` | `read / standard` |
+| `tab-group` | `tab-group list\|create\|add\|remove\|delete\|show [--format json]` | `conditional-mutation / conditional` |
+| `broadcast` | `broadcast <group> <cmd> [args...] [--format json] [--full-results]` | `mutation / mutation` |
+| `use` | `use <target> --name <alias>` | `protected-mutation / mutation` |
+| `attach` | `attach --port N --target <id> --name <alias>` | `protected-mutation / mutation` |
+| `current` | `current [--format json]` | `read / standard` |
+| `forget` | `forget <alias>` | `protected-mutation / mutation` |
+| `perceive` | `perceive <target> [flags] [--format json]` | `read / standard` |
+| `snap` | `snap <target> [--full]` | `read / standard` |
+| `controls` | `controls <target> [-s selector] [--filter text] [--limit N] [--compact] [--format json]` | `read / standard` |
+| `eval` | `eval <target> <expr>` | `script / raw-script` |
+| `eval64` | `eval64 <target> <base64>` | `script / raw-script` |
+| `call` | `call <target> <expr\|fn>` | `script / raw-script` |
+| `elshot` | `elshot <target> <sel\|@ref>` | `read / standard` |
+| `shot` | `shot <target> [file\|--annotate]` | `conditional-mutation / conditional` |
+| `diff-shot` | `diff-shot <target> [--reset] [--threshold pct]` | `conditional-mutation / conditional` |
+| `html` | `html <target> [selector]` | `read / standard` |
+| `nav` | `nav <target> <url> [--format json]` | `mutation / mutation` |
+| `mock` | `mock <target> [add\|clear]` | `mutation / mutation` |
+| `clock` | `clock <target> [freeze\|offset\|reset]` | `mutation / mutation` |
+| `throttle` | `throttle <target> [off\|offline\|slow-3g\|fast-3g\|lte\|custom]` | `mutation / mutation` |
+| `status` | `status <target> [--runtime]` | `read / standard` |
+| `console` | `console <target> [--all\|--errors\|--clear]` | `conditional-mutation / conditional` |
+| `summary` | `summary <target>` | `read / standard` |
+| `report` | `report <target> [--last N\|--all] [--format json] [--qa\|--summary] [--compact]` | `evidence / standard` |
+| `checkpoint` | `checkpoint <target> [--unsafe-full] [--format json]` | `sensitive-read / sensitive-read` |
+| `restore` | `restore <target> --file <path> [--format json]` | `mutation / mutation` |
+| `record-actions` | `record-actions <target>` | `read / standard` |
+| `export-playwright` | `export-playwright <target> [--format json]` | `read / standard` |
+| `replay` | `replay <target> --file <path> [--format json]` | `mutation / mutation` |
+| `frame` | `frame <target> [--format json]` | `read / standard` |
+| `overlay` | `overlay <target> [sel\|@ref] [--format json]` | `read / standard` |
+| `qa` | `qa <target> [--desktop WxH] [--mobile WxH] [--format json]` | `mutation / mutation` |
+| `responsive-audit` | `responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]` | `mutation / mutation` |
+| `verify-click` | `verify-click <target> <sel\|@ref> [--format json]` | `mutation / mutation` |
+| `net` | `net <target>` | `read / standard` |
+| `click` | `click <target> <sel\|@ref> [--format json] [--qa\|--summary]` | `mutation / mutation` |
+| `jsclick` | `jsclick <target> <sel\|@ref>` | `mutation / mutation` |
+| `clickxy` | `clickxy <target> <x> <y> [--format json]` | `mutation / mutation` |
+| `type` | `type <target> <text> [--format json]` | `mutation / mutation` |
+| `press` | `press\|key <target> <key> [--format json]` | `mutation / mutation` |
+| `scroll` | `scroll <target> <dir\|x,y> [px] [--format json]` | `mutation / mutation` |
+| `hover` | `hover <target> <sel\|@ref>` | `protected-mutation / mutation` |
+| `waitfor` | `waitfor <target> <selector> [ms]` | `read / standard` |
+| `loadall` | `loadall <target> <selector> [ms]` | `protected-mutation / mutation` |
+| `wait` | `wait <target> <ms>` | `read / standard` |
+| `fill` | `fill <target> <sel\|@ref> <txt> [--format json]` | `mutation / mutation` |
+| `select` | `select <target> <selector> <val> [--format json]` | `mutation / mutation` |
+| `fullshot` | `fullshot <target> [file]` | `conditional-mutation / conditional` |
+| `scanshot` | `scanshot <target>` | `read / standard` |
+| `styles` | `styles <target> <selector> [--root auto\|body\|document\|<sel>]` | `read / standard` |
+| `components` | `components <target> [--depth N] [@ref\|selector] [--max-chars N] [--unsafe-full] [--format json]` | `sensitive-read / sensitive-read` |
+| `cookies` | `cookies <target>` | `sensitive-read / sensitive-read` |
+| `cookieset` | `cookieset <target> <cookie>` | `mutation / mutation` |
+| `cookiedel` | `cookiedel <target> <name>` | `mutation / mutation` |
+| `dialog` | `dialog <target> [accept\|dismiss]` | `protected-mutation / mutation` |
+| `viewport` | `viewport\|resize <target> [WxH]` | `mutation / mutation` |
+| `emulate` | `emulate <target> [dark\|light\|no-preference\|off\|status]` | `mutation / mutation` |
+| `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
+| `text` | `text <target> [selector]` | `read / standard` |
+| `table` | `table <target> [selector]` | `read / standard` |
+| `back` | `back <target>` | `mutation / mutation` |
+| `forward` | `forward <target>` | `mutation / mutation` |
+| `reload` | `reload <target>` | `mutation / mutation` |
+| `closetab` | `closetab <target>` | `mutation / mutation` |
+| `netlog` | `netlog <target> [--clear]` | `conditional-mutation / conditional` |
+| `inject` | `inject <target> <flag> [content]` | `mutation / mutation` |
+| `cascade` | `cascade <target> <sel\|@ref> [prop] [--format json]` | `read / standard` |
+| `record` | `record <target> [ms]` | `conditional-mutation / conditional` |
+| `evalraw` | `evalraw <target> <method> [json]` | `raw-cdp / raw-cdp` |
+| `batch` | `batch <target> <cmds> [--parallel] [--format json]` | `composite / composite` |
+| `flow` | `flow <target> "<steps>" [--format json]` | `composite / composite` |
+| `repeat` | `repeat <target> <N> <cmd> [args]` | `composite / composite` |
+| `doctor` | `doctor / ready [--format json]` | `read / standard` |
+| `keepalive` | `keepalive <target> <ms>` | `protected-mutation / mutation` |
+| `open` | `open [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]` | `mutation / mutation` |
+| `spawn-debug-browser` | `spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]` | `mutation / mutation` |
+| `dismiss-modal` | `dismiss-modal <target>` | `mutation / mutation` |
+| `stop` | `stop [target] [--format json]` | `mutation / mutation` |
+<!-- chrome-cdp-ex:generated-command-surface:end -->
+
 ## Agent Loop
 
 The core loop is intentionally short:
@@ -72,13 +162,13 @@ For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a tex
 
 Official releases live on GitHub, not the npm registry. Use the release tag, release notes, GitHub Pages proof page, and attached tarball as the publish surface.
 
-Pinned install: [v2.14.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0).
+Pinned install: [v2.15.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0).
 
 ```bash
-curl -L -o pi-chrome-cdp-2.14.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.14.0/pi-chrome-cdp-2.14.0.tgz
-mkdir -p chrome-cdp-ex-v2.14.0
-tar -xzf pi-chrome-cdp-2.14.0.tgz -C chrome-cdp-ex-v2.14.0 --strip-components=1
-cd chrome-cdp-ex-v2.14.0
+curl -L -o pi-chrome-cdp-2.15.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.15.0/pi-chrome-cdp-2.15.0.tgz
+mkdir -p chrome-cdp-ex-v2.15.0
+tar -xzf pi-chrome-cdp-2.15.0.tgz -C chrome-cdp-ex-v2.15.0 --strip-components=1
+cd chrome-cdp-ex-v2.15.0
 claude --plugin-dir .
 ```
 
@@ -404,7 +494,7 @@ npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-
 
 Use [`docs/benchmarks/measured-baselines.example.json`](benchmarks/measured-baselines.example.json) as the checked-in schema fixture for reviewers. Do not publish comparison claims from that example file; regenerate a measured `baselines.json` for the machine and browser under test.
 
-Use `benchmark:campaign` for repeated live testing. It runs sequential rounds with unique CDP and HTTP ports, alternating matched MCP and CLI routes by default, then reports pass rate, latency, estimated output tokens, first-useful-observation time, and culprit steps. Failed, incomplete, or regression-fail campaigns exit nonzero; `--allow-failures` is only for intentionally collecting diagnostic output. Add `--types large-app` for the 5000+ DOM node, 1000-row, 200-control bounded-output stress gate.
+Use `benchmark:campaign` for repeated live testing. It runs sequential rounds with unique CDP and HTTP ports, alternating matched MCP and CLI routes by default, then reports pass rate, latency, estimated output tokens, first-useful-observation time, culprit steps, and a deterministic candidate identity. That identity binds the product version to a SHA-256 digest of the runtime, benchmark, setup, package, and identity-owned source files. Failed, incomplete, or regression-fail campaigns exit nonzero; `--allow-failures` is only for intentionally collecting diagnostic output. Add `--types large-app` for the 5000+ DOM node, 1000-row, 200-control bounded-output stress gate.
 
 Add `--types real-app --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy` when a smoke page is too easy. Each profile has a distinct trait/probe contract, and output records generated coverage, exercised coverage, missing probes, target class, and culprit steps. These are safe local/test-only fixtures. Any future URL-backed profile must use an owned staging/test tenant, never customer data, personal accounts, or production workflows.
 
@@ -412,7 +502,10 @@ The README and GitHub Pages benchmark proof should use a current passing mixed c
 
 ```bash
 npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output release-campaign.json
+npm run benchmark:update-readme -- release-campaign.json README.md --html experiment/benchmark.html --date YYYY-MM-DD --version X.Y.Z
 ```
+
+The public-proof updater validates all ten ordered rounds, every round gate, zero failures, the exact release route/profile inventory, and the artifact candidate identity against the current tree before it writes either README or benchmark HTML.
 
 Killer Path gates include long-session report budget coverage. Any report handoff with 50 or more recorded actions must stay inside its JSON byte budget, expose `latestAction`, keep a bounded non-expensive `timelineWindow`, preserve recovery-critical receipt fields, and point to artifact paths instead of dumping all history.
 

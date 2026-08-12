@@ -3,23 +3,33 @@
 [![81 Commands](https://img.shields.io/badge/commands-81-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
-[![Release v2.14.0](https://img.shields.io/badge/release-v2.14.0-brightgreen)](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0)
+[![Release v2.15.0](https://img.shields.io/badge/release-v2.15.0-brightgreen)](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)
 [![MIT License](https://img.shields.io/badge/license-MIT-gray)](LICENSE)
 
-> **TL;DR** — Give coding agents eyes and hands on your **already open** Chrome / Edge / Electron session: perceive layout, act with Action Receipts, recover from overlays and stale refs, then hand off a session report.
+> **Use the browser you already have open.** Give coding agents eyes and hands on your Chrome, Edge, or Electron session — including its current tabs, login state, and live page state — with evidence for every action.
 
-Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-ex` is for **live-page perception** when the agent needs the browser you are actually using — cookies, login state, and open tabs included.
+**Agent hosts:** [Codex](docs/integrations/codex.md) · [Claude Code](docs/integrations/claude.md) · [Cursor](docs/integrations/cursor.md) · [OpenClaw](docs/integrations/openclaw.md) · [Hermes](docs/integrations/hermes.md) · [Pi](docs/integrations/pi.md)
 
-## What's new in v2.14.0
+<p align="center">
+  <a href="experiment/codex-killer-path-demo.mp4"><img src="experiment/codex-killer-path-demo-poster.png" alt="Codex uses chrome-cdp-ex to perceive, act, verify what changed, and hand off a browser session" width="720"></a>
+</p>
 
-| Area | Change |
+**[Watch the 60-second Codex demo →](experiment/codex-killer-path-demo.mp4)** · **[Try the Codex Killer Path →](docs/examples/codex-killer-path.md)** · [See all integrations →](INTEGRATIONS.md)
+
+Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-ex` is for **live-page perception** when the agent needs the browser you are actually using, plus Action Receipts, recovery guidance, and a session handoff.
+
+> **Evidence boundary:** Phase 1 candidate evidence: v2.15.0 live-validated the Codex CLI-skill route on one disposable local fixture. Candidate digest sha256:802f7add…; these measurements are historical for the current tree. A fresh campaign is required before any current-tree or release claim. Claude Code, Cursor, OpenClaw, Hermes, and Pi have documented install routes; this does not claim that every route was live-tested. Benchmark "real-app" profiles are local fixtures, not external production apps.
+
+## Proof, with boundaries
+
+| Evidence | What it proves |
 |---|---|
-| Cross-host install | `scripts/setup.mjs` + [INTEGRATIONS.md](INTEGRATIONS.md) for Claude Code, Codex, Cursor, OpenClaw, Hermes, Pi |
-| Slim skill | Always-loaded golden path; deep docs in `references/` |
-| MCP | Curated Tier-1 tools, allowlisted `run_command`, session resources |
-| Release asset | Tarball includes plugin manifest, `bin/chrome-cdp`, and `setup.mjs` |
+| [Codex demo and reproducible route](docs/examples/codex-killer-path.md) | One disposable-fixture loop completed `doctor → open → perceive → act → evidence → report`; the [host manifest](docs/benchmarks/host-validation.v1.json) records the boundary |
+| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | Phase 1 candidate measurement: the v2.15.0 mixed local campaign passed 10/10 rounds, including five local fixture profiles. Historical for the current tree; rerun required before release. |
+| [Redesign experiment](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html) | On the controlled comparison page, richer perception produced the stronger redesign |
+| [Curated ecosystem listing](https://github.com/hesreallyhim/awesome-claude-code#providers-runtime--integration-infrastructure) | `awesome-claude-code` independently lists the project for its live-session perception and benchmark rigor; recognition is not adoption |
 
-[Release notes →](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0)
+[v2.15.0 release notes →](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)
 
 ## Why agents need this
 
@@ -30,21 +40,6 @@ Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-
 | "Which CSS rule made this button blue?" | `cascade` traces style back to selector and source line |
 | "The bug only happens in my logged-in browser." | Real Chrome / Edge / Brave / Electron / WSL2→Windows sessions |
 | "Exploration disappears after one prompt." | Reports, checkpoints, replay, Playwright export |
-
-## Proof
-
-[![Last measured Smart Eye campaign (v2.14.0): 10/10 rounds, 34/34 real-app quality gate](experiment/benchmark-proof.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html)
-
-[![Redesign experiment: richer perception produced the better page](experiment/final-A.png)](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html)
-
-| Proof | Why it matters |
-|---|---|
-| [Smart Eye benchmark](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) | Last measured release campaign (**v2.14.0**, 2026-08-12): 10/10 rounds across MCP, CLI, Killer Path, 5,200-node large-app stress, and five safe local real-app profiles |
-| [Redesign experiment](https://endeavoryen.github.io/chrome-cdp-ex/experiment/showcase.html) | Same page, same prompt, same rounds — richer perception produced the better result |
-| [Killer Path](docs/examples/killer-path.md) | 60-second route: `doctor → open → perceive → act → evidence → report` |
-| Validated with Codex | [Poster](experiment/codex-killer-path-demo-poster.png) · [60-second MP4](experiment/codex-killer-path-demo.mp4) · [reproducible Killer Path](docs/examples/codex-killer-path.md) · [versioned host manifest](docs/benchmarks/host-validation.v1.json) |
-
-> Numbers below are from that v2.14.0 campaign. The five real-app profiles are safe local fixtures, not external production-app evidence.
 
 ## Use this when
 
@@ -72,44 +67,22 @@ Playwright is excellent for deterministic tests in a clean browser. `chrome-cdp-
 | Long-session debugging | `status`, `netlog`, `mock` / `clock` / `throttle`, `report` |
 | Workflow capture and replay | `checkpoint`, `record-actions`, `export-playwright`, `replay` |
 
-## Smart Eye Proof
-
-Measured agent path: see → act → verify → recover → hand off. The v2.14.0 release-quality campaign ran 10 rounds: matched MCP/CLI, Killer Path, a 5,200-node large-app fixture, and five safe local real-app profiles.
-
-| Proof point | Last measured run |
-|---|---:|
-| Release proof | **v2.14.0 live campaign** |
-| Real-app targets | **dashboard, docs-app, auth-flow, data-table, canvas-heavy** |
-| Campaign pass rate | **10/10 rounds** |
-| Quality gate | **34/34 pass in each real-app round** |
-| First useful observation | **2.155s avg** |
-| First action evidence | **2.840s avg** |
-| Useful observation tokens | **1,732 avg** |
-| Max step output | **1,075 tokens** |
-| Matched MCP / CLI | **100% pass; CLI used 3,830 fewer output tokens on average** |
-
-[Benchmark page →](https://endeavoryen.github.io/chrome-cdp-ex/experiment/benchmark.html) · [v2.14.0 product release →](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0)
-
-```bash
-npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output release-campaign.json
-```
-
 ## Quick start
 
 Shortest first run: [Killer Path](docs/examples/killer-path.md). Host matrix: [INTEGRATIONS.md](INTEGRATIONS.md).
 
 ### 1. Install
 
-**Pinned release (v2.14.0):**
+**Pinned release (v2.15.0):**
 
 ```bash
-curl -L -o pi-chrome-cdp-2.14.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.14.0/pi-chrome-cdp-2.14.0.tgz
-mkdir -p chrome-cdp-ex-v2.14.0
-tar -xzf pi-chrome-cdp-2.14.0.tgz -C chrome-cdp-ex-v2.14.0 --strip-components=1
-cd chrome-cdp-ex-v2.14.0
+curl -L -o pi-chrome-cdp-2.15.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.15.0/pi-chrome-cdp-2.15.0.tgz
+mkdir -p chrome-cdp-ex-v2.15.0
+tar -xzf pi-chrome-cdp-2.15.0.tgz -C chrome-cdp-ex-v2.15.0 --strip-components=1
+cd chrome-cdp-ex-v2.15.0
 ```
 
-Checksum is published on the [GitHub Release](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0). This project does **not** publish to the npm registry.
+Checksum is published on the [GitHub Release](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0). This project does **not** publish to the npm registry.
 
 **Current `main`:**
 
@@ -184,6 +157,96 @@ doctor → list/open → perceive → click/fill → perceive --since-action →
 
 Full map: [docs/reference.md](docs/reference.md) · always-loaded skill: [SKILL.md](skills/chrome-cdp-ex/SKILL.md) · deep flags: [references/commands.md](skills/chrome-cdp-ex/references/commands.md).
 
+### Generated command catalog
+
+<!-- chrome-cdp-ex:generated-command-surface:start -->
+_Generated from the immutable command catalog; edit command metadata at its source, not this region._
+
+| Command | Synopsis | Catalog policy |
+|---|---|---|
+| `help` | `help` | `read / standard` |
+| `list` | `list\|tabs\|ls [--format json]` | `read / standard` |
+| `target` | `target --url URL\|--title TEXT [--exact] [--format json]` | `read / standard` |
+| `tab-group` | `tab-group list\|create\|add\|remove\|delete\|show [--format json]` | `conditional-mutation / conditional` |
+| `broadcast` | `broadcast <group> <cmd> [args...] [--format json] [--full-results]` | `mutation / mutation` |
+| `use` | `use <target> --name <alias>` | `protected-mutation / mutation` |
+| `attach` | `attach --port N --target <id> --name <alias>` | `protected-mutation / mutation` |
+| `current` | `current [--format json]` | `read / standard` |
+| `forget` | `forget <alias>` | `protected-mutation / mutation` |
+| `perceive` | `perceive <target> [flags] [--format json]` | `read / standard` |
+| `snap` | `snap <target> [--full]` | `read / standard` |
+| `controls` | `controls <target> [-s selector] [--filter text] [--limit N] [--compact] [--format json]` | `read / standard` |
+| `eval` | `eval <target> <expr>` | `script / raw-script` |
+| `eval64` | `eval64 <target> <base64>` | `script / raw-script` |
+| `call` | `call <target> <expr\|fn>` | `script / raw-script` |
+| `elshot` | `elshot <target> <sel\|@ref>` | `read / standard` |
+| `shot` | `shot <target> [file\|--annotate]` | `conditional-mutation / conditional` |
+| `diff-shot` | `diff-shot <target> [--reset] [--threshold pct]` | `conditional-mutation / conditional` |
+| `html` | `html <target> [selector]` | `read / standard` |
+| `nav` | `nav <target> <url> [--format json]` | `mutation / mutation` |
+| `mock` | `mock <target> [add\|clear]` | `mutation / mutation` |
+| `clock` | `clock <target> [freeze\|offset\|reset]` | `mutation / mutation` |
+| `throttle` | `throttle <target> [off\|offline\|slow-3g\|fast-3g\|lte\|custom]` | `mutation / mutation` |
+| `status` | `status <target> [--runtime]` | `read / standard` |
+| `console` | `console <target> [--all\|--errors\|--clear]` | `conditional-mutation / conditional` |
+| `summary` | `summary <target>` | `read / standard` |
+| `report` | `report <target> [--last N\|--all] [--format json] [--qa\|--summary] [--compact]` | `evidence / standard` |
+| `checkpoint` | `checkpoint <target> [--unsafe-full] [--format json]` | `sensitive-read / sensitive-read` |
+| `restore` | `restore <target> --file <path> [--format json]` | `mutation / mutation` |
+| `record-actions` | `record-actions <target>` | `read / standard` |
+| `export-playwright` | `export-playwright <target> [--format json]` | `read / standard` |
+| `replay` | `replay <target> --file <path> [--format json]` | `mutation / mutation` |
+| `frame` | `frame <target> [--format json]` | `read / standard` |
+| `overlay` | `overlay <target> [sel\|@ref] [--format json]` | `read / standard` |
+| `qa` | `qa <target> [--desktop WxH] [--mobile WxH] [--format json]` | `mutation / mutation` |
+| `responsive-audit` | `responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]` | `mutation / mutation` |
+| `verify-click` | `verify-click <target> <sel\|@ref> [--format json]` | `mutation / mutation` |
+| `net` | `net <target>` | `read / standard` |
+| `click` | `click <target> <sel\|@ref> [--format json] [--qa\|--summary]` | `mutation / mutation` |
+| `jsclick` | `jsclick <target> <sel\|@ref>` | `mutation / mutation` |
+| `clickxy` | `clickxy <target> <x> <y> [--format json]` | `mutation / mutation` |
+| `type` | `type <target> <text> [--format json]` | `mutation / mutation` |
+| `press` | `press\|key <target> <key> [--format json]` | `mutation / mutation` |
+| `scroll` | `scroll <target> <dir\|x,y> [px] [--format json]` | `mutation / mutation` |
+| `hover` | `hover <target> <sel\|@ref>` | `protected-mutation / mutation` |
+| `waitfor` | `waitfor <target> <selector> [ms]` | `read / standard` |
+| `loadall` | `loadall <target> <selector> [ms]` | `protected-mutation / mutation` |
+| `wait` | `wait <target> <ms>` | `read / standard` |
+| `fill` | `fill <target> <sel\|@ref> <txt> [--format json]` | `mutation / mutation` |
+| `select` | `select <target> <selector> <val> [--format json]` | `mutation / mutation` |
+| `fullshot` | `fullshot <target> [file]` | `conditional-mutation / conditional` |
+| `scanshot` | `scanshot <target>` | `read / standard` |
+| `styles` | `styles <target> <selector> [--root auto\|body\|document\|<sel>]` | `read / standard` |
+| `components` | `components <target> [--depth N] [@ref\|selector] [--max-chars N] [--unsafe-full] [--format json]` | `sensitive-read / sensitive-read` |
+| `cookies` | `cookies <target>` | `sensitive-read / sensitive-read` |
+| `cookieset` | `cookieset <target> <cookie>` | `mutation / mutation` |
+| `cookiedel` | `cookiedel <target> <name>` | `mutation / mutation` |
+| `dialog` | `dialog <target> [accept\|dismiss]` | `protected-mutation / mutation` |
+| `viewport` | `viewport\|resize <target> [WxH]` | `mutation / mutation` |
+| `emulate` | `emulate <target> [dark\|light\|no-preference\|off\|status]` | `mutation / mutation` |
+| `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
+| `text` | `text <target> [selector]` | `read / standard` |
+| `table` | `table <target> [selector]` | `read / standard` |
+| `back` | `back <target>` | `mutation / mutation` |
+| `forward` | `forward <target>` | `mutation / mutation` |
+| `reload` | `reload <target>` | `mutation / mutation` |
+| `closetab` | `closetab <target>` | `mutation / mutation` |
+| `netlog` | `netlog <target> [--clear]` | `conditional-mutation / conditional` |
+| `inject` | `inject <target> <flag> [content]` | `mutation / mutation` |
+| `cascade` | `cascade <target> <sel\|@ref> [prop] [--format json]` | `read / standard` |
+| `record` | `record <target> [ms]` | `conditional-mutation / conditional` |
+| `evalraw` | `evalraw <target> <method> [json]` | `raw-cdp / raw-cdp` |
+| `batch` | `batch <target> <cmds> [--parallel] [--format json]` | `composite / composite` |
+| `flow` | `flow <target> "<steps>" [--format json]` | `composite / composite` |
+| `repeat` | `repeat <target> <N> <cmd> [args]` | `composite / composite` |
+| `doctor` | `doctor / ready [--format json]` | `read / standard` |
+| `keepalive` | `keepalive <target> <ms>` | `protected-mutation / mutation` |
+| `open` | `open [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]` | `mutation / mutation` |
+| `spawn-debug-browser` | `spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]` | `mutation / mutation` |
+| `dismiss-modal` | `dismiss-modal <target>` | `mutation / mutation` |
+| `stop` | `stop [target] [--format json]` | `mutation / mutation` |
+<!-- chrome-cdp-ex:generated-command-surface:end -->
+
 ## Docs
 
 - [INTEGRATIONS.md](INTEGRATIONS.md) — Claude Code, Codex, Cursor, OpenClaw, Hermes, Pi
@@ -192,7 +255,7 @@ Full map: [docs/reference.md](docs/reference.md) · always-loaded skill: [SKILL.
 - [Technical reference](docs/reference.md) — commands, MCP, Electron, WSL2, gates
 - [Product strategy](docs/strategy/agent-browser-vision.md) — why this is not another Playwright
 - [Self-improvement loop](docs/self-improvement-loop.md) — issue → test → PR → merge
-- [v2.14.0 release](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.14.0) — notes, checksum, tarball
+- [v2.15.0 release](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0) — notes, checksum, tarball
 
 ## Dogfood benchmark
 
@@ -200,15 +263,15 @@ Use the live benchmark before publishing performance or adoption claims. Visual 
 
 ### Latest dogfood snapshot
 
-Local run on 2026-08-12 for v2.14.0 against 5 safe local real-app fixtures: dashboard, docs-app, auth-flow, data-table, canvas-heavy. Timing starts after CDP is reachable. Publish competitor deltas only from measured baselines.
+Phase 1 candidate snapshot: local run on 2026-08-12 for v2.15.0 against 5 safe local real-app fixtures: dashboard, docs-app, auth-flow, data-table, canvas-heavy. These are not external production apps. Historical for the current tree; rerun required before release. Timing starts after CDP is reachable. Publish competitor deltas only from measured baselines.
 
 | Metric | Latest measured run |
 |---|---:|
-| Total time | 11.284s avg |
+| Total time | 10.303s avg |
 | Command calls | 24 per round |
-| First useful observation | 2.155s avg |
-| First action evidence | 2.840s avg |
-| Golden path complete | 5.945s avg |
+| First useful observation | 2.141s avg |
+| First action evidence | 2.831s avg |
+| Golden path complete | 5.341s avg |
 | Estimated output tokens | 11,422 avg |
 | Useful observation tokens | 1,732 avg |
 | Action evidence coverage | 6 auto-evidence actions per round; no failed criteria |
@@ -220,7 +283,7 @@ Regenerate this table after meaningful command, perception, or benchmark changes
 
 ```bash
 npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli --real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy --settle-ms 0 --json --output release-campaign.json
-npm run benchmark:update-readme -- release-campaign.json README.md --html experiment/benchmark.html --date YYYY-MM-DD
+npm run benchmark:update-readme -- release-campaign.json README.md --html experiment/benchmark.html --date YYYY-MM-DD --version X.Y.Z
 ```
 
 Schema fixture: [`docs/benchmarks/measured-baselines.example.json`](docs/benchmarks/measured-baselines.example.json) (format only — regenerate local measured baselines before publishing comparison deltas).
@@ -231,6 +294,7 @@ Do not publish README, marketplace, awesome-list, or social comparison claims un
 
 - `npm run benchmark:killer -- --json` exits 0 and `gate.passed` is true.
 - A 10+ round mixed campaign covers matched MCP/CLI, Killer Path, large-app stress, and all five local real-app profiles before release or high-difficulty claims.
+- The campaign candidate identity matches the release version and current runtime/benchmark source digest; truncated, relabeled, or stale artifacts must fail closed.
 - Total output, per-command output, first-action-evidence, and per-command latency gates pass; inspect the gate `culprit` before publishing speed or efficiency claims.
 - Action JSON passes the Action Receipt contract gate: `eventId`, `dispatch`, `settlement.state/strategy/signals`, `observedDeltaDetails`, `blockingSignals`, `recoveryHint`, and executable `nextSteps`.
 - Competitor comparisons use `npm run benchmark:killer -- --comparison-baselines ./baselines.json` with measured baselines, not the planning-only `heuristic-smoke-baseline`.

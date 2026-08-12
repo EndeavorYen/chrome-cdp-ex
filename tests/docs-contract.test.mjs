@@ -1,4 +1,7 @@
-import { readFileSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { existsSync, readFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 import { checkDocsContract, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
 
@@ -14,8 +17,18 @@ const contributing = readFileSync(new URL('../CONTRIBUTING.md', import.meta.url)
 const design = readFileSync(new URL('../DESIGN.md', import.meta.url), 'utf8');
 const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 const releaseWorkflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+const runtimeV3ArchitectureUrl = new URL('../docs/architecture/runtime-v3.md', import.meta.url);
+const runtimeV3AdrUrl = new URL('../docs/adr/0001-runtime-v3-contract-first-strangler.md', import.meta.url);
+const publicContractsReadmeUrl = new URL('../docs/contracts/README.md', import.meta.url);
 
 describe('Killer Path docs contract', () => {
+  it('runs by absolute script path without depending on caller cwd', () => {
+    const script = fileURLToPath(new URL('../scripts/check-docs-contract.mjs', import.meta.url));
+    const child = spawnSync(process.execPath, [script], { cwd: tmpdir(), encoding: 'utf8' });
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toContain('Docs contract OK: 81 commands checked');
+  });
+
   it('accepts the documented first-run golden path', () => {
     expect(validateKillerPathContract(killerPath)).toEqual([]);
   });
@@ -154,6 +167,34 @@ describe('Killer Path docs contract', () => {
 });
 
 describe('Repository release gates', () => {
+  it('ships the Runtime v3 contract source of truth and fixture policy', () => {
+    const files = JSON.parse(packageJson).files;
+
+    expect(existsSync(runtimeV3ArchitectureUrl)).toBe(true);
+    expect(existsSync(runtimeV3AdrUrl)).toBe(true);
+    expect(existsSync(publicContractsReadmeUrl)).toBe(true);
+    expect(files).toEqual(expect.arrayContaining([
+      'docs/architecture/runtime-v3.md',
+      'docs/adr/0001-runtime-v3-contract-first-strangler.md',
+      'docs/contracts/',
+    ]));
+    expect(readFileSync(runtimeV3ArchitectureUrl, 'utf8')).toMatch(
+      /representative browser-independent CLI\s+exit and error behavior/,
+    );
+  });
+
+  it('labels Phase 1 live evidence as historical for the Phase 2 tree', () => {
+    const codexIntegration = readFileSync(new URL('../docs/integrations/codex.md', import.meta.url), 'utf8');
+    const codexKillerPath = readFileSync(new URL('../docs/examples/codex-killer-path.md', import.meta.url), 'utf8');
+
+    for (const surface of [readme, codexIntegration, codexKillerPath]) {
+      expect(surface).toContain('Phase 1 candidate');
+    }
+    expect(readme).toContain('historical for the current tree');
+    expect(readFileSync(new URL('../experiment/benchmark.html', import.meta.url), 'utf8'))
+      .toContain('historical for current tree');
+  });
+
   it('runs CI for pull requests targeting main and dev', () => {
     expect(ciWorkflow).toMatch(/pull_request:\s*\n\s*branches:\s*\[[^\]]*\bmain\b[^\]]*\bdev\b[^\]]*\]/);
   });
@@ -168,13 +209,13 @@ describe('Repository release gates', () => {
     expect(releaseWorkflow).not.toContain('--generate-notes');
   });
 
-  it('packs and attaches a release tarball that includes plugin + integrations assets', () => {
+  it('validates host evidence and the actual tarball before attaching a release', () => {
     expect(releaseWorkflow).toContain('npm ci');
+    expect(releaseWorkflow).toContain('npm run check:host-validation');
+    expect(releaseWorkflow).toContain('npm run check:contracts');
     expect(releaseWorkflow).toContain('npm pack');
-    expect(releaseWorkflow).toContain('package/.claude-plugin/plugin.json');
-    expect(releaseWorkflow).toContain('package/INTEGRATIONS.md');
-    expect(releaseWorkflow).toContain('package/bin/chrome-cdp');
-    expect(releaseWorkflow).toContain('package/scripts/setup.mjs');
+    expect(releaseWorkflow).toContain('npm run check:contracts -- --tarball "$TARBALL"');
+    expect(releaseWorkflow).toContain('npm run check:release-package -- "$TARBALL"');
     expect(releaseWorkflow).toContain("node-version: '22'");
     expect(releaseWorkflow).toMatch(/gh release create "\$TAG" "\$TARBALL"/);
   });
