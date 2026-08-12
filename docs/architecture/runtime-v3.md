@@ -1,14 +1,15 @@
 # Browser Runtime v3 Architecture
 
-Status: Runtime v3 application dispatch and current-tree all-route evidence are
-implemented through Phase 7 Task 6.
-The final all-route evidence and release-candidate gates remain pending.
+Status: Runtime v3 is complete and published in v2.15.0. Current-tree all-route
+evidence, the final release-candidate gates, and the official release workflow
+all passed on the reviewed candidate.
 
 Runtime v3 is a compatibility-preserving refactor of chrome-cdp-ex, not a new
 browser engine. The current v2.15 runtime keeps one resident daemon per tab.
 CLI still enters through `cdp.mjs`; MCP invokes an in-process runtime client
 instead of spawning the CLI for each tool request. The components below state
-the implemented boundary that the final release-candidate evidence must prove.
+the implemented and released boundary proven by the final current-tree evidence
+and release gates.
 
 ## Why change
 
@@ -157,8 +158,8 @@ across all target-command families and representative targetless adapters.
    docs, permissions, and typed CDP domains.
 6. Phase 7 moved all 68 target commands behind the catalog-derived application
    dispatcher, removed only superseded dispatch paths, and accepted source-bound
-   disposable all-route/failure evidence. Its remaining work is the full Runtime
-   v3 release-candidate gate.
+   disposable all-route/failure evidence. The full Runtime v3 release-candidate
+   gate then passed and v2.15.0 was published.
 
 At every step, the compatibility facade stays executable. A failed fixture,
 live scenario, package gate, or independent review blocks removal of the old
