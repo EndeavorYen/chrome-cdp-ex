@@ -715,6 +715,9 @@ function createDaemonRequestConnection(conn, {
     disconnected = true;
     const entries = [...active.values()];
     for (const entry of entries) {
+      if (!entry.controller.signal.aborted) entry.controller.abort(error);
+    }
+    for (const entry of entries) {
       retainFatalCleanupError(error, prepareDaemonCollectionFatal(entry.execution, error));
     }
     for (const entry of entries) retainFatalCleanupError(error, cleanupRequest(entry, error));
