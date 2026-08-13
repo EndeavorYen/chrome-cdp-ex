@@ -154,6 +154,12 @@ function createCrashSession(layout, {
   return { sessionDir, artifactDir, ownerPath };
 }
 
+function crashLayoutForTarget(layout, targetDigest) {
+  const targetDir = join(layout.ownerDir, targetDigest);
+  mkdirSync(targetDir, { mode: 0o700 });
+  return { ...layout, targetDir, targetDigest };
+}
+
 function tracedHandle(handle, label, trace, overrides = {}) {
   return {
     async readFile(...args) {
@@ -659,6 +665,34 @@ describe('immutable row-aligned table continuation', () => {
     expect(dataReads).toBe(1);
   });
 
+  it('never returns different rows for a token after a coherent manifest and data rewrite', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = testStore(runtimeDir);
+    const publication = await store.publish(bundleForRows([['one'], ['two']]), execution());
+    const first = await store.readContinuation(publication.token);
+    const layout = artifactTest.inspectTableArtifactStore(store);
+    const artifactDir = join(layout.sessionDir, publication.artifactId);
+    const rowsPath = join(artifactDir, 'rows.tsv');
+    const manifestPath = join(artifactDir, 'manifest.json');
+    const replacement = bundleForRows([['uno'], ['dos']]);
+    const replacementManifest = {
+      ...replacement.manifest,
+      ownership: {
+        artifactId: publication.artifactId,
+        targetDigest: layout.targetDigest,
+        sessionDigest: layout.sessionDigest,
+      },
+    };
+
+    expect(first.continuation.rows).toEqual(['one', 'two']);
+    writeFileSync(rowsPath, replacement.rowsTsv, { mode: 0o600 });
+    writeFileSync(manifestPath, `${JSON.stringify(replacementManifest, null, 2)}\n`, { mode: 0o600 });
+
+    await expect(store.readContinuation(publication.token)).rejects.toMatchObject({
+      code: 'TABLE_ARTIFACT_READ_FAILED',
+    });
+  });
+
   it('fails the read when a private file close reports delayed I/O failure', async () => {
     const runtimeDir = privateRuntimeRoot();
     let reading = false;
@@ -842,6 +876,53 @@ describe('artifact request and session ownership', () => {
     },
   );
 
+  it.each(['directory', 'rows', 'manifest'])(
+    'preserves a same-path %s replacement and still removes a safe sibling',
+    async replacement => {
+      const runtimeDir = privateRuntimeRoot();
+      const store = artifactTest.createTableArtifactStoreWithDependencies({
+        runtimeDir,
+        targetId: 'target',
+        sessionId: 'session',
+        platform: 'darwin',
+      }, { randomBytes: deterministicBytes(ID_A, ID_B) });
+      const request = execution();
+      await store.publish(bundleForRows([['replace-me']]), request);
+      await store.publish(bundleForRows([['safe']]), request);
+      const layout = artifactTest.inspectTableArtifactStore(store);
+      const replacedDir = join(layout.sessionDir, ID_A);
+      const safeDir = join(layout.sessionDir, ID_B);
+      const rowsPath = join(replacedDir, 'rows.tsv');
+      const manifestPath = join(replacedDir, 'manifest.json');
+
+      if (replacement === 'directory') {
+        unlinkSync(manifestPath);
+        unlinkSync(rowsPath);
+        rmdirSync(replacedDir);
+        mkdirSync(replacedDir, { mode: 0o700 });
+        writeFileSync(rowsPath, 'replacement rows', { mode: 0o600 });
+        writeFileSync(manifestPath, 'replacement manifest', { mode: 0o600 });
+      } else {
+        const path = replacement === 'rows' ? rowsPath : manifestPath;
+        unlinkSync(path);
+        writeFileSync(path, `replacement ${replacement}`, { mode: 0o600, flag: 'wx' });
+      }
+
+      let error;
+      try { store.rollbackRequest(request); } catch (caught) { error = caught; }
+
+      expect(error).toMatchObject({ code: 'TABLE_ARTIFACT_CLEANUP_FAILED' });
+      expect(existsSync(safeDir)).toBe(false);
+      if (replacement === 'directory') {
+        expect(readFileSync(rowsPath, 'utf8')).toBe('replacement rows');
+        expect(readFileSync(manifestPath, 'utf8')).toBe('replacement manifest');
+      } else {
+        const path = replacement === 'rows' ? rowsPath : manifestPath;
+        expect(readFileSync(path, 'utf8')).toBe(`replacement ${replacement}`);
+      }
+    },
+  );
+
   it('isolates stores by private session namespace for reads and cleanup', async () => {
     const runtimeDir = privateRuntimeRoot();
     const first = artifactTest.createTableArtifactStoreWithDependencies({
@@ -951,6 +1032,122 @@ describe('artifact request and session ownership', () => {
     expect(existsSync(fixtures.staleCommitted.sessionDir)).toBe(false);
     expect(probes.sort((a, b) => a - b)).toEqual([10, 11, 12, 13, 14, 15, 16, 17]);
     expect(probes).not.toContain(999);
+  });
+
+  it('sweeps proven-dead residue belonging to another validated target namespace', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target-a',
+      sessionId: 'current-session',
+      platform: 'darwin',
+    }, {
+      randomBytes: deterministicBytes(ID_A),
+      pid: 999,
+      now: () => NOW_MS,
+      processAlive: () => { const error = new Error('dead'); error.code = 'ESRCH'; throw error; },
+    });
+    const request = execution();
+    await store.publish(bundleForRows([['current']]), request);
+    store.releaseRequest(request);
+    const layout = artifactTest.inspectTableArtifactStore(store);
+    const other = crashLayoutForTarget(layout, digest('target-b'));
+    const stale = createCrashSession(other, {
+      name: digest('target-b-stale'), pid: 41, ageMs: 25 * 60 * 60 * 1000, committed: true,
+    });
+
+    expect(store.sweepCrashResidue()).toBeUndefined();
+    expect(existsSync(stale.sessionDir)).toBe(false);
+  });
+
+  it('rotates bounded session enumeration so a stale tail cannot starve behind live sessions', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const probes = [];
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'current-session',
+      platform: 'darwin',
+    }, {
+      randomBytes: deterministicBytes(ID_A),
+      pid: 999,
+      now: () => NOW_MS,
+      processAlive: pid => {
+        probes.push(pid);
+        if (pid < 1000) return true;
+        const error = new Error('dead'); error.code = 'ESRCH'; throw error;
+      },
+    });
+    const request = execution();
+    await store.publish(bundleForRows([['current']]), request);
+    store.releaseRequest(request);
+    const layout = artifactTest.inspectTableArtifactStore(store);
+    for (let index = 0; index < 80; index += 1) {
+      createCrashSession(layout, {
+        name: digest(`live-prefix-${index}`), pid: index + 1,
+        ageMs: 25 * 60 * 60 * 1000, artifact: false,
+      });
+    }
+    const stale = createCrashSession(layout, {
+      name: digest('stale-tail'), pid: 1001,
+      ageMs: 25 * 60 * 60 * 1000, artifact: false,
+    });
+
+    for (let attempt = 0; attempt < 4 && existsSync(stale.sessionDir); attempt += 1) {
+      const before = probes.length;
+      try { store.sweepCrashResidue(); } catch (error) {
+        expect(error).toMatchObject({ code: 'TABLE_ARTIFACT_CLEANUP_FAILED' });
+      }
+      expect(probes.length - before).toBeLessThanOrEqual(32);
+    }
+    expect(existsSync(stale.sessionDir)).toBe(false);
+  });
+
+  it('rotates bounded target enumeration and advances it during later publishes', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'current-target',
+      sessionId: 'current-session',
+      platform: 'darwin',
+    }, {
+      randomBytes: deterministicBytes(
+        ID_A,
+        ID_B,
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        'cccccccccccccccccccccccccccccccc',
+      ),
+      pid: 999,
+      now: () => NOW_MS,
+      processAlive: pid => {
+        if (pid < 1000) return true;
+        const error = new Error('dead'); error.code = 'ESRCH'; throw error;
+      },
+    });
+    const first = execution();
+    await store.publish(bundleForRows([['first']]), first);
+    store.releaseRequest(first);
+    const layout = artifactTest.inspectTableArtifactStore(store);
+    for (let index = 0; index < 70; index += 1) {
+      const target = crashLayoutForTarget(layout, digest(`live-target-${index}`));
+      createCrashSession(target, {
+        name: digest(`live-session-${index}`), pid: index + 1,
+        ageMs: 25 * 60 * 60 * 1000, artifact: false,
+      });
+    }
+    const staleTarget = crashLayoutForTarget(layout, digest('stale-target-tail'));
+    const stale = createCrashSession(staleTarget, {
+      name: digest('stale-target-session'), pid: 1001,
+      ageMs: 25 * 60 * 60 * 1000, artifact: false,
+    });
+
+    for (let attempt = 0; attempt < 4 && existsSync(stale.sessionDir); attempt += 1) {
+      const next = execution();
+      await store.publish(bundleForRows([[`advance-${attempt}`]]), next);
+      store.releaseRequest(next);
+    }
+    expect(existsSync(stale.sessionDir)).toBe(false);
   });
 
   it('applies the uncommitted TTL to owner-only dead sessions at the exact boundary', async () => {
