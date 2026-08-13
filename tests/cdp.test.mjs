@@ -24,6 +24,7 @@ const {
   formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr, autoActionJsonArgs,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkBrowserPermission, checkFdLimit,
   doctorWizardSummary, formatDoctorReport, runDoctorChecks, doctorStr, helpStr,
+  sampleRootFrameTables, tableObservationStr,
 } = T;
 
 // =========================================================================
@@ -4913,6 +4914,217 @@ function createMockCDP(handlers = {}) {
     },
   };
 }
+
+describe('bounded table observation', () => {
+  function sampledPage(tables = []) {
+    return JSON.stringify({
+      schema: 'chrome-cdp-ex.table-sample.v1',
+      tablesSeen: tables.length,
+      tables,
+      truncated: false,
+      truncationReason: null,
+    });
+  }
+
+  function sampledTable(overrides = {}) {
+    return {
+      caption: 'Orders',
+      ariaRowCount: null,
+      headerRows: [],
+      dataRows: [
+        { rawAriaRowIndex: null, cells: ['A', '1'] },
+        { rawAriaRowIndex: null, cells: ['B', '2'] },
+      ],
+      directRowsSeen: 2,
+      headerRowsSeen: 0,
+      dataRowsSeen: 2,
+      truncated: false,
+      truncationReason: null,
+      ...overrides,
+    };
+  }
+
+  it('uses the exact root-frame isolated-world CDP sequence and bounded string result', async () => {
+    const cdp = createMockCDP({
+      'Page.getFrameTree': () => ({
+        frameTree: {
+          frame: { id: 'root-frame' },
+          childFrames: [{ frame: { id: 'child-frame', parentId: 'root-frame' } }],
+        },
+      }),
+      'Page.createIsolatedWorld': params => {
+        expect(params).toEqual({
+          frameId: 'root-frame',
+          worldName: 'chrome-cdp-ex-table-sampler-v1',
+          grantUniveralAccess: false,
+        });
+        return { executionContextId: 731 };
+      },
+      'Runtime.evaluate': params => {
+        expect(params).toMatchObject({
+          contextId: 731,
+          returnByValue: true,
+          awaitPromise: false,
+        });
+        expect(params.expression).toContain('chrome-cdp-ex.table-sample.v1');
+        return { result: { type: 'string', value: sampledPage([sampledTable()]) } };
+      },
+    });
+
+    await expect(sampleRootFrameTables(cdp, 'sid1', 'table')).resolves.toMatchObject({
+      schema: 'chrome-cdp-ex.table-sample.v1',
+      tablesSeen: 1,
+    });
+    expect(cdp.calls.map(call => call.method)).toEqual([
+      'Page.getFrameTree',
+      'Page.createIsolatedWorld',
+      'Runtime.evaluate',
+    ]);
+    expect(cdp.calls.every(call => call.sessionId === 'sid1')).toBe(true);
+  });
+
+  it.each([
+    [{ frameTree: { frame: {} } }, /root frame/i],
+    [{ frameTree: { frame: { id: 'root' } } }, /execution context/i],
+  ])('rejects malformed frame/world responses before returning sample %#', async (frameResult, message) => {
+    const cdp = createMockCDP({
+      'Page.getFrameTree': () => frameResult,
+      'Page.createIsolatedWorld': () => ({}),
+    });
+    await expect(sampleRootFrameTables(cdp, 'sid1', 'table')).rejects.toThrow(message);
+  });
+
+  it('rejects runtime exceptions, non-string remote values, malformed JSON, and oversized samples', async () => {
+    for (const runtimeResult of [
+      { exceptionDetails: { text: 'boom' }, result: { type: 'string', value: sampledPage() } },
+      { result: { type: 'object', value: {} } },
+      { result: { type: 'string', value: '{' } },
+      { result: { type: 'string', value: 'x'.repeat(524289) } },
+    ]) {
+      const cdp = createMockCDP({ 'Runtime.evaluate': () => runtimeResult });
+      await expect(sampleRootFrameTables(cdp, 'sid1', 'table')).rejects.toThrow();
+    }
+  });
+
+  it('bridges unindexed snapshots through Task 1 once and preserves a valid prefix on a late oversized row', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
+        dataRows: [
+          { rawAriaRowIndex: null, cells: ['safe'] },
+          { rawAriaRowIndex: null, cells: ['x'.repeat(4097)] },
+        ],
+        directRowsSeen: 2,
+        dataRowsSeen: 2,
+        truncated: true,
+        truncationReason: 'row-too-large',
+      })]) } }),
+    });
+
+    const output = JSON.parse(await tableObservationStr(cdp, 'sid1', {
+      mode: 'observe', selector: null, format: 'json',
+    }));
+    expect(output).toMatchObject({
+      schema: 'chrome-cdp-ex.tables.v1',
+      snapshot: {
+        tablesSeen: 1,
+        tablesReturned: 1,
+        truncated: false,
+        truncationReason: null,
+      },
+      tables: [{
+        schema: 'chrome-cdp-ex.table.v1',
+        identitySource: 'snapshot-order',
+        orderingSource: 'dom-order',
+        collectedRows: 1,
+        completeness: { state: 'unknown', evidenceConflict: false },
+        snapshot: {
+          directRowsSeen: 2,
+          headerRowsSeen: 0,
+          dataRowsSeen: 2,
+          rowsAdmitted: 1,
+          truncated: true,
+          truncationReason: 'row-too-large',
+        },
+        inline: { rows: ['safe'], rowCount: 1 },
+      }],
+    });
+    expect(Buffer.byteLength(JSON.stringify(output, null, 2), 'utf8')).toBeLessThanOrEqual(16384);
+  });
+
+  it('certifies complete only for exact normalized ARIA coverage with contiguous indexed headers', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
+        ariaRowCount: 3,
+        headerRows: [{ rawAriaRowIndex: 1, cells: ['Name', 'Value'] }],
+        dataRows: [
+          { rawAriaRowIndex: 2, cells: ['A', '1'] },
+          { rawAriaRowIndex: 3, cells: ['B', '2'] },
+        ],
+        directRowsSeen: 3,
+        headerRowsSeen: 1,
+      })]) } }),
+    });
+
+    const output = JSON.parse(await tableObservationStr(cdp, 'sid1', {
+      mode: 'observe', selector: '#orders', format: 'json',
+    }));
+    expect(output.tables[0]).toMatchObject({
+      logicalRows: 2,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'aria-rowindex',
+      orderingSource: 'aria-rowindex',
+      completeness: { state: 'complete', termination: 'logical-count-reached', evidenceConflict: false },
+      headers: [['Name', 'Value']],
+      inline: { rows: ['A\t1', 'B\t2'] },
+    });
+  });
+
+  it.each([
+    { headerRows: [{ rawAriaRowIndex: null, cells: ['H'] }] },
+    { headerRows: [{ rawAriaRowIndex: 2, cells: ['H'] }] },
+    { headerRows: [{ rawAriaRowIndex: 1, cells: ['H'] }, { rawAriaRowIndex: 1, cells: ['H2'] }] },
+  ])('keeps malformed or noncontiguous header indexing uncertified %#', async headerCase => {
+    const headerRows = headerCase.headerRows;
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
+        ariaRowCount: headerRows.length + 2,
+        headerRows,
+        dataRows: [
+          { rawAriaRowIndex: headerRows.length + 1, cells: ['A'] },
+          { rawAriaRowIndex: headerRows.length + 2, cells: ['B'] },
+        ],
+        directRowsSeen: headerRows.length + 2,
+        headerRowsSeen: headerRows.length,
+      })]) } }),
+    });
+
+    const output = JSON.parse(await tableObservationStr(cdp, 'sid1', {
+      mode: 'observe', selector: null, format: 'json',
+    }));
+    expect(output.tables[0]).toMatchObject({
+      identitySource: 'snapshot-order',
+      orderingSource: 'dom-order',
+      completeness: { state: 'unknown' },
+    });
+  });
+
+  it('formats text as a mounted snapshot with provenance first and complete-row bounds', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
+        ariaRowCount: 100,
+      })]) } }),
+    });
+
+    const output = await tableObservationStr(cdp, 'sid1', {
+      mode: 'observe', selector: null, format: 'text',
+    });
+    expect(output.split('\n').slice(0, 4).join('\n')).toMatch(/Table snapshot.*mounted.*incomplete/is);
+    expect(output).toContain('A\t1');
+    expect(output).toContain('B\t2');
+    expect(output).toMatch(/table .*--collect.*--scroll-container/i);
+    expect(Buffer.byteLength(output, 'utf8')).toBeLessThanOrEqual(8192);
+  });
+});
 
 // =========================================================================
 // frame tree helpers
