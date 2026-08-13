@@ -1,4 +1,8 @@
 const TABLE_SAMPLE_SCHEMA = 'chrome-cdp-ex.table-sample.v1';
+const MAX_SELECTOR_BYTES = 1024;
+const MAX_SELECTOR_COMPONENTS = 32;
+const MAX_SELECTOR_IDENTIFIER_UNITS = 128;
+const MAX_SELECTOR_VALUE_BYTES = 256;
 const TABLE_TRUNCATION_REASONS = new Set([
   null,
   'row-limit',
@@ -30,6 +34,104 @@ export const TABLE_SAMPLER_LIMITS = Object.freeze({
   maxDirectChildren: 4096,
   maxDocumentNodes: 65536,
 });
+
+function selectorInvalid() {
+  throw new TypeError('table: bounded table selector is not supported');
+}
+
+function selectorWellFormed(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xD800 && unit <= 0xDBFF) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xDC00 && next <= 0xDFFF)) return false;
+      index += 1;
+    } else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function selectorIdentifier(source, offset, attribute = false) {
+  const start = offset;
+  const first = source.charCodeAt(offset);
+  const firstAllowed = (first >= 65 && first <= 90) || (first >= 97 && first <= 122)
+    || first === 95 || (attribute && first === 58);
+  if (!firstAllowed) selectorInvalid();
+  offset += 1;
+  while (offset < source.length) {
+    const unit = source.charCodeAt(offset);
+    const allowed = (unit >= 65 && unit <= 90) || (unit >= 97 && unit <= 122)
+      || (unit >= 48 && unit <= 57) || unit === 95 || unit === 45
+      || (attribute && (unit === 46 || unit === 58));
+    if (!allowed) break;
+    offset += 1;
+  }
+  if (offset - start > MAX_SELECTOR_IDENTIFIER_UNITS) selectorInvalid();
+  return { value: source.slice(start, offset), offset };
+}
+
+export function parseTableObservationSelector(value) {
+  const source = value === null || value === undefined || value === '' ? 'table' : value;
+  if (typeof source !== 'string' || !selectorWellFormed(source)
+    || Buffer.byteLength(source, 'utf8') > MAX_SELECTOR_BYTES) selectorInvalid();
+  let offset = source.startsWith('table') ? 5 : 0;
+  let componentCount = 0;
+  let id = null;
+  const classes = [];
+  const attributes = [];
+  const seenClasses = new Set();
+  const seenAttributes = new Set();
+  while (offset < source.length) {
+    const marker = source[offset];
+    if (marker === '#') {
+      if (id !== null) selectorInvalid();
+      const parsed = selectorIdentifier(source, offset + 1);
+      id = parsed.value;
+      offset = parsed.offset;
+    } else if (marker === '.') {
+      const parsed = selectorIdentifier(source, offset + 1);
+      if (seenClasses.has(parsed.value)) selectorInvalid();
+      seenClasses.add(parsed.value);
+      classes.push(parsed.value);
+      offset = parsed.offset;
+    } else if (marker === '[') {
+      const parsed = selectorIdentifier(source, offset + 1, true);
+      if (seenAttributes.has(parsed.value)) selectorInvalid();
+      seenAttributes.add(parsed.value);
+      offset = parsed.offset;
+      let expected = null;
+      if (source[offset] === '=') {
+        if (source[offset + 1] !== '"') selectorInvalid();
+        offset += 2;
+        const valueStart = offset;
+        while (offset < source.length && source[offset] !== '"') {
+          const unit = source.charCodeAt(offset);
+          if (unit === 0x5C || unit === 0x0D || unit === 0x0A) selectorInvalid();
+          offset += 1;
+        }
+        if (source[offset] !== '"') selectorInvalid();
+        expected = source.slice(valueStart, offset);
+        if (Buffer.byteLength(expected, 'utf8') > MAX_SELECTOR_VALUE_BYTES) selectorInvalid();
+        offset += 1;
+      }
+      if (source[offset] !== ']') selectorInvalid();
+      offset += 1;
+      attributes.push(Object.freeze({ name: parsed.value, expected }));
+    } else {
+      selectorInvalid();
+    }
+    componentCount += 1;
+    if (componentCount > MAX_SELECTOR_COMPONENTS) selectorInvalid();
+  }
+  if (offset === 0) selectorInvalid();
+  return Object.freeze({
+    id,
+    classes: Object.freeze(classes),
+    attributes: Object.freeze(attributes),
+  });
+}
 
 function invalid(message) {
   throw new TypeError(`Invalid table sampler result: ${message}`);
@@ -153,8 +255,15 @@ function parsedTable(value, index) {
     && omittedRows !== 1) {
     invalid(`${name} truncation reason requires exactly one omitted row`);
   }
+  if (value.truncationReason !== 'row-limit'
+    && directRowsSeen > TABLE_SAMPLER_LIMITS.maxDirectRowsPerTable) {
+    invalid(`${name} truncation reason loses precedence to row-limit`);
+  }
   if (value.truncationReason === 'dom-node-limit' && omittedRows > 1) {
     invalid(`${name} dom-node-limit provenance has inconsistent counters`);
+  }
+  if (headerRows.length < headerRowsSeen && (dataRows.length !== 0 || dataRowsSeen !== 0)) {
+    invalid(`${name} data rows violate the producer header prefix`);
   }
   return Object.freeze({
     caption,
@@ -195,6 +304,10 @@ export function parseTableSamplerResult(value) {
   if (parsed.truncationReason === 'sample-byte-limit' && omittedTables !== 1) {
     invalid('sample sample-byte-limit provenance requires exactly one omitted table');
   }
+  if (parsed.truncationReason === 'sample-byte-limit'
+    && tablesSeen > TABLE_SAMPLER_LIMITS.maxTables) {
+    invalid('sample sample-byte-limit provenance loses precedence to table-limit');
+  }
   if ((parsed.truncationReason === 'dom-depth-limit'
       || parsed.truncationReason === 'dom-node-limit')
     && omittedTables !== 0) {
@@ -210,12 +323,12 @@ export function parseTableSamplerResult(value) {
 }
 
 export function buildTableSamplerExpression(selector = 'table') {
-  const selectorLiteral = JSON.stringify(selector || 'table');
+  const selectorSpecLiteral = JSON.stringify(parseTableObservationSelector(selector));
   const limits = JSON.stringify(TABLE_SAMPLER_LIMITS);
   return String.raw`(() => {
     'use strict';
     const LIMITS = ${limits};
-    const selector = ${selectorLiteral};
+    const selectorSpec = ${selectorSpecLiteral};
     const O = Object;
     const A = Array;
     const S = String;
@@ -235,7 +348,6 @@ export function buildTableSamplerExpression(selector = 'table') {
     const localNameGetter = getOwnPropertyDescriptor(elementProto, 'localName').get;
     const namespaceURIGetter = getOwnPropertyDescriptor(elementProto, 'namespaceURI').get;
     const getAttribute = getOwnPropertyDescriptor(elementProto, 'getAttribute').value;
-    const elementMatches = getOwnPropertyDescriptor(elementProto, 'matches').value;
     const arrayPush = getOwnPropertyDescriptor(A.prototype, 'push').value;
     const charCodeAt = getOwnPropertyDescriptor(S.prototype, 'charCodeAt').value;
     const fromCharCode = S.fromCharCode;
@@ -257,6 +369,41 @@ export function buildTableSamplerExpression(selector = 'table') {
       && apply(namespaceURIGetter, value, []) === XHTML
       ? name(value) : '';
     const attribute = (value, key) => apply(getAttribute, value, [key]);
+    const asciiSpace = unit => unit === 0x20 || unit === 0x09 || unit === 0x0A
+      || unit === 0x0C || unit === 0x0D;
+    const sameAsciiToken = (value, start, end, expected) => {
+      if (end - start !== expected.length) return false;
+      for (let index = 0; index < expected.length; index += 1) {
+        if (apply(charCodeAt, value, [start + index]) !== apply(charCodeAt, expected, [index])) return false;
+      }
+      return true;
+    };
+    const hasClass = (value, expected) => {
+      let offset = 0;
+      while (offset < value.length) {
+        while (offset < value.length && asciiSpace(apply(charCodeAt, value, [offset]))) offset += 1;
+        const start = offset;
+        while (offset < value.length && !asciiSpace(apply(charCodeAt, value, [offset]))) offset += 1;
+        if (start < offset && sameAsciiToken(value, start, offset, expected)) return true;
+      }
+      return false;
+    };
+    const matchesTableSelector = value => {
+      if (selectorSpec.id !== null && boundedAttribute(value, 'id') !== selectorSpec.id) return false;
+      if (selectorSpec.classes.length > 0) {
+        const rawClass = boundedAttribute(value, 'class');
+        if (rawClass === null) return false;
+        for (let index = 0; index < selectorSpec.classes.length; index += 1) {
+          if (!hasClass(rawClass, selectorSpec.classes[index])) return false;
+        }
+      }
+      for (let index = 0; index < selectorSpec.attributes.length; index += 1) {
+        const constraint = selectorSpec.attributes[index];
+        const raw = boundedAttribute(value, constraint.name);
+        if (raw === null || (constraint.expected !== null && raw !== constraint.expected)) return false;
+      }
+      return true;
+    };
     const hasTableAncestor = value => {
       let parent = apply(parentNodeGetter, value, []);
       let depth = 0;
@@ -422,7 +569,7 @@ export function buildTableSamplerExpression(selector = 'table') {
         cellCount += 1;
         if (cellCount > LIMITS.maxCellsPerRow) return { ok: false, reason: 'cell-limit' };
         const sampledText = text(direct[index], LIMITS.maxCellTextBytes);
-        if (!sampledText.ok) return { ok: false, reason: 'row-too-large' };
+        if (!sampledText.ok) return { ok: false, reason: sampledText.reason };
         apply(arrayPush, cells, [sampledText.value]);
         if (canonicalBytes(cells) > LIMITS.maxCanonicalRowBytes) return { ok: false, reason: 'row-too-large' };
       }
@@ -581,7 +728,6 @@ export function buildTableSamplerExpression(selector = 'table') {
     };
     let current = apply(firstChildGetter, document, []);
     let documentNodes = 0;
-    let selectorValidated = false;
     while (current && !pageTruncated) {
       if (documentNodes >= LIMITS.maxDocumentNodes) {
         pageTruncated = true;
@@ -592,13 +738,9 @@ export function buildTableSamplerExpression(selector = 'table') {
       const type = apply(nodeTypeGetter, current, []);
       let descend = type === 1;
       if (type === 1) {
-        if (!selectorValidated) {
-          apply(elementMatches, current, [selector]);
-          selectorValidated = true;
-        }
         if (isTable(current)) {
           descend = false;
-          if (apply(elementMatches, current, [selector])) {
+          if (matchesTableSelector(current)) {
             const ancestorStatus = hasTableAncestor(current);
             if (ancestorStatus === 'overflow') {
               pageTruncated = true;

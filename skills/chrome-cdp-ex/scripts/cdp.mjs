@@ -11128,6 +11128,7 @@ function boundedTableRuntimeDiagnostic(exceptionDetails) {
 }
 
 async function sampleRootFrameTables(cdp, sid, selector) {
+  const expression = buildTableSamplerExpression(selector || 'table');
   const frameTree = await cdpDomains(cdp).Page.getFrameTree({}, sid);
   const frameId = frameTree?.frameTree?.frame?.id;
   if (typeof frameId !== 'string' || frameId.length === 0) throw new Error('table: root frame id is unavailable');
@@ -11140,7 +11141,7 @@ async function sampleRootFrameTables(cdp, sid, selector) {
     throw new Error('table: isolated execution context is unavailable');
   }
   const evaluated = await cdpDomains(cdp).Runtime.evaluate({
-    expression: buildTableSamplerExpression(selector || 'table'),
+    expression,
     contextId: world.executionContextId,
     returnByValue: true,
     awaitPromise: false,

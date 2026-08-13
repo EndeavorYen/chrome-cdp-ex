@@ -1,4 +1,5 @@
 import { isProxy } from 'node:util/types';
+import { parseTableObservationSelector } from './table-sampler.mjs';
 
 const MAX_ARGV_ITEMS = 16;
 const MAX_SELECTOR_BYTES = 1_024;
@@ -100,6 +101,7 @@ function parseSnapshot(argv) {
     if (!token.startsWith('--')) {
       if (selector !== null) fail('at most one positional table selector is allowed');
       selector = selectorValue(token, 'table');
+      parseTableObservationSelector(selector);
       continue;
     }
     if (!KNOWN_FLAGS.has(token)) fail(`unknown flag ${token}`);
