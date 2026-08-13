@@ -159,6 +159,12 @@ describe('Killer Path docs contract', () => {
       'Latest measured release: v2.16.0 passed 10/10 rounds.',
       '[v2.16.0 release notes →](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)',
       '[v2.16.0 release](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)',
+      'Release: v2.16.0',
+      'Pinned release: v2.16.0',
+      'Latest release: v2.16.0',
+      'Measured candidate v2.16.0 — release pending.',
+      '[Latest: v2.16.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)',
+      '[v2.16.0 — pinned](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)',
     ]) {
       expect(checkDocsContract({ ...docs, readme: `${docs.readme}\n${falseClaim}\n` }, []), falseClaim)
         .toContain('README.md must not present unreleased candidate v2.16.0 as a published or measured release');
