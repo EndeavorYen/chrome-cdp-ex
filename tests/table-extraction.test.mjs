@@ -199,10 +199,24 @@ describe('canonical table bytes and bounded previews', () => {
   });
 
   it('has zero canonical artifact bytes for zero data rows', () => {
-    const manifest = buildTableExportManifest(accumulatorWithRows([]), { termination: 'logical-count-reached' });
+    const bundle = buildTableExportBundle(accumulatorWithRows([]), { termination: 'logical-count-reached' });
 
-    expect(manifest.artifact.rows).toBe(0);
-    expect(manifest.artifact.bytes).toBe(0);
+    expect(bundle.rowsTsv).toBe('');
+    expect(bundle.manifest.artifact.rows).toBe(0);
+    expect(bundle.manifest.artifact.bytes).toBe(0);
+  });
+
+  it('preserves empty canonical rows and distinguishes them through manifest row count', () => {
+    const one = buildTableExportBundle(accumulatorWithRows([['']]), { termination: 'logical-count-reached' });
+    const two = buildTableExportBundle(accumulatorWithRows([[''], ['']]), { termination: 'logical-count-reached' });
+    const trailing = buildTableExportBundle(accumulatorWithRows([['value'], ['']]), { termination: 'logical-count-reached' });
+
+    expect(one.rowsTsv).toBe('');
+    expect(one.manifest.artifact).toMatchObject({ rows: 1, bytes: 0 });
+    expect(two.rowsTsv).toBe('\n');
+    expect(two.manifest.artifact).toMatchObject({ rows: 2, bytes: 1 });
+    expect(trailing.rowsTsv).toBe('value\n');
+    expect(trailing.manifest.artifact).toMatchObject({ rows: 2, bytes: 6 });
   });
 
   it('keeps the complete manifest response at or below 16384 UTF-8 bytes under escaping pressure', () => {

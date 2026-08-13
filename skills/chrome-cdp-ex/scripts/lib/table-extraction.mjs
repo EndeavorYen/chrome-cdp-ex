@@ -125,7 +125,7 @@ function cellArray(value, name, maxCellsPerRow = TABLE_EXTRACTION_LIMITS.maxCell
 function rowArray(value, name) {
   return boundedStringArray(value, name, {
     maxItems: TABLE_EXTRACTION_LIMITS.maxRows,
-    maxItemBytes: TABLE_EXTRACTION_LIMITS.maxInlineBytes,
+    maxItemBytes: TABLE_EXTRACTION_LIMITS.maxCanonicalRowBytes,
   });
 }
 
@@ -215,12 +215,16 @@ function previewForRows(rows, limits, sourceRowCount = rows.length) {
   });
 }
 
+function prettyJsonBytes(value) {
+  return Buffer.byteLength(JSON.stringify(value, null, 2), 'utf8');
+}
+
 function boundedPreview(rows, limits, makeResult) {
   let preview = previewForRows(rows, limits, rows.length);
-  while (Buffer.byteLength(JSON.stringify(makeResult(preview)), 'utf8') > limits.maxResponseBytes && preview.rowCount > 0) {
+  while (prettyJsonBytes(makeResult(preview)) > limits.maxResponseBytes && preview.rowCount > 0) {
     preview = previewForRows(preview.rows.slice(0, -1), limits, rows.length);
   }
-  if (Buffer.byteLength(JSON.stringify(makeResult(preview)), 'utf8') > limits.maxResponseBytes) {
+  if (prettyJsonBytes(makeResult(preview)) > limits.maxResponseBytes) {
     throw new RangeError('Table extraction metadata exceeds the response byte ceiling');
   }
   return preview;
@@ -376,12 +380,17 @@ export function finalizeTableExtraction(accumulator, options) {
 }
 
 export function buildTableExportManifest(accumulator, options) {
+  return buildTableExportBundle(accumulator, options).manifest;
+}
+
+export function buildTableExportBundle(accumulator, options) {
   const state = accumulatorState(accumulator);
   const record = ownDataRecord(options, 'manifest options');
   exactKeys(record, 'manifest options', new Set(['termination']));
   const termination = enumValue(ownValue(record, 'termination', 'manifest options'), TERMINATIONS, 'termination');
   const table = tableResult(state, termination);
-  const checksum = createHash('sha256').update(Buffer.from(table.body, 'utf8')).digest('hex');
+  const rowsTsv = table.body;
+  const checksum = createHash('sha256').update(Buffer.from(rowsTsv, 'utf8')).digest('hex');
   const base = {
     schema: 'chrome-cdp-ex.table-export.v1',
     logicalRows: table.logicalRows,
@@ -392,8 +401,14 @@ export function buildTableExportManifest(accumulator, options) {
     collectedRows: table.collectedRows,
     recycledMountedNodes: table.recycledMountedNodes,
     completeness: table.completeness,
-    artifact: Object.freeze({ rows: table.collectedRows, bytes: table.artifactBytes, checksum }),
+    artifact: Object.freeze({
+      rows: table.collectedRows,
+      bytes: table.artifactBytes,
+      checksum,
+      checksumScope: 'canonical-data-rows-tsv-utf8',
+    }),
   };
   const preview = boundedPreview(table.rows, state.limits, inline => ({ ...base, inline }));
-  return Object.freeze({ ...base, inline: preview });
+  const manifest = Object.freeze({ ...base, inline: preview });
+  return Object.freeze({ manifest, rowsTsv });
 }
