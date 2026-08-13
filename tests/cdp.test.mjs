@@ -5158,6 +5158,36 @@ describe('bounded table observation', () => {
     });
   });
 
+  it('retains certified ARIA identity for a sampler-truncated valid prefix', async () => {
+    const dataRows = Array.from({ length: 128 }, (_, index) => ({
+      rawAriaRowIndex: index + 1,
+      cells: [`row-${index + 1}`],
+    }));
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
+        ariaRowCount: 1000,
+        dataRows,
+        directRowsSeen: 129,
+        dataRowsSeen: 129,
+        truncated: true,
+        truncationReason: 'row-limit',
+      })]) } }),
+    });
+
+    const output = JSON.parse(await tableObservationStr(cdp, 'sid1', {
+      mode: 'observe', selector: null, format: 'json',
+    }));
+    expect(output.tables[0]).toMatchObject({
+      logicalRows: 1000,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'aria-rowindex',
+      orderingSource: 'aria-rowindex',
+      collectedRows: 128,
+      completeness: { state: 'incomplete', termination: 'observation', evidenceConflict: false },
+      snapshot: { rowsAdmitted: 128, truncated: true, truncationReason: 'row-limit' },
+    });
+  });
+
   it.each([
     { name: 'null count', ariaRowCount: null, expectedRows: null, expectedConflict: false },
     { name: 'unknown count', ariaRowCount: -1, expectedRows: null, expectedConflict: false },
@@ -5233,6 +5263,28 @@ describe('bounded table observation', () => {
       'caption', 'headers', 'snapshot',
     ]);
     expect(JSON.stringify(output)).not.toMatch(/rawAriaRowIndex|executionContextId|frameId|timestamp|path/);
+  });
+
+  it('canonicalizes hostile caption and header metadata before JSON emission', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
+        caption: 'Orders\nFORGED\u001b[31m\u0085\u2028',
+        ariaRowCount: 2,
+        headerRows: [{ rawAriaRowIndex: 1, cells: ['Name\rNEXT\u009f\u2029'] }],
+        dataRows: [{ rawAriaRowIndex: 2, cells: ['safe'] }],
+        directRowsSeen: 2,
+        headerRowsSeen: 1,
+        dataRowsSeen: 1,
+      })]) } }),
+    });
+
+    const output = JSON.parse(await tableObservationStr(cdp, 'sid1', {
+      mode: 'observe', selector: null, format: 'json',
+    }));
+    expect(output.tables[0].caption).toBe('Orders\\nFORGED\\u001B[31m\\u0085\\u2028');
+    expect(output.tables[0].headers).toEqual([['Name\\rNEXT\\u009F\\u2029']]);
+    const metadata = [output.tables[0].caption, ...output.tables[0].headers.flat()];
+    expect(metadata.every(value => !/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/u.test(value))).toBe(true);
   });
 
   it('escapes hostile runtime exception controls into one bounded diagnostic line', async () => {
@@ -5343,6 +5395,26 @@ describe('bounded table observation', () => {
       const unit = character.charCodeAt(0);
       return unit !== 0x0A && (unit < 0x20 || (unit >= 0x7F && unit <= 0x9F));
     })).toBe(false);
+  });
+
+  it.each([
+    { name: 'trailing empty cell', cells: ['A', ''], canonical: 'A\t' },
+    { name: 'empty row', cells: [], canonical: '' },
+  ])('ends complete text after $name with a non-whitespace provenance footer', async fixture => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
+        ariaRowCount: 1,
+        dataRows: [{ rawAriaRowIndex: 1, cells: fixture.cells }],
+        directRowsSeen: 1,
+        dataRowsSeen: 1,
+      })]) } }),
+    });
+
+    const output = await tableObservationStr(cdp, 'sid1', {
+      mode: 'observe', selector: null, format: 'text',
+    });
+    expect(output).toContain(`\n${fixture.canonical}\nSnapshot provenance: bounded root-frame observation.`);
+    expect(output).toMatch(/Snapshot provenance: bounded root-frame observation\.$/);
   });
 });
 

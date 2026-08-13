@@ -98,6 +98,39 @@ function trailingTablePayload() {
   return { output, rows };
 }
 
+function rootTableCdp(cells) {
+  const sample = JSON.stringify({
+    schema: 'chrome-cdp-ex.table-sample.v1',
+    tablesSeen: 1,
+    tables: [{
+      caption: 'Orders',
+      ariaRowCount: 1,
+      headerRows: [],
+      dataRows: [{ rawAriaRowIndex: 1, cells }],
+      directRowsSeen: 1,
+      headerRowsSeen: 0,
+      dataRowsSeen: 1,
+      truncated: false,
+      truncationReason: null,
+    }],
+    truncated: false,
+    truncationReason: null,
+  });
+  return {
+    send(method) {
+      if (method === 'Page.getFrameTree') {
+        return Promise.resolve({ frameTree: { frame: { id: 'root-frame' } } });
+      }
+      if (method === 'Page.createIsolatedWorld') return Promise.resolve({ executionContextId: 151 });
+      if (method === 'Runtime.evaluate') {
+        return Promise.resolve({ result: { type: 'string', value: sample } });
+      }
+      return Promise.resolve({});
+    },
+    onEvent() { return () => {}; },
+  };
+}
+
 describe('bounded table observation public emission', () => {
   it('keeps full target diagnostics and trims only whole inline rows after diagnostics attach', () => {
     const { output, rows } = tableObservationPayload();
@@ -208,6 +241,45 @@ describe('bounded table observation public emission', () => {
 
     expect(direct.code).toBe(0);
     expect(Buffer.byteLength(direct.stdout, 'utf8')).toBeLessThanOrEqual(16_384);
+    expect(sent[0].result).toEqual({
+      content: [{ type: 'text', text: direct.stdout }],
+      isError: false,
+    });
+  });
+
+  it.each([
+    { name: 'trailing empty cell', cells: ['A', ''], canonical: 'A\t' },
+    { name: 'empty row', cells: [], canonical: '' },
+  ])('preserves a complete $name through direct CLI and MCP transport', async fixture => {
+    const direct = await executeCdpCli(['table', 'ABC12345'], {
+      runMain: async ({ console, process }) => {
+        const result = await cdpTest.tableObservationStr(rootTableCdp(fixture.cells), 'sid1', {
+          mode: 'observe', selector: null, format: 'text',
+        });
+        cdpTest.emitTargetCommandResponse({ ok: true, result }, {
+          cmd: 'table',
+          format: 'text',
+          console,
+          process,
+        });
+      },
+    });
+    const sent = [];
+    const handle = createMcpRequestHandler({
+      runtimeClient: createRuntimeClient({ executeCli: async () => direct }),
+      sendMessage: message => sent.push(message),
+    });
+
+    await handle({
+      jsonrpc: '2.0',
+      id: 152,
+      method: 'tools/call',
+      params: { name: 'run_command', arguments: { command: 'table', args: ['ABC12345'] } },
+    });
+
+    expect(direct.code).toBe(0);
+    expect(direct.stdout).toContain(`\n${fixture.canonical}\nSnapshot provenance: bounded root-frame observation.`);
+    expect(direct.stdout).toMatch(/Snapshot provenance: bounded root-frame observation\.$/);
     expect(sent[0].result).toEqual({
       content: [{ type: 'text', text: direct.stdout }],
       isError: false,
