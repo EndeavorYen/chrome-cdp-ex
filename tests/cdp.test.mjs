@@ -7176,6 +7176,46 @@ describe('waitForStr --gone', () => {
       .rejects.toThrow(/Unknown ref/);
   });
 
+  it.each([
+    ['top', 'Page.getFrameTree'],
+    ['top', 'Page.createIsolatedWorld'],
+    ['top', 'DOM.resolveNode'],
+    ['top', 'Runtime.callFunctionOn'],
+    ['frame', 'Page.createIsolatedWorld'],
+    ['frame', 'DOM.resolveNode'],
+    ['frame', 'Runtime.callFunctionOn'],
+  ])('propagates transient %s-ref %s failures without invalidating the ref', async (scope, method) => {
+    const transient = new Error(`transient ${method} failure`);
+    const handlers = {
+      'Page.getFrameTree': () => ({ frameTree: { frame: { id: 'main-frame' } } }),
+      'Page.createIsolatedWorld': () => ({ executionContextId: 901 }),
+      'DOM.resolveNode': () => ({ object: { objectId: 'isolated-ref' } }),
+      'Runtime.callFunctionOn': () => ({ result: { value: { connected: true, visible: true } } }),
+    };
+    handlers[method] = () => { throw transient; };
+    const cdp = createMockCDP(handlers);
+    const refMap = new Map(scope === 'top' ? [[6, 60606]] : []);
+    const refState = {
+      generation: 1,
+      invalidationReason: null,
+      ...(scope === 'frame' ? {
+        frameRefs: new Map([['@f2', {
+          frameRef: '@f2',
+          frameId: 'child-frame',
+          refs: new Map([[1, 61616]]),
+        }]]),
+      } : {}),
+    };
+    const ref = scope === 'top' ? '@6' : '@f2:1';
+
+    await expect(waitForStr(cdp, 'sid1', ['--gone', ref, '500'], refMap, refState))
+      .rejects.toBe(transient);
+
+    expect(refState.invalidationReason).toBeNull();
+    if (scope === 'top') expect(refMap.get(6)).toBe(60606);
+    else expect(refState.frameRefs.get('@f2').refs.get(1)).toBe(61616);
+  });
+
   it('should return when @ref element is removed from DOM (resolveNode throws)', async () => {
     const cdp = createMockCDP({
       'DOM.resolveNode': () => { throw new Error('Could not find node'); },
