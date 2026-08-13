@@ -2,8 +2,13 @@ import { createHash } from 'node:crypto';
 import { isProxy } from 'node:util/types';
 
 const LOGICAL_COUNT_SOURCES = new Set(['aria-rowcount', 'none']);
-const IDENTITY_SOURCES = new Set(['aria-rowindex', 'row-key-column']);
-const ORDERING_SOURCES = new Set(['aria-rowindex', 'row-key-column']);
+const IDENTITY_SOURCES = new Set(['aria-rowindex', 'row-key-column', 'snapshot-order']);
+const ORDERING_SOURCES = new Set(['aria-rowindex', 'row-key-column', 'dom-order']);
+const PROVENANCE_PAIRS = new Set([
+  'aria-rowindex/aria-rowindex',
+  'row-key-column/row-key-column',
+  'snapshot-order/dom-order',
+]);
 const TERMINATIONS = new Set([
   'observation',
   'logical-count-reached',
@@ -249,7 +254,16 @@ function tableResult(state, termination) {
     && termination === 'logical-count-reached'
     && [...state.rowsByKey.values()].every(entry => Number.isInteger(entry.key) && entry.key >= 1 && entry.key <= state.logicalRows)
     && [...state.rowsByKey.values()].every(entry => state.rowsByKey.has(`number:${entry.key}`));
-  const completeness = state.logicalRows === null ? 'unknown' : complete ? 'complete' : 'incomplete';
+  let completeness;
+  if (state.logicalRows === null) {
+    completeness = Object.freeze({ state: 'unknown', termination, evidenceConflict: false });
+  } else if (rows.length < state.logicalRows) {
+    completeness = Object.freeze({ state: 'incomplete', termination, evidenceConflict: false });
+  } else if (rows.length > state.logicalRows) {
+    completeness = Object.freeze({ state: 'unknown', termination, evidenceConflict: true });
+  } else {
+    completeness = Object.freeze({ state: complete ? 'complete' : 'unknown', termination, evidenceConflict: false });
+  }
   return {
     schema: 'chrome-cdp-ex.table.v1',
     logicalRows: state.logicalRows,
@@ -259,7 +273,7 @@ function tableResult(state, termination) {
     mountedRows: state.mountedNodeIds.size,
     collectedRows: rows.length,
     recycledMountedNodes: state.recycledNodeIds.size,
-    completeness: Object.freeze({ state: completeness, termination }),
+    completeness,
     rows,
     body,
     artifactBytes,
@@ -287,7 +301,9 @@ export function createTableAccumulator(options) {
   const orderingSource = enumValue(ownValue(record, 'orderingSource', 'options'), ORDERING_SOURCES, 'options.orderingSource');
   const limits = normalizedLimits(ownValue(record, 'limits', 'options', { required: false }));
   if ((logicalRows === null) !== (logicalCountSource === 'none')) invalid('logicalRows and logicalCountSource disagree');
-  if (identitySource !== orderingSource) invalid('identitySource and orderingSource must match');
+  if (!PROVENANCE_PAIRS.has(`${identitySource}/${orderingSource}`)) {
+    invalid('identitySource and orderingSource must match a supported provenance pair');
+  }
 
   const state = {
     logicalRows,
@@ -300,6 +316,7 @@ export function createTableAccumulator(options) {
     recycledNodeIds: new Set(),
     nextFirstObserved: 0,
     artifactBytes: 0,
+    snapshotBatchSeen: false,
     limits,
   };
   const accumulator = Object.freeze(Object.create(null));
@@ -319,6 +336,8 @@ function validatedSample(state, sample) {
   if (state.identitySource === 'aria-rowindex') {
     if (!Number.isSafeInteger(key) || key < 1) invalid('sample.key must be a positive safe integer for aria-rowindex');
     if (state.logicalRows !== null && key > state.logicalRows) invalid('sample.key must not exceed logicalRows');
+  } else if (state.identitySource === 'snapshot-order') {
+    if (!Number.isSafeInteger(key) || key < 1) invalid('sample.key must be a positive safe integer for snapshot-order');
   } else if (typeof key === 'number') {
     nonNegativeInteger(key, 'sample.key');
   } else {
@@ -335,7 +354,14 @@ function admission(state, admitted, reason = null) {
 
 export function addTableSampleBatch(accumulator, samples) {
   const state = accumulatorState(accumulator);
+  if (state.identitySource === 'snapshot-order' && state.snapshotBatchSeen) {
+    invalid('snapshot-order accepts exactly one batch');
+  }
   const validated = sampleArray(samples).map(sample => validatedSample(state, sample));
+  if (state.identitySource === 'snapshot-order'
+    && validated.some((sample, index) => sample.key !== index + 1)) {
+    invalid('snapshot-order keys must be exact batch ordinals 1..N');
+  }
   const batchKeys = new Set();
   const batchNodeIds = new Set();
   for (const sample of validated) {
@@ -346,6 +372,7 @@ export function addTableSampleBatch(accumulator, samples) {
     const prior = state.rowsByKey.get(sample.keyId);
     if (prior !== undefined && prior.row !== sample.row) invalid('sample.key conflicts with a previously collected row');
   }
+  if (state.identitySource === 'snapshot-order') state.snapshotBatchSeen = true;
   const newKeys = validated.filter(sample => !state.rowsByKey.has(sample.keyId));
   if (newKeys.some(sample => sample.rowBytes > state.limits.maxCanonicalRowBytes)) return admission(state, false, 'row-too-large');
   if (state.rowsByKey.size + newKeys.length > state.limits.maxRows) return admission(state, false, 'row-limit');

@@ -724,9 +724,10 @@ function validateCommittedManifest(value, state, artifactId) {
     || !nonNegativeSafeInteger(value.recycledMountedNodes)) {
     fail('TABLE_ARTIFACT_READ_FAILED', 'artifact manifest verification failed');
   }
-  if (!exactObject(value.completeness, ['state', 'termination'])
+  if (!exactObject(value.completeness, ['state', 'termination', 'evidenceConflict'])
     || !['complete', 'incomplete', 'unknown'].includes(value.completeness.state)
-    || typeof value.completeness.termination !== 'string') {
+    || typeof value.completeness.termination !== 'string'
+    || typeof value.completeness.evidenceConflict !== 'boolean') {
     fail('TABLE_ARTIFACT_READ_FAILED', 'artifact manifest verification failed');
   }
   if (!exactObject(value.artifact, ['rows', 'bytes', 'checksum', 'checksumScope'])
