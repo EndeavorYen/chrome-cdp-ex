@@ -145,8 +145,8 @@ describe('Runtime v3 final dispatch characterization', () => {
       COMMAND_SURFACE.commands,
       command => command.kind,
     )).map(([kind, commands]) => [kind, commands.length]))).toEqual({
-      read: 24,
-      'conditional-mutation': 7,
+      read: 23,
+      'conditional-mutation': 8,
       mutation: 32,
       'protected-mutation': 7,
       script: 3,

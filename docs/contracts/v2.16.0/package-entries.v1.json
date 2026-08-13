@@ -71,6 +71,7 @@
     "package/skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/screenshot-health.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/session-report.mjs",
+    "package/skills/chrome-cdp-ex/scripts/lib/table-contract.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/table-extraction.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/target-binding.mjs",
     "package/skills/chrome-cdp-ex/scripts/mcp-server.mjs"

@@ -74,9 +74,9 @@ describe('Phase 6 command-surface characterization', () => {
         expect(cdpTest.commandMeta(spelling), spelling).toBe(command);
       }
     }
-    expect(Buffer.byteLength(cdpTest.helpStr())).toBe(21448);
+    expect(Buffer.byteLength(cdpTest.helpStr())).toBe(21723);
     expect(`sha256:${createHash('sha256').update(cdpTest.helpStr()).digest('hex')}`)
-      .toBe('sha256:ac006898447290de10d571b503c03b3febfc5a60f52e36965914309d7e43a559');
+      .toBe('sha256:c3b989758b5ffd5f2350fdf78c2b52d1551b7e99a00ebb1a8079274b23673615');
     expect(cdpTest.helpStr()).toMatch(/\.\n$/);
     expect(cdpTest.helpStr().trim()).toBe(contract.cliCases.find(entry => entry.id === 'help').stdout);
     expect(contract.cliCases.find(entry => entry.id === 'no-args-help').stdout)
@@ -101,10 +101,10 @@ describe('Phase 6 command-surface characterization', () => {
         });
         expect(result.status, args.join(' ') || '<no args>').toBe(0);
         expect(result.stderr).toHaveLength(0);
-        expect(result.stdout).toHaveLength(21449);
+        expect(result.stdout).toHaveLength(21724);
         expect(result.stdout.subarray(-2)).toEqual(Buffer.from('\n\n'));
         expect(`sha256:${createHash('sha256').update(result.stdout).digest('hex')}`)
-          .toBe('sha256:33ed0f947dd690bc331c5f2929dad0aab1842ff39a9927a8d353a0b7da41da17');
+          .toBe('sha256:d2c9fe0735def0dfe95d13a02a25d84647acc8981ecb9e57875fcabc763ce4b5');
       }
     } finally {
       rmSync(runtimeRoot, { recursive: true, force: true });
@@ -157,7 +157,13 @@ describe('Phase 6 command-surface characterization', () => {
       record_snapshot: ['record-snapshot'],
       report: ['report'],
       responsive_audit: ['responsive-audit'],
-      run_command: ['run-command-read', 'run-command-mutation'],
+      run_command: [
+        'run-command-read',
+        'run-command-mutation',
+        'run-command-table-observe',
+        'run-command-table-collect',
+        'run-command-table-continue',
+      ],
       screenshot: ['screenshot'],
       select_target: ['select-target'],
       session_checkpoint: ['session-checkpoint', 'session-checkpoint-unsafe'],

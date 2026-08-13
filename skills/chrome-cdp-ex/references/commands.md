@@ -246,7 +246,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `emulate` | `emulate <target> [dark\|light\|no-preference\|off\|status]` | `mutation / mutation` |
 | `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
 | `text` | `text <target> [selector]` | `read / standard` |
-| `table` | `table <target> [selector]` | `read / standard` |
+| `table` | `table <target> [TABLE_SELECTOR] [--format text\|json] \| table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text\|json] \| table <target> --continue TOKEN --format json` | `conditional-mutation / conditional` |
 | `back` | `back <target>` | `mutation / mutation` |
 | `forward` | `forward <target>` | `mutation / mutation` |
 | `reload` | `reload <target>` | `mutation / mutation` |

@@ -101,6 +101,9 @@ describe('public contract baseline', () => {
       'wait-for-stable',
       'run-command-read',
       'run-command-mutation',
+      'run-command-table-observe',
+      'run-command-table-collect',
+      'run-command-table-continue',
     ]));
     expect(contract.mcp.mappingCases.every(entry => commandSpellings.has(entry.command[0]))).toBe(true);
     expect(contract.mcp.invalidCases.map(entry => entry.id)).toEqual([
@@ -121,6 +124,8 @@ describe('public contract baseline', () => {
       'run-command-diff-shot-reset-without-confirm',
       'run-command-shot-path-without-confirm',
       'run-command-fullshot-path-without-confirm',
+      'run-command-table-collect-without-confirm',
+      'run-command-table-malformed',
       'screenshot-path-without-confirm',
       'run-command-not-allowlisted',
       'run-command-newline',
