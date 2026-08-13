@@ -6695,9 +6695,10 @@ describe('clickStr', () => {
       { nodeId: 'alpha-0', parentId: 'root-0', role: { value: 'button' }, name: { value: 'Review Alpha' }, backendDOMNodeId: 101 },
     ];
     const freshNodes = [
-      { nodeId: 'root-1', role: { value: 'RootWebArea' }, name: { value: 'Reviews' }, childIds: ['charlie-1', 'alpha-1'] },
+      { nodeId: 'root-1', role: { value: 'RootWebArea' }, name: { value: 'Reviews' }, childIds: ['charlie-1', 'alpha-1', 'bravo-1'] },
       { nodeId: 'charlie-1', parentId: 'root-1', role: { value: 'button' }, name: { value: 'Review Charlie' }, backendDOMNodeId: 201 },
       { nodeId: 'alpha-1', parentId: 'root-1', role: { value: 'button' }, name: { value: 'Review Alpha' }, backendDOMNodeId: 202 },
+      { nodeId: 'bravo-1', parentId: 'root-1', role: { value: 'button' }, name: { value: 'Review Bravo' }, backendDOMNodeId: 203 },
     ];
     const refMap = new Map();
     const refState = { generation: 1, invalidationReason: null };
@@ -6712,13 +6713,14 @@ describe('clickStr', () => {
       { name: 'Review Alpha', x: 40, y: 72, w: 120, h: 32 },
       { name: 'Review Bravo', x: 40, y: 124, w: 120, h: 32 },
     ];
-    const connectedObjects = new Set(['fresh-charlie', 'fresh-alpha']);
+    const connectedObjects = new Set(['fresh-charlie', 'fresh-alpha', 'fresh-bravo']);
     const cdp = createMockCDP({
       'DOM.resolveNode': ({ backendNodeId }) => ({
         object: {
           objectId: backendNodeId === 101
             ? 'detached-alpha'
-            : backendNodeId === 202 ? 'fresh-alpha' : 'fresh-charlie',
+            : backendNodeId === 202 ? 'fresh-alpha'
+            : backendNodeId === 203 ? 'fresh-bravo' : 'fresh-charlie',
         },
       }),
       'Runtime.callFunctionOn': ({ objectId, functionDeclaration }) => {
@@ -6784,7 +6786,7 @@ describe('clickStr', () => {
 
     // A fresh perceive replaces, rather than remaps, the stale ref authority.
     buildPerceiveTree(freshNodes, meta, refMap);
-    expect([...refMap.entries()]).toEqual([[1, 201], [2, 202]]);
+    expect([...refMap.entries()]).toEqual([[1, 201], [2, 202], [3, 203]]);
     expect(refMap.get(2)).toBe(202);
     await clickStr(cdp, 'sid1', '@2', refMap, refState);
     expect(appAttempts).toEqual(['Review Alpha']);

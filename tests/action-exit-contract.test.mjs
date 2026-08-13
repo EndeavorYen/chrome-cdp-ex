@@ -127,6 +127,80 @@ function replayArtifact(actions) {
   };
 }
 
+async function detachedRefActionFixture({ input = '@1', frameRef = null } = {}) {
+  const refMap = frameRef ? new Map() : new Map([[1, 14801]]);
+  const refState = {
+    generation: 1,
+    invalidationReason: null,
+    ...(frameRef ? {
+      frameRefs: new Map([[frameRef, {
+        frameRef,
+        frameId: 'child-frame',
+        parentId: null,
+        refs: new Map([[1, 14801]]),
+      }]]),
+    } : {}),
+  };
+  const inputCalls = [];
+  const observe = vi.fn(async () => '+++ Added\n+ [button] pre-action remount');
+  const cdp = {
+    calls: [],
+    async send(method, params = {}, sessionId) {
+      this.calls.push({ method, params, sessionId });
+      if (method === 'Page.getFrameTree') {
+        return { frameTree: { frame: { id: 'root-frame' } } };
+      }
+      if (method === 'Page.createIsolatedWorld') {
+        return { executionContextId: 901 };
+      }
+      if (method === 'DOM.resolveNode') {
+        return {
+          object: {
+            objectId: params.executionContextId === 901
+              ? 'isolated-detached-ref'
+              : 'page-detached-ref',
+          },
+        };
+      }
+      if (method === 'Runtime.callFunctionOn') {
+        if (params.objectId === 'isolated-detached-ref') {
+          return { result: { value: { connected: false } } };
+        }
+        return { result: { value: {
+          connected: true,
+          x: 10,
+          y: 20,
+          w: 100,
+          h: 30,
+          tag: 'BUTTON',
+          text: 'Forged Alpha',
+        } } };
+      }
+      if (method.startsWith('Input.dispatch')) {
+        inputCalls.push({ method, params });
+        return {};
+      }
+      return {};
+    },
+  };
+  let captured = null;
+  const output = await cdpTest.runActionWithFeedback({
+    action: 'click',
+    target: {
+      targetId: 'ABC12345',
+      input,
+      resolvedBy: 'selector-or-ref',
+      label: input,
+    },
+    dispatch: () => cdpTest.clickStr(cdp, 'sid', input, refMap, refState),
+    feedbackPolicy: 'settle-diff',
+    observe,
+    onActionResult: result => { captured = result; },
+    format: 'json',
+  });
+  return { output, captured, cdp, refMap, refState, inputCalls, observe };
+}
+
 describe('hard action dispatch exit contract (#143)', () => {
   it('makes the daemon application route additive-fail while preserving the Action Result bytes', async () => {
     const registry = createCommandRegistry([{
@@ -668,5 +742,137 @@ describe('hard action dispatch exit contract (#143)', () => {
         { runMain: runMainWithStdout(FAILED_ACTION_JSON) },
       )).resolves.toEqual({ code: 1, stdout: FAILED_ACTION_JSON, stderr: '' });
     });
+  });
+});
+
+describe('detached ref propagation contract (#148)', () => {
+  it('preserves the stale-ref Action Result through direct CLI and MCP failure surfaces', async () => {
+    const fixture = await detachedRefActionFixture();
+    const action = JSON.parse(fixture.output);
+
+    expect(action).toMatchObject({
+      action: 'click',
+      target: { input: '@1' },
+      dispatch: { ok: false, method: 'click' },
+      effects: {
+        domDiff: null,
+        failure: {
+          kind: 'stale-ref',
+          nextCommand: 'cdp perceive ABC12345 -C -d 8',
+        },
+      },
+      outcome: { status: 'failed', changed: false },
+    });
+    expect(fixture.inputCalls).toEqual([]);
+    expect(fixture.observe).not.toHaveBeenCalled();
+    expect(fixture.refMap.has(1)).toBe(false);
+
+    const direct = await executeCdpCli(
+      ['click', 'ABC12345', '@1', '--format', 'json'],
+      { runMain: runMainWithStdout(fixture.output) },
+    );
+    expect(direct).toEqual({ code: 1, stdout: fixture.output, stderr: '' });
+
+    const sent = [];
+    const handle = createMcpRequestHandler({
+      runtimeClient: createRuntimeClient({ executeCli: async () => direct }),
+      sendMessage: message => sent.push(message),
+    });
+    await handle({
+      jsonrpc: '2.0',
+      id: 148,
+      method: 'tools/call',
+      params: {
+        name: 'run_command',
+        arguments: {
+          command: 'click',
+          args: ['ABC12345', '@1', '--format', 'json'],
+          confirm: true,
+        },
+      },
+    });
+    expect(sent).toEqual([{
+      jsonrpc: '2.0',
+      id: 148,
+      result: {
+        content: [{ type: 'text', text: fixture.output }],
+        isError: true,
+      },
+    }]);
+  });
+
+  it('halts batch, flow, replay, and repeat before a later action without remapping', async () => {
+    const fixture = await detachedRefActionFixture();
+    const stale = async () => ({ ok: true, result: fixture.output });
+
+    const batchRun = vi.fn(stale);
+    const batchResults = await cdpTest.runBatchCommands({ run: batchRun }, [
+      { cmd: 'click', args: ['@1'] },
+      { cmd: 'click', args: ['#later'] },
+    ]);
+    expect(batchRun).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(cdpTest.formatBatchResults(batchResults, 'model', {
+      targetId: 'ABC12345',
+    }))).toMatchObject({
+      counts: { ok: 0, failed: 1 },
+      failedStep: { cmd: 'click', error: expect.stringMatching(/DOM changes/) },
+    });
+
+    const flowRun = vi.fn(stale);
+    const flow = JSON.parse(await cdpTest.flowStr({
+      run: flowRun,
+      settle: async () => '',
+    }, 'click @1; click #later', { format: 'json', targetId: 'ABC12345' }));
+    expect(flowRun).toHaveBeenCalledTimes(1);
+    expect(flow).toMatchObject({
+      halted: true,
+      counts: { ok: 0, failed: 1, skipped: 1 },
+      failedStep: { cmd: 'click', error: expect.stringMatching(/DOM changes/) },
+    });
+
+    const replayRun = vi.fn(stale);
+    const replay = JSON.parse(await cdpTest.replayActionsStr({ run: replayRun }, [
+      '--format', 'json', '--json', JSON.stringify(replayArtifact([
+        { action: 'click', command: ['click', '@1'], replayable: true, needsInput: [] },
+        { action: 'click', command: ['click', '#later'], replayable: true, needsInput: [] },
+      ])),
+    ]));
+    expect(replayRun).toHaveBeenCalledTimes(1);
+    expect(replay).toMatchObject({
+      halted: true,
+      counts: { ok: 0, failed: 1 },
+      failedStep: { command: ['click', '@1'], error: expect.stringMatching(/DOM changes/) },
+    });
+
+    const repeatRun = vi.fn(stale);
+    await expect(cdpTest.repeatStr({ run: repeatRun }, ['3', 'click', '@1']))
+      .rejects.toThrow(/DOM changes.*Repeat halted at iteration 1\/3/s);
+    expect(repeatRun).toHaveBeenCalledTimes(1);
+    expect(fixture.refMap.has(1)).toBe(false);
+  });
+
+  it('keeps a stale frame ref in the fresh-perceive recovery command', async () => {
+    const fixture = await detachedRefActionFixture({ input: '@f2:1', frameRef: '@f2' });
+    const action = JSON.parse(fixture.output);
+
+    expect(action).toMatchObject({
+      target: { input: '@f2:1' },
+      dispatch: { ok: false },
+      effects: {
+        failure: {
+          kind: 'stale-ref',
+          nextCommand: 'cdp perceive ABC12345 --frame @f2',
+        },
+        diagnosis: {
+          recovery: {
+            strategy: 'refresh-perception',
+            verifyCommand: 'cdp perceive ABC12345 --frame @f2',
+          },
+        },
+      },
+      nextSteps: expect.arrayContaining(['cdp perceive ABC12345 --frame @f2']),
+    });
+    expect(fixture.refState.frameRefs.get('@f2').refs.has(1)).toBe(false);
+    expect(fixture.cdp.calls.some(call => call.method === 'Page.getFrameTree')).toBe(false);
   });
 });
