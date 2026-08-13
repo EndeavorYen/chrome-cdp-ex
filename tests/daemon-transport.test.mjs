@@ -120,6 +120,39 @@ describe('daemon NDJSON request transport', () => {
       .rejects.toThrow('Daemon response id 7 did not match request id 1');
   });
 
+  it.each([
+    ['missing ok', '{"id":1}\n'],
+    ['non-boolean ok', '{"id":1,"ok":"yes","result":"clicked"}\n'],
+    ['success without result', '{"id":1,"ok":true}\n'],
+    ['null success result', '{"id":1,"ok":true,"result":null}\n'],
+    ['numeric success result', '{"id":1,"ok":true,"result":0}\n'],
+    ['object success result', '{"id":1,"ok":true,"result":{}}\n'],
+    ['resultless stop marker on click', '{"id":1,"ok":true,"stopAfter":true}\n'],
+    ['failure without error', '{"id":1,"ok":false}\n'],
+    ['scalar', '42\n'],
+  ])('rejects a mutation response with an invalid terminal schema: %s', async (_label, frame) => {
+    const conn = connection({ onWrite: socket => queueMicrotask(() => socket.emit('data', frame)) });
+
+    const error = await requestDaemon(
+      conn,
+      { cmd: 'click', args: ['#purchase'] },
+      { mayHaveSideEffects: true },
+    ).catch(cause => cause);
+
+    expect(error).toMatchObject({
+      name: 'DaemonTransportError',
+      code: 'DAEMON_COMPLETION_UNKNOWN',
+      completion: 'unknown',
+      sideEffectMayHaveOccurred: true,
+      retrySafe: false,
+      transportCause: {
+        phase: 'awaiting-response',
+        kind: 'invalid-response',
+        message: expect.stringMatching(/invalid daemon response/i),
+      },
+    });
+  });
+
   it('decodes split valid UTF-8 and rejects malformed UTF-8 bytes', async () => {
     const encoded = Buffer.from('{"ok":true,"id":1,"result":"✓"}\n');
     const checkmark = Buffer.from('✓');
@@ -180,6 +213,146 @@ describe('daemon NDJSON request transport', () => {
     const conn = connection({ onWrite: socket => queueMicrotask(() => socket.emit(event)) });
     await expect(requestDaemon(conn, { cmd: 'perceive', args: [] }, { runtimeDir: '/fixture/runtime' }))
       .rejects.toThrow('Connection closed before response. The daemon for this tab may have crashed or exited (idle timeout, page closed, or browser disconnect). Re-run "perceive <target>" to restart it; check /fixture/runtime for stale sockets if this repeats.');
+  });
+
+  it.each(['end', 'close'])('marks a committed mutation as ambiguous when the peer emits %s before its receipt', async event => {
+    let committed = 0;
+    const conn = connection({
+      onWrite(socket, payload) {
+        expect(JSON.parse(payload)).toEqual({
+          cmd: 'click',
+          args: ['#purchase'],
+          id: 1,
+        });
+        committed += 1;
+        queueMicrotask(() => socket.emit(event));
+      },
+    });
+
+    const error = await requestDaemon(
+      conn,
+      { cmd: 'click', args: ['#purchase'] },
+      { runtimeDir: '/fixture/runtime', mayHaveSideEffects: true },
+    ).catch(cause => cause);
+
+    expect(committed).toBe(1);
+    expect(conn.write).toHaveBeenCalledOnce();
+    expect(error).toMatchObject({
+      name: 'DaemonTransportError',
+      code: 'DAEMON_COMPLETION_UNKNOWN',
+      completion: 'unknown',
+      sideEffectMayHaveOccurred: true,
+      transportCause: {
+        phase: 'awaiting-response',
+        kind: `peer-${event}`,
+        message: expect.stringContaining('Connection closed before response.'),
+      },
+    });
+    expect(error.transportCause.message.length).toBeLessThanOrEqual(512);
+  });
+
+  it('conservatively marks a synchronous mutation write failure as ambiguous after send is attempted', async () => {
+    const original = new Error('write EPIPE before bytes were accepted');
+    original.code = 'EPIPE';
+    const conn = connection();
+    conn.write.mockImplementation(() => { throw original; });
+
+    const error = await requestDaemon(
+      conn,
+      { cmd: 'click', args: ['#purchase'] },
+      { mayHaveSideEffects: true },
+    ).catch(cause => cause);
+
+    expect(error).toMatchObject({
+      name: 'DaemonTransportError',
+      code: 'DAEMON_COMPLETION_UNKNOWN',
+      completion: 'unknown',
+      sideEffectMayHaveOccurred: true,
+      retrySafe: false,
+      transportCause: {
+        phase: 'sending-request',
+        kind: 'write-error',
+        code: 'EPIPE',
+        message: 'write EPIPE before bytes were accepted',
+      },
+    });
+    expect(conn.write).toHaveBeenCalledOnce();
+  });
+
+  it('keeps serialization failure proven pre-dispatch and never writes', async () => {
+    const request = { cmd: 'click', args: ['#purchase'] };
+    request.self = request;
+    const conn = connection();
+
+    const error = await requestDaemon(conn, request, { mayHaveSideEffects: true }).catch(cause => cause);
+
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error).not.toHaveProperty('completion');
+    expect(error).not.toHaveProperty('sideEffectMayHaveOccurred');
+    expect(conn.write).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['socket error', connection({ onWrite: socket => queueMicrotask(() => {
+      const error = new Error('read ECONNRESET after request');
+      error.code = 'ECONNRESET';
+      socket.emit('error', error);
+    }) }), 'peer-error', 'ECONNRESET'],
+    ['malformed response', connection({ onWrite: socket => queueMicrotask(() => socket.emit('data', '{bad json}\n')) }), 'invalid-response', undefined],
+    ['oversized response', connection({ onWrite: socket => queueMicrotask(() => socket.emit('data', 'x'.repeat(65))) }), 'response-too-large', undefined],
+  ])('marks a mutation %s as unknown without a validated receipt', async (_label, conn, kind, code) => {
+    const error = await requestDaemon(
+      conn,
+      { cmd: 'click', args: ['#purchase'] },
+      { mayHaveSideEffects: true, maxResponseBytes: 64 },
+    ).catch(cause => cause);
+
+    expect(error).toMatchObject({
+      name: 'DaemonTransportError',
+      code: 'DAEMON_COMPLETION_UNKNOWN',
+      completion: 'unknown',
+      sideEffectMayHaveOccurred: true,
+      retrySafe: false,
+      transportCause: {
+        phase: 'awaiting-response',
+        kind,
+        ...(code ? { code } : {}),
+        message: expect.any(String),
+      },
+    });
+    expect(error.transportCause.message.length).toBeLessThanOrEqual(512);
+    expect(conn.write).toHaveBeenCalledOnce();
+  });
+
+  it('marks a mutation timeout as unknown after one send attempt', async () => {
+    vi.useFakeTimers();
+    try {
+      const conn = connection();
+      const promise = requestDaemon(
+        conn,
+        { cmd: 'click', args: ['#purchase'] },
+        { mayHaveSideEffects: true, timeoutMs: 25 },
+      );
+      const rejection = promise.catch(cause => cause);
+      await vi.advanceTimersByTimeAsync(25);
+      const error = await rejection;
+      expect(error).toMatchObject({
+        name: 'DaemonTransportError',
+        code: 'DAEMON_COMPLETION_UNKNOWN',
+        completion: 'unknown',
+        sideEffectMayHaveOccurred: true,
+        retrySafe: false,
+        transportCause: {
+          phase: 'awaiting-response',
+          kind: 'timeout',
+          message: 'IPC timeout: command "click" took longer than 0.025s',
+        },
+      });
+      expect(conn.write).toHaveBeenCalledOnce();
+      expect(conn.destroy).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('preserves the exact connection error object and stop-after response completion', async () => {

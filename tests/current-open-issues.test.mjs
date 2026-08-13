@@ -1606,6 +1606,35 @@ describe('v2.11.0 review regressions', () => {
     expect(full.results[0].result).toBe(resultText);
   });
 
+  it('makes an ambiguous broadcast mutation verify state instead of replaying it', () => {
+    const transport = {
+      completion: 'unknown',
+      sideEffectMayHaveOccurred: true,
+      retrySafe: false,
+      transportCause: {
+        phase: 'awaiting-response',
+        kind: 'peer-close',
+        message: 'Connection closed before response.',
+      },
+    };
+    const model = T.buildBroadcastModel({
+      groupName: 'checkout',
+      command: 'click',
+      commandArgs: ['#purchase'],
+      results: [{
+        target: 'buyer',
+        targetPrefix: 'AAAABBBB',
+        ok: false,
+        error: 'The action may have taken effect.',
+        ...transport,
+      }],
+    });
+
+    expect(model.results[0]).toMatchObject(transport);
+    expect(model.nextSteps).toEqual(['cdp perceive AAAABBBB -C -d 8']);
+    expect(model.nextSteps.join('\n')).not.toContain('#purchase');
+  });
+
   it('maps low-token defaults through the MCP adapter', () => {
     expect(buildMcpToolCommand('perceive', { target: 'AAAABBBB' }))
       .toEqual(expect.arrayContaining(['--adaptive']));
