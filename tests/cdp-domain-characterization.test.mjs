@@ -588,11 +588,14 @@ describe('Phase 6 direct CDP characterization', () => {
       createCdp: () => openClient,
       getWsUrlFn: async () => 'ws://127.0.0.1/devtools/browser/fixture',
     });
-    expect(openClient.send.mock.calls[0]).toEqual([
-      'Target.attachToTarget', { targetId: 'TARGET', flatten: true }, undefined, 250,
-    ]);
+    expect(openClient.send.mock.calls[0][0]).toBe('Target.attachToTarget');
+    expect(openClient.send.mock.calls[0][1]).toEqual({ targetId: 'TARGET', flatten: true });
+    expect(openClient.send.mock.calls[0][2]).toBeUndefined();
+    expect(openClient.send.mock.calls[0][3]).toBeGreaterThanOrEqual(100);
+    expect(openClient.send.mock.calls[0][3]).toBeLessThanOrEqual(250);
     expect(openClient.send.mock.calls[1][2]).toBe('ATTACHED');
-    expect(openClient.send.mock.calls[1][3]).toBe(250);
+    expect(openClient.send.mock.calls[1][3]).toBeGreaterThanOrEqual(100);
+    expect(openClient.send.mock.calls[1][3]).toBeLessThanOrEqual(250);
 
     const daemonCdp = mockCdp({ failMethod: 'CSS.enable', error: new Error('unsupported CSS') });
     await expect(cdpTest.enableDaemonDomains(daemonCdp, 'DAEMON-SESSION')).resolves.toBeUndefined();

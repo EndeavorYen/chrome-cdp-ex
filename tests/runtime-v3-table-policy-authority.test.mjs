@@ -62,8 +62,6 @@ const lifecycleAuthorityOwnerNames = [
 ];
 
 describe('Runtime v3 table policy authority', () => {
-  describe.configure({ timeout: 15_000 });
-
   it('binds the exact catalog policy and argv-aware production owners', () => {
     const authority = inventory().tablePolicyAuthority;
     expect(authority).toMatchObject({

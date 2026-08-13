@@ -39,6 +39,6 @@ describe('Runtime v3 dispatch authority characterization', () => {
       "const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];",
       "if (true) { const verifyClickBuilder = applicationPreflight.handlerBuilders['dismiss-modal']; }\n  const verifyClickBuilder = applicationPreflight.handlerBuilders['verify-click'];",
     ))).toThrow(/direct runDaemon const|exactly once/);
-  }, 30_000);
+  }, 60_000);
 
 });

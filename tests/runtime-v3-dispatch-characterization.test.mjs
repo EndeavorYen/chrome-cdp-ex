@@ -12,8 +12,6 @@ import {
 } from './runtime-v3-dispatch-test-helpers.mjs';
 
 describe('Runtime v3 final dispatch characterization', () => {
-  describe.configure({ timeout: 15_000 });
-
   it('freezes the exact 81-command daemon/CLI ownership graph and deletion allowlist', () => {
     expect(buildRuntimeDispatchInventory(source)).toEqual(fixture);
     expect(fixture).toMatchObject({
