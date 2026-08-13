@@ -386,4 +386,87 @@ describe('daemon NDJSON request transport', () => {
       vi.useRealTimers();
     }
   });
+
+  it('selects the bounded collection IPC deadline only after strict table parsing', () => {
+    expect(ipcTimeoutForRequest({
+      cmd: 'table',
+      args: ['#orders', '--format', 'json', '--scroll-container', '.viewport', '--collect'],
+    })).toBe(315000);
+    expect(ipcTimeoutForRequest({ cmd: 'table', args: ['#orders'] })).toBe(120000);
+    expect(ipcTimeoutForRequest({
+      cmd: 'table',
+      args: ['--continue', 'ct1.0123456789abcdef0123456789abcdef.0', '--format', 'json'],
+    })).toBe(120000);
+    expect(ipcTimeoutForRequest({
+      cmd: 'table',
+      args: ['#orders', '--scroll-container', '.viewport', '--collect'],
+      timeoutMs: 999999,
+    })).toBe(315000);
+    expect(ipcTimeoutForRequest({ cmd: 'status', args: [], timeoutMs: 999999 })).toBe(120000);
+    expect(ipcTimeoutForRequest({ cmd: 'wait', args: ['180000'] })).toBe(185000);
+    expect(() => ipcTimeoutForRequest({ cmd: 'table', args: ['--collect'] }))
+      .toThrow('table: --collect requires --scroll-container');
+  });
+
+  it('rejects malformed collection argv before request mutation, listeners, timers, or IPC', () => {
+    const conn = connection();
+    const request = { cmd: 'table', args: ['--collect'] };
+
+    expect(() => requestDaemon(conn, request))
+      .toThrow('table: --collect requires --scroll-container');
+
+    expect(request).toEqual({ cmd: 'table', args: ['--collect'] });
+    expect(conn.write).not.toHaveBeenCalled();
+    for (const event of ['data', 'error', 'end', 'close']) expect(conn.listenerCount(event)).toBe(0);
+  });
+
+  it('caps explicit internal timeout overrides while preserving shorter test deadlines', async () => {
+    const timerSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const capped = connection();
+      const cappedPromise = requestDaemon(capped, {
+        cmd: 'table',
+        args: ['--collect', '--scroll-container', '.viewport'],
+      }, {
+        mayHaveSideEffects: true,
+        timeoutMs: 999999,
+      }).catch(error => error);
+
+      expect(timerSpy).toHaveBeenLastCalledWith(expect.any(Function), 315000);
+      capped.emit('close');
+      await expect(cappedPromise).resolves.toMatchObject({
+        code: 'DAEMON_COMPLETION_UNKNOWN',
+        completion: 'unknown',
+        retrySafe: false,
+      });
+    } finally {
+      timerSpy.mockRestore();
+    }
+
+    vi.useFakeTimers();
+    try {
+      const shortened = connection();
+      const shortenedPromise = requestDaemon(shortened, {
+        cmd: 'table',
+        args: ['--collect', '--scroll-container', '.viewport'],
+      }, {
+        mayHaveSideEffects: true,
+        timeoutMs: 25,
+      }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(shortenedPromise).resolves.toMatchObject({
+        code: 'DAEMON_COMPLETION_UNKNOWN',
+        completion: 'unknown',
+        retrySafe: false,
+        transportCause: {
+          kind: 'timeout',
+          message: 'IPC timeout: command "table" took longer than 0.025s',
+        },
+      });
+      expect(shortened.write).toHaveBeenCalledOnce();
+      expect(shortened.destroy).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
