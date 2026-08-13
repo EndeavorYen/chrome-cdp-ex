@@ -4866,7 +4866,22 @@ function createMockCDP(handlers = {}) {
     calls,
     send(method, params = {}, sessionId, timeout) {
       calls.push({ method, params, sessionId, timeout });
+      const trustedConnectivityCall = method === 'Runtime.callFunctionOn'
+        && params.functionDeclaration?.includes('ownerDocumentGetter')
+        && !params.functionDeclaration.includes('requestAnimationFrame');
+      if (trustedConnectivityCall) {
+        const handler = handlers['Runtime.callFunctionOn:trusted-connectivity'];
+        return Promise.resolve(handler
+          ? handler(params, sessionId)
+          : { result: { value: { connected: true } } });
+      }
       if (handlers[method]) return Promise.resolve(handlers[method](params, sessionId));
+      if (method === 'Page.getFrameTree') {
+        return Promise.resolve({ frameTree: { frame: { id: 'mock-root-frame' } } });
+      }
+      if (method === 'Page.createIsolatedWorld') {
+        return Promise.resolve({ executionContextId: 901 });
+      }
       return Promise.resolve({});
     },
     onEvent() { return () => {}; },
@@ -6715,6 +6730,9 @@ describe('clickStr', () => {
     ];
     const connectedObjects = new Set(['fresh-charlie', 'fresh-alpha', 'fresh-bravo']);
     const cdp = createMockCDP({
+      'Runtime.callFunctionOn:trusted-connectivity': ({ objectId }) => ({
+        result: { value: { connected: connectedObjects.has(objectId) } },
+      }),
       'DOM.resolveNode': ({ backendNodeId }) => ({
         object: {
           objectId: backendNodeId === 101
@@ -6724,9 +6742,6 @@ describe('clickStr', () => {
         },
       }),
       'Runtime.callFunctionOn': ({ objectId, functionDeclaration }) => {
-        if (!functionDeclaration.includes('requestAnimationFrame')) {
-          return { result: { value: connectedObjects.has(objectId) } };
-        }
         if (objectId === 'detached-alpha') {
           return { result: { value: {
             ...(functionDeclaration.includes('isConnected') ? { connected: false } : {}),
@@ -8057,7 +8072,14 @@ describe('recordStr', () => {
       emit(method, params) { for (const cb of listeners.get(method) || []) cb(params); },
       send(method, params = {}, sessionId) {
         calls.push({ method, params, sessionId });
+        if (method === 'Runtime.callFunctionOn'
+          && params.functionDeclaration?.includes('ownerDocumentGetter')
+          && !params.functionDeclaration.includes('requestAnimationFrame')) {
+          return Promise.resolve({ result: { value: { connected: true } } });
+        }
         if (extraHandlers[method]) return Promise.resolve(extraHandlers[method](params, sessionId, cdp));
+        if (method === 'Page.getFrameTree') return Promise.resolve({ frameTree: { frame: { id: 'mock-root-frame' } } });
+        if (method === 'Page.createIsolatedWorld') return Promise.resolve({ executionContextId: 901 });
         if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: JSON.stringify({ totals: {}, labels: [], count: 0 }) } });
         return Promise.resolve({});
       },
@@ -9970,13 +9992,14 @@ describe('resolveRefNode stale backend handling', () => {
       'DOM.resolveNode': ({ executionContextId }) => ({
         object: { objectId: executionContextId === 901 ? 'isolated-ref' : 'page-ref' },
       }),
-      'Runtime.callFunctionOn': ({ objectId, functionDeclaration }) => {
-        if (objectId === 'isolated-ref') {
-          if (/this\.(?:isConnected|ownerDocument|getRootNode)/.test(functionDeclaration)) {
-            throw new Error('page-patched connectivity property was invoked');
-          }
-          return { result: { value: { connected } } };
+      'Runtime.callFunctionOn:trusted-connectivity': ({ objectId, functionDeclaration }) => {
+        expect(objectId).toBe('isolated-ref');
+        if (/this\.(?:isConnected|ownerDocument|getRootNode)/.test(functionDeclaration)) {
+          throw new Error('page-patched connectivity property was invoked');
         }
+        return { result: { value: { connected } } };
+      },
+      'Runtime.callFunctionOn': ({ objectId, functionDeclaration }) => {
         if (functionDeclaration.includes('requestAnimationFrame')) {
           return { result: { value: {
             connected: true,

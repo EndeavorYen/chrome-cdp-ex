@@ -5996,13 +5996,55 @@ function invalidateRefMapping(refMap, ref, refState) {
   else refMap.delete(parseInt(ref.slice(1)));
 }
 
-async function resolveRefNode(cdp, sid, refMap, ref, refState) {
+function trustedRefConnectivityFunctionDeclaration() {
+  return `function() {
+    try {
+      const nodePrototype = Node.prototype;
+      const connectedGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'isConnected')?.get;
+      const ownerDocumentGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'ownerDocument')?.get;
+      const getRootNode = Object.getOwnPropertyDescriptor(nodePrototype, 'getRootNode')?.value;
+      if (typeof connectedGetter !== 'function' || typeof ownerDocumentGetter !== 'function' || typeof getRootNode !== 'function') {
+        return { connected: false };
+      }
+      const connected = Reflect.apply(connectedGetter, this, []);
+      const ownerDocument = Reflect.apply(ownerDocumentGetter, this, []);
+      const composedRoot = Reflect.apply(getRootNode, this, [{ composed: true }]);
+      return { connected: connected === true && ownerDocument != null && composedRoot === ownerDocument };
+    } catch {
+      return { connected: false };
+    }
+  }`;
+}
+
+async function rootFrameId(cdp, sid) {
+  const result = await cdpDomains(cdp).Page.getFrameTree({}, sid, REF_RESOLVE_TIMEOUT);
+  const frameId = result.frameTree?.frame?.id;
+  if (!frameId) throw new Error('Page.getFrameTree did not return a root frame id');
+  return frameId;
+}
+
+async function createRefExecutionContext(cdp, sid, frameId) {
+  if (!frameId) throw new Error('Ref frame id is unavailable');
+  const result = await cdpDomains(cdp).Page.createIsolatedWorld({
+    frameId,
+    worldName: 'chrome-cdp-ex-ref-validation',
+    grantUniveralAccess: false,
+  }, sid, REF_RESOLVE_TIMEOUT);
+  if (!Number.isSafeInteger(result.executionContextId)) {
+    throw new Error('Page.createIsolatedWorld did not return an execution context id');
+  }
+  return result.executionContextId;
+}
+
+async function resolveRefNode(cdp, sid, refMap, ref, refState, options = {}) {
   const frameParsed = parseFrameRef(ref);
   let num = null;
   let backendNodeId;
+  let frameId = null;
   if (frameParsed) {
     const scoped = frameScopedBackendNode(refState || {}, frameParsed);
     backendNodeId = scoped.backendNodeId;
+    frameId = scoped.entry.frameId;
   } else {
     num = parseInt(ref.slice(1));
     if (isNaN(num) || !refMap.has(num)) {
@@ -6011,7 +6053,32 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState) {
     backendNodeId = refMap.get(num);
   }
   try {
-    const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId }, sid, REF_RESOLVE_TIMEOUT);
+    const executionContextId = await createRefExecutionContext(
+      cdp,
+      sid,
+      frameId || await rootFrameId(cdp, sid),
+    );
+    const { object } = await cdpDomains(cdp).DOM.resolveNode({
+      backendNodeId,
+      executionContextId,
+    }, sid, REF_RESOLVE_TIMEOUT);
+    if (!object?.objectId) throw new Error('DOM.resolveNode did not return an object id');
+    const validation = await cdpDomains(cdp).Runtime.callFunctionOn({
+      objectId: object.objectId,
+      functionDeclaration: trustedRefConnectivityFunctionDeclaration(),
+      returnByValue: true,
+    }, sid, REF_RESOLVE_TIMEOUT);
+    if (validation.exceptionDetails) {
+      throw new Error(runtimeExceptionMessage(validation.exceptionDetails));
+    }
+    const validationValue = validation.result?.value;
+    const connected = validationValue === true || validationValue?.connected === true;
+    if (!connected) throw new Error('resolved backend node is detached from its owning document');
+    if (options.returnRealm === 'page') {
+      const pageResult = await cdpDomains(cdp).DOM.resolveNode({ backendNodeId }, sid, REF_RESOLVE_TIMEOUT);
+      if (!pageResult.object?.objectId) throw new Error('DOM.resolveNode did not return a page-world object id');
+      return pageResult.object.objectId;
+    }
     return object.objectId;
   } catch (e) {
     // The ref existed in this daemon, but the backend node can no longer be
@@ -6024,8 +6091,21 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState) {
 
 function scrollSettledRectFunctionDeclaration() {
   return `async function() {
-    const connectedToOwningDocument = () => this.isConnected === true &&
-      !!this.ownerDocument && this.getRootNode({ composed: true }) === this.ownerDocument;
+    const connectedToOwningDocument = () => {
+      try {
+        const nodePrototype = Node.prototype;
+        const connectedGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'isConnected')?.get;
+        const ownerDocumentGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'ownerDocument')?.get;
+        const getRootNode = Object.getOwnPropertyDescriptor(nodePrototype, 'getRootNode')?.value;
+        if (typeof connectedGetter !== 'function' || typeof ownerDocumentGetter !== 'function' || typeof getRootNode !== 'function') return false;
+        const connected = Reflect.apply(connectedGetter, this, []);
+        const ownerDocument = Reflect.apply(ownerDocumentGetter, this, []);
+        const composedRoot = Reflect.apply(getRootNode, this, [{ composed: true }]);
+        return connected === true && ownerDocument != null && composedRoot === ownerDocument;
+      } catch {
+        return false;
+      }
+    };
     if (!connectedToOwningDocument()) return { connected: false };
     const readRect = () => {
       const rect = this.getBoundingClientRect();
@@ -8716,7 +8796,9 @@ function reactComponentAtElementScript() {
 }
 
 async function resolveComponentRefObjectId(cdp, sid, ref, refMap, refState) {
-  if (!isCursorRef(ref)) return resolveRefNode(cdp, sid, refMap, ref, refState);
+  if (!isCursorRef(ref)) {
+    return resolveRefNode(cdp, sid, refMap, ref, refState, { returnRealm: 'page' });
+  }
   const rect = resolveCursorRef(refMap, ref, refState);
   const result = await cdpDomains(cdp).Runtime.evaluate( {
     expression: `document.elementFromPoint(${rect.x + rect.w / 2}, ${rect.y + rect.h / 2})`,
@@ -11041,6 +11123,27 @@ function formatBatchResults(results, format = 'json', options = {}) {
     }).join('\n');
   }
   return JSON.stringify(results, null, 2);
+}
+
+async function runBatchCommands({ run }, commands = [], { parallel = false } = {}) {
+  const runOne = async (command) => {
+    const nested = await run(command);
+    const semantics = classifyCommandResultSemantics(nested, { command: command.cmd });
+    return {
+      cmd: command.cmd,
+      ok: semantics.ok,
+      result: nested.result,
+      error: semantics.ok ? nested.error : semantics.error,
+    };
+  };
+  if (parallel) return Promise.all(commands.map(runOne));
+  const results = [];
+  for (const command of commands) {
+    const result = await runOne(command);
+    results.push(result);
+    if (!result.ok) break;
+  }
+  return results;
 }
 
 // --- Repeat: bounded loop primitive ---
@@ -13862,20 +13965,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         if (unsafe.length) throw new Error(`batch --parallel: ${[...new Set(unsafe.map(command => command.cmd))].join(', ')} mutate shared state — use sequential batch`);
       }
       const autoActionJson = parsedBatch.output === 'model';
-      const runOne = async command => {
-        const nested = await handleCommand({
+      const runOne = command => handleCommand({
           cmd: command.cmd,
           args: autoActionJsonArgs(command.cmd, command.args || [], autoActionJson),
         });
-        return { cmd: command.cmd, ok: nested.ok, result: nested.result, error: nested.error };
-      };
-      let results;
-      if (parallel) {
-        results = await Promise.all(commands.map(runOne));
-      } else {
-        results = [];
-        for (const command of commands) results.push(await runOne(command));
-      }
+      const results = await runBatchCommands({ run: runOne }, commands, { parallel });
       const format = parsedBatch.output === 'legacy-json' ? 'json' : parsedBatch.output;
       return formatBatchResults(results, format, { targetId, mode: parallel ? 'parallel' : 'sequential' });
     },
@@ -16869,7 +16963,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Cascade source mapping
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
-  formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
+  formatBatchResults, runBatchCommands, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
   formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   CLI_HELP_LAYOUT, CLI_HELP_TEMPLATE, renderCliHelp, helpStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
