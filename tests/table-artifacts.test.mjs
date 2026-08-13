@@ -510,6 +510,39 @@ describe('immutable row-aligned table continuation', () => {
     expect(readdirSync(runtimeDir)).toEqual([]);
   });
 
+  it('rejects a same-file mutation observed between pre-read and post-read fstat', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    let dataReads = 0;
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'session',
+      platform: 'darwin',
+    }, {
+      randomBytes: deterministicBytes(ID_A),
+      open: async (...args) => {
+        const handle = await open(...args);
+        if (basename(args[0]) !== 'rows.tsv' || (args[1] & 3) !== 0) return handle;
+        const wrapped = tracedHandle(handle, 'data-read', [], {
+          stat: real => real.stat(),
+        });
+        wrapped.readFile = async () => {
+          dataReads += 1;
+          const bytes = await handle.readFile();
+          writeFileSync(args[0], 'tampered-after-read');
+          return bytes;
+        };
+        return wrapped;
+      },
+    });
+    const publication = await store.publish(bundleForRows(), execution());
+
+    await expect(store.readContinuation(publication.token)).rejects.toMatchObject({
+      code: 'TABLE_ARTIFACT_READ_FAILED',
+    });
+    expect(dataReads).toBe(1);
+  });
+
   it.each(['missing-manifest', 'manifest-symlink', 'wrong-target', 'wrong-session', 'data-size', 'data-checksum'])(
     'fails path-free when committed artifact state is tampered: %s',
     async tamper => {
