@@ -1126,76 +1126,59 @@ async function runProductCommands(route, env, targetId) {
       ],
     };
   }
-  const { executeCdpCli } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
   const { createRuntimeClient } = await import('../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs');
   const { createMcpRequestHandler } = await import('../skills/chrome-cdp-ex/scripts/mcp-server.mjs');
-  const previous = {
-    HOME: process.env.HOME,
-    TMPDIR: process.env.TMPDIR,
-    XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
-    CDP_HOST: process.env.CDP_HOST,
-    CDP_PORT: process.env.CDP_PORT,
-  };
-  Object.assign(process.env, {
-    HOME: env.HOME,
-    TMPDIR: env.TMPDIR,
-    XDG_RUNTIME_DIR: env.XDG_RUNTIME_DIR,
-    CDP_HOST: env.CDP_HOST,
-    CDP_PORT: env.CDP_PORT,
+  const sent = [];
+  const handler = createMcpRequestHandler({
+    runtimeClient: createRuntimeClient({
+      executeCli: command => {
+        const result = runSync(process.execPath, [CDP_PATH, ...command], { env, timeout: collectTimeout });
+        return {
+          code: Number.isInteger(result.exitCode) ? result.exitCode : 1,
+          stdout: result.stdout,
+          stderr: result.stderr,
+        };
+      },
+    }),
+    sendMessage: message => sent.push(message),
   });
-  try {
-    const hostProcess = Object.create(process);
-    Object.defineProperty(hostProcess, 'env', { value: env, writable: true });
-    const sent = [];
-    const handler = createMcpRequestHandler({
-      runtimeClient: createRuntimeClient({
-        executeCli: command => executeCdpCli(command, { hostProcess }),
-      }),
-      sendMessage: message => sent.push(message),
-    });
-    const call = async (id, params) => {
-      sent.length = 0;
-      await handler({ jsonrpc: '2.0', id, method: 'tools/call', params });
-      const response = sent[0];
-      if (response?.error) throw new Error(response.error.message);
-      if (response?.result?.isError) {
-        throw new Error(response.result.content?.[0]?.text || 'MCP collect failed');
-      }
-      return response?.result?.content?.[0]?.text || '';
-    };
-    const collectParams = route === 'mcp'
-      ? buildFirstClassMcpCollectParams(targetId)
-      : buildRunCommandMcpCollectParams(targetId);
-    const collectText = await call(1, collectParams);
-    const model = parseCollectJson(collectText);
-    const token = model.continuation?.token;
-    invariant(typeof token === 'string' && token, 'MCP collect continuation token is missing');
-    const continueParams = route === 'mcp'
-      ? { name: 'table', arguments: { target: targetId, continue: token } }
-      : {
-        name: 'run_command',
-        arguments: { command: 'table', args: [targetId, '--continue', token, '--format', 'json'] },
-      };
-    const first = await call(2, continueParams);
-    const second = await call(3, continueParams);
-    invariant(first === second, 'MCP continuation byte identity mismatch');
-    return {
-      model,
-      jsonBytes: Buffer.byteLength(collectText, 'utf8'),
-      continuationBytesEqual: first === second,
-      continuationSha256: createHash('sha256').update(first, 'utf8').digest('hex'),
-      commands: [
-        { phase: 'collect', argv: collectParams, status: 0, stdout: collectText, stderr: '' },
-        { phase: 'continue', argv: continueParams, status: 0, stdout: first, stderr: '' },
-        { phase: 'continue-repeat', argv: continueParams, status: 0, stdout: second, stderr: '' },
-      ],
-    };
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
+  const call = async (id, params) => {
+    sent.length = 0;
+    await handler({ jsonrpc: '2.0', id, method: 'tools/call', params });
+    const response = sent[0];
+    if (response?.error) throw new Error(response.error.message);
+    if (response?.result?.isError) {
+      throw new Error(response.result.content?.[0]?.text || 'MCP collect failed');
     }
-  }
+    return response?.result?.content?.[0]?.text || '';
+  };
+  const collectParams = route === 'mcp'
+    ? buildFirstClassMcpCollectParams(targetId)
+    : buildRunCommandMcpCollectParams(targetId);
+  const collectText = await call(1, collectParams);
+  const model = parseCollectJson(collectText);
+  const token = model.continuation?.token;
+  invariant(typeof token === 'string' && token, 'MCP collect continuation token is missing');
+  const continueParams = route === 'mcp'
+    ? { name: 'table', arguments: { target: targetId, continue: token } }
+    : {
+      name: 'run_command',
+      arguments: { command: 'table', args: [targetId, '--continue', token, '--format', 'json'] },
+    };
+  const first = await call(2, continueParams);
+  const second = await call(3, continueParams);
+  invariant(first === second, 'MCP continuation byte identity mismatch');
+  return {
+    model,
+    jsonBytes: Buffer.byteLength(collectText, 'utf8'),
+    continuationBytesEqual: first === second,
+    continuationSha256: createHash('sha256').update(first, 'utf8').digest('hex'),
+    commands: [
+      { phase: 'collect', argv: collectParams, status: 0, stdout: collectText, stderr: '' },
+      { phase: 'continue', argv: continueParams, status: 0, stdout: first, stderr: '' },
+      { phase: 'continue-repeat', argv: continueParams, status: 0, stdout: second, stderr: '' },
+    ],
+  };
 }
 
 async function runChromeProductRoute(route, browserPath, fixtureDocument, trial) {
@@ -1385,14 +1368,15 @@ export async function runLiveTableCollectionTrials(hooks = {}) {
     const trialRoutes = [];
     for (const route of TABLE_COLLECTION_ROUTES) {
       const captured = await runRoute(route, trial);
-      trialRoutes.push({ trial, route, captured });
+      const entry = { trial, route, captured };
+      trialRoutes.push(entry);
+      routes.push(entry);
     }
     const oracle = trialRoutes.find(entry => entry.route === 'playwright')?.captured;
     for (const entry of trialRoutes) {
       if (entry.route === 'playwright') assertPlaywrightOracleProof(entry.captured);
       else assertProductRouteProof(entry.captured, oracle);
     }
-    routes.push(...trialRoutes);
     trials.push({
       trial,
       ok: true,
