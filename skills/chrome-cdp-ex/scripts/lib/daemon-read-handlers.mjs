@@ -1,4 +1,5 @@
 import { commandResult } from './command-application.mjs';
+import { parseTableArgs } from './table-contract.mjs';
 
 const COMMANDS = Object.freeze([
   'cascade', 'checkpoint', 'components', 'console', 'controls', 'cookies', 'diff-shot', 'elshot', 'export-playwright', 'frame', 'fullshot', 'html', 'net', 'overlay',
@@ -93,7 +94,13 @@ export function createDaemonReadHandlers(input) {
     status: async context => commandResult(await capabilities.status(snapshotArgs(context)), null),
     styles: async context => commandResult(await capabilities.styles(snapshotArgs(context)), null),
     summary: async context => commandResult(await capabilities.summary(snapshotArgs(context)), null),
-    table: async context => commandResult(await capabilities.table(snapshotArgs(context)[0]), null),
+    table: async context => {
+      const request = parseTableArgs(snapshotArgs(context));
+      if (request.mode === 'collect') throw new Error('table: collection is unavailable in this v2.16 candidate');
+      if (request.mode === 'continue') throw new Error('table: continuation is unavailable until private artifact storage is installed');
+      if (request.format === 'json') throw new Error('table: JSON observation is unavailable until the bounded snapshot runtime is installed');
+      return commandResult(await capabilities.table(request), null);
+    },
     text: async context => commandResult(await capabilities.text(snapshotArgs(context)), null),
     wait: async context => commandResult(await capabilities.wait(snapshotArgs(context)), null),
     waitfor: async context => commandResult(await capabilities.waitfor(snapshotArgs(context)), null),

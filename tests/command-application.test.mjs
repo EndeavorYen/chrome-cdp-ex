@@ -963,7 +963,7 @@ describe('Phase 4 daemon dispatch seam', () => {
       fullshot: async args => `fullshot:${args.join('|')}`,
       html: async args => `html:${args.join('|')}`,
       text: async args => `text:${args.join('|')}`,
-      table: async selector => `table:${selector ?? ''}`,
+      table: async request => `table:${request.selector ?? ''}`,
       net: async args => `net:${args.join('|')}`,
       overlay: async args => `overlay:${args.join('|')}`,
       record: async args => `record:${args.join('|')}`,
@@ -1181,7 +1181,16 @@ describe('Phase 4 daemon dispatch seam', () => {
     }
     expect(capabilities.html).toHaveBeenCalledOnce();
     expect(capabilities.text).toHaveBeenCalledOnce();
-    expect(capabilities.table).toHaveBeenCalledExactlyOnceWith('#grid');
+    expect(capabilities.table).toHaveBeenCalledWith(expect.objectContaining({
+      schema: 'chrome-cdp-ex.table-request.v1',
+      argv: ['#grid'],
+      mode: 'observe',
+      selector: '#grid',
+      format: 'text',
+    }));
+    const tableRequest = capabilities.table.mock.calls[0][0];
+    expect(Object.isFrozen(tableRequest)).toBe(true);
+    expect(Object.isFrozen(tableRequest.argv)).toBe(true);
     expect(capabilities.net).toHaveBeenCalledOnce();
     expect(capabilities.status).toHaveBeenCalledOnce();
     expect(capabilities.summary).toHaveBeenCalledOnce();
