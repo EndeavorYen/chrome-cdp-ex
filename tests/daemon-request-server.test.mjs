@@ -563,6 +563,84 @@ describe('daemon request server lifecycle', () => {
     expect(lifecycle.activeRequestCount()).toBe(0);
   });
 
+  it('aborts the outer request before collector and request cleanup during fatal retirement', async () => {
+    const order = [];
+    let outerSignal;
+    let runtimeSignal;
+    let collectorReason;
+    const collectorCleanup = vi.fn(reason => {
+      collectorReason = reason;
+      expect(outerSignal.aborted).toBe(true);
+      expect(outerSignal.reason).toBe(reason);
+      expect(runtimeSignal.aborted).toBe(true);
+      expect(runtimeSignal.reason).toBe(reason);
+      order.push('collector-cleanup');
+    });
+    const requestCleanup = vi.fn((_request, execution, reason) => {
+      expect(execution.signal).toBe(outerSignal);
+      expect(execution.signal.aborted).toBe(true);
+      expect(execution.signal.reason).toBe(reason);
+      expect(reason).toBe(collectorReason);
+      order.push('request-cleanup');
+    });
+    const dispose = vi.fn(() => { order.push('dispose'); });
+    const onFatal = vi.fn(reason => {
+      expect(reason).toBe(collectorReason);
+      order.push('fatal-shutdown');
+    });
+    const conn = connection();
+    conn.destroy.mockImplementation(() => {
+      order.push('destroy');
+      conn.destroyed = true;
+      conn.writable = false;
+    });
+    T.createDaemonRequestConnection(conn, {
+      handleRequest: async (_request, execution) => {
+        outerSignal = execution.signal;
+        outerSignal.addEventListener('abort', () => order.push('outer-abort'), { once: true });
+        const result = await T.runTableCollectionLifecycle(execution, {
+          collect: async runtime => {
+            runtimeSignal = runtime.signal;
+            runtimeSignal.addEventListener('abort', () => order.push('runtime-abort'), { once: true });
+            runtime.runCdpOperation(() => new Promise(() => {})).catch(() => {});
+            await Promise.resolve();
+            return { termination: 'logical-count-reached' };
+          },
+          finalize: vi.fn(),
+          cleanup: collectorCleanup,
+        });
+        return { ok: true, result };
+      },
+      cleanup: requestCleanup,
+      onDispose: dispose,
+      onFatal,
+      now: () => 0,
+    });
+    conn.emit('data', frame({
+      id: 36,
+      cmd: 'table',
+      args: ['--collect', '--scroll-container', '.viewport'],
+    }));
+    await drain();
+
+    conn.closePeer('close');
+
+    expect(collectorCleanup).toHaveBeenCalledOnce();
+    expect(requestCleanup).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(conn.destroy).toHaveBeenCalledOnce();
+    expect(onFatal).toHaveBeenCalledOnce();
+    expect(order).toEqual([
+      'outer-abort',
+      'runtime-abort',
+      'collector-cleanup',
+      'request-cleanup',
+      'dispose',
+      'destroy',
+      'fatal-shutdown',
+    ]);
+  });
+
   it('aborts and suppresses a duplicate active ID on one socket while accepting id=1 on another socket', async () => {
     let firstSignal;
     const firstHandle = vi.fn((_request, execution) => new Promise((resolve, reject) => {
