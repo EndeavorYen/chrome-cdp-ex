@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isTableCollectArgs,
+  parseTableContinuationToken,
   parseTableArgs,
   parseTableRunCommandArgs,
 } from '../skills/chrome-cdp-ex/scripts/lib/table-contract.mjs';
@@ -148,6 +149,34 @@ describe('table request contract', () => {
     [['--continue', 'ct1.0123456789abcdef0123456789abcdef.01', '--format', 'json'], /continuation token/],
   ])('enforces immutable continuation grammar %j', (input, expected) => {
     expect(() => parseTableArgs(input)).toThrow(expected);
+  });
+
+  it('parses the shared continuation token authority at exact offset boundaries', () => {
+    expect(parseTableContinuationToken('ct1.0123456789abcdef0123456789abcdef.0')).toEqual({
+      artifactId: '0123456789abcdef0123456789abcdef',
+      offset: 0,
+      token: 'ct1.0123456789abcdef0123456789abcdef.0',
+    });
+    expect(parseTableContinuationToken('ct1.ffffffffffffffffffffffffffffffff.99999')).toEqual({
+      artifactId: 'ffffffffffffffffffffffffffffffff',
+      offset: 99999,
+      token: 'ct1.ffffffffffffffffffffffffffffffff.99999',
+    });
+  });
+
+  it.each([
+    'ct1.0123456789abcdef0123456789abcdef.100000',
+    'ct1.0123456789abcdef0123456789abcdef.01',
+    'ct1.0123456789abcdef0123456789abcdef.+1',
+    'ct1.0123456789abcdef0123456789abcdef.-1',
+    'ct1.0123456789ABCDEF0123456789ABCDEF.1',
+    'ct1.%2e%2e%2f0123456789abcdef01234567.1',
+    '../ct1.0123456789abcdef0123456789abcdef.1',
+    ' ct1.0123456789abcdef0123456789abcdef.1',
+    'ct1.0123456789abcdef0123456789abcdef.1.extra',
+  ])('rejects hostile continuation token %s', token => {
+    expect(() => parseTableContinuationToken(token)).toThrow(/continuation token/i);
+    expect(() => parseTableArgs(['--continue', token, '--format', 'json'])).toThrow(/continuation token/i);
   });
 
   it('rejects proxies, accessors, custom prototypes, symbols, sparse arrays, and non-enumerable argv', () => {
