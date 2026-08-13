@@ -88,32 +88,44 @@
 - Modify: `skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs`
 - Modify: `skills/chrome-cdp-ex/scripts/lib/daemon-read-handlers.mjs`
 - Modify: `skills/chrome-cdp-ex/scripts/cdp.mjs`
+- Modify: `scripts/check-public-contracts.mjs` and `scripts/runtime-dispatch-inventory.mjs`.
 - Modify: `package.json`, `package-lock.json`, contract/checker version selection, and generated command docs owned by the catalog generator.
 - Create: initial `docs/contracts/v2.16.0/` public/runtime/package fixtures; never modify v2.15 fixtures.
 - Modify: the directly covering command-surface, application, MCP, batch, transport, and runtime-inventory tests.
 
 **Interfaces:**
 - Produces one strict own-data argv parser and `isTableCollectArgs(args)` used by every policy boundary.
-- Public grammar is exactly observation, explicit `--collect`, or immutable `--continue`; collection-only flags without `--collect` fail before capability effects.
+- Public grammar is exactly:
+
+  ```text
+  table <target> [TABLE_SELECTOR] [--format text|json]
+  table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR
+    [--load-more SELECTOR] [--row-key-column N] [--format text|json]
+  table <target> --continue TOKEN --format json
+  ```
+
+  Flags may appear in any order but at most once; there is at most one positional table selector. Selector values are nonempty, well-formed Unicode, and at most 1,024 UTF-8 bytes. `N` is canonical decimal `0..255` with no sign or leading zero. Collect requires `--scroll-container`; `--load-more` and `--row-key-column` are collect-only. Continue is mutually exclusive with every selector/collect flag and requires explicit JSON format. Observation/collect default to text when format is absent. Task 2 owns these request bounds in `table-contract.mjs`; Task 1 remains extraction-data-only.
 - Catalog effect/authorization is conditional: observation and continuation are reads; collection is a protected mutation.
+- The v2.16 public command projection includes `kind`, `authorization`, and `evidencePolicy`; the runtime inventory binds the exact table policy plus the AST/source ownership of daemon authorization, argv-aware batch safety, and transport side-effect classification. Policy swaps, duplicate calls, shadows, or unbound helper rewrites must drift or reject.
 - CLI `--collect` is explicit acknowledgement. The currently shipped MCP `run_command` route requires own-data `confirm:true` before RuntimeClient execution. The new first-class MCP table tool does not exist until Task 7.
 - Task 2 bumps package/checker selection to unreleased v2.16.0 before its first catalog change and establishes initial v2.16 public/runtime/package fixtures. Every later contract-shaping task refreshes only v2.16 fixtures in a separate reviewed mechanical commit.
+- Release docs remain pinned to the actual published v2.15.0 release while package/plugin metadata describes the unreleased v2.16 candidate. The docs checker validates package/plugin parity separately from stable-release links and requires explicit `unreleased` candidate wording; it must never fabricate a v2.16 tag or tarball URL. Historical v2.15 benchmark/host evidence remains historical and is not relabeled as v2.16.
 
 - [ ] **Step 1: Select unreleased v2.16 before any catalog change**
 
-  Bump package/checker selection to 2.16.0, generate the initial byte-reviewed v2.16 public/runtime/package fixtures from the unchanged surface, prove all v2.15 bytes remain identical, and commit version/fixtures mechanically before editing the catalog.
+  Bump package/plugin metadata and checker selection to 2.16.0, RED/GREEN the docs checker so candidate metadata remains distinct from pinned published v2.15 release links, generate the initial byte-reviewed v2.16 public/runtime/package fixtures from the unchanged surface, prove all v2.15 bytes remain identical, and commit version/checker/fixtures mechanically before editing the catalog. Do not rewrite historical host/benchmark evidence or claim a v2.16 release asset.
 
 - [ ] **Step 2: RED the exact parser grammar and argv forwarding**
 
-  Cover duplicates, empty strings, unknown flags, selector ambiguity, UTF-8 selector bound, zero-based row-key range, mutual exclusion, continuation grammar, proxies/accessors/custom prototypes/symbols/sparse arrays, and full ordered argv delivery to the table capability.
+  Cover every exact grammar production, arbitrary flag order with one canonical parsed model, duplicates, missing/empty values, unknown flags, selector ambiguity, 1,024/N+1 UTF-8 selector bounds, canonical zero-based row-key values, mutual exclusion, explicit continuation JSON, proxies/accessors/custom prototypes/symbols/sparse arrays, and full ordered argv delivery to the table capability.
 
 - [ ] **Step 3: Implement parser and fail-closed pre-collector behavior**
 
-  Until Task 6 lands, a valid collect request returns an explicit unavailable error before page effects. Snapshot behavior remains usable; invalid continuation never touches storage.
+  Until Task 5 lands, legacy text observation remains usable after stripping its parsed text-format flag, while JSON observation returns explicit unavailable before page effects. Until Task 6 lands, valid collect returns explicit unavailable before page effects. Until Task 4 lands, valid continuation returns explicit unavailable before storage reads; invalid continuation never touches storage.
 
 - [ ] **Step 4: RED catalog, run-command MCP, batch, and transport classifications**
 
-  Prove collect requires confirmation through MCP `run_command`, is unsafe in parallel batch, and is side-effect-capable after IPC send; observation/continuation remain read-only and parallel-safe. Canonical aliases and nested composite inspection must not bypass the predicate. Do not fabricate or partially add the future first-class MCP tool.
+  Prove collect requires confirmation through MCP `run_command`, is unsafe in parallel batch, and is side-effect-capable after IPC send; observation/continuation remain read-only and parallel-safe. Canonical aliases and nested composite inspection must not bypass the predicate. RED-mutate each public projection and production policy/helper wiring to prove the source/contract gates detect it. Do not fabricate or partially add the future first-class MCP tool.
 
 - [ ] **Step 5: Implement one authority path, refresh v2.16, and verify zero-effect denials**
 
