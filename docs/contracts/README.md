@@ -13,7 +13,8 @@ pre-deletion dispatch fixture. Both default to read-only check mode; fixture
 updates require an explicit reviewed write command, and neither checker infers
 permission to rewrite a baseline.
 
-The fixture owns command and alias metadata, public schemas, deterministic
+The fixture owns command and alias metadata, public schemas (including the
+v2.16 `table-result` and `table-export-manifest` contracts), deterministic
 browser-independent CLI exits/output, MCP definitions/resources/allowlists and
 representative mappings, package metadata, and the actual tar entry inventory.
 
