@@ -213,7 +213,14 @@ async function checkedStep(request, operation) {
   return result;
 }
 
-async function ensurePrivateDirectory(path, parentPath, parentReal, state, request) {
+async function ensurePrivateDirectory(
+  path,
+  parentPath,
+  parentReal,
+  state,
+  request,
+  onCreated = () => {},
+) {
   let created = false;
   try {
     await checkedStep(request, () => state.fs.mkdir(path, { mode: 0o700 }));
@@ -227,42 +234,125 @@ async function ensurePrivateDirectory(path, parentPath, parentReal, state, reque
   if (!isContained(parentReal, actual) || actual === parentReal) {
     fail('TABLE_ARTIFACT_STORAGE_INVALID', 'private artifact containment validation failed');
   }
-  if (created) await fsyncDirectory(state, request, parentPath);
+  if (created) {
+    onCreated(storedDirectoryIdentity(stats));
+    await fsyncDirectory(state, request, parentPath);
+  }
   return actual;
+}
+
+function resetInitializationState(state) {
+  state.rootReal = null;
+  state.ownerReal = null;
+  state.targetReal = null;
+  state.sessionReal = null;
+  state.createdAtMs = null;
+  state.initialization = null;
+  state.initialized = false;
+}
+
+function cleanupPartialInitialization(state) {
+  const partial = state.initialization;
+  if (!partial) return true;
+  if (!partial.sessionIdentity) {
+    resetInitializationState(state);
+    return true;
+  }
+  const paths = [state.runtimeDir, state.ownerDir, state.targetDir, state.sessionDir];
+  let parentReal = null;
+  try {
+    for (const path of paths) {
+      const stats = lstatSync(path);
+      assertDirectoryStats(stats);
+      if (path === state.sessionDir
+        && !matchesStoredIdentity(stats, partial.sessionIdentity)) return false;
+      const actual = realpathSync(path);
+      if (parentReal && (!isContained(parentReal, actual) || actual === parentReal)) return false;
+      parentReal = actual;
+    }
+    const listing = readdirSync(state.sessionDir);
+    if (listing.some(name => name !== OWNER_RECORD_NAME)) return false;
+    if (listing.includes(OWNER_RECORD_NAME)) {
+      if (!partial.ownerIdentity
+        || !safeOwnedFile(state.ownerRecordPath, partial.ownerIdentity)) return false;
+      unlinkSync(state.ownerRecordPath);
+    } else if (partial.ownerIdentity) {
+      return false;
+    }
+    if (partial.sessionCreated) {
+      if (readdirSync(state.sessionDir).length !== 0) return false;
+      rmdirSync(state.sessionDir);
+    }
+    resetInitializationState(state);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function initializeStore(state, request) {
   if (state.initialized) return;
-  throwIfPublicationStopped(request);
-  const rootStats = await checkedStep(request, () => state.fs.lstat(state.runtimeDir));
-  assertDirectoryStats(rootStats);
-  const rootReal = await checkedStep(request, () => state.fs.realpath(state.runtimeDir));
-  const ownerReal = await ensurePrivateDirectory(
-    state.ownerDir, state.runtimeDir, rootReal, state, request,
-  );
-  const targetReal = await ensurePrivateDirectory(
-    state.targetDir, state.ownerDir, ownerReal, state, request,
-  );
-  const sessionReal = await ensurePrivateDirectory(
-    state.sessionDir, state.targetDir, targetReal, state, request,
-  );
-  throwIfPublicationStopped(request);
-  state.rootReal = rootReal;
-  state.ownerReal = ownerReal;
-  state.targetReal = targetReal;
-  state.sessionReal = sessionReal;
-  state.createdAtMs = state.now();
-  if (!nonNegativeSafeInteger(state.createdAtMs)) {
-    fail('TABLE_ARTIFACT_STORAGE_INVALID', 'artifact store clock is invalid');
-  }
-  const ownerBytes = Buffer.from(`${JSON.stringify(ownerRecordForState(state), null, 2)}\n`, 'utf8');
+  if (state.initialization && !cleanupPartialInitialization(state)) throw cleanupFailed();
+  state.initialization = {
+    ownerIdentity: null,
+    sessionCreated: false,
+    sessionIdentity: null,
+  };
+  let initializationStarted = false;
   try {
-    await writePrivateFile(state, request, join(state.sessionDir, OWNER_RECORD_NAME), ownerBytes);
+    throwIfPublicationStopped(request);
+    const rootStats = await checkedStep(request, () => state.fs.lstat(state.runtimeDir));
+    assertDirectoryStats(rootStats);
+    const rootReal = await checkedStep(request, () => state.fs.realpath(state.runtimeDir));
+    const ownerReal = await ensurePrivateDirectory(
+      state.ownerDir, state.runtimeDir, rootReal, state, request,
+    );
+    const targetReal = await ensurePrivateDirectory(
+      state.targetDir, state.ownerDir, ownerReal, state, request,
+    );
+    initializationStarted = true;
+    const sessionReal = await ensurePrivateDirectory(
+      state.sessionDir,
+      state.targetDir,
+      targetReal,
+      state,
+      request,
+      identity => {
+        state.initialization.sessionCreated = true;
+        state.initialization.sessionIdentity = identity;
+      },
+    );
+    throwIfPublicationStopped(request);
+    state.rootReal = rootReal;
+    state.ownerReal = ownerReal;
+    state.targetReal = targetReal;
+    state.sessionReal = sessionReal;
+    if (!state.initialization.sessionIdentity) {
+      state.initialization.sessionIdentity = storedDirectoryIdentity(
+        await checkedStep(request, () => state.fs.lstat(state.sessionDir)),
+      );
+    }
+    state.createdAtMs = state.now();
+    if (!nonNegativeSafeInteger(state.createdAtMs)) {
+      fail('TABLE_ARTIFACT_STORAGE_INVALID', 'artifact store clock is invalid');
+    }
+    const ownerBytes = Buffer.from(`${JSON.stringify(ownerRecordForState(state), null, 2)}\n`, 'utf8');
+    await writePrivateFile(
+      state,
+      request,
+      state.ownerRecordPath,
+      ownerBytes,
+      identity => { state.initialization.ownerIdentity = identity; },
+    );
     await fsyncDirectory(state, request, state.sessionDir);
   } catch (error) {
-    throw wrapError(error);
+    if (!cleanupPartialInitialization(state)) throw cleanupFailed();
+    if (initializationStarted) throw wrapError(error);
+    if (error instanceof TableArtifactStorageError) throw error;
+    throw wrapError(error, 'TABLE_ARTIFACT_STORAGE_INVALID');
   }
   state.initialized = true;
+  state.initialization = null;
 }
 
 function validateBundle(bundle) {
@@ -531,7 +621,7 @@ async function closeHandle(handle) {
   if (handle) await handle.close();
 }
 
-async function writePrivateFile(state, request, path, bytes) {
+async function writePrivateFile(state, request, path, bytes, onIdentity = () => {}) {
   const flags = FS_CONSTANTS.O_WRONLY | FS_CONSTANTS.O_CREAT | FS_CONSTANTS.O_EXCL | FS_CONSTANTS.O_NOFOLLOW;
   let handle;
   try {
@@ -539,8 +629,10 @@ async function writePrivateFile(state, request, path, bytes) {
     await checkedStep(request, () => handle.writeFile(bytes));
     const stats = await checkedStep(request, () => handle.stat());
     assertFileStats(stats, bytes.length);
+    const identity = storedFileIdentity(stats);
+    onIdentity(identity);
     await checkedStep(request, () => handle.sync());
-    return storedFileIdentity(stats);
+    return identity;
   } finally {
     await closeHandle(handle);
   }
@@ -853,6 +945,7 @@ async function publish(state, bundle, execution) {
         throw cleanupFailed();
       }
     }
+    if (!entry && request.entries.size === 0) state.requests.delete(request.context);
     if (error instanceof TableArtifactStorageError) throw error;
     if (!state.initialized && !entry) {
       throw wrapError(error, 'TABLE_ARTIFACT_STORAGE_INVALID');
@@ -1173,6 +1266,9 @@ function sweepCrashResidue(state) {
 function cleanupSession(state) {
   for (const request of state.requests.values()) request.rolledBack = true;
   let failed = !closeSweepCursor(state);
+  if (!state.initialized && state.initialization && !cleanupPartialInitialization(state)) {
+    failed = true;
+  }
   for (const entry of [...state.entries.values()]) {
     if (cleanupEntry(state, entry)) {
       entry.request?.entries.delete(entry);
@@ -1182,7 +1278,7 @@ function cleanupSession(state) {
   for (const [context, request] of state.requests) {
     if (request.entries.size === 0) state.requests.delete(context);
   }
-  if (state.entries.size === 0 && !removeOwnerAndEmptySession(
+  if (state.initialized && state.entries.size === 0 && !removeOwnerAndEmptySession(
     state,
     state.targetDir,
     state.targetDigest,
@@ -1218,6 +1314,7 @@ function makeStore(input, dependencies) {
     processAlive: dependencies.processAlive,
     sweepCursor: { ownerDirectory: null, activeTarget: null },
     createdAtMs: null,
+    initialization: null,
     initialized: false,
     entries: new Map(),
     requests: new Map(),
