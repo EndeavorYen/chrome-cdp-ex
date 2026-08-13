@@ -69,6 +69,15 @@ describe('host validation manifest', () => {
     );
   });
 
+  it('rejects relabeling historical v2.15 evidence as the current v2.16 candidate', () => {
+    const manifest = structuredClone(checkedInManifest);
+    manifest.productVersion = packageJson.version;
+
+    expect(validate(manifest)).toContain(
+      'Host validation historical evidence must bind published version 2.15.0 to candidate identity sha256:802f7add9391ab693f2cb9e477914ece3b81cc20ada08023706f4f212120675f',
+    );
+  });
+
   it('rejects unknown statuses instead of silently promoting a host', () => {
     const manifest = structuredClone(checkedInManifest);
     manifest.hosts[0].status = 'verified';
