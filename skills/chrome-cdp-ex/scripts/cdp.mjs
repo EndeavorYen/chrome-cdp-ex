@@ -11179,12 +11179,9 @@ function validAriaIdentity(sample) {
 
 function observedTableEntry(sample, index) {
   const ariaIdentity = validAriaIdentity(sample);
-  const countKnown = sample.headerRowsSeen === sample.headerRows.length
-    && Number.isSafeInteger(sample.ariaRowCount)
-    && sample.ariaRowCount >= sample.headerRows.length;
   const accumulator = createTableAccumulator({
-    logicalRows: countKnown ? sample.ariaRowCount - sample.headerRows.length : null,
-    logicalCountSource: countKnown ? 'aria-rowcount' : 'none',
+    logicalRows: ariaIdentity ? ariaIdentity.logicalRows : null,
+    logicalCountSource: ariaIdentity ? 'aria-rowcount' : 'none',
     identitySource: ariaIdentity ? 'aria-rowindex' : 'snapshot-order',
     orderingSource: ariaIdentity ? 'aria-rowindex' : 'dom-order',
   });
