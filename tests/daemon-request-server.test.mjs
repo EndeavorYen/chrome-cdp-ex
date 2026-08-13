@@ -35,6 +35,46 @@ async function drain() {
 }
 
 describe('daemon request server lifecycle', () => {
+  it.each([
+    ['SIGTERM', 0],
+    ['listen failure', 1],
+  ])('aborts all connection registries before the %s shutdown path exits', (_path, exitCode) => {
+    const order = [];
+    const first = { abortAll: vi.fn(() => order.push('abort:first')) };
+    const second = { abortAll: vi.fn(() => order.push('abort:second')) };
+    const server = { close: vi.fn(() => order.push('server:close')) };
+    const closeCdp = vi.fn(() => order.push('cdp:close'));
+    const unlinkSocket = vi.fn(() => order.push('socket:unlink'));
+    const exitProcess = vi.fn(code => order.push(`exit:${code}`));
+    const shutdown = T.createDaemonShutdown({
+      requestConnections: new Set([first, second]),
+      getServer: () => server,
+      socketPath: '/run/cdp/table.sock',
+      closeCdp,
+      exitProcess,
+      unlinkSocket,
+      isWindows: false,
+    });
+
+    const signalHandler = () => shutdown(exitCode);
+    signalHandler('SIGTERM');
+    shutdown(exitCode);
+
+    expect(first.abortAll).toHaveBeenCalledOnce();
+    expect(second.abortAll).toHaveBeenCalledOnce();
+    expect(server.close).toHaveBeenCalledOnce();
+    expect(closeCdp).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledExactlyOnceWith(exitCode);
+    expect(order).toEqual([
+      'abort:first',
+      'abort:second',
+      'server:close',
+      'socket:unlink',
+      'cdp:close',
+      `exit:${exitCode}`,
+    ]);
+  });
+
   it.each(['end', 'close', 'error'])('aborts a live request on peer %s and suppresses every late response/effect', async event => {
     let resolveCollector;
     const firstEffect = vi.fn();
