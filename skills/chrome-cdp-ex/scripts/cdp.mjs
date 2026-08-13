@@ -11104,12 +11104,6 @@ function batchStepModel(result = {}, index = 0) {
     cmd: result.cmd || '',
     ok,
   };
-  if (result.skipped === true) {
-    step.ok = false;
-    step.skipped = true;
-    step.reason = result.reason || 'not run after earlier batch failure';
-    return step;
-  }
   if (ok) {
     step.resultPreview = firstNonEmptyLine(result.result);
   } else {
@@ -11124,8 +11118,7 @@ function batchStepModel(result = {}, index = 0) {
 
 function buildBatchResultModel(results = [], { targetId = null, mode = 'sequential' } = {}) {
   const steps = results.map((result, index) => batchStepModel(result, index));
-  const failedSteps = steps.filter(step => !step.ok && step.skipped !== true);
-  const skippedSteps = steps.filter(step => step.skipped === true);
+  const failedSteps = steps.filter(step => !step.ok);
   const diagnosisAttentionSteps = steps.filter(step => step.ok && isAttentionDiagnosis(step.diagnosis));
   const verdictAttentionSteps = steps.filter(step => step.ok && isAttentionVerdict(step.verdict));
   const attentionSteps = [...new Set([...diagnosisAttentionSteps, ...verdictAttentionSteps])];
@@ -11151,9 +11144,8 @@ function buildBatchResultModel(results = [], { targetId = null, mode = 'sequenti
     mode,
     counts: {
       steps: steps.length,
-      ok: steps.filter(step => step.ok).length,
+      ok: steps.length - failedSteps.length,
       failed: failedSteps.length,
-      skipped: skippedSteps.length,
       attention: attentionSteps.length,
     },
     steps,
@@ -11197,15 +11189,11 @@ function formatBatchResults(results, format = 'json', options = {}) {
     const lines = [];
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
-      if (r.skipped === true) {
-        lines.push(`[${i + 1}/${results.length}] ${r.cmd} (skipped)`);
-        lines.push(`  ${r.reason || 'not run after earlier batch failure'}`);
-      } else if (r.ok) {
-        lines.push(`[${i + 1}/${results.length}] ${r.cmd}`);
+      lines.push(`[${i + 1}/${results.length}] ${r.cmd}${r.ok ? '' : ' (error)'}`);
+      if (r.ok) {
         const body = (r.result ?? '').toString();
         if (body) lines.push(...body.split('\n').map(l => '  ' + l));
       } else {
-        lines.push(`[${i + 1}/${results.length}] ${r.cmd} (error)`);
         lines.push(`  ${r.error}`);
       }
     }
@@ -11214,7 +11202,6 @@ function formatBatchResults(results, format = 'json', options = {}) {
   if (format === 'compact') {
     return results.map((r, i) => {
       const head = `[${i + 1}] ${r.cmd}`;
-      if (r.skipped === true) return `${head}: SKIPPED ${r.reason || 'not run after earlier batch failure'}`;
       if (!r.ok) return `${head}: ERROR ${r.error}`;
       const body = (r.result ?? '').toString().split('\n')[0].slice(0, 200);
       return body ? `${head}: ${body}` : `${head}: ok`;
@@ -11236,21 +11223,10 @@ async function runBatchCommands({ run }, commands = [], { parallel = false } = {
   };
   if (parallel) return Promise.all(commands.map(runOne));
   const results = [];
-  for (let i = 0; i < commands.length; i++) {
-    const command = commands[i];
+  for (const command of commands) {
     const result = await runOne(command);
     results.push(result);
-    if (!result.ok) {
-      for (let j = i + 1; j < commands.length; j++) {
-        results.push({
-          cmd: commands[j].cmd,
-          ok: false,
-          skipped: true,
-          reason: 'not run after earlier batch failure',
-        });
-      }
-      break;
-    }
+    if (!result.ok) break;
   }
   return results;
 }
