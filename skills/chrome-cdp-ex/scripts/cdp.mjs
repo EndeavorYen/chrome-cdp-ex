@@ -19,8 +19,10 @@ import { autoActionJsonArgs as autoActionJsonArgsForCommands } from './lib/actio
 import {
   classifyRawCdpMethod,
   commandResult,
+  createCommandExecutionContext,
   createCommandRegistry,
   defineCommandSpec,
+  inspectCommandExecutionContext,
 } from './lib/command-application.mjs';
 import {
   createCommandDispatcher,
@@ -132,6 +134,247 @@ const DAEMON_METADATA_SCHEMA = 'chrome-cdp-ex.daemon-metadata.v1';
 const ALLOW_STALE_DAEMON_FLAG = '--allow-stale-daemon';
 const DEFAULT_CDP_HOST = '127.0.0.1';
 const DEFAULT_SPAWN_READY_TIMEOUT_MS = 5000;
+const TABLE_COLLECTION_DEADLINES = Object.freeze({
+  pageMs: 295000,
+  serverMs: 300000,
+  maxCdpOperationMs: 5000,
+});
+
+class TableCollectionDeadlineError extends Error {
+  constructor(phase) {
+    const page = phase === 'page';
+    super(page
+      ? 'table: page/CDP deadline reached before collection completed'
+      : 'table: server deadline reached before a committed response was ready');
+    this.name = 'TableCollectionDeadlineError';
+    this.code = page ? 'TABLE_COLLECTION_PAGE_DEADLINE' : 'TABLE_COLLECTION_SERVER_DEADLINE';
+    this.phase = phase;
+  }
+}
+
+class TableCollectionOperationTimeoutError extends Error {
+  constructor(timeoutMs) {
+    super(`table: CDP operation exceeded its ${timeoutMs}ms bounded timeout`);
+    this.name = 'TableCollectionOperationTimeoutError';
+    this.code = 'TABLE_COLLECTION_CDP_TIMEOUT';
+    this.phase = 'page';
+  }
+}
+
+function monotonicNow() {
+  return performance.now();
+}
+
+function createDaemonRequestExecutionContext({ request, signal, now = monotonicNow }) {
+  if (typeof now !== 'function') throw new Error('daemon request clock must be a function');
+  const tableCollect = request?.cmd === 'table'
+    ? isTableCollectArgs(request.args || [])
+    : false;
+  let deadline = null;
+  if (tableCollect) {
+    const startedAt = now();
+    if (!Number.isFinite(startedAt) || startedAt < 0) {
+      throw new Error('daemon request monotonic clock must return a finite non-negative number');
+    }
+    deadline = {
+      startedAt,
+      pageAt: startedAt + TABLE_COLLECTION_DEADLINES.pageMs,
+      serverAt: startedAt + TABLE_COLLECTION_DEADLINES.serverMs,
+      maxCdpOperationMs: TABLE_COLLECTION_DEADLINES.maxCdpOperationMs,
+      now,
+    };
+  }
+  return createCommandExecutionContext({ signal, deadline });
+}
+
+function abortReason(signal, fallback = 'table: collection request aborted') {
+  if (signal.reason instanceof Error) return signal.reason;
+  return new Error(signal.reason == null ? fallback : String(signal.reason));
+}
+
+function createTableCollectionRuntime(executionContext, {
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+} = {}) {
+  const context = inspectCommandExecutionContext(executionContext);
+  if (!context.deadline) throw new Error('table: collection deadline context is required');
+  const { deadline } = context;
+  const lifecycleController = new AbortController();
+  let finalizing = false;
+  const abortLifecycle = reason => {
+    if (!lifecycleController.signal.aborted) lifecycleController.abort(reason);
+  };
+  const onRequestAbort = () => abortLifecycle(abortReason(context.signal));
+  if (context.signal.aborted) onRequestAbort();
+  else context.signal.addEventListener('abort', onRequestAbort, { once: true });
+
+  const remaining = value => Math.max(0, value - deadline.now());
+  const throwIfAborted = () => {
+    if (lifecycleController.signal.aborted) throw abortReason(lifecycleController.signal);
+  };
+  const remainingPageMs = () => remaining(deadline.pageAt);
+  const remainingServerMs = () => remaining(deadline.serverAt);
+  const phase = () => {
+    if (finalizing && remainingServerMs() > 0) return 'finalization-only';
+    if (remainingPageMs() > 0) return 'page';
+    if (remainingServerMs() > 0) return 'finalization-only';
+    return 'expired';
+  };
+  const cdpOperationTimeoutMs = () => finalizing
+    ? 0
+    : Math.min(deadline.maxCdpOperationMs, remainingPageMs());
+  const beginFinalization = () => {
+    finalizing = true;
+  };
+
+  const runCdpOperation = async operation => {
+    if (typeof operation !== 'function') throw new Error('table: CDP operation must be a function');
+    throwIfAborted();
+    if (finalizing) throw new TableCollectionDeadlineError('page');
+    const pageRemaining = remainingPageMs();
+    if (pageRemaining <= 0) throw new TableCollectionDeadlineError('page');
+    const timeoutMs = Math.min(deadline.maxCdpOperationMs, pageRemaining);
+    const timeoutError = timeoutMs === pageRemaining
+      ? new TableCollectionDeadlineError('page')
+      : new TableCollectionOperationTimeoutError(timeoutMs);
+    const operationController = new AbortController();
+    const onLifecycleAbort = () => {
+      if (!operationController.signal.aborted) {
+        operationController.abort(abortReason(lifecycleController.signal));
+      }
+    };
+    lifecycleController.signal.addEventListener('abort', onLifecycleAbort, { once: true });
+    let timer;
+    let rejectAbort;
+    const aborted = new Promise((resolve, reject) => {
+      rejectAbort = reject;
+    });
+    const rejectOnLifecycleAbort = () => rejectAbort(abortReason(lifecycleController.signal));
+    lifecycleController.signal.addEventListener('abort', rejectOnLifecycleAbort, { once: true });
+    const timeout = new Promise((resolve, reject) => {
+      timer = setTimer(() => {
+        if (!operationController.signal.aborted) operationController.abort(timeoutError);
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => operation({
+          signal: operationController.signal,
+          timeoutMs,
+        })),
+        timeout,
+        aborted,
+      ]);
+    } finally {
+      clearTimer(timer);
+      lifecycleController.signal.removeEventListener('abort', onLifecycleAbort);
+      lifecycleController.signal.removeEventListener('abort', rejectOnLifecycleAbort);
+    }
+  };
+
+  const sleep = async milliseconds => {
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+      throw new Error('table: sleep duration must be a finite non-negative number');
+    }
+    throwIfAborted();
+    if (finalizing) throw new TableCollectionDeadlineError('page');
+    const pageRemaining = remainingPageMs();
+    if (pageRemaining <= 0) throw new TableCollectionDeadlineError('page');
+    const requestedMs = Math.trunc(milliseconds);
+    const timeoutMs = Math.min(requestedMs, pageRemaining);
+    if (timeoutMs === 0) return;
+    const reachesPageDeadline = requestedMs >= pageRemaining;
+    await new Promise((resolve, reject) => {
+      const onAbort = () => {
+        clearTimer(timer);
+        lifecycleController.signal.removeEventListener('abort', onAbort);
+        reject(abortReason(lifecycleController.signal));
+      };
+      const timer = setTimer(() => {
+        lifecycleController.signal.removeEventListener('abort', onAbort);
+        if (reachesPageDeadline) reject(new TableCollectionDeadlineError('page'));
+        else resolve();
+      }, timeoutMs);
+      lifecycleController.signal.addEventListener('abort', onAbort, { once: true });
+    });
+  };
+
+  const runFinalization = async operation => {
+    if (typeof operation !== 'function') throw new Error('table: finalization operation must be a function');
+    beginFinalization();
+    throwIfAborted();
+    const timeoutMs = remainingServerMs();
+    if (timeoutMs <= 0) {
+      const error = new TableCollectionDeadlineError('server');
+      abortLifecycle(error);
+      throw error;
+    }
+    const timeoutError = new TableCollectionDeadlineError('server');
+    let timer;
+    let rejectAbort;
+    const aborted = new Promise((resolve, reject) => {
+      rejectAbort = reject;
+    });
+    const onAbort = () => rejectAbort(abortReason(lifecycleController.signal));
+    lifecycleController.signal.addEventListener('abort', onAbort, { once: true });
+    const timeout = new Promise((resolve, reject) => {
+      timer = setTimer(() => {
+        abortLifecycle(timeoutError);
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([Promise.resolve().then(operation), timeout, aborted]);
+    } finally {
+      clearTimer(timer);
+      lifecycleController.signal.removeEventListener('abort', onAbort);
+    }
+  };
+
+  return Object.freeze({
+    signal: lifecycleController.signal,
+    deadline,
+    phase,
+    remainingPageMs,
+    remainingServerMs,
+    cdpOperationTimeoutMs,
+    throwIfAborted,
+    runCdpOperation,
+    sleep,
+    beginFinalization,
+    runFinalization,
+    dispose() {
+      context.signal.removeEventListener('abort', onRequestAbort);
+    },
+  });
+}
+
+async function runTableCollectionLifecycle(executionContext, {
+  collect,
+  finalize,
+  cleanup,
+} = {}) {
+  if (typeof collect !== 'function') throw new Error('table: collector seam is required');
+  if (typeof finalize !== 'function') throw new Error('table: finalizer seam is required');
+  if (typeof cleanup !== 'function') throw new Error('table: cleanup seam is required');
+  const runtime = createTableCollectionRuntime(executionContext);
+  try {
+    let collection;
+    try {
+      collection = await collect(runtime);
+    } catch (error) {
+      if (error?.code !== 'TABLE_COLLECTION_PAGE_DEADLINE') throw error;
+      collection = { termination: 'time-limit' };
+    }
+    return await runtime.runFinalization(() => finalize(collection, runtime));
+  } catch (error) {
+    await cleanup(error);
+    throw error;
+  } finally {
+    runtime.dispose();
+  }
+}
 
 class RingBuffer {
   constructor(capacity) { this.buf = []; this.capacity = capacity; this.seq = 0; }
@@ -17168,4 +17411,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createClickCommandHandler, createEvalrawCommandHandler,
   authorizeDaemonApplicationCommand, executeDaemonApplicationRoute,
   daemonRequestMayHaveSideEffects,
+  TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,
+  createDaemonRequestExecutionContext, createTableCollectionRuntime,
+  runTableCollectionLifecycle,
 } : undefined;

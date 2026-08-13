@@ -1,7 +1,9 @@
 import net from 'net';
 import { resolve } from 'path';
+import { isTableCollectArgs } from './table-contract.mjs';
 
 const IPC_TIMEOUT = 120000;
+const TABLE_COLLECTION_IPC_TIMEOUT = 315000;
 const DEFAULT_CONNECT_TIMEOUT = 5000;
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_TRANSPORT_DIAGNOSTIC_CHARS = 512;
@@ -106,20 +108,30 @@ function parseWaitMilliseconds(value) {
 }
 
 export function ipcTimeoutForRequest(request) {
+  const tableCollect = request?.cmd === 'table'
+    ? isTableCollectArgs(request.args || [])
+    : false;
+  const timeoutCeiling = tableCollect ? TABLE_COLLECTION_IPC_TIMEOUT : IPC_TIMEOUT;
   if (Number.isFinite(request?.timeoutMs) && request.timeoutMs > 0) {
-    return Math.min(Math.max(100, Math.trunc(request.timeoutMs)), IPC_TIMEOUT);
+    return Math.min(Math.max(100, Math.trunc(request.timeoutMs)), timeoutCeiling);
   }
+  if (tableCollect) return TABLE_COLLECTION_IPC_TIMEOUT;
   if (request?.cmd !== 'wait') return IPC_TIMEOUT;
   const waitMs = parseWaitMilliseconds(request.args?.[0]);
   return waitMs == null ? IPC_TIMEOUT : Math.max(IPC_TIMEOUT, waitMs + 5000);
 }
 
-export function requestDaemon(conn, request, {
-  runtimeDir = '',
-  timeoutMs = ipcTimeoutForRequest(request),
-  maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
-  mayHaveSideEffects = false,
-} = {}) {
+export function requestDaemon(conn, request, options = {}) {
+  const {
+    runtimeDir = '',
+    timeoutMs: requestedTimeoutMs,
+    maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
+    mayHaveSideEffects = false,
+  } = options;
+  const timeoutCeiling = ipcTimeoutForRequest(request);
+  const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0
+    ? Math.min(Math.max(1, Math.trunc(requestedTimeoutMs)), timeoutCeiling)
+    : timeoutCeiling;
   return new Promise((resolveResponse, reject) => {
     const requestId = 1;
     const chunks = [];

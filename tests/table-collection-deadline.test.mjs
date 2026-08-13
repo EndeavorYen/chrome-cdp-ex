@@ -213,7 +213,8 @@ describe('table collection monotonic deadline context', () => {
     const outcome = promise.catch(error => error);
     controller.abort(reason);
 
-    await expect(Promise.race([outcome, Promise.resolve('still-pending')])).resolves.toBe(reason);
+    const nextTurn = new Promise(resolve => setTimeout(() => resolve('still-pending'), 0));
+    await expect(Promise.race([outcome, nextTurn])).resolves.toBe(reason);
     expect(clearTimer).toHaveBeenCalledWith(timerHandle);
     runtime.dispose();
     expect(removeListener.mock.calls.length).toBeGreaterThanOrEqual(addListener.mock.calls.length);
