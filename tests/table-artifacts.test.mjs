@@ -226,6 +226,53 @@ describe('private table artifact publication', () => {
     }
   });
 
+  it.each(['owner-close', 'session-fsync', 'session-close'])(
+    'recovers the same lazy store after a one-shot %s failure during initialization',
+    async fault => {
+      const runtimeDir = privateRuntimeRoot();
+      let layout;
+      let injected = false;
+      const store = testStore(runtimeDir, {}, {
+        open: async (...args) => {
+          const handle = await open(...args);
+          const path = args[0];
+          const isOwner = basename(path) === 'owner.json';
+          const isSession = layout && path === layout.sessionDir;
+          if (injected || (fault === 'owner-close' && !isOwner)
+            || (fault !== 'owner-close' && !isSession)) return handle;
+          return tracedHandle(handle, fault, [], {
+            ...(fault.endsWith('fsync') ? {
+              sync: async () => {
+                injected = true;
+                throw new Error(`one-shot init fault ${runtimeDir}`);
+              },
+            } : {
+              close: async realHandle => {
+                injected = true;
+                await realHandle.close();
+                throw new Error(`one-shot init fault ${runtimeDir}`);
+              },
+            }),
+          });
+        },
+      });
+      layout = artifactTest.inspectTableArtifactStore(store);
+
+      let error;
+      try { await store.publish(bundleForRows(), execution()); } catch (caught) { error = caught; }
+
+      expect(error?.code).toBe('TABLE_ARTIFACT_PUBLICATION_FAILED');
+      expect(error?.message).not.toContain(runtimeDir);
+      expect(injected).toBe(true);
+      expect(existsSync(layout.ownerRecordPath)).toBe(false);
+      expect(existsSync(layout.sessionDir)).toBe(false);
+
+      const publication = await store.publish(bundleForRows(), execution());
+      expect(publication.token).toBe(`ct1.${ID_A}.0`);
+      expect(existsSync(layout.ownerRecordPath)).toBe(true);
+    },
+  );
+
   it('publishes data durably before a manifest commit marker with exact private modes', async () => {
     const runtimeDir = privateRuntimeRoot();
     const trace = [];
