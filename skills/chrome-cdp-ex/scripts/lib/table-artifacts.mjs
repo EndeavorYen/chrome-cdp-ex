@@ -630,6 +630,18 @@ function artifactRows(rowsTsv, count) {
   return rows;
 }
 
+function validateInlineManifestRows(manifest, rows) {
+  const inlineRows = rows.slice(0, manifest.inline.rowCount);
+  const inlineBytes = Buffer.byteLength(inlineRows.join('\n'), 'utf8');
+  if (manifest.inline.rowCount > TABLE_EXTRACTION_LIMITS.maxInlineRows
+    || manifest.inline.bytes > TABLE_EXTRACTION_LIMITS.maxInlineBytes
+    || manifest.inline.bytes !== inlineBytes
+    || manifest.inline.truncated !== (inlineRows.length < rows.length)
+    || manifest.inline.rows.some((row, index) => row !== inlineRows[index])) {
+    fail('TABLE_ARTIFACT_READ_FAILED', 'artifact inline manifest verification failed');
+  }
+}
+
 function continuationResult(manifest, artifactId, token, offset, rows, nextToken) {
   return {
     schema: 'chrome-cdp-ex.table.v1',
@@ -692,6 +704,7 @@ async function readContinuation(state, token) {
       fail('TABLE_ARTIFACT_READ_FAILED', 'artifact checksum verification failed');
     }
     const allRows = artifactRows(fatalUtf8(dataBytes), manifest.artifact.rows);
+    validateInlineManifestRows(manifest, allRows);
     let count = Math.min(TABLE_EXTRACTION_LIMITS.maxInlineRows, allRows.length - parsed.offset);
     let result;
     while (count > 0) {
@@ -858,7 +871,20 @@ function sweepArtifact(state, sessionDir, sessionDigest, artifactId, now) {
     } catch {
       return false;
     }
-    if (manifest.artifact.bytes !== stats[1].size) return false;
+    let dataBytes;
+    let rows;
+    try {
+      dataBytes = readPrivateFileSync(paths.rows, TABLE_EXTRACTION_LIMITS.maxArtifactBytes);
+      if (manifest.artifact.bytes !== dataBytes.length
+        || manifest.artifact.bytes !== stats[1].size
+        || createHash('sha256').update(dataBytes).digest('hex') !== manifest.artifact.checksum) {
+        return false;
+      }
+      rows = artifactRows(fatalUtf8(dataBytes), manifest.artifact.rows);
+      validateInlineManifestRows(manifest, rows);
+    } catch {
+      return false;
+    }
     stats.push(manifestStats);
   }
   const newestMtime = Math.max(...stats.map(value => value.mtimeMs));
@@ -911,6 +937,21 @@ function sweepDeadSession(state, sessionDigest, now) {
     return false;
   }
   if (!provenDeadProcess(state, owner.pid)) return null;
+  let sessionEligible;
+  try {
+    const ownerStats = lstatSync(join(sessionDir, OWNER_RECORD_NAME));
+    const sessionStats = lstatSync(sessionDir);
+    const newestSessionAuthority = Math.max(
+      owner.createdAtMs,
+      ownerStats.mtimeMs,
+      sessionStats.mtimeMs,
+    );
+    sessionEligible = Number.isFinite(newestSessionAuthority)
+      && now >= newestSessionAuthority
+      && now - newestSessionAuthority >= UNCOMMITTED_SWEEP_TTL_MS;
+  } catch {
+    return false;
+  }
   let listing;
   try { listing = readDirectoryBounded(sessionDir, SWEEP_LIMITS.artifacts); } catch { return false; }
   let failed = listing.truncated;
@@ -926,7 +967,7 @@ function sweepDeadSession(state, sessionDigest, now) {
   let remaining;
   try { remaining = readDirectoryBounded(sessionDir, SWEEP_LIMITS.artifacts); } catch { return false; }
   if (!remaining.truncated && remaining.entries.length === 1
-    && remaining.entries[0] === OWNER_RECORD_NAME) {
+    && remaining.entries[0] === OWNER_RECORD_NAME && sessionEligible) {
     if (!removeOwnerAndEmptySession(state, sessionDir, sessionDigest, owner)) failed = true;
   }
   return failed ? false : true;
