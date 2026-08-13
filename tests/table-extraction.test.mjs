@@ -128,6 +128,25 @@ describe('canonical table bytes and bounded previews', () => {
     expect(preview.truncated).toBe(true);
   });
 
+  it('keeps a 257-row preview input bounded by preview rows rather than the direct-cell limit', () => {
+    const rows = Array.from({ length: 257 }, (_, index) => `row-${index + 1}`);
+    const preview = buildInlineTablePreview(rows);
+
+    expect(preview.rows).toEqual(rows.slice(0, 20));
+    expect(preview.rowCount).toBe(20);
+    expect(preview.truncated).toBe(true);
+  });
+
+  it('keeps the frozen 1024-row input previewable without treating rows as direct cells', () => {
+    const rows = frozenRowsFixture().map(cells => cells.join('\t'));
+    const preview = buildInlineTablePreview(rows);
+
+    expect(preview.rowCount).toBe(20);
+    expect(preview.rows[0]).toBe('ROW-0001\tdone\tteam-14\t8919');
+    expect(preview.rows[19]).toBe('ROW-0020\tqueued\tteam-06\t159380');
+    expect(preview.truncated).toBe(true);
+  });
+
   it('rejects more than 256 direct cells in one canonical row', () => {
     expect(() => canonicalizeTableCells(Array.from({ length: 257 }, () => 'x'))).toThrow(/item bound/i);
   });
@@ -354,6 +373,22 @@ describe('collection safety and completeness', () => {
     expect(addTableSample(accumulator, { mountedNodeId: 'node-3', key: 3, cells: ['c'] }))
       .toEqual({ admitted: false, reason: 'byte-limit', collectedRows: 2, artifactBytes: 3 });
     expect(finalizeTableExtraction(accumulator, { termination: 'byte-limit' }).collectedRows).toBe(2);
+  });
+
+  it('enforces the creation-lowered direct-cell bound at N and N plus one without mutating the artifact', () => {
+    const accumulator = createTableAccumulator({
+      logicalRows: 3,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'aria-rowindex',
+      orderingSource: 'aria-rowindex',
+      limits: { maxCellsPerRow: 2 },
+    });
+
+    expect(addTableSample(accumulator, { mountedNodeId: 'node-1', key: 1, cells: ['a', 'b'] }))
+      .toEqual({ admitted: true, reason: null, collectedRows: 1, artifactBytes: 3 });
+    expect(() => addTableSample(accumulator, { mountedNodeId: 'node-2', key: 2, cells: ['c', 'd', 'e'] }))
+      .toThrow(/item bound/i);
+    expect(finalizeTableExtraction(accumulator, { termination: 'observation' }).collectedRows).toBe(1);
   });
 });
 
