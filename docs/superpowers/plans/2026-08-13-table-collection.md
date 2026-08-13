@@ -146,7 +146,7 @@
 
 - [ ] **Step 1: Write RED collector tests against a real recycling controller seam**
 
-  Freeze the issue fixture: 1,024 logical rows, four columns, 12 stable mounted `<tr>` identities, 128 initially loaded, 64 added per load interaction, exactly 14 load-more interactions, final canonical checksum `73e9f36080b8c781e204857ad9c7dcf4ce7ce419b1503d9affd0343f58f964ed`.
+  Freeze the issue fixture: 1,024 logical rows, four columns, 12 stable mounted `<tr>` identities, 128 initially loaded, 64 added per load interaction, exactly 14 load-more interactions. For one-based row index `i`, canonical cells are `ROW-${pad4(i)}`, `['queued','ready','blocked','done'][(i*7)%4]`, `team-${pad2(((i*13)%17)+1)}`, and `1000+((i*7919)%900000)`; join cells with tab and rows with LF, with no header or final LF. The body is exactly 31,104 UTF-8 bytes/chars and SHA-256 `73e9f36080b8c781e204857ad9c7dcf4ce7ce419b1503d9affd0343f58f964ed`.
 
 - [ ] **Step 2: Verify RED catches current mounted-only behavior**
 
