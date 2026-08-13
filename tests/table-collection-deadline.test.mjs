@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createCommandExecutionContext } from '../skills/chrome-cdp-ex/scripts/lib/command-application.mjs';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
@@ -57,6 +58,21 @@ describe('table collection monotonic deadline context', () => {
     expect(() => T.createDaemonRequestExecutionContext({
       request: { cmd: 'table', args: ['--collect'] }, signal, now: () => 30,
     })).toThrow('table: --collect requires --scroll-container');
+  });
+
+  it('rejects an internally forged deadline context even when application validation brands it', () => {
+    const forged = createCommandExecutionContext({
+      signal: new AbortController().signal,
+      deadline: {
+        startedAt: 0,
+        pageAt: 999999,
+        serverAt: 1000000,
+        maxCdpOperationMs: 999999,
+        now: () => 0,
+      },
+    });
+    expect(() => T.createTableCollectionRuntime(forged))
+      .toThrow('table: trusted daemon request deadline context is required');
   });
 
   it('dynamically caps and aborts an in-flight CDP operation at the page deadline', async () => {
