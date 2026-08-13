@@ -52,6 +52,13 @@ function mutate(text, before, after) {
   return text.replace(before, after);
 }
 
+const lifecycleAuthorityOwnerNames = [
+  'createDaemonRequestConnection',
+  'createDaemonShutdown',
+  'emitTargetCommandResponse',
+  'isDeterministicTableContinuationResult',
+];
+
 describe('Runtime v3 table policy authority', () => {
   it('binds the exact catalog policy and argv-aware production owners', () => {
     const authority = inventory().tablePolicyAuthority;
@@ -467,6 +474,20 @@ describe('Runtime v3 table policy authority', () => {
       "  if (hasResult) { if (cmd === 'table') response.result = attachTargetResolutionDiagnostics(response.result, targetResolution);"),
   ])('rejects lifecycle or deterministic-emission owner bypass %#', mutation => {
     expectInventoryDriftOrReject(mutation);
+  });
+
+  it.each(lifecycleAuthorityOwnerNames.flatMap(name => ([
+    [`${name} shadow`, mutate(source,
+      'async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {',
+      `async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) { const ${name} = () => {};`)],
+    [`${name} duplicate`, mutate(source,
+      `function ${name}(`,
+      `function ${name}() {}\nfunction ${name}(`)],
+    [`${name} write`, mutate(source,
+      `function ${name}(`,
+      `${name} = () => {};\nfunction ${name}(`)],
+  ])))('rejects lifecycle owner scope bypass: %s', (_label, mutation) => {
+    expect(() => inventory(mutation)).toThrow(/table policy authority|Parsing error/i);
   });
 
   it.each([

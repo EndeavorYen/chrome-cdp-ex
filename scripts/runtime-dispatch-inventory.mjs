@@ -895,6 +895,13 @@ function collectTablePolicyAuthority(source, {
   const frozenWiringBindings = new Map();
   let runDaemonAuthoritySource = null;
   let sendCommandAuthoritySource = null;
+  const lifecycleOwnerNames = [
+    'createDaemonRequestConnection',
+    'createDaemonShutdown',
+    'emitTargetCommandResponse',
+    'isDeterministicTableContinuationResult',
+  ];
+  const lifecycleOwnerSources = new Map();
   const failTable = message => { throw new Error(`table policy authority: ${message}`); };
   const rule = {
     create(context) {
@@ -929,6 +936,16 @@ function collectTablePolicyAuthority(source, {
         },
         FunctionDeclaration(node) {
           const name = node.id?.name;
+          if (lifecycleOwnerNames.includes(name)) {
+            const ancestors = sourceCode.getAncestors(node);
+            if (ancestors.length !== 1 || ancestors[0]?.type !== 'Program') {
+              failTable(`${name} must be one unique top-level lifecycle owner`);
+            }
+            if (lifecycleOwnerSources.has(name)) {
+              failTable(`${name} lifecycle owner must be unique`);
+            }
+            lifecycleOwnerSources.set(name, sourceCode.getText(node));
+          }
           if (name === 'runDaemon') {
             if (runDaemonAuthoritySource !== null) failTable('runDaemon table policy owner must be unique');
             runDaemonAuthoritySource = sourceCode.getText(node);
@@ -1151,6 +1168,9 @@ function collectTablePolicyAuthority(source, {
           requireUniqueBinding(sourceCode, 'isDeterministicTableContinuationResult', {
             definitionType: 'FunctionName',
           }, failTable);
+          for (const name of lifecycleOwnerNames) {
+            requireUniqueBinding(sourceCode, name, { definitionType: 'FunctionName' }, failTable);
+          }
           requireUniqueBinding(sourceCode, 'readCapabilities', {
             definitionType: 'Variable',
             topLevel: false,
@@ -1177,6 +1197,9 @@ function collectTablePolicyAuthority(source, {
   }
   if (!runDaemonAuthoritySource || !sendCommandAuthoritySource) {
     failTable('runDaemon and sendCommand table policy owners must be present');
+  }
+  if (lifecycleOwnerNames.some(name => !lifecycleOwnerSources.has(name))) {
+    failTable('all table artifact lifecycle owners must be present');
   }
   const expectedCalls = {
     isTableCollectArgs: [
@@ -1264,6 +1287,7 @@ function collectTablePolicyAuthority(source, {
       ...helperSources,
       runDaemonAuthoritySource,
       sendCommandAuthoritySource,
+      ...lifecycleOwnerNames.map(name => lifecycleOwnerSources.get(name)),
       mcpAuthority.source,
       daemonReadAuthority.source,
       tableContractAuthority.source,
