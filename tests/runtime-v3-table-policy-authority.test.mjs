@@ -439,6 +439,37 @@ describe('Runtime v3 table policy authority', () => {
   });
 
   it.each([
+    mutate(source,
+      '} else if (successfulResponse) disposeAfterSuccessfulFlush(entry);',
+      '} else if (successfulResponse || response?.ok === false) disposeAfterSuccessfulFlush(entry);'),
+    mutate(source,
+      `    try {
+      if (cleanupSession() !== undefined) finalExitCode = 1;
+    } catch {
+      finalExitCode = 1;
+    }
+    try { getServer()?.close(); } catch {}
+    if (!isWindows) try { unlinkSocket(socketPath); } catch {}
+    try { closeCdp(); } catch {}`,
+      `    try { getServer()?.close(); } catch {}
+    if (!isWindows) try { unlinkSocket(socketPath); } catch {}
+    try { closeCdp(); } catch {}
+    try {
+      if (cleanupSession() !== undefined) finalExitCode = 1;
+    } catch {
+      finalExitCode = 1;
+    }`),
+    mutate(source,
+      "  if (cmd !== 'table' || typeof result !== 'string') return false;",
+      "  if (cmd === 'table') return false; if (cmd !== 'table' || typeof result !== 'string') return false;"),
+    mutate(source,
+      '  if (hasResult) {',
+      "  if (hasResult) { if (cmd === 'table') response.result = attachTargetResolutionDiagnostics(response.result, targetResolution);"),
+  ])('rejects lifecycle or deterministic-emission owner bypass %#', mutation => {
+    expectInventoryDriftOrReject(mutation);
+  });
+
+  it.each([
     mutate(tableContractSource,
       'const CONTINUATION_TOKEN_RE = /^ct1\\.([0-9a-f]{32})\\.(0|[1-9][0-9]{0,4})$/;',
       'const CONTINUATION_TOKEN_RE = /^ct1\\.([0-9a-f]{32})\\.(0|[1-9][0-9]{0,5})$/;'),
