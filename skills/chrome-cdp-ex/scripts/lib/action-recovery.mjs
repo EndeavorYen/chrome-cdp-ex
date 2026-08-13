@@ -31,7 +31,10 @@ export function classifyActionFailure(err, { action = 'action', target = {} } = 
   const lower = originalMessage.toLowerCase();
   const targetId = actionFailureTargetId(target);
   const input = actionFailureInput(target);
-  const perceiveCommand = `cdp perceive ${targetId} -C -d 8`;
+  const frameRef = String(input).match(/^(@f\d+):\d+$/)?.[1] || null;
+  const perceiveCommand = frameRef
+    ? `cdp perceive ${targetId} --frame ${frameRef}`
+    : `cdp perceive ${targetId} -C -d 8`;
   const statusCommand = `cdp status ${targetId}`;
   const base = {
     schema: 'chrome-cdp-ex.action-failure.v1',

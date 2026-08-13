@@ -1,7 +1,7 @@
 // cdp.test.mjs — Tests for cdp.mjs pure functions
 // Run: npm test
 
-import { afterEach, describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
@@ -4866,7 +4866,31 @@ function createMockCDP(handlers = {}) {
     calls,
     send(method, params = {}, sessionId, timeout) {
       calls.push({ method, params, sessionId, timeout });
+      const trustedPresenceCall = method === 'Runtime.callFunctionOn'
+        && params.functionDeclaration?.includes('ownerDocumentGetter')
+        && params.functionDeclaration.includes('getClientRects');
+      if (trustedPresenceCall) {
+        const handler = handlers['Runtime.callFunctionOn:trusted-presence'] || handlers[method];
+        return Promise.resolve(handler
+          ? handler(params, sessionId)
+          : { result: { value: { connected: true, visible: true } } });
+      }
+      const trustedConnectivityCall = method === 'Runtime.callFunctionOn'
+        && params.functionDeclaration?.includes('ownerDocumentGetter')
+        && !params.functionDeclaration.includes('requestAnimationFrame');
+      if (trustedConnectivityCall) {
+        const handler = handlers['Runtime.callFunctionOn:trusted-connectivity'];
+        return Promise.resolve(handler
+          ? handler(params, sessionId)
+          : { result: { value: { connected: true } } });
+      }
       if (handlers[method]) return Promise.resolve(handlers[method](params, sessionId));
+      if (method === 'Page.getFrameTree') {
+        return Promise.resolve({ frameTree: { frame: { id: 'mock-root-frame' } } });
+      }
+      if (method === 'Page.createIsolatedWorld') {
+        return Promise.resolve({ executionContextId: 901 });
+      }
       return Promise.resolve({});
     },
     onEvent() { return () => {}; },
@@ -5057,7 +5081,7 @@ describe('frame tree helpers', () => {
       },
       'Runtime.callFunctionOn': (params) => {
         if (params.objectId === 'child-button') {
-          return { result: { value: { x: 10, y: 5, w: 100, h: 20, tag: 'BUTTON', text: 'Pay now' } } };
+          return { result: { value: { connected: true, x: 10, y: 5, w: 100, h: 20, tag: 'BUTTON', text: 'Pay now' } } };
         }
         if (params.objectId === 'frame-owner') {
           return { result: { value: { x: 50, y: 40, w: 300, h: 200 } } };
@@ -6680,13 +6704,116 @@ describe('clickStr', () => {
         expect(params.functionDeclaration).toContain('maxSamples = fullyVisible ? 2 : 60');
         expect(params.functionDeclaration).toContain('currentVisible && stableSamples >= 2');
         expect(params.awaitPromise).toBe(true);
-        return { result: { value: { x: 50, y: 60, w: 100, h: 40, tag: 'A', text: 'Link' } } };
+        return { result: { value: { connected: true, x: 50, y: 60, w: 100, h: 40, tag: 'A', text: 'Link' } } };
       },
       'Input.dispatchMouseEvent': () => ({}),
     });
     const result = await clickStr(cdp, 'sid1', '@1', refMap);
     expect(result).toContain('Clicked');
     expect(result).toContain('@1');
+  });
+
+  it('fails a detached @ref after replaceChildren before dispatch or pre-action churn observation', async () => {
+    const oldNodes = [
+      { nodeId: 'root-0', role: { value: 'RootWebArea' }, name: { value: 'Reviews' }, childIds: ['alpha-0'] },
+      { nodeId: 'alpha-0', parentId: 'root-0', role: { value: 'button' }, name: { value: 'Review Alpha' }, backendDOMNodeId: 101 },
+    ];
+    const freshNodes = [
+      { nodeId: 'root-1', role: { value: 'RootWebArea' }, name: { value: 'Reviews' }, childIds: ['charlie-1', 'alpha-1', 'bravo-1'] },
+      { nodeId: 'charlie-1', parentId: 'root-1', role: { value: 'button' }, name: { value: 'Review Charlie' }, backendDOMNodeId: 201 },
+      { nodeId: 'alpha-1', parentId: 'root-1', role: { value: 'button' }, name: { value: 'Review Alpha' }, backendDOMNodeId: 202 },
+      { nodeId: 'bravo-1', parentId: 'root-1', role: { value: 'button' }, name: { value: 'Review Bravo' }, backendDOMNodeId: 203 },
+    ];
+    const refMap = new Map();
+    const refState = { generation: 1, invalidationReason: null };
+    const meta = { layoutMap: {}, styleHints: {} };
+    buildPerceiveTree(oldNodes, meta, refMap);
+    expect(refMap.get(1)).toBe(101);
+
+    // Harness-only replaceChildren: the old backend node still resolves, but is detached.
+    const appAttempts = [];
+    const currentTargets = [
+      { name: 'Review Charlie', x: 40, y: 20, w: 120, h: 32 },
+      { name: 'Review Alpha', x: 40, y: 72, w: 120, h: 32 },
+      { name: 'Review Bravo', x: 40, y: 124, w: 120, h: 32 },
+    ];
+    const connectedObjects = new Set(['fresh-charlie', 'fresh-alpha', 'fresh-bravo']);
+    const cdp = createMockCDP({
+      'Runtime.callFunctionOn:trusted-connectivity': ({ objectId }) => ({
+        result: { value: { connected: connectedObjects.has(objectId) } },
+      }),
+      'DOM.resolveNode': ({ backendNodeId }) => ({
+        object: {
+          objectId: backendNodeId === 101
+            ? 'detached-alpha'
+            : backendNodeId === 202 ? 'fresh-alpha'
+            : backendNodeId === 203 ? 'fresh-bravo' : 'fresh-charlie',
+        },
+      }),
+      'Runtime.callFunctionOn': ({ objectId, functionDeclaration }) => {
+        if (objectId === 'detached-alpha') {
+          return { result: { value: {
+            ...(functionDeclaration.includes('isConnected') ? { connected: false } : {}),
+            x: 0, y: 0, w: 0, h: 0, tag: 'BUTTON', text: 'Review Alpha',
+          } } };
+        }
+        return { result: { value: {
+          ...(functionDeclaration.includes('isConnected') ? { connected: true } : {}),
+          x: 40, y: 72, w: 120, h: 32, tag: 'BUTTON', text: 'Review Alpha',
+        } } };
+      },
+      'Input.dispatchMouseEvent': ({ type, x, y }) => {
+        if (type === 'mouseReleased') {
+          const target = currentTargets.find(entry => (
+            x >= entry.x && x <= entry.x + entry.w && y >= entry.y && y <= entry.y + entry.h
+          ));
+          if (target) appAttempts.push(target.name);
+        }
+        return {};
+      },
+    });
+    const observe = vi.fn(async () => '+++ Added\n+ [button] Review Charlie @1');
+    let captured = null;
+    const output = await T.runActionWithFeedback({
+      action: 'click',
+      target: { targetId: 'ABC12345', input: '@1', resolvedBy: 'selector-or-ref', label: '@1' },
+      dispatch: () => clickStr(cdp, 'sid1', '@1', refMap, refState),
+      feedbackPolicy: 'settle-diff',
+      observe,
+      onActionResult: result => { captured = result; },
+      format: { format: 'json', compact: true },
+    });
+    const result = JSON.parse(output);
+    const processLike = { exitCode: 0, platform: 'darwin' };
+    T.emitTargetCommandResponse({ ok: true, result: output }, {
+      cmd: 'click',
+      targetPrefix: 'ABC12345',
+      format: 'json',
+      console: { log: () => {}, error: () => {} },
+      process: processLike,
+    });
+
+    expect(result.dispatch).toMatchObject({ ok: false, method: 'click' });
+    expect(result.effects).toMatchObject({
+      domDiff: null,
+      failure: {
+        kind: 'stale-ref',
+        nextCommand: 'cdp perceive ABC12345 -C -d 8',
+      },
+    });
+    expect(result.outcome).toMatchObject({ status: 'failed', changed: false });
+    expect(captured.dispatch.ok).toBe(false);
+    expect(cdp.calls.filter(call => call.method.startsWith('Input.dispatch'))).toEqual([]);
+    expect(appAttempts).toEqual([]);
+    expect(observe).not.toHaveBeenCalled();
+    expect(processLike.exitCode).toBe(1);
+
+    // A fresh perceive replaces, rather than remaps, the stale ref authority.
+    buildPerceiveTree(freshNodes, meta, refMap);
+    expect([...refMap.entries()]).toEqual([[1, 201], [2, 202], [3, 203]]);
+    expect(refMap.get(2)).toBe(202);
+    await clickStr(cdp, 'sid1', '@2', refMap, refState);
+    expect(appAttempts).toEqual(['Review Alpha']);
   });
 
   it('should click cursor-interactive @c refs using saved viewport coordinates', async () => {
@@ -6978,6 +7105,34 @@ describe('diff compact filtering', () => {
 // =========================================================================
 
 describe('waitForStr --gone', () => {
+  function trustedGoneFixture({ connected = true, visible = true, frameId = 'main-frame' } = {}) {
+    const cdp = createMockCDP({
+      'Page.getFrameTree': () => ({ frameTree: { frame: { id: frameId } } }),
+      'Page.createIsolatedWorld': params => {
+        expect(params).toMatchObject({ frameId, grantUniveralAccess: false });
+        return { executionContextId: 901 };
+      },
+      'DOM.resolveNode': ({ executionContextId }) => ({
+        object: { objectId: executionContextId === 901 ? 'isolated-ref' : 'page-ref' },
+      }),
+      'Runtime.callFunctionOn:trusted-connectivity': ({ objectId, functionDeclaration }) => {
+        expect(objectId).toBe('isolated-ref');
+        expect(functionDeclaration).not.toMatch(/this\.(?:isConnected|ownerDocument|getRootNode)/);
+        return { result: { value: { connected } } };
+      },
+      'Runtime.callFunctionOn': ({ objectId, functionDeclaration }) => {
+        if (objectId === 'page-ref') {
+          if (/this\.(?:isConnected|offsetParent)/.test(functionDeclaration)) {
+            return { result: { value: true } };
+          }
+          throw new Error('page-realm connectivity accessor was invoked');
+        }
+        return { result: { value: { connected, visible } } };
+      },
+    });
+    return cdp;
+  }
+
   it('should throw when no selector provided after --gone', async () => {
     const cdp = createMockCDP({});
     await expect(waitForStr(cdp, 'sid1', ['--gone'], new Map()))
@@ -7021,6 +7176,46 @@ describe('waitForStr --gone', () => {
       .rejects.toThrow(/Unknown ref/);
   });
 
+  it.each([
+    ['top', 'Page.getFrameTree'],
+    ['top', 'Page.createIsolatedWorld'],
+    ['top', 'DOM.resolveNode'],
+    ['top', 'Runtime.callFunctionOn'],
+    ['frame', 'Page.createIsolatedWorld'],
+    ['frame', 'DOM.resolveNode'],
+    ['frame', 'Runtime.callFunctionOn'],
+  ])('propagates transient %s-ref %s failures without invalidating the ref', async (scope, method) => {
+    const transient = new Error(`transient ${method} failure`);
+    const handlers = {
+      'Page.getFrameTree': () => ({ frameTree: { frame: { id: 'main-frame' } } }),
+      'Page.createIsolatedWorld': () => ({ executionContextId: 901 }),
+      'DOM.resolveNode': () => ({ object: { objectId: 'isolated-ref' } }),
+      'Runtime.callFunctionOn': () => ({ result: { value: { connected: true, visible: true } } }),
+    };
+    handlers[method] = () => { throw transient; };
+    const cdp = createMockCDP(handlers);
+    const refMap = new Map(scope === 'top' ? [[6, 60606]] : []);
+    const refState = {
+      generation: 1,
+      invalidationReason: null,
+      ...(scope === 'frame' ? {
+        frameRefs: new Map([['@f2', {
+          frameRef: '@f2',
+          frameId: 'child-frame',
+          refs: new Map([[1, 61616]]),
+        }]]),
+      } : {}),
+    };
+    const ref = scope === 'top' ? '@6' : '@f2:1';
+
+    await expect(waitForStr(cdp, 'sid1', ['--gone', ref, '500'], refMap, refState))
+      .rejects.toBe(transient);
+
+    expect(refState.invalidationReason).toBeNull();
+    if (scope === 'top') expect(refMap.get(6)).toBe(60606);
+    else expect(refState.frameRefs.get('@f2').refs.get(1)).toBe(61616);
+  });
+
   it('should return when @ref element is removed from DOM (resolveNode throws)', async () => {
     const cdp = createMockCDP({
       'DOM.resolveNode': () => { throw new Error('Could not find node'); },
@@ -7033,7 +7228,7 @@ describe('waitForStr --gone', () => {
   it('should return when @ref element becomes disconnected', async () => {
     const cdp = createMockCDP({
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-      'Runtime.callFunctionOn': () => ({ result: { value: false } }), // isConnected=false
+      'Runtime.callFunctionOn': () => ({ result: { value: { connected: false, visible: false } } }),
     });
     const refMap = new Map([[3, 99999]]);
     const result = await waitForStr(cdp, 'sid1', ['--gone', '@3', '5000'], refMap);
@@ -7043,11 +7238,64 @@ describe('waitForStr --gone', () => {
   it('should timeout when @ref element stays present', async () => {
     const cdp = createMockCDP({
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-      'Runtime.callFunctionOn': () => ({ result: { value: true } }), // still connected+visible
+      'Runtime.callFunctionOn': () => ({ result: { value: { connected: true, visible: true } } }),
     });
     const refMap = new Map([[7, 77777]]);
     await expect(waitForStr(cdp, 'sid1', ['--gone', '@7', '500'], refMap))
       .rejects.toThrow(/@7.*still present/);
+  });
+
+  it('reports a detached @ref gone despite forged page-realm connectivity', async () => {
+    const cdp = trustedGoneFixture({ connected: false, visible: true });
+    const refMap = new Map([[8, 80808]]);
+    const refState = { generation: 1, invalidationReason: null };
+
+    await expect(waitForStr(cdp, 'sid1', ['--gone', '@8', '500'], refMap, refState))
+      .resolves.toMatch(/@8.*gone.*removed|disconnected/i);
+
+    expect(refMap.has(8)).toBe(false);
+    expect(refState.invalidationReason).toBe('dom-mutation');
+    expect(cdp.calls.some(call => (
+      call.method === 'Runtime.callFunctionOn' && call.params.objectId === 'page-ref'
+    ))).toBe(false);
+  });
+
+  it('supports a connected hidden frame ref without clearing its mapping', async () => {
+    const cdp = trustedGoneFixture({ connected: true, visible: false, frameId: 'child-frame' });
+    const refState = {
+      generation: 1,
+      frameRefs: new Map([['@f2', {
+        frameRef: '@f2',
+        frameId: 'child-frame',
+        parentId: null,
+        refs: new Map([[1, 81818]]),
+      }]]),
+    };
+
+    await expect(waitForStr(cdp, 'sid1', ['--gone', '@f2:1', '500'], new Map(), refState))
+      .resolves.toMatch(/@f2:1.*gone.*hidden/i);
+
+    expect(refState.frameRefs.get('@f2').refs.get(1)).toBe(81818);
+    expect(cdp.calls.some(call => call.method === 'Page.getFrameTree')).toBe(false);
+    expect(cdp.calls.find(call => call.method === 'Page.createIsolatedWorld')?.params.frameId)
+      .toBe('child-frame');
+  });
+
+  it('polls connected visible refs through a trusted isolated-world visibility probe', async () => {
+    const cdp = trustedGoneFixture({ connected: true, visible: true });
+
+    await expect(waitForStr(cdp, 'sid1', ['--gone', '@9', '500'], new Map([[9, 90909]]), {
+      generation: 1,
+    })).rejects.toThrow(/@9.*still present/);
+
+    const visibilityCalls = cdp.calls.filter(call => (
+      call.method === 'Runtime.callFunctionOn'
+      && call.params.functionDeclaration.includes('getClientRects')
+    ));
+    expect(visibilityCalls.length).toBeGreaterThan(0);
+    expect(visibilityCalls.every(call => call.params.objectId === 'isolated-ref')).toBe(true);
+    expect(visibilityCalls[0].params.functionDeclaration)
+      .not.toMatch(/this\.(?:isConnected|offsetParent)/);
   });
 });
 
@@ -7954,7 +8202,14 @@ describe('recordStr', () => {
       emit(method, params) { for (const cb of listeners.get(method) || []) cb(params); },
       send(method, params = {}, sessionId) {
         calls.push({ method, params, sessionId });
+        if (method === 'Runtime.callFunctionOn'
+          && params.functionDeclaration?.includes('ownerDocumentGetter')
+          && !params.functionDeclaration.includes('requestAnimationFrame')) {
+          return Promise.resolve({ result: { value: { connected: true } } });
+        }
         if (extraHandlers[method]) return Promise.resolve(extraHandlers[method](params, sessionId, cdp));
+        if (method === 'Page.getFrameTree') return Promise.resolve({ frameTree: { frame: { id: 'mock-root-frame' } } });
+        if (method === 'Page.createIsolatedWorld') return Promise.resolve({ executionContextId: 901 });
         if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: JSON.stringify({ totals: {}, labels: [], count: 0 }) } });
         return Promise.resolve({});
       },
@@ -8011,7 +8266,7 @@ describe('recordStr', () => {
       },
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
       'Runtime.callFunctionOn': () => ({
-        result: { value: { x: 10, y: 20, w: 20, h: 10, tag: 'BUTTON', text: 'Go' } },
+        result: { value: { connected: true, x: 10, y: 20, w: 20, h: 10, tag: 'BUTTON', text: 'Go' } },
       }),
       'Input.dispatchMouseEvent': () => ({}),
     });
@@ -9856,6 +10111,41 @@ describe('formatUnknownRefError', () => {
 describe('resolveRefNode stale backend handling', () => {
   const { resolveRefNode } = T;
 
+  function adversarialRefFixture({ connected = false, frameId = 'main-frame' } = {}) {
+    const effects = [];
+    const cdp = createMockCDP({
+      'Page.getFrameTree': () => ({ frameTree: { frame: { id: frameId } } }),
+      'Page.createIsolatedWorld': (params) => {
+        expect(params).toMatchObject({ frameId, grantUniveralAccess: false });
+        return { executionContextId: 901 };
+      },
+      'DOM.resolveNode': ({ executionContextId }) => ({
+        object: { objectId: executionContextId === 901 ? 'isolated-ref' : 'page-ref' },
+      }),
+      'Runtime.callFunctionOn:trusted-connectivity': ({ objectId, functionDeclaration }) => {
+        expect(objectId).toBe('isolated-ref');
+        if (/this\.(?:isConnected|ownerDocument|getRootNode)/.test(functionDeclaration)) {
+          throw new Error('page-patched connectivity property was invoked');
+        }
+        return { result: { value: { connected } } };
+      },
+      'Runtime.callFunctionOn': ({ objectId, functionDeclaration }) => {
+        if (functionDeclaration.includes('requestAnimationFrame')) {
+          return { result: { value: {
+            connected: true,
+            x: 10, y: 20, w: 100, h: 30, tag: 'BUTTON', text: 'Forged Alpha',
+          } } };
+        }
+        if (functionDeclaration.includes('this.click()')) effects.push('jsclick');
+        if (functionDeclaration.includes("this.focus(); this.value=''")) effects.push('fill');
+        return { result: { value: { tag: 'BUTTON', text: 'Forged Alpha' } } };
+      },
+      'Input.dispatchMouseEvent': () => { effects.push('mouse'); return {}; },
+      'Input.insertText': () => { effects.push('insert-text'); return {}; },
+    });
+    return { cdp, effects };
+  }
+
   it('resolves backend refs with a short timeout so stale refs fail fast', async () => {
     const refMap = new Map([[31, 12345]]);
     const cdp = createMockCDP({
@@ -9872,11 +10162,83 @@ describe('resolveRefNode stale backend handling', () => {
   it('classifies DOM-mutation stale refs when backend node resolution fails', async () => {
     const refMap = new Map([[31, 12345]]);
     const refState = { generation: 1, invalidationReason: null };
-    const cdp = { send: async () => { throw new Error('No node with given id'); } };
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => { throw new Error('No node with given id'); },
+    });
     await expect(resolveRefNode(cdp, 'sid', refMap, '@31', refState))
       .rejects.toThrow(/DOM changes/);
     expect(refState.invalidationReason).toBe('dom-mutation');
     expect(refMap.has(31)).toBe(false);
+  });
+
+  it.each([
+    ['click', ({ cdp, refMap, refState }) => clickStr(cdp, 'sid', '@1', refMap, refState)],
+    ['jsclick', ({ cdp, refMap, refState }) => T.jsClickStr(cdp, 'sid', '@1', refMap, refState)],
+    ['fill', ({ cdp, refMap, refState }) => fillStr(cdp, 'sid', '@1', 'blocked', refMap, refState)],
+  ])('rejects a detached ref through trusted isolation before %s effects', async (_label, run) => {
+    const { cdp, effects } = adversarialRefFixture();
+    const refMap = new Map([[1, 101]]);
+    const refState = { generation: 1, invalidationReason: null };
+
+    await expect(run({ cdp, refMap, refState })).rejects.toThrow(/DOM changes/);
+
+    expect(effects).toEqual([]);
+    expect(refMap.has(1)).toBe(false);
+    expect(refState.invalidationReason).toBe('dom-mutation');
+    expect(cdp.calls.filter(call => call.method === 'Page.createIsolatedWorld')).toHaveLength(1);
+    expect(cdp.calls.find(call => call.method === 'DOM.resolveNode')?.params)
+      .toMatchObject({ backendNodeId: 101, executionContextId: 901 });
+  });
+
+  it('keeps connected shadow refs valid through native composed-root validation and smooth scroll', async () => {
+    const { cdp, effects } = adversarialRefFixture({ connected: true });
+    const refMap = new Map([[1, 301]]);
+    const refState = { generation: 1, invalidationReason: null };
+
+    await clickStr(cdp, 'sid', '@1', refMap, refState);
+
+    expect(effects).toEqual(['mouse', 'mouse', 'mouse']);
+    expect(refMap.get(1)).toBe(301);
+    const validation = cdp.calls.find(call => (
+      call.method === 'Runtime.callFunctionOn' && call.params.objectId === 'isolated-ref'
+    ));
+    expect(validation.params.functionDeclaration).toContain('composed: true');
+    expect(validation.params.functionDeclaration).not.toMatch(/this\.(?:isConnected|ownerDocument|getRootNode)/);
+    expect(cdp.calls.some(call => (
+      call.method === 'Runtime.callFunctionOn'
+      && call.params.functionDeclaration.includes('requestAnimationFrame')
+    ))).toBe(true);
+  });
+
+  it('validates frame refs in a frame-owned isolated world', async () => {
+    const { cdp } = adversarialRefFixture({ connected: true, frameId: 'child-frame' });
+    const refState = {
+      generation: 1,
+      frameRefs: new Map([['@f2', {
+        frameRef: '@f2',
+        frameId: 'child-frame',
+        parentId: null,
+        refs: new Map([[1, 401]]),
+      }]]),
+    };
+
+    await expect(resolveRefNode(cdp, 'sid', new Map(), '@f2:1', refState))
+      .resolves.toBe('isolated-ref');
+
+    expect(cdp.calls.some(call => call.method === 'Page.getFrameTree')).toBe(false);
+    expect(cdp.calls.find(call => call.method === 'Page.createIsolatedWorld')?.params.frameId)
+      .toBe('child-frame');
+  });
+
+  it('can return a page-world wrapper for component expandos only after trusted validation', async () => {
+    const { cdp } = adversarialRefFixture({ connected: true });
+    const refMap = new Map([[1, 501]]);
+
+    await expect(resolveRefNode(cdp, 'sid', refMap, '@1', { generation: 1 }, { returnRealm: 'page' }))
+      .resolves.toBe('page-ref');
+
+    const resolves = cdp.calls.filter(call => call.method === 'DOM.resolveNode');
+    expect(resolves.map(call => call.params.executionContextId ?? null)).toEqual([901, null]);
   });
 });
 

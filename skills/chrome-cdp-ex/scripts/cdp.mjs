@@ -5986,15 +5986,122 @@ function formatUnknownRefError(ref, state = {}) {
   return `Unknown ref: ${ref}. Run "perceive" to refresh refs, or use a stable CSS selector for long loops.`;
 }
 
-async function resolveRefNode(cdp, sid, refMap, ref, refState) {
+function invalidateRefMapping(refMap, ref, refState) {
+  if (refState) {
+    refState.invalidatedAt = Date.now();
+    refState.invalidationReason = 'dom-mutation';
+  }
+  const frameParsed = parseFrameRef(ref);
+  if (frameParsed) frameScopedRefEntry(refState || {}, frameParsed)?.refs?.delete(frameParsed.refIndex);
+  else refMap.delete(parseInt(ref.slice(1)));
+}
+
+const STALE_REF_ERROR_CODE = 'CDP_STALE_REF';
+
+function isMissingDomNodeError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('no node with given id')
+    || message.includes('could not find node')
+    || /node with given id.*does not belong/.test(message)
+    || /no node found for given backend/.test(message)
+    || /backend node.*(?:not found|does not exist)/.test(message);
+}
+
+function staleRefError(refMap, ref, refState, cause) {
+  invalidateRefMapping(refMap, ref, refState);
+  const error = new Error(
+    formatUnknownRefError(ref, refState || {}) + ` Original CDP error: ${cause.message}`,
+    { cause },
+  );
+  error.code = STALE_REF_ERROR_CODE;
+  return error;
+}
+
+function isStaleRefError(error) {
+  return error?.code === STALE_REF_ERROR_CODE;
+}
+
+function trustedRefConnectivityFunctionDeclaration() {
+  return `function() {
+    try {
+      const nodePrototype = Node.prototype;
+      const connectedGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'isConnected')?.get;
+      const ownerDocumentGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'ownerDocument')?.get;
+      const getRootNode = Object.getOwnPropertyDescriptor(nodePrototype, 'getRootNode')?.value;
+      if (typeof connectedGetter !== 'function' || typeof ownerDocumentGetter !== 'function' || typeof getRootNode !== 'function') {
+        return { error: 'trusted connectivity primitives unavailable' };
+      }
+      const connected = Reflect.apply(connectedGetter, this, []);
+      const ownerDocument = Reflect.apply(ownerDocumentGetter, this, []);
+      const composedRoot = Reflect.apply(getRootNode, this, [{ composed: true }]);
+      return { connected: connected === true && ownerDocument != null && composedRoot === ownerDocument };
+    } catch (error) {
+      return { error: String(error && error.message || error || 'trusted connectivity probe failed') };
+    }
+  }`;
+}
+
+function trustedRefPresenceFunctionDeclaration() {
+  return `function() {
+    try {
+      const nodePrototype = Node.prototype;
+      const elementPrototype = Element.prototype;
+      const connectedGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'isConnected')?.get;
+      const ownerDocumentGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'ownerDocument')?.get;
+      const getRootNode = Object.getOwnPropertyDescriptor(nodePrototype, 'getRootNode')?.value;
+      const getClientRects = Object.getOwnPropertyDescriptor(elementPrototype, 'getClientRects')?.value;
+      if (typeof connectedGetter !== 'function' || typeof ownerDocumentGetter !== 'function'
+        || typeof getRootNode !== 'function' || typeof getClientRects !== 'function') {
+        return { error: 'trusted presence primitives unavailable' };
+      }
+      const connected = Reflect.apply(connectedGetter, this, []);
+      const ownerDocument = Reflect.apply(ownerDocumentGetter, this, []);
+      const composedRoot = Reflect.apply(getRootNode, this, [{ composed: true }]);
+      if (connected !== true || ownerDocument == null || composedRoot !== ownerDocument) {
+        return { connected: false, visible: false };
+      }
+      const rects = Reflect.apply(getClientRects, this, []);
+      const style = getComputedStyle(this);
+      const visible = rects.length > 0
+        && style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && style.visibility !== 'collapse';
+      return { connected: true, visible };
+    } catch (error) {
+      return { error: String(error && error.message || error || 'trusted presence probe failed') };
+    }
+  }`;
+}
+
+async function rootFrameId(cdp, sid) {
+  const result = await cdpDomains(cdp).Page.getFrameTree({}, sid, REF_RESOLVE_TIMEOUT);
+  const frameId = result.frameTree?.frame?.id;
+  if (!frameId) throw new Error('Page.getFrameTree did not return a root frame id');
+  return frameId;
+}
+
+async function createRefExecutionContext(cdp, sid, frameId) {
+  if (!frameId) throw new Error('Ref frame id is unavailable');
+  const result = await cdpDomains(cdp).Page.createIsolatedWorld({
+    frameId,
+    worldName: 'chrome-cdp-ex-ref-validation',
+    grantUniveralAccess: false,
+  }, sid, REF_RESOLVE_TIMEOUT);
+  if (!Number.isSafeInteger(result.executionContextId)) {
+    throw new Error('Page.createIsolatedWorld did not return an execution context id');
+  }
+  return result.executionContextId;
+}
+
+async function resolveRefNode(cdp, sid, refMap, ref, refState, options = {}) {
   const frameParsed = parseFrameRef(ref);
   let num = null;
-  let frameEntry = null;
   let backendNodeId;
+  let frameId = null;
   if (frameParsed) {
     const scoped = frameScopedBackendNode(refState || {}, frameParsed);
-    frameEntry = scoped.entry;
     backendNodeId = scoped.backendNodeId;
+    frameId = scoped.entry.frameId;
   } else {
     num = parseInt(ref.slice(1));
     if (isNaN(num) || !refMap.has(num)) {
@@ -6002,25 +6109,74 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState) {
     }
     backendNodeId = refMap.get(num);
   }
+  const executionContextId = await createRefExecutionContext(
+    cdp,
+    sid,
+    frameId || await rootFrameId(cdp, sid),
+  );
+  let object;
   try {
-    const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId }, sid, REF_RESOLVE_TIMEOUT);
-    return object.objectId;
-  } catch (e) {
-    // The ref existed in this daemon, but the backend node can no longer be
-    // resolved. That is the common "DOM rewrote the element after perceive"
-    // stale-ref case; classify it distinctly instead of surfacing raw CDP text.
-    if (refState) {
-      refState.invalidatedAt = Date.now();
-      refState.invalidationReason = 'dom-mutation';
-    }
-    if (frameParsed) frameEntry?.refs?.delete(frameParsed.refIndex);
-    else refMap.delete(num);
-    throw new Error(formatUnknownRefError(ref, refState || {}) + ` Original CDP error: ${e.message}`);
+    ({ object } = await cdpDomains(cdp).DOM.resolveNode({
+      backendNodeId,
+      executionContextId,
+    }, sid, REF_RESOLVE_TIMEOUT));
+  } catch (error) {
+    if (isMissingDomNodeError(error)) throw staleRefError(refMap, ref, refState, error);
+    throw error;
   }
+  if (!object?.objectId) throw new Error('DOM.resolveNode did not return an object id');
+  const validation = await cdpDomains(cdp).Runtime.callFunctionOn({
+    objectId: object.objectId,
+    functionDeclaration: trustedRefConnectivityFunctionDeclaration(),
+    returnByValue: true,
+  }, sid, REF_RESOLVE_TIMEOUT);
+  if (validation.exceptionDetails) {
+    throw new Error(runtimeExceptionMessage(validation.exceptionDetails));
+  }
+  const validationValue = validation.result?.value;
+  if (validationValue?.error) throw new Error(`Trusted ref connectivity probe failed: ${validationValue.error}`);
+  const connected = validationValue === true || validationValue?.connected === true;
+  if (!connected && (validationValue === false || validationValue?.connected === false)) {
+    throw staleRefError(
+      refMap,
+      ref,
+      refState,
+      new Error('resolved backend node is detached from its owning document'),
+    );
+  }
+  if (!connected) throw new Error('Trusted ref connectivity probe returned no connectivity result');
+  if (options.returnRealm === 'page') {
+    let pageResult;
+    try {
+      pageResult = await cdpDomains(cdp).DOM.resolveNode({ backendNodeId }, sid, REF_RESOLVE_TIMEOUT);
+    } catch (error) {
+      if (isMissingDomNodeError(error)) throw staleRefError(refMap, ref, refState, error);
+      throw error;
+    }
+    if (!pageResult.object?.objectId) throw new Error('DOM.resolveNode did not return a page-world object id');
+    return pageResult.object.objectId;
+  }
+  return object.objectId;
 }
 
 function scrollSettledRectFunctionDeclaration() {
   return `async function() {
+    const connectedToOwningDocument = () => {
+      try {
+        const nodePrototype = Node.prototype;
+        const connectedGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'isConnected')?.get;
+        const ownerDocumentGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'ownerDocument')?.get;
+        const getRootNode = Object.getOwnPropertyDescriptor(nodePrototype, 'getRootNode')?.value;
+        if (typeof connectedGetter !== 'function' || typeof ownerDocumentGetter !== 'function' || typeof getRootNode !== 'function') return false;
+        const connected = Reflect.apply(connectedGetter, this, []);
+        const ownerDocument = Reflect.apply(ownerDocumentGetter, this, []);
+        const composedRoot = Reflect.apply(getRootNode, this, [{ composed: true }]);
+        return connected === true && ownerDocument != null && composedRoot === ownerDocument;
+      } catch {
+        return false;
+      }
+    };
+    if (!connectedToOwningDocument()) return { connected: false };
     const readRect = () => {
       const rect = this.getBoundingClientRect();
       return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
@@ -6048,6 +6204,7 @@ function scrollSettledRectFunctionDeclaration() {
       if (currentVisible && stableSamples >= 2) break;
     }
     return {
+      connected: connectedToOwningDocument(),
       ...previous,
       tag: this.tagName,
       text: (this.textContent || '').trim().substring(0, 80),
@@ -6065,6 +6222,13 @@ async function resolveRef(cdp, sid, refMap, ref, refState) {
     awaitPromise: true,
   }, sid);
   const value = result.result.value || {};
+  if (value.connected !== true) {
+    invalidateRefMapping(refMap, ref, refState);
+    throw new Error(
+      formatUnknownRefError(ref, refState || {}) +
+      ' Original CDP error: resolved backend node is detached from its owning document.'
+    );
+  }
   if (frameParsed) {
     const { entry } = frameScopedBackendNode(refState || {}, frameParsed);
     const offset = await frameViewportOffset(cdp, sid, entry, { settle: true });
@@ -8078,23 +8242,38 @@ async function waitForStr(cdp, sid, args, refMap, refState) {
     const timeout = Math.min(Math.max(timeoutMs, 500), 300000);
     const deadline = Date.now() + timeout;
 
-    // Resolve @ref to a JS check via backendNodeId
+    // Resolve @ref in a tool-owned isolated world so page code cannot forge
+    // connectivity or visibility while we wait.
     if (isRef(selector) && refMap) {
-      const num = parseInt(selector.slice(1));
-      const backendNodeId = refMap.get(num);
-      if (!backendNodeId) throw new Error(formatUnknownRefError(selector, refState || {}));
+      const frameParsed = parseFrameRef(selector);
+      if (frameParsed) {
+        frameScopedBackendNode(refState || {}, frameParsed);
+      } else {
+        const num = parseInt(selector.slice(1));
+        if (!refMap.has(num)) throw new Error(formatUnknownRefError(selector, refState || {}));
+      }
       while (Date.now() < deadline) {
         try {
-          const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId }, sid);
-          // Node still exists — check if it's connected and visible
+          const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
           const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
-            objectId: object.objectId,
-            functionDeclaration: `function() { return this.isConnected && this.offsetParent !== null; }`,
+            objectId,
+            functionDeclaration: trustedRefPresenceFunctionDeclaration(),
             returnByValue: true,
-          }, sid);
-          if (!res.result.value) return `Element ${selector} is gone (disconnected or hidden)`;
-        } catch {
-          return `Element ${selector} is gone (removed from DOM)`;
+          }, sid, REF_RESOLVE_TIMEOUT);
+          if (res.exceptionDetails) throw new Error(runtimeExceptionMessage(res.exceptionDetails));
+          const presence = res.result?.value;
+          if (presence?.error) throw new Error(`Trusted ref presence probe failed: ${presence.error}`);
+          if (presence?.connected !== true) {
+            if (presence?.connected !== false) {
+              throw new Error('Trusted ref presence probe returned no connectivity result');
+            }
+            invalidateRefMapping(refMap, selector, refState);
+            return `Element ${selector} is gone (disconnected)`;
+          }
+          if (presence.visible !== true) return `Element ${selector} is gone (hidden)`;
+        } catch (error) {
+          if (isStaleRefError(error)) return `Element ${selector} is gone (removed from DOM)`;
+          throw error;
         }
         await sleep(300);
       }
@@ -8702,7 +8881,9 @@ function reactComponentAtElementScript() {
 }
 
 async function resolveComponentRefObjectId(cdp, sid, ref, refMap, refState) {
-  if (!isCursorRef(ref)) return resolveRefNode(cdp, sid, refMap, ref, refState);
+  if (!isCursorRef(ref)) {
+    return resolveRefNode(cdp, sid, refMap, ref, refState, { returnRealm: 'page' });
+  }
   const rect = resolveCursorRef(refMap, ref, refState);
   const result = await cdpDomains(cdp).Runtime.evaluate( {
     expression: `document.elementFromPoint(${rect.x + rect.w / 2}, ${rect.y + rect.h / 2})`,
@@ -11027,6 +11208,26 @@ function formatBatchResults(results, format = 'json', options = {}) {
     }).join('\n');
   }
   return JSON.stringify(results, null, 2);
+}
+
+async function runBatchCommands({ run }, commands = [], { parallel = false } = {}) {
+  const runOne = async (command) => {
+    const nested = await run(command);
+    const semantics = classifyCommandResultSemantics(nested, { command: command.cmd });
+    return {
+      cmd: command.cmd,
+      ok: semantics.ok,
+      result: nested.result,
+      error: semantics.ok ? nested.error : semantics.error,
+    };
+  };
+  if (parallel) return Promise.all(commands.map(runOne));
+  const results = [];
+  for (const command of commands) {
+    const result = await runOne(command);
+    results.push(result);
+  }
+  return results;
 }
 
 // --- Repeat: bounded loop primitive ---
@@ -13848,20 +14049,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         if (unsafe.length) throw new Error(`batch --parallel: ${[...new Set(unsafe.map(command => command.cmd))].join(', ')} mutate shared state — use sequential batch`);
       }
       const autoActionJson = parsedBatch.output === 'model';
-      const runOne = async command => {
-        const nested = await handleCommand({
+      const runOne = command => handleCommand({
           cmd: command.cmd,
           args: autoActionJsonArgs(command.cmd, command.args || [], autoActionJson),
         });
-        return { cmd: command.cmd, ok: nested.ok, result: nested.result, error: nested.error };
-      };
-      let results;
-      if (parallel) {
-        results = await Promise.all(commands.map(runOne));
-      } else {
-        results = [];
-        for (const command of commands) results.push(await runOne(command));
-      }
+      const results = await runBatchCommands({ run: runOne }, commands, { parallel });
       const format = parsedBatch.output === 'legacy-json' ? 'json' : parsedBatch.output;
       return formatBatchResults(results, format, { targetId, mode: parallel ? 'parallel' : 'sequential' });
     },
@@ -16855,7 +17047,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Cascade source mapping
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
-  formatBatchResults, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
+  formatBatchResults, runBatchCommands, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
   formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   CLI_HELP_LAYOUT, CLI_HELP_TEMPLATE, renderCliHelp, helpStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
