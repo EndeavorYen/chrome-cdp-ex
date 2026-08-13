@@ -125,6 +125,7 @@ describe('trusted table sampler source', () => {
       maxAncestorDepth: 4096,
       maxDirectChildren: 4096,
       maxDocumentNodes: 65536,
+      maxClassScanUnits: 4096,
     });
     expect(expression).toContain('chrome-cdp-ex.table-sample.v1');
     expect(expression).toContain('HTMLTableElement');
@@ -320,6 +321,56 @@ describe('trusted table sampler source', () => {
     expect(sampled.tablesSeen).toBe(1);
     expect(sampled.tables).toHaveLength(1);
     expect(sampled.tables[0].dataRows[0].cells).toEqual(['included']);
+  });
+
+  it('keeps selector decisions truthful for oversized presence and class attributes', () => {
+    const oversizedPresence = executeSamplerTableRows(
+      [[['present']]],
+      [{ 'data-x': 'x'.repeat(2_000) }],
+      { selector: 'table[data-x]' },
+    );
+    expect(oversizedPresence).toMatchObject({
+      tablesSeen: 1,
+      truncated: false,
+      truncationReason: null,
+    });
+
+    const earlyClass = executeSamplerTableRows(
+      [[['early']]],
+      [{ class: `orders ${'x'.repeat(5_000)}` }],
+      { selector: 'table.orders' },
+    );
+    expect(earlyClass).toMatchObject({
+      tablesSeen: 1,
+      truncated: false,
+      truncationReason: null,
+    });
+
+    const lateClass = executeSamplerTableRows(
+      [[['late']]],
+      [{ class: `${'x'.repeat(5_000)} orders` }],
+      { selector: 'table.orders' },
+    );
+    expect(lateClass).toEqual({
+      schema: 'chrome-cdp-ex.table-sample.v1',
+      tablesSeen: 0,
+      tables: [],
+      truncated: true,
+      truncationReason: 'selector-evaluation-limit',
+    });
+
+    const longUnequalAttribute = executeSamplerTableRows(
+      [[['excluded']]],
+      [{ 'data-x': 'x'.repeat(2_000) }],
+      { selector: 'table[data-x="short"]' },
+    );
+    expect(longUnequalAttribute).toEqual({
+      schema: 'chrome-cdp-ex.table-sample.v1',
+      tablesSeen: 0,
+      tables: [],
+      truncated: false,
+      truncationReason: null,
+    });
   });
 
   it('executes N plus one boundaries with one valid prefix and exact truncation provenance', () => {
