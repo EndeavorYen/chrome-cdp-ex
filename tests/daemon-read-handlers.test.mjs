@@ -143,12 +143,31 @@ describe('daemon extraction read handlers', () => {
   it.each([
     [['#grid', '--format', 'json'], /JSON observation is unavailable/],
     [['#grid', '--collect', '--scroll-container', '.viewport'], /collection is unavailable/],
-    [['--continue', 'ct1.0123456789abcdef0123456789abcdef.0', '--format', 'json'], /continuation is unavailable/],
     [['--collect'], /scroll-container/],
   ])('rejects unavailable or malformed table requests before page capability effects: %j', async (args, expected) => {
     const { capabilities, handlers } = fixture();
     await expect(handlers.table({ args })).rejects.toThrow(expected);
     expect(capabilities.table).not.toHaveBeenCalled();
+  });
+
+  it('routes a strict continuation request to the private artifact capability without page execution', async () => {
+    const { capabilities, handlers } = fixture();
+    const token = 'ct1.0123456789abcdef0123456789abcdef.20';
+    const output = '{\n  "schema": "chrome-cdp-ex.table.v1"\n}';
+    capabilities.table.mockResolvedValueOnce(output);
+
+    const result = await handlers.table({
+      args: ['--continue', token, '--format', 'json'],
+    });
+
+    expect(result.value).toBe(output);
+    expect(capabilities.table).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      schema: 'chrome-cdp-ex.table-request.v1',
+      mode: 'continue',
+      continuation: token,
+      format: 'json',
+      argv: ['--continue', token, '--format', 'json'],
+    }));
   });
 
   it('threads the exact trusted execution context only to the future collection capability seam', async () => {

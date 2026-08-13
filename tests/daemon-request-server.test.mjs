@@ -1122,9 +1122,14 @@ describe('daemon request server lifecycle', () => {
     expect(lifecycle.activeRequestCount()).toBe(0);
   });
 
-  it('wires synchronous cleanup defaults at the production daemon source boundary', () => {
+  it('wires the private artifact store to successful flush, rollback, and shutdown in production', () => {
     expect(cdpSource).toContain('  cleanup = () => {},');
-    expect(cdpSource).toContain('      cleanup: () => {},');
+    expect(cdpSource).toContain("import { createTableArtifactStore } from './lib/table-artifacts.mjs';");
+    expect(cdpSource).toContain("sessionId: randomBytes(16).toString('hex')");
+    expect(cdpSource).toContain('cleanupSession: () => tableArtifactStore.cleanupSession()');
+    expect(cdpSource).toContain('cleanup: (_request, execution) => tableArtifactStore.rollbackRequest(execution)');
+    expect(cdpSource).toContain('onFlushed: (_request, execution) => tableArtifactStore.releaseRequest(execution)');
+    expect(cdpSource).not.toContain('      cleanup: () => {},');
     expect(cdpSource).not.toContain('      cleanup: async () => {},');
   });
 });
