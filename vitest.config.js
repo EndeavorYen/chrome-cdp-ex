@@ -3,8 +3,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     testTimeout: 15_000,
-    // Vitest worker RPC can time out after the 96-case AST authority file
-    // finishes green; CI then exits 1 despite 2163/2163 assertions passing.
+    // Vitest 3.2 worker RPC can miss onTaskUpdate after heavy AST inventory
+    // files even when every assertion passed; coverage then exits 1.
     dangerouslyIgnoreUnhandledErrors: true,
     coverage: {
       provider: 'v8',

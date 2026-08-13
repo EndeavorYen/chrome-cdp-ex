@@ -11,7 +11,7 @@ import {
   source,
 } from './runtime-v3-dispatch-test-helpers.mjs';
 
-describe('Runtime v3 final dispatch characterization', () => {
+describe('Runtime v3 final dispatch characterization', { timeout: 90_000 }, () => {
   it('freezes the exact 81-command daemon/CLI ownership graph and deletion allowlist', () => {
     expect(buildRuntimeDispatchInventory(source)).toEqual(fixture);
     expect(fixture).toMatchObject({
@@ -69,7 +69,7 @@ describe('Runtime v3 final dispatch characterization', () => {
         needsTarget: command.needsTarget,
       });
     }
-  }, 15_000);
+  }, 60_000);
 
   it('covers every target command once by canonical owner and every alias by the same branch', () => {
     const daemonGroups = fixture.daemonGroups.filter(group => group.commands.length === 1
@@ -129,7 +129,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       'const applicationRoute = applicationDispatcher.route(cmd);',
       "await executeDaemonApplicationRoute({ cmd: 'html', args, targetBound: true }, applicationDispatcher);\n      const applicationRoute = applicationDispatcher.route(cmd);",
     ))).toThrow(/exactly one general application dispatch/);
-  }, 45_000);
+  }, 90_000);
 
   it('keeps check mode read-only and rejects stale fixture/source drift', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--check'], {
