@@ -92,7 +92,7 @@ function outputs(overrides = {}) {
 describe('Phase 6 convergence validation', () => {
   it('accepts exact generated/MCP/perception/action/network/raw/report semantics', () => {
     expect(assertPhase6Convergence(outputs())).toEqual({
-      tools: 25,
+      tools: 26,
       actions: 2,
       rawMethod: 'DOM.getDocument',
       boundaries: 5,
@@ -122,7 +122,7 @@ describe('Phase 6 convergence validation', () => {
       cleanup: vi.fn(async () => {}),
     };
     await expect(runPhase6ConvergenceSession(steps)).resolves.toEqual({
-      tools: 25,
+      tools: 26,
       actions: 2,
       rawMethod: 'DOM.getDocument',
       boundaries: 5,
