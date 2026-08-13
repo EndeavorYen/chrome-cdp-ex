@@ -12,6 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:http';
+import net from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -968,7 +969,16 @@ async function startOwnedDaemon(state, targetId) {
     if (state.daemon.exitCode !== null || state.daemon.signalCode !== null) {
       throw new Error(`owned table daemon exited: ${stderr.trim() || state.daemon.exitCode || state.daemon.signalCode}`);
     }
-    if (existsSync(socket)) return socket;
+    const ready = await new Promise(resolveReady => {
+      const conn = net.connect(socket);
+      const done = value => {
+        conn.destroy();
+        resolveReady(value);
+      };
+      conn.once('connect', () => done(true));
+      conn.once('error', () => done(false));
+    });
+    if (ready) return socket;
     await delay(100);
   }
   throw new Error(`owned table daemon socket did not appear: ${stderr.trim() || socket}`);
