@@ -284,7 +284,9 @@ function cleanupPartialInitialization(state) {
         ? safeOwnedFile(state.ownerRecordPath, partial.ownerIdentity)
         : partial.ownerProvisionalIdentity
           ? safeOwnedProvisionalFile(state.ownerRecordPath, partial.ownerProvisionalIdentity)
-          : false;
+          : partial.ownerCreated
+            ? safeOwnedFile(state.ownerRecordPath)
+            : false;
       if (!ownerSafe) return false;
       unlinkSync(state.ownerRecordPath);
     } else if (partial.ownerIdentity || partial.ownerProvisionalIdentity) {
@@ -306,6 +308,7 @@ async function initializeStore(state, request) {
   if (state.initialization && !cleanupPartialInitialization(state)) throw cleanupFailed();
   state.initialization = {
     ownerIdentity: null,
+    ownerCreated: false,
     ownerProvisionalIdentity: null,
     sessionCreated: false,
     sessionIdentity: null,
@@ -356,6 +359,7 @@ async function initializeStore(state, request) {
       ownerBytes,
       identity => { state.initialization.ownerIdentity = identity; },
       identity => { state.initialization.ownerProvisionalIdentity = identity; },
+      () => { state.initialization.ownerCreated = true; },
     );
     await fsyncDirectory(state, request, state.sessionDir);
   } catch (error) {
@@ -652,11 +656,15 @@ async function writePrivateFile(
   bytes,
   onIdentity = () => {},
   onProvisionalIdentity = null,
+  onCreated = () => {},
 ) {
   const flags = FS_CONSTANTS.O_WRONLY | FS_CONSTANTS.O_CREAT | FS_CONSTANTS.O_EXCL | FS_CONSTANTS.O_NOFOLLOW;
   let handle;
   try {
-    handle = await checkedStep(request, () => state.fs.open(path, flags, 0o600));
+    throwIfPublicationStopped(request);
+    handle = await state.fs.open(path, flags, 0o600);
+    onCreated();
+    throwIfPublicationStopped(request);
     if (onProvisionalIdentity) {
       const provisionalStats = await checkedStep(request, () => handle.stat());
       assertProvisionalFileStats(provisionalStats);
