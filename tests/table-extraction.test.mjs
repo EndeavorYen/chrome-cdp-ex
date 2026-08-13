@@ -346,6 +346,23 @@ describe('collection safety and completeness', () => {
     })).toThrow(/provenance pair/i);
   });
 
+  it('does not consume the one snapshot batch when admission rejects before state changes', () => {
+    const accumulator = createTableAccumulator({
+      logicalRows: null,
+      logicalCountSource: 'none',
+      identitySource: 'snapshot-order',
+      orderingSource: 'dom-order',
+      limits: { maxCanonicalRowBytes: 4 },
+    });
+
+    expect(addTableSampleBatch(accumulator, [
+      { mountedNodeId: 'oversized', key: 1, cells: ['12345'] },
+    ])).toEqual({ admitted: false, reason: 'row-too-large', collectedRows: 0, artifactBytes: 0 });
+    expect(addTableSampleBatch(accumulator, [
+      { mountedNodeId: 'snapshot-row-1', key: 1, cells: ['safe'] },
+    ])).toEqual({ admitted: true, reason: null, collectedRows: 1, artifactBytes: 4 });
+  });
+
   it('keeps known partial snapshots incomplete and flags count contradictions as unknown', () => {
     const partial = createTableAccumulator({
       logicalRows: 2,
