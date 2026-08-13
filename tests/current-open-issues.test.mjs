@@ -1413,13 +1413,34 @@ describe('v2.11.0 review regressions', () => {
 
   it('resolves components @refs through the established object-id contract', async () => {
     let callFunctionOn = null;
+    const calls = [];
     const cdp = {
       async send(method, params) {
+        calls.push([method, params]);
         if (method === 'Runtime.evaluate') {
           return { result: { value: JSON.stringify({ framework: 'react', version: '18', source: 'test' }) } };
         }
-        if (method === 'DOM.resolveNode') return { object: { objectId: 'component-node-1' } };
+        if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'root-frame' } } };
+        if (method === 'Page.createIsolatedWorld') {
+          expect(params).toMatchObject({
+            frameId: 'root-frame',
+            worldName: 'chrome-cdp-ex-ref-validation',
+            grantUniveralAccess: false,
+          });
+          return { executionContextId: 901 };
+        }
+        if (method === 'DOM.resolveNode') {
+          return { object: {
+            objectId: params.executionContextId === 901
+              ? 'isolated-component-node-1'
+              : 'component-node-1',
+          } };
+        }
         if (method === 'Runtime.callFunctionOn') {
+          if (params.functionDeclaration.includes('ownerDocumentGetter')) {
+            expect(params.objectId).toBe('isolated-component-node-1');
+            return { result: { value: { connected: true } } };
+          }
           callFunctionOn = params;
           return { result: { value: JSON.stringify({
             ok: true,
@@ -1441,6 +1462,11 @@ describe('v2.11.0 review regressions', () => {
     expect(callFunctionOn?.objectId).toBe('component-node-1');
     expect(callFunctionOn?.functionDeclaration).toMatch(/^function\s*\(/);
     expect(output).toMatchObject({ ok: true, name: 'SecretPanel', target: '@1' });
+    expect(calls.filter(([method]) => method === 'DOM.resolveNode').map(([, params]) => params))
+      .toEqual([
+        { backendNodeId: 123, executionContextId: 901 },
+        { backendNodeId: 123 },
+      ]);
   });
 
   it('resolves cursor-interactive component refs to a live DOM object', async () => {
