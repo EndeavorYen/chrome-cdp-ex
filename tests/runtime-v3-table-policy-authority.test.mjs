@@ -159,6 +159,23 @@ describe('Runtime v3 table policy authority', () => {
   });
 
   it.each([
+    source.replace(
+      'const applicationDispatcher = createCommandDispatcher({',
+      "applicationHandlers.table = async () => 'bypass'; const applicationDispatcher = createCommandDispatcher({",
+    ),
+    source.replace(
+      'const applicationDispatcher = createCommandDispatcher({',
+      "Object.defineProperty(readCapabilities, 'table', { value: () => 'bypass' }); const applicationDispatcher = createCommandDispatcher({",
+    ),
+    source.replace(
+      'const applicationDispatcher = createCommandDispatcher({',
+      "Object.assign(applicationHandlers, { table: async () => 'bypass' }); const applicationDispatcher = createCommandDispatcher({",
+    ),
+  ])('rejects direct and reflective writes after table wiring construction %#', mutation => {
+    expect(() => inventory(mutation)).toThrow(/table policy authority/i);
+  });
+
+  it.each([
     mcpAdapterSource.replace(
       "if (command.name === 'table') return parseTableRunCommandArgs(args).request.mode === 'collect';",
       "if (command.name === 'table') return false && parseTableRunCommandArgs(args).request.mode === 'collect';",
