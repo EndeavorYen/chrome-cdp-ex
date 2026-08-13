@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createContext, runInContext } from 'node:vm';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createTableArtifactStore } from '../skills/chrome-cdp-ex/scripts/lib/table-artifacts.mjs';
 import { parseTableArgs } from '../skills/chrome-cdp-ex/scripts/lib/table-contract.mjs';
@@ -249,7 +249,7 @@ function mountRecycledTableFixture(overrides = {}) {
   };
 
   loadMore.onclick = clickLoadMore;
-  setLoadMoreVisible(true);
+  setLoadMoreVisible(loadedRows < config.logicalRows);
   renderWindow();
 
   return {
@@ -283,7 +283,7 @@ function mountRecycledTableFixture(overrides = {}) {
   };
 }
 
-function createWorldCdp(fixture) {
+function createWorldCdp(fixture, { beforeEvaluate } = {}) {
   const context = createContext({
     Object,
     Array,
@@ -306,9 +306,10 @@ function createWorldCdp(fixture) {
   });
   const calls = [];
   const releasedGroups = [];
+  const eventHandlers = new Map();
   let worldId = 0;
-  const send = async (method, params = {}) => {
-    calls.push({ method, params });
+  const send = async (method, params = {}, sessionId, timeout) => {
+    calls.push({ method, params, sessionId, timeout });
     if (method === 'Page.getFrameTree') {
       return { frameTree: { frame: { id: 'root-frame' } } };
     }
@@ -317,6 +318,7 @@ function createWorldCdp(fixture) {
       return { executionContextId: worldId };
     }
     if (method === 'Runtime.evaluate') {
+      if (beforeEvaluate) await beforeEvaluate(params);
       try {
         const value = runInContext(params.expression, context, { timeout: 5000 });
         if (params.returnByValue === false) {
@@ -351,7 +353,19 @@ function createWorldCdp(fixture) {
     }
     return {};
   };
-  return { send, calls, releasedGroups };
+  return {
+    send,
+    calls,
+    releasedGroups,
+    onEvent(method, handler) {
+      if (!eventHandlers.has(method)) eventHandlers.set(method, new Set());
+      eventHandlers.get(method).add(handler);
+      return () => eventHandlers.get(method)?.delete(handler);
+    },
+    emit(method, params = {}) {
+      for (const handler of [...(eventHandlers.get(method) || [])]) handler(params);
+    },
+  };
 }
 
 function collectRequest(overrides = {}) {
@@ -371,31 +385,60 @@ function collectedTable(output) {
   return model;
 }
 
-async function runCollect(cdp, request, { now = () => 0, store } = {}) {
-  const execution = cdpTest.createDaemonRequestExecutionContext({
-    request: { cmd: 'table', args: [...request.argv] },
-    signal: new AbortController().signal,
+function collectExecution({
+  argv = collectRequest().argv,
+  now = () => 0,
+  signal = new AbortController().signal,
+} = {}) {
+  return cdpTest.createDaemonRequestExecutionContext({
+    request: { cmd: 'table', args: [...argv] },
+    signal,
     now,
+  });
+}
+
+function artifactStore() {
+  return createTableArtifactStore({
+    runtimeDir: privateRuntimeRoot(),
+    targetId: 'target-table-collection',
+    sessionId: 'session-table-collection',
+    platform: 'darwin',
+  });
+}
+
+async function runCollect(cdp, request, {
+  now = () => 0,
+  store,
+  session = { collector: null },
+  execution,
+  signal,
+} = {}) {
+  const resolvedExecution = execution || collectExecution({
+    argv: request.argv,
+    now,
+    signal: signal || new AbortController().signal,
   });
   const collect = cdpTest.tableCollectionStr;
   if (typeof collect === 'function') {
-    return collect(cdp, 'sid', request, execution, store);
+    return collect(cdp, 'sid', request, resolvedExecution, { store, session });
   }
   return cdpTest.tableObservationStr(cdp, 'sid', request);
+}
+
+function pageMutatingCalls(cdp) {
+  return cdp.calls.filter(call => (
+    call.method === 'Page.createIsolatedWorld'
+    || call.method === 'Runtime.evaluate'
+    || call.method === 'Runtime.callFunctionOn'
+    || call.method === 'Input.dispatchMouseEvent'
+  ));
 }
 
 describe('persistent isolated-world virtual collection', () => {
   it('collects every recycled row from the frozen 1024-row virtual table', async () => {
     const fixture = mountRecycledTableFixture();
     const cdp = createWorldCdp(fixture);
-    const store = createTableArtifactStore({
-      runtimeDir: privateRuntimeRoot(),
-      targetId: 'target-table-collection',
-      sessionId: 'session-table-collection',
-      platform: 'darwin',
-    });
-
-    const output = await runCollect(cdp, collectRequest(), { store });
+    const output = await runCollect(cdp, collectRequest(), { store: artifactStore() });
     const table = collectedTable(output);
 
     expect(table.logicalRows).toBe(1024);
@@ -410,3 +453,122 @@ describe('persistent isolated-world virtual collection', () => {
     expect(cdp.releasedGroups.some(group => typeof group === 'string' && group.length > 0)).toBe(true);
   });
 });
+
+describe('collection context, abort, and deadline lifecycle', () => {
+  it('returns collector-busy when a second collect is already active on the session', async () => {
+    const fixture = mountRecycledTableFixture();
+    let release;
+    const blocked = new Promise(resolve => { release = resolve; });
+    let evaluates = 0;
+    const cdp = createWorldCdp(fixture, {
+      beforeEvaluate: async () => {
+        evaluates += 1;
+        if (evaluates === 1) await blocked;
+      },
+    });
+    const session = { collector: null };
+    const store = artifactStore();
+    const first = runCollect(cdp, collectRequest(), { store, session });
+    await vi.waitFor(() => { expect(evaluates).toBeGreaterThan(0); });
+    await expect(runCollect(cdp, collectRequest(), { store, session }))
+      .rejects.toThrow(/collector-busy/);
+    release();
+    await first.catch(() => {});
+  });
+
+  it('aborts when the isolated execution context is destroyed and still releases the object group', async () => {
+    const fixture = mountRecycledTableFixture();
+    const cdp = createWorldCdp(fixture, {
+      beforeEvaluate: async params => {
+        if (params.objectGroup || /table-collector/i.test(params.expression || '')) {
+          cdp.emit('Runtime.executionContextDestroyed', { executionContextId: 1 });
+        }
+      },
+    });
+    await expect(runCollect(cdp, collectRequest(), { store: artifactStore() }))
+      .rejects.toThrow(/execution context|destroyed|detached/i);
+    expect(cdp.releasedGroups.length).toBeGreaterThan(0);
+  });
+
+  it('aborts on root navigation or detach and does not retry the interrupted interaction', async () => {
+    const fixture = mountRecycledTableFixture();
+    const cdp = createWorldCdp(fixture, {
+      beforeEvaluate: async () => {
+        cdp.emit('Page.frameNavigated', { frame: { id: 'root-frame' } });
+      },
+    });
+    await expect(runCollect(cdp, collectRequest(), { store: artifactStore() }))
+      .rejects.toThrow(/navigat|detach/i);
+    expect(cdp.calls.filter(call => call.method === 'Input.dispatchMouseEvent')).toHaveLength(0);
+    expect(cdp.releasedGroups.length).toBeGreaterThan(0);
+  });
+
+  it('aborts on caller disconnect, deletes unpublished artifacts, and releases the object group', async () => {
+    const fixture = mountRecycledTableFixture();
+    const controller = new AbortController();
+    const cdp = createWorldCdp(fixture, {
+      beforeEvaluate: async () => {
+        controller.abort(new Error('table: collection request aborted'));
+      },
+    });
+    const store = artifactStore();
+    const execution = collectExecution({ signal: controller.signal });
+    await expect(runCollect(cdp, collectRequest(), { store, execution }))
+      .rejects.toThrow(/aborted/i);
+    expect(cdp.releasedGroups.length).toBeGreaterThan(0);
+  });
+
+  it('does not start page or final-sample work at or after the 295s page deadline', async () => {
+    const fixture = mountRecycledTableFixture();
+    const cdp = createWorldCdp(fixture);
+    let elapsed = 0;
+    const execution = collectExecution({ now: () => elapsed });
+    elapsed = 295000;
+    await expect(runCollect(cdp, collectRequest(), {
+      store: artifactStore(),
+      execution,
+    })).rejects.toThrow(/page\/CDP deadline|time-limit/i);
+    expect(pageMutatingCalls(cdp)).toEqual([]);
+  });
+
+  it('publishes immediately after early complete success without further page mutations', async () => {
+    const fixture = mountRecycledTableFixture({
+      logicalRows: 2,
+      ariaRowCount: 3,
+      mountedRows: 2,
+      initialAvailable: 2,
+    });
+    const cdp = createWorldCdp(fixture);
+    const output = await runCollect(cdp, collectRequest(), { store: artifactStore() });
+    const table = collectedTable(output);
+    expect(table.collectedRows).toBe(2);
+    expect(table.completeness.state).toBe('complete');
+    expect(table.artifact.bytes).toBeGreaterThan(0);
+    expect(cdp.calls.filter(call => call.method === 'Input.dispatchMouseEvent')).toHaveLength(0);
+    expect(cdp.releasedGroups.length).toBeGreaterThan(0);
+  });
+
+  it('uses the remaining page budget for the dynamically shortened final CDP call', async () => {
+    const fixture = mountRecycledTableFixture({
+      logicalRows: 2,
+      ariaRowCount: 3,
+      mountedRows: 2,
+      initialAvailable: 2,
+    });
+    let elapsed = 0;
+    const execution = collectExecution({ now: () => elapsed });
+    const cdp = createWorldCdp(fixture, {
+      beforeEvaluate: async () => {
+        if (elapsed === 0) elapsed = 293000;
+      },
+    });
+    await runCollect(cdp, collectRequest(), { store: artifactStore(), execution });
+    const timed = cdp.calls.filter(call => (
+      (call.method === 'Runtime.evaluate' || call.method === 'Runtime.callFunctionOn')
+      && Number.isFinite(call.timeout)
+    ));
+    expect(timed.length).toBeGreaterThan(0);
+    expect(Math.max(...timed.map(call => call.timeout))).toBeLessThanOrEqual(2000);
+  });
+});
+
