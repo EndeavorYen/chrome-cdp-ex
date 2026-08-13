@@ -11,6 +11,7 @@ import {
   rmdirSync,
   symlinkSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import {
@@ -21,6 +22,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -38,6 +40,7 @@ import {
 const created = [];
 const ID_A = '0123456789abcdef0123456789abcdef';
 const ID_B = 'fedcba9876543210fedcba9876543210';
+const NOW_MS = Date.UTC(2026, 7, 13, 8, 0, 0);
 
 afterEach(() => {
   while (created.length) rmSync(created.pop(), { recursive: true, force: true });
@@ -96,6 +99,54 @@ function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
   for (const child of Object.values(value)) deepFreeze(child);
   return Object.freeze(value);
+}
+
+function digest(value) {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function setAge(path, ageMs) {
+  const at = new Date(NOW_MS - ageMs);
+  utimesSync(path, at, at);
+}
+
+function createCrashSession(layout, {
+  name,
+  pid,
+  ageMs,
+  committed = false,
+  unknown = false,
+} = {}) {
+  const sessionDir = join(layout.targetDir, name);
+  mkdirSync(sessionDir, { mode: 0o700 });
+  const ownerPath = join(sessionDir, 'owner.json');
+  writeFileSync(ownerPath, `${JSON.stringify({
+    schema: 'chrome-cdp-ex.table-artifact-owner.v1',
+    pid,
+    createdAtMs: NOW_MS - ageMs,
+    targetDigest: layout.targetDigest,
+    sessionDigest: name,
+  }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  const artifactDir = join(sessionDir, ID_B);
+  mkdirSync(artifactDir, { mode: 0o700 });
+  const bundle = bundleForRows([['crash residue']]);
+  const rowsPath = join(artifactDir, 'rows.tsv');
+  writeFileSync(rowsPath, bundle.rowsTsv, { mode: 0o600, flag: 'wx' });
+  if (committed) {
+    writeFileSync(join(artifactDir, 'manifest.json'), `${JSON.stringify({
+      ...bundle.manifest,
+      ownership: {
+        artifactId: ID_B,
+        targetDigest: layout.targetDigest,
+        sessionDigest: name,
+      },
+    }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  }
+  if (unknown) writeFileSync(join(artifactDir, 'unknown.bin'), 'preserve', { mode: 0o600 });
+  for (const path of [rowsPath, ...(committed ? [join(artifactDir, 'manifest.json')] : []), artifactDir, ownerPath, sessionDir]) {
+    setAge(path, ageMs);
+  }
+  return { sessionDir, artifactDir, ownerPath };
 }
 
 function tracedHandle(handle, label, trace, overrides = {}) {
@@ -175,6 +226,8 @@ describe('private table artifact publication', () => {
           ? 'data'
           : basename(path) === 'manifest.json'
             ? 'manifest'
+            : basename(path) === 'owner.json'
+              ? 'owner-record'
             : basename(path) === ID_A
               ? 'artifact-dir'
               : path === runtimeDir
@@ -228,6 +281,8 @@ describe('private table artifact publication', () => {
       'runtime-root:open', 'runtime-root:fstat', 'runtime-root:fsync', 'runtime-root:close',
       'owner-dir:open', 'owner-dir:fstat', 'owner-dir:fsync', 'owner-dir:close',
       'target-dir:open', 'target-dir:fstat', 'target-dir:fsync', 'target-dir:close',
+      'owner-record:open', 'owner-record:write', 'owner-record:fstat', 'owner-record:fsync', 'owner-record:close',
+      'session-dir:open', 'session-dir:fstat', 'session-dir:fsync', 'session-dir:close',
       'data:open', 'data:write', 'data:fstat', 'data:fsync', 'data:close',
       'manifest:open', 'manifest:write', 'manifest:fstat', 'manifest:fsync', 'manifest:close',
       'artifact-dir:open', 'artifact-dir:fstat', 'artifact-dir:fsync', 'artifact-dir:close',
@@ -806,6 +861,150 @@ describe('artifact request and session ownership', () => {
     await expect(second.readContinuation(published.token)).rejects.toThrow(/not available/i);
     expect(second.cleanupSession()).toBeUndefined();
     expect(existsSync(join(artifactTest.inspectTableArtifactStore(first).sessionDir, ID_A))).toBe(true);
+  });
+
+  it('creates one exact private session owner record lazily and removes it at session cleanup', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'private-current-session',
+      platform: 'darwin',
+    }, {
+      randomBytes: deterministicBytes(ID_A),
+      pid: 4242,
+      now: () => NOW_MS,
+      processAlive: () => true,
+    });
+    const layout = artifactTest.inspectTableArtifactStore(store);
+    const ownerPath = join(layout.sessionDir, 'owner.json');
+    expect(existsSync(ownerPath)).toBe(false);
+
+    const request = execution();
+    await store.publish(bundleForRows(), request);
+    store.releaseRequest(request);
+
+    expect(lstatSync(ownerPath).mode & 0o7777).toBe(0o600);
+    expect(JSON.parse(readFileSync(ownerPath, 'utf8'))).toEqual({
+      schema: 'chrome-cdp-ex.table-artifact-owner.v1',
+      pid: 4242,
+      createdAtMs: NOW_MS,
+      targetDigest: layout.targetDigest,
+      sessionDigest: layout.sessionDigest,
+    });
+    expect(store.cleanupSession()).toBeUndefined();
+    expect(existsSync(ownerPath)).toBe(false);
+    expect(existsSync(layout.sessionDir)).toBe(false);
+  });
+
+  it('sweeps only proven-dead TTL-eligible residue and skips live, EPERM, unknown, reused, and fresh sessions', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const probes = [];
+    const status = new Map([
+      [10, 'alive'], [11, 'EPERM'], [12, 'EACCES'], [13, 'ESRCH'],
+      [14, 'ESRCH'], [15, 'ESRCH'], [16, 'ESRCH'], [17, 'alive'],
+    ]);
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'private-current-session',
+      platform: 'darwin',
+    }, {
+      randomBytes: deterministicBytes(ID_A),
+      pid: 999,
+      now: () => NOW_MS,
+      processAlive: pid => {
+        probes.push(pid);
+        const value = status.get(pid);
+        if (value === 'alive') return true;
+        const error = new Error(value || 'unknown');
+        error.code = value;
+        throw error;
+      },
+    });
+    const request = execution();
+    await store.publish(bundleForRows([['current']]), request);
+    store.releaseRequest(request);
+    const layout = artifactTest.inspectTableArtifactStore(store);
+    const fixtures = {
+      live: createCrashSession(layout, { name: digest('live'), pid: 10, ageMs: 25 * 60 * 60 * 1000 }),
+      eperm: createCrashSession(layout, { name: digest('eperm'), pid: 11, ageMs: 25 * 60 * 60 * 1000 }),
+      unknown: createCrashSession(layout, { name: digest('unknown'), pid: 12, ageMs: 25 * 60 * 60 * 1000 }),
+      fresh: createCrashSession(layout, { name: digest('fresh'), pid: 13, ageMs: 14 * 60 * 1000 }),
+      staleUncommitted: createCrashSession(layout, { name: digest('stale-u'), pid: 14, ageMs: 16 * 60 * 1000 }),
+      youngCommitted: createCrashSession(layout, { name: digest('young-c'), pid: 15, ageMs: 23 * 60 * 60 * 1000, committed: true }),
+      staleCommitted: createCrashSession(layout, { name: digest('stale-c'), pid: 16, ageMs: 25 * 60 * 60 * 1000, committed: true }),
+      reusedPid: createCrashSession(layout, { name: digest('reused'), pid: 17, ageMs: 25 * 60 * 60 * 1000 }),
+    };
+
+    expect(store.sweepCrashResidue()).toBeUndefined();
+
+    for (const key of ['live', 'eperm', 'unknown', 'fresh', 'youngCommitted', 'reusedPid']) {
+      expect(existsSync(fixtures[key].sessionDir), key).toBe(true);
+    }
+    expect(existsSync(fixtures.staleUncommitted.sessionDir)).toBe(false);
+    expect(existsSync(fixtures.staleCommitted.sessionDir)).toBe(false);
+    expect(probes.sort((a, b) => a - b)).toEqual([10, 11, 12, 13, 14, 15, 16, 17]);
+    expect(probes).not.toContain(999);
+  });
+
+  it('best-effort sweeps safe dead residue but reports and preserves unknown stale contents', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'private-current-session',
+      platform: 'darwin',
+    }, {
+      randomBytes: deterministicBytes(ID_A),
+      pid: 999,
+      now: () => NOW_MS,
+      processAlive: () => { const error = new Error('dead'); error.code = 'ESRCH'; throw error; },
+    });
+    const request = execution();
+    await store.publish(bundleForRows(), request);
+    store.releaseRequest(request);
+    const layout = artifactTest.inspectTableArtifactStore(store);
+    const safe = createCrashSession(layout, { name: digest('safe-dead'), pid: 20, ageMs: 16 * 60 * 1000 });
+    const unknown = createCrashSession(layout, {
+      name: digest('unknown-dead'), pid: 21, ageMs: 16 * 60 * 1000, unknown: true,
+    });
+
+    let error;
+    try { store.sweepCrashResidue(); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ code: 'TABLE_ARTIFACT_CLEANUP_FAILED' });
+    expect(error?.message).not.toContain(runtimeDir);
+    expect(existsSync(safe.sessionDir)).toBe(false);
+    expect(readFileSync(join(unknown.artifactDir, 'unknown.bin'), 'utf8')).toBe('preserve');
+    expect(readFileSync(join(unknown.artifactDir, 'rows.tsv'), 'utf8')).toBe('crash residue');
+  });
+
+  it('bounds stale namespace enumeration without blocking a normal current-session publish', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const ownerDir = join(runtimeDir, 'table-artifacts-v1');
+    const targetDir = join(ownerDir, digest('target'));
+    mkdirSync(ownerDir, { mode: 0o700 });
+    mkdirSync(targetDir, { mode: 0o700 });
+    const planted = Array.from({ length: 40 }, (_, index) => digest(`planted-${index}`));
+    for (const name of planted) mkdirSync(join(targetDir, name), { mode: 0o700 });
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'private-current-session',
+      platform: 'darwin',
+    }, {
+      randomBytes: deterministicBytes(ID_A),
+      pid: 999,
+      now: () => NOW_MS,
+      processAlive: () => { throw new Error('must not probe missing owner records'); },
+    });
+
+    const publication = await store.publish(bundleForRows(), execution());
+    expect(publication.token).toBe(`ct1.${ID_A}.0`);
+    let error;
+    try { store.sweepCrashResidue(); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ code: 'TABLE_ARTIFACT_CLEANUP_FAILED' });
+    expect(planted.every(name => existsSync(join(targetDir, name)))).toBe(true);
   });
 
   it('fails artifact-producing and continuation modes on Windows before filesystem effects', async () => {
