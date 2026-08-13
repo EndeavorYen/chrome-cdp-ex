@@ -141,13 +141,28 @@ describe('daemon extraction read handlers', () => {
   });
 
   it.each([
-    [['#grid', '--format', 'json'], /JSON observation is unavailable/],
     [['#grid', '--collect', '--scroll-container', '.viewport'], /collection is unavailable/],
     [['--collect'], /scroll-container/],
   ])('rejects unavailable or malformed table requests before page capability effects: %j', async (args, expected) => {
     const { capabilities, handlers } = fixture();
     await expect(handlers.table({ args })).rejects.toThrow(expected);
     expect(capabilities.table).not.toHaveBeenCalled();
+  });
+
+  it('routes JSON observation through the bounded read capability', async () => {
+    const { capabilities, handlers } = fixture();
+    capabilities.table.mockResolvedValueOnce('{"schema":"chrome-cdp-ex.tables.v1"}');
+
+    const result = await handlers.table({ args: ['#grid', '--format', 'json'] });
+
+    expect(result.value).toBe('{"schema":"chrome-cdp-ex.tables.v1"}');
+    expect(capabilities.table).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      schema: 'chrome-cdp-ex.table-request.v1',
+      mode: 'observe',
+      selector: '#grid',
+      format: 'json',
+      argv: ['#grid', '--format', 'json'],
+    }));
   });
 
   it('routes a strict continuation request to the private artifact capability without page execution', async () => {
