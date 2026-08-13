@@ -5284,7 +5284,11 @@ describe('bounded table observation', () => {
     expect(output.tables[0].caption).toBe('Orders\\nFORGED\\u001B[31m\\u0085\\u2028');
     expect(output.tables[0].headers).toEqual([['Name\\rNEXT\\u009F\\u2029']]);
     const metadata = [output.tables[0].caption, ...output.tables[0].headers.flat()];
-    expect(metadata.every(value => !/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/u.test(value))).toBe(true);
+    expect(metadata.every(value => [...value].every(character => {
+      const unit = character.charCodeAt(0);
+      return unit >= 0x20 && !(unit >= 0x7F && unit <= 0x9F)
+        && unit !== 0x2028 && unit !== 0x2029;
+    }))).toBe(true);
   });
 
   it('escapes hostile runtime exception controls into one bounded diagnostic line', async () => {

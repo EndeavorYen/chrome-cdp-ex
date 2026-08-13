@@ -11169,7 +11169,7 @@ function certifiedAriaTable(sample) {
 }
 
 function observedTableEntry(sample, index) {
-  const certified = !sample.truncated ? certifiedAriaTable(sample) : null;
+  const certified = certifiedAriaTable(sample);
   const countKnown = Number.isSafeInteger(sample.ariaRowCount)
     && sample.ariaRowCount >= sample.headerRows.length;
   const accumulator = createTableAccumulator({
@@ -11208,10 +11208,14 @@ function observedTableEntry(sample, index) {
   const result = finalizeTableExtraction(accumulator, {
     termination: safeComplete ? 'logical-count-reached' : 'observation',
   });
+  const caption = canonicalizeTableCells([sample.caption || `Table ${index + 1}`]);
+  const headers = sample.headerRows.map(row => Object.freeze(
+    row.cells.map(cell => canonicalizeTableCells([cell])),
+  ));
   return Object.freeze({
     ...result,
-    caption: sample.caption || `Table ${index + 1}`,
-    headers: Object.freeze(sample.headerRows.map(row => Object.freeze([...row.cells]))),
+    caption,
+    headers: Object.freeze(headers),
     snapshot: Object.freeze({
       directRowsSeen: sample.directRowsSeen,
       headerRowsSeen: sample.headerRowsSeen,
@@ -11278,14 +11282,15 @@ function boundedTableObservationJson(model) {
 
 function boundedTableObservationText(model, target = '<target>') {
   const summary = `Table snapshot: ${model.tables.length} mounted table(s); ${model.snapshot.truncated ? 'truncated' : 'bounded root-frame sample'}`;
+  const footer = 'Snapshot provenance: bounded root-frame observation.';
   const sections = [];
   for (let index = 0; index < model.tables.length; index += 1) {
     const table = model.tables[index];
     const metadata = [
-      `${canonicalizeTableCells([table.caption])} — ${table.completeness.state}; mounted ${table.mountedRows}; observed ${table.collectedRows}${table.logicalRows === null ? '' : `/${table.logicalRows}`}`,
+      `${table.caption} — ${table.completeness.state}; mounted ${table.mountedRows}; observed ${table.collectedRows}${table.logicalRows === null ? '' : `/${table.logicalRows}`}`,
     ];
     for (let headerIndex = 0; headerIndex < table.headers.length; headerIndex += 1) {
-      metadata.push(`${headerIndex === 0 ? 'Header' : `Header ${headerIndex + 1}`}: ${canonicalizeTableCells(table.headers[headerIndex])}`);
+      metadata.push(`${headerIndex === 0 ? 'Header' : `Header ${headerIndex + 1}`}: ${table.headers[headerIndex].join('\t')}`);
     }
     sections.push({ metadata, rows: [...table.inline.rows] });
   }
@@ -11298,6 +11303,7 @@ function boundedTableObservationText(model, target = '<target>') {
     ...sections.flatMap(section => [...section.metadata, ...section.rows]),
     ...(emissionTruncated ? ['Table preview truncated at complete row boundaries by the 8,192-byte emission limit.'] : []),
     ...(hint ? [hint] : []),
+    footer,
   ].join('\n');
   let output = render();
   while (Buffer.byteLength(output, 'utf8') > 8192) {
