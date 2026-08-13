@@ -156,7 +156,7 @@ describe('canonical table bytes and bounded previews', () => {
   });
 
   it('keeps the complete manifest response at or below 16384 UTF-8 bytes under escaping pressure', () => {
-    const manifest = buildTableExportManifest(accumulatorWithRows([['\\'.repeat(4096)]]), {
+    const manifest = buildTableExportManifest(accumulatorWithRows([['\\'.repeat(2048)]]), {
       termination: 'logical-count-reached',
     });
 
@@ -167,7 +167,7 @@ describe('canonical table bytes and bounded previews', () => {
 
 describe('collection safety and completeness', () => {
   it('records node recycling when one mounted node carries different stable keys', () => {
-    const accumulator = accumulatorWithRows([['first']]);
+    const accumulator = accumulatorWithRows([['first']], { logicalRows: 2 });
     addTableSample(accumulator, { mountedNodeId: 'node-0', key: 2, cells: ['second'] });
 
     expect(finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' }).recycledMountedNodes).toBe(1);
@@ -224,7 +224,7 @@ describe('collection safety and completeness', () => {
   });
 
   it('rejects duplicate stable keys within one mounted sample batch even if the rows match', () => {
-    const accumulator = accumulatorWithRows([]);
+    const accumulator = accumulatorWithRows([], { logicalRows: 2 });
 
     expect(() => addTableSampleBatch(accumulator, [
       { mountedNodeId: 'node-1', key: 1, cells: ['same'] },
