@@ -182,6 +182,60 @@ describe('daemon NDJSON request transport', () => {
       .rejects.toThrow('Connection closed before response. The daemon for this tab may have crashed or exited (idle timeout, page closed, or browser disconnect). Re-run "perceive <target>" to restart it; check /fixture/runtime for stale sockets if this repeats.');
   });
 
+  it.each(['end', 'close'])('marks a committed mutation as ambiguous when the peer emits %s before its receipt', async event => {
+    let committed = 0;
+    const conn = connection({
+      onWrite(socket, payload) {
+        expect(JSON.parse(payload)).toEqual({
+          cmd: 'click',
+          args: ['#purchase'],
+          id: 1,
+        });
+        committed += 1;
+        queueMicrotask(() => socket.emit(event));
+      },
+    });
+
+    const error = await requestDaemon(
+      conn,
+      { cmd: 'click', args: ['#purchase'] },
+      { runtimeDir: '/fixture/runtime', mayHaveSideEffects: true },
+    ).catch(cause => cause);
+
+    expect(committed).toBe(1);
+    expect(conn.write).toHaveBeenCalledOnce();
+    expect(error).toMatchObject({
+      name: 'DaemonCompletionUnknownError',
+      code: 'DAEMON_COMPLETION_UNKNOWN',
+      completion: 'unknown',
+      sideEffectMayHaveOccurred: true,
+      transportCause: {
+        phase: 'awaiting-response',
+        kind: `peer-${event}`,
+        message: expect.stringContaining('Connection closed before response.'),
+      },
+    });
+    expect(error.transportCause.message.length).toBeLessThanOrEqual(512);
+  });
+
+  it('keeps a synchronous mutation write failure as proven pre-dispatch', async () => {
+    const original = new Error('write EPIPE before bytes were accepted');
+    original.code = 'EPIPE';
+    const conn = connection();
+    conn.write.mockImplementation(() => { throw original; });
+
+    const error = await requestDaemon(
+      conn,
+      { cmd: 'click', args: ['#purchase'] },
+      { mayHaveSideEffects: true },
+    ).catch(cause => cause);
+
+    expect(error).toBe(original);
+    expect(error).not.toHaveProperty('completion');
+    expect(error).not.toHaveProperty('sideEffectMayHaveOccurred');
+    expect(conn.write).toHaveBeenCalledOnce();
+  });
+
   it('preserves the exact connection error object and stop-after response completion', async () => {
     const original = new Error('socket reset');
     const failed = connection({ onWrite: socket => queueMicrotask(() => socket.emit('error', original)) });

@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -11,6 +12,7 @@ import {
   createCommandRegistry,
 } from '../skills/chrome-cdp-ex/scripts/lib/command-application.mjs';
 import { createCommandDispatcher } from '../skills/chrome-cdp-ex/scripts/lib/command-dispatch.mjs';
+import { requestDaemon } from '../skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs';
 
 const FAILED_ACTION = {
   schema: 'chrome-cdp-ex.action.v1',
@@ -742,6 +744,112 @@ describe('hard action dispatch exit contract (#143)', () => {
         { runMain: runMainWithStdout(FAILED_ACTION_JSON) },
       )).resolves.toEqual({ code: 1, stdout: FAILED_ACTION_JSON, stderr: '' });
     });
+  });
+});
+
+describe('ambiguous action completion contract (#150)', () => {
+  async function committedActionDisconnect() {
+    let mutations = 0;
+    const connection = new EventEmitter();
+    connection.write = vi.fn(() => {
+      mutations += 1;
+      queueMicrotask(() => connection.emit('close'));
+    });
+    connection.end = vi.fn();
+    connection.destroy = vi.fn();
+    const error = await requestDaemon(
+      connection,
+      { cmd: 'click', args: ['#purchase'] },
+      { runtimeDir: '/fixture/runtime', mayHaveSideEffects: true },
+    ).catch(cause => cause);
+    return { error, mutations, connection };
+  }
+
+  it('returns verify-before-retry JSON after a mutation commits but its receipt is lost', async () => {
+    const fixture = await committedActionDisconnect();
+    const output = cdpTest.formatCliError(fixture.error, {
+      cmd: 'click',
+      targetPrefix: 'ABC12345',
+      format: 'json',
+    });
+    const model = JSON.parse(output);
+
+    expect(fixture.mutations).toBe(1);
+    expect(fixture.connection.write).toHaveBeenCalledOnce();
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.cli-error.v1',
+      ok: false,
+      command: 'click',
+      targetPrefix: 'ABC12345',
+      completion: 'unknown',
+      sideEffectMayHaveOccurred: true,
+      retrySafe: false,
+      recovery: {
+        kind: 'ambiguous-action-completion',
+        strategy: 'verify-before-retry',
+        run: 'cdp perceive ABC12345 -C -d 8',
+        reason: expect.stringMatching(/may have occurred.*do not repeat/i),
+      },
+      diagnostics: {
+        transport: {
+          phase: 'awaiting-response',
+          kind: 'peer-close',
+          message: expect.stringContaining('Connection closed before response.'),
+        },
+      },
+      nextSteps: ['cdp perceive ABC12345 -C -d 8'],
+    });
+    expect(output).not.toContain('#purchase');
+    expect(model.diagnostics.transport.message.length).toBeLessThanOrEqual(512);
+  });
+
+  it('keeps CLI nonzero and MCP isError parity without redispatching the mutation', async () => {
+    const fixture = await committedActionDisconnect();
+    const output = cdpTest.formatCliError(fixture.error, {
+      cmd: 'click',
+      targetPrefix: 'ABC12345',
+      format: 'json',
+    });
+    const direct = await executeCdpCli(
+      ['click', 'ABC12345', '#purchase', '--format', 'json'],
+      {
+        runMain: async ({ console, process }) => {
+          console.error(output);
+          process.exitCode = 1;
+        },
+      },
+    );
+    const sent = [];
+    const handle = createMcpRequestHandler({
+      runtimeClient: createRuntimeClient({ executeCli: async () => direct }),
+      sendMessage: message => sent.push(message),
+    });
+
+    await handle({
+      jsonrpc: '2.0',
+      id: 150,
+      method: 'tools/call',
+      params: {
+        name: 'run_command',
+        arguments: {
+          command: 'click',
+          args: ['ABC12345', '#purchase', '--format', 'json'],
+          confirm: true,
+        },
+      },
+    });
+
+    expect(direct).toEqual({ code: 1, stdout: '', stderr: output });
+    expect(sent).toEqual([{
+      jsonrpc: '2.0',
+      id: 150,
+      result: {
+        content: [{ type: 'text', text: output }],
+        isError: true,
+      },
+    }]);
+    expect(fixture.mutations).toBe(1);
+    expect(fixture.connection.write).toHaveBeenCalledOnce();
   });
 });
 
