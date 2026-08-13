@@ -30,7 +30,7 @@ import {
 } from './lib/command-dispatch.mjs';
 import { createDaemonReadHandlers } from './lib/daemon-read-handlers.mjs';
 import { createDaemonActionHandlers } from './lib/daemon-action-handlers.mjs';
-import { isTableCollectArgs, parseTableArgs } from './lib/table-contract.mjs';
+import { isTableCollectArgs, parseTableArgs, parseTableContinuationToken } from './lib/table-contract.mjs';
 import { createTableArtifactStore } from './lib/table-artifacts.mjs';
 import {
   bindCdpTransport,
@@ -17225,6 +17225,7 @@ function emitTargetCommandResponse(response, {
     && response.result !== '';
   if (hasResult) {
     const output = format === 'json' && targetResolution
+      && !isDeterministicTableContinuationResult(cmd, response.result)
       ? attachTargetResolutionDiagnostics(response.result, targetResolution)
       : response.result;
     console.log(output);
@@ -17238,6 +17239,22 @@ function emitTargetCommandResponse(response, {
   if (response?.ok === false) {
     console.error(formatDaemonCommandError(response.error, { cmd, targetPrefix, format }));
     process.exitCode = 1;
+  }
+}
+
+function isDeterministicTableContinuationResult(cmd, result) {
+  if (cmd !== 'table' || typeof result !== 'string') return false;
+  let model;
+  try { model = JSON.parse(result); } catch { return false; }
+  if (!model || typeof model !== 'object' || Array.isArray(model)
+    || model.schema !== 'chrome-cdp-ex.table.v1'
+    || !model.continuation || typeof model.continuation !== 'object'
+    || Array.isArray(model.continuation)) return false;
+  try {
+    parseTableContinuationToken(model.continuation.token);
+    return true;
+  } catch {
+    return false;
   }
 }
 
