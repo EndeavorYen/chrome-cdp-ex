@@ -302,6 +302,46 @@ describe('private table artifact publication', () => {
     expect(existsSync(join(layout.sessionDir, ID_A))).toBe(false);
   });
 
+  it.each(['rows.tsv', 'manifest.json', ID_A, 'session-dir'])(
+    'returns no token and rolls back when %s close reports delayed I/O failure',
+    async closeFault => {
+      const runtimeDir = privateRuntimeRoot();
+      let layout;
+      const store = testStore(runtimeDir, {}, {
+        open: async (...args) => {
+          const handle = await open(...args);
+          const path = args[0];
+          const label = basename(path) === 'rows.tsv'
+            ? 'rows.tsv'
+            : basename(path) === 'manifest.json'
+              ? 'manifest.json'
+              : basename(path) === ID_A
+                ? ID_A
+                : layout && path === layout.sessionDir
+                  ? 'session-dir'
+                  : 'other';
+          if (label !== closeFault) return handle;
+          return tracedHandle(handle, label, [], {
+            close: async realHandle => {
+              await realHandle.close();
+              throw new Error(`delayed close failure at ${runtimeDir}`);
+            },
+          });
+        },
+      });
+      layout = artifactTest.inspectTableArtifactStore(store);
+
+      let publication;
+      let error;
+      try { publication = await store.publish(bundleForRows(), execution()); } catch (caught) { error = caught; }
+
+      expect(publication).toBeUndefined();
+      expect(error?.code).toBe('TABLE_ARTIFACT_PUBLICATION_FAILED');
+      expect(error?.message).not.toContain(runtimeDir);
+      expect(existsSync(join(layout.sessionDir, ID_A))).toBe(false);
+    },
+  );
+
   it('tombstones an in-flight publish on rollback and self-cleans when the awaited fsync resumes', async () => {
     const runtimeDir = privateRuntimeRoot();
     let resumeFsync;
@@ -552,6 +592,30 @@ describe('immutable row-aligned table continuation', () => {
       code: 'TABLE_ARTIFACT_READ_FAILED',
     });
     expect(dataReads).toBe(1);
+  });
+
+  it('fails the read when a private file close reports delayed I/O failure', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    let reading = false;
+    const store = testStore(runtimeDir, {}, {
+      open: async (...args) => {
+        const handle = await open(...args);
+        if (!reading || basename(args[0]) !== 'manifest.json') return handle;
+        return tracedHandle(handle, 'manifest', [], {
+          close: async realHandle => {
+            await realHandle.close();
+            throw new Error(`delayed close failure at ${runtimeDir}`);
+          },
+        });
+      },
+    });
+    const publication = await store.publish(bundleForRows(), execution());
+    reading = true;
+
+    let error;
+    try { await store.readContinuation(publication.token); } catch (caught) { error = caught; }
+    expect(error?.code).toBe('TABLE_ARTIFACT_READ_FAILED');
+    expect(error?.message).not.toContain(runtimeDir);
   });
 
   it.each(['missing-manifest', 'manifest-symlink', 'wrong-target', 'wrong-session', 'data-size', 'data-checksum'])(
