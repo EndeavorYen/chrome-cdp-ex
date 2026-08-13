@@ -33,6 +33,14 @@ import { createDaemonActionHandlers } from './lib/daemon-action-handlers.mjs';
 import { isTableCollectArgs, parseTableArgs, parseTableContinuationToken } from './lib/table-contract.mjs';
 import { createTableArtifactStore } from './lib/table-artifacts.mjs';
 import {
+  addTableSampleBatch,
+  canonicalizeTableCells,
+  createTableAccumulator,
+  finalizeTableExtraction,
+  TABLE_EXTRACTION_LIMITS,
+} from './lib/table-extraction.mjs';
+import { buildTableSamplerExpression, parseTableSamplerResult } from './lib/table-sampler.mjs';
+import {
   bindCdpTransport,
   createCdpDomains,
   createRawCdpGateway,
@@ -11096,28 +11104,167 @@ async function textStr(cdp, sid, args) {
   return out;
 }
 
-// --- Full table data extraction ---
-async function tableStr(cdp, sid, selector) {
-  const sel = selector || 'table';
-  return evalStr(cdp, sid, `(function() {
-    const tables = document.querySelectorAll(${JSON.stringify(sel)});
-    if (tables.length === 0) return 'No tables found' + (${JSON.stringify(sel)} !== 'table' ? ' matching ' + ${JSON.stringify(sel)} : '');
-    const results = [];
-    for (let ti = 0; ti < tables.length && ti < 10; ti++) {
-      const tbl = tables[ti];
-      const caption = tbl.querySelector('caption')?.textContent?.trim() || tbl.getAttribute('aria-label') || 'Table ' + (ti + 1);
-      const rows = [];
-      for (const tr of tbl.querySelectorAll('tr')) {
-        const cells = [];
-        for (const cell of tr.querySelectorAll('th, td')) {
-          cells.push(cell.textContent.trim().replace(/\\s+/g, ' '));
-        }
-        if (cells.length > 0) rows.push(cells.join('\\t'));
+// --- Truthful bounded table observation ---
+async function sampleRootFrameTables(cdp, sid, selector) {
+  const frameTree = await cdpDomains(cdp).Page.getFrameTree({}, sid);
+  const frameId = frameTree?.frameTree?.frame?.id;
+  if (typeof frameId !== 'string' || frameId.length === 0) throw new Error('table: root frame id is unavailable');
+  const world = await cdpDomains(cdp).Page.createIsolatedWorld({
+    frameId,
+    worldName: 'chrome-cdp-ex-table-sampler-v1',
+    grantUniveralAccess: false,
+  }, sid);
+  if (!Number.isSafeInteger(world?.executionContextId) || world.executionContextId < 1) {
+    throw new Error('table: isolated execution context is unavailable');
+  }
+  const evaluated = await cdpDomains(cdp).Runtime.evaluate({
+    expression: buildTableSamplerExpression(selector || 'table'),
+    contextId: world.executionContextId,
+    returnByValue: true,
+    awaitPromise: false,
+  }, sid);
+  if (evaluated?.exceptionDetails) {
+    throw new Error(`table: isolated sampler failed: ${runtimeExceptionMessage(evaluated.exceptionDetails)}`);
+  }
+  if (evaluated?.result?.type !== 'string' || typeof evaluated.result.value !== 'string') {
+    throw new Error('table: isolated sampler returned a non-string result');
+  }
+  return parseTableSamplerResult(evaluated.result.value);
+}
+
+function certifiedAriaTable(sample) {
+  const headerCount = sample.headerRows.length;
+  const rawCount = sample.ariaRowCount;
+  if (!Number.isSafeInteger(rawCount) || rawCount < headerCount || rawCount === -1) return null;
+  for (let index = 0; index < headerCount; index += 1) {
+    if (sample.headerRows[index].rawAriaRowIndex !== index + 1) return null;
+  }
+  for (let index = 0; index < sample.dataRows.length; index += 1) {
+    const raw = sample.dataRows[index].rawAriaRowIndex;
+    if (!Number.isSafeInteger(raw) || raw !== headerCount + index + 1 || raw > rawCount) return null;
+  }
+  return Object.freeze({ headerCount, logicalRows: rawCount - headerCount });
+}
+
+function observedTableEntry(sample, index) {
+  const certified = !sample.truncated ? certifiedAriaTable(sample) : null;
+  const countKnown = Number.isSafeInteger(sample.ariaRowCount)
+    && sample.ariaRowCount >= sample.headerRows.length;
+  const accumulator = createTableAccumulator({
+    logicalRows: countKnown ? sample.ariaRowCount - sample.headerRows.length : null,
+    logicalCountSource: countKnown ? 'aria-rowcount' : 'none',
+    identitySource: certified ? 'aria-rowindex' : 'snapshot-order',
+    orderingSource: certified ? 'aria-rowindex' : 'dom-order',
+  });
+  const admitted = [];
+  let truncationReason = sample.truncationReason;
+  for (let rowIndex = 0; rowIndex < sample.dataRows.length; rowIndex += 1) {
+    const row = sample.dataRows[rowIndex];
+    try {
+      const canonical = canonicalizeTableCells(row.cells);
+      if (Buffer.byteLength(canonical, 'utf8') > TABLE_EXTRACTION_LIMITS.maxCanonicalRowBytes
+        || Buffer.byteLength(JSON.stringify(row), 'utf8') > 8194) {
+        truncationReason = 'row-too-large';
+        break;
       }
-      results.push(caption + ':\\n' + rows.join('\\n'));
+      admitted.push({
+        mountedNodeId: `snapshot-${index + 1}-row-${rowIndex + 1}`,
+        key: certified ? row.rawAriaRowIndex - certified.headerCount : admitted.length + 1,
+        cells: row.cells,
+      });
+    } catch (error) {
+      if (/bound|4096|item/i.test(error.message || '')) {
+        truncationReason = row.cells.length > 256 ? 'cell-limit' : 'row-too-large';
+        break;
+      }
+      throw error;
     }
-    return results.join('\\n\\n');
-  })()`);
+  }
+  const admission = addTableSampleBatch(accumulator, admitted);
+  if (!admission.admitted && !truncationReason) truncationReason = admission.reason;
+  const safeComplete = certified && !truncationReason && admitted.length === certified.logicalRows;
+  const result = finalizeTableExtraction(accumulator, {
+    termination: safeComplete ? 'logical-count-reached' : 'observation',
+  });
+  return Object.freeze({
+    ...result,
+    caption: sample.caption || `Table ${index + 1}`,
+    headers: Object.freeze(sample.headerRows.map(row => Object.freeze([...row.cells]))),
+    snapshot: Object.freeze({
+      directRowsSeen: sample.directRowsSeen,
+      headerRowsSeen: sample.headerRowsSeen,
+      dataRowsSeen: sample.dataRowsSeen,
+      rowsAdmitted: admitted.length,
+      truncated: Boolean(sample.truncated || truncationReason),
+      truncationReason: truncationReason || null,
+    }),
+  });
+}
+
+function tableObservationModel(sample) {
+  return Object.freeze({
+    schema: 'chrome-cdp-ex.tables.v1',
+    snapshot: Object.freeze({
+      tablesSeen: sample.tablesSeen,
+      tablesReturned: sample.tables.length,
+      truncated: sample.truncated,
+      truncationReason: sample.truncationReason,
+    }),
+    tables: Object.freeze(sample.tables.map(observedTableEntry)),
+  });
+}
+
+function boundedTableObservationJson(model) {
+  const mutable = structuredClone(model);
+  let output = formatJson(mutable);
+  while (Buffer.byteLength(output, 'utf8') > 16384) {
+    let removed = false;
+    for (let index = mutable.tables.length - 1; index >= 0; index -= 1) {
+      const inline = mutable.tables[index].inline;
+      if (inline.rows.length === 0) continue;
+      inline.rows.pop();
+      inline.rowCount = inline.rows.length;
+      inline.bytes = Buffer.byteLength(inline.rows.join('\n'), 'utf8');
+      inline.truncated = true;
+      removed = true;
+      break;
+    }
+    if (!removed && mutable.tables.length > 0) {
+      mutable.tables.pop();
+      mutable.snapshot.tablesReturned = mutable.tables.length;
+      mutable.snapshot.truncated = true;
+      mutable.snapshot.truncationReason = 'sample-byte-limit';
+      removed = true;
+    }
+    if (!removed) throw new RangeError('table: observation metadata exceeds the JSON response byte ceiling');
+    output = formatJson(mutable);
+  }
+  return output;
+}
+
+function boundedTableObservationText(model, target = '<target>') {
+  const lines = [
+    `Table snapshot: ${model.tables.length} mounted table(s); ${model.snapshot.truncated ? 'truncated' : 'bounded root-frame sample'}`,
+  ];
+  for (let index = 0; index < model.tables.length; index += 1) {
+    const table = model.tables[index];
+    lines.push(`${table.caption} — ${table.completeness.state}; mounted ${table.mountedRows}; observed ${table.collectedRows}${table.logicalRows === null ? '' : `/${table.logicalRows}`}`);
+    if (table.headers.length) lines.push(`Header: ${table.headers[0].join('\t')}`);
+    for (const row of table.inline.rows) lines.push(row);
+  }
+  if (model.tables.some(table => table.completeness.state !== 'complete')) {
+    lines.push(`Mounted snapshot only. For explicit virtual collection: cdp table ${target} --collect --scroll-container <selector>`);
+  }
+  while (Buffer.byteLength(lines.join('\n'), 'utf8') > 8192 && lines.length > 2) lines.splice(-2, 1);
+  return lines.join('\n');
+}
+
+async function tableObservationStr(cdp, sid, request) {
+  const sample = await sampleRootFrameTables(cdp, sid, request.selector || 'table');
+  const model = tableObservationModel(sample);
+  return request.format === 'json'
+    ? boundedTableObservationJson(model)
+    : boundedTableObservationText(model);
 }
 
 // --- Navigation history ---
@@ -14601,7 +14748,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     text: args => textStr(cdp, sessionId, args),
     table: async request => request.mode === 'continue'
       ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)
-      : tableStr(cdp, sessionId, request.selector),
+      : tableObservationStr(cdp, sessionId, request),
     net: () => netStr(cdp, sessionId),
     overlay: args => overlayStr(cdp, sessionId, targetId, args, refMap, refState),
     record: args => recordStr(cdp, sessionId, args, refMap),
@@ -18016,6 +18163,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
+  sampleRootFrameTables, tableObservationStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
   probeTcpPort,
