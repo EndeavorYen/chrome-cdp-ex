@@ -11851,7 +11851,13 @@ async function tableCollectionStr(cdp, sid, request, execution, options = {}) {
               `__chromeCdpExTableCollector.scrollTo(${JSON.stringify(request.scrollContainer)},${nextTop})`,
             ), 'scroll-container is not scrollable');
           } else if (!before.scrollable && !before.loadMore.present) {
-            throw tableCollectorError('scroll-container is not scrollable');
+            const needsMore = identity.logicalRows !== null && previousCollected < identity.logicalRows;
+            if (needsMore) throw tableCollectorError('scroll-container is not scrollable');
+            return {
+              accumulator,
+              termination: identity.logicalRows === null ? 'no-progress-limit' : 'logical-count-reached',
+              interactions,
+            };
           } else {
             noProgress += 1;
             sample = await samplePage(runtime);
@@ -11892,7 +11898,18 @@ async function tableCollectionStr(cdp, sid, request, execution, options = {}) {
           termination: collection.termination || 'error',
         });
         const publication = await store.publish(bundle, execution);
-        const continuation = await store.readContinuation(publication.token);
+        const continuation = publication.artifact.rows > 0
+          ? await store.readContinuation(publication.token)
+          : {
+            continuation: {
+              token: null,
+              offset: 0,
+              rowCount: 0,
+              rows: [],
+              bytes: 0,
+              nextToken: null,
+            },
+          };
         return formatCollectedTable(bundle, publication, continuation, request.format);
       },
       cleanup,

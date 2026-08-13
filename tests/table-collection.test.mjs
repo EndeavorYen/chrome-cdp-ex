@@ -166,6 +166,10 @@ function mountRecycledTableFixture(overrides = {}) {
   const html = new Element('html');
   const body = html.appendChild(new Element('body'));
   const viewport = body.appendChild(new Element('div', { id: 'viewport', class: 'viewport' }));
+  const staticBox = body.appendChild(new Element('div', { id: 'static' }));
+  staticBox._scrollHeight = 32;
+  staticBox._clientHeight = 32;
+  staticBox._scrollTop = 0;
   const table = viewport.appendChild(new HTMLTableElement({
     id: 'orders',
     'aria-rowcount': String(config.ariaRowCount),
@@ -209,9 +213,18 @@ function mountRecycledTableFixture(overrides = {}) {
   const renderWindow = () => {
     slots.forEach((node, offset) => {
       const dataIndex = windowStart + offset + 1;
-      const rawIndex = dataIndex + config.headerRows;
-      node.setAttribute('aria-rowindex', String(rawIndex));
-      fillCells(node, frozenDataRow(dataIndex));
+      const rawIndex = config.duplicateAria && offset > 0
+        ? windowStart + 1 + config.headerRows
+        : dataIndex + config.headerRows;
+      if (config.omitAria) node._attrs = { ...node._attrs };
+      else node.setAttribute('aria-rowindex', String(rawIndex));
+      if (config.omitAria) delete node._attrs['aria-rowindex'];
+      const cells = config.hugeRow && offset === 0
+        ? [frozenDataRow(dataIndex)[0], 'x'.repeat(4097), ...frozenDataRow(dataIndex).slice(2)]
+        : config.conflictOnRecycle && windowStart > 0
+          ? frozenDataRow(dataIndex).map((cell, index) => (index === 1 ? `mutated-${cell}` : cell))
+          : frozenDataRow(dataIndex);
+      fillCells(node, cells);
     });
     viewport._scrollHeight = loadedRows * config.rowHeightPx;
     viewport._clientHeight = config.mountedRows * config.rowHeightPx;
@@ -223,6 +236,11 @@ function mountRecycledTableFixture(overrides = {}) {
     enumerable: true,
     get() { return this._scrollTop || 0; },
     set(value) {
+      if (config.stallWindow) {
+        this._scrollTop = Math.max(0, Number(value));
+        return;
+      }
+      if (config.stallScroll) return;
       const maxStart = Math.max(0, loadedRows - config.mountedRows);
       windowStart = Math.min(maxStart, Math.max(0, Math.floor(Number(value) / config.rowHeightPx)));
       renderWindow();
@@ -240,16 +258,18 @@ function mountRecycledTableFixture(overrides = {}) {
   });
 
   const clickLoadMore = () => {
-    if (loadMore.hidden || loadedRows >= config.logicalRows) return false;
-    loadedRows = Math.min(config.logicalRows, loadedRows + config.loadIncrement);
+    if (loadMore.hidden || (!config.endlessLoadMore && loadedRows >= config.logicalRows)) return false;
+    loadedRows = config.endlessLoadMore
+      ? loadedRows + 1
+      : Math.min(config.logicalRows, loadedRows + config.loadIncrement);
     loadMoreClicks += 1;
-    if (loadedRows >= config.logicalRows) setLoadMoreVisible(false);
+    if (!config.endlessLoadMore && loadedRows >= config.logicalRows) setLoadMoreVisible(false);
     renderWindow();
     return true;
   };
 
   loadMore.onclick = clickLoadMore;
-  setLoadMoreVisible(loadedRows < config.logicalRows);
+  setLoadMoreVisible(!config.noLoadMore && loadedRows < config.logicalRows);
   renderWindow();
 
   return {
@@ -262,6 +282,27 @@ function mountRecycledTableFixture(overrides = {}) {
     viewport,
     table,
     loadMore,
+    poisonMountedRows() {
+      slots.forEach((node, offset) => {
+        const dataIndex = windowStart + offset + 1;
+        fillCells(node, frozenDataRow(dataIndex).map((cell, index) => (
+          index === 1 ? `conflict-${cell}` : cell
+        )));
+      });
+    },
+    detachTable() {
+      const parent = table.parentNode;
+      if (!parent) return;
+      const siblings = parent._children;
+      const index = siblings.indexOf(table);
+      if (index >= 0) siblings.splice(index, 1);
+      table._parent = null;
+    },
+    reappearLoadMore() {
+      if (loadMore.parentNode) return;
+      body.appendChild(loadMore);
+      setLoadMoreVisible(true);
+    },
     state() {
       return {
         logicalRows: config.logicalRows,
@@ -571,4 +612,151 @@ describe('collection context, abort, and deadline lifecycle', () => {
     expect(timed[timed.length - 1].timeout).toBeLessThanOrEqual(2000);
   });
 });
+
+describe('adversarial virtual collection', () => {
+  it('fails a duplicate mounted aria-rowindex inside one sample', async () => {
+    const fixture = mountRecycledTableFixture({
+      logicalRows: 2,
+      ariaRowCount: 3,
+      mountedRows: 2,
+      initialAvailable: 2,
+      duplicateAria: true,
+    });
+    await expect(runCollect(createWorldCdp(fixture), collectRequest(), { store: artifactStore() }))
+      .rejects.toThrow(/duplicate/i);
+  });
+
+  it('fails a recycled-row conflict when the same key later has different bytes', async () => {
+    const fixture = mountRecycledTableFixture({
+      logicalRows: 4,
+      ariaRowCount: 5,
+      mountedRows: 2,
+      initialAvailable: 4,
+      stallScroll: true,
+    });
+    let evaluates = 0;
+    const cdp = createWorldCdp(fixture, {
+      beforeEvaluate: async () => {
+        evaluates += 1;
+        if (evaluates === 3) fixture.poisonMountedRows();
+      },
+    });
+    await expect(runCollect(cdp, collectRequest(), { store: artifactStore() }))
+      .rejects.toThrow(/conflict/i);
+  });
+
+  it('rejects snapshot-order collection before the first interaction', async () => {
+    const fixture = mountRecycledTableFixture({
+      logicalRows: 2,
+      ariaRowCount: 3,
+      mountedRows: 2,
+      initialAvailable: 2,
+      omitAria: true,
+    });
+    const cdp = createWorldCdp(fixture);
+    await expect(runCollect(cdp, collectRequest(), { store: artifactStore() }))
+      .rejects.toThrow(/aria-rowindex or --row-key-column/i);
+    expect(cdp.calls.filter(call => call.method === 'Input.dispatchMouseEvent')).toHaveLength(0);
+  });
+
+  it('cannot certify complete in row-key mode even when every row was collected', async () => {
+    const fixture = mountRecycledTableFixture({
+      logicalRows: 2,
+      ariaRowCount: 3,
+      mountedRows: 2,
+      initialAvailable: 2,
+    });
+    const output = await runCollect(createWorldCdp(fixture), collectRequest({
+      argv: [
+        '#orders', '--collect', '--scroll-container', '#viewport',
+        '--row-key-column', '0', '--format', 'json',
+      ],
+    }), { store: artifactStore() });
+    const table = collectedTable(output);
+    expect(table.collectedRows).toBe(2);
+    expect(table.identitySource).toBe('row-key-column');
+    expect(table.completeness.state).toBe('unknown');
+  });
+
+  it('fails closed for a missing or non-scrollable container and a detached table', async () => {
+    const missing = mountRecycledTableFixture({ logicalRows: 2, ariaRowCount: 3, mountedRows: 2, initialAvailable: 2 });
+    await expect(runCollect(createWorldCdp(missing), collectRequest({
+      argv: ['#orders', '--collect', '--scroll-container', '#missing', '--format', 'json'],
+    }), { store: artifactStore() })).rejects.toThrow(/scroll-container not found/i);
+
+    const frozen = mountRecycledTableFixture({
+      logicalRows: 4, ariaRowCount: 5, mountedRows: 2, initialAvailable: 2, noLoadMore: true,
+    });
+    await expect(runCollect(createWorldCdp(frozen), collectRequest({
+      argv: ['#orders', '--collect', '--scroll-container', '#static', '--format', 'json'],
+    }), { store: artifactStore() })).rejects.toThrow(/not scrollable/i);
+
+    const detaching = mountRecycledTableFixture({ logicalRows: 4, ariaRowCount: 5, mountedRows: 2, initialAvailable: 4 });
+    let evaluates = 0;
+    const cdp = createWorldCdp(detaching, {
+      beforeEvaluate: async () => {
+        evaluates += 1;
+        if (evaluates === 3) detaching.detachTable();
+      },
+    });
+    await expect(runCollect(cdp, collectRequest(), { store: artifactStore() }))
+      .rejects.toThrow(/detach|exactly one HTML table/i);
+  });
+
+  it('stops at row-too-large, no-progress, interaction, and thrown CDP operations', async () => {
+    const huge = mountRecycledTableFixture({
+      logicalRows: 2,
+      ariaRowCount: 3,
+      mountedRows: 2,
+      initialAvailable: 2,
+      hugeRow: true,
+    });
+    const hugeResult = collectedTable(await runCollect(
+      createWorldCdp(huge),
+      collectRequest(),
+      { store: artifactStore() },
+    ));
+    expect(hugeResult.completeness.termination).toBe('row-too-large');
+
+    const stalled = mountRecycledTableFixture({
+      logicalRows: 8,
+      ariaRowCount: 9,
+      mountedRows: 2,
+      initialAvailable: 8,
+      stallScroll: true,
+    });
+    const stalledResult = collectedTable(await runCollect(
+      createWorldCdp(stalled),
+      collectRequest(),
+      { store: artifactStore() },
+    ));
+    expect(stalledResult.completeness.termination).toBe('no-progress-limit');
+
+    const endless = mountRecycledTableFixture({
+      logicalRows: 100,
+      ariaRowCount: 101,
+      mountedRows: 12,
+      initialAvailable: 12,
+      endlessLoadMore: true,
+      stallWindow: true,
+    });
+    const endlessResult = collectedTable(await runCollect(
+      createWorldCdp(endless),
+      collectRequest(),
+      { store: artifactStore() },
+    ));
+    expect(endlessResult.completeness.termination).toBe('interaction-limit');
+
+    const throwing = mountRecycledTableFixture({
+      logicalRows: 2, ariaRowCount: 3, mountedRows: 2, initialAvailable: 2,
+    });
+    const cdp = createWorldCdp(throwing, {
+      beforeEvaluate: async () => { throw new Error('cdp evaluate exploded'); },
+    });
+    await expect(runCollect(cdp, collectRequest(), { store: artifactStore() }))
+      .rejects.toThrow(/exploded/i);
+    expect(cdp.releasedGroups.length).toBeGreaterThan(0);
+  });
+});
+
 
