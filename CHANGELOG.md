@@ -4,6 +4,11 @@
 
 ### Agent reliability
 
+* Preserve ambiguous completion when a side-effect-capable daemon request loses
+  its response. CLI remains non-zero and MCP remains `isError: true`, while the
+  error now reports `completion: "unknown"`, `sideEffectMayHaveOccurred: true`,
+  `retrySafe: false`, bounded transport diagnostics, and a verify-before-retry
+  perception command. The client never redispatches the action (#150).
 * Preserve failed JSON Action Results while returning a non-zero CLI status and
   MCP `isError: true` when `dispatch.ok` is false. Nested replay/repeat steps now
   fail fast on the same semantic result; dispatched `no-change`, `attention`,
