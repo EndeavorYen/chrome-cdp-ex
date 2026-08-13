@@ -821,32 +821,37 @@ describe('detached ref propagation contract (#148)', () => {
     const fixture = await detachedRefActionFixture();
     const stale = async () => ({ ok: true, result: fixture.output });
 
-    const batchRun = vi.fn(stale);
+    const batchRun = vi.fn(async command => (
+      command.args[0] === '@1' ? stale() : { ok: true, result: 'later command completed' }
+    ));
     const batchResults = await cdpTest.runBatchCommands({ run: batchRun }, [
       { cmd: 'click', args: ['@1'] },
       { cmd: 'click', args: ['#later'] },
     ]);
-    expect(batchRun).toHaveBeenCalledTimes(1);
-    expect(batchRun).toHaveBeenCalledWith({ cmd: 'click', args: ['@1'] });
+    expect(batchRun).toHaveBeenCalledTimes(2);
+    expect(batchRun.mock.calls).toEqual([
+      [{ cmd: 'click', args: ['@1'] }],
+      [{ cmd: 'click', args: ['#later'] }],
+    ]);
     expect(batchResults).toHaveLength(2);
     expect(batchResults[1]).toMatchObject({
       cmd: 'click',
-      skipped: true,
+      ok: true,
+      result: 'later command completed',
     });
     const batchModel = JSON.parse(cdpTest.formatBatchResults(batchResults, 'model', {
       targetId: 'ABC12345',
     }));
     expect(batchModel).toMatchObject({
-      counts: { steps: 2, ok: 0, failed: 1, skipped: 1 },
+      counts: { steps: 2, ok: 1, failed: 1 },
       failedStep: { cmd: 'click', error: expect.stringMatching(/DOM changes/) },
       steps: [
         { index: 1, cmd: 'click', ok: false },
-        { index: 2, cmd: 'click', ok: false, skipped: true },
+        { index: 2, cmd: 'click', ok: true, resultPreview: 'later command completed' },
       ],
     });
-    expect(cdpTest.formatBatchResults(batchResults, 'plain')).toMatch(
-      /\[1\/2\] click \(error\)[\s\S]*\[2\/2\] click \(skipped\)/,
-    );
+    expect(cdpTest.formatBatchResults(batchResults, 'plain'))
+      .toMatch(/\[1\/2\] click \(error\)[\s\S]*\[2\/2\] click[\s\S]*later command completed/);
 
     const flowRun = vi.fn(stale);
     const flow = JSON.parse(await cdpTest.flowStr({
