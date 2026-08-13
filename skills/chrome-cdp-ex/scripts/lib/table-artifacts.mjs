@@ -112,6 +112,17 @@ function assertReadableFileStats(stats, { expectedBytes = null, maxBytes }) {
   }
 }
 
+function stableFileIdentity(before, after) {
+  return before.dev === after.dev
+    && before.ino === after.ino
+    && before.mode === after.mode
+    && before.uid === after.uid
+    && before.nlink === after.nlink
+    && before.size === after.size
+    && before.mtimeMs === after.mtimeMs
+    && before.ctimeMs === after.ctimeMs;
+}
+
 function freezeDeep(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) freezeDeep(child);
@@ -421,8 +432,13 @@ async function readPrivateFile(state, path, { expectedBytes = null, maxBytes }) 
     const stats = await handle.stat();
     assertReadableFileStats(stats, { expectedBytes, maxBytes });
     const bytes = await handle.readFile();
+    const after = await handle.stat();
+    assertReadableFileStats(after, { expectedBytes, maxBytes });
     if (!Buffer.isBuffer(bytes) || bytes.length !== stats.size) {
       fail('TABLE_ARTIFACT_READ_FAILED', 'private artifact verification failed');
+    }
+    if (!stableFileIdentity(stats, after)) {
+      fail('TABLE_ARTIFACT_READ_FAILED', 'private artifact changed while it was read');
     }
     return bytes;
   } finally {
