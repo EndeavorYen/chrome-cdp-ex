@@ -650,6 +650,7 @@ describe('authorized live four-route trials', () => {
     expect(html).toContain('id="load-more"');
     expect(html).toContain('aria-rowcount="1025"');
     expect(html).toContain('virtual-slot-00');
+    expect(html).toContain('table.style.top');
     expect(html).not.toMatch(/table-extraction|table-artifacts|table-contract/);
   });
 

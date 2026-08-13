@@ -670,6 +670,7 @@ export function buildTableCollectionFixtureDocument() {
     const fixtureRoot = document.querySelector('#grid-fixture');
     const scrollport = document.querySelector('#grid-scrollport');
     const track = document.querySelector('#virtual-grid-track');
+    const table = document.querySelector('#virtual-grid');
     const loadMore = document.querySelector('#load-more');
     const slots = [...document.querySelectorAll('#virtual-grid-body tr')];
     let loadedRows = INITIAL;
@@ -693,6 +694,7 @@ export function buildTableCollectionFixtureDocument() {
         }));
       });
       track.style.height = (loadedRows * ROW_H) + 'px';
+      table.style.top = (windowStart * ROW_H) + 'px';
       fixtureRoot.dataset.loadedRows = String(loadedRows);
       fixtureRoot.dataset.loadMoreClicks = String(loadMoreClicks);
       fixtureRoot.dataset.windowStart = String(windowStart);
