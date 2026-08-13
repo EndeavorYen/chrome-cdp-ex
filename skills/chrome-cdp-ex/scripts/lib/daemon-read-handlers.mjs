@@ -110,7 +110,6 @@ export function createDaemonReadHandlers(input) {
         return commandResult(await capabilities.table(request, execution), null);
       }
       if (request.mode === 'continue') return commandResult(await capabilities.table(request), null);
-      if (request.format === 'json') throw new Error('table: JSON observation is unavailable until the bounded snapshot runtime is installed');
       return commandResult(await capabilities.table(request), null);
     },
     text: async context => commandResult(await capabilities.text(snapshotArgs(context)), null),

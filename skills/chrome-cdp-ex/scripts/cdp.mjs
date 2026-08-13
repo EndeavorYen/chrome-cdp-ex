@@ -11236,49 +11236,100 @@ function tableObservationModel(sample) {
   });
 }
 
+function orderedTableObservationEnvelope(model) {
+  return {
+    schema: model.schema,
+    snapshot: model.snapshot,
+    ...(Object.hasOwn(model, 'targetResolution') ? { targetResolution: model.targetResolution } : {}),
+    tables: model.tables,
+  };
+}
+
+function trimTrailingTableObservationPreview(model) {
+  const table = model.tables[model.tables.length - 1];
+  if (table?.inline?.rows?.length > 0) {
+    table.inline.rows.pop();
+    table.inline.rowCount = table.inline.rows.length;
+    table.inline.bytes = Buffer.byteLength(table.inline.rows.join('\n'), 'utf8');
+    table.inline.truncated = true;
+    return true;
+  }
+  if (model.tables.length > 0) {
+    model.tables.pop();
+    model.snapshot.tablesReturned = model.tables.length;
+    model.snapshot.truncated = true;
+    model.snapshot.truncationReason = 'sample-byte-limit';
+    return true;
+  }
+  return false;
+}
+
 function boundedTableObservationJson(model) {
   const mutable = structuredClone(model);
-  let output = formatJson(mutable);
+  let output = formatJson(orderedTableObservationEnvelope(mutable));
   while (Buffer.byteLength(output, 'utf8') > 16384) {
-    let removed = false;
-    for (let index = mutable.tables.length - 1; index >= 0; index -= 1) {
-      const inline = mutable.tables[index].inline;
-      if (inline.rows.length === 0) continue;
-      inline.rows.pop();
-      inline.rowCount = inline.rows.length;
-      inline.bytes = Buffer.byteLength(inline.rows.join('\n'), 'utf8');
-      inline.truncated = true;
-      removed = true;
-      break;
+    if (!trimTrailingTableObservationPreview(mutable)) {
+      throw new RangeError('table: observation metadata exceeds the JSON response byte ceiling');
     }
-    if (!removed && mutable.tables.length > 0) {
-      mutable.tables.pop();
-      mutable.snapshot.tablesReturned = mutable.tables.length;
-      mutable.snapshot.truncated = true;
-      mutable.snapshot.truncationReason = 'sample-byte-limit';
-      removed = true;
-    }
-    if (!removed) throw new RangeError('table: observation metadata exceeds the JSON response byte ceiling');
-    output = formatJson(mutable);
+    output = formatJson(orderedTableObservationEnvelope(mutable));
   }
   return output;
 }
 
 function boundedTableObservationText(model, target = '<target>') {
-  const lines = [
-    `Table snapshot: ${model.tables.length} mounted table(s); ${model.snapshot.truncated ? 'truncated' : 'bounded root-frame sample'}`,
-  ];
+  const summary = `Table snapshot: ${model.tables.length} mounted table(s); ${model.snapshot.truncated ? 'truncated' : 'bounded root-frame sample'}`;
+  const sections = [];
   for (let index = 0; index < model.tables.length; index += 1) {
     const table = model.tables[index];
-    lines.push(`${table.caption} — ${table.completeness.state}; mounted ${table.mountedRows}; observed ${table.collectedRows}${table.logicalRows === null ? '' : `/${table.logicalRows}`}`);
-    if (table.headers.length) lines.push(`Header: ${table.headers[0].join('\t')}`);
-    for (const row of table.inline.rows) lines.push(row);
+    const metadata = [
+      `${canonicalizeTableCells([table.caption])} — ${table.completeness.state}; mounted ${table.mountedRows}; observed ${table.collectedRows}${table.logicalRows === null ? '' : `/${table.logicalRows}`}`,
+    ];
+    for (let headerIndex = 0; headerIndex < table.headers.length; headerIndex += 1) {
+      metadata.push(`${headerIndex === 0 ? 'Header' : `Header ${headerIndex + 1}`}: ${canonicalizeTableCells(table.headers[headerIndex])}`);
+    }
+    sections.push({ metadata, rows: [...table.inline.rows] });
   }
-  if (model.tables.some(table => table.completeness.state !== 'complete')) {
-    lines.push(`Mounted snapshot only. For explicit virtual collection: cdp table ${target} --collect --scroll-container <selector>`);
+  const hint = model.tables.some(table => table.completeness.state !== 'complete')
+    ? `Mounted snapshot only. For explicit virtual collection: cdp table ${target} --collect --scroll-container <selector>`
+    : null;
+  let emissionTruncated = false;
+  const render = () => [
+    summary,
+    ...sections.flatMap(section => [...section.metadata, ...section.rows]),
+    ...(emissionTruncated ? ['Table preview truncated at complete row boundaries by the 8,192-byte emission limit.'] : []),
+    ...(hint ? [hint] : []),
+  ].join('\n');
+  let output = render();
+  while (Buffer.byteLength(output, 'utf8') > 8192) {
+    const section = sections[sections.length - 1];
+    if (!section) throw new RangeError('table: observation summary exceeds the text response byte ceiling');
+    if (section.rows.length > 0) section.rows.pop();
+    else sections.pop();
+    emissionTruncated = true;
+    output = render();
   }
-  while (Buffer.byteLength(lines.join('\n'), 'utf8') > 8192 && lines.length > 2) lines.splice(-2, 1);
-  return lines.join('\n');
+  return output;
+}
+
+function boundedTableObservationEmissionJson(result) {
+  if (typeof result !== 'string') return result;
+  let model;
+  try { model = JSON.parse(result); } catch { return result; }
+  if (!model || typeof model !== 'object' || Array.isArray(model)
+    || model.schema !== 'chrome-cdp-ex.tables.v1'
+    || !Array.isArray(model.tables)) return result;
+  return boundedTableObservationJson(model);
+}
+
+function boundedTableObservationEmissionText(result) {
+  if (typeof result !== 'string' || Buffer.byteLength(result, 'utf8') <= 8192) return result;
+  const marker = 'Table preview truncated at complete row boundaries by the 8,192-byte emission limit.';
+  const lines = result.split('\n');
+  while (lines.length > 1 && Buffer.byteLength([...lines, marker].join('\n'), 'utf8') > 8192) lines.pop();
+  if (Buffer.byteLength([...lines, marker].join('\n'), 'utf8') > 8192) {
+    return 'Table snapshot unavailable: summary exceeded the 8,192-byte emission limit.';
+  }
+  return [...lines, marker].join('\n');
 }
 
 async function tableObservationStr(cdp, sid, request) {
@@ -17393,10 +17444,15 @@ function emitTargetCommandResponse(response, {
     && response?.result !== null
     && response.result !== '';
   if (hasResult) {
-    const output = format === 'json' && targetResolution
+    let output = format === 'json' && targetResolution
       && !isDeterministicTableContinuationResult(cmd, response.result)
       ? attachTargetResolutionDiagnostics(response.result, targetResolution)
       : response.result;
+    if (cmd === 'table' && !isDeterministicTableContinuationResult(cmd, response.result)) {
+      output = format === 'json'
+        ? boundedTableObservationEmissionJson(output)
+        : boundedTableObservationEmissionText(output);
+    }
     console.log(output);
     const semantics = classifyCommandResultSemantics(
       { ok: response?.ok === true, result: output },
