@@ -8,6 +8,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  rmdirSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -734,6 +735,52 @@ describe('artifact request and session ownership', () => {
       registeredArtifactIds: [ID_A],
     });
   });
+
+  it.each(['wrong-mode', 'symlink-escape'])(
+    'does not enter a %s artifact directory during cleanup and still removes safe siblings',
+    async tamper => {
+      const runtimeDir = privateRuntimeRoot();
+      const store = artifactTest.createTableArtifactStoreWithDependencies({
+        runtimeDir,
+        targetId: 'target',
+        sessionId: 'session',
+        platform: 'darwin',
+      }, { randomBytes: deterministicBytes(ID_A, ID_B) });
+      const request = execution();
+      await store.publish(bundleForRows([['tampered']]), request);
+      await store.publish(bundleForRows([['safe']]), request);
+      const layout = artifactTest.inspectTableArtifactStore(store);
+      const tamperedDir = join(layout.sessionDir, ID_A);
+      const safeDir = join(layout.sessionDir, ID_B);
+      let externalDir = null;
+      if (tamper === 'wrong-mode') {
+        chmodSync(tamperedDir, 0o755);
+      } else {
+        unlinkSync(join(tamperedDir, 'manifest.json'));
+        unlinkSync(join(tamperedDir, 'rows.tsv'));
+        rmdirSync(tamperedDir);
+        externalDir = join(runtimeDir, 'external-artifact');
+        mkdirSync(externalDir, { mode: 0o700 });
+        writeFileSync(join(externalDir, 'rows.tsv'), 'external rows', { mode: 0o600 });
+        writeFileSync(join(externalDir, 'manifest.json'), 'external manifest', { mode: 0o600 });
+        symlinkSync(externalDir, tamperedDir, 'dir');
+      }
+
+      let error;
+      try { store.rollbackRequest(request); } catch (caught) { error = caught; }
+
+      expect(error).toMatchObject({ code: 'TABLE_ARTIFACT_CLEANUP_FAILED' });
+      expect(error?.message).not.toContain(runtimeDir);
+      expect(existsSync(safeDir)).toBe(false);
+      if (tamper === 'wrong-mode') {
+        expect(readFileSync(join(tamperedDir, 'rows.tsv'), 'utf8')).toBe('tampered');
+        expect(existsSync(join(tamperedDir, 'manifest.json'))).toBe(true);
+      } else {
+        expect(readFileSync(join(externalDir, 'rows.tsv'), 'utf8')).toBe('external rows');
+        expect(readFileSync(join(externalDir, 'manifest.json'), 'utf8')).toBe('external manifest');
+      }
+    },
+  );
 
   it('isolates stores by private session namespace for reads and cleanup', async () => {
     const runtimeDir = privateRuntimeRoot();
