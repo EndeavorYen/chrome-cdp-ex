@@ -226,22 +226,40 @@ describe('private table artifact publication', () => {
     }
   });
 
-  it.each(['owner-close', 'session-fsync', 'session-close'])(
+  it.each(['owner-write', 'owner-stat', 'owner-close', 'session-fsync', 'session-close'])(
     'recovers the same lazy store after a one-shot %s failure during initialization',
     async fault => {
       const runtimeDir = privateRuntimeRoot();
       let layout;
       let injected = false;
+      let ownerWritten = false;
       const store = testStore(runtimeDir, {}, {
         open: async (...args) => {
           const handle = await open(...args);
           const path = args[0];
           const isOwner = basename(path) === 'owner.json';
           const isSession = layout && path === layout.sessionDir;
-          if (injected || (fault === 'owner-close' && !isOwner)
-            || (fault !== 'owner-close' && !isSession)) return handle;
+          if (injected || (fault.startsWith('owner-') && !isOwner)
+            || (!fault.startsWith('owner-') && !isSession)) return handle;
           return tracedHandle(handle, fault, [], {
-            ...(fault.endsWith('fsync') ? {
+            ...(fault === 'owner-write' ? {
+              writeFile: async () => {
+                injected = true;
+                throw new Error(`one-shot init fault ${runtimeDir}`);
+              },
+            } : fault === 'owner-stat' ? {
+              writeFile: async (realHandle, ...writeArgs) => {
+                await realHandle.writeFile(...writeArgs);
+                ownerWritten = true;
+              },
+              stat: async realHandle => {
+                if (ownerWritten) {
+                  injected = true;
+                  throw new Error(`one-shot init fault ${runtimeDir}`);
+                }
+                return realHandle.stat();
+              },
+            } : fault.endsWith('fsync') ? {
               sync: async () => {
                 injected = true;
                 throw new Error(`one-shot init fault ${runtimeDir}`);
