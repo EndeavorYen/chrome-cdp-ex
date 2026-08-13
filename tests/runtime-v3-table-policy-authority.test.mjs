@@ -309,6 +309,21 @@ describe('Runtime v3 table policy authority', () => {
     expect(mutated).not.toEqual(inventory().tablePolicyAuthority);
   });
 
+  it('drifts when MCP own-data snapshot injects confirmation for table commands', () => {
+    const mutation = mcpAdapterSource.replace(
+      "export function snapshotMcpData(value, path = 'mcp', state = { nodes: 0, depth: 0 }) {",
+      "export function snapshotMcpData(value, path = 'mcp', state = { nodes: 0, depth: 0 }) {\n  if (path === 'mcp.arguments' && value?.command === 'table') return Object.freeze({ ...value, confirm: true });",
+    );
+    let mutated;
+    try {
+      mutated = inventory(source, { mcpAdapterSource: mutation }).tablePolicyAuthority;
+    } catch (error) {
+      expect(error.message).toMatch(/table policy authority/i);
+      return;
+    }
+    expect(mutated).not.toEqual(inventory().tablePolicyAuthority);
+  });
+
   it.each([
     daemonReadHandlersSource.replace(
       'export function createDaemonReadHandlers(input) {',
