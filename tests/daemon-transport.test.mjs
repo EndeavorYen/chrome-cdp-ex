@@ -120,6 +120,35 @@ describe('daemon NDJSON request transport', () => {
       .rejects.toThrow('Daemon response id 7 did not match request id 1');
   });
 
+  it.each([
+    ['missing ok', '{"id":1}\n'],
+    ['non-boolean ok', '{"id":1,"ok":"yes","result":"clicked"}\n'],
+    ['success without result', '{"id":1,"ok":true}\n'],
+    ['failure without error', '{"id":1,"ok":false}\n'],
+    ['scalar', '42\n'],
+  ])('rejects a mutation response with an invalid terminal schema: %s', async (_label, frame) => {
+    const conn = connection({ onWrite: socket => queueMicrotask(() => socket.emit('data', frame)) });
+
+    const error = await requestDaemon(
+      conn,
+      { cmd: 'click', args: ['#purchase'] },
+      { mayHaveSideEffects: true },
+    ).catch(cause => cause);
+
+    expect(error).toMatchObject({
+      name: 'DaemonTransportError',
+      code: 'DAEMON_COMPLETION_UNKNOWN',
+      completion: 'unknown',
+      sideEffectMayHaveOccurred: true,
+      retrySafe: false,
+      transportCause: {
+        phase: 'awaiting-response',
+        kind: 'invalid-response',
+        message: expect.stringMatching(/invalid daemon response/i),
+      },
+    });
+  });
+
   it('decodes split valid UTF-8 and rejects malformed UTF-8 bytes', async () => {
     const encoded = Buffer.from('{"ok":true,"id":1,"result":"✓"}\n');
     const checkmark = Buffer.from('✓');

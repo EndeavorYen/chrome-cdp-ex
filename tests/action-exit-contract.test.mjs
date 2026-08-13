@@ -750,7 +750,8 @@ describe('ambiguous action completion contract (#150)', () => {
   async function committedActionDisconnect() {
     let mutations = 0;
     const connection = new EventEmitter();
-    connection.write = vi.fn(() => {
+    connection.write = vi.fn(payload => {
+      expect(JSON.parse(payload)).toEqual({ cmd: 'click', args: ['#purchase'], id: 1 });
       mutations += 1;
       queueMicrotask(() => connection.emit('close'));
     });
@@ -774,6 +775,8 @@ describe('ambiguous action completion contract (#150)', () => {
 
   it.each([
     'connect ECONNREFUSED /fixture/runtime/cdp-ABC12345.sock',
+    'connect ENOENT /fixture/runtime/cdp-ABC12345.sock',
+    'connect ECONNRESET /fixture/runtime/cdp-ABC12345.sock',
     'Timed out connecting to daemon socket: /fixture/runtime/cdp-ABC12345.sock',
   ])('keeps a proven pre-dispatch disconnect restartable: %s', message => {
     const model = JSON.parse(cdpTest.formatCliError(new Error(message), {
