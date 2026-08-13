@@ -5270,7 +5270,10 @@ describe('bounded table observation', () => {
 
     const error = await sampleRootFrameTables(cdp, 'sid1', 'table').catch(cause => cause);
     expect(error.message).toContain('boom\\nFORGED\\u001B[31m\\0');
-    expect(error.message).not.toMatch(/[\n\r\u001b\u0000]/);
+    expect([...error.message].some(character => {
+      const unit = character.charCodeAt(0);
+      return unit < 0x20 || (unit >= 0x7F && unit <= 0x9F);
+    })).toBe(false);
     expect(Buffer.byteLength(error.message, 'utf8')).toBeLessThanOrEqual(1024);
   });
 

@@ -11105,6 +11105,28 @@ async function textStr(cdp, sid, args) {
 }
 
 // --- Truthful bounded table observation ---
+function boundedTableRuntimeDiagnostic(exceptionDetails) {
+  const raw = String(runtimeExceptionMessage(exceptionDetails));
+  let bounded = '';
+  for (let index = 0; index < raw.length && bounded.length < 128; index += 1) {
+    const unit = raw.charCodeAt(index);
+    if (unit >= 0xD800 && unit <= 0xDBFF) {
+      const next = raw.charCodeAt(index + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF && bounded.length <= 126) {
+        bounded += raw[index] + raw[index + 1];
+        index += 1;
+      } else {
+        bounded += '\uFFFD';
+      }
+    } else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+      bounded += '\uFFFD';
+    } else {
+      bounded += raw[index];
+    }
+  }
+  return canonicalizeTableCells([bounded]);
+}
+
 async function sampleRootFrameTables(cdp, sid, selector) {
   const frameTree = await cdpDomains(cdp).Page.getFrameTree({}, sid);
   const frameId = frameTree?.frameTree?.frame?.id;
@@ -11124,7 +11146,7 @@ async function sampleRootFrameTables(cdp, sid, selector) {
     awaitPromise: false,
   }, sid);
   if (evaluated?.exceptionDetails) {
-    throw new Error(`table: isolated sampler failed: ${runtimeExceptionMessage(evaluated.exceptionDetails)}`);
+    throw new Error(`table: isolated sampler failed: ${boundedTableRuntimeDiagnostic(evaluated.exceptionDetails)}`);
   }
   if (evaluated?.result?.type !== 'string' || typeof evaluated.result.value !== 'string') {
     throw new Error('table: isolated sampler returned a non-string result');
