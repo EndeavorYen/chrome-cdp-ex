@@ -7096,6 +7096,34 @@ describe('diff compact filtering', () => {
 // =========================================================================
 
 describe('waitForStr --gone', () => {
+  function trustedGoneFixture({ connected = true, visible = true, frameId = 'main-frame' } = {}) {
+    const cdp = createMockCDP({
+      'Page.getFrameTree': () => ({ frameTree: { frame: { id: frameId } } }),
+      'Page.createIsolatedWorld': params => {
+        expect(params).toMatchObject({ frameId, grantUniveralAccess: false });
+        return { executionContextId: 901 };
+      },
+      'DOM.resolveNode': ({ executionContextId }) => ({
+        object: { objectId: executionContextId === 901 ? 'isolated-ref' : 'page-ref' },
+      }),
+      'Runtime.callFunctionOn:trusted-connectivity': ({ objectId, functionDeclaration }) => {
+        expect(objectId).toBe('isolated-ref');
+        expect(functionDeclaration).not.toMatch(/this\.(?:isConnected|ownerDocument|getRootNode)/);
+        return { result: { value: { connected } } };
+      },
+      'Runtime.callFunctionOn': ({ objectId, functionDeclaration }) => {
+        if (objectId === 'page-ref') {
+          if (/this\.(?:isConnected|offsetParent)/.test(functionDeclaration)) {
+            return { result: { value: true } };
+          }
+          throw new Error('page-realm connectivity accessor was invoked');
+        }
+        return { result: { value: { connected, visible } } };
+      },
+    });
+    return cdp;
+  }
+
   it('should throw when no selector provided after --gone', async () => {
     const cdp = createMockCDP({});
     await expect(waitForStr(cdp, 'sid1', ['--gone'], new Map()))
@@ -7166,6 +7194,59 @@ describe('waitForStr --gone', () => {
     const refMap = new Map([[7, 77777]]);
     await expect(waitForStr(cdp, 'sid1', ['--gone', '@7', '500'], refMap))
       .rejects.toThrow(/@7.*still present/);
+  });
+
+  it('reports a detached @ref gone despite forged page-realm connectivity', async () => {
+    const cdp = trustedGoneFixture({ connected: false, visible: true });
+    const refMap = new Map([[8, 80808]]);
+    const refState = { generation: 1, invalidationReason: null };
+
+    await expect(waitForStr(cdp, 'sid1', ['--gone', '@8', '500'], refMap, refState))
+      .resolves.toMatch(/@8.*gone.*removed|disconnected/i);
+
+    expect(refMap.has(8)).toBe(false);
+    expect(refState.invalidationReason).toBe('dom-mutation');
+    expect(cdp.calls.some(call => (
+      call.method === 'Runtime.callFunctionOn' && call.params.objectId === 'page-ref'
+    ))).toBe(false);
+  });
+
+  it('supports a connected hidden frame ref without clearing its mapping', async () => {
+    const cdp = trustedGoneFixture({ connected: true, visible: false, frameId: 'child-frame' });
+    const refState = {
+      generation: 1,
+      frameRefs: new Map([['@f2', {
+        frameRef: '@f2',
+        frameId: 'child-frame',
+        parentId: null,
+        refs: new Map([[1, 81818]]),
+      }]]),
+    };
+
+    await expect(waitForStr(cdp, 'sid1', ['--gone', '@f2:1', '500'], new Map(), refState))
+      .resolves.toMatch(/@f2:1.*gone.*hidden/i);
+
+    expect(refState.frameRefs.get('@f2').refs.get(1)).toBe(81818);
+    expect(cdp.calls.some(call => call.method === 'Page.getFrameTree')).toBe(false);
+    expect(cdp.calls.find(call => call.method === 'Page.createIsolatedWorld')?.params.frameId)
+      .toBe('child-frame');
+  });
+
+  it('polls connected visible refs through a trusted isolated-world visibility probe', async () => {
+    const cdp = trustedGoneFixture({ connected: true, visible: true });
+
+    await expect(waitForStr(cdp, 'sid1', ['--gone', '@9', '500'], new Map([[9, 90909]]), {
+      generation: 1,
+    })).rejects.toThrow(/@9.*still present/);
+
+    const visibilityCalls = cdp.calls.filter(call => (
+      call.method === 'Runtime.callFunctionOn'
+      && call.params.functionDeclaration.includes('getClientRects')
+    ));
+    expect(visibilityCalls.length).toBeGreaterThan(0);
+    expect(visibilityCalls.every(call => call.params.objectId === 'isolated-ref')).toBe(true);
+    expect(visibilityCalls[0].params.functionDeclaration)
+      .not.toMatch(/this\.(?:isConnected|offsetParent)/);
   });
 });
 
