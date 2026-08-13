@@ -7,8 +7,9 @@ import { buildRuntimeDispatchInventory } from '../scripts/runtime-dispatch-inven
 
 export const rootDir = fileURLToPath(new URL('..', import.meta.url));
 export const source = readFileSync(join(rootDir, 'skills/chrome-cdp-ex/scripts/cdp.mjs'), 'utf8');
+export const packageVersion = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8')).version;
 export const fixture = JSON.parse(readFileSync(
-  join(rootDir, 'docs/contracts/v2.15.0/runtime-dispatch.v1.json'),
+  join(rootDir, `docs/contracts/v${packageVersion}/runtime-dispatch.v1.json`),
   'utf8',
 ));
 export const scriptPath = join(rootDir, 'scripts/runtime-dispatch-inventory.mjs');

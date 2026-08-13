@@ -5,6 +5,7 @@ import { buildRuntimeDispatchInventory } from '../scripts/runtime-dispatch-inven
 import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import {
   fixture,
+  packageVersion,
   rootDir,
   scriptPath,
   source,
@@ -15,7 +16,7 @@ describe('Runtime v3 final dispatch characterization', () => {
     expect(buildRuntimeDispatchInventory(source)).toEqual(fixture);
     expect(fixture).toMatchObject({
       schema: 'chrome-cdp-ex.runtime-dispatch.v1',
-      productVersion: '2.15.0',
+      productVersion: packageVersion,
       counts: {
         commands: 81,
         aliases: 23,

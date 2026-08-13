@@ -6,7 +6,7 @@
       "title": "Public contract baseline",
       "owner": "maintainers",
       "tags": ["contract", "default"],
-      "runner": { "kind": "node", "entrypoint": "scripts/check-public-contracts.mjs", "args": ["--version", "2.15.0"] },
+      "runner": { "kind": "node", "entrypoint": "scripts/check-public-contracts.mjs", "args": ["--version", "2.16.0"] },
       "expect": { "exitCodes": [0], "stdoutIncludes": ["Public contracts OK:"] },
       "risk": { "units": 1, "timeoutMs": 30000, "maxOutputBytes": 65536, "network": "none", "browser": "none", "mutation": "none", "maxAttempts": 1 }
     },

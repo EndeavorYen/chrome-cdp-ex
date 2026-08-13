@@ -11,8 +11,9 @@ import { commandResult } from '../skills/chrome-cdp-ex/scripts/lib/command-appli
 import { createCommandDispatcher } from '../skills/chrome-cdp-ex/scripts/lib/command-dispatch.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
+const packageVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const contract = JSON.parse(readFileSync(
-  new URL('../docs/contracts/v2.15.0/public-contracts.v1.json', import.meta.url),
+  new URL(`../docs/contracts/v${packageVersion}/public-contracts.v1.json`, import.meta.url),
   'utf8',
 ));
 

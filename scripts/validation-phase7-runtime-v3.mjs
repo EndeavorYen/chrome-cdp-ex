@@ -15,7 +15,8 @@ import { createCommandDispatcher } from '../skills/chrome-cdp-ex/scripts/lib/com
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const sourcePath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
-const inventoryPath = resolve(rootDir, 'docs/contracts/v2.15.0/runtime-dispatch.v1.json');
+const packageVersion = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf8')).version;
+const inventoryPath = resolve(rootDir, `docs/contracts/v${packageVersion}/runtime-dispatch.v1.json`);
 
 const EXPECTED_FAILURE_PROOF = Object.freeze({
   schema: 'chrome-cdp-ex.runtime-v3-failures.v1',

@@ -18,20 +18,21 @@ const supportedHosts = ['claude', 'codex', 'cursor', 'openclaw', 'hermes', 'pi']
 function validate(manifest) {
   return validateHostValidation(manifest, {
     packageVersion: packageJson.version,
+    publishedVersion: '2.15.0',
     supportedHosts,
     rootDir,
   });
 }
 
 describe('host validation CLI', () => {
-  it('accepts the checked-in current-release evidence manifest', () => {
+  it('accepts checked-in historical evidence beneath an unreleased candidate', () => {
     const result = spawnSync(process.execPath, ['scripts/check-host-validation.mjs'], {
       cwd: new URL('..', import.meta.url),
       encoding: 'utf8',
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain(`Host validation OK: 6 hosts, product v${packageJson.version}`);
+    expect(result.stdout).toContain('Host validation OK: 6 hosts, historical product v2.15.0 under candidate v2.16.0');
     expect(result.stderr).toBe('');
   });
 
@@ -59,12 +60,12 @@ describe('host validation manifest', () => {
     expect(validate(checkedInManifest)).toEqual([]);
   });
 
-  it('rejects evidence recorded for a different product version', () => {
+  it('rejects evidence recorded for neither the package nor published version', () => {
     const manifest = structuredClone(checkedInManifest);
     manifest.productVersion = '2.13.1';
 
     expect(validate(manifest)).toContain(
-      `Host validation productVersion 2.13.1 does not match package version ${packageJson.version}`,
+      'Host validation productVersion 2.13.1 matches neither package version 2.16.0 nor published historical version 2.15.0',
     );
   });
 

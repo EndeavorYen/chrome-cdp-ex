@@ -1,5 +1,7 @@
 # chrome-cdp-ex
 
+> **Unreleased candidate:** repository metadata is v2.16.0; install links and measured release evidence remain pinned to published v2.15.0.
+
 [![81 Commands](https://img.shields.io/badge/commands-81-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)

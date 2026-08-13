@@ -1,4 +1,5 @@
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
@@ -19,6 +20,18 @@ const packageVersion = JSON.parse(
 ).version;
 
 describe('public contract baseline', () => {
+  it('keeps every published v2.15 fixture byte-identical', () => {
+    const expected = {
+      'package-entries.v1.json': '279e3e23d154d6ef5f01bb4479be22167b39634bfbdc28b7b27a49558476d3e2',
+      'public-contracts.v1.json': '169f2ff562ad05fe38e902de1500429444e3ad646aee1121ddea02dd46809556',
+      'runtime-dispatch.v1.json': '43326e9b9216a4c27d7d7beda4265ee86fe32ed99f80297215829ecea10ab062',
+    };
+    for (const [name, checksum] of Object.entries(expected)) {
+      const bytes = readFileSync(join(rootDir, 'docs/contracts/v2.15.0', name));
+      expect(createHash('sha256').update(bytes).digest('hex'), name).toBe(checksum);
+    }
+  });
+
   it('canonicalizes object keys recursively without reordering arrays', () => {
     expect(canonicalize({ z: 1, a: { y: 2, b: 3 }, list: [{ z: 1, a: 2 }, 'x'] }))
       .toEqual({ a: { b: 3, y: 2 }, list: [{ a: 2, z: 1 }, 'x'], z: 1 });
@@ -129,7 +142,7 @@ describe('public contract baseline', () => {
     expect(large[0].length).toBeLessThanOrEqual(600);
   });
 
-  it('matches the checked-in v2.15.0 fixture and detects each protected drift class', async () => {
+  it('matches the checked-in current-version fixture and detects each protected drift class', async () => {
     const actual = await buildPublicContract({ rootDir });
     const fixture = JSON.parse(readFileSync(
       join(rootDir, 'docs', 'contracts', `v${packageVersion}`, 'public-contracts.v1.json'),

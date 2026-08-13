@@ -10,7 +10,8 @@ import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-sur
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const cdpPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
-const fixturePath = resolve(rootDir, 'docs/contracts/v2.15.0/runtime-dispatch.v1.json');
+const packageVersion = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf8')).version;
+const fixturePath = resolve(rootDir, `docs/contracts/v${packageVersion}/runtime-dispatch.v1.json`);
 const PROTOCOL_COMMANDS = new Set(['list', 'list_raw', 'meta', 'stop']);
 
 function digest(value) {
@@ -457,7 +458,7 @@ export function buildRuntimeDispatchInventory(source = readFileSync(cdpPath, 'ut
 
   return {
     schema: 'chrome-cdp-ex.runtime-dispatch.v1',
-    productVersion: '2.15.0',
+    productVersion: packageVersion,
     counts: {
       commands: COMMAND_SURFACE.commands.length,
       aliases: COMMAND_SURFACE.commands.flatMap(command => command.aliases).length,

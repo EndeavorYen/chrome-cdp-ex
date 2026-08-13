@@ -25,8 +25,9 @@ import {
 } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
+const packageVersion = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8')).version;
 const contract = JSON.parse(readFileSync(
-  join(rootDir, 'docs/contracts/v2.15.0/public-contracts.v1.json'),
+  join(rootDir, `docs/contracts/v${packageVersion}/public-contracts.v1.json`),
   'utf8',
 ));
 

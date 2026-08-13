@@ -1,5 +1,7 @@
 # chrome-cdp-ex Reference
 
+> **Unreleased candidate:** repository metadata is v2.16.0; install links and measured release evidence remain pinned to published v2.15.0.
+
 > **TL;DR** — This is the technical reference for `chrome-cdp-ex`: command map, action evidence behavior, browser setup, Electron/WSL2 notes, and benchmark rules. Start with the README when you want the product story.
 
 ## Command Map

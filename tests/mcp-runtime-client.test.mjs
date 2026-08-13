@@ -9,8 +9,9 @@ import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-ser
 import { __test__ as cdpTest } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
+const packageVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const contract = JSON.parse(readFileSync(
-  new URL('../docs/contracts/v2.15.0/public-contracts.v1.json', import.meta.url),
+  new URL(`../docs/contracts/v${packageVersion}/public-contracts.v1.json`, import.meta.url),
   'utf8',
 ));
 

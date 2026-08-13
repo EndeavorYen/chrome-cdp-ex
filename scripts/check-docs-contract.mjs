@@ -112,7 +112,11 @@ function checkReleaseMetadataContract(docs) {
     failures.push(`Release metadata version mismatch: package.json ${packageModel.version} != .claude-plugin/plugin.json ${pluginModel.version}`);
   }
   const version = packageModel.version;
-  const publishedVersion = '2.15.0';
+  const publishedVersion = docs.changelog?.match(/^## \[(\d+\.\d+\.\d+)\]/m)?.[1] || null;
+  if (!publishedVersion) {
+    failures.push('CHANGELOG.md is missing the latest published semantic version');
+    return failures;
+  }
   for (const [label, text] of [['README.md', docs.readme], ['docs/reference.md', docs.reference]]) {
     if (!text) continue;
     if (!text.includes(`/releases/tag/v${publishedVersion}`)) {
@@ -311,6 +315,7 @@ function readDocs() {
     killerPath: read('docs/examples/killer-path.md'),
     packageJson: read('package.json'),
     pluginManifest: read('.claude-plugin/plugin.json'),
+    changelog: read('CHANGELOG.md'),
     claude: read('CLAUDE.md'),
     contributing: read('CONTRIBUTING.md'),
     design: read('DESIGN.md'),

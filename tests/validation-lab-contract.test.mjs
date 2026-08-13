@@ -108,9 +108,9 @@ describe('validation lab registry contract', () => {
       'package-lock.json',
       'README.md',
       'docs/reference.md',
-      'docs/contracts/v2.15.0/runtime-dispatch.v1.json',
-      'docs/contracts/v2.15.0/package-entries.v1.json',
-      'docs/contracts/v2.15.0/public-contracts.v1.json',
+      'docs/contracts/v2.16.0/runtime-dispatch.v1.json',
+      'docs/contracts/v2.16.0/package-entries.v1.json',
+      'docs/contracts/v2.16.0/public-contracts.v1.json',
       'skills/chrome-cdp-ex/references/commands.md',
       'scripts/candidate-identity.mjs',
       'scripts/benchmark-run-lock.mjs',
@@ -127,7 +127,9 @@ describe('validation lab registry contract', () => {
     try {
       for (const [index, name] of files.entries()) {
         mkdirSync(dirname(join(fixtureRoot, name)), { recursive: true });
-        writeFileSync(join(fixtureRoot, name), `fixture-${index}\n`);
+        writeFileSync(join(fixtureRoot, name), name === 'package.json'
+          ? '{"version":"2.16.0"}\n'
+          : `fixture-${index}\n`);
       }
       const options = {
         rootDir: fixtureRoot,
@@ -140,9 +142,9 @@ describe('validation lab registry contract', () => {
         'skills/chrome-cdp-ex/scripts/cdp.mjs',
         'README.md',
         'docs/reference.md',
-        'docs/contracts/v2.15.0/runtime-dispatch.v1.json',
-        'docs/contracts/v2.15.0/package-entries.v1.json',
-        'docs/contracts/v2.15.0/public-contracts.v1.json',
+        'docs/contracts/v2.16.0/runtime-dispatch.v1.json',
+        'docs/contracts/v2.16.0/package-entries.v1.json',
+        'docs/contracts/v2.16.0/public-contracts.v1.json',
         'skills/chrome-cdp-ex/references/commands.md',
         'scripts/validation-phase5-supervisor.mjs',
         'scripts/validation-phase6-convergence.mjs',

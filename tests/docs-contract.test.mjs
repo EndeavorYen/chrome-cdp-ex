@@ -12,6 +12,7 @@ const skill = readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.me
 const killerPath = readFileSync(new URL('../docs/examples/killer-path.md', import.meta.url), 'utf8');
 const packageJson = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
 const pluginManifest = readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8');
+const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
 const claude = readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8');
 const contributing = readFileSync(new URL('../CONTRIBUTING.md', import.meta.url), 'utf8');
 const design = readFileSync(new URL('../DESIGN.md', import.meta.url), 'utf8');
@@ -103,6 +104,7 @@ describe('Killer Path docs contract', () => {
       killerPath,
       packageJson,
       pluginManifest: pluginManifest.replace(/"version":\s*"[^"]+"/, '"version": "0.0.0"'),
+      changelog,
       claude,
       contributing,
       design,
@@ -114,24 +116,25 @@ describe('Killer Path docs contract', () => {
   });
 
   it('keeps an unreleased package candidate separate from pinned published release links', () => {
-    const candidatePackage = packageJson.replace('"version": "2.15.0"', '"version": "2.16.0"');
-    const candidatePlugin = pluginManifest.replace('"version": "2.15.0"', '"version": "2.16.0"');
-    const candidateWording = '\n> **Unreleased candidate:** v2.16.0 development metadata; install links remain pinned to published v2.15.0.\n';
     const docs = {
-      readme: `${readme}${candidateWording}`,
-      reference: `${reference}${candidateWording}`,
+      readme,
+      reference,
       selfImprovementLoop,
       skill,
       killerPath,
-      packageJson: candidatePackage,
-      pluginManifest: candidatePlugin,
+      packageJson,
+      pluginManifest,
+      changelog,
       claude,
       contributing,
       design,
     };
 
     expect(checkDocsContract(docs, [])).toEqual([]);
-    expect(checkDocsContract({ ...docs, readme }, [])).toContain(
+    expect(checkDocsContract({
+      ...docs,
+      readme: readme.replace(/^> \*\*Unreleased candidate:\*\*.*\n/m, ''),
+    }, [])).toContain(
       'README.md must identify v2.16.0 as an unreleased candidate while v2.15.0 remains published',
     );
     expect(checkDocsContract({
@@ -145,6 +148,10 @@ describe('Killer Path docs contract', () => {
       'README.md must not fabricate an unreleased release tag v2.16.0',
       'README.md must not fabricate an unreleased tarball pi-chrome-cdp-2.16.0.tgz',
     ]));
+    expect(checkDocsContract({
+      ...docs,
+      changelog: changelog.replace('## [2.15.0]', '## [9.8.7]'),
+    }, [])).toContain('README.md is missing the published release tag v9.8.7');
   });
 
   it('rejects stale contributor paths, obsolete line counts, and shipped features marked future', () => {
@@ -254,6 +261,12 @@ describe('Repository release gates', () => {
     expect(releaseWorkflow).toContain('CHANGELOG.md');
     expect(releaseWorkflow).toContain('--notes-file');
     expect(releaseWorkflow).not.toContain('--generate-notes');
+  });
+
+  it('cleanly skips release work for an unreleased package candidate', () => {
+    expect(releaseWorkflow).toContain('id: readiness');
+    expect(releaseWorkflow).toContain('ready=false');
+    expect(releaseWorkflow).toContain("steps.readiness.outputs.ready == 'true'");
   });
 
   it('validates host evidence and the actual tarball before attaching a release', () => {

@@ -38,6 +38,7 @@ function staysWithin(rootDir, candidate) {
 
 export function validateHostValidation(manifest, {
   packageVersion,
+  publishedVersion = packageVersion,
   supportedHosts = SUPPORTED_HOSTS,
   rootDir = REPO_ROOT,
 } = {}) {
@@ -45,8 +46,11 @@ export function validateHostValidation(manifest, {
   if (manifest?.schema !== 'chrome-cdp-ex.host-validation.v1') {
     errors.push(`Host validation schema must be chrome-cdp-ex.host-validation.v1`);
   }
-  if (manifest?.productVersion !== packageVersion) {
-    errors.push(`Host validation productVersion ${manifest?.productVersion || 'missing'} does not match package version ${packageVersion}`);
+  const historicalPublishedEvidence = manifest?.productVersion === publishedVersion
+    && manifest?.environment?.evidenceScope === 'historical-candidate'
+    && manifest?.environment?.currentTree === false;
+  if (manifest?.productVersion !== packageVersion && !historicalPublishedEvidence) {
+    errors.push(`Host validation productVersion ${manifest?.productVersion || 'missing'} matches neither package version ${packageVersion} nor published historical version ${publishedVersion}`);
   }
   if (!isIsoDate(manifest?.validatedAt)) {
     errors.push('Host validation validatedAt must be an ISO date (YYYY-MM-DD)');
@@ -118,8 +122,12 @@ export function checkHostValidation({
 } = {}) {
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   const packageJson = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf8'));
+  const changelog = readFileSync(resolve(rootDir, 'CHANGELOG.md'), 'utf8');
+  const publishedVersion = changelog.match(/^## \[(\d+\.\d+\.\d+)\]/m)?.[1] || null;
+  if (!publishedVersion) throw new Error('CHANGELOG.md is missing the latest published semantic version');
   const errors = validateHostValidation(manifest, {
     packageVersion: packageJson.version,
+    publishedVersion,
     supportedHosts: SUPPORTED_HOSTS,
     rootDir,
   });
@@ -133,7 +141,11 @@ function main() {
     process.exitCode = 1;
     return;
   }
-  process.stdout.write(`Host validation OK: ${manifest.hosts.length} hosts, product v${manifest.productVersion}\n`);
+  const packageVersion = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8')).version;
+  const scope = manifest.productVersion === packageVersion
+    ? `product v${manifest.productVersion}`
+    : `historical product v${manifest.productVersion} under candidate v${packageVersion}`;
+  process.stdout.write(`Host validation OK: ${manifest.hosts.length} hosts, ${scope}\n`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
