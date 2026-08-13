@@ -5996,6 +5996,31 @@ function invalidateRefMapping(refMap, ref, refState) {
   else refMap.delete(parseInt(ref.slice(1)));
 }
 
+const STALE_REF_ERROR_CODE = 'CDP_STALE_REF';
+
+function isMissingDomNodeError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('no node with given id')
+    || message.includes('could not find node')
+    || /node with given id.*does not belong/.test(message)
+    || /no node found for given backend/.test(message)
+    || /backend node.*(?:not found|does not exist)/.test(message);
+}
+
+function staleRefError(refMap, ref, refState, cause) {
+  invalidateRefMapping(refMap, ref, refState);
+  const error = new Error(
+    formatUnknownRefError(ref, refState || {}) + ` Original CDP error: ${cause.message}`,
+    { cause },
+  );
+  error.code = STALE_REF_ERROR_CODE;
+  return error;
+}
+
+function isStaleRefError(error) {
+  return error?.code === STALE_REF_ERROR_CODE;
+}
+
 function trustedRefConnectivityFunctionDeclaration() {
   return `function() {
     try {
@@ -6004,14 +6029,14 @@ function trustedRefConnectivityFunctionDeclaration() {
       const ownerDocumentGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'ownerDocument')?.get;
       const getRootNode = Object.getOwnPropertyDescriptor(nodePrototype, 'getRootNode')?.value;
       if (typeof connectedGetter !== 'function' || typeof ownerDocumentGetter !== 'function' || typeof getRootNode !== 'function') {
-        return { connected: false };
+        return { error: 'trusted connectivity primitives unavailable' };
       }
       const connected = Reflect.apply(connectedGetter, this, []);
       const ownerDocument = Reflect.apply(ownerDocumentGetter, this, []);
       const composedRoot = Reflect.apply(getRootNode, this, [{ composed: true }]);
       return { connected: connected === true && ownerDocument != null && composedRoot === ownerDocument };
-    } catch {
-      return { connected: false };
+    } catch (error) {
+      return { error: String(error && error.message || error || 'trusted connectivity probe failed') };
     }
   }`;
 }
@@ -6027,7 +6052,7 @@ function trustedRefPresenceFunctionDeclaration() {
       const getClientRects = Object.getOwnPropertyDescriptor(elementPrototype, 'getClientRects')?.value;
       if (typeof connectedGetter !== 'function' || typeof ownerDocumentGetter !== 'function'
         || typeof getRootNode !== 'function' || typeof getClientRects !== 'function') {
-        return { connected: false, visible: false };
+        return { error: 'trusted presence primitives unavailable' };
       }
       const connected = Reflect.apply(connectedGetter, this, []);
       const ownerDocument = Reflect.apply(ownerDocumentGetter, this, []);
@@ -6042,8 +6067,8 @@ function trustedRefPresenceFunctionDeclaration() {
         && style.visibility !== 'hidden'
         && style.visibility !== 'collapse';
       return { connected: true, visible };
-    } catch {
-      return { connected: false, visible: false };
+    } catch (error) {
+      return { error: String(error && error.message || error || 'trusted presence probe failed') };
     }
   }`;
 }
@@ -6084,41 +6109,54 @@ async function resolveRefNode(cdp, sid, refMap, ref, refState, options = {}) {
     }
     backendNodeId = refMap.get(num);
   }
+  const executionContextId = await createRefExecutionContext(
+    cdp,
+    sid,
+    frameId || await rootFrameId(cdp, sid),
+  );
+  let object;
   try {
-    const executionContextId = await createRefExecutionContext(
-      cdp,
-      sid,
-      frameId || await rootFrameId(cdp, sid),
-    );
-    const { object } = await cdpDomains(cdp).DOM.resolveNode({
+    ({ object } = await cdpDomains(cdp).DOM.resolveNode({
       backendNodeId,
       executionContextId,
-    }, sid, REF_RESOLVE_TIMEOUT);
-    if (!object?.objectId) throw new Error('DOM.resolveNode did not return an object id');
-    const validation = await cdpDomains(cdp).Runtime.callFunctionOn({
-      objectId: object.objectId,
-      functionDeclaration: trustedRefConnectivityFunctionDeclaration(),
-      returnByValue: true,
-    }, sid, REF_RESOLVE_TIMEOUT);
-    if (validation.exceptionDetails) {
-      throw new Error(runtimeExceptionMessage(validation.exceptionDetails));
-    }
-    const validationValue = validation.result?.value;
-    const connected = validationValue === true || validationValue?.connected === true;
-    if (!connected) throw new Error('resolved backend node is detached from its owning document');
-    if (options.returnRealm === 'page') {
-      const pageResult = await cdpDomains(cdp).DOM.resolveNode({ backendNodeId }, sid, REF_RESOLVE_TIMEOUT);
-      if (!pageResult.object?.objectId) throw new Error('DOM.resolveNode did not return a page-world object id');
-      return pageResult.object.objectId;
-    }
-    return object.objectId;
-  } catch (e) {
-    // The ref existed in this daemon, but the backend node can no longer be
-    // resolved. That is the common "DOM rewrote the element after perceive"
-    // stale-ref case; classify it distinctly instead of surfacing raw CDP text.
-    invalidateRefMapping(refMap, ref, refState);
-    throw new Error(formatUnknownRefError(ref, refState || {}) + ` Original CDP error: ${e.message}`);
+    }, sid, REF_RESOLVE_TIMEOUT));
+  } catch (error) {
+    if (isMissingDomNodeError(error)) throw staleRefError(refMap, ref, refState, error);
+    throw error;
   }
+  if (!object?.objectId) throw new Error('DOM.resolveNode did not return an object id');
+  const validation = await cdpDomains(cdp).Runtime.callFunctionOn({
+    objectId: object.objectId,
+    functionDeclaration: trustedRefConnectivityFunctionDeclaration(),
+    returnByValue: true,
+  }, sid, REF_RESOLVE_TIMEOUT);
+  if (validation.exceptionDetails) {
+    throw new Error(runtimeExceptionMessage(validation.exceptionDetails));
+  }
+  const validationValue = validation.result?.value;
+  if (validationValue?.error) throw new Error(`Trusted ref connectivity probe failed: ${validationValue.error}`);
+  const connected = validationValue === true || validationValue?.connected === true;
+  if (!connected && (validationValue === false || validationValue?.connected === false)) {
+    throw staleRefError(
+      refMap,
+      ref,
+      refState,
+      new Error('resolved backend node is detached from its owning document'),
+    );
+  }
+  if (!connected) throw new Error('Trusted ref connectivity probe returned no connectivity result');
+  if (options.returnRealm === 'page') {
+    let pageResult;
+    try {
+      pageResult = await cdpDomains(cdp).DOM.resolveNode({ backendNodeId }, sid, REF_RESOLVE_TIMEOUT);
+    } catch (error) {
+      if (isMissingDomNodeError(error)) throw staleRefError(refMap, ref, refState, error);
+      throw error;
+    }
+    if (!pageResult.object?.objectId) throw new Error('DOM.resolveNode did not return a page-world object id');
+    return pageResult.object.objectId;
+  }
+  return object.objectId;
 }
 
 function scrollSettledRectFunctionDeclaration() {
@@ -8224,13 +8262,18 @@ async function waitForStr(cdp, sid, args, refMap, refState) {
           }, sid, REF_RESOLVE_TIMEOUT);
           if (res.exceptionDetails) throw new Error(runtimeExceptionMessage(res.exceptionDetails));
           const presence = res.result?.value;
+          if (presence?.error) throw new Error(`Trusted ref presence probe failed: ${presence.error}`);
           if (presence?.connected !== true) {
+            if (presence?.connected !== false) {
+              throw new Error('Trusted ref presence probe returned no connectivity result');
+            }
             invalidateRefMapping(refMap, selector, refState);
             return `Element ${selector} is gone (disconnected)`;
           }
           if (presence.visible !== true) return `Element ${selector} is gone (hidden)`;
-        } catch {
-          return `Element ${selector} is gone (removed from DOM)`;
+        } catch (error) {
+          if (isStaleRefError(error)) return `Element ${selector} is gone (removed from DOM)`;
+          throw error;
         }
         await sleep(300);
       }

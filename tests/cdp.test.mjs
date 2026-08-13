@@ -10162,7 +10162,9 @@ describe('resolveRefNode stale backend handling', () => {
   it('classifies DOM-mutation stale refs when backend node resolution fails', async () => {
     const refMap = new Map([[31, 12345]]);
     const refState = { generation: 1, invalidationReason: null };
-    const cdp = { send: async () => { throw new Error('No node with given id'); } };
+    const cdp = createMockCDP({
+      'DOM.resolveNode': () => { throw new Error('No node with given id'); },
+    });
     await expect(resolveRefNode(cdp, 'sid', refMap, '@31', refState))
       .rejects.toThrow(/DOM changes/);
     expect(refState.invalidationReason).toBe('dom-mutation');
