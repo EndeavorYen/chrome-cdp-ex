@@ -31,6 +31,8 @@
     "package/docs/schemas/action-receipt.v1.json",
     "package/docs/schemas/doctor.v1.json",
     "package/docs/schemas/route-recommendation.v1.json",
+    "package/docs/schemas/table-export-manifest.v1.json",
+    "package/docs/schemas/table-result.v1.json",
     "package/docs/self-improvement-loop.md",
     "package/docs/strategy/agent-browser-vision.md",
     "package/experiment/codex-killer-path-demo-poster.png",
