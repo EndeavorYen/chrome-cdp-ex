@@ -343,6 +343,169 @@ describe('daemon request server lifecycle', () => {
     }
   });
 
+  it('terminates without a response when a raw finalizer cannot settle by the server deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      let now = 0;
+      let terminated = false;
+      let lateCallback;
+      const lateEffect = vi.fn();
+      const cleanup = vi.fn();
+      const requestCleanup = vi.fn();
+      const onFatal = vi.fn(() => { terminated = true; });
+      const conn = connection();
+      T.createDaemonRequestConnection(conn, {
+        handleRequest: async (_request, execution) => {
+          const result = await T.runTableCollectionLifecycle(execution, {
+            collect: async () => ({ termination: 'logical-count-reached' }),
+            finalize: () => new Promise(() => {
+              lateCallback = () => {
+                if (!terminated) lateEffect();
+              };
+            }),
+            cleanup,
+          });
+          return { ok: true, result };
+        },
+        cleanup: requestCleanup,
+        onFatal,
+        now: () => now,
+      });
+      conn.emit('data', frame({
+        id: 31,
+        cmd: 'table',
+        args: ['--collect', '--scroll-container', '.viewport'],
+      }));
+      await drain();
+
+      now = 300000;
+      await vi.advanceTimersByTimeAsync(300000);
+      await drain();
+
+      expect(onFatal).toHaveBeenCalledOnce();
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(requestCleanup).toHaveBeenCalledOnce();
+      expect(conn.destroy).toHaveBeenCalledOnce();
+      expect(conn.write).not.toHaveBeenCalled();
+      lateCallback();
+      expect(lateEffect).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('terminates without a response when the raw outer collect handler cannot settle by 300s', async () => {
+    vi.useFakeTimers();
+    try {
+      let now = 0;
+      let terminated = false;
+      let lateCallback;
+      const lateEffect = vi.fn();
+      const cleanup = vi.fn();
+      const dispose = vi.fn();
+      const onFatal = vi.fn(() => { terminated = true; });
+      const conn = connection();
+      const lifecycle = T.createDaemonRequestConnection(conn, {
+        handleRequest: () => new Promise(() => {
+          lateCallback = () => {
+            if (!terminated) lateEffect();
+          };
+        }),
+        cleanup,
+        onDispose: dispose,
+        onFatal,
+        now: () => now,
+      });
+      conn.emit('data', frame({
+        id: 32,
+        cmd: 'table',
+        args: ['--collect', '--scroll-container', '.viewport'],
+      }));
+      await drain();
+
+      now = 300000;
+      await vi.advanceTimersByTimeAsync(300000);
+      await drain();
+
+      expect(onFatal).toHaveBeenCalledOnce();
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(conn.destroy).toHaveBeenCalledOnce();
+      expect(conn.write).not.toHaveBeenCalled();
+      expect(lifecycle.activeRequestCount()).toBe(0);
+      lateCallback();
+      expect(lateEffect).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retires fatally after disconnect when a raw collect handler still cannot settle by 300s', async () => {
+    vi.useFakeTimers();
+    try {
+      let now = 0;
+      const cleanup = vi.fn();
+      const dispose = vi.fn();
+      const onFatal = vi.fn();
+      const conn = connection();
+      T.createDaemonRequestConnection(conn, {
+        handleRequest: () => new Promise(() => {}),
+        cleanup,
+        onDispose: dispose,
+        onFatal,
+        now: () => now,
+      });
+      conn.emit('data', frame({
+        id: 33,
+        cmd: 'table',
+        args: ['--collect', '--scroll-container', '.viewport'],
+      }));
+      await drain();
+      conn.closePeer('close');
+
+      now = 300000;
+      await vi.advanceTimersByTimeAsync(300000);
+      await drain();
+
+      expect(onFatal).toHaveBeenCalledOnce();
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(conn.write).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not enqueue a handled failure until request cleanup has completed', async () => {
+    let finishCleanup;
+    const cleanup = vi.fn(() => new Promise(resolve => { finishCleanup = resolve; }));
+    const conn = connection();
+    const lifecycle = T.createDaemonRequestConnection(conn, {
+      handleRequest: async () => ({ ok: false, error: 'collector failed' }),
+      cleanup,
+      now: () => 0,
+    });
+    conn.emit('data', frame({
+      id: 34,
+      cmd: 'table',
+      args: ['--collect', '--scroll-container', '.viewport'],
+    }));
+    await drain();
+
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(conn.write).not.toHaveBeenCalled();
+    expect(lifecycle.activeRequestCount()).toBe(1);
+
+    finishCleanup();
+    await drain();
+    expect(conn.write).toHaveBeenCalledOnce();
+    expect(JSON.parse(conn.write.mock.calls[0][0])).toMatchObject({
+      id: 34,
+      ok: false,
+      error: 'collector failed',
+    });
+  });
+
   it('aborts and suppresses a duplicate active ID on one socket while accepting id=1 on another socket', async () => {
     let firstSignal;
     const firstHandle = vi.fn((_request, execution) => new Promise((resolve, reject) => {

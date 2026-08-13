@@ -143,6 +143,37 @@ describe('table collection monotonic deadline context', () => {
     expect(cleanup).not.toHaveBeenCalled();
   });
 
+  it('fails after a signal-ignoring page operation settles beyond 295s instead of partial-finalizing', async () => {
+    let now = 0;
+    let settleOperation;
+    const context = T.createDaemonRequestExecutionContext({
+      request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+      signal: new AbortController().signal,
+      now: () => now,
+    });
+    const finalize = vi.fn();
+    const cleanup = vi.fn();
+    const lifecycle = T.runTableCollectionLifecycle(context, {
+      collect: runtime => runtime.runCdpOperation(() => new Promise(resolve => {
+        settleOperation = () => {
+          now = context.deadline.pageAt + 2000;
+          resolve('late-page-result');
+        };
+      })),
+      finalize,
+      cleanup,
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    settleOperation();
+    await expect(lifecycle).rejects.toMatchObject({
+      code: 'TABLE_COLLECTION_PAGE_DEADLINE',
+      phase: 'page',
+    });
+    expect(finalize).not.toHaveBeenCalled();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
   it('rejects a short sleep whose delayed callback runs at the absolute page deadline', async () => {
     let now = 0;
     let wake;
@@ -246,10 +277,13 @@ describe('table collection monotonic deadline context', () => {
       }
     })();
 
+    await new Promise(resolve => setImmediate(resolve));
+    expect(operationSignal.aborted).toBe(true);
+    expect(finalize).not.toHaveBeenCalled();
+    finishUnderlyingOperation();
     await expect(lifecycle).resolves.toBe('committed-after-drain');
     expect(finalize).toHaveBeenCalledOnce();
     expect(timers.size).toBe(0);
-    finishUnderlyingOperation();
     await Promise.resolve();
     expect(latePageEffect).not.toHaveBeenCalled();
   });
