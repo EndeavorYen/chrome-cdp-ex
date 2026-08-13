@@ -108,6 +108,7 @@ class Element extends Node {
   setAttribute(name, value) { this._attrs[name] = String(value); }
   getBoundingClientRect() { return { ...this._rect }; }
   querySelector(selector) { return findElement(this, selector); }
+  querySelectorAll(selector) { return findAllElements(this, selector); }
   click() { this.onclick?.(this); }
 }
 
@@ -122,6 +123,7 @@ class Document extends Node {
   }
 
   querySelector(selector) { return findElement(this, selector); }
+  querySelectorAll(selector) { return findAllElements(this, selector); }
 }
 
 function matchSelector(node, selector) {
@@ -153,6 +155,16 @@ function findElement(root, selector) {
     return null;
   };
   return visit(root);
+}
+
+function findAllElements(root, selector) {
+  const matches = [];
+  const visit = node => {
+    if (node !== root && matchSelector(node, selector)) matches.push(node);
+    for (const child of node._children) visit(child);
+  };
+  visit(root);
+  return matches;
 }
 
 function fillCells(rowNode, cells, { header = false } = {}) {
@@ -300,6 +312,26 @@ function mountRecycledTableFixture(overrides = {}) {
       const index = siblings.indexOf(table);
       if (index >= 0) siblings.splice(index, 1);
       table._parent = null;
+    },
+    appendExtraTable() {
+      const extra = new HTMLTableElement({ id: 'other' });
+      body.appendChild(extra);
+      return extra;
+    },
+    growThead() {
+      const extra = thead.appendChild(new Element('tr', {
+        'aria-rowindex': String(config.headerRows + 1),
+      }));
+      fillCells(extra, HEADER_CELLS, { header: true });
+      return extra;
+    },
+    shrinkThead() {
+      const first = thead.firstChild;
+      if (!first) return;
+      const siblings = thead._children;
+      const index = siblings.indexOf(first);
+      if (index >= 0) siblings.splice(index, 1);
+      first._parent = null;
     },
     reappearLoadMore() {
       if (loadMore.parentNode) return;
@@ -614,6 +646,32 @@ describe('collection context, abort, and deadline lifecycle', () => {
     expect(timed.length).toBeGreaterThan(0);
     expect(timed[timed.length - 1].timeout).toBeLessThanOrEqual(2000);
   });
+
+  it('publishes already-collected rows as incomplete time-limit when the page deadline hits mid-interaction', async () => {
+    const fixture = mountRecycledTableFixture({
+      logicalRows: 8,
+      ariaRowCount: 9,
+      mountedRows: 2,
+      initialAvailable: 8,
+    });
+    let elapsed = 0;
+    let evaluates = 0;
+    const execution = collectExecution({ now: () => elapsed });
+    const cdp = createWorldCdp(fixture, {
+      beforeEvaluate: async () => {
+        evaluates += 1;
+        if (evaluates >= 3) elapsed = 295000;
+      },
+    });
+    const output = await runCollect(cdp, collectRequest(), {
+      store: artifactStore(),
+      execution,
+    });
+    const table = collectedTable(output);
+    expect(table.collectedRows).toBe(2);
+    expect(table.completeness.state).toBe('incomplete');
+    expect(table.completeness.termination).toBe('time-limit');
+  });
 });
 
 describe('adversarial virtual collection', () => {
@@ -704,6 +762,53 @@ describe('adversarial virtual collection', () => {
     });
     await expect(runCollect(cdp, collectRequest(), { store: artifactStore() }))
       .rejects.toThrow(/detach|exactly one HTML table/i);
+  });
+
+  it('fails when more than one HTML table matches, including the default table selector', async () => {
+    const fixture = mountRecycledTableFixture({
+      logicalRows: 2,
+      ariaRowCount: 3,
+      mountedRows: 2,
+      initialAvailable: 2,
+    });
+    fixture.appendExtraTable();
+    await expect(runCollect(createWorldCdp(fixture), collectRequest({
+      argv: ['--collect', '--scroll-container', '#viewport', '--format', 'json'],
+    }), { store: artifactStore() })).rejects.toThrow(/exactly one HTML table/);
+  });
+
+  it('fails when a later sample grows or shrinks certified thead membership', async () => {
+    const grow = mountRecycledTableFixture({
+      logicalRows: 4,
+      ariaRowCount: 5,
+      mountedRows: 2,
+      initialAvailable: 4,
+    });
+    let growEvaluates = 0;
+    const growCdp = createWorldCdp(grow, {
+      beforeEvaluate: async () => {
+        growEvaluates += 1;
+        if (growEvaluates === 3) grow.growThead();
+      },
+    });
+    await expect(runCollect(growCdp, collectRequest(), { store: artifactStore() }))
+      .rejects.toThrow(/header aria-rowindex coverage drifted/);
+
+    const shrink = mountRecycledTableFixture({
+      logicalRows: 4,
+      ariaRowCount: 5,
+      mountedRows: 2,
+      initialAvailable: 4,
+    });
+    let shrinkEvaluates = 0;
+    const shrinkCdp = createWorldCdp(shrink, {
+      beforeEvaluate: async () => {
+        shrinkEvaluates += 1;
+        if (shrinkEvaluates === 3) shrink.shrinkThead();
+      },
+    });
+    await expect(runCollect(shrinkCdp, collectRequest(), { store: artifactStore() }))
+      .rejects.toThrow(/header aria-rowindex coverage drifted/);
   });
 
   it('stops at row-too-large, no-progress, interaction, and thrown CDP operations', async () => {
