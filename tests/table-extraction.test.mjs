@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   addTableSample,
+  addTableSampleBatch,
   buildInlineTablePreview,
   buildTableExportManifest,
   canonicalizeTableCells,
@@ -90,6 +91,16 @@ describe('canonical table bytes and bounded previews', () => {
       .toBe('left\\\\right\ttab\\tcell\tcarriage\\rreturn\tline\\nbreak');
   });
 
+  it('escapes hostile controls with the frozen grammar and preserves ordinary whitespace', () => {
+    expect(canonicalizeTableCells(['  keep  ', '\0\u0001\u0008\u000b\u000c\u000e\u001f\u007f\u009f\u2028\u2029']))
+      .toBe('  keep  \t\\0\\u0001\\u0008\\u000B\\u000C\\u000E\\u001F\\u007F\\u009F\\u2028\\u2029');
+  });
+
+  it('rejects unpaired UTF-16 surrogates before canonical byte accounting', () => {
+    expect(() => canonicalizeTableCells(['\ud800'])).toThrow(/surrogate/i);
+    expect(() => canonicalizeTableCells(['\udc00'])).toThrow(/surrogate/i);
+  });
+
   it('keeps a complete exactly-8192-byte row without admitting the next row', () => {
     const exactBoundary = 'a'.repeat(8192);
     const preview = buildInlineTablePreview([exactBoundary, 'next']);
@@ -137,6 +148,13 @@ describe('canonical table bytes and bounded previews', () => {
     expect(manifest.inline.bytes).toBeLessThanOrEqual(8192);
   });
 
+  it('has zero canonical artifact bytes for zero data rows', () => {
+    const manifest = buildTableExportManifest(accumulatorWithRows([]), { termination: 'logical-count-reached' });
+
+    expect(manifest.artifact.rows).toBe(0);
+    expect(manifest.artifact.bytes).toBe(0);
+  });
+
   it('keeps the complete manifest response at or below 16384 UTF-8 bytes under escaping pressure', () => {
     const manifest = buildTableExportManifest(accumulatorWithRows([['\\'.repeat(4096)]]), {
       termination: 'logical-count-reached',
@@ -182,6 +200,50 @@ describe('collection safety and completeness', () => {
     expect(finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' }).completeness.state).toBe('complete');
   });
 
+  it('requires aria-rowindex coverage from one through the known logical total', () => {
+    const accumulator = createTableAccumulator({
+      logicalRows: 2,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'aria-rowindex',
+      orderingSource: 'aria-rowindex',
+    });
+    addTableSample(accumulator, { mountedNodeId: 'node-2', key: 2, cells: ['two'] });
+
+    expect(() => addTableSample(accumulator, { mountedNodeId: 'node-3', key: 3, cells: ['three'] })).toThrow(/logicalRows/i);
+    expect(finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' }).completeness.state).toBe('incomplete');
+  });
+
+  it('does not certify row-key-column collection complete solely from matching counts', () => {
+    const accumulator = accumulatorWithRows([['one'], ['two']], {
+      logicalRows: 2,
+      identitySource: 'row-key-column',
+      orderingSource: 'row-key-column',
+    });
+
+    expect(finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' }).completeness.state).toBe('incomplete');
+  });
+
+  it('rejects duplicate stable keys within one mounted sample batch even if the rows match', () => {
+    const accumulator = accumulatorWithRows([]);
+
+    expect(() => addTableSampleBatch(accumulator, [
+      { mountedNodeId: 'node-1', key: 1, cells: ['same'] },
+      { mountedNodeId: 'node-2', key: 1, cells: ['same'] },
+    ])).toThrow(/duplicate.*batch/i);
+  });
+
+  it('uses numeric aria ordering but first-observed ordering for row-key columns', () => {
+    const aria = accumulatorWithRows([], { logicalRows: 2 });
+    addTableSample(aria, { mountedNodeId: 'node-2', key: 2, cells: ['second'] });
+    addTableSample(aria, { mountedNodeId: 'node-1', key: 1, cells: ['first'] });
+    const rowKey = accumulatorWithRows([], { logicalRows: 2, identitySource: 'row-key-column', orderingSource: 'row-key-column' });
+    addTableSample(rowKey, { mountedNodeId: 'node-b', key: 'b', cells: ['second'] });
+    addTableSample(rowKey, { mountedNodeId: 'node-a', key: 'a', cells: ['first'] });
+
+    expect(buildTableExportManifest(aria, { termination: 'logical-count-reached' }).inline.rows).toEqual(['first', 'second']);
+    expect(buildTableExportManifest(rowKey, { termination: 'logical-count-reached' }).inline.rows).toEqual(['second', 'first']);
+  });
+
   it.each(['row-limit', 'byte-limit', 'interaction-limit', 'time-limit', 'no-progress-limit', 'control-disappeared'])(
     'reports %s as incomplete rather than claiming a partial artifact is complete',
     termination => {
@@ -192,6 +254,13 @@ describe('collection safety and completeness', () => {
       expect(result.completeness.termination).toBe(termination);
     },
   );
+
+  it('reports row-too-large as a truthful unsupported partial result', () => {
+    const accumulator = accumulatorWithRows([], { logicalRows: 1 });
+
+    expect(() => addTableSample(accumulator, { mountedNodeId: 'node-1', key: 1, cells: ['a'.repeat(4097)] })).toThrow(/row byte bound/i);
+    expect(finalizeTableExtraction(accumulator, { termination: 'row-too-large' }).completeness.state).toBe('incomplete');
+  });
 
   it('keeps a partial artifact truthful when a byte limit stops collection', () => {
     const manifest = buildTableExportManifest(accumulatorWithRows([['one']], { logicalRows: 2 }), {
@@ -239,5 +308,6 @@ describe('hostile in-process input validation', () => {
     expect(TABLE_EXTRACTION_LIMITS.maxInteractions).toBe(256);
     expect(TABLE_EXTRACTION_LIMITS.maxDurationMs).toBe(300000);
     expect(TABLE_EXTRACTION_LIMITS.maxNoProgressCycles).toBe(3);
+    expect(TABLE_EXTRACTION_LIMITS.maxCanonicalRowBytes).toBe(4096);
   });
 });
