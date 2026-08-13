@@ -74,6 +74,7 @@
     "package/skills/chrome-cdp-ex/scripts/lib/table-artifacts.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/table-contract.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/table-extraction.mjs",
+    "package/skills/chrome-cdp-ex/scripts/lib/table-sampler.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/target-binding.mjs",
     "package/skills/chrome-cdp-ex/scripts/mcp-server.mjs"
   ],
