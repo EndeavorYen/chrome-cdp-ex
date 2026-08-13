@@ -4866,6 +4866,15 @@ function createMockCDP(handlers = {}) {
     calls,
     send(method, params = {}, sessionId, timeout) {
       calls.push({ method, params, sessionId, timeout });
+      const trustedPresenceCall = method === 'Runtime.callFunctionOn'
+        && params.functionDeclaration?.includes('ownerDocumentGetter')
+        && params.functionDeclaration.includes('getClientRects');
+      if (trustedPresenceCall) {
+        const handler = handlers['Runtime.callFunctionOn:trusted-presence'] || handlers[method];
+        return Promise.resolve(handler
+          ? handler(params, sessionId)
+          : { result: { value: { connected: true, visible: true } } });
+      }
       const trustedConnectivityCall = method === 'Runtime.callFunctionOn'
         && params.functionDeclaration?.includes('ownerDocumentGetter')
         && !params.functionDeclaration.includes('requestAnimationFrame');
@@ -7179,7 +7188,7 @@ describe('waitForStr --gone', () => {
   it('should return when @ref element becomes disconnected', async () => {
     const cdp = createMockCDP({
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-      'Runtime.callFunctionOn': () => ({ result: { value: false } }), // isConnected=false
+      'Runtime.callFunctionOn': () => ({ result: { value: { connected: false, visible: false } } }),
     });
     const refMap = new Map([[3, 99999]]);
     const result = await waitForStr(cdp, 'sid1', ['--gone', '@3', '5000'], refMap);
@@ -7189,7 +7198,7 @@ describe('waitForStr --gone', () => {
   it('should timeout when @ref element stays present', async () => {
     const cdp = createMockCDP({
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-      'Runtime.callFunctionOn': () => ({ result: { value: true } }), // still connected+visible
+      'Runtime.callFunctionOn': () => ({ result: { value: { connected: true, visible: true } } }),
     });
     const refMap = new Map([[7, 77777]]);
     await expect(waitForStr(cdp, 'sid1', ['--gone', '@7', '500'], refMap))

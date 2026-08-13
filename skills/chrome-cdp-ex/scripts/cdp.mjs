@@ -6016,6 +6016,38 @@ function trustedRefConnectivityFunctionDeclaration() {
   }`;
 }
 
+function trustedRefPresenceFunctionDeclaration() {
+  return `function() {
+    try {
+      const nodePrototype = Node.prototype;
+      const elementPrototype = Element.prototype;
+      const connectedGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'isConnected')?.get;
+      const ownerDocumentGetter = Object.getOwnPropertyDescriptor(nodePrototype, 'ownerDocument')?.get;
+      const getRootNode = Object.getOwnPropertyDescriptor(nodePrototype, 'getRootNode')?.value;
+      const getClientRects = Object.getOwnPropertyDescriptor(elementPrototype, 'getClientRects')?.value;
+      if (typeof connectedGetter !== 'function' || typeof ownerDocumentGetter !== 'function'
+        || typeof getRootNode !== 'function' || typeof getClientRects !== 'function') {
+        return { connected: false, visible: false };
+      }
+      const connected = Reflect.apply(connectedGetter, this, []);
+      const ownerDocument = Reflect.apply(ownerDocumentGetter, this, []);
+      const composedRoot = Reflect.apply(getRootNode, this, [{ composed: true }]);
+      if (connected !== true || ownerDocument == null || composedRoot !== ownerDocument) {
+        return { connected: false, visible: false };
+      }
+      const rects = Reflect.apply(getClientRects, this, []);
+      const style = getComputedStyle(this);
+      const visible = rects.length > 0
+        && style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && style.visibility !== 'collapse';
+      return { connected: true, visible };
+    } catch {
+      return { connected: false, visible: false };
+    }
+  }`;
+}
+
 async function rootFrameId(cdp, sid) {
   const result = await cdpDomains(cdp).Page.getFrameTree({}, sid, REF_RESOLVE_TIMEOUT);
   const frameId = result.frameTree?.frame?.id;
@@ -8172,21 +8204,31 @@ async function waitForStr(cdp, sid, args, refMap, refState) {
     const timeout = Math.min(Math.max(timeoutMs, 500), 300000);
     const deadline = Date.now() + timeout;
 
-    // Resolve @ref to a JS check via backendNodeId
+    // Resolve @ref in a tool-owned isolated world so page code cannot forge
+    // connectivity or visibility while we wait.
     if (isRef(selector) && refMap) {
-      const num = parseInt(selector.slice(1));
-      const backendNodeId = refMap.get(num);
-      if (!backendNodeId) throw new Error(formatUnknownRefError(selector, refState || {}));
+      const frameParsed = parseFrameRef(selector);
+      if (frameParsed) {
+        frameScopedBackendNode(refState || {}, frameParsed);
+      } else {
+        const num = parseInt(selector.slice(1));
+        if (!refMap.has(num)) throw new Error(formatUnknownRefError(selector, refState || {}));
+      }
       while (Date.now() < deadline) {
         try {
-          const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId }, sid);
-          // Node still exists — check if it's connected and visible
+          const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
           const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
-            objectId: object.objectId,
-            functionDeclaration: `function() { return this.isConnected && this.offsetParent !== null; }`,
+            objectId,
+            functionDeclaration: trustedRefPresenceFunctionDeclaration(),
             returnByValue: true,
-          }, sid);
-          if (!res.result.value) return `Element ${selector} is gone (disconnected or hidden)`;
+          }, sid, REF_RESOLVE_TIMEOUT);
+          if (res.exceptionDetails) throw new Error(runtimeExceptionMessage(res.exceptionDetails));
+          const presence = res.result?.value;
+          if (presence?.connected !== true) {
+            invalidateRefMapping(refMap, selector, refState);
+            return `Element ${selector} is gone (disconnected)`;
+          }
+          if (presence.visible !== true) return `Element ${selector} is gone (hidden)`;
         } catch {
           return `Element ${selector} is gone (removed from DOM)`;
         }
