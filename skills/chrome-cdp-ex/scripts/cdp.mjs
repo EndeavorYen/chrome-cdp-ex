@@ -521,6 +521,9 @@ function createTableCollectionRuntime(executionContext, {
     sleep,
     beginFinalization,
     runFinalization,
+    clearLatePageInvocation() {
+      runtimeState.latePageInvocation = false;
+    },
     dispose() {
       closePageWork();
       context.signal.removeEventListener('abort', onRequestAbort);
@@ -11387,6 +11390,7 @@ function buildTableCollectorBootstrapExpression() {
     const getAttribute = getOwnPropertyDescriptor(elementProto, 'getAttribute').value;
     const getBoundingClientRect = getOwnPropertyDescriptor(elementProto, 'getBoundingClientRect').value;
     const queryDocument = getOwnPropertyDescriptor(documentProto, 'querySelector').value;
+    const queryAllDocument = getOwnPropertyDescriptor(documentProto, 'querySelectorAll').value;
     const apply = (fn, receiver, args) => reflectApply(fn, receiver, args);
     const nodeIds = new WM();
     let nextId = 1;
@@ -11401,6 +11405,7 @@ function buildTableCollectorBootstrapExpression() {
       return S(id);
     };
     const query = selector => apply(queryDocument, document, [selector]);
+    const queryAll = selector => apply(queryAllDocument, document, [selector]);
     const nameOf = node => apply(localNameGetter, node, []);
     const attr = (node, key) => apply(getAttribute, node, [key]);
     const parseIndex = raw => {
@@ -11483,9 +11488,9 @@ function buildTableCollectorBootstrapExpression() {
     };
     globalThis.__chromeCdpExTableCollector = {
       sample(tableSelector, scrollSelector, loadMoreSelector) {
+        const list = queryAll(tableSelector);
         const matches = [];
-        const first = query(tableSelector);
-        if (first) matches[0] = first;
+        for (let i = 0; i < list.length; i += 1) matches[matches.length] = list[i];
         if (matches.length !== 1 || nameOf(matches[0]) !== 'table') {
           return J.stringify({ ok: false, error: 'collection requires exactly one HTML table' });
         }
@@ -11820,70 +11825,81 @@ async function tableCollectionStr(cdp, sid, request, execution, options = {}) {
           const result = finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' });
           return result.completeness.state === 'complete';
         };
-        while (!complete()) {
-          runtime.throwIfAborted();
-          throwIfInvalid();
-          if (runtime.remainingPageMs() <= 0) {
-            return { accumulator, termination: 'time-limit', interactions };
-          }
-          if (interactions >= TABLE_EXTRACTION_LIMITS.maxInteractions) {
-            return { accumulator, termination: 'interaction-limit', interactions };
-          }
-          if (noProgress >= TABLE_EXTRACTION_LIMITS.maxNoProgressCycles) {
-            return { accumulator, termination: 'no-progress-limit', interactions };
-          }
-          const before = sample;
-          const maxTop = Math.max(0, before.scroll.height - before.scroll.clientHeight);
-          if (before.loadMore.present && before.scroll.top >= maxTop) {
-            await runPage(runtime, async timeoutMs => {
-              const base = {
-                x: before.loadMore.x,
-                y: before.loadMore.y,
-                button: 'left',
-                clickCount: 1,
-                modifiers: 0,
+        try {
+          while (!complete()) {
+            runtime.throwIfAborted();
+            throwIfInvalid();
+            if (runtime.remainingPageMs() <= 0) {
+              return { accumulator, termination: 'time-limit', interactions };
+            }
+            if (interactions >= TABLE_EXTRACTION_LIMITS.maxInteractions) {
+              return { accumulator, termination: 'interaction-limit', interactions };
+            }
+            if (noProgress >= TABLE_EXTRACTION_LIMITS.maxNoProgressCycles) {
+              return { accumulator, termination: 'no-progress-limit', interactions };
+            }
+            const before = sample;
+            const maxTop = Math.max(0, before.scroll.height - before.scroll.clientHeight);
+            if (before.loadMore.present && before.scroll.top >= maxTop) {
+              await runPage(runtime, async timeoutMs => {
+                const base = {
+                  x: before.loadMore.x,
+                  y: before.loadMore.y,
+                  button: 'left',
+                  clickCount: 1,
+                  modifiers: 0,
+                };
+                await cdpDomains(cdp).Input.dispatchMouseEvent({ ...base, type: 'mouseMoved' }, sid, timeoutMs);
+                await cdpDomains(cdp).Input.dispatchMouseEvent({ ...base, type: 'mousePressed' }, sid, timeoutMs);
+                await cdpDomains(cdp).Input.dispatchMouseEvent({ ...base, type: 'mouseReleased' }, sid, timeoutMs);
+              });
+            } else if (before.scroll.top < maxTop) {
+              const nextTop = Math.min(maxTop, before.scroll.top + Math.max(1, before.scroll.clientHeight));
+              parseCollectorPayload(await evaluate(
+                runtime,
+                `__chromeCdpExTableCollector.scrollTo(${JSON.stringify(request.scrollContainer)},${nextTop})`,
+              ), 'scroll-container is not scrollable');
+            } else if (!before.scrollable && !before.loadMore.present) {
+              const needsMore = identity.logicalRows !== null && previousCollected < identity.logicalRows;
+              if (needsMore) throw tableCollectorError('scroll-container is not scrollable');
+              return {
+                accumulator,
+                termination: identity.logicalRows === null ? 'no-progress-limit' : 'logical-count-reached',
+                interactions,
               };
-              await cdpDomains(cdp).Input.dispatchMouseEvent({ ...base, type: 'mouseMoved' }, sid, timeoutMs);
-              await cdpDomains(cdp).Input.dispatchMouseEvent({ ...base, type: 'mousePressed' }, sid, timeoutMs);
-              await cdpDomains(cdp).Input.dispatchMouseEvent({ ...base, type: 'mouseReleased' }, sid, timeoutMs);
-            });
-          } else if (before.scroll.top < maxTop) {
-            const nextTop = Math.min(maxTop, before.scroll.top + Math.max(1, before.scroll.clientHeight));
-            parseCollectorPayload(await evaluate(
-              runtime,
-              `__chromeCdpExTableCollector.scrollTo(${JSON.stringify(request.scrollContainer)},${nextTop})`,
-            ), 'scroll-container is not scrollable');
-          } else if (!before.scrollable && !before.loadMore.present) {
-            const needsMore = identity.logicalRows !== null && previousCollected < identity.logicalRows;
-            if (needsMore) throw tableCollectorError('scroll-container is not scrollable');
-            return {
-              accumulator,
-              termination: identity.logicalRows === null ? 'no-progress-limit' : 'logical-count-reached',
-              interactions,
-            };
-          } else {
-            noProgress += 1;
+            } else {
+              noProgress += 1;
+              sample = await samplePage(runtime);
+              continue;
+            }
+            interactions += 1;
             sample = await samplePage(runtime);
-            continue;
-          }
-          interactions += 1;
-          sample = await samplePage(runtime);
-          if (identity.identitySource === 'aria-rowindex') {
-            nextAriaLogicalRows(sample, identity.headerCount, identity.logicalRows);
-          }
-          for (let index = 0; index < identity.headerCount; index += 1) {
-            if (sample.headerRows[index]?.rawAriaRowIndex !== index + 1) {
+            if (identity.identitySource === 'aria-rowindex') {
+              nextAriaLogicalRows(sample, identity.headerCount, identity.logicalRows);
+            }
+            if (sample.headerRows.length !== identity.headerCount) {
               throw tableCollectorError('header aria-rowindex coverage drifted');
             }
+            for (let index = 0; index < identity.headerCount; index += 1) {
+              if (sample.headerRows[index]?.rawAriaRowIndex !== index + 1) {
+                throw tableCollectorError('header aria-rowindex coverage drifted');
+              }
+            }
+            const collectedBefore = previousCollected;
+            admission = admit(sample);
+            if (!admission.admitted) {
+              return { accumulator, termination: admission.reason, interactions };
+            }
+            previousCollected = admission.collectedRows;
+            if (collectorProgress(before, sample, previousCollected > collectedBefore)) noProgress = 0;
+            else noProgress += 1;
           }
-          const collectedBefore = previousCollected;
-          admission = admit(sample);
-          if (!admission.admitted) {
-            return { accumulator, termination: admission.reason, interactions };
+        } catch (error) {
+          if (error?.code === 'TABLE_COLLECTION_PAGE_DEADLINE') {
+            runtime.clearLatePageInvocation();
+            return { accumulator, termination: 'time-limit', interactions };
           }
-          previousCollected = admission.collectedRows;
-          if (collectorProgress(before, sample, previousCollected > collectedBefore)) noProgress = 0;
-          else noProgress += 1;
+          throw error;
         }
         if (runtime.remainingPageMs() > 0 && worldId !== null && !restored) {
           try {
