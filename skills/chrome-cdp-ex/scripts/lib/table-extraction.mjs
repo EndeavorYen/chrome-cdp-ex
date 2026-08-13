@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isProxy } from 'node:util/types';
 
 const LOGICAL_COUNT_SOURCES = new Set(['aria-rowcount', 'none']);
 const IDENTITY_SOURCES = new Set(['aria-rowindex', 'row-key-column']);
@@ -17,8 +18,7 @@ const TERMINATIONS = new Set([
 ]);
 const MAX_NODE_ID_BYTES = 8192;
 const MAX_KEY_BYTES = 8192;
-const MAX_CELLS_PER_ROW = 1024;
-const accumulators = new WeakSet();
+const accumulatorStates = new WeakMap();
 
 export const TABLE_EXTRACTION_LIMITS = Object.freeze({
   maxRows: 100000,
@@ -27,6 +27,7 @@ export const TABLE_EXTRACTION_LIMITS = Object.freeze({
   maxDurationMs: 300000,
   maxNoProgressCycles: 3,
   maxCanonicalRowBytes: 4096,
+  maxCellsPerRow: 256,
   maxInlineRows: 20,
   maxInlineBytes: 8192,
   maxResponseBytes: 16384,
@@ -37,6 +38,7 @@ function invalid(message) {
 }
 
 function ownDataRecord(value, name) {
+  if (isProxy(value)) invalid(`${name} must not be a proxy`);
   if (value === null || typeof value !== 'object' || Array.isArray(value)) invalid(`${name} must be a plain object`);
   if (Object.getPrototypeOf(value) !== Object.prototype) invalid(`${name} must have Object.prototype`);
   if (Object.getOwnPropertySymbols(value).length !== 0) invalid(`${name} must not have symbols`);
@@ -94,8 +96,9 @@ function enumValue(value, allowed, name) {
 }
 
 function stringArray(value, name) {
+  if (isProxy(value)) invalid(`${name} must not be a proxy`);
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) invalid(`${name} must be an array with Array.prototype`);
-  if (value.length > MAX_CELLS_PER_ROW) invalid(`${name} exceeds its item bound`);
+  if (value.length > TABLE_EXTRACTION_LIMITS.maxCellsPerRow) invalid(`${name} exceeds its item bound`);
   if (Object.getOwnPropertySymbols(value).length !== 0) invalid(`${name} must not have symbols`);
   for (const key of Object.getOwnPropertyNames(value)) {
     if (key === 'length') continue;
@@ -113,6 +116,7 @@ function stringArray(value, name) {
 }
 
 function sampleArray(value) {
+  if (isProxy(value)) invalid('samples must not be a proxy');
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) invalid('samples must be an array with Array.prototype');
   if (Object.getOwnPropertySymbols(value).length !== 0) invalid('samples must not have symbols');
   for (const key of Object.getOwnPropertyNames(value)) {
@@ -151,9 +155,9 @@ function normalizedLimits(value) {
   return Object.freeze(limits);
 }
 
-function canonicalRows(accumulator) {
-  const entries = [...accumulator.rowsByKey.values()];
-  if (accumulator.orderingSource === 'aria-rowindex') entries.sort((left, right) => left.key - right.key);
+function canonicalRows(state) {
+  const entries = [...state.rowsByKey.values()];
+  if (state.orderingSource === 'aria-rowindex') entries.sort((left, right) => left.key - right.key);
   else entries.sort((left, right) => left.firstObserved - right.firstObserved);
   return entries.map(entry => entry.row);
 }
@@ -209,32 +213,33 @@ function boundedPreview(rows, limits, makeResult) {
 }
 
 function accumulatorState(value) {
-  if (value === null || typeof value !== 'object' || !accumulators.has(value)) invalid('accumulator is not a table accumulator');
-  return value;
+  if (isProxy(value)) invalid('accumulator must not be a proxy');
+  if (value === null || typeof value !== 'object') invalid('accumulator is not a table accumulator');
+  const state = accumulatorStates.get(value);
+  if (!state) invalid('accumulator is not a table accumulator');
+  return state;
 }
 
-function tableResult(accumulator, termination, limits) {
-  const rows = canonicalRows(accumulator);
-  if (rows.length > limits.maxRows) invalid('collected rows exceed the configured ceiling');
+function tableResult(state, termination) {
+  const rows = canonicalRows(state);
   const body = rows.join('\n');
   const artifactBytes = Buffer.byteLength(body, 'utf8');
-  if (artifactBytes > limits.maxArtifactBytes) invalid('canonical artifact exceeds the configured ceiling');
-  const complete = accumulator.identitySource === 'aria-rowindex'
-    && accumulator.logicalRows !== null
-    && rows.length === accumulator.logicalRows
+  const complete = state.identitySource === 'aria-rowindex'
+    && state.logicalRows !== null
+    && rows.length === state.logicalRows
     && termination === 'logical-count-reached'
-    && [...accumulator.rowsByKey.values()].every(entry => Number.isInteger(entry.key) && entry.key >= 1 && entry.key <= accumulator.logicalRows)
-    && [...accumulator.rowsByKey.values()].every(entry => accumulator.rowsByKey.has(`number:${entry.key}`));
-  const completeness = accumulator.logicalRows === null ? 'unknown' : complete ? 'complete' : 'incomplete';
+    && [...state.rowsByKey.values()].every(entry => Number.isInteger(entry.key) && entry.key >= 1 && entry.key <= state.logicalRows)
+    && [...state.rowsByKey.values()].every(entry => state.rowsByKey.has(`number:${entry.key}`));
+  const completeness = state.logicalRows === null ? 'unknown' : complete ? 'complete' : 'incomplete';
   return {
     schema: 'chrome-cdp-ex.table.v1',
-    logicalRows: accumulator.logicalRows,
-    logicalCountSource: accumulator.logicalCountSource,
-    identitySource: accumulator.identitySource,
-    orderingSource: accumulator.orderingSource,
-    mountedRows: accumulator.mountedNodeIds.size,
+    logicalRows: state.logicalRows,
+    logicalCountSource: state.logicalCountSource,
+    identitySource: state.identitySource,
+    orderingSource: state.orderingSource,
+    mountedRows: state.mountedNodeIds.size,
     collectedRows: rows.length,
-    recycledMountedNodes: accumulator.recycledNodeIds.size,
+    recycledMountedNodes: state.recycledNodeIds.size,
     completeness: Object.freeze({ state: completeness, termination }),
     rows,
     body,
@@ -250,14 +255,16 @@ export function canonicalizeTableCells(cells) {
 
 export function createTableAccumulator(options) {
   const record = ownDataRecord(options, 'options');
-  exactKeys(record, 'options', new Set(['logicalRows', 'logicalCountSource', 'identitySource', 'orderingSource']));
+  exactKeys(record, 'options', new Set(['logicalRows', 'logicalCountSource', 'identitySource', 'orderingSource', 'limits']));
   const logicalRows = nonNegativeInteger(ownValue(record, 'logicalRows', 'options'), 'options.logicalRows', { nullable: true });
   const logicalCountSource = enumValue(ownValue(record, 'logicalCountSource', 'options'), LOGICAL_COUNT_SOURCES, 'options.logicalCountSource');
   const identitySource = enumValue(ownValue(record, 'identitySource', 'options'), IDENTITY_SOURCES, 'options.identitySource');
   const orderingSource = enumValue(ownValue(record, 'orderingSource', 'options'), ORDERING_SOURCES, 'options.orderingSource');
+  const limits = normalizedLimits(ownValue(record, 'limits', 'options', { required: false }));
   if ((logicalRows === null) !== (logicalCountSource === 'none')) invalid('logicalRows and logicalCountSource disagree');
+  if (identitySource !== orderingSource) invalid('identitySource and orderingSource must match');
 
-  const accumulator = {
+  const state = {
     logicalRows,
     logicalCountSource,
     identitySource,
@@ -267,8 +274,11 @@ export function createTableAccumulator(options) {
     nodeKeys: new Map(),
     recycledNodeIds: new Set(),
     nextFirstObserved: 0,
+    artifactBytes: 0,
+    limits,
   };
-  accumulators.add(accumulator);
+  const accumulator = Object.freeze(Object.create(null));
+  accumulatorStates.set(accumulator, state);
   return accumulator;
 }
 
@@ -281,32 +291,42 @@ function validatedSample(state, sample) {
   exactKeys(record, 'sample', new Set(['mountedNodeId', 'key', 'cells']));
   const mountedNodeId = boundedString(ownValue(record, 'mountedNodeId', 'sample'), 'sample.mountedNodeId', MAX_NODE_ID_BYTES);
   const key = ownValue(record, 'key', 'sample');
-  if (typeof key === 'number') {
+  if (state.identitySource === 'aria-rowindex') {
+    if (!Number.isSafeInteger(key) || key < 1) invalid('sample.key must be a positive safe integer for aria-rowindex');
+    if (state.logicalRows !== null && key > state.logicalRows) invalid('sample.key must not exceed logicalRows');
+  } else if (typeof key === 'number') {
     nonNegativeInteger(key, 'sample.key');
-    if (state.identitySource === 'aria-rowindex') {
-      if (key === 0) invalid('sample.key must be a positive aria-rowindex');
-      if (state.logicalRows !== null && key > state.logicalRows) invalid('sample.key must not exceed logicalRows');
-    }
   } else {
     boundedString(key, 'sample.key', MAX_KEY_BYTES);
   }
   const row = canonicalizeTableCells(ownValue(record, 'cells', 'sample'));
-  if (Buffer.byteLength(row, 'utf8') > TABLE_EXTRACTION_LIMITS.maxCanonicalRowBytes) invalid('sample canonical row exceeds the row byte bound');
-  return { mountedNodeId, key, keyId: `${typeof key}:${key}`, row };
+  const rowBytes = Buffer.byteLength(row, 'utf8');
+  return { mountedNodeId, key, keyId: `${typeof key}:${key}`, row, rowBytes };
+}
+
+function admission(state, admitted, reason = null) {
+  return Object.freeze({ admitted, reason, collectedRows: state.rowsByKey.size, artifactBytes: state.artifactBytes });
 }
 
 export function addTableSampleBatch(accumulator, samples) {
   const state = accumulatorState(accumulator);
   const validated = sampleArray(samples).map(sample => validatedSample(state, sample));
   const batchKeys = new Set();
+  const batchNodeIds = new Set();
   for (const sample of validated) {
     if (batchKeys.has(sample.keyId)) invalid('duplicate stable key within one sample batch');
+    if (batchNodeIds.has(sample.mountedNodeId)) invalid('duplicate mountedNodeId within one sample batch');
     batchKeys.add(sample.keyId);
+    batchNodeIds.add(sample.mountedNodeId);
     const prior = state.rowsByKey.get(sample.keyId);
     if (prior !== undefined && prior.row !== sample.row) invalid('sample.key conflicts with a previously collected row');
   }
   const newKeys = validated.filter(sample => !state.rowsByKey.has(sample.keyId));
-  if (state.rowsByKey.size + newKeys.length > TABLE_EXTRACTION_LIMITS.maxRows) invalid('collected rows exceed the fixed ceiling');
+  if (newKeys.some(sample => sample.rowBytes > state.limits.maxCanonicalRowBytes)) return admission(state, false, 'row-too-large');
+  if (state.rowsByKey.size + newKeys.length > state.limits.maxRows) return admission(state, false, 'row-limit');
+  const addedBytes = newKeys.reduce((total, sample) => total + sample.rowBytes, 0)
+    + Math.max(0, newKeys.length - (state.rowsByKey.size === 0 ? 1 : 0));
+  if (state.artifactBytes + addedBytes > state.limits.maxArtifactBytes) return admission(state, false, 'byte-limit');
   for (const sample of validated) {
     const prior = state.rowsByKey.get(sample.keyId);
     const previousKey = state.nodeKeys.get(sample.mountedNodeId);
@@ -315,7 +335,8 @@ export function addTableSampleBatch(accumulator, samples) {
     state.mountedNodeIds.add(sample.mountedNodeId);
     state.nodeKeys.set(sample.mountedNodeId, sample.keyId);
   }
-  return accumulator;
+  state.artifactBytes += addedBytes;
+  return admission(state, true);
 }
 
 export function buildInlineTablePreview(rows, limits) {
@@ -325,22 +346,20 @@ export function buildInlineTablePreview(rows, limits) {
 export function finalizeTableExtraction(accumulator, options) {
   const state = accumulatorState(accumulator);
   const record = ownDataRecord(options, 'finalize options');
-  exactKeys(record, 'finalize options', new Set(['termination', 'limits']));
+  exactKeys(record, 'finalize options', new Set(['termination']));
   const termination = enumValue(ownValue(record, 'termination', 'finalize options'), TERMINATIONS, 'termination');
-  const limits = normalizedLimits(ownValue(record, 'limits', 'finalize options', { required: false }));
-  const table = tableResult(state, termination, limits);
+  const table = tableResult(state, termination);
   const withoutInline = ({ rows: _rows, body: _body, artifactBytes: _artifactBytes, ...result }) => result;
-  const preview = boundedPreview(table.rows, limits, inline => ({ ...withoutInline(table), inline }));
+  const preview = boundedPreview(table.rows, state.limits, inline => ({ ...withoutInline(table), inline }));
   return Object.freeze({ ...withoutInline(table), inline: preview });
 }
 
 export function buildTableExportManifest(accumulator, options) {
   const state = accumulatorState(accumulator);
   const record = ownDataRecord(options, 'manifest options');
-  exactKeys(record, 'manifest options', new Set(['termination', 'limits']));
+  exactKeys(record, 'manifest options', new Set(['termination']));
   const termination = enumValue(ownValue(record, 'termination', 'manifest options'), TERMINATIONS, 'termination');
-  const limits = normalizedLimits(ownValue(record, 'limits', 'manifest options', { required: false }));
-  const table = tableResult(state, termination, limits);
+  const table = tableResult(state, termination);
   const checksum = createHash('sha256').update(Buffer.from(table.body, 'utf8')).digest('hex');
   const base = {
     schema: 'chrome-cdp-ex.table-export.v1',
@@ -354,6 +373,6 @@ export function buildTableExportManifest(accumulator, options) {
     completeness: table.completeness,
     artifact: Object.freeze({ rows: table.collectedRows, bytes: table.artifactBytes, checksum }),
   };
-  const preview = boundedPreview(table.rows, limits, inline => ({ ...base, inline }));
+  const preview = boundedPreview(table.rows, state.limits, inline => ({ ...base, inline }));
   return Object.freeze({ ...base, inline: preview });
 }
