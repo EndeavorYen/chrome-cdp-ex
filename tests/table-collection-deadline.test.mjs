@@ -143,6 +143,32 @@ describe('table collection monotonic deadline context', () => {
     expect(cleanup).not.toHaveBeenCalled();
   });
 
+  it('rejects a short sleep whose delayed callback runs at the absolute page deadline', async () => {
+    let now = 0;
+    let wake;
+    const context = T.createDaemonRequestExecutionContext({
+      request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+      signal: new AbortController().signal,
+      now: () => now,
+    });
+    const runtime = T.createTableCollectionRuntime(context, {
+      setTimer: vi.fn(callback => {
+        wake = callback;
+        return Symbol('sleep-timer');
+      }),
+      clearTimer: vi.fn(),
+    });
+    const outcome = runtime.sleep(10);
+    now = context.deadline.pageAt;
+    wake();
+
+    await expect(outcome).rejects.toMatchObject({
+      code: 'TABLE_COLLECTION_PAGE_DEADLINE',
+      phase: 'page',
+    });
+    runtime.dispose();
+  });
+
   it('rejects a finalizer result returned at the absolute server deadline and cleans once', async () => {
     let now = 0;
     const context = T.createDaemonRequestExecutionContext({
