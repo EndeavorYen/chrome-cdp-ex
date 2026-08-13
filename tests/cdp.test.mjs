@@ -5228,6 +5228,41 @@ describe('bounded table observation', () => {
     });
   });
 
+  it.each(['cell-limit', 'row-too-large'])(
+    'does not infer ARIA count or identity after a %s header-prefix omission',
+    async truncationReason => {
+      const cdp = createMockCDP({
+        'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
+          ariaRowCount: 4,
+          headerRows: [{ rawAriaRowIndex: 1, cells: ['Visible header'] }],
+          dataRows: [],
+          directRowsSeen: 2,
+          headerRowsSeen: 2,
+          dataRowsSeen: 0,
+          truncated: true,
+          truncationReason,
+        })]) } }),
+      });
+
+      const output = JSON.parse(await tableObservationStr(cdp, 'sid1', {
+        mode: 'observe', selector: null, format: 'json',
+      }));
+      expect(output.tables[0]).toMatchObject({
+        logicalRows: null,
+        logicalCountSource: 'none',
+        identitySource: 'snapshot-order',
+        orderingSource: 'dom-order',
+        completeness: { state: 'unknown', termination: 'observation', evidenceConflict: false },
+        snapshot: {
+          headerRowsSeen: 2,
+          rowsAdmitted: 0,
+          truncated: true,
+          truncationReason,
+        },
+      });
+    },
+  );
+
   it.each([
     { name: 'null count', ariaRowCount: null, expectedRows: null, expectedConflict: false },
     { name: 'unknown count', ariaRowCount: -1, expectedRows: null, expectedConflict: false },
