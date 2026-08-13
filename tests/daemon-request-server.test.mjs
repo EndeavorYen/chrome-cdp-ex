@@ -166,7 +166,7 @@ describe('daemon request server lifecycle', () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it('fails truthfully at the shared 300s server deadline and retains ownership until flush', async () => {
+  it('retires fatally at 300s when the raw handler remains unsettled', async () => {
     let serverTimer;
     let signal;
     const setTimer = vi.fn((callback, _delay) => {
@@ -176,6 +176,7 @@ describe('daemon request server lifecycle', () => {
     const clearTimer = vi.fn();
     const cleanup = vi.fn();
     const dispose = vi.fn();
+    const onFatal = vi.fn();
     const conn = connection({ holdWrite: true });
     const lifecycle = T.createDaemonRequestConnection(conn, {
       handleRequest: (_request, execution) => {
@@ -184,6 +185,7 @@ describe('daemon request server lifecycle', () => {
       },
       cleanup,
       onDispose: dispose,
+      onFatal,
       now: () => 2000,
       setTimer,
       clearTimer,
@@ -202,21 +204,13 @@ describe('daemon request server lifecycle', () => {
 
     expect(signal.aborted).toBe(true);
     expect(signal.reason).toMatchObject({
-      code: 'TABLE_COLLECTION_SERVER_DEADLINE',
+      code: 'TABLE_COLLECTION_DAEMON_TERMINATION_REQUIRED',
       phase: 'server',
     });
     expect(cleanup).toHaveBeenCalledOnce();
-    expect(conn.write).toHaveBeenCalledOnce();
-    expect(JSON.parse(conn.write.mock.calls[0][0])).toMatchObject({
-      id: 1,
-      ok: false,
-      error: expect.stringMatching(/server deadline/),
-    });
-    expect(lifecycle.activeRequestCount()).toBe(1);
-    expect(dispose).not.toHaveBeenCalled();
-
-    conn.writeCallbacks[0]();
-    await drain();
+    expect(onFatal).toHaveBeenCalledOnce();
+    expect(conn.write).not.toHaveBeenCalled();
+    expect(conn.destroy).toHaveBeenCalledOnce();
     expect(lifecycle.activeRequestCount()).toBe(0);
     expect(dispose).toHaveBeenCalledOnce();
     expect(clearTimer).toHaveBeenCalled();
@@ -227,6 +221,7 @@ describe('daemon request server lifecycle', () => {
     let signal;
     const cleanup = vi.fn();
     const dispose = vi.fn();
+    const onFatal = vi.fn();
     const conn = connection();
     const lifecycle = T.createDaemonRequestConnection(conn, {
       handleRequest: async (_request, execution) => {
@@ -236,6 +231,7 @@ describe('daemon request server lifecycle', () => {
       },
       cleanup,
       onDispose: dispose,
+      onFatal,
       now: () => now,
       setTimer: vi.fn(() => Symbol('blocked-server-timer')),
       clearTimer: vi.fn(),
@@ -249,17 +245,13 @@ describe('daemon request server lifecycle', () => {
 
     expect(signal.aborted).toBe(true);
     expect(signal.reason).toMatchObject({
-      code: 'TABLE_COLLECTION_SERVER_DEADLINE',
+      code: 'TABLE_COLLECTION_DAEMON_TERMINATION_REQUIRED',
       phase: 'server',
     });
     expect(cleanup).toHaveBeenCalledOnce();
-    expect(conn.write).toHaveBeenCalledOnce();
-    expect(JSON.parse(conn.write.mock.calls[0][0])).toMatchObject({
-      id: 2,
-      ok: false,
-      error: expect.stringMatching(/server deadline/),
-    });
-    expect(conn.write.mock.calls[0][0]).not.toContain('late-handler-success');
+    expect(onFatal).toHaveBeenCalledOnce();
+    expect(conn.write).not.toHaveBeenCalled();
+    expect(conn.destroy).toHaveBeenCalledOnce();
     expect(dispose).toHaveBeenCalledOnce();
     expect(lifecycle.activeRequestCount()).toBe(0);
   });
@@ -612,7 +604,7 @@ describe('daemon request server lifecycle', () => {
     }));
     await drain();
 
-    expect(now).toHaveBeenCalledTimes(2);
+    expect(now).toHaveBeenCalledTimes(3);
     expect(execution.deadline.now).toBe(now);
     expect(execution.deadline).toMatchObject({
       startedAt: 1234,
