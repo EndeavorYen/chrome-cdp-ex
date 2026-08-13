@@ -42,15 +42,18 @@ function responseFailure(error, { mayHaveSideEffects, phase = 'awaiting-response
     : error;
 }
 
-function validateDaemonResponse(response) {
+function validateDaemonResponse(response, request) {
   if (!response || typeof response !== 'object' || Array.isArray(response)) {
     throw new Error('Invalid daemon response: expected an object');
   }
   if (typeof response.ok !== 'boolean') {
     throw new Error('Invalid daemon response: expected boolean ok');
   }
-  if (response.ok === true && !Object.hasOwn(response, 'result') && response.stopAfter !== true) {
-    throw new Error('Invalid daemon response: successful response requires result');
+  const legacyResultlessStop = request?.cmd === 'stop'
+    && response.stopAfter === true
+    && !Object.hasOwn(response, 'result');
+  if (response.ok === true && typeof response.result !== 'string' && !legacyResultlessStop) {
+    throw new Error('Invalid daemon response: successful response requires a string result');
   }
   if (response.ok === false && typeof response.error !== 'string') {
     throw new Error('Invalid daemon response: failed response requires error');
@@ -179,7 +182,7 @@ export function requestDaemon(conn, request, {
         return;
       }
       try {
-        response = validateDaemonResponse(response);
+        response = validateDaemonResponse(response, request);
       } catch (error) {
         settle(() => {
           try { conn.end(); } catch {}
