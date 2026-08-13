@@ -84,6 +84,33 @@ function testStore(runtimeDir, overrides = {}, dependencies = {}) {
   });
 }
 
+function deepFreeze(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreeze(child);
+  return Object.freeze(value);
+}
+
+function tracedHandle(handle, label, trace, overrides = {}) {
+  return {
+    async writeFile(...args) {
+      trace.push(`${label}:write`);
+      return overrides.writeFile ? overrides.writeFile(handle, ...args) : handle.writeFile(...args);
+    },
+    async stat(...args) {
+      trace.push(`${label}:fstat`);
+      return overrides.stat ? overrides.stat(handle, ...args) : handle.stat(...args);
+    },
+    async sync(...args) {
+      trace.push(`${label}:fsync`);
+      return overrides.sync ? overrides.sync(handle, ...args) : handle.sync(...args);
+    },
+    async close(...args) {
+      trace.push(`${label}:close`);
+      return overrides.close ? overrides.close(handle, ...args) : handle.close(...args);
+    },
+  };
+}
+
 describe('private table artifact publication', () => {
   it('creates an opaque frozen lazy store without touching the filesystem', () => {
     const runtimeDir = join(tmpdir(), `missing-table-root-${process.pid}-${Date.now()}`);
@@ -127,7 +154,21 @@ describe('private table artifact publication', () => {
 
   it('publishes data durably before a manifest commit marker with exact private modes', async () => {
     const runtimeDir = privateRuntimeRoot();
-    const store = testStore(runtimeDir);
+    const trace = [];
+    const store = testStore(runtimeDir, {}, {
+      open: async (...args) => {
+        const handle = await open(...args);
+        const label = basename(args[0]) === 'rows.tsv'
+          ? 'data'
+          : basename(args[0]) === 'manifest.json'
+            ? 'manifest'
+            : basename(args[0]) === ID_A
+              ? 'artifact-dir'
+              : 'session-dir';
+        trace.push(`${label}:open`);
+        return tracedHandle(handle, label, trace);
+      },
+    });
     const publication = await store.publish(bundleForRows(), execution());
     const layout = artifactTest.inspectTableArtifactStore(store);
     const artifactDir = join(layout.sessionDir, ID_A);
@@ -164,6 +205,12 @@ describe('private table artifact publication', () => {
       },
       artifact: publication.artifact,
     });
+    expect(trace).toEqual([
+      'data:open', 'data:write', 'data:fstat', 'data:fsync', 'data:close',
+      'manifest:open', 'manifest:write', 'manifest:fstat', 'manifest:fsync', 'manifest:close',
+      'artifact-dir:open', 'artifact-dir:fstat', 'artifact-dir:fsync', 'artifact-dir:close',
+      'session-dir:open', 'session-dir:fstat', 'session-dir:fsync', 'session-dir:close',
+    ]);
   });
 
   it('remints an exclusive artifact directory collision without replacing or cleaning it', async () => {
@@ -183,18 +230,20 @@ describe('private table artifact publication', () => {
     expect(publication.artifactId).toBe(ID_B);
     expect(readFileSync(join(layout.sessionDir, ID_A, 'rows.tsv'), 'utf8')).toBe('first');
     expect(readFileSync(join(layout.sessionDir, ID_B, 'rows.tsv'), 'utf8')).toBe('second');
+    expect(layout.registeredArtifactIds).toEqual([ID_A, ID_B]);
   });
 
   it('does not create the manifest when data fsync fails and rolls back only its owned directory', async () => {
     const runtimeDir = privateRuntimeRoot();
+    let dataFsyncCalls = 0;
     const store = testStore(runtimeDir, {}, {
       open: async (...args) => {
         const handle = await open(...args);
         if (basename(args[0]) !== 'rows.tsv') return handle;
-        return new Proxy(handle, {
-          get(target, property, receiver) {
-            if (property === 'sync') return async () => { throw new Error(`host path ${runtimeDir}`); };
-            return Reflect.get(target, property, receiver);
+        return tracedHandle(handle, 'data', [], {
+          sync: async () => {
+            dataFsyncCalls += 1;
+            throw new Error(`host path ${runtimeDir}`);
           },
         });
       },
@@ -205,13 +254,71 @@ describe('private table artifact publication', () => {
 
     expect(error?.code).toBe('TABLE_ARTIFACT_PUBLICATION_FAILED');
     expect(error?.message).not.toContain(runtimeDir);
+    expect(dataFsyncCalls).toBe(1);
+    expect(existsSync(join(layout.sessionDir, ID_A))).toBe(false);
+  });
+
+  it('returns no token and rolls back when durability fails after the manifest file is fsynced', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const trace = [];
+    const store = testStore(runtimeDir, {}, {
+      open: async (...args) => {
+        const handle = await open(...args);
+        const label = basename(args[0]) === 'rows.tsv'
+          ? 'data'
+          : basename(args[0]) === 'manifest.json'
+            ? 'manifest'
+            : basename(args[0]) === ID_A
+              ? 'artifact-dir'
+              : 'session-dir';
+        return tracedHandle(handle, label, trace, label === 'artifact-dir' ? {
+          sync: async () => { throw new Error(`artifact fsync ${runtimeDir}`); },
+        } : {});
+      },
+    });
+
+    await expect(store.publish(bundleForRows(), execution())).rejects.toMatchObject({
+      code: 'TABLE_ARTIFACT_PUBLICATION_FAILED',
+    });
+    const layout = artifactTest.inspectTableArtifactStore(store);
+    expect(trace).toContain('manifest:fsync');
+    expect(existsSync(join(layout.sessionDir, ID_A))).toBe(false);
+  });
+
+  it('tombstones an in-flight publish on rollback and self-cleans when the awaited fsync resumes', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    let resumeFsync;
+    let fsyncStarted;
+    const fsyncReached = new Promise(resolve => { fsyncStarted = resolve; });
+    const fsyncGate = new Promise(resolve => { resumeFsync = resolve; });
+    const store = testStore(runtimeDir, {}, {
+      open: async (...args) => {
+        const handle = await open(...args);
+        if (basename(args[0]) !== 'rows.tsv') return handle;
+        return tracedHandle(handle, 'data', [], {
+          sync: async real => {
+            fsyncStarted();
+            await fsyncGate;
+            await real.sync();
+          },
+        });
+      },
+    });
+    const request = execution();
+    const pending = store.publish(bundleForRows(), request);
+    await fsyncReached;
+
+    expect(store.rollbackRequest(request)).toBeUndefined();
+    resumeFsync();
+    await expect(pending).rejects.toMatchObject({ code: 'TABLE_ARTIFACT_REQUEST_ABORTED' });
+    const layout = artifactTest.inspectTableArtifactStore(store);
     expect(existsSync(join(layout.sessionDir, ID_A))).toBe(false);
   });
 
   it('rejects forged bundles and aborts before allocating artifact storage', async () => {
     const runtimeDir = privateRuntimeRoot();
     const store = testStore(runtimeDir);
-    const forged = structuredClone(bundleForRows());
+    const forged = deepFreeze(structuredClone(bundleForRows()));
 
     await expect(store.publish(forged, execution())).rejects.toThrow(/trusted export bundle/i);
     expect(artifactTest.inspectTableArtifactStore(store).registeredArtifactIds).toEqual([]);
