@@ -296,7 +296,92 @@ describe('collection safety and completeness', () => {
       orderingSource: 'row-key-column',
     });
 
-    expect(finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' }).completeness.state).toBe('incomplete');
+    expect(finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' }).completeness.state).toBe('unknown');
+  });
+
+  it('admits exactly one DOM-ordered snapshot with ordinal keys and never certifies equality', () => {
+    const accumulator = createTableAccumulator({
+      logicalRows: 2,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'snapshot-order',
+      orderingSource: 'dom-order',
+    });
+
+    expect(addTableSampleBatch(accumulator, [
+      { mountedNodeId: 'snapshot-row-1', key: 1, cells: ['first'] },
+      { mountedNodeId: 'snapshot-row-2', key: 2, cells: ['second'] },
+    ])).toMatchObject({ admitted: true, collectedRows: 2 });
+    expect(finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' }))
+      .toMatchObject({
+        identitySource: 'snapshot-order',
+        orderingSource: 'dom-order',
+        completeness: { state: 'unknown', termination: 'logical-count-reached' },
+      });
+    expect(() => addTableSampleBatch(accumulator, []))
+      .toThrow(/snapshot-order.*one batch/i);
+    expect(() => addTableSample(accumulator, {
+      mountedNodeId: 'snapshot-row-3', key: 3, cells: ['third'],
+    })).toThrow(/snapshot-order.*one batch/i);
+    expect(finalizeTableExtraction(accumulator, { termination: 'observation' }).collectedRows).toBe(2);
+  });
+
+  it('rejects non-ordinal snapshot keys and unsupported provenance pairs transactionally', () => {
+    const accumulator = createTableAccumulator({
+      logicalRows: null,
+      logicalCountSource: 'none',
+      identitySource: 'snapshot-order',
+      orderingSource: 'dom-order',
+    });
+
+    expect(() => addTableSampleBatch(accumulator, [
+      { mountedNodeId: 'snapshot-row-1', key: 1, cells: ['first'] },
+      { mountedNodeId: 'snapshot-row-2', key: 3, cells: ['third'] },
+    ])).toThrow(/ordinal.*1\.\.N/i);
+    expect(finalizeTableExtraction(accumulator, { termination: 'observation' }).collectedRows).toBe(0);
+    expect(() => createTableAccumulator({
+      logicalRows: null,
+      logicalCountSource: 'none',
+      identitySource: 'snapshot-order',
+      orderingSource: 'snapshot-order',
+    })).toThrow(/provenance pair/i);
+  });
+
+  it('keeps known partial snapshots incomplete and flags count contradictions as unknown', () => {
+    const partial = createTableAccumulator({
+      logicalRows: 2,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'snapshot-order',
+      orderingSource: 'dom-order',
+    });
+    addTableSampleBatch(partial, [
+      { mountedNodeId: 'snapshot-row-1', key: 1, cells: ['first'] },
+    ]);
+    const contradictory = createTableAccumulator({
+      logicalRows: 1,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'snapshot-order',
+      orderingSource: 'dom-order',
+    });
+    addTableSampleBatch(contradictory, [
+      { mountedNodeId: 'snapshot-row-1', key: 1, cells: ['first'] },
+      { mountedNodeId: 'snapshot-row-2', key: 2, cells: ['second'] },
+    ]);
+
+    expect(finalizeTableExtraction(partial, { termination: 'observation' }).completeness.state)
+      .toBe('incomplete');
+    expect(finalizeTableExtraction(contradictory, { termination: 'observation' }).completeness)
+      .toEqual({
+        state: 'unknown',
+        termination: 'observation',
+        reason: 'logical-count-conflict',
+      });
+  });
+
+  it('does not turn exact ARIA coverage complete after an unsafe termination', () => {
+    const accumulator = accumulatorWithRows([['one'], ['two']]);
+
+    expect(finalizeTableExtraction(accumulator, { termination: 'observation' }).completeness.state)
+      .toBe('unknown');
   });
 
   it('rejects duplicate stable keys within one mounted sample batch even if the rows match', () => {
