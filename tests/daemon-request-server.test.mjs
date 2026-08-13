@@ -272,10 +272,12 @@ describe('daemon request server lifecycle', () => {
       let lateCallback;
       const lateEffect = vi.fn();
       const finalize = vi.fn(async () => 'must-not-commit');
-      const collectorCleanup = vi.fn();
-      const requestCleanup = vi.fn();
+      const fatalOrder = [];
+      const collectorCleanup = vi.fn(() => { fatalOrder.push('collector-cleanup'); });
+      const requestCleanup = vi.fn(() => { fatalOrder.push('request-cleanup'); });
       const dispose = vi.fn();
       const onFatal = vi.fn(error => {
+        fatalOrder.push('fatal-shutdown');
         terminated = true;
         expect(error).toMatchObject({
           code: 'TABLE_COLLECTION_DAEMON_TERMINATION_REQUIRED',
@@ -325,6 +327,7 @@ describe('daemon request server lifecycle', () => {
       expect(onFatal).toHaveBeenCalledOnce();
       expect(collectorCleanup).toHaveBeenCalledOnce();
       expect(requestCleanup).toHaveBeenCalledOnce();
+      expect(fatalOrder).toEqual(['collector-cleanup', 'request-cleanup', 'fatal-shutdown']);
       expect(dispose).toHaveBeenCalledOnce();
       expect(conn.destroy).toHaveBeenCalledOnce();
       expect(conn.destroyed).toBe(true);
