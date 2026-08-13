@@ -152,6 +152,15 @@ describe('Killer Path docs contract', () => {
       ...docs,
       changelog: changelog.replace('## [2.15.0]', '## [9.8.7]'),
     }, [])).toContain('README.md is missing the published release tag v9.8.7');
+
+    for (const falseClaim of [
+      '[![Release v2.16.0](https://img.shields.io/badge/release-v2.15.0-brightgreen)]',
+      '**Pinned release (v2.16.0):**',
+      'Latest measured release: v2.16.0 passed 10/10 rounds.',
+    ]) {
+      expect(checkDocsContract({ ...docs, readme: `${docs.readme}\n${falseClaim}\n` }, []), falseClaim)
+        .toContain('README.md must not present unreleased candidate v2.16.0 as a published or measured release');
+    }
   });
 
   it('rejects stale contributor paths, obsolete line counts, and shipped features marked future', () => {
