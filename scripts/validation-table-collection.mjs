@@ -784,6 +784,15 @@ function delay(ms) {
   return new Promise(resolveDelay => setTimeout(resolveDelay, ms));
 }
 
+export function createShortLiveRuntimeDir(route) {
+  invariant(TABLE_COLLECTION_ROUTES.includes(route), `unknown table-collection route: ${route}`);
+  const dir = mkdtempSync(`/tmp/t8${route[0]}-`);
+  const socket = join(dir, 'cdp', `cdp-${'A'.repeat(32)}.sock`);
+  invariant(socket.length < 104, 'daemon socket path exceeds the unix sockaddr limit');
+  mkdirSync(join(dir, 'cdp'), { recursive: true, mode: 0o700 });
+  return dir;
+}
+
 function ensureLiveActive() {
   if (liveCancellation.cancelled) {
     throw new Error(`table-collection cancelled by ${liveCancellation.signal}`);
@@ -914,10 +923,11 @@ function routeEnv(paths, port) {
 function prepareRoutePaths(route, slot) {
   const allocated = allocateRouteFixture(route, { slot });
   const home = join(allocated.taskRoot, 'home');
+  const runtimeDir = createShortLiveRuntimeDir(route);
   mkdirSync(allocated.profileDir, { recursive: true, mode: 0o700 });
-  mkdirSync(allocated.runtimeDir, { recursive: true, mode: 0o700 });
+  mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
   mkdirSync(home, { recursive: true, mode: 0o700 });
-  return { ...allocated, home };
+  return { ...allocated, home, runtimeDir };
 }
 
 function parseCollectJson(text) {

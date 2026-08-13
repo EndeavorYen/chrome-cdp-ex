@@ -39,6 +39,7 @@ import {
   retainBoundedCommandEvidence,
   runLiveTableCollectionTrials,
   runLockedCleanup,
+  createShortLiveRuntimeDir,
   writeTableCollectionEvidence,
 } from '../scripts/validation-table-collection.mjs';
 
@@ -650,6 +651,14 @@ describe('authorized live four-route trials', () => {
     expect(html).toContain('aria-rowcount="1025"');
     expect(html).toContain('virtual-slot-00');
     expect(html).not.toMatch(/table-extraction|table-artifacts|table-contract/);
+  });
+
+  it('keeps isolated live runtime sockets under the unix sockaddr limit', () => {
+    const dir = createShortLiveRuntimeDir('cli');
+    tempPaths.push(dir);
+    const socket = join(dir, 'cdp', `cdp-${'A'.repeat(32)}.sock`);
+    expect(socket.length).toBeLessThan(104);
+    expect(dir.startsWith('/tmp/')).toBe(true);
   });
 
   it('proves product collect contracts and keeps Playwright on fixture/source truth only', () => {
