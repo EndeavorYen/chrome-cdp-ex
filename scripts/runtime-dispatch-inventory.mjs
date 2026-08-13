@@ -15,6 +15,7 @@ const daemonReadHandlersPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/li
 const tableArtifactsPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/lib/table-artifacts.mjs');
 const tableContractPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/lib/table-contract.mjs');
 const tableExtractionPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/lib/table-extraction.mjs');
+const tableSamplerPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/lib/table-sampler.mjs');
 const commandApplicationPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/lib/command-application.mjs');
 const packageVersion = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf8')).version;
 const fixturePath = resolve(rootDir, `docs/contracts/v${packageVersion}/runtime-dispatch.v1.json`);
@@ -28,6 +29,18 @@ const TABLE_CONTRACT_HELPERS = Object.freeze([
   'isTableCollectArgs',
   'parseTableArgs',
   'parseTableContinuationToken',
+]);
+const TABLE_OBSERVATION_OWNERS = Object.freeze([
+  'sampleRootFrameTables',
+  'validAriaIdentity',
+  'observedTableEntry',
+  'tableObservationModel',
+  'boundedTableObservationJson',
+  'boundedTableObservationText',
+  'boundedTableObservationEmissionJson',
+  'boundedTableObservationEmissionText',
+  'tableObservationStr',
+  'emitTargetCommandResponse',
 ]);
 
 function digest(value) {
@@ -849,6 +862,202 @@ function collectTableArtifactAuthority(source, tableExtractionSource, fail) {
   };
 }
 
+function collectTableObservationAuthority(source, tableSamplerSource, tableExtractionSource, fail) {
+  const supportOwners = [
+    'boundedTableRuntimeDiagnostic',
+    'orderedTableObservationEnvelope',
+    'trimTrailingTableObservationPreview',
+  ];
+  const allOwners = [...TABLE_OBSERVATION_OWNERS, ...supportOwners];
+  const functionSources = new Map();
+  let samplerImport = null;
+  let extractionImport = null;
+  const rule = {
+    create(context) {
+      const sourceCode = context.sourceCode;
+      return {
+        ImportDeclaration(node) {
+          const importSource = node.source?.value;
+          if (importSource !== './lib/table-sampler.mjs'
+            && importSource !== './lib/table-extraction.mjs') return;
+          const names = node.specifiers.map(specifier => {
+            if (specifier.type !== 'ImportSpecifier'
+              || specifier.imported?.type !== 'Identifier'
+              || specifier.local?.name !== specifier.imported.name) {
+              fail('table observation imports must be direct named imports without aliases');
+            }
+            return specifier.imported.name;
+          });
+          if (importSource === './lib/table-sampler.mjs') {
+            if (samplerImport !== null) fail('table sampler import must be unique');
+            if (JSON.stringify([...names].sort()) !== JSON.stringify([
+              'buildTableSamplerExpression', 'parseTableSamplerResult',
+            ])) {
+              fail('table sampler import must bind the exact observation helpers');
+            }
+            samplerImport = sourceCode.getText(node);
+            return;
+          }
+          if (extractionImport !== null) fail('table extraction import must be unique');
+          if (JSON.stringify([...names].sort()) !== JSON.stringify([
+            'TABLE_EXTRACTION_LIMITS',
+            'addTableSampleBatch',
+            'canonicalizeTableCells',
+            'createTableAccumulator',
+            'finalizeTableExtraction',
+          ].sort())) {
+            fail('table extraction import must bind the exact observation bridge');
+          }
+          extractionImport = sourceCode.getText(node);
+        },
+        FunctionDeclaration(node) {
+          const name = node.id?.name;
+          if (!allOwners.includes(name)) return;
+          const ancestors = sourceCode.getAncestors(node);
+          if (ancestors.length !== 1 || ancestors[0]?.type !== 'Program') {
+            fail(`${name} must be one unique top-level observation owner`);
+          }
+          if (functionSources.has(name)) fail(`${name} observation owner must be unique`);
+          functionSources.set(name, sourceCode.getText(node));
+        },
+        'Program:exit'() {
+          for (const name of ['buildTableSamplerExpression', 'parseTableSamplerResult']) {
+            requireUniqueBinding(sourceCode, name, {
+              definitionType: 'ImportBinding',
+              importSource: './lib/table-sampler.mjs',
+            }, fail);
+          }
+          for (const name of [
+            'TABLE_EXTRACTION_LIMITS',
+            'addTableSampleBatch',
+            'canonicalizeTableCells',
+            'createTableAccumulator',
+            'finalizeTableExtraction',
+          ]) {
+            requireUniqueBinding(sourceCode, name, {
+              definitionType: 'ImportBinding',
+              importSource: './lib/table-extraction.mjs',
+            }, fail);
+          }
+          for (const name of allOwners) {
+            requireUniqueBinding(sourceCode, name, { definitionType: 'FunctionName' }, fail);
+          }
+        },
+      };
+    },
+  };
+  verifyWithRule(source, 'table-observation-authority', rule, fail);
+  if (!samplerImport || !extractionImport
+    || allOwners.some(name => !functionSources.has(name))) {
+    fail('complete table observation owner set was not found');
+  }
+
+  const samplerBindings = [
+    'export function parseTableObservationSelector(value)',
+    'export function parseTableSamplerResult(value)',
+    "export function buildTableSamplerExpression(selector = 'table')",
+    'const MAX_SELECTOR_COMPONENTS = 32;',
+    'const MAX_SELECTOR_VALUE_BYTES = 256;',
+    'maxClassScanUnits: 4096,',
+    'const selectorSpecLiteral = JSON.stringify(parseTableObservationSelector(selector));',
+    'const matchesTableSelector = value => {',
+    "const hasAttribute = getOwnPropertyDescriptor(elementProto, 'hasAttribute').value;",
+    "pageTruncationReason = 'selector-evaluation-limit';",
+    "invalid(`${name} truncation reason loses precedence to row-limit`);",
+    "invalid(`${name} data rows violate the producer header prefix`);",
+    "invalid('sample sample-byte-limit provenance loses precedence to table-limit');",
+  ];
+  if (samplerBindings.some(binding => !tableSamplerSource.includes(binding))) {
+    fail('bounded table sampler/parser authority was not found');
+  }
+  const extractionBindings = [
+    'export const TABLE_EXTRACTION_LIMITS = Object.freeze({',
+    'export function createTableAccumulator(options)',
+    'export function addTableSampleBatch(accumulator, samples)',
+    'export function finalizeTableExtraction(accumulator, options)',
+    'export function canonicalizeTableCells(cells)',
+  ];
+  if (extractionBindings.some(binding => !tableExtractionSource.includes(binding))) {
+    fail('Task-1 table extraction authority was not found');
+  }
+
+  const sampleOwner = functionSources.get('sampleRootFrameTables');
+  const exactSampleBindings = [
+    "const expression = buildTableSamplerExpression(selector || 'table');",
+    'cdpDomains(cdp).Page.getFrameTree({}, sid)',
+    `cdpDomains(cdp).Page.createIsolatedWorld({
+    frameId,
+    worldName: 'chrome-cdp-ex-table-sampler-v1',
+    grantUniveralAccess: false,
+  }, sid)`,
+    `cdpDomains(cdp).Runtime.evaluate({
+    expression,
+    contextId: world.executionContextId,
+    returnByValue: true,
+    awaitPromise: false,
+  }, sid)`,
+    'return parseTableSamplerResult(evaluated.result.value);',
+  ];
+  if (exactSampleBindings.some(binding => !sampleOwner.includes(binding))
+    || (sampleOwner.match(/cdpDomains\(cdp\)\./g) || []).length !== 3
+    || sampleOwner.indexOf(exactSampleBindings[0]) > sampleOwner.indexOf(exactSampleBindings[1])
+    || (source.match(/grantUniveralAccess: false,/g) || []).length !== 3
+    || source.includes('grantUniveralAccess: true')
+    || (source.match(/    returnByValue: true,\n    awaitPromise: false,/g) || []).length !== 2
+    || source.includes('    returnByValue: false,\n    awaitPromise: true,')) {
+    fail('root-frame sampler must validate first and retain the exact three-call CDP sequence');
+  }
+
+  const entryOwner = functionSources.get('observedTableEntry');
+  const bridgeBindings = [
+    'const accumulator = createTableAccumulator({',
+    'const canonical = canonicalizeTableCells(row.cells);',
+    'const admission = addTableSampleBatch(accumulator, admitted);',
+    'const result = finalizeTableExtraction(accumulator, {',
+  ];
+  if (bridgeBindings.some(binding => !entryOwner.includes(binding))
+    || (entryOwner.match(/addTableSampleBatch\(/g) || []).length !== 1) {
+    fail('observation must use exactly one trusted Task-1 batch bridge');
+  }
+
+  const jsonOwner = functionSources.get('boundedTableObservationJson');
+  const textOwner = functionSources.get('boundedTableObservationText');
+  const emissionJsonOwner = functionSources.get('boundedTableObservationEmissionJson');
+  const emissionTextOwner = functionSources.get('boundedTableObservationEmissionText');
+  const tableOwner = functionSources.get('tableObservationStr');
+  const emitterOwner = functionSources.get('emitTargetCommandResponse');
+  if (!jsonOwner.includes("Buffer.byteLength(output, 'utf8') > 16384")
+    || !textOwner.includes("Buffer.byteLength(output, 'utf8') > 8192")
+    || !emissionJsonOwner.includes('return boundedTableObservationJson(model);')
+    || !emissionTextOwner.includes("Buffer.byteLength(result, 'utf8') <= 8192")
+    || !tableOwner.includes("sampleRootFrameTables(cdp, sid, request.selector || 'table')")
+    || !tableOwner.includes("request.format === 'json'")
+    || !emitterOwner.includes('attachTargetResolutionDiagnostics(response.result, targetResolution)')
+    || !emitterOwner.includes('? boundedTableObservationEmissionJson(output)')
+    || !emitterOwner.includes(': boundedTableObservationEmissionText(output)')) {
+    fail('table formatter and final emission budget authority was not found');
+  }
+
+  const ownerSource = allOwners.map(name => functionSources.get(name)).join('\0');
+  const bindingSource = [
+    samplerImport,
+    extractionImport,
+    ...exactSampleBindings,
+    ...bridgeBindings,
+    ...samplerBindings,
+    ...extractionBindings,
+  ].join('\0');
+  return {
+    owners: [...TABLE_OBSERVATION_OWNERS],
+    sourceDigest: digest([ownerSource, tableSamplerSource, tableExtractionSource].join('\0')),
+    bindingDigest: digest(bindingSource),
+    samplerSourceDigest: digest(tableSamplerSource),
+    extractionSourceDigest: digest(tableExtractionSource),
+    source: [ownerSource, tableSamplerSource, tableExtractionSource].join('\0'),
+    binding: bindingSource,
+  };
+}
+
 function collectTablePolicyAuthority(source, {
   commandApplicationSource,
   commandSurface,
@@ -857,6 +1066,7 @@ function collectTablePolicyAuthority(source, {
   tableArtifactsSource,
   tableContractSource,
   tableExtractionSource,
+  tableSamplerSource,
 }) {
   const table = commandSurface.resolve('table');
   const expectedPolicy = {
@@ -887,7 +1097,7 @@ function collectTablePolicyAuthority(source, {
   let tableRollbackBinding = null;
   let tableReleaseBinding = null;
   let tableSessionCleanupBinding = null;
-  let deterministicContinuationBinding = null;
+  const deterministicContinuationBindings = new Map();
   let batchUnsafeBinding = null;
   let transportSideEffectBinding = null;
   let daemonBuilderBinding = null;
@@ -1034,9 +1244,9 @@ function collectTablePolicyAuthority(source, {
             : [];
           if (properties.length !== 1) failTable('readCapabilities.table must be bound exactly once');
           const binding = sourceCode.getText(properties[0]);
-          const expected = "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : tableStr(cdp, sessionId, request.selector)";
+          const expected = "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : tableObservationStr(cdp, sessionId, request)";
           if (binding !== expected) {
-            failTable('readCapabilities.table must bind continuation to the private store and observation to the legacy page bridge');
+            failTable('readCapabilities.table must bind continuation to the private store and full observation request delivery');
           }
           if (tableCapabilityBinding) failTable('readCapabilities.table must be bound exactly once');
           tableCapabilityBinding = binding;
@@ -1132,13 +1342,22 @@ function collectTablePolicyAuthority(source, {
             const conditional = sourceCode.getAncestors(node).findLast(ancestor => (
               ancestor.type === 'ConditionalExpression'
             ));
+            const guard = sourceCode.getAncestors(node).findLast(ancestor => (
+              ancestor.type === 'IfStatement'
+            ));
             if (namedFunctionOwner(sourceCode, node) !== 'emitTargetCommandResponse'
               || call !== 'isDeterministicTableContinuationResult(cmd, response.result)'
-              || !conditional) {
+              || (!conditional && !guard)) {
               failTable('deterministic continuation emission must use the reviewed result');
             }
-            if (deterministicContinuationBinding) failTable('deterministic continuation binding must be unique');
-            deterministicContinuationBinding = sourceCode.getText(conditional);
+            const role = conditional ? 'target-diagnostics' : 'table-budget';
+            if (deterministicContinuationBindings.has(role)) {
+              failTable(`deterministic continuation ${role} binding must be unique`);
+            }
+            deterministicContinuationBindings.set(
+              role,
+              sourceCode.getText(conditional || guard.test),
+            );
           }
           if (!calls.has(name)) return;
           calls.get(name).push({
@@ -1156,7 +1375,7 @@ function collectTablePolicyAuthority(source, {
               importSource: './lib/table-contract.mjs',
             }, failTable);
           }
-          requireUniqueBinding(sourceCode, 'tableStr', { definitionType: 'FunctionName' }, failTable);
+          requireUniqueBinding(sourceCode, 'tableObservationStr', { definitionType: 'FunctionName' }, failTable);
           requireUniqueBinding(sourceCode, 'createTableArtifactStore', {
             definitionType: 'ImportBinding',
             importSource: './lib/table-artifacts.mjs',
@@ -1232,13 +1451,13 @@ function collectTablePolicyAuthority(source, {
   if (!authorizeBinding) failTable('daemon authorizer binding was not found');
   if (!tableCapabilityBinding) failTable('table continuation capability binding was not found');
   if (!tableArtifactConstructionBinding || !tableRollbackBinding || !tableReleaseBinding
-    || !tableSessionCleanupBinding || !deterministicContinuationBinding) {
+    || !tableSessionCleanupBinding || deterministicContinuationBindings.size !== 2) {
     failTable(`table artifact construction/lifecycle/emission authority was not found: ${JSON.stringify({
       construction: Boolean(tableArtifactConstructionBinding),
       rollback: Boolean(tableRollbackBinding),
       release: Boolean(tableReleaseBinding),
       cleanupSession: Boolean(tableSessionCleanupBinding),
-      emission: Boolean(deterministicContinuationBinding),
+      emission: [...deterministicContinuationBindings.keys()].sort(),
     })}`);
   }
   if (!batchUnsafeBinding) failTable('batch unsafe argv binding was not found');
@@ -1276,6 +1495,12 @@ function collectTablePolicyAuthority(source, {
     tableExtractionSource,
     failTable,
   );
+  const tableObservationAuthority = collectTableObservationAuthority(
+    source,
+    tableSamplerSource,
+    tableExtractionSource,
+    failTable,
+  );
   const commandApplicationAuthority = collectCommandApplicationTableAuthority(commandApplicationSource, failTable);
   const helperSources = TABLE_POLICY_HELPERS.map(name => declarations.get(name));
   return {
@@ -1292,6 +1517,7 @@ function collectTablePolicyAuthority(source, {
       daemonReadAuthority.source,
       tableContractAuthority.source,
       tableArtifactAuthority.source,
+      tableObservationAuthority.source,
       commandApplicationAuthority.source,
     ].join('\0')),
     bindingDigest: digest([
@@ -1301,7 +1527,9 @@ function collectTablePolicyAuthority(source, {
       tableRollbackBinding,
       tableReleaseBinding,
       tableSessionCleanupBinding,
-      deterministicContinuationBinding,
+      ...[...deterministicContinuationBindings.entries()]
+        .sort()
+        .map(([role, binding]) => `${role}:${binding}`),
       batchUnsafeBinding,
       transportSideEffectBinding,
       daemonBuilderBinding,
@@ -1311,10 +1539,18 @@ function collectTablePolicyAuthority(source, {
       daemonReadAuthority.binding,
       tableContractAuthority.binding,
       tableArtifactAuthority.binding,
+      tableObservationAuthority.binding,
       commandApplicationAuthority.binding,
       ...Object.values(expectedCalls).flat().map(call => `${call.owner}:${call.source}`).sort(),
     ].join('\0')),
     artifactSourceDigest: digest(tableArtifactsSource),
+    observation: {
+      owners: tableObservationAuthority.owners,
+      sourceDigest: tableObservationAuthority.sourceDigest,
+      bindingDigest: tableObservationAuthority.bindingDigest,
+      samplerSourceDigest: tableObservationAuthority.samplerSourceDigest,
+      extractionSourceDigest: tableObservationAuthority.extractionSourceDigest,
+    },
   };
 }
 
@@ -1326,6 +1562,7 @@ export function buildRuntimeDispatchInventory(source = readFileSync(cdpPath, 'ut
   tableArtifactsSource = readFileSync(tableArtifactsPath, 'utf8'),
   tableContractSource = readFileSync(tableContractPath, 'utf8'),
   tableExtractionSource = readFileSync(tableExtractionPath, 'utf8'),
+  tableSamplerSource = readFileSync(tableSamplerPath, 'utf8'),
 } = {}) {
   const applicationAuthority = collectApplicationCommands(source);
   const tablePolicyAuthority = collectTablePolicyAuthority(source, {
@@ -1336,6 +1573,7 @@ export function buildRuntimeDispatchInventory(source = readFileSync(cdpPath, 'ut
     tableArtifactsSource,
     tableContractSource,
     tableExtractionSource,
+    tableSamplerSource,
   });
   const applicationCommandSet = applicationAuthority.commands;
   const bySpelling = new Map();
