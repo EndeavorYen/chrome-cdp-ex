@@ -19,6 +19,14 @@ export const tableContractSource = readFileSync(
   join(rootDir, 'skills/chrome-cdp-ex/scripts/lib/table-contract.mjs'),
   'utf8',
 );
+export const tableArtifactsSource = readFileSync(
+  join(rootDir, 'skills/chrome-cdp-ex/scripts/lib/table-artifacts.mjs'),
+  'utf8',
+);
+export const tableExtractionSource = readFileSync(
+  join(rootDir, 'skills/chrome-cdp-ex/scripts/lib/table-extraction.mjs'),
+  'utf8',
+);
 export const commandApplicationSource = readFileSync(
   join(rootDir, 'skills/chrome-cdp-ex/scripts/lib/command-application.mjs'),
   'utf8',

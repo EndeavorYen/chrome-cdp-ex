@@ -6,7 +6,9 @@ import {
   daemonReadHandlersSource,
   mcpAdapterSource,
   source,
+  tableArtifactsSource,
   tableContractSource,
+  tableExtractionSource,
 } from './runtime-v3-dispatch-test-helpers.mjs';
 
 function inventory(cdpSource = source, overrides = {}) {
@@ -14,7 +16,9 @@ function inventory(cdpSource = source, overrides = {}) {
     commandApplicationSource,
     daemonReadHandlersSource,
     mcpAdapterSource,
+    tableArtifactsSource,
     tableContractSource,
+    tableExtractionSource,
     ...overrides,
   });
 }
@@ -29,6 +33,23 @@ function expectInventoryDriftOrReject(cdpSource) {
     return;
   }
   expect(authority).not.toEqual(inventory().tablePolicyAuthority);
+}
+
+function expectOverrideDriftOrReject(overrides) {
+  let authority;
+  try {
+    authority = inventory(source, overrides).tablePolicyAuthority;
+  } catch (error) {
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(/table policy authority/i);
+    return;
+  }
+  expect(authority).not.toEqual(inventory().tablePolicyAuthority);
+}
+
+function mutate(text, before, after) {
+  expect(text).toContain(before);
+  return text.replace(before, after);
 }
 
 describe('Runtime v3 table policy authority', () => {
@@ -50,6 +71,7 @@ describe('Runtime v3 table policy authority', () => {
     });
     expect(authority.sourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(authority.bindingDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(authority.artifactSourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
   it.each([
@@ -67,8 +89,8 @@ describe('Runtime v3 table policy authority', () => {
       'authorize: input => authorizeDaemonApplicationCommand({ ...input, args: [] }),',
     ),
     source.replace(
-      'table: request => tableStr(cdp, sessionId, request.selector),',
-      'table: request => tableStr(cdp, sessionId, request.argv[0]),',
+      "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : tableStr(cdp, sessionId, request.selector),",
+      "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.argv[0]), null, 2)\n      : tableStr(cdp, sessionId, request.selector),",
     ),
   ])('rejects or drifts when an argv-aware production binding is rewritten %#', mutation => {
     expect(() => inventory(mutation)).toThrow(/table policy authority/i);
@@ -383,10 +405,78 @@ describe('Runtime v3 table policy authority', () => {
       'table: applicationPreflight.handlerBuilders.text(readCapabilities),',
     ),
     source.replace(
-      'table: request => tableStr(cdp, sessionId, request.selector),',
-      'table: request => textStr(cdp, sessionId, request.selector),',
+      "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : tableStr(cdp, sessionId, request.selector),",
+      "table: async request => request.mode === 'continue'\n      ? textStr(cdp, sessionId, request.continuation)\n      : tableStr(cdp, sessionId, request.selector),",
     ),
   ])('rejects substituted table handler and capability wiring %#', mutation => {
     expect(() => inventory(mutation)).toThrow(/table policy authority/i);
+  });
+
+  it.each([
+    mutate(source,
+      "import { createTableArtifactStore } from './lib/table-artifacts.mjs';",
+      "import { createTableArtifactStore as createStore } from './lib/table-artifacts.mjs';"),
+    mutate(source,
+      'const tableArtifactStore = createTableArtifactStore({',
+      'const tableArtifactStore = false && createTableArtifactStore({'),
+    mutate(source,
+      'cleanup: (_request, execution) => tableArtifactStore.rollbackRequest(execution),',
+      'cleanup: () => {},'),
+    mutate(source,
+      'onFlushed: (_request, execution) => tableArtifactStore.releaseRequest(execution),',
+      'onFlushed: () => {},'),
+    mutate(source,
+      'cleanupSession: () => tableArtifactStore.cleanupSession(),',
+      'cleanupSession: () => {},'),
+    mutate(source,
+      "&& !isDeterministicTableContinuationResult(cmd, response.result)",
+      "&& false && !isDeterministicTableContinuationResult(cmd, response.result)"),
+    mutate(source,
+      "? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)",
+      "? JSON.stringify(await tableArtifactStore.readContinuation(request.argv[0]), null, 2)"),
+  ])('rejects or drifts for artifact production lifecycle bypass %#', mutation => {
+    expectInventoryDriftOrReject(mutation);
+  });
+
+  it.each([
+    mutate(tableContractSource,
+      'const CONTINUATION_TOKEN_RE = /^ct1\\.([0-9a-f]{32})\\.(0|[1-9][0-9]{0,4})$/;',
+      'const CONTINUATION_TOKEN_RE = /^ct1\\.([0-9a-f]{32})\\.(0|[1-9][0-9]{0,5})$/;'),
+    mutate(tableContractSource,
+      'parseTableContinuationToken(continuation);',
+      'if (false) parseTableContinuationToken(continuation);'),
+  ])('rejects or drifts for continuation parser bypass %#', mutation => {
+    expectOverrideDriftOrReject({ tableContractSource: mutation });
+  });
+
+  it.each([
+    mutate(tableExtractionSource,
+      'exportBundles.set(bundle, Object.freeze({ manifest, rowsTsv }));',
+      'if (false) exportBundles.set(bundle, Object.freeze({ manifest, rowsTsv }));'),
+    mutate(tableExtractionSource,
+      'const trusted = exportBundles.get(bundle);',
+      'const trusted = bundle;'),
+  ])('rejects or drifts for trusted export bundle bypass %#', mutation => {
+    expectOverrideDriftOrReject({ tableExtractionSource: mutation });
+  });
+
+  it.each([
+    mutate(tableArtifactsSource,
+      "if (state.platform === 'win32') {",
+      "if (false && state.platform === 'win32') {"),
+    mutate(tableArtifactsSource,
+      "return error?.code === 'ESRCH';",
+      'return true;'),
+    mutate(tableArtifactsSource,
+      'export function createTableArtifactStore(input) {',
+      'export function createTableArtifactStore(input, dependencies = DEFAULT_DEPENDENCIES) {'),
+    mutate(tableArtifactsSource,
+      'return makeStore(input, DEFAULT_DEPENDENCIES);',
+      'return makeStore(input, dependencies);'),
+    mutate(tableArtifactsSource,
+      'sweepCrashResidue: () => sweepCrashResidue(state),',
+      'sweepCrashResidue() {},'),
+  ])('rejects or drifts for artifact store safety bypass %#', mutation => {
+    expectOverrideDriftOrReject({ tableArtifactsSource: mutation });
   });
 });
