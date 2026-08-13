@@ -226,7 +226,14 @@ describe('private table artifact publication', () => {
     }
   });
 
-  it.each(['owner-write', 'owner-stat', 'owner-close', 'session-fsync', 'session-close'])(
+  it.each([
+    'owner-provisional-stat',
+    'owner-write',
+    'owner-stat',
+    'owner-close',
+    'session-fsync',
+    'session-close',
+  ])(
     'recovers the same lazy store after a one-shot %s failure during initialization',
     async fault => {
       const runtimeDir = privateRuntimeRoot();
@@ -244,6 +251,11 @@ describe('private table artifact publication', () => {
           return tracedHandle(handle, fault, [], {
             ...(fault === 'owner-write' ? {
               writeFile: async () => {
+                injected = true;
+                throw new Error(`one-shot init fault ${runtimeDir}`);
+              },
+            } : fault === 'owner-provisional-stat' ? {
+              stat: async () => {
                 injected = true;
                 throw new Error(`one-shot init fault ${runtimeDir}`);
               },
