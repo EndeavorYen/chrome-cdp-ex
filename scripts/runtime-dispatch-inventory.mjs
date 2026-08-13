@@ -763,6 +763,8 @@ function collectTablePolicyAuthority(source, {
   let daemonBuilderBinding = null;
   let applicationHandlerBinding = null;
   const frozenWiringBindings = new Map();
+  let runDaemonAuthoritySource = null;
+  let sendCommandAuthoritySource = null;
   const failTable = message => { throw new Error(`table policy authority: ${message}`); };
   const rule = {
     create(context) {
@@ -786,6 +788,14 @@ function collectTablePolicyAuthority(source, {
         },
         FunctionDeclaration(node) {
           const name = node.id?.name;
+          if (name === 'runDaemon') {
+            if (runDaemonAuthoritySource !== null) failTable('runDaemon table policy owner must be unique');
+            runDaemonAuthoritySource = sourceCode.getText(node);
+          }
+          if (name === 'sendCommand') {
+            if (sendCommandAuthoritySource !== null) failTable('sendCommand table policy owner must be unique');
+            sendCommandAuthoritySource = sourceCode.getText(node);
+          }
           if (![...TABLE_POLICY_HELPERS, ...TABLE_CONTRACT_HELPERS].includes(name)) return;
           if (TABLE_CONTRACT_HELPERS.includes(name)) failTable(`${name} must not be shadowed`);
           const ancestors = sourceCode.getAncestors(node);
@@ -967,6 +977,9 @@ function collectTablePolicyAuthority(source, {
   if (TABLE_POLICY_HELPERS.some(name => !declarations.has(name))) {
     failTable('all policy helpers must be declared exactly once');
   }
+  if (!runDaemonAuthoritySource || !sendCommandAuthoritySource) {
+    failTable('runDaemon and sendCommand table policy owners must be present');
+  }
   const expectedCalls = {
     isTableCollectArgs: [
       { owner: 'daemonRequestMayHaveSideEffects', source: 'isTableCollectArgs(request.args || [])' },
@@ -1030,6 +1043,8 @@ function collectTablePolicyAuthority(source, {
     sourceDigest: digest([
       tableContractImport,
       ...helperSources,
+      runDaemonAuthoritySource,
+      sendCommandAuthoritySource,
       mcpAuthority.source,
       daemonReadAuthority.source,
       tableContractAuthority.source,
