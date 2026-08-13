@@ -215,6 +215,8 @@ function createTableCollectionRuntime(executionContext, {
   }
   const { deadline } = context;
   const lifecycleController = new AbortController();
+  const pageController = new AbortController();
+  const activePageTasks = new Set();
   let finalizing = false;
   const abortLifecycle = reason => {
     if (!lifecycleController.signal.aborted) lifecycleController.abort(reason);
@@ -238,11 +240,21 @@ function createTableCollectionRuntime(executionContext, {
   const cdpOperationTimeoutMs = () => finalizing
     ? 0
     : Math.min(deadline.maxCdpOperationMs, remainingPageMs());
-  const beginFinalization = () => {
-    finalizing = true;
+  const trackPageTask = task => {
+    activePageTasks.add(task);
+    const remove = () => activePageTasks.delete(task);
+    task.then(remove, remove);
+    return task;
+  };
+  const beginFinalization = async () => {
+    if (!finalizing) {
+      finalizing = true;
+      pageController.abort(new TableCollectionDeadlineError('page'));
+    }
+    await Promise.allSettled([...activePageTasks]);
   };
 
-  const runCdpOperation = async operation => {
+  const runCdpOperation = operation => trackPageTask((async () => {
     if (typeof operation !== 'function') throw new Error('table: CDP operation must be a function');
     throwIfAborted();
     if (finalizing) throw new TableCollectionDeadlineError('page');
@@ -253,19 +265,22 @@ function createTableCollectionRuntime(executionContext, {
       ? new TableCollectionDeadlineError('page')
       : new TableCollectionOperationTimeoutError(timeoutMs);
     const operationController = new AbortController();
-    const onLifecycleAbort = () => {
-      if (!operationController.signal.aborted) {
-        operationController.abort(abortReason(lifecycleController.signal));
-      }
-    };
-    lifecycleController.signal.addEventListener('abort', onLifecycleAbort, { once: true });
-    let timer;
     let rejectAbort;
     const aborted = new Promise((resolve, reject) => {
       rejectAbort = reject;
     });
-    const rejectOnLifecycleAbort = () => rejectAbort(abortReason(lifecycleController.signal));
-    lifecycleController.signal.addEventListener('abort', rejectOnLifecycleAbort, { once: true });
+    const propagateAbort = signal => {
+      const reason = abortReason(signal);
+      if (!operationController.signal.aborted) {
+        operationController.abort(reason);
+      }
+      rejectAbort(reason);
+    };
+    const onLifecycleAbort = () => propagateAbort(lifecycleController.signal);
+    const onPageAbort = () => propagateAbort(pageController.signal);
+    lifecycleController.signal.addEventListener('abort', onLifecycleAbort, { once: true });
+    pageController.signal.addEventListener('abort', onPageAbort, { once: true });
+    let timer;
     const timeout = new Promise((resolve, reject) => {
       timer = setTimer(() => {
         if (!operationController.signal.aborted) operationController.abort(timeoutError);
@@ -273,7 +288,7 @@ function createTableCollectionRuntime(executionContext, {
       }, timeoutMs);
     });
     try {
-      return await Promise.race([
+      const result = await Promise.race([
         Promise.resolve().then(() => {
           throwIfAborted();
           if (operationController.signal.aborted) throw abortReason(operationController.signal);
@@ -282,14 +297,21 @@ function createTableCollectionRuntime(executionContext, {
         timeout,
         aborted,
       ]);
+      throwIfAborted();
+      if (remainingPageMs() <= 0) {
+        const error = new TableCollectionDeadlineError('page');
+        if (!operationController.signal.aborted) operationController.abort(error);
+        throw error;
+      }
+      return result;
     } finally {
       clearTimer(timer);
       lifecycleController.signal.removeEventListener('abort', onLifecycleAbort);
-      lifecycleController.signal.removeEventListener('abort', rejectOnLifecycleAbort);
+      pageController.signal.removeEventListener('abort', onPageAbort);
     }
-  };
+  })());
 
-  const sleep = async milliseconds => {
+  const sleep = milliseconds => trackPageTask((async () => {
     if (!Number.isFinite(milliseconds) || milliseconds < 0) {
       throw new Error('table: sleep duration must be a finite non-negative number');
     }
@@ -302,23 +324,33 @@ function createTableCollectionRuntime(executionContext, {
     if (timeoutMs === 0) return;
     const reachesPageDeadline = requestedMs >= pageRemaining;
     await new Promise((resolve, reject) => {
-      const onAbort = () => {
-        clearTimer(timer);
-        lifecycleController.signal.removeEventListener('abort', onAbort);
-        reject(abortReason(lifecycleController.signal));
+      let timer;
+      const removeAbortListeners = () => {
+        lifecycleController.signal.removeEventListener('abort', onLifecycleAbort);
+        pageController.signal.removeEventListener('abort', onPageAbort);
       };
-      const timer = setTimer(() => {
-        lifecycleController.signal.removeEventListener('abort', onAbort);
+      const rejectForAbort = signal => {
+        clearTimer(timer);
+        removeAbortListeners();
+        reject(abortReason(signal));
+      };
+      const onLifecycleAbort = () => rejectForAbort(lifecycleController.signal);
+      const onPageAbort = () => rejectForAbort(pageController.signal);
+      timer = setTimer(() => {
+        removeAbortListeners();
         if (reachesPageDeadline) reject(new TableCollectionDeadlineError('page'));
         else resolve();
       }, timeoutMs);
-      lifecycleController.signal.addEventListener('abort', onAbort, { once: true });
+      lifecycleController.signal.addEventListener('abort', onLifecycleAbort, { once: true });
+      pageController.signal.addEventListener('abort', onPageAbort, { once: true });
     });
-  };
+    throwIfAborted();
+    if (remainingPageMs() <= 0) throw new TableCollectionDeadlineError('page');
+  })());
 
   const runFinalization = async operation => {
     if (typeof operation !== 'function') throw new Error('table: finalization operation must be a function');
-    beginFinalization();
+    await beginFinalization();
     throwIfAborted();
     const timeoutMs = remainingServerMs();
     if (timeoutMs <= 0) {
@@ -341,7 +373,7 @@ function createTableCollectionRuntime(executionContext, {
       }, timeoutMs);
     });
     try {
-      return await Promise.race([
+      const result = await Promise.race([
         Promise.resolve().then(() => {
           throwIfAborted();
           return operation();
@@ -349,6 +381,12 @@ function createTableCollectionRuntime(executionContext, {
         timeout,
         aborted,
       ]);
+      throwIfAborted();
+      if (remainingServerMs() <= 0) {
+        abortLifecycle(timeoutError);
+        throw timeoutError;
+      }
+      return result;
     } finally {
       clearTimer(timer);
       lifecycleController.signal.removeEventListener('abort', onAbort);
@@ -569,6 +607,11 @@ function createDaemonRequestConnection(conn, {
     ])
       .then(response => {
         if (entry.disposed || !canWrite()) return;
+        if (execution.deadline && execution.deadline.now() >= execution.deadline.serverAt) {
+          const error = new TableCollectionDeadlineError('server');
+          if (!controller.signal.aborted) controller.abort(error);
+          throw error;
+        }
         if (entry.executionTimer !== null) {
           clearTimer(entry.executionTimer);
           entry.executionTimer = null;
