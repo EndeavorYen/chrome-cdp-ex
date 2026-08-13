@@ -95,10 +95,10 @@ function enumValue(value, allowed, name) {
   return value;
 }
 
-function stringArray(value, name) {
+function boundedStringArray(value, name, { maxItems, maxItemBytes }) {
   if (isProxy(value)) invalid(`${name} must not be a proxy`);
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) invalid(`${name} must be an array with Array.prototype`);
-  if (value.length > TABLE_EXTRACTION_LIMITS.maxCellsPerRow) invalid(`${name} exceeds its item bound`);
+  if (value.length > maxItems) invalid(`${name} exceeds its item bound`);
   if (Object.getOwnPropertySymbols(value).length !== 0) invalid(`${name} must not have symbols`);
   for (const key of Object.getOwnPropertyNames(value)) {
     if (key === 'length') continue;
@@ -110,9 +110,23 @@ function stringArray(value, name) {
   for (let index = 0; index < value.length; index += 1) {
     const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
     if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) invalid(`${name} must be dense own enumerable data`);
-    boundedString(descriptor.value, `${name}[${index}]`, TABLE_EXTRACTION_LIMITS.maxArtifactBytes);
+    boundedString(descriptor.value, `${name}[${index}]`, maxItemBytes);
   }
   return value;
+}
+
+function cellArray(value, name, maxCellsPerRow = TABLE_EXTRACTION_LIMITS.maxCellsPerRow) {
+  return boundedStringArray(value, name, {
+    maxItems: maxCellsPerRow,
+    maxItemBytes: TABLE_EXTRACTION_LIMITS.maxArtifactBytes,
+  });
+}
+
+function rowArray(value, name) {
+  return boundedStringArray(value, name, {
+    maxItems: TABLE_EXTRACTION_LIMITS.maxRows,
+    maxItemBytes: TABLE_EXTRACTION_LIMITS.maxInlineBytes,
+  });
 }
 
 function sampleArray(value) {
@@ -248,7 +262,13 @@ function tableResult(state, termination) {
 }
 
 export function canonicalizeTableCells(cells) {
-  return stringArray(cells, 'cells')
+  return cellArray(cells, 'cells')
+    .map(escapeCell)
+    .join('\t');
+}
+
+function canonicalizeSampleCells(cells, maxCellsPerRow) {
+  return cellArray(cells, 'sample.cells', maxCellsPerRow)
     .map(escapeCell)
     .join('\t');
 }
@@ -299,7 +319,7 @@ function validatedSample(state, sample) {
   } else {
     boundedString(key, 'sample.key', MAX_KEY_BYTES);
   }
-  const row = canonicalizeTableCells(ownValue(record, 'cells', 'sample'));
+  const row = canonicalizeSampleCells(ownValue(record, 'cells', 'sample'), state.limits.maxCellsPerRow);
   const rowBytes = Buffer.byteLength(row, 'utf8');
   return { mountedNodeId, key, keyId: `${typeof key}:${key}`, row, rowBytes };
 }
@@ -340,7 +360,8 @@ export function addTableSampleBatch(accumulator, samples) {
 }
 
 export function buildInlineTablePreview(rows, limits) {
-  return previewForRows(stringArray(rows, 'rows'), normalizedLimits(limits));
+  const normalized = normalizedLimits(limits);
+  return previewForRows(rowArray(rows, 'rows'), normalized);
 }
 
 export function finalizeTableExtraction(accumulator, options) {
