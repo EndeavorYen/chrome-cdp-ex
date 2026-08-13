@@ -109,6 +109,10 @@ class Element extends Node {
   getBoundingClientRect() { return { ...this._rect }; }
   querySelector(selector) { return findElement(this, selector); }
   querySelectorAll(selector) { return findAllElements(this, selector); }
+  dispatchEvent(event) {
+    if (event?.type === 'scroll' && typeof this._onScroll === 'function') this._onScroll();
+    return true;
+  }
   click() { this.onclick?.(this); }
 }
 
@@ -256,6 +260,8 @@ function mountRecycledTableFixture(overrides = {}) {
         return;
       }
       if (config.stallScroll) return;
+      this._scrollTop = Math.max(0, Number(value));
+      if (config.syncOnScrollEvent) return;
       const maxStart = Math.max(0, loadedRows - config.mountedRows);
       windowStart = Math.min(maxStart, Math.max(0, Math.floor(Number(value) / config.rowHeightPx)));
       renderWindow();
@@ -284,6 +290,13 @@ function mountRecycledTableFixture(overrides = {}) {
   };
 
   loadMore.onclick = clickLoadMore;
+  if (config.syncOnScrollEvent) {
+    viewport._onScroll = () => {
+      const maxStart = Math.max(0, loadedRows - config.mountedRows);
+      windowStart = Math.min(maxStart, Math.max(0, Math.floor((viewport._scrollTop || 0) / config.rowHeightPx)));
+      renderWindow();
+    };
+  }
   setLoadMoreVisible(!config.noLoadMore && loadedRows < config.logicalRows);
   renderWindow();
 
@@ -378,6 +391,9 @@ function createWorldCdp(fixture, { beforeEvaluate } = {}) {
     HTMLTableElement: fixture.HTMLTableElement,
     Document: fixture.Document,
     document: fixture.document,
+    Event: class Event {
+      constructor(type) { this.type = type; }
+    },
     window: { document: fixture.document, devicePixelRatio: 1 },
   });
   const calls = [];
@@ -527,6 +543,16 @@ describe('persistent isolated-world virtual collection', () => {
     expect(table.artifact.checksum).toBe(FROZEN_CHECKSUM);
     expect(fixture.state().loadMoreClicks).toBe(FIXTURE.loadMoreClicks);
     expect(cdp.releasedGroups.some(group => typeof group === 'string' && group.length > 0)).toBe(true);
+  });
+
+  it('collects when the page virtualizer updates on scroll events rather than the scrollTop setter', async () => {
+    const fixture = mountRecycledTableFixture({ syncOnScrollEvent: true });
+    const output = await runCollect(createWorldCdp(fixture), collectRequest(), { store: artifactStore() });
+    const table = collectedTable(output);
+    expect(table.collectedRows).toBe(1024);
+    expect(table.completeness.state).toBe('complete');
+    expect(table.artifact.checksum).toBe(FROZEN_CHECKSUM);
+    expect(fixture.state().loadMoreClicks).toBe(FIXTURE.loadMoreClicks);
   });
 });
 
