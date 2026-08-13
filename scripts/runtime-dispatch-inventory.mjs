@@ -94,6 +94,16 @@ function requireUniqueBinding(sourceCode, name, {
   return variable;
 }
 
+function requireUnshadowedGlobalReference(sourceCode, identifier, name, fail) {
+  const reference = sourceCode.scopeManager.scopes
+    .flatMap(scope => scope.references)
+    .find(candidate => candidate.identifier === identifier);
+  if (!reference || identifier.name !== name
+    || (reference.resolved !== null && reference.resolved.defs.length !== 0)) {
+    fail(`${name} must resolve to the unshadowed global binding`);
+  }
+}
+
 function verifyWithRule(source, ruleName, rule, fail) {
   const messages = new Linter().verify(source, {
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module' },
@@ -858,6 +868,12 @@ function collectTablePolicyAuthority(source, {
         AssignmentExpression(node) {
           const left = node.left;
           if (left?.type === 'MemberExpression'
+            && !left.computed
+            && left.object?.name === 'Object'
+            && left.property?.name === 'freeze') {
+            failTable('global Object.freeze must not be reassigned');
+          }
+          if (left?.type === 'MemberExpression'
             && ['readCapabilities', 'applicationHandlers'].includes(left.object?.name)) {
             failTable(`${left.object.name} must not be reassigned after construction`);
           }
@@ -892,6 +908,7 @@ function collectTablePolicyAuthority(source, {
             && node.arguments[0]?.type === 'Identifier'
             && ['readCapabilities', 'applicationHandlers'].includes(node.arguments[0].name)) {
             const target = node.arguments[0].name;
+            requireUnshadowedGlobalReference(sourceCode, node.callee.object, 'Object', failTable);
             if (namedFunctionOwner(sourceCode, node) !== 'runDaemon'
               || sourceCode.getText(node) !== `Object.freeze(${target})`) {
               failTable(`${target} must be frozen directly in runDaemon`);
