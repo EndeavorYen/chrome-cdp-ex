@@ -115,7 +115,9 @@ describe('table request contract', () => {
 
   it('enforces exact UTF-8 and Unicode selector bounds', () => {
     const exact = 'é'.repeat(512);
-    expect(parseTableArgs([exact]).selector).toBe(exact);
+    const boundedTable = `table[data-label="${'é'.repeat(128)}"]`;
+    expect(parseTableArgs([boundedTable]).selector).toBe(boundedTable);
+    expect(() => parseTableArgs([exact])).toThrow(/bounded table selector|not supported/i);
     for (const input of [
       [`${exact}a`],
       ['--collect', '--scroll-container', `${exact}a`],
