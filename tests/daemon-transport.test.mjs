@@ -8,6 +8,8 @@ import {
   requestDaemon,
 } from '../skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs';
 
+const { __test__: cdpTest } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+
 function connection({ onWrite } = {}) {
   const conn = new EventEmitter();
   conn.write = vi.fn(payload => onWrite?.(conn, payload));
@@ -467,6 +469,48 @@ describe('daemon NDJSON request transport', () => {
       expect(shortened.destroy).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('binds production collect classification to one 315s ambiguous send with no replay', async () => {
+    const timerSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const collect = connection({
+        onWrite(socket) {
+          queueMicrotask(() => socket.emit('close'));
+        },
+      });
+      const error = await cdpTest.sendCommand(collect, {
+        cmd: 'table',
+        args: ['#orders', '--collect', '--scroll-container', '.viewport'],
+      }).catch(cause => cause);
+
+      expect(collect.write).toHaveBeenCalledOnce();
+      expect(timerSpy).toHaveBeenCalledWith(expect.any(Function), 315000);
+      expect(error).toMatchObject({
+        code: 'DAEMON_COMPLETION_UNKNOWN',
+        completion: 'unknown',
+        sideEffectMayHaveOccurred: true,
+        retrySafe: false,
+        transportCause: { kind: 'peer-close' },
+      });
+
+      for (const request of [
+        { cmd: 'table', args: ['#orders'] },
+        {
+          cmd: 'table',
+          args: ['--continue', 'ct1.0123456789abcdef0123456789abcdef.0', '--format', 'json'],
+        },
+      ]) {
+        timerSpy.mockClear();
+        const read = connection({ onWrite: socket => queueMicrotask(() => socket.emit('close')) });
+        const readError = await cdpTest.sendCommand(read, request).catch(cause => cause);
+        expect(timerSpy).toHaveBeenCalledWith(expect.any(Function), 120000);
+        expect(readError).not.toHaveProperty('completion');
+        expect(read.write).toHaveBeenCalledOnce();
+      }
+    } finally {
+      timerSpy.mockRestore();
     }
   });
 });

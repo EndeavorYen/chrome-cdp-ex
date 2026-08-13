@@ -6,7 +6,7 @@ const COMMANDS = Object.freeze([
   'record', 'record-actions', 'scanshot', 'shot', 'snap', 'status', 'styles', 'summary', 'table', 'text',
   'wait', 'waitfor',
 ]);
-const HANDLER_CONTEXT_KEYS = new Set(['args', 'targetBound', 'spec', 'authorization']);
+const HANDLER_CONTEXT_KEYS = new Set(['args', 'targetBound', 'spec', 'authorization', 'execution']);
 
 function fail(path, message) {
   throw new Error(`${path}: ${message}`);
@@ -56,6 +56,14 @@ function snapshotArgs(contextInput) {
   return Object.freeze(args);
 }
 
+function snapshotExecution(contextInput) {
+  const context = snapshotObject(contextInput, 'handler context');
+  for (const key of Object.keys(context)) {
+    if (!HANDLER_CONTEXT_KEYS.has(key)) fail(`handler context.${key}`, 'is not allowed');
+  }
+  return context.execution ?? null;
+}
+
 function snapshotCapabilities(input) {
   const capabilities = snapshotObject(input, 'capabilities');
   const actual = Object.keys(capabilities).sort();
@@ -96,7 +104,11 @@ export function createDaemonReadHandlers(input) {
     summary: async context => commandResult(await capabilities.summary(snapshotArgs(context)), null),
     table: async context => {
       const request = parseTableArgs(snapshotArgs(context));
-      if (request.mode === 'collect') throw new Error('table: collection is unavailable in this v2.16 candidate');
+      if (request.mode === 'collect') {
+        const execution = snapshotExecution(context);
+        if (!execution) throw new Error('table: collection is unavailable in this v2.16 candidate');
+        return commandResult(await capabilities.table(request, execution), null);
+      }
       if (request.mode === 'continue') throw new Error('table: continuation is unavailable until private artifact storage is installed');
       if (request.format === 'json') throw new Error('table: JSON observation is unavailable until the bounded snapshot runtime is installed');
       return commandResult(await capabilities.table(request), null);

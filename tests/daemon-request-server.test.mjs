@@ -31,9 +31,7 @@ function frame(request) {
 }
 
 async function drain() {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
 }
 
 describe('daemon request server lifecycle', () => {
@@ -124,10 +122,66 @@ describe('daemon request server lifecycle', () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it('rejects one duplicate active ID without aborting its owner and accepts id=1 on another connection', async () => {
-    let resolveFirst;
+  it('fails truthfully at the shared 300s server deadline and retains ownership until flush', async () => {
+    let serverTimer;
+    let signal;
+    const setTimer = vi.fn((callback, _delay) => {
+      serverTimer = callback;
+      return Symbol('server-timer');
+    });
+    const clearTimer = vi.fn();
+    const cleanup = vi.fn();
+    const dispose = vi.fn();
+    const conn = connection({ holdWrite: true });
+    const lifecycle = T.createDaemonRequestConnection(conn, {
+      handleRequest: (_request, execution) => {
+        signal = execution.signal;
+        return new Promise(() => {});
+      },
+      cleanup,
+      onDispose: dispose,
+      now: () => 2000,
+      setTimer,
+      clearTimer,
+    });
+    conn.emit('data', frame({
+      id: 1,
+      cmd: 'table',
+      args: ['--collect', '--scroll-container', '.viewport'],
+    }));
+    await drain();
+
+    expect(setTimer).toHaveBeenCalledWith(expect.any(Function), 300000);
+    expect(signal.aborted).toBe(false);
+    serverTimer();
+    await drain();
+
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).toMatchObject({
+      code: 'TABLE_COLLECTION_SERVER_DEADLINE',
+      phase: 'server',
+    });
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(conn.write).toHaveBeenCalledOnce();
+    expect(JSON.parse(conn.write.mock.calls[0][0])).toMatchObject({
+      id: 1,
+      ok: false,
+      error: expect.stringMatching(/server deadline/),
+    });
+    expect(lifecycle.activeRequestCount()).toBe(1);
+    expect(dispose).not.toHaveBeenCalled();
+
+    conn.writeCallbacks[0]();
+    await drain();
+    expect(lifecycle.activeRequestCount()).toBe(0);
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(clearTimer).toHaveBeenCalled();
+  });
+
+  it('aborts and suppresses a duplicate active ID on one socket while accepting id=1 on another socket', async () => {
+    let firstSignal;
     const firstHandle = vi.fn((_request, execution) => new Promise((resolve, reject) => {
-      resolveFirst = resolve;
+      firstSignal = execution.signal;
       execution.signal.addEventListener('abort', () => reject(execution.signal.reason), { once: true });
     }));
     const connA = connection();
@@ -150,29 +204,91 @@ describe('daemon request server lifecycle', () => {
       args: ['--collect', '--scroll-container', '.viewport'],
     };
     connA.emit('data', frame(request));
+    await drain();
     connA.emit('data', frame(request));
     connB.emit('data', frame(request));
     await drain();
 
     expect(firstHandle).toHaveBeenCalledOnce();
+    expect(firstSignal.aborted).toBe(true);
     expect(handleB).toHaveBeenCalledOnce();
-    expect(lifecycleA.activeRequestCount()).toBe(1);
+    expect(lifecycleA.activeRequestCount()).toBe(0);
     expect(connA.write).toHaveBeenCalledTimes(1);
     expect(JSON.parse(connA.write.mock.calls[0][0])).toEqual({
       id: 1,
       ok: false,
       error: 'Duplicate active request id: 1',
     });
+    expect(connA.end).toHaveBeenCalledOnce();
     expect(JSON.parse(connB.write.mock.calls[0][0])).toEqual({
       id: 1,
       ok: true,
       result: 'other client',
     });
-
-    resolveFirst({ ok: true, result: 'owner complete' });
     await drain();
+    expect(connA.write).toHaveBeenCalledOnce();
     expect(lifecycleA.activeRequestCount()).toBe(0);
     expect(lifecycleB.activeRequestCount()).toBe(0);
+  });
+
+  it.each([
+    [{ cmd: 'status', args: [] }, /request id/],
+    [{ id: 0, cmd: 'status', args: [] }, /request id/],
+    [{ id: -1, cmd: 'status', args: [] }, /request id/],
+    [{ id: 1.5, cmd: 'status', args: [] }, /request id/],
+    [{ id: Number.MAX_SAFE_INTEGER + 1, cmd: 'status', args: [] }, /request id/],
+    [{ id: 1, args: [] }, /request command/],
+    [{ id: 1, cmd: '', args: [] }, /request command/],
+    [{ id: 1, cmd: 'status' }, /request args/],
+    [{ id: 1, cmd: 'status', args: 'bad' }, /request args/],
+    [{ id: 1, cmd: 'status', args: [], planted: true }, /request\.planted/],
+  ])('rejects invalid protocol input before reservation or dispatch: %j', async (request, expected) => {
+    const handleRequest = vi.fn();
+    const cleanup = vi.fn();
+    const conn = connection();
+    const lifecycle = T.createDaemonRequestConnection(conn, {
+      handleRequest,
+      cleanup,
+      now: () => 0,
+    });
+    conn.emit('data', frame(request));
+    await drain();
+
+    expect(handleRequest).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(lifecycle.activeRequestCount()).toBe(0);
+    expect(conn.write).toHaveBeenCalledOnce();
+    expect(JSON.parse(conn.write.mock.calls[0][0])).toMatchObject({
+      id: Number.isSafeInteger(request.id) && request.id > 0 ? request.id : null,
+      ok: false,
+      error: expect.stringMatching(expected),
+    });
+  });
+
+  it('strict-parses first and mints one collection deadline from one monotonic origin', async () => {
+    const now = vi.fn(() => 1234);
+    let execution;
+    const conn = connection();
+    T.createDaemonRequestConnection(conn, {
+      handleRequest: vi.fn(async (_request, context) => {
+        execution = context;
+        return { ok: true, result: 'unavailable seam' };
+      }),
+      now,
+    });
+    conn.emit('data', frame({
+      id: 1,
+      cmd: 'table',
+      args: ['--collect', '--scroll-container', '.viewport'],
+    }));
+    await drain();
+
+    expect(now).toHaveBeenCalledOnce();
+    expect(execution.deadline).toMatchObject({
+      startedAt: 1234,
+      pageAt: 296234,
+      serverAt: 301234,
+    });
   });
 
   it('aborts every live request synchronously on shutdown and disposes each exactly once', async () => {
@@ -215,21 +331,50 @@ describe('daemon request server lifecycle', () => {
     const handleRequest = vi.fn();
     const cleanup = vi.fn();
     const conn = connection();
+    const now = vi.fn(() => 0);
     const lifecycle = T.createDaemonRequestConnection(conn, {
       handleRequest,
       cleanup,
-      now: () => 0,
+      now,
     });
     conn.emit('data', frame({ id: 4, cmd: 'table', args: ['--collect'] }));
     await drain();
 
     expect(handleRequest).not.toHaveBeenCalled();
+    expect(now).not.toHaveBeenCalled();
     expect(cleanup).not.toHaveBeenCalled();
     expect(lifecycle.activeRequestCount()).toBe(0);
     expect(JSON.parse(conn.write.mock.calls[0][0])).toEqual({
       id: 4,
       ok: false,
       error: 'table: --collect requires --scroll-container',
+    });
+  });
+
+  it('keeps the production collect placeholder fail-closed before page capability effects', async () => {
+    const pageEffect = vi.fn();
+    const conn = connection();
+    T.createDaemonRequestConnection(conn, {
+      handleRequest: async (request, execution) => {
+        T.enforceDaemonTableCollectionGate(request, execution);
+        pageEffect();
+        return { ok: true, result: 'unexpected' };
+      },
+      now: () => 0,
+    });
+    conn.emit('data', frame({
+      id: 6,
+      cmd: 'table',
+      args: ['#orders', '--collect', '--scroll-container', '.viewport'],
+    }));
+    await drain();
+
+    expect(pageEffect).not.toHaveBeenCalled();
+    expect(conn.write).toHaveBeenCalledOnce();
+    expect(JSON.parse(conn.write.mock.calls[0][0])).toEqual({
+      id: 6,
+      ok: false,
+      error: 'table: collection is unavailable in this v2.16 candidate',
     });
   });
 
@@ -251,6 +396,35 @@ describe('daemon request server lifecycle', () => {
     await drain();
 
     expect(conn.write).not.toHaveBeenCalled();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(lifecycle.activeRequestCount()).toBe(0);
+  });
+
+  it('cleans an unpublished request before enqueueing a handled failure response', async () => {
+    const cleanup = vi.fn();
+    const dispose = vi.fn();
+    const conn = connection({ holdWrite: true });
+    const lifecycle = T.createDaemonRequestConnection(conn, {
+      handleRequest: async () => ({ ok: false, error: 'collector failed' }),
+      cleanup,
+      onDispose: dispose,
+      now: () => 0,
+    });
+    conn.emit('data', frame({
+      id: 10,
+      cmd: 'table',
+      args: ['--collect', '--scroll-container', '.viewport'],
+    }));
+    await drain();
+
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(conn.write).toHaveBeenCalledOnce();
+    expect(lifecycle.activeRequestCount()).toBe(1);
+    expect(dispose).not.toHaveBeenCalled();
+
+    conn.writeCallbacks[0]();
+    await drain();
     expect(cleanup).toHaveBeenCalledOnce();
     expect(dispose).toHaveBeenCalledOnce();
     expect(lifecycle.activeRequestCount()).toBe(0);

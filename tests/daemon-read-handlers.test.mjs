@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createDaemonReadHandlers,
 } from '../skills/chrome-cdp-ex/scripts/lib/daemon-read-handlers.mjs';
+import { createCommandExecutionContext } from '../skills/chrome-cdp-ex/scripts/lib/command-application.mjs';
 
 describe('daemon extraction read handlers', () => {
   function fixture() {
@@ -148,6 +149,25 @@ describe('daemon extraction read handlers', () => {
     const { capabilities, handlers } = fixture();
     await expect(handlers.table({ args })).rejects.toThrow(expected);
     expect(capabilities.table).not.toHaveBeenCalled();
+  });
+
+  it('threads the exact trusted execution context only to the future collection capability seam', async () => {
+    const { capabilities, handlers } = fixture();
+    const execution = createCommandExecutionContext({
+      signal: new AbortController().signal,
+      deadline: null,
+    });
+
+    await handlers.table({
+      args: ['#grid', '--collect', '--scroll-container', '.viewport'],
+      execution,
+    });
+
+    expect(capabilities.table).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'collect',
+      selector: '#grid',
+      scrollContainer: '.viewport',
+    }), execution);
   });
 
   it('preserves thrown identity and never invokes another capability', async () => {

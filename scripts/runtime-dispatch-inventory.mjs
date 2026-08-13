@@ -1006,6 +1006,8 @@ function collectTablePolicyAuthority(source, {
     ],
     parseTableArgs: [
       { owner: 'authorizeDaemonApplicationCommand', source: 'parseTableArgs(args)' },
+      { owner: 'createDaemonRequestExecutionContext', source: 'parseTableArgs(request.args || [])' },
+      { owner: 'validateDaemonProtocolRequest', source: 'parseTableArgs(frozenRequest.args)' },
     ],
     isBatchParallelUnsafeCommand: [
       { owner: 'batch', source: 'isBatchParallelUnsafeCommand(command.cmd, command.args || [])' },

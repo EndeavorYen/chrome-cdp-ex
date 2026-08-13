@@ -139,6 +139,7 @@ const TABLE_COLLECTION_DEADLINES = Object.freeze({
   serverMs: 300000,
   maxCdpOperationMs: 5000,
 });
+const TRUSTED_DAEMON_REQUEST_CONTEXTS = new WeakSet();
 
 class TableCollectionDeadlineError extends Error {
   constructor(phase) {
@@ -165,11 +166,8 @@ function monotonicNow() {
   return performance.now();
 }
 
-function createDaemonRequestExecutionContext({ request, signal, now = monotonicNow }) {
+function mintDaemonRequestExecutionContext({ signal, tableCollect, now }) {
   if (typeof now !== 'function') throw new Error('daemon request clock must be a function');
-  const tableCollect = request?.cmd === 'table'
-    ? isTableCollectArgs(request.args || [])
-    : false;
   let deadline = null;
   if (tableCollect) {
     const startedAt = now();
@@ -184,7 +182,22 @@ function createDaemonRequestExecutionContext({ request, signal, now = monotonicN
       now,
     };
   }
-  return createCommandExecutionContext({ signal, deadline });
+  const context = createCommandExecutionContext({ signal, deadline });
+  TRUSTED_DAEMON_REQUEST_CONTEXTS.add(context);
+  return context;
+}
+
+function createDaemonRequestExecutionContext({ request, signal, now = monotonicNow }) {
+  const tableCollect = request?.cmd === 'table'
+    ? parseTableArgs(request.args || []).mode === 'collect'
+    : false;
+  return mintDaemonRequestExecutionContext({ signal, tableCollect, now });
+}
+
+function enforceDaemonTableCollectionGate(request, execution = null) {
+  if (request?.cmd === 'table' && execution?.deadline) {
+    throw new Error('table: collection is unavailable in this v2.16 candidate');
+  }
 }
 
 function abortReason(signal, fallback = 'table: collection request aborted') {
@@ -197,7 +210,9 @@ function createTableCollectionRuntime(executionContext, {
   clearTimer = clearTimeout,
 } = {}) {
   const context = inspectCommandExecutionContext(executionContext);
-  if (!context.deadline) throw new Error('table: collection deadline context is required');
+  if (!TRUSTED_DAEMON_REQUEST_CONTEXTS.has(context) || !context.deadline) {
+    throw new Error('table: trusted daemon request deadline context is required');
+  }
   const { deadline } = context;
   const lifecycleController = new AbortController();
   let finalizing = false;
@@ -259,10 +274,11 @@ function createTableCollectionRuntime(executionContext, {
     });
     try {
       return await Promise.race([
-        Promise.resolve().then(() => operation({
-          signal: operationController.signal,
-          timeoutMs,
-        })),
+        Promise.resolve().then(() => {
+          throwIfAborted();
+          if (operationController.signal.aborted) throw abortReason(operationController.signal);
+          return operation({ signal: operationController.signal, timeoutMs });
+        }),
         timeout,
         aborted,
       ]);
@@ -325,7 +341,14 @@ function createTableCollectionRuntime(executionContext, {
       }, timeoutMs);
     });
     try {
-      return await Promise.race([Promise.resolve().then(operation), timeout, aborted]);
+      return await Promise.race([
+        Promise.resolve().then(() => {
+          throwIfAborted();
+          return operation();
+        }),
+        timeout,
+        aborted,
+      ]);
     } finally {
       clearTimer(timer);
       lifecycleController.signal.removeEventListener('abort', onAbort);
@@ -374,6 +397,273 @@ async function runTableCollectionLifecycle(executionContext, {
   } finally {
     runtime.dispose();
   }
+}
+
+function validateDaemonProtocolRequest(input) {
+  const request = snapshotApplicationDataObject(input, 'daemon request');
+  const expectedKeys = new Set(['id', 'cmd', 'args']);
+  for (const key of Object.keys(request)) {
+    if (!expectedKeys.has(key)) throw new Error(`daemon request.${key}: is not allowed`);
+  }
+  for (const key of expectedKeys) {
+    if (!Object.hasOwn(request, key)) throw new Error(`daemon request ${key === 'cmd' ? 'command' : key} is required`);
+  }
+  if (!Number.isSafeInteger(request.id) || request.id <= 0) {
+    throw new Error('daemon request id must be a positive safe integer');
+  }
+  if (typeof request.cmd !== 'string' || request.cmd.length === 0) {
+    throw new Error('daemon request command must be a non-empty string');
+  }
+  const args = snapshotApplicationArray(request.args, 'daemon request args');
+  for (let index = 0; index < args.length; index += 1) {
+    if (typeof args[index] !== 'string') throw new Error(`daemon request args[${index}] must be a string`);
+  }
+  const frozenRequest = Object.freeze({
+    id: request.id,
+    cmd: request.cmd,
+    args: Object.freeze(args),
+  });
+  const tableCollect = frozenRequest.cmd === 'table'
+    ? parseTableArgs(frozenRequest.args).mode === 'collect'
+    : false;
+  return Object.freeze({ request: frozenRequest, tableCollect });
+}
+
+function createDaemonRequestConnection(conn, {
+  handleRequest,
+  cleanup = async () => {},
+  onDispose = () => {},
+  onDisconnect = () => {},
+  onStop = () => {},
+  now = monotonicNow,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+} = {}) {
+  if (!conn || typeof conn.on !== 'function' || typeof conn.off !== 'function') {
+    throw new Error('daemon request connection must be an event emitter');
+  }
+  if (typeof conn.write !== 'function') throw new Error('daemon request connection.write must be a function');
+  if (typeof handleRequest !== 'function') throw new Error('daemon request handler must be a function');
+  if (typeof cleanup !== 'function') throw new Error('daemon request cleanup must be a function');
+  if (typeof onDispose !== 'function') throw new Error('daemon request disposer must be a function');
+  if (typeof onDisconnect !== 'function') throw new Error('daemon request disconnect callback must be a function');
+  if (typeof onStop !== 'function') throw new Error('daemon request stop callback must be a function');
+  if (typeof setTimer !== 'function' || typeof clearTimer !== 'function') {
+    throw new Error('daemon request timer functions are required');
+  }
+  const active = new Map();
+  let buffer = '';
+  let disconnected = false;
+
+  const canWrite = () => !disconnected && conn.destroyed !== true && conn.writable !== false;
+  const writePayload = (payload, callback = () => {}) => {
+    if (!canWrite()) return false;
+    try {
+      conn.write(payload, callback);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const responsePayload = (response, id) => `${JSON.stringify({ ...response, id })}\n`;
+  const writeFailure = (id, error) => {
+    let payload;
+    try {
+      payload = responsePayload({ ok: false, error: actionFailureMessage(error) }, id);
+    } catch {
+      return false;
+    }
+    return writePayload(payload);
+  };
+  const cleanupRequest = (entry, reason) => {
+    if (entry.cleaned) return;
+    entry.cleaned = true;
+    try {
+      const cleanupResult = cleanup(entry.request, entry.execution, reason);
+      Promise.resolve(cleanupResult).catch(() => {});
+    } catch {}
+  };
+  const disposeRequest = (entry, { abort = null, clean = false } = {}) => {
+    if (entry.disposed) return;
+    entry.disposed = true;
+    if (entry.executionTimer !== null) {
+      clearTimer(entry.executionTimer);
+      entry.executionTimer = null;
+    }
+    if (abort && !entry.controller.signal.aborted) entry.controller.abort(abort);
+    if (active.get(entry.id) === entry) active.delete(entry.id);
+    if (clean) cleanupRequest(entry, abort);
+    try { onDispose(entry.request, entry.execution); } catch {}
+  };
+  const disconnectReason = cause => cause instanceof Error
+    ? cause
+    : new Error(`daemon client disconnected: ${cause || 'connection closed'}`);
+  const abortAll = reason => {
+    const error = disconnectReason(reason);
+    disconnected = true;
+    for (const entry of [...active.values()]) disposeRequest(entry, { abort: error, clean: true });
+    removeConnectionListeners();
+    try { onDisconnect(error); } catch {}
+  };
+  const onEnd = () => abortAll('connection ended');
+  const onClose = () => abortAll('connection closed');
+  const onError = error => abortAll(error);
+
+  const terminateForDuplicate = (id) => {
+    const error = new Error(`Duplicate active request id: ${id}`);
+    for (const entry of [...active.values()]) disposeRequest(entry, { abort: error, clean: true });
+    let payload = null;
+    try { payload = responsePayload({ ok: false, error: error.message }, id); } catch {}
+    if (payload && canWrite()) {
+      try {
+        if (typeof conn.end === 'function') conn.end(payload);
+        else conn.write(payload);
+      } catch {}
+    }
+    disconnected = true;
+    removeConnectionListeners();
+    try { onDisconnect(error); } catch {}
+  };
+
+  const dispatch = input => {
+    let validated;
+    try {
+      validated = validateDaemonProtocolRequest(input);
+    } catch (error) {
+      const responseId = Number.isSafeInteger(input?.id) && input.id > 0 ? input.id : null;
+      writeFailure(responseId, error);
+      return;
+    }
+    const { request: req, tableCollect } = validated;
+    if (active.has(req.id)) {
+      terminateForDuplicate(req.id);
+      return;
+    }
+    const controller = new AbortController();
+    const execution = mintDaemonRequestExecutionContext({ signal: controller.signal, tableCollect, now });
+    const entry = {
+      id: req.id,
+      request: req,
+      execution,
+      controller,
+      disposed: false,
+      cleaned: false,
+      executionTimer: null,
+    };
+    active.set(req.id, entry);
+    let rejectAbort;
+    const aborted = new Promise((resolve, reject) => { rejectAbort = reject; });
+    const onRequestAbort = () => rejectAbort(abortReason(controller.signal));
+    controller.signal.addEventListener('abort', onRequestAbort, { once: true });
+    if (execution.deadline) {
+      entry.executionTimer = setTimer(() => {
+        if (!controller.signal.aborted) controller.abort(new TableCollectionDeadlineError('server'));
+      }, execution.deadline.serverAt - execution.deadline.startedAt);
+    }
+    Promise.race([
+      Promise.resolve().then(() => {
+        execution.signal.throwIfAborted();
+        return handleRequest(req, execution);
+      }),
+      aborted,
+    ])
+      .then(response => {
+        if (entry.disposed || !canWrite()) return;
+        if (entry.executionTimer !== null) {
+          clearTimer(entry.executionTimer);
+          entry.executionTimer = null;
+        }
+        if (response?.ok === false) {
+          cleanupRequest(entry, new Error(response.error || 'daemon request failed'));
+        }
+        let payload;
+        try {
+          payload = responsePayload(response, req.id);
+        } catch (error) {
+          disposeRequest(entry, { abort: error, clean: true });
+          return;
+        }
+        const flushed = error => {
+          if (error) disposeRequest(entry, { abort: error, clean: true });
+          else disposeRequest(entry);
+        };
+        if (response?.stopAfter && typeof conn.end === 'function') {
+          try {
+            conn.end(payload, () => {
+              flushed();
+              onStop();
+            });
+          } catch (error) {
+            disposeRequest(entry, { abort: error, clean: true });
+          }
+          return;
+        }
+        if (!writePayload(payload, flushed)) {
+          disposeRequest(entry, {
+            abort: new Error('daemon response write failed before flush'),
+            clean: true,
+          });
+        }
+      })
+      .catch(error => {
+        if (entry.disposed || !canWrite()) return;
+        if (entry.executionTimer !== null) {
+          clearTimer(entry.executionTimer);
+          entry.executionTimer = null;
+        }
+        cleanupRequest(entry, error);
+        let payload;
+        try {
+          payload = responsePayload({ ok: false, error: actionFailureMessage(error) }, req.id);
+        } catch (serializationError) {
+          disposeRequest(entry, { abort: serializationError, clean: true });
+          return;
+        }
+        if (!writePayload(payload, writeError => disposeRequest(entry, {
+          abort: writeError || null,
+          clean: Boolean(writeError),
+        }))) {
+          disposeRequest(entry, { abort: error, clean: true });
+        }
+      })
+      .finally(() => {
+        controller.signal.removeEventListener('abort', onRequestAbort);
+      });
+  };
+
+  const onData = chunk => {
+    if (disconnected) return;
+    buffer += chunk.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (disconnected) break;
+      if (!line.trim()) continue;
+      let req;
+      try {
+        req = JSON.parse(line);
+      } catch {
+        writeFailure(null, new Error('Invalid JSON request'));
+        continue;
+      }
+      dispatch(req);
+    }
+  };
+  function removeConnectionListeners() {
+    conn.off('data', onData);
+    conn.off('end', onEnd);
+    conn.off('close', onClose);
+    conn.off('error', onError);
+  }
+
+  conn.on('data', onData);
+  conn.on('end', onEnd);
+  conn.on('close', onClose);
+  conn.on('error', onError);
+  return Object.freeze({
+    abortAll,
+    activeRequestCount: () => active.size,
+  });
 }
 
 class RingBuffer {
@@ -13810,13 +14100,17 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   // Shutdown helpers
   let alive = true;
-  function shutdown() {
+  let server = null;
+  const requestConnections = new Set();
+  function shutdown(exitCode = 0) {
     if (!alive) return;
     alive = false;
-    server.close();
+    const reason = new Error('daemon shutting down');
+    for (const connection of [...requestConnections]) connection.abortAll(reason);
+    server?.close();
     if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
     cdp.close();
-    process.exit(0);
+    process.exit(Number.isInteger(exitCode) ? exitCode : 0);
   }
 
   // Exit if target goes away or Chrome disconnects
@@ -13827,8 +14121,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     if (params.sessionId === sessionId) shutdown();
   });
   cdp.onClose(() => shutdown());
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => shutdown());
+  process.on('SIGINT', () => shutdown());
 
   // Idle timer
   let keepaliveUntil = 0;
@@ -14432,9 +14726,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   });
 
   // Handle a command
-  async function handleCommand({ cmd, args }) {
+  async function handleCommand({ cmd, args }, execution = undefined) {
     resetIdle();
     try {
+      enforceDaemonTableCollectionGate({ cmd, args }, execution);
       let result;
       const applicationRoute = applicationDispatcher.route(cmd);
       if (applicationRoute?.owner === 'application') {
@@ -14442,7 +14737,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           cmd,
           args,
           targetBound: Boolean(targetId),
-        }, applicationDispatcher);
+        }, applicationDispatcher, cmd === 'table' && execution?.deadline ? execution : undefined);
         if (route.ok === false) {
           return { ok: false, result: route.result, error: route.error };
         }
@@ -14490,33 +14785,25 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   // Request:  { "id": <number>, "cmd": "<command>", "args": ["arg1", "arg2", ...] }
   // Response: { "id": <number>, "ok": <boolean>, "result": "<string>" }
   //           or { "id": <number>, "ok": false, "error": "<message>" }
-  const server = net.createServer((conn) => {
-    let buf = '';
-    conn.on('data', (chunk) => {
-      buf += chunk.toString();
-      const lines = buf.split('\n');
-      buf = lines.pop(); // keep incomplete last line
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        let req;
-        try {
-          req = JSON.parse(line);
-        } catch {
-          conn.write(JSON.stringify({ ok: false, error: 'Invalid JSON request', id: null }) + '\n');
-          continue;
+  server = net.createServer((conn) => {
+    let requestConnection;
+    requestConnection = createDaemonRequestConnection(conn, {
+      handleRequest: handleCommand,
+      cleanup: async () => {},
+      onDispose: () => {
+        if (requestConnection.activeRequestCount() === 0 && conn.destroyed) {
+          requestConnections.delete(requestConnection);
         }
-        handleCommand(req).then((res) => {
-          const payload = JSON.stringify({ ...res, id: req.id }) + '\n';
-          if (res.stopAfter) conn.end(payload, shutdown);
-          else conn.write(payload);
-        });
-      }
+      },
+      onDisconnect: () => requestConnections.delete(requestConnection),
+      onStop: shutdown,
     });
+    requestConnections.add(requestConnection);
   });
 
   server.on('error', (e) => {
     process.stderr.write(`Daemon server listen failed: ${e.message}\n`);
-    process.exit(1);
+    shutdown(1);
   });
 
   if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
@@ -15787,7 +16074,7 @@ function authorizeDaemonApplicationCommand({ command, args = [], policy, mutates
     : { allowed: false, code: 'policy-denied' };
 }
 
-async function executeDaemonApplicationRoute(requestInput, context) {
+async function executeDaemonApplicationRoute(requestInput, context, execution = undefined) {
   inspectCommandDispatcher(context);
   const request = snapshotApplicationDataObject(requestInput, 'daemon route request');
   const expectedKeys = new Set(['cmd', 'args', 'targetBound']);
@@ -15801,7 +16088,7 @@ async function executeDaemonApplicationRoute(requestInput, context) {
     name: request.cmd,
     args: request.args,
     targetBound: request.targetBound,
-  });
+  }, execution);
   const semantics = classifyCommandResultSemantics(
     { ok: true, result: route.result },
     { command: request.cmd },
@@ -17413,5 +17700,6 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   daemonRequestMayHaveSideEffects,
   TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,
   createDaemonRequestExecutionContext, createTableCollectionRuntime,
-  runTableCollectionLifecycle,
+  runTableCollectionLifecycle, createDaemonRequestConnection,
+  enforceDaemonTableCollectionGate,
 } : undefined;

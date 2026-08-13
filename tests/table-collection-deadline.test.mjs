@@ -248,4 +248,36 @@ describe('table collection monotonic deadline context', () => {
     expect(notStarted).not.toHaveBeenCalled();
     preAbortedRuntime.dispose();
   });
+
+  it('does not start queued CDP or finalization work after a synchronous caller abort', async () => {
+    const reason = new Error('disconnect before queued work');
+
+    const operationController = new AbortController();
+    const operationContext = T.createDaemonRequestExecutionContext({
+      request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+      signal: operationController.signal,
+      now: () => 0,
+    });
+    const operationRuntime = T.createTableCollectionRuntime(operationContext);
+    const operation = vi.fn();
+    const operationOutcome = operationRuntime.runCdpOperation(operation).catch(error => error);
+    operationController.abort(reason);
+    await expect(operationOutcome).resolves.toBe(reason);
+    expect(operation).not.toHaveBeenCalled();
+    operationRuntime.dispose();
+
+    const finalizationController = new AbortController();
+    const finalizationContext = T.createDaemonRequestExecutionContext({
+      request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+      signal: finalizationController.signal,
+      now: () => 0,
+    });
+    const finalizationRuntime = T.createTableCollectionRuntime(finalizationContext);
+    const finalization = vi.fn();
+    const finalizationOutcome = finalizationRuntime.runFinalization(finalization).catch(error => error);
+    finalizationController.abort(reason);
+    await expect(finalizationOutcome).resolves.toBe(reason);
+    expect(finalization).not.toHaveBeenCalled();
+    finalizationRuntime.dispose();
+  });
 });

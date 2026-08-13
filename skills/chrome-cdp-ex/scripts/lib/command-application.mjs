@@ -10,7 +10,7 @@ const SPEC_KEYS = new Set([
   'evidencePolicy',
 ]);
 const REQUEST_KEYS = new Set(['name', 'args', 'targetBound']);
-const CONTEXT_KEYS = new Set(['registry', 'handlers', 'authorize']);
+const CONTEXT_KEYS = new Set(['registry', 'handlers', 'authorize', 'execution']);
 const EXECUTION_CONTEXT_KEYS = new Set(['signal', 'deadline']);
 const DEADLINE_KEYS = new Set(['startedAt', 'pageAt', 'serverAt', 'maxCdpOperationMs', 'now']);
 const NAME_RE = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
@@ -389,6 +389,9 @@ export async function executeCommand(requestInput, context = {}) {
   if (!Object.hasOwn(handlers, spec.name)) fail(`handlers.${spec.name}`, 'own handler data property is required');
   const handler = handlers[spec.name];
   if (typeof handler !== 'function') fail(`handlers.${spec.name}`, 'handler is required');
+  const executionContext = contextValue.execution === undefined
+    ? null
+    : inspectCommandExecutionContext(contextValue.execution);
 
   let decision;
   if (spec.authorization === 'standard') {
@@ -408,12 +411,14 @@ export async function executeCommand(requestInput, context = {}) {
   const rawAuthorization = spec.authorization === 'raw-cdp'
     ? mintRawCdpAuthorization(request.args[0])
     : null;
-  const result = await handler(Object.freeze({
+  const handlerContext = {
     args: request.args,
     targetBound: request.targetBound,
     spec,
     authorization: rawAuthorization,
-  }));
+    ...(executionContext ? { execution: executionContext } : {}),
+  };
+  const result = await handler(Object.freeze(handlerContext));
   validateResultPolicy(result, spec, request);
   return freezeRecord({
     schema: 'chrome-cdp-ex.command-execution.v1',

@@ -88,7 +88,7 @@ export function createCommandDispatcher(input = {}) {
         owner: ownerSnapshot[spec.name],
       });
     },
-    async execute(request) {
+    async execute(request, executionContext = undefined) {
       const requestSnapshot = defineCommandRequest(request);
       const spec = registry.resolve(requestSnapshot.name);
       if (!spec) fail('request.name', `unknown command ${requestSnapshot.name}`);
@@ -103,6 +103,7 @@ export function createCommandDispatcher(input = {}) {
         registry,
         handlers: handlerSnapshot,
         authorize,
+        execution: executionContext,
       });
       return Object.freeze({ handled: true, command: spec.name, result: execution.value });
     },

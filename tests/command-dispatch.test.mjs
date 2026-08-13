@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   commandResult,
+  createCommandExecutionContext,
   createCommandRegistry,
   defineCommandSpec,
 } from '../skills/chrome-cdp-ex/scripts/lib/command-application.mjs';
@@ -173,5 +174,26 @@ describe('complete command route dispatcher', () => {
     await expect(dispatcher.execute({ name: 'perceive', args: ['outer'], targetBound: true }))
       .resolves.toEqual({ handled: true, command: 'perceive', result: 'outer:adapter:false' });
     expect(perceive).toHaveBeenCalledOnce();
+  });
+
+  it('threads only a branded per-request execution context without leaking it across calls', async () => {
+    const { handler, options } = fixture();
+    const dispatcher = createCommandDispatcher(options);
+    const execution = createCommandExecutionContext({
+      signal: new AbortController().signal,
+      deadline: null,
+    });
+
+    await dispatcher.execute({ name: 'perceive', args: ['bounded'], targetBound: true }, execution);
+    expect(handler.mock.calls[0][0].execution).toBe(execution);
+
+    await dispatcher.execute({ name: 'perceive', args: ['ordinary'], targetBound: true });
+    expect(handler.mock.calls[1][0]).not.toHaveProperty('execution');
+
+    await expect(dispatcher.execute(
+      { name: 'perceive', args: [], targetBound: true },
+      { signal: new AbortController().signal, deadline: null },
+    )).rejects.toThrow(/must be created by createCommandExecutionContext/);
+    expect(handler).toHaveBeenCalledTimes(2);
   });
 });
