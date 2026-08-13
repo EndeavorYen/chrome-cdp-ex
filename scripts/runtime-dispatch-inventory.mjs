@@ -515,7 +515,10 @@ function collectMcpTablePolicyAuthority(source, fail) {
     fail('MCP run_command must consult argsRequireConfirm with the exact argv');
   }
   return {
-    source: [importSource, argsRequireConfirmSource, buildMcpToolCommandSource, requireConfirmSource].join('\0'),
+    // The confirmation path begins at hostile MCP input snapshotting. Bind the
+    // complete adapter module so edits to snapshot/proxy/import dependencies,
+    // confirmation helpers, or post-confirm argv handling always drift.
+    source,
     binding: [runCommandBinding, ...parserCalls.map(call => call.source), ...confirmationCalls.map(call => call.source)].join('\0'),
   };
 }
