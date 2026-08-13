@@ -205,7 +205,7 @@ describe('daemon NDJSON request transport', () => {
     expect(committed).toBe(1);
     expect(conn.write).toHaveBeenCalledOnce();
     expect(error).toMatchObject({
-      name: 'DaemonCompletionUnknownError',
+      name: 'DaemonTransportError',
       code: 'DAEMON_COMPLETION_UNKNOWN',
       completion: 'unknown',
       sideEffectMayHaveOccurred: true,
@@ -218,7 +218,7 @@ describe('daemon NDJSON request transport', () => {
     expect(error.transportCause.message.length).toBeLessThanOrEqual(512);
   });
 
-  it('keeps a synchronous mutation write failure as proven pre-dispatch', async () => {
+  it('conservatively marks a synchronous mutation write failure as ambiguous after send is attempted', async () => {
     const original = new Error('write EPIPE before bytes were accepted');
     original.code = 'EPIPE';
     const conn = connection();
@@ -230,10 +230,96 @@ describe('daemon NDJSON request transport', () => {
       { mayHaveSideEffects: true },
     ).catch(cause => cause);
 
-    expect(error).toBe(original);
+    expect(error).toMatchObject({
+      name: 'DaemonTransportError',
+      code: 'DAEMON_COMPLETION_UNKNOWN',
+      completion: 'unknown',
+      sideEffectMayHaveOccurred: true,
+      retrySafe: false,
+      transportCause: {
+        phase: 'sending-request',
+        kind: 'write-error',
+        code: 'EPIPE',
+        message: 'write EPIPE before bytes were accepted',
+      },
+    });
+    expect(conn.write).toHaveBeenCalledOnce();
+  });
+
+  it('keeps serialization failure proven pre-dispatch and never writes', async () => {
+    const request = { cmd: 'click', args: ['#purchase'] };
+    request.self = request;
+    const conn = connection();
+
+    const error = await requestDaemon(conn, request, { mayHaveSideEffects: true }).catch(cause => cause);
+
+    expect(error).toBeInstanceOf(TypeError);
     expect(error).not.toHaveProperty('completion');
     expect(error).not.toHaveProperty('sideEffectMayHaveOccurred');
+    expect(conn.write).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['socket error', connection({ onWrite: socket => queueMicrotask(() => {
+      const error = new Error('read ECONNRESET after request');
+      error.code = 'ECONNRESET';
+      socket.emit('error', error);
+    }) }), 'peer-error', 'ECONNRESET'],
+    ['malformed response', connection({ onWrite: socket => queueMicrotask(() => socket.emit('data', '{bad json}\n')) }), 'invalid-response', undefined],
+    ['oversized response', connection({ onWrite: socket => queueMicrotask(() => socket.emit('data', 'x'.repeat(65))) }), 'response-too-large', undefined],
+  ])('marks a mutation %s as unknown without a validated receipt', async (_label, conn, kind, code) => {
+    const error = await requestDaemon(
+      conn,
+      { cmd: 'click', args: ['#purchase'] },
+      { mayHaveSideEffects: true, maxResponseBytes: 64 },
+    ).catch(cause => cause);
+
+    expect(error).toMatchObject({
+      name: 'DaemonTransportError',
+      code: 'DAEMON_COMPLETION_UNKNOWN',
+      completion: 'unknown',
+      sideEffectMayHaveOccurred: true,
+      retrySafe: false,
+      transportCause: {
+        phase: 'awaiting-response',
+        kind,
+        ...(code ? { code } : {}),
+        message: expect.any(String),
+      },
+    });
+    expect(error.transportCause.message.length).toBeLessThanOrEqual(512);
     expect(conn.write).toHaveBeenCalledOnce();
+  });
+
+  it('marks a mutation timeout as unknown after one send attempt', async () => {
+    vi.useFakeTimers();
+    try {
+      const conn = connection();
+      const promise = requestDaemon(
+        conn,
+        { cmd: 'click', args: ['#purchase'] },
+        { mayHaveSideEffects: true, timeoutMs: 25 },
+      );
+      const rejection = promise.catch(cause => cause);
+      await vi.advanceTimersByTimeAsync(25);
+      const error = await rejection;
+      expect(error).toMatchObject({
+        name: 'DaemonTransportError',
+        code: 'DAEMON_COMPLETION_UNKNOWN',
+        completion: 'unknown',
+        sideEffectMayHaveOccurred: true,
+        retrySafe: false,
+        transportCause: {
+          phase: 'awaiting-response',
+          kind: 'timeout',
+          message: 'IPC timeout: command "click" took longer than 0.025s',
+        },
+      });
+      expect(conn.write).toHaveBeenCalledOnce();
+      expect(conn.destroy).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('preserves the exact connection error object and stop-after response completion', async () => {

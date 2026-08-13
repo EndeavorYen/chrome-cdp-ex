@@ -12,7 +12,6 @@ import {
   createCommandRegistry,
 } from '../skills/chrome-cdp-ex/scripts/lib/command-application.mjs';
 import { createCommandDispatcher } from '../skills/chrome-cdp-ex/scripts/lib/command-dispatch.mjs';
-import { requestDaemon } from '../skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs';
 
 const FAILED_ACTION = {
   schema: 'chrome-cdp-ex.action.v1',
@@ -757,13 +756,21 @@ describe('ambiguous action completion contract (#150)', () => {
     });
     connection.end = vi.fn();
     connection.destroy = vi.fn();
-    const error = await requestDaemon(
+    const error = await cdpTest.sendCommand(
       connection,
       { cmd: 'click', args: ['#purchase'] },
-      { runtimeDir: '/fixture/runtime', mayHaveSideEffects: true },
     ).catch(cause => cause);
     return { error, mutations, connection };
   }
+
+  it('uses the trusted command policy for direct, protected, conditional, composite, and raw routes', () => {
+    for (const command of ['click', 'loadall', 'console', 'batch', 'eval', 'evalraw']) {
+      expect(cdpTest.daemonRequestMayHaveSideEffects({ cmd: command }), command).toBe(true);
+    }
+    for (const command of ['perceive', 'table', 'report', 'meta', 'list_raw']) {
+      expect(cdpTest.daemonRequestMayHaveSideEffects({ cmd: command }), command).toBe(false);
+    }
+  });
 
   it('returns verify-before-retry JSON after a mutation commits but its receipt is lost', async () => {
     const fixture = await committedActionDisconnect();
