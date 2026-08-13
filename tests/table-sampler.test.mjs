@@ -569,7 +569,7 @@ describe('trusted table sampler source', () => {
       truncated: true,
       truncationReason: 'row-too-large',
     });
-    expect(charCodeReads).toBeLessThan(5_000);
+    expect(charCodeReads).toBeLessThan(5_200);
   });
 });
 

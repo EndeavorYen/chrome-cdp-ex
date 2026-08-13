@@ -1,6 +1,19 @@
 const TABLE_SAMPLE_SCHEMA = 'chrome-cdp-ex.table-sample.v1';
-const TABLE_TRUNCATION_REASONS = new Set([null, 'row-limit', 'cell-limit', 'row-too-large', 'sample-byte-limit']);
-const PAGE_TRUNCATION_REASONS = new Set([null, 'table-limit', 'sample-byte-limit', 'dom-depth-limit']);
+const TABLE_TRUNCATION_REASONS = new Set([
+  null,
+  'row-limit',
+  'cell-limit',
+  'row-too-large',
+  'sample-byte-limit',
+  'dom-node-limit',
+]);
+const PAGE_TRUNCATION_REASONS = new Set([
+  null,
+  'table-limit',
+  'sample-byte-limit',
+  'dom-depth-limit',
+  'dom-node-limit',
+]);
 
 export const TABLE_SAMPLER_LIMITS = Object.freeze({
   maxTables: 10,
@@ -14,8 +27,8 @@ export const TABLE_SAMPLER_LIMITS = Object.freeze({
   maxDomNodesPerCell: 4096,
   maxTextNodesPerCell: 4096,
   maxAncestorDepth: 4096,
-  maxMatchedCandidates: 11,
   maxDirectChildren: 4096,
+  maxDocumentNodes: 65536,
 });
 
 function invalid(message) {
@@ -91,6 +104,12 @@ function parsedRow(value, name) {
       }
     }
   }
+  const encodedRow = `{"rawAriaRowIndex":${value.rawAriaRowIndex === null ? 'null' : value.rawAriaRowIndex},"cells":[${cells
+    .map(cell => JSON.stringify(cell).replace(/\u2028|\u2029/g, match => `\\u${match.charCodeAt(0).toString(16).toUpperCase()}`))
+    .join(',')}]}`;
+  if (Buffer.byteLength(encodedRow, 'utf8') > 8194) {
+    invalid(`${name} encoded row exceeds 8194 bytes`);
+  }
   return Object.freeze({ rawAriaRowIndex: value.rawAriaRowIndex, cells: Object.freeze(cells) });
 }
 
@@ -118,8 +137,24 @@ function parsedTable(value, index) {
     invalid(`${name} direct-row counts are inconsistent`);
   }
   truncation(value.truncated, value.truncationReason, TABLE_TRUNCATION_REASONS, name);
-  if ((headerRows.length < headerRowsSeen || dataRows.length < dataRowsSeen) && !value.truncated) {
+  const returnedRows = headerRows.length + dataRows.length;
+  const omittedRows = directRowsSeen - returnedRows;
+  if (omittedRows > 0 && !value.truncated) {
     invalid(`${name} row omission requires truncation provenance`);
+  }
+  if (value.truncationReason === 'row-limit'
+    && (directRowsSeen !== TABLE_SAMPLER_LIMITS.maxDirectRowsPerTable + 1
+      || returnedRows !== TABLE_SAMPLER_LIMITS.maxDirectRowsPerTable)) {
+    invalid(`${name} row-limit provenance has inconsistent counters`);
+  }
+  if ((value.truncationReason === 'cell-limit'
+      || value.truncationReason === 'row-too-large'
+      || value.truncationReason === 'sample-byte-limit')
+    && omittedRows !== 1) {
+    invalid(`${name} truncation reason requires exactly one omitted row`);
+  }
+  if (value.truncationReason === 'dom-node-limit' && omittedRows > 1) {
+    invalid(`${name} dom-node-limit provenance has inconsistent counters`);
   }
   return Object.freeze({
     caption,
@@ -148,8 +183,22 @@ export function parseTableSamplerResult(value) {
     .map((entry, index) => parsedTable(entry, index));
   if (tables.length > tablesSeen) invalid('sample table counts are inconsistent');
   truncation(parsed.truncated, parsed.truncationReason, PAGE_TRUNCATION_REASONS, 'sample');
-  if (tables.length < tablesSeen && !parsed.truncated) {
+  const omittedTables = tablesSeen - tables.length;
+  if (omittedTables > 0 && !parsed.truncated) {
     invalid('sample table omission requires truncation provenance');
+  }
+  if (parsed.truncationReason === 'table-limit'
+    && (tablesSeen !== TABLE_SAMPLER_LIMITS.maxTables + 1
+      || tables.length !== TABLE_SAMPLER_LIMITS.maxTables)) {
+    invalid('sample table-limit provenance has inconsistent counters');
+  }
+  if (parsed.truncationReason === 'sample-byte-limit' && omittedTables !== 1) {
+    invalid('sample sample-byte-limit provenance requires exactly one omitted table');
+  }
+  if ((parsed.truncationReason === 'dom-depth-limit'
+      || parsed.truncationReason === 'dom-node-limit')
+    && omittedTables !== 0) {
+    invalid('sample DOM truncation provenance has inconsistent counters');
   }
   return Object.freeze({
     schema: TABLE_SAMPLE_SCHEMA,
@@ -177,8 +226,6 @@ export function buildTableSamplerExpression(selector = 'table') {
     const nodeProto = Node.prototype;
     const elementProto = Element.prototype;
     const textProto = Text.prototype;
-    const documentProto = Document.prototype;
-    const nodeListProto = NodeList.prototype;
     const htmlTableProto = HTMLTableElement.prototype;
     const parentNodeGetter = getOwnPropertyDescriptor(nodeProto, 'parentNode').get;
     const firstChildGetter = getOwnPropertyDescriptor(nodeProto, 'firstChild').get;
@@ -186,10 +233,9 @@ export function buildTableSamplerExpression(selector = 'table') {
     const nodeTypeGetter = getOwnPropertyDescriptor(nodeProto, 'nodeType').get;
     const nodeValueGetter = getOwnPropertyDescriptor(nodeProto, 'nodeValue').get;
     const localNameGetter = getOwnPropertyDescriptor(elementProto, 'localName').get;
+    const namespaceURIGetter = getOwnPropertyDescriptor(elementProto, 'namespaceURI').get;
     const getAttribute = getOwnPropertyDescriptor(elementProto, 'getAttribute').value;
-    const documentQuerySelectorAll = getOwnPropertyDescriptor(documentProto, 'querySelectorAll').value;
-    const nodeListLengthGetter = getOwnPropertyDescriptor(nodeListProto, 'length').get;
-    const nodeListItem = getOwnPropertyDescriptor(nodeListProto, 'item').value;
+    const elementMatches = getOwnPropertyDescriptor(elementProto, 'matches').value;
     const arrayPush = getOwnPropertyDescriptor(A.prototype, 'push').value;
     const charCodeAt = getOwnPropertyDescriptor(S.prototype, 'charCodeAt').value;
     const fromCharCode = S.fromCharCode;
@@ -197,12 +243,19 @@ export function buildTableSamplerExpression(selector = 'table') {
     const BS = fromCharCode(92);
     const DQ = fromCharCode(34);
     const HEX = '0123456789ABCDEF';
+    const XHTML = 'http://www.w3.org/1999/xhtml';
     const apply = (fn, receiver, args) => reflectApply(fn, receiver, args);
     const isTable = value => value !== null
       && typeof value === 'object'
       && apply(isPrototypeOf, htmlTableProto, [value])
+      && apply(namespaceURIGetter, value, []) === XHTML
       && name(value) === 'table';
     const name = value => apply(localNameGetter, value, []);
+    const htmlName = value => value !== null
+      && typeof value === 'object'
+      && apply(isPrototypeOf, elementProto, [value])
+      && apply(namespaceURIGetter, value, []) === XHTML
+      ? name(value) : '';
     const attribute = (value, key) => apply(getAttribute, value, [key]);
     const hasTableAncestor = value => {
       let parent = apply(parentNodeGetter, value, []);
@@ -227,7 +280,7 @@ export function buildTableSamplerExpression(selector = 'table') {
       }
       return { items: result, overflow: false };
     };
-    const utf8Bytes = value => {
+    const utf8Bytes = (value, ceiling) => {
       let bytes = 0;
       for (let index = 0; index < value.length; index += 1) {
         const unit = apply(charCodeAt, value, [index]);
@@ -240,13 +293,14 @@ export function buildTableSamplerExpression(selector = 'table') {
           index += 1;
         } else if (unit >= 0xdc00 && unit <= 0xdfff) return -1;
         else bytes += 3;
+        if (bytes > ceiling) return ceiling + 1;
       }
       return bytes;
     };
     const boundedAttribute = (value, key) => {
       const raw = attribute(value, key);
       if (raw === null) return null;
-      const bytes = utf8Bytes(raw);
+      const bytes = utf8Bytes(raw, LIMITS.maxAttributeBytes);
       return bytes >= 0 && bytes <= LIMITS.maxAttributeBytes ? raw : null;
     };
     const hex4 = unit => BS + 'u' + HEX[(unit >>> 12) & 15] + HEX[(unit >>> 8) & 15]
@@ -271,17 +325,22 @@ export function buildTableSamplerExpression(selector = 'table') {
       let value = '';
       let bytes = 0;
       let visited = 0;
+      let textNodes = 0;
       let current = apply(firstChildGetter, root, []);
       while (current) {
         visited += 1;
-        if (visited > LIMITS.maxDomNodesPerCell || visited > LIMITS.maxTextNodesPerCell) {
-          return { ok: false, value: '' };
-        }
+        if (visited > LIMITS.maxDomNodesPerCell) return { ok: false, value: '', reason: 'dom-node-limit' };
         const type = apply(nodeTypeGetter, current, []);
         if (type === 3) {
+          textNodes += 1;
+          if (textNodes > LIMITS.maxTextNodesPerCell) {
+            return { ok: false, value: '', reason: 'dom-node-limit' };
+          }
           const part = apply(nodeValueGetter, current, []) || '';
-          const partBytes = utf8Bytes(part);
-          if (partBytes < 0 || bytes + partBytes > byteLimit) return { ok: false, value: '' };
+          const partBytes = utf8Bytes(part, byteLimit - bytes);
+          if (partBytes < 0 || bytes + partBytes > byteLimit) {
+            return { ok: false, value: '', reason: 'row-too-large' };
+          }
           value += part;
           bytes += partBytes;
         }
@@ -298,7 +357,7 @@ export function buildTableSamplerExpression(selector = 'table') {
         }
         if (current === root) current = null;
       }
-      return { ok: true, value };
+      return { ok: true, value, reason: null };
     };
     const canonicalBytes = cells => {
       let bytes = cells.length > 0 ? cells.length - 1 : 0;
@@ -354,11 +413,11 @@ export function buildTableSamplerExpression(selector = 'table') {
     const row = tr => {
       const cells = [];
       const directResult = children(tr);
-      if (directResult.overflow) return { ok: false, reason: 'row-too-large' };
+      if (directResult.overflow) return { ok: false, reason: 'dom-node-limit' };
       const direct = directResult.items;
       let cellCount = 0;
       for (let index = 0; index < direct.length; index += 1) {
-        const cellName = name(direct[index]);
+        const cellName = htmlName(direct[index]);
         if (cellName !== 'th' && cellName !== 'td') continue;
         cellCount += 1;
         if (cellCount > LIMITS.maxCellsPerRow) return { ok: false, reason: 'cell-limit' };
@@ -374,7 +433,7 @@ export function buildTableSamplerExpression(selector = 'table') {
       }
       const encoded = '{' + quote('rawAriaRowIndex') + ':' + decimal(rawAriaRowIndex)
         + ',' + quote('cells') + ':[' + encodedCells + ']}';
-      if (utf8Bytes(encoded) > 8194) return { ok: false, reason: 'row-too-large' };
+      if (utf8Bytes(encoded, 8194) > 8194) return { ok: false, reason: 'row-too-large' };
       return { ok: true, value: { rawAriaRowIndex, cells }, encoded };
     };
     const encodeRows = rows => {
@@ -386,7 +445,7 @@ export function buildTableSamplerExpression(selector = 'table') {
     };
     const boundedMetadata = value => {
       if (value === null) return '';
-      const bytes = utf8Bytes(value);
+      const bytes = utf8Bytes(value, LIMITS.maxCaptionBytes);
       return bytes >= 0 && bytes <= LIMITS.maxCaptionBytes ? value : '';
     };
     const encodeTable = state => '{'
@@ -413,27 +472,11 @@ export function buildTableSamplerExpression(selector = 'table') {
         + '}';
     };
     const tableStrings = [];
-    const matched = apply(documentQuerySelectorAll, document, [selector]);
-    const matchedLength = apply(nodeListLengthGetter, matched, []);
+    let retainedTableBytes = 0;
     let tablesSeen = 0;
-    let matchedCandidates = 0;
     let pageTruncated = false;
     let pageTruncationReason = null;
-    for (let tableIndex = 0; tableIndex < matchedLength
-      && matchedCandidates < LIMITS.maxMatchedCandidates
-      && tablesSeen <= LIMITS.maxTables; tableIndex += 1) {
-      matchedCandidates += 1;
-      const candidate = apply(nodeListItem, matched, [tableIndex]);
-      if (!isTable(candidate)) continue;
-      const ancestorStatus = hasTableAncestor(candidate);
-      if (ancestorStatus === 'nested') continue;
-      if (ancestorStatus === 'overflow') {
-        pageTruncated = true;
-        pageTruncationReason = 'dom-depth-limit';
-        break;
-      }
-      tablesSeen += 1;
-      if (tableStrings.length === LIMITS.maxTables) break;
+    const sampleTable = candidate => {
       const directResult = children(candidate);
       const direct = directResult.items;
       const state = {
@@ -450,22 +493,26 @@ export function buildTableSamplerExpression(selector = 'table') {
       let caption = '';
       const theads = [];
       const directBodies = [];
-      for (let index = 0; index < direct.length; index += 1) {
-        const childName = name(direct[index]);
-        if (childName === 'caption' && caption === '') {
-          const sampledCaption = text(direct[index], LIMITS.maxCaptionBytes);
-          if (sampledCaption.ok) caption = sampledCaption.value;
-        } else if (childName === 'thead') apply(arrayPush, theads, [direct[index]]);
-        else if (childName === 'tbody') apply(arrayPush, directBodies, [direct[index]]);
+      if (directResult.overflow) {
+        state.truncated = true;
+        state.truncationReason = 'dom-node-limit';
+      } else {
+        for (let index = 0; index < direct.length; index += 1) {
+          const childName = htmlName(direct[index]);
+          if (childName === 'caption' && caption === '') {
+            const sampledCaption = text(direct[index], LIMITS.maxCaptionBytes);
+            if (sampledCaption.ok) caption = sampledCaption.value;
+            else if (sampledCaption.reason === 'dom-node-limit') {
+              state.truncated = true;
+              state.truncationReason = 'dom-node-limit';
+              break;
+            }
+          } else if (childName === 'thead') apply(arrayPush, theads, [direct[index]]);
+          else if (childName === 'tbody') apply(arrayPush, directBodies, [direct[index]]);
+        }
       }
       state.caption = boundedMetadata(caption || boundedMetadata(boundedAttribute(candidate, 'aria-label')));
-      const aggregateBytes = () => {
-        let bytes = 0;
-        for (let index = 0; index < tableStrings.length; index += 1) bytes += utf8Bytes(tableStrings[index]);
-        for (let index = 0; index < state.headerRows.length; index += 1) bytes += utf8Bytes(state.headerRows[index].encoded);
-        for (let index = 0; index < state.dataRows.length; index += 1) bytes += utf8Bytes(state.dataRows[index].encoded);
-        return bytes;
-      };
+      let retainedRowBytes = 0;
       const admit = (tr, destination, kind) => {
         if (kind === 'header') state.headerRowsSeen += 1; else state.dataRowsSeen += 1;
         state.directRowsSeen = state.headerRowsSeen + state.dataRowsSeen;
@@ -481,12 +528,15 @@ export function buildTableSamplerExpression(selector = 'table') {
           return false;
         }
         const candidateEncoded = sampled.encoded;
-        if (aggregateBytes() + utf8Bytes(candidateEncoded) + 32768 > LIMITS.maxSerializedBytes) {
+        const candidateBytes = utf8Bytes(candidateEncoded, 8194);
+        if (retainedTableBytes + retainedRowBytes + candidateBytes + 32768
+          > LIMITS.maxSerializedBytes) {
           state.truncated = true;
           state.truncationReason = 'sample-byte-limit';
           return false;
         }
         apply(arrayPush, destination, [sampled]);
+        retainedRowBytes += candidateBytes;
         return true;
       };
       const admitRows = (parents, destination, kind) => {
@@ -494,12 +544,12 @@ export function buildTableSamplerExpression(selector = 'table') {
           const directRowsResult = children(parents[parentIndex]);
           const directRows = directRowsResult.items;
           for (let rowIndex = 0; rowIndex < directRows.length; rowIndex += 1) {
-            if (name(directRows[rowIndex]) !== 'tr') continue;
+            if (htmlName(directRows[rowIndex]) !== 'tr') continue;
             if (!admit(directRows[rowIndex], destination, kind)) break;
           }
           if (!state.truncated && directRowsResult.overflow) {
             state.truncated = true;
-            state.truncationReason = 'row-limit';
+            state.truncationReason = 'dom-node-limit';
           }
         }
       };
@@ -509,34 +559,79 @@ export function buildTableSamplerExpression(selector = 'table') {
       }
       if (!directBodies.length && !state.truncated && !directResult.overflow) {
         for (let index = 0; index < direct.length; index += 1) {
-          if (name(direct[index]) !== 'tr') continue;
+          if (htmlName(direct[index]) !== 'tr') continue;
           if (!admit(direct[index], state.dataRows, 'data')) break;
         }
       }
-      if (!state.truncated && directResult.overflow) {
-        state.truncated = true;
-        state.truncationReason = 'row-limit';
-      }
       const encodedTable = encodeTable(state);
-      const candidatePage = encodePage(tablesSeen, [encodedTable], false, null);
-      let priorBytes = 0;
-      for (let index = 0; index < tableStrings.length; index += 1) priorBytes += utf8Bytes(tableStrings[index]) + 1;
-      if (priorBytes + utf8Bytes(candidatePage) > LIMITS.maxSerializedBytes) {
+      const candidateStrings = [];
+      for (let index = 0; index < tableStrings.length; index += 1) {
+        apply(arrayPush, candidateStrings, [tableStrings[index]]);
+      }
+      apply(arrayPush, candidateStrings, [encodedTable]);
+      const candidatePage = encodePage(tablesSeen, candidateStrings, false, null);
+      if (utf8Bytes(candidatePage, LIMITS.maxSerializedBytes) > LIMITS.maxSerializedBytes) {
         pageTruncated = true;
         pageTruncationReason = 'sample-byte-limit';
-        break;
+        return;
       }
       apply(arrayPush, tableStrings, [encodedTable]);
+      retainedTableBytes += utf8Bytes(encodedTable, LIMITS.maxSerializedBytes)
+        + (tableStrings.length > 1 ? 1 : 0);
+    };
+    let current = apply(firstChildGetter, document, []);
+    let documentNodes = 0;
+    let selectorValidated = false;
+    while (current && !pageTruncated) {
+      if (documentNodes >= LIMITS.maxDocumentNodes) {
+        pageTruncated = true;
+        pageTruncationReason = 'dom-node-limit';
+        break;
+      }
+      documentNodes += 1;
+      const type = apply(nodeTypeGetter, current, []);
+      let descend = type === 1;
+      if (type === 1) {
+        if (!selectorValidated) {
+          apply(elementMatches, current, [selector]);
+          selectorValidated = true;
+        }
+        if (isTable(current)) {
+          descend = false;
+          if (apply(elementMatches, current, [selector])) {
+            const ancestorStatus = hasTableAncestor(current);
+            if (ancestorStatus === 'overflow') {
+              pageTruncated = true;
+              pageTruncationReason = 'dom-depth-limit';
+            } else if (ancestorStatus === 'root') {
+              tablesSeen += 1;
+              if (tablesSeen > LIMITS.maxTables) {
+                pageTruncated = true;
+                pageTruncationReason = 'table-limit';
+              } else {
+                sampleTable(current);
+              }
+            }
+          }
+        }
+      }
+      if (pageTruncated) break;
+      const first = descend ? apply(firstChildGetter, current, []) : null;
+      if (first) {
+        current = first;
+      } else {
+        let next = null;
+        while (current && current !== document) {
+          next = apply(nextSiblingGetter, current, []);
+          if (next) break;
+          current = apply(parentNodeGetter, current, []);
+        }
+        current = next;
+      }
     }
-    const tableLimit = tablesSeen > LIMITS.maxTables;
-    if (!pageTruncated && (tableLimit
-      || (matchedCandidates >= LIMITS.maxMatchedCandidates && matchedCandidates < matchedLength))) {
-      pageTruncated = true;
-      pageTruncationReason = 'table-limit';
-    }
-    let encoded = encodePage(tablesSeen, tableStrings, pageTruncated, pageTruncationReason);
-    if (utf8Bytes(encoded) > LIMITS.maxSerializedBytes) {
-      encoded = encodePage(tablesSeen, [], true, 'sample-byte-limit');
+    const encoded = encodePage(tablesSeen, tableStrings, pageTruncated, pageTruncationReason);
+    if (utf8Bytes(encoded, LIMITS.maxSerializedBytes) > LIMITS.maxSerializedBytes) {
+      throw new TypeError('table sampler serialization invariant');
     }
     return encoded;
   })()`;
