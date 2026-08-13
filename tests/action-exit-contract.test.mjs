@@ -817,7 +817,7 @@ describe('detached ref propagation contract (#148)', () => {
     }]);
   });
 
-  it('halts batch, flow, replay, and repeat before a later action without remapping', async () => {
+  it('keeps batch aggregate-all while flow, replay, and repeat halt without remapping', async () => {
     const fixture = await detachedRefActionFixture();
     const stale = async () => ({ ok: true, result: fixture.output });
 

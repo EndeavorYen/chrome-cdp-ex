@@ -11226,7 +11226,6 @@ async function runBatchCommands({ run }, commands = [], { parallel = false } = {
   for (const command of commands) {
     const result = await runOne(command);
     results.push(result);
-    if (!result.ok) break;
   }
   return results;
 }
