@@ -400,6 +400,56 @@ describe('trusted table sampler source', () => {
       truncationReason: 'dom-depth-limit',
     });
   });
+
+  it('does not use direct-row fallback when direct-child overflow hides a later tbody', () => {
+    class N {
+      constructor(type, value = null) { this.t = type; this.v = value; this.p = null; this.c = []; }
+      append(child) { child.p = this; this.c.push(child); return child; }
+      get parentNode() { return this.p; }
+      get firstChild() { return this.c[0] || null; }
+      get nextSibling() { return this.p?.c[this.p.c.indexOf(this) + 1] || null; }
+      get nodeType() { return this.t; }
+      get nodeValue() { return this.v; }
+    }
+    class E extends N {
+      constructor(name) { super(1); this.n = name; }
+      get localName() {
+        if (!(this instanceof E)) throw new TypeError('Illegal invocation');
+        return this.n;
+      }
+      getAttribute() { return null; }
+    }
+    class X extends N { constructor(value) { super(3, value); } }
+    class T extends E { constructor() { super('table'); } }
+    class D extends N {
+      constructor(root, match) { super(9); this.match = match; root.p = this; }
+      querySelectorAll() { return new L([this.match]); }
+    }
+    class L {
+      constructor(values) { this.v = values; }
+      get length() { return this.v.length; }
+      item(index) { return this.v[index] || null; }
+    }
+    const root = new E('html');
+    const tableNode = root.append(new T());
+    tableNode.append(new E('tr')).append(new E('td')).append(new X('must-not-admit'));
+    for (let index = 1; index < TABLE_SAMPLER_LIMITS.maxDirectChildren; index += 1) {
+      tableNode.append(new E('div'));
+    }
+    tableNode.append(new E('tbody')).append(new E('tr')).append(new E('td')).append(new X('hidden-body'));
+    const sampled = parseTableSamplerResult(runInNewContext(buildTableSamplerExpression('table'), {
+      Object, Array, String, Number, Node: N, Element: E, Text: X, Document: D,
+      HTMLTableElement: T, NodeList: L, document: new D(root, tableNode),
+    }));
+
+    expect(sampled.tables[0]).toMatchObject({
+      dataRows: [],
+      directRowsSeen: 0,
+      dataRowsSeen: 0,
+      truncated: true,
+      truncationReason: 'row-limit',
+    });
+  });
 });
 
 describe('bounded table sampler host validation', () => {
