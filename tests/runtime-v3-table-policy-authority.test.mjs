@@ -117,8 +117,8 @@ describe('Runtime v3 table policy authority', () => {
       'authorize: input => authorizeDaemonApplicationCommand({ ...input, args: [] }),',
     ),
     source.replace(
-      "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : tableObservationStr(cdp, sessionId, request),",
-      "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.argv[0]), null, 2)\n      : tableObservationStr(cdp, sessionId, request.selector),",
+      "table: async (request, execution) => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : request.mode === 'collect'\n        ? tableCollectionStr(cdp, sessionId, request, execution, { store: tableArtifactStore, session: tableCollectorSession })\n        : tableObservationStr(cdp, sessionId, request),",
+      "table: async (request, execution) => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.argv[0]), null, 2)\n      : tableObservationStr(cdp, sessionId, request.selector),",
     ),
   ])('rejects or drifts when an argv-aware production binding is rewritten %#', mutation => {
     expect(() => inventory(mutation)).toThrow(/table policy authority/i);
@@ -433,7 +433,7 @@ describe('Runtime v3 table policy authority', () => {
       'table: applicationPreflight.handlerBuilders.text(readCapabilities),',
     ),
     source.replace(
-      "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : tableObservationStr(cdp, sessionId, request),",
+      "table: async (request, execution) => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : request.mode === 'collect'\n        ? tableCollectionStr(cdp, sessionId, request, execution, { store: tableArtifactStore, session: tableCollectorSession })\n        : tableObservationStr(cdp, sessionId, request),",
       "table: async request => request.mode === 'continue'\n      ? textStr(cdp, sessionId, request.continuation)\n      : tableStr(cdp, sessionId, request.selector),",
     ),
   ])('rejects substituted table handler and capability wiring %#', mutation => {
@@ -538,8 +538,8 @@ describe('Runtime v3 table policy authority', () => {
       "import { buildTableSamplerExpression, parseTableSamplerResult } from './lib/table-sampler.mjs';",
       "import { buildTableSamplerExpression as buildSampler, parseTableSamplerResult } from './lib/table-sampler.mjs';"),
     mutate(source,
-      '  addTableSampleBatch,\n  canonicalizeTableCells,',
-      '  addTableSampleBatch as admitBatch,\n  canonicalizeTableCells,'),
+      '  addTableSampleBatch,\n  buildTableExportBundle,\n  canonicalizeTableCells,',
+      '  addTableSampleBatch as admitBatch,\n  buildTableExportBundle,\n  canonicalizeTableCells,'),
     mutate(source,
       '    grantUniveralAccess: false,',
       '    grantUniveralAccess: true,'),

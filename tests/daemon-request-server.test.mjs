@@ -1043,14 +1043,14 @@ describe('daemon request server lifecycle', () => {
     });
   });
 
-  it('keeps the production collect placeholder fail-closed before page capability effects', async () => {
+  it('lets an authorized collect reach the page capability after deadline installation', async () => {
     const pageEffect = vi.fn();
     const conn = connection();
     T.createDaemonRequestConnection(conn, {
       handleRequest: async (request, execution) => {
         T.enforceDaemonTableCollectionGate(request, execution);
         pageEffect();
-        return { ok: true, result: 'unexpected' };
+        return { ok: true, result: 'collected' };
       },
       now: () => 0,
     });
@@ -1061,12 +1061,12 @@ describe('daemon request server lifecycle', () => {
     }));
     await drain();
 
-    expect(pageEffect).not.toHaveBeenCalled();
+    expect(pageEffect).toHaveBeenCalledOnce();
     expect(conn.write).toHaveBeenCalledOnce();
     expect(JSON.parse(conn.write.mock.calls[0][0])).toEqual({
       id: 6,
-      ok: false,
-      error: 'table: collection is unavailable in this v2.16 candidate',
+      ok: true,
+      result: 'collected',
     });
   });
 

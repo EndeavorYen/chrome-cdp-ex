@@ -226,8 +226,9 @@ function createDaemonRequestExecutionContext({ request, signal, now = monotonicN
 }
 
 function enforceDaemonTableCollectionGate(request, execution = null) {
-  if (request?.cmd === 'table' && execution?.deadline) {
-    throw new Error('table: collection is unavailable in this v2.16 candidate');
+  if (request?.cmd !== 'table') return;
+  if (parseTableArgs(request.args || []).mode === 'collect' && !execution?.deadline) {
+    throw new Error('table: trusted daemon request deadline context is required');
   }
 }
 
@@ -11697,6 +11698,9 @@ async function tableCollectionStr(cdp, sid, request, execution, options = {}) {
   const store = options.store;
   const session = options.session || { collector: null };
   if (!store) throw tableCollectorError('artifact store is required for collection');
+  if ((options.platform || process.platform) === 'win32') {
+    throw tableCollectorError('private table artifacts are unavailable on Windows in v2.16');
+  }
   if (session.collector) throw tableCollectorError('collector-busy');
   session.collector = true;
   let worldId = null;
@@ -15095,6 +15099,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     sessionId: randomBytes(16).toString('hex'),
     platform: process.platform,
   });
+  const tableCollectorSession = { collector: null };
   initializeSessionLog(session);
   ensureSessionScreenshotDir(session);
 
@@ -15398,9 +15403,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     fullshot: args => fullshotStr(cdp, sessionId, args[0], targetId),
     html: args => htmlStr(cdp, sessionId, args),
     text: args => textStr(cdp, sessionId, args),
-    table: async request => request.mode === 'continue'
+    table: async (request, execution) => request.mode === 'continue'
       ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)
-      : tableObservationStr(cdp, sessionId, request),
+      : request.mode === 'collect'
+        ? tableCollectionStr(cdp, sessionId, request, execution, { store: tableArtifactStore, session: tableCollectorSession })
+        : tableObservationStr(cdp, sessionId, request),
     net: () => netStr(cdp, sessionId),
     overlay: args => overlayStr(cdp, sessionId, targetId, args, refMap, refState),
     record: args => recordStr(cdp, sessionId, args, refMap),

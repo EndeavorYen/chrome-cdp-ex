@@ -902,6 +902,7 @@ function collectTableObservationAuthority(source, tableSamplerSource, tableExtra
           if (JSON.stringify([...names].sort()) !== JSON.stringify([
             'TABLE_EXTRACTION_LIMITS',
             'addTableSampleBatch',
+            'buildTableExportBundle',
             'canonicalizeTableCells',
             'createTableAccumulator',
             'finalizeTableExtraction',
@@ -930,6 +931,7 @@ function collectTableObservationAuthority(source, tableSamplerSource, tableExtra
           for (const name of [
             'TABLE_EXTRACTION_LIMITS',
             'addTableSampleBatch',
+            'buildTableExportBundle',
             'canonicalizeTableCells',
             'createTableAccumulator',
             'finalizeTableExtraction',
@@ -1003,9 +1005,9 @@ function collectTableObservationAuthority(source, tableSamplerSource, tableExtra
   if (exactSampleBindings.some(binding => !sampleOwner.includes(binding))
     || (sampleOwner.match(/cdpDomains\(cdp\)\./g) || []).length !== 3
     || sampleOwner.indexOf(exactSampleBindings[0]) > sampleOwner.indexOf(exactSampleBindings[1])
-    || source.split(isolatedWorldDenied).length !== 4
+    || source.split(isolatedWorldDenied).length !== 5
     || source.includes('grantUniveralAccess: true')
-    || source.split(evaluateByValueNoAwait).length !== 3
+    || source.split(evaluateByValueNoAwait).length !== 4
     || source.includes('    returnByValue: false,\n    awaitPromise: true,')) {
     fail('root-frame sampler must validate first and retain the exact three-call CDP sequence');
   }
@@ -1246,9 +1248,9 @@ function collectTablePolicyAuthority(source, {
             : [];
           if (properties.length !== 1) failTable('readCapabilities.table must be bound exactly once');
           const binding = sourceCode.getText(properties[0]);
-          const expected = "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : tableObservationStr(cdp, sessionId, request)";
+          const expected = "table: async (request, execution) => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : request.mode === 'collect'\n        ? tableCollectionStr(cdp, sessionId, request, execution, { store: tableArtifactStore, session: tableCollectorSession })\n        : tableObservationStr(cdp, sessionId, request)";
           if (binding !== expected) {
-            failTable('readCapabilities.table must bind continuation to the private store and full observation request delivery');
+            failTable('readCapabilities.table must bind continuation, collection, and observation to the reviewed owners');
           }
           if (tableCapabilityBinding) failTable('readCapabilities.table must be bound exactly once');
           tableCapabilityBinding = binding;
@@ -1378,6 +1380,7 @@ function collectTablePolicyAuthority(source, {
             }, failTable);
           }
           requireUniqueBinding(sourceCode, 'tableObservationStr', { definitionType: 'FunctionName' }, failTable);
+          requireUniqueBinding(sourceCode, 'tableCollectionStr', { definitionType: 'FunctionName' }, failTable);
           requireUniqueBinding(sourceCode, 'createTableArtifactStore', {
             definitionType: 'ImportBinding',
             importSource: './lib/table-artifacts.mjs',
@@ -1430,6 +1433,7 @@ function collectTablePolicyAuthority(source, {
     parseTableArgs: [
       { owner: 'authorizeDaemonApplicationCommand', source: 'parseTableArgs(args)' },
       { owner: 'createDaemonRequestExecutionContext', source: 'parseTableArgs(request.args || [])' },
+      { owner: 'enforceDaemonTableCollectionGate', source: 'parseTableArgs(request.args || [])' },
       { owner: 'validateDaemonProtocolRequest', source: 'parseTableArgs(frozenRequest.args)' },
     ],
     parseTableContinuationToken: [

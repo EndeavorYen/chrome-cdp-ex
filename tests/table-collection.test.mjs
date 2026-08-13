@@ -5,8 +5,11 @@ import { createContext, runInContext } from 'node:vm';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { executeCdpCli } from '../skills/chrome-cdp-ex/scripts/cdp.mjs';
 import { createTableArtifactStore } from '../skills/chrome-cdp-ex/scripts/lib/table-artifacts.mjs';
 import { parseTableArgs } from '../skills/chrome-cdp-ex/scripts/lib/table-contract.mjs';
+import { createMcpRequestHandler } from '../skills/chrome-cdp-ex/scripts/mcp-server.mjs';
+import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
 const { __test__: cdpTest } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
@@ -756,6 +759,208 @@ describe('adversarial virtual collection', () => {
     await expect(runCollect(cdp, collectRequest(), { store: artifactStore() }))
       .rejects.toThrow(/exploded/i);
     expect(cdp.releasedGroups.length).toBeGreaterThan(0);
+  });
+});
+
+describe('collection command semantics', () => {
+  it('fails closed on Windows before any page mutation', async () => {
+    const fixture = mountRecycledTableFixture({
+      logicalRows: 2, ariaRowCount: 3, mountedRows: 2, initialAvailable: 2,
+    });
+    const cdp = createWorldCdp(fixture);
+    await expect(cdpTest.tableCollectionStr(
+      cdp,
+      'sid',
+      collectRequest(),
+      collectExecution(),
+      { store: artifactStore(), platform: 'win32' },
+    )).rejects.toThrow(/unavailable on Windows/i);
+    expect(pageMutatingCalls(cdp)).toEqual([]);
+  });
+
+  it('keeps continuation on the private store without creating an isolated world', async () => {
+    const fixture = mountRecycledTableFixture({
+      logicalRows: 2, ariaRowCount: 3, mountedRows: 2, initialAvailable: 2,
+    });
+    const store = artifactStore();
+    const collected = await runCollect(createWorldCdp(fixture), collectRequest(), { store });
+    const token = collectedTable(collected).continuation.token;
+    const continued = JSON.stringify(await store.readContinuation(token), null, 2);
+    expect(JSON.parse(continued).continuation.token).toBe(token);
+    expect(continued).toContain('ROW-0001');
+  });
+
+  it('preserves collect JSON through CLI capture and confirmed MCP run_command', async () => {
+    const fixture = mountRecycledTableFixture({
+      logicalRows: 2, ariaRowCount: 3, mountedRows: 2, initialAvailable: 2,
+    });
+    const output = await runCollect(createWorldCdp(fixture), collectRequest(), { store: artifactStore() });
+    expect(JSON.parse(output).schema).toBe('chrome-cdp-ex.table.v1');
+    expect(Buffer.byteLength(output, 'utf8')).toBeLessThanOrEqual(16_384);
+
+    const targetResolution = {
+      requestedTargetPrefix: 'ABC12345',
+      requestedTargetId: 'ABC12345ABC12345ABC12345ABC12345',
+      boundTargetId: 'ABC12345ABC12345ABC12345ABC12345',
+      resolvedTargetId: 'ABC12345ABC12345ABC12345ABC12345',
+      resolutionSource: 'live-discovery',
+      status: 'reused',
+      rebound: false,
+    };
+    const direct = await executeCdpCli([
+      'table', 'ABC12345', '#orders', '--collect', '--scroll-container', '#viewport', '--format', 'json',
+    ], {
+      runMain: async ({ console, process }) => {
+        cdpTest.emitTargetCommandResponse({ ok: true, result: output }, {
+          cmd: 'table',
+          format: 'json',
+          targetResolution,
+          console,
+          process,
+        });
+      },
+    });
+    const sent = [];
+    const handle = createMcpRequestHandler({
+      runtimeClient: createRuntimeClient({ executeCli: async () => direct }),
+      sendMessage: message => sent.push(message),
+    });
+    await handle({
+      jsonrpc: '2.0',
+      id: 160,
+      method: 'tools/call',
+      params: {
+        name: 'run_command',
+        arguments: {
+          command: 'table',
+          args: ['ABC12345', '#orders', '--collect', '--scroll-container', '#viewport', '--format', 'json'],
+          confirm: true,
+        },
+      },
+    });
+
+    expect(direct.code).toBe(0);
+    expect(direct.stdout).toBe(output);
+    expect(direct.stdout).not.toContain('targetResolution');
+    expect(sent[0].result).toEqual({
+      content: [{ type: 'text', text: output }],
+      isError: false,
+    });
+  });
+
+  it('preserves collect text through CLI capture and confirmed MCP run_command', async () => {
+    const fixture = mountRecycledTableFixture({
+      logicalRows: 2, ariaRowCount: 3, mountedRows: 2, initialAvailable: 2,
+    });
+    const output = await runCollect(
+      createWorldCdp(fixture),
+      collectRequest({
+        argv: ['#orders', '--collect', '--scroll-container', '#viewport', '--load-more', '#load-more'],
+      }),
+      { store: artifactStore() },
+    );
+    expect(output.startsWith('Table collection:')).toBe(true);
+    expect(Buffer.byteLength(output, 'utf8')).toBeLessThanOrEqual(8192);
+
+    const direct = await executeCdpCli([
+      'table', 'ABC12345', '#orders', '--collect', '--scroll-container', '#viewport',
+    ], {
+      runMain: async ({ console, process }) => {
+        cdpTest.emitTargetCommandResponse({ ok: true, result: output }, {
+          cmd: 'table',
+          format: 'text',
+          console,
+          process,
+        });
+      },
+    });
+    const sent = [];
+    const handle = createMcpRequestHandler({
+      runtimeClient: createRuntimeClient({ executeCli: async () => direct }),
+      sendMessage: message => sent.push(message),
+    });
+    await handle({
+      jsonrpc: '2.0',
+      id: 161,
+      method: 'tools/call',
+      params: {
+        name: 'run_command',
+        arguments: {
+          command: 'table',
+          args: ['ABC12345', '#orders', '--collect', '--scroll-container', '#viewport'],
+          confirm: true,
+        },
+      },
+    });
+
+    expect(direct.code).toBe(0);
+    expect(direct.stdout).toBe(output);
+    expect(sent[0].result).toEqual({
+      content: [{ type: 'text', text: output }],
+      isError: false,
+    });
+  });
+
+  it('keeps batch aggregate-all while flow, replay, and repeat halt on collector-busy without retry', async () => {
+    const busy = async () => ({ ok: false, error: 'table: collector-busy' });
+    const collectArgs = ['#orders', '--collect', '--scroll-container', '#viewport'];
+    const later = { cmd: 'table', args: ['#orders'] };
+
+    const batchRun = vi.fn(async command => (
+      command.args.includes('--collect') ? busy() : { ok: true, result: 'observed' }
+    ));
+    const batchResults = await cdpTest.runBatchCommands({ run: batchRun }, [
+      { cmd: 'table', args: collectArgs },
+      later,
+    ]);
+    expect(batchRun).toHaveBeenCalledTimes(2);
+    expect(batchResults).toMatchObject([
+      { cmd: 'table', ok: false, error: 'table: collector-busy' },
+      { cmd: 'table', ok: true, result: 'observed' },
+    ]);
+
+    const flowRun = vi.fn(busy);
+    const flow = JSON.parse(await cdpTest.flowStr({
+      run: flowRun,
+      settle: async () => '',
+    }, 'table #orders --collect --scroll-container #viewport; table #orders', {
+      format: 'json',
+      targetId: 'ABC12345',
+    }));
+    expect(flowRun).toHaveBeenCalledTimes(1);
+    expect(flowRun).toHaveBeenCalledWith(expect.objectContaining({
+      cmd: 'table',
+      args: collectArgs,
+    }));
+    expect(flow).toMatchObject({
+      halted: true,
+      counts: { ok: 0, failed: 1, skipped: 1 },
+      failedStep: { cmd: 'table', error: 'table: collector-busy' },
+    });
+
+    const replayRun = vi.fn(busy);
+    const replay = JSON.parse(await cdpTest.replayActionsStr({ run: replayRun }, [
+      '--format', 'json', '--json', JSON.stringify({
+        schema: 'chrome-cdp-ex.record-actions.v1',
+        targetId: 'ABC12345',
+        sessionId: 'fixture-session',
+        actions: [
+          { action: 'table', command: ['table', ...collectArgs], replayable: true, needsInput: [] },
+          { action: 'table', command: ['table', '#orders'], replayable: true, needsInput: [] },
+        ],
+      }),
+    ]));
+    expect(replayRun).toHaveBeenCalledTimes(1);
+    expect(replay).toMatchObject({
+      halted: true,
+      counts: { ok: 0, failed: 1 },
+      failedStep: { command: ['table', ...collectArgs], error: 'table: collector-busy' },
+    });
+
+    const repeatRun = vi.fn(busy);
+    await expect(cdpTest.repeatStr({ run: repeatRun }, ['3', 'table', ...collectArgs]))
+      .rejects.toThrow(/collector-busy.*Repeat halted at iteration 1\/3/s);
+    expect(repeatRun).toHaveBeenCalledTimes(1);
   });
 });
 
