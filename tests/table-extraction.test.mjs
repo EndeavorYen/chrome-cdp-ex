@@ -130,8 +130,11 @@ describe('canonical table bytes and bounded previews', () => {
 
   it('never lets callers raise fixed collection or preview ceilings', () => {
     expect(() => buildInlineTablePreview(['x'], { maxInlineRows: 21 })).toThrow(/must not exceed/i);
-    expect(() => finalizeTableExtraction(accumulatorWithRows([['x']]), {
-      termination: 'logical-count-reached',
+    expect(() => createTableAccumulator({
+      logicalRows: 1,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'aria-rowindex',
+      orderingSource: 'aria-rowindex',
       limits: { maxRows: 100001 },
     })).toThrow(/must not exceed/i);
   });
