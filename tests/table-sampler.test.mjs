@@ -352,6 +352,54 @@ describe('trusted table sampler source', () => {
       dataRows: [{ cells: ['safe'] }],
     });
   });
+
+  it('reports ancestor-depth exhaustion instead of silently claiming no tables', () => {
+    class N {
+      constructor(type) { this.t = type; this.p = null; this.c = []; }
+      append(child) { child.p = this; this.c.push(child); return child; }
+      get parentNode() { return this.p; }
+      get firstChild() { return this.c[0] || null; }
+      get nextSibling() { return this.p?.c[this.p.c.indexOf(this) + 1] || null; }
+      get nodeType() { return this.t; }
+      get nodeValue() { return null; }
+    }
+    class E extends N {
+      constructor(name) { super(1); this.n = name; }
+      get localName() {
+        if (!(this instanceof E)) throw new TypeError('Illegal invocation');
+        return this.n;
+      }
+      getAttribute() { return null; }
+    }
+    class X extends N {}
+    class T extends E { constructor() { super('table'); } }
+    class D extends N {
+      constructor(root, match) { super(9); this.match = match; root.p = this; }
+      querySelectorAll() { return new L([this.match]); }
+    }
+    class L {
+      constructor(values) { this.v = values; }
+      get length() { return this.v.length; }
+      item(index) { return this.v[index] || null; }
+    }
+    const root = new E('html');
+    let parent = root;
+    for (let index = 0; index < TABLE_SAMPLER_LIMITS.maxAncestorDepth; index += 1) {
+      parent = parent.append(new E('div'));
+    }
+    const tableNode = parent.append(new T());
+    const sampled = parseTableSamplerResult(runInNewContext(buildTableSamplerExpression('table'), {
+      Object, Array, String, Number, Node: N, Element: E, Text: X, Document: D,
+      HTMLTableElement: T, NodeList: L, document: new D(root, tableNode),
+    }));
+
+    expect(sampled).toMatchObject({
+      tablesSeen: 0,
+      tables: [],
+      truncated: true,
+      truncationReason: 'dom-depth-limit',
+    });
+  });
 });
 
 describe('bounded table sampler host validation', () => {
