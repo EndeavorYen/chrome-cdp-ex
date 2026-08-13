@@ -11158,7 +11158,10 @@ async function sampleRootFrameTables(cdp, sid, selector) {
 function validAriaIdentity(sample) {
   const headerCount = sample.headerRows.length;
   const rawCount = sample.ariaRowCount;
-  if (!Number.isSafeInteger(rawCount) || rawCount < headerCount || rawCount === -1) return null;
+  if (sample.headerRowsSeen !== headerCount
+    || !Number.isSafeInteger(rawCount)
+    || rawCount < headerCount
+    || rawCount === -1) return null;
   for (let index = 0; index < headerCount; index += 1) {
     if (sample.headerRows[index].rawAriaRowIndex !== index + 1) return null;
   }
@@ -11176,7 +11179,8 @@ function validAriaIdentity(sample) {
 
 function observedTableEntry(sample, index) {
   const ariaIdentity = validAriaIdentity(sample);
-  const countKnown = Number.isSafeInteger(sample.ariaRowCount)
+  const countKnown = sample.headerRowsSeen === sample.headerRows.length
+    && Number.isSafeInteger(sample.ariaRowCount)
     && sample.ariaRowCount >= sample.headerRows.length;
   const accumulator = createTableAccumulator({
     logicalRows: countKnown ? sample.ariaRowCount - sample.headerRows.length : null,
