@@ -99,6 +99,9 @@ function parsedTable(value, index) {
     invalid(`${name} direct-row counts are inconsistent`);
   }
   truncation(value.truncated, value.truncationReason, TABLE_TRUNCATION_REASONS, name);
+  if ((headerRows.length < headerRowsSeen || dataRows.length < dataRowsSeen) && !value.truncated) {
+    invalid(`${name} row omission requires truncation provenance`);
+  }
   return Object.freeze({
     caption,
     ariaRowCount: value.ariaRowCount,
@@ -126,6 +129,9 @@ export function parseTableSamplerResult(value) {
     .map((entry, index) => parsedTable(entry, index));
   if (tables.length > tablesSeen) invalid('sample table counts are inconsistent');
   truncation(parsed.truncated, parsed.truncationReason, PAGE_TRUNCATION_REASONS, 'sample');
+  if (tables.length < tablesSeen && !parsed.truncated) {
+    invalid('sample table omission requires truncation provenance');
+  }
   return Object.freeze({
     schema: TABLE_SAMPLE_SCHEMA,
     tablesSeen,
