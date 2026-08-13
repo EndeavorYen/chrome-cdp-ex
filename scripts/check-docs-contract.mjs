@@ -138,6 +138,7 @@ function checkReleaseMetadataContract(docs) {
       const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const falseReleaseClaims = [
         new RegExp(`\\bRelease\\s+v${escapedVersion}\\b`, 'i'),
+        new RegExp(`\\bv${escapedVersion}\\s+release(?:\\s+notes)?\\b`, 'i'),
         new RegExp(`\\bPinned\\s+release\\s*\\(\\s*v${escapedVersion}\\s*\\)`, 'i'),
         new RegExp(`\\bLatest\\s+measured\\s+release[^\\n]*\\bv${escapedVersion}\\b`, 'i'),
       ];
