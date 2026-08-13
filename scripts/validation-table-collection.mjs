@@ -920,6 +920,35 @@ function routeEnv(paths, port) {
   };
 }
 
+function resolveCdpTargetId(env) {
+  const listed = runSync(process.execPath, [CDP_PATH, 'list', '--format', 'json'], { env, timeout: 10_000 });
+  invariant(listed.exitCode === 0, `cdp list failed: ${listed.stderr || listed.stdout}`);
+  const model = JSON.parse(listed.stdout);
+  const page = (model.pages || []).find(entry => entry.url === 'about:blank') || model.pages?.[0];
+  invariant(typeof page?.targetId === 'string' && page.targetId, 'cdp list did not return a targetId');
+  return page.targetId;
+}
+
+async function withLiveRouteSession(state, work) {
+  liveCancellation.register(state);
+  let result;
+  let failure = null;
+  try {
+    result = await work();
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    await state.runCleanup();
+  } catch (cleanupError) {
+    if (failure) failure.cleanupError = cleanupError;
+    else failure = cleanupError;
+  }
+  liveCancellation.clear(state);
+  if (failure) throw failure;
+  return result;
+}
+
 function prepareRoutePaths(route, slot) {
   const allocated = allocateRouteFixture(route, { slot });
   const home = join(allocated.taskRoot, 'home');
@@ -958,15 +987,27 @@ function productProofFromCollect(model, { initial, jsonBytes, continuationBytesE
 function attachRouteCleanup(state) {
   state.runCleanup = () => cleanupPartialLiveState(state, {
     async stopChromeDaemon() {
-      if (!state.env || !state.target?.id) {
+      if (!state.env || !state.targetId) {
         state.cleanup.daemonStopped = true;
         return;
       }
-      const stop = runSync(process.execPath, [CDP_PATH, 'stop', state.target.id, '--format', 'json'], {
+      const stop = runSync(process.execPath, [CDP_PATH, 'stop', state.targetId, '--format', 'json'], {
         env: state.env,
         timeout: 8_000,
       });
-      state.cleanup.daemonStopped = stop.exitCode === 0 || /not running|no daemon/i.test(`${stop.stdout}\n${stop.stderr}`);
+      if (stop.exitCode === 0 || /not running|no daemon/i.test(`${stop.stdout}\n${stop.stderr}`)) {
+        state.cleanup.daemonStopped = true;
+        return;
+      }
+      const marker = `${CDP_PATH} _daemon ${state.targetId}`;
+      for (const line of matchingProcesses([marker])) {
+        const pid = Number(line.trim().split(/\s+/)[0]);
+        if (Number.isInteger(pid) && pid > 0) {
+          try { process.kill(pid, 'SIGTERM'); } catch {}
+        }
+      }
+      await delay(250);
+      state.cleanup.daemonStopped = matchingProcesses([marker]).length === 0;
       invariant(state.cleanup.daemonStopped, `daemon stop failed: ${stop.stderr || stop.stdout}`);
     },
     async stopChromeBrowser() {
@@ -993,7 +1034,8 @@ function attachRouteCleanup(state) {
     async assertNoTaskProcesses() {
       state.cleanup.processesGone = await waitForNoProcesses([
         state.paths.taskRoot,
-        state.target?.id ? `${CDP_PATH} _daemon ${state.target.id}` : null,
+        state.paths.runtimeDir,
+        state.targetId ? `${CDP_PATH} _daemon ${state.targetId}` : null,
       ]);
     },
     async assertEndpointsAndPortsGone() {
@@ -1031,7 +1073,7 @@ async function runProductCommands(route, env, targetId) {
   if (route === 'cli') {
     const collectArgv = buildCliCollectArgv(targetId);
     const collect = runSync(process.execPath, [CDP_PATH, ...collectArgv], { env, timeout: collectTimeout });
-    invariant(collect.exitCode === 0, `CLI collect failed: ${collect.stderr || collect.stdout}`);
+    invariant(collect.exitCode === 0, `CLI collect failed: ${(collect.stderr || collect.stdout).trim() || `exit ${collect.exitCode}`}`);
     const model = parseCollectJson(collect.stdout);
     const token = model.continuation?.token;
     invariant(typeof token === 'string' && token, 'CLI collect continuation token is missing');
@@ -1131,13 +1173,13 @@ async function runChromeProductRoute(route, browserPath, fixtureDocument, trial)
     browser: null,
     env: null,
     target: null,
+    targetId: null,
     lock: null,
     server: null,
     playwrightBrowser: null,
     requestAbort() { this.abortRequested = true; },
   });
-  liveCancellation.register(state);
-  try {
+  return withLiveRouteSession(state, async () => {
     ensureLiveActive();
     state.lock = acquireLiveBenchmarkLock({
       name: `table-collection-${route}-${trial}`,
@@ -1174,17 +1216,18 @@ async function runChromeProductRoute(route, browserPath, fixtureDocument, trial)
       mountedRows: provisioned.mountedRows,
       clicks: provisioned.loadMoreClicks,
     };
+    state.targetId = resolveCdpTargetId(state.env);
     ensureLiveActive();
-    const collected = await runProductCommands(route, state.env, state.target.id);
+    const collected = await runProductCommands(route, state.env, state.targetId);
     const after = await evaluateWebSocket(state.target.webSocketDebuggerUrl, `window.__tableCollectionOracle.state()`);
-    const captured = {
+    return {
       route,
       identity: {
         browserInstanceId: paths.browserInstanceId,
         profileToken: paths.profileToken,
         port,
         runtimeDir: paths.runtimeDir,
-        targetId: state.target.id,
+        targetId: state.targetId,
       },
       ...productProofFromCollect(collected.model, {
         initial,
@@ -1194,16 +1237,8 @@ async function runChromeProductRoute(route, browserPath, fixtureDocument, trial)
         loadMoreClicks: after?.loadMoreClicks,
       }),
       commands: collected.commands,
-      cleanup: null,
     };
-    return captured;
-  } finally {
-    try {
-      await state.runCleanup();
-    } finally {
-      liveCancellation.clear(state);
-    }
-  }
+  });
 }
 
 function resolvePlaywrightModule() {
@@ -1238,13 +1273,13 @@ async function runPlaywrightOracleRoute(browserPath, fixtureDocument, trial) {
     browser: null,
     env: null,
     target: null,
+    targetId: null,
     lock: null,
     server: createFixtureHttpServer(fixtureDocument),
     playwrightBrowser: null,
     requestAbort() { this.abortRequested = true; },
   });
-  liveCancellation.register(state);
-  try {
+  return withLiveRouteSession(state, async () => {
     ensureLiveActive();
     state.lock = acquireLiveBenchmarkLock({
       name: `table-collection-playwright-${trial}`,
@@ -1274,13 +1309,7 @@ async function runPlaywrightOracleRoute(browserPath, fixtureDocument, trial) {
       route: 'playwright',
       ...truth,
     };
-  } finally {
-    try {
-      await state.runCleanup();
-    } finally {
-      liveCancellation.clear(state);
-    }
-  }
+  });
 }
 
 async function defaultRunRoute(route, trial) {
