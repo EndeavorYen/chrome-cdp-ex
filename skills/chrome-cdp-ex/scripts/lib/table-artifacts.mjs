@@ -170,30 +170,39 @@ async function checkedStep(request, operation) {
   return result;
 }
 
-async function ensurePrivateDirectory(path, parentReal, state) {
+async function ensurePrivateDirectory(path, parentPath, parentReal, state, request) {
+  let created = false;
   try {
-    await state.fs.mkdir(path, { mode: 0o700 });
+    await checkedStep(request, () => state.fs.mkdir(path, { mode: 0o700 }));
+    created = true;
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error;
   }
-  const stats = await state.fs.lstat(path);
+  const stats = await checkedStep(request, () => state.fs.lstat(path));
   assertDirectoryStats(stats);
-  const actual = await state.fs.realpath(path);
+  const actual = await checkedStep(request, () => state.fs.realpath(path));
   if (!isContained(parentReal, actual) || actual === parentReal) {
     fail('TABLE_ARTIFACT_STORAGE_INVALID', 'private artifact containment validation failed');
   }
+  if (created) await fsyncDirectory(state, request, parentPath);
   return actual;
 }
 
 async function initializeStore(state, request) {
   if (state.initialized) return;
   throwIfPublicationStopped(request);
-  const rootStats = await state.fs.lstat(state.runtimeDir);
+  const rootStats = await checkedStep(request, () => state.fs.lstat(state.runtimeDir));
   assertDirectoryStats(rootStats);
-  const rootReal = await state.fs.realpath(state.runtimeDir);
-  const ownerReal = await ensurePrivateDirectory(state.ownerDir, rootReal, state);
-  const targetReal = await ensurePrivateDirectory(state.targetDir, ownerReal, state);
-  const sessionReal = await ensurePrivateDirectory(state.sessionDir, targetReal, state);
+  const rootReal = await checkedStep(request, () => state.fs.realpath(state.runtimeDir));
+  const ownerReal = await ensurePrivateDirectory(
+    state.ownerDir, state.runtimeDir, rootReal, state, request,
+  );
+  const targetReal = await ensurePrivateDirectory(
+    state.targetDir, state.ownerDir, ownerReal, state, request,
+  );
+  const sessionReal = await ensurePrivateDirectory(
+    state.sessionDir, state.targetDir, targetReal, state, request,
+  );
   throwIfPublicationStopped(request);
   state.rootReal = rootReal;
   state.ownerReal = ownerReal;
@@ -248,6 +257,23 @@ function safeOwnedFile(path) {
   }
 }
 
+function safeOwnedDirectory(path) {
+  try {
+    const stats = lstatSync(path);
+    return stats.isDirectory() && !stats.isSymbolicLink() && stats.uid === currentUid()
+      && modeBits(stats) === 0o700;
+  } catch {
+    return false;
+  }
+}
+
+function cleanupFailed() {
+  return new TableArtifactStorageError(
+    'TABLE_ARTIFACT_CLEANUP_FAILED',
+    'table: private artifact cleanup failed',
+  );
+}
+
 function cleanupEntry(entry) {
   if (!entry.directoryCreated) return true;
   const paths = entryPaths(entry);
@@ -262,6 +288,23 @@ function cleanupEntry(entry) {
   try {
     lstatSync(entry.path);
     return false;
+  } catch (error) {
+    return error?.code === 'ENOENT';
+  }
+}
+
+function cleanupEmptySessionDirectory(state) {
+  if (!state.initialized) return true;
+  try {
+    lstatSync(state.sessionDir);
+  } catch (error) {
+    return error?.code === 'ENOENT';
+  }
+  try {
+    if (!safeOwnedDirectory(state.sessionDir)) return false;
+    if (readdirSync(state.sessionDir).length !== 0) return false;
+    rmdirSync(state.sessionDir);
+    return true;
   } catch (error) {
     return error?.code === 'ENOENT';
   }
@@ -301,9 +344,12 @@ async function mintEntry(state, request) {
       if (error?.code === 'EEXIST' && !entry.directoryCreated) {
         continue;
       }
-      if (entry.directoryCreated) cleanupEntry(entry);
-      request.entries.delete(entry);
-      state.entries.delete(id);
+      const cleaned = !entry.directoryCreated || cleanupEntry(entry);
+      if (cleaned) {
+        request.entries.delete(entry);
+        state.entries.delete(id);
+      }
+      if (!cleaned) throw cleanupFailed();
       if (request.rolledBack && error?.code !== 'TABLE_ARTIFACT_REQUEST_ABORTED') {
         fail('TABLE_ARTIFACT_REQUEST_ABORTED', 'artifact request was aborted');
       }
@@ -587,9 +633,13 @@ async function publish(state, bundle, execution) {
     });
   } catch (error) {
     if (entry) {
-      cleanupEntry(entry);
-      entry.request.entries.delete(entry);
-      state.entries.delete(entry.id);
+      const cleaned = cleanupEntry(entry);
+      if (cleaned) {
+        entry.request.entries.delete(entry);
+        state.entries.delete(entry.id);
+      } else {
+        throw cleanupFailed();
+      }
     }
     if (error instanceof TableArtifactStorageError) throw error;
     if (!state.initialized && !entry) {
@@ -604,12 +654,15 @@ function rollbackRequest(state, execution) {
   const request = state.requests.get(context);
   if (!request) return;
   request.rolledBack = true;
+  let failed = false;
   for (const entry of [...request.entries]) {
     if (cleanupEntry(entry)) {
       request.entries.delete(entry);
       state.entries.delete(entry.id);
-    }
+    } else failed = true;
   }
+  if (request.entries.size === 0) state.requests.delete(context);
+  if (failed) throw cleanupFailed();
 }
 
 function releaseRequest(state, execution) {
@@ -623,12 +676,18 @@ function releaseRequest(state, execution) {
 
 function cleanupSession(state) {
   for (const request of state.requests.values()) request.rolledBack = true;
+  let failed = false;
   for (const entry of [...state.entries.values()]) {
     if (cleanupEntry(entry)) {
       entry.request?.entries.delete(entry);
       state.entries.delete(entry.id);
-    }
+    } else failed = true;
   }
+  for (const [context, request] of state.requests) {
+    if (request.entries.size === 0) state.requests.delete(context);
+  }
+  if (state.entries.size === 0 && !cleanupEmptySessionDirectory(state)) failed = true;
+  if (failed) throw cleanupFailed();
 }
 
 function makeStore(input, dependencies) {
@@ -691,6 +750,7 @@ function inspectTableArtifactStore(store) {
     sessionDir: state.sessionDir,
     targetDigest: state.targetDigest,
     sessionDigest: state.sessionDigest,
+    activeRequestCount: state.requests.size,
     registeredArtifactIds: Object.freeze([...state.entries.keys()]),
   });
 }
