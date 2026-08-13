@@ -14307,7 +14307,23 @@ async function getOrStartTabDaemon(targetId, opts = {}) {
 }
 
 function sendCommand(conn, req) {
-  return requestDaemon(conn, req, { runtimeDir: RUNTIME_DIR });
+  return requestDaemon(conn, req, {
+    runtimeDir: RUNTIME_DIR,
+    mayHaveSideEffects: daemonRequestMayHaveSideEffects(req),
+  });
+}
+
+const DAEMON_SIDE_EFFECT_AUTHORIZATIONS = new Set([
+  'mutation',
+  'conditional',
+  'composite',
+  'raw-script',
+  'raw-cdp',
+]);
+
+function daemonRequestMayHaveSideEffects(request = {}) {
+  const command = COMMAND_SURFACE.resolve(request.cmd);
+  return Boolean(command && DAEMON_SIDE_EFFECT_AUTHORIZATIONS.has(command.authorization));
 }
 
 async function assertFreshDaemonConnection(conn, { targetPrefix, expectedTargetId = null, currentMetadata }) {
@@ -15841,8 +15857,21 @@ function cliErrorMessage(err) {
 }
 
 function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = process.platform } = {}) {
-  const message = cliErrorMessage(err);
-  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform });
+  const completionUnknown = err?.code === 'DAEMON_COMPLETION_UNKNOWN'
+    && err?.completion === 'unknown'
+    && err?.sideEffectMayHaveOccurred === true;
+  const message = completionUnknown
+    ? 'The daemon did not return a validated Action Result. The action may have taken effect; do not repeat it until page state is verified.'
+    : cliErrorMessage(err);
+  const target = targetPrefix || '<target>';
+  const recovery = completionUnknown
+    ? {
+        kind: 'ambiguous-action-completion',
+        strategy: 'verify-before-retry',
+        run: `cdp perceive ${target} -C -d 8`,
+        reason: 'The action may have occurred. Inspect current page state first; do not repeat the action until its effect is verified.',
+      }
+    : buildCliErrorRecovery(message, { cmd, targetPrefix, platform });
   const nextSteps = [];
   const commandSteps = Array.isArray(recovery.commands) && recovery.commands.length
     ? recovery.commands.map(command => command?.command).filter(Boolean)
@@ -15850,7 +15879,7 @@ function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = proce
   for (const step of commandSteps) {
     if (step && !nextSteps.includes(step)) nextSteps.push(step);
   }
-  return {
+  const model = {
     schema: 'chrome-cdp-ex.cli-error.v1',
     ok: false,
     command: cmd || null,
@@ -15859,10 +15888,36 @@ function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = proce
     recovery,
     nextSteps,
   };
+  if (completionUnknown) {
+    model.completion = 'unknown';
+    model.sideEffectMayHaveOccurred = true;
+    model.retrySafe = false;
+    model.diagnostics = {
+      transport: {
+        phase: err.transportCause?.phase || 'awaiting-response',
+        kind: err.transportCause?.kind || 'unknown',
+        message: String(err.transportCause?.message || 'unknown transport failure').slice(0, 512),
+        ...(err.transportCause?.code ? { code: String(err.transportCause.code).slice(0, 64) } : {}),
+      },
+    };
+  }
+  return model;
 }
 
 function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', platform = process.platform } = {}) {
   if (format === 'json') return formatJson(buildCliErrorModel(err, { cmd, targetPrefix, platform }));
+  if (err?.code === 'DAEMON_COMPLETION_UNKNOWN') {
+    const model = buildCliErrorModel(err, { cmd, targetPrefix, platform });
+    return [
+      `Error: ${model.error.message}`,
+      'Completion: unknown',
+      'Side effect may have occurred: yes',
+      'Retry safe: no',
+      ...formatCliErrorRecovery(model.recovery),
+      `Transport: ${model.diagnostics.transport.phase}/${model.diagnostics.transport.kind}: ${model.diagnostics.transport.message}`,
+      `Next: ${model.recovery.run}`,
+    ].join('\n');
+  }
   const message = String(err?.message || err || '').trim();
   if (!message) {
     const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix, platform });
@@ -17075,4 +17130,5 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createReportCommandHandler, createPerceiveCommandHandler,
   createClickCommandHandler, createEvalrawCommandHandler,
   authorizeDaemonApplicationCommand, executeDaemonApplicationRoute,
+  daemonRequestMayHaveSideEffects,
 } : undefined;

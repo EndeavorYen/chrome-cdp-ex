@@ -4,7 +4,43 @@ import { resolve } from 'path';
 const IPC_TIMEOUT = 120000;
 const DEFAULT_CONNECT_TIMEOUT = 5000;
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+const MAX_TRANSPORT_DIAGNOSTIC_CHARS = 512;
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
+
+function boundedDiagnostic(value, maxChars = MAX_TRANSPORT_DIAGNOSTIC_CHARS) {
+  const text = String(value ?? '').trim() || 'unknown transport failure';
+  return text.length <= maxChars ? text : `${text.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function transportCause(error, { phase, kind }) {
+  const cause = {
+    phase,
+    kind,
+    message: boundedDiagnostic(error?.message || error),
+  };
+  if (typeof error?.code === 'string' && error.code) {
+    cause.code = boundedDiagnostic(error.code, 64);
+  }
+  return Object.freeze(cause);
+}
+
+export class DaemonTransportError extends Error {
+  constructor(error, { phase, kind }) {
+    super('The daemon did not return a validated Action Result. The action may have taken effect; do not repeat it until page state is verified.', { cause: error });
+    this.name = 'DaemonTransportError';
+    this.code = 'DAEMON_COMPLETION_UNKNOWN';
+    this.completion = 'unknown';
+    this.sideEffectMayHaveOccurred = true;
+    this.retrySafe = false;
+    this.transportCause = transportCause(error, { phase, kind });
+  }
+}
+
+function responseFailure(error, { mayHaveSideEffects, phase = 'awaiting-response', kind }) {
+  return mayHaveSideEffects
+    ? new DaemonTransportError(error, { phase, kind })
+    : error;
+}
 
 export function daemonEndpointForPlatform(targetId, {
   platform = process.platform,
@@ -63,6 +99,7 @@ export function requestDaemon(conn, request, {
   runtimeDir = '',
   timeoutMs = ipcTimeoutForRequest(request),
   maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
+  mayHaveSideEffects = false,
 } = {}) {
   return new Promise((resolveResponse, reject) => {
     const requestId = 1;
@@ -82,9 +119,9 @@ export function requestDaemon(conn, request, {
       clearTimeout(timer);
       operation();
     };
-    const closeDiagnostic = () => new Error(
+    const closeDiagnostic = kind => responseFailure(new Error(
       `Connection closed before response. The daemon for this tab may have crashed or exited (idle timeout, page closed, or browser disconnect). Re-run "perceive <target>" to restart it; check ${runtimeDir} for stale sockets if this repeats.`,
-    );
+    ), { mayHaveSideEffects, kind });
     const onData = chunk => {
       const incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
       const newline = incoming.indexOf(10);
@@ -92,7 +129,8 @@ export function requestDaemon(conn, request, {
       if (nextFrameBytes > maxResponseBytes) {
         settle(() => {
           conn.destroy();
-          reject(new Error(`Daemon response exceeded ${maxResponseBytes} bytes`));
+          const error = new Error(`Daemon response exceeded ${maxResponseBytes} bytes`);
+          reject(responseFailure(error, { mayHaveSideEffects, kind: 'response-too-large' }));
         });
         return;
       }
@@ -109,7 +147,7 @@ export function requestDaemon(conn, request, {
       } catch (error) {
         settle(() => {
           try { conn.end(); } catch {}
-          reject(error);
+          reject(responseFailure(error, { mayHaveSideEffects, kind: 'invalid-response' }));
         });
         return;
       }
@@ -119,7 +157,8 @@ export function requestDaemon(conn, request, {
       if (hasResponseId && response.id !== requestId) {
         settle(() => {
           try { conn.end(); } catch {}
-          reject(new Error(`Daemon response id ${response.id} did not match request id ${requestId}`));
+          const error = new Error(`Daemon response id ${response.id} did not match request id ${requestId}`);
+          reject(responseFailure(error, { mayHaveSideEffects, kind: 'invalid-response' }));
         });
         return;
       }
@@ -128,13 +167,17 @@ export function requestDaemon(conn, request, {
         try { conn.end(); } catch {}
       });
     };
-    const onError = error => settle(() => reject(error));
-    const onEnd = () => settle(() => reject(closeDiagnostic()));
-    const onClose = () => settle(() => reject(closeDiagnostic()));
+    const onError = error => settle(() => reject(responseFailure(error, {
+      mayHaveSideEffects,
+      kind: 'peer-error',
+    })));
+    const onEnd = () => settle(() => reject(closeDiagnostic('peer-end')));
+    const onClose = () => settle(() => reject(closeDiagnostic('peer-close')));
     const timer = setTimeout(() => {
       settle(() => {
         conn.destroy();
-        reject(new Error(`IPC timeout: command "${request.cmd}" took longer than ${timeoutMs / 1000}s`));
+        const error = new Error(`IPC timeout: command "${request.cmd}" took longer than ${timeoutMs / 1000}s`);
+        reject(responseFailure(error, { mayHaveSideEffects, kind: 'timeout' }));
       });
     }, timeoutMs);
 
@@ -142,11 +185,22 @@ export function requestDaemon(conn, request, {
     conn.on('error', onError);
     conn.on('end', onEnd);
     conn.on('close', onClose);
+    let payload;
     try {
       request.id = requestId;
-      conn.write(`${JSON.stringify(request)}\n`);
+      payload = `${JSON.stringify(request)}\n`;
     } catch (error) {
       settle(() => reject(error));
+      return;
+    }
+    try {
+      conn.write(payload);
+    } catch (error) {
+      settle(() => reject(responseFailure(error, {
+        mayHaveSideEffects,
+        phase: 'sending-request',
+        kind: 'write-error',
+      })));
     }
   });
 }
