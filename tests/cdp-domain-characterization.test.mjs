@@ -273,7 +273,10 @@ function responseFor(method, params = {}) {
     case 'CSS.getMatchedStylesForNode': return { matchedCSSRules: [], inherited: [] };
     case 'CSS.getComputedStyleForNode': return { computedStyle: [] };
     case 'Page.navigate': return { loaderId: null };
+    case 'Page.getFrameTree': return { frameTree: { frame: { id: 'ROOT_FRAME' } } };
+    case 'Page.createIsolatedWorld': return { executionContextId: 901 };
     case 'Performance.getMetrics': return { metrics: [] };
+    case 'Runtime.callFunctionOn': return { result: { value: { connected: true } } };
     default: return {};
   }
 }
@@ -511,7 +514,29 @@ describe('Phase 6 direct CDP characterization', () => {
     cdp.send.mockClear();
     await expect(cdpTest.resolveRefNode(cdp, 'SESSION', new Map([[1, 101]]), '@1', {}))
       .resolves.toBe('OBJECT');
-    expect(cdp.send).toHaveBeenCalledWith('DOM.resolveNode', { backendNodeId: 101 }, 'SESSION', 2000);
+    expect(cdp.send.mock.calls.map(call => call[0])).toEqual([
+      'Page.getFrameTree',
+      'Page.createIsolatedWorld',
+      'DOM.resolveNode',
+      'Runtime.callFunctionOn',
+    ]);
+    expect(cdp.send.mock.calls[0]).toEqual(['Page.getFrameTree', {}, 'SESSION', 2000]);
+    expect(cdp.send.mock.calls[1]).toEqual(['Page.createIsolatedWorld', {
+      frameId: 'ROOT_FRAME',
+      worldName: 'chrome-cdp-ex-ref-validation',
+      grantUniveralAccess: false,
+    }, 'SESSION', 2000]);
+    expect(cdp.send.mock.calls[2]).toEqual(['DOM.resolveNode', {
+      backendNodeId: 101,
+      executionContextId: 901,
+    }, 'SESSION', 2000]);
+    expect(cdp.send.mock.calls[3]).toEqual(['Runtime.callFunctionOn', {
+      objectId: 'OBJECT',
+      functionDeclaration: expect.stringContaining('ownerDocumentGetter'),
+      returnByValue: true,
+    }, 'SESSION', 2000]);
+    expect(cdp.send.mock.calls[3][1].functionDeclaration)
+      .not.toMatch(/this\.(?:isConnected|ownerDocument|getRootNode)/);
 
     cdp.send.mockClear();
     const checkpoint = {
