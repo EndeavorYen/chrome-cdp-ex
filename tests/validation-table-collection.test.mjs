@@ -14,6 +14,8 @@ import {
   assertIndependentRouteFixtures,
   assertLoopbackOnlyUrl,
   assertPlaywrightOracleIndependence,
+  assertPlaywrightOracleProof,
+  assertProductRouteProof,
   allocateRouteFixture,
   buildChromeFixtureProvisionExpression,
   buildChromeLaunchArgs,
@@ -22,15 +24,20 @@ import {
   buildLoopbackFixtureUrl,
   buildRunCommandMcpCollectParams,
   buildStaticReadiness,
+  buildTableCollectionFixtureDocument,
   cleanupPartialLiveState,
   createLiveCancellationController,
   createTableCollectionDeadline,
   describeRouteFixture,
   executeEvidenceFirstAttempt,
+  frozenTableCollectionBodyTsv,
+  frozenTableCollectionChecksum,
   listenTableCollectionFixtureServer,
+  main,
   parseArgs,
   playwrightOracleProbeSource,
   retainBoundedCommandEvidence,
+  runLiveTableCollectionTrials,
   runLockedCleanup,
   writeTableCollectionEvidence,
 } from '../scripts/validation-table-collection.mjs';
@@ -595,5 +602,121 @@ describe('evidence-first capture and cleanup contracts', () => {
     expect(() => allocateRouteFixture('cli', { taskRoot: personalMac })).toThrow(/personal/);
     expect(() => allocateRouteFixture('mcp', { taskRoot: personalLinux })).toThrow(/personal/);
     expect(() => buildChromeLaunchArgs({ port: 9624, profileDir: personalMac })).toThrow(/personal/);
+  });
+});
+
+function productProof(overrides = {}) {
+  return {
+    route: 'cli',
+    initial: { available: 128, mountedRows: 12, clicks: 0 },
+    proof: {
+      collectedRows: 1024,
+      logicalRows: 1024,
+      recycledMountedNodes: 12,
+      checksum: TABLE_COLLECTION_FIXTURE.checksum,
+      artifactBytes: TABLE_COLLECTION_FIXTURE.bodyBytes,
+      checksumScope: 'canonical-data-rows-tsv-utf8',
+      jsonBytes: 4096,
+      continuationBytesEqual: true,
+      continuationSha256: 'a'.repeat(64),
+      loadMoreClicks: 14,
+      completeness: { state: 'complete', termination: 'logical-count-reached' },
+    },
+    ...overrides,
+  };
+}
+
+function playwrightProof(overrides = {}) {
+  return {
+    route: 'playwright',
+    logicalRows: 1024,
+    uniqueIndexes: 1024,
+    mountedRows: 12,
+    recycledNodes: 12,
+    loadMoreClicks: 14,
+    checksum: TABLE_COLLECTION_FIXTURE.checksum,
+    ...overrides,
+  };
+}
+
+describe('authorized live four-route trials', () => {
+  it('freezes the loopback fixture document to the canonical 1024-row checksum', () => {
+    expect(frozenTableCollectionChecksum()).toBe(TABLE_COLLECTION_FIXTURE.checksum);
+    expect(Buffer.byteLength(frozenTableCollectionBodyTsv(), 'utf8')).toBe(TABLE_COLLECTION_FIXTURE.bodyBytes);
+    const html = buildTableCollectionFixtureDocument();
+    expect(html).toContain('id="virtual-grid"');
+    expect(html).toContain('id="grid-scrollport"');
+    expect(html).toContain('id="load-more"');
+    expect(html).toContain('aria-rowcount="1025"');
+    expect(html).toContain('virtual-slot-00');
+    expect(html).not.toMatch(/table-extraction|table-artifacts|table-contract/);
+  });
+
+  it('proves product collect contracts and keeps Playwright on fixture/source truth only', () => {
+    const oracle = playwrightProof();
+    expect(assertProductRouteProof(productProof(), oracle)).toMatchObject({
+      collectedRows: 1024,
+      checksum: TABLE_COLLECTION_FIXTURE.checksum,
+      loadMoreClicks: 14,
+    });
+    expect(assertPlaywrightOracleProof(oracle)).toMatchObject({
+      uniqueIndexes: 1024,
+      recycledNodes: 12,
+      loadMoreClicks: 14,
+      checksum: TABLE_COLLECTION_FIXTURE.checksum,
+    });
+    expect(() => assertProductRouteProof(productProof({
+      initial: { available: 128, mountedRows: 12, clicks: 1 },
+    }), oracle)).toThrow(/zero clicks|initial/);
+    expect(() => assertPlaywrightOracleProof({
+      ...oracle,
+      artifact: { checksum: TABLE_COLLECTION_FIXTURE.checksum },
+    })).toThrow(/artifact|product/);
+    const probe = playwrightOracleProbeSource();
+    expect(probe).toContain('aria-rowindex');
+    expect(probe).toContain('crypto.subtle.digest');
+    expect(assertPlaywrightOracleIndependence(probe)).toEqual({ importsProductExtraction: false });
+  });
+
+  it('runs two fresh four-route trials serially and never in parallel', async () => {
+    const order = [];
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const outDir = tempDir();
+    const run = await runLiveTableCollectionTrials({
+      trialCount: 2,
+      outDir,
+      async runRoute(route, trial) {
+        concurrent += 1;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        order.push(`${trial}:${route}`);
+        await Promise.resolve();
+        concurrent -= 1;
+        if (route === 'playwright') return playwrightProof();
+        return productProof({ route });
+      },
+    });
+    expect(maxConcurrent).toBe(1);
+    expect(order).toEqual([
+      '1:cli', '1:mcp', '1:mcp-run-command', '1:playwright',
+      '2:cli', '2:mcp', '2:mcp-run-command', '2:playwright',
+    ]);
+    expect(run.ok).toBe(true);
+    expect(run.trials).toHaveLength(2);
+    expect(run.routes).toHaveLength(8);
+    expect(statSync(run.evidencePath).mode & 0o777).toBe(0o600);
+    const stored = JSON.parse(readFileSync(run.evidencePath, 'utf8'));
+    expect(JSON.stringify(stored)).not.toContain('ROW-0512');
+  });
+
+  it('lets --allow-live run the authorized live path instead of refusing browsers', async () => {
+    const calls = [];
+    await expect(main(['--allow-live'], {
+      runLive: async () => {
+        calls.push('live');
+        return 0;
+      },
+    })).resolves.toBe(0);
+    expect(calls).toEqual(['live']);
   });
 });
