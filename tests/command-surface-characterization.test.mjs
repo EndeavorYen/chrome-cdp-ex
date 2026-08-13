@@ -125,13 +125,13 @@ describe('Phase 6 command-surface characterization', () => {
       .toBe('sha256:3b37cd2d5f067d70ecda6570c7d9ca3316610e116962ee547cce0386eda8e37d');
     expect(digestJson(MCP_RUN_COMMAND_ALLOWLIST))
       .toBe('sha256:82bc5511c77a48a44f84c91df1c350bc0a350cf3800d992dca7ce7a0e641a3f2');
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(25);
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(26);
     expect(MCP_RESOURCE_TEMPLATES).toHaveLength(3);
     expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(83);
     expect(MCP_RESOURCE_RECORDS.map(resource => resource.mapper)).toEqual([
       'doctor-status', 'session-report', 'session-screenshot-latest',
     ]);
-    expect(Object.keys(MCP_TOOL_MAPPER_BY_NAME)).toHaveLength(25);
+    expect(Object.keys(MCP_TOOL_MAPPER_BY_NAME)).toHaveLength(26);
     for (const fixture of contract.mcp.mappingCases) {
       expect(buildMcpToolCommand(fixture.tool, fixture.args), fixture.id).toEqual(fixture.command);
     }
@@ -168,6 +168,7 @@ describe('Phase 6 command-surface characterization', () => {
       select_target: ['select-target'],
       session_checkpoint: ['session-checkpoint', 'session-checkpoint-unsafe'],
       spawn_debug_browser: ['spawn-debug-browser'],
+      table: ['table-observe', 'table-collect', 'table-continue'],
       verify_click: ['verify-click'],
       viewport: ['viewport-read', 'viewport-set'],
       wait_for: ['wait-for-text', 'wait-for-any', 'wait-for-stable'],
@@ -195,6 +196,7 @@ describe('Phase 6 command-surface characterization', () => {
       select_target: 'tool:select-target',
       session_checkpoint: 'tool:session-checkpoint',
       spawn_debug_browser: 'tool:spawn-debug-browser',
+      table: 'tool:table',
       verify_click: 'tool:verify-click',
       viewport: 'tool:viewport',
       wait_for: 'tool:wait-for',

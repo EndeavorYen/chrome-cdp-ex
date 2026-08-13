@@ -77,7 +77,7 @@ describe('MCP Tier-1 + run_command + resources', () => {
     const names = MCP_TOOL_DEFINITIONS.map(tool => tool.name);
     expect(names).toEqual(expect.arrayContaining([
       'navigate', 'press', 'wait_for', 'cascade', 'components',
-      'spawn_debug_browser', 'record_snapshot', 'session_checkpoint', 'run_command',
+      'spawn_debug_browser', 'record_snapshot', 'session_checkpoint', 'table', 'run_command',
     ]));
     expect(buildMcpToolCommand('navigate', { target: 'app', url: 'https://example.com', confirm: true }))
       .toEqual(['nav', 'app', 'https://example.com', '--format', 'json']);

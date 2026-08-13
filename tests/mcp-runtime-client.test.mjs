@@ -184,6 +184,9 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     ['run_command', Object.assign(Object.create({ confirm: true }), {
       command: 'table', args: ['fixture', '--collect', '--scroll-container', '.viewport'],
     })],
+    ['table', Object.assign(Object.create({ confirm: true }), {
+      target: 'fixture', collect: true, scrollContainer: '.viewport',
+    })],
   ])('rejects inherited confirmation for %s before RuntimeClient execution', async (name, args) => {
     const executeCli = vi.fn();
     const state = handlerWith(executeCli);

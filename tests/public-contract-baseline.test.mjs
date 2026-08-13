@@ -59,9 +59,9 @@ describe('public contract baseline', () => {
       && typeof command.evidencePolicy === 'string'
     ))).toBe(true);
     expect(new Set(aliases).size).toBe(23);
-    expect(contract.schemas).toHaveLength(3);
+    expect(contract.schemas).toHaveLength(5);
     expect(contract.schemas.every(schema => schema.id.startsWith('https://'))).toBe(true);
-    expect(contract.mcp.tools).toHaveLength(25);
+    expect(contract.mcp.tools).toHaveLength(26);
     expect(contract.mcp.runCommandAllowlist).toHaveLength(83);
     expect(contract.mcp.resourceTemplates).toHaveLength(3);
   });
@@ -104,6 +104,9 @@ describe('public contract baseline', () => {
       'run-command-table-observe',
       'run-command-table-collect',
       'run-command-table-continue',
+      'table-observe',
+      'table-collect',
+      'table-continue',
     ]));
     expect(contract.mcp.mappingCases.every(entry => commandSpellings.has(entry.command[0]))).toBe(true);
     expect(contract.mcp.invalidCases.map(entry => entry.id)).toEqual([
@@ -126,6 +129,8 @@ describe('public contract baseline', () => {
       'run-command-fullshot-path-without-confirm',
       'run-command-table-collect-without-confirm',
       'run-command-table-malformed',
+      'table-collect-without-confirm',
+      'table-selector-and-continue',
       'screenshot-path-without-confirm',
       'run-command-not-allowlisted',
       'run-command-newline',
