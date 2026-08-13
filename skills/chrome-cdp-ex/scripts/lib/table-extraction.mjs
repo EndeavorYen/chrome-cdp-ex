@@ -19,6 +19,7 @@ const TERMINATIONS = new Set([
 const MAX_NODE_ID_BYTES = 8192;
 const MAX_KEY_BYTES = 8192;
 const accumulatorStates = new WeakMap();
+const exportBundles = new WeakMap();
 
 export const TABLE_EXTRACTION_LIMITS = Object.freeze({
   maxRows: 100000,
@@ -410,5 +411,14 @@ export function buildTableExportBundle(accumulator, options) {
   };
   const preview = boundedPreview(table.rows, state.limits, inline => ({ ...base, inline }));
   const manifest = Object.freeze({ ...base, inline: preview });
-  return Object.freeze({ manifest, rowsTsv });
+  const bundle = Object.freeze({ manifest, rowsTsv });
+  exportBundles.set(bundle, Object.freeze({ manifest, rowsTsv }));
+  return bundle;
+}
+
+export function inspectTableExportBundle(bundle) {
+  if (isProxy(bundle)) invalid('export bundle must not be a proxy');
+  const trusted = exportBundles.get(bundle);
+  if (!trusted) invalid('export bundle must be created by buildTableExportBundle');
+  return trusted;
 }

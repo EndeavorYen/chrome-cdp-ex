@@ -2,7 +2,6 @@ import {
   chmodSync,
   existsSync,
   lstatSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -74,7 +73,7 @@ function deterministicBytes(...ids) {
 function testStore(runtimeDir, overrides = {}, dependencies = {}) {
   return artifactTest.createTableArtifactStoreWithDependencies({
     runtimeDir,
-    targetId: 'target/full/identity',
+    targetId: 'target-full-identity',
     sessionId: 'private-session-identity',
     platform: 'darwin',
     ...overrides,
@@ -217,7 +216,7 @@ describe('private table artifact publication', () => {
     const runtimeDir = privateRuntimeRoot();
     const store = artifactTest.createTableArtifactStoreWithDependencies({
       runtimeDir,
-      targetId: 'target/full/identity',
+      targetId: 'target-full-identity',
       sessionId: 'private-session-identity',
       platform: 'darwin',
     }, { randomBytes: deterministicBytes(ID_A, ID_A, ID_B) });
@@ -230,7 +229,7 @@ describe('private table artifact publication', () => {
     expect(publication.artifactId).toBe(ID_B);
     expect(readFileSync(join(layout.sessionDir, ID_A, 'rows.tsv'), 'utf8')).toBe('first');
     expect(readFileSync(join(layout.sessionDir, ID_B, 'rows.tsv'), 'utf8')).toBe('second');
-    expect(layout.registeredArtifactIds).toEqual([ID_A, ID_B]);
+    expect(artifactTest.inspectTableArtifactStore(store).registeredArtifactIds).toEqual([ID_A, ID_B]);
   });
 
   it('does not create the manifest when data fsync fails and rolls back only its owned directory', async () => {
