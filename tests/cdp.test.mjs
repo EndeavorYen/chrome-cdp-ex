@@ -6706,7 +6706,12 @@ describe('clickStr', () => {
     expect(refMap.get(1)).toBe(101);
 
     // Harness-only replaceChildren: the old backend node still resolves, but is detached.
-    let appAttempts = 0;
+    const appAttempts = [];
+    const currentTargets = [
+      { name: 'Review Charlie', x: 40, y: 20, w: 120, h: 32 },
+      { name: 'Review Alpha', x: 40, y: 72, w: 120, h: 32 },
+      { name: 'Review Bravo', x: 40, y: 124, w: 120, h: 32 },
+    ];
     const connectedObjects = new Set(['fresh-charlie', 'fresh-alpha']);
     const cdp = createMockCDP({
       'DOM.resolveNode': ({ backendNodeId }) => ({
@@ -6732,7 +6737,12 @@ describe('clickStr', () => {
         } } };
       },
       'Input.dispatchMouseEvent': ({ type, x, y }) => {
-        if (type === 'mouseReleased' && x === 100 && y === 88) appAttempts += 1;
+        if (type === 'mouseReleased') {
+          const target = currentTargets.find(entry => (
+            x >= entry.x && x <= entry.x + entry.w && y >= entry.y && y <= entry.y + entry.h
+          ));
+          if (target) appAttempts.push(target.name);
+        }
         return {};
       },
     });
@@ -6768,15 +6778,16 @@ describe('clickStr', () => {
     expect(result.outcome).toMatchObject({ status: 'failed', changed: false });
     expect(captured.dispatch.ok).toBe(false);
     expect(cdp.calls.filter(call => call.method.startsWith('Input.dispatch'))).toEqual([]);
-    expect(appAttempts).toBe(0);
+    expect(appAttempts).toEqual([]);
     expect(observe).not.toHaveBeenCalled();
     expect(processLike.exitCode).toBe(1);
 
     // A fresh perceive replaces, rather than remaps, the stale ref authority.
     buildPerceiveTree(freshNodes, meta, refMap);
+    expect([...refMap.entries()]).toEqual([[1, 201], [2, 202]]);
     expect(refMap.get(2)).toBe(202);
     await clickStr(cdp, 'sid1', '@2', refMap, refState);
-    expect(appAttempts).toBe(1);
+    expect(appAttempts).toEqual(['Review Alpha']);
   });
 
   it('should click cursor-interactive @c refs using saved viewport coordinates', async () => {
@@ -9946,6 +9957,40 @@ describe('formatUnknownRefError', () => {
 describe('resolveRefNode stale backend handling', () => {
   const { resolveRefNode } = T;
 
+  function adversarialRefFixture({ connected = false, frameId = 'main-frame' } = {}) {
+    const effects = [];
+    const cdp = createMockCDP({
+      'Page.getFrameTree': () => ({ frameTree: { frame: { id: frameId } } }),
+      'Page.createIsolatedWorld': (params) => {
+        expect(params).toMatchObject({ frameId, grantUniveralAccess: false });
+        return { executionContextId: 901 };
+      },
+      'DOM.resolveNode': ({ executionContextId }) => ({
+        object: { objectId: executionContextId === 901 ? 'isolated-ref' : 'page-ref' },
+      }),
+      'Runtime.callFunctionOn': ({ objectId, functionDeclaration }) => {
+        if (objectId === 'isolated-ref') {
+          if (/this\.(?:isConnected|ownerDocument|getRootNode)/.test(functionDeclaration)) {
+            throw new Error('page-patched connectivity property was invoked');
+          }
+          return { result: { value: { connected } } };
+        }
+        if (functionDeclaration.includes('requestAnimationFrame')) {
+          return { result: { value: {
+            connected: true,
+            x: 10, y: 20, w: 100, h: 30, tag: 'BUTTON', text: 'Forged Alpha',
+          } } };
+        }
+        if (functionDeclaration.includes('this.click()')) effects.push('jsclick');
+        if (functionDeclaration.includes("this.focus(); this.value=''")) effects.push('fill');
+        return { result: { value: { tag: 'BUTTON', text: 'Forged Alpha' } } };
+      },
+      'Input.dispatchMouseEvent': () => { effects.push('mouse'); return {}; },
+      'Input.insertText': () => { effects.push('insert-text'); return {}; },
+    });
+    return { cdp, effects };
+  }
+
   it('resolves backend refs with a short timeout so stale refs fail fast', async () => {
     const refMap = new Map([[31, 12345]]);
     const cdp = createMockCDP({
@@ -9967,6 +10012,76 @@ describe('resolveRefNode stale backend handling', () => {
       .rejects.toThrow(/DOM changes/);
     expect(refState.invalidationReason).toBe('dom-mutation');
     expect(refMap.has(31)).toBe(false);
+  });
+
+  it.each([
+    ['click', ({ cdp, refMap, refState }) => clickStr(cdp, 'sid', '@1', refMap, refState)],
+    ['jsclick', ({ cdp, refMap, refState }) => T.jsClickStr(cdp, 'sid', '@1', refMap, refState)],
+    ['fill', ({ cdp, refMap, refState }) => fillStr(cdp, 'sid', '@1', 'blocked', refMap, refState)],
+  ])('rejects a detached ref through trusted isolation before %s effects', async (_label, run) => {
+    const { cdp, effects } = adversarialRefFixture();
+    const refMap = new Map([[1, 101]]);
+    const refState = { generation: 1, invalidationReason: null };
+
+    await expect(run({ cdp, refMap, refState })).rejects.toThrow(/DOM changes/);
+
+    expect(effects).toEqual([]);
+    expect(refMap.has(1)).toBe(false);
+    expect(refState.invalidationReason).toBe('dom-mutation');
+    expect(cdp.calls.filter(call => call.method === 'Page.createIsolatedWorld')).toHaveLength(1);
+    expect(cdp.calls.find(call => call.method === 'DOM.resolveNode')?.params)
+      .toMatchObject({ backendNodeId: 101, executionContextId: 901 });
+  });
+
+  it('keeps connected shadow refs valid through native composed-root validation and smooth scroll', async () => {
+    const { cdp, effects } = adversarialRefFixture({ connected: true });
+    const refMap = new Map([[1, 301]]);
+    const refState = { generation: 1, invalidationReason: null };
+
+    await clickStr(cdp, 'sid', '@1', refMap, refState);
+
+    expect(effects).toEqual(['mouse', 'mouse', 'mouse']);
+    expect(refMap.get(1)).toBe(301);
+    const validation = cdp.calls.find(call => (
+      call.method === 'Runtime.callFunctionOn' && call.params.objectId === 'isolated-ref'
+    ));
+    expect(validation.params.functionDeclaration).toContain('composed: true');
+    expect(validation.params.functionDeclaration).not.toMatch(/this\.(?:isConnected|ownerDocument|getRootNode)/);
+    expect(cdp.calls.some(call => (
+      call.method === 'Runtime.callFunctionOn'
+      && call.params.functionDeclaration.includes('requestAnimationFrame')
+    ))).toBe(true);
+  });
+
+  it('validates frame refs in a frame-owned isolated world', async () => {
+    const { cdp } = adversarialRefFixture({ connected: true, frameId: 'child-frame' });
+    const refState = {
+      generation: 1,
+      frameRefs: new Map([['@f2', {
+        frameRef: '@f2',
+        frameId: 'child-frame',
+        parentId: null,
+        refs: new Map([[1, 401]]),
+      }]]),
+    };
+
+    await expect(resolveRefNode(cdp, 'sid', new Map(), '@f2:1', refState))
+      .resolves.toBe('isolated-ref');
+
+    expect(cdp.calls.some(call => call.method === 'Page.getFrameTree')).toBe(false);
+    expect(cdp.calls.find(call => call.method === 'Page.createIsolatedWorld')?.params.frameId)
+      .toBe('child-frame');
+  });
+
+  it('can return a page-world wrapper for component expandos only after trusted validation', async () => {
+    const { cdp } = adversarialRefFixture({ connected: true });
+    const refMap = new Map([[1, 501]]);
+
+    await expect(resolveRefNode(cdp, 'sid', refMap, '@1', { generation: 1 }, { returnRealm: 'page' }))
+      .resolves.toBe('page-ref');
+
+    const resolves = cdp.calls.filter(call => call.method === 'DOM.resolveNode');
+    expect(resolves.map(call => call.params.executionContextId ?? null)).toEqual([901, null]);
   });
 });
 
