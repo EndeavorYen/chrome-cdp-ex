@@ -523,15 +523,17 @@ export function createLiveCancellationController() {
       return null;
     },
     clear(state) {
+      if (cancellationPromise) return;
       if (activeState === state) activeState = null;
     },
     cancel(nextSignal) {
       if (!signal) signal = nextSignal;
       if (cancellationPromise) return cancellationPromise;
-      if (!activeState) {
+      const registeredState = activeState;
+      if (!registeredState) {
         return Promise.reject(new Error('table-collection cancellation has no registered live state'));
       }
-      cancellationPromise = Promise.resolve().then(() => runRegisteredCleanup(activeState));
+      cancellationPromise = Promise.resolve().then(() => runRegisteredCleanup(registeredState));
       return cancellationPromise;
     },
     get cancelled() { return signal !== null; },
