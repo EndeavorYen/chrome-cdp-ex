@@ -101,7 +101,6 @@ function parseSnapshot(argv) {
     if (!token.startsWith('--')) {
       if (selector !== null) fail('at most one positional table selector is allowed');
       selector = selectorValue(token, 'table');
-      parseTableObservationSelector(selector);
       continue;
     }
     if (!KNOWN_FLAGS.has(token)) fail(`unknown flag ${token}`);
@@ -142,10 +141,13 @@ function parseSnapshot(argv) {
     fail('--scroll-container, --load-more, and --row-key-column are collect-only');
   }
 
+  const mode = continuation !== null ? 'continue' : collect ? 'collect' : 'observe';
+  if (mode === 'observe' && selector !== null) parseTableObservationSelector(selector);
+
   return Object.freeze({
     schema: 'chrome-cdp-ex.table-request.v1',
     argv,
-    mode: continuation !== null ? 'continue' : collect ? 'collect' : 'observe',
+    mode,
     selector,
     format: format || 'text',
     scrollContainer,

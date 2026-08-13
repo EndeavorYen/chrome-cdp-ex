@@ -11155,29 +11155,34 @@ async function sampleRootFrameTables(cdp, sid, selector) {
   return parseTableSamplerResult(evaluated.result.value);
 }
 
-function certifiedAriaTable(sample) {
+function validAriaIdentity(sample) {
   const headerCount = sample.headerRows.length;
   const rawCount = sample.ariaRowCount;
   if (!Number.isSafeInteger(rawCount) || rawCount < headerCount || rawCount === -1) return null;
   for (let index = 0; index < headerCount; index += 1) {
     if (sample.headerRows[index].rawAriaRowIndex !== index + 1) return null;
   }
+  let previous = headerCount;
   for (let index = 0; index < sample.dataRows.length; index += 1) {
     const raw = sample.dataRows[index].rawAriaRowIndex;
-    if (!Number.isSafeInteger(raw) || raw !== headerCount + index + 1 || raw > rawCount) return null;
+    if (!Number.isSafeInteger(raw) || raw <= previous || raw > rawCount) return null;
+    previous = raw;
   }
-  return Object.freeze({ headerCount, logicalRows: rawCount - headerCount });
+  const logicalRows = rawCount - headerCount;
+  const coverageComplete = sample.dataRows.length === logicalRows
+    && sample.dataRows.every((row, index) => row.rawAriaRowIndex === headerCount + index + 1);
+  return Object.freeze({ headerCount, logicalRows, coverageComplete });
 }
 
 function observedTableEntry(sample, index) {
-  const certified = certifiedAriaTable(sample);
+  const ariaIdentity = validAriaIdentity(sample);
   const countKnown = Number.isSafeInteger(sample.ariaRowCount)
     && sample.ariaRowCount >= sample.headerRows.length;
   const accumulator = createTableAccumulator({
     logicalRows: countKnown ? sample.ariaRowCount - sample.headerRows.length : null,
     logicalCountSource: countKnown ? 'aria-rowcount' : 'none',
-    identitySource: certified ? 'aria-rowindex' : 'snapshot-order',
-    orderingSource: certified ? 'aria-rowindex' : 'dom-order',
+    identitySource: ariaIdentity ? 'aria-rowindex' : 'snapshot-order',
+    orderingSource: ariaIdentity ? 'aria-rowindex' : 'dom-order',
   });
   const admitted = [];
   let truncationReason = sample.truncationReason;
@@ -11192,7 +11197,7 @@ function observedTableEntry(sample, index) {
       }
       admitted.push({
         mountedNodeId: `snapshot-${index + 1}-row-${rowIndex + 1}`,
-        key: certified ? row.rawAriaRowIndex - certified.headerCount : admitted.length + 1,
+        key: ariaIdentity ? row.rawAriaRowIndex - ariaIdentity.headerCount : admitted.length + 1,
         cells: row.cells,
       });
     } catch (error) {
@@ -11205,7 +11210,9 @@ function observedTableEntry(sample, index) {
   }
   const admission = addTableSampleBatch(accumulator, admitted);
   if (!admission.admitted && !truncationReason) truncationReason = admission.reason;
-  const safeComplete = certified && !truncationReason && admitted.length === certified.logicalRows;
+  const safeComplete = ariaIdentity?.coverageComplete
+    && !truncationReason
+    && admitted.length === ariaIdentity.logicalRows;
   const result = finalizeTableExtraction(accumulator, {
     termination: safeComplete ? 'logical-count-reached' : 'observation',
   });
