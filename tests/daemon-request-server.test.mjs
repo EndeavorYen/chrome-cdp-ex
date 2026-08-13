@@ -641,7 +641,7 @@ describe('daemon request server lifecycle', () => {
     ]);
   });
 
-  it('aborts and suppresses a duplicate active ID on one socket while accepting id=1 on another socket', async () => {
+  it('aborts an ordinary duplicate active ID on one socket while accepting id=1 on another socket', async () => {
     let firstSignal;
     const firstHandle = vi.fn((_request, execution) => new Promise((resolve, reject) => {
       firstSignal = execution.signal;
@@ -663,8 +663,8 @@ describe('daemon request server lifecycle', () => {
 
     const request = {
       id: 1,
-      cmd: 'table',
-      args: ['--collect', '--scroll-container', '.viewport'],
+      cmd: 'status',
+      args: [],
     };
     connA.emit('data', frame(request));
     await drain();

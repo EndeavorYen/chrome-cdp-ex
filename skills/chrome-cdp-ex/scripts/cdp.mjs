@@ -730,6 +730,14 @@ function createDaemonRequestConnection(conn, {
 
   const terminateForDuplicate = (id) => {
     const error = new Error(`Duplicate active request id: ${id}`);
+    const unsafeCollect = [...active.values()].some(entry => (
+      entry.execution.deadline
+      && (!entry.handlerSettled || daemonRequestHasUnsettledInvocations(entry.execution))
+    ));
+    if (unsafeCollect) {
+      terminateForFatal(new TableCollectionDaemonTerminationRequiredError());
+      return;
+    }
     for (const entry of [...active.values()]) disposeRequest(entry, { abort: error, clean: true });
     let payload = null;
     try { payload = responsePayload({ ok: false, error: error.message }, id); } catch {}
