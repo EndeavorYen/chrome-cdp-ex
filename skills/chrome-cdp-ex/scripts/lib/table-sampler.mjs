@@ -175,8 +175,8 @@ export function buildTableSamplerExpression(selector = 'table') {
     const apply = (fn, receiver, args) => reflectApply(fn, receiver, args);
     const isTable = value => value !== null
       && typeof value === 'object'
-      && name(value) === 'table'
-      && apply(isPrototypeOf, htmlTableProto, [value]);
+      && apply(isPrototypeOf, htmlTableProto, [value])
+      && name(value) === 'table';
     const name = value => apply(localNameGetter, value, []);
     const attribute = (value, key) => apply(getAttribute, value, [key]);
     const hasTableAncestor = value => {
