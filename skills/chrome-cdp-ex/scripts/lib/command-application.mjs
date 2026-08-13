@@ -344,6 +344,7 @@ export async function executeCommand(requestInput, context = {}) {
     if (typeof contextValue.authorize !== 'function') fail('context.authorize', `authorizer is required for ${spec.authorization}`);
     decision = validateAuthorizationDecision(await contextValue.authorize(Object.freeze({
       command: spec.name,
+      args: request.args,
       policy: spec.authorization,
       mutates: spec.mutates,
       targetBound: request.targetBound,

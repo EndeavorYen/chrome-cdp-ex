@@ -28,6 +28,7 @@ import {
 } from './lib/command-dispatch.mjs';
 import { createDaemonReadHandlers } from './lib/daemon-read-handlers.mjs';
 import { createDaemonActionHandlers } from './lib/daemon-action-handlers.mjs';
+import { isTableCollectArgs, parseTableArgs } from './lib/table-contract.mjs';
 import {
   bindCdpTransport,
   createCdpDomains,
@@ -11081,9 +11082,15 @@ const BATCH_PARALLEL_SAFE_READ_COMMANDS = new Set([
   'controls', 'html', 'text', 'table', 'styles', 'summary', 'net', 'wait', 'waitfor',
 ]);
 
-function isBatchParallelUnsafeCommand(cmd) {
+function isBatchParallelUnsafeCommand(cmd, args = []) {
   const command = COMMAND_SURFACE.resolve(cmd);
   if (!command) return true;
+  if (command.name === 'table') {
+    if (command.kind !== 'conditional-mutation'
+      || command.authorization !== 'conditional'
+      || command.evidencePolicy !== 'none') return true;
+    return isTableCollectArgs(args);
+  }
   if (command.kind !== 'read'
     || command.authorization !== 'standard'
     || command.evidencePolicy !== 'none') return true;
@@ -14054,7 +14061,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const blocked = commands.filter(command => BATCH_BLOCKED.has(command.cmd));
       if (blocked.length) throw new Error(`batch: ${blocked.map(command => command.cmd).join(', ')} not allowed inside batch`);
       if (parallel) {
-        const unsafe = commands.filter(command => isBatchParallelUnsafeCommand(command.cmd));
+        const unsafe = commands.filter(command => isBatchParallelUnsafeCommand(command.cmd, command.args || []));
         if (unsafe.length) throw new Error(`batch --parallel: ${[...new Set(unsafe.map(command => command.cmd))].join(', ')} mutate shared state — use sequential batch`);
       }
       const autoActionJson = parsedBatch.output === 'model';
@@ -14332,6 +14339,12 @@ const DAEMON_SIDE_EFFECT_AUTHORIZATIONS = new Set([
 
 function daemonRequestMayHaveSideEffects(request = {}) {
   const command = COMMAND_SURFACE.resolve(request.cmd);
+  if (command?.name === 'table') {
+    if (command.kind !== 'conditional-mutation'
+      || command.authorization !== 'conditional'
+      || command.evidencePolicy !== 'none') return true;
+    return isTableCollectArgs(request.args || []);
+  }
   return Boolean(command && DAEMON_SIDE_EFFECT_AUTHORIZATIONS.has(command.authorization));
 }
 
@@ -15499,11 +15512,13 @@ function createEvalrawCommandHandler({ evalRaw }) {
   };
 }
 
-function authorizeDaemonApplicationCommand({ command, policy, mutates, targetBound }) {
+function authorizeDaemonApplicationCommand({ command, args = [], policy, mutates, targetBound }) {
   if (!targetBound) return { allowed: false, code: 'target-not-bound' };
   const actionMutates = ['dialog', 'hover', 'keepalive', 'loadall'].includes(command)
     ? mutates === false
     : mutates === true;
+  const tablePolicyMatches = command === 'table' && policy === 'conditional' && mutates === false;
+  if (tablePolicyMatches) parseTableArgs(args);
   const allowed = ([
     'back', 'click', 'clickxy', 'clock', 'closetab', 'dismiss-modal', 'fill', 'forward', 'hover',
     'cookiedel', 'cookieset', 'dialog', 'emulate', 'jsclick', 'keepalive', 'mock',
@@ -15513,6 +15528,7 @@ function authorizeDaemonApplicationCommand({ command, policy, mutates, targetBou
       && policy === 'mutation' && actionMutates)
     || (['console', 'diff-shot', 'fullshot', 'netlog', 'record', 'shot'].includes(command)
       && policy === 'conditional' && mutates === false)
+    || tablePolicyMatches
     || (['batch', 'flow', 'repeat'].includes(command)
       && policy === 'composite' && mutates === false)
     || (command === 'replay' && policy === 'mutation' && mutates === true)

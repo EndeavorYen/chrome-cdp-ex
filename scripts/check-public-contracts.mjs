@@ -23,6 +23,7 @@ import {
   buildMcpToolCommand,
   listMcpResources,
 } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
+import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 
 const DEFAULT_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const FIXTURE_NAME = 'public-contracts.v1.json';
@@ -138,14 +139,21 @@ async function commandProjection() {
   try {
     const module = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
     if (!module.__test__?.COMMANDS) throw new Error('cdp.mjs did not expose __test__.COMMANDS');
-    return module.__test__.COMMANDS.map(command => ({
-      aliases: [...(command.aliases || [])],
-      feedbackPolicy: command.feedbackPolicy || null,
-      mutates: command.mutates === true,
-      name: command.name,
-      needsTarget: command.needsTarget === true,
-      outputFormats: [...(command.outputFormats || [])],
-    }));
+    return module.__test__.COMMANDS.map(command => {
+      const policy = COMMAND_SURFACE.resolve(command.name);
+      if (!policy) throw new Error(`command-surface policy missing for ${command.name}`);
+      return {
+        aliases: [...(command.aliases || [])],
+        authorization: policy.authorization,
+        evidencePolicy: policy.evidencePolicy,
+        feedbackPolicy: command.feedbackPolicy || null,
+        kind: policy.kind,
+        mutates: command.mutates === true,
+        name: command.name,
+        needsTarget: command.needsTarget === true,
+        outputFormats: [...(command.outputFormats || [])],
+      };
+    });
   } finally {
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previousNodeEnv;
@@ -239,6 +247,9 @@ const MCP_MAPPING_INPUTS = Object.freeze([
   { id: 'session-checkpoint-unsafe', tool: 'session_checkpoint', args: { target: 'fixture', unsafeFull: true, confirm: true } },
   { id: 'run-command-read', tool: 'run_command', args: { command: 'help', args: [] } },
   { id: 'run-command-mutation', tool: 'run_command', args: { command: 'click', args: ['fixture', '@1'], confirm: true } },
+  { id: 'run-command-table-observe', tool: 'run_command', args: { command: 'table', args: ['fixture', '#grid'] } },
+  { id: 'run-command-table-collect', tool: 'run_command', args: { command: 'table', args: ['fixture', '#grid', '--collect', '--scroll-container', '.viewport'], confirm: true } },
+  { id: 'run-command-table-continue', tool: 'run_command', args: { command: 'table', args: ['fixture', '--continue', 'ct1.0123456789abcdef0123456789abcdef.0', '--format', 'json'] } },
 ]);
 
 const MCP_INVALID_INPUTS = Object.freeze([
@@ -259,6 +270,8 @@ const MCP_INVALID_INPUTS = Object.freeze([
   { id: 'run-command-diff-shot-reset-without-confirm', kind: 'tool', tool: 'run_command', args: { command: 'diff-shot', args: ['fixture', '--reset'] } },
   { id: 'run-command-shot-path-without-confirm', kind: 'tool', tool: 'run_command', args: { command: 'shot', args: ['fixture', '/tmp/explicit.png'] } },
   { id: 'run-command-fullshot-path-without-confirm', kind: 'tool', tool: 'run_command', args: { command: 'fullshot', args: ['fixture', '/tmp/explicit-full.png'] } },
+  { id: 'run-command-table-collect-without-confirm', kind: 'tool', tool: 'run_command', args: { command: 'table', args: ['fixture', '#grid', '--collect', '--scroll-container', '.viewport'] } },
+  { id: 'run-command-table-malformed', kind: 'tool', tool: 'run_command', args: { command: 'table', args: ['fixture', '#one', '#two'], confirm: true } },
   { id: 'screenshot-path-without-confirm', kind: 'tool', tool: 'screenshot', args: { target: 'fixture', path: '/tmp/explicit.png' } },
   { id: 'run-command-not-allowlisted', kind: 'tool', tool: 'run_command', args: { command: 'rm', args: ['fixture'] } },
   { id: 'run-command-newline', kind: 'tool', tool: 'run_command', args: { command: 'help', args: ['bad\narg'] } },

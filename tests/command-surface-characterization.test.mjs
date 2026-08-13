@@ -32,12 +32,13 @@ const contract = JSON.parse(readFileSync(
 ));
 
 function commandProjection(command) {
+  const policy = COMMAND_SURFACE.resolve(command.name);
   return {
     aliases: [...command.aliases],
-    authorization: command.authorization,
-    evidencePolicy: command.evidencePolicy,
+    authorization: policy.authorization,
+    evidencePolicy: policy.evidencePolicy,
     feedbackPolicy: command.feedbackPolicy ?? null,
-    kind: command.kind,
+    kind: policy.kind,
     mutates: command.mutates,
     name: command.name,
     needsTarget: command.needsTarget,

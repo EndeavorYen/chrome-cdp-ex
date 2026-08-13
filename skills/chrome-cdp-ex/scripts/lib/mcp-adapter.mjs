@@ -1,4 +1,5 @@
 import { readFileSync } from 'fs';
+import { isProxy } from 'node:util/types';
 import {
   COMMAND_SURFACE,
   MCP_RESOURCE_TEMPLATES,
@@ -7,6 +8,7 @@ import {
   MCP_TOOL_DEFINITIONS,
   MCP_TOOL_MAPPER_BY_NAME,
 } from './command-surface.mjs';
+import { parseTableRunCommandArgs } from './table-contract.mjs';
 
 export {
   MCP_RESOURCE_TEMPLATES,
@@ -31,6 +33,7 @@ export function snapshotMcpData(value, path = 'mcp', state = { nodes: 0, depth: 
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value !== 'object') throw new Error(`${path}: must contain JSON data only`);
+  if (isProxy(value)) throw new Error(`${path}: proxies are not allowed`);
   const prototype = Object.getPrototypeOf(value);
   const descriptors = Object.getOwnPropertyDescriptors(value);
   const keys = Reflect.ownKeys(descriptors);
@@ -134,6 +137,7 @@ export function argsRequireConfirm(commandName, args = []) {
   if (ALWAYS_CONFIRM_AUTHORIZATION.has(command.authorization)) return true;
   if (command.authorization === 'composite') return true;
   if (command.authorization === 'conditional') {
+    if (command.name === 'table') return parseTableRunCommandArgs(args).request.mode === 'collect';
     if (command.name === 'tab-group') return tabGroupRequiresConfirm(args);
     if (command.name === 'record') return args.includes('--action');
     if (command.name === 'console' || command.name === 'netlog') return args.includes('--clear');
@@ -378,7 +382,10 @@ export function buildMcpToolCommand(name, args = {}) {
     }
     case 'run-command': {
       const commandName = normalizeAllowlistedCommand(args.command);
-      const extra = Array.isArray(args.args) ? args.args.map(String) : [];
+      const extra = Array.isArray(args.args) ? [...args.args] : [];
+      if (extra.some(arg => typeof arg !== 'string')) {
+        throw new Error('run_command args must contain strings only');
+      }
       if (argsRequireConfirm(commandName, extra)) requireConfirm(args, `run_command ${commandName}`);
       // Disallow nested shell metacharacters by accepting only plain string args.
       for (const arg of extra) {
