@@ -472,8 +472,15 @@ function buildBroadcastModel({ groupName, command, commandArgs = [], results = [
       bounded.errorChars = text.length;
       bounded.errorTruncated = text.length > 240;
     }
+    if (entry.completion === 'unknown') {
+      bounded.completion = 'unknown';
+      bounded.sideEffectMayHaveOccurred = entry.sideEffectMayHaveOccurred === true;
+      bounded.retrySafe = false;
+      if (entry.transportCause) bounded.transportCause = { ...entry.transportCause };
+    }
     return bounded;
   });
+  const failedResults = results.filter(result => !result.ok);
   return {
     schema: 'chrome-cdp-ex.broadcast.v1',
     group: groupName,
@@ -485,7 +492,9 @@ function buildBroadcastModel({ groupName, command, commandArgs = [], results = [
     failed,
     results: boundedResults,
     nextSteps: failed
-      ? results.filter(r => !r.ok).slice(0, 3).map(r => formatCommandLine(['cdp', command, r.targetPrefix, ...commandArgs]))
+      ? failedResults.slice(0, 3).map(result => result.completion === 'unknown'
+          ? `cdp perceive ${result.targetPrefix} -C -d 8`
+          : formatCommandLine(['cdp', command, result.targetPrefix, ...commandArgs]))
       : [`cdp tab-group show ${groupName}`],
   };
 }
@@ -15780,6 +15789,8 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
   if (
     lower.includes('connection closed before response') ||
     lower.includes('econnrefused') ||
+    lower.includes('connect enoent') ||
+    lower.includes('connect econnreset') ||
     lower.includes('timed out connecting to daemon socket') ||
     lower.includes('daemon failed to start') ||
     lower.includes('ipc timeout')
@@ -16485,6 +16496,12 @@ async function main(options = {}) {
           }
         } catch (e) {
           entry.error = e.message || String(e);
+          if (e?.code === 'DAEMON_COMPLETION_UNKNOWN') {
+            entry.completion = 'unknown';
+            entry.sideEffectMayHaveOccurred = e.sideEffectMayHaveOccurred === true;
+            entry.retrySafe = false;
+            entry.transportCause = e.transportCause || null;
+          }
         }
         results.push(entry);
       }

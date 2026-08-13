@@ -42,6 +42,22 @@ function responseFailure(error, { mayHaveSideEffects, phase = 'awaiting-response
     : error;
 }
 
+function validateDaemonResponse(response) {
+  if (!response || typeof response !== 'object' || Array.isArray(response)) {
+    throw new Error('Invalid daemon response: expected an object');
+  }
+  if (typeof response.ok !== 'boolean') {
+    throw new Error('Invalid daemon response: expected boolean ok');
+  }
+  if (response.ok === true && !Object.hasOwn(response, 'result') && response.stopAfter !== true) {
+    throw new Error('Invalid daemon response: successful response requires result');
+  }
+  if (response.ok === false && typeof response.error !== 'string') {
+    throw new Error('Invalid daemon response: failed response requires error');
+  }
+  return response;
+}
+
 export function daemonEndpointForPlatform(targetId, {
   platform = process.platform,
   runtimeDir,
@@ -158,6 +174,15 @@ export function requestDaemon(conn, request, {
         settle(() => {
           try { conn.end(); } catch {}
           const error = new Error(`Daemon response id ${response.id} did not match request id ${requestId}`);
+          reject(responseFailure(error, { mayHaveSideEffects, kind: 'invalid-response' }));
+        });
+        return;
+      }
+      try {
+        response = validateDaemonResponse(response);
+      } catch (error) {
+        settle(() => {
+          try { conn.end(); } catch {}
           reject(responseFailure(error, { mayHaveSideEffects, kind: 'invalid-response' }));
         });
         return;
