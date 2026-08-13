@@ -810,6 +810,25 @@ describe('ambiguous action completion contract (#150)', () => {
     expect(model.diagnostics.transport.message.length).toBeLessThanOrEqual(512);
   });
 
+  it('prints an explicit unsafe-to-retry warning in the default CLI text surface', async () => {
+    const fixture = await committedActionDisconnect();
+    const output = cdpTest.formatCliError(fixture.error, {
+      cmd: 'click',
+      targetPrefix: 'ABC12345',
+    });
+
+    expect(output).toContain('Completion: unknown');
+    expect(output).toContain('Side effect may have occurred: yes');
+    expect(output).toContain('Retry safe: no');
+    expect(output).toContain('Kind: ambiguous-action-completion');
+    expect(output).toContain('Strategy: verify-before-retry');
+    expect(output).toContain('Run: cdp perceive ABC12345 -C -d 8');
+    expect(output).toMatch(/do not repeat/i);
+    expect(output).toContain('Transport: awaiting-response/peer-close');
+    expect(fixture.mutations).toBe(1);
+    expect(fixture.connection.write).toHaveBeenCalledOnce();
+  });
+
   it('keeps CLI nonzero and MCP isError parity without redispatching the mutation', async () => {
     const fixture = await committedActionDisconnect();
     const output = cdpTest.formatCliError(fixture.error, {
