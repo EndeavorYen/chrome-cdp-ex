@@ -5201,6 +5201,33 @@ describe('bounded table observation', () => {
     });
   });
 
+  it('retains ARIA identity for a valid non-prefix virtual window without claiming complete', async () => {
+    const dataRows = Array.from({ length: 11 }, (_, index) => ({
+      rawAriaRowIndex: index + 50,
+      cells: [`row-${index + 50}`],
+    }));
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
+        ariaRowCount: 100,
+        dataRows,
+        directRowsSeen: dataRows.length,
+        dataRowsSeen: dataRows.length,
+      })]) } }),
+    });
+
+    const output = JSON.parse(await tableObservationStr(cdp, 'sid1', {
+      mode: 'observe', selector: null, format: 'json',
+    }));
+    expect(output.tables[0]).toMatchObject({
+      logicalRows: 100,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'aria-rowindex',
+      orderingSource: 'aria-rowindex',
+      collectedRows: 11,
+      completeness: { state: 'incomplete', termination: 'observation', evidenceConflict: false },
+    });
+  });
+
   it.each([
     { name: 'null count', ariaRowCount: null, expectedRows: null, expectedConflict: false },
     { name: 'unknown count', ariaRowCount: -1, expectedRows: null, expectedConflict: false },

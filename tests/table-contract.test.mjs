@@ -73,6 +73,17 @@ describe('table request contract', () => {
     expect(() => isTableCollectArgs(['--collect'])).toThrow(/scroll-container/);
   });
 
+  it('preserves the generic selector grammar for collection requests', () => {
+    expect(parseTableArgs([
+      'table > tbody', '--collect', '--scroll-container', '.viewport',
+    ])).toEqual(observe({
+      argv: ['table > tbody', '--collect', '--scroll-container', '.viewport'],
+      mode: 'collect',
+      selector: 'table > tbody',
+      scrollContainer: '.viewport',
+    }));
+  });
+
   it('strips exactly one run-command target before parsing table argv', () => {
     expect(parseTableRunCommandArgs(['target-1', '--format', 'json', '#grid'])).toEqual({
       target: 'target-1',
