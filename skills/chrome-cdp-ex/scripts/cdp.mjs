@@ -15779,6 +15779,8 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
   }
   if (
     lower.includes('connection closed before response') ||
+    lower.includes('econnrefused') ||
+    lower.includes('timed out connecting to daemon socket') ||
     lower.includes('daemon failed to start') ||
     lower.includes('ipc timeout')
   ) {
