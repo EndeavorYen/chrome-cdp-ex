@@ -5015,7 +5015,7 @@ describe('bounded table observation', () => {
     }
   });
 
-  it('bridges unindexed snapshots through Task 1 once and preserves a valid prefix on a late oversized row', async () => {
+  it('rejects a hostile sampler wire row that violates the canonical-row contract', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
         dataRows: [
@@ -5029,35 +5029,9 @@ describe('bounded table observation', () => {
       })]) } }),
     });
 
-    const output = JSON.parse(await tableObservationStr(cdp, 'sid1', {
+    await expect(tableObservationStr(cdp, 'sid1', {
       mode: 'observe', selector: null, format: 'json',
-    }));
-    expect(output).toMatchObject({
-      schema: 'chrome-cdp-ex.tables.v1',
-      snapshot: {
-        tablesSeen: 1,
-        tablesReturned: 1,
-        truncated: false,
-        truncationReason: null,
-      },
-      tables: [{
-        schema: 'chrome-cdp-ex.table.v1',
-        identitySource: 'snapshot-order',
-        orderingSource: 'dom-order',
-        collectedRows: 1,
-        completeness: { state: 'unknown', evidenceConflict: false },
-        snapshot: {
-          directRowsSeen: 2,
-          headerRowsSeen: 0,
-          dataRowsSeen: 2,
-          rowsAdmitted: 1,
-          truncated: true,
-          truncationReason: 'row-too-large',
-        },
-        inline: { rows: ['safe'], rowCount: 1 },
-      }],
-    });
-    expect(Buffer.byteLength(JSON.stringify(output, null, 2), 'utf8')).toBeLessThanOrEqual(16384);
+    })).rejects.toThrow(/canonical row exceeds 4096/i);
   });
 
   it('preserves the producible page-side valid prefix and N plus one truncation evidence', async () => {

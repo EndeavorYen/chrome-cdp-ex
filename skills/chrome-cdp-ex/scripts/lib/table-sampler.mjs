@@ -72,6 +72,25 @@ function parsedRow(value, name) {
   }
   const cells = exactArray(value.cells, `${name}.cells`, TABLE_SAMPLER_LIMITS.maxCellsPerRow)
     .map((cell, index) => wellFormed(cell, `${name}.cells[${index}]`, TABLE_SAMPLER_LIMITS.maxCellTextBytes));
+  let canonicalBytes = Math.max(0, cells.length - 1);
+  for (const cell of cells) {
+    for (let index = 0; index < cell.length; index += 1) {
+      const unit = cell.charCodeAt(index);
+      if (unit === 0x5C || unit === 0x09 || unit === 0x0D || unit === 0x0A || unit === 0) canonicalBytes += 2;
+      else if ((unit >= 1 && unit <= 8) || (unit >= 11 && unit <= 12)
+        || (unit >= 14 && unit <= 31) || (unit >= 127 && unit <= 159)
+        || unit === 0x2028 || unit === 0x2029) canonicalBytes += 6;
+      else if (unit <= 0x7F) canonicalBytes += 1;
+      else if (unit <= 0x7FF) canonicalBytes += 2;
+      else if (unit >= 0xD800 && unit <= 0xDBFF) {
+        canonicalBytes += 4;
+        index += 1;
+      } else canonicalBytes += 3;
+      if (canonicalBytes > TABLE_SAMPLER_LIMITS.maxCanonicalRowBytes) {
+        invalid(`${name} canonical row exceeds 4096 bytes`);
+      }
+    }
+  }
   return Object.freeze({ rawAriaRowIndex: value.rawAriaRowIndex, cells: Object.freeze(cells) });
 }
 
@@ -307,6 +326,7 @@ export function buildTableSamplerExpression(selector = 'table') {
     };
     const decimal = value => {
       if (value === null) return 'null';
+      if (value === -1) return '-1';
       if (value === 0) return '0';
       let remaining = value;
       let output = '';
