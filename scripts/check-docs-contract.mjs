@@ -100,6 +100,19 @@ function parseJsonDoc(text, label, failures) {
   }
 }
 
+function hasCandidateReleaseClaim(text, version) {
+  const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const candidateVersion = new RegExp(`\\bv${escapedVersion}\\b`, 'i');
+  const releaseContext = /\b(?:release(?:\s+notes?)?|pinned|latest|measured|published)\b/i;
+  const bracketContexts = [...text.matchAll(/\[([^\]\n]{1,300})\]/g)].map(match => match[1]);
+  const clauseContexts = text
+    .split(/\r?\n/)
+    .flatMap(line => line.split(/(?:;|；|。|(?<!\d)[.!?](?!\d))/u))
+    .filter(clause => clause.length <= 2_000);
+  return [...bracketContexts, ...clauseContexts]
+    .some(context => candidateVersion.test(context) && releaseContext.test(context));
+}
+
 function checkReleaseMetadataContract(docs) {
   const failures = [];
   if (!docs.packageJson && !docs.pluginManifest) return failures;
@@ -135,14 +148,7 @@ function checkReleaseMetadataContract(docs) {
       if (text.includes(`pi-chrome-cdp-${version}.tgz`)) {
         failures.push(`${label} must not fabricate an unreleased tarball pi-chrome-cdp-${version}.tgz`);
       }
-      const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const falseReleaseClaims = [
-        new RegExp(`\\bRelease\\s+v${escapedVersion}\\b`, 'i'),
-        new RegExp(`\\bv${escapedVersion}\\s+release(?:\\s+notes)?\\b`, 'i'),
-        new RegExp(`\\bPinned\\s+release\\s*\\(\\s*v${escapedVersion}\\s*\\)`, 'i'),
-        new RegExp(`\\bLatest\\s+measured\\s+release[^\\n]*\\bv${escapedVersion}\\b`, 'i'),
-      ];
-      if (falseReleaseClaims.some(pattern => pattern.test(text))) {
+      if (hasCandidateReleaseClaim(text, version)) {
         failures.push(`${label} must not present unreleased candidate v${version} as a published or measured release`);
       }
     }
