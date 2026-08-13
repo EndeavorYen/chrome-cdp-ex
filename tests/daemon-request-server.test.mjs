@@ -218,6 +218,48 @@ describe('daemon request server lifecycle', () => {
     expect(clearTimer).toHaveBeenCalled();
   });
 
+  it('refuses a collect success returned at the absolute server deadline before enqueue', async () => {
+    let now = 0;
+    let signal;
+    const cleanup = vi.fn();
+    const dispose = vi.fn();
+    const conn = connection();
+    const lifecycle = T.createDaemonRequestConnection(conn, {
+      handleRequest: async (_request, execution) => {
+        signal = execution.signal;
+        now = execution.deadline.serverAt;
+        return { ok: true, result: 'late-handler-success' };
+      },
+      cleanup,
+      onDispose: dispose,
+      now: () => now,
+      setTimer: vi.fn(() => Symbol('blocked-server-timer')),
+      clearTimer: vi.fn(),
+    });
+    conn.emit('data', frame({
+      id: 2,
+      cmd: 'table',
+      args: ['--collect', '--scroll-container', '.viewport'],
+    }));
+    await drain();
+
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).toMatchObject({
+      code: 'TABLE_COLLECTION_SERVER_DEADLINE',
+      phase: 'server',
+    });
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(conn.write).toHaveBeenCalledOnce();
+    expect(JSON.parse(conn.write.mock.calls[0][0])).toMatchObject({
+      id: 2,
+      ok: false,
+      error: expect.stringMatching(/server deadline/),
+    });
+    expect(conn.write.mock.calls[0][0]).not.toContain('late-handler-success');
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(lifecycle.activeRequestCount()).toBe(0);
+  });
+
   it('aborts and suppresses a duplicate active ID on one socket while accepting id=1 on another socket', async () => {
     let firstSignal;
     const firstHandle = vi.fn((_request, execution) => new Promise((resolve, reject) => {

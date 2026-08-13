@@ -116,6 +116,57 @@ describe('table collection monotonic deadline context', () => {
     }
   });
 
+  it('turns a CDP result returned at the absolute page deadline into partial finalization', async () => {
+    let now = 0;
+    const context = T.createDaemonRequestExecutionContext({
+      request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+      signal: new AbortController().signal,
+      now: () => now,
+    });
+    const finalize = vi.fn(async ({ termination }) => termination);
+    const cleanup = vi.fn();
+
+    const result = await T.runTableCollectionLifecycle(context, {
+      collect: runtime => runtime.runCdpOperation(() => {
+        now = context.deadline.pageAt;
+        return { termination: 'logical-count-reached', value: 'late-cdp-success' };
+      }),
+      finalize,
+      cleanup,
+    });
+
+    expect(result).toBe('time-limit');
+    expect(finalize).toHaveBeenCalledWith(
+      { termination: 'time-limit' },
+      expect.objectContaining({ phase: expect.any(Function) }),
+    );
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+
+  it('rejects a finalizer result returned at the absolute server deadline and cleans once', async () => {
+    let now = 0;
+    const context = T.createDaemonRequestExecutionContext({
+      request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+      signal: new AbortController().signal,
+      now: () => now,
+    });
+    const cleanup = vi.fn();
+    const lifecycle = T.runTableCollectionLifecycle(context, {
+      collect: async () => ({ termination: 'logical-count-reached' }),
+      finalize: async () => {
+        now = context.deadline.serverAt;
+        return 'late-finalize-success';
+      },
+      cleanup,
+    });
+
+    await expect(lifecycle).rejects.toMatchObject({
+      code: 'TABLE_COLLECTION_SERVER_DEADLINE',
+      phase: 'server',
+    });
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
   it('starts finalization immediately after early page success and forbids later CDP work', async () => {
     let now = 500;
     const context = T.createDaemonRequestExecutionContext({
