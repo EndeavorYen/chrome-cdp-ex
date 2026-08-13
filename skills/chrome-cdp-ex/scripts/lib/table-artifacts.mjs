@@ -360,7 +360,7 @@ async function mintEntry(state, request) {
 }
 
 async function closeHandle(handle) {
-  try { await handle?.close?.(); } catch {}
+  if (handle) await handle.close();
 }
 
 async function writePrivateFile(state, request, path, bytes) {
