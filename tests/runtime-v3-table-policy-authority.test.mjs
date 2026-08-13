@@ -9,6 +9,7 @@ import {
   tableArtifactsSource,
   tableContractSource,
   tableExtractionSource,
+  tableSamplerSource,
 } from './runtime-v3-dispatch-test-helpers.mjs';
 
 function inventory(cdpSource = source, overrides = {}) {
@@ -19,6 +20,7 @@ function inventory(cdpSource = source, overrides = {}) {
     tableArtifactsSource,
     tableContractSource,
     tableExtractionSource,
+    tableSamplerSource,
     ...overrides,
   });
 }
@@ -79,6 +81,25 @@ describe('Runtime v3 table policy authority', () => {
     expect(authority.sourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(authority.bindingDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(authority.artifactSourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(authority.observation).toMatchObject({
+      owners: [
+        'sampleRootFrameTables',
+        'certifiedAriaTable',
+        'observedTableEntry',
+        'tableObservationModel',
+        'boundedTableObservationJson',
+        'boundedTableObservationText',
+        'boundedTableObservationEmissionJson',
+        'boundedTableObservationEmissionText',
+        'tableObservationStr',
+        'emitTargetCommandResponse',
+      ],
+    });
+    for (const key of [
+      'sourceDigest', 'bindingDigest', 'samplerSourceDigest', 'extractionSourceDigest',
+    ]) {
+      expect(authority.observation[key]).toMatch(/^sha256:[a-f0-9]{64}$/);
+    }
   });
 
   it.each([
@@ -96,8 +117,8 @@ describe('Runtime v3 table policy authority', () => {
       'authorize: input => authorizeDaemonApplicationCommand({ ...input, args: [] }),',
     ),
     source.replace(
-      "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : tableStr(cdp, sessionId, request.selector),",
-      "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.argv[0]), null, 2)\n      : tableStr(cdp, sessionId, request.selector),",
+      "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : tableObservationStr(cdp, sessionId, request),",
+      "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.argv[0]), null, 2)\n      : tableObservationStr(cdp, sessionId, request.selector),",
     ),
   ])('rejects or drifts when an argv-aware production binding is rewritten %#', mutation => {
     expect(() => inventory(mutation)).toThrow(/table policy authority/i);
@@ -160,7 +181,7 @@ describe('Runtime v3 table policy authority', () => {
     ),
     source.replace(
       'async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {',
-      'async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication(), tableStr = () => \'bypass\') {',
+      'async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication(), tableObservationStr = () => \'bypass\') {',
     ),
     source.replace(
       'function sendCommand(conn, req) {',
@@ -189,7 +210,7 @@ describe('Runtime v3 table policy authority', () => {
     ),
     source.replace(
       'const readCapabilities = {',
-      "const tableStr = () => 'bypass'; const readCapabilities = {",
+      "const tableObservationStr = () => 'bypass'; const readCapabilities = {",
     ),
     source.replace(
       'const recordActionsBuilder = applicationPreflight.handlerBuilders[\'record-actions\'];',
@@ -412,7 +433,7 @@ describe('Runtime v3 table policy authority', () => {
       'table: applicationPreflight.handlerBuilders.text(readCapabilities),',
     ),
     source.replace(
-      "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : tableStr(cdp, sessionId, request.selector),",
+      "table: async request => request.mode === 'continue'\n      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)\n      : tableObservationStr(cdp, sessionId, request),",
       "table: async request => request.mode === 'continue'\n      ? textStr(cdp, sessionId, request.continuation)\n      : tableStr(cdp, sessionId, request.selector),",
     ),
   ])('rejects substituted table handler and capability wiring %#', mutation => {
@@ -510,6 +531,43 @@ describe('Runtime v3 table policy authority', () => {
       'const trusted = bundle;'),
   ])('rejects or drifts for trusted export bundle bypass %#', mutation => {
     expectOverrideDriftOrReject({ tableExtractionSource: mutation });
+  });
+
+  it.each([
+    mutate(source,
+      "import { buildTableSamplerExpression, parseTableSamplerResult } from './lib/table-sampler.mjs';",
+      "import { buildTableSamplerExpression as buildSampler, parseTableSamplerResult } from './lib/table-sampler.mjs';"),
+    mutate(source,
+      '  addTableSampleBatch,\n  canonicalizeTableCells,',
+      '  addTableSampleBatch as admitBatch,\n  canonicalizeTableCells,'),
+    mutate(source,
+      '    grantUniveralAccess: false,',
+      '    grantUniveralAccess: true,'),
+    mutate(source,
+      '    returnByValue: true,\n    awaitPromise: false,',
+      '    returnByValue: false,\n    awaitPromise: true,'),
+    mutate(source,
+      '  const admission = addTableSampleBatch(accumulator, admitted);',
+      '  const admission = addTableSampleBatch(accumulator, []);'),
+    mutate(source,
+      "? boundedTableObservationEmissionJson(output)\n        : boundedTableObservationEmissionText(output);",
+      '? output\n        : output;'),
+  ])('rejects observation source ownership bypass %#', mutation => {
+    expect(() => inventory(mutation)).toThrow(/table (?:policy|observation) authority/i);
+  });
+
+  it.each([
+    mutate(tableSamplerSource,
+      'export function buildTableSamplerExpression(selector = \'table\') {',
+      'export function buildTableSamplerExpression(selector = \'table\') { if (false) return \'{}\';'),
+    mutate(tableExtractionSource,
+      'export function addTableSampleBatch(accumulator, samples) {',
+      'export function addTableSampleBatch(accumulator, samples) { if (false) return { admitted: true };'),
+  ])('drifts for complete sampler or extraction source changes %#', mutation => {
+    const override = mutation.includes('buildTableSamplerExpression')
+      ? { tableSamplerSource: mutation }
+      : { tableExtractionSource: mutation };
+    expectOverrideDriftOrReject(override);
   });
 
   it.each([

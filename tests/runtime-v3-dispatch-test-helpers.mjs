@@ -27,6 +27,10 @@ export const tableExtractionSource = readFileSync(
   join(rootDir, 'skills/chrome-cdp-ex/scripts/lib/table-extraction.mjs'),
   'utf8',
 );
+export const tableSamplerSource = readFileSync(
+  join(rootDir, 'skills/chrome-cdp-ex/scripts/lib/table-sampler.mjs'),
+  'utf8',
+);
 export const commandApplicationSource = readFileSync(
   join(rootDir, 'skills/chrome-cdp-ex/scripts/lib/command-application.mjs'),
   'utf8',
