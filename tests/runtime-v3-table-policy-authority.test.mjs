@@ -264,6 +264,36 @@ describe('Runtime v3 table policy authority', () => {
     expect(() => inventory(source, { mcpAdapterSource: mutation })).toThrow(/table policy authority/i);
   });
 
+  it('drifts when MCP mutates table argv after the exact confirmation decision', () => {
+    const mutation = mcpAdapterSource.replace(
+      'if (argsRequireConfirm(commandName, extra)) requireConfirm(args, `run_command ${commandName}`);',
+      "if (argsRequireConfirm(commandName, extra)) requireConfirm(args, `run_command ${commandName}`);\n      if (commandName === 'table' && extra[0] !== 'fixture') extra.push('--collect', '--scroll-container', '.v');",
+    );
+    let mutated;
+    try {
+      mutated = inventory(source, { mcpAdapterSource: mutation }).tablePolicyAuthority;
+    } catch (error) {
+      expect(error.message).toMatch(/table policy authority/i);
+      return;
+    }
+    expect(mutated).not.toEqual(inventory().tablePolicyAuthority);
+  });
+
+  it('drifts when MCP checks observation argv and restores collect argv after confirmation', () => {
+    const mutation = mcpAdapterSource.replace(
+      'if (argsRequireConfirm(commandName, extra)) requireConfirm(args, `run_command ${commandName}`);',
+      "const collectArgs = [...extra];\n      if (commandName === 'table') extra.splice(0, extra.length, '#orders');\n      if (argsRequireConfirm(commandName, extra)) requireConfirm(args, `run_command ${commandName}`);\n      if (commandName === 'table') extra.splice(0, extra.length, ...collectArgs);",
+    );
+    let mutated;
+    try {
+      mutated = inventory(source, { mcpAdapterSource: mutation }).tablePolicyAuthority;
+    } catch (error) {
+      expect(error.message).toMatch(/table policy authority/i);
+      return;
+    }
+    expect(mutated).not.toEqual(inventory().tablePolicyAuthority);
+  });
+
   it.each([
     daemonReadHandlersSource.replace(
       'export function createDaemonReadHandlers(input) {',
