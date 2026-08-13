@@ -4985,6 +4985,19 @@ describe('bounded table observation', () => {
   });
 
   it.each([
+    'table:has(#last)',
+    'html table',
+    'table>tbody',
+    'table,table',
+    'table\\#orders',
+  ])('rejects an unbounded observation selector before any CDP call: %s', async selector => {
+    const cdp = createMockCDP();
+
+    await expect(sampleRootFrameTables(cdp, 'sid1', selector)).rejects.toThrow(/bounded table selector|not supported/i);
+    expect(cdp.calls).toEqual([]);
+  });
+
+  it.each([
     [{ frameTree: { frame: {} } }, /root frame/i],
     [{ frameTree: { frame: { id: 'root' } } }, /execution context/i],
   ])('rejects malformed frame/world responses before returning sample %#', async (frameResult, message) => {

@@ -40,6 +40,7 @@ function executeSamplerTableRows(tableRows, tableAttributes = [], {
   selector = 'table',
   StringConstructor = String,
   bodyNamespace = 'http://www.w3.org/1999/xhtml',
+  cellDepth = 0,
 } = {}) {
   class N {
     constructor(type, value = null) { this.t = type; this.v = value; this.p = null; this.c = []; }
@@ -92,7 +93,12 @@ function executeSamplerTableRows(tableRows, tableAttributes = [], {
     const body = tableNode.append(new E('tbody', {}, bodyNamespace));
     for (const cells of rows) {
       const row = body.append(new E('tr'));
-      for (const value of cells) row.append(new E('td')).append(new X(value));
+      for (const value of cells) {
+        const cell = row.append(new E('td'));
+        let textParent = cell;
+        for (let depth = 0; depth < cellDepth; depth += 1) textParent = textParent.append(new E('span'));
+        textParent.append(new X(value));
+      }
     }
   }
   return parseTableSamplerResult(runInNewContext(buildTableSamplerExpression(selector), {
@@ -127,8 +133,8 @@ describe('trusted table sampler source', () => {
     expect(expression).toContain('Node.prototype');
     expect(expression).toContain('Element.prototype');
     expect(expression).toContain('Text.prototype');
-    expect(expression).toContain("getOwnPropertyDescriptor(elementProto, 'matches').value");
     expect(expression).toContain("getOwnPropertyDescriptor(elementProto, 'namespaceURI').get");
+    expect(expression).not.toContain("getOwnPropertyDescriptor(elementProto, 'matches')");
     expect(expression).not.toContain('querySelectorAll');
     expect(expression).not.toMatch(/\.querySelector|\.querySelectorAll|\.matches|\.closest|\.textContent/);
     expect(expression).not.toMatch(/JSON\.stringify|new TextEncoder|\.toJSON|\.filter\(|\.map\(|\.isPrototypeOf\(|\.test\(|\.padStart\(|for\s*\([^)]*\sof\s/);
@@ -304,8 +310,11 @@ describe('trusted table sampler source', () => {
   it('matches the caller selector only against bounded root HTML table candidates', () => {
     const sampled = executeSamplerTableRows(
       [[['included']], [['excluded']]],
-      [{ id: 'orders' }, { id: 'other' }],
-      { selector: '#orders' },
+      [
+        { id: 'orders', class: 'active selected', role: 'grid', 'data-ready': '' },
+        { id: 'other', class: 'active selected', role: 'grid', 'data-ready': '' },
+      ],
+      { selector: 'table#orders.active[data-ready][role="grid"]' },
     );
 
     expect(sampled.tablesSeen).toBe(1);
@@ -571,6 +580,22 @@ describe('trusted table sampler source', () => {
     });
     expect(charCodeReads).toBeLessThan(5_200);
   });
+
+  it('reports cell descendant exhaustion as a DOM node limit', () => {
+    const sampled = executeSamplerTableRows(
+      [[['too deep']]],
+      [],
+      { cellDepth: TABLE_SAMPLER_LIMITS.maxDomNodesPerCell },
+    );
+
+    expect(sampled.tables[0]).toMatchObject({
+      dataRows: [],
+      directRowsSeen: 1,
+      dataRowsSeen: 1,
+      truncated: true,
+      truncationReason: 'dom-node-limit',
+    });
+  });
 });
 
 describe('bounded table sampler host validation', () => {
@@ -704,5 +729,39 @@ describe('bounded table sampler host validation', () => {
     })]),
   ])('rejects reason-inconsistent truncation provenance %#', wire => {
     expect(() => parseTableSamplerResult(wire)).toThrow(/provenance|reason|counter|omission/i);
+  });
+
+  it.each(['cell-limit', 'row-too-large', 'sample-byte-limit', 'dom-node-limit'])(
+    'rejects %s after the row-limit boundary would already have won',
+    truncationReason => {
+      const rows = Array.from({ length: 128 }, () => ({ rawAriaRowIndex: null, cells: ['safe'] }));
+      expect(() => parseTableSamplerResult(page([table({
+        dataRows: rows,
+        directRowsSeen: 129,
+        dataRowsSeen: 129,
+        truncated: true,
+        truncationReason,
+      })]))).toThrow(/provenance|reason|counter/i);
+    },
+  );
+
+  it('rejects page sample-byte pressure after table-limit would already have won', () => {
+    expect(() => parseTableSamplerResult(page(Array.from({ length: 10 }, () => table()), {
+      tablesSeen: 11,
+      truncated: true,
+      truncationReason: 'sample-byte-limit',
+    }))).toThrow(/provenance|reason|counter/i);
+  });
+
+  it('rejects data rows returned after an omitted header stopped producer traversal', () => {
+    expect(() => parseTableSamplerResult(page([table({
+      headerRows: [],
+      dataRows: [{ rawAriaRowIndex: null, cells: ['impossible'] }],
+      directRowsSeen: 2,
+      headerRowsSeen: 1,
+      dataRowsSeen: 1,
+      truncated: true,
+      truncationReason: 'row-too-large',
+    })]))).toThrow(/provenance|prefix|header|counter/i);
   });
 });

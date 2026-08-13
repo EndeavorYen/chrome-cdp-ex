@@ -128,6 +128,39 @@ describe('table request contract', () => {
     }
   });
 
+  it('accepts only the bounded table observation selector subset', () => {
+    for (const selector of [
+      'table',
+      '#orders',
+      '.active',
+      '[data-ready]',
+      '[role="grid"]',
+      'table#orders.active[data-ready][role="grid"]',
+      'table[data-label="訂單 表"]',
+    ]) {
+      expect(parseTableArgs([selector]).selector).toBe(selector);
+    }
+  });
+
+  it.each([
+    'table:has(#last)',
+    'html table',
+    'table>tbody',
+    'table+table',
+    'table~table',
+    'table,table',
+    'table\\#orders',
+    'div#orders',
+    'table#one#two',
+    'table.active.active',
+    'table[role][role="grid"]',
+    'table[role="bad\\value"]',
+    'table[role="bad\nvalue"]',
+    `table${Array.from({ length: 33 }, (_, index) => `.c${index}`).join('')}`,
+  ])('rejects unbounded or ambiguous table observation selector %s', selector => {
+    expect(() => parseTableArgs([selector])).toThrow(/bounded table selector|not supported/i);
+  });
+
   it('accepts only canonical zero-based row-key columns 0 through 255', () => {
     for (const [raw, value] of [['0', 0], ['9', 9], ['255', 255]]) {
       expect(parseTableArgs(['--collect', '--scroll-container', '.v', '--row-key-column', raw]).rowKeyColumn)
