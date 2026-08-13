@@ -47,8 +47,13 @@ describe('trusted table sampler source', () => {
       maxCanonicalRowBytes: 4096,
       maxSerializedBytes: 524288,
       maxCaptionBytes: 512,
-      maxCellTextBytes: 16384,
+      maxAttributeBytes: 1024,
+      maxCellTextBytes: 4096,
+      maxDomNodesPerCell: 4096,
       maxTextNodesPerCell: 4096,
+      maxAncestorDepth: 4096,
+      maxMatchedCandidates: 11,
+      maxDirectChildren: 4096,
     });
     expect(expression).toContain('chrome-cdp-ex.table-sample.v1');
     expect(expression).toContain('HTMLTableElement');
@@ -74,7 +79,7 @@ describe('trusted table sampler source', () => {
       append(child) {
         child._parent = this;
         this._children.push(child);
-        return this;
+        return child;
       }
       get parentNode() { return this._parent; }
       get firstChild() { return this._children[0] || null; }
@@ -110,8 +115,19 @@ describe('trusted table sampler source', () => {
       get documentElement() { return this._root; }
       querySelectorAll(selector) {
         if (selector !== 'table') throw new Error('unexpected selector');
-        return this._root._children.filter(child => child instanceof HTMLTableElementLike);
+        const matches = [];
+        const visit = node => {
+          if (node instanceof HTMLTableElementLike) matches.push(node);
+          for (const child of node._children) visit(child);
+        };
+        visit(this._root);
+        return new NodeListLike(matches);
       }
+    }
+    class NodeListLike {
+      constructor(values) { this.values = values; }
+      get length() { return this.values.length; }
+      item(index) { return this.values[index] || null; }
     }
     const root = new ElementLike('html');
     const outer = root.append(new HTMLTableElementLike({ 'aria-label': 'Orders', 'aria-rowcount': '2' }));
@@ -135,6 +151,7 @@ describe('trusted table sampler source', () => {
       Text: TextLike,
       Document: DocumentLike,
       HTMLTableElement: HTMLTableElementLike,
+      NodeList: NodeListLike,
       document,
       JSON: Object.freeze({ stringify: () => { poisonCalls += 1; throw new Error('page JSON'); } }),
       TextEncoder: class { constructor() { poisonCalls += 1; throw new Error('page TextEncoder'); } },
@@ -144,7 +161,7 @@ describe('trusted table sampler source', () => {
     const sampled = parseTableSamplerResult(encoded);
 
     expect(poisonCalls).toBe(0);
-    expect(sampled.tables).toHaveLength(1);
+    expect(sampled.tables.map(entry => entry.caption)).toEqual(['Orders']);
     expect(sampled.tables[0]).toMatchObject({
       caption: 'Orders',
       ariaRowCount: 2,
@@ -175,7 +192,12 @@ describe('trusted table sampler source', () => {
     class D extends N {
       constructor(root) { super(9); this.r = root; }
       get documentElement() { return this.r; }
-      querySelectorAll() { return this.r.c; }
+      querySelectorAll() { return new L(this.r.c); }
+    }
+    class L {
+      constructor(values) { this.v = values; }
+      get length() { return this.v.length; }
+      item(index) { return this.v[index] || null; }
     }
     const root = new E('html');
     const tableNode = new T();
@@ -187,7 +209,7 @@ describe('trusted table sampler source', () => {
     root.append(tableNode);
     const encoded = runInNewContext(buildTableSamplerExpression('table'), {
       Object, Array, String, Number, Node: N, Element: E, Text: X, Document: D,
-      HTMLTableElement: T, document: new D(root),
+      HTMLTableElement: T, NodeList: L, document: new D(root),
     });
 
     expect(parseTableSamplerResult(encoded).tables[0].dataRows[0].cells).toEqual(['direct']);
@@ -196,8 +218,8 @@ describe('trusted table sampler source', () => {
   it('drops the whole offending row for cell, text-node, canonical-row, or aggregate-byte pressure', () => {
     const expression = buildTableSamplerExpression('table');
 
-    expect(expression).toContain("truncationReason = 'cell-limit'");
-    expect(expression).toContain("truncationReason = 'row-too-large'");
+    expect(expression).toContain("reason: 'cell-limit'");
+    expect(expression).toContain("reason: 'row-too-large'");
     expect(expression).toContain("truncationReason = 'sample-byte-limit'");
     expect(expression).toContain('maxTextNodesPerCell');
     expect(expression).toMatch(/utf8Bytes\([^)]*candidate/i);
