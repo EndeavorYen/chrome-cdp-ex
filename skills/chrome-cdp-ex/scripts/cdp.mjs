@@ -13788,6 +13788,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     wait: args => waitStr(args[0]),
     waitfor: args => waitForStr(cdp, sessionId, args, refMap, refState),
   };
+  Object.freeze(readCapabilities);
   const recordActionsBuilder = applicationPreflight.handlerBuilders['record-actions'];
   const exportPlaywrightBuilder = applicationPreflight.handlerBuilders['export-playwright'];
   const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];
@@ -14179,6 +14180,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     closetab: applicationPreflight.handlerBuilders.closetab(actionCapabilities),
     loadall: applicationPreflight.handlerBuilders.loadall(actionCapabilities),
   };
+  Object.freeze(applicationHandlers);
   const applicationDispatcher = createCommandDispatcher({
     registry: applicationRegistry,
     owners: applicationPreflight.routeOwners,

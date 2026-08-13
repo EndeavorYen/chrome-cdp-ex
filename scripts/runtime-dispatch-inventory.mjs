@@ -752,6 +752,7 @@ function collectTablePolicyAuthority(source, {
   let transportSideEffectBinding = null;
   let daemonBuilderBinding = null;
   let applicationHandlerBinding = null;
+  const frozenWiringBindings = new Map();
   const failTable = message => { throw new Error(`table policy authority: ${message}`); };
   const rule = {
     create(context) {
@@ -857,10 +858,8 @@ function collectTablePolicyAuthority(source, {
         AssignmentExpression(node) {
           const left = node.left;
           if (left?.type === 'MemberExpression'
-            && !left.computed
-            && left.object?.name === 'readCapabilities'
-            && left.property?.name === 'table') {
-            failTable('readCapabilities.table must not be reassigned after construction');
+            && ['readCapabilities', 'applicationHandlers'].includes(left.object?.name)) {
+            failTable(`${left.object.name} must not be reassigned after construction`);
           }
         },
         Property(node) {
@@ -885,6 +884,30 @@ function collectTablePolicyAuthority(source, {
           authorizeBinding = binding;
         },
         CallExpression(node) {
+          if (node.callee?.type === 'MemberExpression'
+            && !node.callee.computed
+            && node.callee.object?.name === 'Object'
+            && node.callee.property?.name === 'freeze'
+            && node.arguments.length === 1
+            && node.arguments[0]?.type === 'Identifier'
+            && ['readCapabilities', 'applicationHandlers'].includes(node.arguments[0].name)) {
+            const target = node.arguments[0].name;
+            if (namedFunctionOwner(sourceCode, node) !== 'runDaemon'
+              || sourceCode.getText(node) !== `Object.freeze(${target})`) {
+              failTable(`${target} must be frozen directly in runDaemon`);
+            }
+            if (frozenWiringBindings.has(target)) failTable(`${target} must be frozen exactly once`);
+            frozenWiringBindings.set(target, sourceCode.getText(node));
+            return;
+          }
+          if (node.callee?.type === 'MemberExpression'
+            && !node.callee.computed
+            && ['Object', 'Reflect'].includes(node.callee.object?.name)
+            && ['assign', 'defineProperties', 'defineProperty', 'set', 'setPrototypeOf'].includes(node.callee.property?.name)
+            && node.arguments[0]?.type === 'Identifier'
+            && ['readCapabilities', 'applicationHandlers'].includes(node.arguments[0].name)) {
+            failTable(`${node.arguments[0].name} must not be reflectively mutated after construction`);
+          }
           const name = node.callee?.type === 'Identifier' ? node.callee.name : null;
           if (!calls.has(name)) return;
           calls.get(name).push({
@@ -904,6 +927,11 @@ function collectTablePolicyAuthority(source, {
           }
           requireUniqueBinding(sourceCode, 'tableStr', { definitionType: 'FunctionName' }, failTable);
           requireUniqueBinding(sourceCode, 'readCapabilities', {
+            definitionType: 'Variable',
+            topLevel: false,
+            allowInitializationWrite: true,
+          }, failTable);
+          requireUniqueBinding(sourceCode, 'applicationHandlers', {
             definitionType: 'Variable',
             topLevel: false,
             allowInitializationWrite: true,
@@ -951,6 +979,9 @@ function collectTablePolicyAuthority(source, {
   if (!transportSideEffectBinding) failTable('transport side-effect binding was not found');
   if (!daemonBuilderBinding) failTable('daemon table handler builder binding was not found');
   if (!applicationHandlerBinding) failTable('application table handler binding was not found');
+  for (const target of ['readCapabilities', 'applicationHandlers']) {
+    if (!frozenWiringBindings.has(target)) failTable(`${target} freeze binding was not found`);
+  }
   const batchPolicySource = declarations.get('isBatchParallelUnsafeCommand');
   if (!batchPolicySource.includes('return isTableCollectArgs(args);')) {
     failTable('batch table classification must directly return isTableCollectArgs(args)');
@@ -994,6 +1025,7 @@ function collectTablePolicyAuthority(source, {
       transportSideEffectBinding,
       daemonBuilderBinding,
       applicationHandlerBinding,
+      ...[...frozenWiringBindings.entries()].sort().map(([target, binding]) => `${target}:${binding}`),
       mcpAuthority.binding,
       daemonReadAuthority.binding,
       tableContractAuthority.binding,
