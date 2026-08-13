@@ -116,6 +116,7 @@ function createCrashSession(layout, {
   ageMs,
   committed = false,
   unknown = false,
+  artifact = true,
 } = {}) {
   const sessionDir = join(layout.targetDir, name);
   mkdirSync(sessionDir, { mode: 0o700 });
@@ -127,23 +128,27 @@ function createCrashSession(layout, {
     targetDigest: layout.targetDigest,
     sessionDigest: name,
   }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-  const artifactDir = join(sessionDir, ID_B);
-  mkdirSync(artifactDir, { mode: 0o700 });
-  const bundle = bundleForRows([['crash residue']]);
-  const rowsPath = join(artifactDir, 'rows.tsv');
-  writeFileSync(rowsPath, bundle.rowsTsv, { mode: 0o600, flag: 'wx' });
-  if (committed) {
-    writeFileSync(join(artifactDir, 'manifest.json'), `${JSON.stringify({
-      ...bundle.manifest,
-      ownership: {
-        artifactId: ID_B,
-        targetDigest: layout.targetDigest,
-        sessionDigest: name,
-      },
-    }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  const artifactDir = artifact ? join(sessionDir, ID_B) : null;
+  const touched = [];
+  if (artifact) {
+    mkdirSync(artifactDir, { mode: 0o700 });
+    const bundle = bundleForRows([['crash residue']]);
+    const rowsPath = join(artifactDir, 'rows.tsv');
+    writeFileSync(rowsPath, bundle.rowsTsv, { mode: 0o600, flag: 'wx' });
+    if (committed) {
+      writeFileSync(join(artifactDir, 'manifest.json'), `${JSON.stringify({
+        ...bundle.manifest,
+        ownership: {
+          artifactId: ID_B,
+          targetDigest: layout.targetDigest,
+          sessionDigest: name,
+        },
+      }, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    }
+    if (unknown) writeFileSync(join(artifactDir, 'unknown.bin'), 'preserve', { mode: 0o600 });
+    touched.push(rowsPath, ...(committed ? [join(artifactDir, 'manifest.json')] : []), artifactDir);
   }
-  if (unknown) writeFileSync(join(artifactDir, 'unknown.bin'), 'preserve', { mode: 0o600 });
-  for (const path of [rowsPath, ...(committed ? [join(artifactDir, 'manifest.json')] : []), artifactDir, ownerPath, sessionDir]) {
+  for (const path of [...touched, ownerPath, sessionDir]) {
     setAge(path, ageMs);
   }
   return { sessionDir, artifactDir, ownerPath };
@@ -946,6 +951,67 @@ describe('artifact request and session ownership', () => {
     expect(existsSync(fixtures.staleCommitted.sessionDir)).toBe(false);
     expect(probes.sort((a, b) => a - b)).toEqual([10, 11, 12, 13, 14, 15, 16, 17]);
     expect(probes).not.toContain(999);
+  });
+
+  it('applies the uncommitted TTL to owner-only dead sessions at the exact boundary', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'private-current-session',
+      platform: 'darwin',
+    }, {
+      randomBytes: deterministicBytes(ID_A),
+      pid: 999,
+      now: () => NOW_MS,
+      processAlive: () => { const error = new Error('dead'); error.code = 'ESRCH'; throw error; },
+    });
+    const request = execution();
+    await store.publish(bundleForRows(), request);
+    store.releaseRequest(request);
+    const layout = artifactTest.inspectTableArtifactStore(store);
+    const young = createCrashSession(layout, {
+      name: digest('owner-only-young'), pid: 30, ageMs: (15 * 60 * 1000) - 1, artifact: false,
+    });
+    const eligible = createCrashSession(layout, {
+      name: digest('owner-only-eligible'), pid: 31, ageMs: 15 * 60 * 1000, artifact: false,
+    });
+
+    expect(store.sweepCrashResidue()).toBeUndefined();
+    expect(existsSync(young.sessionDir)).toBe(true);
+    expect(existsSync(eligible.sessionDir)).toBe(false);
+  });
+
+  it('preserves same-size committed checksum tamper and reports bounded cleanup failure', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'private-current-session',
+      platform: 'darwin',
+    }, {
+      randomBytes: deterministicBytes(ID_A),
+      pid: 999,
+      now: () => NOW_MS,
+      processAlive: () => { const error = new Error('dead'); error.code = 'ESRCH'; throw error; },
+    });
+    const request = execution();
+    await store.publish(bundleForRows(), request);
+    store.releaseRequest(request);
+    const layout = artifactTest.inspectTableArtifactStore(store);
+    const tampered = createCrashSession(layout, {
+      name: digest('committed-tamper'), pid: 32, ageMs: 25 * 60 * 60 * 1000, committed: true,
+    });
+    const rowsPath = join(tampered.artifactDir, 'rows.tsv');
+    writeFileSync(rowsPath, 'crush residue', { mode: 0o600 });
+    setAge(rowsPath, 25 * 60 * 60 * 1000);
+
+    let error;
+    try { store.sweepCrashResidue(); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ code: 'TABLE_ARTIFACT_CLEANUP_FAILED' });
+    expect(error?.message).not.toContain(runtimeDir);
+    expect(readFileSync(rowsPath, 'utf8')).toBe('crush residue');
+    expect(existsSync(join(tampered.artifactDir, 'manifest.json'))).toBe(true);
   });
 
   it('best-effort sweeps safe dead residue but reports and preserves unknown stale contents', async () => {
