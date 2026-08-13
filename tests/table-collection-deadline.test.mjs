@@ -116,7 +116,7 @@ describe('table collection monotonic deadline context', () => {
     }
   });
 
-  it('turns a CDP result returned at the absolute page deadline into partial finalization', async () => {
+  it('rejects a CDP result returned at the absolute page deadline without finalizing', async () => {
     let now = 0;
     const context = T.createDaemonRequestExecutionContext({
       request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
@@ -126,7 +126,7 @@ describe('table collection monotonic deadline context', () => {
     const finalize = vi.fn(async ({ termination }) => termination);
     const cleanup = vi.fn();
 
-    const result = await T.runTableCollectionLifecycle(context, {
+    const lifecycle = T.runTableCollectionLifecycle(context, {
       collect: runtime => runtime.runCdpOperation(() => {
         now = context.deadline.pageAt;
         return { termination: 'logical-count-reached', value: 'late-cdp-success' };
@@ -135,12 +135,13 @@ describe('table collection monotonic deadline context', () => {
       cleanup,
     });
 
-    expect(result).toBe('time-limit');
-    expect(finalize).toHaveBeenCalledWith(
-      { termination: 'time-limit' },
-      expect.objectContaining({ phase: expect.any(Function) }),
-    );
-    expect(cleanup).not.toHaveBeenCalled();
+    await expect(lifecycle).rejects.toMatchObject({
+      code: 'TABLE_COLLECTION_PAGE_DEADLINE',
+      phase: 'page',
+      lateInvocation: true,
+    });
+    expect(finalize).not.toHaveBeenCalled();
+    expect(cleanup).toHaveBeenCalledOnce();
   });
 
   it('fails after a signal-ignoring page operation settles beyond 295s instead of partial-finalizing', async () => {
@@ -172,6 +173,45 @@ describe('table collection monotonic deadline context', () => {
     });
     expect(finalize).not.toHaveBeenCalled();
     expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('fails when the operation timer wins first but ignored raw work settles at 297s', async () => {
+    vi.useFakeTimers();
+    try {
+      let now = 0;
+      let settleOperation;
+      const context = T.createDaemonRequestExecutionContext({
+        request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+        signal: new AbortController().signal,
+        now: () => now,
+      });
+      const finalize = vi.fn(async () => 'unsafe-partial-success');
+      const cleanup = vi.fn();
+      const lifecycle = T.runTableCollectionLifecycle(context, {
+        collect: runtime => runtime.runCdpOperation(() => new Promise(resolve => {
+          settleOperation = resolve;
+        })),
+        finalize,
+        cleanup,
+      });
+      await Promise.resolve();
+
+      now = 5000;
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(finalize).not.toHaveBeenCalled();
+
+      now = context.deadline.pageAt + 2000;
+      settleOperation('ignored-timeout-and-settled-late');
+      await expect(lifecycle).rejects.toMatchObject({
+        code: 'TABLE_COLLECTION_PAGE_DEADLINE',
+        phase: 'page',
+        lateInvocation: true,
+      });
+      expect(finalize).not.toHaveBeenCalled();
+      expect(cleanup).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects a short sleep whose delayed callback runs at the absolute page deadline', async () => {
