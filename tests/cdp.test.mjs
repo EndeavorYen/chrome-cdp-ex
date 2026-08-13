@@ -5011,7 +5011,7 @@ describe('bounded table observation', () => {
       'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
         dataRows: [
           { rawAriaRowIndex: null, cells: ['safe'] },
-          { rawAriaRowIndex: null, cells: ['x'.repeat(4097)] },
+          { rawAriaRowIndex: null, cells: ['\\'.repeat(2049)] },
         ],
         directRowsSeen: 2,
         dataRowsSeen: 2,
