@@ -36,6 +36,58 @@ function page(tables = [table()], overrides = {}) {
   });
 }
 
+function executeSamplerTableRows(tableRows) {
+  class N {
+    constructor(type, value = null) { this.t = type; this.v = value; this.p = null; this.c = []; }
+    append(child) { child.p = this; this.c.push(child); return child; }
+    get parentNode() { return this.p; }
+    get firstChild() { return this.c[0] || null; }
+    get nextSibling() { return this.p?.c[this.p.c.indexOf(this) + 1] || null; }
+    get nodeType() { return this.t; }
+    get nodeValue() { return this.v; }
+  }
+  class E extends N {
+    constructor(name, attrs = {}) { super(1); this.n = name; this.a = attrs; }
+    get localName() {
+      if (!(this instanceof E)) throw new TypeError('Illegal invocation');
+      return this.n;
+    }
+    getAttribute(name) { return Object.hasOwn(this.a, name) ? this.a[name] : null; }
+  }
+  class X extends N { constructor(value) { super(3, value); } }
+  class T extends E { constructor(attrs = {}) { super('table', attrs); } }
+  class D extends N {
+    constructor(root) { super(9); this.r = root; root.p = this; }
+    querySelectorAll() {
+      const matches = [];
+      const visit = node => {
+        if (node instanceof T) matches.push(node);
+        for (const child of node.c) visit(child);
+      };
+      visit(this.r);
+      return new L(matches);
+    }
+  }
+  class L {
+    constructor(values) { this.v = values; }
+    get length() { return this.v.length; }
+    item(index) { return this.v[index] || null; }
+  }
+  const root = new E('html');
+  for (const rows of tableRows) {
+    const tableNode = root.append(new T());
+    const body = tableNode.append(new E('tbody'));
+    for (const cells of rows) {
+      const row = body.append(new E('tr'));
+      for (const value of cells) row.append(new E('td')).append(new X(value));
+    }
+  }
+  return parseTableSamplerResult(runInNewContext(buildTableSamplerExpression('table'), {
+    Object, Array, String, Number, Node: N, Element: E, Text: X, Document: D,
+    HTMLTableElement: T, NodeList: L, document: new D(root),
+  }));
+}
+
 describe('trusted table sampler source', () => {
   it('freezes the root-frame bounded DOM contract without page callbacks or mutable globals', () => {
     const expression = buildTableSamplerExpression('table');
@@ -241,6 +293,55 @@ describe('trusted table sampler source', () => {
     expect(expression).toContain("pageTruncationReason = 'table-limit'");
     expect(expression).toMatch(/matchedCandidates\s*>?=\s*LIMITS\.maxMatchedCandidates/);
   });
+
+  it('executes N plus one boundaries with one valid prefix and exact truncation provenance', () => {
+    const cellLimit = executeSamplerTableRows([[['safe'], Array(257).fill('')]]);
+    expect(cellLimit.tables[0]).toMatchObject({
+      dataRows: [{ cells: ['safe'] }],
+      directRowsSeen: 2,
+      dataRowsSeen: 2,
+      truncated: true,
+      truncationReason: 'cell-limit',
+    });
+
+    const rowBytes = executeSamplerTableRows([[['safe'], ['\\'.repeat(2049)]]]);
+    expect(rowBytes.tables[0]).toMatchObject({
+      dataRows: [{ cells: ['safe'] }],
+      directRowsSeen: 2,
+      dataRowsSeen: 2,
+      truncated: true,
+      truncationReason: 'row-too-large',
+    });
+
+    const rowLimit = executeSamplerTableRows([
+      Array.from({ length: 129 }, (_, index) => [`row-${index + 1}`]),
+    ]);
+    expect(rowLimit.tables[0].dataRows).toHaveLength(128);
+    expect(rowLimit.tables[0]).toMatchObject({
+      directRowsSeen: 129,
+      dataRowsSeen: 129,
+      truncated: true,
+      truncationReason: 'row-limit',
+    });
+
+    const tableLimit = executeSamplerTableRows(Array.from({ length: 11 }, () => [[['safe']][0]]));
+    expect(tableLimit).toMatchObject({
+      tablesSeen: 11,
+      truncated: true,
+      truncationReason: 'table-limit',
+    });
+    expect(tableLimit.tables).toHaveLength(10);
+
+    const aggregate = executeSamplerTableRows([
+      Array.from({ length: 128 }, () => ['x'.repeat(4000)]),
+    ]);
+    expect(aggregate.tables[0].dataRows.length).toBeGreaterThan(0);
+    expect(aggregate.tables[0].dataRowsSeen).toBe(aggregate.tables[0].dataRows.length + 1);
+    expect(aggregate.tables[0]).toMatchObject({
+      truncated: true,
+      truncationReason: 'sample-byte-limit',
+    });
+  });
 });
 
 describe('bounded table sampler host validation', () => {
@@ -313,5 +414,15 @@ describe('bounded table sampler host validation', () => {
       truncated: true,
       truncationReason: 'table-limit',
     }))).toThrow(/tablesSeen/i);
+  });
+
+  it('rejects unexplained row or table omissions when truncation provenance says none', () => {
+    expect(() => parseTableSamplerResult(page([table({
+      directRowsSeen: 3,
+      dataRowsSeen: 3,
+    })]))).toThrow(/omission|truncation/i);
+    expect(() => parseTableSamplerResult(page([table()], {
+      tablesSeen: 2,
+    }))).toThrow(/omission|truncation/i);
   });
 });
