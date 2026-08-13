@@ -949,6 +949,31 @@ async function withLiveRouteSession(state, work) {
   return result;
 }
 
+async function startOwnedDaemon(state, targetId) {
+  invariant(typeof targetId === 'string' && targetId, 'owned daemon targetId is required');
+  mkdirSync(join(state.paths.runtimeDir, 'cdp'), { recursive: true, mode: 0o700 });
+  const socket = join(state.paths.runtimeDir, 'cdp', `cdp-${targetId}.sock`);
+  let stderr = '';
+  state.daemon = spawn(process.execPath, [CDP_PATH, '_daemon', targetId], {
+    cwd: ROOT_DIR,
+    env: state.env,
+    detached: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  state.daemon.stderr.on('data', chunk => {
+    stderr = `${stderr}${chunk}`.slice(-4096);
+  });
+  state.daemon.stdout?.resume();
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (state.daemon.exitCode !== null || state.daemon.signalCode !== null) {
+      throw new Error(`owned table daemon exited: ${stderr.trim() || state.daemon.exitCode || state.daemon.signalCode}`);
+    }
+    if (existsSync(socket)) return socket;
+    await delay(100);
+  }
+  throw new Error(`owned table daemon socket did not appear: ${stderr.trim() || socket}`);
+}
+
 function prepareRoutePaths(route, slot) {
   const allocated = allocateRouteFixture(route, { slot });
   const home = join(allocated.taskRoot, 'home');
@@ -987,28 +1012,30 @@ function productProofFromCollect(model, { initial, jsonBytes, continuationBytesE
 function attachRouteCleanup(state) {
   state.runCleanup = () => cleanupPartialLiveState(state, {
     async stopChromeDaemon() {
-      if (!state.env || !state.targetId) {
-        state.cleanup.daemonStopped = true;
-        return;
+      if (state.daemon) {
+        await stopChild(state.daemon);
+        state.daemon = null;
       }
-      const stop = runSync(process.execPath, [CDP_PATH, 'stop', state.targetId, '--format', 'json'], {
-        env: state.env,
-        timeout: 8_000,
-      });
-      if (stop.exitCode === 0 || /not running|no daemon/i.test(`${stop.stdout}\n${stop.stderr}`)) {
-        state.cleanup.daemonStopped = true;
-        return;
+      const marker = state.targetId ? `${CDP_PATH} _daemon ${state.targetId}` : null;
+      if (state.env && state.targetId) {
+        runSync(process.execPath, [CDP_PATH, 'stop', state.targetId, '--format', 'json'], {
+          env: state.env,
+          timeout: 8_000,
+        });
       }
-      const marker = `${CDP_PATH} _daemon ${state.targetId}`;
-      for (const line of matchingProcesses([marker])) {
-        const pid = Number(line.trim().split(/\s+/)[0]);
-        if (Number.isInteger(pid) && pid > 0) {
-          try { process.kill(pid, 'SIGTERM'); } catch {}
+      if (marker) {
+        for (const line of matchingProcesses([marker])) {
+          const pid = Number(line.trim().split(/\s+/)[0]);
+          if (Number.isInteger(pid) && pid > 0) {
+            try { process.kill(pid, 'SIGTERM'); } catch {}
+          }
         }
+        await delay(250);
+        state.cleanup.daemonStopped = matchingProcesses([marker]).length === 0;
+        invariant(state.cleanup.daemonStopped, 'owned table daemon process remained');
+        return;
       }
-      await delay(250);
-      state.cleanup.daemonStopped = matchingProcesses([marker]).length === 0;
-      invariant(state.cleanup.daemonStopped, `daemon stop failed: ${stop.stderr || stop.stdout}`);
+      state.cleanup.daemonStopped = true;
     },
     async stopChromeBrowser() {
       state.cleanup.browserStopped = await stopChild(state.browser);
@@ -1174,6 +1201,7 @@ async function runChromeProductRoute(route, browserPath, fixtureDocument, trial)
     env: null,
     target: null,
     targetId: null,
+    daemon: null,
     lock: null,
     server: null,
     playwrightBrowser: null,
@@ -1217,6 +1245,7 @@ async function runChromeProductRoute(route, browserPath, fixtureDocument, trial)
       clicks: provisioned.loadMoreClicks,
     };
     state.targetId = resolveCdpTargetId(state.env);
+    await startOwnedDaemon(state, state.targetId);
     ensureLiveActive();
     const collected = await runProductCommands(route, state.env, state.targetId);
     const after = await evaluateWebSocket(state.target.webSocketDebuggerUrl, `window.__tableCollectionOracle.state()`);
