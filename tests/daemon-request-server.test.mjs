@@ -353,6 +353,7 @@ describe('daemon request server lifecycle', () => {
     const conn = connection();
     T.createDaemonRequestConnection(conn, {
       handleRequest: vi.fn(async (_request, context) => {
+        expect(now).toHaveBeenCalledOnce();
         execution = context;
         return { ok: true, result: 'unavailable seam' };
       }),
@@ -365,7 +366,8 @@ describe('daemon request server lifecycle', () => {
     }));
     await drain();
 
-    expect(now).toHaveBeenCalledOnce();
+    expect(now).toHaveBeenCalledTimes(2);
+    expect(execution.deadline.now).toBe(now);
     expect(execution.deadline).toMatchObject({
       startedAt: 1234,
       pageAt: 296234,

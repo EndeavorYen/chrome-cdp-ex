@@ -167,6 +167,67 @@ describe('table collection monotonic deadline context', () => {
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
+  it('aborts and drains unawaited page work before finalization and leaves no live timers', async () => {
+    let nextTimer = 0;
+    const timers = new Map();
+    const setTimer = vi.fn((callback, delay) => {
+      const handle = ++nextTimer;
+      timers.set(handle, { callback, delay });
+      return handle;
+    });
+    const clearTimer = vi.fn(handle => timers.delete(handle));
+    const latePageEffect = vi.fn();
+    let operationSignal;
+    let finishUnderlyingOperation;
+    let operationOutcome;
+    let sleepOutcome;
+    const context = T.createDaemonRequestExecutionContext({
+      request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+      signal: new AbortController().signal,
+      now: () => 0,
+    });
+    const runtime = T.createTableCollectionRuntime(context, { setTimer, clearTimer });
+    const finalize = vi.fn(async () => {
+      expect(operationSignal.aborted).toBe(true);
+      await expect(operationOutcome).resolves.toMatchObject({
+        code: 'TABLE_COLLECTION_PAGE_DEADLINE',
+        phase: 'page',
+      });
+      await expect(sleepOutcome).resolves.toMatchObject({
+        code: 'TABLE_COLLECTION_PAGE_DEADLINE',
+        phase: 'page',
+      });
+      return 'committed-after-drain';
+    });
+
+    const lifecycle = (async () => {
+      try {
+        const collection = await (async () => {
+          operationOutcome = runtime.runCdpOperation(({ signal }) => new Promise(resolve => {
+            operationSignal = signal;
+            finishUnderlyingOperation = () => {
+              if (!signal.aborted) latePageEffect();
+              resolve('late-page-result');
+            };
+          })).catch(error => error);
+          sleepOutcome = runtime.sleep(30).catch(error => error);
+          await Promise.resolve();
+          return { termination: 'logical-count-reached' };
+        })();
+        return await runtime.runFinalization(() => finalize(collection, runtime));
+      } finally {
+        runtime.dispose();
+      }
+    })();
+
+    await expect(lifecycle).resolves.toBe('committed-after-drain');
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(timers.size).toBe(0);
+    finishUnderlyingOperation();
+    await Promise.resolve();
+    expect(latePageEffect).not.toHaveBeenCalled();
+  });
+
   it('starts finalization immediately after early page success and forbids later CDP work', async () => {
     let now = 500;
     const context = T.createDaemonRequestExecutionContext({
