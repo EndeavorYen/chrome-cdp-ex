@@ -666,6 +666,35 @@ function createDaemonRequestConnection(conn, {
   });
 }
 
+function createDaemonShutdown({
+  requestConnections,
+  getServer,
+  socketPath,
+  closeCdp,
+  exitProcess = code => process.exit(code),
+  unlinkSocket = unlinkSync,
+  isWindows = IS_WINDOWS,
+}) {
+  if (!(requestConnections instanceof Set)) throw new Error('daemon request connection registry must be a Set');
+  if (typeof getServer !== 'function') throw new Error('daemon server accessor must be a function');
+  if (typeof closeCdp !== 'function') throw new Error('daemon CDP closer must be a function');
+  if (typeof exitProcess !== 'function') throw new Error('daemon process exit must be a function');
+  if (typeof unlinkSocket !== 'function') throw new Error('daemon socket unlink must be a function');
+  let alive = true;
+  return (exitCode = 0) => {
+    if (!alive) return;
+    alive = false;
+    const reason = new Error('daemon shutting down');
+    for (const connection of [...requestConnections]) {
+      try { connection.abortAll(reason); } catch {}
+    }
+    try { getServer()?.close(); } catch {}
+    if (!isWindows) try { unlinkSocket(socketPath); } catch {}
+    try { closeCdp(); } catch {}
+    exitProcess(Number.isInteger(exitCode) ? exitCode : 0);
+  };
+}
+
 class RingBuffer {
   constructor(capacity) { this.buf = []; this.capacity = capacity; this.seq = 0; }
   push(entry) { entry._seq = ++this.seq; this.buf.push(entry); if (this.buf.length > this.capacity) this.buf.shift(); }
@@ -14099,19 +14128,14 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   });
 
   // Shutdown helpers
-  let alive = true;
   let server = null;
   const requestConnections = new Set();
-  function shutdown(exitCode = 0) {
-    if (!alive) return;
-    alive = false;
-    const reason = new Error('daemon shutting down');
-    for (const connection of [...requestConnections]) connection.abortAll(reason);
-    server?.close();
-    if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
-    cdp.close();
-    process.exit(Number.isInteger(exitCode) ? exitCode : 0);
-  }
+  const shutdown = createDaemonShutdown({
+    requestConnections,
+    getServer: () => server,
+    socketPath: sp,
+    closeCdp: () => cdp.close(),
+  });
 
   // Exit if target goes away or Chrome disconnects
   cdp.onEvent('Target.targetDestroyed', (params) => {
@@ -17701,5 +17725,5 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,
   createDaemonRequestExecutionContext, createTableCollectionRuntime,
   runTableCollectionLifecycle, createDaemonRequestConnection,
-  enforceDaemonTableCollectionGate,
+  createDaemonShutdown, enforceDaemonTableCollectionGate,
 } : undefined;
