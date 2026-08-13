@@ -127,6 +127,7 @@ describe('daemon NDJSON request transport', () => {
     ['null success result', '{"id":1,"ok":true,"result":null}\n'],
     ['numeric success result', '{"id":1,"ok":true,"result":0}\n'],
     ['object success result', '{"id":1,"ok":true,"result":{}}\n'],
+    ['resultless stop marker on click', '{"id":1,"ok":true,"stopAfter":true}\n'],
     ['failure without error', '{"id":1,"ok":false}\n'],
     ['scalar', '42\n'],
   ])('rejects a mutation response with an invalid terminal schema: %s', async (_label, frame) => {
