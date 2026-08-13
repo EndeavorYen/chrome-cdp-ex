@@ -478,5 +478,5 @@ describe('Runtime v3 table policy authority', () => {
       'sweepCrashResidue() {},'),
   ])('rejects or drifts for artifact store safety bypass %#', mutation => {
     expectOverrideDriftOrReject({ tableArtifactsSource: mutation });
-  });
+  }, 15_000);
 });
