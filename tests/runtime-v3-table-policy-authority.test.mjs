@@ -84,7 +84,7 @@ describe('Runtime v3 table policy authority', () => {
     expect(authority.observation).toMatchObject({
       owners: [
         'sampleRootFrameTables',
-        'certifiedAriaTable',
+        'validAriaIdentity',
         'observedTableEntry',
         'tableObservationModel',
         'boundedTableObservationJson',
