@@ -112,13 +112,25 @@ function checkReleaseMetadataContract(docs) {
     failures.push(`Release metadata version mismatch: package.json ${packageModel.version} != .claude-plugin/plugin.json ${pluginModel.version}`);
   }
   const version = packageModel.version;
+  const publishedVersion = '2.15.0';
   for (const [label, text] of [['README.md', docs.readme], ['docs/reference.md', docs.reference]]) {
     if (!text) continue;
-    if (!text.includes(`/releases/tag/v${version}`)) {
-      failures.push(`${label} is missing the current release tag v${version}`);
+    if (!text.includes(`/releases/tag/v${publishedVersion}`)) {
+      failures.push(`${label} is missing the published release tag v${publishedVersion}`);
     }
-    if (!text.includes(`pi-chrome-cdp-${version}.tgz`)) {
-      failures.push(`${label} is missing the current release tarball pi-chrome-cdp-${version}.tgz`);
+    if (!text.includes(`pi-chrome-cdp-${publishedVersion}.tgz`)) {
+      failures.push(`${label} is missing the published release tarball pi-chrome-cdp-${publishedVersion}.tgz`);
+    }
+    if (version !== publishedVersion) {
+      if (!text.toLowerCase().includes('unreleased') || !text.includes(`v${version}`)) {
+        failures.push(`${label} must identify v${version} as an unreleased candidate while v${publishedVersion} remains published`);
+      }
+      if (text.includes(`/releases/tag/v${version}`)) {
+        failures.push(`${label} must not fabricate an unreleased release tag v${version}`);
+      }
+      if (text.includes(`pi-chrome-cdp-${version}.tgz`)) {
+        failures.push(`${label} must not fabricate an unreleased tarball pi-chrome-cdp-${version}.tgz`);
+      }
     }
   }
   return failures;
