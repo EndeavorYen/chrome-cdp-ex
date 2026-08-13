@@ -17,7 +17,7 @@ const MCP_TOOL_MAPPERS = new Set([
   'cascade', 'click', 'components', 'controls', 'dismiss-modal', 'doctor', 'fill',
   'list-tabs', 'navigate', 'open-or-attach', 'overlay', 'perceive', 'press', 'qa-page',
   'record-snapshot', 'report', 'responsive-audit', 'screenshot', 'select-target',
-  'session-checkpoint', 'spawn-debug-browser', 'verify-click', 'viewport', 'wait-for',
+  'session-checkpoint', 'spawn-debug-browser', 'table', 'verify-click', 'viewport', 'wait-for',
 ]);
 const POLICY_BY_KIND = Object.freeze({
   read: Object.freeze({ mutates: false, authorization: 'standard', evidencePolicy: 'none', feedback: false }),
@@ -750,6 +750,25 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
     },
   },
   {
+    name: 'table',
+    description: 'Observe a bounded table snapshot, collect a virtualized table after confirm: true, or continue a private artifact. Selector and continue are mutually exclusive; collect requires a scroll container.',
+    inputSchema: {
+      type: 'object',
+      required: ['target'],
+      properties: {
+        target: stringSchema('Target prefix or named alias.'),
+        selector: stringSchema('Optional table CSS selector. Mutually exclusive with continue.'),
+        collect: booleanSchema('Scroll or click to collect virtualized rows. Requires confirm: true and scrollContainer.'),
+        scrollContainer: stringSchema('Virtualized scroll-container selector. Required when collect is true.'),
+        loadMore: stringSchema('Optional load-more control selector. Collect-only.'),
+        rowKeyColumn: { type: 'integer', minimum: 0, maximum: 255, description: 'Zero-based stable row-key column. Collect-only.' },
+        continue: stringSchema('Immutable continuation token. Mutually exclusive with selector and collect.'),
+        confirm: booleanSchema('Must be true for collect because collection scrolls or clicks.', { const: true }),
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'run_command',
     description: 'Escape hatch: run an allowlisted chrome-cdp-ex CLI command. Mutating commands require confirm: true.',
     inputSchema: {
@@ -839,7 +858,7 @@ const COMMAND_SURFACE_INPUT = [
   {"name":"emulate","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Emulation"],"help":{"synopsis":"emulate <target> [dark|light|no-preference|off|status]","summary":"Media feature emulation via CDP Emulation.setEmulatedMedia","order":59,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"upload","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"state-change","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["DOM"],"help":{"synopsis":"upload <target> <selector> <paths> [--format json]","summary":"Upload file(s) to <input type=\"file\"> (comma-separated paths)","order":60,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"text","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text"],"feedbackPolicy":null,"kind":"read","authorization":"standard","evidencePolicy":"none","domains":["Runtime"],"help":{"synopsis":"text <target> [selector]","summary":"Clean visible text — optional CSS selector to scope","order":61,"section":"observation"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
-  {"name":"table","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"conditional-mutation","authorization":"conditional","evidencePolicy":"none","domains":["Runtime"],"help":{"synopsis":"table <target> [TABLE_SELECTOR] [--format text|json] | table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text|json] | table <target> --continue TOKEN --format json","summary":"Table observation contract; v2.16 candidate currently serves legacy text only (JSON, collect, and continue unavailable)","order":62,"section":"observation"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
+  {"name":"table","aliases":[],"needsTarget":true,"mutates":false,"outputFormats":["text","json"],"feedbackPolicy":null,"kind":"conditional-mutation","authorization":"conditional","evidencePolicy":"none","domains":["Runtime"],"help":{"synopsis":"table <target> [TABLE_SELECTOR] [--format text|json] | table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text|json] | table <target> --continue TOKEN --format json","summary":"Bounded table observation with completeness, explicit virtual collection, and private continuation; fixed ceilings and MCP collect confirmation","order":62,"section":"observation"},"mcp":{"exposure":"tool-and-run-command","toolName":"table","mapper":"table"}},
   {"name":"back","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"full-perceive","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Page","Runtime"],"help":{"synopsis":"back <target>","summary":"Navigate back in browser history","order":63,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"forward","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"full-perceive","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Page","Runtime"],"help":{"synopsis":"forward <target>","summary":"Navigate forward in browser history","order":64,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"reload","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"state-change","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Page","Runtime"],"help":{"synopsis":"reload <target>","summary":"Reload current page and clear console/exception/navigation buffers","order":65,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
@@ -924,8 +943,8 @@ function surfaceDigest(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-export const COMMAND_SURFACE_IDENTITY = '4912e96146a3f3950615ca2aca414286879d925c0b3cc589c663ecb1fea0d537';
-export const MCP_SURFACE_IDENTITY = '4c3c13af2408a8d5507ca5445d524ff4f0b48964ae4234bc8d4f6297a613acd9';
+export const COMMAND_SURFACE_IDENTITY = 'ed09a707e1c2094b56d45db13e26f4c6277b52872abea9d99fdab12059f32f15';
+export const MCP_SURFACE_IDENTITY = 'd98eb8653763e131c55e17f91a48f7ee1f2e62ebab29a98752a88adac52219b3';
 if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
   fail('commands', 'reviewed catalog identity drifted');
 }

@@ -380,6 +380,28 @@ export function buildMcpToolCommand(name, args = {}) {
       }
       return optionalFormatJson(command);
     }
+    case 'table': {
+      const target = requireString(args, 'target');
+      const selector = typeof args.selector === 'string' ? args.selector : null;
+      const continuation = typeof args.continue === 'string' ? args.continue : null;
+      const collect = args.collect === true;
+      if (selector && continuation) throw new Error('table selector is mutually exclusive with continue');
+      if (collect && continuation) throw new Error('table collect is mutually exclusive with continue');
+      if (collect) requireConfirm(args, 'table');
+      const command = ['table', target];
+      if (selector) command.push(selector);
+      if (collect) command.push('--collect');
+      if (typeof args.scrollContainer === 'string') command.push('--scroll-container', args.scrollContainer);
+      if (typeof args.loadMore === 'string') command.push('--load-more', args.loadMore);
+      if (args.rowKeyColumn != null) {
+        if (!Number.isInteger(args.rowKeyColumn) || args.rowKeyColumn < 0 || args.rowKeyColumn > 255) {
+          throw new Error('table rowKeyColumn must be an integer in 0..255');
+        }
+        command.push('--row-key-column', String(args.rowKeyColumn));
+      }
+      if (continuation) command.push('--continue', continuation);
+      return optionalFormatJson(command);
+    }
     case 'run-command': {
       const commandName = normalizeAllowlistedCommand(args.command);
       const extra = Array.isArray(args.args) ? [...args.args] : [];
