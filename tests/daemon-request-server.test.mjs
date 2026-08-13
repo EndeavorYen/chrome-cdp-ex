@@ -694,6 +694,103 @@ describe('daemon request server lifecycle', () => {
     expect(lifecycleB.activeRequestCount()).toBe(0);
   });
 
+  it('fatally retires an unproven collect victim on duplicate ID without emitting a frame', async () => {
+    let terminated = false;
+    let finishIgnoredHandler;
+    let outerSignal;
+    let runtimeSignal;
+    let collectorReason;
+    const lateEffect = vi.fn();
+    const order = [];
+    const collectorCleanup = vi.fn(reason => {
+      collectorReason = reason;
+      expect(outerSignal.aborted).toBe(true);
+      expect(outerSignal.reason).toBe(reason);
+      expect(runtimeSignal.aborted).toBe(true);
+      expect(runtimeSignal.reason).toBe(reason);
+      order.push('collector-cleanup');
+    });
+    const requestCleanup = vi.fn((_request, execution, reason) => {
+      expect(execution.signal.aborted).toBe(true);
+      expect(execution.signal.reason).toBe(reason);
+      expect(reason).toBe(collectorReason);
+      order.push('request-cleanup');
+    });
+    const dispose = vi.fn(() => { order.push('dispose'); });
+    const onFatal = vi.fn(reason => {
+      expect(reason).toBe(collectorReason);
+      terminated = true;
+      order.push('fatal-shutdown');
+    });
+    const conn = connection();
+    conn.destroy.mockImplementation(() => {
+      order.push('destroy');
+      conn.destroyed = true;
+      conn.writable = false;
+    });
+    const lifecycle = T.createDaemonRequestConnection(conn, {
+      handleRequest: async (_request, execution) => {
+        outerSignal = execution.signal;
+        outerSignal.addEventListener('abort', () => order.push('outer-abort'), { once: true });
+        return T.runTableCollectionLifecycle(execution, {
+          collect: async runtime => {
+            runtimeSignal = runtime.signal;
+            runtimeSignal.addEventListener('abort', () => order.push('runtime-abort'), { once: true });
+            runtime.runCdpOperation(() => new Promise(() => {})).catch(() => {});
+            await Promise.resolve();
+            return new Promise(resolve => {
+              finishIgnoredHandler = () => {
+                if (!terminated) lateEffect();
+                resolve({ termination: 'logical-count-reached' });
+              };
+            });
+          },
+          finalize: vi.fn(),
+          cleanup: collectorCleanup,
+        });
+      },
+      cleanup: requestCleanup,
+      onDispose: dispose,
+      onFatal,
+      now: () => 0,
+    });
+    const request = {
+      id: 37,
+      cmd: 'table',
+      args: ['--collect', '--scroll-container', '.viewport'],
+    };
+    conn.emit('data', frame(request));
+    await drain();
+    conn.emit('data', frame(request));
+
+    expect(outerSignal.reason).toMatchObject({
+      code: 'TABLE_COLLECTION_DAEMON_TERMINATION_REQUIRED',
+      phase: 'server',
+    });
+    expect(collectorCleanup).toHaveBeenCalledOnce();
+    expect(requestCleanup).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(conn.destroy).toHaveBeenCalledOnce();
+    expect(onFatal).toHaveBeenCalledOnce();
+    expect(conn.write).not.toHaveBeenCalled();
+    expect(conn.end).not.toHaveBeenCalled();
+    expect(lifecycle.activeRequestCount()).toBe(0);
+    expect(order).toEqual([
+      'outer-abort',
+      'runtime-abort',
+      'collector-cleanup',
+      'request-cleanup',
+      'dispose',
+      'destroy',
+      'fatal-shutdown',
+    ]);
+
+    finishIgnoredHandler();
+    await drain();
+    expect(lateEffect).not.toHaveBeenCalled();
+    expect(onFatal).toHaveBeenCalledOnce();
+  });
+
   it.each([
     [{ cmd: 'status', args: [] }, /request id/],
     [{ id: 0, cmd: 'status', args: [] }, /request id/],
