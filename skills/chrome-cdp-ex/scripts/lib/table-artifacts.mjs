@@ -1,6 +1,11 @@
 import {
   constants as FS_CONSTANTS,
+  closeSync,
+  fstatSync,
   lstatSync,
+  openSync,
+  opendirSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   rmdirSync,
@@ -23,6 +28,12 @@ import { parseTableContinuationToken } from './table-contract.mjs';
 const ARTIFACT_OWNER_DIR = 'table-artifacts-v1';
 const ARTIFACT_ID_ATTEMPTS = 16;
 const MAX_MANIFEST_BYTES = 64 * 1024;
+const MAX_OWNER_RECORD_BYTES = 4096;
+const UNCOMMITTED_SWEEP_TTL_MS = 15 * 60 * 1000;
+const COMMITTED_SWEEP_TTL_MS = 24 * 60 * 60 * 1000;
+const SWEEP_LIMITS = Object.freeze({ targets: 64, sessions: 32, artifacts: 256, files: 3 });
+const OWNER_RECORD_NAME = 'owner.json';
+const OWNER_RECORD_SCHEMA = 'chrome-cdp-ex.table-artifact-owner.v1';
 const STORE_STATES = new WeakMap();
 const IDENTITY_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
 
@@ -209,7 +220,23 @@ async function initializeStore(state, request) {
   state.ownerReal = ownerReal;
   state.targetReal = targetReal;
   state.sessionReal = sessionReal;
+  state.createdAtMs = state.now();
+  if (!nonNegativeSafeInteger(state.createdAtMs)) {
+    fail('TABLE_ARTIFACT_STORAGE_INVALID', 'artifact store clock is invalid');
+  }
+  const ownerBytes = Buffer.from(`${JSON.stringify(ownerRecordForState(state), null, 2)}\n`, 'utf8');
+  try {
+    await writePrivateFile(state, request, join(state.sessionDir, OWNER_RECORD_NAME), ownerBytes);
+    await fsyncDirectory(state, request, state.sessionDir);
+  } catch (error) {
+    throw wrapError(error);
+  }
   state.initialized = true;
+  try {
+    sweepCrashResidue(state);
+  } catch (error) {
+    if (error?.code !== 'TABLE_ARTIFACT_CLEANUP_FAILED') throw error;
+  }
 }
 
 function validateBundle(bundle) {
@@ -268,11 +295,11 @@ function safeOwnedDirectory(path) {
   }
 }
 
-function verifyCleanupDirectory(state, entry = null) {
+function verifyCleanupDirectory(state, entry = null, sessionDir = state.sessionDir) {
   if (!state.initialized) return false;
-  if (entry && (entry.path !== join(state.sessionDir, entry.id)
+  if (entry && (entry.path !== join(sessionDir, entry.id)
     || !/^[0-9a-f]{32}$/.test(entry.id))) return false;
-  const paths = [state.runtimeDir, state.ownerDir, state.targetDir, state.sessionDir];
+  const paths = [state.runtimeDir, state.ownerDir, state.targetDir, sessionDir];
   if (entry) paths.push(entry.path);
   let parentReal = null;
   try {
@@ -295,14 +322,93 @@ function cleanupFailed() {
   );
 }
 
-function cleanupEntry(state, entry) {
+function readDirectoryBounded(path, limit) {
+  let directory;
+  let closeError = null;
+  const entries = [];
+  let truncated = false;
+  try {
+    directory = opendirSync(path);
+    for (let index = 0; index <= limit; index += 1) {
+      const entry = directory.readSync();
+      if (!entry) break;
+      if (index === limit) {
+        truncated = true;
+        break;
+      }
+      entries.push(entry.name);
+    }
+  } finally {
+    try { directory?.closeSync(); } catch (error) { closeError = error; }
+  }
+  if (closeError) throw closeError;
+  return { entries, truncated };
+}
+
+function readPrivateFileSync(path, maxBytes) {
+  let fd;
+  let result;
+  let primaryError = null;
+  let closeError = null;
+  try {
+    fd = openSync(path, FS_CONSTANTS.O_RDONLY | FS_CONSTANTS.O_NOFOLLOW);
+    const before = fstatSync(fd);
+    assertReadableFileStats(before, { maxBytes });
+    const bytes = readFileSync(fd);
+    const after = fstatSync(fd);
+    assertReadableFileStats(after, { maxBytes });
+    if (!Buffer.isBuffer(bytes) || bytes.length !== before.size || !stableFileIdentity(before, after)) {
+      throw cleanupFailed();
+    }
+    result = bytes;
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    try { if (fd !== undefined) closeSync(fd); } catch (error) { closeError = error; }
+  }
+  if (primaryError || closeError) throw cleanupFailed();
+  return result;
+}
+
+function ownerRecordForState(state) {
+  return {
+    schema: OWNER_RECORD_SCHEMA,
+    pid: state.pid,
+    createdAtMs: state.createdAtMs,
+    targetDigest: state.targetDigest,
+    sessionDigest: state.sessionDigest,
+  };
+}
+
+function validateOwnerRecord(value, { targetDigest, sessionDigest }) {
+  if (!exactObject(value, ['schema', 'pid', 'createdAtMs', 'targetDigest', 'sessionDigest'])
+    || value.schema !== OWNER_RECORD_SCHEMA
+    || !Number.isSafeInteger(value.pid) || value.pid <= 0
+    || !nonNegativeSafeInteger(value.createdAtMs)
+    || value.targetDigest !== targetDigest
+    || value.sessionDigest !== sessionDigest) throw cleanupFailed();
+  return value;
+}
+
+function readOwnerRecord(path, authority) {
+  try {
+    return validateOwnerRecord(
+      JSON.parse(fatalUtf8(readPrivateFileSync(path, MAX_OWNER_RECORD_BYTES))),
+      authority,
+    );
+  } catch {
+    throw cleanupFailed();
+  }
+}
+
+function cleanupEntry(state, entry, sessionDir = state.sessionDir) {
   if (!entry.directoryCreated) return true;
   try {
     lstatSync(entry.path);
   } catch (error) {
     return error?.code === 'ENOENT';
   }
-  if (!verifyCleanupDirectory(state, entry)) return false;
+  if (!verifyCleanupDirectory(state, entry, sessionDir)) return false;
   const paths = entryPaths(entry);
   for (const path of [paths.manifest, paths.rows]) {
     if (safeOwnedFile(path)) {
@@ -315,23 +421,6 @@ function cleanupEntry(state, entry) {
   try {
     lstatSync(entry.path);
     return false;
-  } catch (error) {
-    return error?.code === 'ENOENT';
-  }
-}
-
-function cleanupEmptySessionDirectory(state) {
-  if (!state.initialized) return true;
-  try {
-    lstatSync(state.sessionDir);
-  } catch (error) {
-    return error?.code === 'ENOENT';
-  }
-  try {
-    if (!verifyCleanupDirectory(state)) return false;
-    if (readdirSync(state.sessionDir).length !== 0) return false;
-    rmdirSync(state.sessionDir);
-    return true;
   } catch (error) {
     return error?.code === 'ENOENT';
   }
@@ -701,6 +790,180 @@ function releaseRequest(state, execution) {
   state.requests.delete(context);
 }
 
+function provenDeadProcess(state, pid) {
+  try {
+    state.processAlive(pid);
+    return false;
+  } catch (error) {
+    return error?.code === 'ESRCH';
+  }
+}
+
+function safeContainedChildDirectory(parent, name) {
+  const path = join(parent, name);
+  if (!safeOwnedDirectory(path)) return false;
+  try {
+    const parentReal = realpathSync(parent);
+    const actual = realpathSync(path);
+    return isContained(parentReal, actual) && actual !== parentReal;
+  } catch {
+    return false;
+  }
+}
+
+function sweepFileStats(path, maxBytes) {
+  try {
+    const stats = lstatSync(path);
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.uid !== currentUid()
+      || modeBits(stats) !== 0o600 || stats.nlink !== 1 || stats.size > maxBytes) return null;
+    return stats;
+  } catch {
+    return null;
+  }
+}
+
+function sweepArtifact(state, sessionDir, sessionDigest, artifactId, now) {
+  const entry = {
+    id: artifactId,
+    path: join(sessionDir, artifactId),
+    directoryCreated: true,
+    committed: false,
+    request: null,
+  };
+  if (!verifyCleanupDirectory(state, entry, sessionDir)) return false;
+  let listing;
+  try { listing = readDirectoryBounded(entry.path, SWEEP_LIMITS.files); } catch { return false; }
+  if (listing.truncated || listing.entries.some(name => !['rows.tsv', 'manifest.json'].includes(name))) {
+    return false;
+  }
+  const paths = entryPaths(entry);
+  const rowsPresent = listing.entries.includes('rows.tsv');
+  const manifestPresent = listing.entries.includes('manifest.json');
+  const stats = [lstatSync(entry.path)];
+  if (rowsPresent) {
+    const rowsStats = sweepFileStats(paths.rows, TABLE_EXTRACTION_LIMITS.maxArtifactBytes);
+    if (!rowsStats) return false;
+    stats.push(rowsStats);
+  }
+  if (manifestPresent) {
+    const manifestStats = sweepFileStats(paths.manifest, MAX_MANIFEST_BYTES);
+    if (!manifestStats || !rowsPresent) return false;
+    let manifest;
+    try {
+      manifest = validateCommittedManifest(
+        JSON.parse(fatalUtf8(readPrivateFileSync(paths.manifest, MAX_MANIFEST_BYTES))),
+        { targetDigest: state.targetDigest, sessionDigest },
+        artifactId,
+      );
+    } catch {
+      return false;
+    }
+    if (manifest.artifact.bytes !== stats[1].size) return false;
+    stats.push(manifestStats);
+  }
+  const newestMtime = Math.max(...stats.map(value => value.mtimeMs));
+  const ttl = manifestPresent ? COMMITTED_SWEEP_TTL_MS : UNCOMMITTED_SWEEP_TTL_MS;
+  if (!Number.isFinite(newestMtime) || now < newestMtime || now - newestMtime < ttl) return null;
+  return cleanupEntry(state, entry, sessionDir);
+}
+
+function removeOwnerAndEmptySession(state, sessionDir, sessionDigest, expectedOwner = null) {
+  try {
+    lstatSync(sessionDir);
+  } catch (error) {
+    return error?.code === 'ENOENT';
+  }
+  if (!verifyCleanupDirectory(state, null, sessionDir)) return false;
+  let listing;
+  try { listing = readDirectoryBounded(sessionDir, SWEEP_LIMITS.artifacts); } catch { return false; }
+  if (listing.truncated || listing.entries.length !== 1 || listing.entries[0] !== OWNER_RECORD_NAME) {
+    return false;
+  }
+  const ownerPath = join(sessionDir, OWNER_RECORD_NAME);
+  let owner;
+  try {
+    owner = readOwnerRecord(ownerPath, { targetDigest: state.targetDigest, sessionDigest });
+  } catch {
+    return false;
+  }
+  if (expectedOwner && (owner.pid !== expectedOwner.pid
+    || owner.createdAtMs !== expectedOwner.createdAtMs)) return false;
+  try {
+    unlinkSync(ownerPath);
+    if (readdirSync(sessionDir).length !== 0) return false;
+    rmdirSync(sessionDir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sweepDeadSession(state, sessionDigest, now) {
+  const sessionDir = join(state.targetDir, sessionDigest);
+  if (!verifyCleanupDirectory(state, null, sessionDir)) return false;
+  let owner;
+  try {
+    owner = readOwnerRecord(join(sessionDir, OWNER_RECORD_NAME), {
+      targetDigest: state.targetDigest,
+      sessionDigest,
+    });
+  } catch {
+    return false;
+  }
+  if (!provenDeadProcess(state, owner.pid)) return null;
+  let listing;
+  try { listing = readDirectoryBounded(sessionDir, SWEEP_LIMITS.artifacts); } catch { return false; }
+  let failed = listing.truncated;
+  for (const name of listing.entries) {
+    if (name === OWNER_RECORD_NAME) continue;
+    if (!/^[0-9a-f]{32}$/.test(name)) {
+      failed = true;
+      continue;
+    }
+    const cleaned = sweepArtifact(state, sessionDir, sessionDigest, name, now);
+    if (cleaned === false) failed = true;
+  }
+  let remaining;
+  try { remaining = readDirectoryBounded(sessionDir, SWEEP_LIMITS.artifacts); } catch { return false; }
+  if (!remaining.truncated && remaining.entries.length === 1
+    && remaining.entries[0] === OWNER_RECORD_NAME) {
+    if (!removeOwnerAndEmptySession(state, sessionDir, sessionDigest, owner)) failed = true;
+  }
+  return failed ? false : true;
+}
+
+function sweepCrashResidue(state) {
+  if (state.platform === 'win32' || !state.initialized) return;
+  if (!verifyCleanupDirectory(state)) {
+    fail('TABLE_ARTIFACT_STORAGE_INVALID', 'private artifact session authority is invalid');
+  }
+  let failed = false;
+  try {
+    const targets = readDirectoryBounded(state.ownerDir, SWEEP_LIMITS.targets);
+    failed ||= targets.truncated || targets.entries.some(name => (
+      !/^[0-9a-f]{64}$/.test(name) || !safeContainedChildDirectory(state.ownerDir, name)
+    ));
+    const sessions = readDirectoryBounded(state.targetDir, SWEEP_LIMITS.sessions);
+    failed ||= sessions.truncated;
+    const now = state.now();
+    if (!Number.isFinite(now) || now < 0) throw cleanupFailed();
+    for (const sessionDigest of sessions.entries) {
+      if (sessionDigest === state.sessionDigest) continue;
+      if (!/^[0-9a-f]{64}$/.test(sessionDigest)) {
+        failed = true;
+        continue;
+      }
+      const result = sweepDeadSession(state, sessionDigest, now);
+      if (result === false) failed = true;
+    }
+  } catch (error) {
+    if (error instanceof TableArtifactStorageError
+      && error.code === 'TABLE_ARTIFACT_STORAGE_INVALID') throw error;
+    failed = true;
+  }
+  if (failed) throw cleanupFailed();
+}
+
 function cleanupSession(state) {
   for (const request of state.requests.values()) request.rolledBack = true;
   let failed = false;
@@ -713,12 +976,22 @@ function cleanupSession(state) {
   for (const [context, request] of state.requests) {
     if (request.entries.size === 0) state.requests.delete(context);
   }
-  if (state.entries.size === 0 && !cleanupEmptySessionDirectory(state)) failed = true;
+  if (state.entries.size === 0 && !removeOwnerAndEmptySession(
+    state,
+    state.sessionDir,
+    state.sessionDigest,
+    ownerRecordForState(state),
+  )) failed = true;
   if (failed) throw cleanupFailed();
 }
 
 function makeStore(input, dependencies) {
   const options = validateFactoryInput(input);
+  if (!Number.isSafeInteger(dependencies.pid) || dependencies.pid <= 0
+    || typeof dependencies.now !== 'function'
+    || typeof dependencies.processAlive !== 'function') {
+    fail('TABLE_ARTIFACT_STORAGE_INVALID', 'artifact store runtime dependencies are invalid');
+  }
   const targetDigest = digest(options.targetId);
   const sessionDigest = digest(options.sessionId);
   const ownerDir = join(options.runtimeDir, ARTIFACT_OWNER_DIR);
@@ -731,6 +1004,11 @@ function makeStore(input, dependencies) {
     sessionDir,
     targetDigest,
     sessionDigest,
+    ownerRecordPath: join(sessionDir, OWNER_RECORD_NAME),
+    pid: dependencies.pid,
+    now: dependencies.now,
+    processAlive: dependencies.processAlive,
+    createdAtMs: null,
     initialized: false,
     entries: new Map(),
     requests: new Map(),
@@ -743,7 +1021,7 @@ function makeStore(input, dependencies) {
     rollbackRequest: execution => rollbackRequest(state, execution),
     releaseRequest: execution => releaseRequest(state, execution),
     cleanupSession: () => cleanupSession(state),
-    sweepCrashResidue() {},
+    sweepCrashResidue: () => sweepCrashResidue(state),
   });
   STORE_STATES.set(store, state);
   return store;
@@ -752,6 +1030,9 @@ function makeStore(input, dependencies) {
 const DEFAULT_DEPENDENCIES = Object.freeze({
   randomBytes: secureRandomBytes,
   fs: Object.freeze({ lstat, mkdir, open: openFile, realpath }),
+  now: Date.now,
+  pid: process.pid,
+  processAlive: pid => process.kill(pid, 0),
 });
 
 export function createTableArtifactStore(input) {
@@ -761,6 +1042,9 @@ export function createTableArtifactStore(input) {
 function createTableArtifactStoreWithDependencies(input, dependencies = {}) {
   return makeStore(input, {
     randomBytes: dependencies.randomBytes || DEFAULT_DEPENDENCIES.randomBytes,
+    now: dependencies.now || DEFAULT_DEPENDENCIES.now,
+    pid: dependencies.pid || DEFAULT_DEPENDENCIES.pid,
+    processAlive: dependencies.processAlive || DEFAULT_DEPENDENCIES.processAlive,
     fs: {
       ...DEFAULT_DEPENDENCIES.fs,
       ...(dependencies.fs || {}),
@@ -777,6 +1061,7 @@ function inspectTableArtifactStore(store) {
     sessionDir: state.sessionDir,
     targetDigest: state.targetDigest,
     sessionDigest: state.sessionDigest,
+    ownerRecordPath: state.ownerRecordPath,
     activeRequestCount: state.requests.size,
     registeredArtifactIds: Object.freeze([...state.entries.keys()]),
   });
