@@ -36,7 +36,7 @@ function page(tables = [table()], overrides = {}) {
   });
 }
 
-function executeSamplerTableRows(tableRows) {
+function executeSamplerTableRows(tableRows, tableAttributes = []) {
   class N {
     constructor(type, value = null) { this.t = type; this.v = value; this.p = null; this.c = []; }
     append(child) { child.p = this; this.c.push(child); return child; }
@@ -74,8 +74,9 @@ function executeSamplerTableRows(tableRows) {
     item(index) { return this.v[index] || null; }
   }
   const root = new E('html');
-  for (const rows of tableRows) {
-    const tableNode = root.append(new T());
+  for (let tableIndex = 0; tableIndex < tableRows.length; tableIndex += 1) {
+    const rows = tableRows[tableIndex];
+    const tableNode = root.append(new T(tableAttributes[tableIndex] || {}));
     const body = tableNode.append(new E('tbody'));
     for (const cells of rows) {
       const row = body.append(new E('tr'));
@@ -342,6 +343,15 @@ describe('trusted table sampler source', () => {
       truncationReason: 'sample-byte-limit',
     });
   });
+
+  it('executes aria-rowcount minus one as explicit unknown evidence', () => {
+    const sampled = executeSamplerTableRows([[['safe']]], [{ 'aria-rowcount': '-1' }]);
+
+    expect(sampled.tables[0]).toMatchObject({
+      ariaRowCount: -1,
+      dataRows: [{ cells: ['safe'] }],
+    });
+  });
 });
 
 describe('bounded table sampler host validation', () => {
@@ -424,5 +434,13 @@ describe('bounded table sampler host validation', () => {
     expect(() => parseTableSamplerResult(page([table()], {
       tablesSeen: 2,
     }))).toThrow(/omission|truncation/i);
+  });
+
+  it('rejects a hostile wire row whose combined canonical cells exceed 4096 bytes', () => {
+    expect(() => parseTableSamplerResult(page([table({
+      dataRows: [{ rawAriaRowIndex: null, cells: ['a'.repeat(3000), 'b'.repeat(3000)] }],
+      directRowsSeen: 1,
+      dataRowsSeen: 1,
+    })]))).toThrow(/canonical.*4096|row.*bound/i);
   });
 });
