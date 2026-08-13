@@ -99,7 +99,10 @@ describe('trusted table sampler source', () => {
         this._localName = localName;
         this._attributes = attributes;
       }
-      get localName() { return this._localName; }
+      get localName() {
+        if (!(this instanceof ElementLike)) throw new TypeError('Illegal invocation');
+        return this._localName;
+      }
       getAttribute(name) { return Object.hasOwn(this._attributes, name) ? this._attributes[name] : null; }
       querySelectorAll() { poisonCalls += 1; throw new Error('page querySelectorAll'); }
       closest() { poisonCalls += 1; throw new Error('page closest'); }
@@ -111,7 +114,7 @@ describe('trusted table sampler source', () => {
       constructor(attributes) { super('table', attributes); }
     }
     class DocumentLike extends NodeLike {
-      constructor(root) { super(9); this._root = root; }
+      constructor(root) { super(9); this._root = root; root._parent = this; }
       get documentElement() { return this._root; }
       querySelectorAll(selector) {
         if (selector !== 'table') throw new Error('unexpected selector');
