@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { runInNewContext } from 'node:vm';
 
 import {
   TABLE_SAMPLER_LIMITS,
@@ -47,16 +48,159 @@ describe('trusted table sampler source', () => {
       maxSerializedBytes: 524288,
       maxCaptionBytes: 512,
       maxCellTextBytes: 16384,
+      maxTextNodesPerCell: 4096,
     });
     expect(expression).toContain('chrome-cdp-ex.table-sample.v1');
     expect(expression).toContain('HTMLTableElement');
-    expect(expression).toContain('Object.getOwnPropertyDescriptor');
+    expect(expression).toContain('const O = Object');
+    expect(expression).toContain('O.getOwnPropertyDescriptor');
     expect(expression).toContain('Node.prototype');
     expect(expression).toContain('Element.prototype');
     expect(expression).toContain('Text.prototype');
     expect(expression).not.toMatch(/\.querySelector|\.querySelectorAll|\.matches|\.closest|\.textContent/);
-    expect(expression).not.toMatch(/JSON\.stringify|new TextEncoder|\.toJSON|for\s*\([^)]*\sof\s/);
+    expect(expression).not.toMatch(/JSON\.stringify|new TextEncoder|\.toJSON|\.filter\(|\.map\(|\.isPrototypeOf\(|\.test\(|\.padStart\(|for\s*\([^)]*\sof\s/);
     expect(Buffer.byteLength(expression, 'utf8')).toBeLessThan(100_000);
+  });
+
+  it('executes against captured DOM primitives without invoking poisoned page callbacks', () => {
+    let poisonCalls = 0;
+    class NodeLike {
+      constructor(type, value = null) {
+        this._type = type;
+        this._value = value;
+        this._parent = null;
+        this._children = [];
+      }
+      append(child) {
+        child._parent = this;
+        this._children.push(child);
+        return this;
+      }
+      get parentNode() { return this._parent; }
+      get firstChild() { return this._children[0] || null; }
+      get nextSibling() {
+        if (!this._parent) return null;
+        const index = this._parent._children.indexOf(this);
+        return this._parent._children[index + 1] || null;
+      }
+      get nodeType() { return this._type; }
+      get nodeValue() { return this._value; }
+      get textContent() { poisonCalls += 1; throw new Error('page textContent'); }
+      toJSON() { poisonCalls += 1; throw new Error('page toJSON'); }
+    }
+    class ElementLike extends NodeLike {
+      constructor(localName, attributes = {}) {
+        super(1);
+        this._localName = localName;
+        this._attributes = attributes;
+      }
+      get localName() { return this._localName; }
+      getAttribute(name) { return Object.hasOwn(this._attributes, name) ? this._attributes[name] : null; }
+      querySelectorAll() { poisonCalls += 1; throw new Error('page querySelectorAll'); }
+      closest() { poisonCalls += 1; throw new Error('page closest'); }
+    }
+    class TextLike extends NodeLike {
+      constructor(value) { super(3, value); }
+    }
+    class HTMLTableElementLike extends ElementLike {
+      constructor(attributes) { super('table', attributes); }
+    }
+    class DocumentLike extends NodeLike {
+      constructor(root) { super(9); this._root = root; }
+      get documentElement() { return this._root; }
+      querySelectorAll(selector) {
+        if (selector !== 'table') throw new Error('unexpected selector');
+        return this._root._children.filter(child => child instanceof HTMLTableElementLike);
+      }
+    }
+    const root = new ElementLike('html');
+    const outer = root.append(new HTMLTableElementLike({ 'aria-label': 'Orders', 'aria-rowcount': '2' }));
+    const body = outer.append(new ElementLike('tbody'));
+    const first = body.append(new ElementLike('tr', { 'aria-rowindex': '1' }));
+    first.append(new ElementLike('td')).append(new TextLike('A'));
+    first.append(new ElementLike('td')).append(new TextLike(''));
+    const second = body.append(new ElementLike('tr', { 'aria-rowindex': '2' }));
+    const cell = second.append(new ElementLike('td'));
+    cell.append(new TextLike('B'));
+    const nested = cell.append(new HTMLTableElementLike());
+    nested.append(new ElementLike('tr')).append(new ElementLike('td')).append(new TextLike('poison nested'));
+    const document = new DocumentLike(root);
+    const context = {
+      Object,
+      Array,
+      String,
+      Number,
+      Node: NodeLike,
+      Element: ElementLike,
+      Text: TextLike,
+      Document: DocumentLike,
+      HTMLTableElement: HTMLTableElementLike,
+      document,
+      JSON: Object.freeze({ stringify: () => { poisonCalls += 1; throw new Error('page JSON'); } }),
+      TextEncoder: class { constructor() { poisonCalls += 1; throw new Error('page TextEncoder'); } },
+    };
+
+    const encoded = runInNewContext(buildTableSamplerExpression('table'), context);
+    const sampled = parseTableSamplerResult(encoded);
+
+    expect(poisonCalls).toBe(0);
+    expect(sampled.tables).toHaveLength(1);
+    expect(sampled.tables[0]).toMatchObject({
+      caption: 'Orders',
+      ariaRowCount: 2,
+      dataRows: [
+        { rawAriaRowIndex: 1, cells: ['A', ''] },
+        { rawAriaRowIndex: 2, cells: ['B'] },
+      ],
+    });
+  });
+
+  it('executes the direct table-row fallback without invoking a getter on a synthetic object', () => {
+    class N {
+      constructor(type, value = null) { this.t = type; this.v = value; this.p = null; this.c = []; }
+      append(child) { child.p = this; this.c.push(child); return this; }
+      get parentNode() { return this.p; }
+      get firstChild() { return this.c[0] || null; }
+      get nextSibling() { return this.p?.c[this.p.c.indexOf(this) + 1] || null; }
+      get nodeType() { return this.t; }
+      get nodeValue() { return this.v; }
+    }
+    class E extends N {
+      constructor(name, attrs = {}) { super(1); this.n = name; this.a = attrs; }
+      get localName() { return this.n; }
+      getAttribute(name) { return Object.hasOwn(this.a, name) ? this.a[name] : null; }
+    }
+    class X extends N { constructor(value) { super(3, value); } }
+    class T extends E { constructor() { super('table'); } }
+    class D extends N {
+      constructor(root) { super(9); this.r = root; }
+      get documentElement() { return this.r; }
+      querySelectorAll() { return this.r.c; }
+    }
+    const root = new E('html');
+    const tableNode = new T();
+    const row = new E('tr');
+    const cell = new E('td');
+    cell.append(new X('direct'));
+    row.append(cell);
+    tableNode.append(row);
+    root.append(tableNode);
+    const encoded = runInNewContext(buildTableSamplerExpression('table'), {
+      Object, Array, String, Number, Node: N, Element: E, Text: X, Document: D,
+      HTMLTableElement: T, document: new D(root),
+    });
+
+    expect(parseTableSamplerResult(encoded).tables[0].dataRows[0].cells).toEqual(['direct']);
+  });
+
+  it('drops the whole offending row for cell, text-node, canonical-row, or aggregate-byte pressure', () => {
+    const expression = buildTableSamplerExpression('table');
+
+    expect(expression).toContain("truncationReason = 'cell-limit'");
+    expect(expression).toContain("truncationReason = 'row-too-large'");
+    expect(expression).toContain("truncationReason = 'sample-byte-limit'");
+    expect(expression).toContain('maxTextNodesPerCell');
+    expect(expression).toMatch(/utf8Bytes\([^)]*candidate/i);
   });
 });
 
