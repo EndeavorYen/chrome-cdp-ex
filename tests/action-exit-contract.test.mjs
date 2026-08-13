@@ -772,6 +772,31 @@ describe('ambiguous action completion contract (#150)', () => {
     }
   });
 
+  it.each([
+    'connect ECONNREFUSED /fixture/runtime/cdp-ABC12345.sock',
+    'Timed out connecting to daemon socket: /fixture/runtime/cdp-ABC12345.sock',
+  ])('keeps a proven pre-dispatch disconnect restartable: %s', message => {
+    const model = JSON.parse(cdpTest.formatCliError(new Error(message), {
+      cmd: 'click',
+      targetPrefix: 'ABC12345',
+      format: 'json',
+    }));
+
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.cli-error.v1',
+      ok: false,
+      recovery: {
+        kind: 'daemon-disconnect',
+        strategy: 'restart-tab-daemon',
+        run: 'cdp perceive ABC12345 -C -d 8',
+      },
+      nextSteps: ['cdp perceive ABC12345 -C -d 8'],
+    });
+    expect(model).not.toHaveProperty('completion');
+    expect(model).not.toHaveProperty('sideEffectMayHaveOccurred');
+    expect(model).not.toHaveProperty('retrySafe');
+  });
+
   it('returns verify-before-retry JSON after a mutation commits but its receipt is lost', async () => {
     const fixture = await committedActionDisconnect();
     const output = cdpTest.formatCliError(fixture.error, {
