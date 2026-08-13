@@ -148,7 +148,23 @@ describe('canonical table bytes and bounded previews', () => {
   });
 
   it('rejects more than 256 direct cells in one canonical row', () => {
+    expect(canonicalizeTableCells(Array.from({ length: 256 }, () => 'x')).split('\t')).toHaveLength(256);
     expect(() => canonicalizeTableCells(Array.from({ length: 257 }, () => 'x'))).toThrow(/item bound/i);
+  });
+
+  it('rejects malformed and over-bound preview-row arrays without treating them as cells', () => {
+    const sparseRows = Array(2);
+    sparseRows[0] = 'first';
+    const accessorRows = ['first'];
+    Object.defineProperty(accessorRows, '1', { enumerable: true, get: () => 'second' });
+    const rowProxy = new Proxy(['first'], {});
+
+    expect(() => buildInlineTablePreview(sparseRows)).toThrow(/dense/i);
+    expect(() => buildInlineTablePreview(accessorRows)).toThrow(/enumerable data/i);
+    expect(() => buildInlineTablePreview(rowProxy)).toThrow(/proxy/i);
+    expect(() => buildInlineTablePreview(['\ud800'])).toThrow(/surrogate/i);
+    expect(() => buildInlineTablePreview(['a'.repeat(8193)])).toThrow(/byte bound/i);
+    expect(() => buildInlineTablePreview(Array.from({ length: 100001 }, () => 'x'))).toThrow(/item bound/i);
   });
 
   it('never lets callers raise fixed collection or preview ceilings', () => {
