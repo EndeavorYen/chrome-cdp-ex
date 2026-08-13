@@ -174,6 +174,15 @@ class TableCollectionDaemonTerminationRequiredError extends Error {
   }
 }
 
+class TableCollectionSynchronousCleanupRequiredError extends Error {
+  constructor(cleanupScope) {
+    super(`table: ${cleanupScope} cleanup must complete synchronously and return undefined`);
+    this.name = 'TableCollectionSynchronousCleanupRequiredError';
+    this.code = 'TABLE_COLLECTION_SYNC_CLEANUP_REQUIRED';
+    this.cleanupScope = cleanupScope;
+  }
+}
+
 function monotonicNow() {
   return performance.now();
 }
@@ -221,12 +230,28 @@ function daemonRequestHasUnsettledInvocations(executionContext) {
   return (TABLE_COLLECTION_RUNTIME_STATES.get(executionContext)?.ownedInvocations.size || 0) > 0;
 }
 
+function invokeSynchronousCleanup(cleanup, cleanupScope, args) {
+  try {
+    return cleanup(...args) === undefined
+      ? null
+      : new TableCollectionSynchronousCleanupRequiredError(cleanupScope);
+  } catch (error) {
+    return error;
+  }
+}
+
+function retainFatalCleanupError(fatalError, cleanupError) {
+  if (!cleanupError || cleanupError === fatalError) return;
+  if (!Array.isArray(fatalError.cleanupErrors)) fatalError.cleanupErrors = [];
+  if (fatalError.cleanupErrors.length < 16) fatalError.cleanupErrors.push(cleanupError);
+}
+
 function prepareDaemonCollectionFatal(executionContext, error) {
   const state = TABLE_COLLECTION_RUNTIME_STATES.get(executionContext);
-  if (!state) return;
+  if (!state) return null;
   state.closePageWork?.();
   state.abortLifecycle?.(error);
-  state.startCleanup?.(error)?.catch(() => {});
+  return state.startCleanup?.(error) || null;
 }
 
 function isDaemonTerminationRequired(error) {
@@ -505,15 +530,13 @@ async function runTableCollectionLifecycle(executionContext, {
   if (typeof cleanup !== 'function') throw new Error('table: cleanup seam is required');
   const runtime = createTableCollectionRuntime(executionContext);
   const runtimeState = TABLE_COLLECTION_RUNTIME_STATES.get(executionContext);
-  let cleanupPromise = null;
+  let cleanupStarted = false;
+  let cleanupFailure = null;
   const startCleanup = error => {
-    if (cleanupPromise) return cleanupPromise;
-    try {
-      cleanupPromise = Promise.resolve(cleanup(error));
-    } catch (cleanupError) {
-      cleanupPromise = Promise.reject(cleanupError);
-    }
-    return cleanupPromise;
+    if (cleanupStarted) return cleanupFailure;
+    cleanupStarted = true;
+    cleanupFailure = invokeSynchronousCleanup(cleanup, 'collector', [error]);
+    return cleanupFailure;
   };
   runtimeState.startCleanup = startCleanup;
   try {
@@ -535,10 +558,11 @@ async function runTableCollectionLifecycle(executionContext, {
       }
     }
     if (isDaemonTerminationRequired(failure)) {
-      startCleanup(failure).catch(() => {});
+      retainFatalCleanupError(failure, startCleanup(failure));
       throw failure;
     }
-    await startCleanup(failure);
+    const cleanupError = startCleanup(failure);
+    if (cleanupError) throw cleanupError;
     throw failure;
   } finally {
     runtime.dispose();
@@ -577,7 +601,7 @@ function validateDaemonProtocolRequest(input) {
 
 function createDaemonRequestConnection(conn, {
   handleRequest,
-  cleanup = async () => {},
+  cleanup = () => {},
   onDispose = () => {},
   onDisconnect = () => {},
   onFatal = () => {},
@@ -626,17 +650,18 @@ function createDaemonRequestConnection(conn, {
     return writePayload(payload);
   };
   const cleanupRequest = (entry, reason) => {
-    if (entry.cleanupPromise) return entry.cleanupPromise;
+    if (entry.cleanupStarted) return entry.cleanupFailure;
+    entry.cleanupStarted = true;
     entry.cleaned = true;
-    try {
-      entry.cleanupPromise = Promise.resolve(cleanup(entry.request, entry.execution, reason)).catch(() => {});
-    } catch {
-      entry.cleanupPromise = Promise.resolve();
-    }
-    return entry.cleanupPromise;
+    entry.cleanupFailure = invokeSynchronousCleanup(
+      cleanup,
+      'request',
+      [entry.request, entry.execution, reason],
+    );
+    return entry.cleanupFailure;
   };
   const disposeRequest = (entry, { abort = null, clean = false } = {}) => {
-    if (entry.disposed) return;
+    if (entry.disposed) return entry.cleanupFailure;
     entry.disposed = true;
     if (entry.executionTimer !== null) {
       clearTimer(entry.executionTimer);
@@ -644,8 +669,9 @@ function createDaemonRequestConnection(conn, {
     }
     if (abort && !entry.controller.signal.aborted) entry.controller.abort(abort);
     if (active.get(entry.id) === entry) active.delete(entry.id);
-    if (clean) cleanupRequest(entry, abort);
+    const cleanupError = clean ? cleanupRequest(entry, abort) : entry.cleanupFailure;
     try { onDispose(entry.request, entry.execution); } catch {}
+    return cleanupError;
   };
   const notifyDisconnect = error => {
     if (disconnectNotified || active.size > 0) return;
@@ -657,18 +683,26 @@ function createDaemonRequestConnection(conn, {
     : new Error(`daemon client disconnected: ${cause || 'connection closed'}`);
   const abortAll = (reason, { retire = true } = {}) => {
     const error = disconnectReason(reason);
+    const unsafeCollect = !retire && [...active.values()].some(entry => (
+      entry.execution.deadline
+      && (!entry.handlerSettled || daemonRequestHasUnsettledInvocations(entry.execution))
+    ));
+    if (unsafeCollect) {
+      terminateForFatal(new TableCollectionDaemonTerminationRequiredError());
+      return;
+    }
     disconnected = true;
+    let cleanupFailure = null;
     for (const entry of [...active.values()]) {
-      const mustRetain = !retire && entry.execution.deadline && !entry.handlerSettled;
-      if (mustRetain) {
-        if (!entry.controller.signal.aborted) entry.controller.abort(error);
-        cleanupRequest(entry, error);
-      } else {
-        if (retire) prepareDaemonCollectionFatal(entry.execution, error);
-        disposeRequest(entry, { abort: error, clean: true });
-      }
+      if (retire) retainFatalCleanupError(error, prepareDaemonCollectionFatal(entry.execution, error));
+      const entryCleanupFailure = disposeRequest(entry, { abort: error, clean: true });
+      cleanupFailure ||= entryCleanupFailure;
     }
     removeConnectionListeners();
+    if (!retire && cleanupFailure) {
+      terminateForFatal(cleanupFailure);
+      return;
+    }
     notifyDisconnect(error);
   };
   const onEnd = () => abortAll('connection ended', { retire: false });
@@ -679,8 +713,12 @@ function createDaemonRequestConnection(conn, {
     if (poisoned) return;
     poisoned = true;
     disconnected = true;
-    for (const entry of [...active.values()]) prepareDaemonCollectionFatal(entry.execution, error);
-    for (const entry of [...active.values()]) disposeRequest(entry, { abort: error, clean: true });
+    const entries = [...active.values()];
+    for (const entry of entries) {
+      retainFatalCleanupError(error, prepareDaemonCollectionFatal(entry.execution, error));
+    }
+    for (const entry of entries) retainFatalCleanupError(error, cleanupRequest(entry, error));
+    for (const entry of entries) disposeRequest(entry, { abort: error });
     removeConnectionListeners();
     try { conn.destroy?.(); } catch {}
     notifyDisconnect(error);
@@ -726,7 +764,8 @@ function createDaemonRequestConnection(conn, {
       controller,
       disposed: false,
       cleaned: false,
-      cleanupPromise: null,
+      cleanupStarted: false,
+      cleanupFailure: null,
       handlerSettled: false,
       executionTimer: null,
     };
@@ -736,8 +775,12 @@ function createDaemonRequestConnection(conn, {
         terminateForFatal(new TableCollectionDaemonTerminationRequiredError());
       }, execution.deadline.serverAt - execution.deadline.startedAt);
     }
-    const finishWithoutResponse = async reason => {
-      await cleanupRequest(entry, reason);
+    const finishWithoutResponse = reason => {
+      const cleanupError = cleanupRequest(entry, reason);
+      if (cleanupError) {
+        terminateForFatal(cleanupError);
+        return;
+      }
       disposeRequest(entry);
       notifyDisconnect(reason);
     };
@@ -755,11 +798,11 @@ function createDaemonRequestConnection(conn, {
     });
     entry.handlerInvocation = handlerInvocation;
     handlerInvocation
-      .then(async response => {
+      .then(response => {
         entry.handlerSettled = true;
         if (entry.disposed) return;
         if (!canWrite()) {
-          await finishWithoutResponse(abortReason(controller.signal));
+          finishWithoutResponse(abortReason(controller.signal));
           return;
         }
         if (!responseGateOpen()) return;
@@ -768,7 +811,11 @@ function createDaemonRequestConnection(conn, {
           entry.executionTimer = null;
         }
         if (response?.ok === false) {
-          await cleanupRequest(entry, new Error(response.error || 'daemon request failed'));
+          const cleanupError = cleanupRequest(entry, new Error(response.error || 'daemon request failed'));
+          if (cleanupError) {
+            terminateForFatal(cleanupError);
+            return;
+          }
           if (entry.disposed || !canWrite()) return;
           if (!responseGateOpen()) return;
         }
@@ -776,12 +823,16 @@ function createDaemonRequestConnection(conn, {
         try {
           payload = responsePayload(response, req.id);
         } catch (error) {
-          disposeRequest(entry, { abort: error, clean: true });
+          const cleanupError = disposeRequest(entry, { abort: error, clean: true });
+          if (cleanupError) terminateForFatal(cleanupError);
           return;
         }
         if (!responseGateOpen()) return;
         const flushed = error => {
-          if (error) disposeRequest(entry, { abort: error, clean: true });
+          if (error) {
+            const cleanupError = disposeRequest(entry, { abort: error, clean: true });
+            if (cleanupError) terminateForFatal(cleanupError);
+          }
           else disposeRequest(entry);
         };
         if (response?.stopAfter && typeof conn.end === 'function') {
@@ -791,18 +842,20 @@ function createDaemonRequestConnection(conn, {
               onStop();
             });
           } catch (error) {
-            disposeRequest(entry, { abort: error, clean: true });
+            const cleanupError = disposeRequest(entry, { abort: error, clean: true });
+            if (cleanupError) terminateForFatal(cleanupError);
           }
           return;
         }
         if (!writePayload(payload, flushed)) {
-          disposeRequest(entry, {
+          const cleanupError = disposeRequest(entry, {
             abort: new Error('daemon response write failed before flush'),
             clean: true,
           });
+          if (cleanupError) terminateForFatal(cleanupError);
         }
       })
-      .catch(async error => {
+      .catch(error => {
         entry.handlerSettled = true;
         if (entry.disposed) return;
         if (isDaemonTerminationRequired(error)) {
@@ -810,7 +863,7 @@ function createDaemonRequestConnection(conn, {
           return;
         }
         if (!canWrite()) {
-          await finishWithoutResponse(error);
+          finishWithoutResponse(error);
           return;
         }
         if (!responseGateOpen()) return;
@@ -818,22 +871,31 @@ function createDaemonRequestConnection(conn, {
           clearTimer(entry.executionTimer);
           entry.executionTimer = null;
         }
-        await cleanupRequest(entry, error);
+        const cleanupError = cleanupRequest(entry, error);
+        if (cleanupError) {
+          terminateForFatal(cleanupError);
+          return;
+        }
         if (entry.disposed || !canWrite()) return;
         if (!responseGateOpen()) return;
         let payload;
         try {
           payload = responsePayload({ ok: false, error: actionFailureMessage(error) }, req.id);
         } catch (serializationError) {
-          disposeRequest(entry, { abort: serializationError, clean: true });
+          const serializationCleanupError = disposeRequest(entry, { abort: serializationError, clean: true });
+          if (serializationCleanupError) terminateForFatal(serializationCleanupError);
           return;
         }
         if (!responseGateOpen()) return;
-        if (!writePayload(payload, writeError => disposeRequest(entry, {
-          abort: writeError || null,
-          clean: Boolean(writeError),
-        }))) {
-          disposeRequest(entry, { abort: error, clean: true });
+        if (!writePayload(payload, writeError => {
+          const writeCleanupError = disposeRequest(entry, {
+            abort: writeError || null,
+            clean: Boolean(writeError),
+          });
+          if (writeCleanupError) terminateForFatal(writeCleanupError);
+        })) {
+          const writeCleanupError = disposeRequest(entry, { abort: error, clean: true });
+          if (writeCleanupError) terminateForFatal(writeCleanupError);
         }
       });
   };
@@ -15020,7 +15082,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     let requestConnection;
     requestConnection = createDaemonRequestConnection(conn, {
       handleRequest: handleCommand,
-      cleanup: async () => {},
+      cleanup: () => {},
       onDispose: () => {
         if (requestConnection.activeRequestCount() === 0 && conn.destroyed) {
           requestConnections.delete(requestConnection);
