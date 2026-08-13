@@ -2,7 +2,7 @@ import { isProxy } from 'node:util/types';
 
 const MAX_ARGV_ITEMS = 16;
 const MAX_SELECTOR_BYTES = 1_024;
-const CONTINUATION_TOKEN_RE = /^ct1\.[0-9a-f]{32}\.(?:0|[1-9][0-9]{0,5})$/;
+const CONTINUATION_TOKEN_RE = /^ct1\.([0-9a-f]{32})\.(0|[1-9][0-9]{0,4})$/;
 const VALUE_FLAGS = new Set([
   '--format',
   '--scroll-container',
@@ -126,7 +126,7 @@ function parseSnapshot(argv) {
   }
 
   if (continuation !== null) {
-    if (!CONTINUATION_TOKEN_RE.test(continuation)) fail('invalid continuation token');
+    parseTableContinuationToken(continuation);
     if (selector !== null) fail('--continue is mutually exclusive with a selector');
     if (collect) fail('--continue is mutually exclusive with --collect');
     if (scrollContainer !== null) fail('--continue is mutually exclusive with --scroll-container');
@@ -155,6 +155,17 @@ function parseSnapshot(argv) {
 
 export function parseTableArgs(input) {
   return parseSnapshot(snapshotArgv(input));
+}
+
+export function parseTableContinuationToken(token) {
+  if (typeof token !== 'string') fail('invalid continuation token');
+  const match = CONTINUATION_TOKEN_RE.exec(token);
+  if (!match) fail('invalid continuation token');
+  return Object.freeze({
+    artifactId: match[1],
+    offset: Number(match[2]),
+    token,
+  });
 }
 
 export function isTableCollectArgs(input) {
