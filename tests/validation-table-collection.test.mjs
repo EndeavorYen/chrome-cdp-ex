@@ -481,6 +481,21 @@ describe('evidence-first capture and cleanup contracts', () => {
     expect(order.at(-1)).toBe('lock');
   });
 
+  it('closes over registered state so same-turn clear cannot skip session cleanup', async () => {
+    const order = [];
+    const controller = createLiveCancellationController();
+    const state = {
+      requestAbort() { order.push('abort'); },
+      async cleanup() { order.push('cleanup'); return { verified: true }; },
+    };
+    controller.register(state);
+    const cancelled = controller.cancel('SIGTERM');
+    controller.clear(state);
+    await expect(cancelled).resolves.toEqual({ verified: true });
+    expect(order).toEqual(['abort', 'cleanup']);
+    expect(controller.cancelled).toBe(true);
+  });
+
   it('fails closed when required cleanup steps are missing', async () => {
     const state = {};
     const order = [];
