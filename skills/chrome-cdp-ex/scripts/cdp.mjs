@@ -11,7 +11,7 @@ import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, re
 import { homedir } from 'os';
 import { dirname, resolve, delimiter } from 'path';
 import { spawn, spawnSync } from 'child_process';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { format as formatValue } from 'util';
 import { fileURLToPath } from 'url';
 import net from 'net';
@@ -31,6 +31,7 @@ import {
 import { createDaemonReadHandlers } from './lib/daemon-read-handlers.mjs';
 import { createDaemonActionHandlers } from './lib/daemon-action-handlers.mjs';
 import { isTableCollectArgs, parseTableArgs } from './lib/table-contract.mjs';
+import { createTableArtifactStore } from './lib/table-artifacts.mjs';
 import {
   bindCdpTransport,
   createCdpDomains,
@@ -602,6 +603,7 @@ function validateDaemonProtocolRequest(input) {
 function createDaemonRequestConnection(conn, {
   handleRequest,
   cleanup = () => {},
+  onFlushed = () => {},
   onDispose = () => {},
   onDisconnect = () => {},
   onFatal = () => {},
@@ -616,6 +618,7 @@ function createDaemonRequestConnection(conn, {
   if (typeof conn.write !== 'function') throw new Error('daemon request connection.write must be a function');
   if (typeof handleRequest !== 'function') throw new Error('daemon request handler must be a function');
   if (typeof cleanup !== 'function') throw new Error('daemon request cleanup must be a function');
+  if (typeof onFlushed !== 'function') throw new Error('daemon request flush callback must be a function');
   if (typeof onDispose !== 'function') throw new Error('daemon request disposer must be a function');
   if (typeof onDisconnect !== 'function') throw new Error('daemon request disconnect callback must be a function');
   if (typeof onFatal !== 'function') throw new Error('daemon request fatal callback must be a function');
@@ -672,6 +675,23 @@ function createDaemonRequestConnection(conn, {
     const cleanupError = clean ? cleanupRequest(entry, abort) : entry.cleanupFailure;
     try { onDispose(entry.request, entry.execution); } catch {}
     return cleanupError;
+  };
+  const disposeAfterSuccessfulFlush = entry => {
+    let releaseError = null;
+    try {
+      if (onFlushed(entry.request, entry.execution) !== undefined) {
+        releaseError = new TableCollectionSynchronousCleanupRequiredError('request release');
+      }
+    } catch (error) {
+      releaseError = error;
+    }
+    if (!releaseError) {
+      disposeRequest(entry);
+      return;
+    }
+    const cleanupError = disposeRequest(entry, { abort: releaseError, clean: true });
+    retainFatalCleanupError(releaseError, cleanupError);
+    terminateForFatal(releaseError);
   };
   const notifyDisconnect = error => {
     if (disconnectNotified || active.size > 0) return;
@@ -839,11 +859,12 @@ function createDaemonRequestConnection(conn, {
           return;
         }
         if (!responseGateOpen()) return;
+        const successfulResponse = response?.ok === true;
         const flushed = error => {
           if (error) {
             const cleanupError = disposeRequest(entry, { abort: error, clean: true });
             if (cleanupError) terminateForFatal(cleanupError);
-          }
+          } else if (successfulResponse) disposeAfterSuccessfulFlush(entry);
           else disposeRequest(entry);
         };
         if (response?.stopAfter && typeof conn.end === 'function') {
@@ -899,11 +920,12 @@ function createDaemonRequestConnection(conn, {
         }
         if (!responseGateOpen()) return;
         if (!writePayload(payload, writeError => {
-          const writeCleanupError = disposeRequest(entry, {
-            abort: writeError || null,
-            clean: Boolean(writeError),
-          });
-          if (writeCleanupError) terminateForFatal(writeCleanupError);
+          if (writeError) {
+            const writeCleanupError = disposeRequest(entry, { abort: writeError, clean: true });
+            if (writeCleanupError) terminateForFatal(writeCleanupError);
+            return;
+          }
+          disposeRequest(entry);
         })) {
           const writeCleanupError = disposeRequest(entry, { abort: error, clean: true });
           if (writeCleanupError) terminateForFatal(writeCleanupError);
@@ -950,6 +972,7 @@ function createDaemonShutdown({
   requestConnections,
   getServer,
   socketPath,
+  cleanupSession = () => {},
   closeCdp,
   exitProcess = code => process.exit(code),
   unlinkSocket = unlinkSync,
@@ -958,6 +981,7 @@ function createDaemonShutdown({
   if (!(requestConnections instanceof Set)) throw new Error('daemon request connection registry must be a Set');
   if (typeof getServer !== 'function') throw new Error('daemon server accessor must be a function');
   if (typeof closeCdp !== 'function') throw new Error('daemon CDP closer must be a function');
+  if (typeof cleanupSession !== 'function') throw new Error('daemon session cleanup must be a function');
   if (typeof exitProcess !== 'function') throw new Error('daemon process exit must be a function');
   if (typeof unlinkSocket !== 'function') throw new Error('daemon socket unlink must be a function');
   let alive = true;
@@ -968,10 +992,16 @@ function createDaemonShutdown({
     for (const connection of [...requestConnections]) {
       try { connection.abortAll(reason, { retire: true }); } catch {}
     }
+    let finalExitCode = Number.isInteger(exitCode) ? exitCode : 0;
+    try {
+      if (cleanupSession() !== undefined) finalExitCode = 1;
+    } catch {
+      finalExitCode = 1;
+    }
     try { getServer()?.close(); } catch {}
     if (!isWindows) try { unlinkSocket(socketPath); } catch {}
     try { closeCdp(); } catch {}
-    exitProcess(Number.isInteger(exitCode) ? exitCode : 0);
+    exitProcess(finalExitCode);
   };
 }
 
@@ -14260,6 +14290,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   }
 
   const session = createSessionState({ targetId, sessionId });
+  const tableArtifactStore = createTableArtifactStore({
+    runtimeDir: RUNTIME_DIR,
+    targetId,
+    sessionId: randomBytes(16).toString('hex'),
+    platform: process.platform,
+  });
   initializeSessionLog(session);
   ensureSessionScreenshotDir(session);
 
@@ -14414,6 +14450,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     requestConnections,
     getServer: () => server,
     socketPath: sp,
+    cleanupSession: () => tableArtifactStore.cleanupSession(),
     closeCdp: () => cdp.close(),
   });
 
@@ -14562,7 +14599,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     fullshot: args => fullshotStr(cdp, sessionId, args[0], targetId),
     html: args => htmlStr(cdp, sessionId, args),
     text: args => textStr(cdp, sessionId, args),
-    table: request => tableStr(cdp, sessionId, request.selector),
+    table: async request => request.mode === 'continue'
+      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)
+      : tableStr(cdp, sessionId, request.selector),
     net: () => netStr(cdp, sessionId),
     overlay: args => overlayStr(cdp, sessionId, targetId, args, refMap, refState),
     record: args => recordStr(cdp, sessionId, args, refMap),
@@ -15093,7 +15132,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     let requestConnection;
     requestConnection = createDaemonRequestConnection(conn, {
       handleRequest: handleCommand,
-      cleanup: () => {},
+      cleanup: (_request, execution) => tableArtifactStore.rollbackRequest(execution),
+      onFlushed: (_request, execution) => tableArtifactStore.releaseRequest(execution),
       onDispose: () => {
         if (requestConnection.activeRequestCount() === 0 && conn.destroyed) {
           requestConnections.delete(requestConnection);

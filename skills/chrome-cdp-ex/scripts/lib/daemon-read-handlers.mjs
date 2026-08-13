@@ -109,7 +109,7 @@ export function createDaemonReadHandlers(input) {
         if (!execution) throw new Error('table: collection is unavailable in this v2.16 candidate');
         return commandResult(await capabilities.table(request, execution), null);
       }
-      if (request.mode === 'continue') throw new Error('table: continuation is unavailable until private artifact storage is installed');
+      if (request.mode === 'continue') return commandResult(await capabilities.table(request), null);
       if (request.format === 'json') throw new Error('table: JSON observation is unavailable until the bounded snapshot runtime is installed');
       return commandResult(await capabilities.table(request), null);
     },
