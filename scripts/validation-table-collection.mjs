@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,6 +13,15 @@ const EXTRACTION_IMPORT_RE = /from\s+['"][^'"]*(?:table-extraction|table-artifac
 
 export const TABLE_COLLECTION_ROUTES = Object.freeze(['cli', 'mcp', 'mcp-run-command', 'playwright']);
 export const MAX_PAYLOAD_EVIDENCE_BYTES = 1024;
+export const TABLE_COLLECTION_DEADLINE = Object.freeze({
+  maxDurationMs: 600_000,
+  cdpTimeoutMs: 295_000,
+  playwrightTimeoutMs: 295_000,
+  serverTimeoutMs: 300_000,
+});
+const FIXTURE_LISTEN_HOST = '127.0.0.1';
+const PERSONAL_USER_DATA_DIR_RE = /(?:^|\/)(?:library\/application support\/(?:google\/chrome|microsoft edge)|\.config\/(?:google-chrome|chromium)|(?:google\/chrome|microsoft\/edge)\/user data)(?:\/|$)/i;
+const BOUNDED_STRING_KEYS = Object.freeze(['stdout', 'text']);
 export const TABLE_COLLECTION_FIXTURE = Object.freeze({
   logicalRows: 1024,
   headerRows: 1,
@@ -36,8 +46,8 @@ export const CLEANUP_ORDER = Object.freeze([
   'processes',
   'endpoints-and-ports',
   'profile-runtime-artifacts',
-  'lock',
   'task-root',
+  'lock',
 ]);
 const CLEANUP_STEPS = Object.freeze([
   ['stopChromeDaemon', 'chrome-daemon'],
@@ -47,8 +57,8 @@ const CLEANUP_STEPS = Object.freeze([
   ['assertNoTaskProcesses', 'processes'],
   ['assertEndpointsAndPortsGone', 'endpoints-and-ports'],
   ['removeProfileRuntimeArtifacts', 'profile-runtime-artifacts'],
-  ['assertLockReleased', 'lock'],
   ['removeAndVerifyTaskRoot', 'task-root'],
+  ['assertLockReleased', 'lock'],
 ]);
 const ROUTE_PORTS = Object.freeze({
   cli: Object.freeze({ portStart: 9624, serverPortStart: 42824 }),
@@ -111,7 +121,7 @@ export function describeRouteFixture(route) {
     browser: kind.browser,
     reset: [...kind.reset],
     chromeStartUrl: 'about:blank',
-    listenHost: '127.0.0.1',
+    listenHost: FIXTURE_LISTEN_HOST,
     portStart: ports.portStart,
     serverPortStart: ports.serverPortStart,
     profilePrefix: `chrome-cdp-ex-table-${route}`,
@@ -119,14 +129,24 @@ export function describeRouteFixture(route) {
   };
 }
 
+function assertDisposableUserDataDir(profileDir) {
+  invariant(typeof profileDir === 'string' && profileDir.trim(), 'profileDir is required');
+  const normalized = resolve(profileDir).replaceAll('\\', '/');
+  invariant(!PERSONAL_USER_DATA_DIR_RE.test(normalized), 'personal Chrome user-data-dir is forbidden');
+  return normalized;
+}
+
 export function allocateRouteFixture(route, { taskRoot, slot = 0 } = {}) {
   const described = describeRouteFixture(route);
-  const root = taskRoot || `/tmp/${described.profilePrefix}-${slot}`;
+  const root = taskRoot || mkdtempSync(join(tmpdir(), `${described.profilePrefix}-${slot}-`));
+  assertDisposableUserDataDir(root);
+  const profileDir = join(root, 'profile');
+  assertDisposableUserDataDir(profileDir);
   return {
     ...described,
     slot,
     taskRoot: root,
-    profileDir: join(root, 'profile'),
+    profileDir,
     runtimeDir: join(root, 'runtime'),
     port: described.portStart + slot,
     serverPort: described.serverPortStart + slot,
@@ -155,6 +175,7 @@ export function assertIndependentRouteFixtures(fixtures) {
 }
 
 export function buildChromeLaunchArgs({ port, profileDir }) {
+  assertDisposableUserDataDir(profileDir);
   const base = buildDisposableBrowserArgs({ port, profileDir, url: 'about:blank' });
   return [
     ...base.slice(0, -1),
@@ -180,6 +201,48 @@ export function buildChromeFixtureProvisionExpression(documentHtml) {
 export function buildLoopbackFixtureUrl(port) {
   invariant(Number.isInteger(port) && port > 0 && port <= 65535, 'loopback fixture port is invalid');
   return `http://127.0.0.1:${port}/validation-table-collection.html`;
+}
+
+export function listenTableCollectionFixtureServer(server, { port, host } = {}) {
+  return new Promise((resolveListen, reject) => {
+    try {
+      invariant(server && typeof server.listen === 'function', 'fixture server is required');
+      invariant(Number.isInteger(port) && port > 0 && port <= 65535, 'loopback fixture port is invalid');
+      invariant(host === undefined || host === FIXTURE_LISTEN_HOST, 'fixture server must listen on 127.0.0.1');
+      server.once?.('error', reject);
+      server.listen(port, FIXTURE_LISTEN_HOST, resolveListen);
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
+export function createTableCollectionDeadline(overrides = {}, { parentSignal } = {}) {
+  const budget = {
+    maxDurationMs: overrides.maxDurationMs ?? TABLE_COLLECTION_DEADLINE.maxDurationMs,
+    cdpTimeoutMs: overrides.cdpTimeoutMs ?? TABLE_COLLECTION_DEADLINE.cdpTimeoutMs,
+    playwrightTimeoutMs: overrides.playwrightTimeoutMs ?? TABLE_COLLECTION_DEADLINE.playwrightTimeoutMs,
+    serverTimeoutMs: overrides.serverTimeoutMs ?? TABLE_COLLECTION_DEADLINE.serverTimeoutMs,
+  };
+  for (const key of Object.keys(TABLE_COLLECTION_DEADLINE)) {
+    invariant(Number.isInteger(budget[key]) && budget[key] > 0, `deadline.${key} is invalid`);
+  }
+  invariant(budget.cdpTimeoutMs <= budget.maxDurationMs, 'deadline.cdpTimeoutMs exceeds maxDurationMs');
+  invariant(budget.playwrightTimeoutMs <= budget.maxDurationMs, 'deadline.playwrightTimeoutMs exceeds maxDurationMs');
+  invariant(budget.serverTimeoutMs <= budget.maxDurationMs, 'deadline.serverTimeoutMs exceeds maxDurationMs');
+  const trial = AbortSignal.timeout(budget.maxDurationMs);
+  const compose = timeoutMs => AbortSignal.any(
+    [trial, AbortSignal.timeout(timeoutMs), parentSignal].filter(Boolean),
+  );
+  return Object.freeze({
+    ...budget,
+    signals: Object.freeze({
+      trial,
+      cdp: compose(budget.cdpTimeoutMs),
+      playwright: compose(budget.playwrightTimeoutMs),
+      server: compose(budget.serverTimeoutMs),
+    }),
+  });
 }
 
 export function assertLoopbackOnlyUrl(url) {
@@ -270,6 +333,8 @@ export function buildStaticReadiness() {
     chromeStartUrl: 'about:blank',
     chromeProvisioning: 'direct Runtime.evaluate document.open/write/close into about:blank',
     fixtureHost: '127.0.0.1',
+    listenHost: FIXTURE_LISTEN_HOST,
+    deadline: { ...TABLE_COLLECTION_DEADLINE },
     routes: Object.fromEntries(TABLE_COLLECTION_ROUTES.map(route => [route, { ...ROUTE_KINDS[route] }])),
     fixture: {
       logicalRows: TABLE_COLLECTION_FIXTURE.logicalRows,
@@ -305,13 +370,52 @@ export function retainBoundedCommandEvidence(record) {
   };
 }
 
+function boundPayload(value) {
+  const raw = Buffer.from(typeof value === 'string' ? value : JSON.stringify(value), 'utf8');
+  const prefixBytes = Math.min(raw.byteLength, Math.ceil(MAX_PAYLOAD_EVIDENCE_BYTES / 2));
+  const suffixBytes = raw.byteLength > prefixBytes
+    ? Math.min(raw.byteLength - prefixBytes, Math.floor(MAX_PAYLOAD_EVIDENCE_BYTES / 2))
+    : 0;
+  return {
+    totalBytes: raw.byteLength,
+    sha256: createHash('sha256').update(raw).digest('hex'),
+    prefix: raw.subarray(0, prefixBytes).toString('utf8'),
+    suffix: suffixBytes ? raw.subarray(raw.byteLength - suffixBytes).toString('utf8') : '',
+    truncated: prefixBytes + suffixBytes < raw.byteLength,
+    ...(Array.isArray(value) ? { length: value.length } : {}),
+  };
+}
+
+function boundNode(value, key = '') {
+  if (typeof value === 'string') {
+    if (BOUNDED_STRING_KEYS.includes(key) || Buffer.byteLength(value) > MAX_PAYLOAD_EVIDENCE_BYTES) {
+      return boundPayload(value);
+    }
+    return value;
+  }
+  if (Array.isArray(value) && (key === 'rows' || key === 'content')) return boundPayload(value);
+  if (Array.isArray(value)) return value.map(item => boundNode(item));
+  if (!value || typeof value !== 'object') return value;
+  if (typeof value.stdout === 'string') {
+    const retained = retainBoundedCommandEvidence(value);
+    const extra = {};
+    for (const [nestedKey, nestedValue] of Object.entries(value)) {
+      if (['stdout', 'phase', 'argv', 'status', 'stderr'].includes(nestedKey)) continue;
+      extra[nestedKey] = boundNode(nestedValue, nestedKey);
+    }
+    return { ...retained, ...extra };
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([nestedKey, nestedValue]) => [
+      nestedKey,
+      boundNode(nestedValue, nestedKey),
+    ]),
+  );
+}
+
 function boundCapturedEvidence(captured) {
   invariant(captured && typeof captured === 'object', 'captured evidence must be an object');
-  const evidence = { ...captured };
-  if (captured.result && Object.hasOwn(captured.result, 'stdout')) {
-    evidence.result = retainBoundedCommandEvidence(captured.result);
-  }
-  return evidence;
+  return boundNode(captured);
 }
 
 export async function executeEvidenceFirstAttempt({ capture, retain, assertEvidence, cleanup }) {
@@ -371,7 +475,10 @@ export function cleanupPartialLiveState(state, operations) {
   state.cleanupPromise = (async () => {
     for (const [operation] of CLEANUP_STEPS) {
       try {
-        if (typeof operations?.[operation] === 'function') await operations[operation]();
+        if (typeof operations?.[operation] !== 'function') {
+          throw new Error(`missing required cleanup step: ${operation}`);
+        }
+        await operations[operation]();
       } catch (error) {
         state.cleanup.failures.push(String(error?.message || error).slice(0, 1024));
       }
@@ -397,6 +504,14 @@ export async function runLockedCleanup({ acquireLock, cleanup, releaseLock }) {
   }
 }
 
+async function runRegisteredCleanup(state) {
+  state.requestAbort?.();
+  if (typeof state.runCleanup === 'function') return state.runCleanup();
+  if (state.cleanupPromise) return state.cleanupPromise;
+  if (typeof state.cleanup === 'function') return state.cleanup.call(state);
+  throw new Error('table-collection cancellation has no cleanup work');
+}
+
 export function createLiveCancellationController() {
   let activeState = null;
   let signal = null;
@@ -404,7 +519,7 @@ export function createLiveCancellationController() {
   return {
     register(state) {
       activeState = state;
-      if (signal && activeState) return this.cancel(signal);
+      if (signal) return this.cancel(signal);
       return null;
     },
     clear(state) {
@@ -413,11 +528,10 @@ export function createLiveCancellationController() {
     cancel(nextSignal) {
       if (!signal) signal = nextSignal;
       if (cancellationPromise) return cancellationPromise;
-      cancellationPromise = Promise.resolve().then(async () => {
-        activeState?.requestAbort?.();
-        const cleanup = activeState?.runCleanup || activeState?.cleanup;
-        return typeof cleanup === 'function' ? cleanup.call(activeState) : { verified: true };
-      });
+      if (!activeState) {
+        return Promise.reject(new Error('table-collection cancellation has no registered live state'));
+      }
+      cancellationPromise = Promise.resolve().then(() => runRegisteredCleanup(activeState));
       return cancellationPromise;
     },
     get cancelled() { return signal !== null; },
