@@ -18,6 +18,9 @@ const LIVE_CAPABILITIES = Object.freeze([
   'sinceAction',
   'report',
 ]);
+const HISTORICAL_CANDIDATE_IDENTITIES = Object.freeze({
+  '2.15.0': 'sha256:802f7add9391ab693f2cb9e477914ece3b81cc20ada08023706f4f212120675f',
+});
 
 function rootPath(rootDir) {
   return rootDir instanceof URL ? fileURLToPath(rootDir) : String(rootDir);
@@ -51,6 +54,14 @@ export function validateHostValidation(manifest, {
     && manifest?.environment?.currentTree === false;
   if (manifest?.productVersion !== packageVersion && !historicalPublishedEvidence) {
     errors.push(`Host validation productVersion ${manifest?.productVersion || 'missing'} matches neither package version ${packageVersion} nor published historical version ${publishedVersion}`);
+  }
+  const publishedCandidateIdentity = HISTORICAL_CANDIDATE_IDENTITIES[publishedVersion] || null;
+  if (packageVersion !== publishedVersion
+    && manifest?.environment?.evidenceScope === 'historical-candidate'
+    && (manifest?.productVersion !== publishedVersion
+      || !publishedCandidateIdentity
+      || manifest?.environment?.candidateIdentity !== publishedCandidateIdentity)) {
+    errors.push(`Host validation historical evidence must bind published version ${publishedVersion} to candidate identity ${publishedCandidateIdentity || 'missing'}`);
   }
   if (!isIsoDate(manifest?.validatedAt)) {
     errors.push('Host validation validatedAt must be an ISO date (YYYY-MM-DD)');
