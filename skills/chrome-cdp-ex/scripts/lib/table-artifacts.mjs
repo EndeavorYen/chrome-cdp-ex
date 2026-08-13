@@ -116,6 +116,13 @@ function assertFileStats(stats, expectedBytes) {
   }
 }
 
+function assertProvisionalFileStats(stats) {
+  if (!stats.isFile() || stats.isSymbolicLink() || stats.uid !== currentUid()
+    || modeBits(stats) !== 0o600 || stats.nlink !== 1 || stats.size !== 0) {
+    fail('TABLE_ARTIFACT_PUBLICATION_FAILED', 'private artifact file validation failed');
+  }
+}
+
 function assertReadableFileStats(stats, { expectedBytes = null, maxBytes }) {
   if (!stats.isFile() || stats.isSymbolicLink() || stats.uid !== currentUid()
     || modeBits(stats) !== 0o600 || stats.nlink !== 1
@@ -273,10 +280,14 @@ function cleanupPartialInitialization(state) {
     const listing = readdirSync(state.sessionDir);
     if (listing.some(name => name !== OWNER_RECORD_NAME)) return false;
     if (listing.includes(OWNER_RECORD_NAME)) {
-      if (!partial.ownerIdentity
-        || !safeOwnedFile(state.ownerRecordPath, partial.ownerIdentity)) return false;
+      const ownerSafe = partial.ownerIdentity
+        ? safeOwnedFile(state.ownerRecordPath, partial.ownerIdentity)
+        : partial.ownerProvisionalIdentity
+          ? safeOwnedProvisionalFile(state.ownerRecordPath, partial.ownerProvisionalIdentity)
+          : false;
+      if (!ownerSafe) return false;
       unlinkSync(state.ownerRecordPath);
-    } else if (partial.ownerIdentity) {
+    } else if (partial.ownerIdentity || partial.ownerProvisionalIdentity) {
       return false;
     }
     if (partial.sessionCreated) {
@@ -295,6 +306,7 @@ async function initializeStore(state, request) {
   if (state.initialization && !cleanupPartialInitialization(state)) throw cleanupFailed();
   state.initialization = {
     ownerIdentity: null,
+    ownerProvisionalIdentity: null,
     sessionCreated: false,
     sessionIdentity: null,
   };
@@ -343,6 +355,7 @@ async function initializeStore(state, request) {
       state.ownerRecordPath,
       ownerBytes,
       identity => { state.initialization.ownerIdentity = identity; },
+      identity => { state.initialization.ownerProvisionalIdentity = identity; },
     );
     await fsyncDirectory(state, request, state.sessionDir);
   } catch (error) {
@@ -397,6 +410,17 @@ function safeOwnedFile(path, expectedIdentity = null) {
     return stats.isFile() && !stats.isSymbolicLink() && stats.uid === currentUid()
       && modeBits(stats) === 0o600 && stats.nlink === 1
       && matchesStoredIdentity(stats, expectedIdentity, { file: true });
+  } catch {
+    return false;
+  }
+}
+
+function safeOwnedProvisionalFile(path, expectedIdentity) {
+  try {
+    const stats = lstatSync(path);
+    return stats.isFile() && !stats.isSymbolicLink() && stats.uid === currentUid()
+      && modeBits(stats) === 0o600 && stats.nlink === 1
+      && matchesStoredIdentity(stats, expectedIdentity);
   } catch {
     return false;
   }
@@ -621,11 +645,23 @@ async function closeHandle(handle) {
   if (handle) await handle.close();
 }
 
-async function writePrivateFile(state, request, path, bytes, onIdentity = () => {}) {
+async function writePrivateFile(
+  state,
+  request,
+  path,
+  bytes,
+  onIdentity = () => {},
+  onProvisionalIdentity = null,
+) {
   const flags = FS_CONSTANTS.O_WRONLY | FS_CONSTANTS.O_CREAT | FS_CONSTANTS.O_EXCL | FS_CONSTANTS.O_NOFOLLOW;
   let handle;
   try {
     handle = await checkedStep(request, () => state.fs.open(path, flags, 0o600));
+    if (onProvisionalIdentity) {
+      const provisionalStats = await checkedStep(request, () => handle.stat());
+      assertProvisionalFileStats(provisionalStats);
+      onProvisionalIdentity(storedFileIdentity(provisionalStats));
+    }
     await checkedStep(request, () => handle.writeFile(bytes));
     const stats = await checkedStep(request, () => handle.stat());
     assertFileStats(stats, bytes.length);

@@ -357,7 +357,7 @@ describe('private table artifact publication', () => {
       'runtime-root:open', 'runtime-root:fstat', 'runtime-root:fsync', 'runtime-root:close',
       'owner-dir:open', 'owner-dir:fstat', 'owner-dir:fsync', 'owner-dir:close',
       'target-dir:open', 'target-dir:fstat', 'target-dir:fsync', 'target-dir:close',
-      'owner-record:open', 'owner-record:write', 'owner-record:fstat', 'owner-record:fsync', 'owner-record:close',
+      'owner-record:open', 'owner-record:fstat', 'owner-record:write', 'owner-record:fstat', 'owner-record:fsync', 'owner-record:close',
       'session-dir:open', 'session-dir:fstat', 'session-dir:fsync', 'session-dir:close',
       'data:open', 'data:write', 'data:fstat', 'data:fsync', 'data:close',
       'manifest:open', 'manifest:write', 'manifest:fstat', 'manifest:fsync', 'manifest:close',
