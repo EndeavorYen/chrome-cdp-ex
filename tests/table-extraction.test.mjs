@@ -128,6 +128,10 @@ describe('canonical table bytes and bounded previews', () => {
     expect(preview.truncated).toBe(true);
   });
 
+  it('rejects more than 256 direct cells in one canonical row', () => {
+    expect(() => canonicalizeTableCells(Array.from({ length: 257 }, () => 'x'))).toThrow(/item bound/i);
+  });
+
   it('never lets callers raise fixed collection or preview ceilings', () => {
     expect(() => buildInlineTablePreview(['x'], { maxInlineRows: 21 })).toThrow(/must not exceed/i);
     expect(() => createTableAccumulator({
@@ -261,7 +265,8 @@ describe('collection safety and completeness', () => {
   it('reports row-too-large as a truthful unsupported partial result', () => {
     const accumulator = accumulatorWithRows([], { logicalRows: 1 });
 
-    expect(() => addTableSample(accumulator, { mountedNodeId: 'node-1', key: 1, cells: ['a'.repeat(4097)] })).toThrow(/row byte bound/i);
+    expect(addTableSample(accumulator, { mountedNodeId: 'node-1', key: 1, cells: ['a'.repeat(4097)] }))
+      .toMatchObject({ admitted: false, reason: 'row-too-large' });
     expect(finalizeTableExtraction(accumulator, { termination: 'row-too-large' }).completeness.state).toBe('incomplete');
   });
 
@@ -297,7 +302,7 @@ describe('collection safety and completeness', () => {
   });
 
   it('rejects duplicate mounted node ids within one batch transactionally', () => {
-    const accumulator = accumulatorWithRows([]);
+    const accumulator = accumulatorWithRows([], { logicalRows: 2 });
 
     expect(() => addTableSampleBatch(accumulator, [
       { mountedNodeId: 'node-1', key: 1, cells: ['first'] },
@@ -333,6 +338,22 @@ describe('collection safety and completeness', () => {
 
     expect(rejected).toEqual({ admitted: false, reason: 'row-too-large', collectedRows: 1, artifactBytes: 4 });
     expect(finalizeTableExtraction(accumulator, { termination: 'row-too-large' }).collectedRows).toBe(1);
+  });
+
+  it('admits the exact artifact byte boundary then rejects the N plus one row transactionally', () => {
+    const accumulator = createTableAccumulator({
+      logicalRows: 3,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'aria-rowindex',
+      orderingSource: 'aria-rowindex',
+      limits: { maxRows: 3, maxArtifactBytes: 3 },
+    });
+
+    expect(addTableSample(accumulator, { mountedNodeId: 'node-1', key: 1, cells: ['a'] })).toMatchObject({ admitted: true, artifactBytes: 1 });
+    expect(addTableSample(accumulator, { mountedNodeId: 'node-2', key: 2, cells: ['b'] })).toMatchObject({ admitted: true, artifactBytes: 3 });
+    expect(addTableSample(accumulator, { mountedNodeId: 'node-3', key: 3, cells: ['c'] }))
+      .toEqual({ admitted: false, reason: 'byte-limit', collectedRows: 2, artifactBytes: 3 });
+    expect(finalizeTableExtraction(accumulator, { termination: 'byte-limit' }).collectedRows).toBe(2);
   });
 });
 
