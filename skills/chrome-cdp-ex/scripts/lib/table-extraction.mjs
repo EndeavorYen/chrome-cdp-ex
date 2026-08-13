@@ -372,13 +372,13 @@ export function addTableSampleBatch(accumulator, samples) {
     const prior = state.rowsByKey.get(sample.keyId);
     if (prior !== undefined && prior.row !== sample.row) invalid('sample.key conflicts with a previously collected row');
   }
-  if (state.identitySource === 'snapshot-order') state.snapshotBatchSeen = true;
   const newKeys = validated.filter(sample => !state.rowsByKey.has(sample.keyId));
   if (newKeys.some(sample => sample.rowBytes > state.limits.maxCanonicalRowBytes)) return admission(state, false, 'row-too-large');
   if (state.rowsByKey.size + newKeys.length > state.limits.maxRows) return admission(state, false, 'row-limit');
   const addedBytes = newKeys.reduce((total, sample) => total + sample.rowBytes, 0)
     + Math.max(0, newKeys.length - (state.rowsByKey.size === 0 ? 1 : 0));
   if (state.artifactBytes + addedBytes > state.limits.maxArtifactBytes) return admission(state, false, 'byte-limit');
+  if (state.identitySource === 'snapshot-order') state.snapshotBatchSeen = true;
   for (const sample of validated) {
     const prior = state.rowsByKey.get(sample.keyId);
     const previousKey = state.nodeKeys.get(sample.mountedNodeId);
