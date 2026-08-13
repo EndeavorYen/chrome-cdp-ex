@@ -10,6 +10,10 @@ import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-sur
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const cdpPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
+const mcpAdapterPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs');
+const daemonReadHandlersPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/lib/daemon-read-handlers.mjs');
+const tableContractPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/lib/table-contract.mjs');
+const commandApplicationPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/lib/command-application.mjs');
 const packageVersion = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf8')).version;
 const fixturePath = resolve(rootDir, `docs/contracts/v${packageVersion}/runtime-dispatch.v1.json`);
 const PROTOCOL_COMMANDS = new Set(['list', 'list_raw', 'meta', 'stop']);
@@ -48,6 +52,55 @@ function namedFunctionOwner(sourceCode, node) {
     if (parent?.type === 'Property' && !parent.computed) return parent.key.name || parent.key.value;
   }
   return '<anonymous>';
+}
+
+function bindingEntries(sourceCode, name) {
+  const entries = [];
+  for (const scope of sourceCode.scopeManager.scopes) {
+    for (const variable of scope.variables) {
+      if (variable.name === name) entries.push({ scope, variable });
+    }
+  }
+  return entries;
+}
+
+function requireUniqueBinding(sourceCode, name, {
+  definitionType,
+  importSource = null,
+  topLevel = true,
+  allowInitializationWrite = false,
+} = {}, fail) {
+  const entries = bindingEntries(sourceCode, name);
+  if (entries.length !== 1) fail(`${name} must resolve to one unique trusted binding`);
+  const [{ scope, variable }] = entries;
+  if (topLevel && scope.type !== 'module') fail(`${name} must be bound at module scope`);
+  if (variable.defs.length !== 1 || variable.defs[0].type !== definitionType) {
+    fail(`${name} must retain its reviewed ${definitionType} binding`);
+  }
+  const definition = variable.defs[0];
+  if (definitionType === 'ImportBinding') {
+    if (definition.node?.type !== 'ImportSpecifier'
+      || definition.node.imported?.name !== name
+      || definition.node.local?.name !== name
+      || definition.parent?.source?.value !== importSource) {
+      fail(`${name} must use one direct named import from ${importSource}`);
+    }
+  }
+  for (const reference of variable.references) {
+    if (reference.isWrite() && !(allowInitializationWrite && reference.init === true)) {
+      fail(`${name} must not be reassigned`);
+    }
+  }
+  return variable;
+}
+
+function verifyWithRule(source, ruleName, rule, fail) {
+  const messages = new Linter().verify(source, {
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'module' },
+    plugins: { inventory: { rules: { [ruleName]: rule } } },
+    rules: { [`inventory/${ruleName}`]: 'error' },
+  });
+  if (messages.length) fail(messages.map(message => message.message).join('\n'));
 }
 
 function collectApplicationCommands(source) {
@@ -358,8 +411,320 @@ function collectMainBranches(source) {
   };
 }
 
-function collectTablePolicyAuthority(source) {
-  const table = COMMAND_SURFACE.resolve('table');
+function collectMcpTablePolicyAuthority(source, fail) {
+  let sourceCode = null;
+  let importSource = null;
+  let argsRequireConfirmSource = null;
+  let runCommandBinding = null;
+  const parserCalls = [];
+  const confirmationCalls = [];
+  const rule = {
+    create(context) {
+      sourceCode = context.sourceCode;
+      return {
+        ImportDeclaration(node) {
+          if (node.source?.value !== './table-contract.mjs') return;
+          if (importSource !== null) fail('MCP table-contract import must be unique');
+          if (node.specifiers.length !== 1
+            || node.specifiers[0].type !== 'ImportSpecifier'
+            || node.specifiers[0].imported?.name !== 'parseTableRunCommandArgs'
+            || node.specifiers[0].local?.name !== 'parseTableRunCommandArgs') {
+            fail('MCP must directly import only parseTableRunCommandArgs from table-contract');
+          }
+          importSource = sourceCode.getText(node);
+        },
+        FunctionDeclaration(node) {
+          if (node.id?.name === 'argsRequireConfirm') {
+            if (argsRequireConfirmSource !== null) fail('MCP argsRequireConfirm must be unique');
+            if (node.params.map(parameter => sourceCode.getText(parameter)).join('\0') !== 'commandName\0args = []') {
+              fail('MCP argsRequireConfirm must retain its argv-aware parameters');
+            }
+            argsRequireConfirmSource = sourceCode.getText(node);
+          }
+        },
+        IfStatement(node) {
+          if (namedFunctionOwner(sourceCode, node) !== 'argsRequireConfirm') return;
+          const statement = sourceCode.getText(node);
+          if (!statement.startsWith("if (command.name === 'table')")) return;
+          if (runCommandBinding !== null) fail('MCP table confirmation branch must be unique');
+          if (statement !== "if (command.name === 'table') return parseTableRunCommandArgs(args).request.mode === 'collect';") {
+            fail('MCP table confirmation must directly return the canonical collect classification');
+          }
+          runCommandBinding = statement;
+        },
+        CallExpression(node) {
+          if (node.callee?.type !== 'Identifier') return;
+          const owner = namedFunctionOwner(sourceCode, node);
+          const callSource = sourceCode.getText(node);
+          if (node.callee.name === 'parseTableRunCommandArgs') {
+            parserCalls.push({ owner, source: callSource });
+          } else if (node.callee.name === 'argsRequireConfirm') {
+            confirmationCalls.push({ owner, source: callSource });
+          }
+        },
+        'Program:exit'() {
+          requireUniqueBinding(sourceCode, 'parseTableRunCommandArgs', {
+            definitionType: 'ImportBinding',
+            importSource: './table-contract.mjs',
+          }, fail);
+          requireUniqueBinding(sourceCode, 'argsRequireConfirm', { definitionType: 'FunctionName' }, fail);
+        },
+      };
+    },
+  };
+  verifyWithRule(source, 'mcp-table-policy', rule, fail);
+  if (!importSource || !argsRequireConfirmSource || !runCommandBinding) {
+    fail('MCP table confirmation authority was not found');
+  }
+  if (JSON.stringify(parserCalls) !== JSON.stringify([{
+    owner: 'argsRequireConfirm',
+    source: 'parseTableRunCommandArgs(args)',
+  }])) {
+    fail('MCP parseTableRunCommandArgs call must be live and unique in argsRequireConfirm');
+  }
+  if (JSON.stringify(confirmationCalls) !== JSON.stringify([{
+    owner: 'buildMcpToolCommand',
+    source: 'argsRequireConfirm(commandName, extra)',
+  }])) {
+    fail('MCP run_command must consult argsRequireConfirm with the exact argv');
+  }
+  return {
+    source: [importSource, argsRequireConfirmSource].join('\0'),
+    binding: [runCommandBinding, ...parserCalls.map(call => call.source), ...confirmationCalls.map(call => call.source)].join('\0'),
+  };
+}
+
+function collectDaemonTablePolicyAuthority(source, fail) {
+  let sourceCode = null;
+  let importSource = null;
+  let factorySource = null;
+  let tableHandlerSource = null;
+  const parserCalls = [];
+  const rule = {
+    create(context) {
+      sourceCode = context.sourceCode;
+      return {
+        ImportDeclaration(node) {
+          if (node.source?.value !== './table-contract.mjs') return;
+          if (importSource !== null) fail('daemon read-handler table-contract import must be unique');
+          if (node.specifiers.length !== 1
+            || node.specifiers[0].type !== 'ImportSpecifier'
+            || node.specifiers[0].imported?.name !== 'parseTableArgs'
+            || node.specifiers[0].local?.name !== 'parseTableArgs') {
+            fail('daemon read handler must directly import only parseTableArgs from table-contract');
+          }
+          importSource = sourceCode.getText(node);
+        },
+        FunctionDeclaration(node) {
+          if (node.id?.name !== 'createDaemonReadHandlers') return;
+          if (factorySource !== null) fail('createDaemonReadHandlers must be unique');
+          if (node.params.length !== 1 || sourceCode.getText(node.params[0]) !== 'input') {
+            fail('createDaemonReadHandlers must retain its input parameter');
+          }
+          factorySource = sourceCode.getText(node);
+        },
+        Property(node) {
+          if (node.computed || (node.key.name || node.key.value) !== 'table') return;
+          const ancestors = sourceCode.getAncestors(node);
+          const implementations = [...ancestors].reverse().find(ancestor => ancestor.type === 'VariableDeclarator'
+            && ancestor.id?.type === 'Identifier' && ancestor.id.name === 'implementations');
+          const factory = [...ancestors].reverse().find(ancestor => ancestor.type === 'FunctionDeclaration'
+            && ancestor.id?.name === 'createDaemonReadHandlers');
+          if (!implementations || !factory) return;
+          if (tableHandlerSource !== null) fail('daemon read-handler table implementation must be unique');
+          tableHandlerSource = sourceCode.getText(node);
+        },
+        CallExpression(node) {
+          if (node.callee?.type !== 'Identifier' || node.callee.name !== 'parseTableArgs') return;
+          const ancestors = sourceCode.getAncestors(node);
+          const declarator = ancestors.at(-1);
+          const declaration = ancestors.at(-2);
+          const block = ancestors.at(-3);
+          const arrow = ancestors.at(-4);
+          const property = ancestors.at(-5);
+          const direct = declarator?.type === 'VariableDeclarator'
+            && declarator.id?.type === 'Identifier'
+            && declarator.id.name === 'request'
+            && declarator.init === node
+            && declaration?.type === 'VariableDeclaration'
+            && declaration.kind === 'const'
+            && declaration.declarations.length === 1
+            && block?.type === 'BlockStatement'
+            && block.body[0] === declaration
+            && arrow?.type === 'ArrowFunctionExpression'
+            && arrow.body === block
+            && property?.type === 'Property'
+            && !property.computed
+            && (property.key.name || property.key.value) === 'table';
+          parserCalls.push({
+            direct,
+            owner: namedFunctionOwner(sourceCode, node),
+            source: sourceCode.getText(node),
+          });
+        },
+        'Program:exit'() {
+          requireUniqueBinding(sourceCode, 'parseTableArgs', {
+            definitionType: 'ImportBinding',
+            importSource: './table-contract.mjs',
+          }, fail);
+          requireUniqueBinding(sourceCode, 'createDaemonReadHandlers', { definitionType: 'FunctionName' }, fail);
+        },
+      };
+    },
+  };
+  verifyWithRule(source, 'daemon-table-policy', rule, fail);
+  if (!importSource || !factorySource || !tableHandlerSource) {
+    fail('daemon table read-handler authority was not found');
+  }
+  if (JSON.stringify(parserCalls) !== JSON.stringify([{
+    direct: true,
+    owner: 'table',
+    source: 'parseTableArgs(snapshotArgs(context))',
+  }])) {
+    fail('daemon table parser must be one direct first statement in the table handler');
+  }
+  return {
+    source: [importSource, factorySource].join('\0'),
+    binding: [tableHandlerSource, parserCalls[0].source].join('\0'),
+  };
+}
+
+function collectTableContractAuthority(source, fail) {
+  let sourceCode = null;
+  const functionSources = new Map();
+  const parserCalls = [];
+  let collectBinding = null;
+  const trustedFunctions = ['isTableCollectArgs', 'parseTableArgs', 'parseTableRunCommandArgs'];
+  const rule = {
+    create(context) {
+      sourceCode = context.sourceCode;
+      return {
+        FunctionDeclaration(node) {
+          const name = node.id?.name;
+          if (!trustedFunctions.includes(name)) return;
+          if (functionSources.has(name)) fail(`${name} must be unique in table-contract`);
+          functionSources.set(name, sourceCode.getText(node));
+          if (name !== 'isTableCollectArgs') return;
+          if (node.params.length !== 1 || sourceCode.getText(node.params[0]) !== 'input'
+            || node.body.body.length !== 1
+            || node.body.body[0].type !== 'ReturnStatement') {
+            fail('isTableCollectArgs must be one direct parser-backed return');
+          }
+          const statement = sourceCode.getText(node.body.body[0]);
+          if (statement !== "return parseTableArgs(input).mode === 'collect';") {
+            fail('isTableCollectArgs must directly return canonical parser mode collect');
+          }
+          collectBinding = statement;
+        },
+        CallExpression(node) {
+          if (node.callee?.type !== 'Identifier' || node.callee.name !== 'parseTableArgs') return;
+          parserCalls.push({
+            owner: namedFunctionOwner(sourceCode, node),
+            source: sourceCode.getText(node),
+          });
+        },
+        'Program:exit'() {
+          for (const name of trustedFunctions) {
+            requireUniqueBinding(sourceCode, name, { definitionType: 'FunctionName' }, fail);
+          }
+        },
+      };
+    },
+  };
+  verifyWithRule(source, 'table-contract-policy', rule, fail);
+  if (trustedFunctions.some(name => !functionSources.has(name)) || !collectBinding) {
+    fail('canonical table-contract helper authority was not found');
+  }
+  if (JSON.stringify(parserCalls) !== JSON.stringify([{
+    owner: 'isTableCollectArgs',
+    source: 'parseTableArgs(input)',
+  }])) {
+    fail('isTableCollectArgs must delegate exactly once to parseTableArgs(input)');
+  }
+  return {
+    source: trustedFunctions.map(name => functionSources.get(name)).join('\0'),
+    binding: [collectBinding, parserCalls[0].source].join('\0'),
+  };
+}
+
+function collectCommandApplicationTableAuthority(source, fail) {
+  let sourceCode = null;
+  let executeSource = null;
+  let authorizationBinding = null;
+  let calls = 0;
+  const expectedProperties = {
+    command: 'spec.name',
+    args: 'request.args',
+    policy: 'spec.authorization',
+    mutates: 'spec.mutates',
+    targetBound: 'request.targetBound',
+  };
+  const rule = {
+    create(context) {
+      sourceCode = context.sourceCode;
+      return {
+        FunctionDeclaration(node) {
+          if (node.id?.name !== 'executeCommand') return;
+          if (executeSource !== null) fail('command-application executeCommand must be unique');
+          executeSource = sourceCode.getText(node);
+        },
+        CallExpression(node) {
+          if (node.callee?.type !== 'MemberExpression'
+            || node.callee.computed
+            || node.callee.object?.name !== 'contextValue'
+            || node.callee.property?.name !== 'authorize') return;
+          calls += 1;
+          if (namedFunctionOwner(sourceCode, node) !== 'executeCommand') {
+            fail('command-application authorizer call must belong to executeCommand');
+          }
+          const freezeCall = node.arguments[0];
+          const object = freezeCall?.type === 'CallExpression'
+            && freezeCall.callee?.type === 'MemberExpression'
+            && !freezeCall.callee.computed
+            && freezeCall.callee.object?.name === 'Object'
+            && freezeCall.callee.property?.name === 'freeze'
+            && freezeCall.arguments.length === 1
+            ? freezeCall.arguments[0]
+            : null;
+          if (object?.type !== 'ObjectExpression') {
+            fail('command-application authorizer must receive one frozen request envelope');
+          }
+          const actual = Object.create(null);
+          for (const property of object.properties) {
+            if (property.type !== 'Property' || property.computed || property.kind !== 'init') {
+              fail('command-application authorization envelope must contain static data properties');
+            }
+            actual[property.key.name || property.key.value] = sourceCode.getText(property.value);
+          }
+          if (JSON.stringify(actual) !== JSON.stringify(expectedProperties)) {
+            fail('command-application authorization envelope must forward exact request argv and policy');
+          }
+          authorizationBinding = sourceCode.getText(node);
+        },
+        'Program:exit'() {
+          requireUniqueBinding(sourceCode, 'executeCommand', { definitionType: 'FunctionName' }, fail);
+        },
+      };
+    },
+  };
+  verifyWithRule(source, 'command-application-table-policy', rule, fail);
+  if (!executeSource || !authorizationBinding || calls !== 1) {
+    fail('command-application authorizer must be bound exactly once');
+  }
+  return {
+    source: executeSource,
+    binding: authorizationBinding,
+  };
+}
+
+function collectTablePolicyAuthority(source, {
+  commandApplicationSource,
+  commandSurface,
+  daemonReadHandlersSource,
+  mcpAdapterSource,
+  tableContractSource,
+}) {
+  const table = commandSurface.resolve('table');
   const expectedPolicy = {
     kind: 'conditional-mutation',
     authorization: 'conditional',
@@ -383,6 +748,10 @@ function collectTablePolicyAuthority(source) {
   let tableContractImport = null;
   let authorizeBinding = null;
   let tableCapabilityBinding = null;
+  let batchUnsafeBinding = null;
+  let transportSideEffectBinding = null;
+  let daemonBuilderBinding = null;
+  let applicationHandlerBinding = null;
   const failTable = message => { throw new Error(`table policy authority: ${message}`); };
   const rule = {
     create(context) {
@@ -429,6 +798,48 @@ function collectTablePolicyAuthority(source) {
           if ([...TABLE_POLICY_HELPERS, ...TABLE_CONTRACT_HELPERS].includes(name)) {
             failTable(`${name} must not be shadowed by a variable`);
           }
+          if (name === 'unsafe' && namedFunctionOwner(sourceCode, node) === 'batch') {
+            const binding = sourceCode.getText(node);
+            if (binding !== 'unsafe = commands.filter(command => isBatchParallelUnsafeCommand(command.cmd, command.args || []))') {
+              failTable('batch unsafe selection must directly classify each command with its argv');
+            }
+            if (batchUnsafeBinding) failTable('batch unsafe selection must be bound exactly once');
+            batchUnsafeBinding = binding;
+          }
+          if (name === 'DAEMON_HANDLER_BUILDERS') {
+            const object = node.init?.type === 'CallExpression'
+              && node.init.callee?.type === 'MemberExpression'
+              && !node.init.callee.computed
+              && node.init.callee.object?.name === 'Object'
+              && node.init.callee.property?.name === 'freeze'
+              && node.init.arguments.length === 1
+              ? node.init.arguments[0]
+              : null;
+            const properties = object?.type === 'ObjectExpression'
+              ? object.properties.filter(property => property.type === 'Property'
+                && !property.computed && (property.key.name || property.key.value) === 'table')
+              : [];
+            if (properties.length !== 1) failTable('DAEMON_HANDLER_BUILDERS.table must be bound exactly once');
+            const binding = sourceCode.getText(properties[0]);
+            if (binding !== 'table: capabilities => createDaemonReadHandlers(capabilities).table') {
+              failTable('DAEMON_HANDLER_BUILDERS.table must own the daemon table read handler');
+            }
+            if (daemonBuilderBinding) failTable('DAEMON_HANDLER_BUILDERS.table must be unique');
+            daemonBuilderBinding = binding;
+          }
+          if (name === 'applicationHandlers' && namedFunctionOwner(sourceCode, node) === 'runDaemon') {
+            const properties = node.init?.type === 'ObjectExpression'
+              ? node.init.properties.filter(property => property.type === 'Property'
+                && !property.computed && (property.key.name || property.key.value) === 'table')
+              : [];
+            if (properties.length !== 1) failTable('applicationHandlers.table must be bound exactly once');
+            const binding = sourceCode.getText(properties[0]);
+            if (binding !== 'table: applicationPreflight.handlerBuilders.table(readCapabilities)') {
+              failTable('applicationHandlers.table must use the table builder and reviewed capabilities');
+            }
+            if (applicationHandlerBinding) failTable('applicationHandlers.table must be unique');
+            applicationHandlerBinding = binding;
+          }
           if (name !== 'readCapabilities') return;
           const properties = node.init?.type === 'ObjectExpression'
             ? node.init.properties.filter(property => property.type === 'Property'
@@ -443,9 +854,29 @@ function collectTablePolicyAuthority(source) {
           if (tableCapabilityBinding) failTable('readCapabilities.table must be bound exactly once');
           tableCapabilityBinding = binding;
         },
+        AssignmentExpression(node) {
+          const left = node.left;
+          if (left?.type === 'MemberExpression'
+            && !left.computed
+            && left.object?.name === 'readCapabilities'
+            && left.property?.name === 'table') {
+            failTable('readCapabilities.table must not be reassigned after construction');
+          }
+        },
         Property(node) {
-          if (functionName(sourceCode, node) !== 'runDaemon' || node.computed) return;
-          if ((node.key.name || node.key.value) !== 'authorize') return;
+          if (node.computed) return;
+          const owner = namedFunctionOwner(sourceCode, node);
+          const name = node.key.name || node.key.value;
+          if (owner === 'sendCommand' && name === 'mayHaveSideEffects') {
+            const binding = sourceCode.getText(node);
+            if (binding !== 'mayHaveSideEffects: daemonRequestMayHaveSideEffects(req)') {
+              failTable('sendCommand must directly bind daemonRequestMayHaveSideEffects(req)');
+            }
+            if (transportSideEffectBinding) failTable('sendCommand side-effect classifier must be bound exactly once');
+            transportSideEffectBinding = binding;
+            return;
+          }
+          if (functionName(sourceCode, node) !== 'runDaemon' || name !== 'authorize') return;
           const binding = sourceCode.getText(node);
           if (binding !== 'authorize: authorizeDaemonApplicationCommand') {
             failTable('daemon dispatcher must directly bind authorizeDaemonApplicationCommand');
@@ -460,6 +891,23 @@ function collectTablePolicyAuthority(source) {
             owner: namedFunctionOwner(sourceCode, node),
             source: sourceCode.getText(node),
           });
+        },
+        'Program:exit'() {
+          for (const name of TABLE_POLICY_HELPERS) {
+            requireUniqueBinding(sourceCode, name, { definitionType: 'FunctionName' }, failTable);
+          }
+          for (const name of TABLE_CONTRACT_HELPERS) {
+            requireUniqueBinding(sourceCode, name, {
+              definitionType: 'ImportBinding',
+              importSource: './lib/table-contract.mjs',
+            }, failTable);
+          }
+          requireUniqueBinding(sourceCode, 'tableStr', { definitionType: 'FunctionName' }, failTable);
+          requireUniqueBinding(sourceCode, 'readCapabilities', {
+            definitionType: 'Variable',
+            topLevel: false,
+            allowInitializationWrite: true,
+          }, failTable);
         },
       };
     },
@@ -499,22 +947,77 @@ function collectTablePolicyAuthority(source) {
   }
   if (!authorizeBinding) failTable('daemon authorizer binding was not found');
   if (!tableCapabilityBinding) failTable('legacy table capability binding was not found');
+  if (!batchUnsafeBinding) failTable('batch unsafe argv binding was not found');
+  if (!transportSideEffectBinding) failTable('transport side-effect binding was not found');
+  if (!daemonBuilderBinding) failTable('daemon table handler builder binding was not found');
+  if (!applicationHandlerBinding) failTable('application table handler binding was not found');
+  const batchPolicySource = declarations.get('isBatchParallelUnsafeCommand');
+  if (!batchPolicySource.includes('return isTableCollectArgs(args);')) {
+    failTable('batch table classification must directly return isTableCollectArgs(args)');
+  }
+  const transportPolicySource = declarations.get('daemonRequestMayHaveSideEffects');
+  if (!transportPolicySource.includes('return isTableCollectArgs(request.args || []);')) {
+    failTable('transport table classification must directly return isTableCollectArgs(request.args || [])');
+  }
+  const authorizationSource = declarations.get('authorizeDaemonApplicationCommand');
+  const authorizationBindings = [
+    "const tablePolicyMatches = command === 'table' && policy === 'conditional' && mutates === false;",
+    'if (tablePolicyMatches) parseTableArgs(args);',
+    "['console', 'diff-shot', 'fullshot', 'netlog', 'record', 'shot'].includes(command)",
+    '|| tablePolicyMatches',
+  ];
+  if (authorizationBindings.some(binding => !authorizationSource.includes(binding))
+    || (authorizationSource.match(/command === ['"]table['"]/g) || []).length !== 1
+    || (authorizationSource.match(/\|\| tablePolicyMatches/g) || []).length !== 1) {
+    failTable('daemon authorization must keep table parsing outside the generic conditional allowlist');
+  }
+  const mcpAuthority = collectMcpTablePolicyAuthority(mcpAdapterSource, failTable);
+  const daemonReadAuthority = collectDaemonTablePolicyAuthority(daemonReadHandlersSource, failTable);
+  const tableContractAuthority = collectTableContractAuthority(tableContractSource, failTable);
+  const commandApplicationAuthority = collectCommandApplicationTableAuthority(commandApplicationSource, failTable);
   const helperSources = TABLE_POLICY_HELPERS.map(name => declarations.get(name));
   return {
     policy: expectedPolicy,
     helpers: [...TABLE_POLICY_HELPERS],
-    sourceDigest: digest([tableContractImport, ...helperSources].join('\0')),
+    sourceDigest: digest([
+      tableContractImport,
+      ...helperSources,
+      mcpAuthority.source,
+      daemonReadAuthority.source,
+      tableContractAuthority.source,
+      commandApplicationAuthority.source,
+    ].join('\0')),
     bindingDigest: digest([
       authorizeBinding,
       tableCapabilityBinding,
+      batchUnsafeBinding,
+      transportSideEffectBinding,
+      daemonBuilderBinding,
+      applicationHandlerBinding,
+      mcpAuthority.binding,
+      daemonReadAuthority.binding,
+      tableContractAuthority.binding,
+      commandApplicationAuthority.binding,
       ...Object.values(expectedCalls).flat().map(call => `${call.owner}:${call.source}`).sort(),
     ].join('\0')),
   };
 }
 
-export function buildRuntimeDispatchInventory(source = readFileSync(cdpPath, 'utf8')) {
+export function buildRuntimeDispatchInventory(source = readFileSync(cdpPath, 'utf8'), {
+  commandApplicationSource = readFileSync(commandApplicationPath, 'utf8'),
+  commandSurface = COMMAND_SURFACE,
+  daemonReadHandlersSource = readFileSync(daemonReadHandlersPath, 'utf8'),
+  mcpAdapterSource = readFileSync(mcpAdapterPath, 'utf8'),
+  tableContractSource = readFileSync(tableContractPath, 'utf8'),
+} = {}) {
   const applicationAuthority = collectApplicationCommands(source);
-  const tablePolicyAuthority = collectTablePolicyAuthority(source);
+  const tablePolicyAuthority = collectTablePolicyAuthority(source, {
+    commandApplicationSource,
+    commandSurface,
+    daemonReadHandlersSource,
+    mcpAdapterSource,
+    tableContractSource,
+  });
   const applicationCommandSet = applicationAuthority.commands;
   const bySpelling = new Map();
   for (const command of COMMAND_SURFACE.commands) {
