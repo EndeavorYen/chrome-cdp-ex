@@ -19,6 +19,18 @@ function inventory(cdpSource = source, overrides = {}) {
   });
 }
 
+function expectInventoryDriftOrReject(cdpSource) {
+  let authority;
+  try {
+    authority = inventory(cdpSource).tablePolicyAuthority;
+  } catch (error) {
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(/table policy authority/i);
+    return;
+  }
+  expect(authority).not.toEqual(inventory().tablePolicyAuthority);
+}
+
 describe('Runtime v3 table policy authority', () => {
   it('binds the exact catalog policy and argv-aware production owners', () => {
     const authority = inventory().tablePolicyAuthority;
@@ -190,6 +202,37 @@ describe('Runtime v3 table policy authority', () => {
     ),
   ])('rejects no-op or shadowed Object.freeze protection %#', mutation => {
     expect(() => inventory(mutation)).toThrow(/table policy authority/i);
+  });
+
+  it.each([
+    source.replace(
+      'Object.freeze(readCapabilities);',
+      "const mutateTable = Object.assign; mutateTable(readCapabilities, { table: () => 'bypass' }); Object.freeze(readCapabilities);",
+    ),
+    source.replace(
+      'Object.freeze(applicationHandlers);',
+      "const mutateHandlers = Reflect.set; mutateHandlers(applicationHandlers, 'table', async () => 'bypass'); Object.freeze(applicationHandlers);",
+    ),
+    source.replace(
+      'Object.freeze(applicationHandlers);',
+      "false && Object.freeze(applicationHandlers); const wiringAlias = applicationHandlers; wiringAlias.table = async () => 'bypass';",
+    ),
+    source.replace(
+      'Object.freeze(readCapabilities);',
+      "Object['assign'](readCapabilities, { table: () => 'bypass' }); Object.freeze(readCapabilities);",
+    ),
+    source.replace(
+      "  const applicationDispatcher = createCommandDispatcher({\n    registry: applicationRegistry,",
+      "  const applicationDispatcher = createCommandDispatcher({\n    registry: applicationRegistry,",
+    ).replace(
+      'Object.freeze(applicationHandlers);\n  const applicationDispatcher',
+      'const applicationDispatcher',
+    ).replace(
+      '  // Handle a command',
+      '  Object.freeze(applicationHandlers);\n\n  // Handle a command',
+    ),
+  ])('rejects or drifts for alias, computed, dead, and reordered wiring mutation %#', mutation => {
+    expectInventoryDriftOrReject(mutation);
   });
 
   it.each([
