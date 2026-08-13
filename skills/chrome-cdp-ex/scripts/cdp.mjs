@@ -34,6 +34,7 @@ import { isTableCollectArgs, parseTableArgs, parseTableContinuationToken } from 
 import { createTableArtifactStore } from './lib/table-artifacts.mjs';
 import {
   addTableSampleBatch,
+  buildTableExportBundle,
   canonicalizeTableCells,
   createTableAccumulator,
   finalizeTableExtraction,
@@ -11355,6 +11356,552 @@ async function tableObservationStr(cdp, sid, request) {
     : boundedTableObservationText(model);
 }
 
+const TABLE_COLLECTOR_WORLD = 'chrome-cdp-ex-table-collector-v1';
+const TABLE_COLLECTOR_OBJECT_GROUP = 'chrome-cdp-ex-table-collector';
+
+function tableCollectorError(message) {
+  return new Error(`table: ${message}`);
+}
+
+function buildTableCollectorBootstrapExpression() {
+  return String.raw`(() => {
+    'use strict';
+    const O = Object;
+    const A = Array;
+    const S = String;
+    const N = Number;
+    const J = JSON;
+    const WM = WeakMap;
+    const getOwnPropertyDescriptor = O.getOwnPropertyDescriptor;
+    const reflectApply = Reflect.apply;
+    const nodeProto = Node.prototype;
+    const elementProto = Element.prototype;
+    const documentProto = Document.prototype;
+    const parentNodeGetter = getOwnPropertyDescriptor(nodeProto, 'parentNode').get;
+    const firstChildGetter = getOwnPropertyDescriptor(nodeProto, 'firstChild').get;
+    const nextSiblingGetter = getOwnPropertyDescriptor(nodeProto, 'nextSibling').get;
+    const nodeTypeGetter = getOwnPropertyDescriptor(nodeProto, 'nodeType').get;
+    const nodeValueGetter = getOwnPropertyDescriptor(nodeProto, 'nodeValue').get;
+    const localNameGetter = getOwnPropertyDescriptor(elementProto, 'localName').get;
+    const getAttribute = getOwnPropertyDescriptor(elementProto, 'getAttribute').value;
+    const getBoundingClientRect = getOwnPropertyDescriptor(elementProto, 'getBoundingClientRect').value;
+    const queryDocument = getOwnPropertyDescriptor(documentProto, 'querySelector').value;
+    const apply = (fn, receiver, args) => reflectApply(fn, receiver, args);
+    const nodeIds = new WM();
+    let nextId = 1;
+    let savedScroll = null;
+    const idOf = node => {
+      let id = nodeIds.get(node);
+      if (id === undefined) {
+        id = nextId;
+        nextId += 1;
+        nodeIds.set(node, id);
+      }
+      return S(id);
+    };
+    const query = selector => apply(queryDocument, document, [selector]);
+    const nameOf = node => apply(localNameGetter, node, []);
+    const attr = (node, key) => apply(getAttribute, node, [key]);
+    const parseIndex = raw => {
+      if (raw === null || raw === '') return null;
+      if (raw === '-1') return -1;
+      if (raw.length > 1 && raw[0] === '0') return null;
+      const value = N(raw);
+      if (!N.isSafeInteger(value) || value < 1) return null;
+      return value;
+    };
+    const cellText = root => {
+      let value = '';
+      let current = apply(firstChildGetter, root, []);
+      while (current) {
+        const type = apply(nodeTypeGetter, current, []);
+        if (type === 3) value += apply(nodeValueGetter, current, []) || '';
+        const first = type === 1 ? apply(firstChildGetter, current, []) : null;
+        if (first) current = first;
+        else {
+          let next = null;
+          while (current && current !== root) {
+            next = apply(nextSiblingGetter, current, []);
+            if (next) break;
+            current = apply(parentNodeGetter, current, []);
+          }
+          current = current === root ? null : next;
+        }
+      }
+      return value;
+    };
+    const rowCells = tr => {
+      const cells = [];
+      let child = apply(firstChildGetter, tr, []);
+      while (child) {
+        if (apply(nodeTypeGetter, child, []) === 1) {
+          const tag = nameOf(child);
+          if (tag === 'th' || tag === 'td') cells[cells.length] = cellText(child);
+        }
+        child = apply(nextSiblingGetter, child, []);
+      }
+      return cells;
+    };
+    const collectRows = (parent, kind) => {
+      const rows = [];
+      let child = apply(firstChildGetter, parent, []);
+      while (child) {
+        if (apply(nodeTypeGetter, child, []) === 1 && nameOf(child) === 'tr') {
+          rows[rows.length] = {
+            kind: kind,
+            mountedNodeId: idOf(child),
+            rawAriaRowIndex: parseIndex(attr(child, 'aria-rowindex')),
+            cells: rowCells(child),
+          };
+        }
+        child = apply(nextSiblingGetter, child, []);
+      }
+      return rows;
+    };
+    const rememberScroll = container => {
+      if (savedScroll) return;
+      savedScroll = { container: container, top: container.scrollTop };
+    };
+    const sampleScroll = container => O.freeze({
+      top: container.scrollTop,
+      height: container.scrollHeight,
+      clientHeight: container.clientHeight,
+    });
+    const loadMoreState = selector => {
+      if (!selector) return O.freeze({ present: false, x: 0, y: 0 });
+      const node = query(selector);
+      if (!node || apply(parentNodeGetter, node, []) === null) {
+        return O.freeze({ present: false, x: 0, y: 0 });
+      }
+      const rect = apply(getBoundingClientRect, node, []);
+      return O.freeze({
+        present: true,
+        x: rect.x + rect.width / 2,
+        y: rect.y + rect.height / 2,
+      });
+    };
+    globalThis.__chromeCdpExTableCollector = {
+      sample(tableSelector, scrollSelector, loadMoreSelector) {
+        const matches = [];
+        const first = query(tableSelector);
+        if (first) matches[0] = first;
+        if (matches.length !== 1 || nameOf(matches[0]) !== 'table') {
+          return J.stringify({ ok: false, error: 'collection requires exactly one HTML table' });
+        }
+        const table = matches[0];
+        if (apply(parentNodeGetter, table, []) === null) {
+          return J.stringify({ ok: false, error: 'table is detached' });
+        }
+        const container = query(scrollSelector);
+        if (!container) return J.stringify({ ok: false, error: 'scroll-container not found' });
+        rememberScroll(container);
+        const headerRows = [];
+        const dataRows = [];
+        let child = apply(firstChildGetter, table, []);
+        while (child) {
+          if (apply(nodeTypeGetter, child, []) === 1) {
+            const tag = nameOf(child);
+            if (tag === 'thead') {
+              const rows = collectRows(child, 'header');
+              for (let index = 0; index < rows.length; index += 1) headerRows[headerRows.length] = rows[index];
+            } else if (tag === 'tbody') {
+              const rows = collectRows(child, 'data');
+              for (let index = 0; index < rows.length; index += 1) dataRows[dataRows.length] = rows[index];
+            }
+          }
+          child = apply(nextSiblingGetter, child, []);
+        }
+        const scroll = sampleScroll(container);
+        return J.stringify({
+          ok: true,
+          ariaRowCount: parseIndex(attr(table, 'aria-rowcount')),
+          headerRows: headerRows,
+          dataRows: dataRows,
+          scroll: scroll,
+          scrollable: scroll.height > scroll.clientHeight,
+          loadMore: loadMoreState(loadMoreSelector),
+        });
+      },
+      scrollTo(scrollSelector, top) {
+        const container = query(scrollSelector);
+        if (!container) return J.stringify({ ok: false, error: 'scroll-container not found' });
+        rememberScroll(container);
+        container.scrollTop = top;
+        return J.stringify({ ok: true, scroll: sampleScroll(container) });
+      },
+      restore() {
+        if (savedScroll) savedScroll.container.scrollTop = savedScroll.top;
+        return true;
+      },
+    };
+    return true;
+  })()`;
+}
+
+function parseCollectorPayload(value, fallback = 'isolated collector failed') {
+  if (typeof value !== 'string') throw tableCollectorError(fallback);
+  let parsed;
+  try { parsed = JSON.parse(value); } catch { throw tableCollectorError(fallback); }
+  if (!parsed || parsed.ok !== true) {
+    throw tableCollectorError(parsed?.error || fallback);
+  }
+  return parsed;
+}
+
+function collectorIdentity(request, sample) {
+  if (request.rowKeyColumn !== null && request.rowKeyColumn !== undefined) {
+    return {
+      identitySource: 'row-key-column',
+      orderingSource: 'row-key-column',
+      logicalRows: null,
+      logicalCountSource: 'none',
+      headerCount: sample.headerRows.length,
+    };
+  }
+  const headerCount = sample.headerRows.length;
+  for (let index = 0; index < headerCount; index += 1) {
+    if (sample.headerRows[index].rawAriaRowIndex !== index + 1) {
+      throw tableCollectorError('header aria-rowindex coverage is not contiguous from 1');
+    }
+  }
+  const hasAria = sample.dataRows.every(row => Number.isSafeInteger(row.rawAriaRowIndex) && row.rawAriaRowIndex >= 1);
+  if (!hasAria) {
+    throw tableCollectorError('virtual collection requires aria-rowindex or --row-key-column');
+  }
+  return {
+    identitySource: 'aria-rowindex',
+    orderingSource: 'aria-rowindex',
+    logicalRows: null,
+    logicalCountSource: 'none',
+    headerCount,
+  };
+}
+
+function nextAriaLogicalRows(sample, headerCount, previousCount) {
+  const raw = sample.ariaRowCount;
+  if (raw === null || raw === -1) {
+    if (previousCount !== undefined && previousCount !== null) {
+      throw tableCollectorError('aria-rowcount drifted from a stable integer');
+    }
+    return null;
+  }
+  if (!Number.isSafeInteger(raw) || raw < headerCount) {
+    throw tableCollectorError('aria-rowcount is not a stable safe integer');
+  }
+  if (previousCount !== undefined && previousCount !== raw - headerCount) {
+    throw tableCollectorError('aria-rowcount drifted from a stable integer');
+  }
+  return raw - headerCount;
+}
+
+function collectorSamples(sample, identity) {
+  return sample.dataRows.map(row => {
+    let key;
+    if (identity.identitySource === 'row-key-column') {
+      key = row.cells[identity.rowKeyColumn];
+      if (typeof key !== 'string') throw tableCollectorError('row-key-column is missing from a mounted row');
+    } else {
+      key = row.rawAriaRowIndex - identity.headerCount;
+    }
+    return {
+      mountedNodeId: row.mountedNodeId,
+      key,
+      cells: row.cells,
+    };
+  });
+}
+
+function collectorProgress(before, after, admittedNew) {
+  if (admittedNew) return true;
+  if (before.scroll.top !== after.scroll.top) return true;
+  if (before.scroll.height !== after.scroll.height) return true;
+  if (before.loadMore.present && !after.loadMore.present) return true;
+  return false;
+}
+
+function boundedCollectJson(model) {
+  const mutable = structuredClone(model);
+  let output = JSON.stringify(orderedCollectEnvelope(mutable), null, 2);
+  while (Buffer.byteLength(output, 'utf8') > TABLE_EXTRACTION_LIMITS.maxResponseBytes) {
+    if (!mutable.inline?.rows?.length) {
+      throw new RangeError('table: collection metadata exceeds the JSON response byte ceiling');
+    }
+    mutable.inline.rows.pop();
+    mutable.inline.rowCount = mutable.inline.rows.length;
+    mutable.inline.bytes = Buffer.byteLength(mutable.inline.rows.join('\n'), 'utf8');
+    mutable.inline.truncated = true;
+    output = JSON.stringify(orderedCollectEnvelope(mutable), null, 2);
+  }
+  return output;
+}
+
+function orderedCollectEnvelope(model) {
+  return {
+    schema: model.schema,
+    logicalRows: model.logicalRows,
+    logicalCountSource: model.logicalCountSource,
+    identitySource: model.identitySource,
+    orderingSource: model.orderingSource,
+    mountedRows: model.mountedRows,
+    collectedRows: model.collectedRows,
+    recycledMountedNodes: model.recycledMountedNodes,
+    completeness: model.completeness,
+    artifact: model.artifact,
+    inline: model.inline,
+    continuation: model.continuation,
+  };
+}
+
+function boundedCollectText(model) {
+  const rows = [...(model.inline?.rows || [])];
+  const lines = () => [
+    `Table collection: ${model.completeness.state}; collected ${model.collectedRows}`
+      + (model.logicalRows === null ? '' : `/${model.logicalRows}`),
+    ...rows,
+    model.continuation?.token ? `Continuation: ${model.continuation.token}` : 'Continuation: none',
+  ];
+  let output = lines().join('\n');
+  while (Buffer.byteLength(output, 'utf8') > 8192 && rows.length > 0) {
+    rows.pop();
+    output = lines().join('\n');
+  }
+  return output;
+}
+
+function formatCollectedTable(bundle, publication, continuation, format) {
+  const manifest = bundle.manifest;
+  const model = {
+    schema: 'chrome-cdp-ex.table.v1',
+    logicalRows: manifest.logicalRows,
+    logicalCountSource: manifest.logicalCountSource,
+    identitySource: manifest.identitySource,
+    orderingSource: manifest.orderingSource,
+    mountedRows: manifest.mountedRows,
+    collectedRows: manifest.collectedRows,
+    recycledMountedNodes: manifest.recycledMountedNodes,
+    completeness: manifest.completeness,
+    artifact: {
+      id: publication.artifactId,
+      rows: publication.artifact.rows,
+      bytes: publication.artifact.bytes,
+      checksum: publication.artifact.checksum,
+      checksumScope: publication.artifact.checksumScope,
+    },
+    inline: manifest.inline,
+    continuation: continuation.continuation,
+  };
+  return format === 'json' ? boundedCollectJson(model) : boundedCollectText(model);
+}
+
+async function tableCollectionStr(cdp, sid, request, execution, options = {}) {
+  const store = options.store;
+  const session = options.session || { collector: null };
+  if (!store) throw tableCollectorError('artifact store is required for collection');
+  if (session.collector) throw tableCollectorError('collector-busy');
+  session.collector = true;
+  let worldId = null;
+  let restored = false;
+  const listeners = [];
+  let invalidated = null;
+  const invalidate = error => {
+    if (!invalidated) invalidated = error;
+  };
+  const throwIfInvalid = () => {
+    if (invalidated) throw invalidated;
+  };
+  const runPage = async (runtime, operation) => runtime.runCdpOperation(async ({ timeoutMs }) => {
+    throwIfInvalid();
+    runtime.throwIfAborted();
+    const result = await operation(timeoutMs);
+    throwIfInvalid();
+    runtime.throwIfAborted();
+    return result;
+  });
+  const evaluate = (runtime, expression) => runPage(runtime, timeoutMs => cdpDomains(cdp).Runtime.evaluate({
+    expression,
+    contextId: worldId,
+    objectGroup: TABLE_COLLECTOR_OBJECT_GROUP,
+    returnByValue: true,
+    awaitPromise: false,
+  }, sid, timeoutMs).then(evaluated => {
+    if (evaluated?.exceptionDetails) {
+      throw tableCollectorError(boundedTableRuntimeDiagnostic(evaluated.exceptionDetails));
+    }
+    return evaluated?.result?.value;
+  }));
+  const samplePage = async runtime => parseCollectorPayload(
+    await evaluate(
+      runtime,
+      `__chromeCdpExTableCollector.sample(${JSON.stringify(request.selector || 'table')},`
+        + `${JSON.stringify(request.scrollContainer)},${JSON.stringify(request.loadMore || null)})`,
+    ),
+    'isolated collector sample failed',
+  );
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    while (listeners.length) {
+      try { listeners.pop()(); } catch {}
+    }
+    try {
+      cdp.send('Runtime.releaseObjectGroup', { objectGroup: TABLE_COLLECTOR_OBJECT_GROUP }, sid);
+    } catch {}
+    session.collector = false;
+  };
+
+  let cleaned = false;
+  session.collector = true;
+  try {
+    return await runTableCollectionLifecycle(execution, {
+      collect: async runtime => {
+        runtime.throwIfAborted();
+        if (runtime.remainingPageMs() <= 0) throw new TableCollectionDeadlineError('page');
+        const frameTree = await runPage(runtime, timeoutMs => cdpDomains(cdp).Page.getFrameTree({}, sid, timeoutMs));
+        const frameId = frameTree?.frameTree?.frame?.id;
+        if (typeof frameId !== 'string' || frameId.length === 0) {
+          throw tableCollectorError('root frame id is unavailable');
+        }
+        const world = await runPage(runtime, timeoutMs => cdpDomains(cdp).Page.createIsolatedWorld({
+          frameId,
+          worldName: TABLE_COLLECTOR_WORLD,
+          grantUniveralAccess: false,
+        }, sid, timeoutMs));
+        worldId = world?.executionContextId;
+        if (!Number.isSafeInteger(worldId) || worldId < 1) {
+          throw tableCollectorError('isolated execution context is unavailable');
+        }
+        listeners.push(cdp.onEvent('Runtime.executionContextDestroyed', params => {
+          if (params.executionContextId === worldId) {
+            invalidate(tableCollectorError('isolated execution context was destroyed'));
+          }
+        }));
+        listeners.push(cdp.onEvent('Page.frameNavigated', params => {
+          if (!params?.frame?.parentId) {
+            invalidate(tableCollectorError('root frame navigated during collection'));
+          }
+        }));
+        listeners.push(cdp.onEvent('Target.detachedFromTarget', () => {
+          invalidate(tableCollectorError('target detached during collection'));
+        }));
+        await evaluate(runtime, buildTableCollectorBootstrapExpression());
+        let sample = await samplePage(runtime);
+        const identity = collectorIdentity(request, sample);
+        identity.rowKeyColumn = request.rowKeyColumn;
+        if (identity.identitySource === 'aria-rowindex') {
+          identity.logicalRows = nextAriaLogicalRows(sample, identity.headerCount);
+          identity.logicalCountSource = identity.logicalRows === null ? 'none' : 'aria-rowcount';
+        }
+        const accumulator = createTableAccumulator({
+          logicalRows: identity.logicalRows,
+          logicalCountSource: identity.logicalCountSource,
+          identitySource: identity.identitySource,
+          orderingSource: identity.orderingSource,
+        });
+        const admit = current => {
+          const batch = collectorSamples(current, identity);
+          const admission = addTableSampleBatch(accumulator, batch);
+          if (!admission.admitted) return admission;
+          return { admitted: true, added: batch.length, collectedRows: admission.collectedRows };
+        };
+        let previousCollected = 0;
+        let admission = admit(sample);
+        if (!admission.admitted) {
+          return { accumulator, termination: admission.reason, interactions: 0 };
+        }
+        previousCollected = admission.collectedRows;
+        let interactions = 0;
+        let noProgress = 0;
+        const complete = () => {
+          if (identity.identitySource !== 'aria-rowindex' || identity.logicalRows === null) return false;
+          const result = finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' });
+          return result.completeness.state === 'complete';
+        };
+        while (!complete()) {
+          runtime.throwIfAborted();
+          throwIfInvalid();
+          if (runtime.remainingPageMs() <= 0) {
+            return { accumulator, termination: 'time-limit', interactions };
+          }
+          if (interactions >= TABLE_EXTRACTION_LIMITS.maxInteractions) {
+            return { accumulator, termination: 'interaction-limit', interactions };
+          }
+          if (noProgress >= TABLE_EXTRACTION_LIMITS.maxNoProgressCycles) {
+            return { accumulator, termination: 'no-progress-limit', interactions };
+          }
+          const before = sample;
+          const maxTop = Math.max(0, before.scroll.height - before.scroll.clientHeight);
+          if (before.loadMore.present && before.scroll.top >= maxTop) {
+            await runPage(runtime, async timeoutMs => {
+              const domains = cdpDomains(cdp);
+              const base = {
+                x: before.loadMore.x,
+                y: before.loadMore.y,
+                button: 'left',
+                clickCount: 1,
+                modifiers: 0,
+              };
+              await domains.Input.dispatchMouseEvent({ ...base, type: 'mouseMoved' }, sid, timeoutMs);
+              await domains.Input.dispatchMouseEvent({ ...base, type: 'mousePressed' }, sid, timeoutMs);
+              await domains.Input.dispatchMouseEvent({ ...base, type: 'mouseReleased' }, sid, timeoutMs);
+            });
+          } else if (before.scroll.top < maxTop) {
+            const nextTop = Math.min(maxTop, before.scroll.top + Math.max(1, before.scroll.clientHeight));
+            parseCollectorPayload(await evaluate(
+              runtime,
+              `__chromeCdpExTableCollector.scrollTo(${JSON.stringify(request.scrollContainer)},${nextTop})`,
+            ), 'scroll-container is not scrollable');
+          } else if (!before.scrollable && !before.loadMore.present) {
+            throw tableCollectorError('scroll-container is not scrollable');
+          } else {
+            noProgress += 1;
+            sample = await samplePage(runtime);
+            continue;
+          }
+          interactions += 1;
+          sample = await samplePage(runtime);
+          if (identity.identitySource === 'aria-rowindex') {
+            nextAriaLogicalRows(sample, identity.headerCount, identity.logicalRows);
+          }
+          for (let index = 0; index < identity.headerCount; index += 1) {
+            if (sample.headerRows[index]?.rawAriaRowIndex !== index + 1) {
+              throw tableCollectorError('header aria-rowindex coverage drifted');
+            }
+          }
+          const collectedBefore = previousCollected;
+          admission = admit(sample);
+          if (!admission.admitted) {
+            return { accumulator, termination: admission.reason, interactions };
+          }
+          previousCollected = admission.collectedRows;
+          if (collectorProgress(before, sample, previousCollected > collectedBefore)) noProgress = 0;
+          else noProgress += 1;
+        }
+        if (runtime.remainingPageMs() > 0 && worldId !== null && !restored) {
+          try {
+            await evaluate(runtime, '__chromeCdpExTableCollector.restore()');
+            restored = true;
+          } catch {}
+        }
+        return { accumulator, termination: 'logical-count-reached', interactions };
+      },
+      finalize: async collection => {
+        if (!collection?.accumulator) {
+          throw collection?.error || new TableCollectionDeadlineError('page');
+        }
+        const bundle = buildTableExportBundle(collection.accumulator, {
+          termination: collection.termination || 'error',
+        });
+        const publication = await store.publish(bundle, execution);
+        const continuation = await store.readContinuation(publication.token);
+        return formatCollectedTable(bundle, publication, continuation, request.format);
+      },
+      cleanup,
+    });
+  } finally {
+    cleanup();
+  }
+}
+
 // --- Navigation history ---
 async function historyNavStr(cdp, sid, direction) {
   const { currentIndex, entries } = await cdpDomains(cdp).Page.getNavigationHistory( {}, sid);
@@ -18256,7 +18803,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
-  sampleRootFrameTables, tableObservationStr,
+  sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
   probeTcpPort,

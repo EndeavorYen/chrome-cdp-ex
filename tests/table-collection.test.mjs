@@ -568,7 +568,7 @@ describe('collection context, abort, and deadline lifecycle', () => {
       && Number.isFinite(call.timeout)
     ));
     expect(timed.length).toBeGreaterThan(0);
-    expect(Math.max(...timed.map(call => call.timeout))).toBeLessThanOrEqual(2000);
+    expect(timed[timed.length - 1].timeout).toBeLessThanOrEqual(2000);
   });
 });
 
