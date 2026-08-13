@@ -226,6 +226,7 @@ describe('hostile in-process input validation', () => {
     expect(() => createTableAccumulator(customPrototypeOptions)).toThrow(/Object\.prototype/i);
     expect(() => createTableAccumulator({ logicalRows: -1, logicalCountSource: 'aria-rowcount', identitySource: 'aria-rowindex', orderingSource: 'aria-rowindex' })).toThrow(/non-negative/i);
     expect(() => createTableAccumulator({ logicalRows: 1, logicalCountSource: 'caption', identitySource: 'aria-rowindex', orderingSource: 'aria-rowindex' })).toThrow(/not supported/i);
+    expect(() => createTableAccumulator({ logicalRows: 1, logicalCountSource: 'aria-rowcount', identitySource: 'aria-rowindex', orderingSource: 'aria-rowindex', captionRows: 1024 })).toThrow(/not supported/i);
     expect(() => addTableSample(accumulator, { mountedNodeId: 'node-1', key: 1, cells: sparseCells })).toThrow(/dense/i);
     expect(() => addTableSample(accumulator, { mountedNodeId: 'node-1', key: 1, cells: ['safe', 2] })).toThrow(/string/i);
     expect(() => finalizeTableExtraction(accumulator, { termination: 'disappeared-control' })).toThrow(/not supported/i);
