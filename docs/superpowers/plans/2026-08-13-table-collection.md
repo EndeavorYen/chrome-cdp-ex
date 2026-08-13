@@ -15,16 +15,17 @@
 - Keep commits small and periodic; generated fixtures and version/contract refreshes are separate mechanical commits.
 - Do not modify `docs/contracts/v2.15.0/*`; published contract fixtures are immutable.
 - Treat the behavior as unreleased v2.16.0. Do not create a GitHub Release or publish to npm in this plan.
-- Public v2.16 grammar has no caller-tunable limit flags. Fixed bounds are: selector 1,024 UTF-8 bytes, 256 direct cells per row, 4,096 canonical bytes per row, 20 inline data rows, 16,384 UTF-8 bytes per formatted JSON response, 100,000 unique data rows, 16,777,216 artifact bytes, 256 page mutations, three no-progress cycles, 295,000 ms mutation window, 300,000 ms server total, and 315,000 ms IPC response deadline.
+- Public v2.16 grammar has no caller-tunable limit flags. Fixed bounds are: selector 1,024 UTF-8 bytes, 256 direct cells per row, 4,096 post-escape canonical bytes per row, 8,194 UTF-8 bytes for `JSON.stringify(row)`, 20 inline data rows, 8,192 UTF-8 bytes per complete text response, 16,384 UTF-8 bytes per formatted JSON response, 100,000 unique data rows, 16,777,216 artifact bytes, 256 page mutations, three no-progress cycles, 295,000 ms page/CDP deadline, 300,000 ms server total, and 315,000 ms IPC response deadline.
 - `logicalRows` comes only from explicit semantic evidence such as `aria-rowcount`; never infer it from captions, prose, or `data-source-rows`.
-- `complete` requires known logical count, safe termination, and exact one-based `aria-rowindex` coverage of every index `1..logicalRows`. Count equality alone never proves completeness. Row-key-only collection remains `unknown` even when counts happen to match.
+- `complete` requires known logical count, safe termination, and exact proven ARIA coverage. With no header rows, data must cover raw indexes `1..aria-rowcount`. With `H>0` header rows, every header must expose the contiguous raw indexes `1..H`, data must cover `H+1..aria-rowcount`, and the accumulator normalizes data indexes by subtracting `H`; `logicalRows = aria-rowcount - H`. Header rows are never hashed. Missing, mixed, drifting, or noncontiguous header indexes leave completeness `unknown`. Count equality alone never proves completeness. Row-key-only collection remains `unknown` even when counts happen to match.
 - Virtual collection requires exactly one HTML table, an explicit `--scroll-container`, and stable identity from `aria-rowindex` or zero-based `--row-key-column N` (`0..255`). Duplicate identity inside one mounted snapshot fails; cross-cycle same-key/same-bytes is benign/no-progress; same-key/different-bytes is a conflict; never deduplicate by row text.
 - `--collect` is the only mutating mode. The explicit CLI flag is the CLI acknowledgement; first-class MCP and MCP `run_command` additionally require `confirm:true`. Observation and immutable `--continue` are reads. Never automatically replay an interaction after daemon/transport ambiguity.
 - Catalog conditional policy, batch safety, daemon authorization, MCP confirmation, and transport side-effect classification must land before any collector implementation can scroll or click.
-- Collection stops starting mutations at 295 seconds, reserves five seconds to publish a partial result by 300 seconds, and uses a 315-second client IPC deadline. Caller disconnect aborts all further interactions, deletes unpublished state, and never replays.
+- All page/CDP work has a hard 295,000 ms deadline. Each operation is dynamically capped to `min(5_000, 295_000 - elapsed)`; no final sample, scroll, click, or other CDP call may start or remain pending after that deadline. The 295,000–300,000 ms interval is exclusively for accumulator finalization, fsync, artifact commit, and response construction. If no committed result exists by 300,000 ms, clean the uncommitted directory and fail truthfully. The client IPC deadline is 315,000 ms. Caller disconnect aborts all further work, deletes pre-response artifacts, and never replays.
 - Continuation is immutable, row-aligned, and idempotent: the same token always names the same artifact offset and returns the same table slice plus a distinct next token. Tokens never mutate a server cursor; a row over 4,096 canonical bytes terminates as `row-too-large` and is never cut or skipped.
-- Artifacts are runtime-owned only: no caller paths; validated nonsymlink POSIX root owned by the current UID; 0700 directories; 0600 regular files; exclusive writes; fsync; whole-directory atomic rename with manifest written last; target/session/artifact binding; lazy bounded orphan reclamation; synchronous temp cleanup on failure/abort/shutdown. Artifact-producing modes fail closed on Windows in v2.16 until private ACL verification exists.
+- Artifacts are runtime-owned only: no caller paths; cryptographically random 128-bit lowercase-hex IDs; validated nonsymlink POSIX root owned by the current UID; 0700 directories; 0600 regular files; exclusive writes and fsync. Publication creates the final ID directory exclusively, writes and fsyncs data, then exclusively creates/writes/fsyncs a verified manifest as the commit marker; readers ignore directories without a valid committed manifest. Every published artifact is tracked by its owning session and removed synchronously on stop/detach/signal and on abort before response write completion. TTL sweeping is crash recovery only. Artifact-producing modes fail closed on Windows in v2.16 until private ACL verification exists.
 - Full artifact checksum is SHA-256 over exact UTF-8 canonical data-row `rows.tsv` bytes: tab between cells, LF between rows, no header and no final LF. Issue #151's 1,024-row fixture must produce `73e9f36080b8c781e204857ad9c7dcf4ce7ce419b1503d9affd0343f58f964ed`.
+- Canonical cell grammar is exact: preserve ordinary spaces and valid Unicode without trim, collapse, NFC, or NFKC normalization; reject unpaired UTF-16 surrogates; encode backslash/tab/CR/LF/NUL as `\\`, `\t`, `\r`, `\n`, `\0`; encode remaining C0 controls, C1 controls, U+2028, and U+2029 as uppercase `\uXXXX`. The 4,096-byte row ceiling is measured after these escapes. `JSON.stringify(row)` must also fit 8,194 bytes; a row that cannot fit the single-row JSON envelope terminates `row-too-large` rather than being split.
 - MCP and CLI must use the same runtime engine. Compare parsed semantics and artifact hashes while ignoring only the CLI terminal newline and explicitly enumerated volatile IDs/paths/timestamps.
 - No personal browser profile, login, external mutation, or npm publication. Each live CLI, first-class MCP, MCP run-command, and Playwright route uses its own independently reset task-local browser/target/profile/runtime fixture and proves cleanup.
 - Scope is Critical/Important agent harm only. Do not fold in heuristic container discovery, multi-table collection, caller output paths, arbitrary dynamic MCP resources, or unrelated cleanup.
@@ -39,9 +40,9 @@
 
 **Interfaces:**
 - Produces: immutable `TABLE_EXTRACTION_LIMITS` with the fixed ceilings above.
-- Produces: `canonicalizeTableCells(cells) -> string`, where backslash, tab, CR, and LF are escaped deterministically before tab-joining cells.
-- Produces: `createTableAccumulator({ logicalRows, logicalCountSource, identitySource, orderingSource })`, `addTableSample(accumulator, sample)`, and `addTableSampleBatch(accumulator, samples)` for strict aria coverage, within-snapshot duplicate rejection, benign cross-cycle repeats, row-conflict detection, mounted-node recycling evidence, and canonical byte accounting.
-- Produces: `finalizeTableExtraction(accumulator, { termination, limits }) -> chrome-cdp-ex.table.v1` and `buildTableExportManifest(...) -> chrome-cdp-ex.table-export.v1`.
+- Produces: `canonicalizeTableCells(cells) -> string` using the exact frozen escape/Unicode grammar above before tab-joining cells.
+- Produces: `createTableAccumulator({ logicalRows, logicalCountSource, identitySource, orderingSource, limits? })`, `addTableSample(accumulator, sample)`, and `addTableSampleBatch(accumulator, samples)` for strict aria coverage, within-snapshot duplicate rejection, benign cross-cycle repeats, row-conflict detection, mounted-node recycling evidence, and transactional canonical byte admission. The returned accumulator is a frozen opaque handle backed by module-private state. Internal/test-only limits may lower fixed ceilings at creation but are never public CLI flags.
+- Produces: `finalizeTableExtraction(accumulator, { termination }) -> chrome-cdp-ex.table.v1` and `buildTableExportManifest(...) -> chrome-cdp-ex.table-export.v1`.
 - Produces: `buildInlineTablePreview(rows, limits)` that truncates only at complete UTF-8 row boundaries, rejects rows over 4,096 canonical bytes, and reports exact row/byte counts.
 - Later tasks consume these functions; this task has no filesystem or CDP effects.
 
@@ -69,11 +70,11 @@
 
   Freeze cases for the same mounted node carrying different keys, duplicate keys within one batch, benign same-key repeats across batches, duplicate keys with conflicting bytes, exact `1..logicalRows` coverage, out-of-domain aria indices, row-key non-certification, unknown totals, logical-count reached, row-too-large, row/byte/interaction/time/no-progress limits, and partial-artifact truth.
 
-- [x] **Step 7: Implement accumulator semantics and run focused GREEN**
+- [ ] **Step 7: Implement accumulator semantics and run focused GREEN and review**
 
   Run `npm test -- tests/table-extraction.test.mjs`; then run lint on both new files.
 
-- [x] **Step 8: Commit Task 1 in small checkpoints**
+- [ ] **Step 8: Commit Task 1 in small checkpoints and close independent review**
 
   Commit the verified RED first, then the pure GREEN implementation. Do not touch runtime/catalog/docs in these commits.
 
@@ -87,13 +88,16 @@
 - Modify: `skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs`
 - Modify: `skills/chrome-cdp-ex/scripts/lib/daemon-read-handlers.mjs`
 - Modify: `skills/chrome-cdp-ex/scripts/cdp.mjs`
+- Modify: `package.json`, `package-lock.json`, contract/checker version selection, and generated command docs owned by the catalog generator.
+- Create: initial `docs/contracts/v2.16.0/` public/runtime/package fixtures; never modify v2.15 fixtures.
 - Modify: the directly covering command-surface, application, MCP, batch, transport, and runtime-inventory tests.
 
 **Interfaces:**
 - Produces one strict own-data argv parser and `isTableCollectArgs(args)` used by every policy boundary.
 - Public grammar is exactly observation, explicit `--collect`, or immutable `--continue`; collection-only flags without `--collect` fail before capability effects.
 - Catalog effect/authorization is conditional: observation and continuation are reads; collection is a protected mutation.
-- CLI `--collect` is explicit acknowledgement. First-class MCP and MCP `run_command` require own-data `confirm:true` before RuntimeClient execution.
+- CLI `--collect` is explicit acknowledgement. The currently shipped MCP `run_command` route requires own-data `confirm:true` before RuntimeClient execution. The new first-class MCP table tool does not exist until Task 7.
+- Task 2 bumps package/checker selection to unreleased v2.16.0 before its first catalog change and establishes initial v2.16 public/runtime/package fixtures. Every later contract-shaping task refreshes only v2.16 fixtures in a separate reviewed mechanical commit.
 
 - [ ] **Step 1: RED the exact parser grammar and argv forwarding**
 
@@ -103,17 +107,17 @@
 
   Until Task 6 lands, a valid collect request returns an explicit unavailable error before page effects. Snapshot behavior remains usable; invalid continuation never touches storage.
 
-- [ ] **Step 3: RED catalog, MCP, batch, and transport classifications**
+- [ ] **Step 3: RED catalog, run-command MCP, batch, and transport classifications**
 
-  Prove collect requires confirmation in both MCP routes, is unsafe in parallel batch, and is side-effect-capable after IPC send; observation/continuation remain read-only and parallel-safe. Canonical aliases and nested composite inspection must not bypass the predicate.
+  Prove collect requires confirmation through MCP `run_command`, is unsafe in parallel batch, and is side-effect-capable after IPC send; observation/continuation remain read-only and parallel-safe. Canonical aliases and nested composite inspection must not bypass the predicate. Do not fabricate or partially add the future first-class MCP tool.
 
 - [ ] **Step 4: Implement one authority path and verify zero-effect denials**
 
   Update the exact conditional-command allowlist and catalog-owned policy. Do not duplicate argv heuristics. Denied/inherited/accessor/non-enumerable confirmation reaches zero RuntimeClient/capability calls.
 
-- [ ] **Step 5: Run focused checks and commit RED, GREEN, and generated inventory separately**
+- [ ] **Step 5: Establish v2.16 contracts, run focused checks, and commit mechanics separately**
 
-  Runtime inventory mutations that swap table policy, builder wiring, or argv-aware classification must drift or reject.
+  First bump/select unreleased v2.16.0 and generate reviewed initial fixtures; leave v2.15 byte-identical. Runtime inventory mutations that swap table policy, builder wiring, or argv-aware classification must drift or reject. Commit RED, GREEN, version plumbing, generated docs, and each fixture refresh separately so this task ends with all source/contract/doc gates GREEN.
 
 ---
 
@@ -126,13 +130,13 @@
 - Modify: `tests/daemon-transport.test.mjs` and the directly covering server/dispatcher tests.
 
 **Interfaces:**
-- Selects 315,000 ms only for `table --collect`, capped even for internal overrides; existing wait-specific behavior is unchanged.
+- Selects 315,000 ms only for `table --collect`, capped even for internal overrides; existing wait-specific behavior is unchanged. Server context exposes absolute 295,000/300,000 ms monotonic deadlines, not independently drifting timers.
 - Creates one `AbortController` per active request ID and threads its signal to the eventual collector.
 - Aborts on connection end/close/error and signal shutdown; duplicate active IDs reject; a disconnected client receives no response and causes no later interaction.
 
 - [ ] **Step 1: RED request timeout selection and typed timeout cleanup**
 
-  Freeze 295,000 ms mutation, 300,000 ms server, 315,000 ms IPC, and 5,000 ms per-CDP-operation limits. Timeout remains completion-unknown/no-auto-replay after a collect request was sent.
+  Freeze 295,000 ms page/CDP, 300,000 ms server, 315,000 ms IPC, and 5,000 ms maximum per-CDP-operation limits. Test operations dynamically capped to the remaining pre-295 interval, no CDP work after 295, finalization/publication only from 295–300, and handler completion or truthful failure by 300. Timeout remains completion-unknown/no-auto-replay after a collect request was sent.
 
 - [ ] **Step 2: RED server-side abort behavior**
 
@@ -140,7 +144,7 @@
 
 - [ ] **Step 3: Implement minimal signal plumbing GREEN**
 
-  Every loop, sleep, and CDP operation must observe the signal. Serialization failure before send remains pre-dispatch; post-send response loss remains conservatively ambiguous under #150's contract.
+  Every loop, sleep, and CDP operation must observe the signal and shared monotonic deadline. The abortable CDP wrapper uses `min(5_000, remainingPageMs)` and refuses work when no page time remains. Serialization failure before send remains pre-dispatch; post-send response loss remains conservatively ambiguous under #150's contract.
 
 - [ ] **Step 4: Focused verify and commit small checkpoints**
 
@@ -156,26 +160,26 @@
 - Modify only the minimal runtime/session cleanup seams and their tests.
 
 **Interfaces:**
-- Artifact IDs are 32 lowercase hex characters. Tokens are exactly `ct1.<artifactId>.<zeroBasedDataRowOffset>` and never exist at EOF.
+- Artifact IDs are generated with `randomBytes(16)` and encoded as exactly 32 lowercase hex characters. Tokens are exactly `ct1.<artifactId>.<zeroBasedDataRowOffset>` and never exist at EOF.
 - `rows.tsv` contains only canonical data rows, so issue #151's artifact is exactly 31,104 bytes with checksum `73e9…64ed`.
 - Continuation returns at most 20 whole rows and at most 16,384 formatted JSON bytes; the same token returns byte-identical table payload and a distinct immutable next token.
-- POSIX publication is runtime-owned, nonsymlink, UID/mode checked, exclusive, fsynced, and whole-directory atomic. Windows artifact-producing modes fail closed in v2.16; observation remains available.
+- POSIX publication is runtime-owned, nonsymlink, UID/mode checked, exclusive, fsynced, and manifest-committed. The final artifact directory itself is created exclusively; a valid manifest created last is the only commit marker. Windows artifact-producing modes fail closed in v2.16; observation remains available.
 
 - [ ] **Step 1: RED hostile root, publication, and tamper cases**
 
-  Cover traversal, absolute/encoded paths, symlinks, non-regular files, wrong UID/mode, no-clobber rename, target/session mismatch, stale manifest, checksum/size mismatch, partial write, fsync/rename failure, and no absolute path leakage.
+  Cover traversal, absolute/encoded paths, symlinks, non-regular files, wrong UID/mode, random-ID collision/remint, exclusive final-directory creation, target/session mismatch, missing/partial/stale manifest, checksum/size mismatch, partial data/manifest write, fsync failure, and no absolute path leakage.
 
-- [ ] **Step 2: Implement atomic store GREEN**
+- [ ] **Step 2: Implement exclusive manifest-committed store GREEN**
 
-  Write data then manifest into a 0700 exclusive temp directory with 0600 files, fsync, rename without replacement, and verify real paths remain under the validated root.
+  Create the cryptographically random final ID directory with exclusive 0700 `mkdir`; on collision remint rather than replace. Exclusively create/write/fsync 0600 data, then exclusively create/write/fsync the 0600 manifest last. Readers accept only a complete parsed manifest whose declared regular-file size/hash/ownership/mode verify. Verify real paths remain under the validated root; no portable atomic-no-replace directory rename is assumed.
 
 - [ ] **Step 3: RED continuation boundaries and idempotence**
 
-  Parse the strict token before filesystem reads. Verify regular-file bytes/hash, offsets, whole-row boundaries, maximum 20 rows, worst-case 4,096-byte canonical row, no EOF token, repeated token byte equality, and row-too-large valid-prefix behavior.
+  Parse the strict token before filesystem reads. Verify regular-file bytes/hash, offsets, whole-row boundaries, maximum 20 rows, 4,096-byte post-escape canonical and 8,194-byte serialized-row ceilings, single-row fit in the 16,384-byte formatted envelope, no EOF token, repeated token byte equality, and row-too-large valid-prefix behavior.
 
 - [ ] **Step 4: Implement continuation and bounded cleanup GREEN**
 
-  Remove unpublished temps synchronously on failure/abort/shutdown. Lazily sweep nonsymlink temp entries older than 15 minutes and published artifacts older than 24 hours; unknown types remain visible and undeleted.
+  Register every allocated/final artifact ID in the owning session before writing. Remove uncommitted and committed session artifacts synchronously on failure, client disconnect before response write completion, stop, target detach, SIGINT, and SIGTERM. After a successful response, keep committed artifacts only for continuation until that owning session ends. Lazily sweep uncommitted directories older than 15 minutes and committed crash residue older than 24 hours; TTL is crash recovery, never normal cleanup. Unknown types remain visible and undeleted.
 
 - [ ] **Step 5: Focused verify and commit RED/GREEN separately**
 
@@ -190,13 +194,14 @@
 
 **Interfaces:**
 - Replaces mounted-only prose extraction with `chrome-cdp-ex.table.v1` observation using Task 1 truth functions.
-- Samples HTML tables only. Header rows are direct rows of `thead`; data rows are direct rows of `tbody` or direct rows of `table`; `tfoot` and nested tables are excluded; direct `th`/`td` cells only; no span expansion; at most 256 cells per row.
+- Samples HTML tables only. Header rows are direct `tr` children of direct `thead`; data rows are direct `tr` children of direct `tbody`, or direct table rows only when no `tbody` owns them; `tfoot` and nested tables are excluded; direct `th`/`td` cells only; no span expansion; at most 256 cells per row. Header cells/rows are metadata, never part of `rows.tsv`.
+- ARIA certification first proves header membership: zero headers means offset zero; otherwise every direct header row must have the contiguous raw `aria-rowindex` values `1..H`. Stable table `aria-rowcount` must be at least `H`; data raw indexes normalize by `raw-H`; `logicalRows=aria-rowcount-H`. Any absent/mixed/noncontiguous/drifting header index makes completeness unknown, even if data counts match.
 - Uses a trusted isolated world and captured intrinsics/getters. It never calls page callbacks or page-world helpers.
 - One sample returns at most 128 rows and 524,288 serialized UTF-8 bytes. Default observation may inspect at most 10 tables under one aggregate 524,288-byte page-response budget; collection later requires exactly one table.
 
 - [ ] **Step 1: RED real CDP result shapes and page hostility**
 
-  Cover no/static/virtual/multiple/nested/footer tables, caption/data-attribute false totals, malformed ARIA, patched prototypes/getters/toJSON/JSON/TextEncoder, huge cells, UTF-8/control text, cross-frame refusal, and oversized serialized samples.
+  Cover no/static/virtual/multiple/nested/footer tables, indexed/no-header success, unindexed/mixed/noncontiguous header unknownness, caption/data-attribute false totals, malformed/drifting ARIA, patched prototypes/getters/toJSON/JSON/TextEncoder, huge cells, UTF-8/control text, cross-frame refusal, and oversized serialized samples.
 
 - [ ] **Step 2: Implement isolated bounded sampler GREEN**
 
@@ -204,7 +209,7 @@
 
 - [ ] **Step 3: Integrate bounded snapshot text and JSON**
 
-  Snapshot never scrolls/clicks, never presents mounted rows as full, and stays within the response envelope. Preserve static-table agent ergonomics with header metadata and a bounded complete preview.
+  Snapshot never scrolls/clicks, never presents mounted rows as full, and stays within the response envelope. Complete text output is dynamically truncated only at row boundaries to ≤8,192 UTF-8 bytes; formatted JSON is ≤16,384 bytes. Preserve static-table agent ergonomics with bounded header metadata and a bounded complete preview.
 
 - [ ] **Step 4: Verify characterization/source gates and commit**
 
@@ -225,15 +230,15 @@
 
 - [ ] **Step 1: RED the genuine recycled-node fixture**
 
-  Freeze 1,024 logical rows, four columns, 12 stable mounted nodes, 128 initially available, 64 per load interaction, exactly 14 interactions, exact 31,104-byte body, and checksum `73e9f360…964ed`. RED must fail on current mounted-only behavior, not missing mocks.
+  Freeze one indexed header row at raw `aria-rowindex=1`, table `aria-rowcount=1025`, and 1,024 logical data rows at raw indexes `2..1025` normalized to data indexes `1..1024`; four data columns, 12 stable mounted nodes, 128 initially available, 64 per load interaction, exactly 14 interactions, exact 31,104-byte data body, and checksum `73e9f360…964ed`. RED must fail on current mounted-only behavior, not missing mocks.
 
 - [ ] **Step 2: RED context, abort, and deadline lifecycle**
 
-  Cover execution-context destruction, root navigation/detach, caller disconnect, collector-busy, 295-second no-new-mutation fence, partial publication by 300 seconds, and object-group/listener/temp cleanup on every exit.
+  Cover execution-context destruction, root navigation/detach, caller disconnect, collector-busy, dynamically shortened final CDP call, no page/final-sample work at or after 295 seconds, exclusive 295–300 finalization/publication, handler completion by 300 seconds, and object-group/listener/artifact cleanup on every exit.
 
 - [ ] **Step 3: Implement the smallest condition-driven collector GREEN**
 
-  Progress means new stable identity, changed scroll extent, or control disappearance—not fixed sleep. `aria-rowcount` must be absent/`-1` throughout or one stable safe integer; drift terminates truthfully. Exact ARIA coverage alone can certify complete; row-key mode cannot.
+  Progress means new stable identity, changed scroll extent, or control disappearance—not fixed sleep. `aria-rowcount` must be absent/`-1` throughout or one stable safe integer; header offset/membership and count drift terminate truthfully. Only exact normalized ARIA data coverage plus proven header coverage can certify complete; row-key mode cannot.
 
 - [ ] **Step 4: Add adversarial collection cases**
 
@@ -241,13 +246,13 @@
 
 - [ ] **Step 5: Wire artifact publication and full command semantics**
 
-  CLI JSON/text, daemon, first-class MCP, run-command MCP, batch, flow, repeat, and replay preserve the same result/failure/ambiguity semantics. Collect mutates only after authorization and signal installation; continuation never re-enters the page.
+  CLI JSON/text, daemon, the existing run-command MCP route, batch, flow, repeat, and replay preserve the same result/failure/ambiguity semantics. Collect mutates only after authorization and signal installation; continuation never re-enters the page. Task 7 adds the first-class MCP route only after this shared runtime is accepted.
 
 - [ ] **Step 6: Focused/full runtime verification and periodic commits**
 
 ---
 
-### Task 7: First-class MCP, schemas, v2.16 contracts, and claim-honest docs
+### Task 7: First-class MCP, schemas, v2.16 contract finalization, and claim-honest docs
 
 **Files:**
 - Modify: `skills/chrome-cdp-ex/scripts/lib/command-surface.mjs`
@@ -255,8 +260,8 @@
 - Modify: MCP/public-contract tests.
 - Create: `docs/schemas/table-result.v1.json`
 - Create: `docs/schemas/table-export-manifest.v1.json`
-- Create: the v2.16.0 contract fixtures owned by repository generators.
-- Modify: package/version/checker registries, `CHANGELOG.md`, contract README, release-package inventory, and generated command docs through their owners.
+- Refresh: the existing unreleased v2.16.0 contract fixtures owned by repository generators.
+- Modify: `CHANGELOG.md`, contract README, release-package inventory, and generated command docs through their owners; package/version/checker selection already exists from Task 2.
 
 **Interfaces:**
 - Preserves 81 CLI commands and three MCP resources; adds one first-class `table` tool, increasing first-class tools from 25 to 26.
@@ -271,9 +276,9 @@
 
   Schemas bound every string/count/list and reject false completeness, leaked absolute paths, oversized tokens, negative counts, missing checksum scope, and unknown provenance.
 
-- [ ] **Step 3: Add v2.16 version/contract plumbing**
+- [ ] **Step 3: Finalize v2.16 contract fixtures**
 
-  Bump package metadata to unreleased 2.16.0 only when all runtime behavior is green. Generate new fixtures; never rewrite `docs/contracts/v2.15.0/*`. Keep mechanical commits separate.
+  Refresh the Task 2 v2.16 fixtures for the finished first-class tool, schemas, runtime, docs, and package inventory; never rewrite `docs/contracts/v2.15.0/*`. Keep every mechanical fixture refresh separate and reviewed.
 
 - [ ] **Step 4: Generate honest docs**
 
