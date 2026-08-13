@@ -2,6 +2,7 @@ import {
   constants as FS_CONSTANTS,
   lstatSync,
   readdirSync,
+  realpathSync,
   rmdirSync,
   unlinkSync,
 } from 'node:fs';
@@ -267,6 +268,26 @@ function safeOwnedDirectory(path) {
   }
 }
 
+function verifyCleanupDirectory(state, entry = null) {
+  if (!state.initialized) return false;
+  if (entry && (entry.path !== join(state.sessionDir, entry.id)
+    || !/^[0-9a-f]{32}$/.test(entry.id))) return false;
+  const paths = [state.runtimeDir, state.ownerDir, state.targetDir, state.sessionDir];
+  if (entry) paths.push(entry.path);
+  let parentReal = null;
+  try {
+    for (const path of paths) {
+      if (!safeOwnedDirectory(path)) return false;
+      const actual = realpathSync(path);
+      if (parentReal && (!isContained(parentReal, actual) || actual === parentReal)) return false;
+      parentReal = actual;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function cleanupFailed() {
   return new TableArtifactStorageError(
     'TABLE_ARTIFACT_CLEANUP_FAILED',
@@ -274,8 +295,14 @@ function cleanupFailed() {
   );
 }
 
-function cleanupEntry(entry) {
+function cleanupEntry(state, entry) {
   if (!entry.directoryCreated) return true;
+  try {
+    lstatSync(entry.path);
+  } catch (error) {
+    return error?.code === 'ENOENT';
+  }
+  if (!verifyCleanupDirectory(state, entry)) return false;
   const paths = entryPaths(entry);
   for (const path of [paths.manifest, paths.rows]) {
     if (safeOwnedFile(path)) {
@@ -301,7 +328,7 @@ function cleanupEmptySessionDirectory(state) {
     return error?.code === 'ENOENT';
   }
   try {
-    if (!safeOwnedDirectory(state.sessionDir)) return false;
+    if (!verifyCleanupDirectory(state)) return false;
     if (readdirSync(state.sessionDir).length !== 0) return false;
     rmdirSync(state.sessionDir);
     return true;
@@ -344,7 +371,7 @@ async function mintEntry(state, request) {
       if (error?.code === 'EEXIST' && !entry.directoryCreated) {
         continue;
       }
-      const cleaned = !entry.directoryCreated || cleanupEntry(entry);
+      const cleaned = !entry.directoryCreated || cleanupEntry(state, entry);
       if (cleaned) {
         request.entries.delete(entry);
         state.entries.delete(id);
@@ -633,7 +660,7 @@ async function publish(state, bundle, execution) {
     });
   } catch (error) {
     if (entry) {
-      const cleaned = cleanupEntry(entry);
+      const cleaned = cleanupEntry(state, entry);
       if (cleaned) {
         entry.request.entries.delete(entry);
         state.entries.delete(entry.id);
@@ -656,7 +683,7 @@ function rollbackRequest(state, execution) {
   request.rolledBack = true;
   let failed = false;
   for (const entry of [...request.entries]) {
-    if (cleanupEntry(entry)) {
+    if (cleanupEntry(state, entry)) {
       request.entries.delete(entry);
       state.entries.delete(entry.id);
     } else failed = true;
@@ -678,7 +705,7 @@ function cleanupSession(state) {
   for (const request of state.requests.values()) request.rolledBack = true;
   let failed = false;
   for (const entry of [...state.entries.values()]) {
-    if (cleanupEntry(entry)) {
+    if (cleanupEntry(state, entry)) {
       entry.request?.entries.delete(entry);
       state.entries.delete(entry.id);
     } else failed = true;
