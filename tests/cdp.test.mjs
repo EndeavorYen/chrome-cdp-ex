@@ -5296,6 +5296,54 @@ describe('bounded table observation', () => {
     expect(output).toMatch(/table .*--collect.*--scroll-container/i);
     expect(Buffer.byteLength(output, 'utf8')).toBeLessThanOrEqual(8192);
   });
+
+  it('trims a complete hostile trailing row instead of deleting an earlier row', async () => {
+    const first = 'a'.repeat(4090);
+    const second = 'b'.repeat(4090);
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
+        ariaRowCount: 2,
+        dataRows: [
+          { rawAriaRowIndex: 1, cells: [first] },
+          { rawAriaRowIndex: 2, cells: [second] },
+        ],
+      })]) } }),
+    });
+
+    const output = await tableObservationStr(cdp, 'sid1', {
+      mode: 'observe', selector: null, format: 'text',
+    });
+    expect(Buffer.byteLength(output, 'utf8')).toBeLessThanOrEqual(8192);
+    expect(output).toContain(first);
+    expect(output).not.toContain(second);
+    expect(output).toMatch(/emission limit/i);
+  });
+
+  it('canonicalizes hostile caption and header controls before text emission', async () => {
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { type: 'string', value: sampledPage([sampledTable({
+        caption: 'Orders\nFORGED COMMAND\u001b[31m',
+        ariaRowCount: 2,
+        headerRows: [{ rawAriaRowIndex: 1, cells: ['Name\r\nNEXT\u0000'] }],
+        dataRows: [{ rawAriaRowIndex: 2, cells: ['safe'] }],
+        directRowsSeen: 2,
+        headerRowsSeen: 1,
+        dataRowsSeen: 1,
+      })]) } }),
+    });
+
+    const output = await tableObservationStr(cdp, 'sid1', {
+      mode: 'observe', selector: null, format: 'text',
+    });
+    expect(output).toContain('Orders\\nFORGED COMMAND\\u001B[31m');
+    expect(output).toContain('Header: Name\\r\\nNEXT\\0');
+    expect(output.split('\n')).not.toContain('FORGED COMMAND');
+    expect(output.split('\n')).not.toContain('NEXT');
+    expect([...output].some(character => {
+      const unit = character.charCodeAt(0);
+      return unit !== 0x0A && (unit < 0x20 || (unit >= 0x7F && unit <= 0x9F));
+    })).toBe(false);
+  });
 });
 
 // =========================================================================
