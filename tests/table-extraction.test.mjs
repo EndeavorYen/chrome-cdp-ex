@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   addTableSample,
   addTableSampleBatch,
+  buildTableExportBundle,
   buildInlineTablePreview,
   buildTableExportManifest,
   canonicalizeTableCells,
@@ -101,13 +102,13 @@ describe('canonical table bytes and bounded previews', () => {
     expect(() => canonicalizeTableCells(['\udc00'])).toThrow(/surrogate/i);
   });
 
-  it('keeps a complete exactly-8192-byte row without admitting the next row', () => {
-    const exactBoundary = 'a'.repeat(8192);
-    const preview = buildInlineTablePreview([exactBoundary, 'next']);
+  it('keeps a complete exactly-4096-byte canonical row without admitting the next row', () => {
+    const exactBoundary = 'a'.repeat(4096);
+    const preview = buildInlineTablePreview([exactBoundary, 'b'.repeat(4096)]);
 
     expect(preview.rows).toEqual([exactBoundary]);
     expect(preview.rowCount).toBe(1);
-    expect(preview.bytes).toBe(8192);
+    expect(preview.bytes).toBe(4096);
     expect(preview.truncated).toBe(true);
   });
 
@@ -163,7 +164,7 @@ describe('canonical table bytes and bounded previews', () => {
     expect(() => buildInlineTablePreview(accessorRows)).toThrow(/enumerable data/i);
     expect(() => buildInlineTablePreview(rowProxy)).toThrow(/proxy/i);
     expect(() => buildInlineTablePreview(['\ud800'])).toThrow(/surrogate/i);
-    expect(() => buildInlineTablePreview(['a'.repeat(8193)])).toThrow(/byte bound/i);
+    expect(() => buildInlineTablePreview(['a'.repeat(4097)])).toThrow(/byte bound/i);
     expect(() => buildInlineTablePreview(Array.from({ length: 100001 }, () => 'x'))).toThrow(/item bound/i);
   });
 
@@ -179,15 +180,22 @@ describe('canonical table bytes and bounded previews', () => {
   });
 
   it('hashes the frozen 1024-row TSV body exactly, without a header or final LF', () => {
-    const manifest = buildTableExportManifest(accumulatorWithRows(frozenRowsFixture()), {
+    const bundle = buildTableExportBundle(accumulatorWithRows(frozenRowsFixture()), {
       termination: 'logical-count-reached',
     });
+    const { manifest, rowsTsv } = bundle;
 
+    expect(Object.isFrozen(bundle)).toBe(true);
+    expect(Object.isFrozen(manifest)).toBe(true);
     expect(manifest.schema).toBe('chrome-cdp-ex.table-export.v1');
     expect(manifest.artifact.rows).toBe(1024);
     expect(manifest.artifact.bytes).toBe(31104);
     expect(manifest.artifact.checksum).toBe('73e9f36080b8c781e204857ad9c7dcf4ce7ce419b1503d9affd0343f58f964ed');
+    expect(manifest.artifact.checksumScope).toBe('canonical-data-rows-tsv-utf8');
     expect(manifest.inline.bytes).toBeLessThanOrEqual(8192);
+    expect(Buffer.byteLength(rowsTsv, 'utf8')).toBe(31104);
+    expect(rowsTsv.startsWith('ROW-0001\tdone\tteam-14\t8919\n')).toBe(true);
+    expect(rowsTsv.endsWith('\n')).toBe(false);
   });
 
   it('has zero canonical artifact bytes for zero data rows', () => {
@@ -203,7 +211,19 @@ describe('canonical table bytes and bounded previews', () => {
     });
 
     expect(manifest.inline.bytes).toBeLessThanOrEqual(8192);
-    expect(Buffer.byteLength(JSON.stringify(manifest), 'utf8')).toBeLessThanOrEqual(16384);
+    expect(Buffer.byteLength(JSON.stringify(manifest, null, 2), 'utf8')).toBeLessThanOrEqual(16384);
+  });
+
+  it('budgets the exact emitted pretty JSON and drops the second 1973-backslash row intact', () => {
+    const manifest = buildTableExportManifest(accumulatorWithRows([
+      ['\\'.repeat(1973)],
+      ['\\'.repeat(1973)],
+    ]), { termination: 'logical-count-reached' });
+
+    expect(manifest.inline.rowCount).toBe(1);
+    expect(manifest.inline.rows).toEqual(['\\\\'.repeat(1973)]);
+    expect(manifest.inline.truncated).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(manifest, null, 2), 'utf8')).toBeLessThanOrEqual(16384);
   });
 });
 
