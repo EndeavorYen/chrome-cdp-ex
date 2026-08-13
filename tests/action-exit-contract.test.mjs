@@ -762,10 +762,26 @@ describe('detached ref propagation contract (#148)', () => {
         },
       },
       outcome: { status: 'failed', changed: false },
+      receipt: {
+        schema: 'chrome-cdp-ex.action-receipt.v1',
+        dispatch: { ok: false, method: 'click' },
+        settlement: {
+          state: 'failed',
+          strategy: 'dispatch-failed',
+          signals: ['dispatch-failed'],
+        },
+        outcome: 'failed',
+        blockingSignals: expect.arrayContaining(['stale-ref']),
+        recoveryHint: expect.stringMatching(/no longer maps|recovery command/i),
+      },
     });
     expect(fixture.inputCalls).toEqual([]);
     expect(fixture.observe).not.toHaveBeenCalled();
     expect(fixture.refMap.has(1)).toBe(false);
+    expect(fixture.cdp.calls.some(call => (
+      call.method.startsWith('Accessibility.')
+      || call.method === 'Runtime.evaluate'
+    ))).toBe(false);
 
     const direct = await executeCdpCli(
       ['click', 'ABC12345', '@1', '--format', 'json'],
@@ -811,6 +827,7 @@ describe('detached ref propagation contract (#148)', () => {
       { cmd: 'click', args: ['#later'] },
     ]);
     expect(batchRun).toHaveBeenCalledTimes(1);
+    expect(batchRun).toHaveBeenCalledWith({ cmd: 'click', args: ['@1'] });
     expect(JSON.parse(cdpTest.formatBatchResults(batchResults, 'model', {
       targetId: 'ABC12345',
     }))).toMatchObject({
@@ -824,6 +841,7 @@ describe('detached ref propagation contract (#148)', () => {
       settle: async () => '',
     }, 'click @1; click #later', { format: 'json', targetId: 'ABC12345' }));
     expect(flowRun).toHaveBeenCalledTimes(1);
+    expect(flowRun).toHaveBeenCalledWith({ kind: 'command', cmd: 'click', args: ['@1'] });
     expect(flow).toMatchObject({
       halted: true,
       counts: { ok: 0, failed: 1, skipped: 1 },
@@ -838,6 +856,7 @@ describe('detached ref propagation contract (#148)', () => {
       ])),
     ]));
     expect(replayRun).toHaveBeenCalledTimes(1);
+    expect(replayRun).toHaveBeenCalledWith({ cmd: 'click', args: ['@1'] });
     expect(replay).toMatchObject({
       halted: true,
       counts: { ok: 0, failed: 1 },
@@ -848,6 +867,7 @@ describe('detached ref propagation contract (#148)', () => {
     await expect(cdpTest.repeatStr({ run: repeatRun }, ['3', 'click', '@1']))
       .rejects.toThrow(/DOM changes.*Repeat halted at iteration 1\/3/s);
     expect(repeatRun).toHaveBeenCalledTimes(1);
+    expect(repeatRun).toHaveBeenCalledWith({ cmd: 'click', args: ['@1'] });
     expect(fixture.refMap.has(1)).toBe(false);
   });
 
