@@ -99,6 +99,10 @@ function deepFreeze(value) {
 
 function tracedHandle(handle, label, trace, overrides = {}) {
   return {
+    async readFile(...args) {
+      trace.push(`${label}:read`);
+      return overrides.readFile ? overrides.readFile(handle, ...args) : handle.readFile(...args);
+    },
     async writeFile(...args) {
       trace.push(`${label}:write`);
       return overrides.writeFile ? overrides.writeFile(handle, ...args) : handle.writeFile(...args);
