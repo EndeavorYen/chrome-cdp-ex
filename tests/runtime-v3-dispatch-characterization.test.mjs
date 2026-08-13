@@ -109,8 +109,8 @@ describe('Runtime v3 final dispatch characterization', () => {
       'const route = await fakeLegacyRoute({',
     ))).toThrow(/application ownership|general application dispatch/);
     expect(() => buildRuntimeDispatchInventory(source.replace(
-      'const nested = await handleCommand({',
-      "await handleCommand({ cmd: 'summary', args: [] });\n        const nested = await handleCommand({",
+      'const runOne = command => handleCommand({',
+      "await handleCommand({ cmd: 'summary', args: [] });\n      const runOne = command => handleCommand({",
     ))).toThrow(/workflow capability batch must call handleCommand exactly once/);
     try {
       expect(buildRuntimeDispatchInventory(source.replace(
