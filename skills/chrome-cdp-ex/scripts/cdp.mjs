@@ -11376,6 +11376,7 @@ function buildTableCollectorBootstrapExpression() {
     const N = Number;
     const J = JSON;
     const WM = WeakMap;
+    const EventCtor = globalThis.Event;
     const getOwnPropertyDescriptor = O.getOwnPropertyDescriptor;
     const reflectApply = Reflect.apply;
     const nodeProto = Node.prototype;
@@ -11533,10 +11534,20 @@ function buildTableCollectorBootstrapExpression() {
         if (!container) return J.stringify({ ok: false, error: 'scroll-container not found' });
         rememberScroll(container);
         container.scrollTop = top;
+        if (typeof EventCtor === 'function') {
+          const dispatch = container.dispatchEvent;
+          if (typeof dispatch === 'function') apply(dispatch, container, [new EventCtor('scroll')]);
+        }
         return J.stringify({ ok: true, scroll: sampleScroll(container) });
       },
       restore() {
-        if (savedScroll) savedScroll.container.scrollTop = savedScroll.top;
+        if (savedScroll) {
+          savedScroll.container.scrollTop = savedScroll.top;
+          if (typeof EventCtor === 'function') {
+            const dispatch = savedScroll.container.dispatchEvent;
+            if (typeof dispatch === 'function') apply(dispatch, savedScroll.container, [new EventCtor('scroll')]);
+          }
+        }
         return true;
       },
     };
