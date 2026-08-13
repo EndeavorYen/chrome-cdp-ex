@@ -21,6 +21,7 @@ import { parseTableContinuationToken } from './table-contract.mjs';
 
 const ARTIFACT_OWNER_DIR = 'table-artifacts-v1';
 const ARTIFACT_ID_ATTEMPTS = 16;
+const MAX_MANIFEST_BYTES = 64 * 1024;
 const STORE_STATES = new WeakMap();
 const IDENTITY_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
 
@@ -100,6 +101,14 @@ function assertFileStats(stats, expectedBytes) {
   if (!stats.isFile() || stats.isSymbolicLink() || stats.uid !== currentUid()
     || modeBits(stats) !== 0o600 || stats.nlink !== 1 || stats.size !== expectedBytes) {
     fail('TABLE_ARTIFACT_PUBLICATION_FAILED', 'private artifact file validation failed');
+  }
+}
+
+function assertReadableFileStats(stats, { expectedBytes = null, maxBytes }) {
+  if (!stats.isFile() || stats.isSymbolicLink() || stats.uid !== currentUid()
+    || modeBits(stats) !== 0o600 || stats.nlink !== 1
+    || stats.size > maxBytes || (expectedBytes !== null && stats.size !== expectedBytes)) {
+    fail('TABLE_ARTIFACT_READ_FAILED', 'private artifact verification failed');
   }
 }
 
@@ -229,7 +238,7 @@ function safeOwnedFile(path) {
 }
 
 function cleanupEntry(entry) {
-  if (!entry.directoryCreated) return;
+  if (!entry.directoryCreated) return true;
   const paths = entryPaths(entry);
   for (const path of [paths.manifest, paths.rows]) {
     if (safeOwnedFile(path)) {
@@ -239,6 +248,12 @@ function cleanupEntry(entry) {
   try {
     if (readdirSync(entry.path).length === 0) rmdirSync(entry.path);
   } catch {}
+  try {
+    lstatSync(entry.path);
+    return false;
+  } catch (error) {
+    return error?.code === 'ENOENT';
+  }
 }
 
 async function mintEntry(state, request) {
@@ -256,24 +271,30 @@ async function mintEntry(state, request) {
       directoryCreated: false,
       committed: false,
     };
-    state.entries.set(id, entry);
-    request.entries.add(entry);
     try {
       await state.fs.mkdir(entry.path, { mode: 0o700 });
       entry.directoryCreated = true;
+      state.entries.set(id, entry);
+      request.entries.add(entry);
+      throwIfPublicationStopped(request);
       const stats = await state.fs.lstat(entry.path);
+      throwIfPublicationStopped(request);
       assertDirectoryStats(stats);
       const actual = await state.fs.realpath(entry.path);
+      throwIfPublicationStopped(request);
       if (!isContained(state.sessionReal, actual) || actual === state.sessionReal) {
         fail('TABLE_ARTIFACT_PUBLICATION_FAILED', 'artifact containment validation failed');
       }
-      throwIfPublicationStopped(request);
       return entry;
     } catch (error) {
       if (error?.code === 'EEXIST' && !entry.directoryCreated) {
-        request.entries.delete(entry);
-        state.entries.delete(id);
         continue;
+      }
+      if (entry.directoryCreated) cleanupEntry(entry);
+      request.entries.delete(entry);
+      state.entries.delete(id);
+      if (request.rolledBack && error?.code !== 'TABLE_ARTIFACT_REQUEST_ABORTED') {
+        fail('TABLE_ARTIFACT_REQUEST_ABORTED', 'artifact request was aborted');
       }
       throw error;
     }
@@ -309,6 +330,210 @@ async function fsyncDirectory(state, request, path) {
     await checkedStep(request, () => handle.sync());
   } finally {
     await closeHandle(handle);
+  }
+}
+
+function exactObject(value, keys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function nonNegativeSafeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function validateCommittedManifest(value, state, artifactId) {
+  const rootKeys = [
+    'schema', 'logicalRows', 'logicalCountSource', 'identitySource', 'orderingSource',
+    'mountedRows', 'collectedRows', 'recycledMountedNodes', 'completeness', 'artifact',
+    'inline', 'ownership',
+  ];
+  if (!exactObject(value, rootKeys)
+    || value.schema !== 'chrome-cdp-ex.table-export.v1'
+    || !(value.logicalRows === null || nonNegativeSafeInteger(value.logicalRows))
+    || !['aria-rowcount', 'none'].includes(value.logicalCountSource)
+    || !['aria-rowindex', 'row-key-column'].includes(value.identitySource)
+    || value.orderingSource !== value.identitySource
+    || !nonNegativeSafeInteger(value.mountedRows)
+    || !nonNegativeSafeInteger(value.collectedRows)
+    || !nonNegativeSafeInteger(value.recycledMountedNodes)) {
+    fail('TABLE_ARTIFACT_READ_FAILED', 'artifact manifest verification failed');
+  }
+  if (!exactObject(value.completeness, ['state', 'termination'])
+    || !['complete', 'incomplete', 'unknown'].includes(value.completeness.state)
+    || typeof value.completeness.termination !== 'string') {
+    fail('TABLE_ARTIFACT_READ_FAILED', 'artifact manifest verification failed');
+  }
+  if (!exactObject(value.artifact, ['rows', 'bytes', 'checksum', 'checksumScope'])
+    || !nonNegativeSafeInteger(value.artifact.rows)
+    || value.artifact.rows > TABLE_EXTRACTION_LIMITS.maxRows
+    || !nonNegativeSafeInteger(value.artifact.bytes)
+    || value.artifact.bytes > TABLE_EXTRACTION_LIMITS.maxArtifactBytes
+    || !/^[0-9a-f]{64}$/.test(value.artifact.checksum)
+    || value.artifact.checksumScope !== 'canonical-data-rows-tsv-utf8'
+    || value.collectedRows !== value.artifact.rows) {
+    fail('TABLE_ARTIFACT_READ_FAILED', 'artifact manifest verification failed');
+  }
+  if (!exactObject(value.ownership, ['artifactId', 'targetDigest', 'sessionDigest'])
+    || value.ownership.artifactId !== artifactId
+    || value.ownership.targetDigest !== state.targetDigest
+    || value.ownership.sessionDigest !== state.sessionDigest) {
+    fail('TABLE_ARTIFACT_READ_FAILED', 'artifact ownership verification failed');
+  }
+  if (!exactObject(value.inline, ['rows', 'rowCount', 'bytes', 'truncated'])
+    || !Array.isArray(value.inline.rows)
+    || value.inline.rows.some(row => typeof row !== 'string')
+    || !nonNegativeSafeInteger(value.inline.rowCount)
+    || value.inline.rowCount !== value.inline.rows.length
+    || !nonNegativeSafeInteger(value.inline.bytes)
+    || typeof value.inline.truncated !== 'boolean') {
+    fail('TABLE_ARTIFACT_READ_FAILED', 'artifact manifest verification failed');
+  }
+  return value;
+}
+
+async function verifyOwnedLayers(state, entry) {
+  const layers = [
+    [state.runtimeDir, null],
+    [state.ownerDir, state.rootReal],
+    [state.targetDir, state.ownerReal],
+    [state.sessionDir, state.targetReal],
+    [entry.path, state.sessionReal],
+  ];
+  for (const [path, parentReal] of layers) {
+    const stats = await state.fs.lstat(path);
+    assertDirectoryStats(stats);
+    const actual = await state.fs.realpath(path);
+    if (parentReal && (!isContained(parentReal, actual) || actual === parentReal)) {
+      fail('TABLE_ARTIFACT_READ_FAILED', 'artifact containment verification failed');
+    }
+  }
+}
+
+async function readPrivateFile(state, path, { expectedBytes = null, maxBytes }) {
+  const flags = FS_CONSTANTS.O_RDONLY | FS_CONSTANTS.O_NOFOLLOW;
+  let handle;
+  try {
+    handle = await state.fs.open(path, flags);
+    const stats = await handle.stat();
+    assertReadableFileStats(stats, { expectedBytes, maxBytes });
+    const bytes = await handle.readFile();
+    if (!Buffer.isBuffer(bytes) || bytes.length !== stats.size) {
+      fail('TABLE_ARTIFACT_READ_FAILED', 'private artifact verification failed');
+    }
+    return bytes;
+  } finally {
+    await closeHandle(handle);
+  }
+}
+
+function fatalUtf8(bytes) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    fail('TABLE_ARTIFACT_READ_FAILED', 'artifact UTF-8 verification failed');
+  }
+}
+
+function artifactRows(rowsTsv, count) {
+  const rows = count === 0 ? [] : rowsTsv.split('\n');
+  if (rows.length !== count || rows.join('\n') !== rowsTsv) {
+    fail('TABLE_ARTIFACT_READ_FAILED', 'artifact row count verification failed');
+  }
+  for (const row of rows) {
+    if (Buffer.byteLength(row, 'utf8') > TABLE_EXTRACTION_LIMITS.maxCanonicalRowBytes
+      || Buffer.byteLength(JSON.stringify(row), 'utf8') > 8194) {
+      fail('TABLE_ARTIFACT_READ_FAILED', 'artifact contains a row that is too large');
+    }
+  }
+  return rows;
+}
+
+function continuationResult(manifest, artifactId, token, offset, rows, nextToken) {
+  return {
+    schema: 'chrome-cdp-ex.table.v1',
+    logicalRows: manifest.logicalRows,
+    logicalCountSource: manifest.logicalCountSource,
+    identitySource: manifest.identitySource,
+    orderingSource: manifest.orderingSource,
+    mountedRows: manifest.mountedRows,
+    collectedRows: manifest.collectedRows,
+    recycledMountedNodes: manifest.recycledMountedNodes,
+    completeness: { ...manifest.completeness },
+    artifact: {
+      id: artifactId,
+      rows: manifest.artifact.rows,
+      bytes: manifest.artifact.bytes,
+      checksum: manifest.artifact.checksum,
+      checksumScope: manifest.artifact.checksumScope,
+    },
+    continuation: {
+      token,
+      offset,
+      rowCount: rows.length,
+      rows,
+      bytes: Buffer.byteLength(rows.join('\n'), 'utf8'),
+      nextToken,
+    },
+  };
+}
+
+async function readContinuation(state, token) {
+  const parsed = parseTableContinuationToken(token);
+  if (state.platform === 'win32') {
+    fail('TABLE_ARTIFACT_UNSUPPORTED_PLATFORM', 'private table artifacts are unavailable on Windows in v2.16');
+  }
+  const entry = state.entries.get(parsed.artifactId);
+  if (!entry?.committed) {
+    fail('TABLE_ARTIFACT_READ_FAILED', 'artifact is not available in this session');
+  }
+  try {
+    await verifyOwnedLayers(state, entry);
+    const paths = entryPaths(entry);
+    const manifestBytes = await readPrivateFile(state, paths.manifest, { maxBytes: MAX_MANIFEST_BYTES });
+    let parsedManifest;
+    try {
+      parsedManifest = JSON.parse(fatalUtf8(manifestBytes));
+    } catch (error) {
+      if (error instanceof TableArtifactStorageError) throw error;
+      fail('TABLE_ARTIFACT_READ_FAILED', 'artifact manifest verification failed');
+    }
+    const manifest = validateCommittedManifest(parsedManifest, state, entry.id);
+    if (parsed.offset >= manifest.artifact.rows) {
+      fail('TABLE_ARTIFACT_READ_FAILED', 'continuation offset is outside the artifact');
+    }
+    const dataBytes = await readPrivateFile(state, paths.rows, {
+      expectedBytes: manifest.artifact.bytes,
+      maxBytes: TABLE_EXTRACTION_LIMITS.maxArtifactBytes,
+    });
+    const checksum = createHash('sha256').update(dataBytes).digest('hex');
+    if (checksum !== manifest.artifact.checksum) {
+      fail('TABLE_ARTIFACT_READ_FAILED', 'artifact checksum verification failed');
+    }
+    const allRows = artifactRows(fatalUtf8(dataBytes), manifest.artifact.rows);
+    let count = Math.min(TABLE_EXTRACTION_LIMITS.maxInlineRows, allRows.length - parsed.offset);
+    let result;
+    while (count > 0) {
+      const rows = allRows.slice(parsed.offset, parsed.offset + count);
+      const nextOffset = parsed.offset + count;
+      const nextToken = nextOffset < allRows.length ? `ct1.${entry.id}.${nextOffset}` : null;
+      result = continuationResult(manifest, entry.id, parsed.token, parsed.offset, rows, nextToken);
+      if (Buffer.byteLength(JSON.stringify(result, null, 2), 'utf8') <= TABLE_EXTRACTION_LIMITS.maxResponseBytes) break;
+      count -= 1;
+    }
+    if (count === 0 || !result) {
+      fail('TABLE_ARTIFACT_READ_FAILED', 'artifact row cannot fit the continuation response');
+    }
+    return freezeDeep(result);
+  } catch (error) {
+    if (error instanceof TableArtifactStorageError) {
+      if (error.code === 'TABLE_ARTIFACT_READ_FAILED') throw error;
+      throw new TableArtifactStorageError('TABLE_ARTIFACT_READ_FAILED', 'table: private artifact read failed');
+    }
+    throw new TableArtifactStorageError('TABLE_ARTIFACT_READ_FAILED', 'table: private artifact read failed');
   }
 }
 
@@ -363,7 +588,12 @@ function rollbackRequest(state, execution) {
   const request = state.requests.get(context);
   if (!request) return;
   request.rolledBack = true;
-  for (const entry of request.entries) cleanupEntry(entry);
+  for (const entry of [...request.entries]) {
+    if (cleanupEntry(entry)) {
+      request.entries.delete(entry);
+      state.entries.delete(entry.id);
+    }
+  }
 }
 
 function releaseRequest(state, execution) {
@@ -377,7 +607,12 @@ function releaseRequest(state, execution) {
 
 function cleanupSession(state) {
   for (const request of state.requests.values()) request.rolledBack = true;
-  for (const entry of state.entries.values()) cleanupEntry(entry);
+  for (const entry of [...state.entries.values()]) {
+    if (cleanupEntry(entry)) {
+      entry.request?.entries.delete(entry);
+      state.entries.delete(entry.id);
+    }
+  }
 }
 
 function makeStore(input, dependencies) {
@@ -402,10 +637,7 @@ function makeStore(input, dependencies) {
   };
   const store = Object.freeze({
     publish: (bundle, execution) => publish(state, bundle, execution),
-    readContinuation(token) {
-      parseTableContinuationToken(token);
-      fail('TABLE_ARTIFACT_CONTINUATION_UNAVAILABLE', 'table continuation is not installed yet');
-    },
+    readContinuation: token => readContinuation(state, token),
     rollbackRequest: execution => rollbackRequest(state, execution),
     releaseRequest: execution => releaseRequest(state, execution),
     cleanupSession: () => cleanupSession(state),
