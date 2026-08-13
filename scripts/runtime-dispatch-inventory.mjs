@@ -998,12 +998,14 @@ function collectTableObservationAuthority(source, tableSamplerSource, tableExtra
   }, sid)`,
     'return parseTableSamplerResult(evaluated.result.value);',
   ];
+  const isolatedWorldDenied = 'grantUniveralAccess: false,';
+  const evaluateByValueNoAwait = '    returnByValue: true,\n    awaitPromise: false,';
   if (exactSampleBindings.some(binding => !sampleOwner.includes(binding))
     || (sampleOwner.match(/cdpDomains\(cdp\)\./g) || []).length !== 3
     || sampleOwner.indexOf(exactSampleBindings[0]) > sampleOwner.indexOf(exactSampleBindings[1])
-    || (source.match(/grantUniveralAccess: false,/g) || []).length !== 3
+    || source.split(isolatedWorldDenied).length !== 4
     || source.includes('grantUniveralAccess: true')
-    || (source.match(/    returnByValue: true,\n    awaitPromise: false,/g) || []).length !== 2
+    || source.split(evaluateByValueNoAwait).length !== 3
     || source.includes('    returnByValue: false,\n    awaitPromise: true,')) {
     fail('root-frame sampler must validate first and retain the exact three-call CDP sequence');
   }
