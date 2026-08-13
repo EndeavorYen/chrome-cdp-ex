@@ -391,6 +391,8 @@ export function buildTableSamplerExpression(selector = 'table') {
     const matchedLength = apply(nodeListLengthGetter, matched, []);
     let tablesSeen = 0;
     let matchedCandidates = 0;
+    let pageTruncated = false;
+    let pageTruncationReason = null;
     for (let tableIndex = 0; tableIndex < matchedLength
       && matchedCandidates < LIMITS.maxMatchedCandidates
       && tablesSeen <= LIMITS.maxTables; tableIndex += 1) {
@@ -486,11 +488,20 @@ export function buildTableSamplerExpression(selector = 'table') {
       const candidatePage = encodePage(tablesSeen, [encodedTable], false, null);
       let priorBytes = 0;
       for (let index = 0; index < tableStrings.length; index += 1) priorBytes += utf8Bytes(tableStrings[index]) + 1;
-      if (priorBytes + utf8Bytes(candidatePage) > LIMITS.maxSerializedBytes) break;
+      if (priorBytes + utf8Bytes(candidatePage) > LIMITS.maxSerializedBytes) {
+        pageTruncated = true;
+        pageTruncationReason = 'sample-byte-limit';
+        break;
+      }
       apply(arrayPush, tableStrings, [encodedTable]);
     }
     const tableLimit = tablesSeen > LIMITS.maxTables;
-    let encoded = encodePage(tablesSeen, tableStrings, tableLimit, tableLimit ? 'table-limit' : null);
+    if (!pageTruncated && (tableLimit
+      || (matchedCandidates >= LIMITS.maxMatchedCandidates && matchedCandidates < matchedLength))) {
+      pageTruncated = true;
+      pageTruncationReason = 'table-limit';
+    }
+    let encoded = encodePage(tablesSeen, tableStrings, pageTruncated, pageTruncationReason);
     if (utf8Bytes(encoded) > LIMITS.maxSerializedBytes) {
       encoded = encodePage(tablesSeen, [], true, 'sample-byte-limit');
     }
