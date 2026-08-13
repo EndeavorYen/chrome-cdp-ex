@@ -13,6 +13,12 @@ const cdpPath = resolve(rootDir, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
 const packageVersion = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf8')).version;
 const fixturePath = resolve(rootDir, `docs/contracts/v${packageVersion}/runtime-dispatch.v1.json`);
 const PROTOCOL_COMMANDS = new Set(['list', 'list_raw', 'meta', 'stop']);
+const TABLE_POLICY_HELPERS = Object.freeze([
+  'authorizeDaemonApplicationCommand',
+  'daemonRequestMayHaveSideEffects',
+  'isBatchParallelUnsafeCommand',
+]);
+const TABLE_CONTRACT_HELPERS = Object.freeze(['isTableCollectArgs', 'parseTableArgs']);
 
 function digest(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
@@ -29,6 +35,19 @@ function functionName(sourceCode, node) {
     }
   }
   return '<top>';
+}
+
+function namedFunctionOwner(sourceCode, node) {
+  const ancestors = sourceCode.getAncestors(node);
+  for (let index = ancestors.length - 1; index >= 0; index -= 1) {
+    const ancestor = ancestors[index];
+    if (ancestor.type === 'FunctionDeclaration' && ancestor.id?.name) return ancestor.id.name;
+    if (ancestor.type !== 'FunctionExpression' && ancestor.type !== 'ArrowFunctionExpression') continue;
+    const parent = ancestors[index - 1];
+    if (parent?.type === 'VariableDeclarator' && parent.id?.type === 'Identifier') return parent.id.name;
+    if (parent?.type === 'Property' && !parent.computed) return parent.key.name || parent.key.value;
+  }
+  return '<anonymous>';
 }
 
 function collectApplicationCommands(source) {
@@ -339,8 +358,163 @@ function collectMainBranches(source) {
   };
 }
 
+function collectTablePolicyAuthority(source) {
+  const table = COMMAND_SURFACE.resolve('table');
+  const expectedPolicy = {
+    kind: 'conditional-mutation',
+    authorization: 'conditional',
+    evidencePolicy: 'none',
+    mutates: false,
+    outputFormats: ['text', 'json'],
+  };
+  const actualPolicy = table && {
+    kind: table.kind,
+    authorization: table.authorization,
+    evidencePolicy: table.evidencePolicy,
+    mutates: table.mutates,
+    outputFormats: [...table.outputFormats],
+  };
+  if (JSON.stringify(actualPolicy) !== JSON.stringify(expectedPolicy)) {
+    throw new Error('table policy authority: catalog policy must remain conditional-mutation/conditional with text+json');
+  }
+
+  const declarations = new Map();
+  const calls = new Map([...TABLE_POLICY_HELPERS, ...TABLE_CONTRACT_HELPERS].map(name => [name, []]));
+  let tableContractImport = null;
+  let authorizeBinding = null;
+  let tableCapabilityBinding = null;
+  const failTable = message => { throw new Error(`table policy authority: ${message}`); };
+  const rule = {
+    create(context) {
+      const sourceCode = context.sourceCode;
+      return {
+        ImportDeclaration(node) {
+          if (node.source?.value !== './lib/table-contract.mjs') return;
+          if (tableContractImport) failTable('table-contract helpers must have one unique import');
+          const names = node.specifiers.map(specifier => {
+            if (specifier.type !== 'ImportSpecifier'
+              || specifier.imported?.type !== 'Identifier'
+              || specifier.local?.name !== specifier.imported.name) {
+              failTable('table-contract helpers must use direct named imports without aliases');
+            }
+            return specifier.imported.name;
+          }).sort();
+          if (JSON.stringify(names) !== JSON.stringify([...TABLE_CONTRACT_HELPERS].sort())) {
+            failTable(`table-contract import must exactly bind ${TABLE_CONTRACT_HELPERS.join(', ')}`);
+          }
+          tableContractImport = sourceCode.getText(node);
+        },
+        FunctionDeclaration(node) {
+          const name = node.id?.name;
+          if (![...TABLE_POLICY_HELPERS, ...TABLE_CONTRACT_HELPERS].includes(name)) return;
+          if (TABLE_CONTRACT_HELPERS.includes(name)) failTable(`${name} must not be shadowed`);
+          const ancestors = sourceCode.getAncestors(node);
+          if (ancestors.length !== 1 || ancestors[0]?.type !== 'Program') {
+            failTable(`${name} must be one unique top-level function`);
+          }
+          if (declarations.has(name)) failTable(`${name} must be declared exactly once`);
+          const parameters = node.params.map(parameter => sourceCode.getText(parameter));
+          const expectedParameters = {
+            authorizeDaemonApplicationCommand: ['{ command, args = [], policy, mutates, targetBound }'],
+            daemonRequestMayHaveSideEffects: ['request = {}'],
+            isBatchParallelUnsafeCommand: ['cmd', 'args = []'],
+          }[name];
+          if (JSON.stringify(parameters) !== JSON.stringify(expectedParameters)) {
+            failTable(`${name} must retain its argv-aware parameter contract`);
+          }
+          declarations.set(name, sourceCode.getText(node));
+        },
+        VariableDeclarator(node) {
+          const name = node.id?.type === 'Identifier' ? node.id.name : null;
+          if ([...TABLE_POLICY_HELPERS, ...TABLE_CONTRACT_HELPERS].includes(name)) {
+            failTable(`${name} must not be shadowed by a variable`);
+          }
+          if (name !== 'readCapabilities') return;
+          const properties = node.init?.type === 'ObjectExpression'
+            ? node.init.properties.filter(property => property.type === 'Property'
+              && !property.computed
+              && (property.key.name || property.key.value) === 'table')
+            : [];
+          if (properties.length !== 1) failTable('readCapabilities.table must be bound exactly once');
+          const binding = sourceCode.getText(properties[0]);
+          if (binding !== 'table: request => tableStr(cdp, sessionId, request.selector)') {
+            failTable('readCapabilities.table must pass only the parsed selector to the legacy page bridge');
+          }
+          if (tableCapabilityBinding) failTable('readCapabilities.table must be bound exactly once');
+          tableCapabilityBinding = binding;
+        },
+        Property(node) {
+          if (functionName(sourceCode, node) !== 'runDaemon' || node.computed) return;
+          if ((node.key.name || node.key.value) !== 'authorize') return;
+          const binding = sourceCode.getText(node);
+          if (binding !== 'authorize: authorizeDaemonApplicationCommand') {
+            failTable('daemon dispatcher must directly bind authorizeDaemonApplicationCommand');
+          }
+          if (authorizeBinding) failTable('daemon authorizer must be bound exactly once');
+          authorizeBinding = binding;
+        },
+        CallExpression(node) {
+          const name = node.callee?.type === 'Identifier' ? node.callee.name : null;
+          if (!calls.has(name)) return;
+          calls.get(name).push({
+            owner: namedFunctionOwner(sourceCode, node),
+            source: sourceCode.getText(node),
+          });
+        },
+      };
+    },
+  };
+  const messages = new Linter().verify(source, {
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'module' },
+    plugins: { inventory: { rules: { 'table-policy': rule } } },
+    rules: { 'inventory/table-policy': 'error' },
+  });
+  if (messages.length) failTable(messages.map(message => message.message).join('\n'));
+  if (!tableContractImport) failTable('table-contract helper import was not found');
+  if (TABLE_POLICY_HELPERS.some(name => !declarations.has(name))) {
+    failTable('all policy helpers must be declared exactly once');
+  }
+  const expectedCalls = {
+    isTableCollectArgs: [
+      { owner: 'daemonRequestMayHaveSideEffects', source: 'isTableCollectArgs(request.args || [])' },
+      { owner: 'isBatchParallelUnsafeCommand', source: 'isTableCollectArgs(args)' },
+    ],
+    parseTableArgs: [
+      { owner: 'authorizeDaemonApplicationCommand', source: 'parseTableArgs(args)' },
+    ],
+    isBatchParallelUnsafeCommand: [
+      { owner: 'batch', source: 'isBatchParallelUnsafeCommand(command.cmd, command.args || [])' },
+    ],
+    daemonRequestMayHaveSideEffects: [
+      { owner: 'sendCommand', source: 'daemonRequestMayHaveSideEffects(req)' },
+    ],
+    authorizeDaemonApplicationCommand: [],
+  };
+  for (const [name, expected] of Object.entries(expectedCalls)) {
+    const actual = calls.get(name).sort((left, right) => left.source.localeCompare(right.source));
+    const sortedExpected = [...expected].sort((left, right) => left.source.localeCompare(right.source));
+    if (JSON.stringify(actual) !== JSON.stringify(sortedExpected)) {
+      failTable(`${name} calls must exactly match the reviewed argv-aware bindings`);
+    }
+  }
+  if (!authorizeBinding) failTable('daemon authorizer binding was not found');
+  if (!tableCapabilityBinding) failTable('legacy table capability binding was not found');
+  const helperSources = TABLE_POLICY_HELPERS.map(name => declarations.get(name));
+  return {
+    policy: expectedPolicy,
+    helpers: [...TABLE_POLICY_HELPERS],
+    sourceDigest: digest([tableContractImport, ...helperSources].join('\0')),
+    bindingDigest: digest([
+      authorizeBinding,
+      tableCapabilityBinding,
+      ...Object.values(expectedCalls).flat().map(call => `${call.owner}:${call.source}`).sort(),
+    ].join('\0')),
+  };
+}
+
 export function buildRuntimeDispatchInventory(source = readFileSync(cdpPath, 'utf8')) {
   const applicationAuthority = collectApplicationCommands(source);
+  const tablePolicyAuthority = collectTablePolicyAuthority(source);
   const applicationCommandSet = applicationAuthority.commands;
   const bySpelling = new Map();
   for (const command of COMMAND_SURFACE.commands) {
@@ -470,6 +644,7 @@ export function buildRuntimeDispatchInventory(source = readFileSync(cdpPath, 'ut
     },
     applicationCommands,
     applicationAuthorityDigest: applicationAuthority.authorityDigest,
+    tablePolicyAuthority,
     targetless,
     mainBranches,
     mainSpine,
