@@ -39,6 +39,7 @@ function page(tables = [table()], overrides = {}) {
 function executeSamplerTableRows(tableRows, tableAttributes = [], {
   selector = 'table',
   StringConstructor = String,
+  bodyNamespace = 'http://www.w3.org/1999/xhtml',
 } = {}) {
   class N {
     constructor(type, value = null) { this.t = type; this.v = value; this.p = null; this.c = []; }
@@ -50,12 +51,15 @@ function executeSamplerTableRows(tableRows, tableAttributes = [], {
     get nodeValue() { return this.v; }
   }
   class E extends N {
-    constructor(name, attrs = {}) { super(1); this.n = name; this.a = attrs; }
+    constructor(name, attrs = {}, namespace = 'http://www.w3.org/1999/xhtml') {
+      super(1); this.n = name; this.a = attrs; this.ns = namespace;
+    }
     get localName() {
       if (!(this instanceof E)) throw new TypeError('Illegal invocation');
       return this.n;
     }
     getAttribute(name) { return Object.hasOwn(this.a, name) ? this.a[name] : null; }
+    get namespaceURI() { return this.ns; }
     matches(candidate) {
       if (candidate === 'table') return this.n === 'table';
       if (candidate[0] === '#') return this.a.id === candidate.slice(1);
@@ -65,7 +69,7 @@ function executeSamplerTableRows(tableRows, tableAttributes = [], {
   class X extends N { constructor(value) { super(3, value); } }
   class T extends E { constructor(attrs = {}) { super('table', attrs); } }
   class D extends N {
-    constructor(root) { super(9); this.r = root; root.p = this; }
+    constructor(root) { super(9); this.r = root; this.append(root); }
     querySelectorAll() {
       const matches = [];
       const visit = node => {
@@ -85,7 +89,7 @@ function executeSamplerTableRows(tableRows, tableAttributes = [], {
   for (let tableIndex = 0; tableIndex < tableRows.length; tableIndex += 1) {
     const rows = tableRows[tableIndex];
     const tableNode = root.append(new T(tableAttributes[tableIndex] || {}));
-    const body = tableNode.append(new E('tbody'));
+    const body = tableNode.append(new E('tbody', {}, bodyNamespace));
     for (const cells of rows) {
       const row = body.append(new E('tr'));
       for (const value of cells) row.append(new E('td')).append(new X(value));
@@ -124,6 +128,7 @@ describe('trusted table sampler source', () => {
     expect(expression).toContain('Element.prototype');
     expect(expression).toContain('Text.prototype');
     expect(expression).toContain("getOwnPropertyDescriptor(elementProto, 'matches').value");
+    expect(expression).toContain("getOwnPropertyDescriptor(elementProto, 'namespaceURI').get");
     expect(expression).not.toContain('querySelectorAll');
     expect(expression).not.toMatch(/\.querySelector|\.querySelectorAll|\.matches|\.closest|\.textContent/);
     expect(expression).not.toMatch(/JSON\.stringify|new TextEncoder|\.toJSON|\.filter\(|\.map\(|\.isPrototypeOf\(|\.test\(|\.padStart\(|for\s*\([^)]*\sof\s/);
@@ -167,6 +172,7 @@ describe('trusted table sampler source', () => {
         return this._localName;
       }
       getAttribute(name) { return Object.hasOwn(this._attributes, name) ? this._attributes[name] : null; }
+      get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
       matches(selector) { return selector === 'table' && this._localName === 'table'; }
       querySelectorAll() { poisonCalls += 1; throw new Error('page querySelectorAll'); }
       closest() { poisonCalls += 1; throw new Error('page closest'); }
@@ -178,7 +184,7 @@ describe('trusted table sampler source', () => {
       constructor(attributes) { super('table', attributes); }
     }
     class DocumentLike extends NodeLike {
-      constructor(root) { super(9); this._root = root; root._parent = this; }
+      constructor(root) { super(9); this._root = this.append(root); }
       get documentElement() { return this._root; }
       querySelectorAll(selector) {
         poisonCalls += 1;
@@ -247,12 +253,13 @@ describe('trusted table sampler source', () => {
       constructor(name, attrs = {}) { super(1); this.n = name; this.a = attrs; }
       get localName() { return this.n; }
       getAttribute(name) { return Object.hasOwn(this.a, name) ? this.a[name] : null; }
+      get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
       matches(selector) { return selector === 'table' && this.n === 'table'; }
     }
     class X extends N { constructor(value) { super(3, value); } }
     class T extends E { constructor() { super('table'); } }
     class D extends N {
-      constructor(root) { super(9); this.r = root; }
+      constructor(root) { super(9); this.r = this.append(root); }
       get documentElement() { return this.r; }
       querySelectorAll() { return new L(this.r.c); }
     }
@@ -381,12 +388,13 @@ describe('trusted table sampler source', () => {
         return this.n;
       }
       getAttribute() { return null; }
+      get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
       matches(selector) { return selector === 'table' && this.n === 'table'; }
     }
     class X extends N {}
     class T extends E { constructor() { super('table'); } }
     class D extends N {
-      constructor(root, match) { super(9); this.match = match; root.p = this; }
+      constructor(root, match) { super(9); this.match = match; this.append(root); }
       querySelectorAll() { return new L([this.match]); }
     }
     class L {
@@ -430,12 +438,13 @@ describe('trusted table sampler source', () => {
         return this.n;
       }
       getAttribute() { return null; }
+      get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
       matches(selector) { return selector === 'table' && this.n === 'table'; }
     }
     class X extends N { constructor(value) { super(3, value); } }
     class T extends E { constructor() { super('table'); } }
     class D extends N {
-      constructor(root, match) { super(9); this.match = match; root.p = this; }
+      constructor(root, match) { super(9); this.match = match; this.append(root); }
       querySelectorAll() { return new L([this.match]); }
     }
     class L {
@@ -464,6 +473,24 @@ describe('trusted table sampler source', () => {
     });
   });
 
+  it('ignores foreign-namespace structural lookalikes', () => {
+    const sampled = executeSamplerTableRows(
+      [[['foreign row']]],
+      [],
+      { bodyNamespace: 'urn:example:foreign' },
+    );
+
+    expect(sampled.tables[0]).toMatchObject({
+      headerRows: [],
+      dataRows: [],
+      directRowsSeen: 0,
+      headerRowsSeen: 0,
+      dataRowsSeen: 0,
+      truncated: false,
+      truncationReason: null,
+    });
+  });
+
   it('bounds document discovery and reports a table beyond the node cap as unknown', () => {
     class N {
       constructor(type) { this.t = type; this.p = null; this.c = []; }
@@ -478,12 +505,13 @@ describe('trusted table sampler source', () => {
       constructor(name) { super(1); this.n = name; }
       get localName() { return this.n; }
       getAttribute() { return null; }
+      get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
       matches(selector) { return selector === 'table' && this.n === 'table'; }
     }
     class X extends N {}
     class T extends E { constructor() { super('table'); } }
     class D extends N {
-      constructor(root, match) { super(9); this.match = match; root.p = this; }
+      constructor(root, match) { super(9); this.match = match; this.append(root); }
       querySelectorAll() { return new L([this.match]); }
     }
     class L {
@@ -507,7 +535,7 @@ describe('trusted table sampler source', () => {
     });
   });
 
-  it('stops scanning oversized DOM strings immediately after their local byte bounds', () => {
+  it('stops scanning oversized DOM strings immediately after each local byte bound', () => {
     let charCodeReads = 0;
     function BoundedString() {}
     Object.defineProperty(BoundedString.prototype, 'charCodeAt', {
@@ -518,21 +546,30 @@ describe('trusted table sampler source', () => {
     });
     BoundedString.fromCharCode = String.fromCharCode;
 
-    const sampled = executeSamplerTableRows(
-      [[['x'.repeat(1_000_000)]]],
+    const metadataSample = executeSamplerTableRows(
+      [[]],
       [{ 'aria-label': 'y'.repeat(1_000_000) }],
       { StringConstructor: BoundedString },
     );
 
-    expect(sampled.tables[0]).toMatchObject({
-      caption: '',
+    expect(metadataSample.tables[0].caption).toBe('');
+    expect(charCodeReads).toBeLessThan(2_000);
+
+    charCodeReads = 0;
+    const rowSample = executeSamplerTableRows(
+      [[['x'.repeat(1_000_000)]]],
+      [],
+      { StringConstructor: BoundedString },
+    );
+
+    expect(rowSample.tables[0]).toMatchObject({
       dataRows: [],
       directRowsSeen: 1,
       dataRowsSeen: 1,
       truncated: true,
       truncationReason: 'row-too-large',
     });
-    expect(charCodeReads).toBeLessThan(10_000);
+    expect(charCodeReads).toBeLessThan(5_000);
   });
 });
 
@@ -624,6 +661,14 @@ describe('bounded table sampler host validation', () => {
       directRowsSeen: 1,
       dataRowsSeen: 1,
     })]))).toThrow(/canonical.*4096|row.*bound/i);
+  });
+
+  it('rejects a quote-heavy wire row whose compact producer encoding exceeds 8194 bytes', () => {
+    expect(() => parseTableSamplerResult(page([table({
+      dataRows: [{ rawAriaRowIndex: null, cells: ['"'.repeat(4096)] }],
+      directRowsSeen: 1,
+      dataRowsSeen: 1,
+    })]))).toThrow(/encoded.*8194|row.*bound/i);
   });
 
   it.each([
