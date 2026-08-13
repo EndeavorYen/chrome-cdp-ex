@@ -641,7 +641,7 @@ describe('immutable row-aligned table continuation', () => {
       mountedRows: 25,
       collectedRows: 25,
       recycledMountedNodes: 0,
-      completeness: { state: 'complete', termination: 'logical-count-reached' },
+      completeness: { state: 'complete', termination: 'logical-count-reached', evidenceConflict: false },
       artifact: {
         id: ID_A,
         rows: 25,

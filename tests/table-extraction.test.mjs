@@ -269,10 +269,10 @@ describe('collection safety and completeness', () => {
     expect(finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' }).completeness.state).toBe('unknown');
   });
 
-  it('requires logical-count termination in addition to exact collected-count equality', () => {
+  it('requires safe logical-count termination in addition to exact collected-count equality', () => {
     const accumulator = accumulatorWithRows([['one'], ['two']]);
 
-    expect(finalizeTableExtraction(accumulator, { termination: 'observation' }).completeness.state).toBe('incomplete');
+    expect(finalizeTableExtraction(accumulator, { termination: 'observation' }).completeness.state).toBe('unknown');
     expect(finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' }).completeness.state).toBe('complete');
   });
 
@@ -342,7 +342,7 @@ describe('collection safety and completeness', () => {
       logicalRows: null,
       logicalCountSource: 'none',
       identitySource: 'snapshot-order',
-      orderingSource: 'snapshot-order',
+      orderingSource: 'row-key-column',
     })).toThrow(/provenance pair/i);
   });
 
@@ -373,8 +373,10 @@ describe('collection safety and completeness', () => {
       .toEqual({
         state: 'unknown',
         termination: 'observation',
-        reason: 'logical-count-conflict',
+        evidenceConflict: true,
       });
+    expect(finalizeTableExtraction(partial, { termination: 'observation' }).completeness.evidenceConflict)
+      .toBe(false);
   });
 
   it('does not turn exact ARIA coverage complete after an unsafe termination', () => {
