@@ -84,7 +84,7 @@ describe('daemon request server lifecycle', () => {
   it('cleans session artifacts synchronously after request abort and before closing server or CDP', () => {
     const order = [];
     const connectionLifecycle = { abortAll: vi.fn(() => order.push('requests:abort')) };
-    const cleanupSession = vi.fn(() => order.push('artifacts:cleanup'));
+    const cleanupSession = vi.fn(() => { order.push('artifacts:cleanup'); });
     const server = { close: vi.fn(() => order.push('server:close')) };
     const shutdown = T.createDaemonShutdown({
       requestConnections: new Set([connectionLifecycle]),
@@ -224,7 +224,7 @@ describe('daemon request server lifecycle', () => {
   it('releases successful request ownership only after the response flush callback', async () => {
     const order = [];
     const cleanup = vi.fn(() => order.push('rollback'));
-    const release = vi.fn(() => order.push('release'));
+    const release = vi.fn(() => { order.push('release'); });
     const dispose = vi.fn(() => order.push('dispose'));
     const conn = connection({ holdWrite: true });
     const lifecycle = T.createDaemonRequestConnection(conn, {
@@ -265,6 +265,33 @@ describe('daemon request server lifecycle', () => {
     await drain();
 
     conn.writeCallbacks[0](new Error('flush failed'));
+    await drain();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
+    expect(lifecycle.activeRequestCount()).toBe(0);
+  });
+
+  it.each([
+    ['a handled failure result', async () => ({ ok: false, error: 'handled failure' })],
+    ['a thrown handler failure', async () => { throw new Error('thrown failure'); }],
+  ])('never releases rolled-back request ownership after flushing %s', async (_label, handleRequest) => {
+    const cleanup = vi.fn();
+    const release = vi.fn();
+    const conn = connection({ holdWrite: true });
+    const lifecycle = T.createDaemonRequestConnection(conn, {
+      handleRequest,
+      cleanup,
+      onFlushed: release,
+      now: () => 0,
+    });
+    conn.emit('data', frame({ id: 14, cmd: 'status', args: [] }));
+    await drain();
+
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
+    expect(conn.write).toHaveBeenCalledOnce();
+
+    conn.writeCallbacks[0]();
     await drain();
     expect(cleanup).toHaveBeenCalledOnce();
     expect(release).not.toHaveBeenCalled();
