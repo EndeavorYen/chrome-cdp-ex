@@ -1,7 +1,9 @@
 import { EventEmitter } from 'events';
+import { readFileSync } from 'fs';
 import { describe, expect, it, vi } from 'vitest';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+const cdpSource = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
 
 function connection({ holdWrite = false } = {}) {
   const conn = new EventEmitter();
@@ -432,49 +434,66 @@ describe('daemon request server lifecycle', () => {
     }
   });
 
-  it('retires fatally after disconnect when a raw collect handler still cannot settle by 300s', async () => {
-    vi.useFakeTimers();
-    try {
-      let now = 0;
-      const cleanup = vi.fn();
-      const dispose = vi.fn();
-      const onFatal = vi.fn();
-      const conn = connection();
-      T.createDaemonRequestConnection(conn, {
-        handleRequest: () => new Promise(() => {}),
-        cleanup,
-        onDispose: dispose,
-        onFatal,
-        now: () => now,
+  it('retires immediately on disconnect when a raw collect handler has not proven settlement', async () => {
+    let terminated = false;
+    let finishIgnoredHandler;
+    const lateEffect = vi.fn();
+    const order = [];
+    const cleanup = vi.fn(() => { order.push('request-cleanup'); });
+    const dispose = vi.fn(() => { order.push('dispose'); });
+    const onFatal = vi.fn(error => {
+      order.push('fatal-shutdown');
+      terminated = true;
+      expect(error).toMatchObject({
+        code: 'TABLE_COLLECTION_DAEMON_TERMINATION_REQUIRED',
+        phase: 'server',
       });
-      conn.emit('data', frame({
-        id: 33,
-        cmd: 'table',
-        args: ['--collect', '--scroll-container', '.viewport'],
-      }));
-      await drain();
-      conn.closePeer('close');
+    });
+    const conn = connection();
+    const lifecycle = T.createDaemonRequestConnection(conn, {
+      handleRequest: () => new Promise(resolve => {
+        finishIgnoredHandler = () => {
+          if (!terminated) lateEffect();
+          resolve({ ok: true, result: 'too late' });
+        };
+      }),
+      cleanup,
+      onDispose: dispose,
+      onFatal,
+      now: () => 0,
+    });
+    conn.emit('data', frame({
+      id: 33,
+      cmd: 'table',
+      args: ['--collect', '--scroll-container', '.viewport'],
+    }));
+    await drain();
 
-      now = 300000;
-      await vi.advanceTimersByTimeAsync(300000);
-      await drain();
+    conn.closePeer('close');
 
-      expect(onFatal).toHaveBeenCalledOnce();
-      expect(cleanup).toHaveBeenCalledOnce();
-      expect(dispose).toHaveBeenCalledOnce();
-      expect(conn.write).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(onFatal).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(conn.destroy).toHaveBeenCalledOnce();
+    expect(order).toEqual(['request-cleanup', 'dispose', 'fatal-shutdown']);
+    expect(conn.write).not.toHaveBeenCalled();
+    expect(lifecycle.activeRequestCount()).toBe(0);
+
+    finishIgnoredHandler();
+    await drain();
+    expect(lateEffect).not.toHaveBeenCalled();
+    expect(onFatal).toHaveBeenCalledOnce();
   });
 
-  it('does not enqueue a handled failure until request cleanup has completed', async () => {
-    let finishCleanup;
-    const cleanup = vi.fn(() => new Promise(resolve => { finishCleanup = resolve; }));
+  it('fails closed without awaiting a thenable request cleanup', async () => {
+    const then = vi.fn();
+    const cleanup = vi.fn(() => ({ then }));
+    const onFatal = vi.fn();
     const conn = connection();
     const lifecycle = T.createDaemonRequestConnection(conn, {
       handleRequest: async () => ({ ok: false, error: 'collector failed' }),
       cleanup,
+      onFatal,
       now: () => 0,
     });
     conn.emit('data', frame({
@@ -485,17 +504,63 @@ describe('daemon request server lifecycle', () => {
     await drain();
 
     expect(cleanup).toHaveBeenCalledOnce();
-    expect(conn.write).not.toHaveBeenCalled();
-    expect(lifecycle.activeRequestCount()).toBe(1);
-
-    finishCleanup();
-    await drain();
-    expect(conn.write).toHaveBeenCalledOnce();
-    expect(JSON.parse(conn.write.mock.calls[0][0])).toMatchObject({
-      id: 34,
-      ok: false,
-      error: 'collector failed',
+    expect(then).not.toHaveBeenCalled();
+    expect(onFatal).toHaveBeenCalledOnce();
+    expect(onFatal.mock.calls[0][0]).toMatchObject({
+      code: 'TABLE_COLLECTION_SYNC_CLEANUP_REQUIRED',
+      cleanupScope: 'request',
     });
+    expect(conn.write).not.toHaveBeenCalled();
+    expect(conn.destroy).toHaveBeenCalledOnce();
+    expect(lifecycle.activeRequestCount()).toBe(0);
+  });
+
+  it('retains synchronous cleanup failures while completing fatal retirement', async () => {
+    const collectorFailure = new Error('collector cleanup failed synchronously');
+    const requestFailure = new Error('request cleanup failed synchronously');
+    const collectorCleanup = vi.fn(() => { throw collectorFailure; });
+    const requestCleanup = vi.fn(() => { throw requestFailure; });
+    const dispose = vi.fn();
+    const onFatal = vi.fn();
+    const conn = connection();
+    const lifecycle = T.createDaemonRequestConnection(conn, {
+      handleRequest: async (_request, execution) => {
+        const result = await T.runTableCollectionLifecycle(execution, {
+          collect: async runtime => {
+            runtime.runCdpOperation(() => new Promise(() => {})).catch(() => {});
+            await Promise.resolve();
+            return { termination: 'logical-count-reached' };
+          },
+          finalize: vi.fn(),
+          cleanup: collectorCleanup,
+        });
+        return { ok: true, result };
+      },
+      cleanup: requestCleanup,
+      onDispose: dispose,
+      onFatal,
+      now: () => 0,
+    });
+    conn.emit('data', frame({
+      id: 35,
+      cmd: 'table',
+      args: ['--collect', '--scroll-container', '.viewport'],
+    }));
+    await drain();
+
+    conn.closePeer('close');
+
+    expect(collectorCleanup).toHaveBeenCalledOnce();
+    expect(requestCleanup).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(conn.destroy).toHaveBeenCalledOnce();
+    expect(onFatal).toHaveBeenCalledOnce();
+    expect(onFatal.mock.calls[0][0].cleanupErrors).toEqual([
+      collectorFailure,
+      requestFailure,
+    ]);
+    expect(conn.write).not.toHaveBeenCalled();
+    expect(lifecycle.activeRequestCount()).toBe(0);
   });
 
   it('aborts and suppresses a duplicate active ID on one socket while accepting id=1 on another socket', async () => {
@@ -750,5 +815,11 @@ describe('daemon request server lifecycle', () => {
     expect(cleanup).toHaveBeenCalledOnce();
     expect(dispose).toHaveBeenCalledOnce();
     expect(lifecycle.activeRequestCount()).toBe(0);
+  });
+
+  it('wires synchronous cleanup defaults at the production daemon source boundary', () => {
+    expect(cdpSource).toContain('  cleanup = () => {},');
+    expect(cdpSource).toContain('      cleanup: () => {},');
+    expect(cdpSource).not.toContain('      cleanup: async () => {},');
   });
 });

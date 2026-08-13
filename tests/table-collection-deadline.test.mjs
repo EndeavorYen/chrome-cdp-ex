@@ -387,7 +387,7 @@ describe('table collection monotonic deadline context', () => {
       signal: new AbortController().signal,
       now: () => 0,
     });
-    const cleanup = vi.fn(async () => { events.push('cleanup'); });
+    const cleanup = vi.fn(() => { events.push('cleanup'); });
     const lifecycle = T.runTableCollectionLifecycle(context, {
       collect: async runtime => {
         runtime.runCdpOperation(() => new Promise(resolve => {
@@ -417,6 +417,31 @@ describe('table collection monotonic deadline context', () => {
     events.push('returned');
     expect(events).toEqual(['operation-settled', 'cleanup', 'returned']);
     expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a thenable collector cleanup synchronously without assimilating it', async () => {
+    const collectorError = new Error('collector failed');
+    const then = vi.fn();
+    const cleanup = vi.fn(() => ({ then }));
+    const context = T.createDaemonRequestExecutionContext({
+      request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+      signal: new AbortController().signal,
+      now: () => 0,
+    });
+    const lifecycle = T.runTableCollectionLifecycle(context, {
+      collect: async () => { throw collectorError; },
+      finalize: vi.fn(),
+      cleanup,
+    });
+    const outcome = lifecycle.catch(error => error);
+    const nextTurn = new Promise(resolve => setImmediate(() => resolve('still-pending')));
+
+    await expect(Promise.race([outcome, nextTurn])).resolves.toMatchObject({
+      code: 'TABLE_COLLECTION_SYNC_CLEANUP_REQUIRED',
+      cleanupScope: 'collector',
+    });
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(then).not.toHaveBeenCalled();
   });
 
   it('starts finalization immediately after early page success and forbids later CDP work', async () => {
