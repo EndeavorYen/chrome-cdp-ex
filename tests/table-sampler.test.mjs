@@ -224,6 +224,20 @@ describe('trusted table sampler source', () => {
     expect(expression).toContain('maxTextNodesPerCell');
     expect(expression).toMatch(/utf8Bytes\([^)]*candidate/i);
   });
+
+  it('marks a later table omitted by aggregate pressure instead of silently dropping it', () => {
+    const expression = buildTableSamplerExpression('table');
+
+    expect(expression).toContain("pageTruncationReason = 'sample-byte-limit'");
+    expect(expression).toContain('pageTruncated = true');
+  });
+
+  it('marks candidate-scan exhaustion instead of reporting a silent empty page', () => {
+    const expression = buildTableSamplerExpression('table');
+
+    expect(expression).toContain("pageTruncationReason = 'table-limit'");
+    expect(expression).toMatch(/matchedCandidates\s*>?=\s*LIMITS\.maxMatchedCandidates/);
+  });
 });
 
 describe('bounded table sampler host validation', () => {
