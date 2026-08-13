@@ -176,6 +176,23 @@ describe('Runtime v3 table policy authority', () => {
   });
 
   it.each([
+    source.replace(
+      'async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {',
+      'async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication(), Object = { freeze: value => value }) {',
+    ),
+    source.replace(
+      'Object.freeze(readCapabilities);',
+      'const Object = { freeze: value => value }; Object.freeze(readCapabilities);',
+    ),
+    source.replace(
+      'Object.freeze(readCapabilities);',
+      'Object.freeze = value => value; Object.freeze(readCapabilities);',
+    ),
+  ])('rejects no-op or shadowed Object.freeze protection %#', mutation => {
+    expect(() => inventory(mutation)).toThrow(/table policy authority/i);
+  });
+
+  it.each([
     mcpAdapterSource.replace(
       "if (command.name === 'table') return parseTableRunCommandArgs(args).request.mode === 'collect';",
       "if (command.name === 'table') return false && parseTableRunCommandArgs(args).request.mode === 'collect';",
