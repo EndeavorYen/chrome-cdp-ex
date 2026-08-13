@@ -17,6 +17,10 @@ function connection({ holdWrite = false } = {}) {
     if (payload !== undefined) conn.write(payload, callback);
     else callback?.();
   });
+  conn.destroy = vi.fn(() => {
+    conn.destroyed = true;
+    conn.writable = false;
+  });
   conn.closePeer = (event = 'close', error = null) => {
     conn.destroyed = true;
     conn.writable = false;
@@ -258,6 +262,82 @@ describe('daemon request server lifecycle', () => {
     expect(conn.write.mock.calls[0][0]).not.toContain('late-handler-success');
     expect(dispose).toHaveBeenCalledOnce();
     expect(lifecycle.activeRequestCount()).toBe(0);
+  });
+
+  it('terminates without a response when invoked page work cannot settle by the server deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      let now = 0;
+      let terminated = false;
+      let lateCallback;
+      const lateEffect = vi.fn();
+      const finalize = vi.fn(async () => 'must-not-commit');
+      const collectorCleanup = vi.fn();
+      const requestCleanup = vi.fn();
+      const dispose = vi.fn();
+      const onFatal = vi.fn(error => {
+        terminated = true;
+        expect(error).toMatchObject({
+          code: 'TABLE_COLLECTION_DAEMON_TERMINATION_REQUIRED',
+          phase: 'server',
+          requiresDaemonTermination: true,
+        });
+      });
+      const conn = connection();
+      const lifecycle = T.createDaemonRequestConnection(conn, {
+        handleRequest: async (_request, execution) => {
+          const result = await T.runTableCollectionLifecycle(execution, {
+            collect: async runtime => {
+              runtime.runCdpOperation(() => new Promise(() => {
+                lateCallback = () => {
+                  if (!terminated) lateEffect();
+                };
+              })).catch(() => {});
+              await Promise.resolve();
+              return { termination: 'logical-count-reached' };
+            },
+            finalize,
+            cleanup: collectorCleanup,
+          });
+          return { ok: true, result };
+        },
+        cleanup: requestCleanup,
+        onDispose: dispose,
+        onFatal,
+        now: () => now,
+      });
+      conn.emit('data', frame({
+        id: 3,
+        cmd: 'table',
+        args: ['--collect', '--scroll-container', '.viewport'],
+      }));
+      await drain();
+
+      expect(finalize).not.toHaveBeenCalled();
+      expect(conn.write).not.toHaveBeenCalled();
+      expect(onFatal).not.toHaveBeenCalled();
+      expect(lifecycle.activeRequestCount()).toBe(1);
+
+      now = 300000;
+      await vi.advanceTimersByTimeAsync(300000);
+      await drain();
+
+      expect(onFatal).toHaveBeenCalledOnce();
+      expect(collectorCleanup).toHaveBeenCalledOnce();
+      expect(requestCleanup).toHaveBeenCalledOnce();
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(conn.destroy).toHaveBeenCalledOnce();
+      expect(conn.destroyed).toBe(true);
+      expect(conn.write).not.toHaveBeenCalled();
+      expect(lifecycle.activeRequestCount()).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+      for (const name of ['data', 'end', 'close', 'error']) expect(conn.listenerCount(name)).toBe(0);
+
+      lateCallback();
+      expect(lateEffect).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('aborts and suppresses a duplicate active ID on one socket while accepting id=1 on another socket', async () => {

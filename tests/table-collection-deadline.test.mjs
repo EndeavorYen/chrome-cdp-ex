@@ -254,6 +254,97 @@ describe('table collection monotonic deadline context', () => {
     expect(latePageEffect).not.toHaveBeenCalled();
   });
 
+  it('owns a signal-ignoring operation until it settles before finalization and return', async () => {
+    const rootController = new AbortController();
+    const addListener = vi.spyOn(rootController.signal, 'addEventListener');
+    const removeListener = vi.spyOn(rootController.signal, 'removeEventListener');
+    const events = [];
+    let finishOperation;
+    let operationSignal;
+    let lifecycleSettled = false;
+    const context = T.createDaemonRequestExecutionContext({
+      request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+      signal: rootController.signal,
+      now: () => 0,
+    });
+    const finalize = vi.fn(async () => {
+      events.push('finalize');
+      return 'committed-after-owned-operation';
+    });
+    const lifecycle = T.runTableCollectionLifecycle(context, {
+      collect: async runtime => {
+        runtime.runCdpOperation(({ signal }) => new Promise(resolve => {
+          operationSignal = signal;
+          finishOperation = () => {
+            events.push('operation-settled');
+            resolve('ignored-abort-and-settled');
+          };
+        })).catch(() => {});
+        await Promise.resolve();
+        return { termination: 'logical-count-reached' };
+      },
+      finalize,
+      cleanup: vi.fn(),
+    });
+    lifecycle.then(
+      () => { lifecycleSettled = true; },
+      () => { lifecycleSettled = true; },
+    );
+    await new Promise(resolve => setImmediate(resolve));
+
+    expect(operationSignal.aborted).toBe(true);
+    expect(finalize).not.toHaveBeenCalled();
+    expect(lifecycleSettled).toBe(false);
+
+    finishOperation();
+    await expect(lifecycle).resolves.toBe('committed-after-owned-operation');
+    events.push('returned');
+    expect(events).toEqual(['operation-settled', 'finalize', 'returned']);
+    expect(removeListener.mock.calls.length).toBeGreaterThanOrEqual(addListener.mock.calls.length);
+  });
+
+  it('drains a live invoked operation before cleanup and returning a collector error', async () => {
+    const collectorError = new Error('collector failed after starting page work');
+    const events = [];
+    let finishOperation;
+    let lifecycleSettled = false;
+    const context = T.createDaemonRequestExecutionContext({
+      request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+      signal: new AbortController().signal,
+      now: () => 0,
+    });
+    const cleanup = vi.fn(async () => { events.push('cleanup'); });
+    const lifecycle = T.runTableCollectionLifecycle(context, {
+      collect: async runtime => {
+        runtime.runCdpOperation(() => new Promise(resolve => {
+          finishOperation = () => {
+            events.push('operation-settled');
+            resolve('ignored-abort-and-settled');
+          };
+        })).catch(() => {});
+        await Promise.resolve();
+        throw collectorError;
+      },
+      finalize: vi.fn(),
+      cleanup,
+    });
+    lifecycle.then(
+      () => { lifecycleSettled = true; },
+      () => { lifecycleSettled = true; },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(lifecycleSettled).toBe(false);
+
+    finishOperation();
+    await expect(lifecycle).rejects.toBe(collectorError);
+    events.push('returned');
+    expect(events).toEqual(['operation-settled', 'cleanup', 'returned']);
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
   it('starts finalization immediately after early page success and forbids later CDP work', async () => {
     let now = 500;
     const context = T.createDaemonRequestExecutionContext({
