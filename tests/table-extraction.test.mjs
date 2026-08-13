@@ -409,4 +409,16 @@ describe('hostile in-process input validation', () => {
     expect(() => canonicalizeTableCells(revocable.proxy)).toThrow(/proxy/i);
     expect(getterReads).toBe(0);
   });
+
+  it('rejects proxied sample, batch, limits, finalizer, and accumulator boundaries before state effects', () => {
+    const accumulator = accumulatorWithRows([['safe']], { logicalRows: 2 });
+
+    expect(() => addTableSample(accumulator, new Proxy({ mountedNodeId: 'node-2', key: 2, cells: ['next'] }, {}))).toThrow(/proxy/i);
+    expect(() => addTableSampleBatch(accumulator, new Proxy([], {}))).toThrow(/proxy/i);
+    expect(() => buildInlineTablePreview(['safe'], new Proxy({}, {}))).toThrow(/proxy/i);
+    expect(() => finalizeTableExtraction(accumulator, new Proxy({ termination: 'observation' }, {}))).toThrow(/proxy/i);
+    expect(() => buildTableExportManifest(accumulator, new Proxy({ termination: 'observation' }, {}))).toThrow(/proxy/i);
+    expect(() => finalizeTableExtraction(new Proxy(accumulator, {}), { termination: 'observation' })).toThrow(/proxy/i);
+    expect(finalizeTableExtraction(accumulator, { termination: 'observation' }).collectedRows).toBe(1);
+  });
 });
