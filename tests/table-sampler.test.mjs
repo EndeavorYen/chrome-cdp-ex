@@ -60,6 +60,7 @@ function executeSamplerTableRows(tableRows, tableAttributes = [], {
       return this.n;
     }
     getAttribute(name) { return Object.hasOwn(this.a, name) ? this.a[name] : null; }
+    hasAttribute(name) { return Object.hasOwn(this.a, name); }
     get namespaceURI() { return this.ns; }
     matches(candidate) {
       if (candidate === 'table') return this.n === 'table';
@@ -179,6 +180,7 @@ describe('trusted table sampler source', () => {
         return this._localName;
       }
       getAttribute(name) { return Object.hasOwn(this._attributes, name) ? this._attributes[name] : null; }
+      hasAttribute(name) { return Object.hasOwn(this._attributes, name); }
       get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
       matches(selector) { return selector === 'table' && this._localName === 'table'; }
       querySelectorAll() { poisonCalls += 1; throw new Error('page querySelectorAll'); }
@@ -260,6 +262,7 @@ describe('trusted table sampler source', () => {
       constructor(name, attrs = {}) { super(1); this.n = name; this.a = attrs; }
       get localName() { return this.n; }
       getAttribute(name) { return Object.hasOwn(this.a, name) ? this.a[name] : null; }
+      hasAttribute(name) { return Object.hasOwn(this.a, name); }
       get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
       matches(selector) { return selector === 'table' && this.n === 'table'; }
     }
@@ -448,6 +451,7 @@ describe('trusted table sampler source', () => {
         return this.n;
       }
       getAttribute() { return null; }
+      hasAttribute() { return false; }
       get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
       matches(selector) { return selector === 'table' && this.n === 'table'; }
     }
@@ -498,6 +502,7 @@ describe('trusted table sampler source', () => {
         return this.n;
       }
       getAttribute() { return null; }
+      hasAttribute() { return false; }
       get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
       matches(selector) { return selector === 'table' && this.n === 'table'; }
     }
@@ -565,6 +570,7 @@ describe('trusted table sampler source', () => {
       constructor(name) { super(1); this.n = name; }
       get localName() { return this.n; }
       getAttribute() { return null; }
+      hasAttribute() { return false; }
       get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
       matches(selector) { return selector === 'table' && this.n === 'table'; }
     }

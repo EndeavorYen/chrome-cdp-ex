@@ -17,6 +17,7 @@ const PAGE_TRUNCATION_REASONS = new Set([
   'sample-byte-limit',
   'dom-depth-limit',
   'dom-node-limit',
+  'selector-evaluation-limit',
 ]);
 
 export const TABLE_SAMPLER_LIMITS = Object.freeze({
@@ -33,6 +34,7 @@ export const TABLE_SAMPLER_LIMITS = Object.freeze({
   maxAncestorDepth: 4096,
   maxDirectChildren: 4096,
   maxDocumentNodes: 65536,
+  maxClassScanUnits: 4096,
 });
 
 function selectorInvalid() {
@@ -309,9 +311,10 @@ export function parseTableSamplerResult(value) {
     invalid('sample sample-byte-limit provenance loses precedence to table-limit');
   }
   if ((parsed.truncationReason === 'dom-depth-limit'
-      || parsed.truncationReason === 'dom-node-limit')
+      || parsed.truncationReason === 'dom-node-limit'
+      || parsed.truncationReason === 'selector-evaluation-limit')
     && omittedTables !== 0) {
-    invalid('sample DOM truncation provenance has inconsistent counters');
+    invalid('sample bounded traversal provenance has inconsistent counters');
   }
   return Object.freeze({
     schema: TABLE_SAMPLE_SCHEMA,
@@ -348,6 +351,7 @@ export function buildTableSamplerExpression(selector = 'table') {
     const localNameGetter = getOwnPropertyDescriptor(elementProto, 'localName').get;
     const namespaceURIGetter = getOwnPropertyDescriptor(elementProto, 'namespaceURI').get;
     const getAttribute = getOwnPropertyDescriptor(elementProto, 'getAttribute').value;
+    const hasAttribute = getOwnPropertyDescriptor(elementProto, 'hasAttribute').value;
     const arrayPush = getOwnPropertyDescriptor(A.prototype, 'push').value;
     const charCodeAt = getOwnPropertyDescriptor(S.prototype, 'charCodeAt').value;
     const fromCharCode = S.fromCharCode;
@@ -369,6 +373,7 @@ export function buildTableSamplerExpression(selector = 'table') {
       && apply(namespaceURIGetter, value, []) === XHTML
       ? name(value) : '';
     const attribute = (value, key) => apply(getAttribute, value, [key]);
+    const attributePresent = (value, key) => apply(hasAttribute, value, [key]);
     const asciiSpace = unit => unit === 0x20 || unit === 0x09 || unit === 0x0A
       || unit === 0x0C || unit === 0x0D;
     const sameAsciiToken = (value, start, end, expected) => {
@@ -378,31 +383,49 @@ export function buildTableSamplerExpression(selector = 'table') {
       }
       return true;
     };
+    const exactAttribute = (value, key, expected) => {
+      const raw = attribute(value, key);
+      if (raw === null || raw.length !== expected.length) return false;
+      for (let index = 0; index < expected.length; index += 1) {
+        if (apply(charCodeAt, raw, [index]) !== apply(charCodeAt, expected, [index])) return false;
+      }
+      return true;
+    };
     const hasClass = (value, expected) => {
       let offset = 0;
-      while (offset < value.length) {
-        while (offset < value.length && asciiSpace(apply(charCodeAt, value, [offset]))) offset += 1;
+      const limit = value.length < LIMITS.maxClassScanUnits
+        ? value.length : LIMITS.maxClassScanUnits;
+      while (offset < limit) {
+        while (offset < limit && asciiSpace(apply(charCodeAt, value, [offset]))) offset += 1;
         const start = offset;
-        while (offset < value.length && !asciiSpace(apply(charCodeAt, value, [offset]))) offset += 1;
-        if (start < offset && sameAsciiToken(value, start, offset, expected)) return true;
+        while (offset < limit && !asciiSpace(apply(charCodeAt, value, [offset]))) offset += 1;
+        const tokenComplete = offset === value.length
+          || (offset < limit && asciiSpace(apply(charCodeAt, value, [offset])));
+        if (start < offset && tokenComplete && sameAsciiToken(value, start, offset, expected)) {
+          return 'match';
+        }
       }
-      return false;
+      return limit < value.length ? 'overflow' : 'miss';
     };
     const matchesTableSelector = value => {
-      if (selectorSpec.id !== null && boundedAttribute(value, 'id') !== selectorSpec.id) return false;
+      if (selectorSpec.id !== null && !exactAttribute(value, 'id', selectorSpec.id)) return 'miss';
       if (selectorSpec.classes.length > 0) {
-        const rawClass = boundedAttribute(value, 'class');
-        if (rawClass === null) return false;
+        const rawClass = attribute(value, 'class');
+        if (rawClass === null) return 'miss';
         for (let index = 0; index < selectorSpec.classes.length; index += 1) {
-          if (!hasClass(rawClass, selectorSpec.classes[index])) return false;
+          const classStatus = hasClass(rawClass, selectorSpec.classes[index]);
+          if (classStatus !== 'match') return classStatus;
         }
       }
       for (let index = 0; index < selectorSpec.attributes.length; index += 1) {
         const constraint = selectorSpec.attributes[index];
-        const raw = boundedAttribute(value, constraint.name);
-        if (raw === null || (constraint.expected !== null && raw !== constraint.expected)) return false;
+        if (constraint.expected === null) {
+          if (!attributePresent(value, constraint.name)) return 'miss';
+        } else if (!exactAttribute(value, constraint.name, constraint.expected)) {
+          return 'miss';
+        }
       }
-      return true;
+      return 'match';
     };
     const hasTableAncestor = value => {
       let parent = apply(parentNodeGetter, value, []);
@@ -740,7 +763,11 @@ export function buildTableSamplerExpression(selector = 'table') {
       if (type === 1) {
         if (isTable(current)) {
           descend = false;
-          if (matchesTableSelector(current)) {
+          const selectorStatus = matchesTableSelector(current);
+          if (selectorStatus === 'overflow') {
+            pageTruncated = true;
+            pageTruncationReason = 'selector-evaluation-limit';
+          } else if (selectorStatus === 'match') {
             const ancestorStatus = hasTableAncestor(current);
             if (ancestorStatus === 'overflow') {
               pageTruncated = true;
