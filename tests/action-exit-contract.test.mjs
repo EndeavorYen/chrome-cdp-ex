@@ -828,12 +828,25 @@ describe('detached ref propagation contract (#148)', () => {
     ]);
     expect(batchRun).toHaveBeenCalledTimes(1);
     expect(batchRun).toHaveBeenCalledWith({ cmd: 'click', args: ['@1'] });
-    expect(JSON.parse(cdpTest.formatBatchResults(batchResults, 'model', {
-      targetId: 'ABC12345',
-    }))).toMatchObject({
-      counts: { ok: 0, failed: 1 },
-      failedStep: { cmd: 'click', error: expect.stringMatching(/DOM changes/) },
+    expect(batchResults).toHaveLength(2);
+    expect(batchResults[1]).toMatchObject({
+      cmd: 'click',
+      skipped: true,
     });
+    const batchModel = JSON.parse(cdpTest.formatBatchResults(batchResults, 'model', {
+      targetId: 'ABC12345',
+    }));
+    expect(batchModel).toMatchObject({
+      counts: { steps: 2, ok: 0, failed: 1, skipped: 1 },
+      failedStep: { cmd: 'click', error: expect.stringMatching(/DOM changes/) },
+      steps: [
+        { index: 1, cmd: 'click', ok: false },
+        { index: 2, cmd: 'click', ok: false, skipped: true },
+      ],
+    });
+    expect(cdpTest.formatBatchResults(batchResults, 'plain')).toMatch(
+      /\[1\/2\] click \(error\)[\s\S]*\[2\/2\] click \(skipped\)/,
+    );
 
     const flowRun = vi.fn(stale);
     const flow = JSON.parse(await cdpTest.flowStr({
