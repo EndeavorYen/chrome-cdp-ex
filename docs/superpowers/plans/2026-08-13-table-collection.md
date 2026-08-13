@@ -21,7 +21,7 @@
 - Virtual collection requires exactly one HTML table, an explicit `--scroll-container`, and stable identity from `aria-rowindex` or zero-based `--row-key-column N` (`0..255`). Duplicate identity inside one mounted snapshot fails; cross-cycle same-key/same-bytes is benign/no-progress; same-key/different-bytes is a conflict; never deduplicate by row text.
 - `--collect` is the only mutating mode. The explicit CLI flag is the CLI acknowledgement; first-class MCP and MCP `run_command` additionally require `confirm:true`. Observation and immutable `--continue` are reads. Never automatically replay an interaction after daemon/transport ambiguity.
 - Catalog conditional policy, batch safety, daemon authorization, MCP confirmation, and transport side-effect classification must land before any collector implementation can scroll or click.
-- All page/CDP work has a hard 295,000 ms deadline. Each operation is dynamically capped to `min(5_000, 295_000 - elapsed)`; no final sample, scroll, click, or other CDP call may start or remain pending after that deadline. The 295,000–300,000 ms interval is exclusively for accumulator finalization, fsync, artifact commit, and response construction. If no committed result exists by 300,000 ms, clean the uncommitted directory and fail truthfully. The client IPC deadline is 315,000 ms. Caller disconnect aborts all further work, deletes pre-response artifacts, and never replays.
+- All page/CDP work has a hard 295,000 ms deadline. Each operation is dynamically capped to `min(5_000, 295_000 - elapsed)`; no final sample, scroll, click, or other CDP call may start or remain pending after that deadline. Finalization begins immediately whenever page work finishes; the 295,000–300,000 ms interval is only the reserved last-chance interval, during which accumulator finalization, fsync, artifact commit, and response construction may continue but page/CDP work is forbidden. If no committed result exists by 300,000 ms, clean the uncommitted directory and fail truthfully. The client IPC deadline is 315,000 ms. Caller disconnect aborts all further work, deletes pre-response artifacts, and never replays.
 - Continuation is immutable, row-aligned, and idempotent: the same token always names the same artifact offset and returns the same table slice plus a distinct next token. Tokens never mutate a server cursor; a row over 4,096 canonical bytes terminates as `row-too-large` and is never cut or skipped.
 - Artifacts are runtime-owned only: no caller paths; cryptographically random 128-bit lowercase-hex IDs; validated nonsymlink POSIX root owned by the current UID; 0700 directories; 0600 regular files; exclusive writes and fsync. Publication creates the final ID directory exclusively, writes and fsyncs data, then exclusively creates/writes/fsyncs a verified manifest as the commit marker; readers ignore directories without a valid committed manifest. Every published artifact is tracked by its owning session and removed synchronously on stop/detach/signal and on abort before response write completion. TTL sweeping is crash recovery only. Artifact-producing modes fail closed on Windows in v2.16 until private ACL verification exists.
 - Full artifact checksum is SHA-256 over exact UTF-8 canonical data-row `rows.tsv` bytes: tab between cells, LF between rows, no header and no final LF. Issue #151's 1,024-row fixture must produce `73e9f36080b8c781e204857ad9c7dcf4ce7ce419b1503d9affd0343f58f964ed`.
@@ -99,25 +99,25 @@
 - CLI `--collect` is explicit acknowledgement. The currently shipped MCP `run_command` route requires own-data `confirm:true` before RuntimeClient execution. The new first-class MCP table tool does not exist until Task 7.
 - Task 2 bumps package/checker selection to unreleased v2.16.0 before its first catalog change and establishes initial v2.16 public/runtime/package fixtures. Every later contract-shaping task refreshes only v2.16 fixtures in a separate reviewed mechanical commit.
 
-- [ ] **Step 1: RED the exact parser grammar and argv forwarding**
+- [ ] **Step 1: Select unreleased v2.16 before any catalog change**
+
+  Bump package/checker selection to 2.16.0, generate the initial byte-reviewed v2.16 public/runtime/package fixtures from the unchanged surface, prove all v2.15 bytes remain identical, and commit version/fixtures mechanically before editing the catalog.
+
+- [ ] **Step 2: RED the exact parser grammar and argv forwarding**
 
   Cover duplicates, empty strings, unknown flags, selector ambiguity, UTF-8 selector bound, zero-based row-key range, mutual exclusion, continuation grammar, proxies/accessors/custom prototypes/symbols/sparse arrays, and full ordered argv delivery to the table capability.
 
-- [ ] **Step 2: Implement parser and fail-closed pre-collector behavior**
+- [ ] **Step 3: Implement parser and fail-closed pre-collector behavior**
 
   Until Task 6 lands, a valid collect request returns an explicit unavailable error before page effects. Snapshot behavior remains usable; invalid continuation never touches storage.
 
-- [ ] **Step 3: RED catalog, run-command MCP, batch, and transport classifications**
+- [ ] **Step 4: RED catalog, run-command MCP, batch, and transport classifications**
 
   Prove collect requires confirmation through MCP `run_command`, is unsafe in parallel batch, and is side-effect-capable after IPC send; observation/continuation remain read-only and parallel-safe. Canonical aliases and nested composite inspection must not bypass the predicate. Do not fabricate or partially add the future first-class MCP tool.
 
-- [ ] **Step 4: Implement one authority path and verify zero-effect denials**
+- [ ] **Step 5: Implement one authority path, refresh v2.16, and verify zero-effect denials**
 
-  Update the exact conditional-command allowlist and catalog-owned policy. Do not duplicate argv heuristics. Denied/inherited/accessor/non-enumerable confirmation reaches zero RuntimeClient/capability calls.
-
-- [ ] **Step 5: Establish v2.16 contracts, run focused checks, and commit mechanics separately**
-
-  First bump/select unreleased v2.16.0 and generate reviewed initial fixtures; leave v2.15 byte-identical. Runtime inventory mutations that swap table policy, builder wiring, or argv-aware classification must drift or reject. Commit RED, GREEN, version plumbing, generated docs, and each fixture refresh separately so this task ends with all source/contract/doc gates GREEN.
+  Update the exact conditional-command allowlist and catalog-owned policy. Do not duplicate argv heuristics. Denied/inherited/accessor/non-enumerable confirmation reaches zero RuntimeClient/capability calls. Refresh only v2.16 generated docs/fixtures in separate mechanical commits; runtime mutations that swap table policy, builder wiring, or argv-aware classification must drift or reject. End with all source/contract/doc gates GREEN.
 
 ---
 
@@ -136,7 +136,7 @@
 
 - [ ] **Step 1: RED request timeout selection and typed timeout cleanup**
 
-  Freeze 295,000 ms page/CDP, 300,000 ms server, 315,000 ms IPC, and 5,000 ms maximum per-CDP-operation limits. Test operations dynamically capped to the remaining pre-295 interval, no CDP work after 295, finalization/publication only from 295–300, and handler completion or truthful failure by 300. Timeout remains completion-unknown/no-auto-replay after a collect request was sent.
+  Freeze 295,000 ms page/CDP, 300,000 ms server, 315,000 ms IPC, and 5,000 ms maximum per-CDP-operation limits. Test operations dynamically capped to the remaining pre-295 interval, immediate finalization whenever page work ends, no CDP work after 295, a finalization-only last-chance interval from 295–300, and handler completion or truthful failure by 300. Timeout remains completion-unknown/no-auto-replay after a collect request was sent.
 
 - [ ] **Step 2: RED server-side abort behavior**
 
@@ -234,7 +234,7 @@
 
 - [ ] **Step 2: RED context, abort, and deadline lifecycle**
 
-  Cover execution-context destruction, root navigation/detach, caller disconnect, collector-busy, dynamically shortened final CDP call, no page/final-sample work at or after 295 seconds, exclusive 295–300 finalization/publication, handler completion by 300 seconds, and object-group/listener/artifact cleanup on every exit.
+  Cover execution-context destruction, root navigation/detach, caller disconnect, collector-busy, dynamically shortened final CDP call, immediate publication after early success, no page/final-sample work at or after 295 seconds, finalization-only 295–300 last chance, handler completion by 300 seconds, and object-group/listener/artifact cleanup on every exit.
 
 - [ ] **Step 3: Implement the smallest condition-driven collector GREEN**
 
@@ -311,7 +311,7 @@
 
 - [ ] **Step 4: Run two fresh trials (eight independent routes)**
 
-  Every route starts at 128 available rows, 12 stable nodes, zero clicks and proves 1,024 exact indexes, recycling, exactly 14 interactions, exact body checksum, artifact/manifest integrity, all JSON records ≤16,384 bytes, repeated continuation byte identity, CLI/MCP semantic parity, and no leftovers.
+  All three product routes start at 128 available rows, 12 stable nodes, and zero clicks; each proves 1,024 exact indexes, recycling, exactly 14 interactions, exact body checksum, artifact/manifest integrity, JSON records ≤16,384 bytes, repeated continuation byte identity, normalized product-route parity, and no leftovers. The separate Playwright route independently proves only fixture/source truth—1,024 rows/indexes, 12 recycled nodes, 14 activations, and canonical body checksum—without importing product code or asserting product artifacts/tokens/envelopes. Compare each product route's row count/checksum/interaction evidence against that oracle.
 
 - [ ] **Step 5: Whole-branch acceptance**
 
