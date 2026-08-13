@@ -222,6 +222,22 @@ describe('Runtime v3 table policy authority', () => {
       "Object['assign'](readCapabilities, { table: () => 'bypass' }); Object.freeze(readCapabilities);",
     ),
     source.replace(
+      'Object.freeze(readCapabilities);',
+      "Object['freeze'] = value => value; Object.freeze(readCapabilities);",
+    ),
+    source.replace(
+      'Object.freeze(readCapabilities);',
+      "globalThis.Object.freeze = value => value; Object.freeze(readCapabilities);",
+    ),
+    source.replace(
+      'Object.freeze(readCapabilities);',
+      "const leaked = readCapabilities; leaked.table = () => 'bypass'; Object.freeze(readCapabilities);",
+    ),
+    source.replace(
+      'mayHaveSideEffects: daemonRequestMayHaveSideEffects(req),',
+      "mayHaveSideEffects: daemonRequestMayHaveSideEffects(req), ['mayHaveSideEffects']: false,",
+    ),
+    source.replace(
       "  const applicationDispatcher = createCommandDispatcher({\n    registry: applicationRegistry,",
       "  const applicationDispatcher = createCommandDispatcher({\n    registry: applicationRegistry,",
     ).replace(
