@@ -165,19 +165,26 @@ describe('private table artifact publication', () => {
     const store = testStore(runtimeDir, {}, {
       open: async (...args) => {
         const handle = await open(...args);
-        const label = basename(args[0]) === 'rows.tsv'
+        const path = args[0];
+        const label = basename(path) === 'rows.tsv'
           ? 'data'
-          : basename(args[0]) === 'manifest.json'
+          : basename(path) === 'manifest.json'
             ? 'manifest'
-            : basename(args[0]) === ID_A
+            : basename(path) === ID_A
               ? 'artifact-dir'
-              : 'session-dir';
+              : path === runtimeDir
+                ? 'runtime-root'
+                : path === layout.ownerDir
+                  ? 'owner-dir'
+                  : path === layout.targetDir
+                    ? 'target-dir'
+                    : 'session-dir';
         trace.push(`${label}:open`);
         return tracedHandle(handle, label, trace);
       },
     });
-    const publication = await store.publish(bundleForRows(), execution());
     const layout = artifactTest.inspectTableArtifactStore(store);
+    const publication = await store.publish(bundleForRows(), execution());
     const artifactDir = join(layout.sessionDir, ID_A);
     const rowsPath = join(artifactDir, 'rows.tsv');
     const manifestPath = join(artifactDir, 'manifest.json');
@@ -213,6 +220,9 @@ describe('private table artifact publication', () => {
       artifact: publication.artifact,
     });
     expect(trace).toEqual([
+      'runtime-root:open', 'runtime-root:fstat', 'runtime-root:fsync', 'runtime-root:close',
+      'owner-dir:open', 'owner-dir:fstat', 'owner-dir:fsync', 'owner-dir:close',
+      'target-dir:open', 'target-dir:fstat', 'target-dir:fsync', 'target-dir:close',
       'data:open', 'data:write', 'data:fstat', 'data:fsync', 'data:close',
       'manifest:open', 'manifest:write', 'manifest:fstat', 'manifest:fsync', 'manifest:close',
       'artifact-dir:open', 'artifact-dir:fstat', 'artifact-dir:fsync', 'artifact-dir:close',
@@ -595,6 +605,7 @@ describe('artifact request and session ownership', () => {
 
     expect(store.rollbackRequest(abandoned)).toBeUndefined();
     expect(existsSync(join(layout.sessionDir, abandonedPublication.artifactId))).toBe(false);
+    expect(artifactTest.inspectTableArtifactStore(store).activeRequestCount).toBe(1);
     expect(store.releaseRequest(flushed)).toBeUndefined();
     expect(existsSync(join(layout.sessionDir, flushedPublication.artifactId))).toBe(true);
     expect(store.rollbackRequest(flushed)).toBeUndefined();
@@ -603,10 +614,12 @@ describe('artifact request and session ownership', () => {
     expect(store.cleanupSession()).toBeUndefined();
     expect(store.cleanupSession()).toBeUndefined();
     expect(existsSync(join(layout.sessionDir, flushedPublication.artifactId))).toBe(false);
+    expect(existsSync(layout.sessionDir)).toBe(false);
     expect(artifactTest.inspectTableArtifactStore(store).registeredArtifactIds).toEqual([]);
+    expect(artifactTest.inspectTableArtifactStore(store).activeRequestCount).toBe(0);
   });
 
-  it('never recursively removes unknown or tampered entries during session cleanup', async () => {
+  it('reports a bounded path-free error without recursively removing unknown or tampered entries', async () => {
     const runtimeDir = privateRuntimeRoot();
     const store = testStore(runtimeDir);
     const publication = await store.publish(bundleForRows(), execution());
@@ -617,10 +630,41 @@ describe('artifact request and session ownership', () => {
     unlinkSync(join(artifactDir, 'rows.tsv'));
     mkdirSync(join(artifactDir, 'rows.tsv'), { mode: 0o700 });
 
-    expect(store.cleanupSession()).toBeUndefined();
+    let error;
+    try { store.cleanupSession(); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ code: 'TABLE_ARTIFACT_CLEANUP_FAILED' });
+    expect(error?.message).not.toContain(runtimeDir);
+    expect(error?.message).not.toContain(artifactDir);
     expect(existsSync(artifactDir)).toBe(true);
     expect(readFileSync(unknown, 'utf8')).toBe('preserve me');
     expect(lstatSync(join(artifactDir, 'rows.tsv')).isDirectory()).toBe(true);
+  });
+
+  it('best-effort rolls back every safe sibling before reporting one tampered entry', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'session',
+      platform: 'darwin',
+    }, { randomBytes: deterministicBytes(ID_A, ID_B) });
+    const request = execution();
+    await store.publish(bundleForRows([['tampered']]), request);
+    await store.publish(bundleForRows([['safe']]), request);
+    const layout = artifactTest.inspectTableArtifactStore(store);
+    const tamperedDir = join(layout.sessionDir, ID_A);
+    const safeDir = join(layout.sessionDir, ID_B);
+    writeFileSync(join(tamperedDir, 'unknown.bin'), 'preserve me', { mode: 0o600 });
+
+    let error;
+    try { store.rollbackRequest(request); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ code: 'TABLE_ARTIFACT_CLEANUP_FAILED' });
+    expect(existsSync(tamperedDir)).toBe(true);
+    expect(existsSync(safeDir)).toBe(false);
+    expect(artifactTest.inspectTableArtifactStore(store)).toMatchObject({
+      activeRequestCount: 1,
+      registeredArtifactIds: [ID_A],
+    });
   });
 
   it('isolates stores by private session namespace for reads and cleanup', async () => {
