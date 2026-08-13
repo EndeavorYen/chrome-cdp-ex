@@ -270,6 +270,67 @@ describe('collection safety and completeness', () => {
     expect(manifest.artifact.rows).toBe(1);
     expect(manifest.completeness.state).toBe('incomplete');
   });
+
+  it('keeps accumulator state private behind a frozen opaque handle despite alias mutation attempts', () => {
+    const accumulator = accumulatorWithRows([['before']]);
+
+    expect(Object.isFrozen(accumulator)).toBe(true);
+    expect(Object.getOwnPropertyNames(accumulator)).toEqual([]);
+    expect(() => Object.defineProperty(accumulator, 'rowsByKey', { value: new Map() })).toThrow();
+    expect(finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' }).collectedRows).toBe(1);
+  });
+
+  it('requires matched identity and ordering sources and integer aria keys', () => {
+    expect(() => createTableAccumulator({
+      logicalRows: 1,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'aria-rowindex',
+      orderingSource: 'row-key-column',
+    })).toThrow(/match/i);
+    const accumulator = accumulatorWithRows([]);
+
+    expect(() => addTableSample(accumulator, { mountedNodeId: 'node-1', key: '1', cells: ['row'] })).toThrow(/integer/i);
+    expect(() => addTableSample(accumulator, { mountedNodeId: 'node-1', key: 1.5, cells: ['row'] })).toThrow(/integer/i);
+  });
+
+  it('rejects duplicate mounted node ids within one batch transactionally', () => {
+    const accumulator = accumulatorWithRows([]);
+
+    expect(() => addTableSampleBatch(accumulator, [
+      { mountedNodeId: 'node-1', key: 1, cells: ['first'] },
+      { mountedNodeId: 'node-1', key: 2, cells: ['second'] },
+    ])).toThrow(/mountedNodeId.*batch/i);
+    expect(finalizeTableExtraction(accumulator, { termination: 'observation' }).collectedRows).toBe(0);
+  });
+
+  it('admits only complete batches within fixed construction budgets and preserves the preceding partial artifact', () => {
+    const accumulator = createTableAccumulator({
+      logicalRows: 3,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'aria-rowindex',
+      orderingSource: 'aria-rowindex',
+      limits: { maxRows: 2, maxArtifactBytes: 3 },
+    });
+    const first = addTableSample(accumulator, { mountedNodeId: 'node-1', key: 1, cells: ['a'] });
+    const second = addTableSample(accumulator, { mountedNodeId: 'node-2', key: 2, cells: ['b'] });
+    const rejected = addTableSample(accumulator, { mountedNodeId: 'node-3', key: 3, cells: ['c'] });
+    const result = finalizeTableExtraction(accumulator, { termination: 'byte-limit' });
+
+    expect(first).toEqual({ admitted: true, reason: null, collectedRows: 1, artifactBytes: 1 });
+    expect(second).toEqual({ admitted: true, reason: null, collectedRows: 2, artifactBytes: 3 });
+    expect(Object.isFrozen(rejected)).toBe(true);
+    expect(rejected).toEqual({ admitted: false, reason: 'row-limit', collectedRows: 2, artifactBytes: 3 });
+    expect(result.collectedRows).toBe(2);
+    expect(buildTableExportManifest(accumulator, { termination: 'byte-limit' }).artifact.bytes).toBe(3);
+  });
+
+  it('returns a row-too-large admission result without mutating the prior artifact', () => {
+    const accumulator = accumulatorWithRows([['safe']], { logicalRows: 2 });
+    const rejected = addTableSample(accumulator, { mountedNodeId: 'node-2', key: 2, cells: ['a'.repeat(4097)] });
+
+    expect(rejected).toEqual({ admitted: false, reason: 'row-too-large', collectedRows: 1, artifactBytes: 4 });
+    expect(finalizeTableExtraction(accumulator, { termination: 'row-too-large' }).collectedRows).toBe(1);
+  });
 });
 
 describe('hostile in-process input validation', () => {
@@ -309,5 +370,19 @@ describe('hostile in-process input validation', () => {
     expect(TABLE_EXTRACTION_LIMITS.maxDurationMs).toBe(300000);
     expect(TABLE_EXTRACTION_LIMITS.maxNoProgressCycles).toBe(3);
     expect(TABLE_EXTRACTION_LIMITS.maxCanonicalRowBytes).toBe(4096);
+    expect(TABLE_EXTRACTION_LIMITS.maxCellsPerRow).toBe(256);
+  });
+
+  it('rejects live and revoked proxies before reflection or getter effects at every public record and array boundary', () => {
+    let getterReads = 0;
+    const getterRecord = {};
+    Object.defineProperty(getterRecord, 'logicalRows', { enumerable: true, get: () => { getterReads += 1; return 1; } });
+    const proxy = new Proxy(getterRecord, {});
+    const revocable = Proxy.revocable([], {});
+    revocable.revoke();
+
+    expect(() => createTableAccumulator(proxy)).toThrow(/proxy/i);
+    expect(() => canonicalizeTableCells(revocable.proxy)).toThrow(/proxy/i);
+    expect(getterReads).toBe(0);
   });
 });
