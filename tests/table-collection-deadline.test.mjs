@@ -82,13 +82,15 @@ describe('table collection monotonic deadline context', () => {
       });
 
       const promise = runtime.runCdpOperation(operation);
+      const rejection = promise.catch(error => error);
+      await Promise.resolve();
       expect(operation).toHaveBeenCalledOnce();
       expect(selectedTimeout).toBe(1250);
       expect(operationSignal.aborted).toBe(false);
 
       now = context.deadline.pageAt;
       await vi.advanceTimersByTimeAsync(1250);
-      await expect(promise).rejects.toMatchObject({
+      await expect(rejection).resolves.toMatchObject({
         code: 'TABLE_COLLECTION_PAGE_DEADLINE',
         phase: 'page',
       });
@@ -118,6 +120,12 @@ describe('table collection monotonic deadline context', () => {
       },
       finalize: async ({ termination }, runtime) => {
         events.push(['finalize', termination, now, runtime.phase()]);
+        const forbidden = vi.fn();
+        await expect(runtime.runCdpOperation(forbidden)).rejects.toMatchObject({
+          code: 'TABLE_COLLECTION_PAGE_DEADLINE',
+          phase: 'page',
+        });
+        expect(forbidden).not.toHaveBeenCalled();
         return 'committed-result';
       },
       cleanup: vi.fn(),
@@ -127,7 +135,7 @@ describe('table collection monotonic deadline context', () => {
     expect(events).toEqual([
       ['collect', 500],
       ['cdp', 5000, 500],
-      ['finalize', 'logical-count-reached', 525, 'page'],
+      ['finalize', 'logical-count-reached', 525, 'finalization-only'],
     ]);
 
     now = context.deadline.pageAt;
@@ -165,6 +173,7 @@ describe('table collection monotonic deadline context', () => {
         finalize,
         cleanup,
       });
+      const rejection = lifecycle.catch(error => error);
 
       now = context.deadline.pageAt;
       await vi.advanceTimersByTimeAsync(10);
@@ -172,7 +181,7 @@ describe('table collection monotonic deadline context', () => {
 
       now = context.deadline.serverAt;
       await vi.advanceTimersByTimeAsync(5000);
-      await expect(lifecycle).rejects.toMatchObject({
+      await expect(rejection).resolves.toMatchObject({
         code: 'TABLE_COLLECTION_SERVER_DEADLINE',
         phase: 'server',
       });
@@ -180,5 +189,46 @@ describe('table collection monotonic deadline context', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('settles immediately on root abort and removes operation timers and listeners', async () => {
+    const controller = new AbortController();
+    const addListener = vi.spyOn(controller.signal, 'addEventListener');
+    const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+    const timerHandle = Symbol('timer');
+    const setTimer = vi.fn(() => timerHandle);
+    const clearTimer = vi.fn();
+    const context = T.createDaemonRequestExecutionContext({
+      request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+      signal: controller.signal,
+      now: () => 0,
+    });
+    const runtime = T.createTableCollectionRuntime(context, { setTimer, clearTimer });
+    const neverSettles = vi.fn(() => new Promise(() => {}));
+    const promise = runtime.runCdpOperation(neverSettles);
+    await Promise.resolve();
+    expect(neverSettles).toHaveBeenCalledOnce();
+
+    const reason = new Error('caller disconnected');
+    const outcome = promise.catch(error => error);
+    controller.abort(reason);
+
+    await expect(Promise.race([outcome, Promise.resolve('still-pending')])).resolves.toBe(reason);
+    expect(clearTimer).toHaveBeenCalledWith(timerHandle);
+    runtime.dispose();
+    expect(removeListener.mock.calls.length).toBeGreaterThanOrEqual(addListener.mock.calls.length);
+
+    const preAborted = new AbortController();
+    preAborted.abort(reason);
+    const preAbortedContext = T.createDaemonRequestExecutionContext({
+      request: { cmd: 'table', args: ['--collect', '--scroll-container', '.viewport'] },
+      signal: preAborted.signal,
+      now: () => 0,
+    });
+    const preAbortedRuntime = T.createTableCollectionRuntime(preAbortedContext);
+    const notStarted = vi.fn();
+    await expect(preAbortedRuntime.runCdpOperation(notStarted)).rejects.toBe(reason);
+    expect(notStarted).not.toHaveBeenCalled();
+    preAbortedRuntime.dispose();
   });
 });
