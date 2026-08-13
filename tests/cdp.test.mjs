@@ -227,9 +227,17 @@ describe('COMMANDS registry', () => {
   });
 
   it('keeps read-only extraction commands safe for parallel batch execution', () => {
-    for (const name of ['controls', 'html', 'text', 'table', 'styles', 'summary', 'net', 'network', 'wait', 'waitfor']) {
+    for (const name of ['controls', 'html', 'text', 'styles', 'summary', 'net', 'network', 'wait', 'waitfor']) {
       expect(T.isBatchParallelUnsafeCommand(name)).toBe(false);
     }
+    expect(T.isBatchParallelUnsafeCommand('table', ['#grid'])).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('table', [
+      '--continue', 'ct1.0123456789abcdef0123456789abcdef.0', '--format', 'json',
+    ])).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('table', [
+      '#grid', '--collect', '--scroll-container', '.viewport',
+    ])).toBe(true);
+    expect(() => T.isBatchParallelUnsafeCommand('table', ['--collect'])).toThrow(/scroll-container/);
   });
 
   it('registers record-actions as a target command with text and json output', () => {

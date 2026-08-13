@@ -34,7 +34,10 @@ const contract = JSON.parse(readFileSync(
 function commandProjection(command) {
   return {
     aliases: [...command.aliases],
+    authorization: command.authorization,
+    evidencePolicy: command.evidencePolicy,
     feedbackPolicy: command.feedbackPolicy ?? null,
+    kind: command.kind,
     mutates: command.mutates,
     name: command.name,
     needsTarget: command.needsTarget,

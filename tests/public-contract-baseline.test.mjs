@@ -53,6 +53,11 @@ describe('public contract baseline', () => {
     expect(contract.schema).toBe('chrome-cdp-ex.public-contracts.v1');
     expect(contract.productVersion).toBe(packageVersion);
     expect(contract.commands).toHaveLength(81);
+    expect(contract.commands.every(command => (
+      typeof command.kind === 'string'
+      && typeof command.authorization === 'string'
+      && typeof command.evidencePolicy === 'string'
+    ))).toBe(true);
     expect(new Set(aliases).size).toBe(23);
     expect(contract.schemas).toHaveLength(3);
     expect(contract.schemas.every(schema => schema.id.startsWith('https://'))).toBe(true);
@@ -154,6 +159,9 @@ describe('public contract baseline', () => {
       ['command name', 'commands[0].name', contract => { contract.commands[0].name = 'assist'; }],
       ['command alias', 'commands[1].aliases[0]', contract => { contract.commands[1].aliases[0] = 'pages'; }],
       ['feedback policy', 'commands[4].feedbackPolicy', contract => { contract.commands[4].feedbackPolicy = 'settle-diff'; }],
+      ['command kind', 'commands[0].kind', contract => { contract.commands[0].kind = 'mutation'; }],
+      ['authorization policy', 'commands[0].authorization', contract => { contract.commands[0].authorization = 'mutation'; }],
+      ['evidence policy', 'commands[0].evidencePolicy', contract => { contract.commands[0].evidencePolicy = 'action-receipt'; }],
       ['JSON schema', 'schemas[0].document.title', contract => { contract.schemas[0].document.title = 'Changed'; }],
       ['MCP required field', 'mcp.tools[0].inputSchema.required', contract => { contract.mcp.tools[0].inputSchema.required = ['fixture']; }],
       ['MCP mapping', 'mcp.mappingCases[0].command[0]', contract => { contract.mcp.mappingCases[0].command[0] = 'list'; }],

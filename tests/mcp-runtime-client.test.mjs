@@ -155,6 +155,24 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     },
   );
 
+  it('rejects table collection without confirmation before RuntimeClient execution', async () => {
+    const executeCli = vi.fn();
+    const state = handlerWith(executeCli);
+    await state.handle({
+      jsonrpc: '2.0', id: 46, method: 'tools/call',
+      params: {
+        name: 'run_command',
+        arguments: {
+          command: 'table',
+          args: ['fixture', '#grid', '--collect', '--scroll-container', '.viewport'],
+        },
+      },
+    });
+    expect(state.sent[0].error).toMatchObject({ code: -32000 });
+    expect(state.sent[0].error.message).toMatch(/confirm: true/i);
+    expect(executeCli).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['session_checkpoint', Object.assign(Object.create({ confirm: true }), { target: 'fixture' })],
     ['run_command', Object.assign(Object.create({ confirm: true }), {
@@ -162,6 +180,9 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     })],
     ['run_command', Object.assign(Object.create({ confirm: true }), {
       command: 'cookies', args: ['fixture'],
+    })],
+    ['run_command', Object.assign(Object.create({ confirm: true }), {
+      command: 'table', args: ['fixture', '--collect', '--scroll-container', '.viewport'],
     })],
   ])('rejects inherited confirmation for %s before RuntimeClient execution', async (name, args) => {
     const executeCli = vi.fn();
@@ -177,6 +198,7 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     ['session_checkpoint', { target: 'fixture' }],
     ['run_command', { command: 'checkpoint', args: ['fixture'] }],
     ['run_command', { command: 'cookies', args: ['fixture'] }],
+    ['run_command', { command: 'table', args: ['fixture', '--collect', '--scroll-container', '.viewport'] }],
   ])('rejects non-enumerable confirmation for %s before RuntimeClient execution', async (name, base) => {
     const executeCli = vi.fn();
     const state = handlerWith(executeCli);
@@ -214,6 +236,7 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     ['session_checkpoint', { target: 'fixture' }],
     ['run_command', { command: 'checkpoint', args: ['fixture'] }],
     ['run_command', { command: 'cookies', args: ['fixture'] }],
+    ['run_command', { command: 'table', args: ['fixture', '--collect', '--scroll-container', '.viewport'] }],
   ])('rejects accessor confirmation for %s without invoking it or RuntimeClient', async (name, base) => {
     const executeCli = vi.fn();
     const state = handlerWith(executeCli);
@@ -225,6 +248,22 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     });
     expect(state.sent[0].error).toMatchObject({ code: -32600 });
     expect(read).not.toHaveBeenCalled();
+    expect(executeCli).not.toHaveBeenCalled();
+  });
+
+  it('rejects proxied table collection arguments before RuntimeClient execution', async () => {
+    const executeCli = vi.fn();
+    const state = handlerWith(executeCli);
+    const argumentsProxy = new Proxy({
+      command: 'table',
+      args: ['fixture', '--collect', '--scroll-container', '.viewport'],
+      confirm: true,
+    }, {});
+    await state.handle({
+      jsonrpc: '2.0', id: 47, method: 'tools/call',
+      params: { name: 'run_command', arguments: argumentsProxy },
+    });
+    expect(state.sent[0].error).toMatchObject({ code: -32600 });
     expect(executeCli).not.toHaveBeenCalled();
   });
 

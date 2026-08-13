@@ -452,7 +452,14 @@ describe('Phase 4 command results and execution', () => {
       registry,
       handlers: { click: handler },
       authorize: decision => {
-        expect(decision).toEqual({ command: 'click', policy: 'mutation', mutates: true, targetBound: true });
+        expect(decision).toEqual({
+          command: 'click',
+          args: ['@1'],
+          policy: 'mutation',
+          mutates: true,
+          targetBound: true,
+        });
+        expect(Object.isFrozen(decision.args)).toBe(true);
         return { allowed: true, code: 'daemon-application' };
       },
     });
@@ -911,6 +918,24 @@ describe('Phase 4 daemon dispatch seam', () => {
     })).toEqual({ allowed: false, code: 'target-not-bound' });
     expect(cdpTest.authorizeDaemonApplicationCommand({
       command, policy: 'standard', mutates: false, targetBound: true,
+    })).toEqual({ allowed: false, code: 'policy-denied' });
+  });
+
+  it('binds every valid table mode to conditional authorization and rejects malformed argv', () => {
+    for (const args of [
+      ['#grid'],
+      ['#grid', '--collect', '--scroll-container', '.viewport'],
+      ['--continue', 'ct1.0123456789abcdef0123456789abcdef.0', '--format', 'json'],
+    ]) {
+      expect(cdpTest.authorizeDaemonApplicationCommand({
+        command: 'table', args, policy: 'conditional', mutates: false, targetBound: true,
+      })).toEqual({ allowed: true, code: 'daemon-application' });
+    }
+    expect(() => cdpTest.authorizeDaemonApplicationCommand({
+      command: 'table', args: ['--collect'], policy: 'conditional', mutates: false, targetBound: true,
+    })).toThrow(/scroll-container/);
+    expect(cdpTest.authorizeDaemonApplicationCommand({
+      command: 'table', args: ['#grid'], policy: 'standard', mutates: false, targetBound: true,
     })).toEqual({ allowed: false, code: 'policy-denied' });
   });
 

@@ -157,6 +157,17 @@ describe('command surface catalog', () => {
     expect(COMMAND_SURFACE.resolve('diff-shot')).toMatchObject({ kind: 'conditional-mutation', authorization: 'conditional' });
     expect(COMMAND_SURFACE.resolve('console')).toMatchObject({ kind: 'conditional-mutation', authorization: 'conditional' });
     expect(COMMAND_SURFACE.resolve('netlog')).toMatchObject({ kind: 'conditional-mutation', authorization: 'conditional' });
+    expect(COMMAND_SURFACE.resolve('table')).toMatchObject({
+      kind: 'conditional-mutation',
+      authorization: 'conditional',
+      evidencePolicy: 'none',
+      mutates: false,
+      outputFormats: ['text', 'json'],
+      help: {
+        synopsis: 'table <target> [TABLE_SELECTOR] [--format text|json] | table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text|json] | table <target> --continue TOKEN --format json',
+        summary: 'Table observation contract; v2.16 candidate currently serves legacy text only (JSON, collect, and continue unavailable)',
+      },
+    });
     expect(COMMAND_SURFACE.resolve('keepalive')).toMatchObject({ kind: 'protected-mutation', authorization: 'mutation' });
     expect(COMMAND_SURFACE.resolve('batch')).toMatchObject({ kind: 'composite', authorization: 'composite' });
     expect(COMMAND_SURFACE.resolve('eval')).toMatchObject({ kind: 'script', authorization: 'raw-script' });

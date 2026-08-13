@@ -139,6 +139,22 @@ describe('MCP Tier-1 + run_command + resources', () => {
       .toEqual(['console', 'app', '--errors']);
     expect(buildMcpToolCommand('run_command', { command: 'shot', args: ['app', '--annotate'] }))
       .toEqual(['shot', 'app', '--annotate']);
+    expect(buildMcpToolCommand('run_command', { command: 'table', args: ['app', '#grid'] }))
+      .toEqual(['table', 'app', '#grid']);
+    expect(buildMcpToolCommand('run_command', {
+      command: 'table', args: ['app', '--continue', 'ct1.0123456789abcdef0123456789abcdef.0', '--format', 'json'],
+    })).toEqual(['table', 'app', '--continue', 'ct1.0123456789abcdef0123456789abcdef.0', '--format', 'json']);
+    expect(() => buildMcpToolCommand('run_command', {
+      command: 'table', args: ['app', '#grid', '--collect', '--scroll-container', '.viewport'],
+    })).toThrow(/confirm: true/);
+    expect(buildMcpToolCommand('run_command', {
+      command: 'table',
+      args: ['app', '#grid', '--collect', '--scroll-container', '.viewport'],
+      confirm: true,
+    })).toEqual(['table', 'app', '#grid', '--collect', '--scroll-container', '.viewport']);
+    expect(() => buildMcpToolCommand('run_command', {
+      command: 'table', args: ['app', '#one', '#two'], confirm: true,
+    })).toThrow(/at most one.*selector/);
     expect(buildMcpToolCommand('run_command', {
       command: 'use', args: ['app', '--name', 'saved'], confirm: true,
     })).toEqual(['use', 'app', '--name', 'saved']);
