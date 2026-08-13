@@ -81,6 +81,59 @@ describe('daemon request server lifecycle', () => {
     ]);
   });
 
+  it('cleans session artifacts synchronously after request abort and before closing server or CDP', () => {
+    const order = [];
+    const connectionLifecycle = { abortAll: vi.fn(() => order.push('requests:abort')) };
+    const cleanupSession = vi.fn(() => order.push('artifacts:cleanup'));
+    const server = { close: vi.fn(() => order.push('server:close')) };
+    const shutdown = T.createDaemonShutdown({
+      requestConnections: new Set([connectionLifecycle]),
+      getServer: () => server,
+      socketPath: '/run/cdp/table.sock',
+      cleanupSession,
+      closeCdp: () => order.push('cdp:close'),
+      unlinkSocket: () => order.push('socket:unlink'),
+      exitProcess: code => order.push(`exit:${code}`),
+      isWindows: false,
+    });
+
+    shutdown(0);
+
+    expect(cleanupSession).toHaveBeenCalledOnce();
+    expect(order).toEqual([
+      'requests:abort',
+      'artifacts:cleanup',
+      'server:close',
+      'socket:unlink',
+      'cdp:close',
+      'exit:0',
+    ]);
+  });
+
+  it('finishes shutdown but exits nonzero when synchronous session cleanup fails', () => {
+    const order = [];
+    const shutdown = T.createDaemonShutdown({
+      requestConnections: new Set(),
+      getServer: () => ({ close: () => order.push('server:close') }),
+      socketPath: '/run/cdp/table.sock',
+      cleanupSession: () => { order.push('artifacts:cleanup'); throw new Error('cleanup failed'); },
+      closeCdp: () => order.push('cdp:close'),
+      unlinkSocket: () => order.push('socket:unlink'),
+      exitProcess: code => order.push(`exit:${code}`),
+      isWindows: false,
+    });
+
+    shutdown(0);
+
+    expect(order).toEqual([
+      'artifacts:cleanup',
+      'server:close',
+      'socket:unlink',
+      'cdp:close',
+      'exit:1',
+    ]);
+  });
+
   it.each(['end', 'close', 'error'])('aborts a live request on peer %s and suppresses every late response/effect', async event => {
     let resolveCollector;
     const firstEffect = vi.fn();
@@ -166,6 +219,56 @@ describe('daemon request server lifecycle', () => {
     await drain();
     expect(cleanup).toHaveBeenCalledOnce();
     expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('releases successful request ownership only after the response flush callback', async () => {
+    const order = [];
+    const cleanup = vi.fn(() => order.push('rollback'));
+    const release = vi.fn(() => order.push('release'));
+    const dispose = vi.fn(() => order.push('dispose'));
+    const conn = connection({ holdWrite: true });
+    const lifecycle = T.createDaemonRequestConnection(conn, {
+      handleRequest: async () => ({ ok: true, result: 'committed' }),
+      cleanup,
+      onFlushed: release,
+      onDispose: dispose,
+      now: () => 0,
+    });
+    conn.emit('data', frame({ id: 12, cmd: 'status', args: [] }));
+    await drain();
+
+    expect(conn.write).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
+    expect(dispose).not.toHaveBeenCalled();
+    expect(lifecycle.activeRequestCount()).toBe(1);
+
+    conn.writeCallbacks[0]();
+    await drain();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(order).toEqual(['release', 'dispose']);
+    expect(lifecycle.activeRequestCount()).toBe(0);
+  });
+
+  it('rolls back without release when the response flush callback fails', async () => {
+    const cleanup = vi.fn();
+    const release = vi.fn();
+    const conn = connection({ holdWrite: true });
+    const lifecycle = T.createDaemonRequestConnection(conn, {
+      handleRequest: async () => ({ ok: true, result: 'committed' }),
+      cleanup,
+      onFlushed: release,
+      now: () => 0,
+    });
+    conn.emit('data', frame({ id: 13, cmd: 'status', args: [] }));
+    await drain();
+
+    conn.writeCallbacks[0](new Error('flush failed'));
+    await drain();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
+    expect(lifecycle.activeRequestCount()).toBe(0);
   });
 
   it('retires fatally at 300s when the raw handler remains unsettled', async () => {

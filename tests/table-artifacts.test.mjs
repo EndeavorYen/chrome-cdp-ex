@@ -2,6 +2,7 @@ import {
   chmodSync,
   existsSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -575,4 +576,97 @@ describe('immutable row-aligned table continuation', () => {
       expect(error?.message).not.toContain(artifactDir);
     },
   );
+});
+
+describe('artifact request and session ownership', () => {
+  it('rolls back a request before flush but keeps a flushed artifact until session cleanup', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'session',
+      platform: 'darwin',
+    }, { randomBytes: deterministicBytes(ID_A, ID_B) });
+    const abandoned = execution();
+    const flushed = execution();
+    const abandonedPublication = await store.publish(bundleForRows([['abandoned']]), abandoned);
+    const flushedPublication = await store.publish(bundleForRows([['flushed']]), flushed);
+    const layout = artifactTest.inspectTableArtifactStore(store);
+
+    expect(store.rollbackRequest(abandoned)).toBeUndefined();
+    expect(existsSync(join(layout.sessionDir, abandonedPublication.artifactId))).toBe(false);
+    expect(store.releaseRequest(flushed)).toBeUndefined();
+    expect(existsSync(join(layout.sessionDir, flushedPublication.artifactId))).toBe(true);
+    expect(store.rollbackRequest(flushed)).toBeUndefined();
+    expect(existsSync(join(layout.sessionDir, flushedPublication.artifactId))).toBe(true);
+
+    expect(store.cleanupSession()).toBeUndefined();
+    expect(store.cleanupSession()).toBeUndefined();
+    expect(existsSync(join(layout.sessionDir, flushedPublication.artifactId))).toBe(false);
+    expect(artifactTest.inspectTableArtifactStore(store).registeredArtifactIds).toEqual([]);
+  });
+
+  it('never recursively removes unknown or tampered entries during session cleanup', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = testStore(runtimeDir);
+    const publication = await store.publish(bundleForRows(), execution());
+    const layout = artifactTest.inspectTableArtifactStore(store);
+    const artifactDir = join(layout.sessionDir, publication.artifactId);
+    const unknown = join(artifactDir, 'unknown.bin');
+    writeFileSync(unknown, 'preserve me', { mode: 0o600 });
+    unlinkSync(join(artifactDir, 'rows.tsv'));
+    mkdirSync(join(artifactDir, 'rows.tsv'), { mode: 0o700 });
+
+    expect(store.cleanupSession()).toBeUndefined();
+    expect(existsSync(artifactDir)).toBe(true);
+    expect(readFileSync(unknown, 'utf8')).toBe('preserve me');
+    expect(lstatSync(join(artifactDir, 'rows.tsv')).isDirectory()).toBe(true);
+  });
+
+  it('isolates stores by private session namespace for reads and cleanup', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const first = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'session-a',
+      platform: 'darwin',
+    }, { randomBytes: deterministicBytes(ID_A) });
+    const second = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'session-b',
+      platform: 'darwin',
+    }, { randomBytes: deterministicBytes(ID_B) });
+    const firstRequest = execution();
+    const published = await first.publish(bundleForRows(), firstRequest);
+    first.releaseRequest(firstRequest);
+    const secondRequest = execution();
+    await second.publish(bundleForRows([['other']]), secondRequest);
+    second.releaseRequest(secondRequest);
+
+    await expect(second.readContinuation(published.token)).rejects.toThrow(/not available/i);
+    expect(second.cleanupSession()).toBeUndefined();
+    expect(existsSync(join(artifactTest.inspectTableArtifactStore(first).sessionDir, ID_A))).toBe(true);
+  });
+
+  it('fails artifact-producing and continuation modes on Windows before filesystem effects', async () => {
+    let fsCalls = 0;
+    const failIfCalled = async () => { fsCalls += 1; throw new Error('filesystem must not be reached'); };
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir: 'C:\\private-runtime',
+      targetId: 'target',
+      sessionId: 'session',
+      platform: 'win32',
+    }, {
+      fs: { lstat: failIfCalled, mkdir: failIfCalled, open: failIfCalled, realpath: failIfCalled },
+    });
+
+    await expect(store.publish(bundleForRows(), execution())).rejects.toMatchObject({
+      code: 'TABLE_ARTIFACT_UNSUPPORTED_PLATFORM',
+    });
+    await expect(store.readContinuation(`ct1.${ID_A}.0`)).rejects.toMatchObject({
+      code: 'TABLE_ARTIFACT_UNSUPPORTED_PLATFORM',
+    });
+    expect(fsCalls).toBe(0);
+  });
 });
