@@ -70,11 +70,11 @@
 
   Freeze cases for the same mounted node carrying different keys, duplicate keys within one batch, benign same-key repeats across batches, duplicate keys with conflicting bytes, exact `1..logicalRows` coverage, out-of-domain aria indices, row-key non-certification, unknown totals, logical-count reached, row-too-large, row/byte/interaction/time/no-progress limits, and partial-artifact truth.
 
-- [ ] **Step 7: Implement accumulator semantics and run focused GREEN and review**
+- [x] **Step 7: Implement accumulator semantics and run focused GREEN and review**
 
   Run `npm test -- tests/table-extraction.test.mjs`; then run lint on both new files.
 
-- [ ] **Step 8: Commit Task 1 in small checkpoints and close independent review**
+- [x] **Step 8: Commit Task 1 in small checkpoints and close independent review**
 
   Commit the verified RED first, then the pure GREEN implementation. Do not touch runtime/catalog/docs in these commits.
 
