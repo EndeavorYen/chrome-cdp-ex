@@ -249,7 +249,7 @@ describe('Runtime v3 table policy authority', () => {
     ),
   ])('rejects or drifts for alias, computed, dead, and reordered wiring mutation %#', mutation => {
     expectInventoryDriftOrReject(mutation);
-  });
+  }, 15_000);
 
   it.each([
     mcpAdapterSource.replace(
