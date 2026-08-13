@@ -507,7 +507,7 @@ export function buildTableSamplerExpression(selector = 'table') {
       if (!state.truncated && directBodies.length) {
         admitRows(directBodies, state.dataRows, 'data');
       }
-      if (!directBodies.length && !state.truncated) {
+      if (!directBodies.length && !state.truncated && !directResult.overflow) {
         for (let index = 0; index < direct.length; index += 1) {
           if (name(direct[index]) !== 'tr') continue;
           if (!admit(direct[index], state.dataRows, 'data')) break;
