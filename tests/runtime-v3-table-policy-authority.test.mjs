@@ -2,15 +2,19 @@ import { describe, expect, it } from 'vitest';
 
 import { buildRuntimeDispatchInventory } from '../scripts/runtime-dispatch-inventory.mjs';
 import {
+  commandApplicationSource,
   daemonReadHandlersSource,
   mcpAdapterSource,
   source,
+  tableContractSource,
 } from './runtime-v3-dispatch-test-helpers.mjs';
 
 function inventory(cdpSource = source, overrides = {}) {
   return buildRuntimeDispatchInventory(cdpSource, {
+    commandApplicationSource,
     daemonReadHandlersSource,
     mcpAdapterSource,
+    tableContractSource,
     ...overrides,
   });
 }
@@ -105,6 +109,56 @@ describe('Runtime v3 table policy authority', () => {
   });
 
   it.each([
+    source.replace(
+      'async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {',
+      'async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication(), isBatchParallelUnsafeCommand = () => false) {',
+    ),
+    source.replace(
+      'async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {',
+      "async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication(), authorizeDaemonApplicationCommand = () => ({ allowed: true, code: 'bypass' })) {",
+    ),
+    source.replace(
+      'async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {',
+      'async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication(), tableStr = () => \'bypass\') {',
+    ),
+    source.replace(
+      'function sendCommand(conn, req) {',
+      'function sendCommand(conn, req, daemonRequestMayHaveSideEffects = () => false) {',
+    ),
+  ])('rejects parameter shadows of trusted table policy bindings %#', mutation => {
+    expect(() => inventory(mutation)).toThrow(/table policy authority/i);
+  });
+
+  it.each([
+    source.replace(
+      'const workflowCapabilities = {',
+      'const { isBatchParallelUnsafeCommand } = { isBatchParallelUnsafeCommand: () => false }; const workflowCapabilities = {',
+    ),
+    source.replace(
+      'const workflowCapabilities = {',
+      'isBatchParallelUnsafeCommand = () => false; const workflowCapabilities = {',
+    ),
+    source.replace(
+      'const applicationHandlers = {',
+      "authorizeDaemonApplicationCommand = () => ({ allowed: true, code: 'bypass' }); const applicationHandlers = {",
+    ),
+    source.replace(
+      'function sendCommand(conn, req) {',
+      'function sendCommand(conn, req) { daemonRequestMayHaveSideEffects = () => false;',
+    ),
+    source.replace(
+      'const readCapabilities = {',
+      "const tableStr = () => 'bypass'; const readCapabilities = {",
+    ),
+    source.replace(
+      'const recordActionsBuilder = applicationPreflight.handlerBuilders[\'record-actions\'];',
+      "readCapabilities.table = () => 'bypass'; const recordActionsBuilder = applicationPreflight.handlerBuilders['record-actions'];",
+    ),
+  ])('rejects destructuring, assignment, and post-construction binding bypasses %#', mutation => {
+    expect(() => inventory(mutation)).toThrow(/table policy authority/i);
+  });
+
+  it.each([
     mcpAdapterSource.replace(
       "if (command.name === 'table') return parseTableRunCommandArgs(args).request.mode === 'collect';",
       "if (command.name === 'table') return false && parseTableRunCommandArgs(args).request.mode === 'collect';",
@@ -128,5 +182,58 @@ describe('Runtime v3 table policy authority', () => {
     ),
   ])('rejects dead or shadowed daemon table parser ownership %#', mutation => {
     expect(() => inventory(source, { daemonReadHandlersSource: mutation })).toThrow(/table policy authority/i);
+  });
+
+  it.each([
+    tableContractSource.replace(
+      "return parseTableArgs(input).mode === 'collect';",
+      "return false && parseTableArgs(input).mode === 'collect';",
+    ),
+    tableContractSource.replace(
+      "return parseTableArgs(input).mode === 'collect';",
+      "parseTableArgs(input); return input.includes('--collect');",
+    ),
+  ])('rejects dead or substituted table-contract collect classification %#', mutation => {
+    expect(() => inventory(source, { tableContractSource: mutation })).toThrow(/table policy authority/i);
+  });
+
+  it.each([
+    commandApplicationSource.replace('args: request.args,', 'args: [],'),
+    commandApplicationSource.replace('args: request.args,', ''),
+  ])('rejects command-application authorization without exact argv forwarding %#', mutation => {
+    expect(() => inventory(source, { commandApplicationSource: mutation })).toThrow(/table policy authority/i);
+  });
+
+  it('rejects a swapped catalog table policy before inventory projection', () => {
+    const commandSurface = {
+      resolve(name) {
+        if (name !== 'table') return null;
+        return {
+          kind: 'read',
+          authorization: 'standard',
+          evidencePolicy: 'none',
+          mutates: false,
+          outputFormats: ['text', 'json'],
+        };
+      },
+    };
+    expect(() => inventory(source, { commandSurface })).toThrow(/table policy authority/i);
+  });
+
+  it.each([
+    source.replace(
+      'table: capabilities => createDaemonReadHandlers(capabilities).table,',
+      'table: capabilities => createDaemonReadHandlers(capabilities).text,',
+    ),
+    source.replace(
+      'table: applicationPreflight.handlerBuilders.table(readCapabilities),',
+      'table: applicationPreflight.handlerBuilders.text(readCapabilities),',
+    ),
+    source.replace(
+      'table: request => tableStr(cdp, sessionId, request.selector),',
+      'table: request => textStr(cdp, sessionId, request.selector),',
+    ),
+  ])('rejects substituted table handler and capability wiring %#', mutation => {
+    expect(() => inventory(mutation)).toThrow(/table policy authority/i);
   });
 });

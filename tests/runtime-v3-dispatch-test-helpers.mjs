@@ -15,6 +15,14 @@ export const daemonReadHandlersSource = readFileSync(
   join(rootDir, 'skills/chrome-cdp-ex/scripts/lib/daemon-read-handlers.mjs'),
   'utf8',
 );
+export const tableContractSource = readFileSync(
+  join(rootDir, 'skills/chrome-cdp-ex/scripts/lib/table-contract.mjs'),
+  'utf8',
+);
+export const commandApplicationSource = readFileSync(
+  join(rootDir, 'skills/chrome-cdp-ex/scripts/lib/command-application.mjs'),
+  'utf8',
+);
 export const packageVersion = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8')).version;
 export const fixture = JSON.parse(readFileSync(
   join(rootDir, `docs/contracts/v${packageVersion}/runtime-dispatch.v1.json`),
