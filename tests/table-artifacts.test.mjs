@@ -8,8 +8,15 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
+  writeFileSync,
 } from 'node:fs';
-import { open } from 'node:fs/promises';
+import {
+  lstat as lstatAsync,
+  mkdir as mkdirAsync,
+  open,
+  realpath as realpathAsync,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -314,6 +321,48 @@ describe('private table artifact publication', () => {
     expect(existsSync(join(layout.sessionDir, ID_A))).toBe(false);
   });
 
+  it.each(['mkdir', 'lstat', 'realpath'])(
+    'tombstones an in-flight artifact directory %s and leaves no registered residue',
+    async blockedStep => {
+      const runtimeDir = privateRuntimeRoot();
+      let resume;
+      let reached;
+      const stepReached = new Promise(resolve => { reached = resolve; });
+      const gate = new Promise(resolve => { resume = resolve; });
+      const maybeBlock = async (step, path, operation) => {
+        const result = await operation();
+        if (step === blockedStep && basename(path) === ID_A) {
+          reached();
+          await gate;
+        }
+        return result;
+      };
+      const store = artifactTest.createTableArtifactStoreWithDependencies({
+        runtimeDir,
+        targetId: 'target',
+        sessionId: 'session',
+        platform: 'darwin',
+      }, {
+        randomBytes: deterministicBytes(ID_A),
+        fs: {
+          mkdir: (path, options) => maybeBlock('mkdir', path, () => mkdirAsync(path, options)),
+          lstat: path => maybeBlock('lstat', path, () => lstatAsync(path)),
+          realpath: path => maybeBlock('realpath', path, () => realpathAsync(path)),
+        },
+      });
+      const request = execution();
+      const pending = store.publish(bundleForRows(), request);
+      await stepReached;
+
+      expect(store.rollbackRequest(request)).toBeUndefined();
+      resume();
+      await expect(pending).rejects.toMatchObject({ code: 'TABLE_ARTIFACT_REQUEST_ABORTED' });
+      const layout = artifactTest.inspectTableArtifactStore(store);
+      expect(existsSync(join(layout.sessionDir, ID_A))).toBe(false);
+      expect(layout.registeredArtifactIds).toEqual([]);
+    },
+  );
+
   it('rejects forged bundles and aborts before allocating artifact storage', async () => {
     const runtimeDir = privateRuntimeRoot();
     const store = testStore(runtimeDir);
@@ -347,4 +396,150 @@ describe('private table artifact publication', () => {
     }
     expect(readdirSync(runtimeDir)).toEqual([]);
   });
+});
+
+describe('immutable row-aligned table continuation', () => {
+  it('rejects hostile tokens before every filesystem operation', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    let fsCalls = 0;
+    const failIfCalled = async () => { fsCalls += 1; throw new Error('filesystem must not be reached'); };
+    const store = artifactTest.createTableArtifactStoreWithDependencies({
+      runtimeDir,
+      targetId: 'target',
+      sessionId: 'session',
+      platform: 'darwin',
+    }, { fs: { lstat: failIfCalled, mkdir: failIfCalled, open: failIfCalled, realpath: failIfCalled } });
+
+    for (const token of [
+      `ct1.${ID_A}.100000`,
+      `ct1.${ID_A}.01`,
+      `ct1.${ID_A}.+1`,
+      `ct1.${ID_A}.1.extra`,
+      `ct1.${ID_A.toUpperCase()}.1`,
+      `../ct1.${ID_A}.1`,
+    ]) {
+      await expect(store.readContinuation(token)).rejects.toThrow(/continuation token/i);
+    }
+    expect(fsCalls).toBe(0);
+  });
+
+  it('returns at most twenty whole rows with immutable idempotent next tokens', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = testStore(runtimeDir);
+    const rows = Array.from({ length: 25 }, (_, index) => [`row-${index + 1}`]);
+    const publication = await store.publish(bundleForRows(rows), execution());
+
+    const first = await store.readContinuation(publication.token);
+    const repeated = await store.readContinuation(publication.token);
+    const second = await store.readContinuation(first.continuation.nextToken);
+
+    expect(first).toEqual({
+      schema: 'chrome-cdp-ex.table.v1',
+      logicalRows: 25,
+      logicalCountSource: 'aria-rowcount',
+      identitySource: 'aria-rowindex',
+      orderingSource: 'aria-rowindex',
+      mountedRows: 25,
+      collectedRows: 25,
+      recycledMountedNodes: 0,
+      completeness: { state: 'complete', termination: 'logical-count-reached' },
+      artifact: {
+        id: ID_A,
+        rows: 25,
+        bytes: 165,
+        checksum: publication.artifact.checksum,
+        checksumScope: 'canonical-data-rows-tsv-utf8',
+      },
+      continuation: {
+        token: `ct1.${ID_A}.0`,
+        offset: 0,
+        rowCount: 20,
+        rows: Array.from({ length: 20 }, (_, index) => `row-${index + 1}`),
+        bytes: 130,
+        nextToken: `ct1.${ID_A}.20`,
+      },
+    });
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.continuation.rows)).toBe(true);
+    expect(JSON.stringify(repeated, null, 2)).toBe(JSON.stringify(first, null, 2));
+    expect(second.continuation).toMatchObject({
+      token: `ct1.${ID_A}.20`,
+      offset: 20,
+      rowCount: 5,
+      rows: ['row-21', 'row-22', 'row-23', 'row-24', 'row-25'],
+      nextToken: null,
+    });
+    expect(Buffer.byteLength(JSON.stringify(first, null, 2), 'utf8')).toBeLessThanOrEqual(16384);
+    await expect(store.readContinuation(`ct1.${ID_A}.25`)).rejects.toThrow(/offset/i);
+  });
+
+  it('uses exact pretty JSON size and retains a valid prefix under two 1973-backslash rows', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = testStore(runtimeDir);
+    const publication = await store.publish(bundleForRows([
+      ['\\'.repeat(1973)],
+      ['\\'.repeat(1973)],
+    ]), execution());
+
+    const first = await store.readContinuation(publication.token);
+    const second = await store.readContinuation(first.continuation.nextToken);
+
+    expect(first.continuation.rows).toEqual(['\\\\'.repeat(1973)]);
+    expect(first.continuation.nextToken).toBe(`ct1.${ID_A}.1`);
+    expect(second.continuation.rows).toEqual(['\\\\'.repeat(1973)]);
+    expect(second.continuation.nextToken).toBeNull();
+    expect(Buffer.byteLength(JSON.stringify(first, null, 2), 'utf8')).toBeLessThanOrEqual(16384);
+  });
+
+  it('preserves empty and trailing-empty rows using the authoritative manifest row count', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = testStore(runtimeDir);
+    const publication = await store.publish(bundleForRows([['value'], [''], ['']]), execution());
+    const result = await store.readContinuation(publication.token);
+
+    expect(result.continuation.rows).toEqual(['value', '', '']);
+    expect(result.continuation.bytes).toBe(7);
+    expect(result.continuation.nextToken).toBeNull();
+  });
+
+  it('rejects unknown-session tokens without searching global artifact directories', async () => {
+    const runtimeDir = privateRuntimeRoot();
+    const store = testStore(runtimeDir);
+
+    await expect(store.readContinuation(`ct1.${ID_A}.0`)).rejects.toThrow(/not available/i);
+    expect(readdirSync(runtimeDir)).toEqual([]);
+  });
+
+  it.each(['missing-manifest', 'manifest-symlink', 'wrong-target', 'wrong-session', 'data-size', 'data-checksum'])(
+    'fails path-free when committed artifact state is tampered: %s',
+    async tamper => {
+      const runtimeDir = privateRuntimeRoot();
+      const store = testStore(runtimeDir);
+      const publication = await store.publish(bundleForRows(), execution());
+      const layout = artifactTest.inspectTableArtifactStore(store);
+      const artifactDir = join(layout.sessionDir, ID_A);
+      const manifestPath = join(artifactDir, 'manifest.json');
+      const rowsPath = join(artifactDir, 'rows.tsv');
+      if (tamper === 'missing-manifest') unlinkSync(manifestPath);
+      else if (tamper === 'manifest-symlink') {
+        const external = join(runtimeDir, 'external-manifest');
+        writeFileSync(external, readFileSync(manifestPath));
+        unlinkSync(manifestPath);
+        symlinkSync(external, manifestPath);
+      } else if (tamper === 'data-size') writeFileSync(rowsPath, 'one\ntwo!');
+      else if (tamper === 'data-checksum') writeFileSync(rowsPath, 'uno\ntwo');
+      else {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+        if (tamper === 'wrong-target') manifest.ownership.targetDigest = '0'.repeat(64);
+        else manifest.ownership.sessionDigest = 'f'.repeat(64);
+        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      }
+
+      let error;
+      try { await store.readContinuation(publication.token); } catch (caught) { error = caught; }
+      expect(error?.code).toBe('TABLE_ARTIFACT_READ_FAILED');
+      expect(error?.message).not.toContain(runtimeDir);
+      expect(error?.message).not.toContain(artifactDir);
+    },
+  );
 });
