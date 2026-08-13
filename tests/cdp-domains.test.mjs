@@ -68,6 +68,7 @@ const EXPECTED_METHODS = Object.freeze([
   'Runtime.callFunctionOn',
   'Runtime.enable',
   'Runtime.evaluate',
+  'Runtime.releaseObjectGroup',
   'Target.activateTarget',
   'Target.attachToTarget',
   'Target.closeTarget',

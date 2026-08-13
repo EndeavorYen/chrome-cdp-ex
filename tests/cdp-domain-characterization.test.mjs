@@ -61,6 +61,7 @@ const METHOD_CLASSIFICATION = Object.freeze({
   'Runtime.callFunctionOn': 'escape-potentially-mutating',
   'Runtime.enable': 'session-control',
   'Runtime.evaluate': 'escape-potentially-mutating',
+  'Runtime.releaseObjectGroup': 'session-control',
   'Target.activateTarget': 'browser-mutation',
   'Target.attachToTarget': 'session-control',
   'Target.closeTarget': 'browser-mutation',
@@ -391,13 +392,13 @@ describe('Phase 6 direct CDP characterization', () => {
   it('freezes every direct method, caller, session, and timeout boundary', () => {
     const inventory = directCdpInventory(source);
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
-    expect(inventory).toHaveLength(123);
-    expect(digest).toBe('sha256:9dc65b8d088792d869595c131294a3966dc7c60b0f2666eaa6953ac20ab568e8');
+    expect(inventory).toHaveLength(133);
+    expect(digest).toBe('sha256:b4085614e9167e92919fe1442314ce5c36cb5dd4fc6b2d03b9efbe1e764a0547');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '2000', '5000', '<default>',
       'Math.min(1000, Math.max(100, deadline - now() + 100))',
       'REF_RESOLVE_TIMEOUT', 'RELOAD_DISPATCH_TIMEOUT', 'RELOAD_OBSERVE_TIMEOUT',
-      'SCREENSHOT_TIMEOUT', 'options.timeoutMs', 'probeTimeoutMs',
+      'SCREENSHOT_TIMEOUT', 'options.timeoutMs', 'probeTimeoutMs', 'timeoutMs',
     ]);
     expect([...new Set(inventory.map(entry => entry.session))].sort())
       .toEqual(['<browser>', 'attached.sessionId', 'sessionId', 'sid', 'undefined']);

@@ -11748,7 +11748,7 @@ async function tableCollectionStr(cdp, sid, request, execution, options = {}) {
       try { listeners.pop()(); } catch {}
     }
     try {
-      cdp.send('Runtime.releaseObjectGroup', { objectGroup: TABLE_COLLECTOR_OBJECT_GROUP }, sid);
+      cdpDomains(cdp).Runtime.releaseObjectGroup({ objectGroup: TABLE_COLLECTOR_OBJECT_GROUP }, sid);
     } catch {}
     session.collector = false;
   };
@@ -11836,7 +11836,6 @@ async function tableCollectionStr(cdp, sid, request, execution, options = {}) {
           const maxTop = Math.max(0, before.scroll.height - before.scroll.clientHeight);
           if (before.loadMore.present && before.scroll.top >= maxTop) {
             await runPage(runtime, async timeoutMs => {
-              const domains = cdpDomains(cdp);
               const base = {
                 x: before.loadMore.x,
                 y: before.loadMore.y,
@@ -11844,9 +11843,9 @@ async function tableCollectionStr(cdp, sid, request, execution, options = {}) {
                 clickCount: 1,
                 modifiers: 0,
               };
-              await domains.Input.dispatchMouseEvent({ ...base, type: 'mouseMoved' }, sid, timeoutMs);
-              await domains.Input.dispatchMouseEvent({ ...base, type: 'mousePressed' }, sid, timeoutMs);
-              await domains.Input.dispatchMouseEvent({ ...base, type: 'mouseReleased' }, sid, timeoutMs);
+              await cdpDomains(cdp).Input.dispatchMouseEvent({ ...base, type: 'mouseMoved' }, sid, timeoutMs);
+              await cdpDomains(cdp).Input.dispatchMouseEvent({ ...base, type: 'mousePressed' }, sid, timeoutMs);
+              await cdpDomains(cdp).Input.dispatchMouseEvent({ ...base, type: 'mouseReleased' }, sid, timeoutMs);
             });
           } else if (before.scroll.top < maxTop) {
             const nextTop = Math.min(maxTop, before.scroll.top + Math.max(1, before.scroll.clientHeight));
