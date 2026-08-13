@@ -426,6 +426,7 @@ function collectMcpTablePolicyAuthority(source, fail) {
   let importSource = null;
   let argsRequireConfirmSource = null;
   let buildMcpToolCommandSource = null;
+  let requireConfirmSource = null;
   let runCommandBinding = null;
   const parserCalls = [];
   const confirmationCalls = [];
@@ -448,6 +449,13 @@ function collectMcpTablePolicyAuthority(source, fail) {
           if (node.id?.name === 'buildMcpToolCommand') {
             if (buildMcpToolCommandSource !== null) fail('MCP buildMcpToolCommand must be unique');
             buildMcpToolCommandSource = sourceCode.getText(node);
+          }
+          if (node.id?.name === 'requireConfirm') {
+            if (requireConfirmSource !== null) fail('MCP requireConfirm must be unique');
+            if (node.params.map(parameter => sourceCode.getText(parameter)).join('\0') !== 'args\0action') {
+              fail('MCP requireConfirm must retain its confirmation parameters');
+            }
+            requireConfirmSource = sourceCode.getText(node);
           }
           if (node.id?.name === 'argsRequireConfirm') {
             if (argsRequireConfirmSource !== null) fail('MCP argsRequireConfirm must be unique');
@@ -484,12 +492,14 @@ function collectMcpTablePolicyAuthority(source, fail) {
           }, fail);
           requireUniqueBinding(sourceCode, 'argsRequireConfirm', { definitionType: 'FunctionName' }, fail);
           requireUniqueBinding(sourceCode, 'buildMcpToolCommand', { definitionType: 'FunctionName' }, fail);
+          requireUniqueBinding(sourceCode, 'requireConfirm', { definitionType: 'FunctionName' }, fail);
         },
       };
     },
   };
   verifyWithRule(source, 'mcp-table-policy', rule, fail);
-  if (!importSource || !argsRequireConfirmSource || !buildMcpToolCommandSource || !runCommandBinding) {
+  if (!importSource || !argsRequireConfirmSource || !buildMcpToolCommandSource
+    || !requireConfirmSource || !runCommandBinding) {
     fail('MCP table confirmation authority was not found');
   }
   if (JSON.stringify(parserCalls) !== JSON.stringify([{
@@ -505,7 +515,7 @@ function collectMcpTablePolicyAuthority(source, fail) {
     fail('MCP run_command must consult argsRequireConfirm with the exact argv');
   }
   return {
-    source: [importSource, argsRequireConfirmSource, buildMcpToolCommandSource].join('\0'),
+    source: [importSource, argsRequireConfirmSource, buildMcpToolCommandSource, requireConfirmSource].join('\0'),
     binding: [runCommandBinding, ...parserCalls.map(call => call.source), ...confirmationCalls.map(call => call.source)].join('\0'),
   };
 }
