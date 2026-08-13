@@ -1,6 +1,6 @@
 const TABLE_SAMPLE_SCHEMA = 'chrome-cdp-ex.table-sample.v1';
 const TABLE_TRUNCATION_REASONS = new Set([null, 'row-limit', 'cell-limit', 'row-too-large', 'sample-byte-limit']);
-const PAGE_TRUNCATION_REASONS = new Set([null, 'table-limit', 'sample-byte-limit']);
+const PAGE_TRUNCATION_REASONS = new Set([null, 'table-limit', 'sample-byte-limit', 'dom-depth-limit']);
 
 export const TABLE_SAMPLER_LIMITS = Object.freeze({
   maxTables: 10,
@@ -209,11 +209,11 @@ export function buildTableSamplerExpression(selector = 'table') {
       let depth = 0;
       while (parent) {
         depth += 1;
-        if (depth > LIMITS.maxAncestorDepth) return true;
-        if (isTable(parent)) return true;
+        if (depth > LIMITS.maxAncestorDepth) return 'overflow';
+        if (isTable(parent)) return 'nested';
         parent = apply(parentNodeGetter, parent, []);
       }
-      return false;
+      return 'root';
     };
     const children = parent => {
       const result = [];
@@ -424,7 +424,14 @@ export function buildTableSamplerExpression(selector = 'table') {
       && tablesSeen <= LIMITS.maxTables; tableIndex += 1) {
       matchedCandidates += 1;
       const candidate = apply(nodeListItem, matched, [tableIndex]);
-      if (!isTable(candidate) || hasTableAncestor(candidate)) continue;
+      if (!isTable(candidate)) continue;
+      const ancestorStatus = hasTableAncestor(candidate);
+      if (ancestorStatus === 'nested') continue;
+      if (ancestorStatus === 'overflow') {
+        pageTruncated = true;
+        pageTruncationReason = 'dom-depth-limit';
+        break;
+      }
       tablesSeen += 1;
       if (tableStrings.length === LIMITS.maxTables) break;
       const directResult = children(candidate);
