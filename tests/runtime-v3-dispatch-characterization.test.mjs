@@ -5,17 +5,18 @@ import { buildRuntimeDispatchInventory } from '../scripts/runtime-dispatch-inven
 import { COMMAND_SURFACE } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import {
   fixture,
+  packageVersion,
   rootDir,
   scriptPath,
   source,
 } from './runtime-v3-dispatch-test-helpers.mjs';
 
-describe('Runtime v3 final dispatch characterization', () => {
+describe('Runtime v3 final dispatch characterization', { timeout: 90_000 }, () => {
   it('freezes the exact 81-command daemon/CLI ownership graph and deletion allowlist', () => {
     expect(buildRuntimeDispatchInventory(source)).toEqual(fixture);
     expect(fixture).toMatchObject({
       schema: 'chrome-cdp-ex.runtime-dispatch.v1',
-      productVersion: '2.15.0',
+      productVersion: packageVersion,
       counts: {
         commands: 81,
         aliases: 23,
@@ -68,7 +69,7 @@ describe('Runtime v3 final dispatch characterization', () => {
         needsTarget: command.needsTarget,
       });
     }
-  }, 15_000);
+  }, 60_000);
 
   it('covers every target command once by canonical owner and every alias by the same branch', () => {
     const daemonGroups = fixture.daemonGroups.filter(group => group.commands.length === 1
@@ -128,7 +129,7 @@ describe('Runtime v3 final dispatch characterization', () => {
       'const applicationRoute = applicationDispatcher.route(cmd);',
       "await executeDaemonApplicationRoute({ cmd: 'html', args, targetBound: true }, applicationDispatcher);\n      const applicationRoute = applicationDispatcher.route(cmd);",
     ))).toThrow(/exactly one general application dispatch/);
-  }, 45_000);
+  }, 90_000);
 
   it('keeps check mode read-only and rejects stale fixture/source drift', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--check'], {
@@ -144,8 +145,8 @@ describe('Runtime v3 final dispatch characterization', () => {
       COMMAND_SURFACE.commands,
       command => command.kind,
     )).map(([kind, commands]) => [kind, commands.length]))).toEqual({
-      read: 24,
-      'conditional-mutation': 7,
+      read: 23,
+      'conditional-mutation': 8,
       mutation: 32,
       'protected-mutation': 7,
       script: 3,

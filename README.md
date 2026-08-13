@@ -1,5 +1,7 @@
 # chrome-cdp-ex
 
+> **Unreleased candidate:** repository metadata is v2.16.0; install links and measured release evidence remain pinned to published v2.15.0.
+
 [![81 Commands](https://img.shields.io/badge/commands-81-orange)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0-blue)](skills/chrome-cdp-ex/scripts/cdp.mjs)
 [![Node 22+](https://img.shields.io/badge/node-22%2B-brightgreen)](https://nodejs.org)
@@ -226,7 +228,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `emulate` | `emulate <target> [dark\|light\|no-preference\|off\|status]` | `mutation / mutation` |
 | `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
 | `text` | `text <target> [selector]` | `read / standard` |
-| `table` | `table <target> [selector]` | `read / standard` |
+| `table` | `table <target> [TABLE_SELECTOR] [--format text\|json] \| table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text\|json] \| table <target> --continue TOKEN --format json` | `conditional-mutation / conditional` |
 | `back` | `back <target>` | `mutation / mutation` |
 | `forward` | `forward <target>` | `mutation / mutation` |
 | `reload` | `reload <target>` | `mutation / mutation` |

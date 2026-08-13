@@ -452,7 +452,14 @@ describe('Phase 4 command results and execution', () => {
       registry,
       handlers: { click: handler },
       authorize: decision => {
-        expect(decision).toEqual({ command: 'click', policy: 'mutation', mutates: true, targetBound: true });
+        expect(decision).toEqual({
+          command: 'click',
+          args: ['@1'],
+          policy: 'mutation',
+          mutates: true,
+          targetBound: true,
+        });
+        expect(Object.isFrozen(decision.args)).toBe(true);
         return { allowed: true, code: 'daemon-application' };
       },
     });
@@ -914,6 +921,24 @@ describe('Phase 4 daemon dispatch seam', () => {
     })).toEqual({ allowed: false, code: 'policy-denied' });
   });
 
+  it('binds every valid table mode to conditional authorization and rejects malformed argv', () => {
+    for (const args of [
+      ['#grid'],
+      ['#grid', '--collect', '--scroll-container', '.viewport'],
+      ['--continue', 'ct1.0123456789abcdef0123456789abcdef.0', '--format', 'json'],
+    ]) {
+      expect(cdpTest.authorizeDaemonApplicationCommand({
+        command: 'table', args, policy: 'conditional', mutates: false, targetBound: true,
+      })).toEqual({ allowed: true, code: 'daemon-application' });
+    }
+    expect(() => cdpTest.authorizeDaemonApplicationCommand({
+      command: 'table', args: ['--collect'], policy: 'conditional', mutates: false, targetBound: true,
+    })).toThrow(/scroll-container/);
+    expect(cdpTest.authorizeDaemonApplicationCommand({
+      command: 'table', args: ['#grid'], policy: 'standard', mutates: false, targetBound: true,
+    })).toEqual({ allowed: false, code: 'policy-denied' });
+  });
+
   it('supports the exact request shape used by sequential batch and flow recursion', async () => {
     const context = routeFixture();
     const dispatcher = createCommandDispatcher({
@@ -963,7 +988,7 @@ describe('Phase 4 daemon dispatch seam', () => {
       fullshot: async args => `fullshot:${args.join('|')}`,
       html: async args => `html:${args.join('|')}`,
       text: async args => `text:${args.join('|')}`,
-      table: async selector => `table:${selector ?? ''}`,
+      table: async request => `table:${request.selector ?? ''}`,
       net: async args => `net:${args.join('|')}`,
       overlay: async args => `overlay:${args.join('|')}`,
       record: async args => `record:${args.join('|')}`,
@@ -1181,7 +1206,16 @@ describe('Phase 4 daemon dispatch seam', () => {
     }
     expect(capabilities.html).toHaveBeenCalledOnce();
     expect(capabilities.text).toHaveBeenCalledOnce();
-    expect(capabilities.table).toHaveBeenCalledExactlyOnceWith('#grid');
+    expect(capabilities.table).toHaveBeenCalledWith(expect.objectContaining({
+      schema: 'chrome-cdp-ex.table-request.v1',
+      argv: ['#grid'],
+      mode: 'observe',
+      selector: '#grid',
+      format: 'text',
+    }));
+    const tableRequest = capabilities.table.mock.calls[0][0];
+    expect(Object.isFrozen(tableRequest)).toBe(true);
+    expect(Object.isFrozen(tableRequest.argv)).toBe(true);
     expect(capabilities.net).toHaveBeenCalledOnce();
     expect(capabilities.status).toHaveBeenCalledOnce();
     expect(capabilities.summary).toHaveBeenCalledOnce();

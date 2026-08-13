@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createDaemonReadHandlers,
 } from '../skills/chrome-cdp-ex/scripts/lib/daemon-read-handlers.mjs';
+import { createCommandExecutionContext } from '../skills/chrome-cdp-ex/scripts/lib/command-application.mjs';
 
 describe('daemon extraction read handlers', () => {
   function fixture() {
@@ -30,7 +31,7 @@ describe('daemon extraction read handlers', () => {
       summary: vi.fn(async args => `summary:${args.join('|')}`),
       snap: vi.fn(async args => `snap:${args.join('|')}`),
       text: vi.fn(async args => `text:${args.join('|')}`),
-      table: vi.fn(async selector => `table:${selector ?? ''}`),
+      table: vi.fn(async request => `table:${request.selector ?? ''}:${request.argv.join('|')}`),
       wait: vi.fn(async args => `wait:${args.join('|')}`),
       waitfor: vi.fn(async args => `waitfor:${args.join('|')}`),
     };
@@ -52,7 +53,7 @@ describe('daemon extraction read handlers', () => {
     const { capabilities, handlers } = fixture();
     const html = await handlers.html({ args: ['--root', 'main', 'main'] });
     const text = await handlers.text({ args: ['--selector', 'body', '--exclude', 'body'] });
-    const table = await handlers.table({ args: [] });
+    const table = await handlers.table({ args: ['--format', 'text', '#grid'] });
     const net = await handlers.net({ args: ['ignored-by-legacy'] });
     const status = await handlers.status({ args: ['--format', 'json'] });
     const summary = await handlers.summary({ args: ['--format', 'json'] });
@@ -78,7 +79,7 @@ describe('daemon extraction read handlers', () => {
     const waitfor = await handlers.waitfor({ args: ['--text', 'Ready', '500'] });
     expect(html.value).toBe('html:--root|main|main');
     expect(text.value).toBe('text:--selector|body|--exclude|body');
-    expect(table.value).toBe('table:');
+    expect(table.value).toBe('table:#grid:--format|text|#grid');
     expect(net.value).toBe('net:ignored-by-legacy');
     expect(status.value).toBe('status:--format|json');
     expect(summary.value).toBe('summary:--format|json');
@@ -104,7 +105,16 @@ describe('daemon extraction read handlers', () => {
     expect(waitfor.value).toBe('waitfor:--text|Ready|500');
     expect(capabilities.html).toHaveBeenCalledWith(['--root', 'main', 'main']);
     expect(capabilities.text).toHaveBeenCalledWith(['--selector', 'body', '--exclude', 'body']);
-    expect(capabilities.table).toHaveBeenCalledWith(undefined);
+    expect(capabilities.table).toHaveBeenCalledWith(expect.objectContaining({
+      schema: 'chrome-cdp-ex.table-request.v1',
+      mode: 'observe',
+      selector: '#grid',
+      format: 'text',
+      argv: ['--format', 'text', '#grid'],
+    }));
+    const tableRequest = capabilities.table.mock.calls[0][0];
+    expect(Object.isFrozen(tableRequest)).toBe(true);
+    expect(Object.isFrozen(tableRequest.argv)).toBe(true);
     expect(capabilities.net).toHaveBeenCalledWith(['ignored-by-legacy']);
     expect(capabilities.status).toHaveBeenCalledWith(['--format', 'json']);
     expect(capabilities.summary).toHaveBeenCalledWith(['--format', 'json']);
@@ -128,6 +138,70 @@ describe('daemon extraction read handlers', () => {
     expect(capabilities.cookies).toHaveBeenCalledWith(['legacy-ignored']);
     expect(capabilities.wait).toHaveBeenCalledWith(['25']);
     expect(capabilities.waitfor).toHaveBeenCalledWith(['--text', 'Ready', '500']);
+  });
+
+  it.each([
+    [['#grid', '--collect', '--scroll-container', '.viewport'], /collection is unavailable/],
+    [['--collect'], /scroll-container/],
+  ])('rejects unavailable or malformed table requests before page capability effects: %j', async (args, expected) => {
+    const { capabilities, handlers } = fixture();
+    await expect(handlers.table({ args })).rejects.toThrow(expected);
+    expect(capabilities.table).not.toHaveBeenCalled();
+  });
+
+  it('routes JSON observation through the bounded read capability', async () => {
+    const { capabilities, handlers } = fixture();
+    capabilities.table.mockResolvedValueOnce('{"schema":"chrome-cdp-ex.tables.v1"}');
+
+    const result = await handlers.table({ args: ['#grid', '--format', 'json'] });
+
+    expect(result.value).toBe('{"schema":"chrome-cdp-ex.tables.v1"}');
+    expect(capabilities.table).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      schema: 'chrome-cdp-ex.table-request.v1',
+      mode: 'observe',
+      selector: '#grid',
+      format: 'json',
+      argv: ['#grid', '--format', 'json'],
+    }));
+  });
+
+  it('routes a strict continuation request to the private artifact capability without page execution', async () => {
+    const { capabilities, handlers } = fixture();
+    const token = 'ct1.0123456789abcdef0123456789abcdef.20';
+    const output = '{\n  "schema": "chrome-cdp-ex.table.v1"\n}';
+    capabilities.table.mockResolvedValueOnce(output);
+
+    const result = await handlers.table({
+      args: ['--continue', token, '--format', 'json'],
+    });
+
+    expect(result.value).toBe(output);
+    expect(capabilities.table).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      schema: 'chrome-cdp-ex.table-request.v1',
+      mode: 'continue',
+      continuation: token,
+      format: 'json',
+      argv: ['--continue', token, '--format', 'json'],
+    }));
+  });
+
+  it('threads the exact trusted execution context only to the future collection capability seam', async () => {
+    const { capabilities, handlers } = fixture();
+    const execution = createCommandExecutionContext({
+      signal: new AbortController().signal,
+      deadline: null,
+    });
+
+    await handlers.table({
+      args: ['#grid', '--collect', '--scroll-container', '.viewport'],
+      execution,
+    });
+
+    expect(capabilities.table).toHaveBeenCalledWith(expect.objectContaining({
+      mode: 'collect',
+      selector: '#grid',
+      scrollContainer: '.viewport',
+    }), execution);
   });
 
   it('preserves thrown identity and never invokes another capability', async () => {

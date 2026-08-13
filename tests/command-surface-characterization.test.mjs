@@ -25,15 +25,20 @@ import {
 } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
+const packageVersion = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8')).version;
 const contract = JSON.parse(readFileSync(
-  join(rootDir, 'docs/contracts/v2.15.0/public-contracts.v1.json'),
+  join(rootDir, `docs/contracts/v${packageVersion}/public-contracts.v1.json`),
   'utf8',
 ));
 
 function commandProjection(command) {
+  const policy = COMMAND_SURFACE.resolve(command.name);
   return {
     aliases: [...command.aliases],
+    authorization: policy.authorization,
+    evidencePolicy: policy.evidencePolicy,
     feedbackPolicy: command.feedbackPolicy ?? null,
+    kind: policy.kind,
     mutates: command.mutates,
     name: command.name,
     needsTarget: command.needsTarget,
@@ -69,9 +74,9 @@ describe('Phase 6 command-surface characterization', () => {
         expect(cdpTest.commandMeta(spelling), spelling).toBe(command);
       }
     }
-    expect(Buffer.byteLength(cdpTest.helpStr())).toBe(21448);
+    expect(Buffer.byteLength(cdpTest.helpStr())).toBe(21747);
     expect(`sha256:${createHash('sha256').update(cdpTest.helpStr()).digest('hex')}`)
-      .toBe('sha256:ac006898447290de10d571b503c03b3febfc5a60f52e36965914309d7e43a559');
+      .toBe('sha256:be1b4dbef8bb1fbc432a242c11ae3ed657118fd1f3d92b6cbffcac62fdf1c708');
     expect(cdpTest.helpStr()).toMatch(/\.\n$/);
     expect(cdpTest.helpStr().trim()).toBe(contract.cliCases.find(entry => entry.id === 'help').stdout);
     expect(contract.cliCases.find(entry => entry.id === 'no-args-help').stdout)
@@ -96,10 +101,10 @@ describe('Phase 6 command-surface characterization', () => {
         });
         expect(result.status, args.join(' ') || '<no args>').toBe(0);
         expect(result.stderr).toHaveLength(0);
-        expect(result.stdout).toHaveLength(21449);
+        expect(result.stdout).toHaveLength(21748);
         expect(result.stdout.subarray(-2)).toEqual(Buffer.from('\n\n'));
         expect(`sha256:${createHash('sha256').update(result.stdout).digest('hex')}`)
-          .toBe('sha256:33ed0f947dd690bc331c5f2929dad0aab1842ff39a9927a8d353a0b7da41da17');
+          .toBe('sha256:af2fafa7c5aca321d9a475f3dc1ebbcb96628b54d4cffa8d236387aa7550d659');
       }
     } finally {
       rmSync(runtimeRoot, { recursive: true, force: true });
@@ -115,18 +120,18 @@ describe('Phase 6 command-surface characterization', () => {
     expect(MCP_RESOURCE_TEMPLATES).toEqual(contract.mcp.resourceTemplates);
     expect([...MCP_RUN_COMMAND_ALLOWLIST].sort()).toEqual(contract.mcp.runCommandAllowlist);
     expect(digestJson(MCP_TOOL_DEFINITIONS))
-      .toBe('sha256:8859d01312f924545c671c63f34b6d87383ece920b5e6cb825d22e5b17014631');
+      .toBe('sha256:3e84709c6be34475a595afe7db51e958c0de81fd383abbbc3e56761aeece3f8a');
     expect(digestJson(MCP_RESOURCE_TEMPLATES))
       .toBe('sha256:3b37cd2d5f067d70ecda6570c7d9ca3316610e116962ee547cce0386eda8e37d');
     expect(digestJson(MCP_RUN_COMMAND_ALLOWLIST))
       .toBe('sha256:82bc5511c77a48a44f84c91df1c350bc0a350cf3800d992dca7ce7a0e641a3f2');
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(25);
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(26);
     expect(MCP_RESOURCE_TEMPLATES).toHaveLength(3);
     expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(83);
     expect(MCP_RESOURCE_RECORDS.map(resource => resource.mapper)).toEqual([
       'doctor-status', 'session-report', 'session-screenshot-latest',
     ]);
-    expect(Object.keys(MCP_TOOL_MAPPER_BY_NAME)).toHaveLength(25);
+    expect(Object.keys(MCP_TOOL_MAPPER_BY_NAME)).toHaveLength(26);
     for (const fixture of contract.mcp.mappingCases) {
       expect(buildMcpToolCommand(fixture.tool, fixture.args), fixture.id).toEqual(fixture.command);
     }
@@ -152,11 +157,18 @@ describe('Phase 6 command-surface characterization', () => {
       record_snapshot: ['record-snapshot'],
       report: ['report'],
       responsive_audit: ['responsive-audit'],
-      run_command: ['run-command-read', 'run-command-mutation'],
+      run_command: [
+        'run-command-read',
+        'run-command-mutation',
+        'run-command-table-observe',
+        'run-command-table-collect',
+        'run-command-table-continue',
+      ],
       screenshot: ['screenshot'],
       select_target: ['select-target'],
       session_checkpoint: ['session-checkpoint', 'session-checkpoint-unsafe'],
       spawn_debug_browser: ['spawn-debug-browser'],
+      table: ['table-observe', 'table-collect', 'table-continue'],
       verify_click: ['verify-click'],
       viewport: ['viewport-read', 'viewport-set'],
       wait_for: ['wait-for-text', 'wait-for-any', 'wait-for-stable'],
@@ -184,6 +196,7 @@ describe('Phase 6 command-surface characterization', () => {
       select_target: 'tool:select-target',
       session_checkpoint: 'tool:session-checkpoint',
       spawn_debug_browser: 'tool:spawn-debug-browser',
+      table: 'tool:table',
       verify_click: 'tool:verify-click',
       viewport: 'tool:viewport',
       wait_for: 'tool:wait-for',

@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/table-export-manifest.v1.json",
+  "title": "chrome-cdp-ex.table-export.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "logicalRows",
+    "logicalCountSource",
+    "identitySource",
+    "orderingSource",
+    "mountedRows",
+    "collectedRows",
+    "recycledMountedNodes",
+    "completeness",
+    "artifact",
+    "inline"
+  ],
+  "properties": {
+    "schema": { "const": "chrome-cdp-ex.table-export.v1" },
+    "logicalRows": { "type": ["integer", "null"], "minimum": 0, "maximum": 100000 },
+    "logicalCountSource": { "type": "string", "enum": ["aria-rowcount", "none"] },
+    "identitySource": { "type": "string", "enum": ["aria-rowindex", "row-key-column", "snapshot-order"] },
+    "orderingSource": { "type": "string", "enum": ["aria-rowindex", "row-key-column", "dom-order"] },
+    "mountedRows": { "type": "integer", "minimum": 0, "maximum": 100000 },
+    "collectedRows": { "type": "integer", "minimum": 0, "maximum": 100000 },
+    "recycledMountedNodes": { "type": "integer", "minimum": 0, "maximum": 100000 },
+    "completeness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "termination", "evidenceConflict"],
+      "properties": {
+        "state": { "type": "string", "enum": ["complete", "incomplete", "unknown"] },
+        "termination": {
+          "type": "string",
+          "enum": [
+            "observation",
+            "logical-count-reached",
+            "row-limit",
+            "byte-limit",
+            "interaction-limit",
+            "time-limit",
+            "no-progress-limit",
+            "row-too-large",
+            "control-disappeared",
+            "error"
+          ]
+        },
+        "evidenceConflict": { "type": "boolean" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rows", "bytes", "checksum", "checksumScope"],
+      "properties": {
+        "rows": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+        "checksum": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "checksumScope": { "const": "canonical-data-rows-tsv-utf8" }
+      }
+    },
+    "inline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rows", "rowCount", "bytes", "truncated"],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "type": "string", "maxLength": 4096, "maxUtf8Bytes": 4096 }
+        },
+        "rowCount": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 8192 },
+        "truncated": { "type": "boolean" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["completeness"],
+        "properties": {
+          "completeness": {
+            "required": ["state"],
+            "properties": { "state": { "const": "complete" } }
+          }
+        }
+      },
+      "then": {
+        "required": ["logicalRows", "logicalCountSource", "identitySource", "orderingSource", "completeness"],
+        "properties": {
+          "logicalRows": { "type": "integer", "minimum": 1, "maximum": 100000 },
+          "logicalCountSource": { "const": "aria-rowcount" },
+          "identitySource": { "const": "aria-rowindex" },
+          "orderingSource": { "const": "aria-rowindex" },
+          "completeness": {
+            "type": "object",
+            "properties": {
+              "termination": { "const": "logical-count-reached" },
+              "evidenceConflict": { "const": false }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -12,6 +12,7 @@ const skill = readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.me
 const killerPath = readFileSync(new URL('../docs/examples/killer-path.md', import.meta.url), 'utf8');
 const packageJson = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
 const pluginManifest = readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8');
+const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
 const claude = readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8');
 const contributing = readFileSync(new URL('../CONTRIBUTING.md', import.meta.url), 'utf8');
 const design = readFileSync(new URL('../DESIGN.md', import.meta.url), 'utf8');
@@ -103,6 +104,7 @@ describe('Killer Path docs contract', () => {
       killerPath,
       packageJson,
       pluginManifest: pluginManifest.replace(/"version":\s*"[^"]+"/, '"version": "0.0.0"'),
+      changelog,
       claude,
       contributing,
       design,
@@ -111,6 +113,62 @@ describe('Killer Path docs contract', () => {
     expect(checkDocsContract(docs, [])).toContain(
       `Release metadata version mismatch: package.json ${packageVersion} != .claude-plugin/plugin.json 0.0.0`,
     );
+  });
+
+  it('keeps an unreleased package candidate separate from pinned published release links', () => {
+    const docs = {
+      readme,
+      reference,
+      selfImprovementLoop,
+      skill,
+      killerPath,
+      packageJson,
+      pluginManifest,
+      changelog,
+      claude,
+      contributing,
+      design,
+    };
+
+    expect(checkDocsContract(docs, [])).toEqual([]);
+    expect(checkDocsContract({
+      ...docs,
+      readme: readme.replace(/^> \*\*Unreleased candidate:\*\*.*\n/m, ''),
+    }, [])).toContain(
+      'README.md must identify v2.16.0 as an unreleased candidate while v2.15.0 remains published',
+    );
+    expect(checkDocsContract({
+      ...docs,
+      readme: docs.readme
+        .replaceAll('v2.15.0', 'v2.16.0')
+        .replaceAll('pi-chrome-cdp-2.15.0.tgz', 'pi-chrome-cdp-2.16.0.tgz'),
+    }, [])).toEqual(expect.arrayContaining([
+      'README.md is missing the published release tag v2.15.0',
+      'README.md is missing the published release tarball pi-chrome-cdp-2.15.0.tgz',
+      'README.md must not fabricate an unreleased release tag v2.16.0',
+      'README.md must not fabricate an unreleased tarball pi-chrome-cdp-2.16.0.tgz',
+    ]));
+    expect(checkDocsContract({
+      ...docs,
+      changelog: changelog.replace('## [2.15.0]', '## [9.8.7]'),
+    }, [])).toContain('README.md is missing the published release tag v9.8.7');
+
+    for (const falseClaim of [
+      '[![Release v2.16.0](https://img.shields.io/badge/release-v2.15.0-brightgreen)]',
+      '**Pinned release (v2.16.0):**',
+      'Latest measured release: v2.16.0 passed 10/10 rounds.',
+      '[v2.16.0 release notes →](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)',
+      '[v2.16.0 release](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)',
+      'Release: v2.16.0',
+      'Pinned release: v2.16.0',
+      'Latest release: v2.16.0',
+      'Measured candidate v2.16.0 — release pending.',
+      '[Latest: v2.16.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)',
+      '[v2.16.0 — pinned](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)',
+    ]) {
+      expect(checkDocsContract({ ...docs, readme: `${docs.readme}\n${falseClaim}\n` }, []), falseClaim)
+        .toContain('README.md must not present unreleased candidate v2.16.0 as a published or measured release');
+    }
   });
 
   it('rejects stale contributor paths, obsolete line counts, and shipped features marked future', () => {
@@ -220,6 +278,12 @@ describe('Repository release gates', () => {
     expect(releaseWorkflow).toContain('CHANGELOG.md');
     expect(releaseWorkflow).toContain('--notes-file');
     expect(releaseWorkflow).not.toContain('--generate-notes');
+  });
+
+  it('cleanly skips release work for an unreleased package candidate', () => {
+    expect(releaseWorkflow).toContain('id: readiness');
+    expect(releaseWorkflow).toContain('ready=false');
+    expect(releaseWorkflow).toContain("steps.readiness.outputs.ready == 'true'");
   });
 
   it('validates host evidence and the actual tarball before attaching a release', () => {

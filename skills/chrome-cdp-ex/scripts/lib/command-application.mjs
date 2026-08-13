@@ -10,7 +10,9 @@ const SPEC_KEYS = new Set([
   'evidencePolicy',
 ]);
 const REQUEST_KEYS = new Set(['name', 'args', 'targetBound']);
-const CONTEXT_KEYS = new Set(['registry', 'handlers', 'authorize']);
+const CONTEXT_KEYS = new Set(['registry', 'handlers', 'authorize', 'execution']);
+const EXECUTION_CONTEXT_KEYS = new Set(['signal', 'deadline']);
+const DEADLINE_KEYS = new Set(['startedAt', 'pageAt', 'serverAt', 'maxCdpOperationMs', 'now']);
 const NAME_RE = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 const CODE_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const COMMAND_KINDS = new Set([
@@ -75,6 +77,7 @@ const EXPECTED_POLICY = Object.freeze({
 const COMMAND_RESULTS = new WeakSet();
 const COMMAND_REGISTRIES = new WeakSet();
 const RAW_CDP_AUTHORIZATIONS = new WeakSet();
+const COMMAND_EXECUTION_CONTEXTS = new WeakSet();
 
 function fail(path, message) {
   throw new Error(`${path}: ${message}`);
@@ -272,6 +275,56 @@ export function defineCommandRequest(input) {
   return Object.freeze({ name: value.name, args: Object.freeze(args), targetBound: value.targetBound });
 }
 
+function isAbortSignal(value) {
+  return value
+    && typeof value === 'object'
+    && typeof value.aborted === 'boolean'
+    && typeof value.addEventListener === 'function'
+    && typeof value.removeEventListener === 'function'
+    && typeof value.throwIfAborted === 'function';
+}
+
+export function createCommandExecutionContext(input) {
+  const value = snapshotDataObject(input, 'execution context');
+  assertExactKeys(value, EXECUTION_CONTEXT_KEYS, 'execution context');
+  if (!isAbortSignal(value.signal)) fail('execution context.signal', 'must be an AbortSignal');
+  let deadline = null;
+  if (value.deadline !== null) {
+    const candidate = snapshotDataObject(value.deadline, 'execution context.deadline');
+    assertExactKeys(candidate, DEADLINE_KEYS, 'execution context.deadline');
+    for (const key of ['startedAt', 'pageAt', 'serverAt', 'maxCdpOperationMs']) {
+      if (!Number.isFinite(candidate[key]) || candidate[key] < 0) {
+        fail(`execution context.deadline.${key}`, 'must be a finite non-negative number');
+      }
+    }
+    if (candidate.pageAt < candidate.startedAt) {
+      fail('execution context.deadline.pageAt', 'must not precede startedAt');
+    }
+    if (candidate.serverAt < candidate.pageAt) {
+      fail('execution context.deadline.serverAt', 'must not precede pageAt');
+    }
+    if (candidate.maxCdpOperationMs <= 0) {
+      fail('execution context.deadline.maxCdpOperationMs', 'must be greater than zero');
+    }
+    if (typeof candidate.now !== 'function') fail('execution context.deadline.now', 'must be a function');
+    deadline = Object.freeze({
+      startedAt: candidate.startedAt,
+      pageAt: candidate.pageAt,
+      serverAt: candidate.serverAt,
+      maxCdpOperationMs: candidate.maxCdpOperationMs,
+      now: candidate.now,
+    });
+  }
+  const context = Object.freeze({ signal: value.signal, deadline });
+  COMMAND_EXECUTION_CONTEXTS.add(context);
+  return context;
+}
+
+export function inspectCommandExecutionContext(value) {
+  if (!COMMAND_EXECUTION_CONTEXTS.has(value)) fail('execution context', 'must be created by createCommandExecutionContext');
+  return value;
+}
+
 function validateAuthorizationDecision(input) {
   const value = snapshotDataObject(input, 'authorization');
   assertExactKeys(value, new Set(['allowed', 'code']), 'authorization');
@@ -336,6 +389,9 @@ export async function executeCommand(requestInput, context = {}) {
   if (!Object.hasOwn(handlers, spec.name)) fail(`handlers.${spec.name}`, 'own handler data property is required');
   const handler = handlers[spec.name];
   if (typeof handler !== 'function') fail(`handlers.${spec.name}`, 'handler is required');
+  const executionContext = contextValue.execution === undefined
+    ? null
+    : inspectCommandExecutionContext(contextValue.execution);
 
   let decision;
   if (spec.authorization === 'standard') {
@@ -344,6 +400,7 @@ export async function executeCommand(requestInput, context = {}) {
     if (typeof contextValue.authorize !== 'function') fail('context.authorize', `authorizer is required for ${spec.authorization}`);
     decision = validateAuthorizationDecision(await contextValue.authorize(Object.freeze({
       command: spec.name,
+      args: request.args,
       policy: spec.authorization,
       mutates: spec.mutates,
       targetBound: request.targetBound,
@@ -354,12 +411,14 @@ export async function executeCommand(requestInput, context = {}) {
   const rawAuthorization = spec.authorization === 'raw-cdp'
     ? mintRawCdpAuthorization(request.args[0])
     : null;
-  const result = await handler(Object.freeze({
+  const handlerContext = {
     args: request.args,
     targetBound: request.targetBound,
     spec,
     authorization: rawAuthorization,
-  }));
+    ...(executionContext ? { execution: executionContext } : {}),
+  };
+  const result = await handler(Object.freeze(handlerContext));
   validateResultPolicy(result, spec, request);
   return freezeRecord({
     schema: 'chrome-cdp-ex.command-execution.v1',

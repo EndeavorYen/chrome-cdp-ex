@@ -100,6 +100,19 @@ function parseJsonDoc(text, label, failures) {
   }
 }
 
+function hasCandidateReleaseClaim(text, version) {
+  const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const candidateVersion = new RegExp(`\\bv${escapedVersion}\\b`, 'i');
+  const releaseContext = /\b(?:release(?:\s+notes?)?|pinned|latest|measured|published)\b/i;
+  const bracketContexts = [...text.matchAll(/\[([^\]\n]{1,300})\]/g)].map(match => match[1]);
+  const clauseContexts = text
+    .split(/\r?\n/)
+    .flatMap(line => line.split(/(?:;|；|。|(?<!\d)[.!?](?!\d))/u))
+    .filter(clause => clause.length <= 2_000);
+  return [...bracketContexts, ...clauseContexts]
+    .some(context => candidateVersion.test(context) && releaseContext.test(context));
+}
+
 function checkReleaseMetadataContract(docs) {
   const failures = [];
   if (!docs.packageJson && !docs.pluginManifest) return failures;
@@ -112,13 +125,32 @@ function checkReleaseMetadataContract(docs) {
     failures.push(`Release metadata version mismatch: package.json ${packageModel.version} != .claude-plugin/plugin.json ${pluginModel.version}`);
   }
   const version = packageModel.version;
+  const publishedVersion = docs.changelog?.match(/^## \[(\d+\.\d+\.\d+)\]/m)?.[1] || null;
+  if (!publishedVersion) {
+    failures.push('CHANGELOG.md is missing the latest published semantic version');
+    return failures;
+  }
   for (const [label, text] of [['README.md', docs.readme], ['docs/reference.md', docs.reference]]) {
     if (!text) continue;
-    if (!text.includes(`/releases/tag/v${version}`)) {
-      failures.push(`${label} is missing the current release tag v${version}`);
+    if (!text.includes(`/releases/tag/v${publishedVersion}`)) {
+      failures.push(`${label} is missing the published release tag v${publishedVersion}`);
     }
-    if (!text.includes(`pi-chrome-cdp-${version}.tgz`)) {
-      failures.push(`${label} is missing the current release tarball pi-chrome-cdp-${version}.tgz`);
+    if (!text.includes(`pi-chrome-cdp-${publishedVersion}.tgz`)) {
+      failures.push(`${label} is missing the published release tarball pi-chrome-cdp-${publishedVersion}.tgz`);
+    }
+    if (version !== publishedVersion) {
+      if (!text.toLowerCase().includes('unreleased') || !text.includes(`v${version}`)) {
+        failures.push(`${label} must identify v${version} as an unreleased candidate while v${publishedVersion} remains published`);
+      }
+      if (text.includes(`/releases/tag/v${version}`)) {
+        failures.push(`${label} must not fabricate an unreleased release tag v${version}`);
+      }
+      if (text.includes(`pi-chrome-cdp-${version}.tgz`)) {
+        failures.push(`${label} must not fabricate an unreleased tarball pi-chrome-cdp-${version}.tgz`);
+      }
+      if (hasCandidateReleaseClaim(text, version)) {
+        failures.push(`${label} must not present unreleased candidate v${version} as a published or measured release`);
+      }
     }
   }
   return failures;
@@ -299,6 +331,7 @@ function readDocs() {
     killerPath: read('docs/examples/killer-path.md'),
     packageJson: read('package.json'),
     pluginManifest: read('.claude-plugin/plugin.json'),
+    changelog: read('CHANGELOG.md'),
     claude: read('CLAUDE.md'),
     contributing: read('CONTRIBUTING.md'),
     design: read('DESIGN.md'),

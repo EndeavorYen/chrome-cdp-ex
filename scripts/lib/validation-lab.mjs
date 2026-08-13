@@ -56,11 +56,23 @@ const VALIDATION_SOURCE_PATHS = Object.freeze([
   'package-lock.json',
   'README.md',
   'docs/reference.md',
-  'docs/contracts/v2.15.0',
   'scripts',
   'skills/chrome-cdp-ex/references/commands.md',
   'skills/chrome-cdp-ex/scripts',
 ]);
+
+function validationSourcePaths(rootDir) {
+  let packageModel;
+  try {
+    packageModel = JSON.parse(readFileSync(resolve(rootDir, 'package.json'), 'utf8'));
+  } catch (error) {
+    fail('sourceIdentity.package.json', `must be valid JSON: ${error.message}`);
+  }
+  if (!/^\d+\.\d+\.\d+$/.test(packageModel?.version || '')) {
+    fail('sourceIdentity.package.json.version', 'must be a semantic version');
+  }
+  return [...VALIDATION_SOURCE_PATHS, `docs/contracts/v${packageModel.version}`];
+}
 const MAX_SOURCE_IDENTITY_FILES = 1024;
 const MAX_SOURCE_IDENTITY_ENTRIES = 2048;
 const MAX_SOURCE_IDENTITY_BYTES = 32 * 1024 * 1024;
@@ -176,7 +188,7 @@ export function buildValidationSourceDigest({ rootDir, entrypoint }) {
     fail('sourceIdentity.entrypoint', 'must be repository-relative');
   }
   const state = { entries: 0, files: [], seen: new Set(), totalBytes: 0 };
-  for (const candidatePath of new Set([entrypoint, ...VALIDATION_SOURCE_PATHS])) {
+  for (const candidatePath of new Set([entrypoint, ...validationSourcePaths(rootDir)])) {
     collectSourceIdentityFiles(rootDir, candidatePath, state);
   }
   const unique = [...state.files].sort((left, right) => {

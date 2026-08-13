@@ -23,7 +23,21 @@ jobs:
         id: version
         run: echo "version=v$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
 
+      - name: Check changelog release readiness
+        id: readiness
+        env:
+          TAG: ${{ steps.version.outputs.version }}
+        run: |
+          VERSION="${TAG#v}"
+          if grep -Fq "## [$VERSION](" CHANGELOG.md; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping release for unreleased package candidate $TAG"
+          fi
+
       - name: Check if tag exists
+        if: steps.readiness.outputs.ready == 'true'
         id: check
         env:
           TAG: ${{ steps.version.outputs.version }}
@@ -35,13 +49,13 @@ jobs:
           fi
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        if: steps.check.outputs.exists == 'false'
+        if: steps.readiness.outputs.ready == 'true' && steps.check.outputs.exists == 'false'
         with:
           node-version: '22'
           cache: npm
 
       - name: Extract release notes from changelog
-        if: steps.check.outputs.exists == 'false'
+        if: steps.readiness.outputs.ready == 'true' && steps.check.outputs.exists == 'false'
         env:
           TAG: ${{ steps.version.outputs.version }}
         run: |
@@ -54,7 +68,7 @@ jobs:
           test -s release-notes.md
 
       - name: Validate and pack release tarball
-        if: steps.check.outputs.exists == 'false'
+        if: steps.readiness.outputs.ready == 'true' && steps.check.outputs.exists == 'false'
         id: pack
         env:
           TAG: ${{ steps.version.outputs.version }}
@@ -83,7 +97,7 @@ jobs:
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
 
       - name: Create release
-        if: steps.check.outputs.exists == 'false'
+        if: steps.readiness.outputs.ready == 'true' && steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.version }}

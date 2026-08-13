@@ -44,16 +44,18 @@ function seedSourceIdentityFixture(root) {
     'package-lock.json',
     'README.md',
     'docs/reference.md',
-    'docs/contracts/v2.15.0/runtime-dispatch.v1.json',
-    'docs/contracts/v2.15.0/package-entries.v1.json',
-    'docs/contracts/v2.15.0/public-contracts.v1.json',
+    'docs/contracts/v2.16.0/runtime-dispatch.v1.json',
+    'docs/contracts/v2.16.0/package-entries.v1.json',
+    'docs/contracts/v2.16.0/public-contracts.v1.json',
     'scripts/source-fixture.mjs',
     'skills/chrome-cdp-ex/references/commands.md',
     'skills/chrome-cdp-ex/scripts/source-fixture.mjs',
   ]) {
     const target = join(root, path);
     mkdirSync(join(target, '..'), { recursive: true });
-    writeFileSync(target, `source identity fixture: ${path}\n`);
+    writeFileSync(target, path === 'package.json'
+      ? '{"version":"2.16.0"}\n'
+      : `source identity fixture: ${path}\n`);
   }
 }
 

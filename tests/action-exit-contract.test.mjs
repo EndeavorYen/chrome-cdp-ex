@@ -768,9 +768,20 @@ describe('ambiguous action completion contract (#150)', () => {
     for (const command of ['click', 'loadall', 'console', 'batch', 'eval', 'evalraw']) {
       expect(cdpTest.daemonRequestMayHaveSideEffects({ cmd: command }), command).toBe(true);
     }
-    for (const command of ['perceive', 'table', 'report', 'meta', 'list_raw']) {
+    for (const command of ['perceive', 'report', 'meta', 'list_raw']) {
       expect(cdpTest.daemonRequestMayHaveSideEffects({ cmd: command }), command).toBe(false);
     }
+    expect(cdpTest.daemonRequestMayHaveSideEffects({ cmd: 'table', args: ['#grid'] })).toBe(false);
+    expect(cdpTest.daemonRequestMayHaveSideEffects({
+      cmd: 'table',
+      args: ['--continue', 'ct1.0123456789abcdef0123456789abcdef.0', '--format', 'json'],
+    })).toBe(false);
+    expect(cdpTest.daemonRequestMayHaveSideEffects({
+      cmd: 'table',
+      args: ['#grid', '--collect', '--scroll-container', '.viewport'],
+    })).toBe(true);
+    expect(() => cdpTest.daemonRequestMayHaveSideEffects({ cmd: 'table', args: ['--collect'] }))
+      .toThrow(/scroll-container/);
   });
 
   it.each([

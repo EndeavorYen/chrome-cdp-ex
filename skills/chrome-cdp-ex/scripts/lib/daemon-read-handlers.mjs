@@ -1,11 +1,12 @@
 import { commandResult } from './command-application.mjs';
+import { parseTableArgs } from './table-contract.mjs';
 
 const COMMANDS = Object.freeze([
   'cascade', 'checkpoint', 'components', 'console', 'controls', 'cookies', 'diff-shot', 'elshot', 'export-playwright', 'frame', 'fullshot', 'html', 'net', 'overlay',
   'record', 'record-actions', 'scanshot', 'shot', 'snap', 'status', 'styles', 'summary', 'table', 'text',
   'wait', 'waitfor',
 ]);
-const HANDLER_CONTEXT_KEYS = new Set(['args', 'targetBound', 'spec', 'authorization']);
+const HANDLER_CONTEXT_KEYS = new Set(['args', 'targetBound', 'spec', 'authorization', 'execution']);
 
 function fail(path, message) {
   throw new Error(`${path}: ${message}`);
@@ -55,6 +56,14 @@ function snapshotArgs(contextInput) {
   return Object.freeze(args);
 }
 
+function snapshotExecution(contextInput) {
+  const context = snapshotObject(contextInput, 'handler context');
+  for (const key of Object.keys(context)) {
+    if (!HANDLER_CONTEXT_KEYS.has(key)) fail(`handler context.${key}`, 'is not allowed');
+  }
+  return context.execution ?? null;
+}
+
 function snapshotCapabilities(input) {
   const capabilities = snapshotObject(input, 'capabilities');
   const actual = Object.keys(capabilities).sort();
@@ -93,7 +102,16 @@ export function createDaemonReadHandlers(input) {
     status: async context => commandResult(await capabilities.status(snapshotArgs(context)), null),
     styles: async context => commandResult(await capabilities.styles(snapshotArgs(context)), null),
     summary: async context => commandResult(await capabilities.summary(snapshotArgs(context)), null),
-    table: async context => commandResult(await capabilities.table(snapshotArgs(context)[0]), null),
+    table: async context => {
+      const request = parseTableArgs(snapshotArgs(context));
+      if (request.mode === 'collect') {
+        const execution = snapshotExecution(context);
+        if (!execution) throw new Error('table: collection is unavailable in this v2.16 candidate');
+        return commandResult(await capabilities.table(request, execution), null);
+      }
+      if (request.mode === 'continue') return commandResult(await capabilities.table(request), null);
+      return commandResult(await capabilities.table(request), null);
+    },
     text: async context => commandResult(await capabilities.text(snapshotArgs(context)), null),
     wait: async context => commandResult(await capabilities.wait(snapshotArgs(context)), null),
     waitfor: async context => commandResult(await capabilities.waitfor(snapshotArgs(context)), null),

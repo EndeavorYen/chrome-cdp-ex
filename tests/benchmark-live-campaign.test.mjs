@@ -21,6 +21,8 @@ import {
   summarizeCampaignRun,
 } from '../scripts/benchmark-live-campaign.mjs';
 
+const packageVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+
 function campaignSummaryForComparison({
   passRate = 1,
   avgTokens = 10000,
@@ -664,7 +666,7 @@ describe('live campaign benchmark helpers', () => {
       schema: 'chrome-cdp-ex.live-campaign.v1',
       candidate: {
         schema: 'chrome-cdp-ex.candidate-identity.v1',
-        productVersion: '2.15.0',
+        productVersion: packageVersion,
         algorithm: 'sha256',
         sourceDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       },

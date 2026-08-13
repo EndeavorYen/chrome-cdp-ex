@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Table collection
+
+* Replace the unbounded `table` claim with bounded observation, completeness,
+  explicit `--collect` virtual collection, and private `--continue` tokens.
+  Observation previews at most 20 inline rows and 8,192/16,384 UTF-8 bytes.
+  Collection requires an explicit scroll container, stable identity, and MCP
+  `confirm: true`; standalone `loadall` does not preserve recycled rows (#151).
+
 ### Agent reliability
 
 * Preserve ambiguous completion when a side-effect-capable daemon request loses

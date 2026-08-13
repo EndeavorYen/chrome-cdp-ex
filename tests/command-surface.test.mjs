@@ -157,6 +157,18 @@ describe('command surface catalog', () => {
     expect(COMMAND_SURFACE.resolve('diff-shot')).toMatchObject({ kind: 'conditional-mutation', authorization: 'conditional' });
     expect(COMMAND_SURFACE.resolve('console')).toMatchObject({ kind: 'conditional-mutation', authorization: 'conditional' });
     expect(COMMAND_SURFACE.resolve('netlog')).toMatchObject({ kind: 'conditional-mutation', authorization: 'conditional' });
+    expect(COMMAND_SURFACE.resolve('table')).toMatchObject({
+      kind: 'conditional-mutation',
+      authorization: 'conditional',
+      evidencePolicy: 'none',
+      mutates: false,
+      outputFormats: ['text', 'json'],
+      mcp: { exposure: 'tool-and-run-command', toolName: 'table', mapper: 'table' },
+      help: {
+        synopsis: 'table <target> [TABLE_SELECTOR] [--format text|json] | table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text|json] | table <target> --continue TOKEN --format json',
+        summary: 'Bounded table observation with completeness, explicit virtual collection, and private continuation; fixed ceilings and MCP collect confirmation',
+      },
+    });
     expect(COMMAND_SURFACE.resolve('keepalive')).toMatchObject({ kind: 'protected-mutation', authorization: 'mutation' });
     expect(COMMAND_SURFACE.resolve('batch')).toMatchObject({ kind: 'composite', authorization: 'composite' });
     expect(COMMAND_SURFACE.resolve('eval')).toMatchObject({ kind: 'script', authorization: 'raw-script' });
@@ -240,8 +252,8 @@ describe('MCP surface catalog', () => {
     expect(() => defineMcpSurface(oversizedSchemaArray)).toThrow(/array limit/);
   });
 
-  it('validates the shipped 25-tool, three-resource, ordered 83-spelling surface', () => {
-    expect(MCP_TOOL_DEFINITIONS).toHaveLength(25);
+  it('validates the shipped 26-tool, three-resource, ordered 83-spelling surface', () => {
+    expect(MCP_TOOL_DEFINITIONS).toHaveLength(26);
     expect(MCP_RESOURCE_TEMPLATES).toHaveLength(3);
     expect(MCP_RUN_COMMAND_ALLOWLIST).toHaveLength(83);
     expect(Object.isFrozen(MCP_TOOL_DEFINITIONS[0].inputSchema)).toBe(true);

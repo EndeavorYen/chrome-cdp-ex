@@ -11,7 +11,7 @@ import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, re
 import { homedir } from 'os';
 import { dirname, resolve, delimiter } from 'path';
 import { spawn, spawnSync } from 'child_process';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { format as formatValue } from 'util';
 import { fileURLToPath } from 'url';
 import net from 'net';
@@ -19,8 +19,10 @@ import { autoActionJsonArgs as autoActionJsonArgsForCommands } from './lib/actio
 import {
   classifyRawCdpMethod,
   commandResult,
+  createCommandExecutionContext,
   createCommandRegistry,
   defineCommandSpec,
+  inspectCommandExecutionContext,
 } from './lib/command-application.mjs';
 import {
   createCommandDispatcher,
@@ -28,6 +30,17 @@ import {
 } from './lib/command-dispatch.mjs';
 import { createDaemonReadHandlers } from './lib/daemon-read-handlers.mjs';
 import { createDaemonActionHandlers } from './lib/daemon-action-handlers.mjs';
+import { isTableCollectArgs, parseTableArgs, parseTableContinuationToken } from './lib/table-contract.mjs';
+import { createTableArtifactStore } from './lib/table-artifacts.mjs';
+import {
+  addTableSampleBatch,
+  buildTableExportBundle,
+  canonicalizeTableCells,
+  createTableAccumulator,
+  finalizeTableExtraction,
+  TABLE_EXTRACTION_LIMITS,
+} from './lib/table-extraction.mjs';
+import { buildTableSamplerExpression, parseTableSamplerResult } from './lib/table-sampler.mjs';
 import {
   bindCdpTransport,
   createCdpDomains,
@@ -131,6 +144,879 @@ const DAEMON_METADATA_SCHEMA = 'chrome-cdp-ex.daemon-metadata.v1';
 const ALLOW_STALE_DAEMON_FLAG = '--allow-stale-daemon';
 const DEFAULT_CDP_HOST = '127.0.0.1';
 const DEFAULT_SPAWN_READY_TIMEOUT_MS = 5000;
+const TABLE_COLLECTION_DEADLINES = Object.freeze({
+  pageMs: 295000,
+  serverMs: 300000,
+  maxCdpOperationMs: 5000,
+});
+const TRUSTED_DAEMON_REQUEST_CONTEXTS = new WeakSet();
+const TABLE_COLLECTION_RUNTIME_STATES = new WeakMap();
+
+class TableCollectionDeadlineError extends Error {
+  constructor(phase, { lateInvocation = false } = {}) {
+    const page = phase === 'page';
+    super(page
+      ? 'table: page/CDP deadline reached before collection completed'
+      : 'table: server deadline reached before a committed response was ready');
+    this.name = 'TableCollectionDeadlineError';
+    this.code = page ? 'TABLE_COLLECTION_PAGE_DEADLINE' : 'TABLE_COLLECTION_SERVER_DEADLINE';
+    this.phase = phase;
+    if (lateInvocation) this.lateInvocation = true;
+  }
+}
+
+class TableCollectionOperationTimeoutError extends Error {
+  constructor(timeoutMs) {
+    super(`table: CDP operation exceeded its ${timeoutMs}ms bounded timeout`);
+    this.name = 'TableCollectionOperationTimeoutError';
+    this.code = 'TABLE_COLLECTION_CDP_TIMEOUT';
+    this.phase = 'page';
+  }
+}
+
+class TableCollectionDaemonTerminationRequiredError extends Error {
+  constructor() {
+    super('table: server deadline reached with unsettled invoked work; daemon termination is required');
+    this.name = 'TableCollectionDaemonTerminationRequiredError';
+    this.code = 'TABLE_COLLECTION_DAEMON_TERMINATION_REQUIRED';
+    this.phase = 'server';
+    this.requiresDaemonTermination = true;
+  }
+}
+
+class TableCollectionSynchronousCleanupRequiredError extends Error {
+  constructor(cleanupScope) {
+    super(`table: ${cleanupScope} cleanup must complete synchronously and return undefined`);
+    this.name = 'TableCollectionSynchronousCleanupRequiredError';
+    this.code = 'TABLE_COLLECTION_SYNC_CLEANUP_REQUIRED';
+    this.cleanupScope = cleanupScope;
+  }
+}
+
+function monotonicNow() {
+  return performance.now();
+}
+
+function mintDaemonRequestExecutionContext({ signal, tableCollect, now }) {
+  if (typeof now !== 'function') throw new Error('daemon request clock must be a function');
+  let deadline = null;
+  if (tableCollect) {
+    const startedAt = now();
+    if (!Number.isFinite(startedAt) || startedAt < 0) {
+      throw new Error('daemon request monotonic clock must return a finite non-negative number');
+    }
+    deadline = {
+      startedAt,
+      pageAt: startedAt + TABLE_COLLECTION_DEADLINES.pageMs,
+      serverAt: startedAt + TABLE_COLLECTION_DEADLINES.serverMs,
+      maxCdpOperationMs: TABLE_COLLECTION_DEADLINES.maxCdpOperationMs,
+      now,
+    };
+  }
+  const context = createCommandExecutionContext({ signal, deadline });
+  TRUSTED_DAEMON_REQUEST_CONTEXTS.add(context);
+  return context;
+}
+
+function createDaemonRequestExecutionContext({ request, signal, now = monotonicNow }) {
+  const tableCollect = request?.cmd === 'table'
+    ? parseTableArgs(request.args || []).mode === 'collect'
+    : false;
+  return mintDaemonRequestExecutionContext({ signal, tableCollect, now });
+}
+
+function enforceDaemonTableCollectionGate(request, execution = null) {
+  if (request?.cmd !== 'table') return;
+  if (parseTableArgs(request.args || []).mode === 'collect' && !execution?.deadline) {
+    throw new Error('table: trusted daemon request deadline context is required');
+  }
+}
+
+function abortReason(signal, fallback = 'table: collection request aborted') {
+  if (signal.reason instanceof Error) return signal.reason;
+  return new Error(signal.reason == null ? fallback : String(signal.reason));
+}
+
+function daemonRequestHasUnsettledInvocations(executionContext) {
+  return (TABLE_COLLECTION_RUNTIME_STATES.get(executionContext)?.ownedInvocations.size || 0) > 0;
+}
+
+function invokeSynchronousCleanup(cleanup, cleanupScope, args) {
+  try {
+    return cleanup(...args) === undefined
+      ? null
+      : new TableCollectionSynchronousCleanupRequiredError(cleanupScope);
+  } catch (error) {
+    return error;
+  }
+}
+
+function retainFatalCleanupError(fatalError, cleanupError) {
+  if (!cleanupError || cleanupError === fatalError) return;
+  if (!Array.isArray(fatalError.cleanupErrors)) fatalError.cleanupErrors = [];
+  if (fatalError.cleanupErrors.length < 16) fatalError.cleanupErrors.push(cleanupError);
+}
+
+function prepareDaemonCollectionFatal(executionContext, error) {
+  const state = TABLE_COLLECTION_RUNTIME_STATES.get(executionContext);
+  if (!state) return null;
+  state.closePageWork?.();
+  state.abortLifecycle?.(error);
+  return state.startCleanup?.(error) || null;
+}
+
+function isDaemonTerminationRequired(error) {
+  return error?.code === 'TABLE_COLLECTION_DAEMON_TERMINATION_REQUIRED'
+    && error?.requiresDaemonTermination === true;
+}
+
+function createTableCollectionRuntime(executionContext, {
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+} = {}) {
+  const context = inspectCommandExecutionContext(executionContext);
+  if (!TRUSTED_DAEMON_REQUEST_CONTEXTS.has(context) || !context.deadline) {
+    throw new Error('table: trusted daemon request deadline context is required');
+  }
+  const { deadline } = context;
+  const lifecycleController = new AbortController();
+  const pageController = new AbortController();
+  const activePageTasks = new Set();
+  const ownedInvocations = new Set();
+  const runtimeState = { ownedInvocations, latePageInvocation: false };
+  TABLE_COLLECTION_RUNTIME_STATES.set(context, runtimeState);
+  let finalizing = false;
+  const abortLifecycle = reason => {
+    if (!lifecycleController.signal.aborted) lifecycleController.abort(reason);
+  };
+  const onRequestAbort = () => abortLifecycle(abortReason(context.signal));
+  if (context.signal.aborted) onRequestAbort();
+  else context.signal.addEventListener('abort', onRequestAbort, { once: true });
+
+  const remaining = value => Math.max(0, value - deadline.now());
+  const throwIfAborted = () => {
+    if (lifecycleController.signal.aborted) throw abortReason(lifecycleController.signal);
+  };
+  const remainingPageMs = () => remaining(deadline.pageAt);
+  const remainingServerMs = () => remaining(deadline.serverAt);
+  const phase = () => {
+    if (finalizing && remainingServerMs() > 0) return 'finalization-only';
+    if (remainingPageMs() > 0) return 'page';
+    if (remainingServerMs() > 0) return 'finalization-only';
+    return 'expired';
+  };
+  const cdpOperationTimeoutMs = () => finalizing
+    ? 0
+    : Math.min(deadline.maxCdpOperationMs, remainingPageMs());
+  const trackPageTask = task => {
+    activePageTasks.add(task);
+    const remove = () => activePageTasks.delete(task);
+    task.then(remove, remove);
+    return task;
+  };
+  const trackInvocation = (task, { page = false } = {}) => {
+    ownedInvocations.add(task);
+    const settle = fulfilled => {
+      if (fulfilled && page && deadline.now() >= deadline.pageAt) {
+        runtimeState.latePageInvocation = true;
+      }
+      ownedInvocations.delete(task);
+    };
+    task.then(() => settle(true), () => settle(false));
+    return task;
+  };
+  const closePageWork = () => {
+    if (finalizing) return;
+    finalizing = true;
+    pageController.abort(new TableCollectionDeadlineError('page'));
+  };
+  runtimeState.closePageWork = closePageWork;
+  runtimeState.abortLifecycle = abortLifecycle;
+  const drainOwnedWork = async () => {
+    const pending = [...activePageTasks, ...ownedInvocations];
+    if (pending.length === 0) {
+      if (runtimeState.latePageInvocation) {
+        throw new TableCollectionDeadlineError('page', { lateInvocation: true });
+      }
+      return;
+    }
+    const timeoutMs = remainingServerMs();
+    if (timeoutMs <= 0) throw new TableCollectionDaemonTerminationRequiredError();
+    const fatalError = new TableCollectionDaemonTerminationRequiredError();
+    let timer;
+    const timeout = new Promise((resolve, reject) => {
+      timer = setTimer(() => {
+        abortLifecycle(fatalError);
+        reject(fatalError);
+      }, timeoutMs);
+    });
+    try {
+      await Promise.race([Promise.allSettled(pending), timeout]);
+    } finally {
+      clearTimer(timer);
+    }
+    if (ownedInvocations.size > 0) throw fatalError;
+    if (runtimeState.latePageInvocation) {
+      throw new TableCollectionDeadlineError('page', { lateInvocation: true });
+    }
+  };
+  const beginFinalization = async () => {
+    closePageWork();
+    await drainOwnedWork();
+  };
+
+  const runCdpOperation = operation => trackPageTask((async () => {
+    if (typeof operation !== 'function') throw new Error('table: CDP operation must be a function');
+    throwIfAborted();
+    if (finalizing) throw new TableCollectionDeadlineError('page');
+    const pageRemaining = remainingPageMs();
+    if (pageRemaining <= 0) throw new TableCollectionDeadlineError('page');
+    const timeoutMs = Math.min(deadline.maxCdpOperationMs, pageRemaining);
+    const timeoutError = timeoutMs === pageRemaining
+      ? new TableCollectionDeadlineError('page')
+      : new TableCollectionOperationTimeoutError(timeoutMs);
+    const operationController = new AbortController();
+    let rejectAbort;
+    const aborted = new Promise((resolve, reject) => {
+      rejectAbort = reject;
+    });
+    const propagateAbort = signal => {
+      const reason = abortReason(signal);
+      if (!operationController.signal.aborted) {
+        operationController.abort(reason);
+      }
+      rejectAbort(reason);
+    };
+    const onLifecycleAbort = () => propagateAbort(lifecycleController.signal);
+    const onPageAbort = () => propagateAbort(pageController.signal);
+    lifecycleController.signal.addEventListener('abort', onLifecycleAbort, { once: true });
+    pageController.signal.addEventListener('abort', onPageAbort, { once: true });
+    let timer;
+    const timeout = new Promise((resolve, reject) => {
+      timer = setTimer(() => {
+        if (!operationController.signal.aborted) operationController.abort(timeoutError);
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+    const invocation = Promise.resolve().then(() => {
+      throwIfAborted();
+      if (operationController.signal.aborted) throw abortReason(operationController.signal);
+      return trackInvocation(
+        Promise.resolve(operation({ signal: operationController.signal, timeoutMs })),
+        { page: true },
+      );
+    });
+    try {
+      const result = await Promise.race([
+        invocation,
+        timeout,
+        aborted,
+      ]);
+      throwIfAborted();
+      if (remainingPageMs() <= 0) {
+        const error = new TableCollectionDeadlineError('page', { lateInvocation: true });
+        if (!operationController.signal.aborted) operationController.abort(error);
+        throw error;
+      }
+      return result;
+    } finally {
+      clearTimer(timer);
+      lifecycleController.signal.removeEventListener('abort', onLifecycleAbort);
+      pageController.signal.removeEventListener('abort', onPageAbort);
+    }
+  })());
+
+  const sleep = milliseconds => trackPageTask((async () => {
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+      throw new Error('table: sleep duration must be a finite non-negative number');
+    }
+    throwIfAborted();
+    if (finalizing) throw new TableCollectionDeadlineError('page');
+    const pageRemaining = remainingPageMs();
+    if (pageRemaining <= 0) throw new TableCollectionDeadlineError('page');
+    const requestedMs = Math.trunc(milliseconds);
+    const timeoutMs = Math.min(requestedMs, pageRemaining);
+    if (timeoutMs === 0) return;
+    const reachesPageDeadline = requestedMs >= pageRemaining;
+    await new Promise((resolve, reject) => {
+      let timer;
+      const removeAbortListeners = () => {
+        lifecycleController.signal.removeEventListener('abort', onLifecycleAbort);
+        pageController.signal.removeEventListener('abort', onPageAbort);
+      };
+      const rejectForAbort = signal => {
+        clearTimer(timer);
+        removeAbortListeners();
+        reject(abortReason(signal));
+      };
+      const onLifecycleAbort = () => rejectForAbort(lifecycleController.signal);
+      const onPageAbort = () => rejectForAbort(pageController.signal);
+      timer = setTimer(() => {
+        removeAbortListeners();
+        if (reachesPageDeadline) reject(new TableCollectionDeadlineError('page'));
+        else resolve();
+      }, timeoutMs);
+      lifecycleController.signal.addEventListener('abort', onLifecycleAbort, { once: true });
+      pageController.signal.addEventListener('abort', onPageAbort, { once: true });
+    });
+    throwIfAborted();
+    if (remainingPageMs() <= 0) throw new TableCollectionDeadlineError('page');
+  })());
+
+  const runFinalization = async operation => {
+    if (typeof operation !== 'function') throw new Error('table: finalization operation must be a function');
+    await beginFinalization();
+    throwIfAborted();
+    const timeoutMs = remainingServerMs();
+    if (timeoutMs <= 0) {
+      const error = new TableCollectionDeadlineError('server');
+      abortLifecycle(error);
+      throw error;
+    }
+    const timeoutError = new TableCollectionDeadlineError('server');
+    let timer;
+    let rejectAbort;
+    const aborted = new Promise((resolve, reject) => {
+      rejectAbort = reject;
+    });
+    const onAbort = () => rejectAbort(abortReason(lifecycleController.signal));
+    lifecycleController.signal.addEventListener('abort', onAbort, { once: true });
+    const timeout = new Promise((resolve, reject) => {
+      timer = setTimer(() => {
+        abortLifecycle(timeoutError);
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+    try {
+      const invocation = Promise.resolve().then(() => {
+        throwIfAborted();
+        return trackInvocation(Promise.resolve(operation()));
+      });
+      const result = await Promise.race([
+        invocation,
+        timeout,
+        aborted,
+      ]);
+      throwIfAborted();
+      if (remainingServerMs() <= 0) {
+        abortLifecycle(timeoutError);
+        throw timeoutError;
+      }
+      return result;
+    } finally {
+      clearTimer(timer);
+      lifecycleController.signal.removeEventListener('abort', onAbort);
+    }
+  };
+
+  return Object.freeze({
+    signal: lifecycleController.signal,
+    deadline,
+    phase,
+    remainingPageMs,
+    remainingServerMs,
+    cdpOperationTimeoutMs,
+    throwIfAborted,
+    runCdpOperation,
+    sleep,
+    beginFinalization,
+    runFinalization,
+    clearLatePageInvocation() {
+      runtimeState.latePageInvocation = false;
+    },
+    dispose() {
+      closePageWork();
+      context.signal.removeEventListener('abort', onRequestAbort);
+      if (TABLE_COLLECTION_RUNTIME_STATES.get(context) === runtimeState) {
+        TABLE_COLLECTION_RUNTIME_STATES.delete(context);
+      }
+    },
+  });
+}
+
+async function runTableCollectionLifecycle(executionContext, {
+  collect,
+  finalize,
+  cleanup,
+} = {}) {
+  if (typeof collect !== 'function') throw new Error('table: collector seam is required');
+  if (typeof finalize !== 'function') throw new Error('table: finalizer seam is required');
+  if (typeof cleanup !== 'function') throw new Error('table: cleanup seam is required');
+  const runtime = createTableCollectionRuntime(executionContext);
+  const runtimeState = TABLE_COLLECTION_RUNTIME_STATES.get(executionContext);
+  let cleanupStarted = false;
+  let cleanupFailure = null;
+  const startCleanup = error => {
+    if (cleanupStarted) return cleanupFailure;
+    cleanupStarted = true;
+    cleanupFailure = invokeSynchronousCleanup(cleanup, 'collector', [error]);
+    return cleanupFailure;
+  };
+  runtimeState.startCleanup = startCleanup;
+  try {
+    let collection;
+    try {
+      collection = await collect(runtime);
+    } catch (error) {
+      if (error?.code !== 'TABLE_COLLECTION_PAGE_DEADLINE' || error.lateInvocation === true) throw error;
+      collection = { termination: 'time-limit' };
+    }
+    return await runtime.runFinalization(() => finalize(collection, runtime));
+  } catch (error) {
+    let failure = error;
+    if (!isDaemonTerminationRequired(failure)) {
+      try {
+        await runtime.beginFinalization();
+      } catch (drainError) {
+        failure = drainError;
+      }
+    }
+    if (isDaemonTerminationRequired(failure)) {
+      retainFatalCleanupError(failure, startCleanup(failure));
+      throw failure;
+    }
+    const cleanupError = startCleanup(failure);
+    if (cleanupError) throw cleanupError;
+    throw failure;
+  } finally {
+    runtime.dispose();
+  }
+}
+
+function validateDaemonProtocolRequest(input) {
+  const request = snapshotApplicationDataObject(input, 'daemon request');
+  const expectedKeys = new Set(['id', 'cmd', 'args']);
+  for (const key of Object.keys(request)) {
+    if (!expectedKeys.has(key)) throw new Error(`daemon request.${key}: is not allowed`);
+  }
+  for (const key of expectedKeys) {
+    if (!Object.hasOwn(request, key)) throw new Error(`daemon request ${key === 'cmd' ? 'command' : key} is required`);
+  }
+  if (!Number.isSafeInteger(request.id) || request.id <= 0) {
+    throw new Error('daemon request id must be a positive safe integer');
+  }
+  if (typeof request.cmd !== 'string' || request.cmd.length === 0) {
+    throw new Error('daemon request command must be a non-empty string');
+  }
+  const args = snapshotApplicationArray(request.args, 'daemon request args');
+  for (let index = 0; index < args.length; index += 1) {
+    if (typeof args[index] !== 'string') throw new Error(`daemon request args[${index}] must be a string`);
+  }
+  const frozenRequest = Object.freeze({
+    id: request.id,
+    cmd: request.cmd,
+    args: Object.freeze(args),
+  });
+  const tableCollect = frozenRequest.cmd === 'table'
+    ? parseTableArgs(frozenRequest.args).mode === 'collect'
+    : false;
+  return Object.freeze({ request: frozenRequest, tableCollect });
+}
+
+function createDaemonRequestConnection(conn, {
+  handleRequest,
+  cleanup = () => {},
+  onFlushed = () => {},
+  onDispose = () => {},
+  onDisconnect = () => {},
+  onFatal = () => {},
+  onStop = () => {},
+  now = monotonicNow,
+  setTimer = setTimeout,
+  clearTimer = clearTimeout,
+} = {}) {
+  if (!conn || typeof conn.on !== 'function' || typeof conn.off !== 'function') {
+    throw new Error('daemon request connection must be an event emitter');
+  }
+  if (typeof conn.write !== 'function') throw new Error('daemon request connection.write must be a function');
+  if (typeof handleRequest !== 'function') throw new Error('daemon request handler must be a function');
+  if (typeof cleanup !== 'function') throw new Error('daemon request cleanup must be a function');
+  if (typeof onFlushed !== 'function') throw new Error('daemon request flush callback must be a function');
+  if (typeof onDispose !== 'function') throw new Error('daemon request disposer must be a function');
+  if (typeof onDisconnect !== 'function') throw new Error('daemon request disconnect callback must be a function');
+  if (typeof onFatal !== 'function') throw new Error('daemon request fatal callback must be a function');
+  if (typeof onStop !== 'function') throw new Error('daemon request stop callback must be a function');
+  if (typeof setTimer !== 'function' || typeof clearTimer !== 'function') {
+    throw new Error('daemon request timer functions are required');
+  }
+  const active = new Map();
+  let buffer = '';
+  let disconnected = false;
+  let poisoned = false;
+  let disconnectNotified = false;
+
+  const canWrite = () => !disconnected && conn.destroyed !== true && conn.writable !== false;
+  const writePayload = (payload, callback = () => {}) => {
+    if (!canWrite()) return false;
+    try {
+      conn.write(payload, callback);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const responsePayload = (response, id) => `${JSON.stringify({ ...response, id })}\n`;
+  const writeFailure = (id, error) => {
+    let payload;
+    try {
+      payload = responsePayload({ ok: false, error: actionFailureMessage(error) }, id);
+    } catch {
+      return false;
+    }
+    return writePayload(payload);
+  };
+  const cleanupRequest = (entry, reason) => {
+    if (entry.cleanupStarted) return entry.cleanupFailure;
+    entry.cleanupStarted = true;
+    entry.cleaned = true;
+    entry.cleanupFailure = invokeSynchronousCleanup(
+      cleanup,
+      'request',
+      [entry.request, entry.execution, reason],
+    );
+    return entry.cleanupFailure;
+  };
+  const disposeRequest = (entry, { abort = null, clean = false } = {}) => {
+    if (entry.disposed) return entry.cleanupFailure;
+    entry.disposed = true;
+    if (entry.executionTimer !== null) {
+      clearTimer(entry.executionTimer);
+      entry.executionTimer = null;
+    }
+    if (abort && !entry.controller.signal.aborted) entry.controller.abort(abort);
+    if (active.get(entry.id) === entry) active.delete(entry.id);
+    const cleanupError = clean ? cleanupRequest(entry, abort) : entry.cleanupFailure;
+    try { onDispose(entry.request, entry.execution); } catch {}
+    return cleanupError;
+  };
+  const disposeAfterSuccessfulFlush = entry => {
+    let releaseError = null;
+    try {
+      if (onFlushed(entry.request, entry.execution) !== undefined) {
+        releaseError = new TableCollectionSynchronousCleanupRequiredError('request release');
+      }
+    } catch (error) {
+      releaseError = error;
+    }
+    if (!releaseError) {
+      disposeRequest(entry);
+      return;
+    }
+    const cleanupError = disposeRequest(entry, { abort: releaseError, clean: true });
+    retainFatalCleanupError(releaseError, cleanupError);
+    terminateForFatal(releaseError);
+  };
+  const notifyDisconnect = error => {
+    if (disconnectNotified || active.size > 0) return;
+    disconnectNotified = true;
+    try { onDisconnect(error); } catch {}
+  };
+  const disconnectReason = cause => cause instanceof Error
+    ? cause
+    : new Error(`daemon client disconnected: ${cause || 'connection closed'}`);
+  const abortAll = (reason, { retire = true } = {}) => {
+    const error = disconnectReason(reason);
+    const unsafeCollect = !retire && [...active.values()].some(entry => (
+      entry.execution.deadline
+      && (!entry.handlerSettled || daemonRequestHasUnsettledInvocations(entry.execution))
+    ));
+    if (unsafeCollect) {
+      terminateForFatal(new TableCollectionDaemonTerminationRequiredError());
+      return;
+    }
+    disconnected = true;
+    let cleanupFailure = null;
+    for (const entry of [...active.values()]) {
+      if (retire) retainFatalCleanupError(error, prepareDaemonCollectionFatal(entry.execution, error));
+      const entryCleanupFailure = disposeRequest(entry, { abort: error, clean: true });
+      cleanupFailure ||= entryCleanupFailure;
+    }
+    removeConnectionListeners();
+    if (!retire && cleanupFailure) {
+      terminateForFatal(cleanupFailure);
+      return;
+    }
+    notifyDisconnect(error);
+  };
+  const onEnd = () => abortAll('connection ended', { retire: false });
+  const onClose = () => abortAll('connection closed', { retire: false });
+  const onError = error => abortAll(error, { retire: false });
+
+  const terminateForFatal = error => {
+    if (poisoned) return;
+    poisoned = true;
+    disconnected = true;
+    const entries = [...active.values()];
+    for (const entry of entries) {
+      if (!entry.controller.signal.aborted) entry.controller.abort(error);
+    }
+    for (const entry of entries) {
+      retainFatalCleanupError(error, prepareDaemonCollectionFatal(entry.execution, error));
+    }
+    for (const entry of entries) retainFatalCleanupError(error, cleanupRequest(entry, error));
+    for (const entry of entries) disposeRequest(entry, { abort: error });
+    removeConnectionListeners();
+    try { conn.destroy?.(); } catch {}
+    notifyDisconnect(error);
+    try { onFatal(error); } catch {}
+  };
+
+  const terminateForDuplicate = (id) => {
+    const error = new Error(`Duplicate active request id: ${id}`);
+    const unsafeCollect = [...active.values()].some(entry => (
+      entry.execution.deadline
+      && (!entry.handlerSettled || daemonRequestHasUnsettledInvocations(entry.execution))
+    ));
+    if (unsafeCollect) {
+      terminateForFatal(new TableCollectionDaemonTerminationRequiredError());
+      return;
+    }
+    for (const entry of [...active.values()]) disposeRequest(entry, { abort: error, clean: true });
+    let payload = null;
+    try { payload = responsePayload({ ok: false, error: error.message }, id); } catch {}
+    if (payload && canWrite()) {
+      try {
+        if (typeof conn.end === 'function') conn.end(payload);
+        else conn.write(payload);
+      } catch {}
+    }
+    disconnected = true;
+    removeConnectionListeners();
+    try { onDisconnect(error); } catch {}
+  };
+
+  const dispatch = input => {
+    let validated;
+    try {
+      validated = validateDaemonProtocolRequest(input);
+    } catch (error) {
+      const responseId = Number.isSafeInteger(input?.id) && input.id > 0 ? input.id : null;
+      writeFailure(responseId, error);
+      return;
+    }
+    const { request: req, tableCollect } = validated;
+    if (active.has(req.id)) {
+      terminateForDuplicate(req.id);
+      return;
+    }
+    const controller = new AbortController();
+    const execution = mintDaemonRequestExecutionContext({ signal: controller.signal, tableCollect, now });
+    const entry = {
+      id: req.id,
+      request: req,
+      execution,
+      controller,
+      disposed: false,
+      cleaned: false,
+      cleanupStarted: false,
+      cleanupFailure: null,
+      handlerSettled: false,
+      executionTimer: null,
+    };
+    active.set(req.id, entry);
+    if (execution.deadline) {
+      entry.executionTimer = setTimer(() => {
+        terminateForFatal(new TableCollectionDaemonTerminationRequiredError());
+      }, execution.deadline.serverAt - execution.deadline.startedAt);
+    }
+    const finishWithoutResponse = reason => {
+      const cleanupError = cleanupRequest(entry, reason);
+      if (cleanupError) {
+        terminateForFatal(cleanupError);
+        return;
+      }
+      disposeRequest(entry);
+      notifyDisconnect(reason);
+    };
+    const responseGateOpen = () => {
+      if (execution.deadline && (execution.deadline.now() >= execution.deadline.serverAt
+        || daemonRequestHasUnsettledInvocations(execution))) {
+        terminateForFatal(new TableCollectionDaemonTerminationRequiredError());
+        return false;
+      }
+      return true;
+    };
+    const handlerInvocation = Promise.resolve().then(() => {
+      execution.signal.throwIfAborted();
+      return handleRequest(req, execution);
+    });
+    entry.handlerInvocation = handlerInvocation;
+    handlerInvocation
+      .then(response => {
+        entry.handlerSettled = true;
+        if (entry.disposed) return;
+        if (!canWrite()) {
+          finishWithoutResponse(abortReason(controller.signal));
+          return;
+        }
+        if (!responseGateOpen()) return;
+        if (entry.executionTimer !== null) {
+          clearTimer(entry.executionTimer);
+          entry.executionTimer = null;
+        }
+        if (response?.ok === false) {
+          const cleanupError = cleanupRequest(entry, new Error(response.error || 'daemon request failed'));
+          if (cleanupError) {
+            terminateForFatal(cleanupError);
+            return;
+          }
+          if (entry.disposed || !canWrite()) return;
+          if (!responseGateOpen()) return;
+        }
+        let payload;
+        try {
+          payload = responsePayload(response, req.id);
+        } catch (error) {
+          const cleanupError = disposeRequest(entry, { abort: error, clean: true });
+          if (cleanupError) terminateForFatal(cleanupError);
+          return;
+        }
+        if (!responseGateOpen()) return;
+        const successfulResponse = response?.ok === true;
+        const flushed = error => {
+          if (error) {
+            const cleanupError = disposeRequest(entry, { abort: error, clean: true });
+            if (cleanupError) terminateForFatal(cleanupError);
+          } else if (successfulResponse) disposeAfterSuccessfulFlush(entry);
+          else disposeRequest(entry);
+        };
+        if (response?.stopAfter && typeof conn.end === 'function') {
+          try {
+            conn.end(payload, () => {
+              flushed();
+              onStop();
+            });
+          } catch (error) {
+            const cleanupError = disposeRequest(entry, { abort: error, clean: true });
+            if (cleanupError) terminateForFatal(cleanupError);
+          }
+          return;
+        }
+        if (!writePayload(payload, flushed)) {
+          const cleanupError = disposeRequest(entry, {
+            abort: new Error('daemon response write failed before flush'),
+            clean: true,
+          });
+          if (cleanupError) terminateForFatal(cleanupError);
+        }
+      })
+      .catch(error => {
+        entry.handlerSettled = true;
+        if (entry.disposed) return;
+        if (isDaemonTerminationRequired(error)) {
+          terminateForFatal(error);
+          return;
+        }
+        if (!canWrite()) {
+          finishWithoutResponse(error);
+          return;
+        }
+        if (!responseGateOpen()) return;
+        if (entry.executionTimer !== null) {
+          clearTimer(entry.executionTimer);
+          entry.executionTimer = null;
+        }
+        const cleanupError = cleanupRequest(entry, error);
+        if (cleanupError) {
+          terminateForFatal(cleanupError);
+          return;
+        }
+        if (entry.disposed || !canWrite()) return;
+        if (!responseGateOpen()) return;
+        let payload;
+        try {
+          payload = responsePayload({ ok: false, error: actionFailureMessage(error) }, req.id);
+        } catch (serializationError) {
+          const serializationCleanupError = disposeRequest(entry, { abort: serializationError, clean: true });
+          if (serializationCleanupError) terminateForFatal(serializationCleanupError);
+          return;
+        }
+        if (!responseGateOpen()) return;
+        if (!writePayload(payload, writeError => {
+          if (writeError) {
+            const writeCleanupError = disposeRequest(entry, { abort: writeError, clean: true });
+            if (writeCleanupError) terminateForFatal(writeCleanupError);
+            return;
+          }
+          disposeRequest(entry);
+        })) {
+          const writeCleanupError = disposeRequest(entry, { abort: error, clean: true });
+          if (writeCleanupError) terminateForFatal(writeCleanupError);
+        }
+      });
+  };
+
+  const onData = chunk => {
+    if (disconnected) return;
+    buffer += chunk.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (disconnected) break;
+      if (!line.trim()) continue;
+      let req;
+      try {
+        req = JSON.parse(line);
+      } catch {
+        writeFailure(null, new Error('Invalid JSON request'));
+        continue;
+      }
+      dispatch(req);
+    }
+  };
+  function removeConnectionListeners() {
+    conn.off('data', onData);
+    conn.off('end', onEnd);
+    conn.off('close', onClose);
+    conn.off('error', onError);
+  }
+
+  conn.on('data', onData);
+  conn.on('end', onEnd);
+  conn.on('close', onClose);
+  conn.on('error', onError);
+  return Object.freeze({
+    abortAll,
+    activeRequestCount: () => active.size,
+  });
+}
+
+function createDaemonShutdown({
+  requestConnections,
+  getServer,
+  socketPath,
+  cleanupSession = () => {},
+  closeCdp,
+  exitProcess = code => process.exit(code),
+  unlinkSocket = unlinkSync,
+  isWindows = IS_WINDOWS,
+}) {
+  if (!(requestConnections instanceof Set)) throw new Error('daemon request connection registry must be a Set');
+  if (typeof getServer !== 'function') throw new Error('daemon server accessor must be a function');
+  if (typeof closeCdp !== 'function') throw new Error('daemon CDP closer must be a function');
+  if (typeof cleanupSession !== 'function') throw new Error('daemon session cleanup must be a function');
+  if (typeof exitProcess !== 'function') throw new Error('daemon process exit must be a function');
+  if (typeof unlinkSocket !== 'function') throw new Error('daemon socket unlink must be a function');
+  let alive = true;
+  return (exitCode = 0) => {
+    if (!alive) return;
+    alive = false;
+    const reason = new Error('daemon shutting down');
+    for (const connection of [...requestConnections]) {
+      try { connection.abortAll(reason, { retire: true }); } catch {}
+    }
+    let finalExitCode = Number.isInteger(exitCode) ? exitCode : 0;
+    try {
+      if (cleanupSession() !== undefined) finalExitCode = 1;
+    } catch {
+      finalExitCode = 1;
+    }
+    try { getServer()?.close(); } catch {}
+    if (!isWindows) try { unlinkSocket(socketPath); } catch {}
+    try { closeCdp(); } catch {}
+    exitProcess(finalExitCode);
+  };
+}
 
 class RingBuffer {
   constructor(capacity) { this.buf = []; this.capacity = capacity; this.seq = 0; }
@@ -10223,28 +11109,844 @@ async function textStr(cdp, sid, args) {
   return out;
 }
 
-// --- Full table data extraction ---
-async function tableStr(cdp, sid, selector) {
-  const sel = selector || 'table';
-  return evalStr(cdp, sid, `(function() {
-    const tables = document.querySelectorAll(${JSON.stringify(sel)});
-    if (tables.length === 0) return 'No tables found' + (${JSON.stringify(sel)} !== 'table' ? ' matching ' + ${JSON.stringify(sel)} : '');
-    const results = [];
-    for (let ti = 0; ti < tables.length && ti < 10; ti++) {
-      const tbl = tables[ti];
-      const caption = tbl.querySelector('caption')?.textContent?.trim() || tbl.getAttribute('aria-label') || 'Table ' + (ti + 1);
-      const rows = [];
-      for (const tr of tbl.querySelectorAll('tr')) {
-        const cells = [];
-        for (const cell of tr.querySelectorAll('th, td')) {
-          cells.push(cell.textContent.trim().replace(/\\s+/g, ' '));
-        }
-        if (cells.length > 0) rows.push(cells.join('\\t'));
+// --- Truthful bounded table observation ---
+function boundedTableRuntimeDiagnostic(exceptionDetails) {
+  const raw = String(runtimeExceptionMessage(exceptionDetails));
+  let bounded = '';
+  for (let index = 0; index < raw.length && bounded.length < 128; index += 1) {
+    const unit = raw.charCodeAt(index);
+    if (unit >= 0xD800 && unit <= 0xDBFF) {
+      const next = raw.charCodeAt(index + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF && bounded.length <= 126) {
+        bounded += raw[index] + raw[index + 1];
+        index += 1;
+      } else {
+        bounded += '\uFFFD';
       }
-      results.push(caption + ':\\n' + rows.join('\\n'));
+    } else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+      bounded += '\uFFFD';
+    } else {
+      bounded += raw[index];
     }
-    return results.join('\\n\\n');
-  })()`);
+  }
+  return canonicalizeTableCells([bounded]);
+}
+
+async function sampleRootFrameTables(cdp, sid, selector) {
+  const expression = buildTableSamplerExpression(selector || 'table');
+  const frameTree = await cdpDomains(cdp).Page.getFrameTree({}, sid);
+  const frameId = frameTree?.frameTree?.frame?.id;
+  if (typeof frameId !== 'string' || frameId.length === 0) throw new Error('table: root frame id is unavailable');
+  const world = await cdpDomains(cdp).Page.createIsolatedWorld({
+    frameId,
+    worldName: 'chrome-cdp-ex-table-sampler-v1',
+    grantUniveralAccess: false,
+  }, sid);
+  if (!Number.isSafeInteger(world?.executionContextId) || world.executionContextId < 1) {
+    throw new Error('table: isolated execution context is unavailable');
+  }
+  const evaluated = await cdpDomains(cdp).Runtime.evaluate({
+    expression,
+    contextId: world.executionContextId,
+    returnByValue: true,
+    awaitPromise: false,
+  }, sid);
+  if (evaluated?.exceptionDetails) {
+    throw new Error(`table: isolated sampler failed: ${boundedTableRuntimeDiagnostic(evaluated.exceptionDetails)}`);
+  }
+  if (evaluated?.result?.type !== 'string' || typeof evaluated.result.value !== 'string') {
+    throw new Error('table: isolated sampler returned a non-string result');
+  }
+  return parseTableSamplerResult(evaluated.result.value);
+}
+
+function validAriaIdentity(sample) {
+  const headerCount = sample.headerRows.length;
+  const rawCount = sample.ariaRowCount;
+  if (sample.headerRowsSeen !== headerCount
+    || !Number.isSafeInteger(rawCount)
+    || rawCount < headerCount
+    || rawCount === -1) return null;
+  for (let index = 0; index < headerCount; index += 1) {
+    if (sample.headerRows[index].rawAriaRowIndex !== index + 1) return null;
+  }
+  let previous = headerCount;
+  for (let index = 0; index < sample.dataRows.length; index += 1) {
+    const raw = sample.dataRows[index].rawAriaRowIndex;
+    if (!Number.isSafeInteger(raw) || raw <= previous || raw > rawCount) return null;
+    previous = raw;
+  }
+  const logicalRows = rawCount - headerCount;
+  const coverageComplete = sample.dataRows.length === logicalRows
+    && sample.dataRows.every((row, index) => row.rawAriaRowIndex === headerCount + index + 1);
+  return Object.freeze({ headerCount, logicalRows, coverageComplete });
+}
+
+function observedTableEntry(sample, index) {
+  const ariaIdentity = validAriaIdentity(sample);
+  const accumulator = createTableAccumulator({
+    logicalRows: ariaIdentity ? ariaIdentity.logicalRows : null,
+    logicalCountSource: ariaIdentity ? 'aria-rowcount' : 'none',
+    identitySource: ariaIdentity ? 'aria-rowindex' : 'snapshot-order',
+    orderingSource: ariaIdentity ? 'aria-rowindex' : 'dom-order',
+  });
+  const admitted = [];
+  let truncationReason = sample.truncationReason;
+  for (let rowIndex = 0; rowIndex < sample.dataRows.length; rowIndex += 1) {
+    const row = sample.dataRows[rowIndex];
+    try {
+      const canonical = canonicalizeTableCells(row.cells);
+      if (Buffer.byteLength(canonical, 'utf8') > TABLE_EXTRACTION_LIMITS.maxCanonicalRowBytes
+        || Buffer.byteLength(JSON.stringify(row), 'utf8') > 8194) {
+        truncationReason = 'row-too-large';
+        break;
+      }
+      admitted.push({
+        mountedNodeId: `snapshot-${index + 1}-row-${rowIndex + 1}`,
+        key: ariaIdentity ? row.rawAriaRowIndex - ariaIdentity.headerCount : admitted.length + 1,
+        cells: row.cells,
+      });
+    } catch (error) {
+      if (/bound|4096|item/i.test(error.message || '')) {
+        truncationReason = row.cells.length > 256 ? 'cell-limit' : 'row-too-large';
+        break;
+      }
+      throw error;
+    }
+  }
+  const admission = addTableSampleBatch(accumulator, admitted);
+  if (!admission.admitted && !truncationReason) truncationReason = admission.reason;
+  const safeComplete = ariaIdentity?.coverageComplete
+    && !truncationReason
+    && admitted.length === ariaIdentity.logicalRows;
+  const result = finalizeTableExtraction(accumulator, {
+    termination: safeComplete ? 'logical-count-reached' : 'observation',
+  });
+  const caption = canonicalizeTableCells([sample.caption || `Table ${index + 1}`]);
+  const headers = sample.headerRows.map(row => Object.freeze(
+    row.cells.map(cell => canonicalizeTableCells([cell])),
+  ));
+  return Object.freeze({
+    ...result,
+    caption,
+    headers: Object.freeze(headers),
+    snapshot: Object.freeze({
+      directRowsSeen: sample.directRowsSeen,
+      headerRowsSeen: sample.headerRowsSeen,
+      dataRowsSeen: sample.dataRowsSeen,
+      rowsAdmitted: admitted.length,
+      truncated: Boolean(sample.truncated || truncationReason),
+      truncationReason: truncationReason || null,
+    }),
+  });
+}
+
+function tableObservationModel(sample) {
+  return Object.freeze({
+    schema: 'chrome-cdp-ex.tables.v1',
+    snapshot: Object.freeze({
+      tablesSeen: sample.tablesSeen,
+      tablesReturned: sample.tables.length,
+      truncated: sample.truncated,
+      truncationReason: sample.truncationReason,
+    }),
+    tables: Object.freeze(sample.tables.map(observedTableEntry)),
+  });
+}
+
+function orderedTableObservationEnvelope(model) {
+  return {
+    schema: model.schema,
+    snapshot: model.snapshot,
+    ...(Object.hasOwn(model, 'targetResolution') ? { targetResolution: model.targetResolution } : {}),
+    tables: model.tables,
+  };
+}
+
+function trimTrailingTableObservationPreview(model) {
+  const table = model.tables[model.tables.length - 1];
+  if (table?.inline?.rows?.length > 0) {
+    table.inline.rows.pop();
+    table.inline.rowCount = table.inline.rows.length;
+    table.inline.bytes = Buffer.byteLength(table.inline.rows.join('\n'), 'utf8');
+    table.inline.truncated = true;
+    return true;
+  }
+  if (model.tables.length > 0) {
+    model.tables.pop();
+    model.snapshot.tablesReturned = model.tables.length;
+    model.snapshot.truncated = true;
+    model.snapshot.truncationReason = 'sample-byte-limit';
+    return true;
+  }
+  return false;
+}
+
+function boundedTableObservationJson(model) {
+  const mutable = structuredClone(model);
+  let output = formatJson(orderedTableObservationEnvelope(mutable));
+  while (Buffer.byteLength(output, 'utf8') > 16384) {
+    if (!trimTrailingTableObservationPreview(mutable)) {
+      throw new RangeError('table: observation metadata exceeds the JSON response byte ceiling');
+    }
+    output = formatJson(orderedTableObservationEnvelope(mutable));
+  }
+  return output;
+}
+
+function boundedTableObservationText(model, target = '<target>') {
+  const summary = `Table snapshot: ${model.tables.length} mounted table(s); ${model.snapshot.truncated ? 'truncated' : 'bounded root-frame sample'}`;
+  const footer = 'Snapshot provenance: bounded root-frame observation.';
+  const sections = [];
+  for (let index = 0; index < model.tables.length; index += 1) {
+    const table = model.tables[index];
+    const metadata = [
+      `${table.caption} — ${table.completeness.state}; mounted ${table.mountedRows}; observed ${table.collectedRows}${table.logicalRows === null ? '' : `/${table.logicalRows}`}`,
+    ];
+    for (let headerIndex = 0; headerIndex < table.headers.length; headerIndex += 1) {
+      metadata.push(`${headerIndex === 0 ? 'Header' : `Header ${headerIndex + 1}`}: ${table.headers[headerIndex].join('\t')}`);
+    }
+    sections.push({ metadata, rows: [...table.inline.rows] });
+  }
+  const hint = model.tables.some(table => table.completeness.state !== 'complete')
+    ? `Mounted snapshot only. For explicit virtual collection: cdp table ${target} --collect --scroll-container <selector>`
+    : null;
+  let emissionTruncated = false;
+  const render = () => [
+    summary,
+    ...sections.flatMap(section => [...section.metadata, ...section.rows]),
+    ...(emissionTruncated ? ['Table preview truncated at complete row boundaries by the 8,192-byte emission limit.'] : []),
+    ...(hint ? [hint] : []),
+    footer,
+  ].join('\n');
+  let output = render();
+  while (Buffer.byteLength(output, 'utf8') > 8192) {
+    const section = sections[sections.length - 1];
+    if (!section) throw new RangeError('table: observation summary exceeds the text response byte ceiling');
+    if (section.rows.length > 0) section.rows.pop();
+    else sections.pop();
+    emissionTruncated = true;
+    output = render();
+  }
+  return output;
+}
+
+function boundedTableObservationEmissionJson(result) {
+  if (typeof result !== 'string') return result;
+  let model;
+  try { model = JSON.parse(result); } catch { return result; }
+  if (!model || typeof model !== 'object' || Array.isArray(model)
+    || model.schema !== 'chrome-cdp-ex.tables.v1'
+    || !Array.isArray(model.tables)) return result;
+  return boundedTableObservationJson(model);
+}
+
+function boundedTableObservationEmissionText(result) {
+  if (typeof result !== 'string' || Buffer.byteLength(result, 'utf8') <= 8192) return result;
+  const marker = 'Table preview truncated at complete row boundaries by the 8,192-byte emission limit.';
+  const lines = result.split('\n');
+  while (lines.length > 1 && Buffer.byteLength([...lines, marker].join('\n'), 'utf8') > 8192) lines.pop();
+  if (Buffer.byteLength([...lines, marker].join('\n'), 'utf8') > 8192) {
+    return 'Table snapshot unavailable: summary exceeded the 8,192-byte emission limit.';
+  }
+  return [...lines, marker].join('\n');
+}
+
+async function tableObservationStr(cdp, sid, request) {
+  const sample = await sampleRootFrameTables(cdp, sid, request.selector || 'table');
+  const model = tableObservationModel(sample);
+  return request.format === 'json'
+    ? boundedTableObservationJson(model)
+    : boundedTableObservationText(model);
+}
+
+const TABLE_COLLECTOR_WORLD = 'chrome-cdp-ex-table-collector-v1';
+const TABLE_COLLECTOR_OBJECT_GROUP = 'chrome-cdp-ex-table-collector';
+
+function tableCollectorError(message) {
+  return new Error(`table: ${message}`);
+}
+
+function buildTableCollectorBootstrapExpression() {
+  return String.raw`(() => {
+    'use strict';
+    const O = Object;
+    const A = Array;
+    const S = String;
+    const N = Number;
+    const J = JSON;
+    const WM = WeakMap;
+    const EventCtor = globalThis.Event;
+    const getOwnPropertyDescriptor = O.getOwnPropertyDescriptor;
+    const reflectApply = Reflect.apply;
+    const nodeProto = Node.prototype;
+    const elementProto = Element.prototype;
+    const documentProto = Document.prototype;
+    const parentNodeGetter = getOwnPropertyDescriptor(nodeProto, 'parentNode').get;
+    const firstChildGetter = getOwnPropertyDescriptor(nodeProto, 'firstChild').get;
+    const nextSiblingGetter = getOwnPropertyDescriptor(nodeProto, 'nextSibling').get;
+    const nodeTypeGetter = getOwnPropertyDescriptor(nodeProto, 'nodeType').get;
+    const nodeValueGetter = getOwnPropertyDescriptor(nodeProto, 'nodeValue').get;
+    const localNameGetter = getOwnPropertyDescriptor(elementProto, 'localName').get;
+    const getAttribute = getOwnPropertyDescriptor(elementProto, 'getAttribute').value;
+    const getBoundingClientRect = getOwnPropertyDescriptor(elementProto, 'getBoundingClientRect').value;
+    const queryDocument = getOwnPropertyDescriptor(documentProto, 'querySelector').value;
+    const queryAllDocument = getOwnPropertyDescriptor(documentProto, 'querySelectorAll').value;
+    const apply = (fn, receiver, args) => reflectApply(fn, receiver, args);
+    const nodeIds = new WM();
+    let nextId = 1;
+    let savedScroll = null;
+    const idOf = node => {
+      let id = nodeIds.get(node);
+      if (id === undefined) {
+        id = nextId;
+        nextId += 1;
+        nodeIds.set(node, id);
+      }
+      return S(id);
+    };
+    const query = selector => apply(queryDocument, document, [selector]);
+    const queryAll = selector => apply(queryAllDocument, document, [selector]);
+    const nameOf = node => apply(localNameGetter, node, []);
+    const attr = (node, key) => apply(getAttribute, node, [key]);
+    const parseIndex = raw => {
+      if (raw === null || raw === '') return null;
+      if (raw === '-1') return -1;
+      if (raw.length > 1 && raw[0] === '0') return null;
+      const value = N(raw);
+      if (!N.isSafeInteger(value) || value < 1) return null;
+      return value;
+    };
+    const cellText = root => {
+      let value = '';
+      let current = apply(firstChildGetter, root, []);
+      while (current) {
+        const type = apply(nodeTypeGetter, current, []);
+        if (type === 3) value += apply(nodeValueGetter, current, []) || '';
+        const first = type === 1 ? apply(firstChildGetter, current, []) : null;
+        if (first) current = first;
+        else {
+          let next = null;
+          while (current && current !== root) {
+            next = apply(nextSiblingGetter, current, []);
+            if (next) break;
+            current = apply(parentNodeGetter, current, []);
+          }
+          current = current === root ? null : next;
+        }
+      }
+      return value;
+    };
+    const rowCells = tr => {
+      const cells = [];
+      let child = apply(firstChildGetter, tr, []);
+      while (child) {
+        if (apply(nodeTypeGetter, child, []) === 1) {
+          const tag = nameOf(child);
+          if (tag === 'th' || tag === 'td') cells[cells.length] = cellText(child);
+        }
+        child = apply(nextSiblingGetter, child, []);
+      }
+      return cells;
+    };
+    const collectRows = (parent, kind) => {
+      const rows = [];
+      let child = apply(firstChildGetter, parent, []);
+      while (child) {
+        if (apply(nodeTypeGetter, child, []) === 1 && nameOf(child) === 'tr') {
+          rows[rows.length] = {
+            kind: kind,
+            mountedNodeId: idOf(child),
+            rawAriaRowIndex: parseIndex(attr(child, 'aria-rowindex')),
+            cells: rowCells(child),
+          };
+        }
+        child = apply(nextSiblingGetter, child, []);
+      }
+      return rows;
+    };
+    const rememberScroll = container => {
+      if (savedScroll) return;
+      savedScroll = { container: container, top: container.scrollTop };
+    };
+    const sampleScroll = container => O.freeze({
+      top: container.scrollTop,
+      height: container.scrollHeight,
+      clientHeight: container.clientHeight,
+    });
+    const loadMoreState = selector => {
+      if (!selector) return O.freeze({ present: false, x: 0, y: 0 });
+      const node = query(selector);
+      if (!node || apply(parentNodeGetter, node, []) === null) {
+        return O.freeze({ present: false, x: 0, y: 0 });
+      }
+      const rect = apply(getBoundingClientRect, node, []);
+      return O.freeze({
+        present: true,
+        x: rect.x + rect.width / 2,
+        y: rect.y + rect.height / 2,
+      });
+    };
+    globalThis.__chromeCdpExTableCollector = {
+      sample(tableSelector, scrollSelector, loadMoreSelector) {
+        const list = queryAll(tableSelector);
+        const matches = [];
+        for (let i = 0; i < list.length; i += 1) matches[matches.length] = list[i];
+        if (matches.length !== 1 || nameOf(matches[0]) !== 'table') {
+          return J.stringify({ ok: false, error: 'collection requires exactly one HTML table' });
+        }
+        const table = matches[0];
+        if (apply(parentNodeGetter, table, []) === null) {
+          return J.stringify({ ok: false, error: 'table is detached' });
+        }
+        const container = query(scrollSelector);
+        if (!container) return J.stringify({ ok: false, error: 'scroll-container not found' });
+        rememberScroll(container);
+        const headerRows = [];
+        const dataRows = [];
+        let child = apply(firstChildGetter, table, []);
+        while (child) {
+          if (apply(nodeTypeGetter, child, []) === 1) {
+            const tag = nameOf(child);
+            if (tag === 'thead') {
+              const rows = collectRows(child, 'header');
+              for (let index = 0; index < rows.length; index += 1) headerRows[headerRows.length] = rows[index];
+            } else if (tag === 'tbody') {
+              const rows = collectRows(child, 'data');
+              for (let index = 0; index < rows.length; index += 1) dataRows[dataRows.length] = rows[index];
+            }
+          }
+          child = apply(nextSiblingGetter, child, []);
+        }
+        const scroll = sampleScroll(container);
+        return J.stringify({
+          ok: true,
+          ariaRowCount: parseIndex(attr(table, 'aria-rowcount')),
+          headerRows: headerRows,
+          dataRows: dataRows,
+          scroll: scroll,
+          scrollable: scroll.height > scroll.clientHeight,
+          loadMore: loadMoreState(loadMoreSelector),
+        });
+      },
+      scrollTo(scrollSelector, top) {
+        const container = query(scrollSelector);
+        if (!container) return J.stringify({ ok: false, error: 'scroll-container not found' });
+        rememberScroll(container);
+        container.scrollTop = top;
+        if (typeof EventCtor === 'function') {
+          const dispatch = container.dispatchEvent;
+          if (typeof dispatch === 'function') apply(dispatch, container, [new EventCtor('scroll')]);
+        }
+        return J.stringify({ ok: true, scroll: sampleScroll(container) });
+      },
+      restore() {
+        if (savedScroll) {
+          savedScroll.container.scrollTop = savedScroll.top;
+          if (typeof EventCtor === 'function') {
+            const dispatch = savedScroll.container.dispatchEvent;
+            if (typeof dispatch === 'function') apply(dispatch, savedScroll.container, [new EventCtor('scroll')]);
+          }
+        }
+        return true;
+      },
+    };
+    return true;
+  })()`;
+}
+
+function parseCollectorPayload(value, fallback = 'isolated collector failed') {
+  if (typeof value !== 'string') throw tableCollectorError(fallback);
+  let parsed;
+  try { parsed = JSON.parse(value); } catch { throw tableCollectorError(fallback); }
+  if (!parsed || parsed.ok !== true) {
+    throw tableCollectorError(parsed?.error || fallback);
+  }
+  return parsed;
+}
+
+function collectorIdentity(request, sample) {
+  if (request.rowKeyColumn !== null && request.rowKeyColumn !== undefined) {
+    return {
+      identitySource: 'row-key-column',
+      orderingSource: 'row-key-column',
+      logicalRows: null,
+      logicalCountSource: 'none',
+      headerCount: sample.headerRows.length,
+    };
+  }
+  const headerCount = sample.headerRows.length;
+  for (let index = 0; index < headerCount; index += 1) {
+    if (sample.headerRows[index].rawAriaRowIndex !== index + 1) {
+      throw tableCollectorError('header aria-rowindex coverage is not contiguous from 1');
+    }
+  }
+  const hasAria = sample.dataRows.every(row => Number.isSafeInteger(row.rawAriaRowIndex) && row.rawAriaRowIndex >= 1);
+  if (!hasAria) {
+    throw tableCollectorError('virtual collection requires aria-rowindex or --row-key-column');
+  }
+  return {
+    identitySource: 'aria-rowindex',
+    orderingSource: 'aria-rowindex',
+    logicalRows: null,
+    logicalCountSource: 'none',
+    headerCount,
+  };
+}
+
+function nextAriaLogicalRows(sample, headerCount, previousCount) {
+  const raw = sample.ariaRowCount;
+  if (raw === null || raw === -1) {
+    if (previousCount !== undefined && previousCount !== null) {
+      throw tableCollectorError('aria-rowcount drifted from a stable integer');
+    }
+    return null;
+  }
+  if (!Number.isSafeInteger(raw) || raw < headerCount) {
+    throw tableCollectorError('aria-rowcount is not a stable safe integer');
+  }
+  if (previousCount !== undefined && previousCount !== raw - headerCount) {
+    throw tableCollectorError('aria-rowcount drifted from a stable integer');
+  }
+  return raw - headerCount;
+}
+
+function collectorSamples(sample, identity) {
+  return sample.dataRows.map(row => {
+    let key;
+    if (identity.identitySource === 'row-key-column') {
+      key = row.cells[identity.rowKeyColumn];
+      if (typeof key !== 'string') throw tableCollectorError('row-key-column is missing from a mounted row');
+    } else {
+      key = row.rawAriaRowIndex - identity.headerCount;
+    }
+    return {
+      mountedNodeId: row.mountedNodeId,
+      key,
+      cells: row.cells,
+    };
+  });
+}
+
+function collectorProgress(before, after, admittedNew) {
+  if (admittedNew) return true;
+  if (before.scroll.top !== after.scroll.top) return true;
+  if (before.scroll.height !== after.scroll.height) return true;
+  if (before.loadMore.present && !after.loadMore.present) return true;
+  return false;
+}
+
+function boundedCollectJson(model) {
+  const mutable = structuredClone(model);
+  let output = JSON.stringify(orderedCollectEnvelope(mutable), null, 2);
+  while (Buffer.byteLength(output, 'utf8') > TABLE_EXTRACTION_LIMITS.maxResponseBytes) {
+    if (!mutable.inline?.rows?.length) {
+      throw new RangeError('table: collection metadata exceeds the JSON response byte ceiling');
+    }
+    mutable.inline.rows.pop();
+    mutable.inline.rowCount = mutable.inline.rows.length;
+    mutable.inline.bytes = Buffer.byteLength(mutable.inline.rows.join('\n'), 'utf8');
+    mutable.inline.truncated = true;
+    output = JSON.stringify(orderedCollectEnvelope(mutable), null, 2);
+  }
+  return output;
+}
+
+function orderedCollectEnvelope(model) {
+  return {
+    schema: model.schema,
+    logicalRows: model.logicalRows,
+    logicalCountSource: model.logicalCountSource,
+    identitySource: model.identitySource,
+    orderingSource: model.orderingSource,
+    mountedRows: model.mountedRows,
+    collectedRows: model.collectedRows,
+    recycledMountedNodes: model.recycledMountedNodes,
+    completeness: model.completeness,
+    artifact: model.artifact,
+    inline: model.inline,
+    continuation: model.continuation,
+  };
+}
+
+function boundedCollectText(model) {
+  const rows = [...(model.inline?.rows || [])];
+  const lines = () => [
+    `Table collection: ${model.completeness.state}; collected ${model.collectedRows}`
+      + (model.logicalRows === null ? '' : `/${model.logicalRows}`),
+    ...rows,
+    model.continuation?.token ? `Continuation: ${model.continuation.token}` : 'Continuation: none',
+  ];
+  let output = lines().join('\n');
+  while (Buffer.byteLength(output, 'utf8') > 8192 && rows.length > 0) {
+    rows.pop();
+    output = lines().join('\n');
+  }
+  return output;
+}
+
+function formatCollectedTable(bundle, publication, continuation, format) {
+  const manifest = bundle.manifest;
+  const model = {
+    schema: 'chrome-cdp-ex.table.v1',
+    logicalRows: manifest.logicalRows,
+    logicalCountSource: manifest.logicalCountSource,
+    identitySource: manifest.identitySource,
+    orderingSource: manifest.orderingSource,
+    mountedRows: manifest.mountedRows,
+    collectedRows: manifest.collectedRows,
+    recycledMountedNodes: manifest.recycledMountedNodes,
+    completeness: manifest.completeness,
+    artifact: {
+      id: publication.artifactId,
+      rows: publication.artifact.rows,
+      bytes: publication.artifact.bytes,
+      checksum: publication.artifact.checksum,
+      checksumScope: publication.artifact.checksumScope,
+    },
+    inline: manifest.inline,
+    continuation: continuation.continuation,
+  };
+  return format === 'json' ? boundedCollectJson(model) : boundedCollectText(model);
+}
+
+async function tableCollectionStr(cdp, sid, request, execution, options = {}) {
+  const store = options.store;
+  const session = options.session || { collector: null };
+  if (!store) throw tableCollectorError('artifact store is required for collection');
+  if ((options.platform || process.platform) === 'win32') {
+    throw tableCollectorError('private table artifacts are unavailable on Windows in v2.16');
+  }
+  if (session.collector) throw tableCollectorError('collector-busy');
+  session.collector = true;
+  let worldId = null;
+  let restored = false;
+  const listeners = [];
+  let invalidated = null;
+  const invalidate = error => {
+    if (!invalidated) invalidated = error;
+  };
+  const throwIfInvalid = () => {
+    if (invalidated) throw invalidated;
+  };
+  const runPage = async (runtime, operation) => runtime.runCdpOperation(async ({ timeoutMs }) => {
+    throwIfInvalid();
+    runtime.throwIfAborted();
+    const result = await operation(timeoutMs);
+    throwIfInvalid();
+    runtime.throwIfAborted();
+    return result;
+  });
+  const evaluate = (runtime, expression) => runPage(runtime, timeoutMs => cdpDomains(cdp).Runtime.evaluate({
+    expression,
+    contextId: worldId,
+    objectGroup: TABLE_COLLECTOR_OBJECT_GROUP,
+    returnByValue: true,
+    awaitPromise: false,
+  }, sid, timeoutMs).then(evaluated => {
+    if (evaluated?.exceptionDetails) {
+      throw tableCollectorError(boundedTableRuntimeDiagnostic(evaluated.exceptionDetails));
+    }
+    return evaluated?.result?.value;
+  }));
+  const samplePage = async runtime => parseCollectorPayload(
+    await evaluate(
+      runtime,
+      `__chromeCdpExTableCollector.sample(${JSON.stringify(request.selector || 'table')},`
+        + `${JSON.stringify(request.scrollContainer)},${JSON.stringify(request.loadMore || null)})`,
+    ),
+    'isolated collector sample failed',
+  );
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    while (listeners.length) {
+      try { listeners.pop()(); } catch {}
+    }
+    try {
+      cdpDomains(cdp).Runtime.releaseObjectGroup({ objectGroup: TABLE_COLLECTOR_OBJECT_GROUP }, sid);
+    } catch {}
+    session.collector = false;
+  };
+
+  let cleaned = false;
+  session.collector = true;
+  try {
+    return await runTableCollectionLifecycle(execution, {
+      collect: async runtime => {
+        runtime.throwIfAborted();
+        if (runtime.remainingPageMs() <= 0) throw new TableCollectionDeadlineError('page');
+        const frameTree = await runPage(runtime, timeoutMs => cdpDomains(cdp).Page.getFrameTree({}, sid, timeoutMs));
+        const frameId = frameTree?.frameTree?.frame?.id;
+        if (typeof frameId !== 'string' || frameId.length === 0) {
+          throw tableCollectorError('root frame id is unavailable');
+        }
+        const world = await runPage(runtime, timeoutMs => cdpDomains(cdp).Page.createIsolatedWorld({
+          frameId,
+          worldName: TABLE_COLLECTOR_WORLD,
+          grantUniveralAccess: false,
+        }, sid, timeoutMs));
+        worldId = world?.executionContextId;
+        if (!Number.isSafeInteger(worldId) || worldId < 1) {
+          throw tableCollectorError('isolated execution context is unavailable');
+        }
+        listeners.push(cdp.onEvent('Runtime.executionContextDestroyed', params => {
+          if (params.executionContextId === worldId) {
+            invalidate(tableCollectorError('isolated execution context was destroyed'));
+          }
+        }));
+        listeners.push(cdp.onEvent('Page.frameNavigated', params => {
+          if (!params?.frame?.parentId) {
+            invalidate(tableCollectorError('root frame navigated during collection'));
+          }
+        }));
+        listeners.push(cdp.onEvent('Target.detachedFromTarget', () => {
+          invalidate(tableCollectorError('target detached during collection'));
+        }));
+        await evaluate(runtime, buildTableCollectorBootstrapExpression());
+        let sample = await samplePage(runtime);
+        const identity = collectorIdentity(request, sample);
+        identity.rowKeyColumn = request.rowKeyColumn;
+        if (identity.identitySource === 'aria-rowindex') {
+          identity.logicalRows = nextAriaLogicalRows(sample, identity.headerCount);
+          identity.logicalCountSource = identity.logicalRows === null ? 'none' : 'aria-rowcount';
+        }
+        const accumulator = createTableAccumulator({
+          logicalRows: identity.logicalRows,
+          logicalCountSource: identity.logicalCountSource,
+          identitySource: identity.identitySource,
+          orderingSource: identity.orderingSource,
+        });
+        const admit = current => {
+          const batch = collectorSamples(current, identity);
+          const admission = addTableSampleBatch(accumulator, batch);
+          if (!admission.admitted) return admission;
+          return { admitted: true, added: batch.length, collectedRows: admission.collectedRows };
+        };
+        let previousCollected = 0;
+        let admission = admit(sample);
+        if (!admission.admitted) {
+          return { accumulator, termination: admission.reason, interactions: 0 };
+        }
+        previousCollected = admission.collectedRows;
+        let interactions = 0;
+        let noProgress = 0;
+        const complete = () => {
+          if (identity.identitySource !== 'aria-rowindex' || identity.logicalRows === null) return false;
+          const result = finalizeTableExtraction(accumulator, { termination: 'logical-count-reached' });
+          return result.completeness.state === 'complete';
+        };
+        try {
+          while (!complete()) {
+            runtime.throwIfAborted();
+            throwIfInvalid();
+            if (runtime.remainingPageMs() <= 0) {
+              return { accumulator, termination: 'time-limit', interactions };
+            }
+            if (interactions >= TABLE_EXTRACTION_LIMITS.maxInteractions) {
+              return { accumulator, termination: 'interaction-limit', interactions };
+            }
+            if (noProgress >= TABLE_EXTRACTION_LIMITS.maxNoProgressCycles) {
+              return { accumulator, termination: 'no-progress-limit', interactions };
+            }
+            const before = sample;
+            const maxTop = Math.max(0, before.scroll.height - before.scroll.clientHeight);
+            if (before.loadMore.present && before.scroll.top >= maxTop) {
+              await runPage(runtime, async timeoutMs => {
+                const base = {
+                  x: before.loadMore.x,
+                  y: before.loadMore.y,
+                  button: 'left',
+                  clickCount: 1,
+                  modifiers: 0,
+                };
+                await cdpDomains(cdp).Input.dispatchMouseEvent({ ...base, type: 'mouseMoved' }, sid, timeoutMs);
+                await cdpDomains(cdp).Input.dispatchMouseEvent({ ...base, type: 'mousePressed' }, sid, timeoutMs);
+                await cdpDomains(cdp).Input.dispatchMouseEvent({ ...base, type: 'mouseReleased' }, sid, timeoutMs);
+              });
+            } else if (before.scroll.top < maxTop) {
+              const nextTop = Math.min(maxTop, before.scroll.top + Math.max(1, before.scroll.clientHeight));
+              parseCollectorPayload(await evaluate(
+                runtime,
+                `__chromeCdpExTableCollector.scrollTo(${JSON.stringify(request.scrollContainer)},${nextTop})`,
+              ), 'scroll-container is not scrollable');
+            } else if (!before.scrollable && !before.loadMore.present) {
+              const needsMore = identity.logicalRows !== null && previousCollected < identity.logicalRows;
+              if (needsMore) throw tableCollectorError('scroll-container is not scrollable');
+              return {
+                accumulator,
+                termination: identity.logicalRows === null ? 'no-progress-limit' : 'logical-count-reached',
+                interactions,
+              };
+            } else {
+              noProgress += 1;
+              sample = await samplePage(runtime);
+              continue;
+            }
+            interactions += 1;
+            sample = await samplePage(runtime);
+            if (identity.identitySource === 'aria-rowindex') {
+              nextAriaLogicalRows(sample, identity.headerCount, identity.logicalRows);
+            }
+            if (sample.headerRows.length !== identity.headerCount) {
+              throw tableCollectorError('header aria-rowindex coverage drifted');
+            }
+            for (let index = 0; index < identity.headerCount; index += 1) {
+              if (sample.headerRows[index]?.rawAriaRowIndex !== index + 1) {
+                throw tableCollectorError('header aria-rowindex coverage drifted');
+              }
+            }
+            const collectedBefore = previousCollected;
+            admission = admit(sample);
+            if (!admission.admitted) {
+              return { accumulator, termination: admission.reason, interactions };
+            }
+            previousCollected = admission.collectedRows;
+            if (collectorProgress(before, sample, previousCollected > collectedBefore)) noProgress = 0;
+            else noProgress += 1;
+          }
+        } catch (error) {
+          if (error?.code === 'TABLE_COLLECTION_PAGE_DEADLINE') {
+            runtime.clearLatePageInvocation();
+            return { accumulator, termination: 'time-limit', interactions };
+          }
+          throw error;
+        }
+        if (runtime.remainingPageMs() > 0 && worldId !== null && !restored) {
+          try {
+            await evaluate(runtime, '__chromeCdpExTableCollector.restore()');
+            restored = true;
+          } catch {}
+        }
+        return { accumulator, termination: 'logical-count-reached', interactions };
+      },
+      finalize: async collection => {
+        if (!collection?.accumulator) {
+          throw collection?.error || new TableCollectionDeadlineError('page');
+        }
+        const bundle = buildTableExportBundle(collection.accumulator, {
+          termination: collection.termination || 'error',
+        });
+        const publication = await store.publish(bundle, execution);
+        const continuation = publication.artifact.rows > 0
+          ? await store.readContinuation(publication.token)
+          : {
+            continuation: {
+              token: null,
+              offset: 0,
+              rowCount: 0,
+              rows: [],
+              bytes: 0,
+              nextToken: null,
+            },
+          };
+        return formatCollectedTable(bundle, publication, continuation, request.format);
+      },
+      cleanup,
+    });
+  } finally {
+    cleanup();
+  }
 }
 
 // --- Navigation history ---
@@ -11081,9 +12783,15 @@ const BATCH_PARALLEL_SAFE_READ_COMMANDS = new Set([
   'controls', 'html', 'text', 'table', 'styles', 'summary', 'net', 'wait', 'waitfor',
 ]);
 
-function isBatchParallelUnsafeCommand(cmd) {
+function isBatchParallelUnsafeCommand(cmd, args = []) {
   const command = COMMAND_SURFACE.resolve(cmd);
   if (!command) return true;
+  if (command.name === 'table') {
+    if (command.kind !== 'conditional-mutation'
+      || command.authorization !== 'conditional'
+      || command.evidencePolicy !== 'none') return true;
+    return isTableCollectArgs(args);
+  }
   if (command.kind !== 'read'
     || command.authorization !== 'standard'
     || command.evidencePolicy !== 'none') return true;
@@ -13411,6 +15119,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   }
 
   const session = createSessionState({ targetId, sessionId });
+  const tableArtifactStore = createTableArtifactStore({
+    runtimeDir: RUNTIME_DIR,
+    targetId,
+    sessionId: randomBytes(16).toString('hex'),
+    platform: process.platform,
+  });
+  const tableCollectorSession = { collector: null };
   initializeSessionLog(session);
   ensureSessionScreenshotDir(session);
 
@@ -13559,15 +15274,15 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   });
 
   // Shutdown helpers
-  let alive = true;
-  function shutdown() {
-    if (!alive) return;
-    alive = false;
-    server.close();
-    if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
-    cdp.close();
-    process.exit(0);
-  }
+  let server = null;
+  const requestConnections = new Set();
+  const shutdown = createDaemonShutdown({
+    requestConnections,
+    getServer: () => server,
+    socketPath: sp,
+    cleanupSession: () => tableArtifactStore.cleanupSession(),
+    closeCdp: () => cdp.close(),
+  });
 
   // Exit if target goes away or Chrome disconnects
   cdp.onEvent('Target.targetDestroyed', (params) => {
@@ -13577,8 +15292,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     if (params.sessionId === sessionId) shutdown();
   });
   cdp.onClose(() => shutdown());
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', () => shutdown());
+  process.on('SIGINT', () => shutdown());
 
   // Idle timer
   let keepaliveUntil = 0;
@@ -13714,7 +15429,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     fullshot: args => fullshotStr(cdp, sessionId, args[0], targetId),
     html: args => htmlStr(cdp, sessionId, args),
     text: args => textStr(cdp, sessionId, args),
-    table: selector => tableStr(cdp, sessionId, selector),
+    table: async (request, execution) => request.mode === 'continue'
+      ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)
+      : request.mode === 'collect'
+        ? tableCollectionStr(cdp, sessionId, request, execution, { store: tableArtifactStore, session: tableCollectorSession })
+        : tableObservationStr(cdp, sessionId, request),
     net: () => netStr(cdp, sessionId),
     overlay: args => overlayStr(cdp, sessionId, targetId, args, refMap, refState),
     record: args => recordStr(cdp, sessionId, args, refMap),
@@ -13781,6 +15500,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     wait: args => waitStr(args[0]),
     waitfor: args => waitForStr(cdp, sessionId, args, refMap, refState),
   };
+  Object.freeze(readCapabilities);
   const recordActionsBuilder = applicationPreflight.handlerBuilders['record-actions'];
   const exportPlaywrightBuilder = applicationPreflight.handlerBuilders['export-playwright'];
   const dismissModalBuilder = applicationPreflight.handlerBuilders['dismiss-modal'];
@@ -14054,7 +15774,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const blocked = commands.filter(command => BATCH_BLOCKED.has(command.cmd));
       if (blocked.length) throw new Error(`batch: ${blocked.map(command => command.cmd).join(', ')} not allowed inside batch`);
       if (parallel) {
-        const unsafe = commands.filter(command => isBatchParallelUnsafeCommand(command.cmd));
+        const unsafe = commands.filter(command => isBatchParallelUnsafeCommand(command.cmd, command.args || []));
         if (unsafe.length) throw new Error(`batch --parallel: ${[...new Set(unsafe.map(command => command.cmd))].join(', ')} mutate shared state — use sequential batch`);
       }
       const autoActionJson = parsedBatch.output === 'model';
@@ -14172,6 +15892,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     closetab: applicationPreflight.handlerBuilders.closetab(actionCapabilities),
     loadall: applicationPreflight.handlerBuilders.loadall(actionCapabilities),
   };
+  Object.freeze(applicationHandlers);
   const applicationDispatcher = createCommandDispatcher({
     registry: applicationRegistry,
     owners: applicationPreflight.routeOwners,
@@ -14180,9 +15901,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   });
 
   // Handle a command
-  async function handleCommand({ cmd, args }) {
+  async function handleCommand({ cmd, args }, execution = undefined) {
     resetIdle();
     try {
+      enforceDaemonTableCollectionGate({ cmd, args }, execution);
       let result;
       const applicationRoute = applicationDispatcher.route(cmd);
       if (applicationRoute?.owner === 'application') {
@@ -14190,7 +15912,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           cmd,
           args,
           targetBound: Boolean(targetId),
-        }, applicationDispatcher);
+        }, applicationDispatcher, cmd === 'table' && execution?.deadline ? execution : undefined);
         if (route.ok === false) {
           return { ok: false, result: route.result, error: route.error };
         }
@@ -14238,33 +15960,27 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   // Request:  { "id": <number>, "cmd": "<command>", "args": ["arg1", "arg2", ...] }
   // Response: { "id": <number>, "ok": <boolean>, "result": "<string>" }
   //           or { "id": <number>, "ok": false, "error": "<message>" }
-  const server = net.createServer((conn) => {
-    let buf = '';
-    conn.on('data', (chunk) => {
-      buf += chunk.toString();
-      const lines = buf.split('\n');
-      buf = lines.pop(); // keep incomplete last line
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        let req;
-        try {
-          req = JSON.parse(line);
-        } catch {
-          conn.write(JSON.stringify({ ok: false, error: 'Invalid JSON request', id: null }) + '\n');
-          continue;
+  server = net.createServer((conn) => {
+    let requestConnection;
+    requestConnection = createDaemonRequestConnection(conn, {
+      handleRequest: handleCommand,
+      cleanup: (_request, execution) => tableArtifactStore.rollbackRequest(execution),
+      onFlushed: (_request, execution) => tableArtifactStore.releaseRequest(execution),
+      onDispose: () => {
+        if (requestConnection.activeRequestCount() === 0 && conn.destroyed) {
+          requestConnections.delete(requestConnection);
         }
-        handleCommand(req).then((res) => {
-          const payload = JSON.stringify({ ...res, id: req.id }) + '\n';
-          if (res.stopAfter) conn.end(payload, shutdown);
-          else conn.write(payload);
-        });
-      }
+      },
+      onDisconnect: () => requestConnections.delete(requestConnection),
+      onFatal: () => shutdown(1),
+      onStop: shutdown,
     });
+    requestConnections.add(requestConnection);
   });
 
   server.on('error', (e) => {
     process.stderr.write(`Daemon server listen failed: ${e.message}\n`);
-    process.exit(1);
+    shutdown(1);
   });
 
   if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
@@ -14332,6 +16048,12 @@ const DAEMON_SIDE_EFFECT_AUTHORIZATIONS = new Set([
 
 function daemonRequestMayHaveSideEffects(request = {}) {
   const command = COMMAND_SURFACE.resolve(request.cmd);
+  if (command?.name === 'table') {
+    if (command.kind !== 'conditional-mutation'
+      || command.authorization !== 'conditional'
+      || command.evidencePolicy !== 'none') return true;
+    return isTableCollectArgs(request.args || []);
+  }
   return Boolean(command && DAEMON_SIDE_EFFECT_AUTHORIZATIONS.has(command.authorization));
 }
 
@@ -15499,11 +17221,13 @@ function createEvalrawCommandHandler({ evalRaw }) {
   };
 }
 
-function authorizeDaemonApplicationCommand({ command, policy, mutates, targetBound }) {
+function authorizeDaemonApplicationCommand({ command, args = [], policy, mutates, targetBound }) {
   if (!targetBound) return { allowed: false, code: 'target-not-bound' };
   const actionMutates = ['dialog', 'hover', 'keepalive', 'loadall'].includes(command)
     ? mutates === false
     : mutates === true;
+  const tablePolicyMatches = command === 'table' && policy === 'conditional' && mutates === false;
+  if (tablePolicyMatches) parseTableArgs(args);
   const allowed = ([
     'back', 'click', 'clickxy', 'clock', 'closetab', 'dismiss-modal', 'fill', 'forward', 'hover',
     'cookiedel', 'cookieset', 'dialog', 'emulate', 'jsclick', 'keepalive', 'mock',
@@ -15513,6 +17237,7 @@ function authorizeDaemonApplicationCommand({ command, policy, mutates, targetBou
       && policy === 'mutation' && actionMutates)
     || (['console', 'diff-shot', 'fullshot', 'netlog', 'record', 'shot'].includes(command)
       && policy === 'conditional' && mutates === false)
+    || tablePolicyMatches
     || (['batch', 'flow', 'repeat'].includes(command)
       && policy === 'composite' && mutates === false)
     || (command === 'replay' && policy === 'mutation' && mutates === true)
@@ -15526,7 +17251,7 @@ function authorizeDaemonApplicationCommand({ command, policy, mutates, targetBou
     : { allowed: false, code: 'policy-denied' };
 }
 
-async function executeDaemonApplicationRoute(requestInput, context) {
+async function executeDaemonApplicationRoute(requestInput, context, execution = undefined) {
   inspectCommandDispatcher(context);
   const request = snapshotApplicationDataObject(requestInput, 'daemon route request');
   const expectedKeys = new Set(['cmd', 'args', 'targetBound']);
@@ -15540,7 +17265,7 @@ async function executeDaemonApplicationRoute(requestInput, context) {
     name: request.cmd,
     args: request.args,
     targetBound: request.targetBound,
-  });
+  }, execution);
   const semantics = classifyCommandResultSemantics(
     { ok: true, result: route.result },
     { command: request.cmd },
@@ -16331,9 +18056,15 @@ function emitTargetCommandResponse(response, {
     && response?.result !== null
     && response.result !== '';
   if (hasResult) {
-    const output = format === 'json' && targetResolution
+    let output = format === 'json' && targetResolution
+      && !isDeterministicTableContinuationResult(cmd, response.result)
       ? attachTargetResolutionDiagnostics(response.result, targetResolution)
       : response.result;
+    if (cmd === 'table' && !isDeterministicTableContinuationResult(cmd, response.result)) {
+      output = format === 'json'
+        ? boundedTableObservationEmissionJson(output)
+        : boundedTableObservationEmissionText(output);
+    }
     console.log(output);
     const semantics = classifyCommandResultSemantics(
       { ok: response?.ok === true, result: output },
@@ -16345,6 +18076,22 @@ function emitTargetCommandResponse(response, {
   if (response?.ok === false) {
     console.error(formatDaemonCommandError(response.error, { cmd, targetPrefix, format }));
     process.exitCode = 1;
+  }
+}
+
+function isDeterministicTableContinuationResult(cmd, result) {
+  if (cmd !== 'table' || typeof result !== 'string') return false;
+  let model;
+  try { model = JSON.parse(result); } catch { return false; }
+  if (!model || typeof model !== 'object' || Array.isArray(model)
+    || model.schema !== 'chrome-cdp-ex.table.v1'
+    || !model.continuation || typeof model.continuation !== 'object'
+    || Array.isArray(model.continuation)) return false;
+  try {
+    parseTableContinuationToken(model.continuation.token);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -17106,6 +18853,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
+  sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
   probeTcpPort,
@@ -17150,4 +18898,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createClickCommandHandler, createEvalrawCommandHandler,
   authorizeDaemonApplicationCommand, executeDaemonApplicationRoute,
   daemonRequestMayHaveSideEffects,
+  TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,
+  createDaemonRequestExecutionContext, createTableCollectionRuntime,
+  runTableCollectionLifecycle, createDaemonRequestConnection,
+  createDaemonShutdown, enforceDaemonTableCollectionGate,
 } : undefined;

@@ -1,4 +1,5 @@
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
@@ -19,6 +20,18 @@ const packageVersion = JSON.parse(
 ).version;
 
 describe('public contract baseline', () => {
+  it('keeps every published v2.15 fixture byte-identical', () => {
+    const expected = {
+      'package-entries.v1.json': '279e3e23d154d6ef5f01bb4479be22167b39634bfbdc28b7b27a49558476d3e2',
+      'public-contracts.v1.json': '169f2ff562ad05fe38e902de1500429444e3ad646aee1121ddea02dd46809556',
+      'runtime-dispatch.v1.json': '43326e9b9216a4c27d7d7beda4265ee86fe32ed99f80297215829ecea10ab062',
+    };
+    for (const [name, checksum] of Object.entries(expected)) {
+      const bytes = readFileSync(join(rootDir, 'docs/contracts/v2.15.0', name));
+      expect(createHash('sha256').update(bytes).digest('hex'), name).toBe(checksum);
+    }
+  });
+
   it('canonicalizes object keys recursively without reordering arrays', () => {
     expect(canonicalize({ z: 1, a: { y: 2, b: 3 }, list: [{ z: 1, a: 2 }, 'x'] }))
       .toEqual({ a: { b: 3, y: 2 }, list: [{ a: 2, z: 1 }, 'x'], z: 1 });
@@ -40,10 +53,15 @@ describe('public contract baseline', () => {
     expect(contract.schema).toBe('chrome-cdp-ex.public-contracts.v1');
     expect(contract.productVersion).toBe(packageVersion);
     expect(contract.commands).toHaveLength(81);
+    expect(contract.commands.every(command => (
+      typeof command.kind === 'string'
+      && typeof command.authorization === 'string'
+      && typeof command.evidencePolicy === 'string'
+    ))).toBe(true);
     expect(new Set(aliases).size).toBe(23);
-    expect(contract.schemas).toHaveLength(3);
+    expect(contract.schemas).toHaveLength(5);
     expect(contract.schemas.every(schema => schema.id.startsWith('https://'))).toBe(true);
-    expect(contract.mcp.tools).toHaveLength(25);
+    expect(contract.mcp.tools).toHaveLength(26);
     expect(contract.mcp.runCommandAllowlist).toHaveLength(83);
     expect(contract.mcp.resourceTemplates).toHaveLength(3);
   });
@@ -83,6 +101,12 @@ describe('public contract baseline', () => {
       'wait-for-stable',
       'run-command-read',
       'run-command-mutation',
+      'run-command-table-observe',
+      'run-command-table-collect',
+      'run-command-table-continue',
+      'table-observe',
+      'table-collect',
+      'table-continue',
     ]));
     expect(contract.mcp.mappingCases.every(entry => commandSpellings.has(entry.command[0]))).toBe(true);
     expect(contract.mcp.invalidCases.map(entry => entry.id)).toEqual([
@@ -103,6 +127,10 @@ describe('public contract baseline', () => {
       'run-command-diff-shot-reset-without-confirm',
       'run-command-shot-path-without-confirm',
       'run-command-fullshot-path-without-confirm',
+      'run-command-table-collect-without-confirm',
+      'run-command-table-malformed',
+      'table-collect-without-confirm',
+      'table-selector-and-continue',
       'screenshot-path-without-confirm',
       'run-command-not-allowlisted',
       'run-command-newline',
@@ -129,7 +157,7 @@ describe('public contract baseline', () => {
     expect(large[0].length).toBeLessThanOrEqual(600);
   });
 
-  it('matches the checked-in v2.15.0 fixture and detects each protected drift class', async () => {
+  it('matches the checked-in current-version fixture and detects each protected drift class', async () => {
     const actual = await buildPublicContract({ rootDir });
     const fixture = JSON.parse(readFileSync(
       join(rootDir, 'docs', 'contracts', `v${packageVersion}`, 'public-contracts.v1.json'),
@@ -141,6 +169,9 @@ describe('public contract baseline', () => {
       ['command name', 'commands[0].name', contract => { contract.commands[0].name = 'assist'; }],
       ['command alias', 'commands[1].aliases[0]', contract => { contract.commands[1].aliases[0] = 'pages'; }],
       ['feedback policy', 'commands[4].feedbackPolicy', contract => { contract.commands[4].feedbackPolicy = 'settle-diff'; }],
+      ['command kind', 'commands[0].kind', contract => { contract.commands[0].kind = 'mutation'; }],
+      ['authorization policy', 'commands[0].authorization', contract => { contract.commands[0].authorization = 'mutation'; }],
+      ['evidence policy', 'commands[0].evidencePolicy', contract => { contract.commands[0].evidencePolicy = 'action-receipt'; }],
       ['JSON schema', 'schemas[0].document.title', contract => { contract.schemas[0].document.title = 'Changed'; }],
       ['MCP required field', 'mcp.tools[0].inputSchema.required', contract => { contract.mcp.tools[0].inputSchema.required = ['fixture']; }],
       ['MCP mapping', 'mcp.mappingCases[0].command[0]', contract => { contract.mcp.mappingCases[0].command[0] = 'list'; }],

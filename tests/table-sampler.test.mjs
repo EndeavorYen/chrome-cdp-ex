@@ -1,0 +1,824 @@
+import { describe, expect, it } from 'vitest';
+import { runInNewContext } from 'node:vm';
+
+import {
+  TABLE_SAMPLER_LIMITS,
+  buildTableSamplerExpression,
+  parseTableSamplerResult,
+} from '../skills/chrome-cdp-ex/scripts/lib/table-sampler.mjs';
+
+function table(overrides = {}) {
+  return {
+    caption: 'Orders',
+    ariaRowCount: null,
+    headerRows: [],
+    dataRows: [
+      { rawAriaRowIndex: null, cells: ['A', ''] },
+      { rawAriaRowIndex: null, cells: ['', 'B'] },
+    ],
+    directRowsSeen: 2,
+    headerRowsSeen: 0,
+    dataRowsSeen: 2,
+    truncated: false,
+    truncationReason: null,
+    ...overrides,
+  };
+}
+
+function page(tables = [table()], overrides = {}) {
+  return JSON.stringify({
+    schema: 'chrome-cdp-ex.table-sample.v1',
+    tablesSeen: tables.length,
+    tables,
+    truncated: false,
+    truncationReason: null,
+    ...overrides,
+  });
+}
+
+function executeSamplerTableRows(tableRows, tableAttributes = [], {
+  selector = 'table',
+  StringConstructor = String,
+  bodyNamespace = 'http://www.w3.org/1999/xhtml',
+  cellDepth = 0,
+} = {}) {
+  class N {
+    constructor(type, value = null) { this.t = type; this.v = value; this.p = null; this.c = []; }
+    append(child) { child.p = this; this.c.push(child); return child; }
+    get parentNode() { return this.p; }
+    get firstChild() { return this.c[0] || null; }
+    get nextSibling() { return this.p?.c[this.p.c.indexOf(this) + 1] || null; }
+    get nodeType() { return this.t; }
+    get nodeValue() { return this.v; }
+  }
+  class E extends N {
+    constructor(name, attrs = {}, namespace = 'http://www.w3.org/1999/xhtml') {
+      super(1); this.n = name; this.a = attrs; this.ns = namespace;
+    }
+    get localName() {
+      if (!(this instanceof E)) throw new TypeError('Illegal invocation');
+      return this.n;
+    }
+    getAttribute(name) { return Object.hasOwn(this.a, name) ? this.a[name] : null; }
+    hasAttribute(name) { return Object.hasOwn(this.a, name); }
+    get namespaceURI() { return this.ns; }
+    matches(candidate) {
+      if (candidate === 'table') return this.n === 'table';
+      if (candidate[0] === '#') return this.a.id === candidate.slice(1);
+      return false;
+    }
+  }
+  class X extends N { constructor(value) { super(3, value); } }
+  class T extends E { constructor(attrs = {}) { super('table', attrs); } }
+  class D extends N {
+    constructor(root) { super(9); this.r = root; this.append(root); }
+    querySelectorAll() {
+      const matches = [];
+      const visit = node => {
+        if (node instanceof T) matches.push(node);
+        for (const child of node.c) visit(child);
+      };
+      visit(this.r);
+      return new L(matches);
+    }
+  }
+  class L {
+    constructor(values) { this.v = values; }
+    get length() { return this.v.length; }
+    item(index) { return this.v[index] || null; }
+  }
+  const root = new E('html');
+  for (let tableIndex = 0; tableIndex < tableRows.length; tableIndex += 1) {
+    const rows = tableRows[tableIndex];
+    const tableNode = root.append(new T(tableAttributes[tableIndex] || {}));
+    const body = tableNode.append(new E('tbody', {}, bodyNamespace));
+    for (const cells of rows) {
+      const row = body.append(new E('tr'));
+      for (const value of cells) {
+        const cell = row.append(new E('td'));
+        let textParent = cell;
+        for (let depth = 0; depth < cellDepth; depth += 1) textParent = textParent.append(new E('span'));
+        textParent.append(new X(value));
+      }
+    }
+  }
+  return parseTableSamplerResult(runInNewContext(buildTableSamplerExpression(selector), {
+    Object, Array, String: StringConstructor, Number, Node: N, Element: E, Text: X, Document: D,
+    HTMLTableElement: T, NodeList: L, document: new D(root),
+  }));
+}
+
+describe('trusted table sampler source', () => {
+  it('freezes the root-frame bounded DOM contract without page callbacks or mutable globals', () => {
+    const expression = buildTableSamplerExpression('table');
+
+    expect(TABLE_SAMPLER_LIMITS).toEqual({
+      maxTables: 10,
+      maxDirectRowsPerTable: 128,
+      maxCellsPerRow: 256,
+      maxCanonicalRowBytes: 4096,
+      maxSerializedBytes: 524288,
+      maxCaptionBytes: 512,
+      maxAttributeBytes: 1024,
+      maxCellTextBytes: 4096,
+      maxDomNodesPerCell: 4096,
+      maxTextNodesPerCell: 4096,
+      maxAncestorDepth: 4096,
+      maxDirectChildren: 4096,
+      maxDocumentNodes: 65536,
+      maxClassScanUnits: 4096,
+    });
+    expect(expression).toContain('chrome-cdp-ex.table-sample.v1');
+    expect(expression).toContain('HTMLTableElement');
+    expect(expression).toContain('const O = Object');
+    expect(expression).toContain('O.getOwnPropertyDescriptor');
+    expect(expression).toContain('Node.prototype');
+    expect(expression).toContain('Element.prototype');
+    expect(expression).toContain('Text.prototype');
+    expect(expression).toContain("getOwnPropertyDescriptor(elementProto, 'namespaceURI').get");
+    expect(expression).not.toContain("getOwnPropertyDescriptor(elementProto, 'matches')");
+    expect(expression).not.toContain('querySelectorAll');
+    expect(expression).not.toMatch(/\.querySelector|\.querySelectorAll|\.matches|\.closest|\.textContent/);
+    expect(expression).not.toMatch(/JSON\.stringify|new TextEncoder|\.toJSON|\.filter\(|\.map\(|\.isPrototypeOf\(|\.test\(|\.padStart\(|for\s*\([^)]*\sof\s/);
+    expect(Buffer.byteLength(expression, 'utf8')).toBeLessThan(100_000);
+  });
+
+  it('executes against captured DOM primitives without invoking poisoned page callbacks', () => {
+    let poisonCalls = 0;
+    class NodeLike {
+      constructor(type, value = null) {
+        this._type = type;
+        this._value = value;
+        this._parent = null;
+        this._children = [];
+      }
+      append(child) {
+        child._parent = this;
+        this._children.push(child);
+        return child;
+      }
+      get parentNode() { return this._parent; }
+      get firstChild() { return this._children[0] || null; }
+      get nextSibling() {
+        if (!this._parent) return null;
+        const index = this._parent._children.indexOf(this);
+        return this._parent._children[index + 1] || null;
+      }
+      get nodeType() { return this._type; }
+      get nodeValue() { return this._value; }
+      get textContent() { poisonCalls += 1; throw new Error('page textContent'); }
+      toJSON() { poisonCalls += 1; throw new Error('page toJSON'); }
+    }
+    class ElementLike extends NodeLike {
+      constructor(localName, attributes = {}) {
+        super(1);
+        this._localName = localName;
+        this._attributes = attributes;
+      }
+      get localName() {
+        if (!(this instanceof ElementLike)) throw new TypeError('Illegal invocation');
+        return this._localName;
+      }
+      getAttribute(name) { return Object.hasOwn(this._attributes, name) ? this._attributes[name] : null; }
+      hasAttribute(name) { return Object.hasOwn(this._attributes, name); }
+      get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
+      matches(selector) { return selector === 'table' && this._localName === 'table'; }
+      querySelectorAll() { poisonCalls += 1; throw new Error('page querySelectorAll'); }
+      closest() { poisonCalls += 1; throw new Error('page closest'); }
+    }
+    class TextLike extends NodeLike {
+      constructor(value) { super(3, value); }
+    }
+    class HTMLTableElementLike extends ElementLike {
+      constructor(attributes) { super('table', attributes); }
+    }
+    class DocumentLike extends NodeLike {
+      constructor(root) { super(9); this._root = this.append(root); }
+      get documentElement() { return this._root; }
+      querySelectorAll(selector) {
+        poisonCalls += 1;
+        throw new Error(`page querySelectorAll ${selector}`);
+      }
+    }
+    class NodeListLike {
+      constructor(values) { this.values = values; }
+      get length() { return this.values.length; }
+      item(index) { return this.values[index] || null; }
+    }
+    const root = new ElementLike('html');
+    const outer = root.append(new HTMLTableElementLike({ 'aria-label': 'Orders', 'aria-rowcount': '2' }));
+    const body = outer.append(new ElementLike('tbody'));
+    const first = body.append(new ElementLike('tr', { 'aria-rowindex': '1' }));
+    first.append(new ElementLike('td')).append(new TextLike('A'));
+    first.append(new ElementLike('td')).append(new TextLike(''));
+    const second = body.append(new ElementLike('tr', { 'aria-rowindex': '2' }));
+    const cell = second.append(new ElementLike('td'));
+    cell.append(new TextLike('B'));
+    const nested = cell.append(new HTMLTableElementLike());
+    nested.append(new ElementLike('tr')).append(new ElementLike('td')).append(new TextLike('poison nested'));
+    const document = new DocumentLike(root);
+    const context = {
+      Object,
+      Array,
+      String,
+      Number,
+      Node: NodeLike,
+      Element: ElementLike,
+      Text: TextLike,
+      Document: DocumentLike,
+      HTMLTableElement: HTMLTableElementLike,
+      NodeList: NodeListLike,
+      document,
+      JSON: Object.freeze({ stringify: () => { poisonCalls += 1; throw new Error('page JSON'); } }),
+      TextEncoder: class { constructor() { poisonCalls += 1; throw new Error('page TextEncoder'); } },
+    };
+
+    const encoded = runInNewContext(buildTableSamplerExpression('table'), context);
+    const sampled = parseTableSamplerResult(encoded);
+
+    expect(poisonCalls).toBe(0);
+    expect(sampled.tables.map(entry => entry.caption)).toEqual(['Orders']);
+    expect(sampled.tables[0]).toMatchObject({
+      caption: 'Orders',
+      ariaRowCount: 2,
+      dataRows: [
+        { rawAriaRowIndex: 1, cells: ['A', ''] },
+        { rawAriaRowIndex: 2, cells: ['B'] },
+      ],
+    });
+  });
+
+  it('executes the direct table-row fallback without invoking a getter on a synthetic object', () => {
+    class N {
+      constructor(type, value = null) { this.t = type; this.v = value; this.p = null; this.c = []; }
+      append(child) { child.p = this; this.c.push(child); return this; }
+      get parentNode() { return this.p; }
+      get firstChild() { return this.c[0] || null; }
+      get nextSibling() { return this.p?.c[this.p.c.indexOf(this) + 1] || null; }
+      get nodeType() { return this.t; }
+      get nodeValue() { return this.v; }
+    }
+    class E extends N {
+      constructor(name, attrs = {}) { super(1); this.n = name; this.a = attrs; }
+      get localName() { return this.n; }
+      getAttribute(name) { return Object.hasOwn(this.a, name) ? this.a[name] : null; }
+      hasAttribute(name) { return Object.hasOwn(this.a, name); }
+      get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
+      matches(selector) { return selector === 'table' && this.n === 'table'; }
+    }
+    class X extends N { constructor(value) { super(3, value); } }
+    class T extends E { constructor() { super('table'); } }
+    class D extends N {
+      constructor(root) { super(9); this.r = this.append(root); }
+      get documentElement() { return this.r; }
+      querySelectorAll() { return new L(this.r.c); }
+    }
+    class L {
+      constructor(values) { this.v = values; }
+      get length() { return this.v.length; }
+      item(index) { return this.v[index] || null; }
+    }
+    const root = new E('html');
+    const tableNode = new T();
+    const row = new E('tr');
+    const cell = new E('td');
+    cell.append(new X('direct'));
+    row.append(cell);
+    tableNode.append(row);
+    root.append(tableNode);
+    const encoded = runInNewContext(buildTableSamplerExpression('table'), {
+      Object, Array, String, Number, Node: N, Element: E, Text: X, Document: D,
+      HTMLTableElement: T, NodeList: L, document: new D(root),
+    });
+
+    expect(parseTableSamplerResult(encoded).tables[0].dataRows[0].cells).toEqual(['direct']);
+  });
+
+  it('drops the whole offending row for cell, text-node, canonical-row, or aggregate-byte pressure', () => {
+    const expression = buildTableSamplerExpression('table');
+
+    expect(expression).toContain("reason: 'cell-limit'");
+    expect(expression).toContain("reason: 'row-too-large'");
+    expect(expression).toContain("truncationReason = 'sample-byte-limit'");
+    expect(expression).toContain('maxTextNodesPerCell');
+    expect(expression).toMatch(/utf8Bytes\([^)]*candidate/i);
+  });
+
+  it('marks a later table omitted by aggregate pressure instead of silently dropping it', () => {
+    const expression = buildTableSamplerExpression('table');
+
+    expect(expression).toContain("pageTruncationReason = 'sample-byte-limit'");
+    expect(expression).toContain('pageTruncated = true');
+  });
+
+  it('matches the caller selector only against bounded root HTML table candidates', () => {
+    const sampled = executeSamplerTableRows(
+      [[['included']], [['excluded']]],
+      [
+        { id: 'orders', class: 'active selected', role: 'grid', 'data-ready': '' },
+        { id: 'other', class: 'active selected', role: 'grid', 'data-ready': '' },
+      ],
+      { selector: 'table#orders.active[data-ready][role="grid"]' },
+    );
+
+    expect(sampled.tablesSeen).toBe(1);
+    expect(sampled.tables).toHaveLength(1);
+    expect(sampled.tables[0].dataRows[0].cells).toEqual(['included']);
+  });
+
+  it('keeps selector decisions truthful for oversized presence and class attributes', () => {
+    const oversizedPresence = executeSamplerTableRows(
+      [[['present']]],
+      [{ 'data-x': 'x'.repeat(2_000) }],
+      { selector: 'table[data-x]' },
+    );
+    expect(oversizedPresence).toMatchObject({
+      tablesSeen: 1,
+      truncated: false,
+      truncationReason: null,
+    });
+
+    const earlyClass = executeSamplerTableRows(
+      [[['early']]],
+      [{ class: `orders ${'x'.repeat(5_000)}` }],
+      { selector: 'table.orders' },
+    );
+    expect(earlyClass).toMatchObject({
+      tablesSeen: 1,
+      truncated: false,
+      truncationReason: null,
+    });
+
+    const lateClass = executeSamplerTableRows(
+      [[['late']]],
+      [{ class: `${'x'.repeat(5_000)} orders` }],
+      { selector: 'table.orders' },
+    );
+    expect(lateClass).toEqual({
+      schema: 'chrome-cdp-ex.table-sample.v1',
+      tablesSeen: 0,
+      tables: [],
+      truncated: true,
+      truncationReason: 'selector-evaluation-limit',
+    });
+
+    const longUnequalAttribute = executeSamplerTableRows(
+      [[['excluded']]],
+      [{ 'data-x': 'x'.repeat(2_000) }],
+      { selector: 'table[data-x="short"]' },
+    );
+    expect(longUnequalAttribute).toEqual({
+      schema: 'chrome-cdp-ex.table-sample.v1',
+      tablesSeen: 0,
+      tables: [],
+      truncated: false,
+      truncationReason: null,
+    });
+  });
+
+  it('executes N plus one boundaries with one valid prefix and exact truncation provenance', () => {
+    const cellLimit = executeSamplerTableRows([[['safe'], Array(257).fill('')]]);
+    expect(cellLimit.tables[0]).toMatchObject({
+      dataRows: [{ cells: ['safe'] }],
+      directRowsSeen: 2,
+      dataRowsSeen: 2,
+      truncated: true,
+      truncationReason: 'cell-limit',
+    });
+
+    const rowBytes = executeSamplerTableRows([[['safe'], ['\\'.repeat(2049)]]]);
+    expect(rowBytes.tables[0]).toMatchObject({
+      dataRows: [{ cells: ['safe'] }],
+      directRowsSeen: 2,
+      dataRowsSeen: 2,
+      truncated: true,
+      truncationReason: 'row-too-large',
+    });
+
+    const rowLimit = executeSamplerTableRows([
+      Array.from({ length: 129 }, (_, index) => [`row-${index + 1}`]),
+    ]);
+    expect(rowLimit.tables[0].dataRows).toHaveLength(128);
+    expect(rowLimit.tables[0]).toMatchObject({
+      directRowsSeen: 129,
+      dataRowsSeen: 129,
+      truncated: true,
+      truncationReason: 'row-limit',
+    });
+
+    const tableLimit = executeSamplerTableRows(Array.from({ length: 11 }, () => [[['safe']][0]]));
+    expect(tableLimit).toMatchObject({
+      tablesSeen: 11,
+      truncated: true,
+      truncationReason: 'table-limit',
+    });
+    expect(tableLimit.tables).toHaveLength(10);
+
+    const aggregate = executeSamplerTableRows([
+      Array.from({ length: 128 }, () => ['x'.repeat(4000)]),
+    ]);
+    expect(aggregate.tables[0].dataRows.length).toBeGreaterThan(0);
+    expect(aggregate.tables[0].dataRowsSeen).toBe(aggregate.tables[0].dataRows.length + 1);
+    expect(aggregate.tables[0]).toMatchObject({
+      truncated: true,
+      truncationReason: 'sample-byte-limit',
+    });
+  });
+
+  it('executes aria-rowcount minus one as explicit unknown evidence', () => {
+    const sampled = executeSamplerTableRows([[['safe']]], [{ 'aria-rowcount': '-1' }]);
+
+    expect(sampled.tables[0]).toMatchObject({
+      ariaRowCount: -1,
+      dataRows: [{ cells: ['safe'] }],
+    });
+  });
+
+  it('reports ancestor-depth exhaustion instead of silently claiming no tables', () => {
+    class N {
+      constructor(type) { this.t = type; this.p = null; this.c = []; }
+      append(child) { child.p = this; this.c.push(child); return child; }
+      get parentNode() { return this.p; }
+      get firstChild() { return this.c[0] || null; }
+      get nextSibling() { return this.p?.c[this.p.c.indexOf(this) + 1] || null; }
+      get nodeType() { return this.t; }
+      get nodeValue() { return null; }
+    }
+    class E extends N {
+      constructor(name) { super(1); this.n = name; }
+      get localName() {
+        if (!(this instanceof E)) throw new TypeError('Illegal invocation');
+        return this.n;
+      }
+      getAttribute() { return null; }
+      hasAttribute() { return false; }
+      get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
+      matches(selector) { return selector === 'table' && this.n === 'table'; }
+    }
+    class X extends N {}
+    class T extends E { constructor() { super('table'); } }
+    class D extends N {
+      constructor(root, match) { super(9); this.match = match; this.append(root); }
+      querySelectorAll() { return new L([this.match]); }
+    }
+    class L {
+      constructor(values) { this.v = values; }
+      get length() { return this.v.length; }
+      item(index) { return this.v[index] || null; }
+    }
+    const root = new E('html');
+    let parent = root;
+    for (let index = 0; index < TABLE_SAMPLER_LIMITS.maxAncestorDepth; index += 1) {
+      parent = parent.append(new E('div'));
+    }
+    const tableNode = parent.append(new T());
+    const sampled = parseTableSamplerResult(runInNewContext(buildTableSamplerExpression('table'), {
+      Object, Array, String, Number, Node: N, Element: E, Text: X, Document: D,
+      HTMLTableElement: T, NodeList: L, document: new D(root, tableNode),
+    }));
+
+    expect(sampled).toMatchObject({
+      tablesSeen: 0,
+      tables: [],
+      truncated: true,
+      truncationReason: 'dom-depth-limit',
+    });
+  });
+
+  it('does not use direct-row fallback when direct-child overflow hides a later tbody', () => {
+    class N {
+      constructor(type, value = null) { this.t = type; this.v = value; this.p = null; this.c = []; }
+      append(child) { child.p = this; this.c.push(child); return child; }
+      get parentNode() { return this.p; }
+      get firstChild() { return this.c[0] || null; }
+      get nextSibling() { return this.p?.c[this.p.c.indexOf(this) + 1] || null; }
+      get nodeType() { return this.t; }
+      get nodeValue() { return this.v; }
+    }
+    class E extends N {
+      constructor(name) { super(1); this.n = name; }
+      get localName() {
+        if (!(this instanceof E)) throw new TypeError('Illegal invocation');
+        return this.n;
+      }
+      getAttribute() { return null; }
+      hasAttribute() { return false; }
+      get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
+      matches(selector) { return selector === 'table' && this.n === 'table'; }
+    }
+    class X extends N { constructor(value) { super(3, value); } }
+    class T extends E { constructor() { super('table'); } }
+    class D extends N {
+      constructor(root, match) { super(9); this.match = match; this.append(root); }
+      querySelectorAll() { return new L([this.match]); }
+    }
+    class L {
+      constructor(values) { this.v = values; }
+      get length() { return this.v.length; }
+      item(index) { return this.v[index] || null; }
+    }
+    const root = new E('html');
+    const tableNode = root.append(new T());
+    tableNode.append(new E('tr')).append(new E('td')).append(new X('must-not-admit'));
+    for (let index = 1; index < TABLE_SAMPLER_LIMITS.maxDirectChildren; index += 1) {
+      tableNode.append(new E('div'));
+    }
+    tableNode.append(new E('tbody')).append(new E('tr')).append(new E('td')).append(new X('hidden-body'));
+    const sampled = parseTableSamplerResult(runInNewContext(buildTableSamplerExpression('table'), {
+      Object, Array, String, Number, Node: N, Element: E, Text: X, Document: D,
+      HTMLTableElement: T, NodeList: L, document: new D(root, tableNode),
+    }));
+
+    expect(sampled.tables[0]).toMatchObject({
+      dataRows: [],
+      directRowsSeen: 0,
+      dataRowsSeen: 0,
+      truncated: true,
+      truncationReason: 'dom-node-limit',
+    });
+  });
+
+  it('ignores foreign-namespace structural lookalikes', () => {
+    const sampled = executeSamplerTableRows(
+      [[['foreign row']]],
+      [],
+      { bodyNamespace: 'urn:example:foreign' },
+    );
+
+    expect(sampled.tables[0]).toMatchObject({
+      headerRows: [],
+      dataRows: [],
+      directRowsSeen: 0,
+      headerRowsSeen: 0,
+      dataRowsSeen: 0,
+      truncated: false,
+      truncationReason: null,
+    });
+  });
+
+  it('bounds document discovery and reports a table beyond the node cap as unknown', () => {
+    class N {
+      constructor(type) { this.t = type; this.p = null; this.c = []; }
+      append(child) { child.p = this; this.c.push(child); return child; }
+      get parentNode() { return this.p; }
+      get firstChild() { return this.c[0] || null; }
+      get nextSibling() { return this.p?.c[this.p.c.indexOf(this) + 1] || null; }
+      get nodeType() { return this.t; }
+      get nodeValue() { return null; }
+    }
+    class E extends N {
+      constructor(name) { super(1); this.n = name; }
+      get localName() { return this.n; }
+      getAttribute() { return null; }
+      hasAttribute() { return false; }
+      get namespaceURI() { return 'http://www.w3.org/1999/xhtml'; }
+      matches(selector) { return selector === 'table' && this.n === 'table'; }
+    }
+    class X extends N {}
+    class T extends E { constructor() { super('table'); } }
+    class D extends N {
+      constructor(root, match) { super(9); this.match = match; this.append(root); }
+      querySelectorAll() { return new L([this.match]); }
+    }
+    class L {
+      constructor(values) { this.v = values; }
+      get length() { return this.v.length; }
+      item(index) { return this.v[index] || null; }
+    }
+    const root = new E('html');
+    for (let index = 0; index < TABLE_SAMPLER_LIMITS.maxDocumentNodes; index += 1) root.append(new E('div'));
+    const tableNode = root.append(new T());
+    const sampled = parseTableSamplerResult(runInNewContext(buildTableSamplerExpression('table'), {
+      Object, Array, String, Number, Node: N, Element: E, Text: X, Document: D,
+      HTMLTableElement: T, NodeList: L, document: new D(root, tableNode),
+    }));
+
+    expect(sampled).toMatchObject({
+      tablesSeen: 0,
+      tables: [],
+      truncated: true,
+      truncationReason: 'dom-node-limit',
+    });
+  });
+
+  it('stops scanning oversized DOM strings immediately after each local byte bound', () => {
+    let charCodeReads = 0;
+    function BoundedString() {}
+    Object.defineProperty(BoundedString.prototype, 'charCodeAt', {
+      value(index) {
+        charCodeReads += 1;
+        return String.prototype.charCodeAt.call(this, index);
+      },
+    });
+    BoundedString.fromCharCode = String.fromCharCode;
+
+    const metadataSample = executeSamplerTableRows(
+      [[]],
+      [{ 'aria-label': 'y'.repeat(1_000_000) }],
+      { StringConstructor: BoundedString },
+    );
+
+    expect(metadataSample.tables[0].caption).toBe('');
+    expect(charCodeReads).toBeLessThan(2_000);
+
+    charCodeReads = 0;
+    const rowSample = executeSamplerTableRows(
+      [[['x'.repeat(1_000_000)]]],
+      [],
+      { StringConstructor: BoundedString },
+    );
+
+    expect(rowSample.tables[0]).toMatchObject({
+      dataRows: [],
+      directRowsSeen: 1,
+      dataRowsSeen: 1,
+      truncated: true,
+      truncationReason: 'row-too-large',
+    });
+    expect(charCodeReads).toBeLessThan(5_200);
+  });
+
+  it('reports cell descendant exhaustion as a DOM node limit', () => {
+    const sampled = executeSamplerTableRows(
+      [[['too deep']]],
+      [],
+      { cellDepth: TABLE_SAMPLER_LIMITS.maxDomNodesPerCell },
+    );
+
+    expect(sampled.tables[0]).toMatchObject({
+      dataRows: [],
+      directRowsSeen: 1,
+      dataRowsSeen: 1,
+      truncated: true,
+      truncationReason: 'dom-node-limit',
+    });
+  });
+});
+
+describe('bounded table sampler host validation', () => {
+  it('preserves empty static rows and reports one DOM-ordered mounted snapshot', () => {
+    const result = parseTableSamplerResult(page());
+
+    expect(result.tables).toEqual([table()]);
+    expect(result.tables[0].dataRows[0].cells).toEqual(['A', '']);
+    expect(result.tables[0].dataRows[1].cells).toEqual(['', 'B']);
+  });
+
+  it('accepts ten tables and rejects an eleventh or an oversized page response', () => {
+    expect(parseTableSamplerResult(page(Array.from({ length: 10 }, (_, index) => table({ caption: `T${index + 1}` })))).tables)
+      .toHaveLength(10);
+    expect(() => parseTableSamplerResult(page(Array.from({ length: 11 }, () => table()), {
+      tablesSeen: 11,
+      truncated: true,
+      truncationReason: 'table-limit',
+    }))).toThrow(/tables.*bound/i);
+    expect(() => parseTableSamplerResult('x'.repeat(524289))).toThrow(/524,288.*bytes/i);
+  });
+
+  it('accepts at most 128 direct rows and 256 direct cells with explicit N plus one evidence', () => {
+    const rows128 = Array.from({ length: 128 }, (_, index) => ({
+      rawAriaRowIndex: index + 1,
+      cells: Array(256).fill(''),
+    }));
+    expect(parseTableSamplerResult(page([table({
+      ariaRowCount: 128,
+      dataRows: rows128,
+      directRowsSeen: 128,
+      dataRowsSeen: 128,
+    })])).tables[0].dataRows).toHaveLength(128);
+
+    expect(() => parseTableSamplerResult(page([table({
+      dataRows: rows128.concat({ rawAriaRowIndex: 129, cells: ['late'] }),
+      directRowsSeen: 129,
+      dataRowsSeen: 129,
+      truncated: true,
+      truncationReason: 'row-limit',
+    })]))).toThrow(/dataRows.*bound/i);
+    expect(() => parseTableSamplerResult(page([table({
+      dataRows: [{ rawAriaRowIndex: null, cells: Array(257).fill('') }],
+      directRowsSeen: 1,
+      dataRowsSeen: 1,
+      truncated: true,
+      truncationReason: 'cell-limit',
+    })]))).toThrow(/cells.*bound/i);
+  });
+
+  it('rejects malformed ARIA, extra keys, accessors, custom prototypes, and unpaired Unicode', () => {
+    expect(() => parseTableSamplerResult(page([table({ ariaRowCount: -2 })]))).toThrow(/ariaRowCount/i);
+    expect(() => parseTableSamplerResult(page([table({ ariaRowCount: '2' })]))).toThrow(/ariaRowCount/i);
+    expect(() => parseTableSamplerResult(page([table({ extra: true })]))).toThrow(/extra/i);
+    expect(() => parseTableSamplerResult(page([table({ caption: '\ud800' })]))).toThrow(/Unicode/i);
+    expect(() => parseTableSamplerResult({ value: page() })).toThrow(/string/i);
+  });
+
+  it('requires exact truncation provenance and bounded seen counts', () => {
+    expect(() => parseTableSamplerResult(page([table({ truncated: true, truncationReason: null })])))
+      .toThrow(/truncation/i);
+    expect(() => parseTableSamplerResult(page([table({
+      directRowsSeen: 130,
+      dataRowsSeen: 130,
+      truncated: true,
+      truncationReason: 'row-limit',
+    })]))).toThrow(/directRowsSeen/i);
+    expect(() => parseTableSamplerResult(page([], {
+      tablesSeen: 12,
+      truncated: true,
+      truncationReason: 'table-limit',
+    }))).toThrow(/tablesSeen/i);
+  });
+
+  it('rejects unexplained row or table omissions when truncation provenance says none', () => {
+    expect(() => parseTableSamplerResult(page([table({
+      directRowsSeen: 3,
+      dataRowsSeen: 3,
+    })]))).toThrow(/omission|truncation/i);
+    expect(() => parseTableSamplerResult(page([table()], {
+      tablesSeen: 2,
+    }))).toThrow(/omission|truncation/i);
+  });
+
+  it('rejects a hostile wire row whose combined canonical cells exceed 4096 bytes', () => {
+    expect(() => parseTableSamplerResult(page([table({
+      dataRows: [{ rawAriaRowIndex: null, cells: ['a'.repeat(3000), 'b'.repeat(3000)] }],
+      directRowsSeen: 1,
+      dataRowsSeen: 1,
+    })]))).toThrow(/canonical.*4096|row.*bound/i);
+  });
+
+  it('rejects a quote-heavy wire row whose compact producer encoding exceeds 8194 bytes', () => {
+    expect(() => parseTableSamplerResult(page([table({
+      dataRows: [{ rawAriaRowIndex: null, cells: ['"'.repeat(4096)] }],
+      directRowsSeen: 1,
+      dataRowsSeen: 1,
+    })]))).toThrow(/encoded.*8194|row.*bound/i);
+  });
+
+  it.each([
+    page([], { tablesSeen: 1, truncated: true, truncationReason: 'table-limit' }),
+    page([table()], { tablesSeen: 1, truncated: true, truncationReason: 'sample-byte-limit' }),
+    page([table({
+      dataRows: [{ rawAriaRowIndex: null, cells: ['safe'] }],
+      directRowsSeen: 2,
+      dataRowsSeen: 2,
+      truncated: true,
+      truncationReason: 'row-limit',
+    })]),
+    page([table({
+      dataRows: [],
+      directRowsSeen: 2,
+      dataRowsSeen: 2,
+      truncated: true,
+      truncationReason: 'cell-limit',
+    })]),
+    page([table({
+      dataRows: [],
+      directRowsSeen: 2,
+      dataRowsSeen: 2,
+      truncated: true,
+      truncationReason: 'row-too-large',
+    })]),
+    page([table({
+      dataRows: [],
+      directRowsSeen: 2,
+      dataRowsSeen: 2,
+      truncated: true,
+      truncationReason: 'sample-byte-limit',
+    })]),
+  ])('rejects reason-inconsistent truncation provenance %#', wire => {
+    expect(() => parseTableSamplerResult(wire)).toThrow(/provenance|reason|counter|omission/i);
+  });
+
+  it.each(['cell-limit', 'row-too-large', 'sample-byte-limit', 'dom-node-limit'])(
+    'rejects %s after the row-limit boundary would already have won',
+    truncationReason => {
+      const rows = Array.from({ length: 128 }, () => ({ rawAriaRowIndex: null, cells: ['safe'] }));
+      expect(() => parseTableSamplerResult(page([table({
+        dataRows: rows,
+        directRowsSeen: 129,
+        dataRowsSeen: 129,
+        truncated: true,
+        truncationReason,
+      })]))).toThrow(/provenance|reason|counter/i);
+    },
+  );
+
+  it('rejects page sample-byte pressure after table-limit would already have won', () => {
+    expect(() => parseTableSamplerResult(page(Array.from({ length: 10 }, () => table()), {
+      tablesSeen: 11,
+      truncated: true,
+      truncationReason: 'sample-byte-limit',
+    }))).toThrow(/provenance|reason|counter/i);
+  });
+
+  it('rejects data rows returned after an omitted header stopped producer traversal', () => {
+    expect(() => parseTableSamplerResult(page([table({
+      headerRows: [],
+      dataRows: [{ rawAriaRowIndex: null, cells: ['impossible'] }],
+      directRowsSeen: 2,
+      headerRowsSeen: 1,
+      dataRowsSeen: 1,
+      truncated: true,
+      truncationReason: 'row-too-large',
+    })]))).toThrow(/provenance|prefix|header|counter/i);
+  });
+});

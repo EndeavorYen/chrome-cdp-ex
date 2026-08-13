@@ -1,6 +1,6 @@
 {
   "name": "pi-chrome-cdp",
-  "version": "2.15.0",
+  "version": "2.16.0",
   "description": "Give your AI agent access to your live Chrome session — works out of the box, connects to tabs you already have open",
   "keywords": [
     "pi-package",
@@ -25,7 +25,7 @@
     "check:command-surfaces": "node scripts/generate-command-surfaces.mjs",
     "check:host-validation": "node scripts/check-host-validation.mjs",
     "check:release-package": "node scripts/check-release-package.mjs",
-    "check:contracts": "node scripts/check-public-contracts.mjs --version 2.15.0",
+    "check:contracts": "node scripts/check-public-contracts.mjs --version 2.16.0",
     "setup": "node scripts/setup.mjs",
     "smoke:live": "node scripts/live-smoke.mjs",
     "benchmark:killer": "node scripts/benchmark-killer-path.mjs",

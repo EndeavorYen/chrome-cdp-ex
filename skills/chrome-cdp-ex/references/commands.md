@@ -246,7 +246,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `emulate` | `emulate <target> [dark\|light\|no-preference\|off\|status]` | `mutation / mutation` |
 | `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
 | `text` | `text <target> [selector]` | `read / standard` |
-| `table` | `table <target> [selector]` | `read / standard` |
+| `table` | `table <target> [TABLE_SELECTOR] [--format text\|json] \| table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text\|json] \| table <target> --continue TOKEN --format json` | `conditional-mutation / conditional` |
 | `back` | `back <target>` | `mutation / mutation` |
 | `forward` | `forward <target>` | `mutation / mutation` |
 | `reload` | `reload <target>` | `mutation / mutation` |
@@ -599,7 +599,7 @@ scripts/cdp.mjs components <target> [--depth N]     # bounded/redacted React/Vue
 scripts/cdp.mjs components <target> @3 --max-chars 8000 --format json # React fiber target
 scripts/cdp.mjs components <target> @3 --unsafe-full # React fiber; explicit sensitive/large opt-in
 scripts/cdp.mjs text    <target> [selector]              # clean text — optional CSS selector to scope
-scripts/cdp.mjs table   <target> [selector]            # full table data (tab-separated, no row limit)
+scripts/cdp.mjs table   <target> [selector] [--format json]  # bounded mounted snapshot; not a full export
 scripts/cdp.mjs cookies <target>                       # list cookies for current page
 scripts/cdp.mjs cookieset <target> <cookie>            # set cookie: "name=value; domain=.example.com; secure"
 scripts/cdp.mjs cookiedel <target> <name>              # delete cookie by name
@@ -705,14 +705,22 @@ scripts/cdp.mjs text <target> --root auto "header"             # scope to app ro
 Returns page content as plain text. **Use the selector form** to extract specific sections (e.g. AI replies, article body) instead of drowning in sidebar/nav noise.
 Use `--root auto` when a React/Vite app has repeated shell text outside the app mount; it scopes extraction to `#root`, `[data-reactroot]`, `main`, then `body`.
 
-### Table data extraction
+### Table observation, collection, and continuation
+
+Default `table` is **bounded observation** of currently mounted rows. It is not a complete export: inline preview keeps at most 20 whole data rows and 8,192 UTF-8 bytes of text (16,384 for JSON). Completeness is `complete` only with known `aria-rowcount`, safe termination, and exact proven ARIA coverage. Missing logical evidence, header drift, or row-key-only collection stays `unknown`. Count equality alone never proves completeness.
+
+Virtual collection is explicit and mutating. Use `--collect --scroll-container SELECTOR` (optional `--load-more`, `--row-key-column N`) on exactly one HTML table with stable `aria-rowindex` or a zero-based row-key column. CLI `--collect` is the acknowledgement; first-class MCP `table` and MCP `run_command` also require `confirm: true`. Observation and immutable `--continue` are reads. Collection has fixed ceilings (100,000 unique data rows, 16,777,216 artifact bytes, 256 page mutations, 295,000 ms page/CDP, 300,000 ms server). Artifact-producing modes fail closed on Windows in v2.16. Unsupported: heuristic container discovery, multi-table collection, and caller output paths.
+
+Private continuation is row-aligned and idempotent: `table <target> --continue TOKEN --format json` returns the same slice plus a distinct next token. Tokens never mutate a server cursor.
+
+Standalone `loadall` clicks a control until it disappears. It does **not** preserve recycled virtualized rows; use `table --collect` when the table unmounts rows as it scrolls.
 
 ```bash
-scripts/cdp.mjs table <target>                # all tables on page (tab-separated, no row limit)
-scripts/cdp.mjs table <target> "#data-table"   # specific table by CSS selector
+scripts/cdp.mjs table <target> --format json
+scripts/cdp.mjs table <target> "#data-table" --format json
+scripts/cdp.mjs table <target> "#data-table" --collect --scroll-container ".viewport" --format json
+scripts/cdp.mjs table <target> --continue ct1.<artifactId>.<offset> --format json
 ```
-
-Returns full table data with no row truncation (unlike perceive which caps at 5 rows). Output is tab-separated for easy parsing.
 
 ### Browser history navigation
 
@@ -905,8 +913,8 @@ scripts/cdp.mjs record <target> 5000
 
 ### Data extraction
 1. `text <target> [selector]` — get readable text (use selector to scope, e.g. `text <t> ".content"`)
-2. `table <target>` — get full table data (no 5-row truncation)
-3. `table <target> "#specific-table"` — extract specific table
+2. `table <target> --format json` — bounded mounted snapshot with completeness, not a full export
+3. `table <target> "#specific-table" --collect --scroll-container ".viewport"` — explicit virtual collection after acknowledgement; continue with `--continue TOKEN --format json`
 
 ### Cross-tab parallel operations
 
