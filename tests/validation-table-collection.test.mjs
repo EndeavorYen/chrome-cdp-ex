@@ -1,5 +1,5 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   CLEANUP_ORDER,
   MAX_PAYLOAD_EVIDENCE_BYTES,
+  TABLE_COLLECTION_DEADLINE,
   TABLE_COLLECTION_FIXTURE,
   TABLE_COLLECTION_ROUTES,
   assertIndependentRouteFixtures,
@@ -23,8 +24,10 @@ import {
   buildStaticReadiness,
   cleanupPartialLiveState,
   createLiveCancellationController,
+  createTableCollectionDeadline,
   describeRouteFixture,
   executeEvidenceFirstAttempt,
+  listenTableCollectionFixtureServer,
   parseArgs,
   playwrightOracleProbeSource,
   retainBoundedCommandEvidence,
@@ -60,6 +63,38 @@ function oversizedCollectPayload() {
   })}\n`;
 }
 
+function oversizedRows() {
+  return Array.from({ length: 1024 }, (_, index) => (
+    `ROW-${String(index + 1).padStart(4, '0')}\tdone\tteam-01\t1000`
+  ));
+}
+
+const CLEANUP_OPERATIONS = Object.freeze([
+  ['stopChromeDaemon', 'chrome-daemon'],
+  ['stopChromeBrowser', 'chrome-browser'],
+  ['closePlaywright', 'playwright'],
+  ['closeServer', 'fixture-server'],
+  ['assertNoTaskProcesses', 'processes'],
+  ['assertEndpointsAndPortsGone', 'endpoints-and-ports'],
+  ['removeProfileRuntimeArtifacts', 'profile-runtime-artifacts'],
+  ['removeAndVerifyTaskRoot', 'task-root'],
+  ['assertLockReleased', 'lock'],
+]);
+
+function trackingCleanupOperations(order, blockers = {}) {
+  return Object.fromEntries(CLEANUP_OPERATIONS.map(([operation, label]) => [
+    operation,
+    async () => {
+      order.push(label);
+      if (blockers[operation]) await blockers[operation];
+    },
+  ]));
+}
+
+async function flushMicrotasks(times = 8) {
+  for (let index = 0; index < times; index += 1) await Promise.resolve();
+}
+
 describe('four-route Validation Lab runner', () => {
   it('freezes four separately reset routes and a static plan that starts no browser', () => {
     expect([...TABLE_COLLECTION_ROUTES]).toEqual(['cli', 'mcp', 'mcp-run-command', 'playwright']);
@@ -69,6 +104,13 @@ describe('four-route Validation Lab runner', () => {
     expect(readiness.chromeStartUrl).toBe('about:blank');
     expect(readiness.chromeProvisioning).toMatch(/Runtime\.evaluate.*about:blank/);
     expect(readiness.fixtureHost).toBe('127.0.0.1');
+    expect(readiness.listenHost).toBe('127.0.0.1');
+    expect(readiness.deadline).toEqual({
+      maxDurationMs: 600_000,
+      cdpTimeoutMs: 295_000,
+      playwrightTimeoutMs: 295_000,
+      serverTimeoutMs: 300_000,
+    });
     expect(readiness.routes).toEqual({
       cli: { kind: 'direct-cli-collect', browser: 'fresh-cft-about-blank', reset: ['browser', 'target', 'profile', 'runtime'] },
       mcp: { kind: 'first-class-mcp-collect', browser: 'fresh-cft-about-blank', reset: ['browser', 'target', 'profile', 'runtime'] },
@@ -304,8 +346,8 @@ describe('evidence-first capture and cleanup contracts', () => {
       'processes',
       'endpoints-and-ports',
       'profile-runtime-artifacts',
-      'lock',
       'task-root',
+      'lock',
     ]);
     const order = [];
     const state = { cleanupPromise: null };
@@ -326,14 +368,18 @@ describe('evidence-first capture and cleanup contracts', () => {
     expect(state.cleanup).toMatchObject({ attempted: true, verified: false, failures: ['browser stop failed'] });
 
     const lockOrder = [];
+    let lockHeld = false;
     const leftover = await runLockedCleanup({
       async acquireLock() {
         lockOrder.push('acquire');
+        lockHeld = true;
         return { lockDir: '/tmp/table-lock' };
       },
       async cleanup(lock) {
         lockOrder.push('cleanup');
         expect(lock.lockDir).toBe('/tmp/table-lock');
+        expect(lockHeld).toBe(true);
+        lockOrder.push('task-root');
         return {
           daemonStopped: true,
           browserStopped: true,
@@ -344,21 +390,26 @@ describe('evidence-first capture and cleanup contracts', () => {
           profileRemoved: true,
           runtimeRemoved: true,
           artifactRemoved: true,
-          lockReleased: true,
+          lockReleased: false,
           rootRemoved: true,
         };
       },
-      async releaseLock() { lockOrder.push('release'); },
+      async releaseLock() {
+        lockOrder.push('release');
+        lockHeld = false;
+      },
     });
-    expect(lockOrder).toEqual(['acquire', 'cleanup', 'release']);
+    expect(lockOrder).toEqual(['acquire', 'cleanup', 'task-root', 'release']);
     expect(leftover).toMatchObject({
       endpointGone: true,
       processesGone: true,
       profileRemoved: true,
       runtimeRemoved: true,
       artifactRemoved: true,
-      lockReleased: true,
+      lockReleased: false,
+      rootRemoved: true,
     });
+    expect(lockHeld).toBe(false);
 
     const signals = [];
     const controller = createLiveCancellationController();
@@ -373,5 +424,161 @@ describe('evidence-first capture and cleanup contracts', () => {
     await expect(first).resolves.toEqual({ verified: true });
     expect(signals).toEqual(['abort', 'cleanup']);
     expect(controller.signal).toBe('SIGTERM');
+  });
+
+  it('awaits cleanupPromise on SIGTERM instead of reporting fake success', async () => {
+    const order = [];
+    let releaseDaemon;
+    const blocked = new Promise(resolve => {
+      releaseDaemon = resolve;
+    });
+    const state = {};
+    cleanupPartialLiveState(state, trackingCleanupOperations(order, { stopChromeDaemon: blocked }));
+    const controller = createLiveCancellationController();
+    controller.register(state);
+    const cancelled = controller.cancel('SIGTERM');
+    let settled = false;
+    cancelled.then(() => {
+      settled = true;
+    }, () => {
+      settled = true;
+    });
+    await flushMicrotasks();
+    expect(settled).toBe(false);
+    expect(order).toEqual(['chrome-daemon']);
+    expect(state.cleanup).toMatchObject({ attempted: true, verified: false });
+    releaseDaemon();
+    await expect(cancelled).resolves.toMatchObject({ attempted: true, verified: true });
+    expect(order).toEqual([...CLEANUP_ORDER]);
+    expect(controller.cancel('SIGINT')).toBe(cancelled);
+  });
+
+  it('fails closed on cancel-before-register and still runs real cleanup after register', async () => {
+    const controller = createLiveCancellationController();
+    const first = controller.cancel('SIGTERM');
+    await expect(first).rejects.toThrow(/registered live state|cleanup work/);
+
+    const order = [];
+    let releaseDaemon;
+    const blocked = new Promise(resolve => {
+      releaseDaemon = resolve;
+    });
+    const state = {};
+    cleanupPartialLiveState(state, trackingCleanupOperations(order, { stopChromeDaemon: blocked }));
+    const afterRegister = controller.register(state);
+    let settled = false;
+    Promise.resolve(afterRegister).then(() => {
+      settled = true;
+    }, () => {
+      settled = true;
+    });
+    await flushMicrotasks();
+    expect(settled).toBe(false);
+    expect(order).toEqual(['chrome-daemon']);
+    releaseDaemon();
+    await expect(afterRegister).resolves.toMatchObject({ attempted: true, verified: true });
+    expect(order[0]).toBe('chrome-daemon');
+    expect(order.at(-1)).toBe('lock');
+  });
+
+  it('fails closed when required cleanup steps are missing', async () => {
+    const state = {};
+    const order = [];
+    await expect(cleanupPartialLiveState(state, {
+      async stopChromeBrowser() { order.push('chrome-browser'); },
+    })).rejects.toThrow(/cleanup failed|missing required cleanup step/);
+    expect(state.cleanup.verified).toBe(false);
+    expect(state.cleanup.failures.some(item => /stopChromeDaemon/.test(item))).toBe(true);
+    expect(order).toEqual(['chrome-browser']);
+  });
+
+  it('publishes a trial/CDP/Playwright/server AbortSignal deadline budget', async () => {
+    expect(TABLE_COLLECTION_DEADLINE).toEqual({
+      maxDurationMs: 600_000,
+      cdpTimeoutMs: 295_000,
+      playwrightTimeoutMs: 295_000,
+      serverTimeoutMs: 300_000,
+    });
+    expect(() => createTableCollectionDeadline({ maxDurationMs: 0 })).toThrow(/deadline|maxDurationMs/);
+    const deadline = createTableCollectionDeadline({
+      maxDurationMs: 40,
+      cdpTimeoutMs: 10,
+      playwrightTimeoutMs: 10,
+      serverTimeoutMs: 20,
+    });
+    expect(deadline.signals.trial).toBeInstanceOf(AbortSignal);
+    expect(deadline.signals.cdp).toBeInstanceOf(AbortSignal);
+    expect(deadline.signals.playwright).toBeInstanceOf(AbortSignal);
+    expect(deadline.signals.server).toBeInstanceOf(AbortSignal);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('deadline signals did not abort')), 200);
+      deadline.signals.trial.addEventListener('abort', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    expect(deadline.signals.trial.aborted).toBe(true);
+    expect(deadline.signals.cdp.aborted).toBe(true);
+  });
+
+  it('allowlist-bounds MCP result, rows, and content so a 1024-row payload cannot land in the 0600 file', async () => {
+    const outDir = tempDir();
+    const rows = oversizedRows();
+    const run = await executeEvidenceFirstAttempt({
+      async capture() {
+        return {
+          result: {
+            rows,
+            content: [{ type: 'text', text: JSON.stringify({ rows }) }],
+          },
+        };
+      },
+      async retain(evidence) {
+        expect(JSON.stringify(evidence)).not.toContain('ROW-0512');
+        expect(JSON.stringify(evidence)).not.toMatch(/"rows"\s*:\s*\[/);
+        return writeTableCollectionEvidence(outDir, evidence);
+      },
+      assertEvidence() { return { ok: true }; },
+      async cleanup(truth) { return truth; },
+    });
+    const stored = JSON.parse(readFileSync(run.evidencePath, 'utf8'));
+    expect(statSync(run.evidencePath).mode & 0o777).toBe(0o600);
+    expect(JSON.stringify(stored)).not.toContain('ROW-0512');
+    expect(JSON.stringify(stored)).not.toMatch(/"rows"\s*:\s*\[/);
+  });
+
+  it('freezes the fixture HTTP server listen host to 127.0.0.1', async () => {
+    const calls = [];
+    const server = {
+      once(event, handler) {
+        if (event === 'error') this.onerror = handler;
+        return this;
+      },
+      listen(port, host, callback) {
+        calls.push({ port, host });
+        callback();
+      },
+    };
+    await listenTableCollectionFixtureServer(server, { port: 42824 });
+    expect(calls).toEqual([{ port: 42824, host: '127.0.0.1' }]);
+    await expect(listenTableCollectionFixtureServer(server, { port: 42824, host: '0.0.0.0' }))
+      .rejects.toThrow(/127\.0\.0\.1/);
+    await expect(listenTableCollectionFixtureServer(server, { port: 42824, host: '::' }))
+      .rejects.toThrow(/127\.0\.0\.1/);
+  });
+
+  it('defaults taskRoot to mkdtemp and rejects a personal Chrome user-data-dir', () => {
+    const first = allocateRouteFixture('cli');
+    const second = allocateRouteFixture('cli');
+    tempPaths.push(first.taskRoot, second.taskRoot);
+    expect(existsSync(first.taskRoot)).toBe(true);
+    expect(first.taskRoot).not.toBe(second.taskRoot);
+    expect(first.taskRoot).not.toBe('/tmp/chrome-cdp-ex-table-cli-0');
+    expect(second.taskRoot).not.toBe('/tmp/chrome-cdp-ex-table-cli-0');
+    const personalMac = join(homedir(), 'Library/Application Support/Google/Chrome');
+    const personalLinux = join(homedir(), '.config/google-chrome');
+    expect(() => allocateRouteFixture('cli', { taskRoot: personalMac })).toThrow(/personal/);
+    expect(() => allocateRouteFixture('mcp', { taskRoot: personalLinux })).toThrow(/personal/);
+    expect(() => buildChromeLaunchArgs({ port: 9624, profileDir: personalMac })).toThrow(/personal/);
   });
 });
