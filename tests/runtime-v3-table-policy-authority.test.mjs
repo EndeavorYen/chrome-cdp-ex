@@ -294,6 +294,21 @@ describe('Runtime v3 table policy authority', () => {
     expect(mutated).not.toEqual(inventory().tablePolicyAuthority);
   });
 
+  it('drifts when the MCP confirmation enforcer is changed to a no-op', () => {
+    const mutation = mcpAdapterSource.replace(
+      'if (args?.confirm !== true) throw new Error(`${action} requires confirm: true`);',
+      'if (false && args?.confirm !== true) throw new Error(`${action} requires confirm: true`);',
+    );
+    let mutated;
+    try {
+      mutated = inventory(source, { mcpAdapterSource: mutation }).tablePolicyAuthority;
+    } catch (error) {
+      expect(error.message).toMatch(/table policy authority/i);
+      return;
+    }
+    expect(mutated).not.toEqual(inventory().tablePolicyAuthority);
+  });
+
   it.each([
     daemonReadHandlersSource.replace(
       'export function createDaemonReadHandlers(input) {',
