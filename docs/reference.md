@@ -360,7 +360,7 @@ Common outcomes:
 | `failed` | Dispatch failed; use the recovery command. |
 | `timeout` | The action may have happened, but post-action observation timed out. |
 
-For `no-change`, the receipt exposes target-aware blocking signals. Click/fill-style actions get `overlay-check-needed`; frame-scoped targets such as `@f2:4` get `frame-check-needed`; every no-change action gets `fresh-perception-needed`. Treat these as "inspect before retry" signals and follow the matching `nextSteps`.
+For `no-change`, the receipt exposes target-aware blocking signals. Click/fill-style actions get `overlay-check-needed` and only pass a selector/`@ref` into `overlay` when the action actually targeted one; frame-scoped targets such as `@f2:4` get `frame-check-needed`; every no-change action that still needs investigation gets `fresh-perception-needed`. Key-press no-ops (`Escape` / `Tab` / `Space`) and `dismiss-modal` when no dialog is present are expected no-change / `continue` — they do not send the agent to `overlay <key>`. Treat remaining blocking signals as "inspect before retry" and follow the matching `nextSteps`.
 
 If dispatch succeeds but post-action observation fails internally, the action still returns `chrome-cdp-ex.action.v1` with an `observation-error` diagnosis instead of a generic CLI error.
 

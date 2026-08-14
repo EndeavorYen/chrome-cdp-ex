@@ -202,6 +202,22 @@ export function classifyActionFailure(err, { action = 'action', target = {} } = 
     };
   }
 
+  if (
+    lower.includes('unknown key')
+    || lower.includes('key name required')
+  ) {
+    return {
+      ...base,
+      kind: 'usage',
+      reason: 'press requires a supported key name.',
+      nextCommand: 'cdp help press',
+      hints: [
+        'Use Enter, Tab, Escape, Backspace, Space, Arrow*, or a single character.',
+        'Use `type` for multi-character text.',
+      ],
+    };
+  }
+
   return base;
 }
 
@@ -270,8 +286,57 @@ export function isExpectedClipboardNoChange(target = {}, extraText = '') {
     || looksLikeClipboardControl(extraText);
 }
 
+const NON_SELECTOR_RESOLVED_BY = new Set([
+  'key', 'dialog', 'coordinates', 'scroll', 'history', 'url', 'viewport', 'focus', 'command',
+]);
+
+const NAMED_PRESS_KEYS = /^(enter|tab|escape|esc|space|backspace|shift|ctrl|control|alt|meta|arrow(up|down|left|right)|page(up|down)|home|end|delete|insert)$/i;
+
+export function isExpectedPressNoChange(target = {}, action = null) {
+  if (target?.expectedOutcome === 'press-no-change') return true;
+  if (String(target?.resolvedBy || '') === 'key') return true;
+  return String(action || target?.action || '').toLowerCase() === 'press';
+}
+
+export function isExpectedNoChange(target = {}, extraText = '', action = null) {
+  if (isExpectedClipboardNoChange(target, extraText)) return true;
+  if (target?.expectedOutcome === 'no-modal') return true;
+  return isExpectedPressNoChange(target, action);
+}
+
+export function expectedNoChangeReason(target = {}, action = null) {
+  if (isExpectedClipboardNoChange(target)) {
+    return 'Clipboard / copy action; no visible AX tree change is expected.';
+  }
+  if (target?.expectedOutcome === 'no-modal') {
+    return 'No visible modal/dialog was present; nothing was dismissed.';
+  }
+  if (isExpectedPressNoChange(target, action)) {
+    return 'Key press produced no visible AX tree change; continue without overlay recovery.';
+  }
+  return 'No visible AX tree change observed after action.';
+}
+
+export function overlaySelectorArg(targetInput = '', targetInfo = {}) {
+  const resolvedBy = String(targetInfo?.resolvedBy || '');
+  if (NON_SELECTOR_RESOLVED_BY.has(resolvedBy)) return '';
+  const raw = String(targetInput || targetInfo?.input || '').trim();
+  if (!raw) return '';
+  if (NAMED_PRESS_KEYS.test(raw)) return '';
+  if (/^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$/.test(raw)) return '';
+  if (/^modal$/i.test(raw)) return '';
+  return recoveryCommandArg(raw);
+}
+
+function overlayCheckCommand(target, targetInput = '', targetInfo = {}) {
+  const selector = overlaySelectorArg(targetInput, targetInfo);
+  return selector
+    ? `cdp overlay ${target} ${selector} --format json`
+    : `cdp overlay ${target} --format json`;
+}
+
 function noChangeNeedsOverlay(action, targetInfo = {}) {
-  if (isExpectedClipboardNoChange(targetInfo)) return false;
+  if (isExpectedNoChange(targetInfo, '', action)) return false;
   return new Set(['click', 'jsclick', 'clickxy', 'fill', 'select', 'upload', 'press', 'dismiss-modal'])
     .has(String(action || '').toLowerCase());
 }
@@ -288,7 +353,7 @@ function noChangeBlockingSignals({ action = null, targetInput = '', targetInfo =
   const signals = [];
   if (noChangeNeedsOverlay(action, targetInfo)) signals.push('overlay-check-needed');
   if (noChangeNeedsFrameContext(targetInput, targetInfo)) signals.push('frame-check-needed');
-  if (!isExpectedClipboardNoChange(targetInfo, targetInput)) signals.push('fresh-perception-needed');
+  if (!isExpectedNoChange(targetInfo, targetInput, action)) signals.push('fresh-perception-needed');
   return [...new Set(signals)];
 }
 
@@ -311,9 +376,16 @@ export function buildNoChangeOutcomeRecommendation({
   targetInfo = {},
   source = 'action-outcome',
 } = {}) {
-  const input = recoveryCommandArg(targetInput);
   const blockingSignals = noChangeBlockingSignals({ action, targetInput, targetInfo });
-  if (isExpectedClipboardNoChange(targetInfo, targetInput)) {
+  if (isExpectedNoChange(targetInfo, targetInput, action)) {
+    const reason = isExpectedClipboardNoChange(targetInfo, targetInput)
+      ? 'Clipboard / copy actions do not rewrite the AX tree; continue without overlay recovery.'
+      : expectedNoChangeReason(targetInfo, action);
+    const recoveryHint = isExpectedClipboardNoChange(targetInfo, targetInput)
+      ? 'Clipboard action dispatched; no visible AX change is expected.'
+      : targetInfo?.expectedOutcome === 'no-modal'
+        ? 'No visible modal/dialog; continue without overlay recovery.'
+        : 'Key press dispatched; no visible AX change is expected for a no-op key.';
     return {
       source,
       actionIndex,
@@ -321,14 +393,14 @@ export function buildNoChangeOutcomeRecommendation({
       outcomeStatus: 'no-change',
       strategy: 'continue',
       priority: 'low',
-      reason: 'Clipboard / copy actions do not rewrite the AX tree; continue without overlay recovery.',
+      reason,
       blockingSignals,
-      recoveryHint: 'Clipboard action dispatched; no visible AX change is expected.',
+      recoveryHint,
       verifyCommand: `cdp report ${target} --format json`,
       commands: uniqueNextStepCommands([`cdp report ${target} --format json`]),
     };
   }
-  const overlayCommand = input ? `cdp overlay ${target} ${input} --format json` : `cdp overlay ${target} --format json`;
+  const overlayCommand = overlayCheckCommand(target, targetInput, targetInfo);
   const perceiveCommand = `cdp perceive ${target} -C -d 8`;
   const commands = [];
   if (blockingSignals.includes('overlay-check-needed')) commands.push(overlayCommand);
@@ -514,7 +586,6 @@ export function getRecoveryPolicyTemplate(kind) {
 
 export function buildActionRecoveryPlan(diagnosis = {}, { targetId = '<target>', targetInput = '' } = {}) {
   const target = targetId || '<target>';
-  const input = recoveryCommandArg(targetInput);
   const commandMap = {
     perceive: `cdp perceive ${target} -C -d 8`,
     'since-action': `cdp perceive ${target} --since-action`,
@@ -523,7 +594,7 @@ export function buildActionRecoveryPlan(diagnosis = {}, { targetId = '<target>',
     netlog: `cdp netlog ${target}`,
     console: `cdp console ${target} --errors`,
     frame: `cdp frame ${target} --format json`,
-    overlay: input ? `cdp overlay ${target} ${input} --format json` : `cdp overlay ${target} --format json`,
+    overlay: overlayCheckCommand(target, targetInput),
     dismiss: `cdp dismiss-modal ${target}`,
   };
   const nextCommand = diagnosis.nextCommand || null;

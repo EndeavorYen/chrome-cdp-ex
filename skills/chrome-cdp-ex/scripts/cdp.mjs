@@ -60,6 +60,9 @@ import {
   classifyActionFailure,
   formatActionFailure,
   isExpectedClipboardNoChange,
+  isExpectedNoChange,
+  expectedNoChangeReason,
+  overlaySelectorArg,
   isTimeoutError,
   looksLikeClipboardControl,
   recoveryCommandsFromDiagnosis,
@@ -126,6 +129,7 @@ import {
 
 const TIMEOUT = 15000;
 const SCREENSHOT_TIMEOUT = 30000;
+const QA_SCREENSHOT_TIMEOUT_MS = 2000;
 const NAVIGATION_TIMEOUT = 30000;
 const RELOAD_EVENT_TIMEOUT = 1000;
 const RELOAD_DISPATCH_TIMEOUT = 1000;
@@ -3075,8 +3079,8 @@ let _screenshotTier = 1; // start at tier 1; advances on failure
 function resetScreenshotTier() { _screenshotTier = 1; }
 function getScreenshotTier() { return _screenshotTier; }
 
-async function screencastFallback(cdp, sid) {
-  const frame = cdp.waitForEvent('Page.screencastFrame', SCREENSHOT_TIMEOUT);
+async function screencastFallback(cdp, sid, timeoutMs = SCREENSHOT_TIMEOUT) {
+  const frame = cdp.waitForEvent('Page.screencastFrame', timeoutMs);
   try {
     await cdpDomains(cdp).Page.startScreencast( { format: 'png', quality: 100, everyNthFrame: 1 }, sid);
     const result = await frame.promise;
@@ -3110,11 +3114,15 @@ async function waitForScreenshotPaint(cdp, sid) {
 async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {}) {
   const inspectFrame = hooks.inspectFrame || (frame => inspectScreenshotFrame(cdp, sid, frame.data));
   const waitForPaint = hooks.waitForPaint || (() => waitForScreenshotPaint(cdp, sid));
+  const timeoutMs = Number.isFinite(hooks.timeoutMs) && hooks.timeoutMs > 0
+    ? hooks.timeoutMs
+    : SCREENSHOT_TIMEOUT;
+  const skipSanityRetry = hooks.skipSanityRetry === true;
   let captured;
   // Tier 1: standard captureScreenshot
   if (_screenshotTier <= 1) {
     try {
-      const result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, SCREENSHOT_TIMEOUT);
+      const result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
       captured = { data: result.data, fallback: false, method: 'captureScreenshot' };
     } catch (err) {
       if (!err.message?.startsWith('Timeout:')) throw err;
@@ -3126,7 +3134,7 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
   if (!captured && _screenshotTier <= 2) {
     try {
       const result = await cdpDomains(cdp).Page.captureScreenshot(
-        { ...params, fromSurface: false }, sid, SCREENSHOT_TIMEOUT);
+        { ...params, fromSurface: false }, sid, timeoutMs);
       captured = { data: result.data, fallback: true, method: 'captureScreenshot-fromSurface-false' };
     } catch (err) {
       if (!err.message?.startsWith('Timeout:')) throw err;
@@ -3137,7 +3145,7 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
   // Tier 3: screencast single-frame grab
   if (!captured) {
     try {
-      const data = await screencastFallback(cdp, sid);
+      const data = await screencastFallback(cdp, sid, timeoutMs);
       captured = { data, fallback: true, method: 'screencast' };
     } catch {
       throw new Error(
@@ -3148,14 +3156,14 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
   }
 
   const firstFrameSanity = await inspectFrame(captured);
-  if (!firstFrameSanity?.retry || captured.method !== 'captureScreenshot') {
+  if (skipSanityRetry || !firstFrameSanity?.retry || captured.method !== 'captureScreenshot') {
     return { ...captured, retryCount: 0, sanity: firstFrameSanity };
   }
 
   await waitForPaint();
   let retry;
   try {
-    retry = await cdpDomains(cdp).Page.captureScreenshot( { ...params, fromSurface: false }, sid, SCREENSHOT_TIMEOUT);
+    retry = await cdpDomains(cdp).Page.captureScreenshot( { ...params, fromSurface: false }, sid, timeoutMs);
   } catch (error) {
     throw new Error(`Screenshot alternate capture failed: ${error?.message || String(error)}`);
   }
@@ -3203,18 +3211,32 @@ function formatScreenshotCaptureDiagnostics(capture = {}) {
 
 async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
   let filePath = null;
-  let opts = { quiet: false, verbose: false, onCapture: null };
+  let opts = { quiet: false, verbose: false, onCapture: null, timeoutMs: null, skipSanityRetry: false };
   if (filePathOrOpts && typeof filePathOrOpts === 'object' && !Array.isArray(filePathOrOpts)) {
     filePath = filePathOrOpts.filePath || null;
-    opts = { quiet: !!filePathOrOpts.quiet, verbose: !!filePathOrOpts.verbose, onCapture: filePathOrOpts.onCapture || null };
+    opts = {
+      quiet: !!filePathOrOpts.quiet,
+      verbose: !!filePathOrOpts.verbose,
+      onCapture: filePathOrOpts.onCapture || null,
+      timeoutMs: filePathOrOpts.timeoutMs,
+      skipSanityRetry: filePathOrOpts.skipSanityRetry === true,
+    };
   } else {
     filePath = filePathOrOpts || null;
     if (maybeOpts && typeof maybeOpts === 'object') {
-      opts = { quiet: !!maybeOpts.quiet, verbose: !!maybeOpts.verbose, onCapture: maybeOpts.onCapture || null };
+      opts = {
+        quiet: !!maybeOpts.quiet,
+        verbose: !!maybeOpts.verbose,
+        onCapture: maybeOpts.onCapture || null,
+        timeoutMs: maybeOpts.timeoutMs,
+        skipSanityRetry: maybeOpts.skipSanityRetry === true,
+      };
     }
   }
   const dpr = await getDpr(cdp, sid);
-  const capture = await captureScreenshot(cdp, sid, { format: 'png' });
+  const captureHooks = { skipSanityRetry: opts.skipSanityRetry };
+  if (Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0) captureHooks.timeoutMs = opts.timeoutMs;
+  const capture = await captureScreenshot(cdp, sid, { format: 'png' }, captureHooks);
   const { data } = capture;
   opts.onCapture?.(capture);
   const out = filePath || resolve(RUNTIME_DIR, `screenshot-${(targetId || 'unknown').slice(0, 8)}.png`);
@@ -4337,15 +4359,15 @@ function buildActionOutcome(actionResult = {}) {
   }
 
   if (domObserved) {
-    const expectedClipboard = isExpectedClipboardNoChange(actionResult.target);
+    const expectedNoChange = isExpectedNoChange(actionResult.target, '', actionResult.action);
     return {
       ...base,
       status: 'no-change',
       changed: false,
-      needsAttention: !expectedClipboard,
+      needsAttention: !expectedNoChange,
       evidence: 'dom',
-      reason: expectedClipboard
-        ? 'Clipboard / copy action; no visible AX tree change is expected.'
+      reason: expectedNoChange
+        ? expectedNoChangeReason(actionResult.target, actionResult.action)
         : 'No visible AX tree change observed after action.',
     };
   }
@@ -4843,13 +4865,13 @@ function buildActionVerdict(actionResult = {}) {
         needsRecovery: false,
       };
     case 'no-change': {
-      const expectedClipboard = isExpectedClipboardNoChange(actionResult.target);
+      const expectedNoChange = isExpectedNoChange(actionResult.target, '', actionResult.action);
       return {
         ...base,
-        status: expectedClipboard ? 'continue' : 'investigate',
+        status: expectedNoChange ? 'continue' : 'investigate',
         confidence: 'medium',
-        canContinue: expectedClipboard,
-        needsRecovery: !expectedClipboard,
+        canContinue: expectedNoChange,
+        needsRecovery: !expectedNoChange,
       };
     }
     case 'failed':
@@ -5353,6 +5375,21 @@ function formatActionWorkflowCommandOutput(model, { format = 'text', text = '' }
   return typeof text === 'function' ? text() : text;
 }
 
+function qaScreenshotCaptureOptions() {
+  return {
+    timeoutMs: QA_SCREENSHOT_TIMEOUT_MS,
+    skipSanityRetry: true,
+  };
+}
+
+function isScreenshotTimeoutError(err) {
+  const msg = String(err?.message || '');
+  return isTimeoutError(err)
+    || /screenshot failed: all methods timed out/i.test(msg)
+    || /screenshot alternate capture failed/i.test(msg)
+    || /page\.capturescreenshot timed out/i.test(msg);
+}
+
 function parseQaArgs(args = []) {
   const fopts = parseFormatArgs(args, ['text', 'json']);
   const opts = {
@@ -5778,17 +5815,26 @@ async function qaPageStr({
     exceptions: exceptionBuf.all().length,
   };
   const screenshots = {};
+  let screenshotTimedOut = false;
   for (const [kind, size] of [['desktop', qopts.desktop], ['mobile', qopts.mobile]]) {
     if (!size) continue;
+    if (screenshotTimedOut) {
+      errors.push(`${kind} screenshot: skipped after previous screenshot timeout`);
+      continue;
+    }
     try {
       await viewportStr(cdp, sid, size);
       ensureSessionScreenshotDir(session);
       const path = nextSessionScreenshotPath(session, kind);
-      const shot = await shotStr(cdp, sid, path, targetId, { quiet: true });
+      const shot = await shotStr(cdp, sid, path, targetId, {
+        quiet: true,
+        ...qaScreenshotCaptureOptions(),
+      });
       appendSessionScreenshot(session, { kind: `qa-${kind}`, path: shot.split('\n')[0], note: size });
       screenshots[kind] = { viewport: size, path: shot.split('\n')[0] };
     } catch (error) {
       errors.push(`${kind} screenshot: ${error.message}`);
+      if (isScreenshotTimeoutError(error)) screenshotTimedOut = true;
     }
   }
   let perception = null;
@@ -5886,6 +5932,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
     dispatchText = await dispatch();
   } catch (e) {
     const failure = classifyActionFailure(e, { action, target });
+    if (failure.kind === 'usage') throw e;
     const result = createActionResult({
       action,
       target: target || { input: '', resolvedBy: 'command', label: '' },
@@ -5983,7 +6030,7 @@ function summarizeActionDomDiff(domDiff) {
 function compactActionTargetModel(target = null) {
   if (!target || typeof target !== 'object') return target;
   const compact = {};
-  for (const field of ['targetId', 'input', 'resolvedBy', 'label', 'frameRef', 'redacted']) {
+  for (const field of ['targetId', 'input', 'resolvedBy', 'label', 'frameRef', 'redacted', 'expectedOutcome']) {
     if (target[field] !== undefined && target[field] !== null && target[field] !== '') compact[field] = target[field];
   }
   return compact;
@@ -10295,12 +10342,22 @@ function keyForPress(input) {
   return null;
 }
 
+function pressUsageError(keyName) {
+  if (!keyName) {
+    return new Error('Key name required (Enter, Tab, Escape, Backspace, Space, Arrow*, or single character a-z/A-Z/0-9/punctuation)');
+  }
+  if (!keyForPress(keyName)) {
+    return new Error(
+      `Unknown key: ${keyName}. Supported: ${Object.keys(KEY_MAP).join(', ')}, single characters (a-z, A-Z, 0-9, common punctuation). Use \`type\` for multi-character text.`
+    );
+  }
+  return null;
+}
+
 async function pressStr(cdp, sid, keyName) {
-  if (!keyName) throw new Error('Key name required (Enter, Tab, Escape, Backspace, Space, Arrow*, or single character a-z/A-Z/0-9/punctuation)');
+  const usage = pressUsageError(keyName);
+  if (usage) throw usage;
   const mapped = keyForPress(keyName);
-  if (!mapped) throw new Error(
-    `Unknown key: ${keyName}. Supported: ${Object.keys(KEY_MAP).join(', ')}, single characters (a-z, A-Z, 0-9, common punctuation). Use \`type\` for multi-character text.`
-  );
   const modifiers = mapped.shift ? 8 : 0;
   const base = {
     key: mapped.key,
@@ -12460,16 +12517,17 @@ function textPageScript(opts) {
   })()`;
 }
 
-async function textStr(cdp, sid, args) {
+async function textStr(cdp, sid, args, extra = {}) {
   // Support legacy single-string call: textStr(cdp, sid, 'main') — wrap into args[]
   let optsArgs = args;
   if (typeof args === 'string' || args == null) optsArgs = args ? [args] : [];
   else if (!Array.isArray(args)) optsArgs = [];
   const opts = parseTextArgs(optsArgs);
+  if (extra.targetPrefix && !opts.targetPrefix) opts.targetPrefix = extra.targetPrefix;
   try {
     const page = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ title: document.title, url: window.location.href, contentType: document.contentType || "" })', false, { timeoutMs: STATUS_PAGE_INFO_TIMEOUT }));
     if (isPdfViewerContentType(page.contentType)) {
-      throw pdfViewerError(page, { targetPrefix: opts.targetPrefix || '<target>' });
+      throw pdfViewerError(page, { targetPrefix: opts.targetPrefix || extra.targetPrefix || '<target>' });
     }
   } catch (error) {
     if (error?.code === 'pdf_viewer') throw error;
@@ -16996,12 +17054,22 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         actionTarget.expectedOutcome = 'clipboard-no-change';
         actionTarget.dispatchText = String(text || '');
       }
+      if (action === 'dismiss-modal' && /no visible modal\/dialog detected/i.test(String(text || ''))) {
+        actionTarget.expectedOutcome = 'no-modal';
+      }
+      if (action === 'press' || actionTarget.resolvedBy === 'key') {
+        actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'press-no-change';
+      }
       return text;
     };
     const observeThenFlush = async () => {
       if (actionTarget.expectedOutcome === 'clipboard-no-change') {
         appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
         return 'No changes detected (clipboard action).';
+      }
+      if (actionTarget.expectedOutcome === 'no-modal') {
+        appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
+        return 'No changes detected (no modal).';
       }
       const text = await observeAfterAction();
       await waitForActionNetworkQuiet(pendingReqs);
@@ -17086,7 +17154,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     },
     fullshot: args => fullshotStr(cdp, sessionId, args[0], targetId),
     html: args => htmlStr(cdp, sessionId, args),
-    text: args => textStr(cdp, sessionId, args),
+    text: args => textStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
     table: async (request, execution) => request.mode === 'continue'
       ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)
       : request.mode === 'collect'
@@ -17299,7 +17367,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     }), null),
     press: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-      const value = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
+      const usage = pressUsageError(fopts.args[0]);
+      if (usage) throw usage;
+      const value = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]], expectedOutcome: 'press-no-change' }, 'settle-diff', null, fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
     qa: async args => commandResult(await qaPageStr({
@@ -19181,7 +19251,8 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
     case 'type':
       return `cdp type ${target} <text>`;
     case 'press':
-      return `cdp press ${target} <key>`;
+    case 'key':
+      return 'cdp help press';
     case 'select':
       return `cdp select ${target} <selector> <value>`;
     case 'elshot':
@@ -19216,6 +19287,8 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
       return 'cdp help target';
     case 'text':
       return 'cdp help text';
+    case 'waitfor':
+      return 'cdp help waitfor';
     case 'forget':
       return 'cdp help forget';
     default:
@@ -19315,6 +19388,17 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       strategy: 'show-help',
       run: 'cdp help target',
       reason: 'target requires --url and/or --title. Print usage instead of probing doctor.',
+    };
+  }
+  if (
+    (cmd === 'press' || cmd === 'key')
+    && (lower.includes('unknown key') || lower.includes('key name required'))
+  ) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help press',
+      reason: 'press requires a supported key name. Print usage instead of wrapping as an unclassified action failure.',
     };
   }
   if (
@@ -19425,6 +19509,19 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       strategy: 'provide-required-argument',
       run: commandUsageTemplate(cmd, targetPrefix),
       reason: 'The command is missing required input; provide the required argument instead of retrying unchanged.',
+    };
+  }
+  if (
+    (cmd === 'waitfor' && (lower.includes('timeout') || lower.includes('not found within') || lower.includes('still present') || lower.includes('did not stabilise')))
+    || /timeout:\s*.+\bnot found within\b/i.test(message)
+    || /timeout:\s*.+\bstill present after\b/i.test(message)
+    || /timeout:\s*.+\bdid not stabilise\b/i.test(message)
+  ) {
+    return {
+      kind: 'timeout',
+      strategy: 'adjust-wait',
+      run: 'cdp help waitfor',
+      reason: 'The wait condition was not met before the timeout. Increase the bound or use --text / --any-of; the tab is still live.',
     };
   }
   return lower.includes('target/document readiness mismatch') ? perceiveReadinessRecovery(target)
@@ -20789,9 +20886,11 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,
   buildActionRecoveryPlan, buildNoChangeOutcomeRecommendation,
+  isExpectedNoChange, overlaySelectorArg,
   createActionResult, buildActionReceipt, formatActionText, runActionWithFeedback,
   parseVerifyClickArgs, buildSemanticInteractionModel, formatSemanticInteractionResult, formatActionWorkflowCommandOutput,
   parseQaArgs, buildQaPageModel, formatQaPageReport,
+  qaScreenshotCaptureOptions, QA_SCREENSHOT_TIMEOUT_MS,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest, isNetworkFailure,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
@@ -20829,7 +20928,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   buildExactTargetSupervisorCandidates,
   cdpRuntimeIdentity,
   // 3y-mud feedback additions
-  KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr,
+  KEY_MAP, PUNCT_KEY_MAP, SHIFTED_PUNCT_KEY_MAP, keyForPress, pressStr, pressUsageError,
   formatUnknownRefError, resolveRefNode, scrollSettledRectFunctionDeclaration, formatRefRect, isPriorityPerceiveTextLine,
   parseFrameOnlyRef, parseFrameRef, flattenFrameTree, formatFrameTreeText, framesModel, framesStr,
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,

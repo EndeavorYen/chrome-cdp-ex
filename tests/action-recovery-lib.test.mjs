@@ -5,6 +5,7 @@ import {
   buildNoChangeOutcomeRecommendation,
   classifyActionFailure,
   formatActionFailure,
+  overlaySelectorArg,
   recoveryCommandsFromDiagnosis,
   RECOVERY_POLICY_REGISTRY,
   listRecoveryPolicyKinds,
@@ -123,6 +124,19 @@ describe('action recovery lib', () => {
     });
     expect(recommendation.strategy).toBe('continue');
     expect(recommendation.blockingSignals).toEqual([]);
+    expect(recommendation.commands.join('\n')).not.toMatch(/\boverlay\b/);
+  });
+
+  it('omits press keys from overlay Next and continues no-change key presses', () => {
+    expect(overlaySelectorArg('Escape', { resolvedBy: 'key' })).toBe('');
+    expect(overlaySelectorArg('modal', { resolvedBy: 'dialog' })).toBe('');
+    const recommendation = buildNoChangeOutcomeRecommendation({
+      action: 'press',
+      target: 'ABC123',
+      targetInput: 'Escape',
+      targetInfo: { input: 'Escape', resolvedBy: 'key' },
+    });
+    expect(recommendation.strategy).toBe('continue');
     expect(recommendation.commands.join('\n')).not.toMatch(/\boverlay\b/);
   });
 

@@ -3315,3 +3315,249 @@ describe('issues #195-#202 open contracts', () => {
   });
 });
 
+describe('issues #204-#208 open contracts', () => {
+  it('#204 press no-change Next is not overlay <Key>; usage is Kind:usage / help press', () => {
+    expect(T.overlaySelectorArg('Escape', { resolvedBy: 'key', input: 'Escape' })).toBe('');
+    expect(T.overlaySelectorArg('a', { resolvedBy: 'key', input: 'a' })).toBe('');
+    expect(T.overlaySelectorArg('#save', { resolvedBy: 'selector-or-ref', input: '#save' })).toBe('"#save"');
+
+    const escape = T.buildNoChangeOutcomeRecommendation({
+      action: 'press',
+      target: '1D366978',
+      targetInput: 'Escape',
+      targetInfo: { input: 'Escape', resolvedBy: 'key', label: 'Escape', expectedOutcome: 'press-no-change' },
+    });
+    expect(escape.strategy).toBe('continue');
+    expect(escape.blockingSignals).not.toContain('overlay-check-needed');
+    expect(escape.commands.join('\n')).not.toMatch(/\boverlay\b/);
+    expect(escape.commands.join('\n')).not.toMatch(/\bEscape\b/);
+
+    const space = T.buildNoChangeOutcomeRecommendation({
+      action: 'press',
+      target: '1D366978',
+      targetInput: 'Space',
+      targetInfo: { input: 'Space', resolvedBy: 'key', label: 'Space' },
+    });
+    expect(space.strategy).toBe('continue');
+    expect(space.commands.join('\n')).not.toMatch(/\boverlay\b/);
+
+    const result = T.createActionResult({
+      action: 'press',
+      target: {
+        targetId: '1D3669785EAC5A1A211792636BAE8A07',
+        input: 'Escape',
+        resolvedBy: 'key',
+        label: 'Escape',
+        expectedOutcome: 'press-no-change',
+      },
+      dispatch: { ok: true, method: 'press' },
+      settle: { ok: true, durationMs: 80 },
+      effects: {
+        domDiff: 'No changes detected.',
+        console: [],
+        network: [],
+        navigation: null,
+        consoleDelta: { count: 0, errors: 0, warnings: 0, entries: [] },
+        exceptionDelta: { count: 0, entries: [] },
+        networkDelta: { count: 0, failures: 0, pending: 0, entries: [] },
+      },
+    });
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.verdict.needsRecovery).toBe(false);
+    expect(T.formatActionText(result)).not.toMatch(/\bcdp overlay\b/);
+    expect(T.formatActionText(result)).not.toMatch(/overlay 1D366978 Escape/);
+
+    const unknown = T.classifyActionFailure(new Error('Unknown key: Esc. Supported: enter, tab, escape'), {
+      action: 'press',
+      target: { targetId: '1D366978', input: 'Esc', resolvedBy: 'key' },
+    });
+    expect(unknown.kind).toBe('usage');
+    expect(unknown.nextCommand).toBe('cdp help press');
+
+    const missing = T.buildCliErrorRecovery('Key name required (Enter, Tab, Escape, Backspace, Space, Arrow*, or single character a-z/A-Z/0-9/punctuation)', {
+      cmd: 'press',
+      targetPrefix: '1D366978',
+    });
+    expect(missing.kind).toBe('usage');
+    expect(missing.run).toBe('cdp help press');
+
+    const text = T.formatCliError(new Error('Unknown key: Esc. Supported: enter, tab, escape'), {
+      cmd: 'press',
+      targetPrefix: '1D366978',
+    });
+    expect(text).toMatch(/Kind: usage/);
+    expect(text).toMatch(/Next: cdp help press/);
+    expect(text).not.toMatch(/Action failure: unknown/);
+    expect(T.pressUsageError('Esc')?.message).toMatch(/Unknown key: Esc/);
+    expect(T.pressUsageError(undefined)?.message).toMatch(/Key name required/);
+    expect(T.pressUsageError('Escape')).toBeNull();
+  });
+
+  it('#205 dismiss-modal with no modal is no-change continue, not dom-changed', () => {
+    expect(T.actionDomDiffShowsChange('No changes detected (no modal).')).toBe(false);
+    expect(T.overlaySelectorArg('modal', { resolvedBy: 'dialog', input: 'modal' })).toBe('');
+
+    const recommendation = T.buildNoChangeOutcomeRecommendation({
+      action: 'dismiss-modal',
+      target: '1D366978',
+      targetInput: 'modal',
+      targetInfo: { input: 'modal', resolvedBy: 'dialog', label: 'modal', expectedOutcome: 'no-modal' },
+    });
+    expect(recommendation.strategy).toBe('continue');
+    expect(recommendation.outcomeStatus).toBe('no-change');
+    expect(recommendation.blockingSignals).not.toContain('overlay-check-needed');
+    expect(recommendation.commands.join('\n')).not.toMatch(/\boverlay\b/);
+
+    const result = T.createActionResult({
+      action: 'dismiss-modal',
+      target: {
+        targetId: '1D3669785EAC5A1A211792636BAE8A07',
+        input: 'modal',
+        resolvedBy: 'dialog',
+        label: 'modal',
+        expectedOutcome: 'no-modal',
+      },
+      dispatch: { ok: true, method: 'dismiss-modal' },
+      settle: { ok: true, durationMs: 20 },
+      effects: {
+        domDiff: 'No changes detected (no modal).',
+        console: [],
+        network: [],
+        navigation: null,
+        consoleDelta: { count: 0, errors: 0, warnings: 0, entries: [] },
+        exceptionDelta: { count: 0, entries: [] },
+        networkDelta: { count: 0, failures: 0, pending: 0, entries: [] },
+      },
+    });
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.effects.diagnosis?.kind).not.toBe('dom-changed');
+    expect(T.formatActionText(result)).not.toMatch(/Outcome: changed/);
+  });
+
+  it('#206 waitfor timeout is Kind:timeout / help waitfor, not unknown/status', () => {
+    const selector = T.buildCliErrorRecovery(
+      'Timeout: ".does-not-exist-xyz" not found within 1500ms — to wait for specific text content instead, use: waitfor --text "expected text" 120000',
+      { cmd: 'waitfor', targetPrefix: '1D366978' },
+    );
+    expect(selector.kind).toBe('timeout');
+    expect(selector.run).toBe('cdp help waitfor');
+    expect(selector.run).not.toMatch(/status/);
+
+    const text = T.buildCliErrorRecovery('Timeout: text "ZZZNOPE" not found within 1200ms', {
+      cmd: 'waitfor',
+      targetPrefix: '1D366978',
+    });
+    expect(text.kind).toBe('timeout');
+    expect(text.run).toBe('cdp help waitfor');
+
+    const anyOf = T.buildCliErrorRecovery('Timeout: any of [ZZZ, NOPE] not found within 1200ms', {
+      cmd: 'waitfor',
+      targetPrefix: '1D366978',
+    });
+    expect(anyOf.kind).toBe('timeout');
+    expect(anyOf.run).toBe('cdp help waitfor');
+
+    const formatted = T.formatCliError(
+      new Error('Timeout: ".does-not-exist-xyz" not found within 1500ms'),
+      { cmd: 'waitfor', targetPrefix: '1D366978' },
+    );
+    expect(formatted).toMatch(/Kind: timeout/);
+    expect(formatted).toMatch(/Next: cdp help waitfor/);
+    expect(formatted).not.toMatch(/Kind: unknown/);
+    expect(formatted).not.toMatch(/cdp status/);
+
+    expect(T.commandUsageTemplate('waitfor', '1D366978')).toBe('cdp help waitfor');
+    const missing = T.buildCliErrorRecovery('CSS selector or --text required', {
+      cmd: 'waitfor',
+      targetPrefix: '1D366978',
+    });
+    expect(missing.kind).toBe('usage');
+    expect(missing.run).toBe('cdp help waitfor');
+  });
+
+  it('#207 text --auto PDF Next uses the resolved prefix, not <target>', async () => {
+    const printed = T.formatPdfViewerOutput({
+      title: '',
+      url: 'https://arxiv.org/pdf/2608.12307',
+      contentType: 'application/pdf',
+    }, { targetPrefix: '9FAD7C71' });
+    expect(printed).toContain('cdp eval 9FAD7C71 "document.contentType"');
+    expect(printed).not.toContain('<target>');
+
+    let calls = 0;
+    const cdp = {
+      send(method) {
+        if (method !== 'Runtime.evaluate') throw new Error(`unexpected ${method}`);
+        calls += 1;
+        return Promise.resolve({
+          result: {
+            value: JSON.stringify({
+              title: '',
+              url: 'https://arxiv.org/pdf/2608.12307',
+              contentType: 'application/pdf',
+            }),
+          },
+        });
+      },
+    };
+    await expect(T.textStr(cdp, 'sid', ['--auto'], { targetPrefix: '9FAD7C71' }))
+      .rejects.toThrow(/cdp eval 9FAD7C71 "document\.contentType"/);
+    expect(calls).toBe(1);
+    try {
+      await T.textStr(cdp, 'sid', ['--auto'], { targetPrefix: '9FAD7C71' });
+      throw new Error('expected pdf viewer error');
+    } catch (error) {
+      if (error.message === 'expected pdf viewer error') throw error;
+      expect(error.code).toBe('pdf_viewer');
+      expect(error.message).not.toContain('<target>');
+    }
+  });
+
+  it('#208 qa screenshot capture is bounded and still yields a receipt', async () => {
+    expect(T.QA_SCREENSHOT_TIMEOUT_MS).toBeLessThanOrEqual(3000);
+    expect(T.qaScreenshotCaptureOptions()).toMatchObject({
+      timeoutMs: T.QA_SCREENSHOT_TIMEOUT_MS,
+      skipSanityRetry: true,
+    });
+
+    T.resetScreenshotTier();
+    const cdp = {
+      calls: [],
+      send(method, params = {}, sessionId, timeout) {
+        this.calls.push({ method, params, sessionId, timeout });
+        if (method === 'Page.captureScreenshot') {
+          throw new Error('Timeout: Page.captureScreenshot');
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+      waitForEvent() {
+        return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+      },
+    };
+    await expect(T.captureScreenshot(cdp, 'sid', { format: 'png' }, {
+      ...T.qaScreenshotCaptureOptions(),
+      inspectFrame: async () => ({ retry: false }),
+    })).rejects.toThrow(/all methods timed out|Timeout: Page\.captureScreenshot/);
+    expect(cdp.calls.some(call => call.method === 'Page.captureScreenshot' && call.timeout === T.QA_SCREENSHOT_TIMEOUT_MS)).toBe(true);
+    expect(cdp.calls.every(call => call.method !== 'Page.captureScreenshot' || call.timeout === T.QA_SCREENSHOT_TIMEOUT_MS)).toBe(true);
+
+    const model = T.buildQaPageModel({
+      targetId: '1D3669785EAC5A1A211792636BAE8A07',
+      page: { title: 'Example Domain', url: 'https://example.com/' },
+      pageHealth: { status: 'ok', isBlank: false },
+      console: { errors: 0, warnings: 0, exceptions: 0 },
+      perception: { captured: true, summary: 'Page: Example Domain' },
+      screenshots: {},
+      errors: ['desktop screenshot: Screenshot failed: all methods timed out (Page.captureScreenshot, fromSurface:false, screencast).'],
+    });
+    const text = T.formatQaPageReport(model);
+    expect(text).toMatch(/QA page: Example Domain/);
+    expect(text).toMatch(/Error: desktop screenshot:/);
+    expect(text).toMatch(/Verdict:/);
+    expect(text.length).toBeGreaterThan(0);
+  });
+});
+

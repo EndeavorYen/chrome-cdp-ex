@@ -394,12 +394,12 @@ describe('Phase 6 direct CDP characterization', () => {
     const inventory = directCdpInventory(source);
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
     expect(inventory).toHaveLength(137);
-    expect(digest).toBe('sha256:cb2e2f47760e9427e7a75104dfe1b4fda3cece00fb3d9fe0cfe5d4c84b791f34');
+    expect(digest).toBe('sha256:53267871a64905648cf9f8f94817ca70fe151a7fa0173ab87a67f04b3ace4df4');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'Math.min(1000, Math.max(100, deadline - now() + 100))',
       'REF_RESOLVE_TIMEOUT', 'RELOAD_DISPATCH_TIMEOUT', 'RELOAD_OBSERVE_TIMEOUT',
-      'SCREENSHOT_TIMEOUT', 'options.timeoutMs', 'probeTimeoutMs', 'timeoutMs',
+      'options.timeoutMs', 'probeTimeoutMs', 'timeoutMs',
     ]);
     expect([...new Set(inventory.map(entry => entry.session))].sort())
       .toEqual(['<browser>', 'attached.sessionId', 'sessionId', 'sid', 'undefined']);
