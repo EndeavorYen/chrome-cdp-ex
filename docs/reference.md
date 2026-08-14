@@ -88,7 +88,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `viewport` | `viewport\|resize <target> [WxH]` | `mutation / mutation` |
 | `emulate` | `emulate <target> [dark\|light\|no-preference\|off\|status]` | `mutation / mutation` |
 | `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
-| `text` | `text <target> [selector]` | `read / standard` |
+| `text` | `text <target> [selector\|--auto]` | `read / standard` |
 | `table` | `table <target> [TABLE_SELECTOR] [--format text\|json] \| table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text\|json] \| table <target> --continue TOKEN --format json` | `conditional-mutation / conditional` |
 | `back` | `back <target>` | `mutation / mutation` |
 | `forward` | `forward <target>` | `mutation / mutation` |
@@ -104,7 +104,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `repeat` | `repeat <target> <N> <cmd> [args]` | `composite / composite` |
 | `doctor` | `doctor / ready [--format json]` | `read / standard` |
 | `keepalive` | `keepalive <target> <ms>` | `protected-mutation / mutation` |
-| `open` | `open [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]` | `mutation / mutation` |
+| `open` | `open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]` | `mutation / mutation` |
 | `spawn-debug-browser` | `spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]` | `mutation / mutation` |
 | `dismiss-modal` | `dismiss-modal <target>` | `mutation / mutation` |
 | `stop` | `stop [target] [--format json]` | `mutation / mutation` |
@@ -119,12 +119,14 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 node skills/chrome-cdp-ex/scripts/cdp.mjs list
 node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
+# For "what does this page say": node skills/chrome-cdp-ex/scripts/cdp.mjs text <target> --auto
 node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
 node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 ```
 
 Use `--format json` when another agent or script needs structured handoff data instead of human text.
+Default `open` returns the target prefix and a follow-up `perceive` command; pass `--perceive` only when you want the full dump in the same call.
 
 ## Baselines And Bounded State Checks
 
@@ -158,7 +160,7 @@ Multi-statement async eval returns a simple trailing expression:
 `eval <target> "const value = await Promise.resolve(42); value"` prints `42`.
 Use an explicit `return` for ambiguous control-flow endings.
 
-For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a text-row budget from page density and console errors. Explicit `--last N` always wins.
+For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a text-row budget from page density and console errors. Explicit `--last N` always wins. If a search box is focused, blur it (`press Escape`) or `perceive -s main` so typeahead suggestions do not replace the page body; `--keep-typeahead` keeps the dropdown. On virtualized feeds, `perceive --cards` returns a capped `chrome-cdp-ex.cards.v1` article/listitem list instead of the AX dump.
 
 ## Install And Release Surface
 
@@ -345,6 +347,8 @@ cdp report <target> --last 1 --format json --compact
 ```
 
 Compact action/report JSON keeps the executable handoff contract - `schema`, target/action identity, dispatch/settlement status, high-signal evidence, outcome/verdict, recommendation, next steps, and receipt recovery data - while trimming duplicated full diagnostic envelopes and long DOM evidence. Use the session JSONL path from `report` when you need the full audit trail.
+
+`fill --format json` defaults to `chrome-cdp-ex.fill.v1`: `{ value, changed, navigation, typeahead }` plus an optional `targetPrefix`. That receipt stays a few hundred bytes even when diagnosis/recovery envelopes are attached internally. Pass `--full` or `--unsafe-full` for the existing `chrome-cdp-ex.action.v1` envelope, or `--compact` for the compact action handoff. After a no-navigation typeahead fill, `perceive --since-action` summarizes as `textbox value set; N suggestion links` plus the suggestion labels instead of listing the rerooted AX tree.
 
 Common outcomes:
 

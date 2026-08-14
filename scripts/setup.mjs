@@ -6,6 +6,7 @@
  */
 import { spawn } from 'child_process';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -30,17 +31,25 @@ export const SUPPORTED_HOSTS = Object.freeze([
   'pi',
 ]);
 
+export function hermesSkillPath({ home = homedir(), env = process.env } = {}) {
+  const hermesHome = env.HERMES_HOME || join(home, '.hermes');
+  return join(hermesHome, 'skills', 'chrome-cdp-ex');
+}
+
 export function detectEnvironment({
   home = homedir(),
   repoRoot = REPO_ROOT,
   env = process.env,
+  fs: io = { existsSync },
 } = {}) {
   const skillDir = resolve(repoRoot, 'skills', 'chrome-cdp-ex');
   const cdpScript = resolve(skillDir, 'scripts', 'cdp.mjs');
   const mcpServer = resolve(skillDir, 'scripts', 'mcp-server.mjs');
+  const exists = io.existsSync || existsSync;
   const hosts = {
     claudeSkill: join(home, '.claude', 'skills', 'chrome-cdp-ex'),
     codexSkill: join(home, '.codex', 'skills', 'chrome-cdp-ex'),
+    hermesSkill: hermesSkillPath({ home, env }),
     cursorMcp: join(repoRoot, '.cursor', 'mcp.json'),
     cursorUserMcp: join(home, '.cursor', 'mcp.json'),
   };
@@ -57,23 +66,28 @@ export function detectEnvironment({
     hosts: {
       claude: {
         skillPath: hosts.claudeSkill,
-        installed: existsSync(hosts.claudeSkill),
+        installed: exists(hosts.claudeSkill),
         route: 'cli',
       },
       codex: {
         skillPath: hosts.codexSkill,
-        installed: existsSync(hosts.codexSkill),
+        installed: exists(hosts.codexSkill),
         route: 'cli',
       },
       cursor: {
         projectMcpPath: hosts.cursorMcp,
         userMcpPath: hosts.cursorUserMcp,
-        projectConfigured: existsSync(hosts.cursorMcp),
-        userConfigured: existsSync(hosts.cursorUserMcp),
+        projectConfigured: exists(hosts.cursorMcp),
+        userConfigured: exists(hosts.cursorUserMcp),
         route: 'mcp',
       },
       openclaw: { route: 'mcp', notes: 'Register skill dir + stdio MCP server' },
-      hermes: { route: 'cli', notes: 'Prefer shell calls to cdp.mjs' },
+      hermes: {
+        skillPath: hosts.hermesSkill,
+        installed: exists(hosts.hermesSkill),
+        route: 'cli',
+        notes: 'Prefer shell calls to cdp.mjs',
+      },
       pi: { route: 'cli', notes: 'package.json pi.skills metadata' },
     },
     filesPresent: {
@@ -138,13 +152,16 @@ export function hostSnippet(host, detect = detectEnvironment()) {
         `# MCP stdio:`,
         JSON.stringify(cursorMcpConfig({ mcpServer: mcp, node: detect.node, cdpPort: detect.cdpPort }), null, 2),
       ].join('\n');
-    case 'hermes':
+    case 'hermes': {
+      const hermesDest = detect.hosts?.hermes?.skillPath || hermesSkillPath();
+      const hermesParent = dirname(hermesDest);
       return [
         `# Hermes — prefer CLI`,
-        `cp -R ${skillDir} <hermes-skills-dir>/chrome-cdp-ex`,
+        `mkdir -p ${shQuote(hermesParent)} && cp -R ${skillDir} ${shQuote(`${hermesParent}/`)}`,
         `${node} ${cdp} doctor`,
         `${node} ${cdp} list`,
       ].join('\n');
+    }
     case 'pi':
       return [
         `# Pi / pi-coding-agent`,
@@ -180,6 +197,20 @@ function mergeMcpConfig(existing, next) {
     ...next.mcpServers,
   };
   return { ...base, mcpServers: servers };
+}
+
+export function writeHostSkill({
+  dest,
+  skillDir = SKILL_DIR,
+  dryRun = false,
+  fs: io = { mkdirSync, cpSync },
+} = {}) {
+  if (!dest) throw new Error('writeHostSkill requires dest');
+  if (!dryRun) {
+    io.mkdirSync(dirname(dest), { recursive: true });
+    io.cpSync(skillDir, dest, { recursive: true, force: true });
+  }
+  return { dest, dryRun, copied: !dryRun };
 }
 
 export function writeCursorMcpConfig({
@@ -309,6 +340,7 @@ function printDetect(detect) {
     'Host install status:',
     `  claude skill: ${detect.hosts.claude.installed ? 'installed' : 'missing'} (${detect.hosts.claude.skillPath})`,
     `  codex skill:  ${detect.hosts.codex.installed ? 'installed' : 'missing'} (${detect.hosts.codex.skillPath})`,
+    `  hermes skill: ${detect.hosts.hermes.installed ? 'installed' : 'missing'} (${detect.hosts.hermes.skillPath})`,
     `  cursor project MCP: ${detect.hosts.cursor.projectConfigured ? 'present' : 'missing'} (${detect.hosts.cursor.projectMcpPath})`,
     '',
     'Route recommendation:',
@@ -329,17 +361,19 @@ function usage() {
   node scripts/setup.mjs --help
 
 --for cursor --write   merges chrome-cdp-ex into ./.cursor/mcp.json
+--for hermes --write   copies the skill into ~/.hermes/skills/chrome-cdp-ex
+--for codex --write    copies the skill into ~/.codex/skills/chrome-cdp-ex
 --json                 machine-readable output`;
 }
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), opts = {}) {
   if (argv.includes('--help') || argv.includes('-h') || argv.length === 0) {
     console.log(usage());
     return 0;
   }
   const json = argv.includes('--json');
   const write = argv.includes('--write');
-  const detect = detectEnvironment();
+  const detect = opts.detect || detectEnvironment(opts);
 
   if (argv.includes('--detect')) {
     if (json) console.log(JSON.stringify(detect, null, 2));
@@ -393,6 +427,12 @@ export async function main(argv = process.argv.slice(2)) {
         node: detect.node,
         cdpPort: detect.cdpPort,
       });
+    } else if ((host === 'hermes' || host === 'codex') && write) {
+      payload.written = writeHostSkill({
+        dest: detect.hosts[host].skillPath,
+        skillDir: detect.skillDir,
+        fs: opts.fs,
+      });
     }
     if (json) console.log(JSON.stringify(payload, null, 2));
     else {
@@ -401,8 +441,11 @@ export async function main(argv = process.argv.slice(2)) {
       console.log(`MCP: ${detect.node} ${detect.mcpServer}`);
       console.log('');
       console.log(snippet);
-      if (payload.written) console.log(`\nWrote ${payload.written.path}`);
+      if (payload.written?.path) console.log(`\nWrote ${payload.written.path}`);
+      else if (payload.written?.dest) console.log(`\nWrote ${payload.written.dest}`);
       else if (host === 'cursor') console.log('\nTip: add --write to merge into ./.cursor/mcp.json');
+      else if (host === 'hermes') console.log(`\nTip: add --write to copy into ${detect.hosts.hermes.skillPath}`);
+      else if (host === 'codex') console.log('\nTip: add --write to copy into ~/.codex/skills/chrome-cdp-ex');
     }
     return 0;
   }

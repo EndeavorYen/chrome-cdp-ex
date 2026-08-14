@@ -47,7 +47,7 @@ export function goldenPathPerceiveRecommendation(targetPrefix) {
     after: `cdp click ${targetPrefix} @ref  # choose a ref from perceive`,
     evidence: `cdp perceive ${targetPrefix} --since-action`,
     report: `cdp report ${targetPrefix}`,
-    reason: 'observe the real page before choosing an action target',
+    reason: 'observe the real page before choosing an action target. For "what does this page say", run cdp text ' + targetPrefix + ' --auto',
   });
 }
 

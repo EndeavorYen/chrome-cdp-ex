@@ -108,8 +108,10 @@ node scripts/setup.mjs --for cursor --write   # Cursor → .cursor/mcp.json
 ```bash
 node scripts/setup.mjs --verify
 ./bin/chrome-cdp doctor
-# or: node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
+# or: "$HERMES_HOME/node/bin/node" skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 ```
+
+If `node -v` is <22, use the Node 22 path printed by doctor (`./bin/chrome-cdp` re-execs it when found).
 
 If CDP is not reachable:
 
@@ -135,7 +137,7 @@ If CDP is not reachable:
 
 Loop: **perceive → act → ask what changed**. Action JSON uses `receipt.schema = chrome-cdp-ex.action-receipt.v1`.
 
-**Requires:** Node.js 22+ (built-in WebSocket). Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
+**Requires:** Node.js 22 (built-in WebSocket). Prefer `./bin/chrome-cdp` or `$HERMES_HOME/node/bin/node` when PATH `node` is older. Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
 
 ## How it works
 
@@ -227,7 +229,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `viewport` | `viewport\|resize <target> [WxH]` | `mutation / mutation` |
 | `emulate` | `emulate <target> [dark\|light\|no-preference\|off\|status]` | `mutation / mutation` |
 | `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
-| `text` | `text <target> [selector]` | `read / standard` |
+| `text` | `text <target> [selector\|--auto]` | `read / standard` |
 | `table` | `table <target> [TABLE_SELECTOR] [--format text\|json] \| table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text\|json] \| table <target> --continue TOKEN --format json` | `conditional-mutation / conditional` |
 | `back` | `back <target>` | `mutation / mutation` |
 | `forward` | `forward <target>` | `mutation / mutation` |
@@ -243,7 +245,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `repeat` | `repeat <target> <N> <cmd> [args]` | `composite / composite` |
 | `doctor` | `doctor / ready [--format json]` | `read / standard` |
 | `keepalive` | `keepalive <target> <ms>` | `protected-mutation / mutation` |
-| `open` | `open [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]` | `mutation / mutation` |
+| `open` | `open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]` | `mutation / mutation` |
 | `spawn-debug-browser` | `spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]` | `mutation / mutation` |
 | `dismiss-modal` | `dismiss-modal <target>` | `mutation / mutation` |
 | `stop` | `stop [target] [--format json]` | `mutation / mutation` |

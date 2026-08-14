@@ -273,6 +273,7 @@ describe('current open issue contracts', () => {
       fs,
       fetcher,
       listDaemons: () => [],
+      lastEndpoint: null,
     });
     const model = T.buildDoctorModel(checks);
 
@@ -1806,5 +1807,952 @@ describe('v2.11.0 review regressions', () => {
       process.chdir(previousCwd);
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  it('#155 persists last-known debug browser identity after spawn-debug-browser succeeds', async () => {
+    const remembered = [];
+    const fs = {
+      existsSync: path => path === '/opt/chromium/chrome',
+      mkdirSync: () => {},
+    };
+    const child = {
+      pid: 4242,
+      unref: () => {},
+      stdout: { on: () => {}, setEncoding: () => {}, unref: () => {} },
+      stderr: { on: () => {}, setEncoding: () => {}, unref: () => {} },
+      on: () => {},
+      once: () => {},
+    };
+
+    await T.spawnDebugBrowserStr([
+      'chrome',
+      '--port', '9224',
+      '--user-data-dir', '/tmp/real-x-profile',
+      '--exe', '/opt/chromium/chrome',
+    ], { TMPDIR: '/tmp', PATH: '' }, {
+      platform: 'linux',
+      fs,
+      spawn: () => child,
+      probeTcpPort: async () => ({ occupied: false }),
+      waitForSpawnedCdp: async ({ port }) => ({ ok: true, port, product: 'Chrome/126.0.0.0' }),
+      rememberLastCdpEndpoint: record => remembered.push(record),
+    });
+
+    expect(remembered).toEqual([expect.objectContaining({
+      host: '127.0.0.1',
+      port: 9224,
+      profileDir: '/tmp/real-x-profile',
+      exe: '/opt/chromium/chrome',
+      browser: 'chrome',
+    })]);
+  });
+
+  it('#155 round-trips last endpoint JSON without secrets', () => {
+    const files = new Map();
+    const runtimeDir = '/tmp/cdp-runtime-155';
+    T.writeLastCdpEndpoint({
+      host: '127.0.0.1',
+      port: 9224,
+      profileDir: '/tmp/real-x-profile',
+      exe: '/opt/chromium/chrome',
+      browser: 'chrome',
+      launchedAt: '2026-08-14T09:00:00.000Z',
+    }, {
+      runtimeDir,
+      writer: (path, data) => files.set(path, String(data)),
+    });
+
+    const stored = JSON.parse(files.get(`${runtimeDir}/cdp-last-endpoint.json`));
+    expect(stored).toEqual({
+      schema: 'chrome-cdp-ex.cdp-last-endpoint.v1',
+      host: '127.0.0.1',
+      port: '9224',
+      profileDir: '/tmp/real-x-profile',
+      exe: '/opt/chromium/chrome',
+      browser: 'chrome',
+      launchedAt: '2026-08-14T09:00:00.000Z',
+    });
+    expect(JSON.stringify(stored)).not.toMatch(/cookie|password|token|secret/i);
+
+    const read = T.readLastCdpEndpoint({
+      runtimeDir,
+      reader: path => {
+        if (!files.has(path)) throw new Error('ENOENT');
+        return files.get(path);
+      },
+    });
+    expect(read.profileDir).toBe('/tmp/real-x-profile');
+    expect(read.port).toBe('9224');
+  });
+
+  it('#155 skips WebSocket fallback on ECONNREFUSED and relaunches the same profile', async () => {
+    let wsCalls = 0;
+    const lastEndpoint = {
+      host: '127.0.0.1',
+      port: '9224',
+      profileDir: '/tmp/real-x-profile',
+      exe: '/opt/chromium/chrome',
+      browser: 'chrome',
+    };
+    const started = Date.now();
+    const r = await T.checkCdpReachability({
+      env: { CDP_PORT: '9224' },
+      fetcher: async () => {
+        const err = new Error('connect ECONNREFUSED 127.0.0.1:9224');
+        err.code = 'ECONNREFUSED';
+        throw err;
+      },
+      lastEndpoint,
+      connectWebSocket: () => {
+        wsCalls += 1;
+        throw new Error('WebSocket fallback should not run after connection refused');
+      },
+    });
+
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(wsCalls).toBe(0);
+    expect(r).toMatchObject({
+      status: 'FAIL',
+      label: 'CDP',
+      error: 'cdp_unreachable',
+      host: '127.0.0.1',
+      port: '9224',
+      profileDir: '/tmp/real-x-profile',
+    });
+    expect(r.relaunch).toBe('/opt/chromium/chrome --remote-debugging-port=9224 --user-data-dir /tmp/real-x-profile');
+    expect(r.relaunch).not.toMatch(/spawn-debug-browser|rm -rf|disposable/i);
+    expect(r.hint).toBe(r.relaunch);
+    expect(r.detail).toMatch(/cannot reach 127\.0\.0\.1:9224/i);
+  });
+
+  it('#155 still uses WebSocket fallback when /json/version returns 404', async () => {
+    let wsCalls = 0;
+    const r = await T.checkCdpReachability({
+      env: { CDP_PORT: '9224' },
+      fetcher: async () => ({ ok: false, status: 404 }),
+      connectWebSocket: async () => {
+        wsCalls += 1;
+        return true;
+      },
+    });
+    expect(wsCalls).toBe(1);
+    expect(r.status).toBe('OK');
+    expect(r.detail).toMatch(/WebSocket fallback/i);
+  });
+
+  it('#155 CLI error model reports cdp_unreachable with the remembered profile relaunch', () => {
+    const err = T.cdpUnreachableError({
+      host: '127.0.0.1',
+      port: '9224',
+      cause: 'connect ECONNREFUSED',
+      lastEndpoint: {
+        host: '127.0.0.1',
+        port: '9224',
+        profileDir: '/tmp/real-x-profile',
+        browser: 'chrome',
+        exe: '/opt/chromium/chrome',
+      },
+    });
+    const model = T.buildCliErrorModel(err, { cmd: 'list' });
+    const text = T.formatCliError(err, { cmd: 'list' });
+
+    expect(err.code).toBe('cdp_unreachable');
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.cli-error.v1',
+      ok: false,
+      command: 'list',
+      error: {
+        code: 'cdp_unreachable',
+        message: expect.stringMatching(/cannot reach cdp on 127\.0\.0\.1:9224/i),
+      },
+      host: '127.0.0.1',
+      port: '9224',
+      profileDir: '/tmp/real-x-profile',
+      relaunch: expect.stringContaining('--user-data-dir /tmp/real-x-profile'),
+    });
+    expect(model.recovery).toMatchObject({
+      kind: 'browser-cdp',
+      strategy: 'relaunch-same-profile',
+      run: model.relaunch,
+    });
+    expect(text).toContain(model.relaunch);
+    expect(text).not.toMatch(/chrome-profile-2|DISPLAY=:2/);
+  });
+
+  it('#155 unknown profile tells the agent not to invent a new user-data-dir', () => {
+    const err = T.cdpUnreachableError({
+      host: '127.0.0.1',
+      port: '9224',
+      cause: 'connect ECONNREFUSED',
+      lastEndpoint: null,
+    });
+    const model = T.buildCliErrorModel(err, { cmd: 'attach' });
+    expect(model.ok).toBe(false);
+    expect(model.error.code).toBe('cdp_unreachable');
+    expect(model.profileDir).toBeNull();
+    expect(model.relaunch).toBeNull();
+    expect(model.error.message).toMatch(/do not invent a new --user-data-dir/i);
+    expect(model.error.message).toMatch(/chrome:\/\/inspect\/#remote-debugging/);
+    expect(model.recovery.strategy).toBe('enable-existing-debugging');
+  });
+
+  it('#155 doctor FAIL hint and recommendation reuse the remembered profile', async () => {
+    const lastEndpoint = {
+      host: '127.0.0.1',
+      port: '9224',
+      profileDir: '/tmp/real-x-profile',
+      exe: '/opt/chromium/chrome',
+      browser: 'chrome',
+    };
+    const fetcher = async () => {
+      const err = new Error('connect ECONNREFUSED');
+      err.code = 'ECONNREFUSED';
+      throw err;
+    };
+    const checks = await T.runDoctorChecks({
+      nodeVersion: 'v22.10.0',
+      home: '/tmp/x',
+      fs: { existsSync: () => true, lstatSync: () => ({ isSymbolicLink: () => true }) },
+      listDaemons: () => [],
+      fdLimit: 4096,
+      platform: 'darwin',
+      env: { CDP_PORT: '9224' },
+      fetcher,
+      lastEndpoint,
+      connectWebSocket: () => {
+        throw new Error('WebSocket fallback should not run');
+      },
+    });
+    const model = T.buildDoctorModel(checks);
+    const cdp = model.checks.find(check => check.label === 'CDP');
+    const relaunch = '/opt/chromium/chrome --remote-debugging-port=9224 --user-data-dir /tmp/real-x-profile';
+
+    expect(cdp).toMatchObject({
+      status: 'FAIL',
+      error: 'cdp_unreachable',
+      profileDir: '/tmp/real-x-profile',
+      hint: relaunch,
+      relaunch,
+    });
+    expect(model.recommendation).toMatchObject({
+      stage: 'browser-cdp',
+      run: relaunch,
+      strategy: 'relaunch-same-profile',
+    });
+    expect(model.nextSteps[0]).toBe(relaunch);
+
+    const text = T.formatDoctorOutput(checks);
+    expect(text).toContain(`hint: ${relaunch}`);
+    expect(text).not.toMatch(/spawn-debug-browser|rm -rf|Profile is disposable/);
+  });
+
+  it('#155 doctor with CDP_PORT and unknown profile on Linux/no DISPLAY does not spawn a blank profile', async () => {
+    const fs = {
+      existsSync: path => path === '/usr/bin/chromium' || path.endsWith('package.json'),
+      lstatSync: () => ({ isDirectory: () => false, isSymbolicLink: () => false }),
+    };
+    const checks = await T.runDoctorChecks({
+      nodeVersion: 'v22.1.0',
+      platform: 'linux',
+      fdLimit: 4096,
+      home: '/home/agent',
+      env: { PATH: '/usr/bin', CDP_PORT: '9224', CI: 'true' },
+      fs,
+      fetcher: async () => {
+        const err = new Error('connect ECONNREFUSED');
+        err.code = 'ECONNREFUSED';
+        throw err;
+      },
+      listDaemons: () => [],
+      lastEndpoint: null,
+      connectWebSocket: () => {
+        throw new Error('WebSocket fallback should not run');
+      },
+    });
+    const model = T.buildDoctorModel(checks);
+    const text = T.formatDoctorOutput(checks);
+
+    expect(checks.find(check => check.label === 'Environment')?.status).toBe('WARN');
+    expect(model.recommendation).toMatchObject({
+      stage: 'browser-cdp',
+      strategy: 'enable-existing-debugging',
+      run: null,
+    });
+    expect(model.recommendation.ask).toMatch(/chrome:\/\/inspect\/#remote-debugging/);
+    expect(JSON.stringify(model.recommendation)).not.toMatch(/spawn-debug-browser/);
+    expect(model.nextSteps.join('\n')).not.toMatch(/spawn-debug-browser/);
+    expect(text).not.toMatch(/spawn-debug-browser/);
+    expect(text).toMatch(/chrome:\/\/inspect\/#remote-debugging/);
+    expect(text).toMatch(/do not invent a new --user-data-dir/i);
+  });
+
+  it('#155 same-profile relaunch reuses an existing Chrome profile without disposable spawn cleanup', () => {
+    const lastEndpoint = {
+      host: '127.0.0.1',
+      port: '9224',
+      profileDir: '/Users/me/Library/Application Support/Google/Chrome',
+      exe: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      browser: 'chrome',
+    };
+    const relaunch = T.formatCdpRelaunchCommand(lastEndpoint, { port: '9224' });
+    expect(relaunch).toContain('--remote-debugging-port=9224');
+    expect(relaunch).toContain('--user-data-dir');
+    expect(relaunch).toContain('/Users/me/Library/Application Support/Google/Chrome');
+    expect(relaunch).not.toMatch(/spawn-debug-browser/);
+    expect(relaunch).not.toMatch(/rm -rf/);
+    expect(relaunch).not.toMatch(/disposable/i);
+
+    const err = T.cdpUnreachableError({
+      host: '127.0.0.1',
+      port: '9224',
+      cause: 'ECONNREFUSED',
+      lastEndpoint,
+    });
+    const text = T.formatCliError(err, { cmd: 'list' });
+    expect(text).toContain(relaunch);
+    expect(text).not.toMatch(/rm -rf|Profile is disposable/);
+
+    const model = T.buildSpawnDebugBrowserModel({
+      browser: 'chrome',
+      profileDir: lastEndpoint.profileDir,
+      host: '127.0.0.1',
+      port: 9224,
+      url: null,
+      exe: lastEndpoint.exe,
+    }, { ok: true, product: 'Chrome' }, { child: { pid: 1 } });
+    expect(model.cleanup.deleteProfile).toBeNull();
+    const spawned = T.formatSpawnDebugBrowserOutput(model);
+    expect(spawned).not.toMatch(/rm -rf/);
+    expect(spawned).not.toMatch(/Profile is disposable/);
+    expect(spawned).toMatch(/existing profile|reuse this profile/i);
+  });
+
+  it('#155 disposable tmp spawn profile still uses spawn-debug-browser cleanup', () => {
+    const profileDir = '/tmp/chrome-cdp-ex-chrome-debug-profile-9224';
+    const relaunch = T.formatCdpRelaunchCommand({
+      port: '9224',
+      profileDir,
+      browser: 'chrome',
+    });
+    expect(relaunch).toBe('cdp spawn-debug-browser chrome --port 9224 --user-data-dir /tmp/chrome-cdp-ex-chrome-debug-profile-9224');
+    const model = T.buildSpawnDebugBrowserModel({
+      browser: 'chrome',
+      profileDir,
+      host: '127.0.0.1',
+      port: 9224,
+      url: null,
+    }, { ok: true }, { child: { pid: 1 } });
+    expect(model.cleanup.deleteProfile).toBe(`rm -rf ${profileDir}`);
+    expect(T.formatSpawnDebugBrowserOutput(model)).toContain('Profile is disposable');
+  });
+
+  it('#155 rememberLastCdpEndpoint drops profileDir when the port changes without a new profile', () => {
+    const files = new Map();
+    const runtimeDir = '/tmp/cdp-runtime-155-port-change';
+    const io = {
+      runtimeDir,
+      writer: (path, data) => files.set(path, String(data)),
+      reader: path => {
+        if (!files.has(path)) throw new Error('ENOENT');
+        return files.get(path);
+      },
+    };
+    T.writeLastCdpEndpoint({
+      host: '127.0.0.1',
+      port: 9224,
+      profileDir: '/Users/me/Library/Application Support/Google/Chrome',
+      browser: 'chrome',
+    }, io);
+    const next = T.rememberLastCdpEndpoint({
+      host: '127.0.0.1',
+      port: 9333,
+    }, io);
+    expect(next.port).toBe('9333');
+    expect(next.profileDir).toBeNull();
+    expect(T.readLastCdpEndpoint(io).profileDir).toBeNull();
+  });
+
+  it('#155 live CDP success on a new port does not keep the previous profileDir', async () => {
+    const files = new Map();
+    const runtimeDir = '/tmp/cdp-runtime-155-live-port-change';
+    const io = {
+      runtimeDir,
+      writer: (path, data) => files.set(path, String(data)),
+      reader: path => {
+        if (!files.has(path)) throw new Error('ENOENT');
+        return files.get(path);
+      },
+    };
+    T.writeLastCdpEndpoint({
+      host: '127.0.0.1',
+      port: 9224,
+      profileDir: '/Users/me/Library/Application Support/Google/Chrome',
+      browser: 'chrome',
+    }, io);
+    const remembered = T.readLastCdpEndpoint(io);
+    const result = await T.checkCdpReachability({
+      env: { CDP_PORT: '9333' },
+      lastEndpoint: remembered,
+      rememberEndpoint: record => T.rememberLastCdpEndpoint(record, io),
+      fetcher: async () => ({
+        ok: true,
+        json: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9333/devtools/browser', Browser: 'Chrome/126' }),
+      }),
+    });
+    expect(result.status).toBe('OK');
+    expect(T.readLastCdpEndpoint(io).port).toBe('9333');
+    expect(T.readLastCdpEndpoint(io).profileDir).toBeNull();
+  });
+
+  it('#155 dead-CDP doctor commands use the discovered Node 22 binary', async () => {
+    const hermesNode = '/opt/hermes/node/bin/node';
+    const cdpScript = '/repo/skills/chrome-cdp-ex/scripts/cdp.mjs';
+    const checks = await T.runDoctorChecks({
+      nodeVersion: 'v20.19.2',
+      cdpScriptPath: cdpScript,
+      discoverNode22: () => ({ binary: hermesNode, version: 'v22.14.0' }),
+      home: '/tmp/x',
+      fs: { existsSync: () => true, lstatSync: () => ({ isSymbolicLink: () => true }) },
+      listDaemons: () => [],
+      fdLimit: 4096,
+      platform: 'linux',
+      env: { CDP_PORT: '9224' },
+      fetcher: async () => {
+        const err = new Error('connect ECONNREFUSED');
+        err.code = 'ECONNREFUSED';
+        throw err;
+      },
+      lastEndpoint: { host: '127.0.0.1', port: '9224' },
+      connectWebSocket: () => {
+        throw new Error('WebSocket fallback should not run');
+      },
+    });
+    const model = T.buildDoctorModel(checks);
+    const prefix = `${hermesNode} ${cdpScript}`;
+    expect(model.recommendation.after).toBe(`${prefix} list`);
+    expect(model.recommendation.ask).toContain(`${prefix} doctor`);
+    expect(T.doctorNextSteps(checks).join('\n')).toContain(`${prefix} doctor`);
+    expect(T.doctorNextSteps(checks).join('\n')).toContain(`${prefix} list`);
+  });
+
+  it('#155 getWsUrl throws a fail-fast cdp_unreachable error with the same-profile relaunch', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      const err = new Error('connect ECONNREFUSED');
+      err.code = 'ECONNREFUSED';
+      throw err;
+    };
+    try {
+      await expect(T.getWsUrl({
+        env: { CDP_PORT: '9224', CDP_HOST: '127.0.0.1' },
+        lastEndpoint: {
+          host: '127.0.0.1',
+          port: '9224',
+          profileDir: '/tmp/real-x-profile',
+          browser: 'chrome',
+        },
+      })).rejects.toMatchObject({
+        code: 'cdp_unreachable',
+        port: '9224',
+        profileDir: '/tmp/real-x-profile',
+        relaunch: expect.stringContaining('--user-data-dir /tmp/real-x-profile'),
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('#161 keeps main under exclude wrappers and points agents at text --auto', () => {
+    const axNode = (id, role, opts = {}) => ({
+      nodeId: id,
+      role: { value: role },
+      name: { value: opts.name || role },
+      ...(opts.parentId ? { parentId: opts.parentId } : {}),
+      ...(opts.backendDOMNodeId ? { backendDOMNodeId: opts.backendDOMNodeId } : {}),
+    });
+    const header = {
+      nodeName: 'HEADER',
+      backendNodeId: 1,
+      children: [
+        { nodeName: 'NAV', backendNodeId: 2, children: [] },
+        { nodeName: 'MAIN', backendNodeId: 3, children: [{ nodeName: 'H1', backendNodeId: 4, children: [] }] },
+      ],
+    };
+    const nodes = [
+      axNode('root', 'WebArea'),
+      axNode('header', 'banner', { parentId: 'root', backendDOMNodeId: 1 }),
+      axNode('nav', 'navigation', { parentId: 'header', backendDOMNodeId: 2 }),
+      axNode('main', 'main', { parentId: 'header', backendDOMNodeId: 3, name: 'Docs' }),
+      axNode('h1', 'heading', { parentId: 'main', backendDOMNodeId: 4, name: 'Install' }),
+    ];
+    const filtered = T.filterPerceiveExcludedAxNodes(
+      nodes,
+      new Set([1, 2]),
+      new Map([[1, header], [2, header.children[0]]]),
+    );
+    expect(filtered.map(n => n.nodeId)).toEqual(['root', 'header', 'main', 'h1']);
+
+    const usage = T.helpStr();
+    expect(usage).toContain('--auto');
+    expect(usage).toMatch(/-x <sel> \/ --exclude/);
+    expect(T.perceiveInteractiveNoiseHint(51)).toMatch(/text --auto/);
+    expect(T.perceiveInteractiveNoiseHint(51)).toMatch(/must not empty main/);
+  });
+
+  it('#154 treats a Hermes-only skill path as a first-class install', () => {
+    const home = '/home/test';
+    const hermesPath = `${home}/.hermes/skills/chrome-cdp-ex`;
+    const fs = {
+      existsSync: path => path === hermesPath,
+      lstatSync: () => ({ isSymbolicLink: () => false }),
+    };
+    const result = T.checkSkillSymlink({ home, fs });
+    expect(result.status).toBe('OK');
+    expect(result.detail).toContain(hermesPath);
+    expect(result.detail).not.toMatch(/not found/);
+  });
+
+  it('#154 hints ~/.hermes/skills when no host skill path exists', () => {
+    const result = T.checkSkillSymlink({
+      home: '/home/test',
+      fs: { existsSync: () => false },
+    });
+    expect(result.status).toBe('WARN');
+    expect(result.hint).toContain('~/.hermes/skills');
+  });
+});
+
+describe('issue #158 unknown perceive flags', () => {
+  it('#158 rejects unknown perceive flags with compact-flag help instead of dumping the page', async () => {
+    expect(() => T.parsePerceiveArgs(['--cards'])).not.toThrow();
+    expect(T.parsePerceiveArgs(['--cards']).cards).toBe(true);
+    expect(() => T.parsePerceiveArgs(['--not-a-real-flag'])).toThrow(/unknown option --not-a-real-flag/);
+
+    let message = '';
+    try {
+      T.parsePerceiveArgs(['--not-a-real-flag']);
+    } catch (error) {
+      message = error.message;
+    }
+    expect(message).toContain('unknown option --not-a-real-flag');
+    expect(message).toContain('perceive compact flags:');
+    expect(message).toContain('--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel');
+    expect(message).toContain('--cards');
+
+    const cli = T.formatCliError(new Error(message), { cmd: 'perceive', targetPrefix: 'F8741D08' });
+    expect(cli).toContain('unknown option --not-a-real-flag');
+    expect(cli).toContain('perceive compact flags:');
+    expect(cli).not.toMatch(/Page:/);
+
+    const handler = T.createPerceiveCommandHandler({
+      cdp: { send() { throw new Error('unexpected CDP'); } },
+      sessionId: 'session-158',
+      targetId: 'F8741D08FULLTARGET',
+      session: { lastAction: null },
+      consoleBuf: { all: () => [] },
+      exceptionBuf: { all: () => [] },
+      netReqBuf: { all: () => [] },
+      refMap: new Map(),
+      lastPerceiveStore: { output: null },
+      refState: { generation: 0 },
+      ops: {
+        readPerceiveTargetMetadata: async () => {
+          throw new Error('should not sample readiness for unknown flags');
+        },
+        perceiveText: async () => 'FULL DUMP SHOULD NOT RUN',
+      },
+    });
+    await expect(handler({ args: ['--feed-dump'] })).rejects.toThrow(/unknown option --feed-dump/);
+    await expect(handler({ args: ['--qa', '--not-a-real-flag'] })).rejects.toThrow(/unknown option --not-a-real-flag/);
+
+    const qa = T.parseQaModeArgs(['--qa', '--summary', '--adaptive']);
+    expect(qa).toMatchObject({ qa: true, summary: true });
+    expect(T.parsePerceiveArgs(qa.args).adaptive).toBe(true);
+  });
+});
+
+describe('issue #144 pending CDP lifecycle errors', () => {
+  it('does not recommend Allow debugging for websocket close or Inspector.detached', () => {
+    const closed = T.formatCliError(
+      new Error('CDP websocket closed while waiting for Page.navigate (code=1006, reason=going away)'),
+      { cmd: 'nav', targetPrefix: 'AABBCCDD' }
+    );
+    const detached = T.formatCliError(
+      new Error('CDP Inspector.detached while waiting for Page.navigate (reason=target_closed)'),
+      { cmd: 'nav', targetPrefix: 'AABBCCDD' }
+    );
+    for (const out of [closed, detached]) {
+      expect(out).not.toMatch(/click Allow/i);
+      expect(out).not.toMatch(/Allow debugging/i);
+    }
+    const detachedModel = T.buildCliErrorModel(
+      new Error('CDP Inspector.detached while waiting for Page.navigate (reason=target_closed)'),
+      { cmd: 'nav', targetPrefix: 'AABBCCDD' }
+    );
+    expect(detachedModel.recovery.kind).toBe('target-closed');
+    expect(detachedModel.recovery.run).toBe('cdp list');
+  });
+});
+
+describe('issue #160 open token budget', () => {
+  it('defaults open to fail-fast attach without auto-perceive', () => {
+    expect(T.DEFAULT_OPEN_ATTACH_TIMEOUT_MS).toBe(5000);
+    expect(T.parseOpenArgs(['https://example.com'])).toMatchObject({
+      attachTimeoutMs: 5000,
+      perceive: false,
+    });
+    expect(T.parseOpenArgs(['https://example.com', '--perceive']).perceive).toBe(true);
+    expect(T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', '0']).attachTimeoutMs).toBe(0);
+    expect(T.formatOpenNextPerceiveCommand('AABBCCDDEEFF')).toBe('Next: cdp perceive AABBCCDD -C -d 8');
+    expect(T.shouldAnnounceOpenAttachWait({ failedConnects: 1, elapsedMs: 300 })).toBe(false);
+    expect(T.COMMANDS.find(command => command.name === 'open').feedbackPolicy).toBe('report-only');
+  });
+});
+
+describe('issue #157 Node 22 discovery', () => {
+  const hermesBinary = '/home/box/.hermes/node/bin/node';
+  const cdpScriptPath = '/repo/skills/chrome-cdp-ex/scripts/cdp.mjs';
+  const isolatedFs = {
+    existsSync: () => false,
+    readdirSync: () => [],
+    readFileSync: () => '',
+  };
+  const isolatedSpawn = () => ({ status: 1, stdout: '' });
+
+  function hermesDiscoverOpts(extra = {}) {
+    return {
+      home: '/home/box',
+      env: {},
+      execPath: '/usr/bin/node',
+      cdpScriptPath,
+      fs: {
+        existsSync: path => path === hermesBinary,
+        readdirSync: () => [],
+        readFileSync: () => '',
+      },
+      spawnSync: (bin) => {
+        if (bin === hermesBinary) return { status: 0, stdout: 'v22.23.2\n' };
+        return { status: 1, stdout: '' };
+      },
+      ...extra,
+    };
+  }
+
+  it('discovers Hermes Node 22 when PATH runtime is v20', () => {
+    const found = T.discoverNode22(hermesDiscoverOpts());
+    expect(found).toMatchObject({
+      binary: hermesBinary,
+      version: 'v22.23.2',
+    });
+  });
+
+  it('checkNode with v20 + Hermes Node 22 is WARN with recommendedBinary, not a blocking FAIL', () => {
+    const result = T.checkNode('v20.19.2', hermesDiscoverOpts());
+    expect(result.status).toBe('WARN');
+    expect(result.recommendedBinary).toBe(hermesBinary);
+    expect(result.detail).toContain('v20.19.2 (runtime)');
+    expect(result.detail).toContain(hermesBinary);
+    expect(result.hint).toBe(`Rerun: ${hermesBinary} ${cdpScriptPath} doctor`);
+
+    const model = T.buildDoctorModel([
+      result,
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Tabs', detail: '1', targetPrefixes: ['AABBCCDD'] },
+      { status: 'OK', label: 'Permission', detail: 'approved', targetPrefixes: ['AABBCCDD'] },
+    ]);
+    expect(model).toMatchObject({
+      ready: true,
+      operationalReady: true,
+      failures: 0,
+    });
+    expect(model.wizard.status).not.toMatch(/blocked at Node/i);
+    expect(model.provenCommand).toContain(hermesBinary);
+    expect(model.provenCommand).toContain(cdpScriptPath);
+    expect(T.doctorNextSteps([
+      result,
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Tabs', detail: '1', targetPrefixes: ['AABBCCDD'] },
+    ]).join('\n')).toContain(hermesBinary);
+  });
+
+  it('provenCommand uses discovered Node 22 when Permission is WARN (first-run, no daemon)', () => {
+    const node = T.checkNode('v20.19.2', hermesDiscoverOpts());
+    const model = T.buildDoctorModel([
+      node,
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Tabs', detail: '1', targetPrefixes: ['AABBCCDD'] },
+      {
+        status: 'WARN',
+        label: 'Permission',
+        detail: 'browser debugging approval not confirmed for AABBCCDD',
+        hint: 'Run: cdp perceive AABBCCDD -C -d 8; if Chrome asks "Allow debugging?", click Allow',
+        severity: 'advisory',
+        provenCommand: 'cdp list',
+        nextProbe: 'cdp perceive AABBCCDD -C -d 8',
+        targetPrefixes: ['AABBCCDD'],
+      },
+    ]);
+    expect(model.provenCommand).toContain(hermesBinary);
+    expect(model.provenCommand).toContain(cdpScriptPath);
+    expect(model.provenCommand).toContain('perceive AABBCCDD');
+    expect(model.provenCommand).not.toMatch(/^cdp /);
+  });
+
+  it('doctor ask and currentStep use the Node 22 prefix instead of bare cdp doctor/list', () => {
+    const node = T.checkNode('v20.19.2', hermesDiscoverOpts());
+    const model = T.buildDoctorModel([
+      node,
+      { status: 'FAIL', label: 'CDP', detail: 'cannot reach 127.0.0.1:9222' },
+    ]);
+    expect(model.wizard.currentStep).toContain(hermesBinary);
+    expect(model.wizard.currentStep).not.toMatch(/\bcdp doctor\b/);
+    expect(model.recommendation.ask).toContain(hermesBinary);
+    expect(model.recommendation.ask).not.toMatch(/\bcdp doctor\b/);
+    expect(model.recommendation.after).toContain(hermesBinary);
+    expect(model.recommendation.after).not.toMatch(/^cdp /);
+  });
+
+  it('checkNode with v20 and no candidates stays FAIL and blocked', () => {
+    const result = T.checkNode('v20.19.2', {
+      home: '/home/box',
+      env: {},
+      execPath: '/usr/bin/node',
+      cdpScriptPath,
+      fs: isolatedFs,
+      spawnSync: isolatedSpawn,
+    });
+    expect(result.status).toBe('FAIL');
+    expect(result.recommendedBinary).toBeFalsy();
+    expect(result.hint).not.toMatch(/install Node\.js 22\+/i);
+    expect(result.hint).toMatch(/PATH|Hermes|fnm|nvm/i);
+
+    const model = T.buildDoctorModel([
+      result,
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Tabs', detail: '1', targetPrefixes: ['AABBCCDD'] },
+    ]);
+    expect(model.ready).toBe(false);
+    expect(model.operationalReady).toBe(false);
+    expect(model.wizard.status).toMatch(/blocked at Node/i);
+    expect(T.doctorNextSteps([result]).join('\n')).not.toMatch(/install Node\.js 22\+/i);
+  });
+
+  it('checkNode with v22 is OK and does not probe other binaries', () => {
+    const result = T.checkNode('v22.23.2', {
+      execPath: hermesBinary,
+      spawnSync: () => {
+        throw new Error('should not probe Node 22 candidates');
+      },
+    });
+    expect(result.status).toBe('OK');
+    expect(result.recommendedBinary).toBeFalsy();
+  });
+
+  it('bin re-exec helper spawns the discovered Node 22 binary with original args', () => {
+    const decision = T.resolveChromeCdpNodeLaunch({
+      version: 'v20.19.2',
+      execPath: '/usr/bin/node',
+      argv: ['/usr/bin/node', '/repo/bin/chrome-cdp', 'doctor', '--format', 'json'],
+      scriptPath: cdpScriptPath,
+      env: {},
+      discover: () => ({ binary: hermesBinary, version: 'v22.23.2' }),
+    });
+    expect(decision).toMatchObject({
+      action: 'reexec',
+      binary: hermesBinary,
+    });
+    expect(decision.args).toEqual(['/repo/bin/chrome-cdp', 'doctor', '--format', 'json']);
+    expect(decision.env.CHROME_CDP_NODE_REEXEC).toBe('1');
+  });
+
+  it('bin re-exec helper keeps the current binary on Node 22 and does not reexec', () => {
+    const decision = T.resolveChromeCdpNodeLaunch({
+      version: 'v22.23.2',
+      execPath: hermesBinary,
+      argv: [hermesBinary, '/repo/bin/chrome-cdp', 'list'],
+      scriptPath: cdpScriptPath,
+      env: {},
+      discover: () => {
+        throw new Error('should not discover when already on Node 22');
+      },
+    });
+    expect(decision).toMatchObject({
+      action: 'use-current',
+      binary: hermesBinary,
+    });
+  });
+
+  it('bin re-exec helper fails closed when Node 20 has no Node 22 candidate', () => {
+    const decision = T.resolveChromeCdpNodeLaunch({
+      version: 'v20.19.2',
+      execPath: '/usr/bin/node',
+      argv: ['/usr/bin/node', '/repo/bin/chrome-cdp', 'doctor'],
+      scriptPath: cdpScriptPath,
+      env: {},
+      discover: () => null,
+    });
+    expect(decision.action).toBe('fail');
+    expect(decision.message).not.toMatch(/install Node\.js 22\+/i);
+    expect(decision.message).toMatch(/PATH|Hermes|fnm|nvm/i);
+  });
+});
+
+describe('issue #163 doctor next-probe and skip-link @refs', () => {
+  function axNode(id, role, name, opts = {}) {
+    return {
+      nodeId: id,
+      role: { value: role },
+      name: { value: name },
+      ...(opts.parentId ? { parentId: opts.parentId } : {}),
+      ...(opts.childIds ? { childIds: opts.childIds } : {}),
+      ...(opts.backendDOMNodeId ? { backendDOMNodeId: opts.backendDOMNodeId } : {}),
+      ...(opts.url ? { properties: [{ name: 'url', value: { type: 'string', value: opts.url } }] } : {}),
+    };
+  }
+
+  function licensePage(targetId = '6669325BAAAAAAA1') {
+    return {
+      targetId,
+      title: 'LICENSE',
+      url: 'https://huggingface.co/MiniMaxAI/MiniMax-Music3/blob/main/LICENSE',
+    };
+  }
+
+  function xProfilePage(targetId = 'F8741D08AAAAAAA2') {
+    return {
+      targetId,
+      title: 'SY239434 / X',
+      url: 'https://x.com/SY239434',
+    };
+  }
+
+  function multiTabDoctorChecks({
+    daemonPrefix = '6669325B',
+    pages = [
+      licensePage(),
+      xProfilePage(),
+      { targetId: '11111111AAAAAAA3', title: 'MiniMax-Music3', url: 'https://huggingface.co/MiniMaxAI/MiniMax-Music3' },
+      { targetId: '22222222AAAAAAA4', title: 'Comfy tutorial', url: 'https://example.com/comfy' },
+      { targetId: '33333333AAAAAAA5', title: 'Docs', url: 'https://example.com/docs' },
+    ],
+  } = {}) {
+    const prefixes = pages.map(page => page.targetId.slice(0, 8));
+    return [
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Daemons', detail: `1 live: ${daemonPrefix}`, targetPrefixes: [daemonPrefix] },
+      {
+        status: 'OK',
+        label: 'Tabs',
+        detail: `${pages.length} debuggable page targets`,
+        targetPrefixes: prefixes,
+        pages,
+      },
+      {
+        status: 'OK',
+        label: 'Permission',
+        detail: `debugging approved for ${daemonPrefix}`,
+        targetPrefixes: [daemonPrefix],
+      },
+    ];
+  }
+
+  it('does not use daemon[0] / LICENSE blob as next-probe when multiple tabs exist', () => {
+    const checks = multiTabDoctorChecks();
+    const model = T.buildDoctorModel(checks);
+    const text = T.formatDoctorReport(checks);
+    const permission = T.checkBrowserPermission({
+      daemons: { targetPrefixes: ['6669325B'] },
+      tabs: checks.find(check => check.label === 'Tabs'),
+      cdp: { status: 'OK' },
+    });
+
+    expect(model.provenCommand).toBe('cdp list');
+    expect(model.provenCommand).not.toContain('6669325B');
+    expect(model.recommendation.run).toBe('cdp list');
+    expect(model.wizard.currentStep).toMatch(/\bcdp list\b/);
+    expect(model.wizard.currentStep).not.toContain('6669325B');
+    expect(permission.provenCommand).toBe('cdp list');
+    expect(text).toContain('Proven / next probe: cdp list');
+    expect(text).toMatch(/5 tabs — pick with cdp list \/ cdp target --url/);
+    expect(text).toMatch(/list is the source of truth for which tab/i);
+    expect(text).not.toMatch(/Proven \/ next probe: cdp perceive 6669325B/);
+
+    const perceiveStep = model.nextSteps.find(step => /\bperceive\b/.test(step));
+    expect(perceiveStep).toBeTruthy();
+    expect(perceiveStep).not.toContain('6669325B');
+    expect(model.recommendedTargetPrefix).not.toBe('6669325B');
+    expect(T.rankPageTargets(checks.find(check => check.label === 'Tabs').pages)[0].url)
+      .not.toMatch(/\/LICENSE(?:$|\.)/i);
+  });
+
+  it('ranks an https profile above a LICENSE blob and still perceives a lone LICENSE tab', () => {
+    const license = licensePage();
+    const profile = xProfilePage();
+    expect(T.pageTargetScore(profile)).toBeGreaterThan(T.pageTargetScore(license));
+    expect(T.rankPageTargets([license, profile])[0].url).toContain('x.com');
+
+    const single = T.buildDoctorModel([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Tabs', detail: '1', targetPrefixes: ['6669325B'], pages: [license] },
+      { status: 'OK', label: 'Permission', detail: 'approved', targetPrefixes: ['6669325B'] },
+    ]);
+    expect(single.provenCommand).toBe('cdp perceive 6669325B -C -d 8');
+  });
+
+  it('ranks checkBrowserTargets prefixes by page score, not JSON/daemon order', async () => {
+    const fetcher = async () => ({
+      ok: true,
+      json: async () => ([
+        {
+          type: 'page',
+          id: '6669325BAAAAAAA1',
+          title: 'LICENSE',
+          url: 'https://huggingface.co/MiniMaxAI/MiniMax-Music3/blob/main/LICENSE',
+        },
+        {
+          type: 'page',
+          id: 'F8741D08AAAAAAA2',
+          title: 'SY239434 / X',
+          url: 'https://x.com/SY239434',
+        },
+      ]),
+    });
+    const tabs = await T.checkBrowserTargets({
+      cdp: { status: 'OK', host: '127.0.0.1', port: '9224' },
+      fetcher,
+    });
+    expect(tabs.targetPrefixes[0]).toBe('F8741D08');
+    expect(tabs.pages[0].url).toContain('x.com');
+  });
+
+  it('gives the article tweet an early @ref and keeps skip-links out of @1/@2/@3', () => {
+    const nodes = [
+      axNode('root', 'WebArea', 'X'),
+      axNode('skip', 'link', 'Skip to timeline', { parentId: 'root', backendDOMNodeId: 11, url: '#timeline' }),
+      axNode('kbd', 'link', '鍵盤快速鍵', { parentId: 'root', backendDOMNodeId: 12, url: '#' }),
+      axNode('nav', 'navigation', 'Primary', { parentId: 'root' }),
+      axNode('home', 'link', 'Home', { parentId: 'nav', backendDOMNodeId: 21 }),
+      axNode('explore', 'link', 'Explore', { parentId: 'nav', backendDOMNodeId: 22 }),
+      axNode('notes', 'link', 'Notifications', { parentId: 'nav', backendDOMNodeId: 23 }),
+      axNode('tweet', 'article', 'Latest tweet from SY239434', { parentId: 'root', backendDOMNodeId: 99 }),
+    ];
+    nodes[0].childIds = ['skip', 'kbd', 'nav', 'tweet'];
+    nodes[3].childIds = ['home', 'explore', 'notes'];
+
+    const refMap = new Map();
+    const { treeLines } = T.buildPerceiveTree(nodes, { layoutMap: {}, styleHints: {} }, refMap);
+    const output = treeLines.join('\n');
+    const articleLine = treeLines.find(line => /Latest tweet from SY239434/.test(line));
+    const skipLine = treeLines.find(line => /Skip to timeline/i.test(line));
+    const kbdLine = treeLines.find(line => /鍵盤快速鍵/.test(line));
+
+    expect(articleLine).toMatch(/@\d+\b/);
+    expect(articleLine).toMatch(/@[123]\b/);
+    expect(refMap.get(Number(articleLine.match(/@(\d+)/)[1]))).toBe(99);
+    expect(skipLine).not.toMatch(/@[123]\b/);
+    expect(kbdLine).not.toMatch(/@[123]\b/);
+    expect(output).toMatch(/\[article\].*@\d+/);
   });
 });

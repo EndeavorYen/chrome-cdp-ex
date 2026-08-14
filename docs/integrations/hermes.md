@@ -3,8 +3,17 @@
 ## Install
 
 ```bash
-cp -R skills/chrome-cdp-ex <hermes-skills-dir>/chrome-cdp-ex
 node scripts/setup.mjs --for hermes
+node scripts/setup.mjs --for hermes --write
+```
+
+`--for hermes` prints the resolved copy command. `--write` copies the skill into
+`~/.hermes/skills/chrome-cdp-ex`, or `$HERMES_HOME/skills/chrome-cdp-ex` when
+`HERMES_HOME` is set.
+
+```bash
+node ~/.hermes/skills/chrome-cdp-ex/scripts/cdp.mjs doctor
+node ~/.hermes/skills/chrome-cdp-ex/scripts/cdp.mjs list
 ```
 
 ## Route
