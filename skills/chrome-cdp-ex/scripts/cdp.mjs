@@ -13978,10 +13978,10 @@ function doctorWizardModel(checks) {
     currentStep = node.hint || NODE22_MISSING_HINT;
   } else if (cdp?.status === 'FAIL') {
     status = 'blocked at browser CDP';
-    currentStep = 'enable browser remote debugging, then rerun: cdp doctor';
+    currentStep = `enable browser remote debugging, then rerun: ${prefix} doctor`;
   } else if (cdp?.status === 'WARN') {
     status = 'waiting for stable browser CDP';
-    currentStep = 're-toggle browser remote debugging, then rerun: cdp doctor';
+    currentStep = `re-toggle browser remote debugging, then rerun: ${prefix} doctor`;
   } else if (noTargets) {
     status = 'waiting for a debuggable page';
     currentStep = `${prefix} open https://example.com`;
@@ -14061,7 +14061,7 @@ function doctorRecommendationModel(checks) {
         ...base,
         stage: 'browser-cdp',
         run: environment.recovery.command,
-        ask: 'Approve launching an isolated local debug browser profile, then run: cdp list.',
+        ask: `Approve launching an isolated local debug browser profile, then run: ${prefix} list.`,
         after: `${prefix} list`,
         requiresUserAction: true,
         consentRequired: true,
@@ -14072,7 +14072,7 @@ function doctorRecommendationModel(checks) {
       ...base,
       stage: 'browser-cdp',
       run: `${prefix} spawn-debug-browser edge --port 9222 --url https://example.com`,
-      ask: 'Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: cdp doctor.',
+      ask: `Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: ${prefix} doctor.`,
       after: `${prefix} list`,
       requiresUserAction: true,
       consentRequired: true,
@@ -14168,9 +14168,9 @@ function doctorNextSteps(checks) {
     if (environment?.recovery?.command) {
       lines.push(`  1. ${environment.recovery.command}`);
       lines.push(`  2. Then run: ${prefix} list`);
-      lines.push('  3. Existing browser alternative: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
+      lines.push(`  3. Existing browser alternative: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: ${prefix} doctor`);
     } else {
-      lines.push('  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
+      lines.push(`  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: ${prefix} doctor`);
       lines.push(`  2. Isolated profile: ${prefix} spawn-debug-browser edge --port 9222 --url https://example.com`);
       lines.push(`  3. Then run: ${prefix} list`);
     }
@@ -14288,10 +14288,9 @@ function buildDoctorModel(checks) {
   const cdpOk = annotatedChecks.find(c => c.label === 'CDP')?.status === 'OK';
   const tabsOk = annotatedChecks.find(c => c.label === 'Tabs')?.status === 'OK';
   const permission = annotatedChecks.find(c => c.label === 'Permission');
+  const provenTarget = permission?.targetPrefixes?.[0];
   const provenCommand = cdpOk && tabsOk
-    ? (permission?.status === 'OK'
-      ? (permission.targetPrefixes?.[0] ? `${prefix} perceive ${permission.targetPrefixes[0]} -C -d 8` : `${prefix} list`)
-      : (permission?.hint?.match(/cdp \S.+/)?.[0] || recommendation?.run || `${prefix} list`))
+    ? (provenTarget ? `${prefix} perceive ${provenTarget} -C -d 8` : (recommendation?.run || `${prefix} list`))
     : (recommendation?.run || node?.rerunCommand || null);
   return {
     schema: 'chrome-cdp-ex.doctor.v1',

@@ -1873,6 +1873,43 @@ describe('issue #157 Node 22 discovery', () => {
     ]).join('\n')).toContain(hermesBinary);
   });
 
+  it('provenCommand uses discovered Node 22 when Permission is WARN (first-run, no daemon)', () => {
+    const node = T.checkNode('v20.19.2', hermesDiscoverOpts());
+    const model = T.buildDoctorModel([
+      node,
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Tabs', detail: '1', targetPrefixes: ['AABBCCDD'] },
+      {
+        status: 'WARN',
+        label: 'Permission',
+        detail: 'browser debugging approval not confirmed for AABBCCDD',
+        hint: 'Run: cdp perceive AABBCCDD -C -d 8; if Chrome asks "Allow debugging?", click Allow',
+        severity: 'advisory',
+        provenCommand: 'cdp list',
+        nextProbe: 'cdp perceive AABBCCDD -C -d 8',
+        targetPrefixes: ['AABBCCDD'],
+      },
+    ]);
+    expect(model.provenCommand).toContain(hermesBinary);
+    expect(model.provenCommand).toContain(cdpScriptPath);
+    expect(model.provenCommand).toContain('perceive AABBCCDD');
+    expect(model.provenCommand).not.toMatch(/^cdp /);
+  });
+
+  it('doctor ask and currentStep use the Node 22 prefix instead of bare cdp doctor/list', () => {
+    const node = T.checkNode('v20.19.2', hermesDiscoverOpts());
+    const model = T.buildDoctorModel([
+      node,
+      { status: 'FAIL', label: 'CDP', detail: 'cannot reach 127.0.0.1:9222' },
+    ]);
+    expect(model.wizard.currentStep).toContain(hermesBinary);
+    expect(model.wizard.currentStep).not.toMatch(/\bcdp doctor\b/);
+    expect(model.recommendation.ask).toContain(hermesBinary);
+    expect(model.recommendation.ask).not.toMatch(/\bcdp doctor\b/);
+    expect(model.recommendation.after).toContain(hermesBinary);
+    expect(model.recommendation.after).not.toMatch(/^cdp /);
+  });
+
   it('checkNode with v20 and no candidates stays FAIL and blocked', () => {
     const result = T.checkNode('v20.19.2', {
       home: '/home/box',
