@@ -7418,26 +7418,50 @@ function validateUrl(url) {
 
 // Perceive: enriched accessibility tree with inline visual layout annotations
 // Options parsed from args: --diff, --selector <sel>, --interactive/-i, --depth <N>, --cursor-interactive/-C
+const PERCEIVE_COMPACT_FLAGS =
+  '--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel';
+
+function unknownPerceiveOption(token) {
+  throw new Error(`unknown option ${token}\nperceive compact flags: ${PERCEIVE_COMPACT_FLAGS}`);
+}
+
 function parsePerceiveArgs(args) {
   const opts = {
     diff: false, selector: null, exclude: null,
     interactive: false, maxDepth: Infinity, cursorInteractive: false,
     keepRefs: false, last: null, adaptive: false, sinceAction: false, frameRef: null,
   };
+  const requireValue = (flag, index, label) => {
+    const value = args[index + 1];
+    if (value === undefined || value === '' || String(value).startsWith('-')) {
+      throw new Error(`${flag} requires ${label}`);
+    }
+    return value;
+  };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (!String(a).startsWith('-')) continue;
     if (a === '--diff') opts.diff = true;
     else if (a === '--since-action') opts.sinceAction = true;
-    else if (a === '-F' || a === '--frame') opts.frameRef = args[++i] || null;
-    else if (a === '-s' || a === '--selector') opts.selector = args[++i];
-    else if (a === '-x' || a === '--exclude') opts.exclude = args[++i];
-    else if (a === '-i' || a === '--interactive') opts.interactive = true;
-    else if (a === '-d' || a === '--depth') opts.maxDepth = parseInt(args[++i]) || Infinity;
-    else if (a === '-C' || a === '--cursor-interactive') opts.cursorInteractive = true;
+    else if (a === '-F' || a === '--frame') {
+      opts.frameRef = requireValue(a, i, 'a frame ref');
+      i++;
+    } else if (a === '-s' || a === '--selector') {
+      opts.selector = requireValue(a, i, 'a CSS selector');
+      i++;
+    } else if (a === '-x' || a === '--exclude') {
+      opts.exclude = requireValue(a, i, 'a CSS selector');
+      i++;
+    } else if (a === '-i' || a === '--interactive') opts.interactive = true;
+    else if (a === '-d' || a === '--depth') {
+      opts.maxDepth = parseInt(requireValue(a, i, 'a depth')) || Infinity;
+      i++;
+    } else if (a === '-C' || a === '--cursor-interactive') opts.cursorInteractive = true;
     else if (a === '--keep-refs') opts.keepRefs = true;
     else if (a === '--adaptive') opts.adaptive = true;
     else if (a === '--last') {
-      const raw = args[++i];
+      const raw = requireValue(a, i, 'N or auto');
+      i++;
       if (raw === 'auto') {
         opts.last = 'auto';
         opts.adaptive = true;
@@ -7445,6 +7469,8 @@ function parsePerceiveArgs(args) {
         const n = parseInt(raw);
         opts.last = Number.isFinite(n) && n > 0 ? n : null;
       }
+    } else {
+      unknownPerceiveOption(a);
     }
   }
   return opts;
@@ -17118,8 +17144,9 @@ function createPerceiveCommandHandler({
   const buildPerceiveModel = ops.perceiveModel || perceiveModel;
   const buildPerceiveDiff = ops.perceiveDiffModel || perceiveDiffModel;
   return async ({ args }) => {
-    const fopts = parseQaModeArgs(args, ['text', 'json']); await ensurePerceiveTargetReady({ cdp, sessionId, targetId, ops });
+    const fopts = parseQaModeArgs(args, ['text', 'json']);
     const popts = parsePerceiveArgs(fopts.args);
+    await ensurePerceiveTargetReady({ cdp, sessionId, targetId, ops });
     const targetPrefix = targetPrefixForDisplay(targetId);
     popts.targetPrefix = targetPrefix;
     if (popts.sinceAction) popts.diffBaseline = session.lastAction?.baselineOutput || null;
