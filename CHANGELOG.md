@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Open onboarding
+
+* Default `open` no longer dumps a full perceive (11–29 KB). It returns
+  `Opened new tab: PREFIX url` plus `Next: cdp perceive PREFIX -C -d 8`.
+  Pass `--perceive` to opt into the previous AX dump. Attach waiting is
+  fail-fast (5s) and skips the 1-minute "Allow debugging?" banner when the
+  daemon socket is already connected. Use `--attach-timeout-ms 60000` when
+  permission may still be pending; `--attach-timeout-ms 0` still returns the
+  target handoff without waiting (#160).
+
 ### Table collection
 
 * Replace the unbounded `table` claim with bounded observation, completeness,

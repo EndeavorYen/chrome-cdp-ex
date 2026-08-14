@@ -243,7 +243,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `repeat` | `repeat <target> <N> <cmd> [args]` | `composite / composite` |
 | `doctor` | `doctor / ready [--format json]` | `read / standard` |
 | `keepalive` | `keepalive <target> <ms>` | `protected-mutation / mutation` |
-| `open` | `open [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]` | `mutation / mutation` |
+| `open` | `open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]` | `mutation / mutation` |
 | `spawn-debug-browser` | `spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]` | `mutation / mutation` |
 | `dismiss-modal` | `dismiss-modal <target>` | `mutation / mutation` |
 | `stop` | `stop [target] [--format json]` | `mutation / mutation` |
