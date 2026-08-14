@@ -16,7 +16,7 @@ const {
   formatPageList, buildPerceiveTree, perceivePageScript, perceiveStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, parseControlsArgs, visibleControlsPageScript, controlsStr, formatVisibleControlsText, navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, fillStr, fillReactStr, waitForStr,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs, formatCliError, formatDaemonCommandError,
-  formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage, shouldAnnounceOpenAttachWait,
   statusStr, clearObservationBuffers,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
   captureScreenshot, screencastFallback, snapshotStr, formatScreenshotCaptureDiagnostics,
@@ -443,7 +443,7 @@ describe('COMMANDS registry', () => {
       aliases: [],
       needsTarget: false,
       mutates: true,
-      feedbackPolicy: 'full-perceive',
+      feedbackPolicy: 'report-only',
       outputFormats: ['text', 'json'],
     }));
   });
@@ -590,6 +590,9 @@ describe('helpStr', () => {
     expect(out).toContain('list|tabs|ls [--format json]');
     expect(out).toContain('perceive <target>');
     expect(out).toContain('report <target>');
+    expect(out).toContain('--perceive');
+    expect(out).toMatch(/open\s+\[url\].*--perceive/);
+    expect(out).toContain('Default open returns the target prefix and a follow-up perceive command');
   });
 });
 
@@ -7069,6 +7072,31 @@ describe('formatDaemonCommandError', () => {
 });
 
 describe('open onboarding guidance', () => {
+  it('defaults open attach timeout to fail-fast and skips auto-perceive', () => {
+    expect(T.DEFAULT_OPEN_ATTACH_TIMEOUT_MS).toBe(5000);
+    expect(T.parseOpenArgs(['https://example.com'])).toEqual({
+      url: 'https://example.com',
+      format: 'text',
+      attachTimeoutMs: 5000,
+      readyTimeoutMs: 5000,
+      readySelector: null,
+      reuseUrl: false,
+      perceive: false,
+    });
+  });
+
+  it('parses --perceive as opt-in auto-perceive without changing fail-fast attach', () => {
+    expect(T.parseOpenArgs(['https://example.com', '--perceive'])).toEqual({
+      url: 'https://example.com',
+      format: 'text',
+      attachTimeoutMs: 5000,
+      readyTimeoutMs: 5000,
+      readySelector: null,
+      reuseUrl: false,
+      perceive: true,
+    });
+  });
+
   it('parses bounded attach waiting for JSON/open automation', () => {
     expect(T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', '0', '--format', 'json'])).toEqual({
       url: 'https://example.com',
@@ -7077,6 +7105,7 @@ describe('open onboarding guidance', () => {
       readyTimeoutMs: 0,
       readySelector: null,
       reuseUrl: false,
+      perceive: false,
     });
     expect(T.parseOpenArgs(['--attach-timeout-ms=1200', '--ready-timeout-ms', '2500', '--ready-selector', '#app'])).toEqual({
       url: 'about:blank',
@@ -7085,6 +7114,7 @@ describe('open onboarding guidance', () => {
       readyTimeoutMs: 2500,
       readySelector: '#app',
       reuseUrl: false,
+      perceive: false,
     });
     expect(() => T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', 'nope'])).toThrow('open: --attach-timeout-ms must be a non-negative integer');
     expect(() => T.parseOpenArgs(['https://example.com', '--ready-timeout-ms', 'nope'])).toThrow('open: --ready-timeout-ms must be a non-negative integer');
@@ -7147,6 +7177,24 @@ describe('open onboarding guidance', () => {
     expect(calls[2][1].expression).toContain('document.querySelector("#app")');
     expect(calls[2][2]).toBe('session-1');
     expect(closed).toBe(true);
+  });
+
+  it('formats a compact next perceive command after open without auto-perceive', () => {
+    expect(formatOpenNextPerceiveCommand('AABBCCDDEEFF')).toBe('Next: cdp perceive AABBCCDD -C -d 8');
+  });
+
+  it('formats the allow-debugging wait banner only as an explicit helper', () => {
+    expect(formatOpenAttachWaitMessage(5000)).toBe(
+      'Waiting for "Allow debugging?" approval in Chrome... (up to 5s)'
+    );
+    expect(formatOpenAttachWaitMessage(60000)).toContain('1m');
+  });
+
+  it('does not announce the allow-debugging banner on the first daemon-boot miss', () => {
+    expect(shouldAnnounceOpenAttachWait({ failedConnects: 1, elapsedMs: 300 })).toBe(false);
+    expect(shouldAnnounceOpenAttachWait({ failedConnects: 2, elapsedMs: 900 })).toBe(false);
+    expect(shouldAnnounceOpenAttachWait({ failedConnects: 3, elapsedMs: 1500 })).toBe(true);
+    expect(shouldAnnounceOpenAttachWait({ failedConnects: 2, elapsedMs: 1000 })).toBe(true);
   });
 
   it('formats a ready continuation after open auto-perceives the page', () => {

@@ -166,7 +166,7 @@ When connected via `CDP_PORT` to an Electron app, a header line is shown:
 1ED3DBAA  Rexiano          http://localhost:5173/#/menu
 ```
 - Each line: `<8-char target ID>  <title>  <url>`. Use the target ID (e.g. `A7BA5C64`) for subsequent commands.
-- **Empty output (exit 0)** = no debuggable tabs available. Do NOT stop to ask the user for help. Instead, use `open <url>` to create a tab — this will auto-attach, wait for the user to click "Allow debugging?" in Chrome, auto-perceive the page, and print Target/Next/Then/Report continuation hints. Use `open <url> --format json` when a script needs the structured target handoff instead of human guidance; add `--attach-timeout-ms 0` only when automation needs the tab target immediately and will run `perceive`/retry itself. Use `--ready-timeout-ms <ms>` and `--ready-selector <sel>` when automation needs a bounded app-shell wait after attach. Once `open` completes, follow those hints and proceed immediately. Do NOT suggest `--remote-debugging-port` restarts.
+- **Empty output (exit 0)** = no debuggable tabs available. Do NOT stop to ask the user for help. Instead, use `open <url>` to create a tab — this auto-attaches with a fail-fast wait (5s) and prints `Opened new tab: PREFIX url` plus `Next: cdp perceive PREFIX -C -d 8`. It does **not** dump the accessibility tree unless you pass `--perceive`. If Chrome may still prompt "Allow debugging?", use `--attach-timeout-ms 60000`. Use `open <url> --format json` when a script needs the structured target handoff instead of human guidance; add `--attach-timeout-ms 0` only when automation needs the tab target immediately and will run `perceive`/retry itself. Use `--ready-timeout-ms <ms>` and `--ready-selector <sel>` when automation needs a bounded app-shell wait after attach. Once `open` completes, follow the printed Next command immediately. Do NOT suggest `--remote-debugging-port` restarts.
 - **Error output** = connection problem. Check prerequisites.
 
 ## Commands
@@ -261,7 +261,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `repeat` | `repeat <target> <N> <cmd> [args]` | `composite / composite` |
 | `doctor` | `doctor / ready [--format json]` | `read / standard` |
 | `keepalive` | `keepalive <target> <ms>` | `protected-mutation / mutation` |
-| `open` | `open [url] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]` | `mutation / mutation` |
+| `open` | `open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]` | `mutation / mutation` |
 | `spawn-debug-browser` | `spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]` | `mutation / mutation` |
 | `dismiss-modal` | `dismiss-modal <target>` | `mutation / mutation` |
 | `stop` | `stop [target] [--format json]` | `mutation / mutation` |
@@ -817,7 +817,7 @@ CSS px = screenshot image px / DPR
 ## Tips
 
 - **Prefer `nav` over `open`** — `nav` reuses an already-approved tab (no prompt, no "Allow debugging?" dialog). Use `open` only when `list` is empty or the user explicitly needs multiple tabs. Even page comparisons work with a single tab — `nav` between URLs and compare perceive data from context.
-- `open` **auto-attaches + auto-perceives** — it waits up to 60s for Chrome's "Allow debugging?" approval, then returns Target/Next/Then/Report hints plus the full page perception (same as `nav`). Do NOT stop to ask the user; just let the command run. After `open`, follow the printed continuation command immediately.
+- `open` **auto-attaches** with a fail-fast wait (5s) and returns `Opened new tab: PREFIX url` plus `Next: cdp perceive PREFIX -C -d 8`. It does **not** auto-perceive unless you pass `--perceive`. If Chrome may still prompt "Allow debugging?", use `--attach-timeout-ms 60000`. Do NOT stop to ask the user; just let the command run. After `open`, follow the printed Next command immediately.
 - Prefer `snap` over `html` for page structure — compact by default, use `snap --full` for complete tree.
 - Prefer `elshot` over `shot` when verifying a specific element — it's more reliable and avoids scroll/DPR issues.
 - Use `type` (not eval) to enter text in cross-origin iframes — `click`/`clickxy` to focus first, then `type`.

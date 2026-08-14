@@ -123,9 +123,8 @@ const IDLE_TIMEOUT = 20 * 60 * 1000;
 const FIRE_AND_FORGET_KEEPALIVE = 60 * 60 * 1000;
 const DAEMON_CONNECT_RETRIES = 20;
 const DAEMON_CONNECT_DELAY = 300;
-const DAEMON_ALLOW_RETRIES = 200;  // For open --attach: 200 * 300ms = 60s
 const DAEMON_ALLOW_DELAY = 300;
-const DEFAULT_OPEN_ATTACH_TIMEOUT_MS = DAEMON_ALLOW_RETRIES * DAEMON_ALLOW_DELAY;
+const DEFAULT_OPEN_ATTACH_TIMEOUT_MS = 5000;
 const DEFAULT_OPEN_READY_TIMEOUT_MS = 5000;
 const MIN_TARGET_PREFIX_LEN = 8;
 const MAX_ACTION_LOG_ENTRIES = 100;
@@ -14370,7 +14369,7 @@ function doctorNextSteps(checks) {
   } else {
     if (noTargets) {
       lines.push('  1. cdp open https://example.com');
-      lines.push('  2. If Chrome asks "Allow debugging?", click Allow; open waits up to 60s.');
+      lines.push('  2. If Chrome asks "Allow debugging?", click Allow; open waits up to 5s (use --attach-timeout-ms 60000 if needed).');
       lines.push('  3. Use the target id printed by open: cdp perceive <target-from-open> -C -d 8');
       lines.push('  Note: for "what does this page say", run: cdp text <target-from-open> --auto');
       lines.push('  4. cdp click <target-from-open> @ref  # or: cdp fill <target-from-open> <selector> <text>');
@@ -17097,7 +17096,11 @@ Usage: cdp <command> [args]
 {{command:keepalive}}
 {{command:open}}
                                     JSON includes schema/target/approval/recommendation/nextSteps for agents.
+                                    Default open returns the target prefix and a follow-up perceive command.
+                                    --perceive dumps the full page after attach (opt-in).
                                     --reuse-url reuses an existing tab matching the URL when unique.
+                                    Default attach wait is fail-fast (5s). Use --attach-timeout-ms 60000
+                                    when Chrome may still prompt "Allow debugging?".
                                     --attach-timeout-ms 0 returns the target handoff without waiting.
                                     --ready-timeout-ms bounds document.readyState waiting after attach.
                                     --ready-selector also waits for a CSS selector before returning.
@@ -17944,6 +17947,7 @@ function parseOpenArgs(args = []) {
   let readyTimeoutMs = null;
   let readySelector = null;
   let reuseUrl = false;
+  let perceive = false;
   for (let i = 0; i < fopts.args.length; i++) {
     const token = fopts.args[i];
     if (token === '--attach-timeout-ms') {
@@ -17962,6 +17966,8 @@ function parseOpenArgs(args = []) {
       if (!readySelector) throw new Error('open: --ready-selector requires a CSS selector');
     } else if (token === '--reuse-url') {
       reuseUrl = true;
+    } else if (token === '--perceive') {
+      perceive = true;
     } else if (String(token).startsWith('-')) {
       throw new Error(`open: unknown argument ${token}`);
     } else {
@@ -17976,6 +17982,7 @@ function parseOpenArgs(args = []) {
     readyTimeoutMs: readyTimeoutMs ?? (attachTimeoutMs > 0 ? DEFAULT_OPEN_READY_TIMEOUT_MS : 0),
     readySelector,
     reuseUrl,
+    perceive,
   };
 }
 
@@ -18143,6 +18150,18 @@ async function navigateOpenTarget(targetId, sp, url, {
   }
 }
 
+function formatOpenNextPerceiveCommand(targetId) {
+  return `Next: cdp perceive ${targetPrefixForDisplay(targetId)} -C -d 8`;
+}
+
+function formatOpenAttachWaitMessage(timeoutMs) {
+  return `Waiting for "Allow debugging?" approval in Chrome... (up to ${formatDuration(timeoutMs)})`;
+}
+
+function shouldAnnounceOpenAttachWait({ failedConnects = 0, elapsedMs = 0 } = {}) {
+  return failedConnects >= 3 || elapsedMs >= 1000;
+}
+
 function formatOpenReadyMessage(targetId, url = '') {
   const target = targetPrefixForDisplay(targetId);
   const lines = [
@@ -18189,7 +18208,7 @@ function formatOpenTimeoutMessage(targetId) {
     'Timeout waiting for debugging approval. Tab created but daemon not connected.',
     `Target: ${target}`,
     'If Chrome asks "Allow debugging?", click Allow first.',
-    `Next: cdp perceive ${target} -C -d 8`,
+    formatOpenNextPerceiveCommand(targetId),
   ].join('\n');
 }
 
@@ -18573,7 +18592,7 @@ async function main(options = {}) {
           return;
         }
         console.log(`Reused existing tab: ${selection.targetPrefix}  ${selection.page.url || url}`);
-        console.log(`Next: cdp perceive ${selection.targetPrefix} -C -d 8`);
+        console.log(formatOpenNextPerceiveCommand(selection.targetId));
         return;
       } catch (e) {
         // Zero matches: fall through and open a new tab.
@@ -18600,9 +18619,6 @@ async function main(options = {}) {
     }
 
     // Auto-attach: start daemon and wait for user to click "Allow debugging?"
-    if (opts.format === 'text') {
-      console.log(`Waiting for "Allow debugging?" approval in Chrome... (up to ${formatDuration(opts.attachTimeoutMs)})`);
-    }
     const sp = sockPath(targetId);
     if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
     const child = spawn(runtimeIdentity.execPath, [runtimeIdentity.scriptPath, '_daemon', targetId], {
@@ -18611,7 +18627,10 @@ async function main(options = {}) {
     });
     child.unref();
     let attached = false;
-    const attachDeadline = Date.now() + opts.attachTimeoutMs;
+    let announcedWait = false;
+    let failedConnects = 0;
+    const attachStartedAt = Date.now();
+    const attachDeadline = attachStartedAt + opts.attachTimeoutMs;
     while (Date.now() < attachDeadline) {
       const remainingMs = attachDeadline - Date.now();
       try {
@@ -18619,7 +18638,16 @@ async function main(options = {}) {
         conn.end();
         attached = true;
         break;
-      } catch {}
+      } catch {
+        failedConnects += 1;
+        if (opts.format === 'text' && !announcedWait && shouldAnnounceOpenAttachWait({
+          failedConnects,
+          elapsedMs: Date.now() - attachStartedAt,
+        })) {
+          console.log(formatOpenAttachWaitMessage(opts.attachTimeoutMs));
+          announcedWait = true;
+        }
+      }
       await sleep(Math.min(DAEMON_ALLOW_DELAY, remainingMs));
     }
     const navigation = attached
@@ -18642,15 +18670,18 @@ async function main(options = {}) {
       return;
     }
     if (attached) {
-      console.log(formatOpenReadyMessage(targetId, url));
-      // Auto-perceive: give agent immediate page understanding (matches nav behavior)
-      try {
-        const conn = await connectToSocket(sp);
-        const resp = await sendCommand(conn, { cmd: 'perceive', args: [] });
-        conn.end();
-        if (resp.ok && resp.result) console.log('---\n' + resp.result);
-      } catch (e) {
-        console.error(formatOpenAutoPerceiveFailure(e, targetId));
+      if (opts.perceive) {
+        console.log(formatOpenReadyMessage(targetId, url));
+        try {
+          const conn = await connectToSocket(sp);
+          const resp = await sendCommand(conn, { cmd: 'perceive', args: [] });
+          conn.end();
+          if (resp.ok && resp.result) console.log('---\n' + resp.result);
+        } catch (e) {
+          console.error(formatOpenAutoPerceiveFailure(e, targetId));
+        }
+      } else {
+        console.log(formatOpenNextPerceiveCommand(targetId));
       }
     } else {
       console.log(formatOpenTimeoutMessage(targetId));
@@ -19106,7 +19137,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, runBatchCommands, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
-  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage, shouldAnnounceOpenAttachWait, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  DEFAULT_OPEN_ATTACH_TIMEOUT_MS,
   CLI_HELP_LAYOUT, CLI_HELP_TEMPLATE, renderCliHelp, helpStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   detectRuntimeEnvironment, checkRuntimeEnvironment,
