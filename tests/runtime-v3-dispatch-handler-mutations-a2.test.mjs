@@ -8,8 +8,8 @@ import {
 describe('Runtime v3 handler wiring characterization A2', () => {
   it.each([
     source.replace(
-      "? await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[1], fargs[2], refMap, refState, { react: true })",
-      "? await actionFeedback('fill', () => selectStr(cdp, sessionId, fargs[1], fargs[2])",
+      "? await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { react: true })",
+      "? await actionFeedback('fill', () => selectStr(cdp, sessionId, parsed.selector, parsed.text)",
     ),
     source.replace(
       "const recordActionsBuilder = applicationPreflight.handlerBuilders['record-actions'];",

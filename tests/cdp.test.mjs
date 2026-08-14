@@ -8360,7 +8360,7 @@ describe('fillStr', () => {
     const refMap = new Map([[1, 201]]);
     const cdp = createMockCDP({
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-      'Runtime.callFunctionOn': () => ({ result: { value: undefined } }),
+      'Runtime.callFunctionOn': () => ({ result: { value: { ok: true, fillable: true, tag: 'INPUT' } } }),
       'Input.insertText': () => ({}),
     });
     const result = await fillStr(cdp, 'sid1', '@1', 'hello', refMap);
@@ -8406,6 +8406,9 @@ describe('fill --react', () => {
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-input' } }),
       'Runtime.callFunctionOn': (params) => {
         expect(params.objectId).toBe('obj-input');
+        if (!params.arguments) {
+          return { result: { value: { ok: true, fillable: true, tag: 'INPUT' } } };
+        }
         expect(params.arguments[0].value).toBe('戰鬥勝利');
         expect(params.functionDeclaration).toContain('Object.getOwnPropertyDescriptor');
         expect(params.functionDeclaration).toContain("new InputEvent('input'");

@@ -3118,3 +3118,200 @@ describe('issues #181-#191 open contracts', () => {
   });
 });
 
+describe('issues #195-#202 open contracts', () => {
+  it('#195 treats letter-start hex prefixes as target prefixes, not unknown aliases', () => {
+    expect(T.looksLikeAliasToken('F874')).toBe(false);
+    expect(T.looksLikeAliasToken('F8')).toBe(false);
+    expect(T.looksLikeAliasToken('F')).toBe(false);
+    expect(T.looksLikeAliasToken('C48C')).toBe(false);
+    expect(T.looksLikeAliasToken('A7BA5C64')).toBe(false);
+    expect(T.looksLikeAliasToken('77C5')).toBe(false);
+    expect(T.looksLikeHexTargetPrefix('F874')).toBe(true);
+    expect(T.looksLikeHexTargetPrefix('F8741D0')).toBe(true);
+    expect(T.looksLikeAliasToken('hfmusic')).toBe(true);
+    expect(T.looksLikeAliasToken('@F874')).toBe(true);
+
+    const store = T.upsertTargetAlias(T.emptyAliasStore(), {
+      name: 'xtest',
+      targetId: 'F8741D08ABCDEF99',
+    });
+    expect(T.resolveTargetAlias('xtest', store).targetId).toBe('F8741D08ABCDEF99');
+    expect(T.resolveTargetAlias('F874', store)).toBeNull();
+
+    const binding = T.resolveLiveTargetBinding({
+      requested: 'F874',
+      livePages: [{ targetId: 'F8741D08ABCDEF99', title: 'X', url: 'https://x.com/' }],
+    });
+    expect(binding.resolvedTargetId).toBe('F8741D08ABCDEF99');
+  });
+
+  it('#196 text rejects unknown flags and compact/json, and flag-only invocation is usage', () => {
+    expect(() => T.parseTextArgs(['--auto', '--not-a-real-flag'])).toThrow(/text: unknown argument --not-a-real-flag/);
+    expect(() => T.parseTextArgs(['--auto', '--compact'])).toThrow(/text: unknown argument --compact/);
+    expect(() => T.parseTextArgs(['--auto', '--format'])).toThrow(/text: unknown argument --format/);
+    expect(T.parseTextArgs(['--auto']).auto).toBe(true);
+
+    const unknown = T.buildCliErrorRecovery('text: unknown argument --not-a-real-flag', { cmd: 'text' });
+    expect(unknown.kind).toBe('usage');
+    expect(unknown.run).toBe('cdp help text');
+
+    const missing = T.buildCliErrorRecovery('text: target prefix is required', { cmd: 'text' });
+    expect(missing.kind).toBe('usage');
+    expect(missing.run).toBe('cdp help text');
+    expect(missing.run).not.toBe('cdp doctor');
+  });
+
+  it('#197 fill rejects unknown flags and fails closed on non-input controls', async () => {
+    expect(() => T.parseFillArgs(['@1', 'hello', '--not-a-real-flag'])).toThrow(/fill: unknown argument --not-a-real-flag/);
+    expect(T.parseFillArgs(['@1', 'hello', '--format', 'json'])).toMatchObject({
+      selector: '@1',
+      text: 'hello',
+      format: 'json',
+    });
+    expect(T.parseFillArgs(['@1', 'hello', 'world'])).toMatchObject({
+      selector: '@1',
+      text: 'hello world',
+    });
+    expect(() => T.normalizeTargetCommandArgs('fill', ['@1', 'hello', '--not-a-real-flag']))
+      .toThrow(/fill: unknown argument --not-a-real-flag/);
+
+    const usage = T.buildCliErrorRecovery('fill: unknown argument --not-a-real-flag', { cmd: 'fill' });
+    expect(usage.kind).toBe('usage');
+    expect(usage.run).toBe('cdp help fill');
+
+    const linkCdp = {
+      send(method) {
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({
+            result: {
+              value: {
+                ok: false,
+                error: 'fill: a is not a fillable control (<A>). Use click for links/buttons.',
+                tag: 'A',
+              },
+            },
+          });
+        }
+        throw new Error(`unexpected ${method}`);
+      },
+    };
+    await expect(T.fillStr(linkCdp, 'sid', 'a', 'hello', new Map()))
+      .rejects.toThrow(/not a fillable control \(<A>\)/);
+    expect(T.classifyActionFailure(new Error('fill: @1 is not a fillable control (<A>). Use click for links/buttons.'), {
+      action: 'fill',
+      target: { targetId: '1D366978', input: '@1' },
+    })).toMatchObject({
+      kind: 'not-fillable',
+      nextCommand: 'cdp help fill',
+    });
+  });
+
+  it('#198 netlog drops leftover requests from a previous navigation', () => {
+    const now = 1_000_000;
+    const entries = [
+      { method: 'GET', url: 'https://github.com/EndeavorYen/chrome-cdp-ex/issues/99999999', status: 404, duration: 321, size: 0, ts: now - 347_000 },
+      { method: 'GET', url: 'https://example.com/', status: 200, duration: 3, size: 0, ts: now - 330_000 },
+    ];
+    const filtered = T.filterNetlogEntries(entries, { lastNavigationTs: now - 330_000 });
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0].url).toBe('https://example.com/');
+
+    const buf = new T.RingBuffer(100);
+    for (const entry of entries) buf.push(entry);
+    const out = T.netlogStr(buf, undefined, { lastNavigationTs: now - 330_000 });
+    expect(out).toContain('https://example.com/');
+    expect(out).not.toContain('github.com');
+  });
+
+  it('#199 eval parses flags off the expression and classifies JS errors as eval, not status', () => {
+    expect(() => T.parseEvalArgs(['document.title', '--format', 'json']))
+      .toThrow(/eval: unknown argument --format/);
+    expect(() => T.parseEvalArgs(['document.title', '--compact']))
+      .toThrow(/eval: unknown argument --compact/);
+    expect(T.parseEvalArgs(['document.title'])).toMatchObject({ expression: 'document.title' });
+
+    const usage = T.buildCliErrorRecovery('eval: unknown argument --format', { cmd: 'eval' });
+    expect(usage.kind).toBe('usage');
+    expect(usage.run).toBe('cdp help eval');
+
+    const jsError = T.buildCliErrorRecovery("SyntaxError: Unexpected identifier 'format'", {
+      cmd: 'eval',
+      targetPrefix: '6914C171',
+    });
+    expect(jsError.kind).toBe('eval');
+    expect(jsError.run).toBe('cdp help eval');
+    expect(jsError.run).not.toMatch(/cdp status/);
+    expect(jsError.kind).not.toBe('unknown');
+  });
+
+  it('#200 target with no args is usage / help target, not doctor', () => {
+    expect(() => T.parseTargetSelectArgs([])).toThrow(/provide --url and\/or --title/);
+    const recovery = T.buildCliErrorRecovery('target: provide --url and/or --title', { cmd: 'target' });
+    expect(recovery.kind).toBe('usage');
+    expect(recovery.run).toBe('cdp help target');
+    expect(recovery.run).not.toBe('cdp doctor');
+    const text = T.formatCliError(new Error('target: provide --url and/or --title'), { cmd: 'target' });
+    expect(text).toMatch(/Kind: usage/);
+    expect(text).toMatch(/Next: cdp help target/);
+    expect(text).not.toMatch(/cdp doctor/);
+  });
+
+  it('#201 forget of an unknown alias fails closed and does not claim Forgot', () => {
+    const store = T.emptyAliasStore();
+    expect(() => T.forgetTargetAlias(store, 'nosuchaliasxyz')).toThrow(/unknown alias "@nosuchaliasxyz"/);
+    const next = T.forgetTargetAlias(
+      T.upsertTargetAlias(store, { name: 'xtest', targetId: 'F8741D08' }),
+      'xtest',
+    );
+    expect(next.removed.name).toBe('xtest');
+    expect(next.next.aliases.xtest).toBeUndefined();
+    const recovery = T.buildCliErrorRecovery('unknown alias "@nosuchaliasxyz"', { cmd: 'forget' });
+    expect(recovery.kind).toBe('target-resolution');
+    expect(recovery.run).toMatch(/^cdp list/);
+  });
+
+  it('#202 clipboard / copy clicks are expected no-change without overlay or 8s settle', () => {
+    expect(T.looksLikeClipboardControl('Copy model name to clipboard')).toBe(true);
+    expect(T.looksLikeClipboardControl('Clicked <BUTTON> "Copy model name to clipboard" (@3)')).toBe(true);
+    expect(T.looksLikeClipboardControl('Refresh')).toBe(false);
+    expect(T.actionDomDiffShowsChange('No changes detected (clipboard action).')).toBe(false);
+    expect(T.scrollSettledRectFunctionDeclaration()).toMatch(/aria-label/);
+
+    const recommendation = T.buildNoChangeOutcomeRecommendation({
+      action: 'click',
+      target: '6914C171',
+      targetInput: '@3',
+      targetInfo: { input: '@3', label: 'Copy model name to clipboard', expectedOutcome: 'clipboard-no-change' },
+    });
+    expect(recommendation.strategy).toBe('continue');
+    expect(recommendation.blockingSignals).not.toContain('overlay-check-needed');
+    expect(recommendation.commands.join('\n')).not.toMatch(/\boverlay\b/);
+
+    const result = T.createActionResult({
+      action: 'click',
+      target: {
+        targetId: '6914C171FULL',
+        input: '@3',
+        label: 'Copy model name to clipboard',
+        expectedOutcome: 'clipboard-no-change',
+      },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 80 },
+      effects: {
+        domDiff: 'No changes detected (clipboard action).',
+        console: [],
+        network: [],
+        navigation: null,
+        consoleDelta: { count: 0, errors: 0, warnings: 0, entries: [] },
+        exceptionDelta: { count: 0, entries: [] },
+        networkDelta: { count: 1, failures: 0, pending: 0, entries: [{ method: 'POST', url: '/api/event', status: 202 }] },
+      },
+    });
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.verdict.needsRecovery).toBe(false);
+    expect(result.receipt.blockingSignals || []).not.toContain('overlay-check-needed');
+    expect(T.formatActionText(result)).not.toMatch(/\boverlay\b/);
+  });
+});
+

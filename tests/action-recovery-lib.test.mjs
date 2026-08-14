@@ -110,6 +110,22 @@ describe('action recovery lib', () => {
     ]);
   });
 
+  it('treats clipboard copy clicks as expected no-change without overlay recovery', () => {
+    const recommendation = buildNoChangeOutcomeRecommendation({
+      action: 'click',
+      target: '6914C171',
+      targetInput: '@3',
+      targetInfo: {
+        input: '@3',
+        label: 'Copy model name to clipboard',
+        expectedOutcome: 'clipboard-no-change',
+      },
+    });
+    expect(recommendation.strategy).toBe('continue');
+    expect(recommendation.blockingSignals).toEqual([]);
+    expect(recommendation.commands.join('\n')).not.toMatch(/\boverlay\b/);
+  });
+
   it('keeps text failure output and recovery command extraction stable', () => {
     const text = formatActionFailure(new Error('Element not found: #save'), {
       action: 'click',
