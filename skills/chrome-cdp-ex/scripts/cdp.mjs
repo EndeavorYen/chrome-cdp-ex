@@ -70,7 +70,6 @@ import {
   goldenPathBrowserPermissionRecommendation,
   goldenPathListRecommendation,
   goldenPathOpenPageRecommendation,
-  goldenPathPerceiveRecommendation,
   goldenPathReadPageRecommendation,
 } from './lib/perception-model.mjs';
 import {
