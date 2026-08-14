@@ -14413,7 +14413,6 @@ function doctorNextSteps(checks) {
     lines.push(`  2. If Chrome asks "Allow debugging?", click Allow, then rerun: ${prefix} list`);
   } else {
     if (noTargets) {
-    if (noTargets) {
       lines.push(`  1. ${prefix} open https://example.com`);
       lines.push('  2. If Chrome asks "Allow debugging?", click Allow; open waits up to 5s (use --attach-timeout-ms 60000 if needed).');
       lines.push(`  3. Use the target id printed by open: ${prefix} perceive <target-from-open> -C -d 8`);
