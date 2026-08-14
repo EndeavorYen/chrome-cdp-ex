@@ -7470,6 +7470,59 @@ function chooseAdaptivePerceiveLast({
   return Math.max(8, Math.min(80, budget));
 }
 
+const PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP = 8;
+const PERCEIVE_CHROME_MAX_RELATIVE_DEPTH = 2;
+const PERCEIVE_CHROME_LINE_CAP = 12;
+const PERCEIVE_CONTENT_LANDMARK_ROLES = new Set(['main', 'article']);
+const PERCEIVE_CHROME_LANDMARK_ROLES = new Set(['navigation', 'banner', 'complementary']);
+
+function isSkipLinkName(name) {
+  return /^\s*skip\b/i.test(String(name || ''));
+}
+
+// Skip-link @ref deprioritization is shared with #163 (doctor probe should not
+// click Skip-to-content first). This path only stops skip-links from taking @1
+// on golden-path perceive; it does not own the full #163 probe policy.
+function isSkipLinkAxNode(node) {
+  const role = node.role?.value || '';
+  if (!INTERACTIVE_ROLES.has(role)) return false;
+  return isSkipLinkName(node.name?.value);
+}
+
+function countsTowardPerceiveDepth(node) {
+  const role = node.role?.value || '';
+  return role !== 'none' && role !== 'generic' && role !== 'InlineTextBox';
+}
+
+function isPerceiveBodyTextRole(role) {
+  return role === 'StaticText' || role === 'paragraph' || role === 'heading';
+}
+
+function perceiveCursorSurfaceLimit(opts = {}) {
+  const defaultCap = PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP;
+  const { last = null, adaptive = false } = opts;
+  if (Number.isFinite(last) && last > 0) return last;
+  if (last === 'auto' || adaptive) {
+    const budget = chooseAdaptivePerceiveLast({
+      lineCount: Number(opts.lineCount || 0),
+      consoleErrors: Number(opts.consoleErrors || 0),
+      interactiveCount: Number(opts.interactiveCount || 0),
+      hasPriorityText: Boolean(opts.hasPriorityText),
+    });
+    return Math.max(4, Math.min(defaultCap, Math.ceil(budget / 6)));
+  }
+  return defaultCap;
+}
+
+function rankPerceiveCursorItems(items, nameOf) {
+  const skip = [];
+  const rest = [];
+  for (const item of items || []) {
+    (isSkipLinkName(nameOf(item)) ? skip : rest).push(item);
+  }
+  return rest.concat(skip);
+}
+
 function parseControlsArgs(args) {
   const opts = { selector: null, filter: null, limit: 30, compact: false };
   const requireValue = (flag, label, index) => {
@@ -7946,6 +7999,7 @@ function formatRefRect(rect) {
 function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   const { maxDepth = Infinity, interactiveOnly = false, keepRefs = false, last = null } = opts;
   // opts.adaptive + opts.consoleErrors are used by the --last auto / --adaptive budget path
+  // opts.cursorInteractive is accepted so -C ranking shares this path with last/adaptive.
 
   const nodesById = new Map(nodes.map(n => [n.nodeId, n]));
   const childrenByParent = new Map();
@@ -7978,9 +8032,13 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   refMap.clear();
   let refCounter = 0;
   const refNodeIds = [];
+  const pendingSkipRefs = [];
 
   const treeLines = [];
+  const contentBodyLines = new Set();
   const visited = new Set();
+  let chromeLinesEmitted = 0;
+  let chromeTruncationNoted = false;
 
   function markSubtreeVisited(nodeId) {
     visited.add(nodeId);
@@ -7989,22 +8047,51 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     }
   }
 
-  function visit(node, depth, parentNode = null, tableAncestorId = null) {
+  function assignInteractiveRef(node) {
+    if (!node.backendDOMNodeId) return null;
+    refCounter++;
+    refMap.set(refCounter, node.backendDOMNodeId);
+    refNodeIds.push({ ref: refCounter, backendDOMNodeId: node.backendDOMNodeId });
+    return refCounter;
+  }
+
+  function childRegion(ctx, counts) {
+    return {
+      inContent: ctx.inContent,
+      inChrome: ctx.inChrome,
+      chromeDepth: ctx.inChrome && counts ? ctx.chromeDepth + 1 : ctx.chromeDepth,
+      contentDepth: ctx.inContent && counts ? ctx.contentDepth + 1 : ctx.contentDepth,
+    };
+  }
+
+  function visit(node, depth, parentNode = null, tableAncestorId = null, ctx = {
+    inContent: false, inChrome: false, chromeDepth: 0, contentDepth: 0,
+  }) {
     if (!node || visited.has(node.nodeId)) return;
     visited.add(node.nodeId);
 
     const role = node.role?.value || '';
     const name = node.name?.value ?? '';
+    const skipLink = isSkipLinkAxNode(node);
+    const enteringContent = PERCEIVE_CONTENT_LANDMARK_ROLES.has(role) && depth <= maxDepth;
+    const inContent = ctx.inContent || enteringContent;
+    const enteringChrome = !inContent && PERCEIVE_CHROME_LANDMARK_ROLES.has(role);
+    const inChrome = !inContent && (ctx.inChrome || enteringChrome);
+    const chromeDepth = enteringChrome ? 0 : ctx.chromeDepth;
+    const contentDepth = enteringContent ? 0 : ctx.contentDepth;
+    const region = { inContent, inChrome, chromeDepth, contentDepth };
+    const counts = countsTowardPerceiveDepth(node);
+    const childDepth = counts ? depth + 1 : depth;
 
-    // Depth limit: still assign refs but don't output deeper nodes
-    if (depth > maxDepth) {
-      if (INTERACTIVE_ROLES.has(role) && node.backendDOMNodeId) {
-        refCounter++;
-        refMap.set(refCounter, node.backendDOMNodeId);
-        refNodeIds.push({ ref: refCounter, backendDOMNodeId: node.backendDOMNodeId });
+    const overChrome = inChrome && chromeDepth > PERCEIVE_CHROME_MAX_RELATIVE_DEPTH;
+    const overContent = inContent && contentDepth > maxDepth;
+    const overGlobal = !inContent && depth > maxDepth;
+    if (overChrome || overContent || overGlobal) {
+      if (INTERACTIVE_ROLES.has(role) && node.backendDOMNodeId && !skipLink) {
+        assignInteractiveRef(node);
       }
       for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
-        visit(child, depth + 1, node, tableAncestorId);
+        visit(child, childDepth, node, tableAncestorId, childRegion(region, counts));
       }
       return;
     }
@@ -8055,57 +8142,70 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     // --interactive mode: only show interactive elements and their immediate structural parents
     if (interactiveOnly && !isInteractive && !ENRICHED_ROLES.has(role)) {
       for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
-        visit(child, depth, node, tableAncestorId);
+        visit(child, depth, node, tableAncestorId, region);
       }
       return;
     }
 
     if (shouldShowAxNode(node, true, parentNode)) {
-      let line = formatAxNode(node, depth);
+      const chromeCapped = inChrome && chromeLinesEmitted >= PERCEIVE_CHROME_LINE_CAP;
+      if (chromeCapped) {
+        if (!chromeTruncationNoted) {
+          treeLines.push(formatAxNode({ role: { value: 'note' }, name: { value: '... chrome truncated' } }, depth));
+          chromeTruncationNoted = true;
+        }
+      } else {
+        let line = formatAxNode(node, depth);
 
-      // Assign @ref to interactive elements
-      if (isInteractive && node.backendDOMNodeId) {
-        refCounter++;
-        refMap.set(refCounter, node.backendDOMNodeId);
-        refNodeIds.push({ ref: refCounter, backendDOMNodeId: node.backendDOMNodeId });
-        line += `  @${refCounter}`;
-      }
-
-      // Enrich landmark/structural nodes with layout annotations
-      if (ENRICHED_ROLES.has(role)) {
-        const layout = consumeLayout(role);
-        if (layout) {
-          const parts = [];
-          if (layout.w) parts.push(`${layout.w}×${layout.h}px`);
-          else if (layout.h >= 40) parts.push(`↕${layout.h}px`);
-          if (layout.bg) parts.push(`bg:${layout.bg}`);
-          if (layout.font) parts.push(layout.font);
-          if (layout.color) parts.push(`color:${layout.color}`);
-          if (layout.display) {
-            let d = layout.display;
-            if (layout.gap) d += ` gap:${layout.gap}`;
-            parts.push(d);
+        // Assign @ref to interactive elements. Skip-links are deferred so they
+        // do not consume @1 when the article has a real control (#159 / #163).
+        if (isInteractive && node.backendDOMNodeId) {
+          if (skipLink) {
+            pendingSkipRefs.push({ lineIndex: treeLines.length, backendDOMNodeId: node.backendDOMNodeId });
+          } else {
+            const ref = assignInteractiveRef(node);
+            if (ref != null) line += `  @${ref}`;
           }
-          if (layout.opacity) parts.push(`opacity:${layout.opacity}`);
-          if (layout.vis === 'above') parts.push('↑above fold');
-          else if (layout.vis === 'below') parts.push('↓below fold');
-          if (parts.length > 0) line += '  ' + parts.join('  ');
         }
-      }
 
-      // Enrich table cells with style hints (positional key: tableIdx:rowIdx:colIdx)
-      if (isCellRole && meta.styleHints) {
-        const ti = tableIdxMap.get(tableAncestorId);
-        const ri = dataRowIdx.get(tableAncestorId) ?? -1;
-        if (ti != null && ri >= 0) {
-          const hint = meta.styleHints[ti + ':' + ri + ':' + cellColIdx];
-          if (hint) line += '  ' + hint;
+        // Enrich landmark/structural nodes with layout annotations
+        if (ENRICHED_ROLES.has(role)) {
+          const layout = consumeLayout(role);
+          if (layout) {
+            const parts = [];
+            if (layout.w) parts.push(`${layout.w}×${layout.h}px`);
+            else if (layout.h >= 40) parts.push(`↕${layout.h}px`);
+            if (layout.bg) parts.push(`bg:${layout.bg}`);
+            if (layout.font) parts.push(layout.font);
+            if (layout.color) parts.push(`color:${layout.color}`);
+            if (layout.display) {
+              let d = layout.display;
+              if (layout.gap) d += ` gap:${layout.gap}`;
+              parts.push(d);
+            }
+            if (layout.opacity) parts.push(`opacity:${layout.opacity}`);
+            if (layout.vis === 'above') parts.push('↑above fold');
+            else if (layout.vis === 'below') parts.push('↓below fold');
+            if (parts.length > 0) line += '  ' + parts.join('  ');
+          }
         }
+
+        // Enrich table cells with style hints (positional key: tableIdx:rowIdx:colIdx)
+        if (isCellRole && meta.styleHints) {
+          const ti = tableIdxMap.get(tableAncestorId);
+          const ri = dataRowIdx.get(tableAncestorId) ?? -1;
+          if (ti != null && ri >= 0) {
+            const hint = meta.styleHints[ti + ':' + ri + ':' + cellColIdx];
+            if (hint) line += '  ' + hint;
+          }
+        }
+        treeLines.push(line);
+        if (inChrome) chromeLinesEmitted++;
+        if (inContent && isPerceiveBodyTextRole(role)) contentBodyLines.add(line);
       }
-      treeLines.push(line);
     }
     for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
-      visit(child, depth + 1, node, tableAncestorId);
+      visit(child, childDepth, node, tableAncestorId, childRegion(region, counts));
     }
   }
 
@@ -8113,16 +8213,26 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   for (const root of roots) visit(root, 0);
   for (const node of nodes) visit(node, 0);
 
+  for (const pending of pendingSkipRefs) {
+    refCounter++;
+    refMap.set(refCounter, pending.backendDOMNodeId);
+    refNodeIds.push({ ref: refCounter, backendDOMNodeId: pending.backendDOMNodeId });
+    if (pending.lineIndex >= 0 && treeLines[pending.lineIndex] != null) {
+      treeLines[pending.lineIndex] += `  @${refCounter}`;
+    }
+  }
+
   // --last N: keep only the last N StaticText / paragraph rows. Ref-bearing
   // lines (anything containing `@<digit>` or `@c<digit>`) and structural lines
   // (landmarks, headings, dialogs, etc.) are always kept.
   // --keep-refs: when truncating, ensure every line carrying an @ref survives.
   // --adaptive / --last auto: choose N from density + error/priority signals.
+  // Content-landmark text is treated as priority so -C chrome cannot outrank the article.
   let outLines = treeLines;
   let effectiveLast = last;
   if (last === 'auto' || (opts.adaptive && (last == null || last === 'auto'))) {
     const interactiveCount = outLines.filter(ln => /@(c?\d+)/.test(ln)).length;
-    const hasPriorityText = outLines.some(ln => isPriorityPerceiveTextLine(ln));
+    const hasPriorityText = outLines.some(ln => isPriorityPerceiveTextLine(ln) || contentBodyLines.has(ln));
     effectiveLast = chooseAdaptivePerceiveLast({
       lineCount: outLines.length,
       consoleErrors: Number(opts.consoleErrors || 0),
@@ -8144,8 +8254,10 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
       const isRef = refLineRe.test(ln);
       const isText = textRoleRe.test(ln) && !isRef;
       if (isText) {
-        if (isPriorityPerceiveTextLine(ln) && priorityKept < priorityBudget) { reversed.push(ln); priorityKept++; }
-        else if (textKept < effectiveLast) { reversed.push(ln); textKept++; }
+        if ((contentBodyLines.has(ln) || isPriorityPerceiveTextLine(ln)) && priorityKept < priorityBudget) {
+          reversed.push(ln);
+          priorityKept++;
+        } else if (textKept < effectiveLast) { reversed.push(ln); textKept++; }
         else { textOmitted++; }
       } else {
         reversed.push(ln);
@@ -8163,6 +8275,15 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     // hid refs was happening elsewhere; --keep-refs is now a soft flag agents
     // can use to assert "do not drop my @ref lines"). The flag is honoured
     // upstream by perceiveStr which avoids cutting ref lines.
+  }
+
+  const hasContentBody = outLines.some(ln => contentBodyLines.has(ln));
+  const emittedChromeOrSkip = outLines.some(ln =>
+    /\[(navigation|banner|complementary)\]/.test(ln) || /\[(link|button)\]\s+Skip\b/i.test(ln)
+  );
+  if (!hasContentBody && Number.isFinite(maxDepth) && emittedChromeOrSkip) {
+    const target = opts.targetPrefix || '<target>';
+    outLines.push(`Body truncated. Next: cdp text ${target} --auto`);
   }
 
   return { treeLines: outLines, refNodeIds };
@@ -8485,7 +8606,9 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     keepRefs,
     last,
     adaptive,
+    cursorInteractive,
     consoleErrors: errors + exceptions,
+    targetPrefix: opts.targetPrefix || '<target>',
   });
   let treeLines = builtTree.treeLines;
   const { refNodeIds } = builtTree;
@@ -8544,21 +8667,37 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   }
   if (frame) treeLines = qualifyFrameRefsInLines(treeLines, frame.ref);
 
-  // === Cursor-interactive @c refs ===
+  // === Cursor-interactive @c refs (capped AFTER body; last/adaptive apply here) ===
+  const cursorLimit = perceiveCursorSurfaceLimit({
+    last,
+    adaptive,
+    lineCount: treeLines.length,
+    consoleErrors: errors + exceptions,
+    interactiveCount: refNodeIds.length + (meta.cursorInteractives?.length || 0) + (meta.visibleControls?.length || 0),
+    hasPriorityText: treeLines.some(ln => isPriorityPerceiveTextLine(ln)),
+  });
   let cRefCounter = 0;
   if (cursorInteractive && meta.cursorInteractives?.length > 0) {
+    const ranked = rankPerceiveCursorItems(meta.cursorInteractives, item => item.text || item.sel);
+    const capped = ranked.slice(0, cursorLimit);
     treeLines.push('');
-    treeLines.push('[Cursor-interactive elements] (non-ARIA clickable)');
-    for (const ci of meta.cursorInteractives) {
+    treeLines.push(`[Cursor-interactive elements] (non-ARIA clickable)${ranked.length > capped.length ? ' (truncated)' : ''}`);
+    for (const ci of capped) {
       cRefCounter++;
       refMap.set(`c${cRefCounter}`, ci);
       treeLines.push(`  [clickable] ${ci.text || ci.sel}  @c${cRefCounter}  (${ci.x},${ci.y} ${ci.w}×${ci.h})`);
     }
   }
   if (cursorInteractive && meta.visibleControls?.length > 0) {
+    const ranked = rankPerceiveCursorItems(
+      meta.visibleControls,
+      item => item.label || item.ariaLabel || item.text || item.title,
+    );
+    const capped = ranked.slice(0, cursorLimit);
+    const truncated = ranked.length > capped.length || meta.visibleControlsTruncated;
     treeLines.push('');
-    treeLines.push(`[Visible controls]${meta.visibleControlsTruncated ? ' (truncated)' : ''}`);
-    for (const control of meta.visibleControls) {
+    treeLines.push(`[Visible controls]${truncated ? ' (truncated)' : ''}`);
+    for (const control of capped) {
       treeLines.push(`  ${formatVisibleControlLine(control)}`);
     }
   }
@@ -13995,7 +14134,7 @@ function doctorRecommendationModel(checks) {
     after: `cdp click ${target} @ref  # or: cdp fill ${target} <selector> <text>`,
     requiresUserAction: false,
     consentRequired: false,
-    reason: 'ready for live browser perception',
+    reason: 'ready for live browser perception. For "what does this page say", run cdp text ' + target + ' --auto',
     commands: doctorNextStepCommands(checks),
     warnings: doctorWarningCommands(checks),
   };
@@ -14139,6 +14278,7 @@ function doctorNextSteps(checks) {
       lines.push('  1. cdp open https://example.com');
       lines.push('  2. If Chrome asks "Allow debugging?", click Allow; open waits up to 60s.');
       lines.push('  3. Use the target id printed by open: cdp perceive <target-from-open> -C -d 8');
+      lines.push('  Note: for "what does this page say", run: cdp text <target-from-open> --auto');
       lines.push('  4. cdp click <target-from-open> @ref  # or: cdp fill <target-from-open> <selector> <text>');
       lines.push('  5. cdp perceive <target-from-open> --since-action');
       lines.push('  6. cdp report <target-from-open>');
@@ -14146,6 +14286,7 @@ function doctorNextSteps(checks) {
       lines.push('  1. cdp list');
       if (!tabs?.targetPrefixes?.length) lines.push('  2. If list is empty: cdp open https://example.com');
       lines.push(`  ${tabs?.targetPrefixes?.length ? '2' : '3'}. cdp perceive ${liveTarget} -C -d 8`);
+      lines.push(`  Note: for "what does this page say", run: cdp text ${liveTarget} --auto`);
       lines.push(`  ${tabs?.targetPrefixes?.length ? '3' : '4'}. cdp click ${liveTarget} @ref  # or: cdp fill ${liveTarget} <selector> <text>`);
       lines.push(`  ${tabs?.targetPrefixes?.length ? '4' : '5'}. cdp perceive ${liveTarget} --since-action`);
       lines.push(`  ${tabs?.targetPrefixes?.length ? '5' : '6'}. cdp report ${liveTarget}`);

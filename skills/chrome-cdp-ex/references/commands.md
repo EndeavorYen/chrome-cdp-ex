@@ -287,10 +287,14 @@ scripts/cdp.mjs controls <target> -s "#composer" --format json # visible control
 
 Returns a single **enriched accessibility tree** that combines semantic structure with inline visual annotations:
 - **Page header**: title, URL, viewport size, scroll position, console health, interactive element counts
-- **Enriched AX tree**: semantic roles and labels with **inline layout annotations** — height, background color, font size, display mode, and viewport visibility (↑above fold / ↓below fold)
+- **Enriched AX tree**: semantic roles and labels with **inline layout annotations** — height, background color, font size, display mode, and viewport visibility (↑above fold / ↓below fold). Golden-path `-C -d 8` prefers `main` / `[role=main]` / `article` headings and StaticText; skip-links, banner, navigation, and complementary chrome are deprioritized for the depth budget and skip-links do not take `@1` (aligned with #163). Generic wrappers do not consume `-d` budget.
 - **Style anomaly hints**: on table cells, annotates non-default background colors, bold text, and unusual text colors — e.g., `[cell] 70.0%  bg:rgb(255,200,200)  bold`
 - **@ref indices with coordinates**: every interactive element gets `@1`, `@2`... with bounding rect `(x,y w×h)` — enables spatial understanding without screenshots
+- **`-C` visible controls**: a short capped list **after** the article body. `--last` / `--adaptive` apply to this dump. Nav chrome must not outrank the article.
+- **Body truncated**: if `-d` still yields only skip/nav chrome, perceive appends `Body truncated. Next: cdp text <target> --auto`.
 - **Scope/filter flags**: `-s` scopes to a subtree, `-i` shows only interactive elements, `-d N` limits depth — essential for large pages to avoid token bloat
+
+For "what does this page say", run `cdp text <target> --auto`. Golden-path `perceive -C -d 8` remains the first observation command.
 
 Example output:
 ```
@@ -696,13 +700,15 @@ scripts/cdp.mjs upload <target> "#file-input" /path/a.jpg,/path/b.jpg   # multip
 ### Text extraction
 
 ```bash
+scripts/cdp.mjs text <target> --auto           # what does this page say (main/article, strips nav/aside)
 scripts/cdp.mjs text <target>                  # full page text (strips scripts/styles/SVG)
 scripts/cdp.mjs text <target> ".reply"         # scoped to CSS selector — much less noise
 scripts/cdp.mjs text <target> "main, [role=main], #app .main"  # fallback chain
 scripts/cdp.mjs text <target> --root auto "header"             # scope to app root; header falls back to banner/h1/h2
 ```
 
-Returns page content as plain text. **Use the selector form** to extract specific sections (e.g. AI replies, article body) instead of drowning in sidebar/nav noise.
+Returns page content as plain text. **`text --auto` is the "what does this page say" command** — it picks `main` / `[role=main]` / `article` and strips nav/aside/footer. Golden-path `perceive -C -d 8` still comes first for structure and `@ref`s; if perceive prints `Body truncated`, run `text --auto` next.
+**Use the selector form** to extract specific sections (e.g. AI replies, article body) instead of drowning in sidebar/nav noise.
 Use `--root auto` when a React/Vite app has repeated shell text outside the app mount; it scopes extraction to `#root`, `[data-reactroot]`, `main`, then `body`.
 
 ### Table observation, collection, and continuation
