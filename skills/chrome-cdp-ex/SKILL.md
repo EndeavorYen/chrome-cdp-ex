@@ -9,9 +9,11 @@ Your eyes and hands on the user's live Chrome browser or Electron app through th
 
 ## TL;DR: 5-step golden path
 
-1. **Doctor:** `node skills/chrome-cdp-ex/scripts/cdp.mjs doctor` checks Node, install path, daemon state, file limits, CDP reachability, and browser-debugging permission.
-2. **List/open:** `node skills/chrome-cdp-ex/scripts/cdp.mjs list`; if no usable tab exists, use `open <url>` or, with user consent, `spawn-debug-browser edge --port 9222 --url <url>`.
-3. **Perceive:** `node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8` to read structure, text, layout hints, console health, and fresh `@ref` handles.
+Prefer `./bin/chrome-cdp` (re-execs Node 22 when PATH `node` is older), `process.execPath`, or `$HERMES_HOME/node/bin/node` over unqualified `node`. If `node -v` is <22, use the Node 22 path printed by doctor.
+
+1. **Doctor:** `./bin/chrome-cdp doctor` checks Node, install path, daemon state, file limits, CDP reachability, and browser-debugging permission.
+2. **List/open:** `./bin/chrome-cdp list`; if no usable tab exists, use `open <url>` or, with user consent, `spawn-debug-browser edge --port 9222 --url <url>`.
+3. **Perceive:** `./bin/chrome-cdp perceive <target> -C -d 8` to read structure, text, layout hints, console health, and fresh `@ref` handles.
 4. **Act:** `click`, `fill`, `press`, `select`, `scroll`, or `dismiss-modal` using a fresh `@ref` or stable selector.
 5. **Verify/report:** read the action evidence, then use `verify-click`, `perceive <target> --since-action`, or `report <target>` / `report <target> --format json` for handoff.
 
@@ -19,9 +21,9 @@ Your eyes and hands on the user's live Chrome browser or Electron app through th
 
 Take action immediately; do not just read this file.
 
-1. Run `node skills/chrome-cdp-ex/scripts/cdp.mjs list` to discover open tabs.
+1. Run `./bin/chrome-cdp list` to discover open tabs.
 2. Show the user the available tabs.
-3. If the user's request names a page, app, tab, URL, or visual state, match it to a target and run `node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8`.
+3. If the user's request names a page, app, tab, URL, or visual state, match it to a target and run `./bin/chrome-cdp perceive <target> -C -d 8`.
 4. If no specific target is clear, ask which tab to inspect after listing the candidates.
 
 ## Perceive first
@@ -33,24 +35,27 @@ Refresh `@ref` handles after navigation, DOM rewrites, modal changes, or failed 
 ## Prerequisites
 
 - **Existing browser:** open `chrome://inspect/#remote-debugging` (or `edge://inspect`) and enable remote debugging when the browser asks.
-- **No reachable browser:** with user consent, launch an isolated debug profile, e.g. `node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com`.
+- **No reachable browser:** with user consent, launch an isolated debug profile, e.g. `./bin/chrome-cdp spawn-debug-browser edge --port 9222 --url https://example.com`.
 - **Electron:** launch the app with a remote debugging port and set `CDP_PORT=<port>` before running commands.
-- **Runtime:** Node.js 22+ is required because the runtime uses built-in WebSocket and has zero runtime npm dependencies.
+- **Runtime:** Node.js 22 is required because the runtime uses built-in WebSocket and has zero runtime npm dependencies. If `node -v` is <22, use the Node 22 path printed by doctor.
 
 ## Invoking commands
 
-Find `scripts/cdp.mjs` relative to the installed skill directory, then run it with Node:
+Find `scripts/cdp.mjs` relative to the installed skill directory. Prefer `./bin/chrome-cdp`, `process.execPath`, or `$HERMES_HOME/node/bin/node` over unqualified PATH `node`.
 
 ```bash
-# From this repository or a checked-out package
-node skills/chrome-cdp-ex/scripts/cdp.mjs list
-node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
+# From this repository or a checked-out package (wrapper re-execs Node 22 if needed)
+./bin/chrome-cdp list
+./bin/chrome-cdp perceive <target> -C -d 8
+
+# Explicit Node 22 binary (Hermes / fnm / nvm)
+"$HERMES_HOME/node/bin/node" skills/chrome-cdp-ex/scripts/cdp.mjs list
 
 # From an installed skill directory
-node /absolute/path/to/chrome-cdp-ex/scripts/cdp.mjs doctor
+"$HERMES_HOME/node/bin/node" /absolute/path/to/chrome-cdp-ex/scripts/cdp.mjs doctor
 
 # Electron explicit port
-CDP_PORT=9222 node /absolute/path/to/chrome-cdp-ex/scripts/cdp.mjs list
+CDP_PORT=9222 ./bin/chrome-cdp list
 ```
 
 Useful target helpers: `target --url <substring>`, `target --title <text>`, `use <target> --name app`, `forget app`, and `open <url> --reuse-url`. `list` aliases are `tabs` and `ls`; `press` has alias `key`; `viewport` has alias `resize`.
