@@ -32,6 +32,11 @@
 
 ### Agent reliability
 
+* Default `fill --format json` to a compact `chrome-cdp-ex.fill.v1` receipt
+  (`value`, `changed`, `navigation`, `typeahead`) instead of the full action
+  envelope. Pass `--full` / `--unsafe-full` for `chrome-cdp-ex.action.v1`.
+  `perceive --since-action` after a no-navigation typeahead fill summarizes as
+  `textbox value set; N suggestion links` (#162).
 * `perceive -x` no longer empties Mintlify-style `<main>` wrappers. Help documents
   `text --auto` and `-x`; SKILL.md and `recipes.md` add a "Read this page"
   path using `text --auto`, `eval`, and `call` (#161).

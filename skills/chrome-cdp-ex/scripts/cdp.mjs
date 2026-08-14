@@ -1779,11 +1779,13 @@ function parseCompactFormatArgs(args, allowed = ['text', 'json']) {
   const fopts = parseFormatArgs(args, allowed);
   let compact = false;
   let qa = false;
+  let full = false;
   let maxDiffLines = null;
   const next = [];
   for (let i = 0; i < fopts.args.length; i++) {
     const arg = fopts.args[i];
     if (arg === '--compact') compact = true;
+    else if (arg === '--full' || arg === '--unsafe-full') full = true;
     else if (arg === '--qa' || arg === '--summary') {
       qa = true;
       compact = true;
@@ -1793,7 +1795,7 @@ function parseCompactFormatArgs(args, allowed = ['text', 'json']) {
       maxDiffLines = parseNonNegativeInteger(String(arg).slice('--max-diff-lines='.length), '--max-diff-lines');
     } else next.push(arg);
   }
-  return { format: fopts.format, compact, qa, maxDiffLines, args: next };
+  return { format: fopts.format, compact, qa, full, maxDiffLines, args: next };
 }
 
 function formatJson(model) {
@@ -3581,6 +3583,8 @@ async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
 
 const MAX_ACTION_DELTA_ENTRIES = 5;
 const MAX_ACTION_JSON_DOM_DIFF_CHARS = 800;
+const FILL_TYPEAHEAD_LIMIT = 10;
+const FILL_TYPEAHEAD_MAX_CHARS = 80;
 const DEFAULT_REPORT_ACTION_LIMIT = 20;
 const DEFAULT_REPORT_JSON_BYTES_MAX = 64 * 1024;
 const DEFAULT_STALE_ARTIFACT_HOURS = 24;
@@ -4557,12 +4561,124 @@ function normalizeActionOutputOptions(format = 'text') {
       compact: format.compact === true || format.qa === true || format.summary === true,
       qa: format.qa === true || format.summary === true,
       maxDiffLines: format.maxDiffLines == null ? null : Number(format.maxDiffLines),
+      full: format.full === true || format.unsafeFull === true,
     };
   }
-  return { format, compact: false, qa: false, maxDiffLines: null };
+  return { format, compact: false, qa: false, maxDiffLines: null, full: false };
 }
 
-function formatActionResultOutput(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null } = {}) {
+function typeaheadLabelFromAxLine(line) {
+  const trimmed = String(line || '').replace(/^[+-]\s*/, '').trim();
+  const match = trimmed.match(/^\[(option|listitem|link)\]\s+(.+)$/i);
+  if (!match) return null;
+  const name = match[2]
+    .replace(/\s+@[c\w:-]+(?:\s+\([^)]+\))?$/, '')
+    .replace(/\s+=\s+".*"$/, '')
+    .trim();
+  if (!name) return null;
+  return compactActionText(name, FILL_TYPEAHEAD_MAX_CHARS);
+}
+
+function extractTypeaheadLabels(lines = [], { limit = FILL_TYPEAHEAD_LIMIT } = {}) {
+  const seen = new Set();
+  const labels = [];
+  for (const line of lines) {
+    const label = typeaheadLabelFromAxLine(line);
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    labels.push(label);
+    if (labels.length >= limit) break;
+  }
+  return labels;
+}
+
+function countTypeaheadLabels(lines = []) {
+  const seen = new Set();
+  for (const line of lines) {
+    const label = typeaheadLabelFromAxLine(line);
+    if (label) seen.add(label);
+  }
+  return seen.size;
+}
+
+function typeaheadLabelFromNetworkUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = raw.includes('://') ? new URL(raw) : new URL(raw, 'https://typeahead.invalid');
+    const keys = [...parsed.searchParams.keys()];
+    if (keys.some(key => /^(q|query|search|suggest|typeahead|autocomplete)$/i.test(key))) return null;
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    if (parts.length < 2) return null;
+    if (/^(api|search|suggest|autocomplete|query)$/i.test(parts[0])) return null;
+    return compactActionText(parts.slice(0, 2).join('/'), FILL_TYPEAHEAD_MAX_CHARS);
+  } catch {
+    return null;
+  }
+}
+
+function extractFillTypeahead(effects = {}) {
+  const fromDiff = extractTypeaheadLabels(String(effects.domDiff || '').split('\n'));
+  const seen = new Set(fromDiff);
+  const labels = [...fromDiff];
+  const entries = effects.networkDelta?.entries || effects.network || [];
+  for (const entry of entries) {
+    if (labels.length >= FILL_TYPEAHEAD_LIMIT) break;
+    if (String(entry?.method || 'GET').toUpperCase() !== 'GET') continue;
+    const label = typeaheadLabelFromNetworkUrl(entry.url || '');
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    labels.push(label);
+  }
+  return labels;
+}
+
+function fillTypedValue(result = {}) {
+  const target = result.target || {};
+  if (isSensitiveActionTarget(result.action, target)) return REDACTED_VALUE;
+  const args = Array.isArray(target.commandArgs) ? target.commandArgs : [];
+  const text = args[0] === '--react' ? args[2] : args[1];
+  return text == null ? '' : String(text);
+}
+
+function fillNavigationUrl(effects = {}) {
+  const nav = effects.navigation;
+  if (nav == null || nav === false) return null;
+  if (typeof nav === 'string') return compactActionText(nav, 180) || null;
+  if (typeof nav === 'object') {
+    const url = nav.url || nav.href || nav.to || '';
+    return url ? compactActionText(String(url), 180) : null;
+  }
+  return null;
+}
+
+function compactFillReceiptForJson(result = {}) {
+  const typeahead = isSensitiveActionTarget(result.action, result.target || {})
+    ? []
+    : extractFillTypeahead(result.effects || {});
+  const targetId = result.target?.targetId || '';
+  const receipt = {
+    schema: 'chrome-cdp-ex.fill.v1',
+    value: fillTypedValue(result),
+    changed: result.outcome?.changed === true || result.outcome?.status === 'changed',
+    navigation: fillNavigationUrl(result.effects || {}),
+    typeahead,
+  };
+  if (targetId) receipt.targetPrefix = targetPrefixForDisplay(targetId);
+  return receipt;
+}
+
+function shouldUseCompactFillReceipt(result, { compact = false, qa = false, full = false } = {}) {
+  return result?.action === 'fill'
+    && result?.dispatch?.ok !== false
+    && result?.settle?.ok !== false
+    && result?.outcome?.needsAttention !== true
+    && full !== true
+    && compact !== true
+    && qa !== true;
+}
+
+function formatActionResultOutput(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false } = {}) {
   if (qa) {
     const summary = buildQaSummaryModel({
       page: {
@@ -4595,6 +4711,9 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
     return formatQaSummaryText(summary);
   }
   if (format === 'json') {
+    if (shouldUseCompactFillReceipt(result, { compact, qa, full })) {
+      return JSON.stringify(compactFillReceiptForJson(result));
+    }
     const model = compactActionResultForJson(result, { compact });
     return compact ? JSON.stringify(model) : formatJson(model);
   }
@@ -8123,6 +8242,30 @@ function buildPerceiveDiffRecommendation({ mode, changed, baselineAvailable = tr
   };
 }
 
+function perceiveFocusedFromOutput(output) {
+  const lines = String(output || '').split('\n');
+  const match = (lines[1] || '').match(/Focused: (.*)$/);
+  return match ? match[1].trim() : '';
+}
+
+function shouldSummarizeTypeaheadDiff(diff, previousOutput, currentOutput, mode) {
+  if (mode !== 'since-action') return false;
+  const previous = parsePerceiveHeader(previousOutput);
+  const current = parsePerceiveHeader(currentOutput);
+  if (previous.page.url && current.page.url && previous.page.url !== current.page.url) return false;
+  const suggestionCount = countTypeaheadLabels(diff.addedStructural);
+  if (suggestionCount === 0) return false;
+  const focused = perceiveFocusedFromOutput(currentOutput);
+  const focusedTextbox = /textbox|searchbox|combobox/i.test(focused);
+  const hasListbox = [...diff.addedStructural, ...diff.removedStructural]
+    .some(line => /\[listbox\]/i.test(line));
+  return focusedTextbox && hasListbox;
+}
+
+function typeaheadDiffHeadline(suggestionCount) {
+  return `textbox value set; ${suggestionCount} suggestion links`;
+}
+
 function buildPerceiveDiffModel(previousOutput, currentOutput, { mode = 'diff', targetPrefix = '' } = {}) {
   const diff = computePerceiveDiff(previousOutput, currentOutput);
   const target = targetPrefix || '<target>';
@@ -8137,7 +8280,7 @@ function buildPerceiveDiffModel(previousOutput, currentOutput, { mode = 'diff', 
     : [
         `cdp report ${target} --format json`,
       ];
-  return {
+  const model = {
     schema: 'chrome-cdp-ex.perceive-diff.v1',
     mode,
     ...parsePerceiveHeader(currentOutput),
@@ -8157,10 +8300,30 @@ function buildPerceiveDiffModel(previousOutput, currentOutput, { mode = 'diff', 
     recommendation: buildPerceiveDiffRecommendation({ mode, changed, nextSteps }),
     nextSteps,
   };
+  if (shouldSummarizeTypeaheadDiff(diff, previousOutput, currentOutput, mode)) {
+    const suggestionCount = countTypeaheadLabels(diff.addedStructural);
+    const labels = extractTypeaheadLabels(diff.addedStructural);
+    model.summary.kind = 'typeahead';
+    model.summary.headline = typeaheadDiffHeadline(suggestionCount);
+    model.added = labels;
+    model.removed = [];
+    model.removedOmitted = diff.removedStructural.length;
+    model.addedOmitted = Math.max(0, suggestionCount - labels.length);
+  }
+  return model;
 }
 
-function formatPerceiveDiffOutput(previousOutput, currentOutput) {
+function formatPerceiveDiffOutput(previousOutput, currentOutput, { mode = 'diff' } = {}) {
   const diff = computePerceiveDiff(previousOutput, currentOutput);
+  if (shouldSummarizeTypeaheadDiff(diff, previousOutput, currentOutput, mode)) {
+    const suggestionCount = countTypeaheadLabels(diff.addedStructural);
+    const labels = extractTypeaheadLabels(diff.addedStructural);
+    const lines = [typeaheadDiffHeadline(suggestionCount), ...labels.map(label => `+ ${label}`)];
+    if (suggestionCount > labels.length) {
+      lines.push(`  ... and ${suggestionCount - labels.length} more`);
+    }
+    return diff.headerLines.join('\n') + '\n\n' + lines.join('\n');
+  }
   const diffLines = [];
   const removedText = diff.removedTextLines.length;
   const addedText = diff.addedTextLines.length;
@@ -8937,7 +9100,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     if (!diffBaseline) {
       return output + '\n\n(no action baseline available; run `perceive` before a mutating command, or use `perceive --diff` after a normal perceive.)';
     }
-    return formatPerceiveDiffOutput(diffBaseline, output);
+    return formatPerceiveDiffOutput(diffBaseline, output, { mode: 'since-action' });
   }
 
   // Diff mode: compare with previous perceive output.
@@ -17179,6 +17342,7 @@ Usage: cdp <command> [args]
 {{command:wait}}
 {{command:fill}}
                                     --react: native value setter + input/change events
+                                    JSON defaults to chrome-cdp-ex.fill.v1; --full restores action.v1
 {{command:select}}
 {{command:fullshot}}
 {{command:scanshot}}
@@ -17757,10 +17921,11 @@ function targetCommandCliErrorFormat(targetPrefix, cmdArgs = [], originalArgs = 
   return detectCliErrorFormat(targetLooksLikeFlag ? originalArgs : cmdArgs);
 }
 
-function formatArgSuffix(format, { compact = false } = {}) {
+function formatArgSuffix(format, { compact = false, full = false } = {}) {
   return [
     ...(format && format !== 'text' ? ['--format', format] : []),
     ...(compact ? ['--compact'] : []),
+    ...(full ? ['--full'] : []),
   ];
 }
 

@@ -985,6 +985,16 @@ describe('parseFormatArgs', () => {
       '--compact',
     ]);
   });
+
+  it('preserves trailing --full when joining fill text args', () => {
+    expect(normalizeTargetCommandArgs('fill', ['#cmd', 'look', 'merchant', '--format', 'json', '--full'])).toEqual([
+      '#cmd',
+      'look merchant',
+      '--format',
+      'json',
+      '--full',
+    ]);
+  });
 });
 
 describe('summaryModel large-app diagnostics', () => {
@@ -1708,15 +1718,199 @@ describe('ActionResult', () => {
       },
       dispatch: async () => 'Filled #password',
       feedbackPolicy: 'settle-diff',
-      observe: async () => '+++ Added (1):\n+   [status] token=dom-sentinel-abc saved',
+      observe: async () => '+++ Added (2):\n+   [status] token=dom-sentinel-abc saved\n+   [option] saved password pw-sentinel-123',
       format: 'json',
     });
     const parsed = JSON.parse(out);
 
-    expect(parsed.target.commandArgs).toEqual(['#password', '<redacted>']);
+    expect(parsed.schema).toBe('chrome-cdp-ex.fill.v1');
+    expect(parsed.value).toBe('<redacted>');
+    expect(parsed.typeahead).toEqual([]);
     expect(out).not.toContain('pw-sentinel-123');
     expect(out).not.toContain('dom-sentinel-abc');
     expect(out).toContain('<redacted>');
+  });
+
+  it('defaults fill JSON to a compact fill receipt under 1000 bytes (#162)', async () => {
+    const diagnosisBlob = JSON.stringify({
+      schema: 'chrome-cdp-ex.action-diagnosis.v1',
+      status: 'ok',
+      kind: 'ok',
+      reason: 'synthetic diagnosis that must not appear in compact fill JSON',
+      recovery: {
+        schema: 'chrome-cdp-ex.recovery-policy.v1',
+        strategy: 'continue-from-evidence',
+        commands: Array.from({ length: 8 }, (_, i) => ({
+          command: `cdp report ABC12345FULLTARGET --format json --step ${i}`,
+        })),
+      },
+    });
+    const typeaheadDiff = [
+      '+++ Added (48):',
+      '+   [textbox] Search = "MiniMax-H3-Turbo"  @1',
+      '+   [listbox] Suggestions',
+      '+   [link] larryvrh/MiniMax-H3-Turbo-Lora  @2',
+      '+   [link] lightx2v/Minimax-h3-Turbo  @3',
+      ...Array.from({ length: 40 }, (_, i) => `+   [StaticText] reroot noise ${i} ${diagnosisBlob.slice(0, 40)}`),
+    ].join('\n');
+
+    const out = await T.runActionWithFeedback({
+      action: 'fill',
+      target: {
+        targetId: 'ABC12345FULLTARGET',
+        input: '#search',
+        resolvedBy: 'selector',
+        label: 'Search',
+        commandArgs: ['#search', 'MiniMax-H3-Turbo'],
+      },
+      dispatch: async () => 'Filled #search',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => typeaheadDiff,
+      enrichActionResult: (result) => {
+        T.applyActionObservationDelta(result, {
+          console: {
+            count: 4,
+            errors: 0,
+            warnings: 0,
+            entries: Array.from({ length: 4 }, (_, i) => ({
+              level: 'log',
+              text: `search debug ${i} ${diagnosisBlob.slice(0, 24)}`,
+              loc: `app.js:${i}`,
+            })),
+          },
+          exceptions: { count: 0, entries: [] },
+          network: {
+            count: 1,
+            failures: 0,
+            pending: 0,
+            entries: [{
+              method: 'GET',
+              url: 'https://huggingface.co/api/models?search=MiniMax-H3-Turbo',
+              status: 200,
+              duration: 18,
+            }],
+          },
+        });
+        result.effects.diagnosis = JSON.parse(diagnosisBlob);
+      },
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(Buffer.byteLength(out)).toBeLessThan(1000);
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.fill.v1',
+      value: 'MiniMax-H3-Turbo',
+      changed: true,
+      navigation: null,
+      typeahead: [
+        'larryvrh/MiniMax-H3-Turbo-Lora',
+        'lightx2v/Minimax-h3-Turbo',
+      ],
+      targetPrefix: 'ABC12345',
+    });
+    expect(parsed).not.toHaveProperty('diagnosis');
+    expect(parsed).not.toHaveProperty('receipt');
+    expect(parsed).not.toHaveProperty('verdict');
+    expect(parsed).not.toHaveProperty('recommendation');
+    expect(out).not.toContain('recovery-policy');
+    expect(out).not.toContain('reroot noise');
+  });
+
+  it('extracts typeahead labels from fill network GET search and option nodes (#162)', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'fill',
+      target: {
+        targetId: 'ABC12345',
+        input: '#q',
+        resolvedBy: 'selector',
+        label: 'q',
+        commandArgs: ['#q', 'MiniMax'],
+      },
+      dispatch: async () => 'Filled #q',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => [
+        '+++ Added (3):',
+        '+   [listbox] Results',
+        '+   [option] org/model-one',
+        '+   [listitem] org/model-two',
+      ].join('\n'),
+      enrichActionResult: (result) => {
+        T.applyActionObservationDelta(result, {
+          console: { count: 0, errors: 0, warnings: 0, entries: [] },
+          exceptions: { count: 0, entries: [] },
+          network: {
+            count: 2,
+            failures: 0,
+            pending: 0,
+            entries: [
+              { method: 'GET', url: 'https://huggingface.co/api/models?search=MiniMax', status: 200, duration: 12 },
+              { method: 'GET', url: 'https://huggingface.co/org/model-three', status: 200, duration: 9 },
+            ],
+          },
+        });
+      },
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.fill.v1');
+    expect(parsed.typeahead).toEqual([
+      'org/model-one',
+      'org/model-two',
+      'org/model-three',
+    ]);
+  });
+
+  it('keeps the full action envelope for fill JSON --full (#162)', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'fill',
+      target: {
+        targetId: 'ABC12345',
+        input: '#search',
+        resolvedBy: 'selector',
+        label: 'Search',
+        commandArgs: ['#search', 'MiniMax-H3-Turbo'],
+      },
+      dispatch: async () => 'Filled #search',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => '+++ Added (1):\n+   [link] org/model  @2',
+      format: { format: 'json', full: true },
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.action.v1');
+    expect(parsed.action).toBe('fill');
+    expect(parsed.dispatch?.ok).toBe(true);
+    expect(parsed.receipt?.schema).toBe('chrome-cdp-ex.action-receipt.v1');
+    expect(parsed.verdict).toBeTruthy();
+    expect(parsed.nextSteps?.length).toBeGreaterThan(0);
+  });
+
+  it('keeps the action envelope when fill JSON observation times out (#162)', async () => {
+    const err = new Error('Timeout: post-action perceive');
+    err.name = 'TimeoutError';
+    const out = await T.runActionWithFeedback({
+      action: 'fill',
+      target: {
+        targetId: 'ABC12345',
+        input: '#search',
+        resolvedBy: 'selector',
+        label: 'Search',
+        commandArgs: ['#search', 'query'],
+      },
+      dispatch: async () => 'Filled #search',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => { throw err; },
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.action.v1');
+    expect(parsed.outcome.status).toBe('timeout');
+    expect(parsed.settle.ok).toBe(false);
+    expect(parsed.dispatch.ok).toBe(true);
+    expect(out).toMatch(/perceive --since-action/);
   });
 
   it('compacts long DOM diff evidence in JSON action handoffs', async () => {
@@ -3851,6 +4045,81 @@ describe('Perceive diff baseline', () => {
     });
     expect(model.textAddedSamples).toEqual(['  [StaticText] hmr panel ready']);
     expect(model.nextSteps).toEqual(['cdp report ABC12345 --format json']);
+  });
+
+  it('summarizes typeahead reroots in since-action diffs instead of listing every node (#162)', () => {
+    const previous = [
+      'Page: Models — https://huggingface.co/models',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: [textbox] Search  @1',
+      'Interactive: 1 textbox',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Models',
+      '  [textbox] Search = ""  @1',
+      '  [heading] Trending',
+      ...Array.from({ length: 80 }, (_, i) => `  [link] old-model-${i}  @${i + 2}`),
+    ].join('\n');
+    const current = [
+      'Page: Models — https://huggingface.co/models',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: [textbox] Search  @1',
+      'Interactive: 1 textbox, 1 listbox',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Models',
+      '  [textbox] Search = "MiniMax-H3-Turbo"  @1',
+      '  [listbox] Suggestions',
+      '    [link] larryvrh/MiniMax-H3-Turbo-Lora  @2',
+      '    [link] lightx2v/Minimax-h3-Turbo  @3',
+      ...Array.from({ length: 120 }, (_, i) => `    [link] filler-suggestion-${i}  @${i + 4}`),
+    ].join('\n');
+
+    const model = T.buildPerceiveDiffModel(previous, current, {
+      mode: 'since-action',
+      targetPrefix: 'ABC12345',
+    });
+    const text = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+
+    expect(model.summary.headline).toBe('textbox value set; 122 suggestion links');
+    expect(model.summary.kind).toBe('typeahead');
+    expect(model.added[0]).toBe('larryvrh/MiniMax-H3-Turbo-Lora');
+    expect(model.added[1]).toBe('lightx2v/Minimax-h3-Turbo');
+    expect(model.added.length).toBeLessThanOrEqual(10);
+    expect(JSON.stringify(model)).not.toContain('filler-suggestion-40');
+    expect(text).toContain('textbox value set; 122 suggestion links');
+    expect(text).toContain('larryvrh/MiniMax-H3-Turbo-Lora');
+    expect(text).not.toContain('filler-suggestion-40');
+  });
+
+  it('does not summarize a huge same-URL click diff as typeahead (#162)', () => {
+    const previous = [
+      'Page: Models — https://huggingface.co/models',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 40 link',
+      'Console: clean',
+      'Coords: top-level viewport CSS px',
+      '',
+      '[WebArea] Models',
+      ...Array.from({ length: 40 }, (_, i) => `  [link] old-model-${i}  @${i + 1}`),
+    ].join('\n');
+    const current = [
+      'Page: Models — https://huggingface.co/models',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 40 link',
+      'Console: clean',
+      'Coords: top-level viewport CSS px',
+      '',
+      '[WebArea] Models',
+      ...Array.from({ length: 40 }, (_, i) => `  [link] new-model-${i}  @${i + 1}`),
+    ].join('\n');
+
+    const model = T.buildPerceiveDiffModel(previous, current, {
+      mode: 'since-action',
+      targetPrefix: 'ABC12345',
+    });
+    expect(model.summary?.kind).not.toBe('typeahead');
+    expect(JSON.stringify(model)).toContain('new-model-0');
   });
 
   it('keeps high-signal StaticText additions in action diffs', () => {
