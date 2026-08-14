@@ -1,0 +1,4 @@
+{
+  "name": "chrome-cdp-ex",
+  "install": "npm ci"
+}
