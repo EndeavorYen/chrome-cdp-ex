@@ -1806,3 +1806,50 @@ describe('v2.11.0 review regressions', () => {
     }
   });
 });
+
+describe('issue #158 unknown perceive flags', () => {
+  it('#158 rejects unknown perceive flags with compact-flag help instead of dumping the page', async () => {
+    expect(() => T.parsePerceiveArgs(['--cards'])).toThrow(/unknown option --cards/);
+    expect(() => T.parsePerceiveArgs(['--not-a-real-flag'])).toThrow(/unknown option --not-a-real-flag/);
+
+    let message = '';
+    try {
+      T.parsePerceiveArgs(['--cards']);
+    } catch (error) {
+      message = error.message;
+    }
+    expect(message).toContain('unknown option --cards');
+    expect(message).toContain('perceive compact flags:');
+    expect(message).toContain('--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel');
+
+    const cli = T.formatCliError(new Error(message), { cmd: 'perceive', targetPrefix: 'F8741D08' });
+    expect(cli).toContain('unknown option --cards');
+    expect(cli).toContain('perceive compact flags:');
+    expect(cli).not.toMatch(/Page:/);
+
+    const handler = T.createPerceiveCommandHandler({
+      cdp: { send() { throw new Error('unexpected CDP'); } },
+      sessionId: 'session-158',
+      targetId: 'F8741D08FULLTARGET',
+      session: { lastAction: null },
+      consoleBuf: { all: () => [] },
+      exceptionBuf: { all: () => [] },
+      netReqBuf: { all: () => [] },
+      refMap: new Map(),
+      lastPerceiveStore: { output: null },
+      refState: { generation: 0 },
+      ops: {
+        readPerceiveTargetMetadata: async () => {
+          throw new Error('should not sample readiness for unknown flags');
+        },
+        perceiveText: async () => 'FULL DUMP SHOULD NOT RUN',
+      },
+    });
+    await expect(handler({ args: ['--cards'] })).rejects.toThrow(/unknown option --cards/);
+    await expect(handler({ args: ['--qa', '--not-a-real-flag'] })).rejects.toThrow(/unknown option --not-a-real-flag/);
+
+    const qa = T.parseQaModeArgs(['--qa', '--summary', '--adaptive']);
+    expect(qa).toMatchObject({ qa: true, summary: true });
+    expect(T.parsePerceiveArgs(qa.args).adaptive).toBe(true);
+  });
+});

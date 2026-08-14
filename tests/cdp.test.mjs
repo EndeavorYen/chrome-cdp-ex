@@ -4087,6 +4087,34 @@ describe('parsePerceiveArgs', () => {
     expect(opts.selector).toBe('#main');
     expect(opts.exclude).toBe('.sidebar');
   });
+
+  it('rejects unknown flags instead of ignoring them', () => {
+    expect(() => parsePerceiveArgs(['--not-a-real-flag'])).toThrow(/unknown option --not-a-real-flag/);
+    expect(() => parsePerceiveArgs(['--cards'])).toThrow(/unknown option --cards/);
+    expect(() => parsePerceiveArgs(['--diff', '--cards', '-i'])).toThrow(/unknown option --cards/);
+  });
+
+  it('skips leftover target-looking tokens that do not start with -', () => {
+    expect(parsePerceiveArgs(['F8741D08', '--adaptive']).adaptive).toBe(true);
+    expect(parsePerceiveArgs(['F8741D08'])).toMatchObject({
+      diff: false,
+      adaptive: false,
+      last: null,
+    });
+  });
+
+  it('rejects missing values for flags that require arguments', () => {
+    expect(() => parsePerceiveArgs(['--selector'])).toThrow(/--selector requires/);
+    expect(() => parsePerceiveArgs(['-s'])).toThrow(/-s requires/);
+    expect(() => parsePerceiveArgs(['-s', '--diff'])).toThrow(/-s requires/);
+    expect(() => parsePerceiveArgs(['--exclude'])).toThrow(/--exclude requires/);
+    expect(() => parsePerceiveArgs(['-x'])).toThrow(/-x requires/);
+    expect(() => parsePerceiveArgs(['--depth'])).toThrow(/--depth requires/);
+    expect(() => parsePerceiveArgs(['-d'])).toThrow(/-d requires/);
+    expect(() => parsePerceiveArgs(['--last'])).toThrow(/--last requires/);
+    expect(() => parsePerceiveArgs(['--frame'])).toThrow(/--frame requires/);
+    expect(() => parsePerceiveArgs(['-F'])).toThrow(/-F requires/);
+  });
 });
 
 describe('perceiveStr selector scope', () => {

@@ -12,6 +12,8 @@
 
 ### Agent reliability
 
+* Reject unknown `perceive` flags with compact-flag help and a non-zero exit
+  instead of silently dumping the full page (#158).
 * Preserve ambiguous completion when a side-effect-capable daemon request loses
   its response. CLI remains non-zero and MCP remains `isError: true`, while the
   error now reports `completion: "unknown"`, `sideEffectMayHaveOccurred: true`,
