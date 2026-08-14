@@ -2642,6 +2642,10 @@ describe('issue #157 Node 22 discovery', () => {
 
 describe('issue #163 doctor next-probe and skip-link @refs', () => {
   function axNode(id, role, name, opts = {}) {
+    const properties = [
+      ...(opts.url ? [{ name: 'url', value: { type: 'string', value: opts.url } }] : []),
+      ...(opts.properties || []),
+    ];
     return {
       nodeId: id,
       role: { value: role },
@@ -2649,7 +2653,7 @@ describe('issue #163 doctor next-probe and skip-link @refs', () => {
       ...(opts.parentId ? { parentId: opts.parentId } : {}),
       ...(opts.childIds ? { childIds: opts.childIds } : {}),
       ...(opts.backendDOMNodeId ? { backendDOMNodeId: opts.backendDOMNodeId } : {}),
-      ...(opts.url ? { properties: [{ name: 'url', value: { type: 'string', value: opts.url } }] } : {}),
+      ...(properties.length ? { properties } : {}),
     };
   }
 
@@ -2721,10 +2725,16 @@ describe('issue #163 doctor next-probe and skip-link @refs', () => {
     expect(text).toMatch(/list is the source of truth for which tab/i);
     expect(text).not.toMatch(/Proven \/ next probe: cdp perceive 6669325B/);
 
-    const perceiveStep = model.nextSteps.find(step => /\bperceive\b/.test(step));
+    const perceiveStep = model.nextSteps.find(step => /\bperceive\b/.test(step) && !/--since-action/.test(step));
     expect(perceiveStep).toBeTruthy();
+    expect(perceiveStep).toContain('<target-from-list>');
     expect(perceiveStep).not.toContain('6669325B');
+    expect(perceiveStep).not.toContain('F8741D08');
+    expect(perceiveStep).not.toContain('0625E82A');
+    expect(model.recommendation.after).toContain('<target-from-list>');
+    expect(model.recommendation.after).not.toMatch(/click (6669325B|F8741D08|0625E82A)/);
     expect(model.recommendedTargetPrefix).not.toBe('6669325B');
+    expect(text).toMatch(/sample after list — not a next-probe/);
     expect(T.rankPageTargets(checks.find(check => check.label === 'Tabs').pages)[0].url)
       .not.toMatch(/\/LICENSE(?:$|\.)/i);
   });
@@ -2797,5 +2807,56 @@ describe('issue #163 doctor next-probe and skip-link @refs', () => {
     expect(skipLine).not.toMatch(/@[123]\b/);
     expect(kbdLine).not.toMatch(/@[123]\b/);
     expect(output).toMatch(/\[article\].*@\d+/);
+  });
+
+  it('ranks zh-TW 跳至 skip buttons last and gives the tweet @1', () => {
+    const nodes = [
+      axNode('root', 'WebArea', 'X'),
+      axNode('skipHome', 'button', '', {
+        parentId: 'root',
+        backendDOMNodeId: 11,
+        properties: [{ name: 'aria-label', value: { type: 'string', value: '跳至首頁時間軸' } }],
+      }),
+      axNode('skipTrend', 'button', '跳至流行趨勢', { parentId: 'root', backendDOMNodeId: 12 }),
+      axNode('back', 'button', '返回', { parentId: 'root', backendDOMNodeId: 13 }),
+      axNode('nav', 'navigation', 'Primary', { parentId: 'root' }),
+      axNode('home', 'link', '首頁', { parentId: 'nav', backendDOMNodeId: 21 }),
+      axNode('tweet', 'article', 'Latest tweet from SY239434', { parentId: 'root', backendDOMNodeId: 99 }),
+    ];
+    nodes[0].childIds = ['skipHome', 'skipTrend', 'back', 'nav', 'tweet'];
+    nodes[4].childIds = ['home'];
+
+    expect(T.isSkipLinkAxNode(nodes[1])).toBe(true);
+    expect(T.isSkipLinkAxNode(nodes[2])).toBe(true);
+    expect(T.isSkipLinkName('跳至首頁時間軸')).toBe(true);
+    expect(T.isSkipLinkName('Skip to main content')).toBe(true);
+
+    const refMap = new Map();
+    const { treeLines } = T.buildPerceiveTree(nodes, { layoutMap: {}, styleHints: {} }, refMap, {
+      maxDepth: 8,
+      cursorInteractive: true,
+    });
+    const articleLine = treeLines.find(line => /Latest tweet from SY239434/.test(line));
+    const skipHome = treeLines.find(line => /跳至首頁時間軸/.test(line));
+    const skipTrend = treeLines.find(line => /跳至流行趨勢/.test(line));
+    const back = treeLines.find(line => /\[button\] 返回/.test(line));
+
+    expect(articleLine).toMatch(/@1\b/);
+    expect(refMap.get(1)).toBe(99);
+    expect(skipHome).toBeDefined();
+    expect(skipHome).not.toMatch(/@[123]\b/);
+    expect(skipTrend).not.toMatch(/@[123]\b/);
+    expect(back).not.toMatch(/@1\b/);
+  });
+
+  it('ranks visible-control aria-label 跳至 / Skip to last', () => {
+    const ranked = T.rankPerceiveCursorItems([
+      { ariaLabel: '跳至首頁時間軸', selector: 'button[aria-label="跳至首頁時間軸"]' },
+      { label: 'Latest tweet', text: 'Latest tweet from SY239434' },
+      { ariaLabel: 'Skip to main content', text: '' },
+    ]);
+    expect(ranked[0].label).toBe('Latest tweet');
+    expect(ranked.at(-2).ariaLabel).toMatch(/跳至/);
+    expect(ranked.at(-1).ariaLabel).toMatch(/Skip to/i);
   });
 });

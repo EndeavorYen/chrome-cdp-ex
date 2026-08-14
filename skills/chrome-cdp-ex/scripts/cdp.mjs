@@ -2476,12 +2476,12 @@ function formatPageListOutput(pages, browserInfo = null, { format = 'text', alia
 
 function shouldShowAxNode(node, compact = false, parentNode = null) {
   const role = node.role?.value || '';
-  const name = node.name?.value ?? '';
+  const name = axNodeAccessibleName(node);
   const value = node.value?.value;
   if (compact && role === 'InlineTextBox') return false;
   // In compact mode, filter StaticText that duplicates parent's name
   if (compact && role === 'StaticText' && parentNode) {
-    const parentName = parentNode.name?.value ?? '';
+    const parentName = axNodeAccessibleName(parentNode);
     if (parentName && parentName.includes(name)) return false;
   }
   return role !== 'none' && role !== 'generic' && !(name === '' && (value === '' || value == null));
@@ -2489,7 +2489,7 @@ function shouldShowAxNode(node, compact = false, parentNode = null) {
 
 function formatAxNode(node, depth) {
   const role = node.role?.value || '';
-  const name = node.name?.value ?? '';
+  const name = axNodeAccessibleName(node);
   const value = node.value?.value;
   const indent = '  '.repeat(Math.min(depth, 10));
   let line = `${indent}[${role}]`;
@@ -7309,7 +7309,7 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
       invalidatedAt: Date.now(),
       invalidationReason: 'daemon-start',
     },
-    lastPerceive: { output: null, model: null },
+    lastPerceive: { output: null, model: null, snapshotOpts: null },
     lastAction: null,
     buffers: {},
     pendingRequests: new Map(),
@@ -7358,7 +7358,8 @@ const INTERACTIVE_ROLES = new Set([
 
 // Content landmarks that should take early @refs (tweets, feed cards, etc.)
 const CONTENT_REF_ROLES = new Set(['article', 'feed', 'listitem', 'status']);
-const SKIP_LINK_NAME_RE = /skip|keyboard|鍵盤|快速鍵/i;
+const SKIP_LINK_NAME_RE = /skip\s+to\b|\bskip\b|keyboard|鍵盤|快速鍵|跳至/i;
+const DOCTOR_LIST_TARGET_PLACEHOLDER = '<target-from-list>';
 
 function axPropertyValue(node, name) {
   const want = String(name || '').toLowerCase();
@@ -7375,13 +7376,31 @@ function axNodeUrl(node) {
   return axPropertyValue(node, 'url');
 }
 
+function axNodeAccessibleName(node) {
+  const name = String(node?.name?.value ?? '');
+  if (name) return name;
+  return axPropertyValue(node, 'name')
+    || axPropertyValue(node, 'aria-label')
+    || axPropertyValue(node, 'description')
+    || '';
+}
+
+function isSkipLinkName(name) {
+  return SKIP_LINK_NAME_RE.test(String(name || ''));
+}
+
 function isSkipLinkAxNode(node) {
   const role = String(node?.role?.value || '');
-  const name = String(node?.name?.value ?? '');
+  const name = axNodeAccessibleName(node);
+  const haystack = [
+    name,
+    axPropertyValue(node, 'aria-label'),
+    axPropertyValue(node, 'description'),
+  ].filter(Boolean).join('\n');
   const url = axNodeUrl(node);
   const fragmentOnly = url === '#' || url.startsWith('#');
-  if (SKIP_LINK_NAME_RE.test(name)) return true;
-  if (role === 'link' && /^\s*skip\s+to\b/i.test(name)) return true;
+  if (isSkipLinkName(haystack)) return true;
+  if ((role === 'link' || role === 'button') && /^\s*(skip\s+to|跳至)/i.test(name)) return true;
   if (role === 'link' && fragmentOnly) return true;
   return false;
 }
@@ -8048,6 +8067,44 @@ function unknownPerceiveOption(token) {
   throw new Error(`unknown option ${token}\nperceive compact flags: ${PERCEIVE_COMPACT_FLAGS}`);
 }
 
+const PERCEIVE_SNAPSHOT_FLAGS = new Set([
+  '-i', '--interactive', '-C', '--cursor-interactive', '-d', '--depth',
+  '-s', '--selector', '-x', '--exclude', '--keep-typeahead', '--last',
+  '--adaptive', '--cards', '--role', '-F', '--frame',
+]);
+
+function perceiveArgsIncludeSnapshotShape(args = []) {
+  return args.some(token => PERCEIVE_SNAPSHOT_FLAGS.has(String(token)));
+}
+
+function perceiveSnapshotOpts(opts = {}) {
+  return {
+    interactive: Boolean(opts.interactive),
+    maxDepth: opts.maxDepth === undefined ? Infinity : opts.maxDepth,
+    cursorInteractive: Boolean(opts.cursorInteractive),
+    selector: opts.selector || null,
+    exclude: opts.exclude || null,
+    keepTypeahead: Boolean(opts.keepTypeahead),
+    last: opts.last ?? null,
+    adaptive: Boolean(opts.adaptive),
+    cards: Boolean(opts.cards),
+    frameRef: opts.frameRef || null,
+  };
+}
+
+function resolveSinceActionPerceiveOpts(popts = {}, lastAction = null, rawArgs = []) {
+  if (!popts.sinceAction) return popts;
+  const snapshot = lastAction?.baselineOpts;
+  const userShaped = perceiveArgsIncludeSnapshotShape(rawArgs);
+  return {
+    ...popts,
+    ...(userShaped || !snapshot ? {} : snapshot),
+    sinceAction: true,
+    keepTypeahead: true,
+    diffBaseline: popts.diffBaseline ?? lastAction?.baselineOutput ?? null,
+  };
+}
+
 function parsePerceiveArgs(args) {
   const opts = {
     diff: false, selector: null, exclude: null,
@@ -8132,10 +8189,6 @@ const PERCEIVE_CHROME_LINE_CAP = 12;
 const PERCEIVE_CONTENT_LANDMARK_ROLES = new Set(['main', 'article']);
 const PERCEIVE_CHROME_LANDMARK_ROLES = new Set(['navigation', 'banner', 'complementary']);
 
-function isSkipLinkName(name) {
-  return SKIP_LINK_NAME_RE.test(String(name || ''));
-}
-
 function countsTowardPerceiveDepth(node) {
   const role = node.role?.value || '';
   return role !== 'none' && role !== 'generic' && role !== 'InlineTextBox';
@@ -8161,11 +8214,24 @@ function perceiveCursorSurfaceLimit(opts = {}) {
   return defaultCap;
 }
 
+function perceiveCursorItemSkipHaystack(item, nameOf) {
+  const named = typeof nameOf === 'function' ? nameOf(item) : '';
+  return [
+    named,
+    item?.label,
+    item?.ariaLabel,
+    item?.text,
+    item?.title,
+    item?.sel,
+    item?.selector,
+  ].filter(Boolean).join('\n');
+}
+
 function rankPerceiveCursorItems(items, nameOf) {
   const skip = [];
   const rest = [];
   for (const item of items || []) {
-    (isSkipLinkName(nameOf(item)) ? skip : rest).push(item);
+    (isSkipLinkName(perceiveCursorItemSkipHaystack(item, nameOf)) ? skip : rest).push(item);
   }
   return rest.concat(skip);
 }
@@ -8687,18 +8753,34 @@ function perceiveFocusedFromOutput(output) {
   return match ? match[1].trim() : '';
 }
 
+function perceiveTextboxValueFromOutput(output) {
+  for (const line of String(output || '').split('\n')) {
+    const match = line.match(/\[(?:textbox|searchbox|combobox)\][^=\n]*=\s*"([^"]*)"/i);
+    if (match) return match[1];
+  }
+  return null;
+}
+
 function shouldSummarizeTypeaheadDiff(diff, previousOutput, currentOutput, mode) {
   if (mode !== 'since-action') return false;
   const previous = parsePerceiveHeader(previousOutput);
   const current = parsePerceiveHeader(currentOutput);
   if (previous.page.url && current.page.url && previous.page.url !== current.page.url) return false;
-  const suggestionCount = countTypeaheadLabels(diff.addedStructural);
-  if (suggestionCount === 0) return false;
   const focused = perceiveFocusedFromOutput(currentOutput);
   const focusedTextbox = /textbox|searchbox|combobox/i.test(focused);
+  if (!focusedTextbox) return false;
+  const suggestionCount = countTypeaheadLabels(diff.addedStructural);
   const hasListbox = [...diff.addedStructural, ...diff.removedStructural]
     .some(line => /\[listbox\]/i.test(line));
-  return focusedTextbox && hasListbox;
+  const previousValue = perceiveTextboxValueFromOutput(previousOutput);
+  const currentValue = perceiveTextboxValueFromOutput(currentOutput);
+  const valueChanged = currentValue != null && previousValue !== currentValue;
+  const structuralChurn = diff.removedStructural.length + diff.addedStructural.length;
+  if (suggestionCount > 0 && (hasListbox || valueChanged || suggestionCount >= 2)) return true;
+  if (valueChanged && hasListbox) return true;
+  // perceive -i baseline vs a later snapshot can reroot; still print the one-liner.
+  if (valueChanged && structuralChurn >= 40) return true;
+  return false;
 }
 
 function typeaheadDiffHeadline(suggestionCount) {
@@ -8843,8 +8925,27 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   refMap.clear();
   let refCounter = 0;
   const refNodeIds = [];
+  const pendingContentRefs = [];
+  const pendingRestRefs = [];
   const pendingSkipRefs = [];
   const pendingChromeRefs = [];
+
+  function refKind(node, skipLink, inChrome) {
+    if (skipLink) return 'skip';
+    if (inChrome) return 'chrome';
+    const role = node.role?.value || '';
+    if (CONTENT_REF_ROLES.has(role)) return 'content';
+    return 'rest';
+  }
+
+  function queueRef(node, lineIndex, kind) {
+    if (!node?.backendDOMNodeId) return;
+    const entry = { lineIndex, backendDOMNodeId: node.backendDOMNodeId };
+    if (kind === 'skip') pendingSkipRefs.push(entry);
+    else if (kind === 'chrome') pendingChromeRefs.push(entry);
+    else if (kind === 'content') pendingContentRefs.push(entry);
+    else pendingRestRefs.push(entry);
+  }
 
   const treeLines = [];
   const contentBodyLines = new Set();
@@ -8899,9 +9000,8 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     const overContent = inContent && contentDepth > maxDepth;
     const overGlobal = !inContent && depth > maxDepth;
     if (overChrome || overContent || overGlobal) {
-      if ((INTERACTIVE_ROLES.has(role) || CONTENT_REF_ROLES.has(role)) && node.backendDOMNodeId && !skipLink) {
-        if (inChrome) pendingChromeRefs.push({ lineIndex: -1, backendDOMNodeId: node.backendDOMNodeId });
-        else assignInteractiveRef(node);
+      if ((INTERACTIVE_ROLES.has(role) || CONTENT_REF_ROLES.has(role)) && node.backendDOMNodeId) {
+        queueRef(node, -1, refKind(node, skipLink, inChrome));
       }
       for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
         visit(child, childDepth, node, tableAncestorId, childRegion(region, counts));
@@ -8970,17 +9070,10 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
       } else {
         let line = formatAxNode(node, depth);
 
-        // Assign @ref to interactive elements. Skip-links are deferred so they
-        // do not consume @1 when the article has a real control (#159 / #163).
+        // Assign @ref after the walk: content landmarks first, then other
+        // controls, then chrome, then skip-links so 跳至 / Skip to never take @1.
         if ((isInteractive || CONTENT_REF_ROLES.has(role)) && node.backendDOMNodeId) {
-          if (skipLink) {
-            pendingSkipRefs.push({ lineIndex: treeLines.length, backendDOMNodeId: node.backendDOMNodeId });
-          } else if (inChrome) {
-            pendingChromeRefs.push({ lineIndex: treeLines.length, backendDOMNodeId: node.backendDOMNodeId });
-          } else {
-            const ref = assignInteractiveRef(node);
-            if (ref != null) line += `  @${ref}`;
-          }
+          queueRef(node, treeLines.length, refKind(node, skipLink, inChrome));
         }
 
         // Enrich landmark/structural nodes with layout annotations
@@ -9028,12 +9121,10 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   for (const root of roots) visit(root, 0);
   for (const node of nodes) visit(node, 0);
 
-  for (const pending of [...pendingChromeRefs, ...pendingSkipRefs]) {
-    refCounter++;
-    refMap.set(refCounter, pending.backendDOMNodeId);
-    refNodeIds.push({ ref: refCounter, backendDOMNodeId: pending.backendDOMNodeId });
-    if (pending.lineIndex >= 0 && treeLines[pending.lineIndex] != null) {
-      treeLines[pending.lineIndex] += `  @${refCounter}`;
+  for (const pending of [...pendingContentRefs, ...pendingRestRefs, ...pendingChromeRefs, ...pendingSkipRefs]) {
+    const ref = assignInteractiveRef({ backendDOMNodeId: pending.backendDOMNodeId });
+    if (ref != null && pending.lineIndex >= 0 && treeLines[pending.lineIndex] != null) {
+      treeLines[pending.lineIndex] += `  @${ref}`;
     }
   }
 
@@ -9094,7 +9185,8 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
 
   const hasContentBody = outLines.some(ln => contentBodyLines.has(ln));
   const emittedChromeOrSkip = outLines.some(ln =>
-    /\[(navigation|banner|complementary)\]/.test(ln) || /\[(link|button)\]\s+Skip\b/i.test(ln)
+    /\[(navigation|banner|complementary)\]/.test(ln)
+    || /\[(link|button)\].*(Skip\s+to|跳至)/i.test(ln)
   );
   if (!hasContentBody && Number.isFinite(maxDepth) && emittedChromeOrSkip) {
     const target = opts.targetPrefix || '<target>';
@@ -9452,6 +9544,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     const output = opts.format === 'json' ? formatCardsJson(model) : formatCardsText(model);
     lastPerceiveStore.output = output;
     lastPerceiveStore.cards = model;
+    lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts(opts);
     if (frame) rememberFramePerceiveOutput(refState, frame.ref, output);
     if (refState && typeof refState === 'object') {
       refState.generation = (refState.generation || 0) + 1;
@@ -9595,6 +9688,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
 
   const markPerceived = () => {
     lastPerceiveStore.output = output;
+    lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts(opts);
     if (frame) rememberFramePerceiveOutput(refState, frame.ref, output);
     // Mark refs as freshly assigned (clears 'navigation'/'daemon-start' state).
     if (refState && typeof refState === 'object') {
@@ -14881,9 +14975,11 @@ function doctorProbeFromTargets({ tabs = {}, daemons = {}, permission = {}, pref
   const tabCount = doctorTabCount(tabs, daemons, permission);
   const targetPrefix = doctorRankedTargetPrefix(tabs, daemons, permission);
   const multi = tabCount > 1;
+  const exampleTarget = multi ? DOCTOR_LIST_TARGET_PLACEHOLDER : (targetPrefix || '<target>');
   return {
     tabCount,
     targetPrefix,
+    exampleTarget,
     multi,
     provenCommand: multi
       ? `${prefix} list`
@@ -14937,7 +15033,7 @@ function checkBrowserPermission({ daemons = null, tabs = null, cdp = null, envir
         : `Run: ${probe.multi ? 'cdp list' : perceive}; if Chrome asks "Allow debugging?", click Allow`,
       severity: 'advisory',
       provenCommand: cdpReachable ? next : null,
-      nextProbe: perceive,
+      nextProbe: probe.multi ? 'cdp list' : perceive,
       probeNote: probe.probeNote,
       targetPrefixes: tabPrefixes,
     };
@@ -15075,7 +15171,7 @@ function doctorWizardModel(checks) {
   const tabs = checks.find(c => c.label === 'Tabs');
   const permission = checks.find(c => c.label === 'Permission');
   const probe = doctorProbeFromChecks(checks);
-  const target = probe.targetPrefix || '<target>';
+  const target = probe.exampleTarget || probe.targetPrefix || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
   const prefix = doctorCliPrefix(node);
 
@@ -15140,7 +15236,7 @@ function doctorRecommendationModel(checks) {
   const tabs = checks.find(c => c.label === 'Tabs');
   const permission = checks.find(c => c.label === 'Permission');
   const probe = doctorProbeFromChecks(checks);
-  const target = probe.targetPrefix || '<target>';
+  const target = probe.exampleTarget || probe.targetPrefix || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
   const prefix = doctorCliPrefix(node);
   const base = {
@@ -15247,7 +15343,7 @@ function doctorRecommendationModel(checks) {
       return {
         ...base,
         stage: 'perceive',
-        run: `${prefix} perceive ${target} -C -d 8`,
+        run: probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`,
         ask: null,
         after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
         requiresUserAction: false,
@@ -15257,7 +15353,7 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-permission',
-      run: `${prefix} perceive ${target} -C -d 8`,
+      run: probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`,
       ask: 'Click Allow if Chrome asks.',
       after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
       requiresUserAction: true,
@@ -15297,7 +15393,7 @@ function doctorNextSteps(checks) {
   const fd = checks.find(c => c.label === 'FD limit');
   const tabs = checks.find(c => c.label === 'Tabs');
   const probe = doctorProbeFromChecks(checks);
-  const liveTarget = probe.targetPrefix || '<target>';
+  const liveTarget = probe.exampleTarget || probe.targetPrefix || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
   const prefix = doctorCliPrefix(node);
   const lines = ['', 'Next steps:'];
@@ -15344,6 +15440,7 @@ function doctorNextSteps(checks) {
       }
       if (!tabs?.targetPrefixes?.length) lines.push(`  2. If list is empty: ${prefix} open https://example.com`);
       lines.push(`  ${tabs?.targetPrefixes?.length ? '2' : '3'}. ${prefix} perceive ${liveTarget} -C -d 8`);
+      if (probe.multi) lines.push('     (sample after list — not a next-probe)');
       lines.push(`  Note: for "what does this page say", run: ${prefix} text ${liveTarget} --auto`);
       lines.push(`  ${tabs?.targetPrefixes?.length ? '3' : '4'}. ${prefix} click ${liveTarget} @ref  # or: ${prefix} fill ${liveTarget} <selector> <text>`);
       lines.push(`  ${tabs?.targetPrefixes?.length ? '4' : '5'}. ${prefix} perceive ${liveTarget} --since-action`);
@@ -16549,9 +16646,18 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   // Action feedback: wait for DOM to settle, then return structured evidence.
   const BATCH_BLOCKED = new Set(['batch', 'stop', 'repeat', 'flow']);
-  async function observeActionDiffForTarget(target = {}, baselineOutput = null) {
+  async function observeActionDiffForTarget(target = {}, baselineOutput = null, baselineOpts = null) {
     const targetFrameRef = frameRefFromActionTarget(target);
     await waitForSettle(cdp, sessionId);
+    const snapshot = resolveSinceActionPerceiveOpts(
+      {
+        sinceAction: true,
+        diffBaseline: baselineOutput,
+        ...(targetFrameRef ? { frameRef: targetFrameRef } : {}),
+      },
+      { baselineOutput, baselineOpts },
+      [],
+    );
     return perceiveStr(
       cdp,
       sessionId,
@@ -16559,9 +16665,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       exceptionBuf,
       refMap,
       lastPerceiveStore,
-      targetFrameRef
-        ? { sinceAction: true, diffBaseline: baselineOutput, frameRef: targetFrameRef }
-        : { sinceAction: true, diffBaseline: baselineOutput },
+      snapshot,
       refState
     );
   }
@@ -16575,9 +16679,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       ? { ...target, targetId }
       : { input: String(target || ''), label: String(target || ''), targetId };
     const baselineOutput = baselineOutputForActionTarget(refState, lastPerceiveStore.output, actionTarget);
+    const baselineOpts = lastPerceiveStore.snapshotOpts || null;
     const observationBaseline = createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf });
     const actionStartedAt = Date.now();
-    const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput));
+    const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput, baselineOpts));
     let postActionPageHealth = null;
     const observeThenFlush = async () => {
       const text = await observeAfterAction();
@@ -16588,7 +16693,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       }).catch(() => null);
       return text;
     };
-    session.lastAction = { action, target: actionTarget, feedbackPolicy, ts: actionStartedAt, baselineOutput };
+    session.lastAction = { action, target: actionTarget, feedbackPolicy, ts: actionStartedAt, baselineOutput, baselineOpts };
     return runActionWithFeedback({
       action,
       target: actionTarget,
@@ -18370,11 +18475,15 @@ function createPerceiveCommandHandler({
   const buildPerceiveDiff = ops.perceiveDiffModel || perceiveDiffModel;
   return async ({ args }) => {
     const fopts = parseQaModeArgs(args, ['text', 'json']);
-    const popts = parsePerceiveArgs(fopts.args);
+    const popts = resolveSinceActionPerceiveOpts(
+      parsePerceiveArgs(fopts.args),
+      session.lastAction,
+      fopts.args,
+    );
     await ensurePerceiveTargetReady({ cdp, sessionId, targetId, ops });
     const targetPrefix = targetPrefixForDisplay(targetId);
     popts.targetPrefix = targetPrefix;
-    if (popts.sinceAction) popts.diffBaseline = session.lastAction?.baselineOutput || null;
+    if (popts.sinceAction) popts.diffBaseline = popts.diffBaseline || session.lastAction?.baselineOutput || null;
     let value;
     if (fopts.qa) {
       const page = await pageInfo(cdp, sessionId, { targetPrefix });
@@ -20140,9 +20249,11 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Perceive & snapshot
   parsePerceiveArgs, pickPrimaryScrollMetrics, omitTypeaheadListboxNodes, TYPEAHEAD_OMITTED_NOTICE,
   buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
+  perceiveTextboxValueFromOutput,
   filterPerceiveExcludedAxNodes, perceiveInteractiveNoiseHint,
   buildCardsModel, formatCardsJson, formatCardsText,
   parseControlsArgs, visibleControlsCollectorSource, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
+  rankPerceiveCursorItems,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,
@@ -20208,7 +20319,9 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   resetScreenshotTier, getScreenshotTier, SCREENSHOT_TIMEOUT,
   // Constants
   ENRICHED_ROLES, INTERACTIVE_ROLES, CONTENT_REF_ROLES,
-  isSkipLinkAxNode, isLicenseBlobUrl,
+  isSkipLinkAxNode, isSkipLinkName, isLicenseBlobUrl,
+  perceiveSnapshotOpts, resolveSinceActionPerceiveOpts, perceiveArgsIncludeSnapshotShape,
+  DOCTOR_LIST_TARGET_PLACEHOLDER,
   // Cascade source mapping
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor

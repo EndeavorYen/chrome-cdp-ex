@@ -666,6 +666,24 @@ describe('Phase 4 perceive compatibility slice', () => {
     });
   });
 
+  it('reuses lastAction -i snapshot opts for bare --since-action (#162)', async () => {
+    const diff = fixture({
+      session: {
+        lastAction: {
+          baselineOutput: 'interactive baseline',
+          baselineOpts: { interactive: true, maxDepth: Infinity, cursorInteractive: false },
+        },
+      },
+    });
+    await diff.handler({ args: ['--since-action'] });
+    expect(diff.ops.perceiveText.mock.calls[0][6]).toMatchObject({
+      sinceAction: true,
+      interactive: true,
+      keepTypeahead: true,
+      diffBaseline: 'interactive baseline',
+    });
+  });
+
   it('returns cards.v1 JSON from perceive --cards --format json', async () => {
     const cardsModel = {
       schema: 'chrome-cdp-ex.cards.v1',
