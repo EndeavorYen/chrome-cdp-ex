@@ -432,6 +432,7 @@ scripts/cdp.mjs overlay <target> [sel|@ref] [--format json]       # detect dialo
 scripts/cdp.mjs report  <target> [--format json]                  # action timeline + evidence + screenshot attachments + JSONL log path
 scripts/cdp.mjs verify-click <target> <sel|@ref> [--expect-text text] [--expect-request pattern] [--format json]
 scripts/cdp.mjs qa <target> [--desktop WxH] [--mobile WxH] [--expect-text text] [--format json]
+# qa restores the previous viewport even if a screenshot times out
 scripts/cdp.mjs responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]  # visual-check alias
 scripts/cdp.mjs target --url URL|--title TEXT [--exact] [--format json]  # select page without guessing prefixes
 scripts/cdp.mjs checkpoint <target> [--format json]                # capture URL, cookies, localStorage, and sessionStorage

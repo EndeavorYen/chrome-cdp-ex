@@ -7,7 +7,7 @@
 // the CDP session open. Chrome's "Allow debugging" modal fires once per
 // daemon (= once per tab). Daemons auto-exit after 20min idle.
 
-import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, realpathSync } from 'fs';
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, realpathSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, resolve, delimiter } from 'path';
 import { spawn, spawnSync } from 'child_process';
@@ -4281,10 +4281,15 @@ function normalizeNetworkDelta(delta = {}) {
   };
 }
 
+function noBaselineActionDiffText() {
+  return 'No changes detected.';
+}
+
 function actionDomDiffShowsChange(domDiff) {
   const text = String(domDiff || '').trim();
   if (!text) return false;
   if (/no changes detected/i.test(text)) return false;
+  if (/no action baseline available/i.test(text)) return false;
   if (/unchanged; still first cards/i.test(text)) return false;
   if (/\bunchanged\b/i.test(text) && /virtualized window/i.test(text)) return false;
   return true;
@@ -5794,6 +5799,31 @@ function formatQaPageReport(model) {
   return lines.join('\n');
 }
 
+async function captureViewportSize(cdp, sid) {
+  try {
+    const dims = JSON.parse(await evalStr(
+      cdp,
+      sid,
+      'JSON.stringify({w:window.innerWidth,h:window.innerHeight})',
+    ));
+    const width = Number(dims?.w);
+    const height = Number(dims?.h);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+    return `${Math.round(width)}x${Math.round(height)}`;
+  } catch {
+    return null;
+  }
+}
+
+async function restoreViewportSize(cdp, sid, size) {
+  if (!size) return null;
+  try {
+    return await viewportStr(cdp, sid, size);
+  } catch {
+    return null;
+  }
+}
+
 async function qaPageStr({
   cdp,
   sid,
@@ -5808,6 +5838,7 @@ async function qaPageStr({
 }, args = []) {
   const qopts = parseQaArgs(args);
   const errors = [];
+  const originalViewport = await captureViewportSize(cdp, sid);
   const page = await pageInfoModel(cdp, sid, { targetPrefix: targetPrefixForDisplay(targetId) });
   const consoleHealth = {
     errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
@@ -5816,98 +5847,102 @@ async function qaPageStr({
   };
   const screenshots = {};
   let screenshotTimedOut = false;
-  for (const [kind, size] of [['desktop', qopts.desktop], ['mobile', qopts.mobile]]) {
-    if (!size) continue;
-    if (screenshotTimedOut) {
-      errors.push(`${kind} screenshot: skipped after previous screenshot timeout`);
-      continue;
-    }
-    try {
-      await viewportStr(cdp, sid, size);
-      ensureSessionScreenshotDir(session);
-      const path = nextSessionScreenshotPath(session, kind);
-      const shot = await shotStr(cdp, sid, path, targetId, {
-        quiet: true,
-        ...qaScreenshotCaptureOptions(),
-      });
-      appendSessionScreenshot(session, { kind: `qa-${kind}`, path: shot.split('\n')[0], note: size });
-      screenshots[kind] = { viewport: size, path: shot.split('\n')[0] };
-    } catch (error) {
-      errors.push(`${kind} screenshot: ${error.message}`);
-      if (isScreenshotTimeoutError(error)) screenshotTimedOut = true;
-    }
-  }
-  let perception = null;
   try {
-    const text = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
-      cursorInteractive: true,
-      maxDepth: 4,
-      targetPrefix: targetPrefixForDisplay(targetId),
-    }, refState);
-    perception = { captured: true, summary: text.split('\n').slice(0, 6).join('\n') };
-  } catch (error) {
-    perception = { captured: false, error: error.message };
-    errors.push(`perceive: ${error.message}`);
-  }
-  let action = null;
-  const assertions = [];
-  if (qopts.click) {
-    let captured = null;
-    await actionFeedback(
-      'click',
-      () => clickStr(cdp, sid, qopts.click, refMap, refState),
-      { input: qopts.click, resolvedBy: 'selector-or-ref', label: qopts.click || '', commandArgs: [qopts.click] },
-      'settle-diff',
-      null,
-      'json',
-      result => { captured = result; },
-    );
-    const textMatched = qopts.expectText
-      ? await pageContainsText(cdp, sid, qopts.expectText).catch(() => false)
-      : false;
-    action = buildSemanticInteractionModel(captured || {}, {
-      selector: qopts.click,
-      expectRequest: qopts.expectRequest,
-      expectStatus: qopts.expectStatus,
-      expectText: qopts.expectText,
-      noConsoleErrors: qopts.noConsoleErrors,
-      evidence: 'concise',
-    }, { textMatched });
-  } else {
-    if (qopts.expectText) {
-      const textMatched = await pageContainsText(cdp, sid, qopts.expectText).catch(() => false);
-      assertions.push({
-        kind: 'text',
-        expected: qopts.expectText,
-        status: textMatched ? 'pass' : 'fail',
-        message: textMatched ? `"${qopts.expectText}" matched` : `"${qopts.expectText}" not found`,
-      });
+    for (const [kind, size] of [['desktop', qopts.desktop], ['mobile', qopts.mobile]]) {
+      if (!size) continue;
+      if (screenshotTimedOut) {
+        errors.push(`${kind} screenshot: skipped after previous screenshot timeout`);
+        continue;
+      }
+      try {
+        await viewportStr(cdp, sid, size);
+        ensureSessionScreenshotDir(session);
+        const path = nextSessionScreenshotPath(session, kind);
+        const shot = await shotStr(cdp, sid, path, targetId, {
+          quiet: true,
+          ...qaScreenshotCaptureOptions(),
+        });
+        appendSessionScreenshot(session, { kind: `qa-${kind}`, path: shot.split('\n')[0], note: size });
+        screenshots[kind] = { viewport: size, path: shot.split('\n')[0] };
+      } catch (error) {
+        errors.push(`${kind} screenshot: ${error.message}`);
+        if (isScreenshotTimeoutError(error)) screenshotTimedOut = true;
+      }
     }
-    if (qopts.expectRequest) {
-      assertions.push({
-        kind: 'request',
-        expected: qopts.expectRequest,
-        status: 'fail',
-        message: '--expect-request requires --click so the command can collect action network evidence',
-      });
+    let perception = null;
+    try {
+      const text = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
+        cursorInteractive: true,
+        maxDepth: 4,
+        targetPrefix: targetPrefixForDisplay(targetId),
+      }, refState);
+      perception = { captured: true, summary: text.split('\n').slice(0, 6).join('\n') };
+    } catch (error) {
+      perception = { captured: false, error: error.message };
+      errors.push(`perceive: ${error.message}`);
     }
+    let action = null;
+    const assertions = [];
+    if (qopts.click) {
+      let captured = null;
+      await actionFeedback(
+        'click',
+        () => clickStr(cdp, sid, qopts.click, refMap, refState),
+        { input: qopts.click, resolvedBy: 'selector-or-ref', label: qopts.click || '', commandArgs: [qopts.click] },
+        'settle-diff',
+        null,
+        'json',
+        result => { captured = result; },
+      );
+      const textMatched = qopts.expectText
+        ? await pageContainsText(cdp, sid, qopts.expectText).catch(() => false)
+        : false;
+      action = buildSemanticInteractionModel(captured || {}, {
+        selector: qopts.click,
+        expectRequest: qopts.expectRequest,
+        expectStatus: qopts.expectStatus,
+        expectText: qopts.expectText,
+        noConsoleErrors: qopts.noConsoleErrors,
+        evidence: 'concise',
+      }, { textMatched });
+    } else {
+      if (qopts.expectText) {
+        const textMatched = await pageContainsText(cdp, sid, qopts.expectText).catch(() => false);
+        assertions.push({
+          kind: 'text',
+          expected: qopts.expectText,
+          status: textMatched ? 'pass' : 'fail',
+          message: textMatched ? `"${qopts.expectText}" matched` : `"${qopts.expectText}" not found`,
+        });
+      }
+      if (qopts.expectRequest) {
+        assertions.push({
+          kind: 'request',
+          expected: qopts.expectRequest,
+          status: 'fail',
+          message: '--expect-request requires --click so the command can collect action network evidence',
+        });
+      }
+    }
+    const pageHealth = await collectPageHealth(cdp, sid).catch(() => null);
+    const model = buildQaPageModel({
+      targetId,
+      page: { title: page.title, url: page.url },
+      pageHealth,
+      console: consoleHealth,
+      perception,
+      screenshots,
+      action,
+      assertions,
+      errors,
+    });
+    return formatActionWorkflowCommandOutput(model, {
+      format: qopts.format,
+      text: () => formatQaPageReport(model),
+    });
+  } finally {
+    await restoreViewportSize(cdp, sid, originalViewport);
   }
-  const pageHealth = await collectPageHealth(cdp, sid).catch(() => null);
-  const model = buildQaPageModel({
-    targetId,
-    page: { title: page.title, url: page.url },
-    pageHealth,
-    console: consoleHealth,
-    perception,
-    screenshots,
-    action,
-    assertions,
-    errors,
-  });
-  return formatActionWorkflowCommandOutput(model, {
-    format: qopts.format,
-    text: () => formatQaPageReport(model),
-  });
 }
 
 async function pageContainsText(cdp, sid, text) {
@@ -10396,16 +10431,15 @@ async function scrollStr(cdp, sid, direction, amount) {
 async function hoverStr(cdp, sid, selector, refMap, refState) {
   if (!selector) throw new Error('CSS selector or @ref required');
   if (isRef(selector)) {
-    const r = await resolveRef(cdp, sid, refMap, selector, refState);
+    const { rect: r } = await resolveRefRectNoScroll(cdp, sid, refMap, selector, refState);
     const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
     await cdpDomains(cdp).Input.dispatchMouseEvent( { x: cx, y: cy, type: 'mouseMoved', button: 'none', modifiers: 0 }, sid);
-    return `Hovering over <${r.tag}> at CSS (${Math.round(cx)}, ${Math.round(cy)}) (${selector})`;
+    return `Hovering over <${r.tag || '?'}> at CSS (${Math.round(cx)}, ${Math.round(cy)}) (${selector})`;
   }
   const expr = `
     (function() {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
-      el.scrollIntoView({ block: 'center', inline: 'center' });
       const rect = el.getBoundingClientRect();
       return { ok: true, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, tag: el.tagName };
     })()
@@ -10724,17 +10758,21 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
 
 async function selectStr(cdp, sid, selector, value) {
   if (!selector) throw new Error('CSS selector required');
-  if (value == null) throw new Error('Value required');
+  if (value == null || String(value) === '') throw new Error('Value required');
+  const wanted = String(value);
   const expr = `
     (function() {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
       if (el.tagName !== 'SELECT') return { ok: false, error: 'Not a <select>: ' + el.tagName };
-      el.value = ${JSON.stringify(value)};
+      const wanted = ${JSON.stringify(wanted)};
+      const match = Array.from(el.options).find(opt => opt.value === wanted || String(opt.textContent || '').trim() === wanted);
+      if (!match) return { ok: false, error: 'No option value=' + wanted };
+      match.selected = true;
+      el.value = match.value;
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
-      const opt = el.options[el.selectedIndex];
-      return { ok: true, text: opt ? opt.textContent.trim() : value };
+      return { ok: true, text: String(match.textContent || '').trim() || match.value || wanted };
     })()
   `;
   const result = await evalStr(cdp, sid, expr);
@@ -12346,14 +12384,32 @@ async function cookieSetStr(cdp, sid, cookieStr) {
 async function cookieDelStr(cdp, sid, name) {
   if (!name) throw new Error('Cookie name required');
   const url = await evalStr(cdp, sid, 'window.location.href');
+  const { cookies } = await cdpDomains(cdp).Network.getCookies( {}, sid);
+  const found = (cookies || []).some(cookie => cookie.name === name);
+  if (!found) throw new Error(`Cookie not found: ${name}`);
   await cdpDomains(cdp).Network.deleteCookies( { name, url }, sid);
   return `Cookie deleted: ${name}`;
+}
+
+function assertReadableUploadFiles(filePaths) {
+  const files = String(filePaths || '').split(',').map(f => f.trim()).filter(Boolean);
+  if (!files.length) throw new Error('File path(s) required (comma-separated for multiple)');
+  for (const file of files) {
+    let stat;
+    try {
+      stat = statSync(file);
+    } catch {
+      throw new Error(`upload: file not found: ${file}`);
+    }
+    if (!stat.isFile()) throw new Error(`upload: file not found: ${file}`);
+  }
+  return files;
 }
 
 async function uploadStr(cdp, sid, selector, filePaths) {
   if (!selector) throw new Error('CSS selector for <input type="file"> required');
   if (!filePaths) throw new Error('File path(s) required (comma-separated for multiple)');
-  const files = filePaths.split(',').map(f => f.trim());
+  const files = assertReadableUploadFiles(filePaths);
   const { root } = await cdpDomains(cdp).DOM.getDocument( {}, sid);
   const { nodeId } = await cdpDomains(cdp).DOM.querySelector( { nodeId: root.nodeId, selector }, sid);
   if (!nodeId) throw new Error('Element not found: ' + selector);
@@ -17013,6 +17069,21 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   async function observeActionDiffForTarget(target = {}, baselineOutput = null, baselineOpts = null) {
     const targetFrameRef = frameRefFromActionTarget(target);
     await waitForSettle(cdp, sessionId);
+    if (!baselineOutput) {
+      await perceiveStr(
+        cdp,
+        sessionId,
+        consoleBuf,
+        exceptionBuf,
+        refMap,
+        lastPerceiveStore,
+        {
+          ...(targetFrameRef ? { frameRef: targetFrameRef } : {}),
+        },
+        refState,
+      );
+      return noBaselineActionDiffText();
+    }
     const snapshot = resolveSinceActionPerceiveOpts(
       {
         sinceAction: true,
@@ -17688,7 +17759,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         target: isMutatingCommand && lastAction.target ? lastAction.target : { targetId, input: args?.[0], label: args?.[0] },
       };
       const failure = classifyActionFailure(e, context);
-      const error = alreadyClassified || (isMutatingCommand && failure.kind !== 'unknown')
+      const error = alreadyClassified || (isMutatingCommand && failure.kind !== 'unknown' && failure.kind !== 'usage')
         ? formatActionFailure(e, context)
         : rawError;
       return { ok: false, error };
@@ -19253,8 +19324,6 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
     case 'press':
     case 'key':
       return 'cdp help press';
-    case 'select':
-      return `cdp select ${target} <selector> <value>`;
     case 'elshot':
       return `cdp elshot ${target} <selector|@ref>`;
     case 'eval':
@@ -19289,6 +19358,13 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
       return 'cdp help text';
     case 'waitfor':
       return 'cdp help waitfor';
+    case 'wait':
+      return 'cdp help wait';
+    case 'tab-group':
+    case 'tabgroup':
+      return 'cdp help tab-group';
+    case 'select':
+      return 'cdp help select';
     case 'forget':
       return 'cdp help forget';
     default:
@@ -19399,6 +19475,74 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       strategy: 'show-help',
       run: 'cdp help press',
       reason: 'press requires a supported key name. Print usage instead of wrapping as an unclassified action failure.',
+    };
+  }
+  if (
+    (cmd === 'wait' || lower.includes('wait duration'))
+    && (
+      lower.includes('wait duration')
+      || lower.includes('positive integer')
+      || lower.includes('at least')
+    )
+  ) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help wait',
+      reason: 'wait requires a positive millisecond duration. Print usage instead of probing doctor/status.',
+    };
+  }
+  if (
+    (cmd === 'tab-group' || cmd === 'tabgroup' || cmd === 'broadcast')
+    && (lower.includes('unknown group') || lower.includes('unknown action'))
+  ) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: cmd === 'broadcast' ? 'cdp help broadcast' : 'cdp tab-group list',
+      reason: 'The named tab group is not stored. List groups instead of probing doctor.',
+    };
+  }
+  if (
+    (cmd === 'select' || lower.includes('not a <select>') || lower.includes('no option value'))
+    && (
+      lower.includes('not a <select>')
+      || lower.includes('no option value')
+      || lower.includes('css selector required')
+      || lower.includes('value required')
+    )
+  ) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help select',
+      reason: 'select requires a <select> control and an existing option value.',
+    };
+  }
+  if (
+    (cmd === 'upload' || lower.includes('upload:'))
+    && (
+      lower.includes('file not found')
+      || lower.includes('not a readable file')
+      || lower.includes('is not an <input type="file">')
+    )
+  ) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help upload',
+      reason: 'upload requires an existing readable file and a file input. Do not plant a ghost file.',
+    };
+  }
+  if (
+    (cmd === 'cookiedel' || lower.includes('cookie not found'))
+    && lower.includes('cookie not found')
+  ) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: targetPrefix ? `cdp cookies ${targetPrefix}` : 'cdp help cookiedel',
+      reason: 'The named cookie is not present. List cookies instead of claiming a delete.',
     };
   }
   if (
@@ -20550,8 +20694,13 @@ async function main(options = {}) {
 
   // Targetless wait: avoids shell sleep policy for simple delays.
   if (cmd === 'wait' && /^\d+$/.test(args[0] || '') && !args[1]) {
-    console.log(await waitStr(args[0]));
-    return;
+    try {
+      console.log(await waitStr(args[0]));
+      return finish(0);
+    } catch (e) {
+      console.error(formatCliError(e, { cmd: 'wait' }));
+      return finish(1);
+    }
   }
 
   // Page commands — need target prefix
@@ -20889,7 +21038,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isExpectedNoChange, overlaySelectorArg,
   createActionResult, buildActionReceipt, formatActionText, runActionWithFeedback,
   parseVerifyClickArgs, buildSemanticInteractionModel, formatSemanticInteractionResult, formatActionWorkflowCommandOutput,
-  parseQaArgs, buildQaPageModel, formatQaPageReport,
+  parseQaArgs, buildQaPageModel, formatQaPageReport, qaPageStr,
+  captureViewportSize, restoreViewportSize,
   qaScreenshotCaptureOptions, QA_SCREENSHOT_TIMEOUT_MS,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest, isNetworkFailure,
@@ -20913,7 +21063,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, loadAllStr, closetabStr, snapshotStr,
+  cookieDelStr, uploadStr, assertReadableUploadFiles,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, selectStr, loadAllStr, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,
@@ -20935,7 +21086,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
   isPdfViewerContentType, formatPdfViewerOutput, pdfViewerError, pageInfoModel,
-  actionDomDiffShowsChange,
+  actionDomDiffShowsChange, noBaselineActionDiffText,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
