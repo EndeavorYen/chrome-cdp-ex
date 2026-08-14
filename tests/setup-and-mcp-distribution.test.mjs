@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -75,13 +75,13 @@ describe('setup.mjs distribution helpers', () => {
   it('reports Hermes skillPath and installed from a fake home', () => {
     const home = mkdtempSync(join(tmpdir(), 'chrome-cdp-hermes-detect-'));
     try {
-      const missing = detectEnvironment({ home });
+      const missing = detectEnvironment({ home, env: {} });
       expect(missing.hosts.hermes.skillPath).toBe(join(home, '.hermes', 'skills', 'chrome-cdp-ex'));
       expect(missing.hosts.hermes.installed).toBe(false);
       expect(missing.hosts.hermes.route).toBe('cli');
 
       mkdirSync(join(home, '.hermes', 'skills', 'chrome-cdp-ex'), { recursive: true });
-      const present = detectEnvironment({ home });
+      const present = detectEnvironment({ home, env: {} });
       expect(present.hosts.hermes.skillPath).toBe(join(home, '.hermes', 'skills', 'chrome-cdp-ex'));
       expect(present.hosts.hermes.installed).toBe(true);
     } finally {
@@ -89,16 +89,26 @@ describe('setup.mjs distribution helpers', () => {
     }
   });
 
-  it('prints the resolved Hermes dest without writing when --write is omitted', async () => {
+  it('prints a Hermes copy into the skill parent without writing when --write is omitted', async () => {
     const home = mkdtempSync(join(tmpdir(), 'chrome-cdp-hermes-print-'));
     try {
-      const detect = detectEnvironment({ home });
+      const detect = detectEnvironment({ home, env: {} });
       const snippet = hostSnippet('hermes', detect);
       const dest = join(home, '.hermes', 'skills', 'chrome-cdp-ex');
-      expect(snippet).toContain(dest);
+      const parent = dirname(dest);
+      expect(snippet).toContain(`cp -R '${detect.skillDir}' '${parent}/'`);
+      expect(snippet).not.toContain(`cp -R '${detect.skillDir}' '${dest}'`);
       expect(snippet).not.toContain('<hermes-skills-dir>');
-      const code = await main(['--for', 'hermes'], { home });
-      expect(code).toBe(0);
+      const logs = [];
+      const originalLog = console.log;
+      console.log = (...args) => { logs.push(args.map(String).join(' ')); };
+      try {
+        const code = await main(['--for', 'hermes'], { home, env: {} });
+        expect(code).toBe(0);
+      } finally {
+        console.log = originalLog;
+      }
+      expect(logs.join('\n')).toContain(dest);
       expect(existsSync(join(home, '.hermes'))).toBe(false);
       expect(existsSync(join(dest, 'SKILL.md'))).toBe(false);
     } finally {
@@ -110,7 +120,7 @@ describe('setup.mjs distribution helpers', () => {
     const home = mkdtempSync(join(tmpdir(), 'chrome-cdp-hermes-write-'));
     try {
       const dest = join(home, '.hermes', 'skills');
-      const code = await main(['--for', 'hermes', '--write'], { home });
+      const code = await main(['--for', 'hermes', '--write'], { home, env: {} });
       expect(code).toBe(0);
       expect(existsSync(join(dest, 'chrome-cdp-ex', 'SKILL.md'))).toBe(true);
     } finally {

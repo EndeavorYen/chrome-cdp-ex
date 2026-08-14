@@ -154,9 +154,10 @@ export function hostSnippet(host, detect = detectEnvironment()) {
       ].join('\n');
     case 'hermes': {
       const hermesDest = detect.hosts?.hermes?.skillPath || hermesSkillPath();
+      const hermesParent = dirname(hermesDest);
       return [
         `# Hermes — prefer CLI`,
-        `mkdir -p ${shQuote(dirname(hermesDest))} && cp -R ${skillDir} ${shQuote(hermesDest)}`,
+        `mkdir -p ${shQuote(hermesParent)} && cp -R ${skillDir} ${shQuote(`${hermesParent}/`)}`,
         `${node} ${cdp} doctor`,
         `${node} ${cdp} list`,
       ].join('\n');
@@ -443,7 +444,7 @@ export async function main(argv = process.argv.slice(2), opts = {}) {
       if (payload.written?.path) console.log(`\nWrote ${payload.written.path}`);
       else if (payload.written?.dest) console.log(`\nWrote ${payload.written.dest}`);
       else if (host === 'cursor') console.log('\nTip: add --write to merge into ./.cursor/mcp.json');
-      else if (host === 'hermes') console.log('\nTip: add --write to copy into ~/.hermes/skills/chrome-cdp-ex');
+      else if (host === 'hermes') console.log(`\nTip: add --write to copy into ${detect.hosts.hermes.skillPath}`);
       else if (host === 'codex') console.log('\nTip: add --write to copy into ~/.codex/skills/chrome-cdp-ex');
     }
     return 0;
