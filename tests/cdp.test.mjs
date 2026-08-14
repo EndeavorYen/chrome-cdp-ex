@@ -1562,13 +1562,14 @@ describe('ActionResult', () => {
       },
       dispatch: async () => 'Filled #password',
       feedbackPolicy: 'settle-diff',
-      observe: async () => '+++ Added (1):\n+   [status] token=dom-sentinel-abc saved',
+      observe: async () => '+++ Added (2):\n+   [status] token=dom-sentinel-abc saved\n+   [option] saved password pw-sentinel-123',
       format: 'json',
     });
     const parsed = JSON.parse(out);
 
     expect(parsed.schema).toBe('chrome-cdp-ex.fill.v1');
     expect(parsed.value).toBe('<redacted>');
+    expect(parsed.typeahead).toEqual([]);
     expect(out).not.toContain('pw-sentinel-123');
     expect(out).not.toContain('dom-sentinel-abc');
     expect(out).toContain('<redacted>');
@@ -3907,6 +3908,36 @@ describe('Perceive diff baseline', () => {
     expect(text).toContain('textbox value set; 122 suggestion links');
     expect(text).toContain('larryvrh/MiniMax-H3-Turbo-Lora');
     expect(text).not.toContain('filler-suggestion-40');
+  });
+
+  it('does not summarize a huge same-URL click diff as typeahead (#162)', () => {
+    const previous = [
+      'Page: Models — https://huggingface.co/models',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 40 link',
+      'Console: clean',
+      'Coords: top-level viewport CSS px',
+      '',
+      '[WebArea] Models',
+      ...Array.from({ length: 40 }, (_, i) => `  [link] old-model-${i}  @${i + 1}`),
+    ].join('\n');
+    const current = [
+      'Page: Models — https://huggingface.co/models',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 40 link',
+      'Console: clean',
+      'Coords: top-level viewport CSS px',
+      '',
+      '[WebArea] Models',
+      ...Array.from({ length: 40 }, (_, i) => `  [link] new-model-${i}  @${i + 1}`),
+    ].join('\n');
+
+    const model = T.buildPerceiveDiffModel(previous, current, {
+      mode: 'since-action',
+      targetPrefix: 'ABC12345',
+    });
+    expect(model.summary?.kind).not.toBe('typeahead');
+    expect(JSON.stringify(model)).toContain('new-model-0');
   });
 
   it('keeps high-signal StaticText additions in action diffs', () => {

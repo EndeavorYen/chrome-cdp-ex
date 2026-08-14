@@ -4591,7 +4591,9 @@ function fillNavigationUrl(effects = {}) {
 }
 
 function compactFillReceiptForJson(result = {}) {
-  const typeahead = extractFillTypeahead(result.effects || {});
+  const typeahead = isSensitiveActionTarget(result.action, result.target || {})
+    ? []
+    : extractFillTypeahead(result.effects || {});
   const targetId = result.target?.targetId || '';
   const receipt = {
     schema: 'chrome-cdp-ex.fill.v1',
@@ -7991,13 +7993,10 @@ function shouldSummarizeTypeaheadDiff(diff, previousOutput, currentOutput, mode)
   const suggestionCount = countTypeaheadLabels(diff.addedStructural);
   if (suggestionCount === 0) return false;
   const focused = perceiveFocusedFromOutput(currentOutput);
-  const focusedTextbox = /textbox/i.test(focused)
-    || diff.addedStructural.some(line => /\[textbox\]/i.test(line));
+  const focusedTextbox = /textbox|searchbox|combobox/i.test(focused);
   const hasListbox = [...diff.addedStructural, ...diff.removedStructural]
-    .some(line => /\[listbox\]/i.test(line))
-    || suggestionCount > 0;
-  const huge = (diff.removedStructural.length + diff.addedStructural.length) >= TYPEAHEAD_REROOT_THRESHOLD;
-  return (focusedTextbox && hasListbox) || huge;
+    .some(line => /\[listbox\]/i.test(line));
+  return focusedTextbox && hasListbox;
 }
 
 function typeaheadDiffHeadline(suggestionCount) {
