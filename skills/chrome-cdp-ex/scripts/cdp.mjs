@@ -17922,6 +17922,10 @@ function formatOpenAttachWaitMessage(timeoutMs) {
   return `Waiting for "Allow debugging?" approval in Chrome... (up to ${formatDuration(timeoutMs)})`;
 }
 
+function shouldAnnounceOpenAttachWait({ failedConnects = 0, elapsedMs = 0 } = {}) {
+  return failedConnects >= 3 || elapsedMs >= 1000;
+}
+
 function formatOpenReadyMessage(targetId, url = '') {
   const target = targetPrefixForDisplay(targetId);
   const lines = [
@@ -18388,7 +18392,9 @@ async function main(options = {}) {
     child.unref();
     let attached = false;
     let announcedWait = false;
-    const attachDeadline = Date.now() + opts.attachTimeoutMs;
+    let failedConnects = 0;
+    const attachStartedAt = Date.now();
+    const attachDeadline = attachStartedAt + opts.attachTimeoutMs;
     while (Date.now() < attachDeadline) {
       const remainingMs = attachDeadline - Date.now();
       try {
@@ -18397,7 +18403,11 @@ async function main(options = {}) {
         attached = true;
         break;
       } catch {
-        if (opts.format === 'text' && !announcedWait) {
+        failedConnects += 1;
+        if (opts.format === 'text' && !announcedWait && shouldAnnounceOpenAttachWait({
+          failedConnects,
+          elapsedMs: Date.now() - attachStartedAt,
+        })) {
           console.log(formatOpenAttachWaitMessage(opts.attachTimeoutMs));
           announcedWait = true;
         }
@@ -18891,7 +18901,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, runBatchCommands, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
-  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage, shouldAnnounceOpenAttachWait, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   DEFAULT_OPEN_ATTACH_TIMEOUT_MS,
   CLI_HELP_LAYOUT, CLI_HELP_TEMPLATE, renderCliHelp, helpStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,

@@ -16,7 +16,7 @@ const {
   formatPageList, buildPerceiveTree, perceivePageScript, perceiveStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, parseControlsArgs, visibleControlsPageScript, controlsStr, formatVisibleControlsText, navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, fillStr, fillReactStr, waitForStr,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs, formatCliError, formatDaemonCommandError,
-  formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage,
+  formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage, shouldAnnounceOpenAttachWait,
   statusStr, clearObservationBuffers,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
   captureScreenshot, screencastFallback, snapshotStr, formatScreenshotCaptureDiagnostics,
@@ -298,7 +298,7 @@ describe('COMMANDS registry', () => {
       aliases: [],
       needsTarget: false,
       mutates: true,
-      feedbackPolicy: 'full-perceive',
+      feedbackPolicy: 'report-only',
       outputFormats: ['text', 'json'],
     }));
   });
@@ -7015,6 +7015,13 @@ describe('open onboarding guidance', () => {
       'Waiting for "Allow debugging?" approval in Chrome... (up to 5s)'
     );
     expect(formatOpenAttachWaitMessage(60000)).toContain('1m');
+  });
+
+  it('does not announce the allow-debugging banner on the first daemon-boot miss', () => {
+    expect(shouldAnnounceOpenAttachWait({ failedConnects: 1, elapsedMs: 300 })).toBe(false);
+    expect(shouldAnnounceOpenAttachWait({ failedConnects: 2, elapsedMs: 900 })).toBe(false);
+    expect(shouldAnnounceOpenAttachWait({ failedConnects: 3, elapsedMs: 1500 })).toBe(true);
+    expect(shouldAnnounceOpenAttachWait({ failedConnects: 2, elapsedMs: 1000 })).toBe(true);
   });
 
   it('formats a ready continuation after open auto-perceives the page', () => {

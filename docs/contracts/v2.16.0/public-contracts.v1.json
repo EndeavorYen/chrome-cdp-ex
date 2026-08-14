@@ -135,7 +135,7 @@
       "aliases": [],
       "authorization": "mutation",
       "evidencePolicy": "action-receipt",
-      "feedbackPolicy": "full-perceive",
+      "feedbackPolicy": "report-only",
       "kind": "mutation",
       "mutates": true,
       "name": "open",

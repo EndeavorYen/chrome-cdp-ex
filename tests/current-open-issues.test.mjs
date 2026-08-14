@@ -1817,5 +1817,7 @@ describe('issue #160 open token budget', () => {
     expect(T.parseOpenArgs(['https://example.com', '--perceive']).perceive).toBe(true);
     expect(T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', '0']).attachTimeoutMs).toBe(0);
     expect(T.formatOpenNextPerceiveCommand('AABBCCDDEEFF')).toBe('Next: cdp perceive AABBCCDD -C -d 8');
+    expect(T.shouldAnnounceOpenAttachWait({ failedConnects: 1, elapsedMs: 300 })).toBe(false);
+    expect(T.COMMANDS.find(command => command.name === 'open').feedbackPolicy).toBe('report-only');
   });
 });
