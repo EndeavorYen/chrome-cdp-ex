@@ -108,6 +108,13 @@ import {
   isCommandSurface,
   projectCliCommands,
 } from './lib/command-surface.mjs';
+import {
+  NODE22_MISSING_HINT,
+  discoverNode22,
+  formatNodeRerunCommand,
+  nodeMajor,
+  resolveChromeCdpNodeLaunch,
+} from './lib/node-runtime.mjs';
 
 const TIMEOUT = 15000;
 const SCREENSHOT_TIMEOUT = 30000;
@@ -123,9 +130,8 @@ const IDLE_TIMEOUT = 20 * 60 * 1000;
 const FIRE_AND_FORGET_KEEPALIVE = 60 * 60 * 1000;
 const DAEMON_CONNECT_RETRIES = 20;
 const DAEMON_CONNECT_DELAY = 300;
-const DAEMON_ALLOW_RETRIES = 200;  // For open --attach: 200 * 300ms = 60s
 const DAEMON_ALLOW_DELAY = 300;
-const DEFAULT_OPEN_ATTACH_TIMEOUT_MS = DAEMON_ALLOW_RETRIES * DAEMON_ALLOW_DELAY;
+const DEFAULT_OPEN_ATTACH_TIMEOUT_MS = 5000;
 const DEFAULT_OPEN_READY_TIMEOUT_MS = 5000;
 const MIN_TARGET_PREFIX_LEN = 8;
 const MAX_ACTION_LOG_ENTRIES = 100;
@@ -140,6 +146,8 @@ const RUNTIME_DIR = IS_WINDOWS
     : resolve(homedir(), '.cache', 'cdp');
 const PAGES_CACHE = resolve(RUNTIME_DIR, 'pages.json');
 const ALIASES_CACHE = resolve(RUNTIME_DIR, 'aliases.json');
+const LAST_CDP_ENDPOINT_FILE = 'cdp-last-endpoint.json';
+const LAST_CDP_ENDPOINT_SCHEMA = 'chrome-cdp-ex.cdp-last-endpoint.v1';
 const DAEMON_METADATA_SCHEMA = 'chrome-cdp-ex.daemon-metadata.v1';
 const ALLOW_STALE_DAEMON_FLAG = '--allow-stale-daemon';
 const DEFAULT_CDP_HOST = '127.0.0.1';
@@ -1086,6 +1094,177 @@ function writeTargetAliases(store, { path = ALIASES_CACHE, writer = writeFileSyn
   return normalized;
 }
 
+function lastCdpEndpointPath(runtimeDir = RUNTIME_DIR) {
+  return resolve(runtimeDir, LAST_CDP_ENDPOINT_FILE);
+}
+
+function normalizeLastCdpEndpoint(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const port = raw.port == null || raw.port === '' ? null : String(raw.port);
+  const host = raw.host ? String(raw.host) : null;
+  const profileDir = raw.profileDir ? String(raw.profileDir) : null;
+  const exe = raw.exe ? String(raw.exe) : null;
+  const browser = raw.browser ? String(raw.browser).toLowerCase() : null;
+  const launchedAt = raw.launchedAt ? String(raw.launchedAt) : null;
+  if (!port && !host && !profileDir) return null;
+  return {
+    schema: LAST_CDP_ENDPOINT_SCHEMA,
+    host,
+    port,
+    profileDir,
+    exe,
+    browser,
+    launchedAt,
+  };
+}
+
+function readLastCdpEndpoint({ runtimeDir = RUNTIME_DIR, reader = readFileSync } = {}) {
+  try {
+    return normalizeLastCdpEndpoint(JSON.parse(reader(lastCdpEndpointPath(runtimeDir), 'utf8')));
+  } catch {
+    return null;
+  }
+}
+
+function writeLastCdpEndpoint(record, { runtimeDir = RUNTIME_DIR, writer = writeFileSync, now } = {}) {
+  const launchedAt = record?.launchedAt
+    || new Date(typeof now === 'function' ? now() : (now || Date.now())).toISOString();
+  const normalized = normalizeLastCdpEndpoint({ ...record, launchedAt });
+  if (!normalized) return null;
+  try { mkdirSync(runtimeDir, { recursive: true, mode: 0o700 }); } catch {}
+  writer(lastCdpEndpointPath(runtimeDir), `${JSON.stringify(normalized)}\n`, { mode: 0o600 });
+  return normalized;
+}
+
+function rememberLastCdpEndpoint(record, opts = {}) {
+  const previous = opts.previous !== undefined ? opts.previous : readLastCdpEndpoint(opts);
+  const next = { ...(previous || {}) };
+  for (const [key, value] of Object.entries(record || {})) {
+    if (value != null && value !== '') next[key] = value;
+  }
+  const portChanged = previous?.port && record?.port != null && String(previous.port) !== String(record.port);
+  if (portChanged && !record.profileDir) next.profileDir = null;
+  return writeLastCdpEndpoint(next, opts);
+}
+
+function shellQuoteCliArg(value) {
+  const text = String(value ?? '');
+  if (text === '') return "''";
+  if (/^[A-Za-z0-9_./:=+-]+$/.test(text)) return text;
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+function inferBrowserFromExe(exe) {
+  const name = String(exe || '').toLowerCase();
+  if (name.includes('msedge') || name.includes('edge')) return 'edge';
+  if (name.includes('brave')) return 'brave';
+  if (name.includes('chrom')) return 'chrome';
+  return null;
+}
+
+function isDisposableSpawnProfileDir(profileDir) {
+  const normalized = String(profileDir || '').replace(/\\/g, '/');
+  return /(?:^|\/)chrome-cdp-ex-[a-z0-9-]+-debug-profile-\d+$/i.test(normalized);
+}
+
+function formatCdpRelaunchCommand(lastEndpoint, { port } = {}) {
+  const profileDir = lastEndpoint?.profileDir;
+  if (!profileDir) return null;
+  const resolvedPort = String(port || lastEndpoint.port || '9222');
+  if (isDisposableSpawnProfileDir(profileDir)) {
+    const browser = lastEndpoint.browser || inferBrowserFromExe(lastEndpoint.exe) || 'chrome';
+    const parts = [
+      'cdp spawn-debug-browser',
+      browser,
+      '--port', resolvedPort,
+      '--user-data-dir', shellQuoteCliArg(profileDir),
+    ];
+    if (lastEndpoint.exe) parts.push('--exe', shellQuoteCliArg(lastEndpoint.exe));
+    return parts.join(' ');
+  }
+  const exe = lastEndpoint.exe || lastEndpoint.browser || 'chrome';
+  return [
+    shellQuoteCliArg(exe),
+    `--remote-debugging-port=${resolvedPort}`,
+    '--user-data-dir',
+    shellQuoteCliArg(profileDir),
+  ].join(' ');
+}
+
+function profileDirFromCommandLine(args) {
+  const list = Array.isArray(args) ? args : [];
+  for (let i = 0; i < list.length; i++) {
+    const arg = String(list[i] ?? '');
+    if (arg.startsWith('--user-data-dir=')) return arg.slice('--user-data-dir='.length) || null;
+    if (arg === '--user-data-dir') return list[i + 1] ? String(list[i + 1]) : null;
+  }
+  return null;
+}
+
+function profileDirFromDevToolsActivePort(portFile) {
+  if (!portFile) return null;
+  const dir = dirname(String(portFile));
+  return /(^|[\\/])Default$/.test(dir) ? dirname(dir) : dir;
+}
+
+function cdpUnreachableError({ host, port, cause, lastEndpoint } = {}) {
+  const resolvedHost = host || lastEndpoint?.host || DEFAULT_CDP_HOST;
+  const resolvedPort = port != null && port !== '' ? String(port) : (lastEndpoint?.port || null);
+  const profileDir = lastEndpoint?.profileDir || null;
+  const relaunch = formatCdpRelaunchCommand(lastEndpoint, { port: resolvedPort });
+  const where = resolvedPort ? `${resolvedHost}:${resolvedPort}` : resolvedHost;
+  const causeText = String(cause || 'unreachable').replace(/^Error:\s*/i, '');
+  const message = profileDir
+    ? `Cannot reach CDP on ${where} (${causeText}). Relaunch the same profile: ${relaunch}`
+    : `Cannot reach CDP on ${where} (${causeText}). Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.`;
+  const err = new Error(message);
+  err.code = 'cdp_unreachable';
+  err.host = resolvedHost;
+  err.port = resolvedPort;
+  err.profileDir = profileDir;
+  err.relaunch = relaunch;
+  return err;
+}
+
+function isCdpHttp404(error) {
+  return Number(error?.status) === 404 || /^HTTP 404\b/i.test(String(error?.message || ''));
+}
+
+async function openCdpWebSocket(url, { timeoutMs = 2000, connectWebSocket } = {}) {
+  if (typeof connectWebSocket === 'function') return connectWebSocket(url);
+  const ws = new WebSocket(url);
+  return new Promise((resolveWs, rejectWs) => {
+    ws.onopen = () => { resolveWs(true); ws.close(); };
+    ws.onerror = (err) => rejectWs(err);
+    setTimeout(() => { ws.close(); rejectWs(new Error('WebSocket timeout')); }, timeoutMs);
+  });
+}
+
+async function rememberLiveCdpEndpointFromSession(cdp, { host, port, env = process.env } = {}) {
+  const resolvedHost = host || env.CDP_HOST || DEFAULT_CDP_HOST;
+  const resolvedPort = port || env.CDP_PORT || null;
+  let profileDir = null;
+  let exe = null;
+  try {
+    const result = await cdp.send('Browser.getBrowserCommandLine', {}, undefined, 1000);
+    const argv = result?.arguments || result?.Arguments || [];
+    profileDir = profileDirFromCommandLine(argv);
+    exe = argv[0] ? String(argv[0]) : null;
+  } catch {}
+  if (!resolvedPort && !profileDir) return null;
+  try {
+    return rememberLastCdpEndpoint({
+      host: resolvedHost,
+      port: resolvedPort,
+      profileDir,
+      exe,
+      browser: inferBrowserFromExe(exe),
+    });
+  } catch {
+    return null;
+  }
+}
+
 function upsertTargetAlias(store = emptyAliasStore(), record = {}) {
   const normalized = normalizeAliasStore(store);
   const name = normalizeAliasName(record.name);
@@ -1647,22 +1826,33 @@ function truncateTextLines(text = '', maxLines = null) {
 // Browser metadata from /json/version — set when connecting via CDP_PORT
 let _browserInfo = null;
 
-async function getWsUrl() {
-  const host = process.env.CDP_HOST || DEFAULT_CDP_HOST;
+async function getWsUrl({
+  env = process.env,
+  fetcher = fetch,
+  lastEndpoint,
+  readLastEndpoint = readLastCdpEndpoint,
+  rememberEndpoint = rememberLastCdpEndpoint,
+} = {}) {
+  const host = env.CDP_HOST || DEFAULT_CDP_HOST;
+  const remembered = lastEndpoint !== undefined ? lastEndpoint : readLastEndpoint();
+  const rememberReachable = (record) => {
+    try { rememberEndpoint(record); } catch {}
+  };
 
   // CDP_PORT: explicit port (e.g. Electron with --remote-debugging-port=9222)
-  if (process.env.CDP_PORT) {
-    const port = process.env.CDP_PORT;
+  if (env.CDP_PORT) {
+    const port = env.CDP_PORT;
     let res;
     try {
-      res = await fetch(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
-    } catch {
-      throw new Error(`Cannot reach CDP on ${host}:${port} — is the app running with --remote-debugging-port=${port}?`);
+      res = await fetcher(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
+    } catch (e) {
+      throw cdpUnreachableError({ host, port, cause: e?.message || e, lastEndpoint: remembered });
     }
     if (res.ok) {
       const info = await res.json();
       if (!info.webSocketDebuggerUrl) throw new Error(`CDP on port ${port}: /json/version has no webSocketDebuggerUrl`);
       _browserInfo = info;
+      rememberReachable({ host, port });
       // Extract path only — don't trust the hostname in the response (may be "localhost"
       // while CDP_HOST points elsewhere, e.g. WSL2→Windows)
       const wsPath = new URL(info.webSocketDebuggerUrl).pathname;
@@ -1672,9 +1862,10 @@ async function getWsUrl() {
     // direct WebSocket handshake to /devtools/browser still works. Do not fall back on
     // other HTTP failures — those usually mean a non-CDP service is bound to the port.
     if (res.status === 404) {
+      rememberReachable({ host, port });
       return `ws://${host}:${port}/devtools/browser`;
     }
-    throw new Error(`CDP on port ${port}: /json/version returned HTTP ${res.status}`);
+    throw cdpUnreachableError({ host, port, cause: `HTTP ${res.status}`, lastEndpoint: remembered });
   }
 
   // DevToolsActivePort file discovery (Chrome, Edge, Brave, etc.)
@@ -1695,9 +1886,9 @@ async function getWsUrl() {
     'Google\\Chrome', 'Google\\Chrome Beta', 'Google\\Chrome for Testing',
     'Chromium', 'BraveSoftware\\Brave-Browser', 'Microsoft\\Edge',
   ];
-  const localAppData = process.env.LOCALAPPDATA || '';
+  const localAppData = env.LOCALAPPDATA || process.env.LOCALAPPDATA || '';
   const candidates = [
-    process.env.CDP_PORT_FILE,
+    env.CDP_PORT_FILE || process.env.CDP_PORT_FILE,
     ...winBrowsers.flatMap(b => [
       resolve(localAppData, b, 'User Data', 'DevToolsActivePort'),
       resolve(localAppData, b, 'User Data', 'Default', 'DevToolsActivePort'),
@@ -1723,9 +1914,24 @@ async function getWsUrl() {
     ]),
   ].filter(Boolean);
   const portFile = candidates.find(p => existsSync(p));
-  if (!portFile) throw new Error('No DevToolsActivePort found and no CDP_PORT set.\n  Chrome: enable at chrome://inspect/#remote-debugging\n  Electron: set CDP_PORT=<port> (app must use --remote-debugging-port)');
+  if (!portFile) {
+    if (remembered?.profileDir) {
+      throw cdpUnreachableError({
+        host,
+        port: remembered.port,
+        cause: 'No DevToolsActivePort found and no CDP_PORT set',
+        lastEndpoint: remembered,
+      });
+    }
+    throw new Error('No DevToolsActivePort found and no CDP_PORT set.\n  Chrome: enable at chrome://inspect/#remote-debugging\n  Electron: set CDP_PORT=<port> (app must use --remote-debugging-port)');
+  }
   const lines = readFileSync(portFile, 'utf8').trim().split('\n');
   if (lines.length < 2 || !lines[0] || !lines[1]) throw new Error(`Invalid DevToolsActivePort file: ${portFile}`);
+  rememberReachable({
+    host,
+    port: lines[0],
+    profileDir: profileDirFromDevToolsActivePort(portFile),
+  });
   return `ws://${host}:${lines[0]}${lines[1]}`;
 }
 
@@ -1780,11 +1986,13 @@ function parseCompactFormatArgs(args, allowed = ['text', 'json']) {
   const fopts = parseFormatArgs(args, allowed);
   let compact = false;
   let qa = false;
+  let full = false;
   let maxDiffLines = null;
   const next = [];
   for (let i = 0; i < fopts.args.length; i++) {
     const arg = fopts.args[i];
     if (arg === '--compact') compact = true;
+    else if (arg === '--full' || arg === '--unsafe-full') full = true;
     else if (arg === '--qa' || arg === '--summary') {
       qa = true;
       compact = true;
@@ -1794,7 +2002,7 @@ function parseCompactFormatArgs(args, allowed = ['text', 'json']) {
       maxDiffLines = parseNonNegativeInteger(String(arg).slice('--max-diff-lines='.length), '--max-diff-lines');
     } else next.push(arg);
   }
-  return { format: fopts.format, compact, qa, maxDiffLines, args: next };
+  return { format: fopts.format, compact, qa, full, maxDiffLines, args: next };
 }
 
 function formatJson(model) {
@@ -2005,16 +2213,59 @@ function getDisplayPrefixLength(targetIds) {
 // ---------------------------------------------------------------------------
 
 class CDP {
-  #ws; #id = 0; #pending = new Map(); #eventHandlers = new Map(); #closeHandlers = [];
+  #ws; #id = 0; #pending = new Map(); #eventHandlers = new Map(); #closeHandlers = []; #opened = false;
+
+  #failPending(select, createError) {
+    for (const [id, entry] of [...this.#pending]) {
+      if (select && !select(entry)) continue;
+      this.#pending.delete(id);
+      entry.reject(createError(entry));
+    }
+  }
+
+  #failPendingOnClose(event) {
+    const code = event?.code;
+    const reason = event?.reason;
+    const detail = [
+      code != null && code !== '' ? `code=${code}` : null,
+      reason ? `reason=${reason}` : null,
+    ].filter(Boolean).join(', ');
+    const suffix = detail ? ` (${detail})` : '';
+    this.#failPending(null, entry =>
+      new Error(`CDP websocket closed while waiting for ${entry.method}${suffix}`)
+    );
+    for (const handler of this.#closeHandlers) handler();
+  }
+
+  #failPendingOnDetach(msg) {
+    const reason = msg?.params?.reason || 'unknown';
+    const sessionId = msg?.sessionId;
+    this.#failPending(
+      sessionId ? entry => entry.sessionId === sessionId : null,
+      entry => new Error(`CDP Inspector.detached while waiting for ${entry.method} (reason=${reason})`)
+    );
+  }
 
   async connect(wsUrl) {
     return new Promise((res, rej) => {
       this.#ws = new WebSocket(wsUrl);
-      this.#ws.onopen = () => res();
-      this.#ws.onerror = (e) => rej(new Error('WebSocket error: ' + (e.message || e.type)));
-      this.#ws.onclose = () => this.#closeHandlers.forEach(h => h());
+      this.#ws.onopen = () => {
+        this.#opened = true;
+        res();
+      };
+      this.#ws.onerror = (e) => {
+        if (!this.#opened) {
+          rej(new Error('WebSocket error: ' + (e.message || e.type)));
+          return;
+        }
+        this.#failPending(null, entry =>
+          new Error(`CDP websocket closed while waiting for ${entry.method}`)
+        );
+      };
+      this.#ws.onclose = (event) => this.#failPendingOnClose(event);
       this.#ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data);
+        if (msg.method === 'Inspector.detached') this.#failPendingOnDetach(msg);
         if (msg.id && this.#pending.has(msg.id)) {
           const { resolve, reject } = this.#pending.get(msg.id);
           this.#pending.delete(msg.id);
@@ -2034,6 +2285,8 @@ class CDP {
     return new Promise((resolve, reject) => {
       let timer;
       this.#pending.set(id, {
+        method,
+        sessionId,
         resolve: (value) => {
           clearTimeout(timer);
           resolve(value);
@@ -2045,7 +2298,13 @@ class CDP {
       });
       const msg = { id, method, params };
       if (sessionId) msg.sessionId = sessionId;
-      this.#ws.send(JSON.stringify(msg));
+      try {
+        this.#ws.send(JSON.stringify(msg));
+      } catch {
+        this.#pending.delete(id);
+        reject(new Error(`CDP websocket closed while waiting for ${method}`));
+        return;
+      }
       timer = setTimeout(() => {
         if (this.#pending.has(id)) {
           this.#pending.delete(id);
@@ -3159,7 +3418,13 @@ async function navStr(cdp, sid, url) {
   validateUrl(url);
   await cdpDomains(cdp).Page.enable( {}, sid);
   const loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
-  const result = await cdpDomains(cdp).Page.navigate( { url }, sid);
+  let result;
+  try {
+    result = await cdpDomains(cdp).Page.navigate( { url }, sid);
+  } catch (e) {
+    loadEvent.cancel();
+    throw e;
+  }
   if (result.errorText) {
     loadEvent.cancel();
     throw new Error(result.errorText);
@@ -3525,6 +3790,8 @@ async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
 
 const MAX_ACTION_DELTA_ENTRIES = 5;
 const MAX_ACTION_JSON_DOM_DIFF_CHARS = 800;
+const FILL_TYPEAHEAD_LIMIT = 10;
+const FILL_TYPEAHEAD_MAX_CHARS = 80;
 const DEFAULT_REPORT_ACTION_LIMIT = 20;
 const DEFAULT_REPORT_JSON_BYTES_MAX = 64 * 1024;
 const DEFAULT_STALE_ARTIFACT_HOURS = 24;
@@ -4501,12 +4768,124 @@ function normalizeActionOutputOptions(format = 'text') {
       compact: format.compact === true || format.qa === true || format.summary === true,
       qa: format.qa === true || format.summary === true,
       maxDiffLines: format.maxDiffLines == null ? null : Number(format.maxDiffLines),
+      full: format.full === true || format.unsafeFull === true,
     };
   }
-  return { format, compact: false, qa: false, maxDiffLines: null };
+  return { format, compact: false, qa: false, maxDiffLines: null, full: false };
 }
 
-function formatActionResultOutput(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null } = {}) {
+function typeaheadLabelFromAxLine(line) {
+  const trimmed = String(line || '').replace(/^[+-]\s*/, '').trim();
+  const match = trimmed.match(/^\[(option|listitem|link)\]\s+(.+)$/i);
+  if (!match) return null;
+  const name = match[2]
+    .replace(/\s+@[c\w:-]+(?:\s+\([^)]+\))?$/, '')
+    .replace(/\s+=\s+".*"$/, '')
+    .trim();
+  if (!name) return null;
+  return compactActionText(name, FILL_TYPEAHEAD_MAX_CHARS);
+}
+
+function extractTypeaheadLabels(lines = [], { limit = FILL_TYPEAHEAD_LIMIT } = {}) {
+  const seen = new Set();
+  const labels = [];
+  for (const line of lines) {
+    const label = typeaheadLabelFromAxLine(line);
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    labels.push(label);
+    if (labels.length >= limit) break;
+  }
+  return labels;
+}
+
+function countTypeaheadLabels(lines = []) {
+  const seen = new Set();
+  for (const line of lines) {
+    const label = typeaheadLabelFromAxLine(line);
+    if (label) seen.add(label);
+  }
+  return seen.size;
+}
+
+function typeaheadLabelFromNetworkUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = raw.includes('://') ? new URL(raw) : new URL(raw, 'https://typeahead.invalid');
+    const keys = [...parsed.searchParams.keys()];
+    if (keys.some(key => /^(q|query|search|suggest|typeahead|autocomplete)$/i.test(key))) return null;
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    if (parts.length < 2) return null;
+    if (/^(api|search|suggest|autocomplete|query)$/i.test(parts[0])) return null;
+    return compactActionText(parts.slice(0, 2).join('/'), FILL_TYPEAHEAD_MAX_CHARS);
+  } catch {
+    return null;
+  }
+}
+
+function extractFillTypeahead(effects = {}) {
+  const fromDiff = extractTypeaheadLabels(String(effects.domDiff || '').split('\n'));
+  const seen = new Set(fromDiff);
+  const labels = [...fromDiff];
+  const entries = effects.networkDelta?.entries || effects.network || [];
+  for (const entry of entries) {
+    if (labels.length >= FILL_TYPEAHEAD_LIMIT) break;
+    if (String(entry?.method || 'GET').toUpperCase() !== 'GET') continue;
+    const label = typeaheadLabelFromNetworkUrl(entry.url || '');
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    labels.push(label);
+  }
+  return labels;
+}
+
+function fillTypedValue(result = {}) {
+  const target = result.target || {};
+  if (isSensitiveActionTarget(result.action, target)) return REDACTED_VALUE;
+  const args = Array.isArray(target.commandArgs) ? target.commandArgs : [];
+  const text = args[0] === '--react' ? args[2] : args[1];
+  return text == null ? '' : String(text);
+}
+
+function fillNavigationUrl(effects = {}) {
+  const nav = effects.navigation;
+  if (nav == null || nav === false) return null;
+  if (typeof nav === 'string') return compactActionText(nav, 180) || null;
+  if (typeof nav === 'object') {
+    const url = nav.url || nav.href || nav.to || '';
+    return url ? compactActionText(String(url), 180) : null;
+  }
+  return null;
+}
+
+function compactFillReceiptForJson(result = {}) {
+  const typeahead = isSensitiveActionTarget(result.action, result.target || {})
+    ? []
+    : extractFillTypeahead(result.effects || {});
+  const targetId = result.target?.targetId || '';
+  const receipt = {
+    schema: 'chrome-cdp-ex.fill.v1',
+    value: fillTypedValue(result),
+    changed: result.outcome?.changed === true || result.outcome?.status === 'changed',
+    navigation: fillNavigationUrl(result.effects || {}),
+    typeahead,
+  };
+  if (targetId) receipt.targetPrefix = targetPrefixForDisplay(targetId);
+  return receipt;
+}
+
+function shouldUseCompactFillReceipt(result, { compact = false, qa = false, full = false } = {}) {
+  return result?.action === 'fill'
+    && result?.dispatch?.ok !== false
+    && result?.settle?.ok !== false
+    && result?.outcome?.needsAttention !== true
+    && full !== true
+    && compact !== true
+    && qa !== true;
+}
+
+function formatActionResultOutput(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false } = {}) {
   if (qa) {
     const summary = buildQaSummaryModel({
       page: {
@@ -4539,6 +4918,9 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
     return formatQaSummaryText(summary);
   }
   if (format === 'json') {
+    if (shouldUseCompactFillReceipt(result, { compact, qa, full })) {
+      return JSON.stringify(compactFillReceiptForJson(result));
+    }
     const model = compactActionResultForJson(result, { compact });
     return compact ? JSON.stringify(model) : formatJson(model);
   }
@@ -6902,16 +7284,6 @@ function isSkipLinkAxNode(node) {
   return false;
 }
 
-function isPerceiveRefRole(role) {
-  return INTERACTIVE_ROLES.has(role) || CONTENT_REF_ROLES.has(role);
-}
-
-function perceiveRefPriority({ skip = false, preferred = false } = {}) {
-  if (skip) return 2;
-  if (preferred) return 0;
-  return 1;
-}
-
 // Format a stale/unknown @ref error explaining the most likely root cause.
 // `state` holds {generation, invalidationReason, lastPerceiveAt} from the daemon.
 function formatUnknownRefError(ref, state = {}) {
@@ -7465,26 +7837,50 @@ function validateUrl(url) {
 
 // Perceive: enriched accessibility tree with inline visual layout annotations
 // Options parsed from args: --diff, --selector <sel>, --interactive/-i, --depth <N>, --cursor-interactive/-C
+const PERCEIVE_COMPACT_FLAGS =
+  '--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel';
+
+function unknownPerceiveOption(token) {
+  throw new Error(`unknown option ${token}\nperceive compact flags: ${PERCEIVE_COMPACT_FLAGS}`);
+}
+
 function parsePerceiveArgs(args) {
   const opts = {
     diff: false, selector: null, exclude: null,
     interactive: false, maxDepth: Infinity, cursorInteractive: false,
     keepRefs: false, last: null, adaptive: false, sinceAction: false, frameRef: null,
   };
+  const requireValue = (flag, index, label) => {
+    const value = args[index + 1];
+    if (value === undefined || value === '' || String(value).startsWith('-')) {
+      throw new Error(`${flag} requires ${label}`);
+    }
+    return value;
+  };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (!String(a).startsWith('-')) continue;
     if (a === '--diff') opts.diff = true;
     else if (a === '--since-action') opts.sinceAction = true;
-    else if (a === '-F' || a === '--frame') opts.frameRef = args[++i] || null;
-    else if (a === '-s' || a === '--selector') opts.selector = args[++i];
-    else if (a === '-x' || a === '--exclude') opts.exclude = args[++i];
-    else if (a === '-i' || a === '--interactive') opts.interactive = true;
-    else if (a === '-d' || a === '--depth') opts.maxDepth = parseInt(args[++i]) || Infinity;
-    else if (a === '-C' || a === '--cursor-interactive') opts.cursorInteractive = true;
+    else if (a === '-F' || a === '--frame') {
+      opts.frameRef = requireValue(a, i, 'a frame ref');
+      i++;
+    } else if (a === '-s' || a === '--selector') {
+      opts.selector = requireValue(a, i, 'a CSS selector');
+      i++;
+    } else if (a === '-x' || a === '--exclude') {
+      opts.exclude = requireValue(a, i, 'a CSS selector');
+      i++;
+    } else if (a === '-i' || a === '--interactive') opts.interactive = true;
+    else if (a === '-d' || a === '--depth') {
+      opts.maxDepth = parseInt(requireValue(a, i, 'a depth')) || Infinity;
+      i++;
+    } else if (a === '-C' || a === '--cursor-interactive') opts.cursorInteractive = true;
     else if (a === '--keep-refs') opts.keepRefs = true;
     else if (a === '--adaptive') opts.adaptive = true;
     else if (a === '--last') {
-      const raw = args[++i];
+      const raw = requireValue(a, i, 'N or auto');
+      i++;
       if (raw === 'auto') {
         opts.last = 'auto';
         opts.adaptive = true;
@@ -7492,6 +7888,8 @@ function parsePerceiveArgs(args) {
         const n = parseInt(raw);
         opts.last = Number.isFinite(n) && n > 0 ? n : null;
       }
+    } else {
+      unknownPerceiveOption(a);
     }
   }
   return opts;
@@ -7515,6 +7913,50 @@ function chooseAdaptivePerceiveLast({
   if (interactiveCount > 40) budget = Math.min(budget, 22);
   if (interactiveCount > 80) budget = Math.min(budget, 16);
   return Math.max(8, Math.min(80, budget));
+}
+
+const PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP = 8;
+const PERCEIVE_CHROME_MAX_RELATIVE_DEPTH = 2;
+const PERCEIVE_CHROME_LINE_CAP = 12;
+const PERCEIVE_CONTENT_LANDMARK_ROLES = new Set(['main', 'article']);
+const PERCEIVE_CHROME_LANDMARK_ROLES = new Set(['navigation', 'banner', 'complementary']);
+
+function isSkipLinkName(name) {
+  return SKIP_LINK_NAME_RE.test(String(name || ''));
+}
+
+function countsTowardPerceiveDepth(node) {
+  const role = node.role?.value || '';
+  return role !== 'none' && role !== 'generic' && role !== 'InlineTextBox';
+}
+
+function isPerceiveBodyTextRole(role) {
+  return role === 'StaticText' || role === 'paragraph' || role === 'heading';
+}
+
+function perceiveCursorSurfaceLimit(opts = {}) {
+  const defaultCap = PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP;
+  const { last = null, adaptive = false } = opts;
+  if (Number.isFinite(last) && last > 0) return last;
+  if (last === 'auto' || adaptive) {
+    const budget = chooseAdaptivePerceiveLast({
+      lineCount: Number(opts.lineCount || 0),
+      consoleErrors: Number(opts.consoleErrors || 0),
+      interactiveCount: Number(opts.interactiveCount || 0),
+      hasPriorityText: Boolean(opts.hasPriorityText),
+    });
+    return Math.max(4, Math.min(defaultCap, Math.ceil(budget / 6)));
+  }
+  return defaultCap;
+}
+
+function rankPerceiveCursorItems(items, nameOf) {
+  const skip = [];
+  const rest = [];
+  for (const item of items || []) {
+    (isSkipLinkName(nameOf(item)) ? skip : rest).push(item);
+  }
+  return rest.concat(skip);
 }
 
 function parseControlsArgs(args) {
@@ -7830,6 +8272,126 @@ function filterAxNodesToBackendSubtree(axNodes, backendNodeIds) {
   return axNodes.filter(included);
 }
 
+function axRoleValue(node) {
+  const role = node?.role;
+  if (typeof role === 'string') return role.toLowerCase();
+  if (role && typeof role.value === 'string') return role.value.toLowerCase();
+  return '';
+}
+
+function isMainLandmarkRole(role) {
+  const value = String(role || '').toLowerCase();
+  return value === 'main' || value === 'article';
+}
+
+function parseDomAttributeMap(attributes) {
+  const map = Object.create(null);
+  if (!Array.isArray(attributes)) return map;
+  for (let i = 0; i + 1 < attributes.length; i += 2) {
+    map[String(attributes[i]).toLowerCase()] = String(attributes[i + 1]);
+  }
+  return map;
+}
+
+function isMainContentDomNode(node) {
+  if (!node || typeof node !== 'object') return false;
+  const name = String(node.nodeName || node.localName || '').toLowerCase();
+  if (name === 'main' || name === 'article') return true;
+  const attrs = parseDomAttributeMap(node.attributes);
+  const role = String(attrs.role || '').toLowerCase();
+  if (role === 'main' || role === 'article') return true;
+  const className = String(attrs.class || attrs.classname || '');
+  return className.split(/\s+/).includes('mdx-content');
+}
+
+function walkDescribedDomNodes(node, visit) {
+  if (!node || typeof node !== 'object') return;
+  visit(node);
+  for (const key of ['children', 'shadowRoots', 'pseudoElements', 'distributedNodes']) {
+    for (const child of node[key] || []) walkDescribedDomNodes(child, visit);
+  }
+  if (node.contentDocument) walkDescribedDomNodes(node.contentDocument, visit);
+  if (node.templateContent) walkDescribedDomNodes(node.templateContent, visit);
+}
+
+function domNodeContainsMainContent(node) {
+  let found = false;
+  walkDescribedDomNodes(node, child => {
+    if (!found && isMainContentDomNode(child)) found = true;
+  });
+  return found;
+}
+
+function axChildrenByParent(axNodes) {
+  const childMap = new Map();
+  for (const n of axNodes || []) {
+    if (!n?.parentId) continue;
+    if (!childMap.has(n.parentId)) childMap.set(n.parentId, []);
+    childMap.get(n.parentId).push(n);
+  }
+  return childMap;
+}
+
+function axNodeOrDescendantIsMainLandmark(node, childMap) {
+  if (!node) return false;
+  if (isMainLandmarkRole(axRoleValue(node))) return true;
+  for (const child of childMap.get(node.nodeId) || []) {
+    if (axNodeOrDescendantIsMainLandmark(child, childMap)) return true;
+  }
+  return false;
+}
+
+function describedNodeForBackendId(describedNodesByBackendId, backendNodeId) {
+  if (!describedNodesByBackendId) return null;
+  if (describedNodesByBackendId instanceof Map) return describedNodesByBackendId.get(backendNodeId) || null;
+  return describedNodesByBackendId[backendNodeId] || null;
+}
+
+function shouldPreserveExcludedBackendNode(backendNodeId, axNodes, describedNodesByBackendId, childMap) {
+  const ax = (axNodes || []).find(n => n.backendDOMNodeId === backendNodeId);
+  if (ax && axNodeOrDescendantIsMainLandmark(ax, childMap)) return true;
+  const described = describedNodeForBackendId(describedNodesByBackendId, backendNodeId);
+  return Boolean(described && domNodeContainsMainContent(described));
+}
+
+function filterAxNodesByExcludedBackendIds(axNodes, excludedBackendNodeIds) {
+  const excludedAxIds = new Set();
+  for (const n of axNodes) {
+    if (n.backendDOMNodeId && excludedBackendNodeIds.has(n.backendDOMNodeId)) excludedAxIds.add(n.nodeId);
+  }
+  if (excludedAxIds.size === 0) return axNodes;
+  const childIdsByParent = new Map();
+  for (const n of axNodes) {
+    if (!n.parentId) continue;
+    if (!childIdsByParent.has(n.parentId)) childIdsByParent.set(n.parentId, []);
+    childIdsByParent.get(n.parentId).push(n.nodeId);
+  }
+  const queue = [...excludedAxIds];
+  while (queue.length) {
+    const id = queue.pop();
+    for (const child of (childIdsByParent.get(id) || [])) {
+      excludedAxIds.add(child);
+      queue.push(child);
+    }
+  }
+  return axNodes.filter(n => !excludedAxIds.has(n.nodeId));
+}
+
+function filterPerceiveExcludedAxNodes(axNodes, excludedBackendNodeIds, describedNodesByBackendId) {
+  if (!excludedBackendNodeIds || excludedBackendNodeIds.size === 0) return axNodes;
+  const childMap = axChildrenByParent(axNodes);
+  const safeExcluded = new Set();
+  for (const id of excludedBackendNodeIds) {
+    if (shouldPreserveExcludedBackendNode(id, axNodes, describedNodesByBackendId, childMap)) continue;
+    safeExcluded.add(id);
+  }
+  return filterAxNodesByExcludedBackendIds(axNodes, safeExcluded);
+}
+
+function perceiveInteractiveNoiseHint(count) {
+  return `(Hint: ${count} interactive elements found — most may be sidebar/nav noise. Exclude must not empty main; prefer \`text --auto\` or \`perceive -s main\`. \`perceive -x "nav, aside"\` only drops chrome that does not wrap main.)`;
+}
+
 function parsePerceiveHeader(output) {
   const lines = String(output || '').split('\n');
   const pageMatch = (lines[0] || '').match(/^Page: (.*) — (.*)$/);
@@ -7908,6 +8470,30 @@ function buildPerceiveDiffRecommendation({ mode, changed, baselineAvailable = tr
   };
 }
 
+function perceiveFocusedFromOutput(output) {
+  const lines = String(output || '').split('\n');
+  const match = (lines[1] || '').match(/Focused: (.*)$/);
+  return match ? match[1].trim() : '';
+}
+
+function shouldSummarizeTypeaheadDiff(diff, previousOutput, currentOutput, mode) {
+  if (mode !== 'since-action') return false;
+  const previous = parsePerceiveHeader(previousOutput);
+  const current = parsePerceiveHeader(currentOutput);
+  if (previous.page.url && current.page.url && previous.page.url !== current.page.url) return false;
+  const suggestionCount = countTypeaheadLabels(diff.addedStructural);
+  if (suggestionCount === 0) return false;
+  const focused = perceiveFocusedFromOutput(currentOutput);
+  const focusedTextbox = /textbox|searchbox|combobox/i.test(focused);
+  const hasListbox = [...diff.addedStructural, ...diff.removedStructural]
+    .some(line => /\[listbox\]/i.test(line));
+  return focusedTextbox && hasListbox;
+}
+
+function typeaheadDiffHeadline(suggestionCount) {
+  return `textbox value set; ${suggestionCount} suggestion links`;
+}
+
 function buildPerceiveDiffModel(previousOutput, currentOutput, { mode = 'diff', targetPrefix = '' } = {}) {
   const diff = computePerceiveDiff(previousOutput, currentOutput);
   const target = targetPrefix || '<target>';
@@ -7922,7 +8508,7 @@ function buildPerceiveDiffModel(previousOutput, currentOutput, { mode = 'diff', 
     : [
         `cdp report ${target} --format json`,
       ];
-  return {
+  const model = {
     schema: 'chrome-cdp-ex.perceive-diff.v1',
     mode,
     ...parsePerceiveHeader(currentOutput),
@@ -7942,10 +8528,30 @@ function buildPerceiveDiffModel(previousOutput, currentOutput, { mode = 'diff', 
     recommendation: buildPerceiveDiffRecommendation({ mode, changed, nextSteps }),
     nextSteps,
   };
+  if (shouldSummarizeTypeaheadDiff(diff, previousOutput, currentOutput, mode)) {
+    const suggestionCount = countTypeaheadLabels(diff.addedStructural);
+    const labels = extractTypeaheadLabels(diff.addedStructural);
+    model.summary.kind = 'typeahead';
+    model.summary.headline = typeaheadDiffHeadline(suggestionCount);
+    model.added = labels;
+    model.removed = [];
+    model.removedOmitted = diff.removedStructural.length;
+    model.addedOmitted = Math.max(0, suggestionCount - labels.length);
+  }
+  return model;
 }
 
-function formatPerceiveDiffOutput(previousOutput, currentOutput) {
+function formatPerceiveDiffOutput(previousOutput, currentOutput, { mode = 'diff' } = {}) {
   const diff = computePerceiveDiff(previousOutput, currentOutput);
+  if (shouldSummarizeTypeaheadDiff(diff, previousOutput, currentOutput, mode)) {
+    const suggestionCount = countTypeaheadLabels(diff.addedStructural);
+    const labels = extractTypeaheadLabels(diff.addedStructural);
+    const lines = [typeaheadDiffHeadline(suggestionCount), ...labels.map(label => `+ ${label}`)];
+    if (suggestionCount > labels.length) {
+      lines.push(`  ... and ${suggestionCount - labels.length} more`);
+    }
+    return diff.headerLines.join('\n') + '\n\n' + lines.join('\n');
+  }
   const diffLines = [];
   const removedText = diff.removedTextLines.length;
   const addedText = diff.addedTextLines.length;
@@ -7993,6 +8599,7 @@ function formatRefRect(rect) {
 function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   const { maxDepth = Infinity, interactiveOnly = false, keepRefs = false, last = null } = opts;
   // opts.adaptive + opts.consoleErrors are used by the --last auto / --adaptive budget path
+  // opts.cursorInteractive is accepted so -C ranking shares this path with last/adaptive.
 
   const nodesById = new Map(nodes.map(n => [n.nodeId, n]));
   const childrenByParent = new Map();
@@ -8021,47 +8628,18 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   const rowCellIdx = new Map();
   const dataRowIdx = new Map();
 
-  // Assign @refs before walking so skip-links do not consume @1/@2/@3.
+  // Clear and rebuild ref map
   refMap.clear();
-  const refByNodeId = new Map();
-  const refCandidates = [];
-  const refSeen = new Set();
-  let refOrder = 0;
-  function collectRefCandidate(node, preferred) {
-    if (!node || refSeen.has(node.nodeId)) return;
-    refSeen.add(node.nodeId);
-    const role = node.role?.value || '';
-    const inPreferred = preferred || CONTENT_REF_ROLES.has(role);
-    if (isPerceiveRefRole(role) && node.backendDOMNodeId) {
-      refCandidates.push({
-        node,
-        order: refOrder++,
-        skip: isSkipLinkAxNode(node),
-        preferred: inPreferred,
-      });
-    }
-    for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
-      collectRefCandidate(child, inPreferred);
-    }
-  }
-  const refRoots = nodes.filter(n => !n.parentId || !nodesById.has(n.parentId));
-  for (const root of refRoots) collectRefCandidate(root, false);
-  for (const node of nodes) collectRefCandidate(node, false);
-  const rankedRefs = [...refCandidates].sort((a, b) => {
-    const priorityDiff = perceiveRefPriority(a) - perceiveRefPriority(b);
-    if (priorityDiff !== 0) return priorityDiff;
-    return a.order - b.order;
-  });
+  let refCounter = 0;
   const refNodeIds = [];
-  for (const candidate of rankedRefs) {
-    const ref = refNodeIds.length + 1;
-    refMap.set(ref, candidate.node.backendDOMNodeId);
-    refNodeIds.push({ ref, backendDOMNodeId: candidate.node.backendDOMNodeId });
-    refByNodeId.set(candidate.node.nodeId, ref);
-  }
+  const pendingSkipRefs = [];
+  const pendingChromeRefs = [];
 
   const treeLines = [];
+  const contentBodyLines = new Set();
   const visited = new Set();
+  let chromeLinesEmitted = 0;
+  let chromeTruncationNoted = false;
 
   function markSubtreeVisited(nodeId) {
     visited.add(nodeId);
@@ -8070,17 +8648,52 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     }
   }
 
-  function visit(node, depth, parentNode = null, tableAncestorId = null) {
+  function assignInteractiveRef(node) {
+    if (!node.backendDOMNodeId) return null;
+    refCounter++;
+    refMap.set(refCounter, node.backendDOMNodeId);
+    refNodeIds.push({ ref: refCounter, backendDOMNodeId: node.backendDOMNodeId });
+    return refCounter;
+  }
+
+  function childRegion(ctx, counts) {
+    return {
+      inContent: ctx.inContent,
+      inChrome: ctx.inChrome,
+      chromeDepth: ctx.inChrome && counts ? ctx.chromeDepth + 1 : ctx.chromeDepth,
+      contentDepth: ctx.inContent && counts ? ctx.contentDepth + 1 : ctx.contentDepth,
+    };
+  }
+
+  function visit(node, depth, parentNode = null, tableAncestorId = null, ctx = {
+    inContent: false, inChrome: false, chromeDepth: 0, contentDepth: 0,
+  }) {
     if (!node || visited.has(node.nodeId)) return;
     visited.add(node.nodeId);
 
     const role = node.role?.value || '';
     const name = node.name?.value ?? '';
+    const skipLink = isSkipLinkAxNode(node);
+    const enteringContent = PERCEIVE_CONTENT_LANDMARK_ROLES.has(role) && depth <= maxDepth;
+    const inContent = ctx.inContent || enteringContent;
+    const enteringChrome = !inContent && PERCEIVE_CHROME_LANDMARK_ROLES.has(role);
+    const inChrome = !inContent && (ctx.inChrome || enteringChrome);
+    const chromeDepth = enteringChrome ? 0 : ctx.chromeDepth;
+    const contentDepth = enteringContent ? 0 : ctx.contentDepth;
+    const region = { inContent, inChrome, chromeDepth, contentDepth };
+    const counts = countsTowardPerceiveDepth(node);
+    const childDepth = counts ? depth + 1 : depth;
 
-    // Depth limit: refs were pre-assigned; skip output for deeper nodes
-    if (depth > maxDepth) {
+    const overChrome = inChrome && chromeDepth > PERCEIVE_CHROME_MAX_RELATIVE_DEPTH;
+    const overContent = inContent && contentDepth > maxDepth;
+    const overGlobal = !inContent && depth > maxDepth;
+    if (overChrome || overContent || overGlobal) {
+      if ((INTERACTIVE_ROLES.has(role) || CONTENT_REF_ROLES.has(role)) && node.backendDOMNodeId && !skipLink) {
+        if (inChrome) pendingChromeRefs.push({ lineIndex: -1, backendDOMNodeId: node.backendDOMNodeId });
+        else assignInteractiveRef(node);
+      }
       for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
-        visit(child, depth + 1, node, tableAncestorId);
+        visit(child, childDepth, node, tableAncestorId, childRegion(region, counts));
       }
       return;
     }
@@ -8127,55 +8740,76 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     }
 
     const isInteractive = INTERACTIVE_ROLES.has(role);
-    const assignedRef = refByNodeId.get(node.nodeId);
 
     // --interactive mode: only show interactive elements and their immediate structural parents
-    if (interactiveOnly && !isInteractive && !ENRICHED_ROLES.has(role) && !assignedRef) {
+    if (interactiveOnly && !isInteractive && !ENRICHED_ROLES.has(role)) {
       for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
-        visit(child, depth, node, tableAncestorId);
+        visit(child, depth, node, tableAncestorId, region);
       }
       return;
     }
 
-    if (shouldShowAxNode(node, true, parentNode) || assignedRef) {
-      let line = formatAxNode(node, depth);
-      if (assignedRef) line += `  @${assignedRef}`;
+    if (shouldShowAxNode(node, true, parentNode)) {
+      const chromeCapped = inChrome && chromeLinesEmitted >= PERCEIVE_CHROME_LINE_CAP;
+      if (chromeCapped) {
+        if (!chromeTruncationNoted) {
+          treeLines.push(formatAxNode({ role: { value: 'note' }, name: { value: '... chrome truncated' } }, depth));
+          chromeTruncationNoted = true;
+        }
+      } else {
+        let line = formatAxNode(node, depth);
 
-      // Enrich landmark/structural nodes with layout annotations
-      if (ENRICHED_ROLES.has(role)) {
-        const layout = consumeLayout(role);
-        if (layout) {
-          const parts = [];
-          if (layout.w) parts.push(`${layout.w}×${layout.h}px`);
-          else if (layout.h >= 40) parts.push(`↕${layout.h}px`);
-          if (layout.bg) parts.push(`bg:${layout.bg}`);
-          if (layout.font) parts.push(layout.font);
-          if (layout.color) parts.push(`color:${layout.color}`);
-          if (layout.display) {
-            let d = layout.display;
-            if (layout.gap) d += ` gap:${layout.gap}`;
-            parts.push(d);
+        // Assign @ref to interactive elements. Skip-links are deferred so they
+        // do not consume @1 when the article has a real control (#159 / #163).
+        if ((isInteractive || CONTENT_REF_ROLES.has(role)) && node.backendDOMNodeId) {
+          if (skipLink) {
+            pendingSkipRefs.push({ lineIndex: treeLines.length, backendDOMNodeId: node.backendDOMNodeId });
+          } else if (inChrome) {
+            pendingChromeRefs.push({ lineIndex: treeLines.length, backendDOMNodeId: node.backendDOMNodeId });
+          } else {
+            const ref = assignInteractiveRef(node);
+            if (ref != null) line += `  @${ref}`;
           }
-          if (layout.opacity) parts.push(`opacity:${layout.opacity}`);
-          if (layout.vis === 'above') parts.push('↑above fold');
-          else if (layout.vis === 'below') parts.push('↓below fold');
-          if (parts.length > 0) line += '  ' + parts.join('  ');
         }
-      }
 
-      // Enrich table cells with style hints (positional key: tableIdx:rowIdx:colIdx)
-      if (isCellRole && meta.styleHints) {
-        const ti = tableIdxMap.get(tableAncestorId);
-        const ri = dataRowIdx.get(tableAncestorId) ?? -1;
-        if (ti != null && ri >= 0) {
-          const hint = meta.styleHints[ti + ':' + ri + ':' + cellColIdx];
-          if (hint) line += '  ' + hint;
+        // Enrich landmark/structural nodes with layout annotations
+        if (ENRICHED_ROLES.has(role)) {
+          const layout = consumeLayout(role);
+          if (layout) {
+            const parts = [];
+            if (layout.w) parts.push(`${layout.w}×${layout.h}px`);
+            else if (layout.h >= 40) parts.push(`↕${layout.h}px`);
+            if (layout.bg) parts.push(`bg:${layout.bg}`);
+            if (layout.font) parts.push(layout.font);
+            if (layout.color) parts.push(`color:${layout.color}`);
+            if (layout.display) {
+              let d = layout.display;
+              if (layout.gap) d += ` gap:${layout.gap}`;
+              parts.push(d);
+            }
+            if (layout.opacity) parts.push(`opacity:${layout.opacity}`);
+            if (layout.vis === 'above') parts.push('↑above fold');
+            else if (layout.vis === 'below') parts.push('↓below fold');
+            if (parts.length > 0) line += '  ' + parts.join('  ');
+          }
         }
+
+        // Enrich table cells with style hints (positional key: tableIdx:rowIdx:colIdx)
+        if (isCellRole && meta.styleHints) {
+          const ti = tableIdxMap.get(tableAncestorId);
+          const ri = dataRowIdx.get(tableAncestorId) ?? -1;
+          if (ti != null && ri >= 0) {
+            const hint = meta.styleHints[ti + ':' + ri + ':' + cellColIdx];
+            if (hint) line += '  ' + hint;
+          }
+        }
+        treeLines.push(line);
+        if (inChrome) chromeLinesEmitted++;
+        if (inContent && isPerceiveBodyTextRole(role)) contentBodyLines.add(line);
       }
-      treeLines.push(line);
     }
     for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
-      visit(child, depth + 1, node, tableAncestorId);
+      visit(child, childDepth, node, tableAncestorId, childRegion(region, counts));
     }
   }
 
@@ -8183,16 +8817,26 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   for (const root of roots) visit(root, 0);
   for (const node of nodes) visit(node, 0);
 
+  for (const pending of [...pendingChromeRefs, ...pendingSkipRefs]) {
+    refCounter++;
+    refMap.set(refCounter, pending.backendDOMNodeId);
+    refNodeIds.push({ ref: refCounter, backendDOMNodeId: pending.backendDOMNodeId });
+    if (pending.lineIndex >= 0 && treeLines[pending.lineIndex] != null) {
+      treeLines[pending.lineIndex] += `  @${refCounter}`;
+    }
+  }
+
   // --last N: keep only the last N StaticText / paragraph rows. Ref-bearing
   // lines (anything containing `@<digit>` or `@c<digit>`) and structural lines
   // (landmarks, headings, dialogs, etc.) are always kept.
   // --keep-refs: when truncating, ensure every line carrying an @ref survives.
   // --adaptive / --last auto: choose N from density + error/priority signals.
+  // Content-landmark text is treated as priority so -C chrome cannot outrank the article.
   let outLines = treeLines;
   let effectiveLast = last;
   if (last === 'auto' || (opts.adaptive && (last == null || last === 'auto'))) {
     const interactiveCount = outLines.filter(ln => /@(c?\d+)/.test(ln)).length;
-    const hasPriorityText = outLines.some(ln => isPriorityPerceiveTextLine(ln));
+    const hasPriorityText = outLines.some(ln => isPriorityPerceiveTextLine(ln) || contentBodyLines.has(ln));
     effectiveLast = chooseAdaptivePerceiveLast({
       lineCount: outLines.length,
       consoleErrors: Number(opts.consoleErrors || 0),
@@ -8214,8 +8858,10 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
       const isRef = refLineRe.test(ln);
       const isText = textRoleRe.test(ln) && !isRef;
       if (isText) {
-        if (isPriorityPerceiveTextLine(ln) && priorityKept < priorityBudget) { reversed.push(ln); priorityKept++; }
-        else if (textKept < effectiveLast) { reversed.push(ln); textKept++; }
+        if ((contentBodyLines.has(ln) || isPriorityPerceiveTextLine(ln)) && priorityKept < priorityBudget) {
+          reversed.push(ln);
+          priorityKept++;
+        } else if (textKept < effectiveLast) { reversed.push(ln); textKept++; }
         else { textOmitted++; }
       } else {
         reversed.push(ln);
@@ -8233,6 +8879,15 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     // hid refs was happening elsewhere; --keep-refs is now a soft flag agents
     // can use to assert "do not drop my @ref lines"). The flag is honoured
     // upstream by perceiveStr which avoids cutting ref lines.
+  }
+
+  const hasContentBody = outLines.some(ln => contentBodyLines.has(ln));
+  const emittedChromeOrSkip = outLines.some(ln =>
+    /\[(navigation|banner|complementary)\]/.test(ln) || /\[(link|button)\]\s+Skip\b/i.test(ln)
+  );
+  if (!hasContentBody && Number.isFinite(maxDepth) && emittedChromeOrSkip) {
+    const target = opts.targetPrefix || '<target>';
+    outLines.push(`Body truncated. Next: cdp text ${target} --auto`);
   }
 
   return { treeLines: outLines, refNodeIds };
@@ -8512,40 +9167,20 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   if (excludeSelector) {
     const { root } = await docRootPromise;
     const excludedBackendNodeIds = new Set();
+    const describedNodesByBackendId = new Map();
     const exNodes = await cdpDomains(cdp).DOM.querySelectorAll( { nodeId: root.nodeId, selector: excludeSelector }, sid);
     if (exNodes.nodeIds) {
       const results = await Promise.allSettled(
-        exNodes.nodeIds.map(nid => cdpDomains(cdp).DOM.describeNode( { nodeId: nid }, sid))
+        exNodes.nodeIds.map(nid => cdpDomains(cdp).DOM.describeNode( { nodeId: nid, depth: -1, pierce: true }, sid))
       );
       for (const r of results) {
-        if (r.status === 'fulfilled' && r.value.node.backendNodeId)
+        if (r.status === 'fulfilled' && r.value.node?.backendNodeId) {
           excludedBackendNodeIds.add(r.value.node.backendNodeId);
+          describedNodesByBackendId.set(r.value.node.backendNodeId, r.value.node);
+        }
       }
     }
-    if (excludedBackendNodeIds.size > 0) {
-      const excludedAxIds = new Set();
-      for (const n of axNodes) {
-        if (n.backendDOMNodeId && excludedBackendNodeIds.has(n.backendDOMNodeId)) excludedAxIds.add(n.nodeId);
-      }
-      if (excludedAxIds.size > 0) {
-        const childMap = new Map();
-        for (const n of axNodes) {
-          if (n.parentId) {
-            if (!childMap.has(n.parentId)) childMap.set(n.parentId, []);
-            childMap.get(n.parentId).push(n.nodeId);
-          }
-        }
-        const queue = [...excludedAxIds];
-        while (queue.length) {
-          const id = queue.pop();
-          for (const child of (childMap.get(id) || [])) {
-            excludedAxIds.add(child);
-            queue.push(child);
-          }
-        }
-        axNodes = axNodes.filter(n => !excludedAxIds.has(n.nodeId));
-      }
-    }
+    axNodes = filterPerceiveExcludedAxNodes(axNodes, excludedBackendNodeIds, describedNodesByBackendId);
   }
 
   const activeRefMap = frame ? new Map() : refMap;
@@ -8555,7 +9190,9 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     keepRefs,
     last,
     adaptive,
+    cursorInteractive,
     consoleErrors: errors + exceptions,
+    targetPrefix: opts.targetPrefix || '<target>',
   });
   let treeLines = builtTree.treeLines;
   const { refNodeIds } = builtTree;
@@ -8614,21 +9251,37 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   }
   if (frame) treeLines = qualifyFrameRefsInLines(treeLines, frame.ref);
 
-  // === Cursor-interactive @c refs ===
+  // === Cursor-interactive @c refs (capped AFTER body; last/adaptive apply here) ===
+  const cursorLimit = perceiveCursorSurfaceLimit({
+    last,
+    adaptive,
+    lineCount: treeLines.length,
+    consoleErrors: errors + exceptions,
+    interactiveCount: refNodeIds.length + (meta.cursorInteractives?.length || 0) + (meta.visibleControls?.length || 0),
+    hasPriorityText: treeLines.some(ln => isPriorityPerceiveTextLine(ln)),
+  });
   let cRefCounter = 0;
   if (cursorInteractive && meta.cursorInteractives?.length > 0) {
+    const ranked = rankPerceiveCursorItems(meta.cursorInteractives, item => item.text || item.sel);
+    const capped = ranked.slice(0, cursorLimit);
     treeLines.push('');
-    treeLines.push('[Cursor-interactive elements] (non-ARIA clickable)');
-    for (const ci of meta.cursorInteractives) {
+    treeLines.push(`[Cursor-interactive elements] (non-ARIA clickable)${ranked.length > capped.length ? ' (truncated)' : ''}`);
+    for (const ci of capped) {
       cRefCounter++;
       refMap.set(`c${cRefCounter}`, ci);
       treeLines.push(`  [clickable] ${ci.text || ci.sel}  @c${cRefCounter}  (${ci.x},${ci.y} ${ci.w}×${ci.h})`);
     }
   }
   if (cursorInteractive && meta.visibleControls?.length > 0) {
+    const ranked = rankPerceiveCursorItems(
+      meta.visibleControls,
+      item => item.label || item.ariaLabel || item.text || item.title,
+    );
+    const capped = ranked.slice(0, cursorLimit);
+    const truncated = ranked.length > capped.length || meta.visibleControlsTruncated;
     treeLines.push('');
-    treeLines.push(`[Visible controls]${meta.visibleControlsTruncated ? ' (truncated)' : ''}`);
-    for (const control of meta.visibleControls) {
+    treeLines.push(`[Visible controls]${truncated ? ' (truncated)' : ''}`);
+    for (const control of capped) {
       treeLines.push(`  ${formatVisibleControlLine(control)}`);
     }
   }
@@ -8679,7 +9332,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     if (!diffBaseline) {
       return output + '\n\n(no action baseline available; run `perceive` before a mutating command, or use `perceive --diff` after a normal perceive.)';
     }
-    return formatPerceiveDiffOutput(diffBaseline, output);
+    return formatPerceiveDiffOutput(diffBaseline, output, { mode: 'since-action' });
   }
 
   // Diff mode: compare with previous perceive output.
@@ -8692,7 +9345,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   markPerceived();
   // Hint when perceive returns many interactive elements without exclude
   if (interactiveOnly && !excludeSelector && refNodeIds.length > 50) {
-    return output + `\n\n(Hint: ${refNodeIds.length} interactive elements found — most may be sidebar/nav noise. Use \`perceive -x "nav, aside"\` to exclude, or \`perceive -s "main"\` to scope.)`;
+    return output + `\n\n${perceiveInteractiveNoiseHint(refNodeIds.length)}`;
   }
   return output;
 }
@@ -13547,21 +14200,67 @@ async function replayActionsStr({ run }, args) {
 }
 
 // --- Doctor: one-call diagnostics ---
-function checkNode(version = process.version) {
-  const major = parseInt(String(version).replace(/^v/, '').split('.')[0]) || 0;
+function checkNode(version = process.version, opts = {}) {
+  const major = nodeMajor(version);
   if (major >= 22) return { status: 'OK', label: 'Node', detail: `${version} (>= 22)` };
+  const cdpScriptPath = opts.cdpScriptPath || fileURLToPath(import.meta.url);
+  const found = typeof opts.discover === 'function'
+    ? opts.discover()
+    : discoverNode22({
+      home: opts.home,
+      env: opts.env,
+      fs: opts.fs,
+      spawnSync: opts.spawnSync,
+      execPath: opts.execPath || process.execPath,
+      execVersion: version,
+      timeout: opts.timeout,
+    });
+  if (found?.binary) {
+    const rerunCommand = formatNodeRerunCommand(found.binary, cdpScriptPath, 'doctor');
+    return {
+      status: 'WARN',
+      severity: 'advisory',
+      label: 'Node',
+      detail: `${version} (runtime) ; Node 22 found at ${found.binary}`,
+      hint: `Rerun: ${rerunCommand}`,
+      recommendedBinary: found.binary,
+      recommendedVersion: found.version,
+      cdpScriptPath,
+      rerunCommand,
+    };
+  }
   return {
-    status: 'FAIL', label: 'Node', detail: `${version} (need >= 22)`,
-    hint: 'chrome-cdp-ex uses built-in WebSocket which requires Node 22+',
+    status: 'FAIL',
+    label: 'Node',
+    detail: `${version} (need >= 22)`,
+    hint: NODE22_MISSING_HINT,
   };
 }
 
-function checkSkillSymlink({ home = homedir(), fs = { existsSync, lstatSync: null } } = {}) {
-  const target = resolve(home, '.claude', 'skills', 'chrome-cdp-ex');
-  if (!fs.existsSync(target)) {
+function hostSkillInstallPaths({ home = homedir(), env = process.env } = {}) {
+  const hermesHome = env.HERMES_HOME || resolve(home, '.hermes');
+  return [...new Set([
+    resolve(hermesHome, 'skills', 'chrome-cdp-ex'),
+    resolve(home, '.hermes', 'skills', 'chrome-cdp-ex'),
+    resolve(home, '.claude', 'skills', 'chrome-cdp-ex'),
+    resolve(home, '.codex', 'skills', 'chrome-cdp-ex'),
+  ])];
+}
+
+function doctorCliPrefix(node) {
+  if (node?.recommendedBinary && node.cdpScriptPath) {
+    return `${node.recommendedBinary} ${node.cdpScriptPath}`;
+  }
+  return 'cdp';
+}
+
+function checkSkillSymlink({ home = homedir(), env = process.env, fs = { existsSync, lstatSync: null } } = {}) {
+  const candidates = hostSkillInstallPaths({ home, env });
+  const target = candidates.find(path => fs.existsSync(path));
+  if (!target) {
     return {
-      status: 'WARN', label: 'Skill install', detail: `${target} not found`,
-      hint: 'Install with: cp -r skills/chrome-cdp-ex ~/.claude/skills/  (or use the plugin loader)',
+      status: 'WARN', label: 'Skill install', detail: `${candidates.join(', ')} not found`,
+      hint: 'Install with: cp -r skills/chrome-cdp-ex ~/.hermes/skills/  (or ~/.claude/skills/, ~/.codex/skills/, or use the plugin loader)',
     };
   }
   let kind = 'directory';
@@ -13647,11 +14346,45 @@ function checkFdLimit({ limit = detectFdLimit(), platform = process.platform } =
   };
 }
 
-async function checkCdpReachability({ env = process.env, fetcher = fetch, host = env.CDP_HOST || process.env.CDP_HOST || '127.0.0.1' } = {}) {
+async function checkCdpReachability({
+  env = process.env,
+  fetcher = fetch,
+  host = env.CDP_HOST || process.env.CDP_HOST || '127.0.0.1',
+  lastEndpoint,
+  readLastEndpoint = readLastCdpEndpoint,
+  rememberEndpoint = rememberLastCdpEndpoint,
+  connectWebSocket,
+} = {}) {
   const port = env.CDP_PORT;
+  const remembered = lastEndpoint !== undefined ? lastEndpoint : readLastEndpoint();
+  const rememberReachable = (record) => {
+    try { rememberEndpoint(record); } catch {}
+  };
+  const unreachable = (p, cause) => {
+    const profileDir = remembered?.profileDir || null;
+    const relaunch = formatCdpRelaunchCommand(remembered, { port: p });
+    const hint = relaunch || 'Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.';
+    return {
+      status: 'FAIL',
+      label: 'CDP',
+      detail: `cannot reach ${host}:${p} (${cause})`,
+      hint,
+      error: 'cdp_unreachable',
+      host,
+      port: String(p),
+      profileDir,
+      relaunch,
+      exe: remembered?.exe || null,
+      browser: remembered?.browser || null,
+    };
+  };
   const tryFetch = async (p) => {
     const res = await fetcher(`http://${host}:${p}/json/version`, { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
     return res.json();
   };
   const describe = (info) => {
@@ -13671,27 +14404,21 @@ async function checkCdpReachability({ env = process.env, fetcher = fetch, host =
           port: String(port),
         };
       }
+      rememberReachable({ host, port });
       return { status: 'OK', label: 'CDP', detail: `${host}:${port} → ${describe(info)}`, host, port: String(port) };
     } catch (e) {
-      // Try WebSocket fallback check
-      try {
-        const wsUrl = `ws://${host}:${port}/devtools/browser`;
-        const ws = new WebSocket(wsUrl);
-        const wsOpen = await new Promise((resolveWs, rejectWs) => {
-          ws.onopen = () => { resolveWs(true); ws.close(); };
-          ws.onerror = (err) => rejectWs(err);
-          setTimeout(() => { ws.close(); rejectWs(new Error('WebSocket timeout')); }, 2000);
-        });
-        if (wsOpen) {
-          return { status: 'OK', label: 'CDP', detail: `${host}:${port} → connected via WebSocket fallback`, host, port: String(port) };
-        }
-      } catch {}
-      return {
-        status: 'FAIL', label: 'CDP', detail: `cannot reach ${host}:${port} (${e.message})`,
-        hint: `start the app with --remote-debugging-port=${port}, or unset CDP_PORT to auto-discover Chrome`,
-        host,
-        port: String(port),
-      };
+      // Chrome 136+ / websocket-only: HTTP 404 still has a live /devtools/browser socket.
+      // Connection refused, timeout, and other HTTP failures must fail fast.
+      if (isCdpHttp404(e)) {
+        try {
+          const wsOpen = await openCdpWebSocket(`ws://${host}:${port}/devtools/browser`, { connectWebSocket });
+          if (wsOpen) {
+            rememberReachable({ host, port });
+            return { status: 'OK', label: 'CDP', detail: `${host}:${port} → connected via WebSocket fallback`, host, port: String(port) };
+          }
+        } catch {}
+      }
+      return unreachable(port, e.message);
     }
   }
   // Auto-discover via DevToolsActivePort (light reuse — avoids full ws connect)
@@ -13707,6 +14434,9 @@ async function checkCdpReachability({ env = process.env, fetcher = fetch, host =
   ].filter(Boolean);
   const found = tryPaths.find(p => existsSync(p));
   if (!found) {
+    if (remembered?.profileDir && remembered?.port) {
+      return unreachable(remembered.port, 'no DevToolsActivePort and no CDP_PORT set');
+    }
     return {
       status: 'FAIL', label: 'CDP', detail: 'no DevToolsActivePort and no CDP_PORT set',
       hint: 'Toggle chrome://inspect/#remote-debugging in Chrome, or set CDP_PORT=<port> for an Electron app',
@@ -13722,8 +14452,10 @@ async function checkCdpReachability({ env = process.env, fetcher = fetch, host =
     return { status: 'WARN', label: 'CDP', detail: `invalid DevToolsActivePort at ${found}`, host };
   }
   const discoveredPort = lines[0];
+  const discoveredProfile = profileDirFromDevToolsActivePort(found);
   try {
     const info = await tryFetch(discoveredPort);
+    rememberReachable({ host, port: discoveredPort, profileDir: discoveredProfile });
     return { status: 'OK', label: 'CDP', detail: `${host}:${discoveredPort} → ${describe(info)} (auto-discovered)`, host, port: String(discoveredPort) };
   } catch (e) {
     return {
@@ -13868,7 +14600,7 @@ function doctorRankedTargetPrefix(tabs = {}, daemons = {}, permission = {}) {
     || null;
 }
 
-function doctorProbeFromTargets({ tabs = {}, daemons = {}, permission = {} } = {}) {
+function doctorProbeFromTargets({ tabs = {}, daemons = {}, permission = {}, prefix = 'cdp' } = {}) {
   const tabCount = doctorTabCount(tabs, daemons, permission);
   const targetPrefix = doctorRankedTargetPrefix(tabs, daemons, permission);
   const multi = tabCount > 1;
@@ -13877,18 +14609,20 @@ function doctorProbeFromTargets({ tabs = {}, daemons = {}, permission = {} } = {
     targetPrefix,
     multi,
     provenCommand: multi
-      ? 'cdp list'
-      : (targetPrefix ? `cdp perceive ${targetPrefix} -C -d 8` : 'cdp list'),
-    probeNote: multi ? `${tabCount} tabs — pick with cdp list / cdp target --url` : null,
+      ? `${prefix} list`
+      : (targetPrefix ? `${prefix} perceive ${targetPrefix} -C -d 8` : `${prefix} list`),
+    probeNote: multi ? `${tabCount} tabs — pick with ${prefix} list / ${prefix} target --url` : null,
     listIsSourceOfTruth: tabCount > 0,
   };
 }
 
 function doctorProbeFromChecks(checks = []) {
+  const node = checks.find(check => check.label === 'Node');
   return doctorProbeFromTargets({
     tabs: checks.find(check => check.label === 'Tabs') || {},
     daemons: checks.find(check => check.label === 'Daemons') || {},
     permission: checks.find(check => check.label === 'Permission') || {},
+    prefix: doctorCliPrefix(node),
   });
 }
 
@@ -14025,16 +14759,27 @@ function checkRuntimeEnvironment(opts = {}) {
 }
 
 function reconcileRuntimeEnvironmentCheck(environment, cdp) {
-  if (cdp?.status !== 'OK' || environment?.label !== 'Environment' || environment.status === 'OK') {
+  if (environment?.label !== 'Environment' || environment.status === 'OK') {
     return environment;
   }
-  return {
-    ...environment,
-    status: 'OK',
-    detail: `${environment.detail}; CDP reachable`,
-    hint: null,
-    recovery: null,
-  };
+  if (cdp?.status === 'OK') {
+    return {
+      ...environment,
+      status: 'OK',
+      detail: `${environment.detail}; CDP reachable`,
+      hint: null,
+      recovery: null,
+    };
+  }
+  // Configured CDP is down. Do not advertise a blank isolated profile.
+  if (cdp?.port || cdp?.profileDir) {
+    return {
+      ...environment,
+      hint: 'CDP_PORT is set; enable remote debugging on that existing browser. Do not spawn a new user-data-dir.',
+      recovery: null,
+    };
+  }
+  return environment;
 }
 
 function doctorWizardSummary(checks) {
@@ -14055,31 +14800,34 @@ function doctorWizardModel(checks) {
   const probe = doctorProbeFromChecks(checks);
   const target = probe.targetPrefix || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
+  const prefix = doctorCliPrefix(node);
 
   let status = 'ready for live browser perception';
-  let currentStep = probe.multi ? 'cdp list' : `cdp perceive ${target} -C -d 8`;
+  let currentStep = probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`;
   if (node?.status === 'FAIL') {
     status = 'blocked at Node.js';
-    currentStep = 'install Node.js 22+ and rerun: cdp doctor';
+    currentStep = node.hint || NODE22_MISSING_HINT;
   } else if (cdp?.status === 'FAIL') {
     status = 'blocked at browser CDP';
-    currentStep = 'enable browser remote debugging, then rerun: cdp doctor';
+    currentStep = cdp.relaunch
+      ? cdp.relaunch
+      : `enable browser remote debugging, then rerun: ${prefix} doctor`;
   } else if (cdp?.status === 'WARN') {
     status = 'waiting for stable browser CDP';
-    currentStep = 're-toggle browser remote debugging, then rerun: cdp doctor';
+    currentStep = `re-toggle browser remote debugging, then rerun: ${prefix} doctor`;
   } else if (noTargets) {
     status = 'waiting for a debuggable page';
-    currentStep = 'cdp open https://example.com';
+    currentStep = `${prefix} open https://example.com`;
   } else if (permission?.status === 'WARN') {
     const severity = doctorCheckSeverity(permission);
     if (severity === 'advisory') {
       status = 'usable with advisory notes (CDP reachable)';
-      currentStep = probe.multi ? 'cdp list' : `cdp list; cdp perceive ${target} -C -d 8`;
+      currentStep = probe.multi ? `${prefix} list` : `${prefix} list; ${prefix} perceive ${target} -C -d 8`;
     } else {
       status = 'waiting for browser debugging approval';
       currentStep = probe.multi
-        ? 'cdp list'
-        : `cdp perceive ${target} -C -d 8  # click Allow if Chrome asks`;
+        ? `${prefix} list`
+        : `${prefix} perceive ${target} -C -d 8  # click Allow if Chrome asks`;
     }
   }
 
@@ -14117,18 +14865,18 @@ function doctorRecommendationModel(checks) {
   const probe = doctorProbeFromChecks(checks);
   const target = probe.targetPrefix || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
-  const perceive = `cdp perceive ${target} -C -d 8`;
+  const prefix = doctorCliPrefix(node);
   const base = {
     source: 'doctor-onboarding',
     stage: 'perceive',
-    run: probe.multi ? 'cdp list' : perceive,
+    run: probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`,
     ask: null,
-    after: `cdp click ${target} @ref  # or: cdp fill ${target} <selector> <text>`,
+    after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
     requiresUserAction: false,
     consentRequired: false,
     reason: probe.multi
       ? `${probe.probeNote}. list is the source of truth for which tab.`
-      : 'ready for live browser perception',
+      : 'ready for live browser perception. For "what does this page say", run cdp text ' + target + ' --auto',
     commands: doctorNextStepCommands(checks),
     warnings: doctorWarningCommands(checks),
   };
@@ -14138,20 +14886,46 @@ function doctorRecommendationModel(checks) {
       ...base,
       stage: 'node',
       run: null,
-      ask: 'Install Node.js 22+.',
-      after: 'cdp doctor',
+      ask: NODE22_MISSING_HINT,
+      after: `${prefix} doctor`,
       requiresUserAction: true,
       reason: node.detail || null,
     };
   }
   if (cdp?.status === 'FAIL') {
+    if (cdp.profileDir && cdp.relaunch) {
+      return {
+        ...base,
+        stage: 'browser-cdp',
+        strategy: 'relaunch-same-profile',
+        run: cdp.relaunch,
+        ask: 'Relaunch the same debug browser profile. Do not invent DISPLAY, a new user-data-dir, or a second Chrome profile.',
+        after: `${prefix} list`,
+        requiresUserAction: true,
+        consentRequired: false,
+        reason: cdp.detail || null,
+      };
+    }
+    if (cdp.port) {
+      return {
+        ...base,
+        stage: 'browser-cdp',
+        strategy: 'enable-existing-debugging',
+        run: cdp.relaunch || null,
+        ask: `Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: ${prefix} doctor. Do not invent a new --user-data-dir.`,
+        after: `${prefix} list`,
+        requiresUserAction: true,
+        consentRequired: true,
+        reason: cdp.detail || null,
+      };
+    }
     if (environment?.recovery?.command) {
       return {
         ...base,
         stage: 'browser-cdp',
         run: environment.recovery.command,
-        ask: 'Approve launching an isolated local debug browser profile, then run: cdp list.',
-        after: 'cdp list',
+        ask: `Approve launching an isolated local debug browser profile, then run: ${prefix} list.`,
+        after: `${prefix} list`,
         requiresUserAction: true,
         consentRequired: true,
         reason: `${cdp.detail || 'Chrome is not reachable.'} Environment looks ${environment.detail || 'headless/remote'}.`,
@@ -14160,9 +14934,10 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-cdp',
-      run: 'cdp spawn-debug-browser edge --port 9222 --url https://example.com',
-      ask: 'Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: cdp doctor.',
-      after: 'cdp list',
+      strategy: 'enable-existing-debugging',
+      run: `${prefix} spawn-debug-browser edge --port 9222 --url https://example.com`,
+      ask: `Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: ${prefix} doctor.`,
+      after: `${prefix} list`,
       requiresUserAction: true,
       consentRequired: true,
       reason: cdp.detail || null,
@@ -14172,9 +14947,9 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-cdp',
-      run: 'cdp doctor',
+      run: `${prefix} doctor`,
       ask: 'Re-toggle browser remote debugging, or restart the app with CDP_PORT set.',
-      after: 'cdp list',
+      after: `${prefix} list`,
       requiresUserAction: true,
       reason: cdp.detail || null,
     };
@@ -14183,9 +14958,9 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'open-page',
-      run: 'cdp open https://example.com',
+      run: `${prefix} open https://example.com`,
       ask: null,
-      after: 'cdp perceive <target-from-open> -C -d 8',
+      after: `${prefix} perceive <target-from-open> -C -d 8`,
       reason: tabs?.detail || null,
     };
   }
@@ -14195,8 +14970,9 @@ function doctorRecommendationModel(checks) {
       return {
         ...base,
         stage: 'perceive',
+        run: `${prefix} perceive ${target} -C -d 8`,
         ask: null,
-        after: `cdp click ${target} @ref  # or: cdp fill ${target} <selector> <text>`,
+        after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
         requiresUserAction: false,
         reason: permission.detail || 'CDP is usable; permission approval is advisory until a tab daemon attaches.',
       };
@@ -14204,8 +14980,9 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-permission',
+      run: `${prefix} perceive ${target} -C -d 8`,
       ask: 'Click Allow if Chrome asks.',
-      after: `cdp click ${target} @ref  # or: cdp fill ${target} <selector> <text>`,
+      after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
       requiresUserAction: true,
       reason: permission.detail || null,
     };
@@ -14245,45 +15022,55 @@ function doctorNextSteps(checks) {
   const probe = doctorProbeFromChecks(checks);
   const liveTarget = probe.targetPrefix || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
+  const prefix = doctorCliPrefix(node);
   const lines = ['', 'Next steps:'];
   if (node?.status === 'FAIL') {
-    lines.push('  1. Install Node.js 22+ and rerun: cdp doctor');
+    lines.push(`  1. ${NODE22_MISSING_HINT}`);
     return lines;
   }
   if (cdp?.status === 'FAIL') {
-    if (environment?.recovery?.command) {
+    if (cdp.relaunch && cdp.profileDir) {
+      lines.push(`  1. ${cdp.relaunch}`);
+      lines.push(`  2. Then run: ${prefix} list`);
+    } else if (cdp.port) {
+      lines.push(`  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: ${prefix} doctor`);
+      lines.push('  2. Do not invent a new --user-data-dir or a second Chrome profile; relaunch the same browser/profile that last served this CDP port.');
+      lines.push(`  3. Then run: ${prefix} list`);
+    } else if (environment?.recovery?.command) {
       lines.push(`  1. ${environment.recovery.command}`);
-      lines.push('  2. Then run: cdp list');
-      lines.push('  3. Existing browser alternative: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
+      lines.push(`  2. Then run: ${prefix} list`);
+      lines.push(`  3. Existing browser alternative: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: ${prefix} doctor`);
     } else {
-      lines.push('  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
-      lines.push('  2. Isolated profile: cdp spawn-debug-browser edge --port 9222 --url https://example.com');
-      lines.push('  3. Then run: cdp list');
+      lines.push(`  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: ${prefix} doctor`);
+      lines.push(`  2. Isolated profile: ${prefix} spawn-debug-browser edge --port 9222 --url https://example.com`);
+      lines.push(`  3. Then run: ${prefix} list`);
     }
     return lines;
   }
   if (cdp?.status === 'WARN') {
     lines.push('  1. Re-toggle browser remote debugging, or restart the app with CDP_PORT set.');
-    lines.push('  2. If Chrome asks "Allow debugging?", click Allow, then rerun: cdp list');
+    lines.push(`  2. If Chrome asks "Allow debugging?", click Allow, then rerun: ${prefix} list`);
   } else {
     if (noTargets) {
-      lines.push('  1. cdp open https://example.com');
-      lines.push('  2. If Chrome asks "Allow debugging?", click Allow; open waits up to 60s.');
-      lines.push('  3. Use the target id printed by open: cdp perceive <target-from-open> -C -d 8');
-      lines.push('  4. cdp click <target-from-open> @ref  # or: cdp fill <target-from-open> <selector> <text>');
-      lines.push('  5. cdp perceive <target-from-open> --since-action');
-      lines.push('  6. cdp report <target-from-open>');
+      lines.push(`  1. ${prefix} open https://example.com`);
+      lines.push('  2. If Chrome asks "Allow debugging?", click Allow; open waits up to 5s (use --attach-timeout-ms 60000 if needed).');
+      lines.push(`  3. Use the target id printed by open: ${prefix} perceive <target-from-open> -C -d 8`);
+      lines.push(`  Note: for "what does this page say", run: ${prefix} text <target-from-open> --auto`);
+      lines.push(`  4. ${prefix} click <target-from-open> @ref  # or: ${prefix} fill <target-from-open> <selector> <text>`);
+      lines.push(`  5. ${prefix} perceive <target-from-open> --since-action`);
+      lines.push(`  6. ${prefix} report <target-from-open>`);
     } else {
-      lines.push('  1. cdp list');
+      lines.push(`  1. ${prefix} list`);
       if (probe.multi) {
         lines.push(`     ${probe.probeNote}`);
         lines.push('     list is the source of truth for which tab');
       }
-      if (!tabs?.targetPrefixes?.length) lines.push('  2. If list is empty: cdp open https://example.com');
-      lines.push(`  ${tabs?.targetPrefixes?.length ? '2' : '3'}. cdp perceive ${liveTarget} -C -d 8`);
-      lines.push(`  ${tabs?.targetPrefixes?.length ? '3' : '4'}. cdp click ${liveTarget} @ref  # or: cdp fill ${liveTarget} <selector> <text>`);
-      lines.push(`  ${tabs?.targetPrefixes?.length ? '4' : '5'}. cdp perceive ${liveTarget} --since-action`);
-      lines.push(`  ${tabs?.targetPrefixes?.length ? '5' : '6'}. cdp report ${liveTarget}`);
+      if (!tabs?.targetPrefixes?.length) lines.push(`  2. If list is empty: ${prefix} open https://example.com`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '2' : '3'}. ${prefix} perceive ${liveTarget} -C -d 8`);
+      lines.push(`  Note: for "what does this page say", run: ${prefix} text ${liveTarget} --auto`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '3' : '4'}. ${prefix} click ${liveTarget} @ref  # or: ${prefix} fill ${liveTarget} <selector> <text>`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '4' : '5'}. ${prefix} perceive ${liveTarget} --since-action`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '5' : '6'}. ${prefix} report ${liveTarget}`);
     }
   }
   if (fd?.status === 'WARN') {
@@ -14368,19 +15155,20 @@ function stripDoctorStepPrefix(line) {
 function doctorNextStepCommands(checks) {
   return doctorNextSteps(checks)
     .map(stripDoctorStepPrefix)
-    .filter(line => line.startsWith('cdp '));
+    .filter(line => line.startsWith('cdp ') || /\bcdp\.mjs\b/.test(line) || /--remote-debugging-port=/.test(line));
 }
 
 function buildDoctorModel(checks) {
   const summary = doctorStatusSummary(checks);
   const annotatedChecks = checks.map(check => ({ ...check, severity: doctorCheckSeverity(check) }));
   const recommendation = doctorRecommendationModel(checks);
+  const node = annotatedChecks.find(c => c.label === 'Node');
   const cdpOk = annotatedChecks.find(c => c.label === 'CDP')?.status === 'OK';
   const tabsOk = annotatedChecks.find(c => c.label === 'Tabs')?.status === 'OK';
   const probe = doctorProbeFromChecks(annotatedChecks);
   const provenCommand = cdpOk && tabsOk
     ? probe.provenCommand
-    : (recommendation?.run || null);
+    : (recommendation?.run || node?.rerunCommand || null);
   return {
     schema: 'chrome-cdp-ex.doctor.v1',
     ...summary,
@@ -14417,12 +15205,27 @@ async function runDoctorChecks(opts = {}) {
   const safeLstat = (p) => { try { return lstatSync(p); } catch { return null; } };
   const fs = opts.fs || { existsSync, lstatSync: safeLstat };
   const checks = [];
-  checks.push(checkNode(opts.nodeVersion));
-  checks.push(checkSkillSymlink({ home: opts.home, fs }));
+  checks.push(checkNode(opts.nodeVersion, {
+    home: opts.home,
+    env: opts.env,
+    fs,
+    spawnSync: opts.spawnSync,
+    execPath: opts.execPath,
+    cdpScriptPath: opts.cdpScriptPath,
+    discover: opts.discoverNode22,
+  }));
+  checks.push(checkSkillSymlink({ home: opts.home, env: opts.env, fs }));
   checks.push(checkDaemonSockets({ list: opts.listDaemons }));
   checks.push(checkFdLimit({ limit: opts.fdLimit, platform: opts.platform }));
   checks.push(checkRuntimeEnvironment({ platform: opts.platform, env: opts.env, fs }));
-  const cdp = await checkCdpReachability({ env: opts.env, fetcher: opts.fetcher, host: opts.host });
+  const cdp = await checkCdpReachability({
+    env: opts.env,
+    fetcher: opts.fetcher,
+    host: opts.host,
+    lastEndpoint: opts.lastEndpoint,
+    readLastEndpoint: opts.readLastEndpoint,
+    connectWebSocket: opts.connectWebSocket,
+  });
   checks[4] = reconcileRuntimeEnvironmentCheck(checks[4], cdp);
   checks.push(cdp);
   const tabs = await checkBrowserTargets({ cdp, env: opts.env, fetcher: opts.fetcher, host: opts.host });
@@ -14497,7 +15300,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env) {
     if (a === '--port' || a === '-p') opts.port = parseInt(tokens[++i]) || 9222;
     else if (a === '--host') opts.host = tokens[++i] || opts.host;
     else if (a === '--url' || a === '-u') opts.url = tokens[++i];
-    else if (a === '--profile-dir') opts.profileDir = tokens[++i];
+    else if (a === '--profile-dir' || a === '--user-data-dir') opts.profileDir = tokens[++i];
     else if (a === '--browser') opts.browser = (tokens[++i] || opts.browser).toLowerCase();
     else if (a === '--exe' || a === '--executable') opts.executable = tokens[++i];
     else if (a === '--headless') opts.headless = 'new';
@@ -14575,6 +15378,7 @@ function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = n
   const nextCommand = targetPrefix
     ? `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`
     : `CDP_PORT=${plan.port} cdp list`;
+  const disposable = isDisposableSpawnProfileDir(plan.profileDir);
   return {
     schema: 'chrome-cdp-ex.spawn-debug-browser.v1',
     ready: readiness?.ok === true,
@@ -14591,7 +15395,7 @@ function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = n
     nextCommand,
     cleanup: {
       stopHint: `CDP_PORT=${plan.port} cdp stop${targetPrefix ? ` ${targetPrefix}` : ''}`,
-      deleteProfile: `rm -rf ${plan.profileDir}`,
+      deleteProfile: disposable ? `rm -rf ${plan.profileDir}` : null,
     },
   };
 }
@@ -14610,8 +15414,13 @@ function formatSpawnDebugBrowserOutput(model, { format = 'text' } = {}) {
   }
   lines.push('');
   lines.push(`Next: ${model.nextCommand}`);
-  lines.push(`Stop/cleanup: ${model.cleanup.stopHint}; then ${model.cleanup.deleteProfile}`);
-  lines.push(`(Profile is disposable — delete ${model.profileDir} to reset.)`);
+  if (model.cleanup?.deleteProfile) {
+    lines.push(`Stop/cleanup: ${model.cleanup.stopHint}; then ${model.cleanup.deleteProfile}`);
+    lines.push(`(Profile is disposable — delete ${model.profileDir} to reset.)`);
+  } else {
+    lines.push(`Stop: ${model.cleanup?.stopHint || `CDP_PORT=${model.port} cdp stop`}`);
+    lines.push('(Reused existing profile — do not delete this user-data-dir.)');
+  }
   return lines.join('\n');
 }
 
@@ -14844,6 +15653,16 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   child.unref?.();
   const pages = await listTargets({ port: plan.port, host: plan.host, fetcher });
   const target = pickSpawnedTarget(pages, plan.url);
+  const remember = deps.rememberLastCdpEndpoint || rememberLastCdpEndpoint;
+  try {
+    remember({
+      host: plan.host,
+      port: plan.port,
+      profileDir: plan.profileDir,
+      exe: plan.exe,
+      browser: plan.browser,
+    });
+  } catch {}
   const model = buildSpawnDebugBrowserModel(plan, readiness, { child, target });
   // Prefer executable path in text mode for operators.
   if (opts.format !== 'json') {
@@ -15239,6 +16058,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const cdp = new CDP();
   try {
     await cdp.connect(await getWsUrl());
+    try { await rememberLiveCdpEndpointFromSession(cdp); } catch {}
   } catch (e) {
     process.stderr.write(`Daemon: cannot connect to Chrome: ${e.message}\n`);
     process.exit(1);
@@ -16232,6 +17052,7 @@ async function discoverLivePagesForTargetResolution() {
   const cdp = new CDP();
   await cdp.connect(await getWsUrl());
   try {
+    try { await rememberLiveCdpEndpointFromSession(cdp); } catch {}
     return await getPages(cdp);
   } finally {
     cdp.close();
@@ -16714,7 +17535,7 @@ const CLI_HELP_LAYOUT = Object.freeze([
   {
     "name": "text",
     "headGap": 4,
-    "summaryGap": 7,
+    "summaryGap": 1,
     "summaryIndent": null
   },
   {
@@ -16863,6 +17684,7 @@ Usage: cdp <command> [args]
                                     JSON with --diff/--since-action returns chrome-cdp-ex.perceive-diff.v1
                                     --frame @fN / -F @fN: perceive inside an iframe; refs become @fN:M
                                     -s <sel> / --selector: scope to CSS selector subtree
+                                    -x <sel> / --exclude: drop matching chrome (must not empty main; prefer text --auto or -s main)
                                     -i / --interactive: only show interactive elements
                                     -d N / --depth N: limit tree depth
                                     -C / --cursor-interactive: include non-ARIA clickable elements (@c refs)
@@ -16928,6 +17750,7 @@ Usage: cdp <command> [args]
 {{command:wait}}
 {{command:fill}}
                                     --react: native value setter + input/change events
+                                    JSON defaults to chrome-cdp-ex.fill.v1; --full restores action.v1
 {{command:select}}
 {{command:fullshot}}
 {{command:scanshot}}
@@ -16946,6 +17769,8 @@ Usage: cdp <command> [args]
                                     off/reset clears overrides; JSON returns chrome-cdp-ex.emulate.v1
 {{command:upload}}
 {{command:text}}
+                                    --auto: extract main content (strips nav/aside/script/style)
+                                    -x / --exclude: extra CSS selectors to strip
                                     --root auto|body|document|default|<sel>: search root for selector resolution
                                     On no-match, error includes root/scope and an eval fallback
 {{command:table}}
@@ -16996,11 +17821,17 @@ Usage: cdp <command> [args]
                                     Readiness: ready | usable-with-warnings | blocked.
                                     Checks expose severity: blocking | warning | advisory | ok.
                                     Headless CDP sessions treat unconfirmed permission as advisory, not a blocker.
+                                    When CDP is unreachable, FAIL hint is one same-profile relaunch line from the
+                                    last known --user-data-dir; do not invent a new profile or DISPLAY.
                                     No target required. Exits 1 if any check FAILs.
 {{command:keepalive}}
 {{command:open}}
                                     JSON includes schema/target/approval/recommendation/nextSteps for agents.
+                                    Default open returns the target prefix and a follow-up perceive command.
+                                    --perceive dumps the full page after attach (opt-in).
                                     --reuse-url reuses an existing tab matching the URL when unique.
+                                    Default attach wait is fail-fast (5s). Use --attach-timeout-ms 60000
+                                    when Chrome may still prompt "Allow debugging?".
                                     --attach-timeout-ms 0 returns the target handoff without waiting.
                                     --ready-timeout-ms bounds document.readyState waiting after attach.
                                     --ready-selector also waits for a CSS selector before returning.
@@ -17256,8 +18087,9 @@ function createPerceiveCommandHandler({
   const buildPerceiveModel = ops.perceiveModel || perceiveModel;
   const buildPerceiveDiff = ops.perceiveDiffModel || perceiveDiffModel;
   return async ({ args }) => {
-    const fopts = parseQaModeArgs(args, ['text', 'json']); await ensurePerceiveTargetReady({ cdp, sessionId, targetId, ops });
+    const fopts = parseQaModeArgs(args, ['text', 'json']);
     const popts = parsePerceiveArgs(fopts.args);
+    await ensurePerceiveTargetReady({ cdp, sessionId, targetId, ops });
     const targetPrefix = targetPrefixForDisplay(targetId);
     popts.targetPrefix = targetPrefix;
     if (popts.sinceAction) popts.diffBaseline = session.lastAction?.baselineOutput || null;
@@ -17499,10 +18331,11 @@ function targetCommandCliErrorFormat(targetPrefix, cmdArgs = [], originalArgs = 
   return detectCliErrorFormat(targetLooksLikeFlag ? originalArgs : cmdArgs);
 }
 
-function formatArgSuffix(format, { compact = false } = {}) {
+function formatArgSuffix(format, { compact = false, full = false } = {}) {
   return [
     ...(format && format !== 'text' ? ['--format', format] : []),
     ...(compact ? ['--compact'] : []),
+    ...(full ? ['--full'] : []),
   ];
 }
 
@@ -17573,7 +18406,7 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
   }
 }
 
-function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform = process.platform } = {}) {
+function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform = process.platform, err = null } = {}) {
   const lower = String(message || '').toLowerCase();
   const target = targetPrefix || '<target>';
   if (lower.includes('emfile') || lower.includes('too many open files')) {
@@ -17589,11 +18422,28 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
     };
   }
   if (
-    lower.includes('cannot reach cdp') ||
-    lower.includes('no devtoolsactiveport') ||
-    lower.includes('websocket error') ||
-    lower.includes('remote-debugging-port')
+    err?.code === 'cdp_unreachable'
+    || lower.includes('cannot reach cdp')
+    || lower.includes('no devtoolsactiveport')
+    || lower.includes('websocket error')
+    || lower.includes('remote-debugging-port')
   ) {
+    if (err?.profileDir && err?.relaunch) {
+      return {
+        kind: 'browser-cdp',
+        strategy: 'relaunch-same-profile',
+        run: err.relaunch,
+        reason: 'Chrome debugging endpoint is down. Relaunch the same user-data-dir; do not invent a new profile.',
+      };
+    }
+    if (err?.code === 'cdp_unreachable' || lower.includes('cannot reach cdp')) {
+      return {
+        kind: 'browser-cdp',
+        strategy: 'enable-existing-debugging',
+        run: err?.relaunch || 'cdp doctor',
+        reason: 'Chrome debugging endpoint is down. Do not invent a new --user-data-dir; enable remote debugging on the existing browser via chrome://inspect/#remote-debugging.',
+      };
+    }
     return {
       kind: 'browser-cdp',
       strategy: 'run-doctor',
@@ -17747,7 +18597,7 @@ function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = proce
         run: `cdp perceive ${target} -C -d 8`,
         reason: 'The action may have occurred. Inspect current page state first; do not repeat the action until its effect is verified.',
       }
-    : buildCliErrorRecovery(message, { cmd, targetPrefix, platform });
+    : buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err });
   const nextSteps = [];
   const commandSteps = Array.isArray(recovery.commands) && recovery.commands.length
     ? recovery.commands.map(command => command?.command).filter(Boolean)
@@ -17764,6 +18614,15 @@ function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = proce
     recovery,
     nextSteps,
   };
+  if (err?.code === 'cdp_unreachable' || recovery.strategy === 'relaunch-same-profile' || recovery.strategy === 'enable-existing-debugging') {
+    if (err?.code === 'cdp_unreachable' || /cannot reach cdp/i.test(message)) {
+      model.error.code = 'cdp_unreachable';
+      model.host = err?.host || null;
+      model.port = err?.port || null;
+      model.profileDir = err?.profileDir ?? null;
+      model.relaunch = err?.relaunch ?? null;
+    }
+  }
   if (completionUnknown) {
     model.completion = 'unknown';
     model.sideEffectMayHaveOccurred = true;
@@ -17803,7 +18662,7 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
   const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
   if (/^Next:/m.test(message)) return lines.join('\n');
 
-  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform });
+  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err });
   lines.push(...formatCliErrorRecovery(recovery));
   lines.push(`Next: ${recovery.run}`);
   return lines.join('\n');
@@ -17846,6 +18705,7 @@ function parseOpenArgs(args = []) {
   let readyTimeoutMs = null;
   let readySelector = null;
   let reuseUrl = false;
+  let perceive = false;
   for (let i = 0; i < fopts.args.length; i++) {
     const token = fopts.args[i];
     if (token === '--attach-timeout-ms') {
@@ -17864,6 +18724,8 @@ function parseOpenArgs(args = []) {
       if (!readySelector) throw new Error('open: --ready-selector requires a CSS selector');
     } else if (token === '--reuse-url') {
       reuseUrl = true;
+    } else if (token === '--perceive') {
+      perceive = true;
     } else if (String(token).startsWith('-')) {
       throw new Error(`open: unknown argument ${token}`);
     } else {
@@ -17878,6 +18740,7 @@ function parseOpenArgs(args = []) {
     readyTimeoutMs: readyTimeoutMs ?? (attachTimeoutMs > 0 ? DEFAULT_OPEN_READY_TIMEOUT_MS : 0),
     readySelector,
     reuseUrl,
+    perceive,
   };
 }
 
@@ -18045,6 +18908,18 @@ async function navigateOpenTarget(targetId, sp, url, {
   }
 }
 
+function formatOpenNextPerceiveCommand(targetId) {
+  return `Next: cdp perceive ${targetPrefixForDisplay(targetId)} -C -d 8`;
+}
+
+function formatOpenAttachWaitMessage(timeoutMs) {
+  return `Waiting for "Allow debugging?" approval in Chrome... (up to ${formatDuration(timeoutMs)})`;
+}
+
+function shouldAnnounceOpenAttachWait({ failedConnects = 0, elapsedMs = 0 } = {}) {
+  return failedConnects >= 3 || elapsedMs >= 1000;
+}
+
 function formatOpenReadyMessage(targetId, url = '') {
   const target = targetPrefixForDisplay(targetId);
   const lines = [
@@ -18091,7 +18966,7 @@ function formatOpenTimeoutMessage(targetId) {
     'Timeout waiting for debugging approval. Tab created but daemon not connected.',
     `Target: ${target}`,
     'If Chrome asks "Allow debugging?", click Allow first.',
-    `Next: cdp perceive ${target} -C -d 8`,
+    formatOpenNextPerceiveCommand(targetId),
   ].join('\n');
 }
 
@@ -18273,6 +19148,7 @@ async function main(options = {}) {
       // No daemon running — connect directly (will trigger one Allow)
       const cdp = new CDP();
       await cdp.connect(await getWsUrl());
+      try { await rememberLiveCdpEndpointFromSession(cdp); } catch {}
       pages = await getPages(cdp);
       cdp.close();
     }
@@ -18475,7 +19351,7 @@ async function main(options = {}) {
           return;
         }
         console.log(`Reused existing tab: ${selection.targetPrefix}  ${selection.page.url || url}`);
-        console.log(`Next: cdp perceive ${selection.targetPrefix} -C -d 8`);
+        console.log(formatOpenNextPerceiveCommand(selection.targetId));
         return;
       } catch (e) {
         // Zero matches: fall through and open a new tab.
@@ -18502,9 +19378,6 @@ async function main(options = {}) {
     }
 
     // Auto-attach: start daemon and wait for user to click "Allow debugging?"
-    if (opts.format === 'text') {
-      console.log(`Waiting for "Allow debugging?" approval in Chrome... (up to ${formatDuration(opts.attachTimeoutMs)})`);
-    }
     const sp = sockPath(targetId);
     if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
     const child = spawn(runtimeIdentity.execPath, [runtimeIdentity.scriptPath, '_daemon', targetId], {
@@ -18513,7 +19386,10 @@ async function main(options = {}) {
     });
     child.unref();
     let attached = false;
-    const attachDeadline = Date.now() + opts.attachTimeoutMs;
+    let announcedWait = false;
+    let failedConnects = 0;
+    const attachStartedAt = Date.now();
+    const attachDeadline = attachStartedAt + opts.attachTimeoutMs;
     while (Date.now() < attachDeadline) {
       const remainingMs = attachDeadline - Date.now();
       try {
@@ -18521,7 +19397,16 @@ async function main(options = {}) {
         conn.end();
         attached = true;
         break;
-      } catch {}
+      } catch {
+        failedConnects += 1;
+        if (opts.format === 'text' && !announcedWait && shouldAnnounceOpenAttachWait({
+          failedConnects,
+          elapsedMs: Date.now() - attachStartedAt,
+        })) {
+          console.log(formatOpenAttachWaitMessage(opts.attachTimeoutMs));
+          announcedWait = true;
+        }
+      }
       await sleep(Math.min(DAEMON_ALLOW_DELAY, remainingMs));
     }
     const navigation = attached
@@ -18544,15 +19429,18 @@ async function main(options = {}) {
       return;
     }
     if (attached) {
-      console.log(formatOpenReadyMessage(targetId, url));
-      // Auto-perceive: give agent immediate page understanding (matches nav behavior)
-      try {
-        const conn = await connectToSocket(sp);
-        const resp = await sendCommand(conn, { cmd: 'perceive', args: [] });
-        conn.end();
-        if (resp.ok && resp.result) console.log('---\n' + resp.result);
-      } catch (e) {
-        console.error(formatOpenAutoPerceiveFailure(e, targetId));
+      if (opts.perceive) {
+        console.log(formatOpenReadyMessage(targetId, url));
+        try {
+          const conn = await connectToSocket(sp);
+          const resp = await sendCommand(conn, { cmd: 'perceive', args: [] });
+          conn.end();
+          if (resp.ok && resp.result) console.log('---\n' + resp.result);
+        } catch (e) {
+          console.error(formatOpenAutoPerceiveFailure(e, targetId));
+        }
+      } else {
+        console.log(formatOpenNextPerceiveCommand(targetId));
       }
     } else {
       console.log(formatOpenTimeoutMessage(targetId));
@@ -18596,6 +19484,27 @@ async function main(options = {}) {
   if (cmd === 'attach' || cmd === 'use') {
     try {
       const parsed = parseAliasCommandArgs(args, cmd);
+      if (parsed.port) {
+        const attachEnv = {
+          CDP_PORT: String(parsed.port),
+          CDP_HOST: parsed.host || process.env.CDP_HOST || DEFAULT_CDP_HOST,
+        };
+        const check = await checkCdpReachability({ env: attachEnv, host: attachEnv.CDP_HOST });
+        if (check.status === 'FAIL') {
+          throw cdpUnreachableError({
+            host: check.host || attachEnv.CDP_HOST,
+            port: check.port || attachEnv.CDP_PORT,
+            cause: check.detail,
+            lastEndpoint: {
+              host: check.host,
+              port: check.port,
+              profileDir: check.profileDir,
+              exe: check.exe,
+              browser: check.browser,
+            },
+          });
+        }
+      }
       const store = readTargetAliases();
       const next = upsertTargetAlias(store, {
         name: parsed.name,
@@ -18940,6 +19849,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
   parsePerceiveArgs, buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
+  filterPerceiveExcludedAxNodes, perceiveInteractiveNoiseHint,
   parseControlsArgs, visibleControlsCollectorSource, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
@@ -18997,6 +19907,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   probeTcpPort,
   getWsUrl, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
+  readLastCdpEndpoint, writeLastCdpEndpoint, rememberLastCdpEndpoint, formatCdpRelaunchCommand,
+  cdpUnreachableError, profileDirFromCommandLine, profileDirFromDevToolsActivePort,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
   // Screenshot
@@ -19009,10 +19921,12 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, runBatchCommands, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
-  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage, shouldAnnounceOpenAttachWait, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  DEFAULT_OPEN_ATTACH_TIMEOUT_MS,
   CLI_HELP_LAYOUT, CLI_HELP_TEMPLATE, renderCliHelp, helpStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   detectRuntimeEnvironment, checkRuntimeEnvironment,
+  discoverNode22, resolveChromeCdpNodeLaunch, formatNodeRerunCommand, nodeMajor,
   doctorWizardModel, doctorWizardSummary, doctorCheckSeverity,
   doctorNextSteps, doctorStatusSummary, buildDoctorModel, formatDoctorOutput,
   formatDoctorReport, runDoctorChecks, doctorStr,
