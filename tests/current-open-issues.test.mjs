@@ -2392,6 +2392,49 @@ describe('issue #144 pending CDP lifecycle errors', () => {
     expect(detachedModel.recovery.kind).toBe('target-closed');
     expect(detachedModel.recovery.run).toBe('cdp list');
   });
+
+  it('completes real-document nav when Page.navigate hangs but the same target URL advanced', async () => {
+    const calls = [];
+    const cdp = {
+      send(method, params = {}, sessionId) {
+        calls.push({ method, params, sessionId });
+        if (method === 'Page.navigate') return new Promise(() => {});
+        if (method === 'Target.getTargets') {
+          return Promise.resolve({
+            targetInfos: [{
+              targetId: '156B9713E3E6234E63401429592707D6',
+              type: 'page',
+              url: 'https://example.org/',
+            }],
+          });
+        }
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({ result: { value: 'complete' } });
+        }
+        return Promise.resolve({});
+      },
+      waitForEvent() {
+        return {
+          promise: new Promise(() => {}),
+          cancel() {},
+        };
+      },
+    };
+
+    const started = Date.now();
+    await expect(T.navStr(cdp, 'sid1', 'https://example.org/', {
+      targetId: '156B9713E3E6234E63401429592707D6',
+      observeDelayMs: 0,
+    })).resolves.toBe('Navigated to https://example.org/');
+    expect(Date.now() - started).toBeLessThan(300);
+    expect(calls.some(call => call.method === 'Target.getTargets' && call.sessionId == null)).toBe(true);
+    expect(calls.some(call => call.method === 'Target.attachToTarget')).toBe(false);
+  });
+
+  it('daemon nav passes the bound targetId into navStr', () => {
+    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    expect(source).toMatch(/navStr\(cdp, sessionId, fopts\.args\[0\], \{[^}]*targetId/);
+  });
 });
 
 describe('issue #160 open token budget', () => {

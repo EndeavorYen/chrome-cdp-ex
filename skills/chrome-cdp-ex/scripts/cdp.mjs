@@ -3419,17 +3419,112 @@ async function waitForDocumentReady(cdp, sid, timeoutMs = NAVIGATION_TIMEOUT, op
   throw new Error('Timed out waiting for navigation to finish');
 }
 
-async function navStr(cdp, sid, url) {
+function navigationDestinationMatches(observedUrl, requestedUrl) {
+  if (!observedUrl || !requestedUrl) return false;
+  if (isBlankPageUrl(observedUrl)) return false;
+  if (observedUrl === requestedUrl) return true;
+  try {
+    return new URL(observedUrl).href === new URL(requestedUrl).href;
+  } catch {
+    return false;
+  }
+}
+
+async function observeSameTargetDestination(cdp, targetId, url, {
+  delayMs = 250,
+  shouldStop = () => false,
+  now = Date.now,
+  sleepFn = sleep,
+} = {}) {
+  if (delayMs > 0) await sleepFn(delayMs);
+  const deadline = now() + TIMEOUT;
+  while (!shouldStop() && now() <= deadline) {
+    try {
+      const { targetInfos } = await cdpDomains(cdp).Target.getTargets( {}, undefined, 1000);
+      const target = (targetInfos || []).find(info => info.targetId === targetId);
+      if (target && navigationDestinationMatches(target.url, url)) return target.url;
+    } catch {
+      // Browser-level Target.getTargets is best-effort while Page.navigate is outstanding.
+    }
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0 || shouldStop()) break;
+    await sleepFn(Math.min(50, remainingMs));
+  }
+  return null;
+}
+
+async function settleObservedNavigation(cdp, sid, {
+  targetId,
+  onSessionId,
+  readyTimeoutMs = 5000,
+  probeTimeoutMs,
+} = {}) {
+  try {
+    await waitForDocumentReady(cdp, sid, readyTimeoutMs, { probeTimeoutMs });
+    return sid;
+  } catch (error) {
+    if (!targetId) throw error;
+    const attached = await cdpDomains(cdp).Target.attachToTarget(
+      { targetId, flatten: true },
+      undefined,
+      5000,
+    );
+    const nextSid = attached?.sessionId;
+    if (!nextSid) throw error;
+    await enableDaemonDomains(cdp, nextSid);
+    onSessionId?.(nextSid);
+    await waitForDocumentReady(cdp, nextSid, readyTimeoutMs, { probeTimeoutMs });
+    return nextSid;
+  }
+}
+
+async function navStr(cdp, sid, url, opts = {}) {
   validateUrl(url);
   await cdpDomains(cdp).Page.enable( {}, sid);
   const loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
-  let result;
+  const targetId = opts.targetId || null;
+  let navigateSettled = false;
+  const navigatePromise = (async () => {
+    try {
+      const result = await cdpDomains(cdp).Page.navigate( { url }, sid);
+      return { kind: 'rpc', result };
+    } finally {
+      navigateSettled = true;
+    }
+  })();
+  const observePromise = targetId
+    ? observeSameTargetDestination(cdp, targetId, url, {
+        delayMs: opts.observeDelayMs ?? 250,
+        shouldStop: () => navigateSettled,
+      }).then(href => (href ? { kind: 'observed', href } : null))
+    : null;
+
+  let outcome;
   try {
-    result = await cdpDomains(cdp).Page.navigate( { url }, sid);
+    outcome = observePromise
+      ? await Promise.race([
+          navigatePromise,
+          observePromise.then(value => value || navigatePromise),
+        ])
+      : await navigatePromise;
   } catch (e) {
     loadEvent.cancel();
     throw e;
   }
+
+  if (outcome.kind === 'observed') {
+    loadEvent.cancel();
+    navigatePromise.catch(() => {});
+    await settleObservedNavigation(cdp, sid, {
+      targetId,
+      onSessionId: opts.onSessionId,
+      readyTimeoutMs: opts.readyTimeoutMs ?? 5000,
+      probeTimeoutMs: opts.probeTimeoutMs,
+    });
+    return `Navigated to ${url}`;
+  }
+
+  const result = outcome.result;
   if (result.errorText) {
     loadEvent.cancel();
     throw new Error(result.errorText);
@@ -3439,7 +3534,9 @@ async function navStr(cdp, sid, url) {
   } else {
     loadEvent.cancel();
   }
-  await waitForDocumentReady(cdp, sid, 5000);
+  await waitForDocumentReady(cdp, sid, opts.readyTimeoutMs ?? 5000, {
+    probeTimeoutMs: opts.probeTimeoutMs,
+  });
   return `Navigated to ${url}`;
 }
 
@@ -16761,7 +16858,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     },
     nav: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-      const value = await actionFeedback('nav', () => navStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'url', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'full-perceive', observeFullPerceive, fopts);
+      const value = await actionFeedback('nav', () => navStr(cdp, sessionId, fopts.args[0], {
+        targetId,
+        onSessionId(nextSid) { sessionId = nextSid; },
+      }), { input: fopts.args[0], resolvedBy: 'url', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'full-perceive', observeFullPerceive, fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
     netlog: async args => commandResult(netlogStr(netReqBuf, args[0]), null),

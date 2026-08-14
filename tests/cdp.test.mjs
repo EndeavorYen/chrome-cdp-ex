@@ -7735,6 +7735,128 @@ describe('navStr', () => {
     await expect(navStr(cdp, 'sid1', 'http://169.254.169.254/'))
       .rejects.toThrow(/metadata/i);
   });
+
+  it('completes when Page.navigate hangs but the same target already shows the destination URL', async () => {
+    let cancelled = false;
+    const cdp = createMockCDP({
+      'Page.enable': () => ({}),
+      'Page.navigate': () => new Promise(() => {}),
+      'Target.getTargets': () => ({
+        targetInfos: [{
+          targetId: 'TARGET-A',
+          type: 'page',
+          url: 'https://example.org/',
+        }],
+      }),
+      'Runtime.evaluate': () => ({ result: { value: 'complete' } }),
+    });
+    const innerWait = cdp.waitForEvent.bind(cdp);
+    cdp.waitForEvent = (method, timeout) => {
+      const waiter = innerWait(method, timeout);
+      return {
+        promise: waiter.promise,
+        cancel() {
+          cancelled = true;
+          waiter.cancel();
+        },
+      };
+    };
+
+    const started = Date.now();
+    const result = await navStr(cdp, 'sid1', 'https://example.org/', {
+      targetId: 'TARGET-A',
+      observeDelayMs: 0,
+    });
+    expect(result).toBe('Navigated to https://example.org/');
+    expect(Date.now() - started).toBeLessThan(300);
+    expect(cancelled).toBe(true);
+    expect(cdp.calls.some(call => call.method === 'Target.getTargets' && call.sessionId == null)).toBe(true);
+    expect(cdp.calls.some(call => call.method === 'Target.attachToTarget')).toBe(false);
+  });
+
+  it('does not treat a different page URL as the bound target navigating', async () => {
+    const cdp = createMockCDP({
+      'Page.enable': () => ({}),
+      'Page.navigate': () => new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout: Page.navigate')), 20);
+      }),
+      'Target.getTargets': () => ({
+        targetInfos: [
+          { targetId: 'TARGET-A', type: 'page', url: 'about:blank' },
+          { targetId: 'OTHER', type: 'page', url: 'https://example.org/' },
+        ],
+      }),
+    });
+
+    const started = Date.now();
+    await expect(navStr(cdp, 'sid1', 'https://example.org/', {
+      targetId: 'TARGET-A',
+      observeDelayMs: 0,
+    })).rejects.toThrow(/Timeout: Page\.navigate/);
+    expect(Date.now() - started).toBeLessThan(400);
+    expect(cdp.calls.some(call => call.method === 'Target.attachToTarget')).toBe(false);
+  });
+
+  it('does not treat a still-blank same target as navigated', async () => {
+    const cdp = createMockCDP({
+      'Page.enable': () => ({}),
+      'Page.navigate': () => new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout: Page.navigate')), 20);
+      }),
+      'Target.getTargets': () => ({
+        targetInfos: [{
+          targetId: 'TARGET-A',
+          type: 'page',
+          url: 'about:blank',
+        }],
+      }),
+    });
+
+    await expect(navStr(cdp, 'sid1', 'https://example.org/', {
+      targetId: 'TARGET-A',
+      observeDelayMs: 0,
+    })).rejects.toThrow(/Timeout: Page\.navigate/);
+    expect(cdp.calls.some(call => call.method === 'Target.attachToTarget')).toBe(false);
+  });
+
+  it('rebinds only the same targetId when the hung session cannot probe document ready', async () => {
+    const sessions = [];
+    const cdp = createMockCDP({
+      'Page.enable': () => ({}),
+      'Page.navigate': () => new Promise(() => {}),
+      'Target.getTargets': () => ({
+        targetInfos: [{
+          targetId: 'TARGET-A',
+          type: 'page',
+          url: 'https://example.org/',
+        }],
+      }),
+      'Runtime.evaluate': (_params, sid) => {
+        if (sid === 'old-sid') return Promise.reject(new Error('session closed'));
+        return { result: { value: 'complete' } };
+      },
+      'Target.attachToTarget': (params) => {
+        expect(params).toEqual({ targetId: 'TARGET-A', flatten: true });
+        return { sessionId: 'new-sid' };
+      },
+    });
+
+    const started = Date.now();
+    const result = await navStr(cdp, 'old-sid', 'https://example.org/', {
+      targetId: 'TARGET-A',
+      observeDelayMs: 0,
+      readyTimeoutMs: 80,
+      probeTimeoutMs: 20,
+      onSessionId(nextSid) { sessions.push(nextSid); },
+    });
+    expect(result).toBe('Navigated to https://example.org/');
+    expect(sessions).toEqual(['new-sid']);
+    expect(Date.now() - started).toBeLessThan(400);
+    const attachCalls = cdp.calls.filter(call => call.method === 'Target.attachToTarget');
+    expect(attachCalls).toHaveLength(1);
+    expect(attachCalls[0].params.targetId).toBe('TARGET-A');
+    expect(attachCalls[0].sessionId == null).toBe(true);
+  });
 });
 
 // =========================================================================
