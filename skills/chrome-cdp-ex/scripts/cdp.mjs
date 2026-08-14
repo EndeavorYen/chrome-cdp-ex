@@ -1582,6 +1582,12 @@ function isBlankPageUrl(url = '') {
   return !value || value === 'about:blank' || value === 'about:srcdoc';
 }
 
+function isLicenseBlobUrl(url = '') {
+  const path = String(url || '').split(/[?#]/)[0];
+  return /\/blob\/[^/]+\/LICENSE(?:\.[A-Za-z0-9]+)?$/i.test(path)
+    || /\/LICENSE(?:\.[A-Za-z0-9]+)?$/i.test(path);
+}
+
 function pageTargetScore(page = {}) {
   let score = 0;
   const url = page.url || '';
@@ -1592,6 +1598,7 @@ function pageTargetScore(page = {}) {
   if (/^http:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/i.test(url)) score += 5;
   if (page.attached === true || page.attached === 1) score += 3;
   if (typeof page.lastAccessTime === 'number') score += Math.min(10, Math.floor(page.lastAccessTime / 1e12));
+  if (isLicenseBlobUrl(url)) score -= 80;
   return score;
 }
 
@@ -7247,6 +7254,36 @@ const INTERACTIVE_ROLES = new Set([
   'menuitemcheckbox', 'menuitemradio', 'option', 'treeitem',
 ]);
 
+// Content landmarks that should take early @refs (tweets, feed cards, etc.)
+const CONTENT_REF_ROLES = new Set(['article', 'feed', 'listitem', 'status']);
+const SKIP_LINK_NAME_RE = /skip|keyboard|鍵盤|快速鍵/i;
+
+function axPropertyValue(node, name) {
+  const want = String(name || '').toLowerCase();
+  for (const prop of node?.properties || []) {
+    if (String(prop?.name || '').toLowerCase() !== want) continue;
+    const value = prop.value;
+    if (value && typeof value === 'object' && 'value' in value) return String(value.value ?? '');
+    return String(value ?? '');
+  }
+  return '';
+}
+
+function axNodeUrl(node) {
+  return axPropertyValue(node, 'url');
+}
+
+function isSkipLinkAxNode(node) {
+  const role = String(node?.role?.value || '');
+  const name = String(node?.name?.value ?? '');
+  const url = axNodeUrl(node);
+  const fragmentOnly = url === '#' || url.startsWith('#');
+  if (SKIP_LINK_NAME_RE.test(name)) return true;
+  if (role === 'link' && /^\s*skip\s+to\b/i.test(name)) return true;
+  if (role === 'link' && fragmentOnly) return true;
+  return false;
+}
+
 // Format a stale/unknown @ref error explaining the most likely root cause.
 // `state` holds {generation, invalidationReason, lastPerceiveAt} from the daemon.
 function formatUnknownRefError(ref, state = {}) {
@@ -7885,16 +7922,7 @@ const PERCEIVE_CONTENT_LANDMARK_ROLES = new Set(['main', 'article']);
 const PERCEIVE_CHROME_LANDMARK_ROLES = new Set(['navigation', 'banner', 'complementary']);
 
 function isSkipLinkName(name) {
-  return /^\s*skip\b/i.test(String(name || ''));
-}
-
-// Skip-link @ref deprioritization is shared with #163 (doctor probe should not
-// click Skip-to-content first). This path only stops skip-links from taking @1
-// on golden-path perceive; it does not own the full #163 probe policy.
-function isSkipLinkAxNode(node) {
-  const role = node.role?.value || '';
-  if (!INTERACTIVE_ROLES.has(role)) return false;
-  return isSkipLinkName(node.name?.value);
+  return SKIP_LINK_NAME_RE.test(String(name || ''));
 }
 
 function countsTowardPerceiveDepth(node) {
@@ -8605,6 +8633,7 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   let refCounter = 0;
   const refNodeIds = [];
   const pendingSkipRefs = [];
+  const pendingChromeRefs = [];
 
   const treeLines = [];
   const contentBodyLines = new Set();
@@ -8659,8 +8688,9 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     const overContent = inContent && contentDepth > maxDepth;
     const overGlobal = !inContent && depth > maxDepth;
     if (overChrome || overContent || overGlobal) {
-      if (INTERACTIVE_ROLES.has(role) && node.backendDOMNodeId && !skipLink) {
-        assignInteractiveRef(node);
+      if ((INTERACTIVE_ROLES.has(role) || CONTENT_REF_ROLES.has(role)) && node.backendDOMNodeId && !skipLink) {
+        if (inChrome) pendingChromeRefs.push({ lineIndex: -1, backendDOMNodeId: node.backendDOMNodeId });
+        else assignInteractiveRef(node);
       }
       for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
         visit(child, childDepth, node, tableAncestorId, childRegion(region, counts));
@@ -8731,9 +8761,11 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
 
         // Assign @ref to interactive elements. Skip-links are deferred so they
         // do not consume @1 when the article has a real control (#159 / #163).
-        if (isInteractive && node.backendDOMNodeId) {
+        if ((isInteractive || CONTENT_REF_ROLES.has(role)) && node.backendDOMNodeId) {
           if (skipLink) {
             pendingSkipRefs.push({ lineIndex: treeLines.length, backendDOMNodeId: node.backendDOMNodeId });
+          } else if (inChrome) {
+            pendingChromeRefs.push({ lineIndex: treeLines.length, backendDOMNodeId: node.backendDOMNodeId });
           } else {
             const ref = assignInteractiveRef(node);
             if (ref != null) line += `  @${ref}`;
@@ -8785,7 +8817,7 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   for (const root of roots) visit(root, 0);
   for (const node of nodes) visit(node, 0);
 
-  for (const pending of pendingSkipRefs) {
+  for (const pending of [...pendingChromeRefs, ...pendingSkipRefs]) {
     refCounter++;
     refMap.set(refCounter, pending.backendDOMNodeId);
     refNodeIds.push({ ref: refCounter, backendDOMNodeId: pending.backendDOMNodeId });
@@ -14523,30 +14555,88 @@ async function checkBrowserTargets({ cdp = null, env = process.env, fetcher = fe
       noTargets: true,
     };
   }
+  const ranked = rankPageTargets(targets);
   const prefixLen = getDisplayPrefixLength(targets.map(target => target.targetId));
-  const targetPrefixes = targets.map(target => target.targetId.slice(0, prefixLen));
-  const labels = targets.slice(0, 3).map((target, index) => {
+  const targetPrefixes = ranked.map(target => target.targetId.slice(0, prefixLen));
+  const labels = ranked.slice(0, 3).map((target, index) => {
     const title = target.title || (target.url === 'about:blank' ? '(blank tab)' : target.url || '(untitled)');
     return `${targetPrefixes[index]} ${title}`.trim();
   });
-  const suffix = targets.length > labels.length ? `, +${targets.length - labels.length} more` : '';
+  const suffix = ranked.length > labels.length ? `, +${ranked.length - labels.length} more` : '';
   return {
     status: 'OK',
     label: 'Tabs',
     detail: `${targets.length} debuggable page target${targets.length === 1 ? '' : 's'}: ${labels.join(', ')}${suffix}`,
     targetPrefixes,
+    pages: ranked.map(target => ({
+      targetId: target.targetId,
+      title: target.title,
+      url: target.url,
+      type: target.type,
+    })),
   };
+}
+
+function doctorTabCount(tabs = {}, daemons = {}, permission = {}) {
+  if (Array.isArray(tabs.pages) && tabs.pages.length) return tabs.pages.length;
+  if (Array.isArray(tabs.targetPrefixes) && tabs.targetPrefixes.length) return tabs.targetPrefixes.length;
+  if (Array.isArray(permission.targetPrefixes) && permission.targetPrefixes.length) {
+    return permission.targetPrefixes.length;
+  }
+  return (daemons.targetPrefixes || []).length;
+}
+
+function doctorRankedTargetPrefix(tabs = {}, daemons = {}, permission = {}) {
+  const pages = Array.isArray(tabs.pages) ? tabs.pages : [];
+  if (pages.length) {
+    const ranked = rankPageTargets(pages);
+    const prefixLen = getDisplayPrefixLength(pages.map(page => page.targetId || page.id || ''));
+    const id = ranked[0]?.targetId || ranked[0]?.id || '';
+    if (id) return id.slice(0, prefixLen);
+  }
+  return tabs.targetPrefixes?.[0]
+    || permission.targetPrefixes?.[0]
+    || daemons.targetPrefixes?.[0]
+    || null;
+}
+
+function doctorProbeFromTargets({ tabs = {}, daemons = {}, permission = {}, prefix = 'cdp' } = {}) {
+  const tabCount = doctorTabCount(tabs, daemons, permission);
+  const targetPrefix = doctorRankedTargetPrefix(tabs, daemons, permission);
+  const multi = tabCount > 1;
+  return {
+    tabCount,
+    targetPrefix,
+    multi,
+    provenCommand: multi
+      ? `${prefix} list`
+      : (targetPrefix ? `${prefix} perceive ${targetPrefix} -C -d 8` : `${prefix} list`),
+    probeNote: multi ? `${tabCount} tabs — pick with ${prefix} list / ${prefix} target --url` : null,
+    listIsSourceOfTruth: tabCount > 0,
+  };
+}
+
+function doctorProbeFromChecks(checks = []) {
+  const node = checks.find(check => check.label === 'Node');
+  return doctorProbeFromTargets({
+    tabs: checks.find(check => check.label === 'Tabs') || {},
+    daemons: checks.find(check => check.label === 'Daemons') || {},
+    permission: checks.find(check => check.label === 'Permission') || {},
+    prefix: doctorCliPrefix(node),
+  });
 }
 
 function checkBrowserPermission({ daemons = null, tabs = null, cdp = null, environment = null } = {}) {
   const daemonPrefixes = daemons?.targetPrefixes || [];
+  const probe = doctorProbeFromTargets({ tabs: tabs || {}, daemons: daemons || {} });
   if (daemonPrefixes.length > 0) {
     return {
       status: 'OK',
       label: 'Permission',
       detail: `debugging approved for ${daemonPrefixes.join(', ')}`,
       severity: 'ok',
-      provenCommand: `cdp perceive ${daemonPrefixes[0]} -C -d 8`,
+      provenCommand: probe.provenCommand,
+      probeNote: probe.probeNote,
       targetPrefixes: daemonPrefixes,
     };
   }
@@ -14555,8 +14645,9 @@ function checkBrowserPermission({ daemons = null, tabs = null, cdp = null, envir
   const headless = Boolean(environment?.environment?.headlessLikely || environment?.headlessLikely);
   const cdpReachable = cdp?.status === 'OK';
   if (tabPrefixes.length > 0) {
-    const target = tabPrefixes[0];
-    const probe = `cdp perceive ${target} -C -d 8`;
+    const target = probe.targetPrefix || tabPrefixes[0];
+    const perceive = `cdp perceive ${target} -C -d 8`;
+    const next = probe.provenCommand;
     // CDP + tabs are enough for agents to proceed; missing daemon approval is advisory.
     return {
       status: 'WARN',
@@ -14565,11 +14656,12 @@ function checkBrowserPermission({ daemons = null, tabs = null, cdp = null, envir
         ? `headless CDP is reachable; tab daemon not attached yet for ${target}`
         : `browser debugging approval not confirmed for ${target}`,
       hint: headless && cdpReachable
-        ? `Non-blocking. Run: ${probe} (or cdp list). UI "Allow debugging?" is not required for headless sessions when CDP works.`
-        : `Run: ${probe}; if Chrome asks "Allow debugging?", click Allow`,
+        ? `Non-blocking. Run: ${next} (or cdp list). UI "Allow debugging?" is not required for headless sessions when CDP works.`
+        : `Run: ${probe.multi ? 'cdp list' : perceive}; if Chrome asks "Allow debugging?", click Allow`,
       severity: 'advisory',
-      provenCommand: cdpReachable ? `cdp list` : null,
-      nextProbe: probe,
+      provenCommand: cdpReachable ? next : null,
+      nextProbe: perceive,
+      probeNote: probe.probeNote,
       targetPrefixes: tabPrefixes,
     };
   }
@@ -14703,15 +14795,15 @@ function doctorWizardSummary(checks) {
 function doctorWizardModel(checks) {
   const node = checks.find(c => c.label === 'Node');
   const cdp = checks.find(c => c.label === 'CDP');
-  const daemon = checks.find(c => c.label === 'Daemons');
   const tabs = checks.find(c => c.label === 'Tabs');
   const permission = checks.find(c => c.label === 'Permission');
-  const target = permission?.targetPrefixes?.[0] || daemon?.targetPrefixes?.[0] || tabs?.targetPrefixes?.[0] || '<target>';
+  const probe = doctorProbeFromChecks(checks);
+  const target = probe.targetPrefix || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
   const prefix = doctorCliPrefix(node);
 
   let status = 'ready for live browser perception';
-  let currentStep = `${prefix} perceive ${target} -C -d 8`;
+  let currentStep = probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`;
   if (node?.status === 'FAIL') {
     status = 'blocked at Node.js';
     currentStep = node.hint || NODE22_MISSING_HINT;
@@ -14730,10 +14822,12 @@ function doctorWizardModel(checks) {
     const severity = doctorCheckSeverity(permission);
     if (severity === 'advisory') {
       status = 'usable with advisory notes (CDP reachable)';
-      currentStep = `${prefix} list; ${prefix} perceive ${target} -C -d 8`;
+      currentStep = probe.multi ? `${prefix} list` : `${prefix} list; ${prefix} perceive ${target} -C -d 8`;
     } else {
       status = 'waiting for browser debugging approval';
-      currentStep = `${prefix} perceive ${target} -C -d 8  # click Allow if Chrome asks`;
+      currentStep = probe.multi
+        ? `${prefix} list`
+        : `${prefix} perceive ${target} -C -d 8  # click Allow if Chrome asks`;
     }
   }
 
@@ -14766,21 +14860,23 @@ function doctorRecommendationModel(checks) {
   const node = checks.find(c => c.label === 'Node');
   const cdp = checks.find(c => c.label === 'CDP');
   const environment = checks.find(c => c.label === 'Environment');
-  const daemon = checks.find(c => c.label === 'Daemons');
   const tabs = checks.find(c => c.label === 'Tabs');
   const permission = checks.find(c => c.label === 'Permission');
-  const target = permission?.targetPrefixes?.[0] || daemon?.targetPrefixes?.[0] || tabs?.targetPrefixes?.[0] || '<target>';
+  const probe = doctorProbeFromChecks(checks);
+  const target = probe.targetPrefix || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
   const prefix = doctorCliPrefix(node);
   const base = {
     source: 'doctor-onboarding',
     stage: 'perceive',
-    run: `${prefix} perceive ${target} -C -d 8`,
+    run: probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`,
     ask: null,
     after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
     requiresUserAction: false,
     consentRequired: false,
-    reason: 'ready for live browser perception. For "what does this page say", run cdp text ' + target + ' --auto',
+    reason: probe.multi
+      ? `${probe.probeNote}. list is the source of truth for which tab.`
+      : 'ready for live browser perception. For "what does this page say", run cdp text ' + target + ' --auto',
     commands: doctorNextStepCommands(checks),
     warnings: doctorWarningCommands(checks),
   };
@@ -14922,9 +15018,9 @@ function doctorNextSteps(checks) {
   const node = checks.find(c => c.label === 'Node');
   const environment = checks.find(c => c.label === 'Environment');
   const fd = checks.find(c => c.label === 'FD limit');
-  const daemon = checks.find(c => c.label === 'Daemons');
   const tabs = checks.find(c => c.label === 'Tabs');
-  const liveTarget = daemon?.targetPrefixes?.[0] || tabs?.targetPrefixes?.[0] || '<target>';
+  const probe = doctorProbeFromChecks(checks);
+  const liveTarget = probe.targetPrefix || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
   const prefix = doctorCliPrefix(node);
   const lines = ['', 'Next steps:'];
@@ -14965,6 +15061,10 @@ function doctorNextSteps(checks) {
       lines.push(`  6. ${prefix} report <target-from-open>`);
     } else {
       lines.push(`  1. ${prefix} list`);
+      if (probe.multi) {
+        lines.push(`     ${probe.probeNote}`);
+        lines.push('     list is the source of truth for which tab');
+      }
       if (!tabs?.targetPrefixes?.length) lines.push(`  2. If list is empty: ${prefix} open https://example.com`);
       lines.push(`  ${tabs?.targetPrefixes?.length ? '2' : '3'}. ${prefix} perceive ${liveTarget} -C -d 8`);
       lines.push(`  Note: for "what does this page say", run: ${prefix} text ${liveTarget} --auto`);
@@ -14999,6 +15099,8 @@ function formatDoctorReport(checks) {
     lines.push(`Blocked: ${model.failures} failure${model.failures === 1 ? '' : 's'}${model.warnings ? `, ${model.warnings} warning${model.warnings === 1 ? '' : 's'}` : ''}.`);
   }
   if (model.provenCommand) lines.push(`Proven / next probe: ${model.provenCommand}`);
+  if (model.probeNote) lines.push(`  ${model.probeNote}`);
+  if (model.listIsSourceOfTruth) lines.push('  list is the source of truth for which tab');
   lines.push(...doctorNextSteps(checks));
   return lines.join('\n');
 }
@@ -15061,18 +15163,19 @@ function buildDoctorModel(checks) {
   const annotatedChecks = checks.map(check => ({ ...check, severity: doctorCheckSeverity(check) }));
   const recommendation = doctorRecommendationModel(checks);
   const node = annotatedChecks.find(c => c.label === 'Node');
-  const prefix = doctorCliPrefix(node);
   const cdpOk = annotatedChecks.find(c => c.label === 'CDP')?.status === 'OK';
   const tabsOk = annotatedChecks.find(c => c.label === 'Tabs')?.status === 'OK';
-  const permission = annotatedChecks.find(c => c.label === 'Permission');
-  const provenTarget = permission?.targetPrefixes?.[0];
+  const probe = doctorProbeFromChecks(annotatedChecks);
   const provenCommand = cdpOk && tabsOk
-    ? (provenTarget ? `${prefix} perceive ${provenTarget} -C -d 8` : (recommendation?.run || `${prefix} list`))
+    ? probe.provenCommand
     : (recommendation?.run || node?.rerunCommand || null);
   return {
     schema: 'chrome-cdp-ex.doctor.v1',
     ...summary,
     provenCommand,
+    probeNote: cdpOk && tabsOk ? probe.probeNote : null,
+    listIsSourceOfTruth: Boolean(cdpOk && tabsOk && probe.listIsSourceOfTruth),
+    recommendedTargetPrefix: cdpOk && tabsOk ? probe.targetPrefix : null,
     wizard: doctorWizardModel(checks),
     recommendation,
     routeRecommendation: {
@@ -19812,7 +19915,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   captureScreenshot, screencastFallback,
   resetScreenshotTier, getScreenshotTier, SCREENSHOT_TIMEOUT,
   // Constants
-  ENRICHED_ROLES, INTERACTIVE_ROLES,
+  ENRICHED_ROLES, INTERACTIVE_ROLES, CONTENT_REF_ROLES,
+  isSkipLinkAxNode, isLicenseBlobUrl,
   // Cascade source mapping
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
@@ -19826,6 +19930,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   doctorWizardModel, doctorWizardSummary, doctorCheckSeverity,
   doctorNextSteps, doctorStatusSummary, buildDoctorModel, formatDoctorOutput,
   formatDoctorReport, runDoctorChecks, doctorStr,
+  doctorProbeFromTargets, doctorProbeFromChecks,
   buildStopResult, formatStopResult, stopDaemons,
   // Issues #82-#87 helpers
   isBlankPageUrl, pageTargetScore, rankPageTargets, matchPageTargets, selectPageTarget,

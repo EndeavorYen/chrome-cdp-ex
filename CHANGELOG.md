@@ -32,6 +32,7 @@
 
 ### Agent reliability
 
+* When multiple tabs are open, doctor Proven / next probe is `cdp list` rather than a starred or first-daemon perceive. Skip-links (`href #`, Skip to, keyboard / 鍵盤快速鍵) get late `@refs`; article/feed/listitem/status nodes get early ones (#163).
 * Dead CDP now fails fast with a same-profile relaunch receipt. `list` / `doctor` / `attach` no longer wait on a WebSocket fallback after connection refused or HTTP timeout. Remembered existing Chrome profiles relaunch with `--remote-debugging-port` and `--user-data-dir` (no disposable `rm -rf`). When `CDP_PORT` is set and the profile is unknown, doctor prefers `chrome://inspect` over a blank `spawn-debug-browser` even on Linux/no DISPLAY (#155).
 * Default `fill --format json` to a compact `chrome-cdp-ex.fill.v1` receipt
   (`value`, `changed`, `navigation`, `typeahead`) instead of the full action

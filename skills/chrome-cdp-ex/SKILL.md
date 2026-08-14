@@ -12,7 +12,7 @@ Your eyes and hands on the user's live Chrome browser or Electron app through th
 Prefer `./bin/chrome-cdp` (re-execs Node 22 when PATH `node` is older), `process.execPath`, or `$HERMES_HOME/node/bin/node` over unqualified `node`. If `node -v` is <22, use the Node 22 path printed by doctor.
 
 1. **Doctor:** `./bin/chrome-cdp doctor` checks Node, install path, daemon state, file limits, CDP reachability, and browser-debugging permission.
-2. **List/open:** `./bin/chrome-cdp list`; if no usable tab exists, use `open <url>` or, with user consent, `spawn-debug-browser edge --port 9222 --url <url>`. Default `open` returns the target prefix plus `Next: cdp perceive <prefix> -C -d 8`; it does not dump the page unless you pass `--perceive`.
+2. **List/open:** `./bin/chrome-cdp list`; if no usable tab exists, use `open <url>` or, with user consent, `spawn-debug-browser edge --port 9222 --url <url>`. Default `open` returns the target prefix plus `Next: cdp perceive <prefix> -C -d 8`; it does not dump the page unless you pass `--perceive`. `list` is the source of truth for which tab — when doctor reports multiple tabs, pick with `list` / `target --url` instead of following a starred or daemon next-probe.
 3. **Perceive:** `./bin/chrome-cdp perceive <target> -C -d 8` to read structure, main/article text, layout hints, console health, and fresh `@ref` handles. For "what does this page say", use `text <target> --auto`.
 4. **Act:** `click`, `fill`, `press`, `select`, `scroll`, or `dismiss-modal` using a fresh `@ref` or stable selector.
 5. **Verify/report:** read the action evidence, then use `verify-click`, `perceive <target> --since-action`, or `report <target>` / `report <target> --format json` for handoff.

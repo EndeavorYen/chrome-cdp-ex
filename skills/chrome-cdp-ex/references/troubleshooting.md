@@ -11,7 +11,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 node skills/chrome-cdp-ex/scripts/cdp.mjs doctor --format json
 ```
 
-`doctor` checks Node 22+, skill install path, daemon sockets, open-file limits, runtime environment, CDP reachability, debuggable tabs, and browser permission. Treat its `Wizard` / `Recommendation` block as the source of truth: run the printed command, ask for any explicit user action, then continue with `list`, `perceive <target> -C -d 8`, action, `perceive --since-action`, and `report`.
+`doctor` checks Node 22+, skill install path, daemon sockets, open-file limits, runtime environment, CDP reachability, debuggable tabs, and browser permission. When multiple tabs are open, the next probe is `cdp list` (`N tabs — pick with cdp list / cdp target --url`); `list` is the source of truth for which tab, not a starred or first-daemon prefix. Treat the `Wizard` / `Recommendation` block as the setup path: run the printed command, ask for any explicit user action, then continue with `list`, `perceive <target> -C -d 8`, action, `perceive --since-action`, and `report`.
 
 Common recoveries:
 
