@@ -74,9 +74,9 @@ describe('Phase 6 command-surface characterization', () => {
         expect(cdpTest.commandMeta(spelling), spelling).toBe(command);
       }
     }
-    expect(Buffer.byteLength(cdpTest.helpStr())).toBe(23000);
+    expect(Buffer.byteLength(cdpTest.helpStr())).toBe(23023);
     expect(`sha256:${createHash('sha256').update(cdpTest.helpStr()).digest('hex')}`)
-      .toBe('sha256:e4362171385e44a164f47c0205a5bb2c3f2524557ee00348dc6265b5f9a1eedc');
+      .toBe('sha256:2deda099404e00e3bde25551603164fb3d6df2967f6a4fdce21ecdf54d9545da');
     expect(cdpTest.helpStr()).toMatch(/\.\n$/);
     expect(cdpTest.helpStr().trim()).toBe(contract.cliCases.find(entry => entry.id === 'help').stdout);
     expect(contract.cliCases.find(entry => entry.id === 'no-args-help').stdout)
@@ -101,10 +101,10 @@ describe('Phase 6 command-surface characterization', () => {
         });
         expect(result.status, args.join(' ') || '<no args>').toBe(0);
         expect(result.stderr).toHaveLength(0);
-        expect(result.stdout).toHaveLength(23001);
+        expect(result.stdout).toHaveLength(23024);
         expect(result.stdout.subarray(-2)).toEqual(Buffer.from('\n\n'));
         expect(`sha256:${createHash('sha256').update(result.stdout).digest('hex')}`)
-          .toBe('sha256:48c661a881129b84d1285bc26004549a4e785ec782b9f5bfc2a568a9f6c5d9f0');
+          .toBe('sha256:c85a8af803ab522b963b14e8a3d5c750823a3eb7dbdda8d4b5ee15db2a35455b');
       }
     } finally {
       rmSync(runtimeRoot, { recursive: true, force: true });

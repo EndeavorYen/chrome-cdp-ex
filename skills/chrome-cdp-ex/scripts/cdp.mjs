@@ -68,8 +68,10 @@ import {
   formatPerceptionJson,
   goldenPathActRecommendation,
   goldenPathBrowserPermissionRecommendation,
+  goldenPathListRecommendation,
   goldenPathOpenPageRecommendation,
   goldenPathPerceiveRecommendation,
+  goldenPathReadPageRecommendation,
 } from './lib/perception-model.mjs';
 import {
   buildCardsModel,
@@ -1299,17 +1301,46 @@ function removeTargetAlias(store = emptyAliasStore(), name) {
   return normalized;
 }
 
+function aliasLookupKey(name) {
+  return String(name || '').trim().replace(/^@+/, '');
+}
+
+function looksLikeAliasToken(token) {
+  const raw = String(token || '').trim();
+  if (!raw) return false;
+  if (raw.startsWith('@')) return true;
+  const key = aliasLookupKey(raw);
+  if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(key)) return false;
+  return !/^[0-9A-Fa-f]{8,}$/.test(key);
+}
+
 function resolveTargetAlias(name, store = readTargetAliases()) {
-  const key = String(name || '').trim();
+  const key = aliasLookupKey(name);
   if (!key) return null;
   const normalized = normalizeAliasStore(store);
-  if (key === 'current' && normalized.current) return normalized.aliases[normalized.current] || null;
-  return normalized.aliases[key] || null;
+  if (key.toLowerCase() === 'current' && normalized.current) {
+    return normalized.aliases[normalized.current] || null;
+  }
+  if (normalized.aliases[key]) return normalized.aliases[key];
+  const found = Object.entries(normalized.aliases).find(([stored]) => stored.toLowerCase() === key.toLowerCase());
+  return found ? found[1] : null;
+}
+
+function unknownAliasError(name) {
+  const display = aliasLookupKey(name);
+  const err = new Error(`unknown alias "@${display}". Run: cdp list / cdp current`);
+  err.code = 'unknown_alias';
+  err.aliasName = display;
+  return err;
 }
 
 function aliasesForTarget(targetId, aliases = {}) {
+  const id = String(targetId || '').toUpperCase();
   return Object.values(aliases || {})
-    .filter(alias => alias?.targetId === targetId)
+    .filter(alias => {
+      const aid = String(alias?.targetId || '').toUpperCase();
+      return aid && (id === aid || id.startsWith(aid));
+    })
     .map(alias => alias.name)
     .sort();
 }
@@ -1372,15 +1403,23 @@ function formatAliasRecord(alias, { format = 'text' } = {}) {
 function formatCurrentAlias(store, { format = 'text' } = {}) {
   const normalized = normalizeAliasStore(store);
   const current = normalized.current ? normalized.aliases[normalized.current] : null;
+  const aliases = Object.values(normalized.aliases).sort((left, right) => String(left.name).localeCompare(String(right.name)));
   if (format === 'json') {
     return formatJson({
       schema: 'chrome-cdp-ex.alias-current.v1',
       current: current || null,
-      aliases: Object.values(normalized.aliases),
+      aliases,
     });
   }
-  if (!current) return 'No current alias. Run: cdp use <target> --name app';
-  return formatAliasRecord(current);
+  if (!aliases.length) return 'No current alias. Run: cdp use <target> --name app';
+  const lines = [];
+  if (current) lines.push(`Current ${formatAliasRecord(current)}`);
+  else lines.push('No current alias. Run: cdp use <target> --name app');
+  for (const alias of aliases) {
+    if (current && alias.name === current.name) continue;
+    lines.push(formatAliasRecord(alias));
+  }
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -1705,20 +1744,22 @@ function parseTargetSelectArgs(args = []) {
 function buildTargetSelectModel(selection, pages = []) {
   const page = selection.page || {};
   const prefixLength = getDisplayPrefixLength((pages || []).map(p => p.targetId || ''));
+  const targetPrefix = selection.targetPrefix || String(selection.targetId || '').slice(0, prefixLength);
+  const recommendation = goldenPathReadPageRecommendation(targetPrefix);
   return {
     schema: 'chrome-cdp-ex.target-select.v1',
     targetId: selection.targetId,
-    targetPrefix: selection.targetPrefix || String(selection.targetId || '').slice(0, prefixLength),
+    targetPrefix,
     title: isBlankPageUrl(page.url) ? '(blank tab)' : (page.title || ''),
     url: page.url || '',
     isBlank: isBlankPageUrl(page.url),
     matchCount: selection.matchCount || 1,
     filters: selection.filters || {},
-    recommendation: goldenPathPerceiveRecommendation(selection.targetPrefix || String(selection.targetId || '').slice(0, 8)),
-    nextSteps: [
-      `cdp perceive ${selection.targetPrefix || String(selection.targetId || '').slice(0, 8)} -C -d 8`,
-      `cdp use ${selection.targetPrefix || String(selection.targetId || '').slice(0, 8)} --name app`,
-    ],
+    recommendation,
+    nextSteps: uniqueNextStepCommands([
+      ...(recommendation.commands || []),
+      `cdp use ${targetPrefix} --name app`,
+    ]),
   };
 }
 
@@ -2108,6 +2149,13 @@ function assessDaemonFreshness({ targetPrefix = '', expectedTargetId = null, cur
       mismatches.push({ field, daemon: daemonValue, current: currentValue });
     }
   }
+  const versionSame = comparableMetadataValue(daemon.packageVersion)
+    && comparableMetadataValue(current?.packageVersion)
+    && daemon.packageVersion === current.packageVersion;
+  if (versionSame) {
+    const remaining = mismatches.filter(mismatch => mismatch.field !== 'scriptPath');
+    if (remaining.length !== mismatches.length) mismatches.splice(0, mismatches.length, ...remaining);
+  }
 
   if (expectedTargetId && daemon.boundTargetId && daemon.boundTargetId !== expectedTargetId) {
     mismatches.push({ field: 'boundTargetId', daemon: daemon.boundTargetId, current: expectedTargetId });
@@ -2332,6 +2380,7 @@ class CDP {
   waitForEvent(method, timeout = TIMEOUT) {
     let settled = false;
     let off;
+    let offClose;
     let timer;
     const promise = new Promise((resolve, reject) => {
       off = this.onEvent(method, (params) => {
@@ -2339,12 +2388,21 @@ class CDP {
         settled = true;
         clearTimeout(timer);
         off();
+        offClose?.();
         resolve(params);
+      });
+      offClose = this.onClose(() => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        off();
+        reject(new Error(`CDP websocket closed while waiting for event: ${method}`));
       });
       timer = setTimeout(() => {
         if (settled) return;
         settled = true;
         off();
+        offClose?.();
         reject(new Error(`Timeout waiting for event: ${method}`));
       }, timeout);
     });
@@ -2355,11 +2413,18 @@ class CDP {
         settled = true;
         clearTimeout(timer);
         off?.();
+        offClose?.();
       },
     };
   }
 
-  onClose(handler) { this.#closeHandlers.push(handler); }
+  onClose(handler) {
+    this.#closeHandlers.push(handler);
+    return () => {
+      const index = this.#closeHandlers.indexOf(handler);
+      if (index >= 0) this.#closeHandlers.splice(index, 1);
+    };
+  }
   close() { this.#ws.close(); }
 }
 
@@ -2445,7 +2510,7 @@ function buildPageListModel(pages = [], browserInfo = null, opts = {}) {
   const recommendedPage = modelPages.find(page => !page.isBlank) || modelPages[0];
   if (recommendedPage) recommendedPage.recommended = true;
   const recommendation = recommendedPage
-    ? goldenPathPerceiveRecommendation(recommendedPage.targetPrefix)
+    ? goldenPathListRecommendation()
     : goldenPathOpenPageRecommendation();
   const nextSteps = recommendation.commands;
   return {
@@ -3588,15 +3653,41 @@ function buildTargetStatusDiagnostic(err, { cmd = 'status', targetPrefix = '' } 
 }
 
 async function pageInfoModel(cdp, sid, opts = {}) {
-  let title = '', url = '';
+  let title = '', url = '', contentType = '';
   try {
-    const info = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ title: document.title, url: window.location.href })', false, { timeoutMs: STATUS_PAGE_INFO_TIMEOUT }));
+    const info = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ title: document.title, url: window.location.href, contentType: document.contentType || "" })', false, { timeoutMs: STATUS_PAGE_INFO_TIMEOUT }));
     title = info.title;
     url = info.url;
+    contentType = info.contentType || '';
   } catch (e) {
-    return { title, url, diagnostic: buildTargetStatusDiagnostic(e, { targetPrefix: opts.targetPrefix }) };
+    return { title, url, contentType, diagnostic: buildTargetStatusDiagnostic(e, { targetPrefix: opts.targetPrefix }) };
   }
-  return { title, url, diagnostic: null };
+  return { title, url, contentType, diagnostic: null };
+}
+
+function isPdfViewerContentType(contentType) {
+  return String(contentType || '').toLowerCase().includes('application/pdf');
+}
+
+function formatPdfViewerOutput(meta = {}, { targetPrefix = '<target>' } = {}) {
+  const title = meta.title || '(untitled)';
+  const url = meta.url || '(unknown)';
+  const type = meta.contentType || 'application/pdf';
+  return [
+    'chrome-cdp-ex.pdf-viewer.v1',
+    'PDF viewer: Chrome is rendering a PDF plugin, not an HTML document.',
+    `Page: ${title}`,
+    `URL: ${url}`,
+    `contentType: ${type}`,
+    'Accessibility tree is empty for this viewer. Do not retry perceive/text as a next-probe.',
+    `Next: cdp eval ${targetPrefix} "document.contentType"`,
+  ].join('\n');
+}
+
+function pdfViewerError(meta = {}, { targetPrefix = '<target>' } = {}) {
+  const err = new Error(formatPdfViewerOutput(meta, { targetPrefix }));
+  err.code = 'pdf_viewer';
+  return err;
 }
 
 async function collectPageHealth(cdp, sid, { changed = false, retryIndeterminate = true } = {}) {
@@ -4032,7 +4123,19 @@ function compactExceptionDeltaEntry(entry = {}) {
   };
 }
 
+function isIgnorableTelemetryFailure(entry = {}) {
+  const url = String(entry.url || '');
+  const type = String(entry.type || '');
+  if (/\/copilot\/agent-sessions(?:\/|$|\?)/i.test(url)) return true;
+  if (/github\.com\/_private\//i.test(url) && Number(entry.status) === 404) return true;
+  if (Number(entry.status) === 404 && type && type !== 'Document') {
+    if (/telemetry|collector|analytics|client-events/i.test(url)) return true;
+  }
+  return false;
+}
+
 function isNetworkFailure(entry = {}) {
+  if (isIgnorableTelemetryFailure(entry)) return false;
   if (entry.failed === true || entry.errorText) return true;
   const status = Number(entry.status);
   return Number.isFinite(status) && status >= 400;
@@ -4118,7 +4221,10 @@ function normalizeNetworkDelta(delta = {}) {
 function actionDomDiffShowsChange(domDiff) {
   const text = String(domDiff || '').trim();
   if (!text) return false;
-  return !/no changes detected/i.test(text);
+  if (/no changes detected/i.test(text)) return false;
+  if (/unchanged; still first cards/i.test(text)) return false;
+  if (/\bunchanged\b/i.test(text) && /virtualized window/i.test(text)) return false;
+  return true;
 }
 
 function actionHasDomObservation(actionResult = {}) {
@@ -6570,12 +6676,14 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
   return model;
 }
 
-function formatSessionReport(session, { now = Date.now(), format = 'text', lastActions = DEFAULT_REPORT_ACTION_LIMIT, compact = false, qa = false } = {}) {
+function formatSessionReport(session, { now = Date.now(), format = 'text', lastActions = DEFAULT_REPORT_ACTION_LIMIT, compact = false, qa = false, page = null } = {}) {
+  const jsonDefaultCompact = format === 'json' && lastActions != null;
+  const effectiveCompact = compact || jsonDefaultCompact;
   if (qa) {
     const model = buildSessionReportModel(session, { now, lastActions, compact: true });
     const latest = model.latestAction || null;
     const summary = buildQaSummaryModel({
-      page: { url: latest?.url || '', title: '' },
+      page: { url: page?.url || latest?.url || '', title: page?.title || '' },
       console: {
         errors: Number(latest?.consoleErrors || latest?.effects?.consoleDelta?.errors || 0),
         exceptions: Number(latest?.exceptions || latest?.effects?.exceptionDelta?.count || 0),
@@ -6606,8 +6714,8 @@ function formatSessionReport(session, { now = Date.now(), format = 'text', lastA
     }
     return formatQaSummaryText(summary);
   }
-  if (format === 'json') return formatJson(buildSessionReportModel(session, { now, lastActions, compact }));
-  const model = buildSessionReportModel(session, { now, lastActions });
+  if (format === 'json') return formatJson(buildSessionReportModel(session, { now, lastActions, compact: effectiveCompact }));
+  const model = buildSessionReportModel(session, { now, lastActions, compact: effectiveCompact });
   const actionLog = session.actionLog || [];
   const timelineWindow = reportActionTimelineWindow(actionLog, lastActions);
   const screenshots = session.screenshots || [];
@@ -6649,6 +6757,10 @@ function formatSessionReport(session, { now = Date.now(), format = 'text', lastA
       if (entry.dispatch?.method) lines.push(`   Dispatch: ${entry.dispatch.method}`);
       if (entry.outcome?.status) lines.push(`   Outcome: ${entry.outcome.status}${entry.outcome.reason ? ` — ${entry.outcome.reason}` : ''}`);
       if (entry.verdict?.status) lines.push(`   Verdict: ${entry.verdict.status}${entry.verdict.reason ? ` — ${entry.verdict.reason}` : ''}`);
+      if (effectiveCompact) {
+        if (entry.nextHint) lines.push(`   Next: ${normalizeReportTargetCommand(entry.nextHint, sourceTarget, model.targetPrefix)}`);
+        continue;
+      }
       if (entry.failure?.kind) lines.push(`   Failure: ${entry.failure.kind} — ${entry.failure.reason}`);
       if (entry.diagnosis?.kind && entry.diagnosis.status !== 'ok') {
         lines.push(`   Diagnosis: ${entry.diagnosis.kind} — ${entry.diagnosis.reason}`);
@@ -7309,7 +7421,7 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
       invalidatedAt: Date.now(),
       invalidationReason: 'daemon-start',
     },
-    lastPerceive: { output: null, model: null, snapshotOpts: null },
+    lastPerceive: { output: null, model: null, snapshotOpts: null, cards: null },
     lastAction: null,
     buffers: {},
     pendingRequests: new Map(),
@@ -7620,11 +7732,19 @@ function scrollSettledRectFunctionDeclaration() {
     const fullyVisible = initial.x >= 0 && initial.y >= 0 &&
       initial.x + initial.w <= window.innerWidth && initial.y + initial.h <= window.innerHeight;
     if (!fullyVisible) this.scrollIntoView({ block: 'center', inline: 'center' });
+    const deadline = Date.now() + 1800;
     const maxSamples = fullyVisible ? 2 : 60;
     let previous = readRect();
     let stableSamples = 0;
     for (let sample = 0; sample < maxSamples; sample++) {
-      await new Promise(resolve => requestAnimationFrame(resolve));
+      if (Date.now() >= deadline) break;
+      await Promise.race([
+        new Promise(resolve => {
+          if (typeof requestAnimationFrame === 'function') requestAnimationFrame(resolve);
+          else resolve();
+        }),
+        new Promise(resolve => setTimeout(resolve, 50)),
+      ]);
       const current = readRect();
       const movement = Math.max(
         Math.abs(current.x - previous.x),
@@ -7650,12 +7770,20 @@ function scrollSettledRectFunctionDeclaration() {
 async function resolveRef(cdp, sid, refMap, ref, refState) {
   const frameParsed = parseFrameRef(ref);
   const objectId = await resolveRefNode(cdp, sid, refMap, ref, refState);
-  const result = await cdpDomains(cdp).Runtime.callFunctionOn( {
-    objectId,
-    functionDeclaration: scrollSettledRectFunctionDeclaration(),
-    returnByValue: true,
-    awaitPromise: true,
-  }, sid);
+  let result;
+  try {
+    result = await cdpDomains(cdp).Runtime.callFunctionOn( {
+      objectId,
+      functionDeclaration: scrollSettledRectFunctionDeclaration(),
+      returnByValue: true,
+      awaitPromise: true,
+    }, sid, REF_RESOLVE_TIMEOUT);
+  } catch (error) {
+    if (isTimeoutError(error, ['Runtime.callFunctionOn'])) {
+      return resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, { objectId });
+    }
+    throw error;
+  }
   const value = result.result.value || {};
   if (value.connected !== true) {
     invalidateRefMapping(refMap, ref, refState);
@@ -7912,7 +8040,7 @@ async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, options =
       };
     }`,
     returnByValue: true,
-  }, sid);
+  }, sid, REF_RESOLVE_TIMEOUT);
   const value = result.result.value || {};
   if (options.functionDeclaration) return value;
   if (frameParsed) {
@@ -9449,11 +9577,29 @@ ${visibleControlsCollectorSource()}
         }
       }
 
+      const cardWindows = [];
+      const cardEls = document.querySelectorAll('article, [role="article"], [role="listitem"]');
+      for (const el of cardEls) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 8 || rect.height < 8) continue;
+        let vis = 'in';
+        if (rect.bottom < 0) vis = 'above';
+        else if (rect.top > vh) vis = 'below';
+        const handleMatch = (el.textContent || '').match(/@[A-Za-z0-9_]{1,30}/);
+        cardWindows.push({
+          vis,
+          text: (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 180),
+          handle: handleMatch ? handleMatch[0] : '',
+        });
+        if (cardWindows.length >= 40) break;
+      }
+
       return JSON.stringify({
         title: document.title, url: window.location.href,
+        contentType: document.contentType || '',
         vw, vh, scrollY, scrollMax,
         counts, focused: focusDesc, layoutMap, styleHints, cursorInteractives,
-        visibleControls, visibleControlsTruncated
+        visibleControls, visibleControlsTruncated, cardWindows
       });
     })()`;
 }
@@ -9494,6 +9640,13 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   ]);
 
   const meta = JSON.parse(metaJson);
+
+  if (isPdfViewerContentType(meta.contentType) && !cards && !scopeSelector) {
+    const output = formatPdfViewerOutput(meta, { targetPrefix: opts.targetPrefix });
+    lastPerceiveStore.output = output;
+    lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts(opts);
+    return output;
+  }
 
   // Console health
   const allConsole = consoleBuf.all();
@@ -9540,6 +9693,8 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     const model = buildCardsModel(axNodes, meta, activeRefMap, {
       last,
       targetPrefix: opts.targetPrefix,
+      previousCards: lastPerceiveStore.cards?.cards,
+      previousScrollY: lastPerceiveStore.cards?.scrollY,
     });
     if (frame) {
       storeFrameScopedRefs(refState, frame, frameContext.frames, activeRefMap);
@@ -12195,6 +12350,14 @@ async function textStr(cdp, sid, args) {
   if (typeof args === 'string' || args == null) optsArgs = args ? [args] : [];
   else if (!Array.isArray(args)) optsArgs = [];
   const opts = parseTextArgs(optsArgs);
+  try {
+    const page = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ title: document.title, url: window.location.href, contentType: document.contentType || "" })', false, { timeoutMs: STATUS_PAGE_INFO_TIMEOUT }));
+    if (isPdfViewerContentType(page.contentType)) {
+      throw pdfViewerError(page, { targetPrefix: opts.targetPrefix || '<target>' });
+    }
+  } catch (error) {
+    if (error?.code === 'pdf_viewer') throw error;
+  }
   const result = await evalStr(cdp, sid, textPageScript(opts));
   let parsed;
   try { parsed = JSON.parse(result); }
@@ -13086,11 +13249,20 @@ async function reloadStr(cdp, sid) {
 }
 
 async function observeReloadPage(cdp, sid) {
+  return observePageState(cdp, sid, 'Reload observation');
+}
+
+async function observeNavPage(cdp, sid) {
+  return observePageState(cdp, sid, 'Navigation observation');
+}
+
+async function observePageState(cdp, sid, heading = 'Page observation') {
   const result = await cdpDomains(cdp).Runtime.evaluate( {
     expression: `JSON.stringify({
       title: document.title || '',
       url: window.location.href || '',
-      readyState: document.readyState || ''
+      readyState: document.readyState || '',
+      contentType: document.contentType || ''
     })`,
     returnByValue: true,
     awaitPromise: true,
@@ -13101,11 +13273,12 @@ async function observeReloadPage(cdp, sid) {
   const value = result.result?.value;
   const parsed = typeof value === 'string' ? JSON.parse(value) : (value || {});
   return [
-    'Reload observation:',
+    `${heading}:`,
     `Page: ${parsed.title || '(untitled)'}`,
     `URL: ${parsed.url || '(unknown)'}`,
     `Ready state: ${parsed.readyState || '(unknown)'}`,
-  ].join('\n');
+    parsed.contentType ? `contentType: ${parsed.contentType}` : null,
+  ].filter(Boolean).join('\n');
 }
 
 async function reloadActionDispatch({ cdp, sessionId, session, consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq }) {
@@ -14647,6 +14820,15 @@ function checkSkillSymlink({ home = homedir(), env = process.env, fs = { existsS
     const lstat = fs.lstatSync ? fs.lstatSync(target) : null;
     if (lstat?.isSymbolicLink?.()) kind = 'symlink';
   } catch {}
+  const binPath = resolve(target, 'bin', 'chrome-cdp');
+  if (!fs.existsSync(binPath)) {
+    return {
+      status: 'WARN',
+      label: 'Skill launcher',
+      detail: `${target} is missing bin/chrome-cdp`,
+      hint: 'Installed skill copies should include bin/chrome-cdp wrapping scripts/cdp.mjs. From a checkout use repo-root ./bin/chrome-cdp.',
+    };
+  }
   return { status: 'OK', label: 'Skill install', detail: `${kind}: ${target}` };
 }
 
@@ -16311,7 +16493,7 @@ async function dismissModalStr(cdp, sid) {
 const DAEMON_HANDLER_BUILDERS = Object.freeze({
   perceive: context => createPerceiveCommandHandler(context),
   click: context => createClickCommandHandler(context),
-  report: context => createReportCommandHandler(context.session),
+  report: context => createReportCommandHandler(context.session, context),
   evalraw: context => createEvalrawCommandHandler(context),
   html: capabilities => createDaemonReadHandlers(capabilities).html,
   text: capabilities => createDaemonReadHandlers(capabilities).text,
@@ -16971,10 +17153,18 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     },
     nav: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-      const value = await actionFeedback('nav', () => navStr(cdp, sessionId, fopts.args[0], {
+      const positional = [];
+      let perceive = false;
+      for (const arg of fopts.args) {
+        if (arg === '--perceive') perceive = true;
+        else if (String(arg).startsWith('--')) throw new Error(`nav: unknown argument ${arg}`);
+        else positional.push(arg);
+      }
+      const url = positional[0];
+      const value = await actionFeedback('nav', () => navStr(cdp, sessionId, url, {
         targetId,
         onSessionId(nextSid) { sessionId = nextSid; },
-      }), { input: fopts.args[0], resolvedBy: 'url', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'full-perceive', observeFullPerceive, fopts);
+      }), { input: url, resolvedBy: 'url', label: url || '', commandArgs: [url] }, perceive ? 'full-perceive' : 'state-change', perceive ? observeFullPerceive : () => observeNavPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
     netlog: async args => commandResult(netlogStr(netReqBuf, args[0]), null),
@@ -17157,7 +17347,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     }, args),
   };
   const applicationHandlers = {
-    report: applicationPreflight.handlerBuilders.report({ session }),
+    report: applicationPreflight.handlerBuilders.report({ session, cdp, sessionId }),
     click: applicationPreflight.handlerBuilders.click({
       actionFeedback,
       click: selector => clickStr(cdp, sessionId, selector, refMap, refState),
@@ -17533,7 +17723,7 @@ async function stopDaemons(targetPrefix, deps = {}) {
     let response;
     try {
       const conn = await connect(daemon.socketPath);
-      response = await send(conn, { cmd: 'stop' });
+      response = await send(conn, { cmd: 'stop', args: [] });
     } catch {
       if (!IS_WINDOWS) {
         try {
@@ -17562,7 +17752,7 @@ const CLI_HELP_LAYOUT = Object.freeze([
   {
     "name": "help",
     "headGap": 1,
-    "summaryGap": 30,
+    "summaryGap": 20,
     "summaryIndent": null
   },
   {
@@ -18340,6 +18530,18 @@ function helpStr() {
   return USAGE;
 }
 
+function helpTopicStr(topic) {
+  const raw = String(topic || '').trim();
+  if (!raw || raw === 'help' || raw === '--help' || raw === '-h') return helpStr();
+  const needle = raw.replace(/^-+/, '').toLowerCase();
+  const record = COMMAND_SURFACE.resolve(needle);
+  if (!record) throw new Error(unknownCommandMessage(raw));
+  const lines = [`cdp ${record.help.synopsis}`, record.help.summary];
+  if (record.aliases?.length) lines.push(`Aliases: ${record.aliases.join(', ')}`);
+  lines.push('Run `cdp help` for the full command reference.');
+  return `${lines.join('\n')}\n`;
+}
+
 const COMMANDS = projectCliCommands(COMMAND_SURFACE);
 
 function sameStringArray(left, right) {
@@ -18449,16 +18651,23 @@ function createApplicationCommandRegistry(commands) {
   return createCommandRegistry(buildApplicationCommandSpecs(commands));
 }
 
-function createReportCommandHandler(session) {
+function createReportCommandHandler(session, { cdp = null, sessionId = null, pageInfo = pageInfoModel } = {}) {
   return async ({ args }) => {
     const fopts = parseFormatArgs(args, ['text', 'json']);
     const ropts = parseReportArgs(fopts.args);
     if (ropts.args.length) throw new Error(`report: unknown argument ${ropts.args[0]}`);
+    let page = null;
+    if (ropts.qa && cdp && sessionId) {
+      try {
+        page = await pageInfo(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(session.targetId) });
+      } catch {}
+    }
     return commandResult(formatSessionReport(session, {
       format: fopts.format,
       lastActions: ropts.lastActions,
       compact: ropts.compact,
       qa: ropts.qa,
+      page,
     }), { kind: 'session-report' });
   };
 }
@@ -18548,40 +18757,70 @@ function createPerceiveCommandHandler({
   };
 }
 
+function parseClickArgs(args = []) {
+  const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+  let js = false;
+  const positional = [];
+  for (const token of fopts.args) {
+    if (token === '--js' || token === '-j') {
+      js = true;
+      continue;
+    }
+    if (token === '--help' || token === '-h') {
+      const err = new Error('click: help requested');
+      err.code = 'help_requested';
+      err.helpTopic = 'click';
+      throw err;
+    }
+    if (String(token).startsWith('--')) {
+      throw new Error(`click: unknown argument ${token}`);
+    }
+    positional.push(token);
+  }
+  return {
+    format: fopts.format,
+    compact: fopts.compact,
+    qa: fopts.qa,
+    full: fopts.full,
+    maxDiffLines: fopts.maxDiffLines,
+    js,
+    selector: positional[0] || '',
+    args: positional,
+    fopts: { ...fopts, args: positional },
+  };
+}
+
 function createClickCommandHandler({ actionFeedback, click, jsClick }) {
   return async ({ args }) => {
-    const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-    const cargs = fopts.args;
-    let value;
-    if (cargs[0] === '--js' || cargs[0] === '-j') {
-      value = await actionFeedback(
+    const parsed = parseClickArgs(args);
+    const selector = parsed.selector;
+    const value = parsed.js
+      ? await actionFeedback(
         'click',
-        () => jsClick(cargs[1]),
+        () => jsClick(selector),
         {
-          input: cargs[1],
+          input: selector,
           resolvedBy: 'selector-or-ref',
-          label: cargs[1] || '',
-          commandArgs: ['--js', cargs[1]],
+          label: selector || '',
+          commandArgs: ['--js', selector],
         },
         'settle-diff',
         null,
-        fopts
-      );
-    } else {
-      value = await actionFeedback(
+        parsed.fopts
+      )
+      : await actionFeedback(
         'click',
-        () => click(cargs[0]),
+        () => click(selector),
         {
-          input: cargs[0],
+          input: selector,
           resolvedBy: 'selector-or-ref',
-          label: cargs[0] || '',
-          commandArgs: [cargs[0]],
+          label: selector || '',
+          commandArgs: [selector],
         },
         'settle-diff',
         null,
-        fopts
+        parsed.fopts
       );
-    }
     return commandResult(value, { kind: 'action-receipt' });
   };
 }
@@ -18684,7 +18923,7 @@ function editDistance(a, b) {
   return dp[s.length][t.length];
 }
 
-function suggestCommands(input, { limit = 3, maxDistance = 3 } = {}) {
+function suggestCommands(input, { limit = 3, maxDistance = 2 } = {}) {
   const needle = String(input || '').trim().toLowerCase();
   if (!needle) return [];
   // Exact alias → suggest the canonical command name.
@@ -18808,6 +19047,8 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
       return `cdp restore ${target} --file <checkpoint.json>`;
     case 'inject':
       return `cdp inject ${target} --css "body { outline: 1px solid red }"`;
+    case 'stop':
+      return 'cdp stop [target|--all]';
     default:
       return `cdp ${cmd || '<command>'}${targetPrefix ? ` ${target}` : ''} <required-args>`;
   }
@@ -18859,9 +19100,23 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
     };
   }
   if (
+    err?.code === 'unknown_alias'
+    || lower.includes('unknown alias')
+  ) {
+    return {
+      kind: 'target-resolution',
+      strategy: 'list-aliases',
+      run: 'cdp list',
+      then: 'cdp current',
+      reason: 'The named alias is not saved. List tabs or inspect current aliases.',
+    };
+  }
+  if (
     lower.includes('target id required') ||
     lower.includes('no page list cached') ||
-    lower.includes('no target matching prefix')
+    lower.includes('no target matching prefix') ||
+    lower.includes('no live target matching prefix') ||
+    lower.includes('no live target matching alias')
   ) {
     return {
       kind: 'target-resolution',
@@ -18871,12 +19126,37 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       reason: 'The requested tab target could not be resolved from the current page list.',
     };
   }
-  if (lower.includes('ambiguous prefix')) {
+  if (
+    lower.includes('ambiguous prefix')
+    || lower.includes('is ambiguous')
+    || lower.includes('pages matched')
+    || /target:\s+\d+\s+pages matched/i.test(message)
+  ) {
     return {
       kind: 'target-resolution',
       strategy: 'choose-longer-prefix',
       run: 'cdp list  # copy a longer target prefix',
       reason: 'More than one tab matches the provided target prefix.',
+    };
+  }
+  if (
+    lower.includes('unknown option')
+    || lower.includes('unknown argument')
+    || lower.includes('unknown flag')
+  ) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: cmd ? `cdp help ${cmd}` : 'cdp help',
+      reason: 'The command received an unknown flag or argument. Print usage instead of probing doctor/status.',
+    };
+  }
+  if (err?.code === 'pdf_viewer' || lower.includes('pdf viewer') || lower.includes('application/pdf')) {
+    return {
+      kind: 'pdf-viewer',
+      strategy: 'do-not-probe-ax',
+      run: `cdp eval ${target} "document.contentType"`,
+      reason: 'Chrome PDF viewer has no accessibility tree. text/perceive cannot extract the PDF body.',
     };
   }
   if (
@@ -19316,7 +19596,7 @@ async function navigateOpenTarget(targetId, sp, url, {
 }
 
 function formatOpenNextPerceiveCommand(targetId) {
-  return `Next: cdp perceive ${targetPrefixForDisplay(targetId)} -C -d 8`;
+  return `Next: cdp text ${targetPrefixForDisplay(targetId)} --auto`;
 }
 
 function formatOpenAttachWaitMessage(timeoutMs) {
@@ -19349,7 +19629,7 @@ function buildOpenModel({ targetId, url = '', attached = false, autoPerceive = n
   const recommendation = approved && autoPerceiveModel.ok
     ? goldenPathActRecommendation(target, { fromPerceptionBelow: true })
     : approved
-    ? goldenPathPerceiveRecommendation(target)
+    ? goldenPathReadPageRecommendation(target)
     : goldenPathBrowserPermissionRecommendation(target);
   const nextSteps = recommendation.commands;
   return {
@@ -19531,8 +19811,17 @@ async function main(options = {}) {
   // Daemon mode (internal)
   if (cmd === '_daemon') { await runDaemon(args[0], applicationPreflight); return; }
 
-  if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
+  if (!cmd || cmd === '--help' || cmd === '-h') {
     console.log(helpStr()); return finish(0);
+  }
+  if (cmd === 'help') {
+    try {
+      console.log(args[0] ? helpTopicStr(args[0]) : helpStr());
+      return finish(0);
+    } catch (e) {
+      console.error(formatCliError(e, { cmd: 'help' }));
+      return finish(1);
+    }
   }
 
   // List — use existing daemon if available, otherwise direct
@@ -19858,10 +20147,20 @@ async function main(options = {}) {
   // Stop
   if (cmd === 'stop') {
     const fopts = parseFormatArgs(args, ['text', 'json']);
+    if (fopts.args.includes('--help') || fopts.args.includes('-h')) {
+      console.log(helpTopicStr('stop'));
+      return finish(0);
+    }
     if (fopts.args.length > 1) exitCliError(`stop: unknown argument ${fopts.args[1]}`, { cmd, format: fopts.format });
-    const result = await stopDaemons(fopts.args[0]);
-    console.log(formatStopResult(result, { format: fopts.format }));
-    return;
+    try {
+      const requested = fopts.args[0] === '--all' ? undefined : fopts.args[0];
+      const result = await stopDaemons(requested);
+      console.log(formatStopResult(result, { format: fopts.format }));
+      return finish(0);
+    } catch (e) {
+      console.error(formatCliError(e, { cmd, format: fopts.format }));
+      return finish(1);
+    }
   }
 
   // Doctor / ready — one-call diagnostics, no target needed
@@ -19913,9 +20212,18 @@ async function main(options = {}) {
         }
       }
       const store = readTargetAliases();
+      let targetId = parsed.targetId;
+      if (!parsed.port) {
+        try {
+          const pages = await discoverLivePagesForTargetResolution();
+          const upper = String(targetId || '').toUpperCase();
+          const matches = (pages || []).filter(page => String(page.targetId || '').toUpperCase().startsWith(upper));
+          if (matches.length === 1) targetId = matches[0].targetId;
+        } catch {}
+      }
       const next = upsertTargetAlias(store, {
         name: parsed.name,
-        targetId: parsed.targetId,
+        targetId,
         port: parsed.port,
         host: parsed.host,
       });
@@ -19974,6 +20282,17 @@ async function main(options = {}) {
 
   let { targetPrefix, cmdArgs } = parseTargetAndCommandArgs(cmd, targetCommandArgs);
   let cliErrorFormat = targetCommandCliErrorFormat(targetPrefix, cmdArgs, targetCommandArgs);
+  if (
+    targetPrefix === '--help'
+    || targetPrefix === '-h'
+    || cmdArgs.includes('--help')
+    || cmdArgs.includes('-h')
+    || targetCommandArgs.includes('--help')
+    || targetCommandArgs.includes('-h')
+  ) {
+    console.log(helpTopicStr(cmd));
+    return finish(0);
+  }
   if (targetPrefix && String(targetPrefix).startsWith('--')) {
     try {
       const fopts = parseFormatArgs(targetCommandArgs, ['text', 'json']);
@@ -19992,6 +20311,10 @@ async function main(options = {}) {
 
   // Resolve against live discovery before trusting daemon or cache state.
   const targetAlias = resolveTargetAlias(targetPrefix);
+  if (!targetAlias && looksLikeAliasToken(targetPrefix)) {
+    console.error(formatCliError(unknownAliasError(targetPrefix), { cmd, format: cliErrorFormat }));
+    return finish(1);
+  }
   let livePages;
   if (targetAlias?.port) {
     const cachedPages = existsSync(PAGES_CACHE) ? JSON.parse(readFileSync(PAGES_CACHE, 'utf8')) : [];
@@ -20252,6 +20575,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   resolvePrefix, getDisplayPrefixLength, daemonEndpointForPlatform, sockPath, isRef, validateUrl,
   emptyAliasStore, readTargetAliases, writeTargetAliases, upsertTargetAlias,
   removeTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
+  aliasLookupKey, looksLikeAliasToken, unknownAliasError, formatCurrentAlias,
   // AX tree helpers
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
@@ -20270,7 +20594,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseVerifyClickArgs, buildSemanticInteractionModel, formatSemanticInteractionResult, formatActionWorkflowCommandOutput,
   parseQaArgs, buildQaPageModel, formatQaPageReport,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
-  summarizeActionObservationEffects, shouldTrackActionNetworkRequest,
+  summarizeActionObservationEffects, shouldTrackActionNetworkRequest, isNetworkFailure,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
   appendSessionEnvironmentLog, buildRecordEnvironmentModel,
   initializeSessionLog, parseReportArgs, buildSessionReportModel, formatSessionReport, sessionScreenshotDir,
@@ -20291,7 +20615,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, loadAllStr, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, loadAllStr, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,
@@ -20312,6 +20636,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
+  isPdfViewerContentType, formatPdfViewerOutput, pdfViewerError, pageInfoModel,
+  actionDomDiffShowsChange,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
@@ -20336,7 +20662,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   formatBatchResults, runBatchCommands, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
   formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage, shouldAnnounceOpenAttachWait, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   DEFAULT_OPEN_ATTACH_TIMEOUT_MS,
-  CLI_HELP_LAYOUT, CLI_HELP_TEMPLATE, renderCliHelp, helpStr,
+  CLI_HELP_LAYOUT, CLI_HELP_TEMPLATE, renderCliHelp, helpStr, helpTopicStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   detectRuntimeEnvironment, checkRuntimeEnvironment,
   discoverNode22, resolveChromeCdpNodeLaunch, formatNodeRerunCommand, nodeMajor,
@@ -20362,7 +20688,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   COMMANDS, NEEDS_TARGET, commandMeta, buildApplicationCommandSpecs, createApplicationCommandRegistry,
   DAEMON_APPLICATION_COMMANDS, DAEMON_HANDLER_BUILDERS, preflightDaemonApplication,
   createReportCommandHandler, createPerceiveCommandHandler,
-  createClickCommandHandler, createEvalrawCommandHandler,
+  createClickCommandHandler, parseClickArgs, createEvalrawCommandHandler,
+  buildCliErrorRecovery,
   authorizeDaemonApplicationCommand, executeDaemonApplicationRoute,
   daemonRequestMayHaveSideEffects,
   TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,

@@ -122,11 +122,11 @@ const parsedList = JSON.parse(listJson);
 if (parsedList.schema !== 'chrome-cdp-ex.list.v1' || !Array.isArray(parsedList.pages) || !parsedList.pages.some(page => page.targetPrefix === target)) {
   throw new Error(`list json should include the smoke target prefix\nOutput:\n${listJson}`);
 }
-if (!parsedList.nextSteps?.some(step => step.startsWith(`cdp perceive ${target}`))) {
-  throw new Error(`list json should include executable perceive next step\nOutput:\n${listJson}`);
+if (!parsedList.nextSteps?.some(step => step.includes('text <target-from-list> --auto'))) {
+  throw new Error(`list json should include executable text --auto next step\nOutput:\n${listJson}`);
 }
-if (parsedList.recommendation?.source !== 'golden-path' || parsedList.recommendation?.run !== `cdp perceive ${target} -C -d 8`) {
-  throw new Error(`list json should include golden-path perceive recommendation\nOutput:\n${listJson}`);
+if (parsedList.recommendation?.source !== 'golden-path' || parsedList.recommendation?.run !== 'cdp list --format json') {
+  throw new Error(`list json should include golden-path list recommendation\nOutput:\n${listJson}`);
 }
 const doctorOut = step('doctor onboarding', () => run(['doctor']));
 assertIncludes(doctorOut, 'chrome-cdp-ex doctor', 'doctor');
@@ -162,12 +162,12 @@ if (parsedOpen.schema !== 'chrome-cdp-ex.open.v1' || !parsedOpen.targetPrefix ||
 if (parsedOpen.attached !== true || parsedOpen.approval !== 'approved') {
   throw new Error(`open json should attach in the smoke debug browser:\n${openJson}`);
 }
-if (!parsedOpen.nextSteps?.some(nextStep => nextStep.startsWith(`cdp perceive ${parsedOpen.targetPrefix}`))) {
-  throw new Error(`open json should include executable perceive next step:\n${openJson}`);
+if (!parsedOpen.nextSteps?.some(nextStep => nextStep.startsWith(`cdp text ${parsedOpen.targetPrefix}`) || nextStep.startsWith(`cdp perceive ${parsedOpen.targetPrefix}`))) {
+  throw new Error(`open json should include executable read-page next step:\n${openJson}`);
 }
 const expectedOpenRecommendationPrefix = parsedOpen.autoPerceive?.ok
   ? `cdp click ${parsedOpen.targetPrefix}`
-  : `cdp perceive ${parsedOpen.targetPrefix}`;
+  : `cdp text ${parsedOpen.targetPrefix}`;
 if (parsedOpen.recommendation?.source !== 'golden-path' || !parsedOpen.recommendation?.run?.startsWith(expectedOpenRecommendationPrefix)) {
   throw new Error(`open json should recommend the next golden-path command:\n${openJson}`);
 }

@@ -33,9 +33,36 @@ export function goldenPathOpenPageRecommendation() {
   return buildGoldenPathRecommendation({
     stage: 'open-page',
     run: 'cdp open https://example.com',
-    after: 'cdp perceive <target-from-open> -C -d 8',
+    after: 'cdp text <target-from-open> --auto',
     reason: 'no debuggable page targets are available yet',
     commands: ['cdp open https://example.com'],
+  });
+}
+
+export function goldenPathListRecommendation() {
+  return buildGoldenPathRecommendation({
+    stage: 'pick-target',
+    run: 'cdp list --format json',
+    after: 'cdp text <target-from-list> --auto',
+    evidence: 'cdp perceive <target-from-list> --cards',
+    reason: 'list already returned pages — pick a tab, then text --auto / --cards. Do not auto-aim the starred tab. (sample after list — not a next-probe): cdp perceive <target-from-list> -C -d 8',
+    commands: [
+      'cdp list --format json',
+      'cdp text <target-from-list> --auto',
+      'cdp perceive <target-from-list> --cards',
+    ],
+  });
+}
+
+export function goldenPathReadPageRecommendation(targetPrefix) {
+  return buildGoldenPathRecommendation({
+    stage: 'read-page',
+    targetPrefix,
+    run: `cdp text ${targetPrefix} --auto`,
+    after: `cdp perceive ${targetPrefix} --cards`,
+    evidence: `cdp perceive ${targetPrefix} --qa`,
+    report: `cdp report ${targetPrefix}`,
+    reason: 'For "what does this page say", use text --auto or --cards. perceive -C -d 8 is a sample after list, not a next-probe',
   });
 }
 

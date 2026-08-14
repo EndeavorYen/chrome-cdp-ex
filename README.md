@@ -168,7 +168,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 
 | Command | Synopsis | Catalog policy |
 |---|---|---|
-| `help` | `help` | `read / standard` |
+| `help` | `help [command]` | `read / standard` |
 | `list` | `list\|tabs\|ls [--format json]` | `read / standard` |
 | `target` | `target --url URL\|--title TEXT [--exact] [--format json]` | `read / standard` |
 | `tab-group` | `tab-group list\|create\|add\|remove\|delete\|show [--format json]` | `conditional-mutation / conditional` |
@@ -187,7 +187,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `shot` | `shot <target> [file\|--annotate]` | `conditional-mutation / conditional` |
 | `diff-shot` | `diff-shot <target> [--reset] [--threshold pct]` | `conditional-mutation / conditional` |
 | `html` | `html <target> [selector]` | `read / standard` |
-| `nav` | `nav <target> <url> [--format json]` | `mutation / mutation` |
+| `nav` | `nav <target> <url> [--perceive] [--format json]` | `mutation / mutation` |
 | `mock` | `mock <target> [add\|clear]` | `mutation / mutation` |
 | `clock` | `clock <target> [freeze\|offset\|reset]` | `mutation / mutation` |
 | `throttle` | `throttle <target> [off\|offline\|slow-3g\|fast-3g\|lte\|custom]` | `mutation / mutation` |
@@ -206,7 +206,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `responsive-audit` | `responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]` | `mutation / mutation` |
 | `verify-click` | `verify-click <target> <sel\|@ref> [--format json]` | `mutation / mutation` |
 | `net` | `net <target>` | `read / standard` |
-| `click` | `click <target> <sel\|@ref> [--format json] [--qa\|--summary]` | `mutation / mutation` |
+| `click` | `click <target> <sel\|@ref> [--js\|-j] [--format json] [--qa\|--summary]` | `mutation / mutation` |
 | `jsclick` | `jsclick <target> <sel\|@ref>` | `mutation / mutation` |
 | `clickxy` | `clickxy <target> <x> <y> [--format json]` | `mutation / mutation` |
 | `type` | `type <target> <text> [--format json]` | `mutation / mutation` |

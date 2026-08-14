@@ -166,7 +166,7 @@ When connected via `CDP_PORT` to an Electron app, a header line is shown:
 1ED3DBAA  Rexiano          http://localhost:5173/#/menu
 ```
 - Each line: `<8-char target ID>  <title>  <url>`. Use the target ID (e.g. `A7BA5C64`) for subsequent commands.
-- **Empty output (exit 0)** = no debuggable tabs available. Do NOT stop to ask the user for help. Instead, use `open <url>` to create a tab — this auto-attaches with a fail-fast wait (5s) and prints `Opened new tab: PREFIX url` plus `Next: cdp perceive PREFIX -C -d 8`. It does **not** dump the accessibility tree unless you pass `--perceive`. If Chrome may still prompt "Allow debugging?", use `--attach-timeout-ms 60000`. Use `open <url> --format json` when a script needs the structured target handoff instead of human guidance; add `--attach-timeout-ms 0` only when automation needs the tab target immediately and will run `perceive`/retry itself. Use `--ready-timeout-ms <ms>` and `--ready-selector <sel>` when automation needs a bounded app-shell wait after attach. Once `open` completes, follow the printed Next command immediately. Do NOT suggest `--remote-debugging-port` restarts.
+- **Empty output (exit 0)** = no debuggable tabs available. Do NOT stop to ask the user for help. Instead, use `open <url>` to create a tab — this auto-attaches with a fail-fast wait (5s) and prints `Opened new tab: PREFIX url` plus `Next: cdp text PREFIX --auto`. It does **not** dump the accessibility tree unless you pass `--perceive`. If Chrome may still prompt "Allow debugging?", use `--attach-timeout-ms 60000`. Use `open <url> --format json` when a script needs the structured target handoff instead of human guidance; add `--attach-timeout-ms 0` only when automation needs the tab target immediately and will run `perceive`/retry itself. Use `--ready-timeout-ms <ms>` and `--ready-selector <sel>` when automation needs a bounded app-shell wait after attach. Once `open` completes, follow the printed Next command immediately. Do NOT suggest `--remote-debugging-port` restarts.
 - **Error output** = connection problem. Check prerequisites.
 
 ## Commands
@@ -184,7 +184,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 
 | Command | Synopsis | Catalog policy |
 |---|---|---|
-| `help` | `help` | `read / standard` |
+| `help` | `help [command]` | `read / standard` |
 | `list` | `list\|tabs\|ls [--format json]` | `read / standard` |
 | `target` | `target --url URL\|--title TEXT [--exact] [--format json]` | `read / standard` |
 | `tab-group` | `tab-group list\|create\|add\|remove\|delete\|show [--format json]` | `conditional-mutation / conditional` |
@@ -203,7 +203,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `shot` | `shot <target> [file\|--annotate]` | `conditional-mutation / conditional` |
 | `diff-shot` | `diff-shot <target> [--reset] [--threshold pct]` | `conditional-mutation / conditional` |
 | `html` | `html <target> [selector]` | `read / standard` |
-| `nav` | `nav <target> <url> [--format json]` | `mutation / mutation` |
+| `nav` | `nav <target> <url> [--perceive] [--format json]` | `mutation / mutation` |
 | `mock` | `mock <target> [add\|clear]` | `mutation / mutation` |
 | `clock` | `clock <target> [freeze\|offset\|reset]` | `mutation / mutation` |
 | `throttle` | `throttle <target> [off\|offline\|slow-3g\|fast-3g\|lte\|custom]` | `mutation / mutation` |
@@ -222,7 +222,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `responsive-audit` | `responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]` | `mutation / mutation` |
 | `verify-click` | `verify-click <target> <sel\|@ref> [--format json]` | `mutation / mutation` |
 | `net` | `net <target>` | `read / standard` |
-| `click` | `click <target> <sel\|@ref> [--format json] [--qa\|--summary]` | `mutation / mutation` |
+| `click` | `click <target> <sel\|@ref> [--js\|-j] [--format json] [--qa\|--summary]` | `mutation / mutation` |
 | `jsclick` | `jsclick <target> <sel\|@ref>` | `mutation / mutation` |
 | `clickxy` | `clickxy <target> <x> <y> [--format json]` | `mutation / mutation` |
 | `type` | `type <target> <text> [--format json]` | `mutation / mutation` |
@@ -527,19 +527,20 @@ If dispatch fails, read the classified `Action failure:` block instead of retryi
 | `back`, `forward` | action evidence + full perceive |
 | `reload` | action evidence + bounded lightweight page observation |
 | `viewport` (when resizing) | action evidence + perceive diff |
-| `nav` | action evidence + **full perceive** (new page, not a diff) |
+| `nav` | action evidence + **bounded page observation** (title/url/readyState). Pass `--perceive` only when a full AX dump is required |
 
 Example:
 ```
 $ cdp nav <target> https://example.com
 Navigated to https://example.com
 ---
-Page: Example Store — https://example.com
-Viewport: 1280×720 | Scroll: 0/3000 (0%) | ...
-[WebArea] Example Store
-  [banner] ...
-  [main] ...
+Navigation observation:
+Page: Example Store
+URL: https://example.com
+Ready state: complete
 ```
+
+Use `cdp nav <target> <url> --perceive` only when you need the full accessibility tree immediately. Default nav stays compact so GitHub/X telemetry 404s and empty AX dumps do not hijack the next probe.
 
 This eliminates the observe-act-observe loop and makes agents ~2x more efficient.
 
@@ -822,7 +823,7 @@ CSS px = screenshot image px / DPR
 ## Tips
 
 - **Prefer `nav` over `open`** — `nav` reuses an already-approved tab (no prompt, no "Allow debugging?" dialog). Use `open` only when `list` is empty or the user explicitly needs multiple tabs. Even page comparisons work with a single tab — `nav` between URLs and compare perceive data from context.
-- `open` **auto-attaches** with a fail-fast wait (5s) and returns `Opened new tab: PREFIX url` plus `Next: cdp perceive PREFIX -C -d 8`. It does **not** auto-perceive unless you pass `--perceive`. If Chrome may still prompt "Allow debugging?", use `--attach-timeout-ms 60000`. Do NOT stop to ask the user; just let the command run. After `open`, follow the printed Next command immediately.
+- `open` **auto-attaches** with a fail-fast wait (5s) and returns `Opened new tab: PREFIX url` plus `Next: cdp text PREFIX --auto`. It does **not** auto-perceive unless you pass `--perceive`. If Chrome may still prompt "Allow debugging?", use `--attach-timeout-ms 60000`. Do NOT stop to ask the user; just let the command run. After `open`, follow the printed Next command immediately.
 - Prefer `snap` over `html` for page structure — compact by default, use `snap --full` for complete tree.
 - Prefer `elshot` over `shot` when verifying a specific element — it's more reliable and avoids scroll/DPR issues.
 - Use `type` (not eval) to enter text in cross-origin iframes — `click`/`clickxy` to focus first, then `type`.
@@ -834,17 +835,18 @@ CSS px = screenshot image px / DPR
 
 ### Navigating to a URL (prefer `nav` over `open`)
 
-`nav` **auto-returns a full perceive** of the loaded page — no separate `perceive` call needed.
+`nav` waits for load, then returns a **bounded page observation** (title/url/readyState). Pass `--perceive` only when a full AX dump is required.
 
 1. **If you already have a target ID** (from a prior `list` or command):
    ```bash
-   scripts/cdp.mjs nav <target> <url>        # navigates + auto-perceives (one call!)
+   scripts/cdp.mjs nav <target> <url>        # navigates + compact page observation
+   scripts/cdp.mjs nav <target> <url> --perceive  # optional full AX dump
    ```
 
 2. **If no target ID yet**, run `list` first to find a reusable tab:
    ```bash
    scripts/cdp.mjs list                       # find an existing tab
-   scripts/cdp.mjs nav <target> <url>         # navigates + auto-perceives
+   scripts/cdp.mjs nav <target> <url>         # navigates + compact page observation
    ```
 
 3. **Only use `open`** when `list` returned empty (no tabs at all), or the user explicitly needs simultaneous tab access. For comparing pages, use `nav` to switch between URLs in a single tab — perceive data stays in your context.
@@ -861,11 +863,11 @@ CSS px = screenshot image px / DPR
 
 **Use a single tab + `nav`** — perceive output is text in your context, so you don't need both pages open simultaneously. This avoids extra "Allow debugging?" approvals.
 
-1. `nav <target> <url-A>` — auto-returns full perceive of page A (save this in context)
+1. `nav <target> <url-A>` — compact navigation observation of page A (save this in context)
 2. Optionally: `elshot <target> @ref` — capture key visual sections of page A
-3. `nav <target> <url-B>` — auto-returns full perceive of page B
+3. `nav <target> <url-B>` — compact navigation observation of page B
 4. Optionally: `elshot <target> @ref` — capture matching sections of page B
-5. Compare the two perceive outputs + elshots from context
+5. Compare the two observations + elshots from context
 
 **Only open a second tab** if you need to interact with both pages at the same time (e.g., real-time state comparison, copying data between pages).
 

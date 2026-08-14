@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#181–#191)
+
+* Resolve `use --name` aliases case-insensitively, strip `@`, and match stored
+  target prefixes against live pages. Missing aliases recover with `cdp list`
+  instead of doctor.
+* `list` / `open` JSON next-steps prefer `text --auto` / `--cards` over starring
+  a tab and dumping `perceive -C -d 8`.
+* Target no-match / ambiguous prefix / unknown flags recover with list or
+  `cdp help <command>`, not doctor/status.
+* `click @ref` bounds `Runtime.callFunctionOn` to 2s with a no-scroll fallback;
+  `--js` works after the selector; unknown click flags fail closed.
+* `report --qa` reads live page title/url; text `--compact` omits evidence;
+  default JSON is compact (`--all` for the large dump).
+* Chrome PDF viewer pages return an honest receipt instead of empty untitled
+  perceive / unknown text errors.
+* `help [command]` prints a topic; `stop` sends protocol `args: []` and exits
+  non-zero on failure; `blur` no longer suggests `back`.
+* Installed skills ship `bin/chrome-cdp`; same `packageVersion` ignores
+  scriptPath-only daemon mismatches.
+* `nav` defaults to compact page observation (`--perceive` opt-in) and ignores
+  Copilot `agent-sessions` 404s as blocking network failures.
+* `perceive --cards` after scroll reports unchanged when the card window did
+  not replace; waitForEvent fails fast on websocket close.
+
 ### Compact feed perception
 
 * Add `perceive --cards` (alias `--role feed`) for virtualized timelines. Returns

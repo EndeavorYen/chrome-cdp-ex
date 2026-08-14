@@ -44,6 +44,7 @@
     "package/scripts/check-release-package.mjs",
     "package/scripts/setup.mjs",
     "package/skills/chrome-cdp-ex/SKILL.md",
+    "package/skills/chrome-cdp-ex/bin/chrome-cdp",
     "package/skills/chrome-cdp-ex/hosts/claude.md",
     "package/skills/chrome-cdp-ex/hosts/codex.md",
     "package/skills/chrome-cdp-ex/hosts/cursor.md",
