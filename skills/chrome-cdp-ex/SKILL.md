@@ -11,7 +11,7 @@ Your eyes and hands on the user's live Chrome browser or Electron app through th
 
 1. **Doctor:** `node skills/chrome-cdp-ex/scripts/cdp.mjs doctor` checks Node, install path, daemon state, file limits, CDP reachability, and browser-debugging permission.
 2. **List/open:** `node skills/chrome-cdp-ex/scripts/cdp.mjs list`; if no usable tab exists, use `open <url>` or, with user consent, `spawn-debug-browser edge --port 9222 --url <url>`.
-3. **Perceive:** `node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8` to read structure, text, layout hints, console health, and fresh `@ref` handles.
+3. **Perceive:** `node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8` to read structure, main/article text, layout hints, console health, and fresh `@ref` handles. For "what does this page say", use `text <target> --auto`.
 4. **Act:** `click`, `fill`, `press`, `select`, `scroll`, or `dismiss-modal` using a fresh `@ref` or stable selector.
 5. **Verify/report:** read the action evidence, then use `verify-click`, `perceive <target> --since-action`, or `report <target>` / `report <target> --format json` for handoff.
 
@@ -26,7 +26,7 @@ Take action immediately; do not just read this file.
 
 ## Perceive first
 
-Start with `perceive`, not screenshots. It returns the accessibility tree, visible text, layout/style hints, interactive `@ref` handles, and console health in a compact form. Use `elshot` for one element when visual judgment matters, `shot --annotate` for a viewport ref map, `scanshot` only for full-page pixel review, and `record` when the question is about sequence or cause-and-effect over time.
+Start with `perceive`, not screenshots. Golden-path `perceive <target> -C -d 8` prefers `main` / `[role=main]` / `article` text over skip-links and nav chrome; visible controls are a short list after the body. If the body is still truncated it prints `Body truncated. Next: cdp text <target> --auto`. Use `text <target> --auto` when the question is "what does this page say". Use `elshot` for one element when visual judgment matters, `shot --annotate` for a viewport ref map, `scanshot` only for full-page pixel review, and `record` when the question is about sequence or cause-and-effect over time.
 
 Refresh `@ref` handles after navigation, DOM rewrites, modal changes, or failed stale-ref actions by running `perceive <target> -C -d 8` again. For scripts or loops, prefer stable CSS selectors over old `@ref` values.
 
@@ -63,4 +63,4 @@ Useful target helpers: `target --url <substring>`, `target --title <text>`, `use
 
 ## High-signal commands to remember
 
-`doctor`, `list`, `open`, `target`, `use`, `perceive`, `click`, `fill`, `press`, `select`, `scroll`, `verify-click`, `dismiss-modal`, `overlay`, `frame`, `cascade`, `inject`, `elshot`, `shot`, `scanshot`, `record`, `waitfor`, `report`, `stop`.
+`doctor`, `list`, `open`, `target`, `use`, `perceive`, `text`, `click`, `fill`, `press`, `select`, `scroll`, `verify-click`, `dismiss-modal`, `overlay`, `frame`, `cascade`, `inject`, `elshot`, `shot`, `scanshot`, `record`, `waitfor`, `report`, `stop`.

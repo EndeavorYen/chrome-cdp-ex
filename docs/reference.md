@@ -119,6 +119,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 node skills/chrome-cdp-ex/scripts/cdp.mjs list
 node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -C -d 8
+# For "what does this page say": node skills/chrome-cdp-ex/scripts/cdp.mjs text <target> --auto
 node skills/chrome-cdp-ex/scripts/cdp.mjs click <target> @ref
 node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action
 node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
