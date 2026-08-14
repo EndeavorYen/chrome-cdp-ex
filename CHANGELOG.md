@@ -47,9 +47,11 @@
   (`value`, `changed`, `navigation`, `typeahead`) instead of the full action
   envelope. Pass `--full` / `--unsafe-full` for `chrome-cdp-ex.action.v1`.
   `perceive --since-action` after a no-navigation typeahead fill summarizes as
-  `textbox value set; N suggestion links`. Bare `--since-action` reuses the last
-  perceive snapshot shape (so `perceive -i` then fill does not reroot against a
-  full tree) and keeps typeahead so the one-liner actually prints (#162).
+  `textbox value set; N suggestion links`, including when the header is
+  `Focused: <input>` rather than an AX `textbox` / `searchbox` / `combobox`.
+  Bare `--since-action` reuses the last perceive snapshot shape (so
+  `perceive -i` then fill does not reroot against a full tree) and keeps
+  typeahead so the one-liner actually prints (#162).
 * `perceive -x` no longer empties Mintlify-style `<main>` wrappers. Help documents
   `text --auto` and `-x`; SKILL.md and `recipes.md` add a "Read this page"
   path using `text --auto`, `eval`, and `call` (#161).
