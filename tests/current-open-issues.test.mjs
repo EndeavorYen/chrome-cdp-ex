@@ -273,6 +273,7 @@ describe('current open issue contracts', () => {
       fs,
       fetcher,
       listDaemons: () => [],
+      lastEndpoint: null,
     });
     const model = T.buildDoctorModel(checks);
 
@@ -1803,6 +1804,269 @@ describe('v2.11.0 review regressions', () => {
     } finally {
       process.chdir(previousCwd);
       fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('#155 persists last-known debug browser identity after spawn-debug-browser succeeds', async () => {
+    const remembered = [];
+    const fs = {
+      existsSync: path => path === '/opt/chromium/chrome',
+      mkdirSync: () => {},
+    };
+    const child = {
+      pid: 4242,
+      unref: () => {},
+      stdout: { on: () => {}, setEncoding: () => {}, unref: () => {} },
+      stderr: { on: () => {}, setEncoding: () => {}, unref: () => {} },
+      on: () => {},
+      once: () => {},
+    };
+
+    await T.spawnDebugBrowserStr([
+      'chrome',
+      '--port', '9224',
+      '--user-data-dir', '/tmp/real-x-profile',
+      '--exe', '/opt/chromium/chrome',
+    ], { TMPDIR: '/tmp', PATH: '' }, {
+      platform: 'linux',
+      fs,
+      spawn: () => child,
+      probeTcpPort: async () => ({ occupied: false }),
+      waitForSpawnedCdp: async ({ port }) => ({ ok: true, port, product: 'Chrome/126.0.0.0' }),
+      rememberLastCdpEndpoint: record => remembered.push(record),
+    });
+
+    expect(remembered).toEqual([expect.objectContaining({
+      host: '127.0.0.1',
+      port: 9224,
+      profileDir: '/tmp/real-x-profile',
+      exe: '/opt/chromium/chrome',
+      browser: 'chrome',
+    })]);
+  });
+
+  it('#155 round-trips last endpoint JSON without secrets', () => {
+    const files = new Map();
+    const runtimeDir = '/tmp/cdp-runtime-155';
+    T.writeLastCdpEndpoint({
+      host: '127.0.0.1',
+      port: 9224,
+      profileDir: '/tmp/real-x-profile',
+      exe: '/opt/chromium/chrome',
+      browser: 'chrome',
+      launchedAt: '2026-08-14T09:00:00.000Z',
+    }, {
+      runtimeDir,
+      writer: (path, data) => files.set(path, String(data)),
+    });
+
+    const stored = JSON.parse(files.get(`${runtimeDir}/cdp-last-endpoint.json`));
+    expect(stored).toEqual({
+      schema: 'chrome-cdp-ex.cdp-last-endpoint.v1',
+      host: '127.0.0.1',
+      port: '9224',
+      profileDir: '/tmp/real-x-profile',
+      exe: '/opt/chromium/chrome',
+      browser: 'chrome',
+      launchedAt: '2026-08-14T09:00:00.000Z',
+    });
+    expect(JSON.stringify(stored)).not.toMatch(/cookie|password|token|secret/i);
+
+    const read = T.readLastCdpEndpoint({
+      runtimeDir,
+      reader: path => {
+        if (!files.has(path)) throw new Error('ENOENT');
+        return files.get(path);
+      },
+    });
+    expect(read.profileDir).toBe('/tmp/real-x-profile');
+    expect(read.port).toBe('9224');
+  });
+
+  it('#155 skips WebSocket fallback on ECONNREFUSED and relaunches the same profile', async () => {
+    let wsCalls = 0;
+    const lastEndpoint = {
+      host: '127.0.0.1',
+      port: '9224',
+      profileDir: '/tmp/real-x-profile',
+      exe: '/opt/chromium/chrome',
+      browser: 'chrome',
+    };
+    const started = Date.now();
+    const r = await T.checkCdpReachability({
+      env: { CDP_PORT: '9224' },
+      fetcher: async () => {
+        const err = new Error('connect ECONNREFUSED 127.0.0.1:9224');
+        err.code = 'ECONNREFUSED';
+        throw err;
+      },
+      lastEndpoint,
+      connectWebSocket: () => {
+        wsCalls += 1;
+        throw new Error('WebSocket fallback should not run after connection refused');
+      },
+    });
+
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(wsCalls).toBe(0);
+    expect(r).toMatchObject({
+      status: 'FAIL',
+      label: 'CDP',
+      error: 'cdp_unreachable',
+      host: '127.0.0.1',
+      port: '9224',
+      profileDir: '/tmp/real-x-profile',
+    });
+    expect(r.relaunch).toContain('cdp spawn-debug-browser chrome --port 9224 --user-data-dir /tmp/real-x-profile');
+    expect(r.hint).toBe(r.relaunch);
+    expect(r.detail).toMatch(/cannot reach 127\.0\.0\.1:9224/i);
+  });
+
+  it('#155 still uses WebSocket fallback when /json/version returns 404', async () => {
+    let wsCalls = 0;
+    const r = await T.checkCdpReachability({
+      env: { CDP_PORT: '9224' },
+      fetcher: async () => ({ ok: false, status: 404 }),
+      connectWebSocket: async () => {
+        wsCalls += 1;
+        return true;
+      },
+    });
+    expect(wsCalls).toBe(1);
+    expect(r.status).toBe('OK');
+    expect(r.detail).toMatch(/WebSocket fallback/i);
+  });
+
+  it('#155 CLI error model reports cdp_unreachable with the remembered profile relaunch', () => {
+    const err = T.cdpUnreachableError({
+      host: '127.0.0.1',
+      port: '9224',
+      cause: 'connect ECONNREFUSED',
+      lastEndpoint: {
+        host: '127.0.0.1',
+        port: '9224',
+        profileDir: '/tmp/real-x-profile',
+        browser: 'chrome',
+        exe: '/opt/chromium/chrome',
+      },
+    });
+    const model = T.buildCliErrorModel(err, { cmd: 'list' });
+    const text = T.formatCliError(err, { cmd: 'list' });
+
+    expect(err.code).toBe('cdp_unreachable');
+    expect(model).toMatchObject({
+      schema: 'chrome-cdp-ex.cli-error.v1',
+      ok: false,
+      command: 'list',
+      error: {
+        code: 'cdp_unreachable',
+        message: expect.stringMatching(/cannot reach cdp on 127\.0\.0\.1:9224/i),
+      },
+      host: '127.0.0.1',
+      port: '9224',
+      profileDir: '/tmp/real-x-profile',
+      relaunch: expect.stringContaining('--user-data-dir /tmp/real-x-profile'),
+    });
+    expect(model.recovery).toMatchObject({
+      kind: 'browser-cdp',
+      strategy: 'relaunch-same-profile',
+      run: model.relaunch,
+    });
+    expect(text).toContain(model.relaunch);
+    expect(text).not.toMatch(/chrome-profile-2|DISPLAY=:2/);
+  });
+
+  it('#155 unknown profile tells the agent not to invent a new user-data-dir', () => {
+    const err = T.cdpUnreachableError({
+      host: '127.0.0.1',
+      port: '9224',
+      cause: 'connect ECONNREFUSED',
+      lastEndpoint: null,
+    });
+    const model = T.buildCliErrorModel(err, { cmd: 'attach' });
+    expect(model.ok).toBe(false);
+    expect(model.error.code).toBe('cdp_unreachable');
+    expect(model.profileDir).toBeNull();
+    expect(model.relaunch).toBeNull();
+    expect(model.error.message).toMatch(/do not invent a new --user-data-dir/i);
+    expect(model.error.message).toMatch(/chrome:\/\/inspect\/#remote-debugging/);
+    expect(model.recovery.strategy).toBe('enable-existing-debugging');
+  });
+
+  it('#155 doctor FAIL hint and recommendation reuse the remembered profile', async () => {
+    const lastEndpoint = {
+      host: '127.0.0.1',
+      port: '9224',
+      profileDir: '/tmp/real-x-profile',
+      exe: '/opt/chromium/chrome',
+      browser: 'chrome',
+    };
+    const fetcher = async () => {
+      const err = new Error('connect ECONNREFUSED');
+      err.code = 'ECONNREFUSED';
+      throw err;
+    };
+    const checks = await T.runDoctorChecks({
+      nodeVersion: 'v22.10.0',
+      home: '/tmp/x',
+      fs: { existsSync: () => true, lstatSync: () => ({ isSymbolicLink: () => true }) },
+      listDaemons: () => [],
+      fdLimit: 4096,
+      platform: 'darwin',
+      env: { CDP_PORT: '9224' },
+      fetcher,
+      lastEndpoint,
+      connectWebSocket: () => {
+        throw new Error('WebSocket fallback should not run');
+      },
+    });
+    const model = T.buildDoctorModel(checks);
+    const cdp = model.checks.find(check => check.label === 'CDP');
+    const relaunch = 'cdp spawn-debug-browser chrome --port 9224 --user-data-dir /tmp/real-x-profile --exe /opt/chromium/chrome';
+
+    expect(cdp).toMatchObject({
+      status: 'FAIL',
+      error: 'cdp_unreachable',
+      profileDir: '/tmp/real-x-profile',
+      hint: relaunch,
+      relaunch,
+    });
+    expect(model.recommendation).toMatchObject({
+      stage: 'browser-cdp',
+      run: relaunch,
+      strategy: 'relaunch-same-profile',
+    });
+    expect(model.nextSteps[0]).toBe(relaunch);
+
+    const text = T.formatDoctorOutput(checks);
+    expect(text).toContain(`hint: ${relaunch}`);
+    expect(text).not.toContain('cdp spawn-debug-browser edge --port 9222 --url https://example.com');
+  });
+
+  it('#155 getWsUrl throws a fail-fast cdp_unreachable error with the same-profile relaunch', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      const err = new Error('connect ECONNREFUSED');
+      err.code = 'ECONNREFUSED';
+      throw err;
+    };
+    try {
+      await expect(T.getWsUrl({
+        env: { CDP_PORT: '9224', CDP_HOST: '127.0.0.1' },
+        lastEndpoint: {
+          host: '127.0.0.1',
+          port: '9224',
+          profileDir: '/tmp/real-x-profile',
+          browser: 'chrome',
+        },
+      })).rejects.toMatchObject({
+        code: 'cdp_unreachable',
+        port: '9224',
+        profileDir: '/tmp/real-x-profile',
+        relaunch: expect.stringContaining('--user-data-dir /tmp/real-x-profile'),
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 });

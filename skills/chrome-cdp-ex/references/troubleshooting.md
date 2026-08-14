@@ -22,21 +22,24 @@ Common recoveries:
 
 ## CDP not reachable
 
-1. Check live targets:
+Dead CDP must fail fast with a same-profile relaunch receipt. Do not invent `DISPLAY`, a second `--user-data-dir`, or a fresh empty Chrome profile — that logs the user out of sites like X.
+
+1. Read the printed `error=cdp_unreachable` receipt. If it includes a relaunch line, run that exact command (same port and `--user-data-dir`).
+2. Check live targets:
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs list
 ```
 
-2. In a normal desktop browser, open `chrome://inspect/#remote-debugging` or `edge://inspect` and enable remote debugging/Allow when prompted.
-3. For an explicit port, set `CDP_PORT=<port>`:
+3. In a normal desktop browser, open `chrome://inspect/#remote-debugging` or `edge://inspect` and enable remote debugging/Allow when prompted. This is the correct path when the profile is unknown.
+4. For an explicit port, set `CDP_PORT=<port>`:
 
 ```bash
 CDP_PORT=9222 node skills/chrome-cdp-ex/scripts/cdp.mjs list
 ```
 
-4. If the browser writes `DevToolsActivePort` somewhere non-standard, set `CDP_PORT_FILE` to the full path.
-5. If no tab exists after CDP is reachable, open one:
+5. If the browser writes `DevToolsActivePort` somewhere non-standard, set `CDP_PORT_FILE` to the full path.
+6. If no tab exists after CDP is reachable, open one:
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com

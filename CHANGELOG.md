@@ -12,6 +12,7 @@
 
 ### Agent reliability
 
+* Dead CDP now fails fast with a same-profile relaunch receipt. `list` / `doctor` / `attach` no longer wait on a WebSocket fallback after connection refused or HTTP timeout, and they print the remembered `--user-data-dir` instead of inviting a blank Chrome profile (#155).
 * Preserve ambiguous completion when a side-effect-capable daemon request loses
   its response. CLI remains non-zero and MCP remains `isError: true`, while the
   error now reports `completion: "unknown"`, `sideEffectMayHaveOccurred: true`,
