@@ -18792,7 +18792,7 @@ async function main(options = {}) {
   if (cmd === 'attach' || cmd === 'use') {
     try {
       const parsed = parseAliasCommandArgs(args, cmd);
-      if (cmd === 'attach' && parsed.port) {
+      if (parsed.port) {
         const attachEnv = {
           CDP_PORT: String(parsed.port),
           CDP_HOST: parsed.host || process.env.CDP_HOST || DEFAULT_CDP_HOST,
