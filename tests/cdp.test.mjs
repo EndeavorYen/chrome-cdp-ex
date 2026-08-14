@@ -4092,6 +4092,54 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toContain('filler-suggestion-40');
   });
 
+  it('summarizes Focused: <input> plus a 10/10 suggestion delta as a typeahead one-liner (#162)', () => {
+    const previous = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: <input>',
+      'Interactive: 1 textbox, 9 link',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] MiniMax-Music3',
+      '  [textbox] Search = ""  @55',
+      ...Array.from({ length: 9 }, (_, i) => `  [link] old-suggestion-${i}  @${i + 56}`),
+    ].join('\n');
+    const current = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: <input>',
+      'Interactive: 1 textbox, 9 link',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] MiniMax-Music3',
+      '  [textbox] Search = "MiniMax-Music"  @55',
+      '  [link] MiniMaxAI/MiniMax-Music3  @56',
+      '  [link] MiniMaxAI/MiniMax-Music  @57',
+      '  [link] MiniMaxAI/MiniMax-M2  @58',
+      '  [link] MiniMaxAI/MiniMax-Text-01  @59',
+      '  [link] MiniMaxAI/MiniMax-VL-01  @60',
+      '  [link] Tencent-Hunyuan/HunyuanVideo  @61',
+      '  [link] THUDM/CogVideoX-5b  @62',
+      '  [link] stabilityai/stable-audio-open-1.0  @63',
+      '  [link] facebook/musicgen-large  @64',
+    ].join('\n');
+
+    const model = T.buildPerceiveDiffModel(previous, current, {
+      mode: 'since-action',
+      targetPrefix: '6914C171',
+    });
+    const text = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+
+    expect(model.summary.removed).toBe(10);
+    expect(model.summary.added).toBe(10);
+    expect(model.summary.kind).toBe('typeahead');
+    expect(model.summary.headline).toBe('textbox value set; 9 suggestion links');
+    expect(text).toContain('textbox value set; 9 suggestion links');
+    expect(text).toContain('MiniMaxAI/MiniMax-Music3');
+    expect(text).not.toMatch(/Removed \(10\)/);
+    expect(text).not.toMatch(/Added \(10\)/);
+  });
+
   it('summarizes perceive -i then fill typeahead as a one-liner, not a 96/195 reroot (#162)', () => {
     const previous = [
       'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3',

@@ -8761,14 +8761,22 @@ function perceiveTextboxValueFromOutput(output) {
   return null;
 }
 
+function isTypeaheadDiffFocus(focused) {
+  if (!focused || focused === 'none') return false;
+  const s = String(focused);
+  if (/textbox|searchbox|combobox/i.test(s)) return true;
+  // Live perceive headers use document.activeElement, e.g. "Focused: <input>",
+  // not the AX role. HuggingFace search is often a bare <input> with no id.
+  return /^<(input|textarea)\b/i.test(s);
+}
+
 function shouldSummarizeTypeaheadDiff(diff, previousOutput, currentOutput, mode) {
   if (mode !== 'since-action') return false;
   const previous = parsePerceiveHeader(previousOutput);
   const current = parsePerceiveHeader(currentOutput);
   if (previous.page.url && current.page.url && previous.page.url !== current.page.url) return false;
   const focused = perceiveFocusedFromOutput(currentOutput);
-  const focusedTextbox = /textbox|searchbox|combobox/i.test(focused);
-  if (!focusedTextbox) return false;
+  if (!isTypeaheadDiffFocus(focused)) return false;
   const suggestionCount = countTypeaheadLabels(diff.addedStructural);
   const hasListbox = [...diff.addedStructural, ...diff.removedStructural]
     .some(line => /\[listbox\]/i.test(line));
