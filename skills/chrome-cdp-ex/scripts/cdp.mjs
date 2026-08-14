@@ -7925,6 +7925,126 @@ function filterAxNodesToBackendSubtree(axNodes, backendNodeIds) {
   return axNodes.filter(included);
 }
 
+function axRoleValue(node) {
+  const role = node?.role;
+  if (typeof role === 'string') return role.toLowerCase();
+  if (role && typeof role.value === 'string') return role.value.toLowerCase();
+  return '';
+}
+
+function isMainLandmarkRole(role) {
+  const value = String(role || '').toLowerCase();
+  return value === 'main' || value === 'article';
+}
+
+function parseDomAttributeMap(attributes) {
+  const map = Object.create(null);
+  if (!Array.isArray(attributes)) return map;
+  for (let i = 0; i + 1 < attributes.length; i += 2) {
+    map[String(attributes[i]).toLowerCase()] = String(attributes[i + 1]);
+  }
+  return map;
+}
+
+function isMainContentDomNode(node) {
+  if (!node || typeof node !== 'object') return false;
+  const name = String(node.nodeName || node.localName || '').toLowerCase();
+  if (name === 'main' || name === 'article') return true;
+  const attrs = parseDomAttributeMap(node.attributes);
+  const role = String(attrs.role || '').toLowerCase();
+  if (role === 'main' || role === 'article') return true;
+  const className = String(attrs.class || attrs.classname || '');
+  return className.split(/\s+/).includes('mdx-content');
+}
+
+function walkDescribedDomNodes(node, visit) {
+  if (!node || typeof node !== 'object') return;
+  visit(node);
+  for (const key of ['children', 'shadowRoots', 'pseudoElements', 'distributedNodes']) {
+    for (const child of node[key] || []) walkDescribedDomNodes(child, visit);
+  }
+  if (node.contentDocument) walkDescribedDomNodes(node.contentDocument, visit);
+  if (node.templateContent) walkDescribedDomNodes(node.templateContent, visit);
+}
+
+function domNodeContainsMainContent(node) {
+  let found = false;
+  walkDescribedDomNodes(node, child => {
+    if (!found && isMainContentDomNode(child)) found = true;
+  });
+  return found;
+}
+
+function axChildrenByParent(axNodes) {
+  const childMap = new Map();
+  for (const n of axNodes || []) {
+    if (!n?.parentId) continue;
+    if (!childMap.has(n.parentId)) childMap.set(n.parentId, []);
+    childMap.get(n.parentId).push(n);
+  }
+  return childMap;
+}
+
+function axNodeOrDescendantIsMainLandmark(node, childMap) {
+  if (!node) return false;
+  if (isMainLandmarkRole(axRoleValue(node))) return true;
+  for (const child of childMap.get(node.nodeId) || []) {
+    if (axNodeOrDescendantIsMainLandmark(child, childMap)) return true;
+  }
+  return false;
+}
+
+function describedNodeForBackendId(describedNodesByBackendId, backendNodeId) {
+  if (!describedNodesByBackendId) return null;
+  if (describedNodesByBackendId instanceof Map) return describedNodesByBackendId.get(backendNodeId) || null;
+  return describedNodesByBackendId[backendNodeId] || null;
+}
+
+function shouldPreserveExcludedBackendNode(backendNodeId, axNodes, describedNodesByBackendId, childMap) {
+  const ax = (axNodes || []).find(n => n.backendDOMNodeId === backendNodeId);
+  if (ax && axNodeOrDescendantIsMainLandmark(ax, childMap)) return true;
+  const described = describedNodeForBackendId(describedNodesByBackendId, backendNodeId);
+  return Boolean(described && domNodeContainsMainContent(described));
+}
+
+function filterAxNodesByExcludedBackendIds(axNodes, excludedBackendNodeIds) {
+  const excludedAxIds = new Set();
+  for (const n of axNodes) {
+    if (n.backendDOMNodeId && excludedBackendNodeIds.has(n.backendDOMNodeId)) excludedAxIds.add(n.nodeId);
+  }
+  if (excludedAxIds.size === 0) return axNodes;
+  const childIdsByParent = new Map();
+  for (const n of axNodes) {
+    if (!n.parentId) continue;
+    if (!childIdsByParent.has(n.parentId)) childIdsByParent.set(n.parentId, []);
+    childIdsByParent.get(n.parentId).push(n.nodeId);
+  }
+  const queue = [...excludedAxIds];
+  while (queue.length) {
+    const id = queue.pop();
+    for (const child of (childIdsByParent.get(id) || [])) {
+      excludedAxIds.add(child);
+      queue.push(child);
+    }
+  }
+  return axNodes.filter(n => !excludedAxIds.has(n.nodeId));
+}
+
+function filterPerceiveExcludedAxNodes(axNodes, excludedBackendNodeIds, describedNodesByBackendId) {
+  if (!excludedBackendNodeIds || excludedBackendNodeIds.size === 0) return axNodes;
+  const childMap = axChildrenByParent(axNodes);
+  const safeExcluded = new Set();
+  for (const id of excludedBackendNodeIds) {
+    if (shouldPreserveExcludedBackendNode(id, axNodes, describedNodesByBackendId, childMap)) continue;
+    safeExcluded.add(id);
+  }
+  return filterAxNodesByExcludedBackendIds(axNodes, safeExcluded);
+}
+
+function perceiveInteractiveNoiseHint(count) {
+  return `(Hint: ${count} interactive elements found — most may be sidebar/nav noise. Exclude must not empty main; prefer \`text --auto\` or \`perceive -s main\`. \`perceive -x "nav, aside"\` only drops chrome that does not wrap main.)`;
+}
+
 function parsePerceiveHeader(output) {
   const lines = String(output || '').split('\n');
   const pageMatch = (lines[0] || '').match(/^Page: (.*) — (.*)$/);
@@ -8652,40 +8772,20 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   if (excludeSelector) {
     const { root } = await docRootPromise;
     const excludedBackendNodeIds = new Set();
+    const describedNodesByBackendId = new Map();
     const exNodes = await cdpDomains(cdp).DOM.querySelectorAll( { nodeId: root.nodeId, selector: excludeSelector }, sid);
     if (exNodes.nodeIds) {
       const results = await Promise.allSettled(
-        exNodes.nodeIds.map(nid => cdpDomains(cdp).DOM.describeNode( { nodeId: nid }, sid))
+        exNodes.nodeIds.map(nid => cdpDomains(cdp).DOM.describeNode( { nodeId: nid, depth: -1, pierce: true }, sid))
       );
       for (const r of results) {
-        if (r.status === 'fulfilled' && r.value.node.backendNodeId)
+        if (r.status === 'fulfilled' && r.value.node?.backendNodeId) {
           excludedBackendNodeIds.add(r.value.node.backendNodeId);
+          describedNodesByBackendId.set(r.value.node.backendNodeId, r.value.node);
+        }
       }
     }
-    if (excludedBackendNodeIds.size > 0) {
-      const excludedAxIds = new Set();
-      for (const n of axNodes) {
-        if (n.backendDOMNodeId && excludedBackendNodeIds.has(n.backendDOMNodeId)) excludedAxIds.add(n.nodeId);
-      }
-      if (excludedAxIds.size > 0) {
-        const childMap = new Map();
-        for (const n of axNodes) {
-          if (n.parentId) {
-            if (!childMap.has(n.parentId)) childMap.set(n.parentId, []);
-            childMap.get(n.parentId).push(n.nodeId);
-          }
-        }
-        const queue = [...excludedAxIds];
-        while (queue.length) {
-          const id = queue.pop();
-          for (const child of (childMap.get(id) || [])) {
-            excludedAxIds.add(child);
-            queue.push(child);
-          }
-        }
-        axNodes = axNodes.filter(n => !excludedAxIds.has(n.nodeId));
-      }
-    }
+    axNodes = filterPerceiveExcludedAxNodes(axNodes, excludedBackendNodeIds, describedNodesByBackendId);
   }
 
   const activeRefMap = frame ? new Map() : refMap;
@@ -8850,7 +8950,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   markPerceived();
   // Hint when perceive returns many interactive elements without exclude
   if (interactiveOnly && !excludeSelector && refNodeIds.length > 50) {
-    return output + `\n\n(Hint: ${refNodeIds.length} interactive elements found — most may be sidebar/nav noise. Use \`perceive -x "nav, aside"\` to exclude, or \`perceive -s "main"\` to scope.)`;
+    return output + `\n\n${perceiveInteractiveNoiseHint(refNodeIds.length)}`;
   }
   return output;
 }
@@ -16864,7 +16964,7 @@ const CLI_HELP_LAYOUT = Object.freeze([
   {
     "name": "text",
     "headGap": 4,
-    "summaryGap": 7,
+    "summaryGap": 1,
     "summaryIndent": null
   },
   {
@@ -17013,6 +17113,7 @@ Usage: cdp <command> [args]
                                     JSON with --diff/--since-action returns chrome-cdp-ex.perceive-diff.v1
                                     --frame @fN / -F @fN: perceive inside an iframe; refs become @fN:M
                                     -s <sel> / --selector: scope to CSS selector subtree
+                                    -x <sel> / --exclude: drop matching chrome (must not empty main; prefer text --auto or -s main)
                                     -i / --interactive: only show interactive elements
                                     -d N / --depth N: limit tree depth
                                     -C / --cursor-interactive: include non-ARIA clickable elements (@c refs)
@@ -17096,6 +17197,8 @@ Usage: cdp <command> [args]
                                     off/reset clears overrides; JSON returns chrome-cdp-ex.emulate.v1
 {{command:upload}}
 {{command:text}}
+                                    --auto: extract main content (strips nav/aside/script/style)
+                                    -x / --exclude: extra CSS selectors to strip
                                     --root auto|body|document|default|<sel>: search root for selector resolution
                                     On no-match, error includes root/scope and an eval fallback
 {{command:table}}
@@ -19123,6 +19226,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
   parsePerceiveArgs, buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
+  filterPerceiveExcludedAxNodes, perceiveInteractiveNoiseHint,
   parseControlsArgs, visibleControlsCollectorSource, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,

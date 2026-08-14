@@ -245,7 +245,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `viewport` | `viewport\|resize <target> [WxH]` | `mutation / mutation` |
 | `emulate` | `emulate <target> [dark\|light\|no-preference\|off\|status]` | `mutation / mutation` |
 | `upload` | `upload <target> <selector> <paths> [--format json]` | `mutation / mutation` |
-| `text` | `text <target> [selector]` | `read / standard` |
+| `text` | `text <target> [selector\|--auto]` | `read / standard` |
 | `table` | `table <target> [TABLE_SELECTOR] [--format text\|json] \| table <target> [TABLE_SELECTOR] --collect --scroll-container SELECTOR [--load-more SELECTOR] [--row-key-column N] [--format text\|json] \| table <target> --continue TOKEN --format json` | `conditional-mutation / conditional` |
 | `back` | `back <target>` | `mutation / mutation` |
 | `forward` | `forward <target>` | `mutation / mutation` |
@@ -277,7 +277,7 @@ scripts/cdp.mjs perceive <target> --since-action # show changes caused by the la
 scripts/cdp.mjs perceive <target> --since-action --format json # versioned diff evidence for agents
 scripts/cdp.mjs perceive <target> --frame @f2  # perceive inside a frame; refs become @f2:1
 scripts/cdp.mjs perceive <target> -s "#main"   # scope to CSS selector subtree
-scripts/cdp.mjs perceive <target> -x "nav, aside, [role=complementary]"  # exclude noisy regions
+scripts/cdp.mjs perceive <target> -x "nav, aside, [role=complementary]"  # exclude chrome siblings; never empties main
 scripts/cdp.mjs perceive <target> -i           # interactive elements only (compact)
 scripts/cdp.mjs perceive <target> -d 3         # limit tree depth to 3
 scripts/cdp.mjs perceive <target> -C           # include visible controls + non-ARIA clickables (@c refs)
@@ -292,7 +292,7 @@ Returns a single **enriched accessibility tree** that combines semantic structur
 - **@ref indices with coordinates**: every interactive element gets `@1`, `@2`... with bounding rect `(x,y w×h)` — enables spatial understanding without screenshots
 - **`-C` visible controls**: a short capped list **after** the article body. `--last` / `--adaptive` apply to this dump. Nav chrome must not outrank the article.
 - **Body truncated**: if `-d` still yields only skip/nav chrome, perceive appends `Body truncated. Next: cdp text <target> --auto`.
-- **Scope/filter flags**: `-s` scopes to a subtree, `-i` shows only interactive elements, `-d N` limits depth — essential for large pages to avoid token bloat
+- **Scope/filter flags**: `-s` scopes to a subtree, `-x` drops matching chrome that does not wrap `main`/`article`, `-i` shows only interactive elements, `-d N` limits depth — essential for large pages to avoid token bloat. Prefer `text --auto` or `-s main` over blindly excluding `nav, aside, footer, header`.
 
 For "what does this page say", run `cdp text <target> --auto`. Golden-path `perceive -C -d 8` remains the first observation command.
 
@@ -702,13 +702,15 @@ scripts/cdp.mjs upload <target> "#file-input" /path/a.jpg,/path/b.jpg   # multip
 ```bash
 scripts/cdp.mjs text <target> --auto           # what does this page say (main/article, strips nav/aside)
 scripts/cdp.mjs text <target>                  # full page text (strips scripts/styles/SVG)
+scripts/cdp.mjs text <target> --auto           # main content; strips nav/aside/script/style
 scripts/cdp.mjs text <target> ".reply"         # scoped to CSS selector — much less noise
 scripts/cdp.mjs text <target> "main, [role=main], #app .main"  # fallback chain
 scripts/cdp.mjs text <target> --root auto "header"             # scope to app root; header falls back to banner/h1/h2
+scripts/cdp.mjs text <target> --auto -x ".sidebar"             # extra CSS strippers
 ```
 
 Returns page content as plain text. **`text --auto` is the "what does this page say" command** — it picks `main` / `[role=main]` / `article` and strips nav/aside/footer. Golden-path `perceive -C -d 8` still comes first for structure and `@ref`s; if perceive prints `Body truncated`, run `text --auto` next.
-**Use the selector form** to extract specific sections (e.g. AI replies, article body) instead of drowning in sidebar/nav noise.
+**Use `--auto` or a selector** to extract the article or a specific section (e.g. AI replies) instead of drowning in sidebar/nav noise.
 Use `--root auto` when a React/Vite app has repeated shell text outside the app mount; it scopes extraction to `#root`, `[data-reactroot]`, `main`, then `body`.
 
 ### Table observation, collection, and continuation

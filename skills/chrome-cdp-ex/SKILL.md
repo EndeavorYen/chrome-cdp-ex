@@ -63,9 +63,11 @@ Useful target helpers: `target --url <substring>`, `target --title <text>`, `use
 ## Need more depth?
 
 - `references/commands.md` — exhaustive command and edge-case reference copied from the former full skill body.
-- `references/recipes.md` — situational playbooks for UI review, inert clicks, CSS cascade, modals, OAuth, forms, and live CSS prototyping.
+- `references/recipes.md` — situational playbooks for reading a page, UI review, inert clicks, CSS cascade, modals, OAuth, forms, and live CSS prototyping.
 - `references/troubleshooting.md` — actionable recovery for doctor failures, WSL2, unreachable CDP, debug browser launch, Electron screenshot fallbacks, and stale refs.
 
 ## High-signal commands to remember
 
-`doctor`, `list`, `open`, `target`, `use`, `perceive`, `text`, `click`, `fill`, `press`, `select`, `scroll`, `verify-click`, `dismiss-modal`, `overlay`, `frame`, `cascade`, `inject`, `elshot`, `shot`, `scanshot`, `record`, `waitfor`, `report`, `stop`.
+`doctor`, `list`, `open`, `target`, `use`, `perceive`, `text --auto`, `eval`, `call`, `click`, `fill`, `press`, `select`, `scroll`, `verify-click`, `dismiss-modal`, `overlay`, `frame`, `cascade`, `inject`, `elshot`, `shot`, `scanshot`, `record`, `waitfor`, `report`, `stop`.
+
+For “what does this page say”, use `text --auto` instead of a deep `perceive`. Use `eval` / `call` for one-line extractions (title, abstract, `fetch` of a raw license file).

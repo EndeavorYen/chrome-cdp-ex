@@ -32,6 +32,9 @@
 
 ### Agent reliability
 
+* `perceive -x` no longer empties Mintlify-style `<main>` wrappers. Help documents
+  `text --auto` and `-x`; SKILL.md and `recipes.md` add a "Read this page"
+  path using `text --auto`, `eval`, and `call` (#161).
 * Reject unknown `perceive` flags with compact-flag help and a non-zero exit
   instead of silently dumping the full page (#158).
 * Pending CDP requests now fail on socket close / `Inspector.detached` instead of

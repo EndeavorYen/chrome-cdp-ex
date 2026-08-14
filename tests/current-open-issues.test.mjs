@@ -1806,6 +1806,43 @@ describe('v2.11.0 review regressions', () => {
     }
   });
 
+  it('#161 keeps main under exclude wrappers and points agents at text --auto', () => {
+    const axNode = (id, role, opts = {}) => ({
+      nodeId: id,
+      role: { value: role },
+      name: { value: opts.name || role },
+      ...(opts.parentId ? { parentId: opts.parentId } : {}),
+      ...(opts.backendDOMNodeId ? { backendDOMNodeId: opts.backendDOMNodeId } : {}),
+    });
+    const header = {
+      nodeName: 'HEADER',
+      backendNodeId: 1,
+      children: [
+        { nodeName: 'NAV', backendNodeId: 2, children: [] },
+        { nodeName: 'MAIN', backendNodeId: 3, children: [{ nodeName: 'H1', backendNodeId: 4, children: [] }] },
+      ],
+    };
+    const nodes = [
+      axNode('root', 'WebArea'),
+      axNode('header', 'banner', { parentId: 'root', backendDOMNodeId: 1 }),
+      axNode('nav', 'navigation', { parentId: 'header', backendDOMNodeId: 2 }),
+      axNode('main', 'main', { parentId: 'header', backendDOMNodeId: 3, name: 'Docs' }),
+      axNode('h1', 'heading', { parentId: 'main', backendDOMNodeId: 4, name: 'Install' }),
+    ];
+    const filtered = T.filterPerceiveExcludedAxNodes(
+      nodes,
+      new Set([1, 2]),
+      new Map([[1, header], [2, header.children[0]]]),
+    );
+    expect(filtered.map(n => n.nodeId)).toEqual(['root', 'header', 'main', 'h1']);
+
+    const usage = T.helpStr();
+    expect(usage).toContain('--auto');
+    expect(usage).toMatch(/-x <sel> \/ --exclude/);
+    expect(T.perceiveInteractiveNoiseHint(51)).toMatch(/text --auto/);
+    expect(T.perceiveInteractiveNoiseHint(51)).toMatch(/must not empty main/);
+  });
+
   it('#154 treats a Hermes-only skill path as a first-class install', () => {
     const home = '/home/test';
     const hermesPath = `${home}/.hermes/skills/chrome-cdp-ex`;
