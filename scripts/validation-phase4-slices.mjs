@@ -1208,6 +1208,17 @@ function validateStep(id, stdout, {
     }
     return null;
   }
+  if (id === 'fill') {
+    if (model?.schema === 'chrome-cdp-ex.fill.v1') {
+      if (typeof model.value !== 'string') {
+        throw new Error(`fill value is invalid: ${JSON.stringify(model).slice(0, 1600)}`);
+      }
+      if (typeof model.changed !== 'boolean' || !Object.hasOwn(model, 'navigation') || !Array.isArray(model.typeahead)) {
+        throw new Error(`fill compact receipt is invalid: ${JSON.stringify(model).slice(0, 1600)}`);
+      }
+      return model.changed ? 'changed' : 'no-change';
+    }
+  }
   if (['back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav', 'press', 'reload', 'restore', 'scroll', 'select', 'type', 'upload', 'viewport'].includes(id)) {
     if (model?.schema !== 'chrome-cdp-ex.action.v1' || model?.action !== id) {
       throw new Error(`${id} schema is invalid`);

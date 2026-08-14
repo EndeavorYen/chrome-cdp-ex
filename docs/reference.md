@@ -346,6 +346,8 @@ cdp report <target> --last 1 --format json --compact
 
 Compact action/report JSON keeps the executable handoff contract - `schema`, target/action identity, dispatch/settlement status, high-signal evidence, outcome/verdict, recommendation, next steps, and receipt recovery data - while trimming duplicated full diagnostic envelopes and long DOM evidence. Use the session JSONL path from `report` when you need the full audit trail.
 
+`fill --format json` defaults to `chrome-cdp-ex.fill.v1`: `{ value, changed, navigation, typeahead }` plus an optional `targetPrefix`. That receipt stays a few hundred bytes even when diagnosis/recovery envelopes are attached internally. Pass `--full` or `--unsafe-full` for the existing `chrome-cdp-ex.action.v1` envelope, or `--compact` for the compact action handoff. After a no-navigation typeahead fill, `perceive --since-action` summarizes as `textbox value set; N suggestion links` plus the suggestion labels instead of listing the rerooted AX tree.
+
 Common outcomes:
 
 | Outcome | Meaning |

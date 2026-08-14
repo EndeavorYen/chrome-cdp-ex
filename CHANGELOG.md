@@ -12,6 +12,11 @@
 
 ### Agent reliability
 
+* Default `fill --format json` to a compact `chrome-cdp-ex.fill.v1` receipt
+  (`value`, `changed`, `navigation`, `typeahead`) instead of the full action
+  envelope. Pass `--full` / `--unsafe-full` for `chrome-cdp-ex.action.v1`.
+  `perceive --since-action` after a no-navigation typeahead fill summarizes as
+  `textbox value set; N suggestion links` (#162).
 * Preserve ambiguous completion when a side-effect-capable daemon request loses
   its response. CLI remains non-zero and MCP remains `isError: true`, while the
   error now reports `completion: "unknown"`, `sideEffectMayHaveOccurred: true`,
