@@ -2908,6 +2908,35 @@ describe('issues #181-#191 open contracts', () => {
     expect(unknownFlag.run).not.toBe('cdp doctor');
   });
 
+  it('#183 --exact no-match is target-resolution/list, not unknown/doctor', () => {
+    const pages = [{
+      targetId: 'AABBCCDD1234',
+      title: 'MiniMax-Music3',
+      url: 'https://huggingface.co/MiniMaxAI/MiniMax-Music3',
+    }];
+    expect(() => T.selectPageTarget(pages, {
+      url: 'huggingface.co/MiniMaxAI/MiniMax-Music3',
+      exact: true,
+    })).toThrow(/no page matched.*--exact/);
+
+    const message = 'target: no page matched --url huggingface.co/MiniMaxAI/MiniMax-Music3 --exact. Run: cdp list';
+    const recovery = T.buildCliErrorRecovery(message, { cmd: 'target' });
+    expect(recovery.kind).toBe('target-resolution');
+    expect(recovery.run).toMatch(/^cdp list/);
+    expect(recovery.strategy).not.toBe('run-doctor');
+
+    const text = T.formatCliError(new Error(message), { cmd: 'target' });
+    expect(text).toMatch(/Kind: target-resolution/);
+    expect(text).toMatch(/Next: cdp list/);
+    expect(text).not.toMatch(/Kind: unknown/);
+    expect(text).not.toMatch(/cdp doctor/);
+
+    const ambiguous = T.buildCliErrorRecovery('target: 2 pages matched; narrow with a more specific --url/--title or --exact');
+    expect(ambiguous.kind).toBe('target-resolution');
+    expect(ambiguous.strategy).toBe('choose-longer-prefix');
+    expect(ambiguous.run).toMatch(/^cdp list/);
+  });
+
   it('#184 click --js works after the selector and unknown flags fail closed', () => {
     expect(T.parseClickArgs(['@1', '--js'])).toMatchObject({ js: true, selector: '@1' });
     expect(T.parseClickArgs(['--js', '#save'])).toMatchObject({ js: true, selector: '#save' });
@@ -3022,6 +3051,64 @@ describe('issues #181-#191 open contracts', () => {
       status: 500,
       type: 'Fetch',
     })).toBe(true);
+    expect(T.COMMANDS.find(command => command.name === 'nav').feedbackPolicy).toBe('state-change');
+  });
+
+  it('#190 ignores incidental GitHub chrome 404s when the document itself 200s', () => {
+    expect(T.isNetworkFailure({
+      url: 'https://github.com/EndeavorYen/chrome-cdp-ex/issues/181/agent_tasks',
+      status: 404,
+      type: 'Fetch',
+    })).toBe(false);
+    expect(T.isNetworkFailure({
+      url: 'https://github.com/EndeavorYen/chrome-cdp-ex/issues/181/hovercards',
+      status: 404,
+      type: 'XHR',
+    })).toBe(false);
+    expect(T.isNetworkFailure({
+      url: 'https://github.com/EndeavorYen/chrome-cdp-ex/issues/999999',
+      status: 404,
+      type: 'Document',
+    })).toBe(true);
+    expect(T.isNetworkFailure({
+      url: 'https://example.com/api/missing',
+      status: 404,
+      type: 'Fetch',
+    })).toBe(true);
+
+    const diagnosed = T.applyActionObservationDelta({
+      action: 'nav',
+      target: { targetId: 'ABC12345FULL' },
+      dispatch: { ok: true, method: 'navigate' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { page: { title: 'Issue #181', url: 'https://github.com/EndeavorYen/chrome-cdp-ex/issues/181' } },
+    }, {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 2,
+        pending: 0,
+        entries: [
+          {
+            method: 'GET',
+            url: 'https://github.com/EndeavorYen/chrome-cdp-ex/issues/181',
+            status: 200,
+            type: 'Document',
+          },
+          {
+            method: 'GET',
+            url: 'https://github.com/EndeavorYen/chrome-cdp-ex/issues/181/agent_tasks',
+            status: 404,
+            type: 'Fetch',
+          },
+        ],
+      },
+    });
+    expect(diagnosed.effects.networkDelta.failures).toBe(0);
+    expect(diagnosed.effects.diagnosis?.kind).not.toBe('network-failure');
+    expect(diagnosed.verdict.status).not.toBe('recover');
+    const text = T.formatActionText(diagnosed);
+    expect(text).not.toMatch(/\bcdp netlog\b/);
     expect(T.COMMANDS.find(command => command.name === 'nav').feedbackPolicy).toBe('state-change');
   });
 
