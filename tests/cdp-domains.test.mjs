@@ -21,6 +21,7 @@ const domainSource = readFileSync(fileURLToPath(new URL(
 
 const EXPECTED_METHODS = Object.freeze([
   'Accessibility.getFullAXTree',
+  'Browser.getBrowserCommandLine',
   'CSS.enable',
   'CSS.getComputedStyleForNode',
   'CSS.getMatchedStylesForNode',
@@ -101,7 +102,7 @@ describe('CDP domain clients', () => {
 
     const clients = createCdpDomains(adapter());
     expect(Object.keys(clients)).toEqual([
-      'Accessibility', 'CSS', 'DOM', 'Emulation', 'Fetch', 'Input',
+      'Accessibility', 'Browser', 'CSS', 'DOM', 'Emulation', 'Fetch', 'Input',
       'Network', 'Page', 'Performance', 'Runtime', 'Target',
     ]);
     for (const method of EXPECTED_METHODS) {

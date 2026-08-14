@@ -14,6 +14,7 @@ const source = readFileSync(join(rootDir, 'skills/chrome-cdp-ex/scripts/cdp.mjs'
 const METHOD_CLASSIFICATION = Object.freeze({
   '<dynamic>': 'raw-gateway',
   'Accessibility.getFullAXTree': 'observation',
+  'Browser.getBrowserCommandLine': 'observation',
   'CSS.enable': 'session-control',
   'CSS.getComputedStyleForNode': 'observation',
   'CSS.getMatchedStylesForNode': 'observation',
@@ -392,10 +393,10 @@ describe('Phase 6 direct CDP characterization', () => {
   it('freezes every direct method, caller, session, and timeout boundary', () => {
     const inventory = directCdpInventory(source);
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
-    expect(inventory).toHaveLength(133);
-    expect(digest).toBe('sha256:b4085614e9167e92919fe1442314ce5c36cb5dd4fc6b2d03b9efbe1e764a0547');
+    expect(inventory).toHaveLength(134);
+    expect(digest).toBe('sha256:315f1ce1eee61bde1a73743f71b3116ee019a4b523201d63ef9256374b2284bb');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
-      '2000', '5000', '<default>',
+      '1000', '2000', '5000', '<default>',
       'Math.min(1000, Math.max(100, deadline - now() + 100))',
       'REF_RESOLVE_TIMEOUT', 'RELOAD_DISPATCH_TIMEOUT', 'RELOAD_OBSERVE_TIMEOUT',
       'SCREENSHOT_TIMEOUT', 'options.timeoutMs', 'probeTimeoutMs', 'timeoutMs',

@@ -28,6 +28,7 @@ const RAW_SIDE_EFFECT_CLASSES = new Set(['read-only', 'potentially-mutating', 'u
 const RAW_READ_ONLY_METHODS = new Set([
   'Accessibility.getFullAXTree',
   'Accessibility.getPartialAXTree',
+  'Browser.getBrowserCommandLine',
   'Browser.getVersion',
   'Browser.getWindowBounds',
   'CSS.getComputedStyleForNode',

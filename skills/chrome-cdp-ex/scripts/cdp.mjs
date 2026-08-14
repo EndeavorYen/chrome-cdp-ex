@@ -1251,7 +1251,7 @@ async function rememberLiveCdpEndpointFromSession(cdp, { host, port, env = proce
   let profileDir = null;
   let exe = null;
   try {
-    const result = await cdp.send('Browser.getBrowserCommandLine', {}, undefined, 1000);
+    const result = await cdpDomains(cdp).Browser.getBrowserCommandLine({}, undefined, 1000);
     const argv = result?.arguments || result?.Arguments || [];
     profileDir = profileDirFromCommandLine(argv);
     exe = argv[0] ? String(argv[0]) : null;
