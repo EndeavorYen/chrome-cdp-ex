@@ -1917,7 +1917,8 @@ describe('v2.11.0 review regressions', () => {
       port: '9224',
       profileDir: '/tmp/real-x-profile',
     });
-    expect(r.relaunch).toContain('cdp spawn-debug-browser chrome --port 9224 --user-data-dir /tmp/real-x-profile');
+    expect(r.relaunch).toBe('/opt/chromium/chrome --remote-debugging-port=9224 --user-data-dir /tmp/real-x-profile');
+    expect(r.relaunch).not.toMatch(/spawn-debug-browser|rm -rf|disposable/i);
     expect(r.hint).toBe(r.relaunch);
     expect(r.detail).toMatch(/cannot reach 127\.0\.0\.1:9224/i);
   });
@@ -2022,7 +2023,7 @@ describe('v2.11.0 review regressions', () => {
     });
     const model = T.buildDoctorModel(checks);
     const cdp = model.checks.find(check => check.label === 'CDP');
-    const relaunch = 'cdp spawn-debug-browser chrome --port 9224 --user-data-dir /tmp/real-x-profile --exe /opt/chromium/chrome';
+    const relaunch = '/opt/chromium/chrome --remote-debugging-port=9224 --user-data-dir /tmp/real-x-profile';
 
     expect(cdp).toMatchObject({
       status: 'FAIL',
@@ -2040,7 +2041,133 @@ describe('v2.11.0 review regressions', () => {
 
     const text = T.formatDoctorOutput(checks);
     expect(text).toContain(`hint: ${relaunch}`);
-    expect(text).not.toContain('cdp spawn-debug-browser edge --port 9222 --url https://example.com');
+    expect(text).not.toMatch(/spawn-debug-browser|rm -rf|Profile is disposable/);
+  });
+
+  it('#155 doctor with CDP_PORT and unknown profile on Linux/no DISPLAY does not spawn a blank profile', async () => {
+    const fs = {
+      existsSync: path => path === '/usr/bin/chromium' || path.endsWith('package.json'),
+      lstatSync: () => ({ isDirectory: () => false, isSymbolicLink: () => false }),
+    };
+    const checks = await T.runDoctorChecks({
+      nodeVersion: 'v22.1.0',
+      platform: 'linux',
+      fdLimit: 4096,
+      home: '/home/agent',
+      env: { PATH: '/usr/bin', CDP_PORT: '9224', CI: 'true' },
+      fs,
+      fetcher: async () => {
+        const err = new Error('connect ECONNREFUSED');
+        err.code = 'ECONNREFUSED';
+        throw err;
+      },
+      listDaemons: () => [],
+      lastEndpoint: null,
+      connectWebSocket: () => {
+        throw new Error('WebSocket fallback should not run');
+      },
+    });
+    const model = T.buildDoctorModel(checks);
+    const text = T.formatDoctorOutput(checks);
+
+    expect(checks.find(check => check.label === 'Environment')?.status).toBe('WARN');
+    expect(model.recommendation).toMatchObject({
+      stage: 'browser-cdp',
+      strategy: 'enable-existing-debugging',
+      run: null,
+    });
+    expect(model.recommendation.ask).toMatch(/chrome:\/\/inspect\/#remote-debugging/);
+    expect(JSON.stringify(model.recommendation)).not.toMatch(/spawn-debug-browser/);
+    expect(model.nextSteps.join('\n')).not.toMatch(/spawn-debug-browser/);
+    expect(text).not.toMatch(/spawn-debug-browser/);
+    expect(text).toMatch(/chrome:\/\/inspect\/#remote-debugging/);
+    expect(text).toMatch(/do not invent a new --user-data-dir/i);
+  });
+
+  it('#155 same-profile relaunch reuses an existing Chrome profile without disposable spawn cleanup', () => {
+    const lastEndpoint = {
+      host: '127.0.0.1',
+      port: '9224',
+      profileDir: '/Users/me/Library/Application Support/Google/Chrome',
+      exe: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      browser: 'chrome',
+    };
+    const relaunch = T.formatCdpRelaunchCommand(lastEndpoint, { port: '9224' });
+    expect(relaunch).toContain('--remote-debugging-port=9224');
+    expect(relaunch).toContain('--user-data-dir');
+    expect(relaunch).toContain('/Users/me/Library/Application Support/Google/Chrome');
+    expect(relaunch).not.toMatch(/spawn-debug-browser/);
+    expect(relaunch).not.toMatch(/rm -rf/);
+    expect(relaunch).not.toMatch(/disposable/i);
+
+    const err = T.cdpUnreachableError({
+      host: '127.0.0.1',
+      port: '9224',
+      cause: 'ECONNREFUSED',
+      lastEndpoint,
+    });
+    const text = T.formatCliError(err, { cmd: 'list' });
+    expect(text).toContain(relaunch);
+    expect(text).not.toMatch(/rm -rf|Profile is disposable/);
+
+    const model = T.buildSpawnDebugBrowserModel({
+      browser: 'chrome',
+      profileDir: lastEndpoint.profileDir,
+      host: '127.0.0.1',
+      port: 9224,
+      url: null,
+      exe: lastEndpoint.exe,
+    }, { ok: true, product: 'Chrome' }, { child: { pid: 1 } });
+    expect(model.cleanup.deleteProfile).toBeNull();
+    const spawned = T.formatSpawnDebugBrowserOutput(model);
+    expect(spawned).not.toMatch(/rm -rf/);
+    expect(spawned).not.toMatch(/Profile is disposable/);
+    expect(spawned).toMatch(/existing profile|reuse this profile/i);
+  });
+
+  it('#155 disposable tmp spawn profile still uses spawn-debug-browser cleanup', () => {
+    const profileDir = '/tmp/chrome-cdp-ex-chrome-debug-profile-9224';
+    const relaunch = T.formatCdpRelaunchCommand({
+      port: '9224',
+      profileDir,
+      browser: 'chrome',
+    });
+    expect(relaunch).toBe('cdp spawn-debug-browser chrome --port 9224 --user-data-dir /tmp/chrome-cdp-ex-chrome-debug-profile-9224');
+    const model = T.buildSpawnDebugBrowserModel({
+      browser: 'chrome',
+      profileDir,
+      host: '127.0.0.1',
+      port: 9224,
+      url: null,
+    }, { ok: true }, { child: { pid: 1 } });
+    expect(model.cleanup.deleteProfile).toBe(`rm -rf ${profileDir}`);
+    expect(T.formatSpawnDebugBrowserOutput(model)).toContain('Profile is disposable');
+  });
+
+  it('#155 rememberLastCdpEndpoint drops profileDir when the port changes without a new profile', () => {
+    const files = new Map();
+    const runtimeDir = '/tmp/cdp-runtime-155-port-change';
+    const io = {
+      runtimeDir,
+      writer: (path, data) => files.set(path, String(data)),
+      reader: path => {
+        if (!files.has(path)) throw new Error('ENOENT');
+        return files.get(path);
+      },
+    };
+    T.writeLastCdpEndpoint({
+      host: '127.0.0.1',
+      port: 9224,
+      profileDir: '/Users/me/Library/Application Support/Google/Chrome',
+      browser: 'chrome',
+    }, io);
+    const next = T.rememberLastCdpEndpoint({
+      host: '127.0.0.1',
+      port: 9333,
+    }, io);
+    expect(next.port).toBe('9333');
+    expect(next.profileDir).toBeNull();
+    expect(T.readLastCdpEndpoint(io).profileDir).toBeNull();
   });
 
   it('#155 getWsUrl throws a fail-fast cdp_unreachable error with the same-profile relaunch', async () => {

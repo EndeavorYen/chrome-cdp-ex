@@ -1132,15 +1132,12 @@ function writeLastCdpEndpoint(record, { runtimeDir = RUNTIME_DIR, writer = write
 
 function rememberLastCdpEndpoint(record, opts = {}) {
   const previous = opts.previous !== undefined ? opts.previous : readLastCdpEndpoint(opts);
-  const samePort = previous?.port && record?.port != null && String(previous.port) === String(record.port);
-  if (!record?.profileDir && previous?.profileDir && !samePort) return previous;
   const next = { ...(previous || {}) };
   for (const [key, value] of Object.entries(record || {})) {
     if (value != null && value !== '') next[key] = value;
   }
-  if (previous?.profileDir && record?.port != null && previous.port && String(record.port) !== String(previous.port) && !record.profileDir) {
-    next.profileDir = null;
-  }
+  const portChanged = previous?.port && record?.port != null && String(previous.port) !== String(record.port);
+  if (portChanged && !record.profileDir) next.profileDir = null;
   return writeLastCdpEndpoint(next, opts);
 }
 
@@ -1159,18 +1156,33 @@ function inferBrowserFromExe(exe) {
   return null;
 }
 
+function isDisposableSpawnProfileDir(profileDir) {
+  const normalized = String(profileDir || '').replace(/\\/g, '/');
+  return /(?:^|\/)chrome-cdp-ex-[a-z0-9-]+-debug-profile-\d+$/i.test(normalized);
+}
+
 function formatCdpRelaunchCommand(lastEndpoint, { port } = {}) {
   const profileDir = lastEndpoint?.profileDir;
   if (!profileDir) return null;
-  const browser = lastEndpoint.browser || inferBrowserFromExe(lastEndpoint.exe) || 'chrome';
-  const parts = [
-    'cdp spawn-debug-browser',
-    browser,
-    '--port', String(port || lastEndpoint.port || '9222'),
-    '--user-data-dir', shellQuoteCliArg(profileDir),
-  ];
-  if (lastEndpoint.exe) parts.push('--exe', shellQuoteCliArg(lastEndpoint.exe));
-  return parts.join(' ');
+  const resolvedPort = String(port || lastEndpoint.port || '9222');
+  if (isDisposableSpawnProfileDir(profileDir)) {
+    const browser = lastEndpoint.browser || inferBrowserFromExe(lastEndpoint.exe) || 'chrome';
+    const parts = [
+      'cdp spawn-debug-browser',
+      browser,
+      '--port', resolvedPort,
+      '--user-data-dir', shellQuoteCliArg(profileDir),
+    ];
+    if (lastEndpoint.exe) parts.push('--exe', shellQuoteCliArg(lastEndpoint.exe));
+    return parts.join(' ');
+  }
+  const exe = lastEndpoint.exe || lastEndpoint.browser || 'chrome';
+  return [
+    shellQuoteCliArg(exe),
+    `--remote-debugging-port=${resolvedPort}`,
+    '--user-data-dir',
+    shellQuoteCliArg(profileDir),
+  ].join(' ');
 }
 
 function profileDirFromCommandLine(args) {
@@ -14118,16 +14130,27 @@ function checkRuntimeEnvironment(opts = {}) {
 }
 
 function reconcileRuntimeEnvironmentCheck(environment, cdp) {
-  if (cdp?.status !== 'OK' || environment?.label !== 'Environment' || environment.status === 'OK') {
+  if (environment?.label !== 'Environment' || environment.status === 'OK') {
     return environment;
   }
-  return {
-    ...environment,
-    status: 'OK',
-    detail: `${environment.detail}; CDP reachable`,
-    hint: null,
-    recovery: null,
-  };
+  if (cdp?.status === 'OK') {
+    return {
+      ...environment,
+      status: 'OK',
+      detail: `${environment.detail}; CDP reachable`,
+      hint: null,
+      recovery: null,
+    };
+  }
+  // Configured CDP is down. Do not advertise a blank isolated profile.
+  if (cdp?.port || cdp?.profileDir) {
+    return {
+      ...environment,
+      hint: 'CDP_PORT is set; enable remote debugging on that existing browser. Do not spawn a new user-data-dir.',
+      recovery: null,
+    };
+  }
+  return environment;
 }
 
 function doctorWizardSummary(checks) {
@@ -14248,6 +14271,19 @@ function doctorRecommendationModel(checks) {
         reason: cdp.detail || null,
       };
     }
+    if (cdp.port) {
+      return {
+        ...base,
+        stage: 'browser-cdp',
+        strategy: 'enable-existing-debugging',
+        run: cdp.relaunch || null,
+        ask: 'Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: cdp doctor. Do not invent a new --user-data-dir.',
+        after: 'cdp list',
+        requiresUserAction: true,
+        consentRequired: true,
+        reason: cdp.detail || null,
+      };
+    }
     if (environment?.recovery?.command) {
       return {
         ...base,
@@ -14264,10 +14300,8 @@ function doctorRecommendationModel(checks) {
       ...base,
       stage: 'browser-cdp',
       strategy: 'enable-existing-debugging',
-      run: cdp.relaunch || (cdp.port ? null : 'cdp spawn-debug-browser edge --port 9222 --url https://example.com'),
-      ask: cdp.port
-        ? 'Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: cdp doctor. Do not invent a new --user-data-dir.'
-        : 'Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: cdp doctor.',
+      run: 'cdp spawn-debug-browser edge --port 9222 --url https://example.com',
+      ask: 'Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: cdp doctor.',
       after: 'cdp list',
       requiresUserAction: true,
       consentRequired: true,
@@ -14362,14 +14396,14 @@ function doctorNextSteps(checks) {
     if (cdp.relaunch && cdp.profileDir) {
       lines.push(`  1. ${cdp.relaunch}`);
       lines.push('  2. Then run: cdp list');
-    } else if (environment?.recovery?.command) {
-      lines.push(`  1. ${environment.recovery.command}`);
-      lines.push('  2. Then run: cdp list');
-      lines.push('  3. Existing browser alternative: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
     } else if (cdp.port) {
       lines.push('  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
       lines.push('  2. Do not invent a new --user-data-dir or a second Chrome profile; relaunch the same browser/profile that last served this CDP port.');
       lines.push('  3. Then run: cdp list');
+    } else if (environment?.recovery?.command) {
+      lines.push(`  1. ${environment.recovery.command}`);
+      lines.push('  2. Then run: cdp list');
+      lines.push('  3. Existing browser alternative: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
     } else {
       lines.push('  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
       lines.push('  2. Isolated profile: cdp spawn-debug-browser edge --port 9222 --url https://example.com');
@@ -14477,7 +14511,7 @@ function stripDoctorStepPrefix(line) {
 function doctorNextStepCommands(checks) {
   return doctorNextSteps(checks)
     .map(stripDoctorStepPrefix)
-    .filter(line => line.startsWith('cdp '));
+    .filter(line => line.startsWith('cdp ') || /--remote-debugging-port=/.test(line));
 }
 
 function buildDoctorModel(checks) {
@@ -14690,6 +14724,7 @@ function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = n
   const nextCommand = targetPrefix
     ? `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`
     : `CDP_PORT=${plan.port} cdp list`;
+  const disposable = isDisposableSpawnProfileDir(plan.profileDir);
   return {
     schema: 'chrome-cdp-ex.spawn-debug-browser.v1',
     ready: readiness?.ok === true,
@@ -14706,7 +14741,7 @@ function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = n
     nextCommand,
     cleanup: {
       stopHint: `CDP_PORT=${plan.port} cdp stop${targetPrefix ? ` ${targetPrefix}` : ''}`,
-      deleteProfile: `rm -rf ${plan.profileDir}`,
+      deleteProfile: disposable ? `rm -rf ${plan.profileDir}` : null,
     },
   };
 }
@@ -14725,8 +14760,13 @@ function formatSpawnDebugBrowserOutput(model, { format = 'text' } = {}) {
   }
   lines.push('');
   lines.push(`Next: ${model.nextCommand}`);
-  lines.push(`Stop/cleanup: ${model.cleanup.stopHint}; then ${model.cleanup.deleteProfile}`);
-  lines.push(`(Profile is disposable — delete ${model.profileDir} to reset.)`);
+  if (model.cleanup?.deleteProfile) {
+    lines.push(`Stop/cleanup: ${model.cleanup.stopHint}; then ${model.cleanup.deleteProfile}`);
+    lines.push(`(Profile is disposable — delete ${model.profileDir} to reset.)`);
+  } else {
+    lines.push(`Stop: ${model.cleanup?.stopHint || `CDP_PORT=${model.port} cdp stop`}`);
+    lines.push('(Reused existing profile — do not delete this user-data-dir.)');
+  }
   return lines.join('\n');
 }
 
