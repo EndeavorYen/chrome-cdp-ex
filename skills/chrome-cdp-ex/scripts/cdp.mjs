@@ -13569,12 +13569,23 @@ function checkNode(version = process.version) {
   };
 }
 
-function checkSkillSymlink({ home = homedir(), fs = { existsSync, lstatSync: null } } = {}) {
-  const target = resolve(home, '.claude', 'skills', 'chrome-cdp-ex');
-  if (!fs.existsSync(target)) {
+function hostSkillInstallPaths({ home = homedir(), env = process.env } = {}) {
+  const hermesHome = env.HERMES_HOME || resolve(home, '.hermes');
+  return [...new Set([
+    resolve(hermesHome, 'skills', 'chrome-cdp-ex'),
+    resolve(home, '.hermes', 'skills', 'chrome-cdp-ex'),
+    resolve(home, '.claude', 'skills', 'chrome-cdp-ex'),
+    resolve(home, '.codex', 'skills', 'chrome-cdp-ex'),
+  ])];
+}
+
+function checkSkillSymlink({ home = homedir(), env = process.env, fs = { existsSync, lstatSync: null } } = {}) {
+  const candidates = hostSkillInstallPaths({ home, env });
+  const target = candidates.find(path => fs.existsSync(path));
+  if (!target) {
     return {
-      status: 'WARN', label: 'Skill install', detail: `${target} not found`,
-      hint: 'Install with: cp -r skills/chrome-cdp-ex ~/.claude/skills/  (or use the plugin loader)',
+      status: 'WARN', label: 'Skill install', detail: `${candidates.join(', ')} not found`,
+      hint: 'Install with: cp -r skills/chrome-cdp-ex ~/.hermes/skills/  (or ~/.claude/skills/, ~/.codex/skills/, or use the plugin loader)',
     };
   }
   let kind = 'directory';
@@ -14363,7 +14374,7 @@ async function runDoctorChecks(opts = {}) {
   const fs = opts.fs || { existsSync, lstatSync: safeLstat };
   const checks = [];
   checks.push(checkNode(opts.nodeVersion));
-  checks.push(checkSkillSymlink({ home: opts.home, fs }));
+  checks.push(checkSkillSymlink({ home: opts.home, env: opts.env, fs }));
   checks.push(checkDaemonSockets({ list: opts.listDaemons }));
   checks.push(checkFdLimit({ limit: opts.fdLimit, platform: opts.platform }));
   checks.push(checkRuntimeEnvironment({ platform: opts.platform, env: opts.env, fs }));

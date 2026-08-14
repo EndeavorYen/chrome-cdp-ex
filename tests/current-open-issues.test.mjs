@@ -1805,6 +1805,28 @@ describe('v2.11.0 review regressions', () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it('#154 treats a Hermes-only skill path as a first-class install', () => {
+    const home = '/home/test';
+    const hermesPath = `${home}/.hermes/skills/chrome-cdp-ex`;
+    const fs = {
+      existsSync: path => path === hermesPath,
+      lstatSync: () => ({ isSymbolicLink: () => false }),
+    };
+    const result = T.checkSkillSymlink({ home, fs });
+    expect(result.status).toBe('OK');
+    expect(result.detail).toContain(hermesPath);
+    expect(result.detail).not.toMatch(/not found/);
+  });
+
+  it('#154 hints ~/.hermes/skills when no host skill path exists', () => {
+    const result = T.checkSkillSymlink({
+      home: '/home/test',
+      fs: { existsSync: () => false },
+    });
+    expect(result.status).toBe('WARN');
+    expect(result.hint).toContain('~/.hermes/skills');
+  });
 });
 
 describe('issue #158 unknown perceive flags', () => {

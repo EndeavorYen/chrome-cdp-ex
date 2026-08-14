@@ -1,6 +1,6 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -8,6 +8,7 @@ import {
   cursorMcpConfig,
   detectEnvironment,
   hostSnippet,
+  main,
   routeRecommendation,
   writeCursorMcpConfig,
 } from '../scripts/setup.mjs';
@@ -68,6 +69,81 @@ describe('setup.mjs distribution helpers', () => {
       expect(cursorMcpConfig({ mcpServer: '/x', node: '/n' }).mcpServers['chrome-cdp-ex'].args).toEqual(['/x']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports Hermes skillPath and installed from a fake home', () => {
+    const home = mkdtempSync(join(tmpdir(), 'chrome-cdp-hermes-detect-'));
+    try {
+      const missing = detectEnvironment({ home, env: {} });
+      expect(missing.hosts.hermes.skillPath).toBe(join(home, '.hermes', 'skills', 'chrome-cdp-ex'));
+      expect(missing.hosts.hermes.installed).toBe(false);
+      expect(missing.hosts.hermes.route).toBe('cli');
+
+      mkdirSync(join(home, '.hermes', 'skills', 'chrome-cdp-ex'), { recursive: true });
+      const present = detectEnvironment({ home, env: {} });
+      expect(present.hosts.hermes.skillPath).toBe(join(home, '.hermes', 'skills', 'chrome-cdp-ex'));
+      expect(present.hosts.hermes.installed).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('prints a Hermes copy into the skill parent without writing when --write is omitted', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'chrome-cdp-hermes-print-'));
+    try {
+      const detect = detectEnvironment({ home, env: {} });
+      const snippet = hostSnippet('hermes', detect);
+      const dest = join(home, '.hermes', 'skills', 'chrome-cdp-ex');
+      const parent = dirname(dest);
+      expect(snippet).toContain(`cp -R '${detect.skillDir}' '${parent}/'`);
+      expect(snippet).not.toContain(`cp -R '${detect.skillDir}' '${dest}'`);
+      expect(snippet).not.toContain('<hermes-skills-dir>');
+      const logs = [];
+      const originalLog = console.log;
+      console.log = (...args) => { logs.push(args.map(String).join(' ')); };
+      try {
+        const code = await main(['--for', 'hermes'], { home, env: {} });
+        expect(code).toBe(0);
+      } finally {
+        console.log = originalLog;
+      }
+      expect(logs.join('\n')).toContain(dest);
+      expect(existsSync(join(home, '.hermes'))).toBe(false);
+      expect(existsSync(join(dest, 'SKILL.md'))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('copies SKILL.md into dest/chrome-cdp-ex for --for hermes --write', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'chrome-cdp-hermes-write-'));
+    try {
+      const dest = join(home, '.hermes', 'skills');
+      const code = await main(['--for', 'hermes', '--write'], { home, env: {} });
+      expect(code).toBe(0);
+      expect(existsSync(join(dest, 'chrome-cdp-ex', 'SKILL.md'))).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('uses HERMES_HOME as the skill dest override', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'chrome-cdp-home-'));
+    const hermesHome = mkdtempSync(join(tmpdir(), 'chrome-cdp-hermes-home-'));
+    try {
+      const detect = detectEnvironment({ home, env: { HERMES_HOME: hermesHome } });
+      expect(detect.hosts.hermes.skillPath).toBe(join(hermesHome, 'skills', 'chrome-cdp-ex'));
+      const code = await main(['--for', 'hermes', '--write'], {
+        home,
+        env: { HERMES_HOME: hermesHome },
+      });
+      expect(code).toBe(0);
+      expect(existsSync(join(hermesHome, 'skills', 'chrome-cdp-ex', 'SKILL.md'))).toBe(true);
+      expect(existsSync(join(home, '.hermes'))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(hermesHome, { recursive: true, force: true });
     }
   });
 });
