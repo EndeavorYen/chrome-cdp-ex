@@ -9344,7 +9344,14 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
       last,
       targetPrefix: opts.targetPrefix,
     });
-    if (frame) storeFrameScopedRefs(refState, frame, frameContext.frames, activeRefMap);
+    if (frame) {
+      storeFrameScopedRefs(refState, frame, frameContext.frames, activeRefMap);
+      for (const card of model.cards || []) {
+        if (typeof card.ref === 'string' && /^@\d+$/.test(card.ref)) {
+          card.ref = `${frame.ref}:${card.ref.slice(1)}`;
+        }
+      }
+    }
     const output = opts.format === 'json' ? formatCardsJson(model) : formatCardsText(model);
     lastPerceiveStore.output = output;
     lastPerceiveStore.cards = model;

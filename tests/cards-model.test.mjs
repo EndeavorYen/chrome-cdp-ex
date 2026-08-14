@@ -4,6 +4,7 @@ import {
   CARDS_SCHEMA,
   DEFAULT_CARD_CAP,
   MAX_CARD_CAP,
+  VIRTUALIZED_NEXT,
   buildCardsModel,
   formatCardsJson,
   formatCardsText,
@@ -118,6 +119,21 @@ describe('buildCardsModel', () => {
     expect(MAX_CARD_CAP).toBe(20);
     expect(maxed.cards).toHaveLength(20);
     expect(maxed.truncated).toBe(true);
+  });
+
+  it('points truncated next at a larger --last instead of the cap already applied', () => {
+    const { nodes, meta } = feedTree({ articles: 15, vh: 400 });
+    const model = buildCardsModel(nodes, meta, new Map(), { targetPrefix: 'ABC12345' });
+    expect(model.truncated).toBe(true);
+    expect(model.virtualized).not.toBe(true);
+    expect(model.next).toBe('cdp perceive ABC12345 --cards --last 15');
+  });
+
+  it('asks to scroll when truncated at the max card cap', () => {
+    const { nodes, meta } = feedTree({ articles: 25, vh: 400 });
+    const model = buildCardsModel(nodes, meta, new Map(), { last: 20 });
+    expect(model.truncated).toBe(true);
+    expect(model.next).toBe(VIRTUALIZED_NEXT);
   });
 
   it('truncates visible text around 180 characters', () => {

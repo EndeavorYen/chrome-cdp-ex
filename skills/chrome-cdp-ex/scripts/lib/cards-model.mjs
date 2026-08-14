@@ -206,11 +206,14 @@ export function buildCardsModel(nodes = [], meta = {}, refMap = null, opts = {})
   const expectedVisible = vh > 0 ? Math.floor(vh / TYPICAL_CARD_HEIGHT_PX) : 0;
   const virtualized = foundCount > 0 && expectedVisible > 0 && foundCount < expectedVisible;
   const truncated = foundCount > cap;
+  const raisedLast = Math.min(MAX_CARD_CAP, foundCount);
   const next = virtualized
     ? VIRTUALIZED_NEXT
-    : truncated
-      ? `cdp perceive ${targetPrefix} --cards --last ${cap}`
-      : `cdp perceive ${targetPrefix} --cards`;
+    : truncated && raisedLast > cap
+      ? `cdp perceive ${targetPrefix} --cards --last ${raisedLast}`
+      : truncated
+        ? VIRTUALIZED_NEXT
+        : `cdp perceive ${targetPrefix} --cards`;
 
   const model = {
     schema: CARDS_SCHEMA,
