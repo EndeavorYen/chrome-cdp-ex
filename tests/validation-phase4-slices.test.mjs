@@ -202,7 +202,15 @@ function fixtureOutput(id) {
       page: { title: TITLE, url: 'http://127.0.0.1:41758/validation-phase4.html' },
     });
   }
-  if (['back', 'click', 'clickxy', 'dismiss-modal', 'fill', 'forward', 'inject', 'jsclick', 'nav', 'press', 'reload', 'restore', 'scroll', 'select', 'type', 'upload', 'viewport'].includes(id)) {
+  if (id === 'fill') return JSON.stringify({
+    schema: 'chrome-cdp-ex.fill.v1',
+    value: 'phase7 input',
+    changed: true,
+    navigation: null,
+    typeahead: [],
+    targetPrefix: TARGET,
+  });
+  if (['back', 'click', 'clickxy', 'dismiss-modal', 'forward', 'inject', 'jsclick', 'nav', 'press', 'reload', 'restore', 'scroll', 'select', 'type', 'upload', 'viewport'].includes(id)) {
     const sensitiveTargets = {
       inject: { targetId: TARGET_ID, input: '--css', commandArgs: ['--css', '<redacted>'], redacted: ['commandArgs'] },
       restore: { targetId: TARGET_ID, input: 'checkpoint', commandArgs: ['--file', '[checkpoint-path-redacted]'], redacted: ['commandArgs'] },
