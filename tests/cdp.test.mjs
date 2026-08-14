@@ -4092,6 +4092,68 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toContain('filler-suggestion-40');
   });
 
+  it('summarizes perceive -i then fill typeahead as a one-liner, not a 96/195 reroot (#162)', () => {
+    const previous = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: [textbox] Search  @1',
+      'Interactive: 1 textbox, 95 link',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] MiniMax-Music3',
+      '  [textbox] Search = ""  @1',
+      ...Array.from({ length: 95 }, (_, i) => `  [link] chrome-link-${i}  @${i + 2}`),
+    ].join('\n');
+    const current = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: [textbox] Search  @1',
+      'Interactive: 1 textbox, 194 link',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] MiniMax-Music3',
+      '  [heading] MiniMax-Music3',
+      '  [textbox] Search = "MiniMax"  @1',
+      '  [link] MiniMaxAI/MiniMax-Music3  @2',
+      '  [link] MiniMaxAI/MiniMax-Text-01  @3',
+      ...Array.from({ length: 192 }, (_, i) => `  [link] other-${i}  @${i + 4}`),
+    ].join('\n');
+
+    const model = T.buildPerceiveDiffModel(previous, current, {
+      mode: 'since-action',
+      targetPrefix: '6914C171',
+    });
+    const text = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+
+    expect(model.summary.kind).toBe('typeahead');
+    expect(model.summary.headline).toMatch(/^textbox value set; \d+ suggestion links$/);
+    expect(text).toContain('textbox value set;');
+    expect(text).toContain('suggestion links');
+    expect(text).toContain('MiniMaxAI/MiniMax-Music3');
+    expect(text).not.toMatch(/Removed \(96\)/);
+    expect(text).not.toMatch(/Added \(195\)/);
+  });
+
+  it('reuses the -i snapshot shape for --since-action when the user did not pass -C/-d (#162)', () => {
+    const lastAction = {
+      baselineOutput: '[textbox] Search = ""',
+      baselineOpts: T.perceiveSnapshotOpts({ interactive: true, maxDepth: Infinity }),
+    };
+    const popts = T.resolveSinceActionPerceiveOpts(
+      T.parsePerceiveArgs(['--since-action']),
+      lastAction,
+      ['--since-action'],
+    );
+    expect(popts).toMatchObject({
+      sinceAction: true,
+      interactive: true,
+      keepTypeahead: true,
+      diffBaseline: lastAction.baselineOutput,
+    });
+    expect(T.perceiveArgsIncludeSnapshotShape(['--since-action'])).toBe(false);
+    expect(T.perceiveArgsIncludeSnapshotShape(['--since-action', '-i'])).toBe(true);
+  });
+
   it('does not summarize a huge same-URL click diff as typeahead (#162)', () => {
     const previous = [
       'Page: Models — https://huggingface.co/models',
