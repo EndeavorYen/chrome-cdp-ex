@@ -1,0 +1,36 @@
+#!/usr/bin/env node
+import { spawn } from 'child_process';
+import { dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
+import { resolveChromeCdpNodeLaunch } from '../scripts/lib/node-runtime.mjs';
+
+const skillRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const cdp = resolve(skillRoot, 'scripts', 'cdp.mjs');
+const launch = resolveChromeCdpNodeLaunch({
+  version: process.version,
+  execPath: process.execPath,
+  argv: process.argv,
+  env: process.env,
+  scriptPath: cdp,
+});
+
+function run(binary, args, env = process.env) {
+  const child = spawn(binary, args, {
+    stdio: 'inherit',
+    env,
+  });
+  child.on('exit', code => process.exit(code ?? 1));
+  child.on('error', error => {
+    console.error(error.message || error);
+    process.exit(1);
+  });
+}
+
+if (launch.action === 'reexec') {
+  run(launch.binary, launch.args, launch.env);
+} else if (launch.action === 'fail') {
+  console.error(launch.message);
+  process.exit(1);
+} else {
+  run(process.execPath, [cdp, ...process.argv.slice(2)]);
+}

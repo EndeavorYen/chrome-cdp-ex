@@ -309,7 +309,7 @@ function domainInvocations() {
     {
       domain: 'Accessibility',
       methods: ['Accessibility.getFullAXTree', 'Runtime.evaluate'],
-      callDigest: '1ec5b4aa93d9cdbeee336c0222a942a1a34dd55a89d7d257631c620e274b300e',
+      callDigest: 'ad424d3e3f6e6ed6fef05f0f0e251768595b44f77d5a7114301881862337acdb',
       result: 'Page: Fixture — http://127.0.0.1/fixture\nViewport: 800×600 | Scroll: 0/0 (0%) | Focused: null\nInteractive: none\nConsole: clean\nCoords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)\n',
       invoke: cdp => cdpTest.perceiveStr(
         cdp,
@@ -394,7 +394,7 @@ describe('Phase 6 direct CDP characterization', () => {
     const inventory = directCdpInventory(source);
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
     expect(inventory).toHaveLength(136);
-    expect(digest).toBe('sha256:a27712792c8ce7f05847e29b4ddfbaeb6db45d50270fb8f7f2969943eb04d939');
+    expect(digest).toBe('sha256:3a4e2b5b72a766bc779022e3f0b9304dc70be76e7114bb11d4c0adda2a5fe6bc');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'Math.min(1000, Math.max(100, deadline - now() + 100))',

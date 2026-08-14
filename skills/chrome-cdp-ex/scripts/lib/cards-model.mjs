@@ -4,6 +4,7 @@ export const MAX_CARD_CAP = 20;
 export const CARD_TEXT_LIMIT = 180;
 export const TYPICAL_CARD_HEIGHT_PX = 200;
 export const VIRTUALIZED_NEXT = 'timeline virtualized; scroll and re-run --cards';
+export const CARDS_UNCHANGED_NEXT = 'unchanged; still first cards; virtualized window did not replace cards';
 
 const HANDLE_RE = /@[A-Za-z0-9_]{1,30}/;
 const PERMALINK_RE = /\/(?:status|statuses|posts?|articles?|p|notes?)\//i;
@@ -135,6 +136,29 @@ function extractText(cardNode, handle) {
   return compactCardText(text, CARD_TEXT_LIMIT);
 }
 
+export function cardIdentity(card = {}) {
+  return [card.url || '', card.handle || '', card.text || ''].join('\n');
+}
+
+export function cardsFingerprint(cards = []) {
+  return (Array.isArray(cards) ? cards : []).map(cardIdentity).join('\u001f');
+}
+
+function inViewportVis(vis) {
+  return !vis || vis === 'in';
+}
+
+function cardWindowMatches(card, window) {
+  if (!card || !window) return false;
+  if (window.vis && !inViewportVis(window.vis)) return false;
+  const hay = compactCardText(`${window.text || ''} ${window.handle || ''}`, CARD_TEXT_LIMIT * 2).toLowerCase();
+  if (!hay) return false;
+  const needle = compactCardText(card.text || card.handle || '', 80).toLowerCase();
+  if (needle && hay.includes(needle.slice(0, 40))) return true;
+  if (card.handle && hay.includes(String(card.handle).toLowerCase())) return true;
+  return false;
+}
+
 function isCardCandidate(node, { nodesById, hasFeed, hasMain, hasScopedArticles }) {
   const role = roleOf(node);
   if (!CARD_ROLES.has(role)) return false;
@@ -178,7 +202,24 @@ export function buildCardsModel(nodes = [], meta = {}, refMap = null, opts = {})
   for (const root of roots) visit(root);
 
   const foundCount = candidates.length;
-  const selected = candidates.slice(0, cap);
+  const cardWindows = Array.isArray(meta.cardWindows) ? meta.cardWindows : [];
+  const inViewWindows = cardWindows.filter(window => inViewportVis(window?.vis));
+  let ordered = candidates;
+  if (inViewWindows.length) {
+    const inView = [];
+    const rest = [];
+    for (const node of candidates) {
+      const subtree = collectSubtree(node, childrenOf);
+      const preview = {
+        handle: extractHandle(subtree),
+        text: extractText(node, extractHandle(subtree)),
+      };
+      if (inViewWindows.some(window => cardWindowMatches(preview, window))) inView.push(node);
+      else rest.push(node);
+    }
+    ordered = inView.length ? [...inView, ...rest] : candidates;
+  }
+  const selected = ordered.slice(0, cap);
   if (refMap && typeof refMap.clear === 'function') refMap.clear();
 
   const cards = [];
@@ -203,17 +244,26 @@ export function buildCardsModel(nodes = [], meta = {}, refMap = null, opts = {})
   }
 
   const vh = Number(meta.vh) || 0;
+  const scrollY = Number.isFinite(Number(meta.scrollY)) ? Number(meta.scrollY) : null;
   const expectedVisible = vh > 0 ? Math.floor(vh / TYPICAL_CARD_HEIGHT_PX) : 0;
   const virtualized = foundCount > 0 && expectedVisible > 0 && foundCount < expectedVisible;
   const truncated = foundCount > cap;
   const raisedLast = Math.min(MAX_CARD_CAP, foundCount);
-  const next = virtualized
-    ? VIRTUALIZED_NEXT
-    : truncated && raisedLast > cap
-      ? `cdp perceive ${targetPrefix} --cards --last ${raisedLast}`
-      : truncated
-        ? VIRTUALIZED_NEXT
-        : `cdp perceive ${targetPrefix} --cards`;
+  const previousCards = opts.previousCards;
+  const previousFingerprint = previousCards ? cardsFingerprint(previousCards) : '';
+  const fingerprint = cardsFingerprint(cards);
+  const previousScrollY = Number.isFinite(Number(opts.previousScrollY)) ? Number(opts.previousScrollY) : null;
+  const scrolled = previousScrollY != null && scrollY != null && previousScrollY !== scrollY;
+  const unchanged = Boolean(previousFingerprint) && fingerprint === previousFingerprint;
+  const next = unchanged
+    ? CARDS_UNCHANGED_NEXT
+    : virtualized
+      ? VIRTUALIZED_NEXT
+      : truncated && raisedLast > cap
+        ? `cdp perceive ${targetPrefix} --cards --last ${raisedLast}`
+        : truncated
+          ? VIRTUALIZED_NEXT
+          : `cdp perceive ${targetPrefix} --cards`;
 
   const model = {
     schema: CARDS_SCHEMA,
@@ -221,7 +271,12 @@ export function buildCardsModel(nodes = [], meta = {}, refMap = null, opts = {})
     truncated,
     next,
   };
+  if (scrollY != null) model.scrollY = scrollY;
   if (virtualized) model.virtualized = true;
+  if (unchanged) {
+    model.unchanged = true;
+    if (scrolled) model.virtualizedWindowUnchanged = true;
+  }
   return model;
 }
 
@@ -234,6 +289,7 @@ export function formatCardsText(model = {}) {
   const flags = [
     model.truncated ? 'truncated' : null,
     model.virtualized ? 'virtualized' : null,
+    model.unchanged ? 'unchanged' : null,
   ].filter(Boolean);
   const lines = [
     `${model.schema || CARDS_SCHEMA}  ${cards.length} card${cards.length === 1 ? '' : 's'}${flags.length ? `  ${flags.join(' ')}` : ''}`,

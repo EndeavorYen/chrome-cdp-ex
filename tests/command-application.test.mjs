@@ -725,6 +725,7 @@ describe('Phase 4 click compatibility slice', () => {
   it.each([
     ['normal', ['@7', '--format', 'json', '--compact'], '@7', false],
     ['javascript fallback', ['--js', '#save', '--format', 'json'], '#save', true],
+    ['javascript fallback after selector', ['#save', '--js', '--format', 'json'], '#save', true],
   ])('preserves %s routing and legacy value', async (_label, args, selector, javascriptFallback) => {
     const click = vi.fn(async value => `normal:${value}`);
     const jsClick = vi.fn(async value => `js:${value}`);

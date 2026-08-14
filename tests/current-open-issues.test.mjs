@@ -2303,7 +2303,7 @@ describe('v2.11.0 review regressions', () => {
     const home = '/home/test';
     const hermesPath = `${home}/.hermes/skills/chrome-cdp-ex`;
     const fs = {
-      existsSync: path => path === hermesPath,
+      existsSync: path => path === hermesPath || path === `${hermesPath}/bin/chrome-cdp`,
       lstatSync: () => ({ isSymbolicLink: () => false }),
     };
     const result = T.checkSkillSymlink({ home, fs });
@@ -2433,7 +2433,7 @@ describe('issue #144 pending CDP lifecycle errors', () => {
 
   it('daemon nav passes the bound targetId into navStr', () => {
     const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
-    expect(source).toMatch(/navStr\(cdp, sessionId, fopts\.args\[0\], \{[^}]*targetId/);
+    expect(source).toMatch(/navStr\(cdp, sessionId, url, \{[^}]*targetId/);
   });
 });
 
@@ -2446,7 +2446,7 @@ describe('issue #160 open token budget', () => {
     });
     expect(T.parseOpenArgs(['https://example.com', '--perceive']).perceive).toBe(true);
     expect(T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', '0']).attachTimeoutMs).toBe(0);
-    expect(T.formatOpenNextPerceiveCommand('AABBCCDDEEFF')).toBe('Next: cdp perceive AABBCCDD -C -d 8');
+    expect(T.formatOpenNextPerceiveCommand('AABBCCDDEEFF')).toBe('Next: cdp text AABBCCDD --auto');
     expect(T.shouldAnnounceOpenAttachWait({ failedConnects: 1, elapsedMs: 300 })).toBe(false);
     expect(T.COMMANDS.find(command => command.name === 'open').feedbackPolicy).toBe('report-only');
   });
@@ -2860,3 +2860,174 @@ describe('issue #163 doctor next-probe and skip-link @refs', () => {
     expect(ranked.at(-1).ariaLabel).toMatch(/Skip to/i);
   });
 });
+
+describe('issues #181-#191 open contracts', () => {
+  it('#181 resolves aliases case-insensitively, strips @, and matches stored prefixes', () => {
+    const store = T.upsertTargetAlias(T.emptyAliasStore(), {
+      name: 'hfmusic',
+      targetId: 'F8741D08',
+    });
+    expect(T.resolveTargetAlias('hfmusic', store).targetId).toBe('F8741D08');
+    expect(T.resolveTargetAlias('@HFMusic', store).targetId).toBe('F8741D08');
+    expect(T.looksLikeAliasToken('hfmusic')).toBe(true);
+    expect(T.looksLikeAliasToken('@hfmusic')).toBe(true);
+    expect(T.looksLikeAliasToken('F8741D08')).toBe(false);
+    expect(T.unknownAliasError('missing').message).toMatch(/unknown alias "@missing"/);
+    expect(T.aliasesForTarget('F8741D08ABCDEF', store.aliases)).toEqual(['hfmusic']);
+
+    const binding = T.resolveLiveTargetBinding({
+      requested: 'hfmusic',
+      livePages: [{ targetId: 'F8741D08ABCDEF9999', title: 'HF Music', url: 'https://hf.example/' }],
+      alias: store.aliases.hfmusic,
+    });
+    expect(binding.resolvedTargetId).toBe('F8741D08ABCDEF9999');
+  });
+
+  it('#182 list JSON recommends pick-tab then text --auto, not starred perceive -C -d 8', () => {
+    const model = T.buildPageListModel([
+      { targetId: 'AABBCCDD11223344', type: 'page', title: 'Dashboard', url: 'https://example.com/app' },
+    ]);
+    expect(model.recommendation.stage).toBe('pick-target');
+    expect(model.recommendation.run).toBe('cdp list --format json');
+    expect(model.nextSteps[0]).not.toMatch(/perceive AABBCCDD.*-C -d 8/);
+    expect(model.nextSteps).toEqual(expect.arrayContaining([
+      'cdp text <target-from-list> --auto',
+      'cdp perceive <target-from-list> --cards',
+    ]));
+  });
+
+  it('#183 classifies missing/ambiguous targets and unknown flags as list/usage, not doctor', () => {
+    expect(T.buildCliErrorRecovery('No live target matching prefix "abc".').kind).toBe('target-resolution');
+    expect(T.buildCliErrorRecovery('No live target matching prefix "abc".').run).toMatch(/^cdp list/);
+    expect(T.buildCliErrorRecovery('target: 2 pages matched prefix "aa"').kind).toBe('target-resolution');
+    expect(T.buildCliErrorRecovery('target: 2 pages matched prefix "aa"').strategy).toBe('choose-longer-prefix');
+    expect(T.buildCliErrorRecovery('unknown alias "@hfmusic"').run).toBe('cdp list');
+    const unknownFlag = T.buildCliErrorRecovery('click: unknown argument --foo', { cmd: 'click' });
+    expect(unknownFlag.kind).toBe('usage');
+    expect(unknownFlag.run).toBe('cdp help click');
+    expect(unknownFlag.run).not.toBe('cdp doctor');
+  });
+
+  it('#184 click --js works after the selector and unknown flags fail closed', () => {
+    expect(T.parseClickArgs(['@1', '--js'])).toMatchObject({ js: true, selector: '@1' });
+    expect(T.parseClickArgs(['--js', '#save'])).toMatchObject({ js: true, selector: '#save' });
+    expect(T.parseClickArgs(['@7', '--format', 'json', '--compact'])).toMatchObject({
+      js: false,
+      selector: '@7',
+      format: 'json',
+      compact: true,
+    });
+    expect(() => T.parseClickArgs(['@1', '--foo'])).toThrow(/click: unknown argument --foo/);
+    expect(T.scrollSettledRectFunctionDeclaration()).toMatch(/Date\.now\(\) \+ 1800/);
+    expect(T.scrollSettledRectFunctionDeclaration()).toMatch(/setTimeout/);
+  });
+
+  it('#185 report --qa uses live page title and JSON defaults to compact', () => {
+    const session = T.createSessionState({ targetId: 'ABC12345FULL', sessionId: 'sid' });
+    T.initializeSessionLog(session);
+    session.actionLog.push({
+      action: 'click',
+      ts: session.createdAt + 10,
+      url: 'https://example.test/app',
+      target: { label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 12 },
+      outcome: { status: 'changed' },
+    });
+    const qa = T.formatSessionReport(session, {
+      format: 'json',
+      qa: true,
+      page: { title: 'Example App', url: 'https://example.test/app' },
+    });
+    const parsedQa = JSON.parse(qa);
+    expect(parsedQa.page.title).toBe('Example App');
+    expect(parsedQa.page.url).toContain('example.test/app');
+
+    const json = JSON.parse(T.formatSessionReport(session, { format: 'json' }));
+    expect(json.mode).toBe('compact');
+    const full = JSON.parse(T.formatSessionReport(session, { format: 'json', lastActions: null }));
+    expect(full.mode).not.toBe('compact');
+  });
+
+  it('#186 PDF viewer receipts are classified instead of unknown/status', () => {
+    expect(T.isPdfViewerContentType('application/pdf')).toBe(true);
+    const text = T.formatPdfViewerOutput({
+      title: '',
+      url: 'https://arxiv.org/pdf/1234.pdf',
+      contentType: 'application/pdf',
+    }, { targetPrefix: 'AABBCCDD' });
+    expect(text).toMatch(/PDF viewer/);
+    expect(text).not.toMatch(/\bcdp status\b/);
+    const recovery = T.buildCliErrorRecovery(text, { cmd: 'text', err: T.pdfViewerError({ contentType: 'application/pdf' }) });
+    expect(recovery.kind).toBe('pdf-viewer');
+    expect(recovery.run).toMatch(/document\.contentType/);
+  });
+
+  it('#187 help [command] prints a topic and blur does not suggest back', () => {
+    const topic = T.helpTopicStr('click');
+    expect(topic).toMatch(/^cdp click /);
+    expect(topic).toContain('[--js|-j]');
+    expect(T.helpStr()).toContain('help [command]');
+    expect(T.suggestCommands('blur')).not.toContain('back');
+    expect(T.commandUsageTemplate('stop')).toMatch(/cdp stop \[target/);
+  });
+
+  it('#188 ships a skill-local bin/chrome-cdp launcher and ignores scriptPath-only stale daemons', () => {
+    const bin = readFileSync(new URL('../skills/chrome-cdp-ex/bin/chrome-cdp', import.meta.url), 'utf8');
+    expect(bin).toContain("'scripts', 'cdp.mjs'");
+    expect(bin).toContain('resolveChromeCdpNodeLaunch');
+    const current = {
+      schema: 'chrome-cdp-ex.daemon-metadata.v1',
+      scriptPath: '/repo/skills/chrome-cdp-ex/scripts/cdp.mjs',
+      scriptMtimeMs: 2000,
+      packageVersion: '2.16.0',
+      gitCommit: 'unknown',
+    };
+    const assessment = T.assessDaemonFreshness({
+      targetPrefix: 'AABBCCDD',
+      current,
+      daemon: { ...current, scriptPath: '/home/box/.hermes/skills/chrome-cdp-ex/scripts/cdp.mjs' },
+    });
+    expect(assessment.stale).toBe(false);
+    expect(assessment.mismatches).toEqual([]);
+  });
+
+  it('#188 warns when an installed skill directory is missing bin/chrome-cdp', () => {
+    const home = '/home/test';
+    const hermesPath = `${home}/.hermes/skills/chrome-cdp-ex`;
+    const result = T.checkSkillSymlink({
+      home,
+      fs: {
+        existsSync: path => path === hermesPath,
+        lstatSync: () => ({ isSymbolicLink: () => false }),
+      },
+    });
+    expect(result.status).toBe('WARN');
+    expect(result.label).toBe('Skill launcher');
+    expect(result.detail).toMatch(/bin\/chrome-cdp/);
+  });
+
+  it('#189 click unknown flags throw instead of clicking', () => {
+    expect(() => T.parseClickArgs(['@1', '--not-a-flag'])).toThrow(/unknown argument --not-a-flag/);
+  });
+
+  it('#190 ignores Copilot agent-session 404s as network failures', () => {
+    expect(T.isNetworkFailure({
+      url: 'https://github.com/copilot/agent-sessions/abc',
+      status: 404,
+      type: 'Fetch',
+    })).toBe(false);
+    expect(T.isNetworkFailure({
+      url: 'https://example.com/checkout',
+      status: 500,
+      type: 'Fetch',
+    })).toBe(true);
+    expect(T.COMMANDS.find(command => command.name === 'nav').feedbackPolicy).toBe('state-change');
+  });
+
+  it('#191 unchanged cards after scroll are not treated as DOM change', () => {
+    expect(T.actionDomDiffShowsChange('unchanged; still first cards; virtualized window did not replace cards')).toBe(false);
+    expect(T.actionDomDiffShowsChange('+++ Added\n+ [article] new tweet')).toBe(true);
+  });
+});
+

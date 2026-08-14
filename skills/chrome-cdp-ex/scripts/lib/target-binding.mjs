@@ -5,14 +5,27 @@ function matchingPages(requested, livePages) {
   return (livePages || []).filter(page => String(page?.targetId || '').toUpperCase().startsWith(upper));
 }
 
+function matchingAliasPages(alias, livePages) {
+  const wanted = String(alias?.targetId || '').toUpperCase();
+  if (!wanted) return [];
+  const exact = (livePages || []).filter(page => String(page?.targetId || '').toUpperCase() === wanted);
+  if (exact.length) return exact;
+  return matchingPages(wanted, livePages);
+}
+
 export function resolveLiveTargetBinding({ requested, livePages = [], daemonBinding = null, alias = null } = {}) {
   const rawRequested = String(requested || '').trim();
   const requestedTarget = alias?.targetId || rawRequested;
   if (!requestedTarget) throw new Error('Target binding requires a requested target id or prefix.');
   const matches = alias?.targetId
-    ? (livePages || []).filter(page => page?.targetId === alias.targetId)
+    ? matchingAliasPages(alias, livePages)
     : matchingPages(requestedTarget, livePages);
-  if (matches.length === 0) throw new Error(`No live target matching prefix "${rawRequested}".`);
+  if (matches.length === 0) {
+    if (alias?.name) {
+      throw new Error(`No live target matching alias @${alias.name} (prefix ${String(alias.targetId || rawRequested).slice(0, 8)}). Run: cdp list`);
+    }
+    throw new Error(`No live target matching prefix "${rawRequested}".`);
+  }
   if (matches.length > 1) throw new Error(`Live target prefix "${rawRequested}" is ambiguous (${matches.length} matches).`);
 
   const resolvedTargetId = matches[0].targetId;

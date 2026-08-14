@@ -9,11 +9,11 @@ Your eyes and hands on the user's live Chrome browser or Electron app through th
 
 ## TL;DR: 5-step golden path
 
-Prefer `./bin/chrome-cdp` (re-execs Node 22 when PATH `node` is older), `process.execPath`, or `$HERMES_HOME/node/bin/node` over unqualified `node`. If `node -v` is <22, use the Node 22 path printed by doctor.
+Prefer the skill-local launcher over a relative `./bin/chrome-cdp` from an unrelated cwd (Hermes often starts in `/workspace`). Use `$SKILL_DIR/bin/chrome-cdp` for an installed skill, repo-root `./bin/chrome-cdp` from a checkout, `process.execPath`, or `$HERMES_HOME/node/bin/node`. If `node -v` is <22, use the Node 22 path printed by doctor.
 
-1. **Doctor:** `./bin/chrome-cdp doctor` checks Node, install path, daemon state, file limits, CDP reachability, and browser-debugging permission.
-2. **List/open:** `./bin/chrome-cdp list`; if no usable tab exists, use `open <url>` or, with user consent, `spawn-debug-browser edge --port 9222 --url <url>`. Default `open` returns the target prefix plus `Next: cdp perceive <prefix> -C -d 8`; it does not dump the page unless you pass `--perceive`. `list` is the source of truth for which tab — when doctor reports multiple tabs, pick with `list` / `target --url` instead of following a starred tab, a leftover `perceive <id> -C -d 8` sample, or a daemon next-probe.
-3. **Perceive:** `./bin/chrome-cdp perceive <target> -C -d 8` to read structure, main/article text, layout hints, console health, and fresh `@ref` handles. For "what does this page say", use `text <target> --auto`.
+1. **Doctor:** `bin/chrome-cdp doctor` checks Node, install path, daemon state, file limits, CDP reachability, and browser-debugging permission.
+2. **List/open:** `bin/chrome-cdp list`; if no usable tab exists, use `open <url>` or, with user consent, `spawn-debug-browser edge --port 9222 --url <url>`. Default `open` returns the target prefix plus `Next: cdp text <prefix> --auto`; it does not dump the page unless you pass `--perceive`. `list` is the source of truth for which tab — when doctor reports multiple tabs, pick with `list` / `target --url` instead of following a starred tab, a leftover `perceive <id> -C -d 8` sample, or a daemon next-probe.
+3. **Perceive:** `bin/chrome-cdp perceive <target> -C -d 8` to read structure, main/article text, layout hints, console health, and fresh `@ref` handles. For "what does this page say", use `text <target> --auto`.
 4. **Act:** `click`, `fill`, `press`, `select`, `scroll`, or `dismiss-modal` using a fresh `@ref` or stable selector.
 5. **Verify/report:** read the action evidence, then use `verify-click`, `perceive <target> --since-action`, or `report <target>` / `report <target> --format json` for handoff.
 
@@ -21,9 +21,9 @@ Prefer `./bin/chrome-cdp` (re-execs Node 22 when PATH `node` is older), `process
 
 Take action immediately; do not just read this file.
 
-1. Run `./bin/chrome-cdp list` to discover open tabs.
+1. Run `bin/chrome-cdp list` to discover open tabs.
 2. Show the user the available tabs.
-3. If the user's request names a page, app, tab, URL, or visual state, match it to a target and run `./bin/chrome-cdp perceive <target> -C -d 8`.
+3. If the user's request names a page, app, tab, URL, or visual state, match it to a target and run `bin/chrome-cdp perceive <target> -C -d 8`.
 4. If no specific target is clear, ask which tab to inspect after listing the candidates.
 
 ## Perceive first
@@ -35,13 +35,13 @@ Refresh `@ref` handles after navigation, DOM rewrites, modal changes, or failed 
 ## Prerequisites
 
 - **Existing browser:** open `chrome://inspect/#remote-debugging` (or `edge://inspect`) and enable remote debugging when the browser asks.
-- **No reachable browser:** with user consent, launch an isolated debug profile, e.g. `./bin/chrome-cdp spawn-debug-browser edge --port 9222 --url https://example.com`.
+- **No reachable browser:** with user consent, launch an isolated debug profile, e.g. `bin/chrome-cdp spawn-debug-browser edge --port 9222 --url https://example.com`.
 - **Electron:** launch the app with a remote debugging port and set `CDP_PORT=<port>` before running commands.
 - **Runtime:** Node.js 22 is required because the runtime uses built-in WebSocket and has zero runtime npm dependencies. If `node -v` is <22, use the Node 22 path printed by doctor.
 
 ## Invoking commands
 
-Find `scripts/cdp.mjs` relative to the installed skill directory. Prefer `./bin/chrome-cdp`, `process.execPath`, or `$HERMES_HOME/node/bin/node` over unqualified PATH `node`.
+Find `scripts/cdp.mjs` relative to the installed skill directory. Prefer `$SKILL_DIR/bin/chrome-cdp` (installed copy), repo-root `./bin/chrome-cdp` (checkout), `process.execPath`, or `$HERMES_HOME/node/bin/node` over unqualified PATH `node`. Do not assume cwd is the skill directory.
 
 ```bash
 # From this repository or a checked-out package (wrapper re-execs Node 22 if needed)
@@ -51,7 +51,8 @@ Find `scripts/cdp.mjs` relative to the installed skill directory. Prefer `./bin/
 # Explicit Node 22 binary (Hermes / fnm / nvm)
 "$HERMES_HOME/node/bin/node" skills/chrome-cdp-ex/scripts/cdp.mjs list
 
-# From an installed skill directory
+# From an installed skill directory (Hermes cwd is often not the skill dir)
+"$HERMES_HOME/node/bin/node" /absolute/path/to/chrome-cdp-ex/bin/chrome-cdp doctor
 "$HERMES_HOME/node/bin/node" /absolute/path/to/chrome-cdp-ex/scripts/cdp.mjs doctor
 
 # Electron explicit port

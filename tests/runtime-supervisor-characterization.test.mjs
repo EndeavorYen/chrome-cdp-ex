@@ -275,7 +275,7 @@ describe('Phase 5 current runtime characterization', () => {
     });
     expect(sent).toEqual([{
       conn: { path: '/runtime/cdp-AABB1111FULL.sock' },
-      request: { cmd: 'stop' },
+      request: { cmd: 'stop', args: [] },
     }]);
     expect(unlink).not.toHaveBeenCalled();
     expect(model).toMatchObject({

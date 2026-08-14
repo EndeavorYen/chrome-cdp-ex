@@ -5,6 +5,7 @@ import {
   DEFAULT_CARD_CAP,
   MAX_CARD_CAP,
   VIRTUALIZED_NEXT,
+  CARDS_UNCHANGED_NEXT,
   buildCardsModel,
   formatCardsJson,
   formatCardsText,
@@ -201,6 +202,18 @@ describe('buildCardsModel', () => {
     const { nodes, meta } = feedTree({ articles: 6, vh: 720 });
     const model = buildCardsModel(nodes, meta, new Map());
     expect(model.virtualized).not.toBe(true);
+  });
+
+  it('marks unchanged when the same card window is still first after scroll', () => {
+    const { nodes, meta } = feedTree({ articles: 3, vh: 720 });
+    const first = buildCardsModel(nodes, { ...meta, scrollY: 0 }, new Map());
+    const second = buildCardsModel(nodes, { ...meta, scrollY: 480 }, new Map(), {
+      previousCards: first.cards,
+      previousScrollY: 0,
+    });
+    expect(second.unchanged).toBe(true);
+    expect(second.virtualizedWindowUnchanged).toBe(true);
+    expect(second.next).toBe(CARDS_UNCHANGED_NEXT);
   });
 });
 

@@ -250,6 +250,18 @@ describe('CDP pending command rejection', () => {
     expect(firstSettled.error.message).toMatch(/replaced/);
     expect(secondSettled.error.message).toMatch(/replaced/);
   });
+
+  it('rejects waitForEvent promptly on websocket close instead of waiting for the event timeout', async () => {
+    const { cdp, socket } = await connectFakeCdp(fake);
+    const waiter = cdp.waitForEvent('Page.loadEventFired', 15000);
+    const started = Date.now();
+    socket.close(1006, 'going away');
+
+    const settled = await settlePromptly(waiter.promise);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(settled.status).toBe('rejected');
+    expectLifecycleError(settled.error, /CDP websocket closed while waiting for event: Page\.loadEventFired/);
+  });
 });
 
 // =========================================================================
@@ -4833,19 +4845,16 @@ describe('formatPageList', () => {
       isBlank: true,
     });
     expect(model.nextSteps).toEqual([
-      `cdp perceive ${model.pages[0].targetPrefix} -C -d 8`,
-      `cdp click ${model.pages[0].targetPrefix} @ref  # choose a ref from perceive`,
-      `cdp perceive ${model.pages[0].targetPrefix} --since-action`,
-      `cdp report ${model.pages[0].targetPrefix}`,
+      'cdp list --format json',
+      'cdp text <target-from-list> --auto',
+      'cdp perceive <target-from-list> --cards',
     ]);
     expect(model.recommendation).toMatchObject({
       source: 'golden-path',
-      stage: 'perceive',
-      targetPrefix: model.pages[0].targetPrefix,
-      run: `cdp perceive ${model.pages[0].targetPrefix} -C -d 8`,
-      after: `cdp click ${model.pages[0].targetPrefix} @ref  # choose a ref from perceive`,
-      evidence: `cdp perceive ${model.pages[0].targetPrefix} --since-action`,
-      report: `cdp report ${model.pages[0].targetPrefix}`,
+      stage: 'pick-target',
+      run: 'cdp list --format json',
+      after: 'cdp text <target-from-list> --auto',
+      evidence: 'cdp perceive <target-from-list> --cards',
       requiresUserAction: false,
       consentRequired: false,
     });
@@ -4864,10 +4873,10 @@ describe('formatPageList', () => {
       url: 'https://example.com/app',
     });
     expect(model.recommendation).toMatchObject({
-      targetPrefix: model.pages[0].targetPrefix,
-      run: `cdp perceive ${model.pages[0].targetPrefix} -C -d 8`,
+      stage: 'pick-target',
+      run: 'cdp list --format json',
     });
-    expect(model.nextSteps[0]).toBe(`cdp perceive ${model.pages[0].targetPrefix} -C -d 8`);
+    expect(model.nextSteps[0]).toBe('cdp list --format json');
   });
 
   it('builds an empty list JSON model with an open next step', () => {
@@ -4885,7 +4894,7 @@ describe('formatPageList', () => {
       stage: 'open-page',
       targetPrefix: null,
       run: 'cdp open https://example.com',
-      after: 'cdp perceive <target-from-open> -C -d 8',
+      after: 'cdp text <target-from-open> --auto',
       requiresUserAction: false,
       consentRequired: false,
     });
@@ -7572,7 +7581,7 @@ describe('open onboarding guidance', () => {
   });
 
   it('formats a compact next perceive command after open without auto-perceive', () => {
-    expect(formatOpenNextPerceiveCommand('AABBCCDDEEFF')).toBe('Next: cdp perceive AABBCCDD -C -d 8');
+    expect(formatOpenNextPerceiveCommand('AABBCCDDEEFF')).toBe('Next: cdp text AABBCCDD --auto');
   });
 
   it('formats the allow-debugging wait banner only as an explicit helper', () => {
@@ -7649,10 +7658,10 @@ describe('open onboarding guidance', () => {
 
     expect(model.recommendation).toMatchObject({
       source: 'golden-path',
-      stage: 'perceive',
+      stage: 'read-page',
       targetPrefix: 'AABBCCDD',
-      run: 'cdp perceive AABBCCDD -C -d 8',
-      after: 'cdp click AABBCCDD @ref  # choose a ref from perceive',
+      run: 'cdp text AABBCCDD --auto',
+      after: 'cdp perceive AABBCCDD --cards',
     });
   });
 
@@ -7661,7 +7670,7 @@ describe('open onboarding guidance', () => {
 
     expect(out).toContain('Timeout waiting for debugging approval');
     expect(out).toContain('Target: AABBCCDD');
-    expect(out).toContain('Next: cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('Next: cdp text AABBCCDD --auto');
     expect(out).toContain('click Allow');
   });
 
