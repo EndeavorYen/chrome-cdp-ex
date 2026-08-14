@@ -4122,11 +4122,22 @@ function compactExceptionDeltaEntry(entry = {}) {
   };
 }
 
+function isGitHubWebUrl(url) {
+  try {
+    const host = new URL(String(url || '')).hostname.toLowerCase();
+    return host === 'github.com' || host.endsWith('.github.com');
+  } catch {
+    return false;
+  }
+}
+
 function isIgnorableTelemetryFailure(entry = {}) {
   const url = String(entry.url || '');
   const type = String(entry.type || '');
   if (/\/copilot\/agent-sessions(?:\/|$|\?)/i.test(url)) return true;
   if (/github\.com\/_private\//i.test(url) && Number(entry.status) === 404) return true;
+  // GitHub issue/pr chrome (agent_tasks, hovercards, copilot) 404s are not a failed document.
+  if (Number(entry.status) === 404 && type !== 'Document' && isGitHubWebUrl(url)) return true;
   if (Number(entry.status) === 404 && type && type !== 'Document') {
     if (/telemetry|collector|analytics|client-events/i.test(url)) return true;
   }
@@ -4208,10 +4219,14 @@ function normalizeExceptionDelta(delta = {}) {
 }
 
 function normalizeNetworkDelta(delta = {}) {
-  const entries = (delta.entries || []).slice(-MAX_ACTION_DELTA_ENTRIES).map(compactNetworkDeltaEntry);
+  const rawEntries = (delta.entries || []).slice(-MAX_ACTION_DELTA_ENTRIES);
+  const computedFailures = rawEntries.filter(isNetworkFailure).length;
+  const entries = rawEntries.map(compactNetworkDeltaEntry);
   return {
     count: numericDeltaCount(delta.count, entries.length),
-    failures: numericDeltaCount(delta.failures, entries.filter(isNetworkFailure).length),
+    failures: Number.isFinite(Number(delta.failures))
+      ? numericDeltaCount(delta.failures, computedFailures)
+      : computedFailures,
     pending: numericDeltaCount(delta.pending, entries.filter(entry => entry.pending === true).length),
     entries,
   };
@@ -19123,7 +19138,8 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
     lower.includes('no page list cached') ||
     lower.includes('no target matching prefix') ||
     lower.includes('no live target matching prefix') ||
-    lower.includes('no live target matching alias')
+    lower.includes('no live target matching alias') ||
+    lower.includes('no page matched')
   ) {
     return {
       kind: 'target-resolution',

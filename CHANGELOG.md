@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### #183 / #190 residuals after #193
+
+* `target --url … --exact` with zero matches classifies as `target-resolution`
+  and recovers with `cdp list`, not unknown/doctor. Ambiguous matches stay on
+  the existing `pages matched` path.
+* Non-document GitHub 404s (issue `agent_tasks`, hovercards, and the same class
+  of UI chrome) are not blocking `network-failure` when the document itself is
+  not a 404. Compact nav size is unchanged.
+
 ### Open issue dogfood (#181–#191)
 
 * Resolve `use --name` aliases case-insensitively, strip `@`, and match stored
