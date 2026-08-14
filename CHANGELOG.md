@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Open onboarding
+
+* Default `open` no longer dumps a full perceive (11–29 KB). It returns
+  `Opened new tab: PREFIX url` plus `Next: cdp perceive PREFIX -C -d 8`.
+  Pass `--perceive` to opt into the previous AX dump. Attach waiting is
+  fail-fast (5s). The "Allow debugging?" banner is delayed until about 1s
+  or the third failed daemon-socket connect so normal daemon boot does not
+  look like a permission prompt. Use `--attach-timeout-ms 60000` when
+  permission may still be pending; `--attach-timeout-ms 0` still returns the
+  target handoff without waiting. Catalog `feedbackPolicy` is `report-only`
+  to match the compact default (#160).
+
 ### Table collection
 
 * Replace the unbounded `table` claim with bounded observation, completeness,
@@ -10,8 +22,35 @@
   Collection requires an explicit scroll container, stable identity, and MCP
   `confirm: true`; standalone `loadall` does not preserve recycled rows (#151).
 
+### Setup
+
+* `setup.mjs --for hermes --write` copies the skill into
+  `~/.hermes/skills/chrome-cdp-ex` (or `$HERMES_HOME/skills`). Print-only
+  `--for hermes` now prints the resolved destination instead of
+  `<hermes-skills-dir>`. `doctor` treats Hermes, Claude, and Codex skill
+  paths as first-class installs (#154).
+
 ### Agent reliability
 
+* When multiple tabs are open, doctor Proven / next probe is `cdp list` rather than a starred or first-daemon perceive. Skip-links (`href #`, Skip to, keyboard / 鍵盤快速鍵) get late `@refs`; article/feed/listitem/status nodes get early ones (#163).
+* Focused search/combobox typeahead listboxes are omitted from default perceive; use Escape, `-s main`, or `--keep-typeahead`. Scroll reports the largest overflow scrollport, not only `documentElement` (#164).
+* Dead CDP now fails fast with a same-profile relaunch receipt. `list` / `doctor` / `attach` no longer wait on a WebSocket fallback after connection refused or HTTP timeout. Remembered existing Chrome profiles relaunch with `--remote-debugging-port` and `--user-data-dir` (no disposable `rm -rf`). When `CDP_PORT` is set and the profile is unknown, doctor prefers `chrome://inspect` over a blank `spawn-debug-browser` even on Linux/no DISPLAY (#155).
+* Default `fill --format json` to a compact `chrome-cdp-ex.fill.v1` receipt
+  (`value`, `changed`, `navigation`, `typeahead`) instead of the full action
+  envelope. Pass `--full` / `--unsafe-full` for `chrome-cdp-ex.action.v1`.
+  `perceive --since-action` after a no-navigation typeahead fill summarizes as
+  `textbox value set; N suggestion links` (#162).
+* `perceive -x` no longer empties Mintlify-style `<main>` wrappers. Help documents
+  `text --auto` and `-x`; SKILL.md and `recipes.md` add a "Read this page"
+  path using `text --auto`, `eval`, and `call` (#161).
+* Reject unknown `perceive` flags with compact-flag help and a non-zero exit
+  instead of silently dumping the full page (#158).
+* Pending CDP requests now fail on socket close / `Inspector.detached` instead of
+  aging into `Timeout: Page.navigate`. A navigation load waiter is cancelled when
+  `Page.navigate` throws (#144).
+* Doctor no longer blocks a live CDP session just because PATH `node` is v20.
+  It discovers Hermes / fnm / nvm Node 22 binaries, prints the exact rerun
+  command, and `bin/chrome-cdp` re-execs that binary (#157).
 * Preserve ambiguous completion when a side-effect-capable daemon request loses
   its response. CLI remains non-zero and MCP remains `isError: true`, while the
   error now reports `completion: "unknown"`, `sideEffectMayHaveOccurred: true`,

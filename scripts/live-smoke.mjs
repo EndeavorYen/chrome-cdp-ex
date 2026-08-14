@@ -338,20 +338,17 @@ assertIncludes(fillOut, 'Filled', 'fill');
 assertIncludes(fillOut, 'fill: dispatched', 'fill action evidence');
 const fillJsonOut = step('fill action json evidence', () => run(['fill', target, '#cmd', 'look merchant', '--format', 'json']));
 const parsedFillAction = JSON.parse(fillJsonOut);
-if (parsedFillAction.schema !== 'chrome-cdp-ex.action.v1' || parsedFillAction.action !== 'fill') {
-  throw new Error(`fill --format json should return action evidence JSON:\n${fillJsonOut}`);
+if (parsedFillAction.schema !== 'chrome-cdp-ex.fill.v1') {
+  throw new Error(`fill --format json should return compact fill receipt JSON:\n${fillJsonOut}`);
 }
-if (parsedFillAction.dispatch?.ok !== true || parsedFillAction.settle?.ok !== true) {
-  throw new Error(`fill --format json should report dispatched and settled action:\n${fillJsonOut}`);
+if (parsedFillAction.value !== 'look merchant' || parsedFillAction.changed !== true) {
+  throw new Error(`fill --format json should report the typed value and change:\n${fillJsonOut}`);
 }
-if (!parsedFillAction.effects || !('domDiff' in parsedFillAction.effects)) {
-  throw new Error(`fill --format json should include observed effects:\n${fillJsonOut}`);
+if (!Object.hasOwn(parsedFillAction, 'navigation') || parsedFillAction.navigation !== null) {
+  throw new Error(`fill --format json should include a null navigation field:\n${fillJsonOut}`);
 }
-if (parsedFillAction.verdict?.status !== 'continue' || parsedFillAction.verdict?.canContinue !== true) {
-  throw new Error(`fill --format json should include a continue verdict:\n${fillJsonOut}`);
-}
-if (parsedFillAction.recommendation?.source !== 'action-evidence' || !parsedFillAction.nextSteps?.includes(`cdp report ${target} --format json`)) {
-  throw new Error(`fill --format json should include action continuation recommendation:\n${fillJsonOut}`);
+if (!Array.isArray(parsedFillAction.typeahead)) {
+  throw new Error(`fill --format json should include a typeahead array:\n${fillJsonOut}`);
 }
 const uploadOut = step('upload action evidence', () => run(['upload', target, '#upload-file', uploadFixturePath]));
 assertIncludes(uploadOut, 'Uploaded 1 file', 'upload');

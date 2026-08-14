@@ -10,13 +10,13 @@ import { buildTableSamplerExpression } from '../skills/chrome-cdp-ex/scripts/lib
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const {
-  RingBuffer, resolvePrefix, getDisplayPrefixLength, sockPath,
+  RingBuffer, CDP, resolvePrefix, getDisplayPrefixLength, sockPath,
   shouldShowAxNode, formatAxNode, orderedAxChildren, isRef,
   validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
   formatPageList, buildPerceiveTree, perceivePageScript, perceiveStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
   evalStr, evalFireAndForgetStr, parseEvalArgs, callStr, parseControlsArgs, visibleControlsPageScript, controlsStr, formatVisibleControlsText, navStr, reloadStr, reloadActionDispatch, observeReloadPage, clickStr, fillStr, fillReactStr, waitForStr,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, parseTargetAndCommandArgs, normalizeTargetCommandArgs, formatCliError, formatDaemonCommandError,
-  formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage, shouldAnnounceOpenAttachWait,
   statusStr, clearObservationBuffers,
   KEY_MAP, ENRICHED_ROLES, INTERACTIVE_ROLES,
   captureScreenshot, screencastFallback, snapshotStr, formatScreenshotCaptureDiagnostics,
@@ -26,6 +26,7 @@ const {
   checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkBrowserPermission, checkFdLimit,
   doctorWizardSummary, formatDoctorReport, runDoctorChecks, doctorStr, helpStr,
   sampleRootFrameTables, tableObservationStr,
+  filterPerceiveExcludedAxNodes,
 } = T;
 
 // =========================================================================
@@ -103,6 +104,151 @@ describe('RingBuffer', () => {
     expect(buf.all()).toHaveLength(1);
     expect(buf.all()[0]._seq).toBe(2);
     expect(buf.since(1)).toHaveLength(1);
+  });
+});
+
+// =========================================================================
+// CDP pending command rejection (#144)
+// =========================================================================
+
+function installFakeWebSocket() {
+  const sockets = [];
+  class FakeWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 3;
+    constructor(url) {
+      this.url = url;
+      this.readyState = FakeWebSocket.CONNECTING;
+      this.onopen = null;
+      this.onclose = null;
+      this.onerror = null;
+      this.onmessage = null;
+      sockets.push(this);
+      queueMicrotask(() => {
+        if (this.readyState !== FakeWebSocket.CONNECTING) return;
+        this.readyState = FakeWebSocket.OPEN;
+        this.onopen?.({ type: 'open' });
+      });
+    }
+    send(data) {
+      this.lastSent = data;
+    }
+    close(code = 1006, reason = '') {
+      if (this.readyState === FakeWebSocket.CLOSED) return;
+      this.readyState = FakeWebSocket.CLOSED;
+      this.onclose?.({ type: 'close', code, reason: String(reason), wasClean: false });
+    }
+    emit(payload) {
+      this.onmessage?.({ data: JSON.stringify(payload) });
+    }
+  }
+  const previous = globalThis.WebSocket;
+  globalThis.WebSocket = FakeWebSocket;
+  return {
+    sockets,
+    restore() { globalThis.WebSocket = previous; },
+  };
+}
+
+async function connectFakeCdp(fake) {
+  const cdp = new CDP();
+  await cdp.connect('ws://pending-cdp.test/devtools');
+  return { cdp, socket: fake.sockets.at(-1) };
+}
+
+function expectLifecycleError(err, pattern) {
+  expect(err).toBeInstanceOf(Error);
+  expect(err.message).toMatch(pattern);
+  expect(err.message).not.toMatch(/^Timeout:/);
+  expect(err.message).not.toMatch(/click Allow/i);
+  expect(err.message).not.toMatch(/Allow debugging/i);
+}
+
+function settlePromptly(promise, timeoutMs = 200, timeoutMessage = 'pending send did not reject promptly') {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).then(
+      value => ({ status: 'resolved', value }),
+      error => ({ status: 'rejected', error })
+    ).finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    }),
+  ]);
+}
+
+describe('CDP pending command rejection', () => {
+  let fake;
+
+  beforeEach(() => {
+    fake = installFakeWebSocket();
+  });
+
+  afterEach(() => {
+    fake?.restore();
+  });
+
+  it('rejects pending send() promptly on websocket close, not Timeout', async () => {
+    const { cdp, socket } = await connectFakeCdp(fake);
+    const pending = cdp.send('Page.navigate', { url: 'https://example.com' });
+    const started = Date.now();
+    socket.close(1006, 'going away');
+
+    const settled = await settlePromptly(pending);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(settled.status).toBe('rejected');
+    expectLifecycleError(settled.error, /CDP websocket closed while waiting for Page\.navigate/);
+    expect(settled.error.message).toMatch(/1006/);
+    expect(settled.error.message).toMatch(/going away/);
+  });
+
+  it('rejects pending send() on session-scoped Inspector.detached', async () => {
+    const { cdp, socket } = await connectFakeCdp(fake);
+    const pending = cdp.send('Page.navigate', { url: 'https://example.com' }, 'sid-1');
+    const other = cdp.send('Runtime.evaluate', { expression: '1' }, 'sid-2');
+    const started = Date.now();
+    socket.emit({
+      method: 'Inspector.detached',
+      params: { reason: 'target_closed' },
+      sessionId: 'sid-1',
+    });
+
+    const settled = await settlePromptly(pending);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(settled.status).toBe('rejected');
+    expectLifecycleError(settled.error, /detached while waiting for Page\.navigate/);
+    expect(settled.error.message).toMatch(/target_closed/);
+    socket.emit({
+      id: JSON.parse(socket.lastSent).id,
+      result: { result: { value: 1 } },
+    });
+    await expect(other).resolves.toEqual({ result: { value: 1 } });
+  });
+
+  it('rejects every pending send() when Inspector.detached has no sessionId', async () => {
+    const { cdp, socket } = await connectFakeCdp(fake);
+    const first = cdp.send('Page.navigate', { url: 'https://example.com' }, 'sid-1');
+    const second = cdp.send('Runtime.evaluate', { expression: '1' });
+    const started = Date.now();
+    socket.emit({
+      method: 'Inspector.detached',
+      params: { reason: 'replaced' },
+    });
+
+    const [firstSettled, secondSettled] = await Promise.race([
+      Promise.all([settlePromptly(first), settlePromptly(second)]),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('pending sends did not reject promptly')), 200);
+      }),
+    ]);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(firstSettled.status).toBe('rejected');
+    expect(secondSettled.status).toBe('rejected');
+    expectLifecycleError(firstSettled.error, /detached while waiting for Page\.navigate/);
+    expectLifecycleError(secondSettled.error, /detached while waiting for Runtime\.evaluate/);
+    expect(firstSettled.error.message).toMatch(/replaced/);
+    expect(secondSettled.error.message).toMatch(/replaced/);
   });
 });
 
@@ -298,7 +444,7 @@ describe('COMMANDS registry', () => {
       aliases: [],
       needsTarget: false,
       mutates: true,
-      feedbackPolicy: 'full-perceive',
+      feedbackPolicy: 'report-only',
       outputFormats: ['text', 'json'],
     }));
   });
@@ -445,6 +591,16 @@ describe('helpStr', () => {
     expect(out).toContain('list|tabs|ls [--format json]');
     expect(out).toContain('perceive <target>');
     expect(out).toContain('report <target>');
+    expect(out).toContain('--perceive');
+    expect(out).toMatch(/open\s+\[url\].*--perceive/);
+    expect(out).toContain('Default open returns the target prefix and a follow-up perceive command');
+  });
+
+  it('documents text --auto and perceive -x/--exclude', () => {
+    const out = helpStr();
+    expect(out).toMatch(/text <target>.*--auto|--auto:.*main content/s);
+    expect(out).toContain('--auto');
+    expect(out).toMatch(/-x <sel> \/ --exclude/);
   });
 });
 
@@ -827,6 +983,16 @@ describe('parseFormatArgs', () => {
       '--format',
       'json',
       '--compact',
+    ]);
+  });
+
+  it('preserves trailing --full when joining fill text args', () => {
+    expect(normalizeTargetCommandArgs('fill', ['#cmd', 'look', 'merchant', '--format', 'json', '--full'])).toEqual([
+      '#cmd',
+      'look merchant',
+      '--format',
+      'json',
+      '--full',
     ]);
   });
 });
@@ -1552,15 +1718,199 @@ describe('ActionResult', () => {
       },
       dispatch: async () => 'Filled #password',
       feedbackPolicy: 'settle-diff',
-      observe: async () => '+++ Added (1):\n+   [status] token=dom-sentinel-abc saved',
+      observe: async () => '+++ Added (2):\n+   [status] token=dom-sentinel-abc saved\n+   [option] saved password pw-sentinel-123',
       format: 'json',
     });
     const parsed = JSON.parse(out);
 
-    expect(parsed.target.commandArgs).toEqual(['#password', '<redacted>']);
+    expect(parsed.schema).toBe('chrome-cdp-ex.fill.v1');
+    expect(parsed.value).toBe('<redacted>');
+    expect(parsed.typeahead).toEqual([]);
     expect(out).not.toContain('pw-sentinel-123');
     expect(out).not.toContain('dom-sentinel-abc');
     expect(out).toContain('<redacted>');
+  });
+
+  it('defaults fill JSON to a compact fill receipt under 1000 bytes (#162)', async () => {
+    const diagnosisBlob = JSON.stringify({
+      schema: 'chrome-cdp-ex.action-diagnosis.v1',
+      status: 'ok',
+      kind: 'ok',
+      reason: 'synthetic diagnosis that must not appear in compact fill JSON',
+      recovery: {
+        schema: 'chrome-cdp-ex.recovery-policy.v1',
+        strategy: 'continue-from-evidence',
+        commands: Array.from({ length: 8 }, (_, i) => ({
+          command: `cdp report ABC12345FULLTARGET --format json --step ${i}`,
+        })),
+      },
+    });
+    const typeaheadDiff = [
+      '+++ Added (48):',
+      '+   [textbox] Search = "MiniMax-H3-Turbo"  @1',
+      '+   [listbox] Suggestions',
+      '+   [link] larryvrh/MiniMax-H3-Turbo-Lora  @2',
+      '+   [link] lightx2v/Minimax-h3-Turbo  @3',
+      ...Array.from({ length: 40 }, (_, i) => `+   [StaticText] reroot noise ${i} ${diagnosisBlob.slice(0, 40)}`),
+    ].join('\n');
+
+    const out = await T.runActionWithFeedback({
+      action: 'fill',
+      target: {
+        targetId: 'ABC12345FULLTARGET',
+        input: '#search',
+        resolvedBy: 'selector',
+        label: 'Search',
+        commandArgs: ['#search', 'MiniMax-H3-Turbo'],
+      },
+      dispatch: async () => 'Filled #search',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => typeaheadDiff,
+      enrichActionResult: (result) => {
+        T.applyActionObservationDelta(result, {
+          console: {
+            count: 4,
+            errors: 0,
+            warnings: 0,
+            entries: Array.from({ length: 4 }, (_, i) => ({
+              level: 'log',
+              text: `search debug ${i} ${diagnosisBlob.slice(0, 24)}`,
+              loc: `app.js:${i}`,
+            })),
+          },
+          exceptions: { count: 0, entries: [] },
+          network: {
+            count: 1,
+            failures: 0,
+            pending: 0,
+            entries: [{
+              method: 'GET',
+              url: 'https://huggingface.co/api/models?search=MiniMax-H3-Turbo',
+              status: 200,
+              duration: 18,
+            }],
+          },
+        });
+        result.effects.diagnosis = JSON.parse(diagnosisBlob);
+      },
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(Buffer.byteLength(out)).toBeLessThan(1000);
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.fill.v1',
+      value: 'MiniMax-H3-Turbo',
+      changed: true,
+      navigation: null,
+      typeahead: [
+        'larryvrh/MiniMax-H3-Turbo-Lora',
+        'lightx2v/Minimax-h3-Turbo',
+      ],
+      targetPrefix: 'ABC12345',
+    });
+    expect(parsed).not.toHaveProperty('diagnosis');
+    expect(parsed).not.toHaveProperty('receipt');
+    expect(parsed).not.toHaveProperty('verdict');
+    expect(parsed).not.toHaveProperty('recommendation');
+    expect(out).not.toContain('recovery-policy');
+    expect(out).not.toContain('reroot noise');
+  });
+
+  it('extracts typeahead labels from fill network GET search and option nodes (#162)', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'fill',
+      target: {
+        targetId: 'ABC12345',
+        input: '#q',
+        resolvedBy: 'selector',
+        label: 'q',
+        commandArgs: ['#q', 'MiniMax'],
+      },
+      dispatch: async () => 'Filled #q',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => [
+        '+++ Added (3):',
+        '+   [listbox] Results',
+        '+   [option] org/model-one',
+        '+   [listitem] org/model-two',
+      ].join('\n'),
+      enrichActionResult: (result) => {
+        T.applyActionObservationDelta(result, {
+          console: { count: 0, errors: 0, warnings: 0, entries: [] },
+          exceptions: { count: 0, entries: [] },
+          network: {
+            count: 2,
+            failures: 0,
+            pending: 0,
+            entries: [
+              { method: 'GET', url: 'https://huggingface.co/api/models?search=MiniMax', status: 200, duration: 12 },
+              { method: 'GET', url: 'https://huggingface.co/org/model-three', status: 200, duration: 9 },
+            ],
+          },
+        });
+      },
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.fill.v1');
+    expect(parsed.typeahead).toEqual([
+      'org/model-one',
+      'org/model-two',
+      'org/model-three',
+    ]);
+  });
+
+  it('keeps the full action envelope for fill JSON --full (#162)', async () => {
+    const out = await T.runActionWithFeedback({
+      action: 'fill',
+      target: {
+        targetId: 'ABC12345',
+        input: '#search',
+        resolvedBy: 'selector',
+        label: 'Search',
+        commandArgs: ['#search', 'MiniMax-H3-Turbo'],
+      },
+      dispatch: async () => 'Filled #search',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => '+++ Added (1):\n+   [link] org/model  @2',
+      format: { format: 'json', full: true },
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.action.v1');
+    expect(parsed.action).toBe('fill');
+    expect(parsed.dispatch?.ok).toBe(true);
+    expect(parsed.receipt?.schema).toBe('chrome-cdp-ex.action-receipt.v1');
+    expect(parsed.verdict).toBeTruthy();
+    expect(parsed.nextSteps?.length).toBeGreaterThan(0);
+  });
+
+  it('keeps the action envelope when fill JSON observation times out (#162)', async () => {
+    const err = new Error('Timeout: post-action perceive');
+    err.name = 'TimeoutError';
+    const out = await T.runActionWithFeedback({
+      action: 'fill',
+      target: {
+        targetId: 'ABC12345',
+        input: '#search',
+        resolvedBy: 'selector',
+        label: 'Search',
+        commandArgs: ['#search', 'query'],
+      },
+      dispatch: async () => 'Filled #search',
+      feedbackPolicy: 'settle-diff',
+      observe: async () => { throw err; },
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+
+    expect(parsed.schema).toBe('chrome-cdp-ex.action.v1');
+    expect(parsed.outcome.status).toBe('timeout');
+    expect(parsed.settle.ok).toBe(false);
+    expect(parsed.dispatch.ok).toBe(true);
+    expect(out).toMatch(/perceive --since-action/);
   });
 
   it('compacts long DOM diff evidence in JSON action handoffs', async () => {
@@ -3697,6 +4047,81 @@ describe('Perceive diff baseline', () => {
     expect(model.nextSteps).toEqual(['cdp report ABC12345 --format json']);
   });
 
+  it('summarizes typeahead reroots in since-action diffs instead of listing every node (#162)', () => {
+    const previous = [
+      'Page: Models — https://huggingface.co/models',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: [textbox] Search  @1',
+      'Interactive: 1 textbox',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Models',
+      '  [textbox] Search = ""  @1',
+      '  [heading] Trending',
+      ...Array.from({ length: 80 }, (_, i) => `  [link] old-model-${i}  @${i + 2}`),
+    ].join('\n');
+    const current = [
+      'Page: Models — https://huggingface.co/models',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: [textbox] Search  @1',
+      'Interactive: 1 textbox, 1 listbox',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[WebArea] Models',
+      '  [textbox] Search = "MiniMax-H3-Turbo"  @1',
+      '  [listbox] Suggestions',
+      '    [link] larryvrh/MiniMax-H3-Turbo-Lora  @2',
+      '    [link] lightx2v/Minimax-h3-Turbo  @3',
+      ...Array.from({ length: 120 }, (_, i) => `    [link] filler-suggestion-${i}  @${i + 4}`),
+    ].join('\n');
+
+    const model = T.buildPerceiveDiffModel(previous, current, {
+      mode: 'since-action',
+      targetPrefix: 'ABC12345',
+    });
+    const text = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+
+    expect(model.summary.headline).toBe('textbox value set; 122 suggestion links');
+    expect(model.summary.kind).toBe('typeahead');
+    expect(model.added[0]).toBe('larryvrh/MiniMax-H3-Turbo-Lora');
+    expect(model.added[1]).toBe('lightx2v/Minimax-h3-Turbo');
+    expect(model.added.length).toBeLessThanOrEqual(10);
+    expect(JSON.stringify(model)).not.toContain('filler-suggestion-40');
+    expect(text).toContain('textbox value set; 122 suggestion links');
+    expect(text).toContain('larryvrh/MiniMax-H3-Turbo-Lora');
+    expect(text).not.toContain('filler-suggestion-40');
+  });
+
+  it('does not summarize a huge same-URL click diff as typeahead (#162)', () => {
+    const previous = [
+      'Page: Models — https://huggingface.co/models',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 40 link',
+      'Console: clean',
+      'Coords: top-level viewport CSS px',
+      '',
+      '[WebArea] Models',
+      ...Array.from({ length: 40 }, (_, i) => `  [link] old-model-${i}  @${i + 1}`),
+    ].join('\n');
+    const current = [
+      'Page: Models — https://huggingface.co/models',
+      'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 40 link',
+      'Console: clean',
+      'Coords: top-level viewport CSS px',
+      '',
+      '[WebArea] Models',
+      ...Array.from({ length: 40 }, (_, i) => `  [link] new-model-${i}  @${i + 1}`),
+    ].join('\n');
+
+    const model = T.buildPerceiveDiffModel(previous, current, {
+      mode: 'since-action',
+      targetPrefix: 'ABC12345',
+    });
+    expect(model.summary?.kind).not.toBe('typeahead');
+    expect(JSON.stringify(model)).toContain('new-model-0');
+  });
+
   it('keeps high-signal StaticText additions in action diffs', () => {
     const previous = [
       'Page: Checkout — https://example.com',
@@ -4088,6 +4513,34 @@ describe('parsePerceiveArgs', () => {
     const opts = parsePerceiveArgs(['-s', '#main', '-x', '.sidebar']);
     expect(opts.selector).toBe('#main');
     expect(opts.exclude).toBe('.sidebar');
+  });
+
+  it('rejects unknown flags instead of ignoring them', () => {
+    expect(() => parsePerceiveArgs(['--not-a-real-flag'])).toThrow(/unknown option --not-a-real-flag/);
+    expect(() => parsePerceiveArgs(['--cards'])).toThrow(/unknown option --cards/);
+    expect(() => parsePerceiveArgs(['--diff', '--cards', '-i'])).toThrow(/unknown option --cards/);
+  });
+
+  it('skips leftover target-looking tokens that do not start with -', () => {
+    expect(parsePerceiveArgs(['F8741D08', '--adaptive']).adaptive).toBe(true);
+    expect(parsePerceiveArgs(['F8741D08'])).toMatchObject({
+      diff: false,
+      adaptive: false,
+      last: null,
+    });
+  });
+
+  it('rejects missing values for flags that require arguments', () => {
+    expect(() => parsePerceiveArgs(['--selector'])).toThrow(/--selector requires/);
+    expect(() => parsePerceiveArgs(['-s'])).toThrow(/-s requires/);
+    expect(() => parsePerceiveArgs(['-s', '--diff'])).toThrow(/-s requires/);
+    expect(() => parsePerceiveArgs(['--exclude'])).toThrow(/--exclude requires/);
+    expect(() => parsePerceiveArgs(['-x'])).toThrow(/-x requires/);
+    expect(() => parsePerceiveArgs(['--depth'])).toThrow(/--depth requires/);
+    expect(() => parsePerceiveArgs(['-d'])).toThrow(/-d requires/);
+    expect(() => parsePerceiveArgs(['--last'])).toThrow(/--last requires/);
+    expect(() => parsePerceiveArgs(['--frame'])).toThrow(/--frame requires/);
+    expect(() => parsePerceiveArgs(['-F'])).toThrow(/-F requires/);
   });
 });
 
@@ -6676,8 +7129,9 @@ describe('formatCliError', () => {
     expect(out).toContain('Error: Cannot reach CDP on 127.0.0.1:9222');
     expect(out).toContain('Recovery:');
     expect(out).toContain('Kind: browser-cdp');
-    expect(out).toContain('Strategy: run-doctor');
+    expect(out).toContain('Strategy: enable-existing-debugging');
     expect(out).toContain('Run: cdp doctor');
+    expect(out).toMatch(/do not invent a new --user-data-dir/i);
     expect(out).toContain('Next: cdp doctor');
   });
 
@@ -6898,6 +7352,31 @@ describe('formatDaemonCommandError', () => {
 });
 
 describe('open onboarding guidance', () => {
+  it('defaults open attach timeout to fail-fast and skips auto-perceive', () => {
+    expect(T.DEFAULT_OPEN_ATTACH_TIMEOUT_MS).toBe(5000);
+    expect(T.parseOpenArgs(['https://example.com'])).toEqual({
+      url: 'https://example.com',
+      format: 'text',
+      attachTimeoutMs: 5000,
+      readyTimeoutMs: 5000,
+      readySelector: null,
+      reuseUrl: false,
+      perceive: false,
+    });
+  });
+
+  it('parses --perceive as opt-in auto-perceive without changing fail-fast attach', () => {
+    expect(T.parseOpenArgs(['https://example.com', '--perceive'])).toEqual({
+      url: 'https://example.com',
+      format: 'text',
+      attachTimeoutMs: 5000,
+      readyTimeoutMs: 5000,
+      readySelector: null,
+      reuseUrl: false,
+      perceive: true,
+    });
+  });
+
   it('parses bounded attach waiting for JSON/open automation', () => {
     expect(T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', '0', '--format', 'json'])).toEqual({
       url: 'https://example.com',
@@ -6906,6 +7385,7 @@ describe('open onboarding guidance', () => {
       readyTimeoutMs: 0,
       readySelector: null,
       reuseUrl: false,
+      perceive: false,
     });
     expect(T.parseOpenArgs(['--attach-timeout-ms=1200', '--ready-timeout-ms', '2500', '--ready-selector', '#app'])).toEqual({
       url: 'about:blank',
@@ -6914,6 +7394,7 @@ describe('open onboarding guidance', () => {
       readyTimeoutMs: 2500,
       readySelector: '#app',
       reuseUrl: false,
+      perceive: false,
     });
     expect(() => T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', 'nope'])).toThrow('open: --attach-timeout-ms must be a non-negative integer');
     expect(() => T.parseOpenArgs(['https://example.com', '--ready-timeout-ms', 'nope'])).toThrow('open: --ready-timeout-ms must be a non-negative integer');
@@ -6976,6 +7457,24 @@ describe('open onboarding guidance', () => {
     expect(calls[2][1].expression).toContain('document.querySelector("#app")');
     expect(calls[2][2]).toBe('session-1');
     expect(closed).toBe(true);
+  });
+
+  it('formats a compact next perceive command after open without auto-perceive', () => {
+    expect(formatOpenNextPerceiveCommand('AABBCCDDEEFF')).toBe('Next: cdp perceive AABBCCDD -C -d 8');
+  });
+
+  it('formats the allow-debugging wait banner only as an explicit helper', () => {
+    expect(formatOpenAttachWaitMessage(5000)).toBe(
+      'Waiting for "Allow debugging?" approval in Chrome... (up to 5s)'
+    );
+    expect(formatOpenAttachWaitMessage(60000)).toContain('1m');
+  });
+
+  it('does not announce the allow-debugging banner on the first daemon-boot miss', () => {
+    expect(shouldAnnounceOpenAttachWait({ failedConnects: 1, elapsedMs: 300 })).toBe(false);
+    expect(shouldAnnounceOpenAttachWait({ failedConnects: 2, elapsedMs: 900 })).toBe(false);
+    expect(shouldAnnounceOpenAttachWait({ failedConnects: 3, elapsedMs: 1500 })).toBe(true);
+    expect(shouldAnnounceOpenAttachWait({ failedConnects: 2, elapsedMs: 1000 })).toBe(true);
   });
 
   it('formats a ready continuation after open auto-perceives the page', () => {
@@ -7197,6 +7696,30 @@ describe('navStr', () => {
     });
     await expect(navStr(cdp, 'sid1', 'https://bad.invalid'))
       .rejects.toThrow('net::ERR_NAME_NOT_RESOLVED');
+  });
+
+  it('cancels the load waiter when Page.navigate throws', async () => {
+    let cancelled = false;
+    const cdp = {
+      send(method) {
+        if (method === 'Page.navigate') {
+          return Promise.reject(new Error('CDP websocket closed while waiting for Page.navigate'));
+        }
+        return Promise.resolve({});
+      },
+      waitForEvent() {
+        return {
+          promise: new Promise(() => {}),
+          cancel() { cancelled = true; },
+        };
+      },
+    };
+
+    const started = Date.now();
+    await expect(navStr(cdp, 'sid1', 'https://example.com'))
+      .rejects.toThrow(/websocket closed while waiting for Page\.navigate/);
+    expect(cancelled).toBe(true);
+    expect(Date.now() - started).toBeLessThan(200);
   });
 
   it('should reject non-http URLs', async () => {
@@ -7668,38 +8191,19 @@ describe('fill --react', () => {
 // =========================================================================
 
 describe('exclude subtree filtering', () => {
-  // Simulate the exclude logic from perceiveStr without CDP
-  function filterExcluded(axNodes, excludedBackendNodeIds) {
-    const excludedAxIds = new Set();
-    for (const n of axNodes) {
-      if (n.backendDOMNodeId && excludedBackendNodeIds.has(n.backendDOMNodeId))
-        excludedAxIds.add(n.nodeId);
-    }
-    if (excludedAxIds.size === 0) return axNodes;
-    const childMap = new Map();
-    for (const n of axNodes) {
-      if (n.parentId) {
-        if (!childMap.has(n.parentId)) childMap.set(n.parentId, []);
-        childMap.get(n.parentId).push(n.nodeId);
-      }
-    }
-    const queue = [...excludedAxIds];
-    while (queue.length) {
-      const id = queue.pop();
-      for (const child of (childMap.get(id) || [])) {
-        excludedAxIds.add(child);
-        queue.push(child);
-      }
-    }
-    return axNodes.filter(n => !excludedAxIds.has(n.nodeId));
-  }
-
   const axNode = (id, role, name, opts = {}) => ({
     nodeId: id,
     role: { value: role },
     name: { value: name },
     ...(opts.parentId ? { parentId: opts.parentId } : {}),
     ...(opts.backendDOMNodeId ? { backendDOMNodeId: opts.backendDOMNodeId } : {}),
+  });
+
+  const domNode = (nodeName, backendNodeId, children = [], attributes = []) => ({
+    nodeName,
+    backendNodeId,
+    children,
+    attributes,
   });
 
   it('should remove excluded node and all descendants', () => {
@@ -7712,7 +8216,7 @@ describe('exclude subtree filtering', () => {
       axNode('h1', 'heading', 'Title', { parentId: 'main' }),
     ];
     const excluded = new Set([100]); // exclude nav (backendDOMNodeId=100)
-    const filtered = filterExcluded(nodes, excluded);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, excluded);
 
     expect(filtered.map(n => n.nodeId)).toEqual(['root', 'main', 'h1']);
     expect(filtered.find(n => n.nodeId === 'nav')).toBeUndefined();
@@ -7728,7 +8232,7 @@ describe('exclude subtree filtering', () => {
       axNode('main', 'main', 'Content', { parentId: 'root', backendDOMNodeId: 300 }),
     ];
     const excluded = new Set([100, 200]); // exclude nav and sidebar
-    const filtered = filterExcluded(nodes, excluded);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, excluded);
 
     expect(filtered.map(n => n.nodeId)).toEqual(['root', 'main']);
   });
@@ -7739,7 +8243,7 @@ describe('exclude subtree filtering', () => {
       axNode('main', 'main', 'Content', { parentId: 'root', backendDOMNodeId: 300 }),
     ];
     const excluded = new Set([999]); // non-existent
-    const filtered = filterExcluded(nodes, excluded);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, excluded);
 
     expect(filtered).toHaveLength(2);
   });
@@ -7754,9 +8258,65 @@ describe('exclude subtree filtering', () => {
       axNode('sublink', 'link', 'Sub', { parentId: 'item1' }),
     ];
     const excluded = new Set([100]); // exclude nav → should cascade to list, items, sublink
-    const filtered = filterExcluded(nodes, excluded);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, excluded);
 
     expect(filtered.map(n => n.nodeId)).toEqual(['root']);
+  });
+
+  it('does not drop main when a header wrapper also matches exclude', () => {
+    const main = domNode('MAIN', 3, [domNode('H1', 4)]);
+    const nav = domNode('NAV', 2, [domNode('A', 21)]);
+    const header = domNode('HEADER', 1, [nav, main]);
+    const nodes = [
+      axNode('root', 'WebArea', 'Page'),
+      axNode('header', 'banner', 'Chrome', { parentId: 'root', backendDOMNodeId: 1 }),
+      axNode('nav', 'navigation', 'Nav', { parentId: 'header', backendDOMNodeId: 2 }),
+      axNode('home', 'link', 'Home', { parentId: 'nav', backendDOMNodeId: 21 }),
+      axNode('main', 'main', 'Article', { parentId: 'header', backendDOMNodeId: 3 }),
+      axNode('h1', 'heading', 'Title', { parentId: 'main', backendDOMNodeId: 4 }),
+    ];
+    const described = new Map([[1, header], [2, nav], [3, main]]);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, new Set([1, 2]), described);
+
+    expect(filtered.map(n => n.nodeId)).toEqual(['root', 'header', 'main', 'h1']);
+    expect(filtered.find(n => n.nodeId === 'nav')).toBeUndefined();
+    expect(filtered.find(n => n.nodeId === 'home')).toBeUndefined();
+  });
+
+  it('still removes a real nav sibling that does not wrap main', () => {
+    const nav = domNode('NAV', 100, [domNode('A', 101)]);
+    const main = domNode('MAIN', 200, [domNode('H1', 201)]);
+    const nodes = [
+      axNode('root', 'WebArea', 'Page'),
+      axNode('nav', 'navigation', 'Nav', { parentId: 'root', backendDOMNodeId: 100 }),
+      axNode('link', 'link', 'Home', { parentId: 'nav', backendDOMNodeId: 101 }),
+      axNode('main', 'main', 'Content', { parentId: 'root', backendDOMNodeId: 200 }),
+      axNode('h1', 'heading', 'Title', { parentId: 'main', backendDOMNodeId: 201 }),
+    ];
+    const described = new Map([[100, nav], [200, main]]);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, new Set([100]), described);
+
+    expect(filtered.map(n => n.nodeId)).toEqual(['root', 'main', 'h1']);
+  });
+
+  it('keeps a generic wrapper whose DOM contains .mdx-content or article', () => {
+    const article = domNode('ARTICLE', 12, [domNode('P', 13)]);
+    const wrapper = domNode('DIV', 10, [
+      article,
+    ], ['class', 'layout-shell']);
+    const mdx = domNode('DIV', 22, [domNode('P', 23)], ['class', 'mdx-content prose']);
+    const mdxWrapper = domNode('DIV', 20, [mdx], ['class', 'docs-frame']);
+    const nodes = [
+      axNode('root', 'WebArea', 'Page'),
+      axNode('shell', 'generic', 'Shell', { parentId: 'root', backendDOMNodeId: 10 }),
+      axNode('article', 'article', 'Docs', { parentId: 'shell', backendDOMNodeId: 12 }),
+      axNode('frame', 'generic', 'Frame', { parentId: 'root', backendDOMNodeId: 20 }),
+      axNode('body', 'generic', 'MDX', { parentId: 'frame', backendDOMNodeId: 22 }),
+    ];
+    const described = new Map([[10, wrapper], [20, mdxWrapper]]);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, new Set([10, 20]), described);
+
+    expect(filtered.map(n => n.nodeId)).toEqual(['root', 'shell', 'article', 'frame', 'body']);
   });
 });
 
@@ -10102,19 +10662,26 @@ describe('settleFlow', () => {
 // =========================================================================
 
 describe('checkNode', () => {
+  const noDiscovery = {
+    home: '/no-such-home',
+    env: {},
+    execPath: '/usr/bin/node',
+    fs: { existsSync: () => false, readdirSync: () => [], readFileSync: () => '' },
+    spawnSync: () => ({ status: 1, stdout: '' }),
+  };
   it('returns OK for v22+', () => {
     expect(checkNode('v22.10.0').status).toBe('OK');
     expect(checkNode('v24.0.0').status).toBe('OK');
     expect(checkNode('v22.0.0').status).toBe('OK');
   });
   it('returns FAIL for older Node', () => {
-    const r = checkNode('v18.16.0');
+    const r = checkNode('v18.16.0', noDiscovery);
     expect(r.status).toBe('FAIL');
     expect(r.detail).toContain('need >= 22');
     expect(r.hint).toMatch(/WebSocket/);
   });
   it('handles malformed version strings gracefully', () => {
-    const r = checkNode('???');
+    const r = checkNode('???', noDiscovery);
     expect(r.status).toBe('FAIL');
   });
 });
@@ -10232,10 +10799,12 @@ describe('checkCdpReachability', () => {
 
   it('returns FAIL when fetch throws (e.g. ECONNREFUSED)', async () => {
     const fetcher = async () => { throw new Error('ECONNREFUSED'); };
-    const r = await checkCdpReachability({ env: { CDP_PORT: '9999' }, fetcher });
+    const r = await checkCdpReachability({ env: { CDP_PORT: '9999' }, fetcher, lastEndpoint: null });
     expect(r.status).toBe('FAIL');
     expect(r.detail).toContain('cannot reach');
-    expect(r.hint).toContain('--remote-debugging-port=9999');
+    expect(r.error).toBe('cdp_unreachable');
+    expect(r.hint).toMatch(/do not invent a new --user-data-dir/i);
+    expect(r.relaunch).toBeNull();
   });
 
   it('returns WARN when /json/version is reachable but missing webSocketDebuggerUrl', async () => {
@@ -10249,7 +10818,7 @@ describe('checkCdpReachability', () => {
     // Use a fake home so no DevToolsActivePort exists.
     const fetcher = async () => { throw new Error('should not be called'); };
     const r = await checkCdpReachability({
-      env: {}, fetcher,
+      env: {}, fetcher, lastEndpoint: null,
     });
     // Either succeeds against the live machine or fails — both are acceptable
     // shapes here. Critically, it must produce a structured result with hint
@@ -10469,7 +11038,7 @@ describe('formatDoctorReport', () => {
     expect(out).toContain('1 warning');
   });
 
-  it('uses live daemon prefixes in the ready golden path when available', () => {
+  it('uses the actual tab prefix in the ready golden path, not a mismatched daemon id', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22' },
       { status: 'OK', label: 'Daemons', detail: '1 live: AABBCCDD', targetPrefixes: ['AABBCCDD'] },
@@ -10478,7 +11047,9 @@ describe('formatDoctorReport', () => {
       { status: 'OK', label: 'CDP', detail: 'reachable' },
     ]);
 
-    expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('cdp perceive ZZYYXXWW -C -d 8');
+    expect(out).toMatch(/list is the source of truth for which tab/i);
+    expect(out).not.toContain('cdp perceive AABBCCDD -C -d 8');
   });
 
   it('guides users to open a page when CDP is ready but no targets exist', () => {
@@ -10643,18 +11214,21 @@ describe('doctorStr', () => {
       platform: 'darwin',
       env: { CDP_PORT: '9999' },
       fetcher,
+      lastEndpoint: null,
     });
 
     const model = JSON.parse(out);
     expect(model.recommendation).toMatchObject({
       source: 'doctor-onboarding',
       stage: 'browser-cdp',
-      run: 'cdp spawn-debug-browser edge --port 9222 --url https://example.com',
+      run: null,
       after: 'cdp list',
       requiresUserAction: true,
       consentRequired: true,
+      strategy: 'enable-existing-debugging',
     });
     expect(model.recommendation.ask).toContain('chrome://inspect/#remote-debugging');
+    expect(model.recommendation.ask).toMatch(/do not invent a new --user-data-dir/i);
     expect(model.recommendation.reason).toContain('cannot reach');
     expect(model.recommendation.warnings).toEqual([
       {
@@ -10690,6 +11264,7 @@ describe('doctorStr', () => {
       platform: 'darwin',
       env: { CDP_PORT: '9999' },
       fetcher,
+      lastEndpoint: null,
     });
 
     expect(out).toContain('Long session note: ulimit -n 4096');
