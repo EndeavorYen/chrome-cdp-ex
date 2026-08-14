@@ -1806,3 +1806,163 @@ describe('v2.11.0 review regressions', () => {
     }
   });
 });
+
+describe('issue #163 doctor next-probe and skip-link @refs', () => {
+  function axNode(id, role, name, opts = {}) {
+    return {
+      nodeId: id,
+      role: { value: role },
+      name: { value: name },
+      ...(opts.parentId ? { parentId: opts.parentId } : {}),
+      ...(opts.childIds ? { childIds: opts.childIds } : {}),
+      ...(opts.backendDOMNodeId ? { backendDOMNodeId: opts.backendDOMNodeId } : {}),
+      ...(opts.url ? { properties: [{ name: 'url', value: { type: 'string', value: opts.url } }] } : {}),
+    };
+  }
+
+  function licensePage(targetId = '6669325BAAAAAAA1') {
+    return {
+      targetId,
+      title: 'LICENSE',
+      url: 'https://huggingface.co/MiniMaxAI/MiniMax-Music3/blob/main/LICENSE',
+    };
+  }
+
+  function xProfilePage(targetId = 'F8741D08AAAAAAA2') {
+    return {
+      targetId,
+      title: 'SY239434 / X',
+      url: 'https://x.com/SY239434',
+    };
+  }
+
+  function multiTabDoctorChecks({
+    daemonPrefix = '6669325B',
+    pages = [
+      licensePage(),
+      xProfilePage(),
+      { targetId: '11111111AAAAAAA3', title: 'MiniMax-Music3', url: 'https://huggingface.co/MiniMaxAI/MiniMax-Music3' },
+      { targetId: '22222222AAAAAAA4', title: 'Comfy tutorial', url: 'https://example.com/comfy' },
+      { targetId: '33333333AAAAAAA5', title: 'Docs', url: 'https://example.com/docs' },
+    ],
+  } = {}) {
+    const prefixes = pages.map(page => page.targetId.slice(0, 8));
+    return [
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Daemons', detail: `1 live: ${daemonPrefix}`, targetPrefixes: [daemonPrefix] },
+      {
+        status: 'OK',
+        label: 'Tabs',
+        detail: `${pages.length} debuggable page targets`,
+        targetPrefixes: prefixes,
+        pages,
+      },
+      {
+        status: 'OK',
+        label: 'Permission',
+        detail: `debugging approved for ${daemonPrefix}`,
+        targetPrefixes: [daemonPrefix],
+      },
+    ];
+  }
+
+  it('does not use daemon[0] / LICENSE blob as next-probe when multiple tabs exist', () => {
+    const checks = multiTabDoctorChecks();
+    const model = T.buildDoctorModel(checks);
+    const text = T.formatDoctorReport(checks);
+    const permission = T.checkBrowserPermission({
+      daemons: { targetPrefixes: ['6669325B'] },
+      tabs: checks.find(check => check.label === 'Tabs'),
+      cdp: { status: 'OK' },
+    });
+
+    expect(model.provenCommand).toBe('cdp list');
+    expect(model.provenCommand).not.toContain('6669325B');
+    expect(model.recommendation.run).toBe('cdp list');
+    expect(model.wizard.currentStep).toMatch(/\bcdp list\b/);
+    expect(model.wizard.currentStep).not.toContain('6669325B');
+    expect(permission.provenCommand).toBe('cdp list');
+    expect(text).toContain('Proven / next probe: cdp list');
+    expect(text).toMatch(/5 tabs — pick with cdp list \/ cdp target --url/);
+    expect(text).toMatch(/list is the source of truth for which tab/i);
+    expect(text).not.toMatch(/Proven \/ next probe: cdp perceive 6669325B/);
+
+    const perceiveStep = model.nextSteps.find(step => /\bperceive\b/.test(step));
+    expect(perceiveStep).toBeTruthy();
+    expect(perceiveStep).not.toContain('6669325B');
+    expect(model.recommendedTargetPrefix).not.toBe('6669325B');
+    expect(T.rankPageTargets(checks.find(check => check.label === 'Tabs').pages)[0].url)
+      .not.toMatch(/\/LICENSE(?:$|\.)/i);
+  });
+
+  it('ranks an https profile above a LICENSE blob and still perceives a lone LICENSE tab', () => {
+    const license = licensePage();
+    const profile = xProfilePage();
+    expect(T.pageTargetScore(profile)).toBeGreaterThan(T.pageTargetScore(license));
+    expect(T.rankPageTargets([license, profile])[0].url).toContain('x.com');
+
+    const single = T.buildDoctorModel([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      { status: 'OK', label: 'CDP', detail: 'reachable' },
+      { status: 'OK', label: 'Tabs', detail: '1', targetPrefixes: ['6669325B'], pages: [license] },
+      { status: 'OK', label: 'Permission', detail: 'approved', targetPrefixes: ['6669325B'] },
+    ]);
+    expect(single.provenCommand).toBe('cdp perceive 6669325B -C -d 8');
+  });
+
+  it('ranks checkBrowserTargets prefixes by page score, not JSON/daemon order', async () => {
+    const fetcher = async () => ({
+      ok: true,
+      json: async () => ([
+        {
+          type: 'page',
+          id: '6669325BAAAAAAA1',
+          title: 'LICENSE',
+          url: 'https://huggingface.co/MiniMaxAI/MiniMax-Music3/blob/main/LICENSE',
+        },
+        {
+          type: 'page',
+          id: 'F8741D08AAAAAAA2',
+          title: 'SY239434 / X',
+          url: 'https://x.com/SY239434',
+        },
+      ]),
+    });
+    const tabs = await T.checkBrowserTargets({
+      cdp: { status: 'OK', host: '127.0.0.1', port: '9224' },
+      fetcher,
+    });
+    expect(tabs.targetPrefixes[0]).toBe('F8741D08');
+    expect(tabs.pages[0].url).toContain('x.com');
+  });
+
+  it('gives the article tweet an early @ref and keeps skip-links out of @1/@2/@3', () => {
+    const nodes = [
+      axNode('root', 'WebArea', 'X'),
+      axNode('skip', 'link', 'Skip to timeline', { parentId: 'root', backendDOMNodeId: 11, url: '#timeline' }),
+      axNode('kbd', 'link', '鍵盤快速鍵', { parentId: 'root', backendDOMNodeId: 12, url: '#' }),
+      axNode('nav', 'navigation', 'Primary', { parentId: 'root' }),
+      axNode('home', 'link', 'Home', { parentId: 'nav', backendDOMNodeId: 21 }),
+      axNode('explore', 'link', 'Explore', { parentId: 'nav', backendDOMNodeId: 22 }),
+      axNode('notes', 'link', 'Notifications', { parentId: 'nav', backendDOMNodeId: 23 }),
+      axNode('tweet', 'article', 'Latest tweet from SY239434', { parentId: 'root', backendDOMNodeId: 99 }),
+    ];
+    nodes[0].childIds = ['skip', 'kbd', 'nav', 'tweet'];
+    nodes[3].childIds = ['home', 'explore', 'notes'];
+
+    const refMap = new Map();
+    const { treeLines } = T.buildPerceiveTree(nodes, { layoutMap: {}, styleHints: {} }, refMap);
+    const output = treeLines.join('\n');
+    const articleLine = treeLines.find(line => /Latest tweet from SY239434/.test(line));
+    const skipLine = treeLines.find(line => /Skip to timeline/i.test(line));
+    const kbdLine = treeLines.find(line => /鍵盤快速鍵/.test(line));
+
+    expect(articleLine).toMatch(/@\d+\b/);
+    expect(articleLine).toMatch(/@[123]\b/);
+    expect(refMap.get(Number(articleLine.match(/@(\d+)/)[1]))).toBe(99);
+    expect(skipLine).not.toMatch(/@[123]\b/);
+    expect(kbdLine).not.toMatch(/@[123]\b/);
+    expect(output).toMatch(/\[article\].*@\d+/);
+  });
+});

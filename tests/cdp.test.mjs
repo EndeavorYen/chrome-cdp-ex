@@ -10467,7 +10467,7 @@ describe('formatDoctorReport', () => {
     expect(out).toContain('1 warning');
   });
 
-  it('uses live daemon prefixes in the ready golden path when available', () => {
+  it('uses the actual tab prefix in the ready golden path, not a mismatched daemon id', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22' },
       { status: 'OK', label: 'Daemons', detail: '1 live: AABBCCDD', targetPrefixes: ['AABBCCDD'] },
@@ -10476,7 +10476,9 @@ describe('formatDoctorReport', () => {
       { status: 'OK', label: 'CDP', detail: 'reachable' },
     ]);
 
-    expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('cdp perceive ZZYYXXWW -C -d 8');
+    expect(out).toMatch(/list is the source of truth for which tab/i);
+    expect(out).not.toContain('cdp perceive AABBCCDD -C -d 8');
   });
 
   it('guides users to open a page when CDP is ready but no targets exist', () => {
