@@ -7838,7 +7838,7 @@ function validateUrl(url) {
 // Perceive: enriched accessibility tree with inline visual layout annotations
 // Options parsed from args: --diff, --selector <sel>, --interactive/-i, --depth <N>, --cursor-interactive/-C
 const TYPEAHEAD_OMITTED_NOTICE = 'Focused search/typeahead — suggestions omitted. Next: press Escape or perceive -s main';
-const TYPEAHEAD_FOCUS_ROLES = new Set(['searchbox', 'combobox', 'textbox', 'textarea']);
+const TYPEAHEAD_FOCUS_ROLES = new Set(['searchbox', 'combobox']);
 const TYPEAHEAD_POPUP_ROLES = new Set(['listbox', 'option']);
 
 function pickPrimaryScrollMetrics(candidates, opts) {
@@ -7881,7 +7881,15 @@ function axNodeProp(node, name) {
 
 function isDomSearchFocus(focusedDesc) {
   if (!focusedDesc || focusedDesc === 'none') return false;
-  return /^<(input|textarea|select)\b/i.test(String(focusedDesc));
+  const s = String(focusedDesc);
+  if (!/^<(input|textarea)\b/i.test(s)) return false;
+  const id = (s.match(/#([^>.\s]+)/) || [])[1] || '';
+  const cls = (s.match(/\.([^>\s]+)/) || [])[1] || '';
+  const tokens = `${id} ${cls}`.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return tokens.some(token => (
+    token === 'search' || token === 'searchbox' || token === 'combobox'
+    || token === 'typeahead' || token === 'autocomplete'
+  ));
 }
 
 function selectorTargetsTypeaheadInput(selector) {

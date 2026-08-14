@@ -87,13 +87,36 @@ describe('omitTypeaheadListboxNodes', () => {
     expect(nodes.some(n => n.name?.value === 'MiniMax-H3-Turbo')).toBe(false);
   });
 
-  it('omits a portaled listbox when only document.activeElement shows an input', () => {
+  it('omits a portaled listbox when only document.activeElement shows a search input', () => {
     const unfocused = tree.map(n => (
       n.nodeId === '2' ? axNode({ nodeId: '2', parentId: '1', role: 'searchbox', name: 'Search models', backendDOMNodeId: 2 }) : n
     ));
     const { omitted, nodes } = T.omitTypeaheadListboxNodes(unfocused, { focusedDesc: '<input#search>' });
     expect(omitted).toBe(true);
     expect(nodes.some(n => n.name?.value === 'MiniMax-H3-Turbo')).toBe(false);
+  });
+
+  it('keeps an in-page listbox when a generic textbox is focused', () => {
+    const form = [
+      axNode({ nodeId: '1', role: 'RootWebArea', name: 'Signup', backendDOMNodeId: 1 }),
+      focused('textbox', { nodeId: '2', parentId: '1', name: 'Email', backendDOMNodeId: 2 }),
+      axNode({ nodeId: '3', parentId: '1', role: 'listbox', name: 'Country', backendDOMNodeId: 3 }),
+      axNode({ nodeId: '4', parentId: '3', role: 'option', name: 'Taiwan', backendDOMNodeId: 4 }),
+    ];
+    const { omitted, nodes } = T.omitTypeaheadListboxNodes(form);
+    expect(omitted).toBe(false);
+    expect(nodes.some(n => n.name?.value === 'Taiwan')).toBe(true);
+  });
+
+  it('does not treat a focused checkbox-like input as typeahead', () => {
+    const form = [
+      axNode({ nodeId: '1', role: 'RootWebArea', name: 'Signup', backendDOMNodeId: 1 }),
+      axNode({ nodeId: '2', parentId: '1', role: 'listbox', name: 'Country', backendDOMNodeId: 2 }),
+      axNode({ nodeId: '3', parentId: '2', role: 'option', name: 'Taiwan', backendDOMNodeId: 3 }),
+    ];
+    const { omitted, nodes } = T.omitTypeaheadListboxNodes(form, { focusedDesc: '<input#agree>' });
+    expect(omitted).toBe(false);
+    expect(nodes.some(n => n.name?.value === 'Taiwan')).toBe(true);
   });
 });
 
