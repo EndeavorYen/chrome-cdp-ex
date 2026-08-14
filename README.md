@@ -108,8 +108,10 @@ node scripts/setup.mjs --for cursor --write   # Cursor → .cursor/mcp.json
 ```bash
 node scripts/setup.mjs --verify
 ./bin/chrome-cdp doctor
-# or: node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
+# or: "$HERMES_HOME/node/bin/node" skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 ```
+
+If `node -v` is <22, use the Node 22 path printed by doctor (`./bin/chrome-cdp` re-execs it when found).
 
 If CDP is not reachable:
 
@@ -135,7 +137,7 @@ If CDP is not reachable:
 
 Loop: **perceive → act → ask what changed**. Action JSON uses `receipt.schema = chrome-cdp-ex.action-receipt.v1`.
 
-**Requires:** Node.js 22+ (built-in WebSocket). Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
+**Requires:** Node.js 22 (built-in WebSocket). Prefer `./bin/chrome-cdp` or `$HERMES_HOME/node/bin/node` when PATH `node` is older. Auto-detects Chrome, Chromium, Brave, Edge, and Vivaldi on macOS, Linux (including Flatpak), and Windows.
 
 ## How it works
 

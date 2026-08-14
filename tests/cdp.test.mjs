@@ -10345,19 +10345,26 @@ describe('settleFlow', () => {
 // =========================================================================
 
 describe('checkNode', () => {
+  const noDiscovery = {
+    home: '/no-such-home',
+    env: {},
+    execPath: '/usr/bin/node',
+    fs: { existsSync: () => false, readdirSync: () => [], readFileSync: () => '' },
+    spawnSync: () => ({ status: 1, stdout: '' }),
+  };
   it('returns OK for v22+', () => {
     expect(checkNode('v22.10.0').status).toBe('OK');
     expect(checkNode('v24.0.0').status).toBe('OK');
     expect(checkNode('v22.0.0').status).toBe('OK');
   });
   it('returns FAIL for older Node', () => {
-    const r = checkNode('v18.16.0');
+    const r = checkNode('v18.16.0', noDiscovery);
     expect(r.status).toBe('FAIL');
     expect(r.detail).toContain('need >= 22');
     expect(r.hint).toMatch(/WebSocket/);
   });
   it('handles malformed version strings gracefully', () => {
-    const r = checkNode('???');
+    const r = checkNode('???', noDiscovery);
     expect(r.status).toBe('FAIL');
   });
 });

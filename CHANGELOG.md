@@ -37,6 +37,9 @@
 * Pending CDP requests now fail on socket close / `Inspector.detached` instead of
   aging into `Timeout: Page.navigate`. A navigation load waiter is cancelled when
   `Page.navigate` throws (#144).
+* Doctor no longer blocks a live CDP session just because PATH `node` is v20.
+  It discovers Hermes / fnm / nvm Node 22 binaries, prints the exact rerun
+  command, and `bin/chrome-cdp` re-execs that binary (#157).
 * Preserve ambiguous completion when a side-effect-capable daemon request loses
   its response. CLI remains non-zero and MCP remains `isError: true`, while the
   error now reports `completion: "unknown"`, `sideEffectMayHaveOccurred: true`,
