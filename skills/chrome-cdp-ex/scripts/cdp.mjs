@@ -6732,15 +6732,23 @@ function formatSessionReport(session, { now = Date.now(), format = 'text', lastA
     actionCountLine,
     `Screenshots: ${screenshots.length}`,
     `Records: ${session.records?.length || 0}`,
-    `Report JSON budget: ${formatBytes(model.reportBudget.estimatedJsonBytes)} / ${formatBytes(model.reportBudget.jsonBytesMax)}; ${model.reportBudget.warning}`,
-    `Artifact bytes: log ${formatBytes(model.artifacts.sizes.log.sizeBytes)}, screenshots ${formatBytes(model.artifacts.sizes.screenshotDir.sizeBytes)} (${model.artifacts.sizes.screenshotDir.fileCount} files)`,
-    `Cleanup: ${model.cleanup.workflow[0]}`,
+  ];
+  if (model.reportBudget?.warning != null && model.reportBudget.estimatedJsonBytes != null) {
+    lines.push(`Report JSON budget: ${formatBytes(model.reportBudget.estimatedJsonBytes)} / ${formatBytes(model.reportBudget.jsonBytesMax)}; ${model.reportBudget.warning}`);
+  }
+  if (model.artifacts?.sizes?.log && model.artifacts?.sizes?.screenshotDir) {
+    lines.push(`Artifact bytes: log ${formatBytes(model.artifacts.sizes.log.sizeBytes)}, screenshots ${formatBytes(model.artifacts.sizes.screenshotDir.sizeBytes)} (${model.artifacts.sizes.screenshotDir.fileCount} files)`);
+  }
+  if (model.cleanup?.workflow?.[0]) {
+    lines.push(`Cleanup: ${model.cleanup.workflow[0]}`);
+  }
+  lines.push(
     `Network throttle: ${formatThrottleSummary(session.networkThrottle)}`,
     `Network mocks: ${formatNetworkMocksSummary(session)}`,
     `Clock: ${formatClockSummary(session.clock)}`,
     '',
     'Action timeline:',
-  ];
+  );
   if (actionLog.length === 0) {
     lines.push('No actions recorded yet. Run click/fill/press/nav/inject/reload, then report again.');
   } else {
@@ -20625,7 +20633,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   collectDaemonMetadata, assessDaemonFreshness, formatStaleDaemonMessage, resolveScriptIdentityPath,
   enableDaemonDomains,
   getOrStartTabDaemon,
-  suggestCommands, unknownCommandMessage, editDistance,
+  suggestCommands, unknownCommandMessage, editDistance, commandUsageTemplate,
   resolveLiveTargetBinding, completeTargetResolution, attachTargetResolutionDiagnostics,
   buildExactTargetSupervisorCandidates,
   cdpRuntimeIdentity,

@@ -2974,7 +2974,8 @@ describe('issues #181-#191 open contracts', () => {
 
   it('#188 ships a skill-local bin/chrome-cdp launcher and ignores scriptPath-only stale daemons', () => {
     const bin = readFileSync(new URL('../skills/chrome-cdp-ex/bin/chrome-cdp', import.meta.url), 'utf8');
-    expect(bin).toContain('../scripts/cdp.mjs');
+    expect(bin).toContain("'scripts', 'cdp.mjs'");
+    expect(bin).toContain('resolveChromeCdpNodeLaunch');
     const current = {
       schema: 'chrome-cdp-ex.daemon-metadata.v1',
       scriptPath: '/repo/skills/chrome-cdp-ex/scripts/cdp.mjs',
