@@ -186,6 +186,22 @@ export function classifyActionFailure(err, { action = 'action', target = {} } = 
     };
   }
 
+  if (
+    lower.includes('not a fillable control')
+    || lower.includes('not fillable')
+  ) {
+    return {
+      ...base,
+      kind: 'not-fillable',
+      reason: 'fill requires an input, textarea, or contenteditable control.',
+      nextCommand: `cdp help fill`,
+      hints: [
+        'Use fill on <input>, <textarea>, or contenteditable controls.',
+        'Use click for links and buttons.',
+      ],
+    };
+  }
+
   return base;
 }
 
@@ -236,7 +252,26 @@ export function uniqueNextStepCommands(commands = []) {
   return out;
 }
 
-function noChangeNeedsOverlay(action) {
+export function looksLikeClipboardControl(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  if (/^copy$/i.test(text)) return true;
+  if (/\bclipboard\b/i.test(text)) return true;
+  if (/\bcopied!?\b/i.test(text)) return true;
+  return /\bcopy\b/i.test(text)
+    && /\b(name|link|id|text|url|code|token|json|model|path|sha)\b/i.test(text);
+}
+
+export function isExpectedClipboardNoChange(target = {}, extraText = '') {
+  if (target?.expectedOutcome === 'clipboard-no-change') return true;
+  return looksLikeClipboardControl(target?.label)
+    || looksLikeClipboardControl(target?.input)
+    || looksLikeClipboardControl(target?.dispatchText)
+    || looksLikeClipboardControl(extraText);
+}
+
+function noChangeNeedsOverlay(action, targetInfo = {}) {
+  if (isExpectedClipboardNoChange(targetInfo)) return false;
   return new Set(['click', 'jsclick', 'clickxy', 'fill', 'select', 'upload', 'press', 'dismiss-modal'])
     .has(String(action || '').toLowerCase());
 }
@@ -251,9 +286,9 @@ function noChangeNeedsFrameContext(targetInput = '', targetInfo = {}) {
 
 function noChangeBlockingSignals({ action = null, targetInput = '', targetInfo = {} } = {}) {
   const signals = [];
-  if (noChangeNeedsOverlay(action)) signals.push('overlay-check-needed');
+  if (noChangeNeedsOverlay(action, targetInfo)) signals.push('overlay-check-needed');
   if (noChangeNeedsFrameContext(targetInput, targetInfo)) signals.push('frame-check-needed');
-  signals.push('fresh-perception-needed');
+  if (!isExpectedClipboardNoChange(targetInfo, targetInput)) signals.push('fresh-perception-needed');
   return [...new Set(signals)];
 }
 
@@ -278,6 +313,21 @@ export function buildNoChangeOutcomeRecommendation({
 } = {}) {
   const input = recoveryCommandArg(targetInput);
   const blockingSignals = noChangeBlockingSignals({ action, targetInput, targetInfo });
+  if (isExpectedClipboardNoChange(targetInfo, targetInput)) {
+    return {
+      source,
+      actionIndex,
+      action,
+      outcomeStatus: 'no-change',
+      strategy: 'continue',
+      priority: 'low',
+      reason: 'Clipboard / copy actions do not rewrite the AX tree; continue without overlay recovery.',
+      blockingSignals,
+      recoveryHint: 'Clipboard action dispatched; no visible AX change is expected.',
+      verifyCommand: `cdp report ${target} --format json`,
+      commands: uniqueNextStepCommands([`cdp report ${target} --format json`]),
+    };
+  }
   const overlayCommand = input ? `cdp overlay ${target} ${input} --format json` : `cdp overlay ${target} --format json`;
   const perceiveCommand = `cdp perceive ${target} -C -d 8`;
   const commands = [];

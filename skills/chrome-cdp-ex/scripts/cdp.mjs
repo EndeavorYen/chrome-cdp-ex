@@ -59,7 +59,9 @@ import {
   buildNoChangeOutcomeRecommendation,
   classifyActionFailure,
   formatActionFailure,
+  isExpectedClipboardNoChange,
   isTimeoutError,
+  looksLikeClipboardControl,
   recoveryCommandsFromDiagnosis,
   uniqueNextStepCommands,
 } from './lib/action-recovery.mjs';
@@ -1304,13 +1306,21 @@ function aliasLookupKey(name) {
   return String(name || '').trim().replace(/^@+/, '');
 }
 
+function looksLikeHexTargetPrefix(token) {
+  const key = aliasLookupKey(token);
+  return key.length > 0 && /^[0-9A-Fa-f]+$/.test(key);
+}
+
 function looksLikeAliasToken(token) {
   const raw = String(token || '').trim();
   if (!raw) return false;
   if (raw.startsWith('@')) return true;
   const key = aliasLookupKey(raw);
   if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(key)) return false;
-  return !/^[0-9A-Fa-f]{8,}$/.test(key);
+  // Unique live target prefixes are hex of any length, including A–F starters
+  // (F874, C48C). Named aliases still win when they actually exist.
+  if (looksLikeHexTargetPrefix(key)) return false;
+  return true;
 }
 
 function resolveTargetAlias(name, store = readTargetAliases()) {
@@ -1331,6 +1341,15 @@ function unknownAliasError(name) {
   err.code = 'unknown_alias';
   err.aliasName = display;
   return err;
+}
+
+function forgetTargetAlias(store = emptyAliasStore(), name) {
+  const existing = resolveTargetAlias(name, store);
+  if (!existing) throw unknownAliasError(name);
+  return {
+    next: removeTargetAlias(store, existing.name),
+    removed: existing,
+  };
 }
 
 function aliasesForTarget(targetId, aliases = {}) {
@@ -2890,6 +2909,8 @@ function parseEvalArgs(args) {
       const b64 = (args[++i] || '').trim();
       if (!b64) throw new Error('eval --b64: empty expression. Pass a base64-encoded JS expression.');
       opts.expression = evalBase64Decode(b64);
+    } else if (a === '--format' || a === '--compact' || String(a).startsWith('--')) {
+      throw new Error(`eval: unknown argument ${a}`);
     } else {
       rest.push(a);
     }
@@ -2907,10 +2928,16 @@ function normalizeEvalCliArgs(args = []) {
     ...(fireAndForget ? ['--fire-and-forget'] : []),
     ...(raw ? ['--raw'] : []),
   ];
+  for (const arg of args) {
+    if (ignored.has(arg) || arg === '--b64' || arg === '-b') continue;
+    if (arg === '--format' || arg === '--compact' || String(arg).startsWith('--')) {
+      throw new Error(`eval: unknown argument ${arg}`);
+    }
+  }
   const b64Index = args.findIndex(arg => arg === '--b64' || arg === '-b');
   if (b64Index !== -1) {
     const b64 = args.slice(b64Index + 1)
-      .filter(arg => !ignored.has(arg))
+      .filter(arg => !ignored.has(arg) && !String(arg).startsWith('--'))
       .join('')
       .trim();
     if (!b64) throw new Error('base64 expression required');
@@ -4310,13 +4337,16 @@ function buildActionOutcome(actionResult = {}) {
   }
 
   if (domObserved) {
+    const expectedClipboard = isExpectedClipboardNoChange(actionResult.target);
     return {
       ...base,
       status: 'no-change',
       changed: false,
-      needsAttention: true,
+      needsAttention: !expectedClipboard,
       evidence: 'dom',
-      reason: 'No visible AX tree change observed after action.',
+      reason: expectedClipboard
+        ? 'Clipboard / copy action; no visible AX tree change is expected.'
+        : 'No visible AX tree change observed after action.',
     };
   }
 
@@ -4812,14 +4842,16 @@ function buildActionVerdict(actionResult = {}) {
         canContinue: true,
         needsRecovery: false,
       };
-    case 'no-change':
+    case 'no-change': {
+      const expectedClipboard = isExpectedClipboardNoChange(actionResult.target);
       return {
         ...base,
-        status: 'investigate',
+        status: expectedClipboard ? 'continue' : 'investigate',
         confidence: 'medium',
-        canContinue: false,
-        needsRecovery: true,
+        canContinue: expectedClipboard,
+        needsRecovery: !expectedClipboard,
       };
+    }
     case 'failed':
       return {
         ...base,
@@ -7784,7 +7816,7 @@ function scrollSettledRectFunctionDeclaration() {
       connected: connectedToOwningDocument(),
       ...previous,
       tag: this.tagName,
-      text: (this.textContent || '').trim().substring(0, 80),
+      text: (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').trim().substring(0, 80),
     };
   }`;
 }
@@ -8055,7 +8087,7 @@ async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, options =
         w: Math.round(rect.width),
         h: Math.round(rect.height),
         tag: this.tagName,
-        text: (this.textContent || '').trim().substring(0, 80),
+        text: (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').trim().substring(0, 80),
         position: cs ? cs.position : '',
         pointerEvents: cs ? cs.pointerEvents : '',
         visible: !!(rect.width && rect.height),
@@ -10509,10 +10541,65 @@ function formatInputTextPreview(text) {
   return `${text.substring(0, 40)}${text.length > 40 ? '...' : ''}`;
 }
 
+const NON_FILLABLE_INPUT_TYPES = [
+  'button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image', 'hidden', 'range', 'color',
+];
+
+function fillableControlProbeDeclaration() {
+  return `function() {
+    const el = this;
+    const tag = el && el.tagName ? String(el.tagName).toUpperCase() : '?';
+    const type = String(el && el.type || '').toLowerCase();
+    const role = String(el && el.getAttribute && el.getAttribute('role') || '').toLowerCase();
+    const fillable = !!(el && (
+      el.isContentEditable
+      || tag === 'TEXTAREA'
+      || (tag === 'INPUT' && ${JSON.stringify(NON_FILLABLE_INPUT_TYPES)}.indexOf(type) === -1)
+      || role === 'textbox' || role === 'searchbox' || role === 'combobox'
+    ));
+    return { ok: fillable, fillable, tag, type, role };
+  }`;
+}
+
+function fillableControlPageProbe(selector) {
+  return `(function() {
+    const probe = ${fillableControlProbeDeclaration()};
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+    const info = probe.call(el);
+    if (!info.fillable) {
+      return {
+        ok: false,
+        error: 'fill: ' + ${JSON.stringify(selector)} + ' is not a fillable control (<' + info.tag + '>). Use click for links/buttons.',
+        tag: info.tag,
+      };
+    }
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    el.focus();
+    if (el.isContentEditable) el.textContent = '';
+    else el.value = '';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return { ok: true, tag: info.tag };
+  })()`;
+}
+
+function notFillableControlError(selector, tag) {
+  const shown = selector || '<element>';
+  const tagPart = tag ? ` (<${String(tag).toUpperCase()}>)` : '';
+  return new Error(`fill: ${shown} is not a fillable control${tagPart}. Use click for links/buttons.`);
+}
+
 async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
   const objectId = isRef(selector)
     ? await resolveRefNode(cdp, sid, refMap, selector, refState)
     : await resolveSelectorNode(cdp, sid, selector);
+  const probe = await cdpDomains(cdp).Runtime.callFunctionOn({
+    objectId,
+    functionDeclaration: fillableControlProbeDeclaration(),
+    returnByValue: true,
+  }, sid);
+  const probed = probe.result?.value || {};
+  if (probed.fillable !== true) throw notFillableControlError(selector, probed.tag);
   const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
     objectId,
     functionDeclaration: `function(value) {
@@ -10552,30 +10639,28 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
   if (opts.react) return fillReactStr(cdp, sid, selector, text, refMap, refState);
   if (isRef(selector)) {
     const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
-    await cdpDomains(cdp).Runtime.callFunctionOn( {
+    const probe = await cdpDomains(cdp).Runtime.callFunctionOn({
       objectId,
-      functionDeclaration: `function() { this.scrollIntoView({block:'center'}); this.focus(); this.value=''; this.dispatchEvent(new Event('input',{bubbles:true})); }`,
+      functionDeclaration: `function() {
+        const info = (${fillableControlProbeDeclaration()}).call(this);
+        if (!info.fillable) return info;
+        this.scrollIntoView({block:'center'});
+        this.focus();
+        if (this.isContentEditable) this.textContent = '';
+        else this.value = '';
+        this.dispatchEvent(new Event('input',{bubbles:true}));
+        return info;
+      }`,
       returnByValue: true,
     }, sid);
+    const probed = probe.result?.value || {};
+    if (probed.fillable !== true) throw notFillableControlError(selector, probed.tag);
     await cdpDomains(cdp).Input.insertText( { text }, sid);
     return `Filled ${selector} with "${formatInputTextPreview(text)}"`;
   }
-  // Focus via JS (more reliable than mouse events for input focus) + get element info
-  const expr = `
-    (function() {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
-      el.scrollIntoView({ block: 'center', inline: 'center' });
-      el.focus();
-      el.value = '';
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      return { ok: true, tag: el.tagName };
-    })()
-  `;
-  const result = await evalStr(cdp, sid, expr);
+  const result = await evalStr(cdp, sid, fillableControlPageProbe(selector));
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(r.error);
-  // Insert text into the now-focused, cleared field
   await cdpDomains(cdp).Input.insertText( { text }, sid);
   return `Filled <${r.tag}> with "${formatInputTextPreview(text)}"`;
 }
@@ -11619,9 +11704,16 @@ function dialogStr(dialogBuf, dialogAutoAcceptRef, flag) {
   return lines.join('\n');
 }
 
-function netlogStr(netReqBuf, flag) {
+function filterNetlogEntries(entries = [], { lastNavigationTs = null, lookbackMs = 2500 } = {}) {
+  const list = Array.isArray(entries) ? entries : [];
+  if (!Number.isFinite(Number(lastNavigationTs))) return [...list];
+  const since = Number(lastNavigationTs) - (Number.isFinite(Number(lookbackMs)) ? Number(lookbackMs) : 2500);
+  return list.filter(entry => Number(entry?.ts) >= since);
+}
+
+function netlogStr(netReqBuf, flag, options = {}) {
   if (flag === '--clear') { netReqBuf.clear(); return 'Network log cleared'; }
-  const entries = netReqBuf.all();
+  const entries = filterNetlogEntries(netReqBuf.all(), options);
   if (entries.length === 0) return 'No network requests captured (tracking action-relevant requests; static assets are skipped)';
   const lines = [`Network requests (${entries.length}):`];
   for (const e of entries) {
@@ -12233,7 +12325,9 @@ function parseTextArgs(args) {
     if (a === '--auto') opts.auto = true;
     else if (a === '--root') opts.root = tokens[++i] || 'auto';
     else if (a === '--exclude' || a === '-x') opts.exclude = tokens[++i];
-    else if (typeof a === 'string') {
+    else if (typeof a === 'string' && a.startsWith('--')) {
+      throw new Error(`text: unknown argument ${a}`);
+    } else if (typeof a === 'string') {
       // Comma list = fallback chain (try each until one matches)
       const parts = a.split(',').map(s => s.trim()).filter(Boolean);
       if (parts.length === 0) continue;
@@ -16896,7 +16990,19 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     const actionStartedAt = Date.now();
     const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput, baselineOpts));
     let postActionPageHealth = null;
+    const wrappedDispatch = async () => {
+      const text = await dispatch();
+      if (looksLikeClipboardControl(text) || isExpectedClipboardNoChange(actionTarget, text)) {
+        actionTarget.expectedOutcome = 'clipboard-no-change';
+        actionTarget.dispatchText = String(text || '');
+      }
+      return text;
+    };
     const observeThenFlush = async () => {
+      if (actionTarget.expectedOutcome === 'clipboard-no-change') {
+        appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
+        return 'No changes detected (clipboard action).';
+      }
       const text = await observeAfterAction();
       await waitForActionNetworkQuiet(pendingReqs);
       appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
@@ -16909,7 +17015,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     return runActionWithFeedback({
       action,
       target: actionTarget,
-      dispatch,
+      dispatch: wrappedDispatch,
       feedbackPolicy,
       observe: observeThenFlush,
       enrichActionResult: (actionResult) => {
@@ -17118,11 +17224,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       { kind: 'action-receipt' },
     ),
     fill: async args => {
-      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-      const fargs = fopts.args;
-      const value = fargs[0] === '--react'
-        ? await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[1], fargs[2], refMap, refState, { react: true }), { input: fargs[1], resolvedBy: 'selector-or-ref', label: fargs[1] || '', commandArgs: ['--react', fargs[1], fargs[2]] }, 'settle-diff', null, fopts)
-        : await actionFeedback('fill', () => fillStr(cdp, sessionId, fargs[0], fargs[1], refMap, refState), { input: fargs[0], resolvedBy: 'selector-or-ref', label: fargs[0] || '', commandArgs: [fargs[0], fargs[1]] }, 'settle-diff', null, fopts);
+      const parsed = parseFillArgs(args);
+      const value = parsed.react
+        ? await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { react: true }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: ['--react', parsed.selector, parsed.text] }, 'settle-diff', null, parsed.fopts)
+        : await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: [parsed.selector, parsed.text] }, 'settle-diff', null, parsed.fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
     hover: async args => commandResult(await hoverStr(cdp, sessionId, args[0], refMap, refState), null),
@@ -17189,7 +17294,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       }), { input: url, resolvedBy: 'url', label: url || '', commandArgs: [url] }, perceive ? 'full-perceive' : 'state-change', perceive ? observeFullPerceive : () => observeNavPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
-    netlog: async args => commandResult(netlogStr(netReqBuf, args[0]), null),
+    netlog: async args => commandResult(netlogStr(netReqBuf, args[0], {
+      lastNavigationTs: navBuf.all().at(-1)?.ts ?? null,
+    }), null),
     press: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
@@ -18779,6 +18886,42 @@ function createPerceiveCommandHandler({
   };
 }
 
+function parseFillArgs(args = []) {
+  const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+  let react = false;
+  const positional = [];
+  for (const token of fopts.args) {
+    if (token === '--react') {
+      react = true;
+      continue;
+    }
+    if (token === '--help' || token === '-h') {
+      const err = new Error('fill: help requested');
+      err.code = 'help_requested';
+      err.helpTopic = 'fill';
+      throw err;
+    }
+    if (String(token).startsWith('--')) {
+      throw new Error(`fill: unknown argument ${token}`);
+    }
+    positional.push(token);
+  }
+  const selector = positional[0] || '';
+  const text = positional.slice(1).join(' ');
+  return {
+    format: fopts.format,
+    compact: fopts.compact,
+    qa: fopts.qa,
+    full: fopts.full,
+    maxDiffLines: fopts.maxDiffLines,
+    react,
+    selector,
+    text,
+    args: positional,
+    fopts: { ...fopts, args: positional },
+  };
+}
+
 function parseClickArgs(args = []) {
   const fopts = parseCompactFormatArgs(args, ['text', 'json']);
   let js = false;
@@ -19014,12 +19157,10 @@ function normalizeTargetCommandArgs(cmd, cmdArgs = []) {
     return [fopts.args.join(' '), ...formatArgSuffix(fopts.format, fopts)];
   }
   if (cmd === 'fill') {
-    if (args[0] === '--react') {
-      const fopts = parseCompactFormatArgs(args.slice(2), ['text', 'json']);
-      return ['--react', args[1], fopts.args.join(' '), ...formatArgSuffix(fopts.format, fopts)];
-    }
-    const fopts = parseCompactFormatArgs(args.slice(1), ['text', 'json']);
-    return [args[0], fopts.args.join(' '), ...formatArgSuffix(fopts.format, fopts)];
+    const parsed = parseFillArgs(args);
+    const suffix = formatArgSuffix(parsed.format, parsed);
+    if (parsed.react) return ['--react', parsed.selector, parsed.text, ...suffix];
+    return [parsed.selector, parsed.text, ...suffix];
   }
   return args;
 }
@@ -19046,7 +19187,7 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
     case 'elshot':
       return `cdp elshot ${target} <selector|@ref>`;
     case 'eval':
-      return `cdp eval ${target} <expression>`;
+      return 'cdp help eval';
     case 'eval64':
       return `cdp eval64 ${target} <base64-expression>`;
     case 'call':
@@ -19071,6 +19212,12 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
       return `cdp inject ${target} --css "body { outline: 1px solid red }"`;
     case 'stop':
       return 'cdp stop [target|--all]';
+    case 'target':
+      return 'cdp help target';
+    case 'text':
+      return 'cdp help text';
+    case 'forget':
+      return 'cdp help forget';
     default:
       return `cdp ${cmd || '<command>'}${targetPrefix ? ` ${target}` : ''} <required-args>`;
   }
@@ -19162,6 +19309,14 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       reason: 'More than one tab matches the provided target prefix.',
     };
   }
+  if (cmd === 'target' && (lower.includes('provide --url') || lower.includes('and/or --title'))) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help target',
+      reason: 'target requires --url and/or --title. Print usage instead of probing doctor.',
+    };
+  }
   if (
     lower.includes('unknown option')
     || lower.includes('unknown argument')
@@ -19172,6 +19327,17 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       strategy: 'show-help',
       run: cmd ? `cdp help ${cmd}` : 'cdp help',
       reason: 'The command received an unknown flag or argument. Print usage instead of probing doctor/status.',
+    };
+  }
+  if (
+    (cmd === 'eval' || cmd === 'eval64' || cmd === 'call')
+    && /syntaxerror|referenceerror|typeerror|evalerror|rangeerror|urierror/i.test(message)
+  ) {
+    return {
+      kind: 'eval',
+      strategy: 'fix-expression',
+      run: 'cdp help eval',
+      reason: 'The JavaScript expression threw. Fix the expression; the tab is still live.',
     };
   }
   if (err?.code === 'pdf_viewer' || lower.includes('pdf viewer') || lower.includes('application/pdf')) {
@@ -20264,12 +20430,18 @@ async function main(options = {}) {
     const fopts = parseFormatArgs(args, ['text', 'json']);
     const name = fopts.args[0];
     if (!name) exitCliError('forget requires an alias name', { cmd, format: fopts.format });
-    const next = removeTargetAlias(readTargetAliases(), name);
-    writeTargetAliases(next);
-    console.log(fopts.format === 'json'
-      ? formatJson({ schema: 'chrome-cdp-ex.alias-forget.v1', removed: name, current: next.current })
-      : `Forgot @${name}`);
-    return finish(0);
+    try {
+      const store = readTargetAliases();
+      const { next, removed } = forgetTargetAlias(store, name);
+      writeTargetAliases(next);
+      console.log(fopts.format === 'json'
+        ? formatJson({ schema: 'chrome-cdp-ex.alias-forget.v1', removed: removed.name, current: next.current })
+        : `Forgot @${removed.name}`);
+      return finish(0);
+    } catch (e) {
+      console.error(formatCliError(e, { cmd, format: fopts.format }));
+      return finish(1);
+    }
   }
 
   if (cmd === 'current') {
@@ -20326,6 +20498,10 @@ async function main(options = {}) {
       console.error(formatCliError(e, { cmd }));
       return finish(1);
     }
+  }
+  if (targetPrefix && String(targetPrefix).startsWith('--')) {
+    console.error(formatCliError(`${cmd}: target prefix is required`, { cmd, format: cliErrorFormat }));
+    return finish(1);
   }
   if (!targetPrefix) {
     console.error(formatCliError('target ID required. Run "cdp list" first.', { cmd, format: cliErrorFormat }));
@@ -20597,8 +20773,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Utilities
   resolvePrefix, getDisplayPrefixLength, daemonEndpointForPlatform, sockPath, isRef, validateUrl,
   emptyAliasStore, readTargetAliases, writeTargetAliases, upsertTargetAlias,
-  removeTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
-  aliasLookupKey, looksLikeAliasToken, unknownAliasError, formatCurrentAlias,
+  removeTargetAlias, forgetTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
+  aliasLookupKey, looksLikeAliasToken, looksLikeHexTargetPrefix, unknownAliasError, formatCurrentAlias,
   // AX tree helpers
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
@@ -20612,7 +20788,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,
-  buildActionRecoveryPlan,
+  buildActionRecoveryPlan, buildNoChangeOutcomeRecommendation,
   createActionResult, buildActionReceipt, formatActionText, runActionWithFeedback,
   parseVerifyClickArgs, buildSemanticInteractionModel, formatSemanticInteractionResult, formatActionWorkflowCommandOutput,
   parseQaArgs, buildQaPageModel, formatQaPageReport,
@@ -20629,7 +20805,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs, redactExternalInputActionError, redactRestoreActionError,
   checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,
   // Command implementations
-  getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr,
+  getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr, filterNetlogEntries,
   parseMockArgs, formatNetworkMocksSummary, buildMockModel, formatMockText, mockStr, handleMockRequestPaused,
   parseClockArgs, clockPageScript, formatClockSummary, buildClockModel, formatClockText, clockStr,
   parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
@@ -20711,10 +20887,12 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   COMMANDS, NEEDS_TARGET, commandMeta, buildApplicationCommandSpecs, createApplicationCommandRegistry,
   DAEMON_APPLICATION_COMMANDS, DAEMON_HANDLER_BUILDERS, preflightDaemonApplication,
   createReportCommandHandler, createPerceiveCommandHandler,
-  createClickCommandHandler, parseClickArgs, createEvalrawCommandHandler,
+  createClickCommandHandler, parseClickArgs, parseFillArgs, createEvalrawCommandHandler,
   buildCliErrorRecovery,
   authorizeDaemonApplicationCommand, executeDaemonApplicationRoute,
   daemonRequestMayHaveSideEffects,
+  fillableControlProbeDeclaration, notFillableControlError,
+  looksLikeClipboardControl, isExpectedClipboardNoChange,
   TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,
   createDaemonRequestExecutionContext, createTableCollectionRuntime,
   runTableCollectionLifecycle, createDaemonRequestConnection,
