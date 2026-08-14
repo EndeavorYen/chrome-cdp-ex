@@ -328,3 +328,29 @@ describe('Codex for OSS evidence baseline', () => {
     expect(evidence).toMatch(/not.*adoption/i);
   });
 });
+
+describe('Read this page contract (#161)', () => {
+  it('documents text --auto and perceive -x in CLI help', async () => {
+    process.env.NODE_ENV = 'test';
+    const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+    const usage = T.helpStr();
+    expect(usage).toContain('--auto');
+    expect(usage).toMatch(/-x <sel> \/ --exclude/);
+  });
+
+  it('lists text --auto, eval, and call in SKILL.md and recipes.md', () => {
+    const recipes = readFileSync(new URL('../skills/chrome-cdp-ex/references/recipes.md', import.meta.url), 'utf8');
+    expect(skill).toContain('text --auto');
+    expect(skill).toMatch(/`eval`/);
+    expect(skill).toMatch(/`call`/);
+    expect(recipes).toMatch(/## Read this page/i);
+    expect(recipes).toContain('text <target> --auto');
+    expect(recipes).toContain('raw/main/LICENSE');
+    expect(recipes).toContain('perceive <target> -s main');
+    expect(recipes).toContain('h1.title');
+    const xSection = recipes.split(/### X \/ Twitter/)[1]?.split(/^## /m)[0] || '';
+    const xCode = [...xSection.matchAll(/```bash\n([\s\S]*?)```/g)].map(match => match[1]).join('\n');
+    expect(xCode).toContain('text <target> --auto');
+    expect(xCode).not.toContain('perceive');
+  });
+});

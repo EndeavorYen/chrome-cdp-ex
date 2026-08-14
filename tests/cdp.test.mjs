@@ -26,6 +26,7 @@ const {
   checkNode, checkSkillSymlink, checkDaemonSockets, checkCdpReachability, checkBrowserTargets, checkBrowserPermission, checkFdLimit,
   doctorWizardSummary, formatDoctorReport, runDoctorChecks, doctorStr, helpStr,
   sampleRootFrameTables, tableObservationStr,
+  filterPerceiveExcludedAxNodes,
 } = T;
 
 // =========================================================================
@@ -445,6 +446,13 @@ describe('helpStr', () => {
     expect(out).toContain('list|tabs|ls [--format json]');
     expect(out).toContain('perceive <target>');
     expect(out).toContain('report <target>');
+  });
+
+  it('documents text --auto and perceive -x/--exclude', () => {
+    const out = helpStr();
+    expect(out).toMatch(/text <target>.*--auto|--auto:.*main content/s);
+    expect(out).toContain('--auto');
+    expect(out).toMatch(/-x <sel> \/ --exclude/);
   });
 });
 
@@ -7666,38 +7674,19 @@ describe('fill --react', () => {
 // =========================================================================
 
 describe('exclude subtree filtering', () => {
-  // Simulate the exclude logic from perceiveStr without CDP
-  function filterExcluded(axNodes, excludedBackendNodeIds) {
-    const excludedAxIds = new Set();
-    for (const n of axNodes) {
-      if (n.backendDOMNodeId && excludedBackendNodeIds.has(n.backendDOMNodeId))
-        excludedAxIds.add(n.nodeId);
-    }
-    if (excludedAxIds.size === 0) return axNodes;
-    const childMap = new Map();
-    for (const n of axNodes) {
-      if (n.parentId) {
-        if (!childMap.has(n.parentId)) childMap.set(n.parentId, []);
-        childMap.get(n.parentId).push(n.nodeId);
-      }
-    }
-    const queue = [...excludedAxIds];
-    while (queue.length) {
-      const id = queue.pop();
-      for (const child of (childMap.get(id) || [])) {
-        excludedAxIds.add(child);
-        queue.push(child);
-      }
-    }
-    return axNodes.filter(n => !excludedAxIds.has(n.nodeId));
-  }
-
   const axNode = (id, role, name, opts = {}) => ({
     nodeId: id,
     role: { value: role },
     name: { value: name },
     ...(opts.parentId ? { parentId: opts.parentId } : {}),
     ...(opts.backendDOMNodeId ? { backendDOMNodeId: opts.backendDOMNodeId } : {}),
+  });
+
+  const domNode = (nodeName, backendNodeId, children = [], attributes = []) => ({
+    nodeName,
+    backendNodeId,
+    children,
+    attributes,
   });
 
   it('should remove excluded node and all descendants', () => {
@@ -7710,7 +7699,7 @@ describe('exclude subtree filtering', () => {
       axNode('h1', 'heading', 'Title', { parentId: 'main' }),
     ];
     const excluded = new Set([100]); // exclude nav (backendDOMNodeId=100)
-    const filtered = filterExcluded(nodes, excluded);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, excluded);
 
     expect(filtered.map(n => n.nodeId)).toEqual(['root', 'main', 'h1']);
     expect(filtered.find(n => n.nodeId === 'nav')).toBeUndefined();
@@ -7726,7 +7715,7 @@ describe('exclude subtree filtering', () => {
       axNode('main', 'main', 'Content', { parentId: 'root', backendDOMNodeId: 300 }),
     ];
     const excluded = new Set([100, 200]); // exclude nav and sidebar
-    const filtered = filterExcluded(nodes, excluded);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, excluded);
 
     expect(filtered.map(n => n.nodeId)).toEqual(['root', 'main']);
   });
@@ -7737,7 +7726,7 @@ describe('exclude subtree filtering', () => {
       axNode('main', 'main', 'Content', { parentId: 'root', backendDOMNodeId: 300 }),
     ];
     const excluded = new Set([999]); // non-existent
-    const filtered = filterExcluded(nodes, excluded);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, excluded);
 
     expect(filtered).toHaveLength(2);
   });
@@ -7752,9 +7741,65 @@ describe('exclude subtree filtering', () => {
       axNode('sublink', 'link', 'Sub', { parentId: 'item1' }),
     ];
     const excluded = new Set([100]); // exclude nav → should cascade to list, items, sublink
-    const filtered = filterExcluded(nodes, excluded);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, excluded);
 
     expect(filtered.map(n => n.nodeId)).toEqual(['root']);
+  });
+
+  it('does not drop main when a header wrapper also matches exclude', () => {
+    const main = domNode('MAIN', 3, [domNode('H1', 4)]);
+    const nav = domNode('NAV', 2, [domNode('A', 21)]);
+    const header = domNode('HEADER', 1, [nav, main]);
+    const nodes = [
+      axNode('root', 'WebArea', 'Page'),
+      axNode('header', 'banner', 'Chrome', { parentId: 'root', backendDOMNodeId: 1 }),
+      axNode('nav', 'navigation', 'Nav', { parentId: 'header', backendDOMNodeId: 2 }),
+      axNode('home', 'link', 'Home', { parentId: 'nav', backendDOMNodeId: 21 }),
+      axNode('main', 'main', 'Article', { parentId: 'header', backendDOMNodeId: 3 }),
+      axNode('h1', 'heading', 'Title', { parentId: 'main', backendDOMNodeId: 4 }),
+    ];
+    const described = new Map([[1, header], [2, nav], [3, main]]);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, new Set([1, 2]), described);
+
+    expect(filtered.map(n => n.nodeId)).toEqual(['root', 'header', 'main', 'h1']);
+    expect(filtered.find(n => n.nodeId === 'nav')).toBeUndefined();
+    expect(filtered.find(n => n.nodeId === 'home')).toBeUndefined();
+  });
+
+  it('still removes a real nav sibling that does not wrap main', () => {
+    const nav = domNode('NAV', 100, [domNode('A', 101)]);
+    const main = domNode('MAIN', 200, [domNode('H1', 201)]);
+    const nodes = [
+      axNode('root', 'WebArea', 'Page'),
+      axNode('nav', 'navigation', 'Nav', { parentId: 'root', backendDOMNodeId: 100 }),
+      axNode('link', 'link', 'Home', { parentId: 'nav', backendDOMNodeId: 101 }),
+      axNode('main', 'main', 'Content', { parentId: 'root', backendDOMNodeId: 200 }),
+      axNode('h1', 'heading', 'Title', { parentId: 'main', backendDOMNodeId: 201 }),
+    ];
+    const described = new Map([[100, nav], [200, main]]);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, new Set([100]), described);
+
+    expect(filtered.map(n => n.nodeId)).toEqual(['root', 'main', 'h1']);
+  });
+
+  it('keeps a generic wrapper whose DOM contains .mdx-content or article', () => {
+    const article = domNode('ARTICLE', 12, [domNode('P', 13)]);
+    const wrapper = domNode('DIV', 10, [
+      article,
+    ], ['class', 'layout-shell']);
+    const mdx = domNode('DIV', 22, [domNode('P', 23)], ['class', 'mdx-content prose']);
+    const mdxWrapper = domNode('DIV', 20, [mdx], ['class', 'docs-frame']);
+    const nodes = [
+      axNode('root', 'WebArea', 'Page'),
+      axNode('shell', 'generic', 'Shell', { parentId: 'root', backendDOMNodeId: 10 }),
+      axNode('article', 'article', 'Docs', { parentId: 'shell', backendDOMNodeId: 12 }),
+      axNode('frame', 'generic', 'Frame', { parentId: 'root', backendDOMNodeId: 20 }),
+      axNode('body', 'generic', 'MDX', { parentId: 'frame', backendDOMNodeId: 22 }),
+    ];
+    const described = new Map([[10, wrapper], [20, mdxWrapper]]);
+    const filtered = filterPerceiveExcludedAxNodes(nodes, new Set([10, 20]), described);
+
+    expect(filtered.map(n => n.nodeId)).toEqual(['root', 'shell', 'article', 'frame', 'body']);
   });
 });
 
