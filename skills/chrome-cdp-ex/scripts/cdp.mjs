@@ -72,6 +72,11 @@ import {
   goldenPathPerceiveRecommendation,
 } from './lib/perception-model.mjs';
 import {
+  buildCardsModel,
+  formatCardsJson,
+  formatCardsText,
+} from './lib/cards-model.mjs';
+import {
   buildReportRecommendation,
   defaultReportNextSteps,
   formatReportNextStepLines,
@@ -7940,7 +7945,7 @@ function omitTypeaheadListboxNodes(nodes, opts = {}) {
 }
 
 const PERCEIVE_COMPACT_FLAGS =
-  '--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel | --keep-typeahead';
+  '--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel | --keep-typeahead | --cards | --role feed';
 
 function unknownPerceiveOption(token) {
   throw new Error(`unknown option ${token}\nperceive compact flags: ${PERCEIVE_COMPACT_FLAGS}`);
@@ -7951,6 +7956,7 @@ function parsePerceiveArgs(args) {
     diff: false, selector: null, exclude: null,
     interactive: false, maxDepth: Infinity, cursorInteractive: false,
     keepRefs: false, keepTypeahead: false, last: null, adaptive: false, sinceAction: false, frameRef: null,
+    cards: false,
   };
   const requireValue = (flag, index, label) => {
     const value = args[index + 1];
@@ -7964,7 +7970,12 @@ function parsePerceiveArgs(args) {
     if (!String(a).startsWith('-')) continue;
     if (a === '--diff') opts.diff = true;
     else if (a === '--since-action') opts.sinceAction = true;
-    else if (a === '-F' || a === '--frame') {
+    else if (a === '--cards') opts.cards = true;
+    else if (a === '--role') {
+      const role = String(requireValue(a, i, 'a role')).trim().toLowerCase();
+      i++;
+      if (role === 'feed') opts.cards = true;
+    } else if (a === '-F' || a === '--frame') {
       opts.frameRef = requireValue(a, i, 'a frame ref');
       i++;
     } else if (a === '-s' || a === '--selector') {
@@ -9255,7 +9266,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null,
     interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false,
     keepRefs = false, keepTypeahead = false, last = null, adaptive = false, sinceAction = false, diffBaseline = null,
-    frameRef = null,
+    frameRef = null, cards = false,
   } = opts;
   const frameContext = frameRef ? await resolveFrameRef(cdp, sid, frameRef) : null;
   const frame = frameContext?.frame || null;
@@ -9328,6 +9339,30 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   axNodes = typeaheadFilter.nodes;
 
   const activeRefMap = frame ? new Map() : refMap;
+  if (cards) {
+    const model = buildCardsModel(axNodes, meta, activeRefMap, {
+      last,
+      targetPrefix: opts.targetPrefix,
+    });
+    if (frame) {
+      storeFrameScopedRefs(refState, frame, frameContext.frames, activeRefMap);
+      for (const card of model.cards || []) {
+        if (typeof card.ref === 'string' && /^@\d+$/.test(card.ref)) {
+          card.ref = `${frame.ref}:${card.ref.slice(1)}`;
+        }
+      }
+    }
+    const output = opts.format === 'json' ? formatCardsJson(model) : formatCardsText(model);
+    lastPerceiveStore.output = output;
+    lastPerceiveStore.cards = model;
+    if (frame) rememberFramePerceiveOutput(refState, frame.ref, output);
+    if (refState && typeof refState === 'object') {
+      refState.generation = (refState.generation || 0) + 1;
+      refState.lastPerceiveAt = Date.now();
+      refState.invalidationReason = null;
+    }
+    return output;
+  }
   const builtTree = buildPerceiveTree(axNodes, meta, activeRefMap, {
     maxDepth,
     interactiveOnly,
@@ -17834,6 +17869,7 @@ Usage: cdp <command> [args]
                                     -d N / --depth N: limit tree depth
                                     -C / --cursor-interactive: include non-ARIA clickable elements (@c refs)
                                     --keep-typeahead: keep focused search suggestion listbox in the tree
+                                    --cards / --role feed: compact article/listitem cards (chrome-cdp-ex.cards.v1)
 {{command:snap}}
 {{command:controls}}
 {{command:eval}}
@@ -18273,6 +18309,14 @@ function createPerceiveCommandHandler({
             perceptionPreview: truncateTextLines(text, fopts.maxDiffLines ?? 20),
           })
         : formatQaSummaryText(summary);
+    } else if (popts.cards) {
+      value = await perceiveText(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
+        ...popts,
+        format: fopts.format,
+      }, refState);
+      if (fopts.maxDiffLines != null && fopts.format !== 'json') {
+        value = truncateTextLines(value, fopts.maxDiffLines);
+      }
     } else {
       value = fopts.format === 'json' && (popts.sinceAction || popts.diff)
         ? formatJson(await buildPerceiveDiff(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
@@ -19997,6 +20041,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parsePerceiveArgs, pickPrimaryScrollMetrics, omitTypeaheadListboxNodes, TYPEAHEAD_OMITTED_NOTICE,
   buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
   filterPerceiveExcludedAxNodes, perceiveInteractiveNoiseHint,
+  buildCardsModel, formatCardsJson, formatCardsText,
   parseControlsArgs, visibleControlsCollectorSource, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,

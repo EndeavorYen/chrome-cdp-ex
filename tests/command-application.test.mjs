@@ -666,6 +666,26 @@ describe('Phase 4 perceive compatibility slice', () => {
     });
   });
 
+  it('returns cards.v1 JSON from perceive --cards --format json', async () => {
+    const cardsModel = {
+      schema: 'chrome-cdp-ex.cards.v1',
+      cards: [{ ref: '@1', url: 'https://x.com/a/status/1', handle: '@a', text: 'hi' }],
+      truncated: false,
+      next: 'timeline virtualized; scroll and re-run --cards',
+    };
+    const { handler, ops } = fixture({
+      ops: {
+        perceiveText: vi.fn(async (_cdp, _sid, _c, _e, _refs, _store, opts) => (
+          opts.format === 'json' ? JSON.stringify(cardsModel, null, 2) : 'cards text'
+        )),
+      },
+    });
+    const actual = await handler({ args: ['--cards', '--format', 'json'] });
+    expect(JSON.parse(actual.value)).toMatchObject({ schema: 'chrome-cdp-ex.cards.v1' });
+    expect(ops.perceiveText.mock.calls[0][6]).toMatchObject({ cards: true, format: 'json' });
+    expect(ops.perceiveModel).not.toHaveBeenCalled();
+  });
+
   it('preserves QA JSON summary inputs and bounded perception preview', async () => {
     const { handler } = fixture();
     const actual = JSON.parse((await handler({

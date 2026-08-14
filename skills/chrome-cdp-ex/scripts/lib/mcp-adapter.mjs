@@ -225,6 +225,7 @@ export function buildMcpToolCommand(name, args = {}) {
       if (args.cursorInteractive) command.push('-C');
       if (args.selector) command.push('--selector', String(args.selector));
       if (args.sinceAction) command.push('--since-action');
+      if (args.cards) command.push('--cards');
       if (args.last != null) command.push('--last', String(args.last));
       else if (args.adaptive !== false) command.push('--adaptive');
       if (args.qa || args.summary) command.push('--qa');

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Compact feed perception
+
+* Add `perceive --cards` (alias `--role feed`) for virtualized timelines. Returns
+  bounded `chrome-cdp-ex.cards.v1` cards with ref/url/handle/truncated text and
+  optional engagement crumbs, default cap 12 (`--last N` up to 20), and a
+  virtualization notice when fewer articles are in the AX tree than the
+  viewport height suggests (#156).
+
 ### Open onboarding
 
 * Default `open` no longer dumps a full perceive (11–29 KB). It returns

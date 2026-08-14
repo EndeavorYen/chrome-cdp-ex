@@ -160,7 +160,7 @@ Multi-statement async eval returns a simple trailing expression:
 `eval <target> "const value = await Promise.resolve(42); value"` prints `42`.
 Use an explicit `return` for ambiguous control-flow endings.
 
-For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a text-row budget from page density and console errors. Explicit `--last N` always wins. If a search box is focused, blur it (`press Escape`) or `perceive -s main` so typeahead suggestions do not replace the page body; `--keep-typeahead` keeps the dropdown.
+For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a text-row budget from page density and console errors. Explicit `--last N` always wins. If a search box is focused, blur it (`press Escape`) or `perceive -s main` so typeahead suggestions do not replace the page body; `--keep-typeahead` keeps the dropdown. On virtualized feeds, `perceive --cards` returns a capped `chrome-cdp-ex.cards.v1` article/listitem list instead of the AX dump.
 
 ## Install And Release Surface
 

@@ -434,6 +434,8 @@ describe('current open issue contracts', () => {
     expect(buildMcpToolCommand('doctor', {})).toEqual(['doctor', '--format', 'json']);
     expect(buildMcpToolCommand('perceive', { target: 'app', depth: 4, cursorInteractive: true }))
       .toEqual(['perceive', 'app', '-d', '4', '-C', '--adaptive', '--format', 'json']);
+    expect(buildMcpToolCommand('perceive', { target: 'app', cards: true, last: 12 }))
+      .toEqual(['perceive', 'app', '--cards', '--last', '12', '--format', 'json']);
     expect(buildMcpToolCommand('perceive', { target: 'app', qa: true, maxDiffLines: 12 }))
       .toEqual(['perceive', 'app', '--adaptive', '--qa', '--max-diff-lines', '12', '--format', 'json']);
     expect(buildMcpToolCommand('controls', { target: 'app', selector: '#composer', filter: 'send', limit: 5 }))
@@ -2322,21 +2324,23 @@ describe('v2.11.0 review regressions', () => {
 
 describe('issue #158 unknown perceive flags', () => {
   it('#158 rejects unknown perceive flags with compact-flag help instead of dumping the page', async () => {
-    expect(() => T.parsePerceiveArgs(['--cards'])).toThrow(/unknown option --cards/);
+    expect(() => T.parsePerceiveArgs(['--cards'])).not.toThrow();
+    expect(T.parsePerceiveArgs(['--cards']).cards).toBe(true);
     expect(() => T.parsePerceiveArgs(['--not-a-real-flag'])).toThrow(/unknown option --not-a-real-flag/);
 
     let message = '';
     try {
-      T.parsePerceiveArgs(['--cards']);
+      T.parsePerceiveArgs(['--not-a-real-flag']);
     } catch (error) {
       message = error.message;
     }
-    expect(message).toContain('unknown option --cards');
+    expect(message).toContain('unknown option --not-a-real-flag');
     expect(message).toContain('perceive compact flags:');
     expect(message).toContain('--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel');
+    expect(message).toContain('--cards');
 
     const cli = T.formatCliError(new Error(message), { cmd: 'perceive', targetPrefix: 'F8741D08' });
-    expect(cli).toContain('unknown option --cards');
+    expect(cli).toContain('unknown option --not-a-real-flag');
     expect(cli).toContain('perceive compact flags:');
     expect(cli).not.toMatch(/Page:/);
 
@@ -2358,7 +2362,7 @@ describe('issue #158 unknown perceive flags', () => {
         perceiveText: async () => 'FULL DUMP SHOULD NOT RUN',
       },
     });
-    await expect(handler({ args: ['--cards'] })).rejects.toThrow(/unknown option --cards/);
+    await expect(handler({ args: ['--feed-dump'] })).rejects.toThrow(/unknown option --feed-dump/);
     await expect(handler({ args: ['--qa', '--not-a-real-flag'] })).rejects.toThrow(/unknown option --not-a-real-flag/);
 
     const qa = T.parseQaModeArgs(['--qa', '--summary', '--adaptive']);
