@@ -210,6 +210,15 @@ describe('Killer Path docs contract', () => {
     );
   });
 
+  it('does not make unqualified PATH node the only SKILL.md invocation (#157)', () => {
+    expect(skill).toMatch(/bin\/chrome-cdp|HERMES_HOME|process\.execPath/);
+    expect(skill).toMatch(/If `node -v` is <22, use the Node 22 path printed by doctor/);
+    const invocationLines = skill.split(/\r?\n/).filter(line =>
+      /chrome-cdp-ex\/scripts\/cdp\.mjs|bin\/chrome-cdp/.test(line) && !line.trim().startsWith('#'),
+    );
+    expect(invocationLines.some(line => !/^node\s+/.test(line.trim()))).toBe(true);
+  });
+
   it('requires the self-improvement loop runbook to cover issue, test, review, and merge commands', () => {
     const docs = {
       readme,
