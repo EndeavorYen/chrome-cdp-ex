@@ -1806,3 +1806,26 @@ describe('v2.11.0 review regressions', () => {
     }
   });
 });
+
+describe('issue #144 pending CDP lifecycle errors', () => {
+  it('does not recommend Allow debugging for websocket close or Inspector.detached', () => {
+    const closed = T.formatCliError(
+      new Error('CDP websocket closed while waiting for Page.navigate (code=1006, reason=going away)'),
+      { cmd: 'nav', targetPrefix: 'AABBCCDD' }
+    );
+    const detached = T.formatCliError(
+      new Error('CDP Inspector.detached while waiting for Page.navigate (reason=target_closed)'),
+      { cmd: 'nav', targetPrefix: 'AABBCCDD' }
+    );
+    for (const out of [closed, detached]) {
+      expect(out).not.toMatch(/click Allow/i);
+      expect(out).not.toMatch(/Allow debugging/i);
+    }
+    const detachedModel = T.buildCliErrorModel(
+      new Error('CDP Inspector.detached while waiting for Page.navigate (reason=target_closed)'),
+      { cmd: 'nav', targetPrefix: 'AABBCCDD' }
+    );
+    expect(detachedModel.recovery.kind).toBe('target-closed');
+    expect(detachedModel.recovery.run).toBe('cdp list');
+  });
+});

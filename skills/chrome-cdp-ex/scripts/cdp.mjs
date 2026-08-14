@@ -1998,16 +1998,59 @@ function getDisplayPrefixLength(targetIds) {
 // ---------------------------------------------------------------------------
 
 class CDP {
-  #ws; #id = 0; #pending = new Map(); #eventHandlers = new Map(); #closeHandlers = [];
+  #ws; #id = 0; #pending = new Map(); #eventHandlers = new Map(); #closeHandlers = []; #opened = false;
+
+  #failPending(select, createError) {
+    for (const [id, entry] of [...this.#pending]) {
+      if (select && !select(entry)) continue;
+      this.#pending.delete(id);
+      entry.reject(createError(entry));
+    }
+  }
+
+  #failPendingOnClose(event) {
+    const code = event?.code;
+    const reason = event?.reason;
+    const detail = [
+      code != null && code !== '' ? `code=${code}` : null,
+      reason ? `reason=${reason}` : null,
+    ].filter(Boolean).join(', ');
+    const suffix = detail ? ` (${detail})` : '';
+    this.#failPending(null, entry =>
+      new Error(`CDP websocket closed while waiting for ${entry.method}${suffix}`)
+    );
+    for (const handler of this.#closeHandlers) handler();
+  }
+
+  #failPendingOnDetach(msg) {
+    const reason = msg?.params?.reason || 'unknown';
+    const sessionId = msg?.sessionId;
+    this.#failPending(
+      sessionId ? entry => entry.sessionId === sessionId : null,
+      entry => new Error(`CDP Inspector.detached while waiting for ${entry.method} (reason=${reason})`)
+    );
+  }
 
   async connect(wsUrl) {
     return new Promise((res, rej) => {
       this.#ws = new WebSocket(wsUrl);
-      this.#ws.onopen = () => res();
-      this.#ws.onerror = (e) => rej(new Error('WebSocket error: ' + (e.message || e.type)));
-      this.#ws.onclose = () => this.#closeHandlers.forEach(h => h());
+      this.#ws.onopen = () => {
+        this.#opened = true;
+        res();
+      };
+      this.#ws.onerror = (e) => {
+        if (!this.#opened) {
+          rej(new Error('WebSocket error: ' + (e.message || e.type)));
+          return;
+        }
+        this.#failPending(null, entry =>
+          new Error(`CDP websocket closed while waiting for ${entry.method}`)
+        );
+      };
+      this.#ws.onclose = (event) => this.#failPendingOnClose(event);
       this.#ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data);
+        if (msg.method === 'Inspector.detached') this.#failPendingOnDetach(msg);
         if (msg.id && this.#pending.has(msg.id)) {
           const { resolve, reject } = this.#pending.get(msg.id);
           this.#pending.delete(msg.id);
@@ -2027,6 +2070,8 @@ class CDP {
     return new Promise((resolve, reject) => {
       let timer;
       this.#pending.set(id, {
+        method,
+        sessionId,
         resolve: (value) => {
           clearTimeout(timer);
           resolve(value);
@@ -2038,7 +2083,13 @@ class CDP {
       });
       const msg = { id, method, params };
       if (sessionId) msg.sessionId = sessionId;
-      this.#ws.send(JSON.stringify(msg));
+      try {
+        this.#ws.send(JSON.stringify(msg));
+      } catch {
+        this.#pending.delete(id);
+        reject(new Error(`CDP websocket closed while waiting for ${method}`));
+        return;
+      }
       timer = setTimeout(() => {
         if (this.#pending.has(id)) {
           this.#pending.delete(id);
@@ -3152,7 +3203,13 @@ async function navStr(cdp, sid, url) {
   validateUrl(url);
   await cdpDomains(cdp).Page.enable( {}, sid);
   const loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
-  const result = await cdpDomains(cdp).Page.navigate( { url }, sid);
+  let result;
+  try {
+    result = await cdpDomains(cdp).Page.navigate( { url }, sid);
+  } catch (e) {
+    loadEvent.cancel();
+    throw e;
+  }
   if (result.errorText) {
     loadEvent.cancel();
     throw new Error(result.errorText);
