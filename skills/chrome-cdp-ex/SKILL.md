@@ -30,7 +30,7 @@ Take action immediately; do not just read this file.
 
 Start with `perceive`, not screenshots. Golden-path `perceive <target> -C -d 8` prefers `main` / `[role=main]` / `article` text over skip-links and nav chrome; visible controls are a short list after the body. If the body is still truncated it prints `Body truncated. Next: cdp text <target> --auto`. Use `text <target> --auto` when the question is "what does this page say". Use `elshot` for one element when visual judgment matters, `shot --annotate` for a viewport ref map, `scanshot` only for full-page pixel review, and `record` when the question is about sequence or cause-and-effect over time.
 
-Refresh `@ref` handles after navigation, DOM rewrites, modal changes, or failed stale-ref actions by running `perceive <target> -C -d 8` again. For scripts or loops, prefer stable CSS selectors over old `@ref` values.
+Refresh `@ref` handles after navigation, DOM rewrites, modal changes, or failed stale-ref actions by running `perceive <target> -C -d 8` again. For scripts or loops, prefer stable CSS selectors over old `@ref` values. If `Focused:` is an input/search, blur it first (`press Escape`) or `perceive -s main` — an open typeahead can replace the page body.
 
 ## Prerequisites
 

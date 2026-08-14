@@ -7837,8 +7837,110 @@ function validateUrl(url) {
 
 // Perceive: enriched accessibility tree with inline visual layout annotations
 // Options parsed from args: --diff, --selector <sel>, --interactive/-i, --depth <N>, --cursor-interactive/-C
+const TYPEAHEAD_OMITTED_NOTICE = 'Focused search/typeahead — suggestions omitted. Next: press Escape or perceive -s main';
+const TYPEAHEAD_FOCUS_ROLES = new Set(['searchbox', 'combobox']);
+const TYPEAHEAD_POPUP_ROLES = new Set(['listbox', 'option']);
+
+function pickPrimaryScrollMetrics(candidates, opts) {
+  const significancePx = opts && Number.isFinite(opts.significancePx) ? opts.significancePx : 80;
+  if (!candidates || candidates.length === 0) {
+    return { scrollY: 0, scrollMax: 0, source: 'document' };
+  }
+  function metric(candidate, fallbackSource) {
+    const scrollHeight = Number(candidate && candidate.scrollHeight) || 0;
+    const clientHeight = Number(candidate && candidate.clientHeight) || 0;
+    const scrollTop = Number(candidate && candidate.scrollTop) || 0;
+    return {
+      scrollY: Math.round(scrollTop),
+      scrollMax: Math.round(Math.max(0, scrollHeight - clientHeight)),
+      source: (candidate && candidate.source) || fallbackSource,
+    };
+  }
+  let best = metric(candidates[0], 'document');
+  for (let i = 1; i < candidates.length; i++) {
+    const next = metric(candidates[i], 'inner');
+    if (best.scrollMax === 0 && next.scrollMax > 0) best = next;
+    else if (next.scrollMax > best.scrollMax + significancePx) best = next;
+  }
+  return best;
+}
+
+function axNodeRole(node) {
+  return String(node?.role?.value || node?.role || '');
+}
+
+function axNodeProp(node, name) {
+  const props = node?.properties;
+  if (!Array.isArray(props)) return undefined;
+  for (const prop of props) {
+    const propName = prop?.name?.value || prop?.name;
+    if (propName === name) return prop?.value?.value ?? prop?.value;
+  }
+  return undefined;
+}
+
+function isDomSearchFocus(focusedDesc) {
+  if (!focusedDesc || focusedDesc === 'none') return false;
+  const s = String(focusedDesc);
+  if (!/^<(input|textarea)\b/i.test(s)) return false;
+  const id = (s.match(/#([^>.\s]+)/) || [])[1] || '';
+  const cls = (s.match(/\.([^>\s]+)/) || [])[1] || '';
+  const tokens = `${id} ${cls}`.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  return tokens.some(token => (
+    token === 'search' || token === 'searchbox' || token === 'combobox'
+    || token === 'typeahead' || token === 'autocomplete'
+  ));
+}
+
+function selectorTargetsTypeaheadInput(selector) {
+  if (selector == null) return false;
+  const s = String(selector).trim().toLowerCase();
+  if (!s) return false;
+  if (s === 'main' || s === 'article' || s === 'body' || s === 'html') return false;
+  if (/^(main|article|body|html)[.#:>[]/.test(s)) return false;
+  if (/\b(?:input|textarea|select)\b/.test(s)) return true;
+  if (/\[role\s*=\s*['"]?(?:searchbox|combobox|textbox|listbox)\b/.test(s)) return true;
+  if (/\b(?:searchbox|combobox|typeahead|autocomplete)\b/.test(s)) return true;
+  if (/(?:^|[\s.#:[])search\b/.test(s)) return true;
+  return false;
+}
+
+function omitTypeaheadListboxNodes(nodes, opts = {}) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  if (opts.keepTypeahead || selectorTargetsTypeaheadInput(opts.selector)) {
+    return { nodes: list, omitted: false };
+  }
+  const focusedSearch = list.some(node => {
+    const focused = axNodeProp(node, 'focused');
+    return (focused === true || focused === 'true') && TYPEAHEAD_FOCUS_ROLES.has(axNodeRole(node));
+  });
+  if (!focusedSearch && !isDomSearchFocus(opts.focusedDesc)) {
+    return { nodes: list, omitted: false };
+  }
+  const childrenByParent = new Map();
+  for (const node of list) {
+    if (!node?.parentId) continue;
+    if (!childrenByParent.has(node.parentId)) childrenByParent.set(node.parentId, []);
+    childrenByParent.get(node.parentId).push(node);
+  }
+  const omitIds = new Set();
+  function markSubtree(nodeId) {
+    if (omitIds.has(nodeId)) return;
+    omitIds.add(nodeId);
+    for (const child of (childrenByParent.get(nodeId) || [])) markSubtree(child.nodeId);
+  }
+  let foundPopup = false;
+  for (const node of list) {
+    if (!TYPEAHEAD_POPUP_ROLES.has(axNodeRole(node))) continue;
+    foundPopup = true;
+    markSubtree(node.nodeId);
+  }
+  if (!foundPopup) return { nodes: list, omitted: false };
+  return { nodes: list.filter(node => !omitIds.has(node.nodeId)), omitted: true };
+}
+
 const PERCEIVE_COMPACT_FLAGS =
-  '--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel';
+  '--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel | --keep-typeahead';
 
 function unknownPerceiveOption(token) {
   throw new Error(`unknown option ${token}\nperceive compact flags: ${PERCEIVE_COMPACT_FLAGS}`);
@@ -7848,7 +7950,7 @@ function parsePerceiveArgs(args) {
   const opts = {
     diff: false, selector: null, exclude: null,
     interactive: false, maxDepth: Infinity, cursorInteractive: false,
-    keepRefs: false, last: null, adaptive: false, sinceAction: false, frameRef: null,
+    keepRefs: false, keepTypeahead: false, last: null, adaptive: false, sinceAction: false, frameRef: null,
   };
   const requireValue = (flag, index, label) => {
     const value = args[index + 1];
@@ -7876,6 +7978,7 @@ function parsePerceiveArgs(args) {
       opts.maxDepth = parseInt(requireValue(a, i, 'a depth')) || Infinity;
       i++;
     } else if (a === '-C' || a === '--cursor-interactive') opts.cursorInteractive = true;
+    else if (a === '--keep-typeahead') opts.keepTypeahead = true;
     else if (a === '--keep-refs') opts.keepRefs = true;
     else if (a === '--adaptive') opts.adaptive = true;
     else if (a === '--last') {
@@ -8898,9 +9001,43 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
 function perceivePageScript(cursorInteractive) {
   return `(function() {
 ${visibleControlsCollectorSource()}
+      const pickPrimaryScrollMetrics = ${pickPrimaryScrollMetrics.toString()};
       const vw = window.innerWidth, vh = window.innerHeight;
-      const scrollY = Math.round(window.scrollY);
-      const scrollMax = Math.round(document.documentElement.scrollHeight - window.innerHeight);
+      const scrollingEl = document.scrollingElement || document.documentElement;
+      const scrollCandidates = [];
+      function pushScrollCandidate(el, source) {
+        if (!el) return;
+        const isDocument = el === scrollingEl || el === document.documentElement;
+        scrollCandidates.push({
+          scrollTop: isDocument ? (el.scrollTop || window.scrollY || 0) : (el.scrollTop || 0),
+          scrollHeight: el.scrollHeight || 0,
+          clientHeight: isDocument ? (el.clientHeight || window.innerHeight || 0) : (el.clientHeight || 0),
+          source: source
+        });
+      }
+      pushScrollCandidate(scrollingEl, 'document');
+      if (document.body && document.body !== scrollingEl) pushScrollCandidate(document.body, 'body');
+      const seenScrollers = new Set();
+      const walk = [document.documentElement, document.body].filter(Boolean);
+      let inspected = 0;
+      while (walk.length && inspected < 400) {
+        const el = walk.pop();
+        if (!el || seenScrollers.has(el)) continue;
+        seenScrollers.add(el);
+        inspected++;
+        let overflowY = '';
+        try { overflowY = window.getComputedStyle(el).overflowY || ''; } catch {}
+        if (el !== scrollingEl && /(auto|scroll|overlay)/.test(overflowY)) {
+          pushScrollCandidate(el, 'inner');
+        }
+        const children = el.children;
+        if (children) {
+          for (let i = 0; i < children.length; i++) walk.push(children[i]);
+        }
+      }
+      const scrollMetrics = pickPrimaryScrollMetrics(scrollCandidates);
+      const scrollY = scrollMetrics.scrollY;
+      const scrollMax = scrollMetrics.scrollMax;
 
       // Interactive element counts
       const counts = {};
@@ -9117,7 +9254,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   const {
     diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null,
     interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false,
-    keepRefs = false, last = null, adaptive = false, sinceAction = false, diffBaseline = null,
+    keepRefs = false, keepTypeahead = false, last = null, adaptive = false, sinceAction = false, diffBaseline = null,
     frameRef = null,
   } = opts;
   const frameContext = frameRef ? await resolveFrameRef(cdp, sid, frameRef) : null;
@@ -9182,6 +9319,13 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     }
     axNodes = filterPerceiveExcludedAxNodes(axNodes, excludedBackendNodeIds, describedNodesByBackendId);
   }
+
+  const typeaheadFilter = omitTypeaheadListboxNodes(axNodes, {
+    keepTypeahead,
+    selector: scopeSelector,
+    focusedDesc: meta.focused,
+  });
+  axNodes = typeaheadFilter.nodes;
 
   const activeRefMap = frame ? new Map() : refMap;
   const builtTree = buildPerceiveTree(axNodes, meta, activeRefMap, {
@@ -9297,6 +9441,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
 
   const scrollPct = meta.scrollMax > 0 ? Math.round(meta.scrollY / meta.scrollMax * 100) : 0;
   lines.push(`Viewport: ${meta.vw}×${meta.vh} | Scroll: ${meta.scrollY}/${meta.scrollMax > 0 ? meta.scrollMax : 0} (${scrollPct}%) | Focused: ${meta.focused}`);
+  if (typeaheadFilter.omitted) lines.push(TYPEAHEAD_OMITTED_NOTICE);
 
   const countParts = Object.entries(meta.counts).map(([k, v]) => `${v} ${k}`);
   lines.push(`Interactive: ${countParts.length > 0 ? countParts.join(', ') : 'none'}`);
@@ -17688,6 +17833,7 @@ Usage: cdp <command> [args]
                                     -i / --interactive: only show interactive elements
                                     -d N / --depth N: limit tree depth
                                     -C / --cursor-interactive: include non-ARIA clickable elements (@c refs)
+                                    --keep-typeahead: keep focused search suggestion listbox in the tree
 {{command:snap}}
 {{command:controls}}
 {{command:eval}}
@@ -19848,7 +19994,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // AX tree helpers
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
-  parsePerceiveArgs, buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
+  parsePerceiveArgs, pickPrimaryScrollMetrics, omitTypeaheadListboxNodes, TYPEAHEAD_OMITTED_NOTICE,
+  buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
   filterPerceiveExcludedAxNodes, perceiveInteractiveNoiseHint,
   parseControlsArgs, visibleControlsCollectorSource, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,

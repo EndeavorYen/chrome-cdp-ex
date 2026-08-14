@@ -308,7 +308,7 @@ function domainInvocations() {
     {
       domain: 'Accessibility',
       methods: ['Accessibility.getFullAXTree', 'Runtime.evaluate'],
-      callDigest: '1a0197ef9f5960d9db6503ec8bd74eb4bc29a77a12111bb52d72c8876ff4522e',
+      callDigest: '1ec5b4aa93d9cdbeee336c0222a942a1a34dd55a89d7d257631c620e274b300e',
       result: 'Page: Fixture — http://127.0.0.1/fixture\nViewport: 800×600 | Scroll: 0/0 (0%) | Focused: null\nInteractive: none\nConsole: clean\nCoords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)\n',
       invoke: cdp => cdpTest.perceiveStr(
         cdp,
