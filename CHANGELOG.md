@@ -10,6 +10,14 @@
   Collection requires an explicit scroll container, stable identity, and MCP
   `confirm: true`; standalone `loadall` does not preserve recycled rows (#151).
 
+### Setup
+
+* `setup.mjs --for hermes --write` copies the skill into
+  `~/.hermes/skills/chrome-cdp-ex` (or `$HERMES_HOME/skills`). Print-only
+  `--for hermes` now prints the resolved destination instead of
+  `<hermes-skills-dir>`. `doctor` treats Hermes, Claude, and Codex skill
+  paths as first-class installs (#154).
+
 ### Agent reliability
 
 * Preserve ambiguous completion when a side-effect-capable daemon request loses
