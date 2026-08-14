@@ -14,6 +14,9 @@
 
 * Reject unknown `perceive` flags with compact-flag help and a non-zero exit
   instead of silently dumping the full page (#158).
+* Pending CDP requests now fail on socket close / `Inspector.detached` instead of
+  aging into `Timeout: Page.navigate`. A navigation load waiter is cancelled when
+  `Page.navigate` throws (#144).
 * Preserve ambiguous completion when a side-effect-capable daemon request loses
   its response. CLI remains non-zero and MCP remains `isError: true`, while the
   error now reports `completion: "unknown"`, `sideEffectMayHaveOccurred: true`,

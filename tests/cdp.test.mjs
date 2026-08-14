@@ -10,7 +10,7 @@ import { buildTableSamplerExpression } from '../skills/chrome-cdp-ex/scripts/lib
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const {
-  RingBuffer, resolvePrefix, getDisplayPrefixLength, sockPath,
+  RingBuffer, CDP, resolvePrefix, getDisplayPrefixLength, sockPath,
   shouldShowAxNode, formatAxNode, orderedAxChildren, isRef,
   validateUrl, parsePerceiveArgs, dialogStr, netlogStr,
   formatPageList, buildPerceiveTree, perceivePageScript, perceiveStr, injectStr, cascadeStr, recordStr, parseRecordArgs,
@@ -103,6 +103,151 @@ describe('RingBuffer', () => {
     expect(buf.all()).toHaveLength(1);
     expect(buf.all()[0]._seq).toBe(2);
     expect(buf.since(1)).toHaveLength(1);
+  });
+});
+
+// =========================================================================
+// CDP pending command rejection (#144)
+// =========================================================================
+
+function installFakeWebSocket() {
+  const sockets = [];
+  class FakeWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 3;
+    constructor(url) {
+      this.url = url;
+      this.readyState = FakeWebSocket.CONNECTING;
+      this.onopen = null;
+      this.onclose = null;
+      this.onerror = null;
+      this.onmessage = null;
+      sockets.push(this);
+      queueMicrotask(() => {
+        if (this.readyState !== FakeWebSocket.CONNECTING) return;
+        this.readyState = FakeWebSocket.OPEN;
+        this.onopen?.({ type: 'open' });
+      });
+    }
+    send(data) {
+      this.lastSent = data;
+    }
+    close(code = 1006, reason = '') {
+      if (this.readyState === FakeWebSocket.CLOSED) return;
+      this.readyState = FakeWebSocket.CLOSED;
+      this.onclose?.({ type: 'close', code, reason: String(reason), wasClean: false });
+    }
+    emit(payload) {
+      this.onmessage?.({ data: JSON.stringify(payload) });
+    }
+  }
+  const previous = globalThis.WebSocket;
+  globalThis.WebSocket = FakeWebSocket;
+  return {
+    sockets,
+    restore() { globalThis.WebSocket = previous; },
+  };
+}
+
+async function connectFakeCdp(fake) {
+  const cdp = new CDP();
+  await cdp.connect('ws://pending-cdp.test/devtools');
+  return { cdp, socket: fake.sockets.at(-1) };
+}
+
+function expectLifecycleError(err, pattern) {
+  expect(err).toBeInstanceOf(Error);
+  expect(err.message).toMatch(pattern);
+  expect(err.message).not.toMatch(/^Timeout:/);
+  expect(err.message).not.toMatch(/click Allow/i);
+  expect(err.message).not.toMatch(/Allow debugging/i);
+}
+
+function settlePromptly(promise, timeoutMs = 200, timeoutMessage = 'pending send did not reject promptly') {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).then(
+      value => ({ status: 'resolved', value }),
+      error => ({ status: 'rejected', error })
+    ).finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    }),
+  ]);
+}
+
+describe('CDP pending command rejection', () => {
+  let fake;
+
+  beforeEach(() => {
+    fake = installFakeWebSocket();
+  });
+
+  afterEach(() => {
+    fake?.restore();
+  });
+
+  it('rejects pending send() promptly on websocket close, not Timeout', async () => {
+    const { cdp, socket } = await connectFakeCdp(fake);
+    const pending = cdp.send('Page.navigate', { url: 'https://example.com' });
+    const started = Date.now();
+    socket.close(1006, 'going away');
+
+    const settled = await settlePromptly(pending);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(settled.status).toBe('rejected');
+    expectLifecycleError(settled.error, /CDP websocket closed while waiting for Page\.navigate/);
+    expect(settled.error.message).toMatch(/1006/);
+    expect(settled.error.message).toMatch(/going away/);
+  });
+
+  it('rejects pending send() on session-scoped Inspector.detached', async () => {
+    const { cdp, socket } = await connectFakeCdp(fake);
+    const pending = cdp.send('Page.navigate', { url: 'https://example.com' }, 'sid-1');
+    const other = cdp.send('Runtime.evaluate', { expression: '1' }, 'sid-2');
+    const started = Date.now();
+    socket.emit({
+      method: 'Inspector.detached',
+      params: { reason: 'target_closed' },
+      sessionId: 'sid-1',
+    });
+
+    const settled = await settlePromptly(pending);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(settled.status).toBe('rejected');
+    expectLifecycleError(settled.error, /detached while waiting for Page\.navigate/);
+    expect(settled.error.message).toMatch(/target_closed/);
+    socket.emit({
+      id: JSON.parse(socket.lastSent).id,
+      result: { result: { value: 1 } },
+    });
+    await expect(other).resolves.toEqual({ result: { value: 1 } });
+  });
+
+  it('rejects every pending send() when Inspector.detached has no sessionId', async () => {
+    const { cdp, socket } = await connectFakeCdp(fake);
+    const first = cdp.send('Page.navigate', { url: 'https://example.com' }, 'sid-1');
+    const second = cdp.send('Runtime.evaluate', { expression: '1' });
+    const started = Date.now();
+    socket.emit({
+      method: 'Inspector.detached',
+      params: { reason: 'replaced' },
+    });
+
+    const [firstSettled, secondSettled] = await Promise.race([
+      Promise.all([settlePromptly(first), settlePromptly(second)]),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('pending sends did not reject promptly')), 200);
+      }),
+    ]);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(firstSettled.status).toBe('rejected');
+    expect(secondSettled.status).toBe('rejected');
+    expectLifecycleError(firstSettled.error, /detached while waiting for Page\.navigate/);
+    expectLifecycleError(secondSettled.error, /detached while waiting for Runtime\.evaluate/);
+    expect(firstSettled.error.message).toMatch(/replaced/);
+    expect(secondSettled.error.message).toMatch(/replaced/);
   });
 });
 
@@ -7223,6 +7368,30 @@ describe('navStr', () => {
     });
     await expect(navStr(cdp, 'sid1', 'https://bad.invalid'))
       .rejects.toThrow('net::ERR_NAME_NOT_RESOLVED');
+  });
+
+  it('cancels the load waiter when Page.navigate throws', async () => {
+    let cancelled = false;
+    const cdp = {
+      send(method) {
+        if (method === 'Page.navigate') {
+          return Promise.reject(new Error('CDP websocket closed while waiting for Page.navigate'));
+        }
+        return Promise.resolve({});
+      },
+      waitForEvent() {
+        return {
+          promise: new Promise(() => {}),
+          cancel() { cancelled = true; },
+        };
+      },
+    };
+
+    const started = Date.now();
+    await expect(navStr(cdp, 'sid1', 'https://example.com'))
+      .rejects.toThrow(/websocket closed while waiting for Page\.navigate/);
+    expect(cancelled).toBe(true);
+    expect(Date.now() - started).toBeLessThan(200);
   });
 
   it('should reject non-http URLs', async () => {
