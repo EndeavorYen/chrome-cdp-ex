@@ -108,6 +108,13 @@ import {
   isCommandSurface,
   projectCliCommands,
 } from './lib/command-surface.mjs';
+import {
+  NODE22_MISSING_HINT,
+  discoverNode22,
+  formatNodeRerunCommand,
+  nodeMajor,
+  resolveChromeCdpNodeLaunch,
+} from './lib/node-runtime.mjs';
 
 const TIMEOUT = 15000;
 const SCREENSHOT_TIMEOUT = 30000;
@@ -123,9 +130,8 @@ const IDLE_TIMEOUT = 20 * 60 * 1000;
 const FIRE_AND_FORGET_KEEPALIVE = 60 * 60 * 1000;
 const DAEMON_CONNECT_RETRIES = 20;
 const DAEMON_CONNECT_DELAY = 300;
-const DAEMON_ALLOW_RETRIES = 200;  // For open --attach: 200 * 300ms = 60s
 const DAEMON_ALLOW_DELAY = 300;
-const DEFAULT_OPEN_ATTACH_TIMEOUT_MS = DAEMON_ALLOW_RETRIES * DAEMON_ALLOW_DELAY;
+const DEFAULT_OPEN_ATTACH_TIMEOUT_MS = 5000;
 const DEFAULT_OPEN_READY_TIMEOUT_MS = 5000;
 const MIN_TARGET_PREFIX_LEN = 8;
 const MAX_ACTION_LOG_ENTRIES = 100;
@@ -2000,16 +2006,59 @@ function getDisplayPrefixLength(targetIds) {
 // ---------------------------------------------------------------------------
 
 class CDP {
-  #ws; #id = 0; #pending = new Map(); #eventHandlers = new Map(); #closeHandlers = [];
+  #ws; #id = 0; #pending = new Map(); #eventHandlers = new Map(); #closeHandlers = []; #opened = false;
+
+  #failPending(select, createError) {
+    for (const [id, entry] of [...this.#pending]) {
+      if (select && !select(entry)) continue;
+      this.#pending.delete(id);
+      entry.reject(createError(entry));
+    }
+  }
+
+  #failPendingOnClose(event) {
+    const code = event?.code;
+    const reason = event?.reason;
+    const detail = [
+      code != null && code !== '' ? `code=${code}` : null,
+      reason ? `reason=${reason}` : null,
+    ].filter(Boolean).join(', ');
+    const suffix = detail ? ` (${detail})` : '';
+    this.#failPending(null, entry =>
+      new Error(`CDP websocket closed while waiting for ${entry.method}${suffix}`)
+    );
+    for (const handler of this.#closeHandlers) handler();
+  }
+
+  #failPendingOnDetach(msg) {
+    const reason = msg?.params?.reason || 'unknown';
+    const sessionId = msg?.sessionId;
+    this.#failPending(
+      sessionId ? entry => entry.sessionId === sessionId : null,
+      entry => new Error(`CDP Inspector.detached while waiting for ${entry.method} (reason=${reason})`)
+    );
+  }
 
   async connect(wsUrl) {
     return new Promise((res, rej) => {
       this.#ws = new WebSocket(wsUrl);
-      this.#ws.onopen = () => res();
-      this.#ws.onerror = (e) => rej(new Error('WebSocket error: ' + (e.message || e.type)));
-      this.#ws.onclose = () => this.#closeHandlers.forEach(h => h());
+      this.#ws.onopen = () => {
+        this.#opened = true;
+        res();
+      };
+      this.#ws.onerror = (e) => {
+        if (!this.#opened) {
+          rej(new Error('WebSocket error: ' + (e.message || e.type)));
+          return;
+        }
+        this.#failPending(null, entry =>
+          new Error(`CDP websocket closed while waiting for ${entry.method}`)
+        );
+      };
+      this.#ws.onclose = (event) => this.#failPendingOnClose(event);
       this.#ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data);
+        if (msg.method === 'Inspector.detached') this.#failPendingOnDetach(msg);
         if (msg.id && this.#pending.has(msg.id)) {
           const { resolve, reject } = this.#pending.get(msg.id);
           this.#pending.delete(msg.id);
@@ -2029,6 +2078,8 @@ class CDP {
     return new Promise((resolve, reject) => {
       let timer;
       this.#pending.set(id, {
+        method,
+        sessionId,
         resolve: (value) => {
           clearTimeout(timer);
           resolve(value);
@@ -2040,7 +2091,13 @@ class CDP {
       });
       const msg = { id, method, params };
       if (sessionId) msg.sessionId = sessionId;
-      this.#ws.send(JSON.stringify(msg));
+      try {
+        this.#ws.send(JSON.stringify(msg));
+      } catch {
+        this.#pending.delete(id);
+        reject(new Error(`CDP websocket closed while waiting for ${method}`));
+        return;
+      }
       timer = setTimeout(() => {
         if (this.#pending.has(id)) {
           this.#pending.delete(id);
@@ -3154,7 +3211,13 @@ async function navStr(cdp, sid, url) {
   validateUrl(url);
   await cdpDomains(cdp).Page.enable( {}, sid);
   const loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
-  const result = await cdpDomains(cdp).Page.navigate( { url }, sid);
+  let result;
+  try {
+    result = await cdpDomains(cdp).Page.navigate( { url }, sid);
+  } catch (e) {
+    loadEvent.cancel();
+    throw e;
+  }
   if (result.errorText) {
     loadEvent.cancel();
     throw new Error(result.errorText);
@@ -3522,7 +3585,6 @@ const MAX_ACTION_DELTA_ENTRIES = 5;
 const MAX_ACTION_JSON_DOM_DIFF_CHARS = 800;
 const FILL_TYPEAHEAD_LIMIT = 10;
 const FILL_TYPEAHEAD_MAX_CHARS = 80;
-const TYPEAHEAD_REROOT_THRESHOLD = 40;
 const DEFAULT_REPORT_ACTION_LIMIT = 20;
 const DEFAULT_REPORT_JSON_BYTES_MAX = 64 * 1024;
 const DEFAULT_STALE_ARTIFACT_HOURS = 24;
@@ -4609,6 +4671,8 @@ function compactFillReceiptForJson(result = {}) {
 function shouldUseCompactFillReceipt(result, { compact = false, qa = false, full = false } = {}) {
   return result?.action === 'fill'
     && result?.dispatch?.ok !== false
+    && result?.settle?.ok !== false
+    && result?.outcome?.needsAttention !== true
     && full !== true
     && compact !== true
     && qa !== true;
@@ -7536,26 +7600,50 @@ function validateUrl(url) {
 
 // Perceive: enriched accessibility tree with inline visual layout annotations
 // Options parsed from args: --diff, --selector <sel>, --interactive/-i, --depth <N>, --cursor-interactive/-C
+const PERCEIVE_COMPACT_FLAGS =
+  '--last N | --adaptive | --qa | --summary | -i | -C | -d N | -x sel | -s sel';
+
+function unknownPerceiveOption(token) {
+  throw new Error(`unknown option ${token}\nperceive compact flags: ${PERCEIVE_COMPACT_FLAGS}`);
+}
+
 function parsePerceiveArgs(args) {
   const opts = {
     diff: false, selector: null, exclude: null,
     interactive: false, maxDepth: Infinity, cursorInteractive: false,
     keepRefs: false, last: null, adaptive: false, sinceAction: false, frameRef: null,
   };
+  const requireValue = (flag, index, label) => {
+    const value = args[index + 1];
+    if (value === undefined || value === '' || String(value).startsWith('-')) {
+      throw new Error(`${flag} requires ${label}`);
+    }
+    return value;
+  };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (!String(a).startsWith('-')) continue;
     if (a === '--diff') opts.diff = true;
     else if (a === '--since-action') opts.sinceAction = true;
-    else if (a === '-F' || a === '--frame') opts.frameRef = args[++i] || null;
-    else if (a === '-s' || a === '--selector') opts.selector = args[++i];
-    else if (a === '-x' || a === '--exclude') opts.exclude = args[++i];
-    else if (a === '-i' || a === '--interactive') opts.interactive = true;
-    else if (a === '-d' || a === '--depth') opts.maxDepth = parseInt(args[++i]) || Infinity;
-    else if (a === '-C' || a === '--cursor-interactive') opts.cursorInteractive = true;
+    else if (a === '-F' || a === '--frame') {
+      opts.frameRef = requireValue(a, i, 'a frame ref');
+      i++;
+    } else if (a === '-s' || a === '--selector') {
+      opts.selector = requireValue(a, i, 'a CSS selector');
+      i++;
+    } else if (a === '-x' || a === '--exclude') {
+      opts.exclude = requireValue(a, i, 'a CSS selector');
+      i++;
+    } else if (a === '-i' || a === '--interactive') opts.interactive = true;
+    else if (a === '-d' || a === '--depth') {
+      opts.maxDepth = parseInt(requireValue(a, i, 'a depth')) || Infinity;
+      i++;
+    } else if (a === '-C' || a === '--cursor-interactive') opts.cursorInteractive = true;
     else if (a === '--keep-refs') opts.keepRefs = true;
     else if (a === '--adaptive') opts.adaptive = true;
     else if (a === '--last') {
-      const raw = args[++i];
+      const raw = requireValue(a, i, 'N or auto');
+      i++;
       if (raw === 'auto') {
         opts.last = 'auto';
         opts.adaptive = true;
@@ -7563,6 +7651,8 @@ function parsePerceiveArgs(args) {
         const n = parseInt(raw);
         opts.last = Number.isFinite(n) && n > 0 ? n : null;
       }
+    } else {
+      unknownPerceiveOption(a);
     }
   }
   return opts;
@@ -7586,6 +7676,59 @@ function chooseAdaptivePerceiveLast({
   if (interactiveCount > 40) budget = Math.min(budget, 22);
   if (interactiveCount > 80) budget = Math.min(budget, 16);
   return Math.max(8, Math.min(80, budget));
+}
+
+const PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP = 8;
+const PERCEIVE_CHROME_MAX_RELATIVE_DEPTH = 2;
+const PERCEIVE_CHROME_LINE_CAP = 12;
+const PERCEIVE_CONTENT_LANDMARK_ROLES = new Set(['main', 'article']);
+const PERCEIVE_CHROME_LANDMARK_ROLES = new Set(['navigation', 'banner', 'complementary']);
+
+function isSkipLinkName(name) {
+  return /^\s*skip\b/i.test(String(name || ''));
+}
+
+// Skip-link @ref deprioritization is shared with #163 (doctor probe should not
+// click Skip-to-content first). This path only stops skip-links from taking @1
+// on golden-path perceive; it does not own the full #163 probe policy.
+function isSkipLinkAxNode(node) {
+  const role = node.role?.value || '';
+  if (!INTERACTIVE_ROLES.has(role)) return false;
+  return isSkipLinkName(node.name?.value);
+}
+
+function countsTowardPerceiveDepth(node) {
+  const role = node.role?.value || '';
+  return role !== 'none' && role !== 'generic' && role !== 'InlineTextBox';
+}
+
+function isPerceiveBodyTextRole(role) {
+  return role === 'StaticText' || role === 'paragraph' || role === 'heading';
+}
+
+function perceiveCursorSurfaceLimit(opts = {}) {
+  const defaultCap = PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP;
+  const { last = null, adaptive = false } = opts;
+  if (Number.isFinite(last) && last > 0) return last;
+  if (last === 'auto' || adaptive) {
+    const budget = chooseAdaptivePerceiveLast({
+      lineCount: Number(opts.lineCount || 0),
+      consoleErrors: Number(opts.consoleErrors || 0),
+      interactiveCount: Number(opts.interactiveCount || 0),
+      hasPriorityText: Boolean(opts.hasPriorityText),
+    });
+    return Math.max(4, Math.min(defaultCap, Math.ceil(budget / 6)));
+  }
+  return defaultCap;
+}
+
+function rankPerceiveCursorItems(items, nameOf) {
+  const skip = [];
+  const rest = [];
+  for (const item of items || []) {
+    (isSkipLinkName(nameOf(item)) ? skip : rest).push(item);
+  }
+  return rest.concat(skip);
 }
 
 function parseControlsArgs(args) {
@@ -7901,6 +8044,126 @@ function filterAxNodesToBackendSubtree(axNodes, backendNodeIds) {
   return axNodes.filter(included);
 }
 
+function axRoleValue(node) {
+  const role = node?.role;
+  if (typeof role === 'string') return role.toLowerCase();
+  if (role && typeof role.value === 'string') return role.value.toLowerCase();
+  return '';
+}
+
+function isMainLandmarkRole(role) {
+  const value = String(role || '').toLowerCase();
+  return value === 'main' || value === 'article';
+}
+
+function parseDomAttributeMap(attributes) {
+  const map = Object.create(null);
+  if (!Array.isArray(attributes)) return map;
+  for (let i = 0; i + 1 < attributes.length; i += 2) {
+    map[String(attributes[i]).toLowerCase()] = String(attributes[i + 1]);
+  }
+  return map;
+}
+
+function isMainContentDomNode(node) {
+  if (!node || typeof node !== 'object') return false;
+  const name = String(node.nodeName || node.localName || '').toLowerCase();
+  if (name === 'main' || name === 'article') return true;
+  const attrs = parseDomAttributeMap(node.attributes);
+  const role = String(attrs.role || '').toLowerCase();
+  if (role === 'main' || role === 'article') return true;
+  const className = String(attrs.class || attrs.classname || '');
+  return className.split(/\s+/).includes('mdx-content');
+}
+
+function walkDescribedDomNodes(node, visit) {
+  if (!node || typeof node !== 'object') return;
+  visit(node);
+  for (const key of ['children', 'shadowRoots', 'pseudoElements', 'distributedNodes']) {
+    for (const child of node[key] || []) walkDescribedDomNodes(child, visit);
+  }
+  if (node.contentDocument) walkDescribedDomNodes(node.contentDocument, visit);
+  if (node.templateContent) walkDescribedDomNodes(node.templateContent, visit);
+}
+
+function domNodeContainsMainContent(node) {
+  let found = false;
+  walkDescribedDomNodes(node, child => {
+    if (!found && isMainContentDomNode(child)) found = true;
+  });
+  return found;
+}
+
+function axChildrenByParent(axNodes) {
+  const childMap = new Map();
+  for (const n of axNodes || []) {
+    if (!n?.parentId) continue;
+    if (!childMap.has(n.parentId)) childMap.set(n.parentId, []);
+    childMap.get(n.parentId).push(n);
+  }
+  return childMap;
+}
+
+function axNodeOrDescendantIsMainLandmark(node, childMap) {
+  if (!node) return false;
+  if (isMainLandmarkRole(axRoleValue(node))) return true;
+  for (const child of childMap.get(node.nodeId) || []) {
+    if (axNodeOrDescendantIsMainLandmark(child, childMap)) return true;
+  }
+  return false;
+}
+
+function describedNodeForBackendId(describedNodesByBackendId, backendNodeId) {
+  if (!describedNodesByBackendId) return null;
+  if (describedNodesByBackendId instanceof Map) return describedNodesByBackendId.get(backendNodeId) || null;
+  return describedNodesByBackendId[backendNodeId] || null;
+}
+
+function shouldPreserveExcludedBackendNode(backendNodeId, axNodes, describedNodesByBackendId, childMap) {
+  const ax = (axNodes || []).find(n => n.backendDOMNodeId === backendNodeId);
+  if (ax && axNodeOrDescendantIsMainLandmark(ax, childMap)) return true;
+  const described = describedNodeForBackendId(describedNodesByBackendId, backendNodeId);
+  return Boolean(described && domNodeContainsMainContent(described));
+}
+
+function filterAxNodesByExcludedBackendIds(axNodes, excludedBackendNodeIds) {
+  const excludedAxIds = new Set();
+  for (const n of axNodes) {
+    if (n.backendDOMNodeId && excludedBackendNodeIds.has(n.backendDOMNodeId)) excludedAxIds.add(n.nodeId);
+  }
+  if (excludedAxIds.size === 0) return axNodes;
+  const childIdsByParent = new Map();
+  for (const n of axNodes) {
+    if (!n.parentId) continue;
+    if (!childIdsByParent.has(n.parentId)) childIdsByParent.set(n.parentId, []);
+    childIdsByParent.get(n.parentId).push(n.nodeId);
+  }
+  const queue = [...excludedAxIds];
+  while (queue.length) {
+    const id = queue.pop();
+    for (const child of (childIdsByParent.get(id) || [])) {
+      excludedAxIds.add(child);
+      queue.push(child);
+    }
+  }
+  return axNodes.filter(n => !excludedAxIds.has(n.nodeId));
+}
+
+function filterPerceiveExcludedAxNodes(axNodes, excludedBackendNodeIds, describedNodesByBackendId) {
+  if (!excludedBackendNodeIds || excludedBackendNodeIds.size === 0) return axNodes;
+  const childMap = axChildrenByParent(axNodes);
+  const safeExcluded = new Set();
+  for (const id of excludedBackendNodeIds) {
+    if (shouldPreserveExcludedBackendNode(id, axNodes, describedNodesByBackendId, childMap)) continue;
+    safeExcluded.add(id);
+  }
+  return filterAxNodesByExcludedBackendIds(axNodes, safeExcluded);
+}
+
+function perceiveInteractiveNoiseHint(count) {
+  return `(Hint: ${count} interactive elements found — most may be sidebar/nav noise. Exclude must not empty main; prefer \`text --auto\` or \`perceive -s main\`. \`perceive -x "nav, aside"\` only drops chrome that does not wrap main.)`;
+}
+
 function parsePerceiveHeader(output) {
   const lines = String(output || '').split('\n');
   const pageMatch = (lines[0] || '').match(/^Page: (.*) — (.*)$/);
@@ -8108,6 +8371,7 @@ function formatRefRect(rect) {
 function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   const { maxDepth = Infinity, interactiveOnly = false, keepRefs = false, last = null } = opts;
   // opts.adaptive + opts.consoleErrors are used by the --last auto / --adaptive budget path
+  // opts.cursorInteractive is accepted so -C ranking shares this path with last/adaptive.
 
   const nodesById = new Map(nodes.map(n => [n.nodeId, n]));
   const childrenByParent = new Map();
@@ -8140,9 +8404,13 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   refMap.clear();
   let refCounter = 0;
   const refNodeIds = [];
+  const pendingSkipRefs = [];
 
   const treeLines = [];
+  const contentBodyLines = new Set();
   const visited = new Set();
+  let chromeLinesEmitted = 0;
+  let chromeTruncationNoted = false;
 
   function markSubtreeVisited(nodeId) {
     visited.add(nodeId);
@@ -8151,22 +8419,51 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     }
   }
 
-  function visit(node, depth, parentNode = null, tableAncestorId = null) {
+  function assignInteractiveRef(node) {
+    if (!node.backendDOMNodeId) return null;
+    refCounter++;
+    refMap.set(refCounter, node.backendDOMNodeId);
+    refNodeIds.push({ ref: refCounter, backendDOMNodeId: node.backendDOMNodeId });
+    return refCounter;
+  }
+
+  function childRegion(ctx, counts) {
+    return {
+      inContent: ctx.inContent,
+      inChrome: ctx.inChrome,
+      chromeDepth: ctx.inChrome && counts ? ctx.chromeDepth + 1 : ctx.chromeDepth,
+      contentDepth: ctx.inContent && counts ? ctx.contentDepth + 1 : ctx.contentDepth,
+    };
+  }
+
+  function visit(node, depth, parentNode = null, tableAncestorId = null, ctx = {
+    inContent: false, inChrome: false, chromeDepth: 0, contentDepth: 0,
+  }) {
     if (!node || visited.has(node.nodeId)) return;
     visited.add(node.nodeId);
 
     const role = node.role?.value || '';
     const name = node.name?.value ?? '';
+    const skipLink = isSkipLinkAxNode(node);
+    const enteringContent = PERCEIVE_CONTENT_LANDMARK_ROLES.has(role) && depth <= maxDepth;
+    const inContent = ctx.inContent || enteringContent;
+    const enteringChrome = !inContent && PERCEIVE_CHROME_LANDMARK_ROLES.has(role);
+    const inChrome = !inContent && (ctx.inChrome || enteringChrome);
+    const chromeDepth = enteringChrome ? 0 : ctx.chromeDepth;
+    const contentDepth = enteringContent ? 0 : ctx.contentDepth;
+    const region = { inContent, inChrome, chromeDepth, contentDepth };
+    const counts = countsTowardPerceiveDepth(node);
+    const childDepth = counts ? depth + 1 : depth;
 
-    // Depth limit: still assign refs but don't output deeper nodes
-    if (depth > maxDepth) {
-      if (INTERACTIVE_ROLES.has(role) && node.backendDOMNodeId) {
-        refCounter++;
-        refMap.set(refCounter, node.backendDOMNodeId);
-        refNodeIds.push({ ref: refCounter, backendDOMNodeId: node.backendDOMNodeId });
+    const overChrome = inChrome && chromeDepth > PERCEIVE_CHROME_MAX_RELATIVE_DEPTH;
+    const overContent = inContent && contentDepth > maxDepth;
+    const overGlobal = !inContent && depth > maxDepth;
+    if (overChrome || overContent || overGlobal) {
+      if (INTERACTIVE_ROLES.has(role) && node.backendDOMNodeId && !skipLink) {
+        assignInteractiveRef(node);
       }
       for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
-        visit(child, depth + 1, node, tableAncestorId);
+        visit(child, childDepth, node, tableAncestorId, childRegion(region, counts));
       }
       return;
     }
@@ -8217,57 +8514,70 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     // --interactive mode: only show interactive elements and their immediate structural parents
     if (interactiveOnly && !isInteractive && !ENRICHED_ROLES.has(role)) {
       for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
-        visit(child, depth, node, tableAncestorId);
+        visit(child, depth, node, tableAncestorId, region);
       }
       return;
     }
 
     if (shouldShowAxNode(node, true, parentNode)) {
-      let line = formatAxNode(node, depth);
+      const chromeCapped = inChrome && chromeLinesEmitted >= PERCEIVE_CHROME_LINE_CAP;
+      if (chromeCapped) {
+        if (!chromeTruncationNoted) {
+          treeLines.push(formatAxNode({ role: { value: 'note' }, name: { value: '... chrome truncated' } }, depth));
+          chromeTruncationNoted = true;
+        }
+      } else {
+        let line = formatAxNode(node, depth);
 
-      // Assign @ref to interactive elements
-      if (isInteractive && node.backendDOMNodeId) {
-        refCounter++;
-        refMap.set(refCounter, node.backendDOMNodeId);
-        refNodeIds.push({ ref: refCounter, backendDOMNodeId: node.backendDOMNodeId });
-        line += `  @${refCounter}`;
-      }
-
-      // Enrich landmark/structural nodes with layout annotations
-      if (ENRICHED_ROLES.has(role)) {
-        const layout = consumeLayout(role);
-        if (layout) {
-          const parts = [];
-          if (layout.w) parts.push(`${layout.w}×${layout.h}px`);
-          else if (layout.h >= 40) parts.push(`↕${layout.h}px`);
-          if (layout.bg) parts.push(`bg:${layout.bg}`);
-          if (layout.font) parts.push(layout.font);
-          if (layout.color) parts.push(`color:${layout.color}`);
-          if (layout.display) {
-            let d = layout.display;
-            if (layout.gap) d += ` gap:${layout.gap}`;
-            parts.push(d);
+        // Assign @ref to interactive elements. Skip-links are deferred so they
+        // do not consume @1 when the article has a real control (#159 / #163).
+        if (isInteractive && node.backendDOMNodeId) {
+          if (skipLink) {
+            pendingSkipRefs.push({ lineIndex: treeLines.length, backendDOMNodeId: node.backendDOMNodeId });
+          } else {
+            const ref = assignInteractiveRef(node);
+            if (ref != null) line += `  @${ref}`;
           }
-          if (layout.opacity) parts.push(`opacity:${layout.opacity}`);
-          if (layout.vis === 'above') parts.push('↑above fold');
-          else if (layout.vis === 'below') parts.push('↓below fold');
-          if (parts.length > 0) line += '  ' + parts.join('  ');
         }
-      }
 
-      // Enrich table cells with style hints (positional key: tableIdx:rowIdx:colIdx)
-      if (isCellRole && meta.styleHints) {
-        const ti = tableIdxMap.get(tableAncestorId);
-        const ri = dataRowIdx.get(tableAncestorId) ?? -1;
-        if (ti != null && ri >= 0) {
-          const hint = meta.styleHints[ti + ':' + ri + ':' + cellColIdx];
-          if (hint) line += '  ' + hint;
+        // Enrich landmark/structural nodes with layout annotations
+        if (ENRICHED_ROLES.has(role)) {
+          const layout = consumeLayout(role);
+          if (layout) {
+            const parts = [];
+            if (layout.w) parts.push(`${layout.w}×${layout.h}px`);
+            else if (layout.h >= 40) parts.push(`↕${layout.h}px`);
+            if (layout.bg) parts.push(`bg:${layout.bg}`);
+            if (layout.font) parts.push(layout.font);
+            if (layout.color) parts.push(`color:${layout.color}`);
+            if (layout.display) {
+              let d = layout.display;
+              if (layout.gap) d += ` gap:${layout.gap}`;
+              parts.push(d);
+            }
+            if (layout.opacity) parts.push(`opacity:${layout.opacity}`);
+            if (layout.vis === 'above') parts.push('↑above fold');
+            else if (layout.vis === 'below') parts.push('↓below fold');
+            if (parts.length > 0) line += '  ' + parts.join('  ');
+          }
         }
+
+        // Enrich table cells with style hints (positional key: tableIdx:rowIdx:colIdx)
+        if (isCellRole && meta.styleHints) {
+          const ti = tableIdxMap.get(tableAncestorId);
+          const ri = dataRowIdx.get(tableAncestorId) ?? -1;
+          if (ti != null && ri >= 0) {
+            const hint = meta.styleHints[ti + ':' + ri + ':' + cellColIdx];
+            if (hint) line += '  ' + hint;
+          }
+        }
+        treeLines.push(line);
+        if (inChrome) chromeLinesEmitted++;
+        if (inContent && isPerceiveBodyTextRole(role)) contentBodyLines.add(line);
       }
-      treeLines.push(line);
     }
     for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
-      visit(child, depth + 1, node, tableAncestorId);
+      visit(child, childDepth, node, tableAncestorId, childRegion(region, counts));
     }
   }
 
@@ -8275,16 +8585,26 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
   for (const root of roots) visit(root, 0);
   for (const node of nodes) visit(node, 0);
 
+  for (const pending of pendingSkipRefs) {
+    refCounter++;
+    refMap.set(refCounter, pending.backendDOMNodeId);
+    refNodeIds.push({ ref: refCounter, backendDOMNodeId: pending.backendDOMNodeId });
+    if (pending.lineIndex >= 0 && treeLines[pending.lineIndex] != null) {
+      treeLines[pending.lineIndex] += `  @${refCounter}`;
+    }
+  }
+
   // --last N: keep only the last N StaticText / paragraph rows. Ref-bearing
   // lines (anything containing `@<digit>` or `@c<digit>`) and structural lines
   // (landmarks, headings, dialogs, etc.) are always kept.
   // --keep-refs: when truncating, ensure every line carrying an @ref survives.
   // --adaptive / --last auto: choose N from density + error/priority signals.
+  // Content-landmark text is treated as priority so -C chrome cannot outrank the article.
   let outLines = treeLines;
   let effectiveLast = last;
   if (last === 'auto' || (opts.adaptive && (last == null || last === 'auto'))) {
     const interactiveCount = outLines.filter(ln => /@(c?\d+)/.test(ln)).length;
-    const hasPriorityText = outLines.some(ln => isPriorityPerceiveTextLine(ln));
+    const hasPriorityText = outLines.some(ln => isPriorityPerceiveTextLine(ln) || contentBodyLines.has(ln));
     effectiveLast = chooseAdaptivePerceiveLast({
       lineCount: outLines.length,
       consoleErrors: Number(opts.consoleErrors || 0),
@@ -8306,8 +8626,10 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
       const isRef = refLineRe.test(ln);
       const isText = textRoleRe.test(ln) && !isRef;
       if (isText) {
-        if (isPriorityPerceiveTextLine(ln) && priorityKept < priorityBudget) { reversed.push(ln); priorityKept++; }
-        else if (textKept < effectiveLast) { reversed.push(ln); textKept++; }
+        if ((contentBodyLines.has(ln) || isPriorityPerceiveTextLine(ln)) && priorityKept < priorityBudget) {
+          reversed.push(ln);
+          priorityKept++;
+        } else if (textKept < effectiveLast) { reversed.push(ln); textKept++; }
         else { textOmitted++; }
       } else {
         reversed.push(ln);
@@ -8325,6 +8647,15 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     // hid refs was happening elsewhere; --keep-refs is now a soft flag agents
     // can use to assert "do not drop my @ref lines"). The flag is honoured
     // upstream by perceiveStr which avoids cutting ref lines.
+  }
+
+  const hasContentBody = outLines.some(ln => contentBodyLines.has(ln));
+  const emittedChromeOrSkip = outLines.some(ln =>
+    /\[(navigation|banner|complementary)\]/.test(ln) || /\[(link|button)\]\s+Skip\b/i.test(ln)
+  );
+  if (!hasContentBody && Number.isFinite(maxDepth) && emittedChromeOrSkip) {
+    const target = opts.targetPrefix || '<target>';
+    outLines.push(`Body truncated. Next: cdp text ${target} --auto`);
   }
 
   return { treeLines: outLines, refNodeIds };
@@ -8604,40 +8935,20 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   if (excludeSelector) {
     const { root } = await docRootPromise;
     const excludedBackendNodeIds = new Set();
+    const describedNodesByBackendId = new Map();
     const exNodes = await cdpDomains(cdp).DOM.querySelectorAll( { nodeId: root.nodeId, selector: excludeSelector }, sid);
     if (exNodes.nodeIds) {
       const results = await Promise.allSettled(
-        exNodes.nodeIds.map(nid => cdpDomains(cdp).DOM.describeNode( { nodeId: nid }, sid))
+        exNodes.nodeIds.map(nid => cdpDomains(cdp).DOM.describeNode( { nodeId: nid, depth: -1, pierce: true }, sid))
       );
       for (const r of results) {
-        if (r.status === 'fulfilled' && r.value.node.backendNodeId)
+        if (r.status === 'fulfilled' && r.value.node?.backendNodeId) {
           excludedBackendNodeIds.add(r.value.node.backendNodeId);
+          describedNodesByBackendId.set(r.value.node.backendNodeId, r.value.node);
+        }
       }
     }
-    if (excludedBackendNodeIds.size > 0) {
-      const excludedAxIds = new Set();
-      for (const n of axNodes) {
-        if (n.backendDOMNodeId && excludedBackendNodeIds.has(n.backendDOMNodeId)) excludedAxIds.add(n.nodeId);
-      }
-      if (excludedAxIds.size > 0) {
-        const childMap = new Map();
-        for (const n of axNodes) {
-          if (n.parentId) {
-            if (!childMap.has(n.parentId)) childMap.set(n.parentId, []);
-            childMap.get(n.parentId).push(n.nodeId);
-          }
-        }
-        const queue = [...excludedAxIds];
-        while (queue.length) {
-          const id = queue.pop();
-          for (const child of (childMap.get(id) || [])) {
-            excludedAxIds.add(child);
-            queue.push(child);
-          }
-        }
-        axNodes = axNodes.filter(n => !excludedAxIds.has(n.nodeId));
-      }
-    }
+    axNodes = filterPerceiveExcludedAxNodes(axNodes, excludedBackendNodeIds, describedNodesByBackendId);
   }
 
   const activeRefMap = frame ? new Map() : refMap;
@@ -8647,7 +8958,9 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     keepRefs,
     last,
     adaptive,
+    cursorInteractive,
     consoleErrors: errors + exceptions,
+    targetPrefix: opts.targetPrefix || '<target>',
   });
   let treeLines = builtTree.treeLines;
   const { refNodeIds } = builtTree;
@@ -8706,21 +9019,37 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   }
   if (frame) treeLines = qualifyFrameRefsInLines(treeLines, frame.ref);
 
-  // === Cursor-interactive @c refs ===
+  // === Cursor-interactive @c refs (capped AFTER body; last/adaptive apply here) ===
+  const cursorLimit = perceiveCursorSurfaceLimit({
+    last,
+    adaptive,
+    lineCount: treeLines.length,
+    consoleErrors: errors + exceptions,
+    interactiveCount: refNodeIds.length + (meta.cursorInteractives?.length || 0) + (meta.visibleControls?.length || 0),
+    hasPriorityText: treeLines.some(ln => isPriorityPerceiveTextLine(ln)),
+  });
   let cRefCounter = 0;
   if (cursorInteractive && meta.cursorInteractives?.length > 0) {
+    const ranked = rankPerceiveCursorItems(meta.cursorInteractives, item => item.text || item.sel);
+    const capped = ranked.slice(0, cursorLimit);
     treeLines.push('');
-    treeLines.push('[Cursor-interactive elements] (non-ARIA clickable)');
-    for (const ci of meta.cursorInteractives) {
+    treeLines.push(`[Cursor-interactive elements] (non-ARIA clickable)${ranked.length > capped.length ? ' (truncated)' : ''}`);
+    for (const ci of capped) {
       cRefCounter++;
       refMap.set(`c${cRefCounter}`, ci);
       treeLines.push(`  [clickable] ${ci.text || ci.sel}  @c${cRefCounter}  (${ci.x},${ci.y} ${ci.w}×${ci.h})`);
     }
   }
   if (cursorInteractive && meta.visibleControls?.length > 0) {
+    const ranked = rankPerceiveCursorItems(
+      meta.visibleControls,
+      item => item.label || item.ariaLabel || item.text || item.title,
+    );
+    const capped = ranked.slice(0, cursorLimit);
+    const truncated = ranked.length > capped.length || meta.visibleControlsTruncated;
     treeLines.push('');
-    treeLines.push(`[Visible controls]${meta.visibleControlsTruncated ? ' (truncated)' : ''}`);
-    for (const control of meta.visibleControls) {
+    treeLines.push(`[Visible controls]${truncated ? ' (truncated)' : ''}`);
+    for (const control of capped) {
       treeLines.push(`  ${formatVisibleControlLine(control)}`);
     }
   }
@@ -8784,7 +9113,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   markPerceived();
   // Hint when perceive returns many interactive elements without exclude
   if (interactiveOnly && !excludeSelector && refNodeIds.length > 50) {
-    return output + `\n\n(Hint: ${refNodeIds.length} interactive elements found — most may be sidebar/nav noise. Use \`perceive -x "nav, aside"\` to exclude, or \`perceive -s "main"\` to scope.)`;
+    return output + `\n\n${perceiveInteractiveNoiseHint(refNodeIds.length)}`;
   }
   return output;
 }
@@ -13639,21 +13968,67 @@ async function replayActionsStr({ run }, args) {
 }
 
 // --- Doctor: one-call diagnostics ---
-function checkNode(version = process.version) {
-  const major = parseInt(String(version).replace(/^v/, '').split('.')[0]) || 0;
+function checkNode(version = process.version, opts = {}) {
+  const major = nodeMajor(version);
   if (major >= 22) return { status: 'OK', label: 'Node', detail: `${version} (>= 22)` };
+  const cdpScriptPath = opts.cdpScriptPath || fileURLToPath(import.meta.url);
+  const found = typeof opts.discover === 'function'
+    ? opts.discover()
+    : discoverNode22({
+      home: opts.home,
+      env: opts.env,
+      fs: opts.fs,
+      spawnSync: opts.spawnSync,
+      execPath: opts.execPath || process.execPath,
+      execVersion: version,
+      timeout: opts.timeout,
+    });
+  if (found?.binary) {
+    const rerunCommand = formatNodeRerunCommand(found.binary, cdpScriptPath, 'doctor');
+    return {
+      status: 'WARN',
+      severity: 'advisory',
+      label: 'Node',
+      detail: `${version} (runtime) ; Node 22 found at ${found.binary}`,
+      hint: `Rerun: ${rerunCommand}`,
+      recommendedBinary: found.binary,
+      recommendedVersion: found.version,
+      cdpScriptPath,
+      rerunCommand,
+    };
+  }
   return {
-    status: 'FAIL', label: 'Node', detail: `${version} (need >= 22)`,
-    hint: 'chrome-cdp-ex uses built-in WebSocket which requires Node 22+',
+    status: 'FAIL',
+    label: 'Node',
+    detail: `${version} (need >= 22)`,
+    hint: NODE22_MISSING_HINT,
   };
 }
 
-function checkSkillSymlink({ home = homedir(), fs = { existsSync, lstatSync: null } } = {}) {
-  const target = resolve(home, '.claude', 'skills', 'chrome-cdp-ex');
-  if (!fs.existsSync(target)) {
+function hostSkillInstallPaths({ home = homedir(), env = process.env } = {}) {
+  const hermesHome = env.HERMES_HOME || resolve(home, '.hermes');
+  return [...new Set([
+    resolve(hermesHome, 'skills', 'chrome-cdp-ex'),
+    resolve(home, '.hermes', 'skills', 'chrome-cdp-ex'),
+    resolve(home, '.claude', 'skills', 'chrome-cdp-ex'),
+    resolve(home, '.codex', 'skills', 'chrome-cdp-ex'),
+  ])];
+}
+
+function doctorCliPrefix(node) {
+  if (node?.recommendedBinary && node.cdpScriptPath) {
+    return `${node.recommendedBinary} ${node.cdpScriptPath}`;
+  }
+  return 'cdp';
+}
+
+function checkSkillSymlink({ home = homedir(), env = process.env, fs = { existsSync, lstatSync: null } } = {}) {
+  const candidates = hostSkillInstallPaths({ home, env });
+  const target = candidates.find(path => fs.existsSync(path));
+  if (!target) {
     return {
-      status: 'WARN', label: 'Skill install', detail: `${target} not found`,
-      hint: 'Install with: cp -r skills/chrome-cdp-ex ~/.claude/skills/  (or use the plugin loader)',
+      status: 'WARN', label: 'Skill install', detail: `${candidates.join(', ')} not found`,
+      hint: 'Install with: cp -r skills/chrome-cdp-ex ~/.hermes/skills/  (or ~/.claude/skills/, ~/.codex/skills/, or use the plugin loader)',
     };
   }
   let kind = 'directory';
@@ -14089,29 +14464,30 @@ function doctorWizardModel(checks) {
   const permission = checks.find(c => c.label === 'Permission');
   const target = permission?.targetPrefixes?.[0] || daemon?.targetPrefixes?.[0] || tabs?.targetPrefixes?.[0] || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
+  const prefix = doctorCliPrefix(node);
 
   let status = 'ready for live browser perception';
-  let currentStep = `cdp perceive ${target} -C -d 8`;
+  let currentStep = `${prefix} perceive ${target} -C -d 8`;
   if (node?.status === 'FAIL') {
     status = 'blocked at Node.js';
-    currentStep = 'install Node.js 22+ and rerun: cdp doctor';
+    currentStep = node.hint || NODE22_MISSING_HINT;
   } else if (cdp?.status === 'FAIL') {
     status = 'blocked at browser CDP';
-    currentStep = 'enable browser remote debugging, then rerun: cdp doctor';
+    currentStep = `enable browser remote debugging, then rerun: ${prefix} doctor`;
   } else if (cdp?.status === 'WARN') {
     status = 'waiting for stable browser CDP';
-    currentStep = 're-toggle browser remote debugging, then rerun: cdp doctor';
+    currentStep = `re-toggle browser remote debugging, then rerun: ${prefix} doctor`;
   } else if (noTargets) {
     status = 'waiting for a debuggable page';
-    currentStep = 'cdp open https://example.com';
+    currentStep = `${prefix} open https://example.com`;
   } else if (permission?.status === 'WARN') {
     const severity = doctorCheckSeverity(permission);
     if (severity === 'advisory') {
       status = 'usable with advisory notes (CDP reachable)';
-      currentStep = `cdp list; cdp perceive ${target} -C -d 8`;
+      currentStep = `${prefix} list; ${prefix} perceive ${target} -C -d 8`;
     } else {
       status = 'waiting for browser debugging approval';
-      currentStep = `cdp perceive ${target} -C -d 8  # click Allow if Chrome asks`;
+      currentStep = `${prefix} perceive ${target} -C -d 8  # click Allow if Chrome asks`;
     }
   }
 
@@ -14149,15 +14525,16 @@ function doctorRecommendationModel(checks) {
   const permission = checks.find(c => c.label === 'Permission');
   const target = permission?.targetPrefixes?.[0] || daemon?.targetPrefixes?.[0] || tabs?.targetPrefixes?.[0] || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
+  const prefix = doctorCliPrefix(node);
   const base = {
     source: 'doctor-onboarding',
     stage: 'perceive',
-    run: `cdp perceive ${target} -C -d 8`,
+    run: `${prefix} perceive ${target} -C -d 8`,
     ask: null,
-    after: `cdp click ${target} @ref  # or: cdp fill ${target} <selector> <text>`,
+    after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
     requiresUserAction: false,
     consentRequired: false,
-    reason: 'ready for live browser perception',
+    reason: 'ready for live browser perception. For "what does this page say", run cdp text ' + target + ' --auto',
     commands: doctorNextStepCommands(checks),
     warnings: doctorWarningCommands(checks),
   };
@@ -14167,8 +14544,8 @@ function doctorRecommendationModel(checks) {
       ...base,
       stage: 'node',
       run: null,
-      ask: 'Install Node.js 22+.',
-      after: 'cdp doctor',
+      ask: NODE22_MISSING_HINT,
+      after: `${prefix} doctor`,
       requiresUserAction: true,
       reason: node.detail || null,
     };
@@ -14179,8 +14556,8 @@ function doctorRecommendationModel(checks) {
         ...base,
         stage: 'browser-cdp',
         run: environment.recovery.command,
-        ask: 'Approve launching an isolated local debug browser profile, then run: cdp list.',
-        after: 'cdp list',
+        ask: `Approve launching an isolated local debug browser profile, then run: ${prefix} list.`,
+        after: `${prefix} list`,
         requiresUserAction: true,
         consentRequired: true,
         reason: `${cdp.detail || 'Chrome is not reachable.'} Environment looks ${environment.detail || 'headless/remote'}.`,
@@ -14189,9 +14566,9 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-cdp',
-      run: 'cdp spawn-debug-browser edge --port 9222 --url https://example.com',
-      ask: 'Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: cdp doctor.',
-      after: 'cdp list',
+      run: `${prefix} spawn-debug-browser edge --port 9222 --url https://example.com`,
+      ask: `Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: ${prefix} doctor.`,
+      after: `${prefix} list`,
       requiresUserAction: true,
       consentRequired: true,
       reason: cdp.detail || null,
@@ -14201,9 +14578,9 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-cdp',
-      run: 'cdp doctor',
+      run: `${prefix} doctor`,
       ask: 'Re-toggle browser remote debugging, or restart the app with CDP_PORT set.',
-      after: 'cdp list',
+      after: `${prefix} list`,
       requiresUserAction: true,
       reason: cdp.detail || null,
     };
@@ -14212,9 +14589,9 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'open-page',
-      run: 'cdp open https://example.com',
+      run: `${prefix} open https://example.com`,
       ask: null,
-      after: 'cdp perceive <target-from-open> -C -d 8',
+      after: `${prefix} perceive <target-from-open> -C -d 8`,
       reason: tabs?.detail || null,
     };
   }
@@ -14224,9 +14601,9 @@ function doctorRecommendationModel(checks) {
       return {
         ...base,
         stage: 'perceive',
-        run: `cdp perceive ${target} -C -d 8`,
+        run: `${prefix} perceive ${target} -C -d 8`,
         ask: null,
-        after: `cdp click ${target} @ref  # or: cdp fill ${target} <selector> <text>`,
+        after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
         requiresUserAction: false,
         reason: permission.detail || 'CDP is usable; permission approval is advisory until a tab daemon attaches.',
       };
@@ -14234,9 +14611,9 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-permission',
-      run: `cdp perceive ${target} -C -d 8`,
+      run: `${prefix} perceive ${target} -C -d 8`,
       ask: 'Click Allow if Chrome asks.',
-      after: `cdp click ${target} @ref  # or: cdp fill ${target} <selector> <text>`,
+      after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
       requiresUserAction: true,
       reason: permission.detail || null,
     };
@@ -14276,41 +14653,44 @@ function doctorNextSteps(checks) {
   const tabs = checks.find(c => c.label === 'Tabs');
   const liveTarget = daemon?.targetPrefixes?.[0] || tabs?.targetPrefixes?.[0] || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
+  const prefix = doctorCliPrefix(node);
   const lines = ['', 'Next steps:'];
   if (node?.status === 'FAIL') {
-    lines.push('  1. Install Node.js 22+ and rerun: cdp doctor');
+    lines.push(`  1. ${NODE22_MISSING_HINT}`);
     return lines;
   }
   if (cdp?.status === 'FAIL') {
     if (environment?.recovery?.command) {
       lines.push(`  1. ${environment.recovery.command}`);
-      lines.push('  2. Then run: cdp list');
-      lines.push('  3. Existing browser alternative: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
+      lines.push(`  2. Then run: ${prefix} list`);
+      lines.push(`  3. Existing browser alternative: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: ${prefix} doctor`);
     } else {
-      lines.push('  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: cdp doctor');
-      lines.push('  2. Isolated profile: cdp spawn-debug-browser edge --port 9222 --url https://example.com');
-      lines.push('  3. Then run: cdp list');
+      lines.push(`  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: ${prefix} doctor`);
+      lines.push(`  2. Isolated profile: ${prefix} spawn-debug-browser edge --port 9222 --url https://example.com`);
+      lines.push(`  3. Then run: ${prefix} list`);
     }
     return lines;
   }
   if (cdp?.status === 'WARN') {
     lines.push('  1. Re-toggle browser remote debugging, or restart the app with CDP_PORT set.');
-    lines.push('  2. If Chrome asks "Allow debugging?", click Allow, then rerun: cdp list');
+    lines.push(`  2. If Chrome asks "Allow debugging?", click Allow, then rerun: ${prefix} list`);
   } else {
     if (noTargets) {
-      lines.push('  1. cdp open https://example.com');
-      lines.push('  2. If Chrome asks "Allow debugging?", click Allow; open waits up to 60s.');
-      lines.push('  3. Use the target id printed by open: cdp perceive <target-from-open> -C -d 8');
-      lines.push('  4. cdp click <target-from-open> @ref  # or: cdp fill <target-from-open> <selector> <text>');
-      lines.push('  5. cdp perceive <target-from-open> --since-action');
-      lines.push('  6. cdp report <target-from-open>');
+      lines.push(`  1. ${prefix} open https://example.com`);
+      lines.push('  2. If Chrome asks "Allow debugging?", click Allow; open waits up to 5s (use --attach-timeout-ms 60000 if needed).');
+      lines.push(`  3. Use the target id printed by open: ${prefix} perceive <target-from-open> -C -d 8`);
+      lines.push(`  Note: for "what does this page say", run: ${prefix} text <target-from-open> --auto`);
+      lines.push(`  4. ${prefix} click <target-from-open> @ref  # or: ${prefix} fill <target-from-open> <selector> <text>`);
+      lines.push(`  5. ${prefix} perceive <target-from-open> --since-action`);
+      lines.push(`  6. ${prefix} report <target-from-open>`);
     } else {
-      lines.push('  1. cdp list');
-      if (!tabs?.targetPrefixes?.length) lines.push('  2. If list is empty: cdp open https://example.com');
-      lines.push(`  ${tabs?.targetPrefixes?.length ? '2' : '3'}. cdp perceive ${liveTarget} -C -d 8`);
-      lines.push(`  ${tabs?.targetPrefixes?.length ? '3' : '4'}. cdp click ${liveTarget} @ref  # or: cdp fill ${liveTarget} <selector> <text>`);
-      lines.push(`  ${tabs?.targetPrefixes?.length ? '4' : '5'}. cdp perceive ${liveTarget} --since-action`);
-      lines.push(`  ${tabs?.targetPrefixes?.length ? '5' : '6'}. cdp report ${liveTarget}`);
+      lines.push(`  1. ${prefix} list`);
+      if (!tabs?.targetPrefixes?.length) lines.push(`  2. If list is empty: ${prefix} open https://example.com`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '2' : '3'}. ${prefix} perceive ${liveTarget} -C -d 8`);
+      lines.push(`  Note: for "what does this page say", run: ${prefix} text ${liveTarget} --auto`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '3' : '4'}. ${prefix} click ${liveTarget} @ref  # or: ${prefix} fill ${liveTarget} <selector> <text>`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '4' : '5'}. ${prefix} perceive ${liveTarget} --since-action`);
+      lines.push(`  ${tabs?.targetPrefixes?.length ? '5' : '6'}. ${prefix} report ${liveTarget}`);
     }
   }
   if (fd?.status === 'WARN') {
@@ -14393,21 +14773,22 @@ function stripDoctorStepPrefix(line) {
 function doctorNextStepCommands(checks) {
   return doctorNextSteps(checks)
     .map(stripDoctorStepPrefix)
-    .filter(line => line.startsWith('cdp '));
+    .filter(line => line.startsWith('cdp ') || /\bcdp\.mjs\b/.test(line));
 }
 
 function buildDoctorModel(checks) {
   const summary = doctorStatusSummary(checks);
   const annotatedChecks = checks.map(check => ({ ...check, severity: doctorCheckSeverity(check) }));
   const recommendation = doctorRecommendationModel(checks);
+  const node = annotatedChecks.find(c => c.label === 'Node');
+  const prefix = doctorCliPrefix(node);
   const cdpOk = annotatedChecks.find(c => c.label === 'CDP')?.status === 'OK';
   const tabsOk = annotatedChecks.find(c => c.label === 'Tabs')?.status === 'OK';
   const permission = annotatedChecks.find(c => c.label === 'Permission');
+  const provenTarget = permission?.targetPrefixes?.[0];
   const provenCommand = cdpOk && tabsOk
-    ? (permission?.status === 'OK'
-      ? (permission.targetPrefixes?.[0] ? `cdp perceive ${permission.targetPrefixes[0]} -C -d 8` : 'cdp list')
-      : (permission?.hint?.match(/cdp \S.+/)?.[0] || recommendation?.run || 'cdp list'))
-    : (recommendation?.run || null);
+    ? (provenTarget ? `${prefix} perceive ${provenTarget} -C -d 8` : (recommendation?.run || `${prefix} list`))
+    : (recommendation?.run || node?.rerunCommand || null);
   return {
     schema: 'chrome-cdp-ex.doctor.v1',
     ...summary,
@@ -14441,8 +14822,16 @@ async function runDoctorChecks(opts = {}) {
   const safeLstat = (p) => { try { return lstatSync(p); } catch { return null; } };
   const fs = opts.fs || { existsSync, lstatSync: safeLstat };
   const checks = [];
-  checks.push(checkNode(opts.nodeVersion));
-  checks.push(checkSkillSymlink({ home: opts.home, fs }));
+  checks.push(checkNode(opts.nodeVersion, {
+    home: opts.home,
+    env: opts.env,
+    fs,
+    spawnSync: opts.spawnSync,
+    execPath: opts.execPath,
+    cdpScriptPath: opts.cdpScriptPath,
+    discover: opts.discoverNode22,
+  }));
+  checks.push(checkSkillSymlink({ home: opts.home, env: opts.env, fs }));
   checks.push(checkDaemonSockets({ list: opts.listDaemons }));
   checks.push(checkFdLimit({ limit: opts.fdLimit, platform: opts.platform }));
   checks.push(checkRuntimeEnvironment({ platform: opts.platform, env: opts.env, fs }));
@@ -16738,7 +17127,7 @@ const CLI_HELP_LAYOUT = Object.freeze([
   {
     "name": "text",
     "headGap": 4,
-    "summaryGap": 7,
+    "summaryGap": 1,
     "summaryIndent": null
   },
   {
@@ -16887,6 +17276,7 @@ Usage: cdp <command> [args]
                                     JSON with --diff/--since-action returns chrome-cdp-ex.perceive-diff.v1
                                     --frame @fN / -F @fN: perceive inside an iframe; refs become @fN:M
                                     -s <sel> / --selector: scope to CSS selector subtree
+                                    -x <sel> / --exclude: drop matching chrome (must not empty main; prefer text --auto or -s main)
                                     -i / --interactive: only show interactive elements
                                     -d N / --depth N: limit tree depth
                                     -C / --cursor-interactive: include non-ARIA clickable elements (@c refs)
@@ -16971,6 +17361,8 @@ Usage: cdp <command> [args]
                                     off/reset clears overrides; JSON returns chrome-cdp-ex.emulate.v1
 {{command:upload}}
 {{command:text}}
+                                    --auto: extract main content (strips nav/aside/script/style)
+                                    -x / --exclude: extra CSS selectors to strip
                                     --root auto|body|document|default|<sel>: search root for selector resolution
                                     On no-match, error includes root/scope and an eval fallback
 {{command:table}}
@@ -17025,7 +17417,11 @@ Usage: cdp <command> [args]
 {{command:keepalive}}
 {{command:open}}
                                     JSON includes schema/target/approval/recommendation/nextSteps for agents.
+                                    Default open returns the target prefix and a follow-up perceive command.
+                                    --perceive dumps the full page after attach (opt-in).
                                     --reuse-url reuses an existing tab matching the URL when unique.
+                                    Default attach wait is fail-fast (5s). Use --attach-timeout-ms 60000
+                                    when Chrome may still prompt "Allow debugging?".
                                     --attach-timeout-ms 0 returns the target handoff without waiting.
                                     --ready-timeout-ms bounds document.readyState waiting after attach.
                                     --ready-selector also waits for a CSS selector before returning.
@@ -17281,8 +17677,9 @@ function createPerceiveCommandHandler({
   const buildPerceiveModel = ops.perceiveModel || perceiveModel;
   const buildPerceiveDiff = ops.perceiveDiffModel || perceiveDiffModel;
   return async ({ args }) => {
-    const fopts = parseQaModeArgs(args, ['text', 'json']); await ensurePerceiveTargetReady({ cdp, sessionId, targetId, ops });
+    const fopts = parseQaModeArgs(args, ['text', 'json']);
     const popts = parsePerceiveArgs(fopts.args);
+    await ensurePerceiveTargetReady({ cdp, sessionId, targetId, ops });
     const targetPrefix = targetPrefixForDisplay(targetId);
     popts.targetPrefix = targetPrefix;
     if (popts.sinceAction) popts.diffBaseline = session.lastAction?.baselineOutput || null;
@@ -17872,6 +18269,7 @@ function parseOpenArgs(args = []) {
   let readyTimeoutMs = null;
   let readySelector = null;
   let reuseUrl = false;
+  let perceive = false;
   for (let i = 0; i < fopts.args.length; i++) {
     const token = fopts.args[i];
     if (token === '--attach-timeout-ms') {
@@ -17890,6 +18288,8 @@ function parseOpenArgs(args = []) {
       if (!readySelector) throw new Error('open: --ready-selector requires a CSS selector');
     } else if (token === '--reuse-url') {
       reuseUrl = true;
+    } else if (token === '--perceive') {
+      perceive = true;
     } else if (String(token).startsWith('-')) {
       throw new Error(`open: unknown argument ${token}`);
     } else {
@@ -17904,6 +18304,7 @@ function parseOpenArgs(args = []) {
     readyTimeoutMs: readyTimeoutMs ?? (attachTimeoutMs > 0 ? DEFAULT_OPEN_READY_TIMEOUT_MS : 0),
     readySelector,
     reuseUrl,
+    perceive,
   };
 }
 
@@ -18071,6 +18472,18 @@ async function navigateOpenTarget(targetId, sp, url, {
   }
 }
 
+function formatOpenNextPerceiveCommand(targetId) {
+  return `Next: cdp perceive ${targetPrefixForDisplay(targetId)} -C -d 8`;
+}
+
+function formatOpenAttachWaitMessage(timeoutMs) {
+  return `Waiting for "Allow debugging?" approval in Chrome... (up to ${formatDuration(timeoutMs)})`;
+}
+
+function shouldAnnounceOpenAttachWait({ failedConnects = 0, elapsedMs = 0 } = {}) {
+  return failedConnects >= 3 || elapsedMs >= 1000;
+}
+
 function formatOpenReadyMessage(targetId, url = '') {
   const target = targetPrefixForDisplay(targetId);
   const lines = [
@@ -18117,7 +18530,7 @@ function formatOpenTimeoutMessage(targetId) {
     'Timeout waiting for debugging approval. Tab created but daemon not connected.',
     `Target: ${target}`,
     'If Chrome asks "Allow debugging?", click Allow first.',
-    `Next: cdp perceive ${target} -C -d 8`,
+    formatOpenNextPerceiveCommand(targetId),
   ].join('\n');
 }
 
@@ -18501,7 +18914,7 @@ async function main(options = {}) {
           return;
         }
         console.log(`Reused existing tab: ${selection.targetPrefix}  ${selection.page.url || url}`);
-        console.log(`Next: cdp perceive ${selection.targetPrefix} -C -d 8`);
+        console.log(formatOpenNextPerceiveCommand(selection.targetId));
         return;
       } catch (e) {
         // Zero matches: fall through and open a new tab.
@@ -18528,9 +18941,6 @@ async function main(options = {}) {
     }
 
     // Auto-attach: start daemon and wait for user to click "Allow debugging?"
-    if (opts.format === 'text') {
-      console.log(`Waiting for "Allow debugging?" approval in Chrome... (up to ${formatDuration(opts.attachTimeoutMs)})`);
-    }
     const sp = sockPath(targetId);
     if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
     const child = spawn(runtimeIdentity.execPath, [runtimeIdentity.scriptPath, '_daemon', targetId], {
@@ -18539,7 +18949,10 @@ async function main(options = {}) {
     });
     child.unref();
     let attached = false;
-    const attachDeadline = Date.now() + opts.attachTimeoutMs;
+    let announcedWait = false;
+    let failedConnects = 0;
+    const attachStartedAt = Date.now();
+    const attachDeadline = attachStartedAt + opts.attachTimeoutMs;
     while (Date.now() < attachDeadline) {
       const remainingMs = attachDeadline - Date.now();
       try {
@@ -18547,7 +18960,16 @@ async function main(options = {}) {
         conn.end();
         attached = true;
         break;
-      } catch {}
+      } catch {
+        failedConnects += 1;
+        if (opts.format === 'text' && !announcedWait && shouldAnnounceOpenAttachWait({
+          failedConnects,
+          elapsedMs: Date.now() - attachStartedAt,
+        })) {
+          console.log(formatOpenAttachWaitMessage(opts.attachTimeoutMs));
+          announcedWait = true;
+        }
+      }
       await sleep(Math.min(DAEMON_ALLOW_DELAY, remainingMs));
     }
     const navigation = attached
@@ -18570,15 +18992,18 @@ async function main(options = {}) {
       return;
     }
     if (attached) {
-      console.log(formatOpenReadyMessage(targetId, url));
-      // Auto-perceive: give agent immediate page understanding (matches nav behavior)
-      try {
-        const conn = await connectToSocket(sp);
-        const resp = await sendCommand(conn, { cmd: 'perceive', args: [] });
-        conn.end();
-        if (resp.ok && resp.result) console.log('---\n' + resp.result);
-      } catch (e) {
-        console.error(formatOpenAutoPerceiveFailure(e, targetId));
+      if (opts.perceive) {
+        console.log(formatOpenReadyMessage(targetId, url));
+        try {
+          const conn = await connectToSocket(sp);
+          const resp = await sendCommand(conn, { cmd: 'perceive', args: [] });
+          conn.end();
+          if (resp.ok && resp.result) console.log('---\n' + resp.result);
+        } catch (e) {
+          console.error(formatOpenAutoPerceiveFailure(e, targetId));
+        }
+      } else {
+        console.log(formatOpenNextPerceiveCommand(targetId));
       }
     } else {
       console.log(formatOpenTimeoutMessage(targetId));
@@ -18966,6 +19391,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
   parsePerceiveArgs, buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
+  filterPerceiveExcludedAxNodes, perceiveInteractiveNoiseHint,
   parseControlsArgs, visibleControlsCollectorSource, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
@@ -19034,10 +19460,12 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   decodeVLQ, mapLineToSource, mapInlineSourceMap, stripVitePathQuery, mapStyleSource,
   // Batch / flow / doctor
   formatBatchResults, runBatchCommands, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
-  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage, shouldAnnounceOpenAttachWait, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
+  DEFAULT_OPEN_ATTACH_TIMEOUT_MS,
   CLI_HELP_LAYOUT, CLI_HELP_TEMPLATE, renderCliHelp, helpStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   detectRuntimeEnvironment, checkRuntimeEnvironment,
+  discoverNode22, resolveChromeCdpNodeLaunch, formatNodeRerunCommand, nodeMajor,
   doctorWizardModel, doctorWizardSummary, doctorCheckSeverity,
   doctorNextSteps, doctorStatusSummary, buildDoctorModel, formatDoctorOutput,
   formatDoctorReport, runDoctorChecks, doctorStr,

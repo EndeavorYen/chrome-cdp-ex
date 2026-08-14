@@ -4,6 +4,7 @@ Situational playbooks for common live-browser work. Commands use repository-rela
 
 | Situation | Start with | Goal |
 | --- | --- | --- |
+| Read this page | `text --auto`, `eval`, `call` | Get the article/body/license without chrome or a deep perceive. |
 | Review this UI | `doctor`, `list`, `perceive` | Gather structured layout/content evidence before pixels. |
 | Click did nothing | action evidence, `overlay`, `frame`, fresh `perceive` | Classify no-change instead of retrying blindly. |
 | Why is this blue (cascade) | `cascade` | Find the winning CSS rule and source line. |
@@ -11,6 +12,54 @@ Situational playbooks for common live-browser work. Commands use repository-rela
 | Multi-tab OAuth | `list`, `target`, `use` | Keep app and auth tabs straight through redirects. |
 | Form fill + verify | `fill`, `verify-click`, `perceive --since-action` | Prove input and submit effects. |
 | CSS inject prototype | `cascade`, `inject --css`, `inject --remove` | Test style changes live without editing source. |
+
+## Read this page
+
+Default for “what does this page say”:
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs text <target> --auto
+```
+
+Do not start with `perceive -C -d 8` when you only need readable text. Prefer `text --auto`, then a one-line `eval` / `call` if a selector or network fetch is cheaper.
+
+### Hugging Face model card / license file
+
+License badges on the model card are often images, so `text` will not see the license name. Fetch the raw file from the already-open tab:
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs call <target> 'async () => (await fetch("https://huggingface.co/MiniMaxAI/MiniMax-Music3/raw/main/LICENSE")).text().then(t => t.slice(0, 400))'
+```
+
+Replace the model path with the card you have open. Slice is enough to read the license title.
+
+### Mintlify docs article
+
+Mintlify shells wrap `<main>` inside layout chrome. Blind `perceive -x "nav, aside, footer, header"` can match a wrapper and delete `<main>`, leaving only “Skip to main content”.
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs text <target> --auto
+node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> -s main
+```
+
+Use `-x` only for true chrome siblings (`nav`, `aside`), not ancestor wrappers that also wrap main.
+
+### arXiv abs title + abstract
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs eval <target> "(() => { const t = document.querySelector('h1.title')?.innerText; const a = document.querySelector('blockquote.abstract, #abs .abstract')?.innerText; return [t, a].filter(Boolean).join('\\n\\n'); })()"
+node skills/chrome-cdp-ex/scripts/cdp.mjs text <target> --auto
+```
+
+`eval` of `h1.title` plus the abstract is enough when you only need the paper identity.
+
+### X / Twitter profile
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs text <target> --auto
+```
+
+Do not use `perceive -C -d 8` to read a profile or latest posts; the accessibility dump is mostly chrome.
 
 ## Review this UI
 
