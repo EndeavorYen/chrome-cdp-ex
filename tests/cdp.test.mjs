@@ -7127,8 +7127,9 @@ describe('formatCliError', () => {
     expect(out).toContain('Error: Cannot reach CDP on 127.0.0.1:9222');
     expect(out).toContain('Recovery:');
     expect(out).toContain('Kind: browser-cdp');
-    expect(out).toContain('Strategy: run-doctor');
+    expect(out).toContain('Strategy: enable-existing-debugging');
     expect(out).toContain('Run: cdp doctor');
+    expect(out).toMatch(/do not invent a new --user-data-dir/i);
     expect(out).toContain('Next: cdp doctor');
   });
 
@@ -10796,10 +10797,12 @@ describe('checkCdpReachability', () => {
 
   it('returns FAIL when fetch throws (e.g. ECONNREFUSED)', async () => {
     const fetcher = async () => { throw new Error('ECONNREFUSED'); };
-    const r = await checkCdpReachability({ env: { CDP_PORT: '9999' }, fetcher });
+    const r = await checkCdpReachability({ env: { CDP_PORT: '9999' }, fetcher, lastEndpoint: null });
     expect(r.status).toBe('FAIL');
     expect(r.detail).toContain('cannot reach');
-    expect(r.hint).toContain('--remote-debugging-port=9999');
+    expect(r.error).toBe('cdp_unreachable');
+    expect(r.hint).toMatch(/do not invent a new --user-data-dir/i);
+    expect(r.relaunch).toBeNull();
   });
 
   it('returns WARN when /json/version is reachable but missing webSocketDebuggerUrl', async () => {
@@ -10813,7 +10816,7 @@ describe('checkCdpReachability', () => {
     // Use a fake home so no DevToolsActivePort exists.
     const fetcher = async () => { throw new Error('should not be called'); };
     const r = await checkCdpReachability({
-      env: {}, fetcher,
+      env: {}, fetcher, lastEndpoint: null,
     });
     // Either succeeds against the live machine or fails — both are acceptable
     // shapes here. Critically, it must produce a structured result with hint
@@ -11207,18 +11210,21 @@ describe('doctorStr', () => {
       platform: 'darwin',
       env: { CDP_PORT: '9999' },
       fetcher,
+      lastEndpoint: null,
     });
 
     const model = JSON.parse(out);
     expect(model.recommendation).toMatchObject({
       source: 'doctor-onboarding',
       stage: 'browser-cdp',
-      run: 'cdp spawn-debug-browser edge --port 9222 --url https://example.com',
+      run: null,
       after: 'cdp list',
       requiresUserAction: true,
       consentRequired: true,
+      strategy: 'enable-existing-debugging',
     });
     expect(model.recommendation.ask).toContain('chrome://inspect/#remote-debugging');
+    expect(model.recommendation.ask).toMatch(/do not invent a new --user-data-dir/i);
     expect(model.recommendation.reason).toContain('cannot reach');
     expect(model.recommendation.warnings).toEqual([
       {
@@ -11254,6 +11260,7 @@ describe('doctorStr', () => {
       platform: 'darwin',
       env: { CDP_PORT: '9999' },
       fetcher,
+      lastEndpoint: null,
     });
 
     expect(out).toContain('Long session note: ulimit -n 4096');

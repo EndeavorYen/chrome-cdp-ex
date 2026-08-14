@@ -146,6 +146,8 @@ const RUNTIME_DIR = IS_WINDOWS
     : resolve(homedir(), '.cache', 'cdp');
 const PAGES_CACHE = resolve(RUNTIME_DIR, 'pages.json');
 const ALIASES_CACHE = resolve(RUNTIME_DIR, 'aliases.json');
+const LAST_CDP_ENDPOINT_FILE = 'cdp-last-endpoint.json';
+const LAST_CDP_ENDPOINT_SCHEMA = 'chrome-cdp-ex.cdp-last-endpoint.v1';
 const DAEMON_METADATA_SCHEMA = 'chrome-cdp-ex.daemon-metadata.v1';
 const ALLOW_STALE_DAEMON_FLAG = '--allow-stale-daemon';
 const DEFAULT_CDP_HOST = '127.0.0.1';
@@ -1092,6 +1094,177 @@ function writeTargetAliases(store, { path = ALIASES_CACHE, writer = writeFileSyn
   return normalized;
 }
 
+function lastCdpEndpointPath(runtimeDir = RUNTIME_DIR) {
+  return resolve(runtimeDir, LAST_CDP_ENDPOINT_FILE);
+}
+
+function normalizeLastCdpEndpoint(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const port = raw.port == null || raw.port === '' ? null : String(raw.port);
+  const host = raw.host ? String(raw.host) : null;
+  const profileDir = raw.profileDir ? String(raw.profileDir) : null;
+  const exe = raw.exe ? String(raw.exe) : null;
+  const browser = raw.browser ? String(raw.browser).toLowerCase() : null;
+  const launchedAt = raw.launchedAt ? String(raw.launchedAt) : null;
+  if (!port && !host && !profileDir) return null;
+  return {
+    schema: LAST_CDP_ENDPOINT_SCHEMA,
+    host,
+    port,
+    profileDir,
+    exe,
+    browser,
+    launchedAt,
+  };
+}
+
+function readLastCdpEndpoint({ runtimeDir = RUNTIME_DIR, reader = readFileSync } = {}) {
+  try {
+    return normalizeLastCdpEndpoint(JSON.parse(reader(lastCdpEndpointPath(runtimeDir), 'utf8')));
+  } catch {
+    return null;
+  }
+}
+
+function writeLastCdpEndpoint(record, { runtimeDir = RUNTIME_DIR, writer = writeFileSync, now } = {}) {
+  const launchedAt = record?.launchedAt
+    || new Date(typeof now === 'function' ? now() : (now || Date.now())).toISOString();
+  const normalized = normalizeLastCdpEndpoint({ ...record, launchedAt });
+  if (!normalized) return null;
+  try { mkdirSync(runtimeDir, { recursive: true, mode: 0o700 }); } catch {}
+  writer(lastCdpEndpointPath(runtimeDir), `${JSON.stringify(normalized)}\n`, { mode: 0o600 });
+  return normalized;
+}
+
+function rememberLastCdpEndpoint(record, opts = {}) {
+  const previous = opts.previous !== undefined ? opts.previous : readLastCdpEndpoint(opts);
+  const next = { ...(previous || {}) };
+  for (const [key, value] of Object.entries(record || {})) {
+    if (value != null && value !== '') next[key] = value;
+  }
+  const portChanged = previous?.port && record?.port != null && String(previous.port) !== String(record.port);
+  if (portChanged && !record.profileDir) next.profileDir = null;
+  return writeLastCdpEndpoint(next, opts);
+}
+
+function shellQuoteCliArg(value) {
+  const text = String(value ?? '');
+  if (text === '') return "''";
+  if (/^[A-Za-z0-9_./:=+-]+$/.test(text)) return text;
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+function inferBrowserFromExe(exe) {
+  const name = String(exe || '').toLowerCase();
+  if (name.includes('msedge') || name.includes('edge')) return 'edge';
+  if (name.includes('brave')) return 'brave';
+  if (name.includes('chrom')) return 'chrome';
+  return null;
+}
+
+function isDisposableSpawnProfileDir(profileDir) {
+  const normalized = String(profileDir || '').replace(/\\/g, '/');
+  return /(?:^|\/)chrome-cdp-ex-[a-z0-9-]+-debug-profile-\d+$/i.test(normalized);
+}
+
+function formatCdpRelaunchCommand(lastEndpoint, { port } = {}) {
+  const profileDir = lastEndpoint?.profileDir;
+  if (!profileDir) return null;
+  const resolvedPort = String(port || lastEndpoint.port || '9222');
+  if (isDisposableSpawnProfileDir(profileDir)) {
+    const browser = lastEndpoint.browser || inferBrowserFromExe(lastEndpoint.exe) || 'chrome';
+    const parts = [
+      'cdp spawn-debug-browser',
+      browser,
+      '--port', resolvedPort,
+      '--user-data-dir', shellQuoteCliArg(profileDir),
+    ];
+    if (lastEndpoint.exe) parts.push('--exe', shellQuoteCliArg(lastEndpoint.exe));
+    return parts.join(' ');
+  }
+  const exe = lastEndpoint.exe || lastEndpoint.browser || 'chrome';
+  return [
+    shellQuoteCliArg(exe),
+    `--remote-debugging-port=${resolvedPort}`,
+    '--user-data-dir',
+    shellQuoteCliArg(profileDir),
+  ].join(' ');
+}
+
+function profileDirFromCommandLine(args) {
+  const list = Array.isArray(args) ? args : [];
+  for (let i = 0; i < list.length; i++) {
+    const arg = String(list[i] ?? '');
+    if (arg.startsWith('--user-data-dir=')) return arg.slice('--user-data-dir='.length) || null;
+    if (arg === '--user-data-dir') return list[i + 1] ? String(list[i + 1]) : null;
+  }
+  return null;
+}
+
+function profileDirFromDevToolsActivePort(portFile) {
+  if (!portFile) return null;
+  const dir = dirname(String(portFile));
+  return /(^|[\\/])Default$/.test(dir) ? dirname(dir) : dir;
+}
+
+function cdpUnreachableError({ host, port, cause, lastEndpoint } = {}) {
+  const resolvedHost = host || lastEndpoint?.host || DEFAULT_CDP_HOST;
+  const resolvedPort = port != null && port !== '' ? String(port) : (lastEndpoint?.port || null);
+  const profileDir = lastEndpoint?.profileDir || null;
+  const relaunch = formatCdpRelaunchCommand(lastEndpoint, { port: resolvedPort });
+  const where = resolvedPort ? `${resolvedHost}:${resolvedPort}` : resolvedHost;
+  const causeText = String(cause || 'unreachable').replace(/^Error:\s*/i, '');
+  const message = profileDir
+    ? `Cannot reach CDP on ${where} (${causeText}). Relaunch the same profile: ${relaunch}`
+    : `Cannot reach CDP on ${where} (${causeText}). Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.`;
+  const err = new Error(message);
+  err.code = 'cdp_unreachable';
+  err.host = resolvedHost;
+  err.port = resolvedPort;
+  err.profileDir = profileDir;
+  err.relaunch = relaunch;
+  return err;
+}
+
+function isCdpHttp404(error) {
+  return Number(error?.status) === 404 || /^HTTP 404\b/i.test(String(error?.message || ''));
+}
+
+async function openCdpWebSocket(url, { timeoutMs = 2000, connectWebSocket } = {}) {
+  if (typeof connectWebSocket === 'function') return connectWebSocket(url);
+  const ws = new WebSocket(url);
+  return new Promise((resolveWs, rejectWs) => {
+    ws.onopen = () => { resolveWs(true); ws.close(); };
+    ws.onerror = (err) => rejectWs(err);
+    setTimeout(() => { ws.close(); rejectWs(new Error('WebSocket timeout')); }, timeoutMs);
+  });
+}
+
+async function rememberLiveCdpEndpointFromSession(cdp, { host, port, env = process.env } = {}) {
+  const resolvedHost = host || env.CDP_HOST || DEFAULT_CDP_HOST;
+  const resolvedPort = port || env.CDP_PORT || null;
+  let profileDir = null;
+  let exe = null;
+  try {
+    const result = await cdp.send('Browser.getBrowserCommandLine', {}, undefined, 1000);
+    const argv = result?.arguments || result?.Arguments || [];
+    profileDir = profileDirFromCommandLine(argv);
+    exe = argv[0] ? String(argv[0]) : null;
+  } catch {}
+  if (!resolvedPort && !profileDir) return null;
+  try {
+    return rememberLastCdpEndpoint({
+      host: resolvedHost,
+      port: resolvedPort,
+      profileDir,
+      exe,
+      browser: inferBrowserFromExe(exe),
+    });
+  } catch {
+    return null;
+  }
+}
+
 function upsertTargetAlias(store = emptyAliasStore(), record = {}) {
   const normalized = normalizeAliasStore(store);
   const name = normalizeAliasName(record.name);
@@ -1646,22 +1819,33 @@ function truncateTextLines(text = '', maxLines = null) {
 // Browser metadata from /json/version — set when connecting via CDP_PORT
 let _browserInfo = null;
 
-async function getWsUrl() {
-  const host = process.env.CDP_HOST || DEFAULT_CDP_HOST;
+async function getWsUrl({
+  env = process.env,
+  fetcher = fetch,
+  lastEndpoint,
+  readLastEndpoint = readLastCdpEndpoint,
+  rememberEndpoint = rememberLastCdpEndpoint,
+} = {}) {
+  const host = env.CDP_HOST || DEFAULT_CDP_HOST;
+  const remembered = lastEndpoint !== undefined ? lastEndpoint : readLastEndpoint();
+  const rememberReachable = (record) => {
+    try { rememberEndpoint(record); } catch {}
+  };
 
   // CDP_PORT: explicit port (e.g. Electron with --remote-debugging-port=9222)
-  if (process.env.CDP_PORT) {
-    const port = process.env.CDP_PORT;
+  if (env.CDP_PORT) {
+    const port = env.CDP_PORT;
     let res;
     try {
-      res = await fetch(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
-    } catch {
-      throw new Error(`Cannot reach CDP on ${host}:${port} — is the app running with --remote-debugging-port=${port}?`);
+      res = await fetcher(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
+    } catch (e) {
+      throw cdpUnreachableError({ host, port, cause: e?.message || e, lastEndpoint: remembered });
     }
     if (res.ok) {
       const info = await res.json();
       if (!info.webSocketDebuggerUrl) throw new Error(`CDP on port ${port}: /json/version has no webSocketDebuggerUrl`);
       _browserInfo = info;
+      rememberReachable({ host, port });
       // Extract path only — don't trust the hostname in the response (may be "localhost"
       // while CDP_HOST points elsewhere, e.g. WSL2→Windows)
       const wsPath = new URL(info.webSocketDebuggerUrl).pathname;
@@ -1671,9 +1855,10 @@ async function getWsUrl() {
     // direct WebSocket handshake to /devtools/browser still works. Do not fall back on
     // other HTTP failures — those usually mean a non-CDP service is bound to the port.
     if (res.status === 404) {
+      rememberReachable({ host, port });
       return `ws://${host}:${port}/devtools/browser`;
     }
-    throw new Error(`CDP on port ${port}: /json/version returned HTTP ${res.status}`);
+    throw cdpUnreachableError({ host, port, cause: `HTTP ${res.status}`, lastEndpoint: remembered });
   }
 
   // DevToolsActivePort file discovery (Chrome, Edge, Brave, etc.)
@@ -1694,9 +1879,9 @@ async function getWsUrl() {
     'Google\\Chrome', 'Google\\Chrome Beta', 'Google\\Chrome for Testing',
     'Chromium', 'BraveSoftware\\Brave-Browser', 'Microsoft\\Edge',
   ];
-  const localAppData = process.env.LOCALAPPDATA || '';
+  const localAppData = env.LOCALAPPDATA || process.env.LOCALAPPDATA || '';
   const candidates = [
-    process.env.CDP_PORT_FILE,
+    env.CDP_PORT_FILE || process.env.CDP_PORT_FILE,
     ...winBrowsers.flatMap(b => [
       resolve(localAppData, b, 'User Data', 'DevToolsActivePort'),
       resolve(localAppData, b, 'User Data', 'Default', 'DevToolsActivePort'),
@@ -1722,9 +1907,24 @@ async function getWsUrl() {
     ]),
   ].filter(Boolean);
   const portFile = candidates.find(p => existsSync(p));
-  if (!portFile) throw new Error('No DevToolsActivePort found and no CDP_PORT set.\n  Chrome: enable at chrome://inspect/#remote-debugging\n  Electron: set CDP_PORT=<port> (app must use --remote-debugging-port)');
+  if (!portFile) {
+    if (remembered?.profileDir) {
+      throw cdpUnreachableError({
+        host,
+        port: remembered.port,
+        cause: 'No DevToolsActivePort found and no CDP_PORT set',
+        lastEndpoint: remembered,
+      });
+    }
+    throw new Error('No DevToolsActivePort found and no CDP_PORT set.\n  Chrome: enable at chrome://inspect/#remote-debugging\n  Electron: set CDP_PORT=<port> (app must use --remote-debugging-port)');
+  }
   const lines = readFileSync(portFile, 'utf8').trim().split('\n');
   if (lines.length < 2 || !lines[0] || !lines[1]) throw new Error(`Invalid DevToolsActivePort file: ${portFile}`);
+  rememberReachable({
+    host,
+    port: lines[0],
+    profileDir: profileDirFromDevToolsActivePort(portFile),
+  });
   return `ws://${host}:${lines[0]}${lines[1]}`;
 }
 
@@ -14114,11 +14314,45 @@ function checkFdLimit({ limit = detectFdLimit(), platform = process.platform } =
   };
 }
 
-async function checkCdpReachability({ env = process.env, fetcher = fetch, host = env.CDP_HOST || process.env.CDP_HOST || '127.0.0.1' } = {}) {
+async function checkCdpReachability({
+  env = process.env,
+  fetcher = fetch,
+  host = env.CDP_HOST || process.env.CDP_HOST || '127.0.0.1',
+  lastEndpoint,
+  readLastEndpoint = readLastCdpEndpoint,
+  rememberEndpoint = rememberLastCdpEndpoint,
+  connectWebSocket,
+} = {}) {
   const port = env.CDP_PORT;
+  const remembered = lastEndpoint !== undefined ? lastEndpoint : readLastEndpoint();
+  const rememberReachable = (record) => {
+    try { rememberEndpoint(record); } catch {}
+  };
+  const unreachable = (p, cause) => {
+    const profileDir = remembered?.profileDir || null;
+    const relaunch = formatCdpRelaunchCommand(remembered, { port: p });
+    const hint = relaunch || 'Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.';
+    return {
+      status: 'FAIL',
+      label: 'CDP',
+      detail: `cannot reach ${host}:${p} (${cause})`,
+      hint,
+      error: 'cdp_unreachable',
+      host,
+      port: String(p),
+      profileDir,
+      relaunch,
+      exe: remembered?.exe || null,
+      browser: remembered?.browser || null,
+    };
+  };
   const tryFetch = async (p) => {
     const res = await fetcher(`http://${host}:${p}/json/version`, { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
     return res.json();
   };
   const describe = (info) => {
@@ -14138,27 +14372,21 @@ async function checkCdpReachability({ env = process.env, fetcher = fetch, host =
           port: String(port),
         };
       }
+      rememberReachable({ host, port });
       return { status: 'OK', label: 'CDP', detail: `${host}:${port} → ${describe(info)}`, host, port: String(port) };
     } catch (e) {
-      // Try WebSocket fallback check
-      try {
-        const wsUrl = `ws://${host}:${port}/devtools/browser`;
-        const ws = new WebSocket(wsUrl);
-        const wsOpen = await new Promise((resolveWs, rejectWs) => {
-          ws.onopen = () => { resolveWs(true); ws.close(); };
-          ws.onerror = (err) => rejectWs(err);
-          setTimeout(() => { ws.close(); rejectWs(new Error('WebSocket timeout')); }, 2000);
-        });
-        if (wsOpen) {
-          return { status: 'OK', label: 'CDP', detail: `${host}:${port} → connected via WebSocket fallback`, host, port: String(port) };
-        }
-      } catch {}
-      return {
-        status: 'FAIL', label: 'CDP', detail: `cannot reach ${host}:${port} (${e.message})`,
-        hint: `start the app with --remote-debugging-port=${port}, or unset CDP_PORT to auto-discover Chrome`,
-        host,
-        port: String(port),
-      };
+      // Chrome 136+ / websocket-only: HTTP 404 still has a live /devtools/browser socket.
+      // Connection refused, timeout, and other HTTP failures must fail fast.
+      if (isCdpHttp404(e)) {
+        try {
+          const wsOpen = await openCdpWebSocket(`ws://${host}:${port}/devtools/browser`, { connectWebSocket });
+          if (wsOpen) {
+            rememberReachable({ host, port });
+            return { status: 'OK', label: 'CDP', detail: `${host}:${port} → connected via WebSocket fallback`, host, port: String(port) };
+          }
+        } catch {}
+      }
+      return unreachable(port, e.message);
     }
   }
   // Auto-discover via DevToolsActivePort (light reuse — avoids full ws connect)
@@ -14174,6 +14402,9 @@ async function checkCdpReachability({ env = process.env, fetcher = fetch, host =
   ].filter(Boolean);
   const found = tryPaths.find(p => existsSync(p));
   if (!found) {
+    if (remembered?.profileDir && remembered?.port) {
+      return unreachable(remembered.port, 'no DevToolsActivePort and no CDP_PORT set');
+    }
     return {
       status: 'FAIL', label: 'CDP', detail: 'no DevToolsActivePort and no CDP_PORT set',
       hint: 'Toggle chrome://inspect/#remote-debugging in Chrome, or set CDP_PORT=<port> for an Electron app',
@@ -14189,8 +14420,10 @@ async function checkCdpReachability({ env = process.env, fetcher = fetch, host =
     return { status: 'WARN', label: 'CDP', detail: `invalid DevToolsActivePort at ${found}`, host };
   }
   const discoveredPort = lines[0];
+  const discoveredProfile = profileDirFromDevToolsActivePort(found);
   try {
     const info = await tryFetch(discoveredPort);
+    rememberReachable({ host, port: discoveredPort, profileDir: discoveredProfile });
     return { status: 'OK', label: 'CDP', detail: `${host}:${discoveredPort} → ${describe(info)} (auto-discovered)`, host, port: String(discoveredPort) };
   } catch (e) {
     return {
@@ -14434,16 +14667,27 @@ function checkRuntimeEnvironment(opts = {}) {
 }
 
 function reconcileRuntimeEnvironmentCheck(environment, cdp) {
-  if (cdp?.status !== 'OK' || environment?.label !== 'Environment' || environment.status === 'OK') {
+  if (environment?.label !== 'Environment' || environment.status === 'OK') {
     return environment;
   }
-  return {
-    ...environment,
-    status: 'OK',
-    detail: `${environment.detail}; CDP reachable`,
-    hint: null,
-    recovery: null,
-  };
+  if (cdp?.status === 'OK') {
+    return {
+      ...environment,
+      status: 'OK',
+      detail: `${environment.detail}; CDP reachable`,
+      hint: null,
+      recovery: null,
+    };
+  }
+  // Configured CDP is down. Do not advertise a blank isolated profile.
+  if (cdp?.port || cdp?.profileDir) {
+    return {
+      ...environment,
+      hint: 'CDP_PORT is set; enable remote debugging on that existing browser. Do not spawn a new user-data-dir.',
+      recovery: null,
+    };
+  }
+  return environment;
 }
 
 function doctorWizardSummary(checks) {
@@ -14473,7 +14717,9 @@ function doctorWizardModel(checks) {
     currentStep = node.hint || NODE22_MISSING_HINT;
   } else if (cdp?.status === 'FAIL') {
     status = 'blocked at browser CDP';
-    currentStep = `enable browser remote debugging, then rerun: ${prefix} doctor`;
+    currentStep = cdp.relaunch
+      ? cdp.relaunch
+      : `enable browser remote debugging, then rerun: ${prefix} doctor`;
   } else if (cdp?.status === 'WARN') {
     status = 'waiting for stable browser CDP';
     currentStep = `re-toggle browser remote debugging, then rerun: ${prefix} doctor`;
@@ -14551,6 +14797,32 @@ function doctorRecommendationModel(checks) {
     };
   }
   if (cdp?.status === 'FAIL') {
+    if (cdp.profileDir && cdp.relaunch) {
+      return {
+        ...base,
+        stage: 'browser-cdp',
+        strategy: 'relaunch-same-profile',
+        run: cdp.relaunch,
+        ask: 'Relaunch the same debug browser profile. Do not invent DISPLAY, a new user-data-dir, or a second Chrome profile.',
+        after: `${prefix} list`,
+        requiresUserAction: true,
+        consentRequired: false,
+        reason: cdp.detail || null,
+      };
+    }
+    if (cdp.port) {
+      return {
+        ...base,
+        stage: 'browser-cdp',
+        strategy: 'enable-existing-debugging',
+        run: cdp.relaunch || null,
+        ask: `Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: ${prefix} doctor. Do not invent a new --user-data-dir.`,
+        after: `${prefix} list`,
+        requiresUserAction: true,
+        consentRequired: true,
+        reason: cdp.detail || null,
+      };
+    }
     if (environment?.recovery?.command) {
       return {
         ...base,
@@ -14566,6 +14838,7 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-cdp',
+      strategy: 'enable-existing-debugging',
       run: `${prefix} spawn-debug-browser edge --port 9222 --url https://example.com`,
       ask: `Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: ${prefix} doctor.`,
       after: `${prefix} list`,
@@ -14660,7 +14933,14 @@ function doctorNextSteps(checks) {
     return lines;
   }
   if (cdp?.status === 'FAIL') {
-    if (environment?.recovery?.command) {
+    if (cdp.relaunch && cdp.profileDir) {
+      lines.push(`  1. ${cdp.relaunch}`);
+      lines.push(`  2. Then run: ${prefix} list`);
+    } else if (cdp.port) {
+      lines.push(`  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: ${prefix} doctor`);
+      lines.push('  2. Do not invent a new --user-data-dir or a second Chrome profile; relaunch the same browser/profile that last served this CDP port.');
+      lines.push(`  3. Then run: ${prefix} list`);
+    } else if (environment?.recovery?.command) {
       lines.push(`  1. ${environment.recovery.command}`);
       lines.push(`  2. Then run: ${prefix} list`);
       lines.push(`  3. Existing browser alternative: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: ${prefix} doctor`);
@@ -14773,7 +15053,7 @@ function stripDoctorStepPrefix(line) {
 function doctorNextStepCommands(checks) {
   return doctorNextSteps(checks)
     .map(stripDoctorStepPrefix)
-    .filter(line => line.startsWith('cdp ') || /\bcdp\.mjs\b/.test(line));
+    .filter(line => line.startsWith('cdp ') || /\bcdp\.mjs\b/.test(line) || /--remote-debugging-port=/.test(line));
 }
 
 function buildDoctorModel(checks) {
@@ -14835,7 +15115,14 @@ async function runDoctorChecks(opts = {}) {
   checks.push(checkDaemonSockets({ list: opts.listDaemons }));
   checks.push(checkFdLimit({ limit: opts.fdLimit, platform: opts.platform }));
   checks.push(checkRuntimeEnvironment({ platform: opts.platform, env: opts.env, fs }));
-  const cdp = await checkCdpReachability({ env: opts.env, fetcher: opts.fetcher, host: opts.host });
+  const cdp = await checkCdpReachability({
+    env: opts.env,
+    fetcher: opts.fetcher,
+    host: opts.host,
+    lastEndpoint: opts.lastEndpoint,
+    readLastEndpoint: opts.readLastEndpoint,
+    connectWebSocket: opts.connectWebSocket,
+  });
   checks[4] = reconcileRuntimeEnvironmentCheck(checks[4], cdp);
   checks.push(cdp);
   const tabs = await checkBrowserTargets({ cdp, env: opts.env, fetcher: opts.fetcher, host: opts.host });
@@ -14910,7 +15197,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env) {
     if (a === '--port' || a === '-p') opts.port = parseInt(tokens[++i]) || 9222;
     else if (a === '--host') opts.host = tokens[++i] || opts.host;
     else if (a === '--url' || a === '-u') opts.url = tokens[++i];
-    else if (a === '--profile-dir') opts.profileDir = tokens[++i];
+    else if (a === '--profile-dir' || a === '--user-data-dir') opts.profileDir = tokens[++i];
     else if (a === '--browser') opts.browser = (tokens[++i] || opts.browser).toLowerCase();
     else if (a === '--exe' || a === '--executable') opts.executable = tokens[++i];
     else if (a === '--headless') opts.headless = 'new';
@@ -14988,6 +15275,7 @@ function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = n
   const nextCommand = targetPrefix
     ? `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`
     : `CDP_PORT=${plan.port} cdp list`;
+  const disposable = isDisposableSpawnProfileDir(plan.profileDir);
   return {
     schema: 'chrome-cdp-ex.spawn-debug-browser.v1',
     ready: readiness?.ok === true,
@@ -15004,7 +15292,7 @@ function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = n
     nextCommand,
     cleanup: {
       stopHint: `CDP_PORT=${plan.port} cdp stop${targetPrefix ? ` ${targetPrefix}` : ''}`,
-      deleteProfile: `rm -rf ${plan.profileDir}`,
+      deleteProfile: disposable ? `rm -rf ${plan.profileDir}` : null,
     },
   };
 }
@@ -15023,8 +15311,13 @@ function formatSpawnDebugBrowserOutput(model, { format = 'text' } = {}) {
   }
   lines.push('');
   lines.push(`Next: ${model.nextCommand}`);
-  lines.push(`Stop/cleanup: ${model.cleanup.stopHint}; then ${model.cleanup.deleteProfile}`);
-  lines.push(`(Profile is disposable — delete ${model.profileDir} to reset.)`);
+  if (model.cleanup?.deleteProfile) {
+    lines.push(`Stop/cleanup: ${model.cleanup.stopHint}; then ${model.cleanup.deleteProfile}`);
+    lines.push(`(Profile is disposable — delete ${model.profileDir} to reset.)`);
+  } else {
+    lines.push(`Stop: ${model.cleanup?.stopHint || `CDP_PORT=${model.port} cdp stop`}`);
+    lines.push('(Reused existing profile — do not delete this user-data-dir.)');
+  }
   return lines.join('\n');
 }
 
@@ -15257,6 +15550,16 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   child.unref?.();
   const pages = await listTargets({ port: plan.port, host: plan.host, fetcher });
   const target = pickSpawnedTarget(pages, plan.url);
+  const remember = deps.rememberLastCdpEndpoint || rememberLastCdpEndpoint;
+  try {
+    remember({
+      host: plan.host,
+      port: plan.port,
+      profileDir: plan.profileDir,
+      exe: plan.exe,
+      browser: plan.browser,
+    });
+  } catch {}
   const model = buildSpawnDebugBrowserModel(plan, readiness, { child, target });
   // Prefer executable path in text mode for operators.
   if (opts.format !== 'json') {
@@ -15652,6 +15955,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const cdp = new CDP();
   try {
     await cdp.connect(await getWsUrl());
+    try { await rememberLiveCdpEndpointFromSession(cdp); } catch {}
   } catch (e) {
     process.stderr.write(`Daemon: cannot connect to Chrome: ${e.message}\n`);
     process.exit(1);
@@ -16645,6 +16949,7 @@ async function discoverLivePagesForTargetResolution() {
   const cdp = new CDP();
   await cdp.connect(await getWsUrl());
   try {
+    try { await rememberLiveCdpEndpointFromSession(cdp); } catch {}
     return await getPages(cdp);
   } finally {
     cdp.close();
@@ -17413,6 +17718,8 @@ Usage: cdp <command> [args]
                                     Readiness: ready | usable-with-warnings | blocked.
                                     Checks expose severity: blocking | warning | advisory | ok.
                                     Headless CDP sessions treat unconfirmed permission as advisory, not a blocker.
+                                    When CDP is unreachable, FAIL hint is one same-profile relaunch line from the
+                                    last known --user-data-dir; do not invent a new profile or DISPLAY.
                                     No target required. Exits 1 if any check FAILs.
 {{command:keepalive}}
 {{command:open}}
@@ -17996,7 +18303,7 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
   }
 }
 
-function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform = process.platform } = {}) {
+function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform = process.platform, err = null } = {}) {
   const lower = String(message || '').toLowerCase();
   const target = targetPrefix || '<target>';
   if (lower.includes('emfile') || lower.includes('too many open files')) {
@@ -18012,11 +18319,28 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
     };
   }
   if (
-    lower.includes('cannot reach cdp') ||
-    lower.includes('no devtoolsactiveport') ||
-    lower.includes('websocket error') ||
-    lower.includes('remote-debugging-port')
+    err?.code === 'cdp_unreachable'
+    || lower.includes('cannot reach cdp')
+    || lower.includes('no devtoolsactiveport')
+    || lower.includes('websocket error')
+    || lower.includes('remote-debugging-port')
   ) {
+    if (err?.profileDir && err?.relaunch) {
+      return {
+        kind: 'browser-cdp',
+        strategy: 'relaunch-same-profile',
+        run: err.relaunch,
+        reason: 'Chrome debugging endpoint is down. Relaunch the same user-data-dir; do not invent a new profile.',
+      };
+    }
+    if (err?.code === 'cdp_unreachable' || lower.includes('cannot reach cdp')) {
+      return {
+        kind: 'browser-cdp',
+        strategy: 'enable-existing-debugging',
+        run: err?.relaunch || 'cdp doctor',
+        reason: 'Chrome debugging endpoint is down. Do not invent a new --user-data-dir; enable remote debugging on the existing browser via chrome://inspect/#remote-debugging.',
+      };
+    }
     return {
       kind: 'browser-cdp',
       strategy: 'run-doctor',
@@ -18170,7 +18494,7 @@ function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = proce
         run: `cdp perceive ${target} -C -d 8`,
         reason: 'The action may have occurred. Inspect current page state first; do not repeat the action until its effect is verified.',
       }
-    : buildCliErrorRecovery(message, { cmd, targetPrefix, platform });
+    : buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err });
   const nextSteps = [];
   const commandSteps = Array.isArray(recovery.commands) && recovery.commands.length
     ? recovery.commands.map(command => command?.command).filter(Boolean)
@@ -18187,6 +18511,15 @@ function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = proce
     recovery,
     nextSteps,
   };
+  if (err?.code === 'cdp_unreachable' || recovery.strategy === 'relaunch-same-profile' || recovery.strategy === 'enable-existing-debugging') {
+    if (err?.code === 'cdp_unreachable' || /cannot reach cdp/i.test(message)) {
+      model.error.code = 'cdp_unreachable';
+      model.host = err?.host || null;
+      model.port = err?.port || null;
+      model.profileDir = err?.profileDir ?? null;
+      model.relaunch = err?.relaunch ?? null;
+    }
+  }
   if (completionUnknown) {
     model.completion = 'unknown';
     model.sideEffectMayHaveOccurred = true;
@@ -18226,7 +18559,7 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
   const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
   if (/^Next:/m.test(message)) return lines.join('\n');
 
-  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform });
+  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err });
   lines.push(...formatCliErrorRecovery(recovery));
   lines.push(`Next: ${recovery.run}`);
   return lines.join('\n');
@@ -18712,6 +19045,7 @@ async function main(options = {}) {
       // No daemon running — connect directly (will trigger one Allow)
       const cdp = new CDP();
       await cdp.connect(await getWsUrl());
+      try { await rememberLiveCdpEndpointFromSession(cdp); } catch {}
       pages = await getPages(cdp);
       cdp.close();
     }
@@ -19047,6 +19381,27 @@ async function main(options = {}) {
   if (cmd === 'attach' || cmd === 'use') {
     try {
       const parsed = parseAliasCommandArgs(args, cmd);
+      if (parsed.port) {
+        const attachEnv = {
+          CDP_PORT: String(parsed.port),
+          CDP_HOST: parsed.host || process.env.CDP_HOST || DEFAULT_CDP_HOST,
+        };
+        const check = await checkCdpReachability({ env: attachEnv, host: attachEnv.CDP_HOST });
+        if (check.status === 'FAIL') {
+          throw cdpUnreachableError({
+            host: check.host || attachEnv.CDP_HOST,
+            port: check.port || attachEnv.CDP_PORT,
+            cause: check.detail,
+            lastEndpoint: {
+              host: check.host,
+              port: check.port,
+              profileDir: check.profileDir,
+              exe: check.exe,
+              browser: check.browser,
+            },
+          });
+        }
+      }
       const store = readTargetAliases();
       const next = upsertTargetAlias(store, {
         name: parsed.name,
@@ -19449,6 +19804,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   probeTcpPort,
   getWsUrl, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
+  readLastCdpEndpoint, writeLastCdpEndpoint, rememberLastCdpEndpoint, formatCdpRelaunchCommand,
+  cdpUnreachableError, profileDirFromCommandLine, profileDirFromDevToolsActivePort,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
   // Screenshot

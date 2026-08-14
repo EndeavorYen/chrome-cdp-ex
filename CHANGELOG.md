@@ -32,6 +32,7 @@
 
 ### Agent reliability
 
+* Dead CDP now fails fast with a same-profile relaunch receipt. `list` / `doctor` / `attach` no longer wait on a WebSocket fallback after connection refused or HTTP timeout. Remembered existing Chrome profiles relaunch with `--remote-debugging-port` and `--user-data-dir` (no disposable `rm -rf`). When `CDP_PORT` is set and the profile is unknown, doctor prefers `chrome://inspect` over a blank `spawn-debug-browser` even on Linux/no DISPLAY (#155).
 * Default `fill --format json` to a compact `chrome-cdp-ex.fill.v1` receipt
   (`value`, `changed`, `navigation`, `typeahead`) instead of the full action
   envelope. Pass `--full` / `--unsafe-full` for `chrome-cdp-ex.action.v1`.
