@@ -120,7 +120,7 @@ describe('Phase 6 command-surface characterization', () => {
     expect(MCP_RESOURCE_TEMPLATES).toEqual(contract.mcp.resourceTemplates);
     expect([...MCP_RUN_COMMAND_ALLOWLIST].sort()).toEqual(contract.mcp.runCommandAllowlist);
     expect(digestJson(MCP_TOOL_DEFINITIONS))
-      .toBe('sha256:3e84709c6be34475a595afe7db51e958c0de81fd383abbbc3e56761aeece3f8a');
+      .toBe('sha256:b1700a4682c8379d49982b2b6b443fc0da6618ca6794456e9bc7899fdc1e4cd0');
     expect(digestJson(MCP_RESOURCE_TEMPLATES))
       .toBe('sha256:3b37cd2d5f067d70ecda6570c7d9ca3316610e116962ee547cce0386eda8e37d');
     expect(digestJson(MCP_RUN_COMMAND_ALLOWLIST))
@@ -151,7 +151,7 @@ describe('Phase 6 command-surface characterization', () => {
       navigate: ['navigate'],
       open_or_attach: ['open-attach-alias', 'open-new-tab'],
       overlay: ['overlay'],
-      perceive: ['perceive'],
+      perceive: ['perceive', 'perceive-cards'],
       press: ['press'],
       qa_page: ['qa-page'],
       record_snapshot: ['record-snapshot'],

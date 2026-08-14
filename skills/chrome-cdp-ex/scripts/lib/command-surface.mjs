@@ -448,6 +448,7 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
         adaptive: booleanSchema('Use density/error-aware text-row budgeting. Defaults to true.'),
         last: { type: 'integer', minimum: 1, maximum: 500, description: 'Explicit text-row budget; overrides adaptive mode.' },
         qa: booleanSchema('Return a compact QA summary instead of full perception.'),
+        cards: booleanSchema('Return compact feed cards (article/listitem) instead of the full accessibility tree.'),
         maxDiffLines: { type: 'integer', minimum: 0, maximum: 500, description: 'Truncate long text previews in QA mode.' },
       },
       additionalProperties: false,
@@ -944,12 +945,12 @@ function surfaceDigest(value) {
 }
 
 export const COMMAND_SURFACE_IDENTITY = 'ed09a707e1c2094b56d45db13e26f4c6277b52872abea9d99fdab12059f32f15';
-export const MCP_SURFACE_IDENTITY = 'd98eb8653763e131c55e17f91a48f7ee1f2e62ebab29a98752a88adac52219b3';
+export const MCP_SURFACE_IDENTITY = '587d24c865caf41cca9b0a0553d254612bd7c8976edb37b0a9d4e0bff0978733';
 if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
-  fail('commands', 'reviewed catalog identity drifted');
+  fail('commands', `reviewed catalog identity drifted (${surfaceDigest(COMMAND_SURFACE.commands)})`);
 }
 if (surfaceDigest(MCP_SURFACE) !== MCP_SURFACE_IDENTITY) {
-  fail('mcp', 'reviewed catalog identity drifted');
+  fail('mcp', `reviewed catalog identity drifted (${surfaceDigest(MCP_SURFACE)})`);
 }
 
 export function projectCliCommands(surface = COMMAND_SURFACE) {

@@ -4010,6 +4010,7 @@ describe('parsePerceiveArgs', () => {
       adaptive: false,
       sinceAction: false,
       frameRef: null,
+      cards: false,
     });
   });
 
@@ -4079,6 +4080,7 @@ describe('parsePerceiveArgs', () => {
       adaptive: false,
       sinceAction: false,
       frameRef: null,
+      cards: false,
     });
   });
 
@@ -12297,6 +12299,94 @@ describe('parsePerceiveArgs (keep-refs/last)', () => {
 
   it('treats --last with a non-numeric argument as null', () => {
     expect(T.parsePerceiveArgs(['--last', 'xyz']).last).toBeNull();
+  });
+
+  it('parses --cards as a known compact feed flag', () => {
+    expect(T.parsePerceiveArgs(['--cards']).cards).toBe(true);
+    expect(T.parsePerceiveArgs([]).cards).toBe(false);
+  });
+
+  it('treats --role feed as an alias for --cards', () => {
+    expect(T.parsePerceiveArgs(['--role', 'feed']).cards).toBe(true);
+    expect(T.parsePerceiveArgs(['--role', 'dialog']).cards).toBe(false);
+  });
+});
+
+describe('perceiveStr --cards', () => {
+  it('returns compact feed cards from fake AX articles without a full a11y dump', async () => {
+    const meta = {
+      title: 'Home',
+      url: 'https://x.com/home',
+      vw: 1280,
+      vh: 900,
+      scrollY: 0,
+      scrollMax: 4000,
+      counts: { article: 2 },
+      focused: 'none',
+      layoutMap: { main: [{ h: 2000 }] },
+      styleHints: {},
+      cursorInteractives: [],
+    };
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: JSON.stringify(meta) } }),
+      'Accessibility.getFullAXTree': () => ({
+        nodes: [
+          { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Home' }, childIds: ['2'] },
+          { nodeId: '2', parentId: '1', role: { value: 'main' }, name: { value: 'Timeline' }, childIds: ['3'] },
+          {
+            nodeId: '3', parentId: '2', role: { value: 'article' }, name: { value: '@alice first visible post' },
+            backendDOMNodeId: 31,
+            childIds: ['4'],
+            properties: [],
+          },
+          {
+            nodeId: '4', parentId: '3', role: { value: 'link' }, name: { value: 'Show this post' },
+            properties: [{ name: 'url', value: { value: 'https://x.com/alice/status/1' } }],
+          },
+          {
+            nodeId: '5', parentId: '2', role: { value: 'article' }, name: { value: '@bob second visible post' },
+            backendDOMNodeId: 51,
+            childIds: ['6'],
+          },
+          {
+            nodeId: '6', parentId: '5', role: { value: 'link' }, name: { value: 'Show this post' },
+            properties: [{ name: 'url', value: { value: 'https://x.com/bob/status/2' } }],
+          },
+        ],
+      }),
+    });
+    const refMap = new Map();
+    const out = await T.perceiveStr(
+      cdp,
+      'sid1',
+      new RingBuffer(5),
+      new RingBuffer(5),
+      refMap,
+      { output: null },
+      { cards: true, targetPrefix: 'ABC12345' },
+    );
+    expect(out).toContain('chrome-cdp-ex.cards.v1');
+    expect(out).toContain('@alice');
+    expect(out).toContain('https://x.com/alice/status/1');
+    expect(out).toMatch(/virtualized/i);
+    expect(out).not.toContain('[banner]');
+    expect(out).not.toContain('RootWebArea');
+    expect(refMap.get(1)).toBe(31);
+
+    const json = await T.perceiveStr(
+      cdp,
+      'sid1',
+      new RingBuffer(5),
+      new RingBuffer(5),
+      new Map(),
+      { output: null },
+      { cards: true, format: 'json', targetPrefix: 'ABC12345' },
+    );
+    const parsed = JSON.parse(json);
+    expect(parsed.schema).toBe('chrome-cdp-ex.cards.v1');
+    expect(parsed.cards).toHaveLength(2);
+    expect(parsed.virtualized).toBe(true);
+    expect(parsed.next).toMatch(/scroll and re-run --cards/i);
   });
 });
 

@@ -26,7 +26,7 @@ Take action immediately; do not just read this file.
 
 ## Perceive first
 
-Start with `perceive`, not screenshots. It returns the accessibility tree, visible text, layout/style hints, interactive `@ref` handles, and console health in a compact form. Use `elshot` for one element when visual judgment matters, `shot --annotate` for a viewport ref map, `scanshot` only for full-page pixel review, and `record` when the question is about sequence or cause-and-effect over time.
+Start with `perceive`, not screenshots. It returns the accessibility tree, visible text, layout/style hints, interactive `@ref` handles, and console health in a compact form. On virtualized feeds (X Home, infinite timelines), use `perceive <target> --cards` for a capped article/listitem list instead of a full a11y dump. Use `elshot` for one element when visual judgment matters, `shot --annotate` for a viewport ref map, `scanshot` only for full-page pixel review, and `record` when the question is about sequence or cause-and-effect over time.
 
 Refresh `@ref` handles after navigation, DOM rewrites, modal changes, or failed stale-ref actions by running `perceive <target> -C -d 8` again. For scripts or loops, prefer stable CSS selectors over old `@ref` values.
 

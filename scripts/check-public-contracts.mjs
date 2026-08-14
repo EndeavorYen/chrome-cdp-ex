@@ -222,6 +222,7 @@ const MCP_MAPPING_INPUTS = Object.freeze([
   { id: 'open-new-tab', tool: 'open_or_attach', args: { url: 'https://example.test/', confirm: true } },
   { id: 'select-target', tool: 'select_target', args: { url: 'example.test', exact: true } },
   { id: 'perceive', tool: 'perceive', args: { target: 'fixture', depth: 4, cursorInteractive: true } },
+  { id: 'perceive-cards', tool: 'perceive', args: { target: 'fixture', cards: true } },
   { id: 'controls', tool: 'controls', args: { target: 'fixture', limit: 10 } },
   { id: 'overlay', tool: 'overlay', args: { target: 'fixture', selector: '@1' } },
   { id: 'screenshot', tool: 'screenshot', args: { target: 'fixture', annotate: true } },

@@ -433,6 +433,8 @@ describe('current open issue contracts', () => {
     expect(buildMcpToolCommand('doctor', {})).toEqual(['doctor', '--format', 'json']);
     expect(buildMcpToolCommand('perceive', { target: 'app', depth: 4, cursorInteractive: true }))
       .toEqual(['perceive', 'app', '-d', '4', '-C', '--adaptive', '--format', 'json']);
+    expect(buildMcpToolCommand('perceive', { target: 'app', cards: true, last: 12 }))
+      .toEqual(['perceive', 'app', '--cards', '--last', '12', '--format', 'json']);
     expect(buildMcpToolCommand('perceive', { target: 'app', qa: true, maxDiffLines: 12 }))
       .toEqual(['perceive', 'app', '--adaptive', '--qa', '--max-diff-lines', '12', '--format', 'json']);
     expect(buildMcpToolCommand('controls', { target: 'app', selector: '#composer', filter: 'send', limit: 5 }))

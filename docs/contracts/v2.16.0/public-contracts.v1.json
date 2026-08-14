@@ -1600,6 +1600,22 @@
       },
       {
         "args": {
+          "cards": true,
+          "target": "fixture"
+        },
+        "command": [
+          "perceive",
+          "fixture",
+          "--cards",
+          "--adaptive",
+          "--format",
+          "json"
+        ],
+        "id": "perceive-cards",
+        "tool": "perceive"
+      },
+      {
+        "args": {
           "limit": 10,
           "target": "fixture"
         },
@@ -2383,6 +2399,10 @@
           "properties": {
             "adaptive": {
               "description": "Use density/error-aware text-row budgeting. Defaults to true.",
+              "type": "boolean"
+            },
+            "cards": {
+              "description": "Return compact feed cards (article/listitem) instead of the full accessibility tree.",
               "type": "boolean"
             },
             "cursorInteractive": {

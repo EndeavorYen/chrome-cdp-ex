@@ -72,6 +72,11 @@ import {
   goldenPathPerceiveRecommendation,
 } from './lib/perception-model.mjs';
 import {
+  buildCardsModel,
+  formatCardsJson,
+  formatCardsText,
+} from './lib/cards-model.mjs';
+import {
   buildReportRecommendation,
   defaultReportNextSteps,
   formatReportNextStepLines,
@@ -7423,11 +7428,17 @@ function parsePerceiveArgs(args) {
     diff: false, selector: null, exclude: null,
     interactive: false, maxDepth: Infinity, cursorInteractive: false,
     keepRefs: false, last: null, adaptive: false, sinceAction: false, frameRef: null,
+    cards: false,
   };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--diff') opts.diff = true;
     else if (a === '--since-action') opts.sinceAction = true;
+    else if (a === '--cards') opts.cards = true;
+    else if (a === '--role') {
+      const role = String(args[++i] || '').trim().toLowerCase();
+      if (role === 'feed') opts.cards = true;
+    }
     else if (a === '-F' || a === '--frame') opts.frameRef = args[++i] || null;
     else if (a === '-s' || a === '--selector') opts.selector = args[++i];
     else if (a === '-x' || a === '--exclude') opts.exclude = args[++i];
@@ -8391,9 +8402,9 @@ ${visibleControlsCollectorSource()}
 async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
   const {
     diff: diffMode = false, selector: scopeSelector = null, exclude: excludeSelector = null,
-    interactive: interactiveOnly = false, maxDepth = Infinity, cursorInteractive = false,
+    interactive: interactiveOnly = false, maxDepth = Infinity,     cursorInteractive = false,
     keepRefs = false, last = null, adaptive = false, sinceAction = false, diffBaseline = null,
-    frameRef = null,
+    frameRef = null, cards = false,
   } = opts;
   const frameContext = frameRef ? await resolveFrameRef(cdp, sid, frameRef) : null;
   const frame = frameContext?.frame || null;
@@ -8479,6 +8490,23 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   }
 
   const activeRefMap = frame ? new Map() : refMap;
+  if (cards) {
+    const model = buildCardsModel(axNodes, meta, activeRefMap, {
+      last,
+      targetPrefix: opts.targetPrefix,
+    });
+    if (frame) storeFrameScopedRefs(refState, frame, frameContext.frames, activeRefMap);
+    const output = opts.format === 'json' ? formatCardsJson(model) : formatCardsText(model);
+    lastPerceiveStore.output = output;
+    lastPerceiveStore.cards = model;
+    if (frame) rememberFramePerceiveOutput(refState, frame.ref, output);
+    if (refState && typeof refState === 'object') {
+      refState.generation = (refState.generation || 0) + 1;
+      refState.lastPerceiveAt = Date.now();
+      refState.invalidationReason = null;
+    }
+    return output;
+  }
   const builtTree = buildPerceiveTree(axNodes, meta, activeRefMap, {
     maxDepth,
     interactiveOnly,
@@ -17157,6 +17185,14 @@ function createPerceiveCommandHandler({
             perceptionPreview: truncateTextLines(text, fopts.maxDiffLines ?? 20),
           })
         : formatQaSummaryText(summary);
+    } else if (popts.cards) {
+      value = await perceiveText(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
+        ...popts,
+        format: fopts.format,
+      }, refState);
+      if (fopts.maxDiffLines != null && fopts.format !== 'json') {
+        value = truncateTextLines(value, fopts.maxDiffLines);
+      }
     } else {
       value = fopts.format === 'json' && (popts.sinceAction || popts.diff)
         ? formatJson(await buildPerceiveDiff(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, popts, refState))
@@ -18802,6 +18838,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   shouldShowAxNode, formatAxNode, orderedAxChildren,
   // Perceive & snapshot
   parsePerceiveArgs, buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
+  buildCardsModel, formatCardsJson, formatCardsText,
   parseControlsArgs, visibleControlsCollectorSource, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
