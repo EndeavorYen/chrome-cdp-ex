@@ -28,7 +28,7 @@ Take action immediately; do not just read this file.
 
 Start with `perceive`, not screenshots. It returns the accessibility tree, visible text, layout/style hints, interactive `@ref` handles, and console health in a compact form. Use `elshot` for one element when visual judgment matters, `shot --annotate` for a viewport ref map, `scanshot` only for full-page pixel review, and `record` when the question is about sequence or cause-and-effect over time.
 
-Refresh `@ref` handles after navigation, DOM rewrites, modal changes, or failed stale-ref actions by running `perceive <target> -C -d 8` again. For scripts or loops, prefer stable CSS selectors over old `@ref` values.
+Refresh `@ref` handles after navigation, DOM rewrites, modal changes, or failed stale-ref actions by running `perceive <target> -C -d 8` again. For scripts or loops, prefer stable CSS selectors over old `@ref` values. If `Focused:` is an input/search, blur it first (`press Escape`) or `perceive -s main` — an open typeahead can replace the page body.
 
 ## Prerequisites
 

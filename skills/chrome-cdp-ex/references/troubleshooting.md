@@ -100,3 +100,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs stop <target>
 ```
 
 Use `--allow-stale-daemon` only for an intentional long-running daemon and only as a one-off bypass.
+
+## Focused search poisons perceive
+
+If a search/typeahead is focused, `perceive` may dump suggestions instead of the article. Blur first (`press Escape`) or `perceive -s main`. Use `--keep-typeahead` only when inspecting the dropdown.

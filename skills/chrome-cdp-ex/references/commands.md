@@ -282,6 +282,7 @@ scripts/cdp.mjs perceive <target> -i           # interactive elements only (comp
 scripts/cdp.mjs perceive <target> -d 3         # limit tree depth to 3
 scripts/cdp.mjs perceive <target> -C           # include visible controls + non-ARIA clickables (@c refs)
 scripts/cdp.mjs perceive <target> --adaptive  # density/error-aware text-row budget
+scripts/cdp.mjs perceive <target> --keep-typeahead  # keep focused search suggestion listbox
 scripts/cdp.mjs controls <target> -s "#composer" --format json # visible controls inventory for selector repair
 ```
 
@@ -290,7 +291,7 @@ Returns a single **enriched accessibility tree** that combines semantic structur
 - **Enriched AX tree**: semantic roles and labels with **inline layout annotations** — height, background color, font size, display mode, and viewport visibility (↑above fold / ↓below fold)
 - **Style anomaly hints**: on table cells, annotates non-default background colors, bold text, and unusual text colors — e.g., `[cell] 70.0%  bg:rgb(255,200,200)  bold`
 - **@ref indices with coordinates**: every interactive element gets `@1`, `@2`... with bounding rect `(x,y w×h)` — enables spatial understanding without screenshots
-- **Scope/filter flags**: `-s` scopes to a subtree, `-i` shows only interactive elements, `-d N` limits depth — essential for large pages to avoid token bloat
+- **Scope/filter flags**: `-s` scopes to a subtree, `-i` shows only interactive elements, `-d N` limits depth — essential for large pages to avoid token bloat. Default perceive omits a focused search typeahead; blur with Escape, use `-s main`, or pass `--keep-typeahead` to inspect the dropdown.
 
 Example output:
 ```
