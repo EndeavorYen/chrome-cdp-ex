@@ -1400,6 +1400,104 @@ function aliasEnv(alias, baseEnv = process.env) {
   };
 }
 
+function discoverOptionsForTargetAlias(alias, baseEnv = process.env) {
+  if (!alias?.port) return { env: baseEnv, pinCdpPort: false };
+  return { env: aliasEnv(alias, baseEnv), pinCdpPort: true };
+}
+
+function selectLivePagesForAliasResolution({
+  alias = null,
+  discoveredPages = null,
+} = {}) {
+  if (!Array.isArray(discoveredPages)) {
+    const hint = alias?.port
+      ? ` on CDP port ${alias.port}`
+      : '';
+    throw new Error(`live target discovery is required before resolving an alias${hint}. Run: cdp list`);
+  }
+  return discoveredPages;
+}
+
+async function livePagesForTargetCommand(targetAlias, {
+  discoverPages = discoverLivePagesForTargetResolution,
+  env = process.env,
+} = {}) {
+  const discoveredPages = await discoverPages(discoverOptionsForTargetAlias(targetAlias, env));
+  return selectLivePagesForAliasResolution({ alias: targetAlias, discoveredPages });
+}
+
+function bindAliasTargetFromPages(parsed = {}, livePages = []) {
+  const requested = String(parsed?.targetId || '').trim();
+  if (!requested) throw new Error(`${parsed?.mode || 'use'}: --target or target id is required`);
+  const upper = requested.toUpperCase();
+  const matches = (livePages || []).filter(page => String(page?.targetId || '').toUpperCase().startsWith(upper));
+  if (matches.length === 1) {
+    return {
+      targetId: matches[0].targetId,
+      url: matches[0].url || '',
+      title: matches[0].title || '',
+    };
+  }
+  if (parsed.port) {
+    if (matches.length === 0) {
+      throw new Error(`No live target matching prefix "${requested}" on CDP port ${parsed.port}. Run: cdp list`);
+    }
+    throw new Error(`Live target prefix "${requested}" is ambiguous (${matches.length} matches).`);
+  }
+  return { targetId: requested, url: '', title: '' };
+}
+
+async function bindAndSaveTargetAlias(parsed, {
+  store = readTargetAliases(),
+  discoverPages = discoverLivePagesForTargetResolution,
+  writeStore = writeTargetAliases,
+  env = process.env,
+} = {}) {
+  const attachEnv = parsed.port ? {
+    ...env,
+    CDP_PORT: String(parsed.port),
+    CDP_HOST: parsed.host || env.CDP_HOST || DEFAULT_CDP_HOST,
+  } : null;
+  let targetId = parsed.targetId;
+  let boundUrl = '';
+  let boundTitle = '';
+  try {
+    const pages = await discoverPages({
+      env: attachEnv || env,
+      pinCdpPort: Boolean(parsed.port),
+    });
+    const bound = bindAliasTargetFromPages(parsed, pages);
+    targetId = bound.targetId;
+    boundUrl = bound.url;
+    boundTitle = bound.title;
+  } catch (error) {
+    if (parsed.port) throw error;
+  }
+  const next = upsertTargetAlias(store, {
+    name: parsed.name,
+    targetId,
+    port: parsed.port,
+    host: parsed.host,
+    url: boundUrl,
+    title: boundTitle,
+  });
+  writeStore(next);
+  return next;
+}
+
+const ALLOW_IN_CHROME_DAEMON_START = 'Daemon failed to start — did you click Allow in Chrome?';
+
+function formatDaemonStartFailure({
+  lastError = null,
+  liveTargetPresent = false,
+  targetId = null,
+} = {}) {
+  if (!liveTargetPresent) return ALLOW_IN_CHROME_DAEMON_START;
+  const prefix = targetId ? String(targetId).slice(0, 8) : 'target';
+  const cause = String(lastError?.message || lastError || 'socket never became ready').replace(/^Error:\s*/i, '');
+  return `Daemon failed to start for ${prefix} (${cause}). The tab is already debuggable — this is not an Allow-in-Chrome prompt. Run: cdp list`;
+}
+
 function parseAliasCommandArgs(args = [], mode = 'use') {
   const fopts = parseFormatArgs(args, ['text', 'json']);
   const parsed = {
@@ -19673,7 +19771,8 @@ async function getOrStartTabDaemon(targetId, opts = {}) {
   const execPath = opts.execPath || process.execPath;
   const scriptPath = opts.scriptPath || process.argv[1];
   // Try existing daemon
-  try { return await connect(sp); } catch {}
+  let lastError = null;
+  try { return await connect(sp); } catch (error) { lastError = error; }
 
   // Clean stale socket
   if (platform !== 'win32') try { unlink(sp); } catch {}
@@ -19686,12 +19785,16 @@ async function getOrStartTabDaemon(targetId, opts = {}) {
   });
   child.unref();
 
-  // Wait for socket (includes time for user to click Allow)
+  // Wait for socket (includes time for user to click Allow when the tab is not yet live)
   for (let i = 0; i < retries; i++) {
     await delay(retryDelayMs);
-    try { return await connect(sp); } catch {}
+    try { return await connect(sp); } catch (error) { lastError = error; }
   }
-  throw new Error('Daemon failed to start — did you click Allow in Chrome?');
+  throw new Error(formatDaemonStartFailure({
+    lastError,
+    liveTargetPresent: opts.liveTargetPresent === true,
+    targetId,
+  }));
 }
 
 function sendCommand(conn, req) {
@@ -19742,25 +19845,41 @@ function findAnyDaemonSocket() {
   return listDaemonSockets()[0]?.socketPath || null;
 }
 
-async function discoverLivePagesForTargetResolution() {
-  const existingSocket = findAnyDaemonSocket();
-  if (existingSocket) {
-    try {
-      const conn = await connectToSocket(existingSocket);
-      const response = await sendCommand(conn, { cmd: 'list_raw' });
-      if (response.ok) {
-        const pages = JSON.parse(response.result);
-        if (Array.isArray(pages)) return pages;
-      }
-    } catch {}
+async function discoverLivePagesForTargetResolution({
+  env = process.env,
+  pinCdpPort = false,
+  findSocket = findAnyDaemonSocket,
+  connect = connectToSocket,
+  request = sendCommand,
+  resolveWsUrl = getWsUrl,
+  connectCdp,
+  listPages = getPages,
+  rememberEndpoint = rememberLiveCdpEndpointFromSession,
+} = {}) {
+  if (!pinCdpPort) {
+    const existingSocket = findSocket();
+    if (existingSocket) {
+      try {
+        const conn = await connect(existingSocket);
+        const response = await request(conn, { cmd: 'list_raw' });
+        if (response.ok) {
+          const pages = JSON.parse(response.result);
+          if (Array.isArray(pages)) return pages;
+        }
+      } catch {}
+    }
   }
-  const cdp = new CDP();
-  await cdp.connect(await getWsUrl());
+  const openCdp = connectCdp || (async (wsUrl) => {
+    const cdp = new CDP();
+    await cdp.connect(wsUrl);
+    return cdp;
+  });
+  const cdp = await openCdp(await resolveWsUrl({ env }));
   try {
-    try { await rememberLiveCdpEndpointFromSession(cdp); } catch {}
-    return await getPages(cdp);
+    try { await rememberEndpoint(cdp, { env }); } catch {}
+    return await listPages(cdp);
   } finally {
-    cdp.close();
+    try { cdp.close(); } catch {}
   }
 }
 
@@ -22663,11 +22782,12 @@ async function main(options = {}) {
   if (cmd === 'attach' || cmd === 'use') {
     try {
       const parsed = parseAliasCommandArgs(args, cmd);
+      const attachEnv = parsed.port ? {
+        ...process.env,
+        CDP_PORT: String(parsed.port),
+        CDP_HOST: parsed.host || process.env.CDP_HOST || DEFAULT_CDP_HOST,
+      } : null;
       if (parsed.port) {
-        const attachEnv = {
-          CDP_PORT: String(parsed.port),
-          CDP_HOST: parsed.host || process.env.CDP_HOST || DEFAULT_CDP_HOST,
-        };
         const check = await checkCdpReachability({ env: attachEnv, host: attachEnv.CDP_HOST });
         if (check.status === 'FAIL') {
           throw cdpUnreachableError({
@@ -22685,22 +22805,10 @@ async function main(options = {}) {
         }
       }
       const store = readTargetAliases();
-      let targetId = parsed.targetId;
-      if (!parsed.port) {
-        try {
-          const pages = await discoverLivePagesForTargetResolution();
-          const upper = String(targetId || '').toUpperCase();
-          const matches = (pages || []).filter(page => String(page.targetId || '').toUpperCase().startsWith(upper));
-          if (matches.length === 1) targetId = matches[0].targetId;
-        } catch {}
-      }
-      const next = upsertTargetAlias(store, {
-        name: parsed.name,
-        targetId,
-        port: parsed.port,
-        host: parsed.host,
+      const next = await bindAndSaveTargetAlias(parsed, {
+        store,
+        env: process.env,
       });
-      writeTargetAliases(next);
       console.log(formatAliasRecord(next.aliases[normalizeAliasName(parsed.name)], { format: parsed.format }));
       return finish(0);
     } catch (e) {
@@ -22803,20 +22911,8 @@ async function main(options = {}) {
     console.error(formatCliError(unknownAliasError(targetPrefix), { cmd, format: cliErrorFormat }));
     return finish(1);
   }
-  let livePages;
-  if (targetAlias?.port) {
-    const cachedPages = existsSync(PAGES_CACHE) ? JSON.parse(readFileSync(PAGES_CACHE, 'utf8')) : [];
-    const cachedAliasPage = cachedPages.find(page => page.targetId === targetAlias.targetId);
-    livePages = [cachedAliasPage || {
-      targetId: targetAlias.targetId,
-      title: targetAlias.title || '',
-      url: targetAlias.url || '',
-      type: 'page',
-    }];
-  } else {
-    livePages = await discoverLivePagesForTargetResolution();
-    writeFileSync(PAGES_CACHE, JSON.stringify(livePages), { mode: 0o600 });
-  }
+  const livePages = await livePagesForTargetCommand(targetAlias);
+  writeFileSync(PAGES_CACHE, JSON.stringify(livePages), { mode: 0o600 });
   const requestedTargetId = targetAlias?.targetId || targetPrefix;
   const preliminaryMatches = livePages.filter(page => String(page.targetId || '').toUpperCase().startsWith(String(requestedTargetId).toUpperCase()));
   const preliminaryTargetId = preliminaryMatches.length === 1 ? preliminaryMatches[0].targetId : null;
@@ -22827,7 +22923,6 @@ async function main(options = {}) {
     daemonBinding,
     alias: targetAlias,
   });
-  if (targetAlias?.port) targetResolution.resolutionSource = 'alias';
   const targetId = targetResolution.resolvedTargetId;
 
   let rebound = false;
@@ -22835,7 +22930,9 @@ async function main(options = {}) {
   const browserIdentity = { kind: 'browser', id: 'browser-runtime', revision: 0 };
   const runtimeSupervisor = createBrowserSupervisor({
     discover: async () => {
-      const pages = targetAlias?.port ? livePages : await discoverLivePagesForTargetResolution();
+      const pages = targetAlias?.port
+        ? livePages
+        : await discoverLivePagesForTargetResolution();
       return buildExactTargetSupervisorCandidates(pages, targetId, browserIdentity);
     },
     endpointFor: resolvedTargetId => sockPath(resolvedTargetId),
@@ -22844,6 +22941,7 @@ async function main(options = {}) {
       endpoint,
       initialConnection: await getOrStartTabDaemon(resolvedTargetId, {
         env: aliasEnv(targetAlias),
+        liveTargetPresent: livePages.some(page => page.targetId === resolvedTargetId),
         ...runtimeIdentity,
       }),
     }),
@@ -23063,6 +23161,9 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   resolvePrefix, getDisplayPrefixLength, daemonEndpointForPlatform, sockPath, isRef, validateUrl,
   emptyAliasStore, readTargetAliases, writeTargetAliases, upsertTargetAlias,
   removeTargetAlias, forgetTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
+  aliasEnv, discoverOptionsForTargetAlias, selectLivePagesForAliasResolution, bindAliasTargetFromPages,
+  bindAndSaveTargetAlias, livePagesForTargetCommand, discoverLivePagesForTargetResolution,
+  formatDaemonStartFailure,
   aliasLookupKey, looksLikeAliasToken, looksLikeHexTargetPrefix, unknownAliasError, formatCurrentAlias,
   // AX tree helpers
   shouldShowAxNode, formatAxNode, axNodeTokenState, orderedAxChildren,

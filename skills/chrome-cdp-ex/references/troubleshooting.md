@@ -17,7 +17,8 @@ Common recoveries:
 
 - **Node too old:** install/use Node.js 22+.
 - **Low file descriptor limit:** run the printed `ulimit -n 4096`; on macOS, doctor may also print `sudo launchctl limit maxfiles 65536 200000` for GUI/login-session limits.
-- **Stale daemon:** run the printed `stop <target>`, rerun the original command, and click Allow in Chrome if prompted.
+- **Stale daemon:** run the printed `stop <target>`, rerun the original command, and click Allow in Chrome only if Chrome actually showed the debugging prompt.
+- **Port-bound alias eval says Allow in Chrome but prefix eval works:** the tab is already live. That error is a daemon-start failure, not a permission dialog. Re-run `cdp list` / `eval <prefix>`; do not restart Chrome or invent a new `--user-data-dir`.
 - **Checkout outside expected skill path:** this is usually an install advisory, not an operational blocker.
 
 ## CDP not reachable
