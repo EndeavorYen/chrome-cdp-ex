@@ -6476,4 +6476,726 @@ describe('issue #259 leftover framed perceive settle', () => {
   });
 });
 
+function pageSnapshotValue(overrides = {}) {
+  return JSON.stringify({
+    title: 'Example Domain',
+    url: 'https://example.com/',
+    contentType: 'text/html',
+    vw: 1042,
+    vh: 632,
+    scrollY: 0,
+    scrollMax: 0,
+    counts: { button: 1, 'input[text]': 1, 'input[hidden]': 1, div: 2 },
+    focused: 'none',
+    layoutMap: {},
+    styleHints: {},
+    cursorInteractives: [],
+    visibleControls: [{
+      tag: 'input',
+      role: 'textbox',
+      label: 'oin',
+      clickable: true,
+      rect: { x: 8, y: 80, w: 185, h: 21 },
+      selector: 'input#oin',
+      hints: { id: 'oin', classes: [] },
+    }],
+    ...overrides,
+  });
+}
+
+function callFunctionOnForFill(params = {}, filledText = 'hello-oin') {
+  const decl = String(params.functionDeclaration || '');
+  if (decl.includes('ownerDocumentGetter') && !decl.includes('requestAnimationFrame')) {
+    return { result: { value: { connected: true } } };
+  }
+  if (decl.includes('cdpFillLiveValue')) {
+    return { result: { value: { ok: true, cdpFillLiveValue: true, tag: 'INPUT', value: filledText, textContent: filledText } } };
+  }
+  if (decl.includes('fillable') || decl.includes('isContentEditable') || decl.includes('TEXTAREA')) {
+    return { result: { value: { ok: true, fillable: true, tag: 'INPUT', type: 'text', role: '' } } };
+  }
+  if (decl.includes('getBoundingClientRect')) {
+    if (params.objectId === 'input-object') {
+      return { result: { value: { x: 8, y: 80, w: 185, h: 21, position: '' } } };
+    }
+    if (params.objectId === 'button-object') {
+      return { result: { value: { x: 8, y: 8, w: 80, h: 24, position: '' } } };
+    }
+    if (params.objectId === 'frame-owner') {
+      return { result: { value: { x: 218, y: 275, w: 400, h: 200 } } };
+    }
+    return { result: { value: { x: 0, y: 0, w: 0, h: 0, position: '' } } };
+  }
+  return { result: { value: { x: 0, y: 0, w: 0, h: 0, position: '' } } };
+}
+
+function framedUnnamedInputCdp({
+  frameId = 'child-frame',
+  axOmitsInput = true,
+  nested = false,
+  filledText = 'hello-oin',
+  describeNodeIds = { 'button-object': 201, 'input-object': 202 },
+} = {}) {
+  const methods = [];
+  const childFrames = nested
+    ? [{
+        frame: { id: 'outer-frame', parentId: 'main-frame', name: 'p16outer', url: 'about:srcdoc' },
+        childFrames: [{
+          frame: { id: frameId, parentId: 'outer-frame', name: 'p16inner', url: 'about:srcdoc' },
+          childFrames: [],
+        }],
+      }]
+    : [{
+        frame: { id: frameId, parentId: 'main-frame', name: 'p16outer', url: 'about:srcdoc' },
+        childFrames: [],
+      }];
+  const axNodes = axOmitsInput
+    ? [
+        { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'iframe' }, childIds: ['2'] },
+        { nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: 'outer-btn' }, backendDOMNodeId: 201 },
+      ]
+    : [
+        { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'iframe' }, childIds: ['2', '3'] },
+        { nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: 'outer-btn' }, backendDOMNodeId: 201 },
+        { nodeId: '3', parentId: '1', role: { value: 'textbox' }, name: { value: '' }, backendDOMNodeId: 202 },
+      ];
+  const listed = [
+    { chromeCdpDomInteractiveList: true, index: 1, tag: 'button', type: '', id: '', name: 'outer-btn', role: 'button', hidden: false },
+    { chromeCdpDomInteractiveList: true, index: 2, tag: 'input', type: 'text', id: 'oin', name: '', role: 'textbox', hidden: false },
+  ];
+  const cdp = {
+    methods,
+    send(method, params = {}) {
+      methods.push({ method, params });
+      if (method === 'Page.getFrameTree') {
+        return Promise.resolve({
+          frameTree: {
+            frame: { id: 'main-frame', url: 'https://example.com/' },
+            childFrames,
+          },
+        });
+      }
+      if (method === 'Page.createIsolatedWorld') {
+        return Promise.resolve({ executionContextId: 42 });
+      }
+      if (method === 'Runtime.evaluate') {
+        const expr = String(params.expression || '');
+        if (expr.includes('chromeCdpDomInteractiveList')) {
+          return Promise.resolve({ result: { value: JSON.stringify(listed) } });
+        }
+        if (expr.includes("querySelectorAll('a, button, input, select, textarea')")) {
+          const index = Number(/\[(\d+)\]/.exec(expr)?.[1] || 0);
+          const objectId = index === 2 ? 'input-object' : 'button-object';
+          return Promise.resolve({ result: { objectId } });
+        }
+        return Promise.resolve({ result: { value: pageSnapshotValue() } });
+      }
+      if (method === 'Accessibility.getFullAXTree') {
+        expect(params.frameId).toBe(frameId);
+        return Promise.resolve({ nodes: axNodes });
+      }
+      if (method === 'DOM.resolveNode') {
+        if (params.backendNodeId === 202) return Promise.resolve({ object: { objectId: 'input-object' } });
+        if (params.backendNodeId === 201) return Promise.resolve({ object: { objectId: 'button-object' } });
+        if (params.backendNodeId === 333) return Promise.resolve({ object: { objectId: 'frame-owner' } });
+        return Promise.resolve({ object: { objectId: 'other' } });
+      }
+      if (method === 'Runtime.callFunctionOn') {
+        return Promise.resolve(callFunctionOnForFill(params, filledText));
+      }
+      if (method === 'DOM.getFrameOwner') {
+        return Promise.resolve({ backendNodeId: 333 });
+      }
+      if (method === 'DOM.describeNode') {
+        const backendNodeId = describeNodeIds[params.objectId];
+        return Promise.resolve({ node: backendNodeId != null ? { backendNodeId } : {} });
+      }
+      if (method === 'Input.insertText') {
+        return Promise.resolve({});
+      }
+      return Promise.resolve({});
+    },
+    onEvent() { return () => {}; },
+  };
+  return cdp;
+}
+
+describe('issue #261 framed perceive refs for unnamed inputs', () => {
+  it('#261 unnamed framed textboxes stay in the AX dump and receive @fN:M', () => {
+    const nodes = [
+      { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'iframe' }, childIds: ['2', '3'] },
+      { nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: 'outer-btn' }, backendDOMNodeId: 201 },
+      { nodeId: '3', parentId: '1', role: { value: 'textbox' }, name: { value: '' }, backendDOMNodeId: 202 },
+    ];
+    const refMap = new Map();
+    const { treeLines } = T.buildPerceiveTree(nodes, { layoutMap: {}, styleHints: {} }, refMap);
+    const qualified = T.qualifyFrameRefsInLines(treeLines, '@f2');
+    const output = qualified.join('\n');
+    expect(refMap.get(1)).toBe(201);
+    expect(refMap.get(2)).toBe(202);
+    expect(output).toContain('[button] outer-btn  @f2:1');
+    expect(output).toMatch(/\[textbox\].*@f2:2/);
+  });
+
+  it('#261 synthesizes an AX node when getFullAXTree omits the framed input', () => {
+    const axNodes = [
+      { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'iframe' }, childIds: ['2'] },
+      { nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: 'outer-btn' }, backendDOMNodeId: 201 },
+    ];
+    const merged = T.mergeMissingDomInteractiveAxNodes(axNodes, [
+      { backendNodeId: 201, tag: 'button', role: 'button', name: 'outer-btn' },
+      { backendNodeId: 202, tag: 'input', type: 'text', role: 'textbox', id: 'oin', name: '' },
+    ]);
+    const refMap = new Map();
+    const { treeLines } = T.buildPerceiveTree(merged, { layoutMap: {}, styleHints: {} }, refMap);
+    expect(refMap.size).toBe(2);
+    expect(refMap.get(2)).toBe(202);
+    expect(T.qualifyFrameRefsInLines(treeLines, '@f2').join('\n')).toMatch(/\[textbox\].*@f2:2/);
+  });
+
+  it('#261 -C frame coords match @fN:M / clickxy top-level viewport space and carry the ref', () => {
+    const offset = { x: 218, y: 275 };
+    const local = { x: 8, y: 80, w: 185, h: 21 };
+    const viewport = T.offsetCssRect(local, offset);
+    expect(viewport).toEqual({ x: 226, y: 355, w: 185, h: 21 });
+
+    const control = T.attachRefToVisibleControl(
+      { tag: 'input', role: 'textbox', label: 'oin', rect: viewport, selector: 'input#oin', hints: { id: 'oin' } },
+      T.refAnnotationsFromTreeLines(['[textbox]  @f2:2  (226,355 185×21)']),
+    );
+    expect(control.ref).toBe('@f2:2');
+    expect(T.formatVisibleControlLine(control)).toContain('@f2:2');
+    expect(T.formatVisibleControlLine(control)).toContain('(226,355 185×21)');
+    expect(T.nativeVisibleControlTag('input')).toBe(true);
+  });
+
+  it('#261 perceive --frame assigns @f2:2 to an unnamed srcdoc text input and offsets -C', async () => {
+    const store = { output: null, snapshotOpts: null };
+    const refState = {};
+    const cdp = {
+      send(method, params = {}) {
+        if (method === 'Page.getFrameTree') {
+          return Promise.resolve({
+            frameTree: {
+              frame: { id: 'main-frame', url: 'https://example.com/' },
+              childFrames: [{
+                frame: { id: 'child-frame', parentId: 'main-frame', name: 'p16outer', url: 'about:srcdoc' },
+                childFrames: [],
+              }],
+            },
+          });
+        }
+        if (method === 'Page.createIsolatedWorld') {
+          return Promise.resolve({ executionContextId: 42 });
+        }
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({
+            result: {
+              value: JSON.stringify({
+                title: 'Example Domain',
+                url: 'https://example.com/',
+                contentType: 'text/html',
+                vw: 1042,
+                vh: 632,
+                scrollY: 0,
+                scrollMax: 0,
+                counts: { button: 1, 'input[text]': 1 },
+                focused: 'none',
+                layoutMap: {},
+                styleHints: {},
+                cursorInteractives: [],
+                visibleControls: [{
+                  tag: 'input',
+                  role: 'textbox',
+                  label: 'oin',
+                  clickable: true,
+                  rect: { x: 8, y: 80, w: 185, h: 21 },
+                  selector: 'input#oin',
+                  hints: { id: 'oin', classes: [] },
+                }],
+              }),
+            },
+          });
+        }
+        if (method === 'Accessibility.getFullAXTree') {
+          expect(params.frameId).toBe('child-frame');
+          return Promise.resolve({
+            nodes: [
+              { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'iframe' }, childIds: ['2', '3'] },
+              { nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: 'outer-btn' }, backendDOMNodeId: 201 },
+              { nodeId: '3', parentId: '1', role: { value: 'textbox' }, name: { value: '' }, backendDOMNodeId: 202 },
+            ],
+          });
+        }
+        if (method === 'DOM.resolveNode') {
+          if (params.backendNodeId === 202) return Promise.resolve({ object: { objectId: 'input-object' } });
+          if (params.backendNodeId === 201) return Promise.resolve({ object: { objectId: 'button-object' } });
+          if (params.backendNodeId === 333) return Promise.resolve({ object: { objectId: 'frame-owner' } });
+          return Promise.resolve({ object: { objectId: 'other' } });
+        }
+        if (method === 'Runtime.callFunctionOn') {
+          if (params.objectId === 'input-object') {
+            return Promise.resolve({ result: { value: { x: 8, y: 80, w: 185, h: 21, position: '' } } });
+          }
+          if (params.objectId === 'button-object') {
+            return Promise.resolve({ result: { value: { x: 8, y: 8, w: 80, h: 24, position: '' } } });
+          }
+          if (params.objectId === 'frame-owner') {
+            return Promise.resolve({ result: { value: { x: 218, y: 275, w: 400, h: 200 } } });
+          }
+          return Promise.resolve({ result: { value: { x: 0, y: 0, w: 0, h: 0, position: '' } } });
+        }
+        if (method === 'DOM.getFrameOwner') {
+          return Promise.resolve({ backendNodeId: 333 });
+        }
+        if (method === 'DOM.describeNode') {
+          return Promise.resolve({ node: {} });
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+    };
+
+    const out = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      new Map(),
+      store,
+      { frameRef: '@f2', cursorInteractive: true },
+      refState,
+    );
+    expect(out).toContain('Interactive: 1 button, 1 input[text]');
+    expect(out).toContain('[button] outer-btn  @f2:1  (226,283 80×24)');
+    expect(out).toMatch(/\[textbox\].*@f2:2\s+\(226,355 185×21\)/);
+    expect(out).toContain('input#oin');
+    expect(out).toContain('@f2:2');
+    expect(out).toContain('(226,355 185×21)');
+    expect(out).not.toMatch(/input#oin[^\n]*\(8,80/);
+    expect(refState.frameRefs.get('@f2').refs.get(2)).toBe(202);
+  });
+
+  it('#261 never synthesizes hidden inputs as [textbox] @refs', () => {
+    expect(T.isSynthesizableDomControl({ tag: 'input', type: 'hidden', role: 'textbox', backendNodeId: 9 })).toBe(false);
+    expect(T.isSynthesizableDomControl({ tag: 'input', type: 'text', hidden: true, backendNodeId: 9 })).toBe(false);
+    expect(T.isSynthesizableDomControl({ tag: 'input', type: 'text', display: 'none', backendNodeId: 9 })).toBe(false);
+    expect(T.shouldSynthesizeMissingFrameInteractives(null, [], [
+      { tag: 'input', type: 'text', role: 'textbox' },
+    ])).toBe(false);
+
+    const axNodes = [
+      { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Example' }, childIds: [] },
+    ];
+    const merged = T.mergeMissingDomInteractiveAxNodes(axNodes, [
+      { backendNodeId: 9, tag: 'input', type: 'hidden', role: 'textbox', id: 'csrf', name: '' },
+      { backendNodeId: 10, tag: 'input', type: 'text', hidden: true, role: 'textbox', id: 'ghost' },
+    ]);
+    const refMap = new Map();
+    const { treeLines } = T.buildPerceiveTree(merged, { layoutMap: {}, styleHints: {} }, refMap);
+    expect(refMap.size).toBe(0);
+    expect(treeLines.join('\n')).not.toMatch(/\[textbox\]/);
+  });
+
+  it('#261 -C attaches @fN:M by selector/id, not 1px-exact rect equality', () => {
+    const control = T.attachRefToVisibleControl(
+      { tag: 'input', role: 'textbox', label: 'oin', rect: { x: 227, y: 354, w: 185, h: 21 }, selector: 'input#oin', hints: { id: 'oin' } },
+      T.refAnnotationsFromTreeLines(['[textbox] oin  @f2:2  (226,355 185×21)']),
+    );
+    expect(control.ref).toBe('@f2:2');
+  });
+
+  it('#261 top-level perceive does not describeNode or synthesize hidden inputs when counts exceed AX', async () => {
+    const methods = [];
+    const cdp = {
+      send(method, params = {}) {
+        methods.push({ method, params });
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({
+            result: {
+              value: pageSnapshotValue({
+                counts: { button: 1, 'input[text]': 1, 'input[hidden]': 1, div: 3 },
+                visibleControls: [],
+              }),
+            },
+          });
+        }
+        if (method === 'Accessibility.getFullAXTree') {
+          return Promise.resolve({
+            nodes: [
+              { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Example' }, childIds: ['2'] },
+              { nodeId: '2', parentId: '1', role: { value: 'button' }, name: { value: 'Go' }, backendDOMNodeId: 11 },
+            ],
+          });
+        }
+        if (method === 'DOM.describeNode') {
+          throw new Error('top-level perceive must not describeNode for AX synthesis');
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+    };
+    const out = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      new Map(),
+      { output: null, snapshotOpts: null },
+      { cursorInteractive: true },
+      {},
+    );
+    expect(methods.some(item => item.method === 'DOM.describeNode')).toBe(false);
+    expect(methods.some(item => String(item.params?.expression || '').includes('chromeCdpDomInteractiveList'))).toBe(false);
+    expect(out).not.toMatch(/\[textbox\].*csrf|input\[type=hidden\]/i);
+    expect(out).not.toMatch(/@2\b/);
+  });
+
+  it('#261 fill and resolveRefNode accept a synthesized @f2:2 when AX omits the framed input', async () => {
+    const cdp = framedUnnamedInputCdp({ axOmitsInput: true, filledText: 'hello-oin' });
+    const store = { output: null, snapshotOpts: null };
+    const refState = {};
+    const out = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      new Map(),
+      store,
+      { frameRef: '@f2', cursorInteractive: true },
+      refState,
+    );
+    expect(cdp.methods.some(item => item.method === 'DOM.describeNode')).toBe(true);
+    expect(out).toMatch(/\[textbox\].*@f2:2/);
+    expect(refState.frameRefs.get('@f2').refs.get(2)).toBe(202);
+
+    const objectId = await T.resolveRefNode(cdp, 'sid', new Map(), '@f2:2', refState);
+    expect(objectId).toBe('input-object');
+    const filled = await T.fillStr(cdp, 'sid', '@f2:2', 'hello-oin', new Map(), refState);
+    expect(filled).toContain('@f2:2');
+    expect(filled).toContain('hello-oin');
+  });
+
+  it('#261 nested srcdoc @f3 fill works when AX omits the unnamed input', async () => {
+    const cdp = framedUnnamedInputCdp({
+      frameId: 'inner-frame',
+      axOmitsInput: true,
+      nested: true,
+      filledText: 'nested-oin',
+    });
+    const refState = {};
+    const out = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      new Map(),
+      { output: null, snapshotOpts: null },
+      { frameRef: '@f3', cursorInteractive: true },
+      refState,
+    );
+    expect(out).toContain('Frame: @f3');
+    expect(out).toMatch(/\[textbox\].*@f3:2/);
+    expect(refState.frameRefs.get('@f3').refs.get(2)).toBe(202);
+    const filled = await T.fillStr(cdp, 'sid', '@f3:2', 'nested-oin', new Map(), refState);
+    expect(filled).toContain('@f3:2');
+    expect(filled).toContain('nested-oin');
+  });
+});
+
+describe('issue #262 checkbox/radio/select-multiple settle honesty', () => {
+  const emptyDelta = {
+    console: { count: 0, errors: 0, warnings: 0, entries: [] },
+    exceptions: { count: 0, entries: [] },
+    network: { count: 0, failures: 0, pending: 0, entries: [] },
+  };
+
+  it('#262 unnamed checkbox/radio appear in the AX dump with @refs', () => {
+    const nodes = [
+      { nodeId: '1', role: { value: 'WebArea' }, name: { value: 'Example' }, childIds: ['2', '3', '4'] },
+      {
+        nodeId: '2', parentId: '1', role: { value: 'checkbox' }, name: { value: '' },
+        backendDOMNodeId: 11, checked: { value: false },
+      },
+      {
+        nodeId: '3', parentId: '1', role: { value: 'radio' }, name: { value: '' },
+        backendDOMNodeId: 12, checked: { value: false },
+      },
+      {
+        nodeId: '4', parentId: '1', role: { value: 'radio' }, name: { value: '' },
+        backendDOMNodeId: 13, checked: { value: true },
+      },
+    ];
+    const { treeLines } = T.buildPerceiveTree(nodes, { layoutMap: {}, styleHints: {} }, new Map());
+    const output = treeLines.join('\n');
+    expect(output).toMatch(/\[checkbox\] checked=false\s+@1/);
+    expect(output).toMatch(/\[radio\] checked=false\s+@2/);
+    expect(output).toMatch(/\[radio\] checked=true\s+@3/);
+  });
+
+  it('#262 a dispatched click that flips .checked is Outcome:changed / continue, not overlay', () => {
+    const result = T.createActionResult({
+      action: 'click',
+      target: {
+        targetId: 'ABC123',
+        input: '#p16cb',
+        resolvedBy: 'selector',
+        label: '#p16cb',
+        controlStateChanged: true,
+        controlStateDiff: 'checkbox #p16cb checked false → true',
+      },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 40 },
+      effects: {
+        domDiff: '(no changes detected in AX tree)',
+        console: [],
+        network: [],
+        navigation: null,
+        ...emptyDelta,
+        consoleDelta: emptyDelta.console,
+        exceptionDelta: emptyDelta.exceptions,
+        networkDelta: emptyDelta.network,
+      },
+    });
+    expect(result.outcome).toMatchObject({ status: 'changed', changed: true });
+    expect(result.verdict).toMatchObject({ status: 'continue', canContinue: true });
+    expect(T.formatActionText(result)).not.toMatch(/overlay "#p16cb"/);
+  });
+
+  it('#262 select multiple selectedOptions change is Outcome:changed', () => {
+    expect(T.formControlStateChanged(
+      { tag: 'select', multiple: true, selected: ['a'] },
+      { tag: 'select', multiple: true, selected: ['b'] },
+    )).toBe(true);
+    expect(T.formatFormControlStateDiff(
+      { tag: 'select', id: 'p16msel', selected: ['a'] },
+      { tag: 'select', id: 'p16msel', selected: ['b'] },
+    )).toContain('["b"]');
+
+    const result = T.createActionResult({
+      action: 'select',
+      target: {
+        targetId: 'ABC123',
+        input: '#p16msel',
+        resolvedBy: 'selector',
+        label: '#p16msel',
+        controlStateChanged: true,
+        controlStateDiff: 'select #p16msel selected ["a"] → ["b"]',
+      },
+      dispatch: { ok: true, method: 'select' },
+      settle: { ok: true, durationMs: 40 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+    });
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+  });
+
+  it('#262 no-op Escape / dismiss-modal with no dialog stay no-change + continue', () => {
+    const press = T.createActionResult({
+      action: 'press',
+      target: { targetId: 'ABC123', input: 'Escape', resolvedBy: 'key', label: 'Escape', expectedOutcome: 'press-no-change' },
+      dispatch: { ok: true, method: 'press' },
+      settle: { ok: true, durationMs: 20 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+    });
+    expect(press.outcome.status).toBe('no-change');
+    expect(press.verdict.status).toBe('continue');
+    expect(press.verdict.canContinue).toBe(true);
+
+    const dismiss = T.createActionResult({
+      action: 'dismiss-modal',
+      target: { targetId: 'ABC123', input: 'modal', resolvedBy: 'dialog', label: 'modal', expectedOutcome: 'no-modal' },
+      dispatch: { ok: true, method: 'dismiss-modal' },
+      settle: { ok: true, durationMs: 20 },
+      effects: { domDiff: 'No changes detected (no modal).', console: [], network: [], navigation: null },
+    });
+    expect(dismiss.outcome.status).toBe('no-change');
+    expect(dismiss.verdict.status).toBe('continue');
+  });
+
+  async function snapshotThenOutcome({ action, input, before, after }) {
+    expect(T.shouldSnapshotFormControlState(action, { input, resolvedBy: 'selector' })).toBe(true);
+    const values = [before, after];
+    const cdp = {
+      send(method) {
+        if (method === 'Runtime.evaluate' || method === 'Runtime.callFunctionOn') {
+          const snapshot = values.shift();
+          return Promise.resolve({ result: { value: snapshot } });
+        }
+        return Promise.resolve({});
+      },
+    };
+    const beforeSnap = await T.snapshotFormControlState(cdp, 'sid', input, new Map(), {});
+    const afterSnap = await T.snapshotFormControlState(cdp, 'sid', input, new Map(), {});
+    expect(beforeSnap).toEqual(before);
+    expect(afterSnap).toEqual(after);
+    expect(T.formControlStateChanged(beforeSnap, afterSnap)).toBe(true);
+    const result = T.createActionResult({
+      action,
+      target: {
+        targetId: 'ABC123',
+        input,
+        resolvedBy: 'selector',
+        label: input,
+        controlStateChanged: T.formControlStateChanged(beforeSnap, afterSnap),
+        controlStateDiff: T.formatFormControlStateDiff(beforeSnap, afterSnap),
+      },
+      dispatch: { ok: true, method: action },
+      settle: { ok: true, durationMs: 40 },
+      effects: {
+        domDiff: '(no changes detected in AX tree)',
+        console: [],
+        network: [],
+        navigation: null,
+        ...emptyDelta,
+        consoleDelta: emptyDelta.console,
+        exceptionDelta: emptyDelta.exceptions,
+        networkDelta: emptyDelta.network,
+      },
+    });
+    expect(result.outcome).toMatchObject({ status: 'changed', changed: true });
+    expect(result.verdict).toMatchObject({ status: 'continue', canContinue: true });
+    expect(T.formatActionText(result)).not.toMatch(new RegExp(`overlay "${input.replace('#', '\\#')}"`));
+    return result;
+  }
+
+  it('#262 snapshotFormControlState probe path flips checkbox .checked to Outcome:changed', async () => {
+    await snapshotThenOutcome({
+      action: 'click',
+      input: '#p16cb',
+      before: { tag: 'input', type: 'checkbox', id: 'p16cb', checked: false },
+      after: { tag: 'input', type: 'checkbox', id: 'p16cb', checked: true },
+    });
+  });
+
+  it('#262 snapshotFormControlState probe path flips radio .checked to Outcome:changed', async () => {
+    await snapshotThenOutcome({
+      action: 'click',
+      input: '#p16radio',
+      before: { tag: 'input', type: 'radio', id: 'p16radio', checked: false },
+      after: { tag: 'input', type: 'radio', id: 'p16radio', checked: true },
+    });
+  });
+
+  it('#262 snapshotFormControlState probe path for select-multiple is Outcome:changed', async () => {
+    const result = await snapshotThenOutcome({
+      action: 'select',
+      input: '#p16msel',
+      before: { tag: 'select', type: 'select-multiple', id: 'p16msel', multiple: true, selected: ['a'], value: 'a' },
+      after: { tag: 'select', type: 'select-multiple', id: 'p16msel', multiple: true, selected: ['b'], value: 'b' },
+    });
+    expect(result.target.controlStateDiff).toContain('["b"]');
+  });
+});
+
+describe('issue #263 prompt() JavaScript dialog handling', () => {
+  it('#263 dismiss still sends promptText so Chrome can close prompt()', () => {
+    expect(T.javascriptDialogHandleParams({ type: 'prompt', defaultPrompt: 'def' }, false)).toEqual({
+      accept: false,
+      promptText: 'def',
+    });
+    expect(T.javascriptDialogHandleParams({ type: 'prompt' }, true)).toEqual({
+      accept: true,
+      promptText: '',
+    });
+    expect(T.javascriptDialogHandleParams({ type: 'confirm', message: 'p16-confirm' }, true)).toEqual({
+      accept: true,
+      promptText: '',
+    });
+  });
+
+  it('#263 retries handleJavaScriptDialog until the prompt is visible to CDP', async () => {
+    const calls = [];
+    const cdp = {
+      send(method, params = {}, sessionId) {
+        calls.push({ method, params, sessionId });
+        if (method === 'Page.handleJavaScriptDialog' && calls.filter(c => c.method === method).length < 3) {
+          return Promise.reject(new Error('No dialog is showing'));
+        }
+        return Promise.resolve({});
+      },
+    };
+    const buf = new T.RingBuffer(8);
+    const result = await T.handleOpeningJavaScriptDialog(
+      cdp,
+      'sid-page',
+      { type: 'prompt', message: 'p16-prompt', defaultPrompt: 'def' },
+      { sessionId: 'sid-page' },
+      { accept: false, dialogBuf: buf, retries: 6, delayMs: 1 },
+    );
+    expect(result.ok).toBe(true);
+    expect(calls.some(c => c.method === 'Page.handleJavaScriptDialog' && c.params.accept === false && c.params.promptText === 'def')).toBe(true);
+    expect(buf.all()[0]).toMatchObject({ type: 'prompt', message: 'p16-prompt', defaultPrompt: 'def' });
+  });
+
+  it('#263 tracks in-flight dialog handles so click can wait instead of orphaning the daemon', async () => {
+    const session = T.createJavaScriptDialogSession();
+    let released = false;
+    const pending = new Promise(resolve => setTimeout(() => {
+      released = true;
+      resolve({ ok: true });
+    }, 20));
+    session.track(pending);
+    expect(session.pending.size).toBe(1);
+    await session.waitForPending(500);
+    expect(released).toBe(true);
+    expect(session.pending.size).toBe(0);
+  });
+
+  it('#263 failed handleJavaScriptDialog does not Runtime.evaluate', async () => {
+    const session = T.createJavaScriptDialogSession();
+    session.track(Promise.resolve({ ok: false, error: new Error('No dialog is showing') }));
+    await session.waitForPending(100);
+    expect(session.hasFailedHandle()).toBe(true);
+    expect(T.shouldSkipActionPageEvaluate(session)).toBe(true);
+    let evaluated = false;
+    const text = await T.observeAfterActionGuardingDialogs(session, async () => {
+      evaluated = true;
+      return 'AX snapshot';
+    });
+    expect(evaluated).toBe(false);
+    expect(text).toMatch(/JavaScript dialog still open/i);
+    expect(text).toMatch(/skipped page evaluate/i);
+  });
+
+  it('#263 click still returns an observe receipt when javascriptDialogOpening never fires', async () => {
+    const session = T.createJavaScriptDialogSession();
+    const started = Date.now();
+    let evaluated = false;
+    const text = await T.observeAfterActionGuardingDialogs(session, async () => {
+      evaluated = true;
+      return '(no changes detected in AX tree)';
+    });
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(session.hasPending()).toBe(false);
+    expect(session.hasFailedHandle()).toBe(false);
+    expect(evaluated).toBe(true);
+    expect(text).toContain('no changes detected');
+  });
+
+  it('#263 retries handleJavaScriptDialog only on the event/page session, never the browser session', async () => {
+    const calls = [];
+    const cdp = {
+      send(method, params = {}, sessionId) {
+        calls.push({ method, params, sessionId });
+        return Promise.reject(new Error('No dialog is showing'));
+      },
+    };
+    const result = await T.handleOpeningJavaScriptDialog(
+      cdp,
+      'sid-page',
+      { type: 'prompt', message: 'p16-prompt', defaultPrompt: 'def' },
+      { sessionId: 'sid-event' },
+      { accept: false, retries: 2, delayMs: 1 },
+    );
+    expect(result.ok).toBe(false);
+    const dialogCalls = calls.filter(item => item.method === 'Page.handleJavaScriptDialog');
+    expect(dialogCalls.length).toBeGreaterThan(0);
+    expect(dialogCalls.every(item => item.sessionId === 'sid-event' || item.sessionId === 'sid-page')).toBe(true);
+    expect(dialogCalls.some(item => item.sessionId == null)).toBe(false);
+    expect(dialogCalls.every(item => item.params.promptText === 'def')).toBe(true);
+  });
+});
+
+
 

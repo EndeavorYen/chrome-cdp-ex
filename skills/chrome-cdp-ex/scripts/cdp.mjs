@@ -2672,7 +2672,23 @@ function shouldShowAxNode(node, compact = false, parentNode = null) {
     const parentName = axNodeAccessibleName(parentNode);
     if (parentName && parentName.includes(name)) return false;
   }
-  return role !== 'none' && role !== 'generic' && !(name === '' && (value === '' || value == null));
+  if (role === 'none' || role === 'generic') return false;
+  // Unnamed empty textboxes/checkboxes/radios are still actionable. Filtering
+  // them left Interactive counts advertising controls that had no @ref.
+  if (INTERACTIVE_ROLES.has(role)) return true;
+  return !(name === '' && (value === '' || value == null));
+}
+
+function axNodeTokenState(node, name) {
+  const direct = node?.[name];
+  if (direct && typeof direct === 'object' && 'value' in direct) {
+    if (direct.value === '' || direct.value == null) return '';
+    return String(direct.value);
+  }
+  if (typeof direct === 'boolean' || typeof direct === 'number' || typeof direct === 'string') {
+    return String(direct);
+  }
+  return axPropertyValue(node, name);
 }
 
 function formatAxNode(node, depth) {
@@ -2683,6 +2699,11 @@ function formatAxNode(node, depth) {
   let line = `${indent}[${role}]`;
   if (name !== '') line += ` ${name}`;
   if (!(value === '' || value == null)) line += ` = ${JSON.stringify(value)}`;
+  const checked = axNodeTokenState(node, 'checked');
+  if (checked !== '') line += ` checked=${checked}`;
+  const selected = axNodeTokenState(node, 'selected');
+  if (selected === 'true') line += ' selected';
+  else if (selected && selected !== 'false' && selected !== '') line += ` selected=${selected}`;
   return line;
 }
 
@@ -4601,10 +4622,14 @@ function buildActionOutcome(actionResult = {}) {
   const diagnosis = effects.diagnosis || null;
   const domObserved = actionHasDomObservation(actionResult);
   const navigation = actionNavigationEvidence(actionResult);
-  const changed = actionDomDiffShowsChange(effects.domDiff) || navigation.navigated;
+  const controlStateChanged = Boolean(
+    actionResult.target?.controlStateChanged
+    || effects.controlStateChanged
+  );
+  const changed = actionDomDiffShowsChange(effects.domDiff) || navigation.navigated || controlStateChanged;
   const base = {
     schema: 'chrome-cdp-ex.action-outcome.v1',
-    changed: domObserved || navigation.navigated ? changed : null,
+    changed: domObserved || navigation.navigated || controlStateChanged ? changed : null,
     needsAttention: false,
   };
 
@@ -8019,7 +8044,7 @@ const ENRICHED_ROLES = new Set([
 // Roles that get @ref indices in perceive output (interactive elements)
 const INTERACTIVE_ROLES = new Set([
   'link', 'button', 'menuitem', 'tab', 'checkbox', 'radio', 'switch',
-  'textbox', 'searchbox', 'combobox', 'spinbutton', 'slider',
+  'textbox', 'searchbox', 'combobox', 'listbox', 'spinbutton', 'slider',
   'menuitemcheckbox', 'menuitemradio', 'option', 'treeitem',
 ]);
 
@@ -9170,12 +9195,262 @@ function formatVisibleControlLine(control, index = null) {
   ].filter(Boolean);
   const stateText = state.length ? ` [${state.join(',')}]` : '';
   const rect = control.rect ? ` (${control.rect.x},${control.rect.y} ${control.rect.w}×${control.rect.h})` : '';
+  const ref = control.ref ? ` ${control.ref}` : '';
   const hints = [];
   if (control.hints?.id) hints.push(`#${control.hints.id}`);
   for (const cls of control.hints?.classes || []) hints.push(`.${cls}`);
   const hintText = hints.length ? ` ${hints.join('')}` : '';
   const prefix = index == null ? '' : `${index}. `;
-  return `${prefix}${control.tag || '?'}${role}${aria}${title}${label}${stateText}${rect} ${control.selector || ''}${hintText}`.trimEnd();
+  return `${prefix}${control.tag || '?'}${role}${aria}${title}${label}${stateText}${rect}${ref} ${control.selector || ''}${hintText}`.trimEnd();
+}
+
+function offsetCssRect(rect, offset) {
+  if (!rect || typeof rect !== 'object') return rect;
+  const dx = Number(offset?.x) || 0;
+  const dy = Number(offset?.y) || 0;
+  if (!dx && !dy) return rect;
+  const next = { ...rect };
+  if (rect.x != null) next.x = (Number(rect.x) || 0) + dx;
+  if (rect.y != null) next.y = (Number(rect.y) || 0) + dy;
+  return next;
+}
+
+function offsetCursorInteractiveItem(item, offset) {
+  if (!item || typeof item !== 'object') return item;
+  const dx = Number(offset?.x) || 0;
+  const dy = Number(offset?.y) || 0;
+  if (!dx && !dy) return item;
+  return {
+    ...item,
+    x: (Number(item.x) || 0) + dx,
+    y: (Number(item.y) || 0) + dy,
+    ...(item.rect ? { rect: offsetCssRect(item.rect, offset) } : {}),
+  };
+}
+
+function nativeVisibleControlTag(tag) {
+  return new Set(['a', 'button', 'input', 'select', 'textarea']).has(String(tag || '').toLowerCase());
+}
+
+function refAnnotationsFromTreeLines(treeLines = []) {
+  const out = [];
+  for (const line of treeLines) {
+    const text = String(line || '');
+    const match = text.match(/\[([^\]]+)\](?:\s+(.*?))?\s+@((?:f\d+:)?\d+)(?:\s+\((-?\d+),(-?\d+) (\d+)×(\d+)\))?/);
+    if (!match) continue;
+    const name = String(match[2] || '').replace(/\s+=\s+\S.*$/, '').replace(/\s+checked=\S.*$/, '').trim();
+    const idHint = name.split(/\s+/).find(Boolean) || '';
+    out.push({
+      role: match[1],
+      name,
+      id: idHint,
+      selector: idHint ? `#${idHint}` : '',
+      ref: `@${match[3]}`,
+      x: match[4] != null ? Number(match[4]) : null,
+      y: match[5] != null ? Number(match[5]) : null,
+      w: match[6] != null ? Number(match[6]) : null,
+      h: match[7] != null ? Number(match[7]) : null,
+    });
+  }
+  return out;
+}
+
+function attachRefToVisibleControl(control, annotations = []) {
+  if (!control || !annotations.length) return control;
+  const id = String(control.hints?.id || '').trim();
+  const selector = String(control.selector || '').trim();
+  const byIdentity = annotations.find(item => {
+    if (id && (item.id === id || item.selector === `#${id}` || String(item.name || '') === id)) return true;
+    if (selector && item.selector && (item.selector === selector || selector.endsWith(item.selector))) return true;
+    return false;
+  });
+  if (byIdentity) return { ...control, ref: byIdentity.ref };
+  if (!control.rect) return control;
+  const { x, y, w, h } = control.rect;
+  const hit = annotations.find(item => (
+    item.x != null
+    && Math.abs(item.x - x) <= 1
+    && Math.abs(item.y - y) <= 1
+    && Math.abs(item.w - w) <= 1
+    && Math.abs(item.h - h) <= 1
+  ));
+  if (hit) return { ...control, ref: hit.ref };
+  return control;
+}
+
+function axRoleForDomControl(control = {}) {
+  const tag = String(control.tag || '').toLowerCase();
+  const type = String(control.type || '').toLowerCase();
+  if (tag === 'a') return 'link';
+  if (tag === 'button') return 'button';
+  if (tag === 'textarea') return 'textbox';
+  if (tag === 'select') return control.multiple ? 'listbox' : 'combobox';
+  if (tag === 'input') {
+    if (type === 'checkbox' || type === 'radio') return type;
+    if (['button', 'submit', 'reset', 'image'].includes(type)) return 'button';
+    return 'textbox';
+  }
+  return control.role || 'generic';
+}
+
+function syntheticAxNodeFromDomControl(control, nodeId) {
+  const role = control.role || axRoleForDomControl(control);
+  const node = {
+    nodeId,
+    role: { value: role },
+    name: { value: control.name || control.id || '' },
+    backendDOMNodeId: control.backendNodeId,
+  };
+  if (control.parentId) node.parentId = control.parentId;
+  if (control.value != null && control.value !== '') node.value = { value: control.value };
+  if (control.checked === true || control.checked === false) node.checked = { value: control.checked };
+  if (Array.isArray(control.selected) && control.selected.length) {
+    node.value = { value: control.selected.join(', ') };
+  }
+  return node;
+}
+
+function isSynthesizableDomControl(control = {}) {
+  const tag = String(control.tag || '').toLowerCase();
+  if (!nativeVisibleControlTag(tag)) return false;
+  const type = String(control.type || '').toLowerCase();
+  if (type === 'hidden') return false;
+  if (control.hidden === true) return false;
+  const display = String(control.display || '').toLowerCase();
+  const visibility = String(control.visibility || '').toLowerCase();
+  if (display === 'none' || visibility === 'hidden') return false;
+  return true;
+}
+
+function shouldSynthesizeMissingFrameInteractives(frame, axNodes = [], listed = []) {
+  if (!frame) return false;
+  const candidates = (listed || []).filter(isSynthesizableDomControl);
+  if (!candidates.length) return false;
+  return candidates.length > axInteractiveBackendCount(axNodes);
+}
+
+function mergeMissingDomInteractiveAxNodes(axNodes = [], domControls = []) {
+  const have = new Set(
+    (axNodes || [])
+      .map(node => node?.backendDOMNodeId)
+      .filter(id => id != null),
+  );
+  const extras = [];
+  let index = 0;
+  for (const control of domControls || []) {
+    if (!isSynthesizableDomControl(control)) continue;
+    if (control?.backendNodeId == null || have.has(control.backendNodeId)) continue;
+    index += 1;
+    extras.push(syntheticAxNodeFromDomControl(control, `dom-interactive-${index}`));
+  }
+  if (!extras.length) return axNodes || [];
+  const nodes = (axNodes || []).map(node => (node?.childIds ? { ...node, childIds: [...node.childIds] } : { ...node }));
+  const root = nodes.find(node => !node.parentId);
+  if (root) {
+    root.childIds = [...(root.childIds || []), ...extras.map(node => node.nodeId)];
+    for (const extra of extras) extra.parentId = root.nodeId;
+  }
+  return [...nodes, ...extras];
+}
+
+function countedInteractiveElements(counts = {}) {
+  return Object.values(counts).reduce((sum, value) => sum + (Number(value) || 0), 0);
+}
+
+function axInteractiveBackendCount(axNodes = []) {
+  const ids = new Set();
+  for (const node of axNodes) {
+    const role = node?.role?.value || '';
+    if (!INTERACTIVE_ROLES.has(role) || node.backendDOMNodeId == null) continue;
+    ids.add(node.backendDOMNodeId);
+  }
+  return ids.size;
+}
+
+function domInteractiveListScript() {
+  return `(function() {
+    const chromeCdpDomInteractiveList = true;
+    const els = Array.from(document.querySelectorAll('a, button, input, select, textarea'));
+    const out = [];
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i];
+      const tag = el.tagName.toLowerCase();
+      const type = String(el.type || '').toLowerCase();
+      const cs = window.getComputedStyle(el);
+      const hidden = Boolean(el.hidden)
+        || el.getAttribute('hidden') != null
+        || type === 'hidden'
+        || cs.display === 'none'
+        || cs.visibility === 'hidden';
+      if (hidden) continue;
+      let role = tag;
+      if (tag === 'a') role = 'link';
+      else if (tag === 'button') role = 'button';
+      else if (tag === 'textarea') role = 'textbox';
+      else if (tag === 'select') role = el.multiple ? 'listbox' : 'combobox';
+      else if (tag === 'input') {
+        if (type === 'checkbox' || type === 'radio') role = type;
+        else if (['button', 'submit', 'reset', 'image'].includes(type)) role = 'button';
+        else role = 'textbox';
+      }
+      out.push({
+        chromeCdpDomInteractiveList: true,
+        index: i,
+        tag: tag,
+        type: type,
+        id: el.id || '',
+        name: String(el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || el.id || '').slice(0, 80),
+        value: el.value || '',
+        checked: el.checked === true,
+        multiple: tag === 'select' ? Boolean(el.multiple) : false,
+        selected: tag === 'select' ? Array.from(el.selectedOptions || []).map(opt => opt.value) : null,
+        role: role,
+        hidden: false,
+        display: cs.display,
+        visibility: cs.visibility
+      });
+    }
+    return JSON.stringify(out);
+  })()`;
+}
+
+async function listDomInteractiveControls(cdp, sid, { contextId = null, limit = 40 } = {}) {
+  let listed = [];
+  try {
+    const raw = await evalStr(cdp, sid, domInteractiveListScript(), false, contextId != null ? { contextId } : {});
+    listed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(listed) || listed.length === 0) return [];
+  const capped = listed.filter(isSynthesizableDomControl).slice(0, Math.max(1, Math.min(Number(limit) || 40, 80)));
+  return capped;
+}
+
+async function collectDomInteractiveControls(cdp, sid, { contextId = null, limit = 40, listed = null } = {}) {
+  const candidates = listed || await listDomInteractiveControls(cdp, sid, { contextId, limit });
+  if (!Array.isArray(candidates) || candidates.length === 0) return [];
+  const out = [];
+  for (const item of candidates) {
+    try {
+      const params = {
+        expression: `document.querySelectorAll('a, button, input, select, textarea')[${Number(item.index) || 0}]`,
+        returnByValue: false,
+        awaitPromise: false,
+      };
+      if (contextId != null) params.contextId = contextId;
+      const remote = await cdpDomains(cdp).Runtime.evaluate(params, sid);
+      const objectId = remote?.result?.objectId;
+      if (!objectId) continue;
+      const described = await cdpDomains(cdp).DOM.describeNode({ objectId }, sid);
+      const backendNodeId = described?.node?.backendNodeId;
+      if (backendNodeId == null) continue;
+      out.push({ ...item, backendNodeId });
+    } catch {
+      // Best-effort: AX dump still renders whatever Chrome already exposed.
+    }
+  }
+  return out;
 }
 
 function formatVisibleControlsText(model) {
@@ -10285,6 +10560,19 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   });
   axNodes = typeaheadFilter.nodes;
 
+  if (frame) {
+    const listed = await listDomInteractiveControls(cdp, sid, {
+      contextId: frameExecutionContextId,
+    });
+    if (shouldSynthesizeMissingFrameInteractives(frame, axNodes, listed)) {
+      const extras = await collectDomInteractiveControls(cdp, sid, {
+        contextId: frameExecutionContextId,
+        listed,
+      });
+      if (extras.length) axNodes = mergeMissingDomInteractiveAxNodes(axNodes, extras);
+    }
+  }
+
   const activeRefMap = frame ? new Map() : refMap;
   if (cards) {
     const model = buildCardsModel(axNodes, meta, activeRefMap, {
@@ -10340,6 +10628,16 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
         frames: frameContext.frames,
       })
     : { x: 0, y: 0 };
+  if (frame && (frameOffset.x || frameOffset.y)) {
+    if (Array.isArray(meta.cursorInteractives)) {
+      meta.cursorInteractives = meta.cursorInteractives.map(item => offsetCursorInteractiveItem(item, frameOffset));
+    }
+    if (Array.isArray(meta.visibleControls)) {
+      meta.visibleControls = meta.visibleControls.map(control => (
+        control?.rect ? { ...control, rect: offsetCssRect(control.rect, frameOffset) } : control
+      ));
+    }
+  }
   if (refNodeIds.length > 0) {
     const results = await Promise.allSettled(refNodeIds.map(async ({ ref, backendDOMNodeId }) => {
       const { object } = await cdpDomains(cdp).DOM.resolveNode( { backendNodeId: backendDOMNodeId }, sid);
@@ -10402,10 +10700,11 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     }
   }
   if (cursorInteractive && meta.visibleControls?.length > 0) {
+    const refAnns = refAnnotationsFromTreeLines(treeLines);
     const ranked = rankPerceiveCursorItems(
       meta.visibleControls,
       item => item.label || item.ariaLabel || item.text || item.title,
-    );
+    ).map(control => attachRefToVisibleControl(control, refAnns));
     const capped = ranked.slice(0, cursorLimit);
     const truncated = ranked.length > capped.length || meta.visibleControlsTruncated;
     treeLines.push('');
@@ -11205,6 +11504,94 @@ function fillableControlProbeDeclaration() {
     ));
     return { ok: fillable, fillable, tag, type, role };
   }`;
+}
+
+function formControlStateProbeDeclaration() {
+  return `function() {
+    const el = this;
+    if (!el || !el.tagName) return null;
+    const tag = String(el.tagName).toLowerCase();
+    const type = String(el.type || '').toLowerCase();
+    const state = { tag: tag, type: type, id: el.id || '' };
+    if (type === 'checkbox' || type === 'radio') state.checked = el.checked === true;
+    if (tag === 'select') {
+      state.multiple = Boolean(el.multiple);
+      state.selected = Array.from(el.selectedOptions || []).map(opt => String(opt.value || ''));
+      state.value = String(el.value || '');
+    }
+    return state;
+  }`;
+}
+
+function parseFormControlStateSnapshot(raw) {
+  if (raw == null || raw === '' || raw === 'null' || raw === 'undefined') return null;
+  if (typeof raw === 'object') return raw;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function shouldSnapshotFormControlState(action, target = {}) {
+  const name = String(action || '').toLowerCase();
+  if (!['click', 'jsclick', 'select'].includes(name)) return false;
+  const input = String(target.input || '').trim();
+  if (!input) return false;
+  if (target.resolvedBy === 'coordinates' || target.resolvedBy === 'key' || target.resolvedBy === 'history') {
+    return false;
+  }
+  return isRef(input) || isCursorRef(input) || /^[#.[a-zA-Z*]/.test(input);
+}
+
+function formControlStateChanged(before, after) {
+  if (!before || !after) return false;
+  if (Object.prototype.hasOwnProperty.call(before, 'checked')
+    || Object.prototype.hasOwnProperty.call(after, 'checked')) {
+    if (Boolean(before.checked) !== Boolean(after.checked)) return true;
+  }
+  const beforeSelected = Array.isArray(before.selected) ? before.selected.join('\0') : null;
+  const afterSelected = Array.isArray(after.selected) ? after.selected.join('\0') : null;
+  if (beforeSelected != null || afterSelected != null) {
+    return beforeSelected !== afterSelected;
+  }
+  return false;
+}
+
+function formatFormControlStateDiff(before, after) {
+  const id = after?.id || before?.id || after?.tag || before?.tag || 'control';
+  const label = id ? `#${id}` : (after?.tag || 'control');
+  if (Object.prototype.hasOwnProperty.call(before || {}, 'checked')
+    || Object.prototype.hasOwnProperty.call(after || {}, 'checked')) {
+    return `${after?.type || before?.type || 'checkbox'} ${label} checked ${Boolean(before?.checked)} → ${Boolean(after?.checked)}`;
+  }
+  return `select ${label} selected ${JSON.stringify(before?.selected || [])} → ${JSON.stringify(after?.selected || [])}`;
+}
+
+async function snapshotFormControlState(cdp, sid, selector, refMap, refState) {
+  if (!selector) return null;
+  try {
+    if (isRef(selector)) {
+      const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
+      const res = await cdpDomains(cdp).Runtime.callFunctionOn({
+        objectId,
+        functionDeclaration: `function() { return (${formControlStateProbeDeclaration()}).call(this); }`,
+        returnByValue: true,
+      }, sid);
+      return parseFormControlStateSnapshot(res.result?.value);
+    }
+    const raw = await evalStr(cdp, sid, `(function() {
+      let el;
+      try { el = document.querySelector(${JSON.stringify(selector)}); }
+      catch (err) { return null; }
+      if (!el) return null;
+      return (${formControlStateProbeDeclaration()}).call(el);
+    })()`);
+    return parseFormControlStateSnapshot(raw);
+  } catch {
+    return null;
+  }
 }
 
 function fillableControlPageProbe(selector) {
@@ -12543,6 +12930,113 @@ function dialogStr(dialogBuf, dialogAutoAcceptRef, flag) {
     lines.push(`  [${e.type}] "${e.message}" (${ago}s ago)`);
   }
   return lines.join('\n');
+}
+
+function javascriptDialogHandleParams(params = {}, accept) {
+  return {
+    accept: Boolean(accept),
+    // Chrome prompt() handling fails when promptText is omitted, including dismiss.
+    promptText: String(params?.defaultPrompt || ''),
+  };
+}
+
+function createJavaScriptDialogSession() {
+  const pending = new Set();
+  let failedHandle = false;
+  let lastHandle = null;
+  return {
+    pending,
+    track(promise) {
+      const tracked = Promise.resolve(promise).then((result) => {
+        lastHandle = result && typeof result === 'object' ? result : { ok: true, value: result };
+        if (result && result.ok === false) failedHandle = true;
+        return result;
+      }, (error) => {
+        failedHandle = true;
+        lastHandle = { ok: false, error };
+        throw error;
+      }).finally(() => {
+        pending.delete(tracked);
+      });
+      pending.add(tracked);
+      return tracked;
+    },
+    async waitForPending(timeoutMs = 1000) {
+      if (pending.size === 0) return;
+      const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+      while (pending.size > 0 && Date.now() < deadline) {
+        await Promise.race([
+          Promise.allSettled([...pending]),
+          sleep(Math.max(1, deadline - Date.now())),
+        ]);
+      }
+    },
+    hasPending() {
+      return pending.size > 0;
+    },
+    hasFailedHandle() {
+      return failedHandle;
+    },
+    lastHandle() {
+      return lastHandle;
+    },
+  };
+}
+
+function shouldSkipActionPageEvaluate(dialogSession) {
+  return Boolean(dialogSession && typeof dialogSession.hasFailedHandle === 'function' && dialogSession.hasFailedHandle());
+}
+
+function formatDialogBlockedObserveText(dialogSession = null) {
+  const handle = dialogSession && typeof dialogSession.lastHandle === 'function' ? dialogSession.lastHandle() : null;
+  const detail = handle?.error?.message ? `: ${handle.error.message}` : '';
+  return `JavaScript dialog still open; skipped page evaluate to avoid blocking the tab daemon${detail}`;
+}
+
+async function observeAfterActionGuardingDialogs(jsDialogs, observeAfterAction) {
+  if (jsDialogs && typeof jsDialogs.hasPending === 'function' ? jsDialogs.hasPending() : jsDialogs?.pending?.size > 0) {
+    await jsDialogs.waitForPending(1500);
+  }
+  if (shouldSkipActionPageEvaluate(jsDialogs)) {
+    return formatDialogBlockedObserveText(jsDialogs);
+  }
+  return observeAfterAction();
+}
+
+async function handleOpeningJavaScriptDialog(cdp, fallbackSessionId, params, msg, {
+  accept = true,
+  dialogBuf = null,
+  retries = 8,
+  delayMs = 25,
+} = {}) {
+  if (dialogBuf && typeof dialogBuf.push === 'function') {
+    dialogBuf.push({
+      type: params?.type || 'alert',
+      message: params?.message || '',
+      defaultPrompt: params?.defaultPrompt || '',
+      ts: Date.now(),
+    });
+  }
+  const payload = javascriptDialogHandleParams(params, accept);
+  const sessions = [];
+  if (msg?.sessionId) sessions.push(msg.sessionId);
+  if (fallbackSessionId && fallbackSessionId !== msg?.sessionId) sessions.push(fallbackSessionId);
+  let lastError = null;
+  if (sessions.length === 0) {
+    return { ok: false, error: new Error('No page session available for JavaScript dialog handling') };
+  }
+  for (let attempt = 0; attempt < retries; attempt++) {
+    for (const sid of sessions) {
+      try {
+        await cdpDomains(cdp).Page.handleJavaScriptDialog(payload, sid);
+        return { ok: true, sessionId: sid, attempt };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (attempt + 1 < retries) await sleep(delayMs);
+  }
+  return { ok: false, error: lastError };
 }
 
 function filterNetlogEntries(entries = [], { lastNavigationTs = null, lookbackMs = 2500 } = {}) {
@@ -17848,12 +18342,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const dialogBuf = new RingBuffer(20);
   session.buffers.dialog = dialogBuf;
   const dialogAutoAcceptRef = { value: true }; // auto-dismiss by default to prevent page lockups
-  cdp.onEvent('Page.javascriptDialogOpening', (params) => {
-    dialogBuf.push({ type: params.type, message: params.message, ts: Date.now() });
-    cdpDomains(cdp).Page.handleJavaScriptDialog( {
+  const jsDialogs = createJavaScriptDialogSession();
+  cdp.onEvent('Page.javascriptDialogOpening', (params, msg) => {
+    jsDialogs.track(handleOpeningJavaScriptDialog(cdp, sessionId, params, msg, {
       accept: dialogAutoAcceptRef.value,
-      promptText: dialogAutoAcceptRef.value ? params.defaultPrompt || '' : undefined,
-    }, sessionId).catch(() => {});
+      dialogBuf,
+    }));
   });
 
   // Shutdown helpers
@@ -17999,7 +18493,26 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       .catch(() => actionTarget.page || beforePage);
     const wrappedDispatch = async () => {
       try {
+        const snapshotControls = shouldSnapshotFormControlState(action, actionTarget);
+        const beforeControl = snapshotControls
+          ? await snapshotFormControlState(cdp, sessionId, actionTarget.input, refMap, refState)
+          : null;
         const text = await dispatch();
+        if ((action === 'click' || action === 'jsclick' || action === 'clickxy') && jsDialogs.hasPending()) {
+          await jsDialogs.waitForPending(1500);
+        }
+        if (shouldSkipActionPageEvaluate(jsDialogs)) {
+          actionTarget.dialogBlocked = true;
+          actionTarget.dispatchText = String(text || '');
+          return text;
+        }
+        if (snapshotControls) {
+          const afterControl = await snapshotFormControlState(cdp, sessionId, actionTarget.input, refMap, refState);
+          if (formControlStateChanged(beforeControl, afterControl)) {
+            actionTarget.controlStateChanged = true;
+            actionTarget.controlStateDiff = formatFormControlStateDiff(beforeControl, afterControl);
+          }
+        }
         actionTarget.dispatchText = String(text || '');
         if (looksLikeClipboardControl(text) || isExpectedClipboardNoChange(actionTarget, text)) {
           actionTarget.expectedOutcome = 'clipboard-no-change';
@@ -18022,6 +18535,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         }
         return text;
       } catch (error) {
+        await jsDialogs.waitForPending(1500).catch(() => {});
+        if (shouldSkipActionPageEvaluate(jsDialogs)) {
+          actionTarget.dialogBlocked = true;
+        }
         await pageInfoPromise;
         throw error;
       }
@@ -18042,11 +18559,19 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         postActionPageHealth = await collectPageHealth(cdp, sessionId, { changed: true }).catch(() => null);
         return formatActionNavigationDiff(actionTarget.pageHrefBefore, actionTarget.pageHrefAfter);
       }
-      const text = await observeAfterAction();
+      let text = await observeAfterActionGuardingDialogs(jsDialogs, observeAfterAction);
+      if (actionTarget.dialogBlocked || shouldSkipActionPageEvaluate(jsDialogs)) {
+        appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
+        return text;
+      }
+      if (actionTarget.controlStateChanged) {
+        const note = `Control state changed: ${actionTarget.controlStateDiff}`;
+        text = actionDomDiffShowsChange(text) ? `${note}\n${text}` : note;
+      }
       await waitForActionNetworkQuiet(pendingReqs);
       appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
       postActionPageHealth = await collectPageHealth(cdp, sessionId, {
-        changed: actionDomDiffShowsChange(text),
+        changed: actionDomDiffShowsChange(text) || Boolean(actionTarget.controlStateChanged),
       }).catch(() => null);
       return text;
     };
@@ -22131,7 +22656,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   removeTargetAlias, forgetTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
   aliasLookupKey, looksLikeAliasToken, looksLikeHexTargetPrefix, unknownAliasError, formatCurrentAlias,
   // AX tree helpers
-  shouldShowAxNode, formatAxNode, orderedAxChildren,
+  shouldShowAxNode, formatAxNode, axNodeTokenState, orderedAxChildren,
   // Perceive & snapshot
   parsePerceiveArgs, pickPrimaryScrollMetrics, omitTypeaheadListboxNodes, TYPEAHEAD_OMITTED_NOTICE,
   buildPerceiveDiffModel, formatPerceiveDiffOutput, buildPerceiveTree, perceivePageScript, perceiveStr,
@@ -22139,6 +22664,10 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   filterPerceiveExcludedAxNodes, perceiveInteractiveNoiseHint,
   buildCardsModel, formatCardsJson, formatCardsText,
   parseControlsArgs, visibleControlsCollectorSource, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
+  offsetCssRect, offsetCursorInteractiveItem, mergeMissingDomInteractiveAxNodes, syntheticAxNodeFromDomControl,
+  attachRefToVisibleControl, refAnnotationsFromTreeLines, nativeVisibleControlTag,
+  isSynthesizableDomControl, shouldSynthesizeMissingFrameInteractives, listDomInteractiveControls,
+  collectDomInteractiveControls, countedInteractiveElements, axInteractiveBackendCount,
   rankPerceiveCursorItems,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
@@ -22174,6 +22703,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,
   // Command implementations
   getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr, filterNetlogEntries,
+  javascriptDialogHandleParams, createJavaScriptDialogSession, handleOpeningJavaScriptDialog,
+  shouldSkipActionPageEvaluate, formatDialogBlockedObserveText, observeAfterActionGuardingDialogs,
   parseMockArgs, formatNetworkMocksSummary, buildMockModel, formatMockText, mockStr, handleMockRequestPaused,
   parseClockArgs, clockPageScript, formatClockSummary, buildClockModel, formatClockText, clockStr,
   parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
@@ -22209,6 +22740,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   actionObservationPerceiveOpts, actionResultPdfViewerMeta, actionSettleBaseline, isCardsPerceiveOutput,
   isFramedPerceiveOutput, shouldCaptureTopLevelActionSettle, actionSettleObserveOpts,
   actionDomDiffShowsChange, noBaselineActionDiffText,
+  formControlStateChanged, formatFormControlStateDiff, shouldSnapshotFormControlState,
+  parseFormControlStateSnapshot, snapshotFormControlState,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,

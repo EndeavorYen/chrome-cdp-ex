@@ -4352,8 +4352,16 @@ describe('shouldShowAxNode', () => {
     expect(shouldShowAxNode(node('textbox', '', 'hello'))).toBe(true);
   });
 
-  it('should hide node with empty name and empty value', () => {
-    expect(shouldShowAxNode(node('textbox', '', ''))).toBe(false);
+  it('should show unnamed empty interactive controls so they can receive @refs', () => {
+    expect(shouldShowAxNode(node('textbox', '', ''))).toBe(true);
+    expect(shouldShowAxNode(node('checkbox', ''))).toBe(true);
+    expect(shouldShowAxNode(node('radio', ''))).toBe(true);
+    expect(shouldShowAxNode(node('listbox', ''))).toBe(true);
+  });
+
+  it('should still hide unnamed empty non-interactive nodes', () => {
+    expect(shouldShowAxNode(node('paragraph', '', ''))).toBe(false);
+    expect(shouldShowAxNode(node('StaticText', ''))).toBe(false);
   });
 
   it('should hide InlineTextBox in compact mode', () => {
@@ -4406,6 +4414,27 @@ describe('formatAxNode', () => {
   it('should omit value when empty string', () => {
     expect(formatAxNode(node('textbox', 'Email', ''), 0))
       .toBe('[textbox] Email');
+  });
+
+  it('should include checkbox checked state', () => {
+    expect(formatAxNode({
+      role: { value: 'checkbox' },
+      name: { value: '' },
+      checked: { value: false },
+    }, 0)).toBe('[checkbox] checked=false');
+    expect(formatAxNode({
+      role: { value: 'checkbox' },
+      name: { value: '' },
+      checked: { value: true },
+    }, 0)).toBe('[checkbox] checked=true');
+  });
+
+  it('should include selected option markers', () => {
+    expect(formatAxNode({
+      role: { value: 'option' },
+      name: { value: 'B' },
+      selected: { value: true },
+    }, 0)).toBe('[option] B selected');
   });
 
   it('should omit name when empty', () => {
@@ -5018,7 +5047,7 @@ describe('Role constants', () => {
   });
 
   it('should include core interactive roles in INTERACTIVE_ROLES', () => {
-    for (const r of ['link', 'button', 'textbox', 'checkbox', 'radio', 'combobox', 'slider', 'tab']) {
+    for (const r of ['link', 'button', 'textbox', 'checkbox', 'radio', 'combobox', 'listbox', 'slider', 'tab']) {
       expect(INTERACTIVE_ROLES.has(r)).toBe(true);
     }
   });
@@ -5103,6 +5132,31 @@ describe('buildPerceiveTree', () => {
     // refNodeIds for batch rect resolution
     expect(refNodeIds).toHaveLength(3);
     expect(refNodeIds[0]).toEqual({ ref: 1, backendDOMNodeId: 201 });
+  });
+
+  it('should assign @refs to unnamed empty textboxes, checkboxes, and radios', () => {
+    const nodes = [
+      axNode('root', 'WebArea', 'Page'),
+      axNode('btn', 'button', 'outer-btn', { parentId: 'root', backendDOMNodeId: 301 }),
+      axNode('input', 'textbox', '', { parentId: 'root', backendDOMNodeId: 302 }),
+      axNode('cb', 'checkbox', '', { parentId: 'root', backendDOMNodeId: 303 }),
+      axNode('r1', 'radio', '', { parentId: 'root', backendDOMNodeId: 304 }),
+    ];
+    nodes[0].childIds = ['btn', 'input', 'cb', 'r1'];
+
+    const refMap = new Map();
+    const { treeLines } = buildPerceiveTree(nodes, emptyMeta, refMap);
+    const output = treeLines.join('\n');
+
+    expect(refMap.size).toBe(4);
+    expect(refMap.get(1)).toBe(301);
+    expect(refMap.get(2)).toBe(302);
+    expect(refMap.get(3)).toBe(303);
+    expect(refMap.get(4)).toBe(304);
+    expect(output).toContain('[button] outer-btn  @1');
+    expect(output).toMatch(/\[textbox\].*@2/);
+    expect(output).toMatch(/\[checkbox\].*@3/);
+    expect(output).toMatch(/\[radio\].*@4/);
   });
 
   it('should not assign @ref to non-interactive elements', () => {
