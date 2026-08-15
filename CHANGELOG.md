@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#259)
+
+* Leftover `perceive --frame @fN` dumps are not reused as top-level action
+  settle-diffs. After a same-origin iframe dump, top-level `fill` / `select` /
+  `upload` / `click` settle the page AX tree and report `Outcome: changed` when
+  the control actually changed, instead of `no-change` / overlay against the
+  leftover iframe. Frame-local `@fN:M` actions still settle inside that frame.
+  `#257` leftover `--cards` reset is unchanged.
+
 ### Open issue dogfood (#255, #256, #257)
 
 * Leftover `perceive --cards`, `perceive -s`, and default `perceive --format json` on a
