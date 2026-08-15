@@ -216,7 +216,9 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs verify-click <target> @ref \
   --format json
 ```
 
-It returns `chrome-cdp-ex.semantic-interaction.v1` with the action evidence plus text, network, and console assertions. Text output keeps the same signals readable for human review.
+It returns `chrome-cdp-ex.semantic-interaction.v1` with the action evidence plus text, network, and console assertions. Failed assertions exit non-zero (`Kind: assertion`). `--expect-status` is only meaningful with `--expect-request`; using it alone is a usage error. Text output keeps the same signals readable for human review.
+
+`batch` exits non-zero when any step fails, including `chrome-cdp-ex.batch.v1` handoffs with `counts.failed > 0`. Unknown inner commands recover with `cdp help`.
 
 `qa` is a higher-level smoke command for live UI checks:
 
@@ -265,7 +267,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs broadcast auth status --format json --
 node skills/chrome-cdp-ex/scripts/cdp.mjs tab-group show auth --format json
 ```
 
-Groups are stored in the CDP runtime directory (not the git repo). Prefer read-only broadcast commands unless mutation is intentional. JSON output bounds each target result or error and preserves a full retry command by default; `--full-results` is the explicit large-payload mode.
+Groups are stored in the CDP runtime directory (not the git repo). `create`/`add` resolve each member against live tabs and fail closed for unknown prefixes (no ghost members). Prefer read-only broadcast commands unless mutation is intentional. JSON output bounds each target result or error and preserves a full retry command by default; `--full-results` is the explicit large-payload mode.
 
 ## Components (MVP)
 
@@ -395,6 +397,8 @@ Use these when exploration should become reusable evidence:
 | Draft a Playwright spec | `export-playwright <target> --format json` |
 | Replay portable live steps | `replay <target> --file artifact.json --format json` |
 | Capture visual fallback diffs | `diff-shot <target>` |
+
+Missing restore/replay files are usage errors (`cdp help restore` / `cdp help replay`), not page failures. `diff-shot` fails closed if screenshot capture times out instead of reporting a fake 0% match.
 
 Report, record-actions, export-playwright, and session JSONL artifacts redact common password, token, API key, authorization, cookie, and session patterns by default while preserving command names, keys, counts, domains, and paths for debugging. Checkpoint JSON also redacts cookie values and sensitive storage keys by default. Use `checkpoint --unsafe-full --format json` only when you need a fully restorable artifact; that output intentionally includes raw cookies and storage values, so treat it like a secret.
 

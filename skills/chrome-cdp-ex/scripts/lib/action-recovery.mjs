@@ -277,6 +277,54 @@ export function classifyActionFailure(err, { action = 'action', target = {} } = 
     };
   }
 
+  if (
+    (action === 'verify-click' || action === 'verifyclick' || lower.includes('verify-click:'))
+    && (
+      lower.includes('requires')
+      || lower.includes('exactly one selector')
+    )
+  ) {
+    return {
+      ...base,
+      kind: 'usage',
+      reason: 'verify-click needs a selector and paired network assertions.',
+      nextCommand: 'cdp help verify-click',
+      hints: [
+        'Pass one selector or @ref.',
+        '--expect-status only applies together with --expect-request.',
+      ],
+    };
+  }
+
+  if (
+    (action === 'restore' || action === 'replay'
+      || lower.includes('restore:')
+      || lower.includes('replay:'))
+    && (
+      lower.includes('enoent')
+      || lower.includes('no such file')
+      || (lower.includes('unsupported') && lower.includes('schema'))
+      || lower.includes('requires --file')
+      || lower.includes('requires --json')
+      || lower.includes('invalid checkpoint')
+      || lower.includes('invalid json artifact')
+      || lower.includes('artifact must be')
+      || lower.includes('checkpoint artifact must')
+    )
+  ) {
+    const helpCmd = action === 'replay' || lower.includes('replay') ? 'replay' : 'restore';
+    return {
+      ...base,
+      kind: 'usage',
+      reason: `${helpCmd} needs an existing artifact with a supported schema.`,
+      nextCommand: `cdp help ${helpCmd}`,
+      hints: [
+        `Provide --file or --json. Missing paths are not opened as empty artifacts.`,
+        `Run \`cdp help ${helpCmd}\` for the artifact contract.`,
+      ],
+    };
+  }
+
   return base;
 }
 

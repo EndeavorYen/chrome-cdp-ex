@@ -393,7 +393,7 @@ scripts/cdp.mjs fullshot <target> [file]  # single full-page image (may be tiny 
 
 - **`shot`** — viewport only. Use when you need the currently visible area as pixels.
 - If `[file]` is omitted, `shot` saves under the session screenshot directory and `report <target>` lists it as an attachment.
-- **`diff-shot`** — first call captures a viewport baseline; later calls save current + diff PNG artifacts and changed-pixel ratio. Use only when structured `perceive`/`cascade` evidence is not enough; it is pixel diff, not semantic diagnosis.
+- **`diff-shot`** — first call captures a viewport baseline; later calls save current + diff PNG artifacts and changed-pixel ratio. Screenshot timeouts fail closed (no fake 0% match) with a short capture budget. Use only when structured `perceive`/`cascade` evidence is not enough; it is pixel diff, not semantic diagnosis.
 - **`scanshot`** — scrolls through and captures multiple viewport-sized images with 10% overlap. Use when you need pixel-level verification of an entire page.
 - **`fullshot`** — single image of entire page. **Do NOT use for analysis** — on long pages text becomes unreadably small. Only for non-AI consumption.
 - Screenshot captures report method/retry metadata. A light page with an anomalous near-black frame gets one alternate-surface retry; a legitimately dark page does not.
@@ -430,7 +430,7 @@ scripts/cdp.mjs console <target> [--all|--errors|--clear] [--format json] # cons
 scripts/cdp.mjs frame   <target> [--format json]                  # frame tree with @fN refs (alias: frames)
 scripts/cdp.mjs overlay <target> [sel|@ref] [--format json]       # detect dialogs/overlays and hit-test blockers
 scripts/cdp.mjs report  <target> [--format json]                  # action timeline + evidence + screenshot attachments + JSONL log path
-scripts/cdp.mjs verify-click <target> <sel|@ref> [--expect-text text] [--expect-request pattern] [--format json]
+scripts/cdp.mjs verify-click <target> <sel|@ref> [--expect-text text] [--expect-request pattern] [--expect-status code] [--format json]
 scripts/cdp.mjs qa <target> [--desktop WxH] [--mobile WxH] [--expect-text text] [--format json]
 # qa restores the previous viewport even if a screenshot times out
 scripts/cdp.mjs responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]  # visual-check alias
@@ -470,7 +470,7 @@ scripts/cdp.mjs batch <target> --plain   'click @7 | console --errors'
 scripts/cdp.mjs batch <target> --compact 'click @7 | console --errors'   # one line per step
 ```
 
-Executes multiple commands in a single IPC call. Default output is a JSON array of results.
+Executes multiple commands in a single IPC call. Default output is a JSON array of results. Any failed step exits non-zero, including `--format json` `chrome-cdp-ex.batch.v1` handoffs with `counts.failed > 0`. Unknown inner commands recover with `cdp help`, not `cdp status`.
 
 - **Pipe syntax**: commands separated by `|`, args separated by spaces. Auto-detected when input doesn't start with `[`.
 - **`--parallel`**: runs all commands concurrently via `Promise.all`. Safe for: `elshot`, `eval`, `html`, `text`, `table`, `styles`, `cookies`. Rejected for commands that auto-perceive or mutate action/session state (`click`, `fill`, `upload`, `scroll`, `nav`, `perceive`, etc.); use sequential `batch` or `flow` for those.
@@ -651,7 +651,7 @@ scripts/cdp.mjs forget app                     # remove a saved alias
 scripts/cdp.mjs open    [url] [--reuse-url] [--format json]  # open new tab + auto-attach; --reuse-url reuses matching tab
 scripts/cdp.mjs qa <target> [--desktop WxH] [--mobile WxH] [--format json] # page smoke: screenshots/perception/console/assertions
 scripts/cdp.mjs responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json] # visual-check alias
-scripts/cdp.mjs verify-click <target> <sel|@ref> [--expect-text text] [--expect-request pattern] [--format json]
+scripts/cdp.mjs verify-click <target> <sel|@ref> [--expect-text text] [--expect-request pattern] [--expect-status code] [--format json]
 scripts/cdp.mjs keepalive <target> <ms>        # keep a tab daemon alive for long background work
 scripts/cdp.mjs stop    [target] [--format json] # stop daemon(s) with confirmation receipt
 ```
