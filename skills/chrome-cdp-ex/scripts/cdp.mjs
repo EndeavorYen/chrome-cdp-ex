@@ -5377,8 +5377,42 @@ function shouldUseCompactFillReceipt(result, { compact = false, qa = false, full
     && qa !== true;
 }
 
+function actionResultPdfViewerMeta(result = {}, dispatchText = '') {
+  const page = result.effects?.page || result.page || result.target?.page || {};
+  const blob = [
+    result.effects?.domDiff,
+    dispatchText,
+    result.dispatch?.error,
+    result.effects?.failure?.originalMessage,
+  ].filter(Boolean).join('\n');
+  if (!isPdfViewerContentType(page.contentType) && !blob.includes('chrome-cdp-ex.pdf-viewer.v1')) {
+    return null;
+  }
+  return {
+    title: page.title || '',
+    url: page.url || '',
+    contentType: isPdfViewerContentType(page.contentType) ? page.contentType : 'application/pdf',
+  };
+}
+
+function actionObservationPerceiveOpts(targetId, extra = {}) {
+  return {
+    ...extra,
+    targetPrefix: extra.targetPrefix || targetPrefixForDisplay(targetId),
+  };
+}
+
 function formatActionResultOutput(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false } = {}) {
   if (qa) {
+    const pdf = actionResultPdfViewerMeta(result, dispatchText);
+    if (pdf) {
+      const targetPrefix = result.target?.targetId
+        ? targetPrefixForDisplay(result.target.targetId)
+        : '<target>';
+      return format === 'json'
+        ? formatJson(pdfViewerHandoffModel(pdf, { targetPrefix }))
+        : formatPdfViewerOutput(pdf, { targetPrefix });
+    }
     const summary = buildQaSummaryModel({
       page: {
         url: result.effects?.page?.url || result.page?.url || '',
@@ -5914,6 +5948,7 @@ function formatResponsiveAuditReport(model) {
 
 async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, exceptionBuf, args = []) {
   const opts = parseResponsiveAuditArgs(args);
+  const originalViewport = await captureViewportSize(cdp, sid);
   const page = await pageInfoModel(cdp, sid, { targetPrefix: targetPrefixForDisplay(targetId) });
   const consoleHealth = {
     errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
@@ -5922,50 +5957,54 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
   };
   const viewports = [];
   const errors = [];
-  for (const size of opts.viewports) {
-    const entry = { viewport: size };
-    try {
-      await viewportStr(cdp, sid, size);
-      const metricsRaw = await evalStr(cdp, sid, responsiveAuditViewportScript({ maxControls: opts.maxControls }));
-      const metrics = JSON.parse(metricsRaw);
-      Object.assign(entry, metrics);
-      const shotDir = opts.outDir || session.screenshotDir || null;
-      if (opts.outDir) {
-        try { mkdirSync(opts.outDir, { recursive: true }); } catch {}
-      } else {
-        ensureSessionScreenshotDir(session);
+  try {
+    for (const size of opts.viewports) {
+      const entry = { viewport: size };
+      try {
+        await viewportStr(cdp, sid, size);
+        const metricsRaw = await evalStr(cdp, sid, responsiveAuditViewportScript({ maxControls: opts.maxControls }));
+        const metrics = JSON.parse(metricsRaw);
+        Object.assign(entry, metrics);
+        const shotDir = opts.outDir || session.screenshotDir || null;
+        if (opts.outDir) {
+          try { mkdirSync(opts.outDir, { recursive: true }); } catch {}
+        } else {
+          ensureSessionScreenshotDir(session);
+        }
+        const path = opts.outDir
+          ? resolve(opts.outDir, `responsive-${size.replace(/[^0-9x]/gi, 'x')}-${Date.now()}.png`)
+          : nextSessionScreenshotPath(session, `responsive-${size}`);
+        let screenshotCapture = null;
+        const shot = await shotStr(cdp, sid, path, targetId, { quiet: true, onCapture: capture => { screenshotCapture = capture; } });
+        entry.screenshot = shot.split('\n')[0];
+        if (screenshotCapture) {
+          entry.screenshotCapture = {
+            method: screenshotCapture.method,
+            retryCount: screenshotCapture.retryCount || 0,
+            sanity: screenshotCapture.sanity || null,
+          };
+        }
+        appendSessionScreenshot(session, { kind: 'responsive-audit', path: entry.screenshot, note: size });
+        if (!shotDir && !opts.outDir) {
+          // default screenshots stay under session dir outside the repo
+        }
+      } catch (e) {
+        entry.error = e.message || String(e);
+        errors.push(`${size}: ${entry.error}`);
       }
-      const path = opts.outDir
-        ? resolve(opts.outDir, `responsive-${size.replace(/[^0-9x]/gi, 'x')}-${Date.now()}.png`)
-        : nextSessionScreenshotPath(session, `responsive-${size}`);
-      let screenshotCapture = null;
-      const shot = await shotStr(cdp, sid, path, targetId, { quiet: true, onCapture: capture => { screenshotCapture = capture; } });
-      entry.screenshot = shot.split('\n')[0];
-      if (screenshotCapture) {
-        entry.screenshotCapture = {
-          method: screenshotCapture.method,
-          retryCount: screenshotCapture.retryCount || 0,
-          sanity: screenshotCapture.sanity || null,
-        };
-      }
-      appendSessionScreenshot(session, { kind: 'responsive-audit', path: entry.screenshot, note: size });
-      if (!shotDir && !opts.outDir) {
-        // default screenshots stay under session dir outside the repo
-      }
-    } catch (e) {
-      entry.error = e.message || String(e);
-      errors.push(`${size}: ${entry.error}`);
+      viewports.push(entry);
     }
-    viewports.push(entry);
+    const model = buildResponsiveAuditModel({
+      targetId,
+      viewports,
+      page: { title: page.title, url: page.url },
+      console: consoleHealth,
+      errors,
+    });
+    return opts.format === 'json' ? formatJson(model) : formatResponsiveAuditReport(model);
+  } finally {
+    await restoreViewportSize(cdp, sid, originalViewport);
   }
-  const model = buildResponsiveAuditModel({
-    targetId,
-    viewports,
-    page: { title: page.title, url: page.url },
-    console: consoleHealth,
-    errors,
-  });
-  return opts.format === 'json' ? formatJson(model) : formatResponsiveAuditReport(model);
 }
 
 function buildQaPageModel({ targetId = '', page = {}, pageHealth = null, console: consoleHealth = {}, perception = null, screenshots = {}, action = null, assertions = [], errors = [] } = {}) {
@@ -17538,21 +17577,24 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         exceptionBuf,
         refMap,
         lastPerceiveStore,
-        {
+        actionObservationPerceiveOpts(targetId, {
           ...(targetFrameRef ? { frameRef: targetFrameRef } : {}),
-        },
+        }),
         refState,
       );
       return noBaselineActionDiffText();
     }
-    const snapshot = resolveSinceActionPerceiveOpts(
-      {
-        sinceAction: true,
-        diffBaseline: baselineOutput,
-        ...(targetFrameRef ? { frameRef: targetFrameRef } : {}),
-      },
-      { baselineOutput, baselineOpts },
-      [],
+    const snapshot = actionObservationPerceiveOpts(
+      targetId,
+      resolveSinceActionPerceiveOpts(
+        {
+          sinceAction: true,
+          diffBaseline: baselineOutput,
+          ...(targetFrameRef ? { frameRef: targetFrameRef } : {}),
+        },
+        { baselineOutput, baselineOpts },
+        [],
+      ),
     );
     return perceiveStr(
       cdp,
@@ -17567,7 +17609,16 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   }
   async function observeFullPerceive() {
     await waitForSettle(cdp, sessionId);
-    return perceiveStr(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {}, refState);
+    return perceiveStr(
+      cdp,
+      sessionId,
+      consoleBuf,
+      exceptionBuf,
+      refMap,
+      lastPerceiveStore,
+      actionObservationPerceiveOpts(targetId),
+      refState,
+    );
   }
   async function actionFeedback(action, actionDispatch, target = {}, feedbackPolicy = 'settle-diff', observe = null, format = 'text', captureActionResult = null) {
     const dispatch = typeof actionDispatch === 'function' ? actionDispatch : async () => actionDispatch;
@@ -17581,42 +17632,46 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput, baselineOpts));
     let postActionPageHealth = null;
     const watchNavigation = action === 'click' || action === 'jsclick' || action === 'clickxy';
-    let beforePage = actionTarget.page || { title: '', url: '' };
-    const beforePagePromise = watchNavigation
-      ? pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) })
-        .then((page) => {
-          beforePage = {
-            title: page?.title || beforePage.title || '',
-            url: page?.url || beforePage.url || '',
-          };
-          actionTarget.page = beforePage;
-          return beforePage;
-        })
-        .catch(() => beforePage)
-      : Promise.resolve(beforePage);
+    let beforePage = actionTarget.page || { title: '', url: '', contentType: '' };
+    const pageInfoPromise = pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) })
+      .then((page) => {
+        beforePage = {
+          title: page?.title || beforePage.title || '',
+          url: page?.url || beforePage.url || '',
+          contentType: page?.contentType || beforePage.contentType || '',
+        };
+        actionTarget.page = beforePage;
+        return beforePage;
+      })
+      .catch(() => actionTarget.page || beforePage);
     const wrappedDispatch = async () => {
-      const text = await dispatch();
-      actionTarget.dispatchText = String(text || '');
-      if (looksLikeClipboardControl(text) || isExpectedClipboardNoChange(actionTarget, text)) {
-        actionTarget.expectedOutcome = 'clipboard-no-change';
-      }
-      if (action === 'dismiss-modal' && /no visible modal\/dialog detected/i.test(String(text || ''))) {
-        actionTarget.expectedOutcome = 'no-modal';
-      }
-      if (action === 'press' || actionTarget.resolvedBy === 'key') {
-        actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'press-no-change';
-      }
-      if (watchNavigation) {
-        await beforePagePromise;
-        const afterUrl = await evalPageHref(cdp, sessionId);
-        const beforeUrl = beforePage.url || '';
-        if (shouldSkipActionDomSettle(beforeUrl, afterUrl)) {
-          actionTarget.navigated = true;
-          actionTarget.pageHrefBefore = beforeUrl;
-          actionTarget.pageHrefAfter = afterUrl;
+      try {
+        const text = await dispatch();
+        actionTarget.dispatchText = String(text || '');
+        if (looksLikeClipboardControl(text) || isExpectedClipboardNoChange(actionTarget, text)) {
+          actionTarget.expectedOutcome = 'clipboard-no-change';
         }
+        if (action === 'dismiss-modal' && /no visible modal\/dialog detected/i.test(String(text || ''))) {
+          actionTarget.expectedOutcome = 'no-modal';
+        }
+        if (action === 'press' || actionTarget.resolvedBy === 'key') {
+          actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'press-no-change';
+        }
+        if (watchNavigation) {
+          await pageInfoPromise;
+          const afterUrl = await evalPageHref(cdp, sessionId);
+          const beforeUrl = beforePage.url || '';
+          if (shouldSkipActionDomSettle(beforeUrl, afterUrl)) {
+            actionTarget.navigated = true;
+            actionTarget.pageHrefBefore = beforeUrl;
+            actionTarget.pageHrefAfter = afterUrl;
+          }
+        }
+        return text;
+      } catch (error) {
+        await pageInfoPromise;
+        throw error;
       }
-      return text;
     };
     const observeThenFlush = async () => {
       if (actionTarget.expectedOutcome === 'clipboard-no-change') {
@@ -17650,7 +17705,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       feedbackPolicy,
       observe: observeThenFlush,
       enrichActionResult: async (actionResult) => {
-        if (watchNavigation) await beforePagePromise;
+        await pageInfoPromise;
         applyActionObservationDelta(actionResult, buildActionObservationDelta(
           { consoleBuf, exceptionBuf, netReqBuf },
           observationBaseline
@@ -17678,8 +17733,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           pageHealth: actionResult.effects.pageHealth,
           navigation: actionResult.effects.navigation,
         });
-        if (livePage.url || livePage.title) actionResult.effects.page = livePage;
-        else if (actionTarget.page) actionResult.effects.page = actionTarget.page;
+        if (livePage.url || livePage.title) {
+          const contentType = actionResult.effects.navigation?.changed
+            ? ''
+            : actionTarget.page?.contentType;
+          actionResult.effects.page = contentType ? { ...livePage, contentType } : livePage;
+        } else if (actionTarget.page) actionResult.effects.page = actionTarget.page;
         return actionResult;
       },
       onActionResult: (actionResult) => {
@@ -21778,6 +21837,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
   isPdfViewerContentType, formatPdfViewerOutput, pdfViewerError, pageInfoModel,
+  actionObservationPerceiveOpts, actionResultPdfViewerMeta,
   actionDomDiffShowsChange, noBaselineActionDiffText,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,

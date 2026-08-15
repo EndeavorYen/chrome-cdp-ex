@@ -434,6 +434,7 @@ scripts/cdp.mjs verify-click <target> <sel|@ref> [--expect-text text] [--expect-
 scripts/cdp.mjs qa <target> [--desktop WxH] [--mobile WxH] [--expect-text text] [--format json]
 # qa restores the previous viewport even if a screenshot times out
 scripts/cdp.mjs responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]  # visual-check alias
+# responsive-audit restores the previous viewport after the last --viewport
 scripts/cdp.mjs target --url URL|--title TEXT [--exact] [--format json]  # select page without guessing prefixes
 scripts/cdp.mjs checkpoint <target> [--format json]                # capture URL, cookies, localStorage, and sessionStorage
 scripts/cdp.mjs restore <target> --file <path> [--format json]     # restore a checkpoint artifact; invalidates @refs
@@ -445,7 +446,7 @@ scripts/cdp.mjs replay <target> --file <path> [--format json]     # execute repl
 
 > **Agent tip:** `perceive` already includes summary + console health. Use `status` or `console` only when you need to check for **new** console entries after an action.
 > `perceive --qa`, action QA, `qa`, and `responsive-audit` share the same page-health classifier. Treat `indeterminate` as a bounded loading sample, not as proof that the page is blank.
-> Chrome PDF plugin tabs (`document.contentType` = `application/pdf`) return `chrome-cdp-ex.pdf-viewer.v1` from `perceive`, `text --auto`, `report`, and `report --qa`. Next is `cdp eval <prefix> "document.contentType"` — do not retry `perceive` / `text` or `click @ref`.
+> Chrome PDF plugin tabs (`document.contentType` = `application/pdf`) return `chrome-cdp-ex.pdf-viewer.v1` from `perceive`, `text --auto`, `report`, `report --qa`, `click --qa`, and other PDF-plugin action receipts. Next is `cdp eval <prefix> "document.contentType"` — do not retry `perceive` / `text` or `click @ref`.
 > Action `--qa` Page/URL is the page after the action (including click-nav), not the pre-action snapshot.
 > Use `frame`/`frames` when an action is classified as `wrong-frame` or the page contains iframes; it lists stable `@fN` frame refs. Then run `perceive <target> --frame @f2` to assign frame-local element refs such as `@f2:4`. `click`, `fill`, and `cascade` can use those refs directly.
 > Use `overlay <target>` when a click/fill feels blocked or action failure says `overlay`; use `overlay <target> @ref` to ask whether a specific target point is covered. If blocking is reported, run the printed `dismiss-modal` command before retrying.

@@ -4744,3 +4744,312 @@ describe('issues #227-#231 open contracts', () => {
   });
 });
 
+describe('issues #237-#239 open contracts', () => {
+  const PDF_TARGET_ID = '9FAD7C71E2DA7ED50C67BE2092417850';
+  const PDF_PREFIX = '9FAD7C71';
+  const PDF_PAGE = {
+    title: '',
+    url: 'https://arxiv.org/pdf/2608.12307',
+    contentType: 'application/pdf',
+  };
+  const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  it('#237 responsive-audit restores the original viewport after the last audited size', async () => {
+    const sizes = [];
+    let current = { w: 1042, h: 632 };
+    const tmp = mkdtempSync(join(tmpdir(), 'cdp-responsive-viewport-'));
+    const session = T.createSessionState({
+      targetId: '1D3669785EAC5A1A211792636BAE8A07',
+      sessionId: 'sid',
+      logPath: join(tmp, 'session.jsonl'),
+      screenshotDir: join(tmp, 'shots'),
+    });
+    T.resetScreenshotTier();
+    const cdp = {
+      send(method, params = {}) {
+        if (method === 'Emulation.setDeviceMetricsOverride') {
+          sizes.push(`${params.width}x${params.height}`);
+          current = { w: params.width, h: params.height };
+          return Promise.resolve({});
+        }
+        if (method === 'Page.captureScreenshot') {
+          return Promise.resolve({ data: TINY_PNG });
+        }
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('{w:window.innerWidth') && expr.includes('innerHeight')) {
+            return Promise.resolve({ result: { value: JSON.stringify(current) } });
+          }
+          if (expr.includes('document.title')) {
+            return Promise.resolve({
+              result: { value: JSON.stringify({ title: 'Example Domain', url: 'https://example.com/', contentType: 'text/html' }) },
+            });
+          }
+          if (expr.includes('devicePixelRatio')) {
+            return Promise.resolve({ result: { value: 1 } });
+          }
+          if (expr.includes('overflowX') || expr.includes('clippedControls')) {
+            return Promise.resolve({
+              result: {
+                value: JSON.stringify({
+                  url: 'https://example.com/',
+                  title: 'Example Domain',
+                  viewport: `${current.w}x${current.h}`,
+                  scroll: { width: current.w, height: current.h, clientWidth: current.w, clientHeight: current.h },
+                  overflowX: false,
+                  controlCount: 1,
+                  controls: [{ tag: 'a', text: 'More information...' }],
+                  controlsTruncated: false,
+                  maxControls: 12,
+                  clippedControls: [],
+                  overlaps: [],
+                  pageHealthSignals: {
+                    url: 'https://example.com/',
+                    readyState: 'complete',
+                    visibleTextLength: 40,
+                    elementCount: 12,
+                    visibleControlCount: 1,
+                    bodyRect: { width: current.w, height: current.h },
+                  },
+                }),
+              },
+            });
+          }
+          return Promise.resolve({ result: { value: JSON.stringify({ retry: false }) } });
+        }
+        return Promise.resolve({});
+      },
+    };
+    try {
+      const out = await T.responsiveAuditStr(
+        cdp,
+        'sid',
+        session,
+        '1D3669785EAC5A1A211792636BAE8A07',
+        new T.RingBuffer(8),
+        new T.RingBuffer(8),
+        ['--viewport', '800x600', '--format', 'json'],
+      );
+      const model = JSON.parse(out);
+      expect(model.schema).toBe('chrome-cdp-ex.responsive-audit.v1');
+      expect(model.verdict).toBe('pass');
+      expect(sizes[0]).toBe('800x600');
+      expect(sizes.at(-1)).toBe('1042x632');
+      expect(current).toEqual({ w: 1042, h: 632 });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('#237 responsive-audit restores the original viewport after a screenshot timeout', async () => {
+    const sizes = [];
+    let current = { w: 1042, h: 632 };
+    const tmp = mkdtempSync(join(tmpdir(), 'cdp-responsive-timeout-'));
+    const session = T.createSessionState({
+      targetId: '1D3669785EAC5A1A211792636BAE8A07',
+      sessionId: 'sid',
+      logPath: join(tmp, 'session.jsonl'),
+      screenshotDir: join(tmp, 'shots'),
+    });
+    T.resetScreenshotTier();
+    const cdp = {
+      send(method, params = {}) {
+        if (method === 'Emulation.setDeviceMetricsOverride') {
+          sizes.push(`${params.width}x${params.height}`);
+          current = { w: params.width, h: params.height };
+          return Promise.resolve({});
+        }
+        if (method === 'Page.captureScreenshot') {
+          throw new Error('Timeout: Page.captureScreenshot');
+        }
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('{w:window.innerWidth') && expr.includes('innerHeight')) {
+            return Promise.resolve({ result: { value: JSON.stringify(current) } });
+          }
+          if (expr.includes('document.title')) {
+            return Promise.resolve({
+              result: { value: JSON.stringify({ title: 'Example Domain', url: 'https://example.com/', contentType: 'text/html' }) },
+            });
+          }
+          if (expr.includes('overflowX') || expr.includes('clippedControls')) {
+            return Promise.resolve({
+              result: {
+                value: JSON.stringify({
+                  url: 'https://example.com/',
+                  title: 'Example Domain',
+                  viewport: `${current.w}x${current.h}`,
+                  overflowX: false,
+                  controlCount: 0,
+                  controls: [],
+                  clippedControls: [],
+                  overlaps: [],
+                }),
+              },
+            });
+          }
+          return Promise.resolve({ result: { value: '{}' } });
+        }
+        return Promise.resolve({});
+      },
+      waitForEvent() {
+        return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+      },
+    };
+    try {
+      await T.responsiveAuditStr(
+        cdp,
+        'sid',
+        session,
+        '1D3669785EAC5A1A211792636BAE8A07',
+        new T.RingBuffer(8),
+        new T.RingBuffer(8),
+        ['--viewport', '800x600'],
+      );
+      expect(sizes[0]).toBe('800x600');
+      expect(sizes.at(-1)).toBe('1042x632');
+      expect(current).toEqual({ w: 1042, h: 632 });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('#238 click --qa on a Chrome PDF viewer emits pdf-viewer.v1, not pass/populated', () => {
+    const dump = T.formatPdfViewerOutput(PDF_PAGE, { targetPrefix: PDF_PREFIX });
+    const result = T.createActionResult({
+      action: 'click',
+      target: {
+        targetId: PDF_TARGET_ID,
+        input: 'body',
+        label: 'body',
+        page: PDF_PAGE,
+      },
+      dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
+      settle: { ok: true, durationMs: 5361 },
+      effects: {
+        page: PDF_PAGE,
+        pageHealth: {
+          status: 'populated',
+          isBlank: false,
+          confidence: 'high',
+          evidence: {
+            url: PDF_PAGE.url,
+            title: '',
+            visibleTextLength: 0,
+            elementCount: 4,
+            visibleControlCount: 0,
+            bodyRect: { width: 800, height: 0 },
+            changed: true,
+          },
+        },
+        domDiff: dump,
+        console: [],
+        network: [],
+      },
+    });
+
+    const text = T.formatActionResultOutput(result, { qa: true });
+    expect(text).toContain('chrome-cdp-ex.pdf-viewer.v1');
+    expect(text).toContain(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+    expect(text).not.toMatch(/QA summary: pass/);
+    expect(text).not.toMatch(/Page health: populated/);
+    expect(text).not.toMatch(/Changed: changed/);
+    expect(text).not.toContain('<target>');
+    expect(text).not.toMatch(/cdp perceive /);
+
+    const parsed = JSON.parse(T.formatActionResultOutput(result, { qa: true, format: 'json' }));
+    expect(parsed.schema).toBe('chrome-cdp-ex.pdf-viewer.v1');
+    expect(parsed.nextCommand).toBe(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+    expect(parsed).not.toMatchObject({ ok: true });
+    expect(parsed.summary?.pageHealth?.status).not.toBe('populated');
+  });
+
+  it('#239 action PDF Next interpolates the prefix and misses do not recommend perceive', async () => {
+    expect(T.actionObservationPerceiveOpts(PDF_TARGET_ID)).toMatchObject({ targetPrefix: PDF_PREFIX });
+    expect(T.actionObservationPerceiveOpts(PDF_TARGET_ID, { sinceAction: true }).targetPrefix).toBe(PDF_PREFIX);
+
+    const printed = T.formatPdfViewerOutput(PDF_PAGE, { targetPrefix: PDF_PREFIX });
+    expect(printed).toContain(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+    expect(printed).not.toContain('<target>');
+
+    const cdp = {
+      send(method) {
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({
+            result: {
+              value: JSON.stringify({
+                title: '',
+                url: PDF_PAGE.url,
+                contentType: 'application/pdf',
+                vw: 800,
+                vh: 600,
+                scrollY: 0,
+                scrollMax: 0,
+                counts: {},
+                focused: '',
+                layoutMap: {},
+                styleHints: {},
+                cursorInteractives: [],
+                visibleControls: [],
+                visibleControlsTruncated: false,
+                cardWindows: [],
+              }),
+            },
+          });
+        }
+        if (method === 'Accessibility.getFullAXTree') {
+          return Promise.resolve({ nodes: [] });
+        }
+        return Promise.resolve({});
+      },
+    };
+    const observed = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      new Map(),
+      { output: null },
+      T.actionObservationPerceiveOpts(PDF_TARGET_ID),
+    );
+    expect(observed).toContain('chrome-cdp-ex.pdf-viewer.v1');
+    expect(observed).toContain(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+    expect(observed).not.toContain('<target>');
+
+    const hit = T.formatActionResultOutput(T.createActionResult({
+      action: 'viewport',
+      target: { targetId: PDF_TARGET_ID, input: '1042x632', resolvedBy: 'viewport', page: PDF_PAGE },
+      dispatch: { ok: true, method: 'viewport' },
+      settle: { ok: true, durationMs: 947 },
+      effects: { page: PDF_PAGE, domDiff: observed, console: [], network: [] },
+    }), { dispatchText: observed });
+    expect(hit).toContain(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+    expect(hit).not.toContain('<target>');
+
+    const miss = T.formatActionFailure(new Error('Element not found: a'), {
+      action: 'click',
+      target: {
+        targetId: PDF_TARGET_ID,
+        input: 'a',
+        page: PDF_PAGE,
+      },
+    });
+    expect(miss).toMatch(/Action failure: selector/);
+    expect(miss).toContain(`Next: cdp eval ${PDF_PREFIX} "document.contentType"`);
+    expect(miss).not.toMatch(/cdp perceive /);
+    expect(miss).not.toContain('<target>');
+    expect(miss).not.toContain(PDF_TARGET_ID);
+
+    const htmlMiss = T.formatActionFailure(new Error('Element not found: a'), {
+      action: 'click',
+      target: {
+        targetId: '1D3669785EAC5A1A211792636BAE8A07',
+        input: 'a',
+        page: { title: 'Example Domain', url: 'https://example.com/', contentType: 'text/html' },
+      },
+    });
+    expect(htmlMiss).toMatch(/Next: cdp perceive /);
+    expect(htmlMiss).not.toMatch(/document\.contentType/);
+  });
+});
+

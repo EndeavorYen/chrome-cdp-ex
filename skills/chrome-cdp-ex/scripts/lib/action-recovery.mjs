@@ -26,7 +26,33 @@ export function actionTargetCommandPrefix(target = {}) {
   return id.slice(0, 8);
 }
 
-export function classifyActionFailure(err, { action = 'action', target = {} } = {}) {
+export function isPdfViewerActionTarget(target = {}) {
+  const contentType = String(target?.page?.contentType || target?.contentType || '');
+  return contentType.toLowerCase().includes('application/pdf');
+}
+
+export function pdfViewerActionNextCommand(target = {}) {
+  return `cdp eval ${actionTargetCommandPrefix(target)} "document.contentType"`;
+}
+
+function applyPdfViewerActionRecovery(failure, target = {}) {
+  if (!failure || !isPdfViewerActionTarget(target)) return failure;
+  const nextCommand = pdfViewerActionNextCommand(target);
+  return {
+    ...failure,
+    nextCommand,
+    hints: [
+      'Chrome is rendering a PDF plugin, not an HTML document. Do not retry perceive/text as a next-probe.',
+      `Confirm the plugin with \`${nextCommand}\`.`,
+    ],
+  };
+}
+
+export function classifyActionFailure(err, context = {}) {
+  return applyPdfViewerActionRecovery(classifyActionFailureKind(err, context), context.target || {});
+}
+
+function classifyActionFailureKind(err, { action = 'action', target = {} } = {}) {
   const originalMessage = actionFailureMessage(err);
   const lower = originalMessage.toLowerCase();
   const targetId = actionFailureTargetId(target);

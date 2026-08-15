@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#237, #238, #239)
+
+* `responsive-audit` / `visual-check` restore the tab's original viewport after the
+  last `--viewport`, including when a screenshot times out (same contract as #210 / `qa`).
+* `click --qa` on a Chrome PDF plugin emits `chrome-cdp-ex.pdf-viewer.v1` instead of
+  QA pass / populated / changed. Next is `cdp eval <prefix> "document.contentType"`.
+* PDF-plugin action receipts (`click`, `viewport`, selector misses) interpolate the
+  target prefix in that eval Next. Misses no longer recommend `perceive`.
+
 ### Open issue dogfood (#234, #235)
 
 * `click --qa` compact Page/URL and JSON `summary.page` use the post-navigation
