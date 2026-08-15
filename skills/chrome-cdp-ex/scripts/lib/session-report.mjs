@@ -79,6 +79,8 @@ export function buildReportRecommendation(actionLog = [], target, fullTarget = t
         action: entry.action || null,
         target: sourceTarget,
         targetInput: actionFailureInput(entry.target || {}),
+        targetInfo: entry.target || {},
+        extraText: String(entry.effects?.domDiff || entry.domDiff || ''),
       });
       return {
         ...recommendation,

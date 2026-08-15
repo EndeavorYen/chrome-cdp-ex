@@ -499,18 +499,35 @@ export function isExpectedPressNoChange(target = {}, action = null) {
   return String(action || target?.action || '').toLowerCase() === 'press';
 }
 
+export function isExpectedPdfViewerNoChange(target = {}, extraText = '') {
+  if (target?.expectedOutcome === 'pdf-viewer-no-change') return true;
+  if (isPdfViewerActionTarget(target)) return true;
+  const blob = [
+    extraText,
+    target?.dispatchText,
+    target?.label,
+    target?.domDiff,
+  ].filter(Boolean).join('\n');
+  return /settle shape was pdf-viewer\.v1/i.test(blob)
+    || blob.includes('chrome-cdp-ex.pdf-viewer.v1');
+}
+
 export function isExpectedNoChange(target = {}, extraText = '', action = null) {
   if (isExpectedClipboardNoChange(target, extraText)) return true;
   if (target?.expectedOutcome === 'no-modal') return true;
+  if (isExpectedPdfViewerNoChange(target, extraText)) return true;
   return isExpectedPressNoChange(target, action);
 }
 
-export function expectedNoChangeReason(target = {}, action = null) {
+export function expectedNoChangeReason(target = {}, action = null, extraText = '') {
   if (isExpectedClipboardNoChange(target)) {
     return 'Clipboard / copy action; no visible AX tree change is expected.';
   }
   if (target?.expectedOutcome === 'no-modal') {
     return 'No visible modal/dialog was present; nothing was dismissed.';
+  }
+  if (isExpectedPdfViewerNoChange(target, extraText)) {
+    return 'Settle shape was pdf-viewer.v1 (empty AX); continue without overlay/perceive recovery.';
   }
   if (isExpectedPressNoChange(target, action)) {
     return 'Key press produced no visible AX tree change; continue without overlay recovery.';
@@ -576,9 +593,29 @@ export function buildNoChangeOutcomeRecommendation({
   target = '<target>',
   targetInput = '',
   targetInfo = {},
+  extraText = '',
   source = 'action-outcome',
 } = {}) {
   const blockingSignals = noChangeBlockingSignals({ action, targetInput, targetInfo });
+  if (isExpectedPdfViewerNoChange(targetInfo, extraText)) {
+    const nextCommand = pdfViewerActionNextCommand({
+      ...targetInfo,
+      targetId: targetInfo.targetId || target,
+    });
+    return {
+      source,
+      actionIndex,
+      action,
+      outcomeStatus: 'no-change',
+      strategy: 'continue',
+      priority: 'low',
+      reason: 'Settle shape was pdf-viewer.v1 (empty AX); continue without overlay/perceive recovery.',
+      blockingSignals: [],
+      recoveryHint: 'PDF plugin empty-AX settle; confirm with eval document.contentType.',
+      verifyCommand: nextCommand,
+      commands: uniqueNextStepCommands([nextCommand]),
+    };
+  }
   if (isExpectedNoChange(targetInfo, targetInput, action)) {
     const reason = isExpectedClipboardNoChange(targetInfo, targetInput)
       ? 'Clipboard / copy actions do not rewrite the AX tree; continue without overlay recovery.'
