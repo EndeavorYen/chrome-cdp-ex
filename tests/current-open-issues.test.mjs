@@ -6429,11 +6429,13 @@ describe('issue #259 leftover framed perceive settle', () => {
     const cardsSettled = T.actionSettleBaseline(cardsDump, T.perceiveSnapshotOpts({ cards: true }));
     expect(cardsSettled.output).toBeNull();
     expect(cardsSettled.opts.cards).toBe(false);
+    // #279: leftover 0-card cards is still not the settle dump, but settle must
+    // recapture default AX so a later mutating click is not a no-change liar.
     expect(T.shouldCaptureTopLevelActionSettle(
       T.perceiveSnapshotOpts({ cards: true }),
       cardsDump,
       { input: 'Escape', resolvedBy: 'key', label: 'Escape' },
-    )).toBe(false);
+    )).toBe(true);
   });
 
   it('#259 perceive --frame still records a same-origin iframe dump for @fN:M settle', async () => {
@@ -6529,6 +6531,340 @@ describe('issue #259 leftover framed perceive settle', () => {
     );
     expect(frameSettled.output).toContain('Frame: @f2');
     expect(frameSettled.opts.frameRef).toBe('@f2');
+  });
+});
+
+describe('issue #279 leftover 0-card cards settle for click --js', () => {
+  const TARGET_ID = '62E1DF195EAC5A1A211792636BAE8A07';
+  const emptyDelta = {
+    console: { count: 0, errors: 0, warnings: 0, entries: [] },
+    exceptions: { count: 0, entries: [] },
+    network: { count: 0, failures: 0, pending: 0, entries: [] },
+  };
+
+  function pageMeta() {
+    return JSON.stringify({
+      title: 'Example Domain',
+      url: 'https://example.com/',
+      contentType: 'text/html',
+      vw: 1042,
+      vh: 632,
+      scrollY: 0,
+      scrollMax: 0,
+      counts: { button: 1 },
+      focused: 'none',
+      layoutMap: {},
+      styleHints: {},
+      cursorInteractives: [],
+      visibleControls: [{
+        tag: 'button',
+        role: 'button',
+        label: 'p21',
+        clickable: true,
+        rect: { x: 8, y: 80, w: 80, h: 24 },
+        selector: 'button#p21btn',
+        hints: { id: 'p21btn', classes: [] },
+      }],
+    });
+  }
+
+  function axNodes(clicks) {
+    return [
+      { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Example Domain' }, childIds: ['2', '3', '4'] },
+      { nodeId: '2', parentId: '1', role: { value: 'heading' }, name: { value: 'Example Domain' } },
+      { nodeId: '3', parentId: '1', role: { value: 'button' }, name: { value: 'p21' }, backendDOMNodeId: 21 },
+      { nodeId: '4', parentId: '1', role: { value: 'StaticText' }, name: { value: `clicks:${clicks}` } },
+    ];
+  }
+
+  function createPicky21Page({ clicks = 6 } = {}) {
+    const state = { clicks };
+    const cdp = {
+      calls: [],
+      send(method, params = {}) {
+        cdp.calls.push({ method, params });
+        if (method === 'Page.getFrameTree') {
+          return Promise.resolve({ frameTree: { frame: { id: 'main-frame', url: 'https://example.com/' } } });
+        }
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({ result: { value: pageMeta() } });
+        }
+        if (method === 'Accessibility.getFullAXTree') {
+          return Promise.resolve({ nodes: axNodes(state.clicks) });
+        }
+        if (method === 'DOM.getDocument') {
+          return Promise.resolve({ root: { nodeId: 1 } });
+        }
+        if (method === 'DOM.querySelector') {
+          expect(params.selector).toBe('#p21btn');
+          return Promise.resolve({ nodeId: 21 });
+        }
+        if (method === 'DOM.resolveNode') {
+          return Promise.resolve({ object: { objectId: 'p21-btn' } });
+        }
+        if (method === 'Runtime.callFunctionOn') {
+          const fn = String(params.functionDeclaration || '');
+          if (fn.includes('this.click()')) {
+            state.clicks += 1;
+            return Promise.resolve({ result: { value: { tag: 'BUTTON', text: 'p21' } } });
+          }
+          return Promise.resolve({ result: { value: { connected: true, x: 8, y: 80, w: 80, h: 24 } } });
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+    };
+    return { cdp, state };
+  }
+
+  async function recaptureSettleBaseline(cdp, store, actionTarget, refMap = new Map(), refState = {}) {
+    const baselineFromTarget = T.baselineOutputForActionTarget(refState, store.output, actionTarget);
+    let settleBaseline = T.actionSettleBaseline(
+      baselineFromTarget,
+      store.snapshotOpts || null,
+      actionTarget,
+    );
+    if (
+      !settleBaseline.output
+      && T.shouldCaptureTopLevelActionSettle(
+        store.snapshotOpts,
+        baselineFromTarget,
+        actionTarget,
+      )
+    ) {
+      const topLevelOpts = T.actionObservationPerceiveOpts(TARGET_ID, {
+        ...(settleBaseline.opts || {}),
+        frameRef: null,
+      });
+      const before = await T.perceiveStr(
+        cdp,
+        'sid',
+        new T.RingBuffer(8),
+        new T.RingBuffer(8),
+        refMap,
+        store,
+        topLevelOpts,
+        refState,
+      );
+      settleBaseline = {
+        output: before,
+        opts: T.perceiveSnapshotOpts(topLevelOpts),
+      };
+    }
+    return settleBaseline;
+  }
+
+  function clickJsTarget() {
+    return {
+      input: '#p21btn',
+      resolvedBy: 'selector-or-ref',
+      label: '#p21btn',
+      commandArgs: ['--js', '#p21btn'],
+    };
+  }
+
+  it('#279 leftover 0-card --role feed / --cards recaptures default AX so mutating click --js is Outcome: changed', async () => {
+    expect(T.parsePerceiveArgs(['--role', 'feed']).cards).toBe(true);
+    expect(T.parsePerceiveArgs(['--cards']).cards).toBe(true);
+
+    const { cdp, state } = createPicky21Page({ clicks: 6 });
+    const store = { output: null, snapshotOpts: null, cards: null };
+    const refMap = new Map();
+    const refState = {};
+    const cardsOpts = T.parsePerceiveArgs(['--role', 'feed']);
+    const cardsDump = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      store,
+      { ...cardsOpts, targetPrefix: '62E1DF19' },
+      refState,
+    );
+    expect(cardsDump).toContain('chrome-cdp-ex.cards.v1');
+    expect(cardsDump).toMatch(/0 cards/);
+    expect(store.snapshotOpts.cards).toBe(true);
+    expect(T.isCardsPerceiveOutput(store.output)).toBe(true);
+
+    const clickTarget = clickJsTarget();
+    const discarded = T.actionSettleBaseline(store.output, store.snapshotOpts, clickTarget);
+    expect(discarded.output).toBeNull();
+    expect(discarded.opts.cards).toBe(false);
+    expect(T.shouldCaptureTopLevelActionSettle(store.snapshotOpts, store.output, clickTarget)).toBe(true);
+
+    const observeWithoutRecapture = T.actionSettleObserveOpts(
+      TARGET_ID,
+      clickTarget,
+      discarded.output,
+      discarded.opts,
+    );
+    expect(observeWithoutRecapture.cards).toBe(false);
+
+    const liar = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { targetId: TARGET_ID, ...clickTarget },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: T.noBaselineActionDiffText(), console: [], network: [], navigation: null },
+    }), emptyDelta);
+    expect(liar.outcome.status).toBe('no-change');
+    expect(T.formatActionText(liar)).toMatch(/No visible AX tree change/);
+    expect(liar.verdict.status).toBe('investigate');
+
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, clickTarget, refMap, refState);
+    expect(settleBaseline.output).toBeTruthy();
+    expect(settleBaseline.opts.cards).toBe(false);
+    expect(settleBaseline.output).not.toMatch(/chrome-cdp-ex\.cards\.v1/);
+    expect(settleBaseline.output).toContain('[StaticText] clicks:6');
+    expect(state.clicks).toBe(6);
+
+    const dispatchText = await T.jsClickStr(cdp, 'sid', '#p21btn', refMap, refState);
+    expect(dispatchText).toMatch(/JS-clicked <BUTTON>/);
+    expect(state.clicks).toBe(7);
+
+    const after = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      store,
+      T.actionSettleObserveOpts(TARGET_ID, clickTarget, settleBaseline.output, settleBaseline.opts),
+      refState,
+    );
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+    expect(after).toMatch(/\+\s+\[StaticText\] clicks:7/);
+    expect(after).not.toMatch(/no changes detected in AX tree/i);
+    expect(after).not.toMatch(/chrome-cdp-ex\.cards\.v1/);
+
+    const honest = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { targetId: TARGET_ID, ...clickTarget },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    expect(honest.outcome.status).toBe('changed');
+    expect(honest.verdict.status).toBe('continue');
+    expect(honest.verdict.canContinue).toBe(true);
+    const honestText = T.formatActionText(honest);
+    expect(honestText).toMatch(/Outcome: changed/);
+    expect(honestText).toMatch(/clicks:7/);
+    expect(honestText).not.toMatch(/Outcome: no-change/);
+    expect(honestText).not.toMatch(/No visible AX tree change/);
+    expect(honest.nextSteps.join('\n')).not.toMatch(/overlay/);
+  });
+
+  it('#279 leftover-cards + Escape stays expected no-change after default-AX recapture', async () => {
+    const { cdp, state } = createPicky21Page({ clicks: 6 });
+    const store = { output: null, snapshotOpts: null, cards: null };
+    await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      new Map(),
+      store,
+      { ...T.parsePerceiveArgs(['--cards']), targetPrefix: '62E1DF19' },
+      {},
+    );
+    expect(store.output).toMatch(/0 cards/);
+
+    const escapeTarget = {
+      input: 'Escape',
+      resolvedBy: 'key',
+      label: 'Escape',
+      expectedOutcome: 'press-no-change',
+    };
+    expect(T.shouldCaptureTopLevelActionSettle(store.snapshotOpts, store.output, escapeTarget)).toBe(true);
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, escapeTarget);
+    expect(settleBaseline.output).toContain('[StaticText] clicks:6');
+    expect(state.clicks).toBe(6);
+
+    const after = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      new Map(),
+      store,
+      T.actionSettleObserveOpts(TARGET_ID, escapeTarget, settleBaseline.output, settleBaseline.opts),
+      {},
+    );
+    expect(after).toMatch(/no changes detected in AX tree/i);
+    expect(T.actionDomDiffShowsChange(after)).toBe(false);
+
+    const pressAfterCards = T.applyActionObservationDelta(T.createActionResult({
+      action: 'press',
+      target: { targetId: TARGET_ID, ...escapeTarget },
+      dispatch: { ok: true, method: 'press' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    expect(pressAfterCards.outcome.status).toBe('no-change');
+    expect(pressAfterCards.effects.diagnosis?.kind).not.toBe('dom-changed');
+    const pressText = T.formatActionText(pressAfterCards);
+    expect(pressText).toMatch(/Outcome: no-change/);
+    expect(pressText).not.toMatch(/Outcome: changed/);
+    expect(pressText).not.toMatch(/chrome-cdp-ex\.cards\.v1/);
+    expect(pressAfterCards.nextSteps.join('\n')).not.toMatch(/perceive .*--cards/);
+  });
+
+  it('#279 default-AX perceive then the same click --js stays Outcome: changed', async () => {
+    const { cdp, state } = createPicky21Page({ clicks: 7 });
+    const store = { output: null, snapshotOpts: null, cards: null };
+    const refMap = new Map();
+    const before = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      store,
+      { targetPrefix: '62E1DF19' },
+      {},
+    );
+    expect(before).toContain('[StaticText] clicks:7');
+    expect(store.snapshotOpts.cards).toBe(false);
+
+    const clickTarget = clickJsTarget();
+    const settled = T.actionSettleBaseline(store.output, store.snapshotOpts, clickTarget);
+    expect(settled.output).toBe(before);
+    expect(T.shouldCaptureTopLevelActionSettle(store.snapshotOpts, store.output, clickTarget)).toBe(false);
+
+    await T.jsClickStr(cdp, 'sid', '#p21btn', refMap, {});
+    expect(state.clicks).toBe(8);
+    const after = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      store,
+      T.actionSettleObserveOpts(TARGET_ID, clickTarget, settled.output, settled.opts),
+      {},
+    );
+    expect(after).toMatch(/\+\s+\[StaticText\] clicks:8/);
+
+    const honest = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { targetId: TARGET_ID, ...clickTarget },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    expect(honest.outcome.status).toBe('changed');
+    expect(T.formatActionText(honest)).toMatch(/clicks:8/);
+    expect(T.formatActionText(honest)).not.toMatch(/No visible AX tree change/);
+  });
+
+  it('#279 actionFeedback recapture gate is leftover cards as well as leftover frames', () => {
+    const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    expect(src).toMatch(/!settleBaseline\.output\s*\n\s*&& shouldCaptureTopLevelActionSettle\(/);
+    expect(src).toMatch(
+      /function shouldCaptureTopLevelActionSettle[\s\S]{0,1200}snapshotOpts\?\.cards === true \|\| isCardsPerceiveOutput\(output\)/,
+    );
   });
 });
 
