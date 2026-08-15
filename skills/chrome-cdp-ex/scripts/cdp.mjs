@@ -11812,11 +11812,12 @@ async function rememberHoverSettleBaseline(
   // before mouseMoved — leftover perceive -C -d 8 is a different line-set
   // than default recapture even when both still say hover:0, so that leftover
   // must not be the KEEP baseline. After dispatch, recapture immediately; if
-  // the same shape already changed, KEEP and skip the mutation wait. Only if
-  // it is still idle, wait for a hover-driven mutation (not waitForSettle's
-  // 350ms pre-hover silence). Timeout discards unconditionally so idle AX
-  // cannot be kept. Do not emit ActionResult. Do not lengthen waitForSettle.
-  // Do not wait for the compositor mouseMoved ack.
+  // the same shape already changed, KEEP. If it is still idle, discard
+  // unconditionally (#291). Do not sit waitForHoverDomChange /
+  // HOVER_MUTATION_TIMEOUT_MS: Chrome 151 mouseenter can land after that
+  // window, and discard already keeps the next no-op scroll honest. Do not
+  // emit ActionResult. Do not lengthen waitForSettle. Do not wait for the
+  // compositor mouseMoved ack.
   const settleOpts = actionObservationPerceiveOpts(targetId);
   await perceiveStr(
     cdp,
@@ -11845,25 +11846,7 @@ async function rememberHoverSettleBaseline(
   if (hoverRecaptureShowsChange(before, lastPerceiveStore.output)) {
     return;
   }
-  const hoverChange = await waitForHoverDomChange(cdp, sid);
-  if (hoverChange !== 'hover-changed') {
-    discardHoverIdleBaseline(lastPerceiveStore);
-    return;
-  }
-  await waitForSettle(cdp, sid);
-  await perceiveStr(
-    cdp,
-    sid,
-    consoleBuf,
-    exceptionBuf,
-    refMap,
-    lastPerceiveStore,
-    settleOpts,
-    refState,
-  );
-  if (!hoverRecaptureShowsChange(before, lastPerceiveStore.output)) {
-    discardHoverIdleBaseline(lastPerceiveStore);
-  }
+  discardHoverIdleBaseline(lastPerceiveStore);
 }
 
 async function waitForStr(cdp, sid, args, refMap, refState) {

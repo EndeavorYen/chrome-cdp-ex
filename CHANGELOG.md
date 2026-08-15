@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#291)
+
+* `hover` still snapshots settle-shape AX before mouseMoved and recaptures
+  immediately. Sync hover that already shows a delta KEEPs that baseline.
+  Idle recapture now discards without sitting `waitForHoverDomChange` /
+  `HOVER_MUTATION_TIMEOUT_MS` (3000). Chrome 151 mouseenter can land after
+  that window; discard already keeps a later no-op `scroll` at `(0, 0)` as
+  `Outcome: no-change`. Hover stays a one-liner. `HOVER_MOUSE_ACK_TIMEOUT_MS`
+  stays 250. `#286` honest gate and `#285` leftover PDF `click --js` hold.
+
 ### Open issue dogfood (#282)
 
 * Leftover `perceive` on a Chrome PDF plugin (`chrome-cdp-ex.pdf-viewer.v1`)

@@ -7456,9 +7456,14 @@ describe('issue #286 hover settle baseline', () => {
       && expr.includes('hover-changed');
   }
 
-  function createPicky23Page({ hovers = 0, delayHoverUntilSettle = false, idleQuiet = false } = {}) {
+  function createPicky23Page({
+    hovers = 0,
+    delayHoverUntilSettle = false,
+    idleQuiet = false,
+    hangMutation = false,
+  } = {}) {
     const state = { hovers, pendingHover: false };
-    const deferHover = delayHoverUntilSettle || idleQuiet;
+    const deferHover = delayHoverUntilSettle || idleQuiet || hangMutation;
     const cdp = {
       calls: [],
       send(method, params = {}) {
@@ -7469,6 +7474,16 @@ describe('issue #286 hover settle baseline', () => {
         if (method === 'Runtime.evaluate') {
           const expr = String(params.expression || '');
           if (isHoverMutationExpr(expr)) {
+            if (hangMutation) {
+              // Live Chrome 151: mutation never arrives inside HOVER_MUTATION_TIMEOUT_MS.
+              // Sitting this wait is the paid residual after #289 discard.
+              return new Promise(resolve => {
+                setTimeout(
+                  () => resolve({ result: { value: 'timeout' } }),
+                  T.HOVER_MUTATION_TIMEOUT_MS,
+                );
+              });
+            }
             if (state.pendingHover && !idleQuiet) {
               state.hovers += 1;
               state.pendingHover = false;
@@ -7652,29 +7667,21 @@ describe('issue #286 hover settle baseline', () => {
     const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
     expect(src).toMatch(/hover: async args =>[\s\S]{0,800}rememberHoverSettleBaseline\(/);
     expect(src).toMatch(/hover: async args =>[\s\S]{0,1200}hoverStr\(/);
-    expect(src).toMatch(/chrome-cdp-ex\.hover-mutation\.v1/);
-    expect(src).toMatch(
-      /async function waitForHoverDomChange[\s\S]{0,900}hover-changed/,
-    );
     expect(src).not.toMatch(
-      /async function waitForHoverDomChange[\s\S]{0,900}setTimeout\(done, 350\)/,
+      /async function rememberHoverSettleBaseline[\s\S]{0,2800}waitForHoverDomChange\(/,
     );
     expect(src).toMatch(
-      /async function rememberHoverSettleBaseline[\s\S]{0,2200}waitForHoverDomChange\(/,
-    );
-    expect(src).toMatch(
-      /async function rememberHoverSettleBaseline[\s\S]{0,2800}if \(hoverChange !== 'hover-changed'\) \{\s*discardHoverIdleBaseline\(/,
+      /async function rememberHoverSettleBaseline[\s\S]{0,2800}if \(hoverRecaptureShowsChange\(before, lastPerceiveStore\.output\)\) \{\s*return;\s*\}\s*discardHoverIdleBaseline\(/,
     );
     expect(src).not.toMatch(
       /async function rememberHoverSettleBaseline[\s\S]{0,800}await waitForSettle\(cdp, sid\);\s*await perceiveStr\(/,
     );
     expect(T.HOVER_MUTATION_TIMEOUT_MS).toBe(3000);
-    expect(T.HOVER_MUTATION_MARKER).toBe('chrome-cdp-ex.hover-mutation.v1');
     expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
   });
 
-  it('#286 rememberHoverSettleBaseline waits for DOM settle before recapture so delayed hover AX is not stolen', async () => {
-    const { cdp, state } = createPicky23Page({ hovers: 0, delayHoverUntilSettle: true });
+  it('#291 idle recapture must discard without sitting HOVER_MUTATION_TIMEOUT_MS', async () => {
+    const { cdp, state } = createPicky23Page({ hovers: 0, hangMutation: true });
     const store = { output: null, snapshotOpts: null };
     const refMap = new Map();
     const refState = {};
@@ -7689,7 +7696,7 @@ describe('issue #286 hover settle baseline', () => {
       refState,
     );
     expect(before).toContain('[StaticText] hover:0');
-    const callsBeforeRefresh = cdp.calls.length;
+    const started = Date.now();
     await T.rememberHoverSettleBaseline(
       cdp,
       'sid',
@@ -7703,55 +7710,24 @@ describe('issue #286 hover settle baseline', () => {
         await T.hoverStr(cdp, 'sid', '#p23hover', refMap, refState);
       },
     );
-    expect(state.hovers).toBe(1);
-    expect(state.pendingHover).toBe(false);
-    const refreshCalls = cdp.calls.slice(callsBeforeRefresh);
-    const snapshotAxIdx = refreshCalls.findIndex(call => call.method === 'Accessibility.getFullAXTree');
-    const mouseIdx = refreshCalls.findIndex(call => (
-      call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mouseMoved'
-    ));
-    const mutationIdx = refreshCalls.findIndex(call => (
+    const elapsedMs = Date.now() - started;
+    expect(elapsedMs).toBeLessThan(1000);
+    expect(cdp.calls.some(call => (
       call.method === 'Runtime.evaluate'
       && isHoverMutationExpr(String(call.params.expression || ''))
-    ));
-    const settleIdx = refreshCalls.findIndex(call => (
-      call.method === 'Runtime.evaluate'
-      && isWaitForSettleExpr(String(call.params.expression || ''))
-    ));
-    const recaptureAxIdx = refreshCalls.findLastIndex
-      ? refreshCalls.findLastIndex(call => call.method === 'Accessibility.getFullAXTree')
-      : (() => {
-        let idx = -1;
-        refreshCalls.forEach((call, i) => {
-          if (call.method === 'Accessibility.getFullAXTree') idx = i;
-        });
-        return idx;
-      })();
-    expect(snapshotAxIdx).toBeGreaterThanOrEqual(0);
-    expect(mouseIdx).toBeGreaterThan(snapshotAxIdx);
-    expect(mutationIdx).toBeGreaterThan(mouseIdx);
-    expect(settleIdx).toBeGreaterThan(mutationIdx);
-    expect(recaptureAxIdx).toBeGreaterThan(settleIdx);
-    expect(store.output).toContain('[StaticText] hover:1');
+    ))).toBe(false);
+    expect(state.pendingHover).toBe(true);
+    expect(state.hovers).toBe(0);
+    expect(store.output).toBeNull();
 
-    if (state.pendingHover) {
-      state.hovers += 1;
-      state.pendingHover = false;
-    }
+    state.hovers += 1;
+    state.pendingHover = false;
     const actionTarget = scrollTarget();
     const settleBaseline = T.actionSettleBaseline(store.output, store.snapshotOpts, actionTarget);
+    expect(settleBaseline.output).toBeNull();
     const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
     expect(dispatchText).toBe('Scrolled by (0, 80). Position: (0, 0)');
-    const after = await T.perceiveStr(
-      cdp,
-      'sid',
-      new T.RingBuffer(8),
-      new T.RingBuffer(8),
-      refMap,
-      store,
-      T.actionSettleObserveOpts(TARGET_ID, actionTarget, settleBaseline.output, settleBaseline.opts),
-      refState,
-    );
+    const after = T.noBaselineActionDiffText();
     expect(after).toMatch(/no changes detected/i);
     expect(after).not.toMatch(/\+\s+\[StaticText\] hover:1/);
     const result = T.applyActionObservationDelta(T.createActionResult({
