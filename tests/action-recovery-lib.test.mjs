@@ -191,6 +191,48 @@ describe('action recovery lib', () => {
     expect(text).toContain('Next: cdp eval 9FAD7C71 "document.contentType"');
     expect(text).not.toMatch(/cdp perceive /);
   });
+
+  it('#285 leftover pdf-viewer no-change click --js / scroll Next eval, not overlay/perceive', () => {
+    const targetInfo = {
+      targetId: 'CFD023D2E2DA7ED50C67BE2092417850',
+      input: 'body',
+      label: 'body',
+      page: {
+        title: '',
+        url: 'https://arxiv.org/pdf/2608.12307',
+        contentType: 'application/pdf',
+      },
+    };
+    const extraText = 'No changes detected (settle shape was pdf-viewer.v1; empty AX).';
+    const clickJs = buildNoChangeOutcomeRecommendation({
+      action: 'click',
+      target: 'CFD023D2',
+      targetInput: 'body',
+      targetInfo,
+      extraText,
+    });
+    expect(clickJs.strategy).toBe('continue');
+    expect(clickJs.blockingSignals).toEqual([]);
+    expect(clickJs.commands).toEqual(['cdp eval CFD023D2 "document.contentType"']);
+    expect(clickJs.commands.join('\n')).not.toMatch(/\boverlay\b/);
+    expect(clickJs.commands.join('\n')).not.toMatch(/perceive .* -C/);
+
+    const scroll = buildNoChangeOutcomeRecommendation({
+      action: 'scroll',
+      target: 'CFD023D2',
+      targetInput: 'down',
+      targetInfo: {
+        ...targetInfo,
+        input: 'down',
+        label: 'down',
+        resolvedBy: 'scroll',
+      },
+      extraText,
+    });
+    expect(scroll.strategy).toBe('continue');
+    expect(scroll.commands).toEqual(['cdp eval CFD023D2 "document.contentType"']);
+    expect(scroll.commands.join('\n')).not.toMatch(/perceive .* -C/);
+  });
 });
 
 

@@ -4842,7 +4842,11 @@ function buildActionOutcome(actionResult = {}) {
   }
 
   if (domObserved) {
-    const expectedNoChange = isExpectedNoChange(actionResult.target, '', actionResult.action);
+    const expectedNoChange = isExpectedNoChange(
+      actionResult.target,
+      actionResult.effects?.domDiff,
+      actionResult.action,
+    );
     return {
       ...base,
       status: 'no-change',
@@ -4850,7 +4854,7 @@ function buildActionOutcome(actionResult = {}) {
       needsAttention: !expectedNoChange,
       evidence: 'dom',
       reason: expectedNoChange
-        ? expectedNoChangeReason(actionResult.target, actionResult.action)
+        ? expectedNoChangeReason(actionResult.target, actionResult.action, actionResult.effects?.domDiff)
         : 'No visible AX tree change observed after action.',
     };
   }
@@ -5281,7 +5285,11 @@ function buildActionRecommendation(actionResult = {}) {
       action: actionResult.action || null,
       target,
       targetInput: actionFailureInput(actionResult.target || {}),
-      targetInfo: actionResult.target || {},
+      targetInfo: {
+        ...(actionResult.target || {}),
+        page: actionResult.target?.page || actionResult.effects?.page,
+      },
+      extraText: String(actionResult.effects?.domDiff || ''),
     });
   }
 
@@ -5348,7 +5356,11 @@ function buildActionVerdict(actionResult = {}) {
         needsRecovery: false,
       };
     case 'no-change': {
-      const expectedNoChange = isExpectedNoChange(actionResult.target, '', actionResult.action);
+      const expectedNoChange = isExpectedNoChange(
+        actionResult.target,
+        actionResult.effects?.domDiff,
+        actionResult.action,
+      );
       return {
         ...base,
         status: expectedNoChange ? 'continue' : 'investigate',
@@ -11743,6 +11755,31 @@ async function hoverStr(cdp, sid, selector, refMap, refState) {
   if (!r.ok) throw new Error(r.error);
   await dispatchHoverMove(cdp, sid, r.x, r.y);
   return `Hovering over <${r.tag}> at CSS (${Math.round(r.x)}, ${Math.round(r.y)})`;
+}
+
+async function rememberHoverSettleBaseline(
+  cdp,
+  sid,
+  consoleBuf,
+  exceptionBuf,
+  refMap,
+  lastPerceiveStore,
+  refState,
+  targetId,
+) {
+  // Hover mutates live DOM (tooltips, :hover text) but historically printed a
+  // one-liner and left last-perceive stale. Recapture default AX so the next
+  // mutator does not steal hover's delta (#286). Do not emit ActionResult.
+  await perceiveStr(
+    cdp,
+    sid,
+    consoleBuf,
+    exceptionBuf,
+    refMap,
+    lastPerceiveStore,
+    actionObservationPerceiveOpts(targetId),
+    refState,
+  );
 }
 
 async function waitForStr(cdp, sid, args, refMap, refState) {
@@ -19001,6 +19038,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       lastPerceiveStore.snapshotOpts || null,
       actionTarget,
     );
+    if (isPdfViewerPerceiveOutput(baselineFromTarget)) {
+      actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'pdf-viewer-no-change';
+    }
     if (
       !settleBaseline.output
       && shouldCaptureTopLevelActionSettle(
@@ -19383,7 +19423,20 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         : await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: [parsed.selector, parsed.text] }, 'settle-diff', null, parsed.fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
-    hover: async args => commandResult(await hoverStr(cdp, sessionId, args[0], refMap, refState), null),
+    hover: async args => {
+      const text = await hoverStr(cdp, sessionId, args[0], refMap, refState);
+      await rememberHoverSettleBaseline(
+        cdp,
+        sessionId,
+        consoleBuf,
+        exceptionBuf,
+        refMap,
+        lastPerceiveStore,
+        refState,
+        targetId,
+      );
+      return commandResult(text, null);
+    },
     inject: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const safeCommandArgs = fopts.args.map((arg, index) => index === 0 ? arg : '<redacted>');
@@ -23305,7 +23358,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,

@@ -7150,6 +7150,472 @@ describe('issue #282 leftover pdf-viewer.v1 press settle', () => {
   });
 });
 
+describe('issue #285 leftover pdf-viewer.v1 click --js / scroll Next', () => {
+  const PDF_TARGET_ID = 'CFD023D2E2DA7ED50C67BE2092417850';
+  const PDF_PREFIX = 'CFD023D2';
+  const PDF_PAGE = {
+    title: '',
+    url: 'https://arxiv.org/pdf/2608.12307',
+    contentType: 'application/pdf',
+  };
+  const emptyDelta = {
+    console: { count: 0, errors: 0, warnings: 0, entries: [] },
+    exceptions: { count: 0, entries: [] },
+    network: { count: 0, failures: 0, pending: 0, entries: [] },
+  };
+
+  function pdfViewerCdp() {
+    const calls = [];
+    return {
+      calls,
+      send(method, params = {}) {
+        calls.push({ method, params });
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('scrollBy')) {
+            return Promise.resolve({ result: { value: '{"x":0,"y":0}' } });
+          }
+          if (expr.includes('document.title') || expr.includes('contentType')) {
+            return Promise.resolve({
+              result: {
+                value: JSON.stringify({
+                  title: PDF_PAGE.title,
+                  url: PDF_PAGE.url,
+                  contentType: PDF_PAGE.contentType,
+                  vw: 1042,
+                  vh: 632,
+                  scrollY: 0,
+                  scrollMax: 0,
+                  counts: {},
+                  focused: 'none',
+                  layoutMap: {},
+                  styleHints: {},
+                  cursorInteractives: [],
+                  visibleControls: [],
+                }),
+              },
+            });
+          }
+          if (expr.includes('innerWidth')) {
+            return Promise.resolve({ result: { value: JSON.stringify({ w: 1042, h: 632 }) } });
+          }
+          return Promise.resolve({ result: { value: '{}' } });
+        }
+        if (method === 'Accessibility.getFullAXTree') {
+          return Promise.resolve({ nodes: [] });
+        }
+        if (method === 'Input.dispatchKeyEvent' || method === 'Input.dispatchMouseEvent') {
+          return Promise.resolve({});
+        }
+        if (method === 'DOM.getDocument') {
+          return Promise.resolve({ root: { nodeId: 1 } });
+        }
+        if (method === 'DOM.querySelector') {
+          return Promise.resolve({ nodeId: 2 });
+        }
+        if (method === 'DOM.resolveNode') {
+          return Promise.resolve({ object: { objectId: 'pdf-body' } });
+        }
+        if (method === 'Runtime.callFunctionOn') {
+          return Promise.resolve({ result: { value: { tag: 'BODY', text: '' } } });
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+    };
+  }
+
+  async function recaptureSettleBaseline(cdp, store, actionTarget, refMap = new Map(), refState = {}) {
+    const baselineFromTarget = T.baselineOutputForActionTarget(refState, store.output, actionTarget);
+    let settleBaseline = T.actionSettleBaseline(
+      baselineFromTarget,
+      store.snapshotOpts || null,
+      actionTarget,
+    );
+    if (
+      !settleBaseline.output
+      && T.shouldCaptureTopLevelActionSettle(
+        store.snapshotOpts,
+        baselineFromTarget,
+        actionTarget,
+      )
+    ) {
+      const topLevelOpts = T.actionObservationPerceiveOpts(PDF_TARGET_ID, {
+        ...(settleBaseline.opts || {}),
+        frameRef: null,
+      });
+      const before = await T.perceiveStr(
+        cdp,
+        'sid',
+        new T.RingBuffer(8),
+        new T.RingBuffer(8),
+        refMap,
+        store,
+        topLevelOpts,
+        refState,
+      );
+      settleBaseline = {
+        output: before,
+        opts: T.perceiveSnapshotOpts(topLevelOpts),
+      };
+    }
+    return settleBaseline;
+  }
+
+  async function observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap = new Map(), refState = {}) {
+    if (!settleBaseline.output) {
+      const after = await T.perceiveStr(
+        cdp,
+        'sid',
+        new T.RingBuffer(8),
+        new T.RingBuffer(8),
+        refMap,
+        store,
+        T.actionObservationPerceiveOpts(PDF_TARGET_ID),
+        refState,
+      );
+      if (String(after || '').includes('chrome-cdp-ex.pdf-viewer.v1')) {
+        return typeof T.pdfViewerSettleDiffText === 'function'
+          ? T.pdfViewerSettleDiffText()
+          : T.noBaselineActionDiffText();
+      }
+      return T.noBaselineActionDiffText();
+    }
+    return T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      store,
+      T.actionSettleObserveOpts(PDF_TARGET_ID, actionTarget, settleBaseline.output, settleBaseline.opts),
+      refState,
+    );
+  }
+
+  function expectPdfViewerContinue(got, { nextMustNotInclude } = {}) {
+    expect(got.settleBaseline.output).toBeNull();
+    expect(got.result.outcome.status).toBe('no-change');
+    expect(got.result.verdict.status).toBe('continue');
+    expect(got.text).toMatch(/Outcome: no-change/);
+    expect(got.text).not.toMatch(/Outcome: changed/);
+    expect(got.text).toMatch(/Verdict: continue/);
+    expect(got.text).not.toMatch(/Verdict: investigate/);
+    expect(got.text).toMatch(/Next: cdp eval CFD023D2 "document.contentType"/);
+    expect(got.text).not.toMatch(/cdp overlay /);
+    expect(got.text).not.toMatch(/cdp perceive CFD023D2 -C/);
+    expect(got.result.recommendation?.commands?.[0]).toBe('cdp eval CFD023D2 "document.contentType"');
+    for (const banned of nextMustNotInclude || []) {
+      expect(got.text).not.toMatch(banned);
+    }
+  }
+
+  async function leftoverPdfMutatorReceipt({ leftover = true, kind } = {}) {
+    const cdp = pdfViewerCdp();
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    if (leftover) {
+      const leftoverDump = await T.perceiveStr(
+        cdp,
+        'sid',
+        new T.RingBuffer(8),
+        new T.RingBuffer(8),
+        refMap,
+        store,
+        { targetPrefix: PDF_PREFIX },
+        refState,
+      );
+      expect(leftoverDump).toContain('chrome-cdp-ex.pdf-viewer.v1');
+    }
+    const actionTarget = kind === 'scroll'
+      ? {
+        input: 'down',
+        resolvedBy: 'scroll',
+        label: 'down',
+        page: { ...PDF_PAGE },
+      }
+      : kind === 'press'
+        ? {
+          input: 'Escape',
+          resolvedBy: 'key',
+          label: 'Escape',
+          expectedOutcome: 'press-no-change',
+          page: { ...PDF_PAGE },
+        }
+        : {
+          input: 'body',
+          resolvedBy: 'selector-or-ref',
+          label: 'body',
+          commandArgs: ['--js', 'body'],
+          page: { ...PDF_PAGE },
+        };
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    let dispatchText;
+    let action;
+    if (kind === 'scroll') {
+      action = 'scroll';
+      dispatchText = await T.scrollStr(cdp, 'sid', 'down', '100');
+    } else if (kind === 'press') {
+      action = 'press';
+      dispatchText = await T.pressStr(cdp, 'sid', 'Escape');
+    } else {
+      action = 'click';
+      dispatchText = await T.jsClickStr(cdp, 'sid', 'body', refMap, refState);
+    }
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action,
+      target: { targetId: PDF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: action },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, { dispatchText });
+    return { cdp, store, settleBaseline, dispatchText, after, result, text, receipt };
+  }
+
+  it('#285 leftover pdf-viewer.v1 then click --js body is no-change / continue, Next eval not overlay', async () => {
+    const got = await leftoverPdfMutatorReceipt({ leftover: true, kind: 'click-js' });
+    expect(got.dispatchText).toMatch(/JS-clicked <BODY>/);
+    expect(got.after).toMatch(/no changes detected/i);
+    expectPdfViewerContinue(got, { nextMustNotInclude: [/cdp overlay CFD023D2 body/] });
+  });
+
+  it('#285 leftover pdf-viewer.v1 then scroll down at (0,0) is no-change / continue, Next eval not perceive', async () => {
+    const got = await leftoverPdfMutatorReceipt({ leftover: true, kind: 'scroll' });
+    expect(got.dispatchText).toBe('Scrolled by (0, 100). Position: (0, 0)');
+    expect(got.after).toMatch(/no changes detected/i);
+    expectPdfViewerContinue(got, { nextMustNotInclude: [/cdp perceive CFD023D2 -C -d 8/] });
+  });
+
+  it('#285 leftover pdf-viewer.v1 then press Escape still no-change / continue (#282 hold)', async () => {
+    const got = await leftoverPdfMutatorReceipt({ leftover: true, kind: 'press' });
+    expect(got.dispatchText).toBe('Pressed Escape');
+    expect(got.result.outcome.status).toBe('no-change');
+    expect(got.result.verdict.status).toBe('continue');
+    expect(got.text).not.toMatch(/Outcome: changed/);
+    expect(got.after).toMatch(/no changes detected/i);
+    expect(got.after).toMatch(/pdf-viewer\.v1/);
+  });
+});
+
+describe('issue #286 hover settle baseline', () => {
+  const TARGET_ID = '62E1DF195EAC5A1A211792636BAE8A07';
+  const emptyDelta = {
+    console: { count: 0, errors: 0, warnings: 0, entries: [] },
+    exceptions: { count: 0, entries: [] },
+    network: { count: 0, failures: 0, pending: 0, entries: [] },
+  };
+
+  function pageMeta() {
+    return JSON.stringify({
+      title: 'Example Domain',
+      url: 'https://example.com/',
+      contentType: 'text/html',
+      vw: 1042,
+      vh: 632,
+      scrollY: 0,
+      scrollMax: 0,
+      counts: { span: 1 },
+      focused: 'none',
+      layoutMap: {},
+      styleHints: {},
+      cursorInteractives: [],
+      visibleControls: [{
+        tag: 'span',
+        role: 'button',
+        label: 'p23hover',
+        clickable: true,
+        rect: { x: 8, y: 80, w: 80, h: 24 },
+        selector: 'span#p23hover',
+        hints: { id: 'p23hover', classes: [] },
+      }],
+    });
+  }
+
+  function axNodes(hovers) {
+    return [
+      { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'Example Domain' }, childIds: ['2', '3', '4'] },
+      { nodeId: '2', parentId: '1', role: { value: 'heading' }, name: { value: 'Example Domain' } },
+      { nodeId: '3', parentId: '1', role: { value: 'button' }, name: { value: 'p23hover' }, backendDOMNodeId: 23 },
+      { nodeId: '4', parentId: '1', role: { value: 'StaticText' }, name: { value: `hover:${hovers}` } },
+    ];
+  }
+
+  function createPicky23Page({ hovers = 0 } = {}) {
+    const state = { hovers };
+    const cdp = {
+      calls: [],
+      send(method, params = {}) {
+        cdp.calls.push({ method, params });
+        if (method === 'Page.getFrameTree') {
+          return Promise.resolve({ frameTree: { frame: { id: 'main-frame', url: 'https://example.com/' } } });
+        }
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('scrollBy')) {
+            return Promise.resolve({ result: { value: '{"x":0,"y":0}' } });
+          }
+          if (expr.includes('#p23hover') && expr.includes('rect.width / 2')) {
+            return Promise.resolve({ result: { value: { ok: true, x: 48, y: 92, tag: 'SPAN' } } });
+          }
+          return Promise.resolve({ result: { value: pageMeta() } });
+        }
+        if (method === 'Accessibility.getFullAXTree') {
+          return Promise.resolve({ nodes: axNodes(state.hovers) });
+        }
+        if (method === 'Input.dispatchMouseEvent') {
+          if (params.type === 'mouseMoved') state.hovers += 1;
+          return Promise.resolve({});
+        }
+        if (method === 'DOM.getDocument') {
+          return Promise.resolve({ root: { nodeId: 1 } });
+        }
+        if (method === 'DOM.querySelector') {
+          return Promise.resolve({ nodeId: 23 });
+        }
+        if (method === 'DOM.resolveNode') {
+          return Promise.resolve({ object: { objectId: 'p23-hover' } });
+        }
+        if (method === 'Runtime.callFunctionOn') {
+          return Promise.resolve({ result: { value: { connected: true, x: 8, y: 80, w: 80, h: 24, tag: 'SPAN' } } });
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+    };
+    return { cdp, state };
+  }
+
+  function scrollTarget() {
+    return {
+      input: 'down',
+      resolvedBy: 'scroll',
+      label: 'down',
+    };
+  }
+
+  async function settleScrollReceipt(cdp, store, { refreshHover = false } = {}) {
+    const refMap = new Map();
+    const refState = {};
+    const before = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      store,
+      { targetPrefix: '62E1DF19' },
+      refState,
+    );
+    expect(before).toContain('[StaticText] hover:0');
+    const hoverText = await T.hoverStr(cdp, 'sid', '#p23hover', refMap, refState);
+    expect(hoverText).toMatch(/Hovering over <SPAN>/);
+    if (refreshHover) {
+      expect(typeof T.rememberHoverSettleBaseline).toBe('function');
+      await T.rememberHoverSettleBaseline(
+        cdp,
+        'sid',
+        new T.RingBuffer(8),
+        new T.RingBuffer(8),
+        refMap,
+        store,
+        refState,
+        TARGET_ID,
+      );
+    }
+    const actionTarget = scrollTarget();
+    const settleBaseline = T.actionSettleBaseline(store.output, store.snapshotOpts, actionTarget);
+    const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
+    expect(dispatchText).toBe('Scrolled by (0, 80). Position: (0, 0)');
+    const after = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      store,
+      T.actionSettleObserveOpts(TARGET_ID, actionTarget, settleBaseline.output, settleBaseline.opts),
+      refState,
+    );
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    return { hoverText, dispatchText, after, result, text: T.formatActionText(result), settleBaseline };
+  }
+
+  it('#286 hover then no-op scroll must not claim + hover text as scroll change', async () => {
+    const { cdp, state } = createPicky23Page({ hovers: 0 });
+    const store = { output: null, snapshotOpts: null };
+    const liar = await settleScrollReceipt(cdp, store, { refreshHover: false });
+    expect(state.hovers).toBe(1);
+    expect(liar.after).toMatch(/\+\s+\[StaticText\] hover:1/);
+    expect(liar.result.outcome.status).toBe('changed');
+
+    const honestStore = { output: null, snapshotOpts: null };
+    const { cdp: honestCdp, state: honestState } = createPicky23Page({ hovers: 0 });
+    const honest = await settleScrollReceipt(honestCdp, honestStore, { refreshHover: true });
+    expect(honestState.hovers).toBe(1);
+    expect(honest.settleBaseline.output).toContain('[StaticText] hover:1');
+    expect(honest.after).toMatch(/no changes detected/i);
+    expect(honest.after).not.toMatch(/\+\s+\[StaticText\] hover:1/);
+    expect(honest.result.outcome.status).toBe('no-change');
+    expect(honest.text).not.toMatch(/Outcome: changed/);
+  });
+
+  it('#286 perceive then the same no-op scroll stays no-change', async () => {
+    const { cdp, state } = createPicky23Page({ hovers: 1 });
+    const store = { output: null, snapshotOpts: null };
+    const actionTarget = scrollTarget();
+    const before = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      new Map(),
+      store,
+      { targetPrefix: '62E1DF19' },
+      {},
+    );
+    expect(before).toContain('[StaticText] hover:1');
+    const settleBaseline = T.actionSettleBaseline(store.output, store.snapshotOpts, actionTarget);
+    const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
+    expect(dispatchText).toBe('Scrolled by (0, 80). Position: (0, 0)');
+    const after = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      new Map(),
+      store,
+      T.actionSettleObserveOpts(TARGET_ID, actionTarget, settleBaseline.output, settleBaseline.opts),
+      {},
+    );
+    expect(state.hovers).toBe(1);
+    expect(after).toMatch(/no changes detected/i);
+    expect(after).not.toMatch(/\+\s+\[StaticText\] hover:1/);
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    expect(result.outcome.status).toBe('no-change');
+  });
+
+  it('#286 hover handler refreshes last-perceive settle baseline', () => {
+    const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    expect(src).toMatch(/hover: async args =>[\s\S]{0,500}rememberHoverSettleBaseline\(/);
+  });
+});
+
 function pageSnapshotValue(overrides = {}) {
   return JSON.stringify({
     title: 'Example Domain',
