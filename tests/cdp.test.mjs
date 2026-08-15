@@ -364,31 +364,44 @@ describe('COMMANDS registry', () => {
     const missing = T.COMMANDS
       .filter(command => command.mutates)
       .flatMap(command => [command.name, ...(command.aliases || [])])
-      .filter(name => !T.isBatchParallelUnsafeCommand(name));
+      .filter(name => !['viewport', 'resize'].includes(name) && !T.isBatchParallelUnsafeCommand(name));
 
     expect(missing).toEqual([]);
-    expect(T.isBatchParallelUnsafeCommand('perceive')).toBe(true);
-    expect(T.isBatchParallelUnsafeCommand('snap')).toBe(true);
-    expect(T.isBatchParallelUnsafeCommand('snapshot')).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('viewport', ['800x600'])).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('perceive')).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('snap')).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('snapshot')).toBe(false);
   });
 
   it('uses catalog authorization and kind to reject parallel side effects hidden by legacy mutates', () => {
     for (const name of [
-      'eval', 'evalraw', 'hover', 'loadall', 'dialog', 'console', 'netlog',
+      'hover', 'loadall',
       'shot', 'screenshot', 'diff-shot', 'diffshot', 'fullshot', 'cookies',
-      'elshot', 'scanshot', 'checkpoint', 'components', 'report', 'batch', 'flow', 'repeat',
+      'checkpoint', 'components', 'report', 'batch', 'flow', 'repeat',
       'not-a-command',
     ]) {
       expect(T.isBatchParallelUnsafeCommand(name), name).toBe(true);
     }
-    expect(T.isBatchParallelUnsafeCommand('status')).toBe(true);
-    expect(T.isBatchParallelUnsafeCommand('frame')).toBe(true);
-    expect(T.isBatchParallelUnsafeCommand('frames')).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('eval')).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('status')).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('frame')).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('frames')).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('console')).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('console', ['--clear'])).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('netlog')).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('netlog', ['--clear'])).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('dialog')).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('dialog', ['accept'])).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('viewport')).toBe(false);
+    expect(T.isBatchParallelUnsafeCommand('viewport', ['800x600'])).toBe(true);
   });
 
   it('keeps read-only extraction commands safe for parallel batch execution', () => {
-    for (const name of ['controls', 'html', 'text', 'styles', 'summary', 'net', 'network', 'wait', 'waitfor']) {
-      expect(T.isBatchParallelUnsafeCommand(name)).toBe(false);
+    for (const name of [
+      'controls', 'html', 'text', 'styles', 'summary', 'net', 'network', 'wait', 'waitfor',
+      'list', 'current', 'status', 'overlay', 'perceive', 'eval', 'cascade',
+    ]) {
+      expect(T.isBatchParallelUnsafeCommand(name), name).toBe(false);
     }
     expect(T.isBatchParallelUnsafeCommand('table', ['#grid'])).toBe(false);
     expect(T.isBatchParallelUnsafeCommand('table', [
@@ -8334,8 +8347,70 @@ describe('clickStr', () => {
     await clickStr(cdp, 'sid1', '.el', new Map());
     const mouseEvents = cdp.calls
       .filter(c => c.method === 'Input.dispatchMouseEvent')
-      .map(c => c.params.type);
-    expect(mouseEvents).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
+      .map(c => c.params);
+    expect(mouseEvents.map(params => params.type)).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
+    expect(mouseEvents[0]).toMatchObject({ type: 'mouseMoved', button: 'none', buttons: 0, pointerType: 'mouse' });
+    expect(mouseEvents[1]).toMatchObject({ type: 'mousePressed', button: 'left', buttons: 1, pointerType: 'mouse' });
+    expect(mouseEvents[2]).toMatchObject({ type: 'mouseReleased', button: 'left', buttons: 0, pointerType: 'mouse' });
+  });
+
+  it('follows an <a href> when location.href changes after the realistic click', async () => {
+    let href = 'https://example.com/';
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        if (String(params.expression) === 'location.href') {
+          return { result: { value: href } };
+        }
+        return {
+          result: {
+            value: {
+              ok: true,
+              x: 40,
+              y: 20,
+              tag: 'A',
+              text: 'Learn more',
+              href: 'https://www.iana.org/help/example-domains',
+              pageHref: 'https://example.com/',
+            },
+          },
+        };
+      },
+      'Input.dispatchMouseEvent': ({ type }) => {
+        if (type === 'mouseReleased') href = 'https://www.iana.org/help/example-domains';
+        return {};
+      },
+    });
+    await expect(clickStr(cdp, 'sid1', 'a', new Map()))
+      .resolves.toBe('Clicked <A> "Learn more"');
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent' && call.params.buttons === 1)).toBe(true);
+  });
+
+  it('fails fast when an <a href> click does not navigate', async () => {
+    const started = Date.now();
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        if (String(params.expression) === 'location.href') {
+          return { result: { value: 'https://example.com/' } };
+        }
+        return {
+          result: {
+            value: {
+              ok: true,
+              x: 40,
+              y: 20,
+              tag: 'A',
+              text: 'Learn more',
+              href: 'https://www.iana.org/help/example-domains',
+              pageHref: 'https://example.com/',
+            },
+          },
+        };
+      },
+      'Input.dispatchMouseEvent': () => ({}),
+    });
+    await expect(clickStr(cdp, 'sid1', 'a', new Map()))
+      .rejects.toThrow(/did not navigate/);
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 });
 
@@ -9546,6 +9621,95 @@ describe('cascadeStr', () => {
     expect(result).toContain('[overridden]');
   });
 
+  it('marks the last matching rule as winner when specified values do not equal computed', async () => {
+    const cdp = makeCascadeCDP(
+      [
+        {
+          rule: {
+            selectorList: { text: 'h1' },
+            origin: 'user-agent',
+            style: {
+              styleSheetId: 'user-agent.css',
+              range: { startLine: 0 },
+              cssProperties: [
+                { name: 'font-size', value: '2em' },
+                { name: 'font-weight', value: 'bold' },
+              ],
+            },
+          },
+        },
+        {
+          rule: {
+            selectorList: { text: 'h1' },
+            origin: 'regular',
+            style: {
+              styleSheetId: 'example.css',
+              range: { startLine: 3 },
+              cssProperties: [{ name: 'font-size', value: '1.5em' }],
+            },
+          },
+        },
+      ],
+      [
+        { name: 'font-size', value: '24px' },
+        { name: 'font-weight', value: '700' },
+      ],
+    );
+    const fontSize = JSON.parse(await cascadeStr(cdp, 'sid1', 'h1', 'font-size', new Map(), null, { format: 'json' }));
+    expect(fontSize.properties[0]).toMatchObject({
+      computedValue: '24px',
+      winner: { selector: 'h1', value: '1.5em', origin: 'regular' },
+    });
+    expect(fontSize.properties[0].rules.filter(rule => rule.winner)).toHaveLength(1);
+    expect(fontSize.properties[0].rules[0].overridden).toBe(true);
+    expect(fontSize.properties[0].rules[1].winner).toBe(true);
+
+    const fontWeight = JSON.parse(await cascadeStr(cdp, 'sid1', 'h1', 'font-weight', new Map(), null, { format: 'json' }));
+    expect(fontWeight.properties[0]).toMatchObject({
+      computedValue: '700',
+      winner: { value: 'bold' },
+    });
+    expect(fontWeight.properties[0].rules[0].winner).toBe(true);
+  });
+
+  it('selects a var() winner by cascade order when computed px does not match specified', async () => {
+    const cdp = makeCascadeCDP(
+      [
+        {
+          rule: {
+            selectorList: { text: '.text-lg' },
+            origin: 'regular',
+            style: {
+              styleSheetId: 'utilities.css',
+              range: { startLine: 10 },
+              cssProperties: [{ name: 'font-size', value: 'var(--text-lg)' }],
+            },
+          },
+        },
+        {
+          rule: {
+            selectorList: { text: '.md\\:text-xl' },
+            origin: 'regular',
+            style: {
+              styleSheetId: 'utilities.css',
+              range: { startLine: 40 },
+              cssProperties: [{ name: 'font-size', value: 'var(--text-xl)' }],
+            },
+          },
+        },
+      ],
+      [{ name: 'font-size', value: '20px' }],
+    );
+    const result = JSON.parse(await cascadeStr(cdp, 'sid1', 'h1', 'font-size', new Map(), null, { format: 'json' }));
+    expect(result.properties[0].winner).toMatchObject({
+      selector: '.md\\:text-xl',
+      value: 'var(--text-xl)',
+    });
+    expect(result.properties[0].rules[0]).toMatchObject({ winner: false, overridden: true });
+    expect(result.properties[0].rules[1]).toMatchObject({ winner: true, overridden: false });
+    expect(await cascadeStr(cdp, 'sid1', 'h1', 'font-size', new Map())).toContain('✓ .md\\:text-xl');
+  });
+
   it('should enable DOM/CSS and request document before first style lookup', async () => {
     const cdp = makeCascadeCDP(
       [{
@@ -10407,9 +10571,13 @@ describe('flowStr', () => {
         index: 1,
         kind: 'assert',
         ok: false,
+        failureKind: 'assertion',
+        nextCommand: 'cdp help flow',
         error: 'Assertion failed: text includes "Battle complete"',
       },
+      nextSteps: ['cdp help flow'],
     });
+    expect(parsed.nextSteps.join('\n')).not.toMatch(/cdp status/);
     expect(parsed.steps[1]).toMatchObject({ index: 2, cmd: 'summary', skipped: true });
   });
 

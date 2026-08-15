@@ -8,6 +8,7 @@
 // daemon (= once per tab). Daemons auto-exit after 20min idle.
 
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, realpathSync, statSync } from 'fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { homedir } from 'os';
 import { dirname, resolve, delimiter } from 'path';
 import { spawn, spawnSync } from 'child_process';
@@ -141,7 +142,12 @@ const RELOAD_OBSERVE_TIMEOUT = 2000;
 const STATUS_PAGE_INFO_TIMEOUT = 500;
 const REF_RESOLVE_TIMEOUT = 2000;
 const HOVER_MOUSE_ACK_TIMEOUT_MS = 250;
+const LOADALL_DEFAULT_INTERVAL_MS = 1500;
+const LOADALL_DEFAULT_TIMEOUT_MS = 30_000;
+const LOADALL_MAX_TIMEOUT_MS = 5 * 60 * 1000;
+const CLICK_NAVIGATION_WAIT_MS = 500;
 const IDLE_TIMEOUT = 20 * 60 * 1000;
+const daemonRequestStorage = new AsyncLocalStorage();
 const FIRE_AND_FORGET_KEEPALIVE = 60 * 60 * 1000;
 const DAEMON_CONNECT_RETRIES = 20;
 const DAEMON_CONNECT_DELAY = 300;
@@ -256,8 +262,17 @@ function enforceDaemonTableCollectionGate(request, execution = null) {
 }
 
 function abortReason(signal, fallback = 'table: collection request aborted') {
-  if (signal.reason instanceof Error) return signal.reason;
-  return new Error(signal.reason == null ? fallback : String(signal.reason));
+  if (signal?.reason instanceof Error) return signal.reason;
+  return new Error(signal?.reason == null ? fallback : String(signal.reason));
+}
+
+function daemonRequestAbortSignal() {
+  return daemonRequestStorage.getStore()?.signal || null;
+}
+
+function throwIfRequestAborted(fallback = 'request aborted') {
+  const signal = daemonRequestAbortSignal();
+  if (signal?.aborted) throw abortReason(signal, fallback);
 }
 
 function daemonRequestHasUnsettledInvocations(executionContext) {
@@ -1891,8 +1906,8 @@ function buildQaSummaryModel({
   targetPrefix = null,
   source = 'qa-summary',
 } = {}) {
-  const url = page.url || '';
-  const title = page.title || '';
+  const url = page.url || pageHealth?.evidence?.url || '';
+  const title = page.title || pageHealth?.evidence?.title || '';
   const isBlank = pageHealth?.isBlank ?? (blank == null ? isBlankPageUrl(url) : Boolean(blank));
   const healthStatus = pageHealth?.status || (isBlank ? 'blank' : 'populated');
   const consoleErrors = Number(consoleHealth.errors || 0) + Number(consoleHealth.exceptions || 0);
@@ -1911,7 +1926,7 @@ function buildQaSummaryModel({
       status: healthStatus,
       isBlank,
       confidence: blank == null ? 'low' : 'medium',
-      evidence: { url },
+      evidence: { url, title },
     },
     consoleErrors,
     networkFailures,
@@ -2053,7 +2068,25 @@ async function getWsUrl({
   return `ws://${host}:${lines[0]}${lines[1]}`;
 }
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const sleep = (ms, signal = daemonRequestAbortSignal()) => {
+  const wait = Math.max(0, Number(ms) || 0);
+  if (signal?.aborted) throw abortReason(signal, 'request aborted');
+  return new Promise((resolve, reject) => {
+    if (!signal) {
+      setTimeout(resolve, wait);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortReason(signal, 'request aborted'));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, wait);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+};
 
 function parseDelayMs(value, { name = 'ms', min = 1, max = 24 * 60 * 60 * 1000 } = {}) {
   const raw = String(value ?? '').trim();
@@ -5233,8 +5266,8 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
   if (qa) {
     const summary = buildQaSummaryModel({
       page: {
-        url: result.effects?.page?.url || result.page?.url || '',
-        title: result.effects?.page?.title || result.page?.title || '',
+        url: result.effects?.page?.url || result.page?.url || result.effects?.pageHealth?.evidence?.url || '',
+        title: result.effects?.page?.title || result.page?.title || result.effects?.pageHealth?.evidence?.title || '',
       },
       pageHealth: result.effects?.pageHealth || null,
       console: {
@@ -7976,6 +8009,8 @@ function scrollSettledRectFunctionDeclaration() {
       connected: connectedToOwningDocument(),
       ...previous,
       tag: this.tagName,
+      href: this.tagName === 'A' ? (this.href || null) : null,
+      pageHref: location.href,
       text: (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').trim().substring(0, 80),
     };
   }`;
@@ -10255,13 +10290,50 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
   return `${out}\nElement screenshot of ${desc} — ${Math.round(r.w)}×${Math.round(r.h)} CSS px (clip: ${Math.round(clipW)}×${Math.round(clipH)} with padding)${fb}`;
 }
 
-// Shared: dispatch a realistic mouse click at CSS pixel coordinates
+// Shared: dispatch a realistic mouse click at CSS pixel coordinates.
+// Chrome's default action for <a href> requires the buttons bitmask
+// (left=1 while pressed, 0 after release). Omitting it yields mousedown
+// without a click, so the link never navigates.
 async function dispatchClick(cdp, sid, x, y) {
-  const base = { x, y, button: 'left', clickCount: 1, modifiers: 0 };
-  await cdpDomains(cdp).Input.dispatchMouseEvent( { ...base, type: 'mouseMoved' }, sid);
-  await cdpDomains(cdp).Input.dispatchMouseEvent( { ...base, type: 'mousePressed' }, sid);
+  const point = { x, y, modifiers: 0, pointerType: 'mouse', clickCount: 1 };
+  await cdpDomains(cdp).Input.dispatchMouseEvent({ ...point, type: 'mouseMoved', button: 'none', buttons: 0 }, sid);
+  await cdpDomains(cdp).Input.dispatchMouseEvent({ ...point, type: 'mousePressed', button: 'left', buttons: 1 }, sid);
   await sleep(50);
-  await cdpDomains(cdp).Input.dispatchMouseEvent( { ...base, type: 'mouseReleased' }, sid);
+  await cdpDomains(cdp).Input.dispatchMouseEvent({ ...point, type: 'mouseReleased', button: 'left', buttons: 0 }, sid);
+}
+
+function isNavigatingHref(href, pageHref = '') {
+  const target = String(href || '').trim();
+  if (!target) return false;
+  const lower = target.toLowerCase();
+  if (lower.startsWith('javascript:') || lower.startsWith('mailto:') || lower.startsWith('tel:')) return false;
+  if (target.startsWith('#')) return false;
+  try {
+    const next = new URL(target, pageHref || 'https://example.invalid/');
+    if (next.protocol !== 'http:' && next.protocol !== 'https:') return false;
+    if (!pageHref) return true;
+    return next.href !== new URL(pageHref).href;
+  } catch {
+    return false;
+  }
+}
+
+async function confirmClickFollowedHref(cdp, sid, target = {}) {
+  if (String(target.tag || '').toUpperCase() !== 'A') return;
+  if (!isNavigatingHref(target.href, target.pageHref)) return;
+  const before = String(target.pageHref || '');
+  const deadline = Date.now() + CLICK_NAVIGATION_WAIT_MS;
+  while (Date.now() < deadline) {
+    const current = await evalStr(cdp, sid, 'location.href').catch(() => '');
+    if (current && current !== before) return;
+    await sleep(40);
+  }
+  const after = await evalStr(cdp, sid, 'location.href').catch(() => before);
+  if (!after || after === before) {
+    throw new Error(
+      `Click on <A href="${target.href}"> did not navigate. Try jsclick or click --js.`
+    );
+  }
 }
 
 // Shared: get device pixel ratio
@@ -10328,11 +10400,13 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
   if (isCursorRef(selector)) {
     const r = resolveCursorRef(refMap, selector, refState);
     await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2);
+    await confirmClickFollowedHref(cdp, sid, r);
     return `Clicked <${r.sel}> "${r.text}" (${selector})`;
   }
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState);
     await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2);
+    await confirmClickFollowedHref(cdp, sid, r);
     return `Clicked <${r.tag}> "${r.text}" (${selector})`;
   }
   const expr = `
@@ -10345,13 +10419,22 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
       }
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
       const rect = await (${scrollSettledRectFunctionDeclaration()}).call(el);
-      return { ok: true, x: rect.x + rect.w / 2, y: rect.y + rect.h / 2, tag: rect.tag, text: rect.text };
+      return {
+        ok: true,
+        x: rect.x + rect.w / 2,
+        y: rect.y + rect.h / 2,
+        tag: rect.tag,
+        text: rect.text,
+        href: rect.href || (el.tagName === 'A' ? (el.href || null) : null),
+        pageHref: rect.pageHref || location.href,
+      };
     })()
   `;
   const result = await evalStr(cdp, sid, expr);
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(r.error);
   await dispatchClick(cdp, sid, r.x, r.y);
+  await confirmClickFollowedHref(cdp, sid, r);
   return `Clicked <${r.tag}> "${r.text}"`;
 }
 
@@ -11784,12 +11867,54 @@ async function restoreCheckpointStr(cdp, sid, args) {
   ].join('\n');
 }
 
-// Load-more: repeatedly click a button/selector until it disappears
-async function loadAllStr(cdp, sid, selector, intervalMs = 1500) {
+function parseLoadAllArgs(args = []) {
+  const positional = [];
+  let timeoutMs = LOADALL_DEFAULT_TIMEOUT_MS;
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === '--timeout-ms') {
+      timeoutMs = parseNonNegativeInteger(args[++i], 'loadall: --timeout-ms');
+    } else if (String(token).startsWith('--timeout-ms=')) {
+      timeoutMs = parseNonNegativeInteger(String(token).slice('--timeout-ms='.length), 'loadall: --timeout-ms');
+    } else if (String(token).startsWith('-')) {
+      throw new Error(`loadall: unknown argument ${token}`);
+    } else {
+      positional.push(token);
+    }
+  }
+  const selector = positional[0];
   if (!selector) throw new Error('CSS selector required');
+  let intervalMs = LOADALL_DEFAULT_INTERVAL_MS;
+  if (positional[1] != null) {
+    intervalMs = parseNonNegativeInteger(positional[1], 'loadall: interval-ms');
+  }
+  if (positional.length > 2) throw new Error(`loadall: unknown argument ${positional[2]}`);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new Error('loadall: --timeout-ms must be a positive integer');
+  }
+  return {
+    selector,
+    intervalMs,
+    timeoutMs: Math.min(timeoutMs, LOADALL_MAX_TIMEOUT_MS),
+  };
+}
+
+// Load-more: repeatedly click a button/selector until it disappears
+async function loadAllStr(cdp, sid, selector, intervalMs = LOADALL_DEFAULT_INTERVAL_MS, options = {}) {
+  if (!selector) throw new Error('CSS selector required');
+  const timeoutMs = Math.min(
+    Math.max(Number(options.timeoutMs) || LOADALL_DEFAULT_TIMEOUT_MS, 1),
+    LOADALL_MAX_TIMEOUT_MS,
+  );
   let clicks = 0;
-  const deadline = Date.now() + 5 * 60 * 1000; // 5-minute hard cap
-  while (Date.now() < deadline) {
+  let seen = false;
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    throwIfRequestAborted('loadall: aborted');
+    if (Date.now() >= deadline) {
+      if (!seen) throw new Error(`Element not found: ${selector}`);
+      throw new Error(`loadall: "${selector}" still present after ${clicks} click(s) (timeout ${timeoutMs}ms)`);
+    }
     const expr = `
       (function() {
         const el = document.querySelector(${JSON.stringify(selector)});
@@ -11800,13 +11925,19 @@ async function loadAllStr(cdp, sid, selector, intervalMs = 1500) {
       })()
     `;
     const result = await evalStr(cdp, sid, expr);
-    if (result === 'null' || result === '') break;
+    if (result === 'null' || result === '') {
+      if (!seen) throw new Error(`Element not found: ${selector}`);
+      return `Clicked "${selector}" ${clicks} time(s) until it disappeared`;
+    }
+    seen = true;
     const r = JSON.parse(result);
     await dispatchClick(cdp, sid, r.x, r.y);
     clicks++;
-    await sleep(intervalMs);
+    throwIfRequestAborted('loadall: aborted');
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) continue;
+    await sleep(Math.min(Math.max(0, intervalMs), remaining));
   }
-  return `Clicked "${selector}" ${clicks} time(s) until it disappeared`;
 }
 
 async function annotshotStr(cdp, sid, targetId, refMap) {
@@ -14042,8 +14173,9 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts =
     if (prop.name.startsWith('-webkit-') || prop.name.startsWith('-moz-')) continue;
     if (property && prop.name !== property) continue;
     if (!propRules.has(prop.name)) propRules.set(prop.name, []);
-    // Insert at the beginning — inline styles win over everything
-    propRules.get(prop.name).unshift({
+    // Inline styles win over stylesheet rules; keep them last so cascade-order
+    // winner selection (last matching declaration) treats them as the winner.
+    propRules.get(prop.name).push({
       value: prop.value,
       selector: '[inline]',
       source: 'inline style attribute',
@@ -14055,6 +14187,21 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts =
     .trim()
     .replace(/\s*,\s*/g, ', ')
     .replace(/\s+/g, ' ');
+  const cssValuesEquivalent = (specified, computed) => {
+    const a = normalizeCssValue(specified).toLowerCase();
+    const b = normalizeCssValue(computed).toLowerCase();
+    if (a === b) return true;
+    const aliases = { bold: '700', normal: '400' };
+    return aliases[a] === b || aliases[b] === a;
+  };
+  const cascadeWinnerIndex = (rules, computedVal) => {
+    let equivalent = -1;
+    for (let i = 0; i < rules.length; i++) {
+      if (cssValuesEquivalent(rules[i].value, computedVal)) equivalent = i;
+    }
+    if (equivalent >= 0) return equivalent;
+    return rules.length - 1;
+  };
 
   // Dedupe identical (selector, normalized value, source, origin) entries per property.
   // CDP can return repeated matchedCSSRules / cssProperties (e.g. same rule
@@ -14127,8 +14274,9 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts =
     lines.push(`${prop}: ${computedVal}`);
     const ruleModels = [];
     let winner = null;
-    for (const r of rules) {
-      const isWinner = normalizeCssValue(r.value) === normalizeCssValue(computedVal);
+    const winnerIndex = cascadeWinnerIndex(rules, computedVal);
+    for (const [index, r] of rules.entries()) {
+      const isWinner = index === winnerIndex;
       const mark = isWinner ? '✓' : '✗';
       const note = isWinner ? '' : '  [overridden]';
       const ruleModel = {
@@ -14409,9 +14557,11 @@ function commandMeta(cmd) {
   return COMMANDS.find(command => command.name === cmd || (command.aliases || []).includes(cmd)) || null;
 }
 
-const BATCH_PARALLEL_SAFE_READ_COMMANDS = new Set([
-  'controls', 'html', 'text', 'table', 'styles', 'summary', 'net', 'wait', 'waitfor',
-]);
+const BATCH_PARALLEL_SAFE_SCRIPT_COMMANDS = new Set(['eval', 'eval64', 'call']);
+
+function isViewportMutationArg(value) {
+  return /^\d+x\d+$/i.test(String(value || ''));
+}
 
 function isBatchParallelUnsafeCommand(cmd, args = []) {
   const command = COMMAND_SURFACE.resolve(cmd);
@@ -14422,10 +14572,20 @@ function isBatchParallelUnsafeCommand(cmd, args = []) {
       || command.evidencePolicy !== 'none') return true;
     return isTableCollectArgs(args);
   }
+  if (command.name === 'console' || command.name === 'netlog') {
+    return args.some(arg => arg === '--clear');
+  }
+  if (command.name === 'dialog') {
+    return args.some(arg => arg === 'accept' || arg === 'dismiss');
+  }
+  if (command.name === 'viewport' || command.name === 'resize') {
+    return args.some(arg => isViewportMutationArg(arg));
+  }
+  if (BATCH_PARALLEL_SAFE_SCRIPT_COMMANDS.has(command.name)) return false;
   if (command.kind !== 'read'
     || command.authorization !== 'standard'
     || command.evidencePolicy !== 'none') return true;
-  return !BATCH_PARALLEL_SAFE_READ_COMMANDS.has(command.name);
+  return false;
 }
 
 function autoActionJsonArgs(cmd, args = [], enabled = false) {
@@ -14775,6 +14935,11 @@ function flowStepModel(step = {}, index = 0, state = {}) {
   }
   const errorText = String(semantics.error || 'unknown error');
   base.error = errorText;
+  if (step.kind === 'assert') {
+    base.failureKind = 'assertion';
+    base.nextCommand = 'cdp help flow';
+    return base;
+  }
   const failureKind = semantics.dispatchFailed
     ? actionModel?.effects?.failure?.kind || null
     : extractLabeledLine(errorText, 'Action failure');
@@ -14803,7 +14968,13 @@ function buildFlowResultModel({ targetId = null, input = '', steps = [], stepRes
     for (const command of recoveryCommandsFromVerdict(failedStep.verdict)) pushNext(command);
     pushNext(failedStep.nextCommand);
   }
-  if (failedStep && nextSteps.length === 0) pushNext(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
+  if (failedStep && nextSteps.length === 0) {
+    if (failedStep.kind === 'assert' || failedStep.failureKind === 'assertion') {
+      pushNext('cdp help flow');
+    } else {
+      pushNext(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
+    }
+  }
   for (const step of attentionSteps) {
     for (const command of recoveryCommandsFromDiagnosis(step.diagnosis)) pushNext(command);
     for (const command of recoveryCommandsFromVerdict(step.verdict)) pushNext(command);
@@ -17532,10 +17703,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       extendKeepalive(parseDelayMs(args[0], { name: 'keepalive duration' })),
       null,
     ),
-    loadall: async args => commandResult(
-      await loadAllStr(cdp, sessionId, args[0], args[1] ? parseInt(args[1]) : 1500),
-      null,
-    ),
+    loadall: async args => {
+      const parsed = parseLoadAllArgs(args);
+      return commandResult(
+        await loadAllStr(cdp, sessionId, parsed.selector, parsed.intervalMs, { timeoutMs: parsed.timeoutMs }),
+        null,
+      );
+    },
     mock: async args => commandResult(
       await mockStr(cdp, sessionId, session, args),
       { kind: 'action-receipt' },
@@ -17849,7 +18023,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   // Handle a command
   async function handleCommand({ cmd, args }, execution = undefined) {
-    resetIdle();
+  resetIdle();
+  if (daemonRequestStorage.getStore() === undefined) {
+    return daemonRequestStorage.run(execution || null, () => handleCommand({ cmd, args }, execution));
+  }
     try {
       enforceDaemonTableCollectionGate({ cmd, args }, execution);
       let result;
@@ -18737,7 +18914,8 @@ Usage: cdp <command> [args]
   waitfor <target> --gone <sel|@ref> [ms]  Wait for element to DISAPPEAR (streaming end)
   waitfor <target> --text "str" [--scope sel] [ms]  Wait for text to appear on page
 {{command:loadall}}
-                                    Optional interval in ms between clicks (default 1500)
+                                    [interval-ms] is the click interval (default 1500), not a timeout.
+                                    --timeout-ms N: fail if the control is still present (default 30000, max 5 min).
 {{command:wait}}
 {{command:fill}}
                                     --react: native value setter + input/change events
@@ -18786,7 +18964,7 @@ Usage: cdp <command> [args]
                                     --format json returns chrome-cdp-ex.batch.v1 failure handoff
                                     Pipe syntax: 'fill @3 hello | fill @5 world | click @7'
                                     JSON syntax: '[{"cmd":"click","args":["@1"]},{"cmd":"perceive","args":["--diff"]}]'
-                                    --parallel  Run read-only/extraction commands concurrently (mutating commands are rejected)
+                                    --parallel  Run read-only/extraction commands concurrently (mutating commands are rejected as Kind:usage / cdp help batch)
                                     --plain     Human-readable per-step output (default: pretty JSON)
                                     --compact   One line per step (head + first line of result)
 {{command:flow}}
@@ -19477,7 +19655,7 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
     case 'upload':
       return `cdp upload ${target} <selector> <file-path>`;
     case 'batch':
-      return `cdp batch ${target} "fill @3 hello | click @5"`;
+      return 'cdp help batch';
     case 'flow':
       return `cdp flow ${target} "click @1; wait dom stable; summary"`;
     case 'replay':
@@ -19498,6 +19676,8 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
       return 'cdp help wait';
     case 'repeat':
       return 'cdp help repeat';
+    case 'loadall':
+      return 'cdp help loadall';
     case 'verify-click':
     case 'verifyclick':
       return 'cdp help verify-click';
@@ -19881,6 +20061,69 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       strategy: 'adjust-wait',
       run: 'cdp help waitfor',
       reason: 'The wait condition was not met before the timeout. Increase the bound or use --text / --any-of; the tab is still live.',
+    };
+  }
+  if (
+    lower.includes('assertion failed')
+    || (cmd === 'flow' && lower.includes('flow halted') && lower.includes('assert'))
+  ) {
+    return {
+      kind: 'assertion',
+      strategy: 'inspect-assertion',
+      run: 'cdp help flow',
+      reason: 'A flow assertion did not hold. The page is still live; inspect the selector or text, or run perceive.',
+    };
+  }
+  if (lower.includes('unknown wait:')) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help flow',
+      reason: 'flow wait only accepts "dom stable" or "network idle". Print usage instead of probing status.',
+    };
+  }
+  if (lower.includes('batch --parallel:')) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help batch',
+      reason: 'batch --parallel only runs read-only/extraction commands. Use sequential batch or flow for mutations.',
+    };
+  }
+  if (
+    cmd === 'loadall'
+    && (
+      lower.includes('still present')
+      || lower.includes('aborted')
+      || (lower.includes('timeout') && !lower.includes('element not found'))
+    )
+  ) {
+    return {
+      kind: 'timeout',
+      strategy: 'show-help',
+      run: 'cdp help loadall',
+      reason: 'loadall stopped before the control disappeared. [interval-ms] is the click interval; pass --timeout-ms to raise the cap.',
+    };
+  }
+  if (
+    (cmd === 'loadall' || cmd === 'click' || cmd === 'jsclick')
+    && (lower.includes('element not found') || lower.includes('css selector required'))
+  ) {
+    return {
+      kind: cmd === 'loadall' && lower.includes('css selector required') ? 'usage' : 'selector',
+      strategy: cmd === 'loadall' && lower.includes('css selector required') ? 'show-help' : 'refresh-perception',
+      run: lower.includes('css selector required')
+        ? 'cdp help loadall'
+        : (targetPrefix ? `cdp perceive ${targetPrefix} -C -d 8` : 'cdp help loadall'),
+      reason: 'No current element matched the selector. A missing load-more control is not a successful disappear.',
+    };
+  }
+  if (lower.includes('did not navigate') || (lower.includes('try jsclick') && lower.includes('<a href'))) {
+    return {
+      kind: 'no-navigation',
+      strategy: 'use-jsclick',
+      run: targetPrefix ? `cdp jsclick ${targetPrefix} a` : 'cdp help click',
+      reason: 'The realistic mouse click dispatched but the link default action did not run.',
     };
   }
   return lower.includes('target/document readiness mismatch') ? perceiveReadinessRecovery(target)
@@ -21266,6 +21509,10 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   diffShotScreenshotCaptureOptions,
   VERIFY_CLICK_SETTLE_MS, VERIFY_CLICK_REQUEST_WAIT_MS,
   HOVER_MOUSE_ACK_TIMEOUT_MS,
+  LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
+  CLICK_NAVIGATION_WAIT_MS,
+  daemonRequestStorage, sleep,
+  dispatchClick, isNavigatingHref, confirmClickFollowedHref,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest, isNetworkFailure,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
@@ -21289,7 +21536,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, uploadStr, assertReadableUploadFiles,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, selectStr, loadAllStr, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,

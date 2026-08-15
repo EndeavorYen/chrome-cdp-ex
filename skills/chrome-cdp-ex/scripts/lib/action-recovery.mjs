@@ -149,6 +149,23 @@ export function classifyActionFailure(err, { action = 'action', target = {} } = 
   }
 
   if (
+    lower.includes('did not navigate')
+    || (lower.includes('try jsclick') && lower.includes('<a href'))
+  ) {
+    const jsClick = input ? `cdp jsclick ${targetId} ${input}` : 'cdp help click';
+    return {
+      ...base,
+      kind: 'no-navigation',
+      reason: 'The realistic mouse click dispatched but the link default action did not run.',
+      nextCommand: jsClick,
+      hints: [
+        `Retry with \`${jsClick}\` or \`cdp click ${targetId} ${input || '<selector>'} --js\`.`,
+        'Do not treat a no-change overlay probe as the next step on a plain <a href>.',
+      ],
+    };
+  }
+
+  if (
     lower.includes('is not a valid selector') ||
     lower.includes('invalid selector') ||
     lower.includes(':has-text(') ||
@@ -444,6 +461,7 @@ function overlayCheckCommand(target, targetInput = '', targetInfo = {}) {
 
 function noChangeNeedsOverlay(action, targetInfo = {}) {
   if (isExpectedNoChange(targetInfo, '', action)) return false;
+  if (/clicked\s+<a\b/i.test(String(targetInfo.dispatchText || targetInfo.label || ''))) return false;
   return new Set(['click', 'jsclick', 'clickxy', 'fill', 'select', 'upload', 'press', 'dismiss-modal'])
     .has(String(action || '').toLowerCase());
 }

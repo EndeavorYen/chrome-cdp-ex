@@ -73,7 +73,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `scroll` | `scroll <target> <dir\|x,y> [px] [--format json]` | `mutation / mutation` |
 | `hover` | `hover <target> <sel\|@ref>` | `protected-mutation / mutation` |
 | `waitfor` | `waitfor <target> <selector> [ms]` | `read / standard` |
-| `loadall` | `loadall <target> <selector> [ms]` | `protected-mutation / mutation` |
+| `loadall` | `loadall <target> <selector> [interval-ms] [--timeout-ms N]` | `protected-mutation / mutation` |
 | `wait` | `wait <target> <ms>` | `read / standard` |
 | `fill` | `fill <target> <sel\|@ref> <txt> [--format json]` | `mutation / mutation` |
 | `select` | `select <target> <selector> <val> [--format json]` | `mutation / mutation` |

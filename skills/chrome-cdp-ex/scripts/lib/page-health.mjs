@@ -13,6 +13,7 @@ export function classifyPageHealth(signals = {}) {
   const changed = signals.changed === true;
   const evidence = {
     url: String(signals.url || ''),
+    title: String(signals.title || ''),
     readyState: readyState || null,
     visibleTextLength,
     elementCount,
@@ -60,6 +61,7 @@ export function pageHealthScript() {
     const text = body ? (body.innerText || body.textContent || '') : '';
     return JSON.stringify({
       url: location.href,
+      title: document.title || '',
       readyState: document.readyState,
       visibleTextLength: text.trim().length,
       elementCount: document.querySelectorAll('*').length,

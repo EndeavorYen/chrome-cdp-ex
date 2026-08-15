@@ -375,6 +375,10 @@ describe('daemon NDJSON request transport', () => {
     expect(ipcTimeoutForRequest({ cmd: 'wait', args: ['bad'] })).toBe(120000);
     expect(ipcTimeoutForRequest({ cmd: 'status', args: [], timeoutMs: 1 })).toBe(100);
     expect(ipcTimeoutForRequest({ cmd: 'status', args: [], timeoutMs: 999999 })).toBe(120000);
+    expect(ipcTimeoutForRequest({ cmd: 'loadall', args: ['#more'] })).toBe(120000);
+    expect(ipcTimeoutForRequest({ cmd: 'loadall', args: ['#more', '400'] })).toBe(120000);
+    expect(ipcTimeoutForRequest({ cmd: 'loadall', args: ['#more', '--timeout-ms', '180000'] })).toBe(185000);
+    expect(ipcTimeoutForRequest({ cmd: 'loadall', args: ['#more', '--timeout-ms=300000'] })).toBe(305000);
 
     vi.useFakeTimers();
     try {
