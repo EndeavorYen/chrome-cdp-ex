@@ -7037,7 +7037,7 @@ describe('issue #282 leftover pdf-viewer.v1 press settle', () => {
     return { cdp, store, leftoverDump, settleBaseline, dispatchText, after, result, text, receipt };
   }
 
-  function expectHonestNoChangePress(got, { key, leftover = true } = {}) {
+  function expectHonestNoChangePress(got, { key } = {}) {
     expect(got.dispatchText).toBe(`Pressed ${key === 'Escape' ? 'Escape' : key}`);
     expect(got.result.outcome.status).toBe('no-change');
     expect(got.result.verdict.status).toBe('continue');
