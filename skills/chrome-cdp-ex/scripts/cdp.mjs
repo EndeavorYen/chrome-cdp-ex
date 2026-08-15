@@ -60,6 +60,7 @@ import {
   buildNoChangeOutcomeRecommendation,
   classifyActionFailure,
   formatActionFailure,
+  actionFailurePage,
   isExpectedClipboardNoChange,
   isExpectedNoChange,
   expectedNoChangeReason,
@@ -146,6 +147,7 @@ const LOADALL_DEFAULT_INTERVAL_MS = 1500;
 const LOADALL_DEFAULT_TIMEOUT_MS = 30_000;
 const LOADALL_MAX_TIMEOUT_MS = 5 * 60 * 1000;
 const CLICK_NAVIGATION_WAIT_MS = 500;
+const CLICK_HREF_PROBE_TIMEOUT_MS = 120;
 const IDLE_TIMEOUT = 20 * 60 * 1000;
 const daemonRequestStorage = new AsyncLocalStorage();
 const FIRE_AND_FORGET_KEEPALIVE = 60 * 60 * 1000;
@@ -4391,6 +4393,65 @@ function actionDomDiffShowsChange(domDiff) {
   return true;
 }
 
+function comparableActionHref(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    url.hash = '';
+    return url.href;
+  } catch {
+    return raw;
+  }
+}
+
+function shouldSkipActionDomSettle(beforeUrl, afterUrl) {
+  const from = comparableActionHref(beforeUrl);
+  const to = comparableActionHref(afterUrl);
+  return Boolean(from && to && from !== to);
+}
+
+function formatActionNavigationDiff(fromUrl, toUrl) {
+  return `Navigated ${String(fromUrl || '').trim()} -> ${String(toUrl || '').trim()}`;
+}
+
+function actionNetworkShowsDocumentNavigation(networkDelta = {}) {
+  return (networkDelta.entries || []).some((entry) => {
+    const type = String(entry.type || '');
+    const method = String(entry.method || 'GET').toUpperCase();
+    if (method !== 'GET' && method !== 'HEAD') return false;
+    if (type !== 'Document') return false;
+    if (entry.failed === true || entry.errorText) return false;
+    return true;
+  });
+}
+
+function actionNavigationEvidence(actionResult = {}) {
+  const effects = actionResult.effects || {};
+  const nav = effects.navigation;
+  let from = '';
+  let to = '';
+  if (nav && typeof nav === 'object') {
+    from = String(nav.from || nav.before || nav.pageHref || '');
+    to = String(nav.to || nav.after || nav.url || nav.href || '');
+  } else if (typeof nav === 'string') {
+    to = nav;
+  }
+  const before = from
+    || String(effects.page?.url || actionResult.target?.pageHrefBefore || actionResult.target?.pageHref || actionResult.target?.page?.url || '');
+  const after = to
+    || String(effects.pageHealth?.evidence?.url || effects.pageHealth?.url || actionResult.target?.pageHrefAfter || '');
+  const hrefChanged = shouldSkipActionDomSettle(before, after) || nav?.changed === true;
+  const documentNavigation = actionNetworkShowsDocumentNavigation(effects.networkDelta || {});
+  return {
+    from: before,
+    to: after,
+    hrefChanged,
+    documentNavigation,
+    navigated: Boolean(hrefChanged || documentNavigation),
+  };
+}
+
 function actionHasDomObservation(actionResult = {}) {
   return Object.prototype.hasOwnProperty.call(actionResult.effects || {}, 'domDiff')
     && actionResult.effects.domDiff !== null
@@ -4401,10 +4462,11 @@ function buildActionOutcome(actionResult = {}) {
   const effects = actionResult.effects || {};
   const diagnosis = effects.diagnosis || null;
   const domObserved = actionHasDomObservation(actionResult);
-  const changed = actionDomDiffShowsChange(effects.domDiff);
+  const navigation = actionNavigationEvidence(actionResult);
+  const changed = actionDomDiffShowsChange(effects.domDiff) || navigation.navigated;
   const base = {
     schema: 'chrome-cdp-ex.action-outcome.v1',
-    changed: domObserved ? changed : null,
+    changed: domObserved || navigation.navigated ? changed : null,
     needsAttention: false,
   };
 
@@ -4446,6 +4508,18 @@ function buildActionOutcome(actionResult = {}) {
       needsAttention: true,
       evidence: diagnosis.source || 'diagnosis',
       reason: diagnosis.reason || 'Action needs follow-up.',
+    };
+  }
+
+  if (navigation.navigated) {
+    return {
+      ...base,
+      status: 'changed',
+      changed: true,
+      evidence: 'navigation',
+      reason: navigation.hrefChanged && navigation.from && navigation.to
+        ? `Page navigated from ${navigation.from} to ${navigation.to}.`
+        : 'Observed a document navigation after the action.',
     };
   }
 
@@ -4740,7 +4814,7 @@ function actionDiagnosisSignals(actionResult = {}) {
   return {
     dispatchOk: actionResult.dispatch?.ok !== false,
     settleOk: actionResult.settle?.ok ?? null,
-    domChanged: actionDomDiffShowsChange(effects.domDiff),
+    domChanged: actionDomDiffShowsChange(effects.domDiff) || actionNavigationEvidence(actionResult).navigated,
     consoleErrors: consoleDelta.errors,
     consoleWarnings: consoleDelta.warnings,
     exceptions: exceptionDelta.count,
@@ -5131,8 +5205,8 @@ function formatActionText(result) {
   return lines.join('\n');
 }
 
-function finalizeActionResult(result, { enrichActionResult = null, onActionResult = null } = {}) {
-  if (enrichActionResult) enrichActionResult(result);
+async function finalizeActionResult(result, { enrichActionResult = null, onActionResult = null } = {}) {
+  if (enrichActionResult) await enrichActionResult(result);
   applyActionReceipt(applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(result)))));
   if (onActionResult) onActionResult(result);
   return result;
@@ -6087,7 +6161,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       effects: { domDiff: null, console: [], network: [], navigation: null, failure },
       nextHint: failure.nextCommand,
     });
-    finalizeActionResult(result, { enrichActionResult, onActionResult });
+    await finalizeActionResult(result, { enrichActionResult, onActionResult });
     if (output.format === 'json') return formatActionResultOutput(result, output);
     throw new Error(formatActionFailure(e, { action, target }));
   }
@@ -6100,7 +6174,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       effects: { domDiff: null, console: [], network: [], navigation: null },
       nextHint: feedbackPolicy === 'report-only' ? nextHint : null,
     });
-    finalizeActionResult(result, { enrichActionResult, onActionResult });
+    await finalizeActionResult(result, { enrichActionResult, onActionResult });
     if (feedbackPolicy === 'none') return dispatchText;
     return formatActionResultOutput(result, { ...output, dispatchText });
   }
@@ -6114,7 +6188,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       effects: { domDiff, console: [], network: [], navigation: null },
       nextHint,
     });
-    finalizeActionResult(result, { enrichActionResult, onActionResult });
+    await finalizeActionResult(result, { enrichActionResult, onActionResult });
     return formatActionResultOutput(result, { ...output, dispatchText });
   } catch (e) {
     const observationError = isTimeoutError(e) ? null : compactObservationError(e);
@@ -6132,7 +6206,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
       },
       nextHint,
     });
-    finalizeActionResult(result, { enrichActionResult, onActionResult });
+    await finalizeActionResult(result, { enrichActionResult, onActionResult });
     return formatActionResultOutput(result, {
       ...output,
       dispatchText,
@@ -8301,17 +8375,31 @@ async function resolveRefRectNoScroll(cdp, sid, refMap, ref, refState, options =
   return { rect: value, objectId };
 }
 
-// Wait for DOM mutations to stop after an action (350ms of silence = settled)
+// Wait for DOM mutations to stop after an action (350ms of silence = settled).
+// Bound the CDP evaluate to the settle budget so a document replacement cannot
+// hang until the default 15s CDP timeout.
 async function waitForSettle(cdp, sid, timeoutMs = 3000) {
-  return evalStr(cdp, sid, `new Promise(resolve => {
+  const budget = Math.max(1, Number(timeoutMs) || 3000);
+  let timer;
+  try {
+    const outcome = await Promise.race([
+      evalStr(cdp, sid, `new Promise(resolve => {
     let timer;
     const done = () => { obs.disconnect(); resolve('stable'); };
     const reset = () => { clearTimeout(timer); timer = setTimeout(done, 350); };
     const obs = new MutationObserver(reset);
     obs.observe(document.body || document.documentElement, { childList: true, subtree: true, attributes: true });
     timer = setTimeout(done, 350);
-    setTimeout(() => { clearTimeout(timer); obs.disconnect(); resolve('timeout'); }, ${timeoutMs});
-  })`);
+    setTimeout(() => { clearTimeout(timer); obs.disconnect(); resolve('timeout'); }, ${budget});
+  })`, false, { timeoutMs: budget + 50 }),
+      new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), budget); }),
+    ]);
+    return outcome === 'timeout' ? 'timeout' : String(outcome || 'stable');
+  } catch {
+    return 'stable';
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function validateUrl(url) {
@@ -10318,22 +10406,39 @@ function isNavigatingHref(href, pageHref = '') {
   }
 }
 
+async function evalPageHref(cdp, sid, timeoutMs = CLICK_HREF_PROBE_TIMEOUT_MS) {
+  const requested = Number(timeoutMs);
+  const budget = Math.max(1, Number.isFinite(requested) ? requested : CLICK_HREF_PROBE_TIMEOUT_MS);
+  let timer;
+  try {
+    const href = await Promise.race([
+      evalStr(cdp, sid, 'location.href', false, { timeoutMs: budget }),
+      new Promise(resolve => { timer = setTimeout(() => resolve(''), budget); }),
+    ]);
+    return String(href || '').trim();
+  } catch {
+    return '';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function confirmClickFollowedHref(cdp, sid, target = {}) {
   if (String(target.tag || '').toUpperCase() !== 'A') return;
   if (!isNavigatingHref(target.href, target.pageHref)) return;
   const before = String(target.pageHref || '');
   const deadline = Date.now() + CLICK_NAVIGATION_WAIT_MS;
   while (Date.now() < deadline) {
-    const current = await evalStr(cdp, sid, 'location.href').catch(() => '');
-    if (current && current !== before) return;
-    await sleep(40);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const current = await evalPageHref(cdp, sid, Math.min(CLICK_HREF_PROBE_TIMEOUT_MS, remaining));
+    if (current && current !== before) return current;
+    const pause = Math.min(40, deadline - Date.now());
+    if (pause > 0) await sleep(pause);
   }
-  const after = await evalStr(cdp, sid, 'location.href').catch(() => before);
-  if (!after || after === before) {
-    throw new Error(
-      `Click on <A href="${target.href}"> did not navigate. Try jsclick or click --js.`
-    );
-  }
+  throw new Error(
+    `Click on <A href="${target.href}"> did not navigate. Try jsclick or click --js.`
+  );
 }
 
 // Shared: get device pixel ratio
@@ -17418,17 +17523,41 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     const actionStartedAt = Date.now();
     const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput, baselineOpts));
     let postActionPageHealth = null;
+    const watchNavigation = action === 'click' || action === 'jsclick' || action === 'clickxy';
+    let beforePage = actionTarget.page || { title: '', url: '' };
+    const beforePagePromise = watchNavigation
+      ? pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) })
+        .then((page) => {
+          beforePage = {
+            title: page?.title || beforePage.title || '',
+            url: page?.url || beforePage.url || '',
+          };
+          actionTarget.page = beforePage;
+          return beforePage;
+        })
+        .catch(() => beforePage)
+      : Promise.resolve(beforePage);
     const wrappedDispatch = async () => {
       const text = await dispatch();
+      actionTarget.dispatchText = String(text || '');
       if (looksLikeClipboardControl(text) || isExpectedClipboardNoChange(actionTarget, text)) {
         actionTarget.expectedOutcome = 'clipboard-no-change';
-        actionTarget.dispatchText = String(text || '');
       }
       if (action === 'dismiss-modal' && /no visible modal\/dialog detected/i.test(String(text || ''))) {
         actionTarget.expectedOutcome = 'no-modal';
       }
       if (action === 'press' || actionTarget.resolvedBy === 'key') {
         actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'press-no-change';
+      }
+      if (watchNavigation) {
+        await beforePagePromise;
+        const afterUrl = await evalPageHref(cdp, sessionId);
+        const beforeUrl = beforePage.url || '';
+        if (shouldSkipActionDomSettle(beforeUrl, afterUrl)) {
+          actionTarget.navigated = true;
+          actionTarget.pageHrefBefore = beforeUrl;
+          actionTarget.pageHrefAfter = afterUrl;
+        }
       }
       return text;
     };
@@ -17440,6 +17569,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       if (actionTarget.expectedOutcome === 'no-modal') {
         appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
         return 'No changes detected (no modal).';
+      }
+      if (actionTarget.navigated) {
+        appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
+        await waitForActionNetworkQuiet(pendingReqs, { quietMs: 50, timeoutMs: 250 });
+        appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
+        postActionPageHealth = await collectPageHealth(cdp, sessionId, { changed: true }).catch(() => null);
+        return formatActionNavigationDiff(actionTarget.pageHrefBefore, actionTarget.pageHrefAfter);
       }
       const text = await observeAfterAction();
       await waitForActionNetworkQuiet(pendingReqs);
@@ -17456,12 +17592,31 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       dispatch: wrappedDispatch,
       feedbackPolicy,
       observe: observeThenFlush,
-      enrichActionResult: (actionResult) => {
+      enrichActionResult: async (actionResult) => {
+        if (watchNavigation) await beforePagePromise;
         applyActionObservationDelta(actionResult, buildActionObservationDelta(
           { consoleBuf, exceptionBuf, netReqBuf },
           observationBaseline
         ));
         if (postActionPageHealth) actionResult.effects.pageHealth = postActionPageHealth;
+        else if (actionTarget.page && (actionTarget.page.title || actionTarget.page.url)) {
+          actionResult.effects.pageHealth = actionResult.effects.pageHealth || {
+            status: 'populated',
+            isBlank: false,
+            evidence: {
+              url: actionTarget.page.url || '',
+              title: actionTarget.page.title || '',
+            },
+          };
+        }
+        if (actionTarget.page) actionResult.effects.page = actionTarget.page;
+        if (actionTarget.navigated) {
+          actionResult.effects.navigation = {
+            from: actionTarget.pageHrefBefore,
+            to: actionTarget.pageHrefAfter,
+            changed: true,
+          };
+        }
         return actionResult;
       },
       onActionResult: (actionResult) => {
@@ -21501,7 +21656,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   classifyActionFailure, formatActionFailure,
   buildActionRecoveryPlan, buildNoChangeOutcomeRecommendation,
   isExpectedNoChange, overlaySelectorArg,
-  createActionResult, buildActionReceipt, formatActionText, runActionWithFeedback,
+  createActionResult, buildActionReceipt, formatActionText, formatActionResultOutput, runActionWithFeedback,
   parseVerifyClickArgs, buildSemanticInteractionModel, formatSemanticInteractionResult, formatActionWorkflowCommandOutput,
   parseQaArgs, buildQaPageModel, formatQaPageReport, qaPageStr,
   captureViewportSize, restoreViewportSize,
@@ -21510,9 +21665,11 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   VERIFY_CLICK_SETTLE_MS, VERIFY_CLICK_REQUEST_WAIT_MS,
   HOVER_MOUSE_ACK_TIMEOUT_MS,
   LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
-  CLICK_NAVIGATION_WAIT_MS,
+  CLICK_NAVIGATION_WAIT_MS, CLICK_HREF_PROBE_TIMEOUT_MS,
   daemonRequestStorage, sleep,
-  dispatchClick, isNavigatingHref, confirmClickFollowedHref,
+  dispatchClick, isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,
+  shouldSkipActionDomSettle, formatActionNavigationDiff, actionNavigationEvidence,
+  actionFailurePage,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest, isNetworkFailure,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,

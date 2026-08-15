@@ -8410,7 +8410,7 @@ describe('clickStr', () => {
     });
     await expect(clickStr(cdp, 'sid1', 'a', new Map()))
       .rejects.toThrow(/did not navigate/);
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Date.now() - started).toBeLessThanOrEqual(750);
   });
 });
 

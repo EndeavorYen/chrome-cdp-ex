@@ -345,12 +345,22 @@ export function classifyActionFailure(err, { action = 'action', target = {} } = 
   return base;
 }
 
+export function actionFailurePage(target = {}, extra = {}) {
+  const page = extra.page || target.page || target.pageHealth?.evidence || {};
+  const title = String(page.title || '').trim();
+  const url = String(page.url || '').trim();
+  if (!title && !url) return null;
+  return { title, url };
+}
+
 export function formatActionFailure(err, context = {}) {
   const message = actionFailureMessage(err);
   if (message.startsWith('Action failure:')) return message;
   const failure = classifyActionFailure(err, context);
+  const page = actionFailurePage(context.target, context);
   const lines = [
     `Action failure: ${failure.kind}`,
+    ...(page ? [`Page: ${page.title || '(untitled)'}`, `URL: ${page.url || '(unknown)'}`] : []),
     `Reason: ${failure.reason}`,
     `Next: ${failure.nextCommand}`,
   ];
