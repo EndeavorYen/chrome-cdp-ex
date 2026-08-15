@@ -11804,20 +11804,33 @@ async function rememberHoverSettleBaseline(
   lastPerceiveStore,
   refState,
   targetId,
+  dispatchHover = null,
 ) {
   // Hover mutates live DOM (tooltips, :hover text) but historically printed a
   // one-liner and left last-perceive stale. Recapture default AX so the next
-  // mutator does not steal hover's delta (#286). Wait for a hover-driven
-  // mutation — not waitForSettle's 350ms pre-hover silence, which recaptured
-  // idle AX on Chrome 151 while mouseenter was still queued. If that mutation
-  // never arrives (or AX still matches the pre-hover tree), discard the idle
-  // recapture so a later no-op scroll cannot claim +hover text.
-  // Do not emit ActionResult. Do not lengthen waitForSettle. Do not wait for
-  // the compositor mouseMoved ack.
+  // mutator does not steal hover's delta (#286). Snapshot settle-shape AX
+  // before mouseMoved — leftover perceive -C -d 8 is a different line-set
+  // than default recapture even when both still say hover:0, so that leftover
+  // must not be the KEEP baseline. After dispatch, recapture immediately; if
+  // the same shape already changed, KEEP and skip the mutation wait. Only if
+  // it is still idle, wait for a hover-driven mutation (not waitForSettle's
+  // 350ms pre-hover silence). Timeout discards unconditionally so idle AX
+  // cannot be kept. Do not emit ActionResult. Do not lengthen waitForSettle.
+  // Do not wait for the compositor mouseMoved ack.
+  const settleOpts = actionObservationPerceiveOpts(targetId);
+  await perceiveStr(
+    cdp,
+    sid,
+    consoleBuf,
+    exceptionBuf,
+    refMap,
+    lastPerceiveStore,
+    settleOpts,
+    refState,
+  );
   const before = lastPerceiveStore.output;
-  const hoverChange = await waitForHoverDomChange(cdp, sid);
-  if (hoverChange === 'hover-changed') {
-    await waitForSettle(cdp, sid);
+  if (typeof dispatchHover === 'function') {
+    await dispatchHover();
   }
   await perceiveStr(
     cdp,
@@ -11826,7 +11839,26 @@ async function rememberHoverSettleBaseline(
     exceptionBuf,
     refMap,
     lastPerceiveStore,
-    actionObservationPerceiveOpts(targetId),
+    settleOpts,
+    refState,
+  );
+  if (hoverRecaptureShowsChange(before, lastPerceiveStore.output)) {
+    return;
+  }
+  const hoverChange = await waitForHoverDomChange(cdp, sid);
+  if (hoverChange !== 'hover-changed') {
+    discardHoverIdleBaseline(lastPerceiveStore);
+    return;
+  }
+  await waitForSettle(cdp, sid);
+  await perceiveStr(
+    cdp,
+    sid,
+    consoleBuf,
+    exceptionBuf,
+    refMap,
+    lastPerceiveStore,
+    settleOpts,
     refState,
   );
   if (!hoverRecaptureShowsChange(before, lastPerceiveStore.output)) {
@@ -19476,7 +19508,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       return commandResult(value, { kind: 'action-receipt' });
     },
     hover: async args => {
-      const text = await hoverStr(cdp, sessionId, args[0], refMap, refState);
+      let text;
       await rememberHoverSettleBaseline(
         cdp,
         sessionId,
@@ -19486,6 +19518,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         lastPerceiveStore,
         refState,
         targetId,
+        async () => {
+          text = await hoverStr(cdp, sessionId, args[0], refMap, refState);
+        },
       );
       return commandResult(text, null);
     },
