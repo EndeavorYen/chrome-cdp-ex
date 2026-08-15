@@ -7444,8 +7444,8 @@ describe('issue #286 hover settle baseline', () => {
     ];
   }
 
-  function createPicky23Page({ hovers = 0 } = {}) {
-    const state = { hovers };
+  function createPicky23Page({ hovers = 0, delayHoverUntilSettle = false } = {}) {
+    const state = { hovers, pendingHover: false };
     const cdp = {
       calls: [],
       send(method, params = {}) {
@@ -7455,6 +7455,13 @@ describe('issue #286 hover settle baseline', () => {
         }
         if (method === 'Runtime.evaluate') {
           const expr = String(params.expression || '');
+          if (expr.includes('MutationObserver')) {
+            if (state.pendingHover) {
+              state.hovers += 1;
+              state.pendingHover = false;
+            }
+            return Promise.resolve({ result: { value: 'stable' } });
+          }
           if (expr.includes('scrollBy')) {
             return Promise.resolve({ result: { value: '{"x":0,"y":0}' } });
           }
@@ -7467,7 +7474,10 @@ describe('issue #286 hover settle baseline', () => {
           return Promise.resolve({ nodes: axNodes(state.hovers) });
         }
         if (method === 'Input.dispatchMouseEvent') {
-          if (params.type === 'mouseMoved') state.hovers += 1;
+          if (params.type === 'mouseMoved') {
+            if (delayHoverUntilSettle) state.pendingHover = true;
+            else state.hovers += 1;
+          }
           return Promise.resolve({});
         }
         if (method === 'DOM.getDocument') {
@@ -7613,6 +7623,82 @@ describe('issue #286 hover settle baseline', () => {
   it('#286 hover handler refreshes last-perceive settle baseline', () => {
     const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
     expect(src).toMatch(/hover: async args =>[\s\S]{0,500}rememberHoverSettleBaseline\(/);
+    expect(src).toMatch(
+      /async function rememberHoverSettleBaseline[\s\S]{0,1200}await waitForSettle\(cdp, sid\);\s*await perceiveStr\(/,
+    );
+  });
+
+  it('#286 rememberHoverSettleBaseline waits for DOM settle before recapture so delayed hover AX is not stolen', async () => {
+    const { cdp, state } = createPicky23Page({ hovers: 0, delayHoverUntilSettle: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    const before = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      store,
+      { targetPrefix: '62E1DF19' },
+      refState,
+    );
+    expect(before).toContain('[StaticText] hover:0');
+    await T.hoverStr(cdp, 'sid', '#p23hover', refMap, refState);
+    expect(state.hovers).toBe(0);
+    expect(state.pendingHover).toBe(true);
+
+    const callsBeforeRefresh = cdp.calls.length;
+    await T.rememberHoverSettleBaseline(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      store,
+      refState,
+      TARGET_ID,
+    );
+    const refreshCalls = cdp.calls.slice(callsBeforeRefresh);
+    const settleIdx = refreshCalls.findIndex(call => (
+      call.method === 'Runtime.evaluate'
+      && String(call.params.expression || '').includes('MutationObserver')
+    ));
+    const recaptureAxIdx = refreshCalls.findIndex(call => call.method === 'Accessibility.getFullAXTree');
+    expect(settleIdx).toBeGreaterThanOrEqual(0);
+    expect(recaptureAxIdx).toBeGreaterThan(settleIdx);
+    expect(state.hovers).toBe(1);
+    expect(state.pendingHover).toBe(false);
+    expect(store.output).toContain('[StaticText] hover:1');
+
+    if (state.pendingHover) {
+      state.hovers += 1;
+      state.pendingHover = false;
+    }
+    const actionTarget = scrollTarget();
+    const settleBaseline = T.actionSettleBaseline(store.output, store.snapshotOpts, actionTarget);
+    const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
+    expect(dispatchText).toBe('Scrolled by (0, 80). Position: (0, 0)');
+    const after = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      store,
+      T.actionSettleObserveOpts(TARGET_ID, actionTarget, settleBaseline.output, settleBaseline.opts),
+      refState,
+    );
+    expect(after).toMatch(/no changes detected/i);
+    expect(after).not.toMatch(/\+\s+\[StaticText\] hover:1/);
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    expect(result.outcome.status).toBe('no-change');
   });
 });
 
