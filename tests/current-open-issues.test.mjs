@@ -7735,5 +7735,186 @@ describe('issue #267 restore --unsafe-full cookie fidelity', () => {
   });
 });
 
+describe('issue #270 record-actions password dispatchText redaction', () => {
+  it('#270 record-actions JSON redacts dispatchText and sibling fields for a password-like fill', () => {
+    const logPath = join(mkdtempSync(join(tmpdir(), 'cdp-p18w-pass-')), 'session.jsonl');
+    const secret = 'dummy-secret-p18';
+    const state = T.createSessionState({ targetId: 'P18WPASS', sessionId: 'sid-p18', logPath });
+
+    T.appendSessionActionLog(state, T.createActionResult({
+      action: 'fill',
+      target: {
+        input: '#p18w-pass',
+        resolvedBy: 'selector',
+        label: '#p18w-pass',
+        commandArgs: ['#p18w-pass', secret],
+        dispatchText: `Filled <INPUT> with "${secret}"`,
+        controlStateDiff: `value "" → "${secret}"`,
+      },
+      dispatch: { ok: true, method: 'fill' },
+      settle: { ok: true, durationMs: 42 },
+      effects: {
+        domDiff: `Control state changed: value "" → "${secret}"`,
+        console: [],
+        network: [],
+        navigation: null,
+      },
+      nextHint: null,
+    }));
+
+    const json = T.formatRecordActions(state, { format: 'json' });
+    const model = JSON.parse(json);
+    const step = model.actions[0];
+    const serialized = JSON.stringify(model);
+
+    expect(serialized).not.toContain(secret);
+    expect(step.command).toEqual(['fill', '#p18w-pass', '<redacted>']);
+    expect(step.target.commandArgs).toEqual(['#p18w-pass', '<redacted>']);
+    expect(step.target.redacted).toEqual(expect.arrayContaining(['commandArgs']));
+    expect(step.replayable).toBe(false);
+    expect(step.needsInput).toEqual(['text']);
+    expect(String(step.target.dispatchText || '')).not.toContain(secret);
+    expect(String(step.target.dispatchText || '')).toMatch(/<redacted>/);
+    expect(JSON.stringify(step.target)).not.toContain(secret);
+    expect(JSON.stringify(step.evidence || {})).not.toContain(secret);
+    expect(readFileSync(logPath, 'utf8')).not.toContain(secret);
+    expect(T.formatExportPlaywright(state)).not.toContain(secret);
+  });
+});
+
+describe('issue #271 cascade injected !important beats inline', () => {
+  it('#271 winner and editTarget match computedValue when injected !important beats inline', async () => {
+    const cdp = {
+      send(method) {
+        if (method === 'DOM.getDocument') return Promise.resolve({ root: { nodeId: 1 } });
+        if (method === 'DOM.querySelector') return Promise.resolve({ nodeId: 10 });
+        if (method === 'CSS.getMatchedStylesForNode') {
+          return Promise.resolve({
+            matchedCSSRules: [{
+              rule: {
+                selectorList: { text: '#p18w-label' },
+                origin: 'injected',
+                style: {
+                  styleSheetId: 'inject-1',
+                  range: { startLine: 0 },
+                  cssProperties: [{
+                    name: 'background-color',
+                    value: '#00ffff',
+                    important: true,
+                  }],
+                },
+              },
+            }],
+            inlineStyle: {
+              cssProperties: [{ name: 'background-color', value: 'rgb(255, 255, 0)' }],
+            },
+            inherited: [],
+          });
+        }
+        if (method === 'CSS.getComputedStyleForNode') {
+          return Promise.resolve({
+            computedStyle: [{ name: 'background-color', value: 'rgb(0, 255, 255)' }],
+          });
+        }
+        if (method === 'CSS.getStyleSheetText') {
+          return Promise.resolve({ text: '#p18w-label{background:#00ffff !important}' });
+        }
+        return Promise.resolve({});
+      },
+    };
+
+    const model = JSON.parse(await T.cascadeStr(
+      cdp, 'sid', '#p18w-label', 'background-color', new Map(), null, { format: 'json' },
+    ));
+    const property = model.properties[0];
+    expect(property.computedValue).toBe('rgb(0, 255, 255)');
+    expect(property.winner).toMatchObject({
+      selector: '#p18w-label',
+      value: '#00ffff',
+      origin: 'injected',
+    });
+    expect(property.winner.selector).not.toBe('[inline]');
+    expect(property.winner.value).not.toBe('rgb(255, 255, 0)');
+    expect(model.editTarget).toMatchObject({
+      property: 'background-color',
+      selector: '#p18w-label',
+      value: '#00ffff',
+      origin: 'injected',
+    });
+    const injected = property.rules.find(rule => rule.origin === 'injected');
+    const inline = property.rules.find(rule => rule.selector === '[inline]');
+    expect(injected).toMatchObject({ winner: true, overridden: false, value: '#00ffff' });
+    expect(inline).toMatchObject({ winner: false, overridden: true, value: 'rgb(255, 255, 0)' });
+    expect(property.rules.filter(rule => rule.winner)).toHaveLength(1);
+  });
+});
+
+describe('issue #272 replay incomplete fill must not guess empty text', () => {
+  function replayArtifact(actions) {
+    return {
+      schema: 'chrome-cdp-ex.record-actions.v1',
+      targetId: 'P18WTEXT',
+      sessionId: 'sid-p18',
+      source: 'test',
+      actionCount: actions.length,
+      actions,
+    };
+  }
+
+  it('#272 replay of fill with needsInput text and no value does not apply empty string', async () => {
+    const calls = [];
+    const source = replayArtifact([{
+      index: 1,
+      action: 'fill',
+      command: ['fill', '#p18w-text'],
+      replayable: true,
+      needsInput: ['text'],
+    }]);
+
+    const out = await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step);
+        return { ok: true, result: 'Filled <INPUT> with ""' };
+      },
+    }, ['--format', 'json', '--json', JSON.stringify(source)]);
+    const parsed = JSON.parse(out);
+
+    expect(calls).toEqual([]);
+    expect(parsed.counts.ok).toBe(0);
+    expect(parsed.counts.ok).not.toBeGreaterThan(0);
+    expect(parsed.steps[0].ok).not.toBe(true);
+    expect(parsed.steps[0].missing).toEqual(expect.arrayContaining(['text']));
+    expect(JSON.stringify(parsed)).not.toMatch(/Filled <INPUT> with ""/);
+    expect(parsed.counts.skipped + parsed.counts.failed).toBeGreaterThan(0);
+  });
+
+  it('#272 password fill remains skipped as missing text without guessing empty string', async () => {
+    const calls = [];
+    const source = replayArtifact([{
+      index: 1,
+      action: 'fill',
+      command: ['fill', '#p18w-pass', '<redacted>'],
+      replayable: false,
+      needsInput: ['text'],
+    }]);
+
+    const out = await T.replayActionsStr({
+      run: async (step) => {
+        calls.push(step);
+        return { ok: true, result: 'Filled <INPUT> with ""' };
+      },
+    }, ['--format', 'json', '--json', JSON.stringify(source)]);
+    const parsed = JSON.parse(out);
+
+    expect(calls).toEqual([]);
+    expect(parsed.counts.ok).toBe(0);
+    expect(parsed.steps[0]).toMatchObject({
+      skipped: true,
+      missing: ['text'],
+    });
+  });
+});
+
+
 
 
