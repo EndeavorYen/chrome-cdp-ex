@@ -7879,7 +7879,32 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
   ];
   const ADDED_FILE = { name: 'tokenizer.json', backend: 304, y: 264 };
 
-  function hfMeta(scrollY, files) {
+  const CAP_SWAP_CHROME = [
+    'Hugging Face', 'Models', 'Datasets', 'Spaces', 'Posts', 'search', 'docs', 'pricing',
+  ];
+  const CAP_SWAP_CONTENT = [
+    'MiniMaxAI', 'MiniMax-Music3', 'Copy', 'Like', 'LICENSE', 'README.md', 'config.json', 'Files',
+  ];
+
+  function hfVisibleControl(label, y) {
+    return {
+      tag: 'a',
+      role: 'link',
+      label,
+      clickable: true,
+      rect: { x: 24, y, w: 160, h: 22 },
+      selector: `a[href="#${label.replace(/\s+/g, '-')}"]`,
+      hints: { id: '', classes: [] },
+    };
+  }
+
+  function hfMeta(scrollY, files, { foldTag = false, capSwap = false } = {}) {
+    const fileControls = files.map(file => hfVisibleControl(file.name, file.y - scrollY));
+    const visibleControls = capSwap
+      ? (scrollY > 0 ? CAP_SWAP_CONTENT : CAP_SWAP_CHROME).map((label, i) => (
+        hfVisibleControl(label, 12 + i * 28)
+      ))
+      : fileControls;
     return JSON.stringify({
       title: 'MiniMaxAI/MiniMax-Music3 at main',
       url: HF_URL,
@@ -7890,22 +7915,16 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
       scrollMax: 2400,
       counts: { a: files.length },
       focused: 'none',
-      layoutMap: {},
+      layoutMap: foldTag || capSwap
+        ? { navigation: [{ w: 603, h: 28, ...(scrollY > 0 ? { vis: 'above' } : {}) }] }
+        : {},
       styleHints: {},
       cursorInteractives: [],
-      visibleControls: files.map(file => ({
-        tag: 'a',
-        role: 'link',
-        label: file.name,
-        clickable: true,
-        rect: { x: 24, y: file.y - scrollY, w: 160, h: 22 },
-        selector: `a[href="${file.name}"]`,
-        hints: { id: '', classes: [] },
-      })),
+      visibleControls,
     });
   }
 
-  function hfAx(files) {
+  function hfAx(files, { foldTag = false, capSwap = false } = {}) {
     const links = files.map((file, i) => ({
       nodeId: String(20 + i),
       parentId: '10',
@@ -7913,8 +7932,20 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
       name: { value: file.name },
       backendDOMNodeId: file.backend,
     }));
+    const withNav = foldTag || capSwap;
     return [
-      { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'MiniMax-Music3' }, childIds: ['10', '99'] },
+      {
+        nodeId: '1',
+        role: { value: 'RootWebArea' },
+        name: { value: 'MiniMax-Music3' },
+        childIds: withNav ? ['5', '10', '99'] : ['10', '99'],
+      },
+      ...(withNav ? [{
+        nodeId: '5',
+        parentId: '1',
+        role: { value: 'navigation' },
+        name: { value: 'Main' },
+      }] : []),
       { nodeId: '10', parentId: '1', role: { value: 'main' }, name: { value: '' }, childIds: links.map(n => n.nodeId) },
       ...links,
       {
@@ -7931,11 +7962,15 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     scrollY = 0,
     clicks = 0,
     files = DEFAULT_FILES,
+    foldTag = false,
+    capSwap = false,
   } = {}) {
     const state = {
       scrollY,
       clicks,
       files: files.map(file => ({ ...file })),
+      foldTag,
+      capSwap,
     };
     const cdp = {
       calls: [],
@@ -7958,12 +7993,19 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
             return Promise.resolve({ result: { value: JSON.stringify({ tag: 'BUTTON', text: 'p26' }) } });
           }
           if (expr.includes('document.title') || expr.includes('contentType')) {
-            return Promise.resolve({ result: { value: hfMeta(state.scrollY, state.files) } });
+            return Promise.resolve({
+              result: {
+                value: hfMeta(state.scrollY, state.files, {
+                  foldTag: state.foldTag,
+                  capSwap: state.capSwap,
+                }),
+              },
+            });
           }
           return Promise.resolve({ result: { value: '{}' } });
         }
         if (method === 'Accessibility.getFullAXTree') {
-          const nodes = hfAx(state.files);
+          const nodes = hfAx(state.files, { foldTag: state.foldTag, capSwap: state.capSwap });
           if (state.clicks) {
             nodes.push({
               nodeId: '98',
@@ -8352,6 +8394,108 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
     expect(T.actionDomDiffShowsChange(after)).toBe(true);
     expect(after).toMatch(/\+\s+\[StaticText\] clicks:7/);
+  });
+
+  it('#297 leftover -C -d 8 then scroll fold-tag-only [navigation] Main is no-change / Next -C -d 8', async () => {
+    const { cdp } = createHfPage({ foldTag: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
+    expect(leftoverDump).toMatch(/\[navigation\] Main {2}603×28px/);
+    expect(leftoverDump).not.toMatch(/↑above fold/);
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    await T.scrollStr(cdp, 'sid', 'down', '80');
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/no changes detected in AX tree/i);
+    expect(after).not.toMatch(/--- Removed/);
+    expect(after).not.toMatch(/↑above fold/);
+    expect(T.actionDomDiffShowsChange(after)).toBe(false);
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.verdict.status).toBe('continue');
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
+  });
+
+  it('#297 leftover -C -d 8 then scroll Visible-control cap-swap is changed / compact / Next -C -d 8', async () => {
+    const { cdp } = createHfPage({ capSwap: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
+    expect(leftoverDump).toMatch(/Hugging Face/);
+    expect(leftoverDump).toMatch(/\[navigation\] Main {2}603×28px/);
+    const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    expect(settleBaseline.output).toBe(leftoverDump);
+    expect(cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length).toBe(axBefore);
+    await T.scrollStr(cdp, 'sid', 'down', '80');
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/Visible-control cap swap: 8 left, 8 entered/);
+    expect(after).toContain('- Hugging Face');
+    expect(after).toContain('+ MiniMaxAI');
+    expect(after).not.toMatch(/--- Removed \(9\)/);
+    expect(after).not.toMatch(/a role=link "Hugging Face"/);
+    expect(after).not.toMatch(/\[navigation\] Main/);
+    expect(after).not.toMatch(/LICENSE/);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+    expect(text).toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Visible-control cap swap: 8 left, 8 entered/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
+    expect(text).not.toMatch(/record-actions/);
+  });
+
+  it('#297 leftover -C -d 8 cap-swap plus a new file still prints tokenizer.json', async () => {
+    const { cdp, state } = createHfPage({ capSwap: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    await leftoverGoldenPath(cdp, store, refMap, refState);
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    state.files = [...DEFAULT_FILES, ADDED_FILE];
+    await T.scrollStr(cdp, 'sid', 'down', '80');
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/tokenizer\.json/);
+    expect(after).toMatch(/Visible-control cap swap: 8 left, 8 entered/);
+    expect(after).not.toMatch(/a role=link "Hugging Face"/);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('changed');
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
   });
 });
 

@@ -4020,6 +4020,102 @@ describe('Perceive diff baseline', () => {
     expect(T.actionDomDiffShowsChange(changed)).toBe(true);
   });
 
+  it('#297 fold-tag-only [navigation] Main is not a Removed+Added pair', () => {
+    const previous = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 0/2400 (0%) | Focused: none',
+      'Interactive: 12 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[RootWebArea] MiniMax-Music3',
+      '  [navigation] Main  603×28px',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+    ].join('\n');
+    const current = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 80/2400 (3%) | Focused: none',
+      'Interactive: 12 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[RootWebArea] MiniMax-Music3',
+      '  [navigation] Main  603×28px  ↑above fold',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+    ].join('\n');
+    expect(T.stripPerceiveIdentityChrome('  [navigation] Main  603×28px  ↑above fold'))
+      .toBe(T.stripPerceiveIdentityChrome('  [navigation] Main  603×28px'));
+    const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+    expect(diff).toMatch(/no changes detected in AX tree/i);
+    expect(diff).not.toMatch(/--- Removed/);
+    expect(diff).not.toMatch(/↑above fold/);
+    expect(T.actionDomDiffShowsChange(diff)).toBe(false);
+  });
+
+  it('#297 Visible-control cap-swap summarizes membership and still prints a new file', () => {
+    const chrome = [
+      'Hugging Face', 'Models', 'Datasets', 'Spaces', 'Posts', 'search', 'docs', 'pricing',
+    ];
+    const content = [
+      'MiniMaxAI', 'MiniMax-Music3', 'Copy', 'Like', 'LICENSE', 'README.md', 'config.json', 'Files',
+    ];
+    const header = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 0/2400 (0%) | Focused: none',
+      'Interactive: 12 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+    ];
+    const previous = [
+      ...header,
+      '[RootWebArea] MiniMax-Music3',
+      '  [navigation] Main  603×28px',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+      '    [link] README.md  @2  (24,208 160×22)',
+      '',
+      '[Visible controls]',
+      ...chrome.map((label, i) => `  a role=link "${label}" [clickable] (8,${12 + i * 28} 80×22) a[href="#${label}"]`),
+    ].join('\n');
+    const currentHeader = header.map(line => line.replace('Scroll: 0/2400 (0%)', 'Scroll: 80/2400 (3%)'));
+    const current = [
+      ...currentHeader,
+      '[RootWebArea] MiniMax-Music3',
+      '  [navigation] Main  603×28px  ↑above fold',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)',
+      '',
+      '[Visible controls]',
+      ...content.map((label, i) => `  a role=link "${label}" [clickable] (8,${40 + i * 28} 80×22) a[href="#${label}"]`),
+    ].join('\n');
+    const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+    expect(diff).toMatch(/Visible-control cap swap: 8 left, 8 entered/);
+    expect(diff).toContain('- Hugging Face');
+    expect(diff).toContain('+ MiniMaxAI');
+    expect(diff).not.toMatch(/--- Removed \(9\)/);
+    expect(diff).not.toMatch(/a role=link "Hugging Face"/);
+    expect(diff).not.toMatch(/\[navigation\] Main/);
+    expect(T.actionDomDiffShowsChange(diff)).toBe(true);
+
+    const addedFile = current.replace(
+      '    [link] README.md  @2  (24,128 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)\n    [link] tokenizer.json  @3  (24,156 160×22)',
+    );
+    const changed = T.formatPerceiveDiffOutput(previous, addedFile, { mode: 'since-action' });
+    expect(changed).toMatch(/tokenizer\.json/);
+    expect(changed).toMatch(/Visible-control cap swap: 8 left, 8 entered/);
+    expect(changed).not.toMatch(/a role=link "Hugging Face"/);
+    expect(T.actionDomDiffShowsChange(changed)).toBe(true);
+
+    const model = T.buildPerceiveDiffModel(previous, current, { mode: 'since-action' });
+    expect(model.summary.changed).toBe(true);
+    expect(model.summary.kind).toBe('visible-control-cap-swap');
+    expect(model.summary.headline).toBe('Visible-control cap swap: 8 left, 8 entered');
+    expect(model.removed).toEqual(expect.arrayContaining(['Hugging Face']));
+    expect(model.added).toEqual(expect.arrayContaining(['MiniMaxAI']));
+    expect(model.removed.length).toBeLessThanOrEqual(4);
+  });
+
   it('builds a JSON diff model from an explicit baseline output', () => {
     const previous = [
       'Page: Example — https://example.com',
