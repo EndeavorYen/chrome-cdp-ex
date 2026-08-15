@@ -10040,10 +10040,6 @@ function visibleControlNameFromLine(line) {
   return { name: fallback, named: false };
 }
 
-function visibleControlLabelFromLine(line) {
-  return visibleControlNameFromLine(line).name;
-}
-
 function extractVisibleControlLabels(lines = [], { namedOnly = false } = {}) {
   const labels = [];
   const seen = new Set();
