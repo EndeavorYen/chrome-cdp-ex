@@ -2709,7 +2709,9 @@ function orderedAxChildren(node, nodesById, childrenByParent) {
   return children;
 }
 
-async function snapshotStr(cdp, sid, compact = false) {
+async function snapshotStr(cdp, sid, compact = false, extra = {}) {
+  const targetPrefix = extra.targetPrefix || '<target>';
+  await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
   const { nodes } = await cdpDomains(cdp).Accessibility.getFullAXTree( {}, sid);
   const nodesById = new Map(nodes.map(node => [node.nodeId, node]));
   const childrenByParent = new Map();
@@ -5969,8 +5971,12 @@ function formatResponsiveAuditReport(model) {
 
 async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, exceptionBuf, args = []) {
   const opts = parseResponsiveAuditArgs(args);
+  const targetPrefix = targetPrefixForDisplay(targetId);
+  const page = await pageInfoModel(cdp, sid, { targetPrefix });
+  if (isPdfViewerContentType(page.contentType)) {
+    throw pdfViewerError(page, { targetPrefix });
+  }
   const originalViewport = await captureViewportSize(cdp, sid);
-  const page = await pageInfoModel(cdp, sid, { targetPrefix: targetPrefixForDisplay(targetId) });
   const consoleHealth = {
     errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
     warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
@@ -5979,9 +5985,16 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
   const viewports = [];
   const errors = [];
   try {
+    let screenshotTimedOut = false;
     for (const size of opts.viewports) {
       const entry = { viewport: size };
       try {
+        if (screenshotTimedOut) {
+          entry.error = 'skipped after previous screenshot timeout';
+          errors.push(`${size}: ${entry.error}`);
+          viewports.push(entry);
+          continue;
+        }
         await viewportStr(cdp, sid, size);
         const metricsRaw = await evalStr(cdp, sid, responsiveAuditViewportScript({ maxControls: opts.maxControls }));
         const metrics = JSON.parse(metricsRaw);
@@ -6012,6 +6025,7 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
       } catch (e) {
         entry.error = e.message || String(e);
         errors.push(`${size}: ${entry.error}`);
+        if (isScreenshotTimeoutError(e)) screenshotTimedOut = true;
       }
       viewports.push(entry);
     }
@@ -6022,6 +6036,10 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
       console: consoleHealth,
       errors,
     });
+    if (screenshotTimedOut) {
+      const timeoutError = errors.find(msg => isScreenshotTimeoutError({ message: msg })) || errors[0];
+      throw new Error(timeoutError);
+    }
     return opts.format === 'json' ? formatJson(model) : formatResponsiveAuditReport(model);
   } finally {
     await restoreViewportSize(cdp, sid, originalViewport);
@@ -11084,6 +11102,89 @@ function notFillableControlError(selector, tag) {
   return new Error(`fill: ${shown} is not a fillable control${tagPart}. Use click for links/buttons.`);
 }
 
+function fillValueRejectedError(selector, text) {
+  const shown = selector || '<element>';
+  return new Error(
+    `fill: ${shown} did not accept "${formatInputTextPreview(String(text ?? ''))}"; live value is still empty`
+  );
+}
+
+function fillLiveValueDeclaration() {
+  return `function() {
+    const el = this;
+    const cdpFillLiveValue = true;
+    const value = el && el.isContentEditable
+      ? String(el.innerText || el.textContent || '')
+      : String((el && el.value != null) ? el.value : (el && el.textContent) || '');
+    return {
+      ok: true,
+      cdpFillLiveValue,
+      tag: el && el.tagName ? String(el.tagName).toUpperCase() : '?',
+      value,
+      textContent: String(el && el.textContent || ''),
+    };
+  }`;
+}
+
+function fillLiveValuePageScript(selector) {
+  return `(function() {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return { ok: false, cdpFillLiveValue: true, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+    return (${fillLiveValueDeclaration()}).call(el);
+  })()`;
+}
+
+function parseFillLiveSnapshot(raw) {
+  let parsed = raw;
+  if (typeof raw === 'string') {
+    try { parsed = JSON.parse(raw); } catch { parsed = null; }
+  }
+  if (!parsed || typeof parsed !== 'object') return { ok: false, value: '', textContent: '' };
+  return {
+    ok: parsed.ok !== false,
+    tag: parsed.tag || '?',
+    value: String(parsed.value ?? ''),
+    textContent: String(parsed.textContent ?? ''),
+  };
+}
+
+function fillLiveValueAccepted(snapshot, wanted) {
+  const expected = String(wanted ?? '');
+  if (!snapshot || snapshot.ok !== true) return false;
+  return snapshot.value === expected || snapshot.textContent === expected;
+}
+
+async function readFillLiveValue(cdp, sid, selector, refMap, refState) {
+  if (isRef(selector)) {
+    const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
+    const res = await cdpDomains(cdp).Runtime.callFunctionOn({
+      objectId,
+      functionDeclaration: fillLiveValueDeclaration(),
+      returnByValue: true,
+    }, sid);
+    return parseFillLiveSnapshot(res.result?.value);
+  }
+  const raw = await evalStr(cdp, sid, fillLiveValuePageScript(selector));
+  return parseFillLiveSnapshot(raw);
+}
+
+async function fillLiveValueAcceptedNow(cdp, sid, selector, text, refMap, refState) {
+  try {
+    return fillLiveValueAccepted(await readFillLiveValue(cdp, sid, selector, refMap, refState), text);
+  } catch {
+    return false;
+  }
+}
+
+async function assertFillLiveValue(cdp, sid, selector, text, refMap, refState) {
+  const snapshot = await readFillLiveValue(cdp, sid, selector, refMap, refState).catch(() => ({
+    ok: false,
+    value: '',
+    textContent: '',
+  }));
+  if (!fillLiveValueAccepted(snapshot, text)) throw fillValueRejectedError(selector, text);
+}
+
 async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
   const objectId = isRef(selector)
     ? await resolveRefNode(cdp, sid, refMap, selector, refState)
@@ -11131,7 +11232,11 @@ async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
 async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
   if (!selector) throw new Error('CSS selector or @ref required');
   if (text == null) throw new Error('Text required');
-  if (opts.react) return fillReactStr(cdp, sid, selector, text, refMap, refState);
+  if (opts.react) {
+    const out = await fillReactStr(cdp, sid, selector, text, refMap, refState);
+    await assertFillLiveValue(cdp, sid, selector, text, refMap, refState);
+    return out;
+  }
   if (isRef(selector)) {
     const objectId = await resolveRefNode(cdp, sid, refMap, selector, refState);
     const probe = await cdpDomains(cdp).Runtime.callFunctionOn({
@@ -11151,12 +11256,20 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
     const probed = probe.result?.value || {};
     if (probed.fillable !== true) throw notFillableControlError(selector, probed.tag);
     await cdpDomains(cdp).Input.insertText( { text }, sid);
+    if (!(await fillLiveValueAcceptedNow(cdp, sid, selector, text, refMap, refState))) {
+      await fillReactStr(cdp, sid, selector, text, refMap, refState);
+    }
+    await assertFillLiveValue(cdp, sid, selector, text, refMap, refState);
     return `Filled ${selector} with "${formatInputTextPreview(text)}"`;
   }
   const result = await evalStr(cdp, sid, fillableControlPageProbe(selector));
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(r.error);
   await cdpDomains(cdp).Input.insertText( { text }, sid);
+  if (!(await fillLiveValueAcceptedNow(cdp, sid, selector, text, refMap, refState))) {
+    await fillReactStr(cdp, sid, selector, text, refMap, refState);
+  }
+  await assertFillLiveValue(cdp, sid, selector, text, refMap, refState);
   return `Filled <${r.tag}> with "${formatInputTextPreview(text)}"`;
 }
 
@@ -11263,13 +11376,15 @@ async function scanshotStr(cdp, sid, targetId) {
   return lines.join('\n');
 }
 
-async function stylesStr(cdp, sid, selectorOrArgs) {
+async function stylesStr(cdp, sid, selectorOrArgs, extra = {}) {
   // Share root/selector resolution with text/html for consistent diagnostics.
   let opts;
   if (Array.isArray(selectorOrArgs)) opts = parseTextArgs(selectorOrArgs);
   else if (typeof selectorOrArgs === 'string' || selectorOrArgs == null) {
     opts = parseTextArgs(selectorOrArgs ? [selectorOrArgs] : []);
   } else opts = { selectors: [], root: null };
+  const targetPrefix = extra.targetPrefix || opts.targetPrefix || '<target>';
+  await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
   const selector = opts.selectors[0] || null;
   if (!selector) throw new Error('CSS selector required');
   const root = opts.root || 'document';
@@ -11337,7 +11452,7 @@ async function stylesStr(cdp, sid, selectorOrArgs) {
     const rootLabel = parsed?.root || root || 'document';
     throw new Error(
       `styles: no element matched within root "${rootLabel}" for selector ${selector}. ` +
-      `Fallback: cdp eval <target> "getComputedStyle(document.querySelector(${JSON.stringify(selector)}))"`
+      `Fallback: cdp eval ${targetPrefix} "getComputedStyle(document.querySelector(${JSON.stringify(selector)}))"`
     );
   }
   // Legacy path: eval may still return a plain object if script changes.
@@ -17871,7 +17986,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       });
       return output;
     },
-    snap: args => snapshotStr(cdp, sessionId, args[0] !== '--full'),
+    snap: args => snapshotStr(cdp, sessionId, args[0] !== '--full', { targetPrefix: targetPrefixForDisplay(targetId) }),
     status: async args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
       if (fopts.format === 'json') {
@@ -17898,7 +18013,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         targetPrefix: targetPrefixForDisplay(targetId),
       });
     },
-    styles: args => stylesStr(cdp, sessionId, args),
+    styles: args => stylesStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
     summary: async args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
       return fopts.format === 'json'
@@ -21933,6 +22048,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   authorizeDaemonApplicationCommand, executeDaemonApplicationRoute,
   daemonRequestMayHaveSideEffects,
   fillableControlProbeDeclaration, notFillableControlError,
+  fillLiveValueAccepted, fillValueRejectedError, fillLiveValuePageScript,
   looksLikeClipboardControl, isExpectedClipboardNoChange,
   TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,
   createDaemonRequestExecutionContext, createTableCollectionRuntime,
