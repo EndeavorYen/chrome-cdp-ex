@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#245, #246, #247, #248)
+
+* `visual-check` / `responsive-audit` on a Chrome PDF plugin emit `chrome-cdp-ex.pdf-viewer.v1`
+  immediately instead of waiting through screenshot timeouts. Next is
+  `cdp eval <prefix> "document.contentType"`, not `shot` / `perceive`. Screenshot
+  timeout paths restore the previous viewport and exit non-zero.
+* `snap` / `snap --full` on a Chrome PDF plugin emit `pdf-viewer.v1` instead of an
+  empty AX tree plus a perceive hint.
+* `styles` on a Chrome PDF plugin emit `pdf-viewer.v1` instead of dumping the
+  chrome-extension embedder BODY/HTML computed styles. Selector misses interpolate
+  the target prefix instead of literal `<target>`.
+* `fill` re-reads the live control after typing. If `.value` / textContent stay
+  empty (controlled textarea), it retries the native setter, then fails closed:
+  no `Filled` line, `Action failure: fill-no-change`, not `Outcome: changed`.
+
 ### Open issue dogfood (#241, #242, #243)
 
 * `qa` on a Chrome PDF plugin emits `chrome-cdp-ex.pdf-viewer.v1` instead of

@@ -246,6 +246,30 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
   }
 
   if (
+    action === 'fill'
+    && (
+      lower.includes('did not accept')
+      || lower.includes('live value is still empty')
+    )
+  ) {
+    const prefix = actionTargetCommandPrefix(target);
+    const inspect = input
+      ? `cdp eval ${prefix} "document.querySelector(${JSON.stringify(input)})?.value"`
+      : `cdp help fill`;
+    return {
+      ...base,
+      kind: 'fill-no-change',
+      reason: 'The fillable control is still empty after fill. A framework may own the value.',
+      nextCommand: inspect,
+      hints: [
+        'Do not claim Filled when the live node value is still empty.',
+        `Inspect the live value with \`${inspect}\`.`,
+        'Retry with `fill --react` only if the control is a native input that still needs a setter.',
+      ],
+    };
+  }
+
+  if (
     lower.includes('unknown key')
     || lower.includes('key name required')
   ) {

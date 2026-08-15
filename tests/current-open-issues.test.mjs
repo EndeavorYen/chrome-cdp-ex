@@ -4904,7 +4904,7 @@ describe('issues #237-#239 open contracts', () => {
       },
     };
     try {
-      await T.responsiveAuditStr(
+      await expect(T.responsiveAuditStr(
         cdp,
         'sid',
         session,
@@ -4912,7 +4912,7 @@ describe('issues #237-#239 open contracts', () => {
         new T.RingBuffer(8),
         new T.RingBuffer(8),
         ['--viewport', '800x600'],
-      );
+      )).rejects.toThrow(/Screenshot failed: all methods timed out|Timeout: Page\.captureScreenshot/);
       expect(sizes[0]).toBe('800x600');
       expect(sizes.at(-1)).toBe('1042x632');
       expect(current).toEqual({ w: 1042, h: 632 });
@@ -5297,6 +5297,276 @@ describe('issues #241-#243 open contracts', () => {
     };
     await expect(T.cookieDelStr(hostCdp, 'sid', 'picky10y')).resolves.toBe('Cookie deleted: picky10y');
     expect(hostJar).toEqual([]);
+  });
+});
+
+describe('issues #245-#248 open contracts', () => {
+  const PDF_TARGET_ID = '9FAD7C71E2DA7ED50C67BE2092417850';
+  const PDF_PREFIX = '9FAD7C71';
+  const PDF_PAGE = {
+    title: '',
+    url: 'https://arxiv.org/pdf/2608.12307',
+    contentType: 'application/pdf',
+  };
+
+  function pdfPageCdp() {
+    const calls = [];
+    return {
+      calls,
+      send(method, params = {}) {
+        calls.push({ method, params });
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('document.title') || expr.includes('contentType')) {
+            return Promise.resolve({ result: { value: JSON.stringify(PDF_PAGE) } });
+          }
+          if (expr.includes('getComputedStyle') || expr.includes('keep')) {
+            throw new Error('styles should not read embedder computed styles on pdf-viewer');
+          }
+          if (expr.includes('{w:window.innerWidth') && expr.includes('innerHeight')) {
+            return Promise.resolve({ result: { value: JSON.stringify({ w: 1042, h: 632 }) } });
+          }
+          return Promise.resolve({ result: { value: '{}' } });
+        }
+        if (method === 'Page.captureScreenshot') {
+          throw new Error('screenshot should not run on pdf-viewer visual-check');
+        }
+        if (method === 'Accessibility.getFullAXTree') {
+          throw new Error('ax should not run on pdf-viewer snap');
+        }
+        if (method === 'Emulation.setDeviceMetricsOverride') {
+          throw new Error('viewport should not change on pdf-viewer visual-check');
+        }
+        return Promise.resolve({});
+      },
+    };
+  }
+
+  it('#245 visual-check on a Chrome PDF viewer emits pdf-viewer.v1 without screenshots or leftover viewport', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'cdp-visual-pdf-'));
+    const session = T.createSessionState({
+      targetId: PDF_TARGET_ID,
+      sessionId: 'sid',
+      logPath: join(tmp, 'session.jsonl'),
+      screenshotDir: join(tmp, 'shots'),
+    });
+    const cdp = pdfPageCdp();
+    try {
+      await expect(T.responsiveAuditStr(
+        cdp,
+        'sid',
+        session,
+        PDF_TARGET_ID,
+        new T.RingBuffer(8),
+        new T.RingBuffer(8),
+        ['--viewport', '800x600'],
+      )).rejects.toThrow(/chrome-cdp-ex\.pdf-viewer\.v1/);
+
+      let thrown;
+      try {
+        await T.responsiveAuditStr(
+          cdp,
+          'sid',
+          session,
+          PDF_TARGET_ID,
+          new T.RingBuffer(8),
+          new T.RingBuffer(8),
+          ['--viewport', '800x600'],
+        );
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown?.code).toBe('pdf_viewer');
+      expect(thrown.message).toContain(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+      expect(thrown.message).not.toMatch(/cdp shot /);
+      expect(thrown.message).not.toMatch(/cdp perceive /);
+      expect(thrown.message).not.toMatch(/Use `perceive`/);
+      expect(cdp.calls.some(call => call.method === 'Page.captureScreenshot')).toBe(false);
+      expect(cdp.calls.some(call => call.method === 'Emulation.setDeviceMetricsOverride')).toBe(false);
+
+      const recovery = T.buildCliErrorRecovery(thrown.message, {
+        cmd: 'visual-check',
+        targetPrefix: PDF_PREFIX,
+        err: thrown,
+      });
+      expect(recovery.kind).toBe('pdf-viewer');
+      expect(recovery.run).toBe(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+      expect(recovery.run).not.toMatch(/cdp shot /);
+      expect(recovery.run).not.toMatch(/cdp perceive /);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('#246 snap on a Chrome PDF viewer emits pdf-viewer.v1, not an empty tree plus perceive', async () => {
+    const cdp = pdfPageCdp();
+    await expect(T.snapshotStr(cdp, 'sid', true, { targetPrefix: PDF_PREFIX }))
+      .rejects.toThrow(/chrome-cdp-ex\.pdf-viewer\.v1/);
+    await expect(T.snapshotStr(cdp, 'sid', false, { targetPrefix: PDF_PREFIX }))
+      .rejects.toThrow(/cdp eval 9FAD7C71 "document\.contentType"/);
+
+    let thrown;
+    try {
+      await T.snapshotStr(cdp, 'sid', true, { targetPrefix: PDF_PREFIX });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.code).toBe('pdf_viewer');
+    expect(thrown.message).not.toMatch(/Use `perceive`/);
+    expect(thrown.message).not.toMatch(/recommended starting command/);
+    expect(cdp.calls.some(call => call.method === 'Accessibility.getFullAXTree')).toBe(false);
+
+    const recovery = T.buildCliErrorRecovery(thrown.message, {
+      cmd: 'snap',
+      targetPrefix: PDF_PREFIX,
+      err: thrown,
+    });
+    expect(recovery.kind).toBe('pdf-viewer');
+    expect(recovery.run).toBe(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+    expect(recovery.run).not.toMatch(/cdp perceive /);
+  });
+
+  it('#247 styles on a Chrome PDF viewer emits pdf-viewer.v1, not embedder BODY/HTML styles', async () => {
+    const cdp = pdfPageCdp();
+    await expect(T.stylesStr(cdp, 'sid', ['body'], { targetPrefix: PDF_PREFIX }))
+      .rejects.toThrow(/chrome-cdp-ex\.pdf-viewer\.v1/);
+    await expect(T.stylesStr(cdp, 'sid', ['html'], { targetPrefix: PDF_PREFIX }))
+      .rejects.toThrow(/cdp eval 9FAD7C71 "document\.contentType"/);
+
+    let thrown;
+    try {
+      await T.stylesStr(cdp, 'sid', ['body'], { targetPrefix: PDF_PREFIX });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.code).toBe('pdf_viewer');
+    expect(thrown.message).not.toContain('Times New Roman');
+    expect(thrown.message).not.toContain('rgb(40, 40, 40)');
+    expect(thrown.message).not.toMatch(/<BODY>/);
+    expect(cdp.calls.some(call => String(call.params?.expression || '').includes('getComputedStyle'))).toBe(false);
+
+    const recovery = T.buildCliErrorRecovery(thrown.message, {
+      cmd: 'styles',
+      targetPrefix: PDF_PREFIX,
+      err: thrown,
+    });
+    expect(recovery.kind).toBe('pdf-viewer');
+    expect(recovery.run).toBe(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+
+    const htmlPage = {
+      send(method, params = {}) {
+        if (method !== 'Runtime.evaluate') throw new Error(`unexpected ${method}`);
+        const expr = String(params.expression || '');
+        if (expr.includes('contentType') || expr.includes('document.title')) {
+          return Promise.resolve({
+            result: {
+              value: JSON.stringify({
+                title: 'Example Domain',
+                url: 'https://example.com/',
+                contentType: 'text/html',
+              }),
+            },
+          });
+        }
+        return Promise.resolve({
+          result: { value: JSON.stringify({ ok: false, root: 'document', selector: 'h1' }) },
+        });
+      },
+    };
+    const miss = await T.stylesStr(htmlPage, 'sid', ['h1'], { targetPrefix: '1D366978' })
+      .then(() => {
+        throw new Error('expected styles selector miss');
+      }, error => error);
+    expect(miss.message).toContain('cdp eval 1D366978');
+    expect(miss.message).not.toContain('<target>');
+  });
+
+  it('#248 fill does not claim Filled/changed when the live textarea value stays empty', async () => {
+    const calls = [];
+    const cdp = {
+      send(method, params = {}) {
+        calls.push({ method, params });
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('cdpFillLiveValue')) {
+            return Promise.resolve({
+              result: { value: { ok: true, tag: 'TEXTAREA', value: '', textContent: '' } },
+            });
+          }
+          return Promise.resolve({
+            result: { value: { ok: true, fillable: true, tag: 'TEXTAREA' } },
+          });
+        }
+        if (method === 'Input.insertText') return Promise.resolve({});
+        if (method === 'DOM.enable') return Promise.resolve({});
+        if (method === 'DOM.getDocument') return Promise.resolve({ root: { nodeId: 1 } });
+        if (method === 'DOM.querySelector') return Promise.resolve({ nodeId: 42 });
+        if (method === 'DOM.resolveNode') return Promise.resolve({ object: { objectId: 'obj-textarea' } });
+        if (method === 'Runtime.callFunctionOn') {
+          if (!params.arguments) {
+            return Promise.resolve({ result: { value: { ok: true, fillable: true, tag: 'TEXTAREA' } } });
+          }
+          return Promise.resolve({ result: { value: { tag: 'TEXTAREA', value: '' } } });
+        }
+        return Promise.resolve({});
+      },
+    };
+
+    await expect(T.fillStr(cdp, 'sid', '#chat-assistant-textarea', 'picky11-no-submit', new Map()))
+      .rejects.toThrow(/did not accept|live value is still empty/);
+    expect(calls.some(call => call.method === 'Input.insertText')).toBe(true);
+
+    let thrown;
+    try {
+      await T.fillStr(cdp, 'sid', '#chat-assistant-textarea', 'picky11-no-submit', new Map());
+    } catch (error) {
+      thrown = error;
+    }
+    expect(String(thrown?.message || '')).not.toMatch(/^Filled /);
+    expect(String(thrown?.message || '')).not.toContain('Filled <TEXTAREA>');
+
+    const failure = T.classifyActionFailure(thrown, {
+      action: 'fill',
+      target: { targetId: '77C5B4F8DEADBEEF', input: '#chat-assistant-textarea' },
+    });
+    expect(failure.kind).toBe('fill-no-change');
+    expect(failure.nextCommand).toContain('cdp eval 77C5B4F8');
+    expect(failure.nextCommand).not.toMatch(/cdp perceive /);
+
+    const formatted = T.formatActionFailure(thrown, {
+      action: 'fill',
+      target: { targetId: '77C5B4F8DEADBEEF', input: '#chat-assistant-textarea' },
+    });
+    expect(formatted).not.toMatch(/^Filled /m);
+    expect(formatted).toMatch(/Action failure: fill-no-change/);
+    expect(formatted).not.toMatch(/Outcome: changed/);
+
+    expect(T.fillLiveValueAccepted({ ok: true, value: '', textContent: '' }, 'picky11-no-submit')).toBe(false);
+    expect(T.fillLiveValueAccepted({ ok: true, value: 'picky11-control', textContent: '' }, 'picky11-control')).toBe(true);
+  });
+
+  it('#248 fill still reports Filled when the live node actually holds the value', async () => {
+    const cdp = {
+      send(method, params = {}) {
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('cdpFillLiveValue')) {
+            return Promise.resolve({
+              result: { value: { ok: true, tag: 'INPUT', value: 'picky11-control', textContent: '' } },
+            });
+          }
+          return Promise.resolve({ result: { value: { ok: true, tag: 'INPUT' } } });
+        }
+        if (method === 'Input.insertText') return Promise.resolve({});
+        if (method === 'Runtime.callFunctionOn') {
+          throw new Error('native setter should not run when insertText stuck');
+        }
+        return Promise.resolve({});
+      },
+    };
+    const out = await T.fillStr(cdp, 'sid', '#picky11in', 'picky11-control', new Map());
+    expect(out).toContain('Filled <INPUT>');
+    expect(out).toContain('picky11-control');
   });
 });
 

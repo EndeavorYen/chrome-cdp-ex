@@ -8421,9 +8421,13 @@ describe('clickStr', () => {
 describe('fillStr', () => {
   it('should clear and fill element by CSS selector', async () => {
     const cdp = createMockCDP({
-      'Runtime.evaluate': () => ({
-        result: { value: { ok: true, tag: 'INPUT' } },
-      }),
+      'Runtime.evaluate': (params) => {
+        const expr = String(params.expression || '');
+        if (expr.includes('cdpFillLiveValue')) {
+          return { result: { value: { ok: true, tag: 'INPUT', value: 'user@test.com', textContent: '' } } };
+        }
+        return { result: { value: { ok: true, tag: 'INPUT' } } };
+      },
       'Input.insertText': () => ({}),
     });
     const result = await fillStr(cdp, 'sid1', '#email', 'user@test.com', new Map());
@@ -8435,7 +8439,12 @@ describe('fillStr', () => {
     const refMap = new Map([[1, 201]]);
     const cdp = createMockCDP({
       'DOM.resolveNode': () => ({ object: { objectId: 'obj-1' } }),
-      'Runtime.callFunctionOn': () => ({ result: { value: { ok: true, fillable: true, tag: 'INPUT' } } }),
+      'Runtime.callFunctionOn': (params) => {
+        if (params.functionDeclaration?.includes('cdpFillLiveValue')) {
+          return { result: { value: { ok: true, tag: 'INPUT', value: 'hello', textContent: 'hello' } } };
+        }
+        return { result: { value: { ok: true, fillable: true, tag: 'INPUT' } } };
+      },
       'Input.insertText': () => ({}),
     });
     const result = await fillStr(cdp, 'sid1', '@1', 'hello', refMap);
@@ -8444,13 +8453,17 @@ describe('fillStr', () => {
   });
 
   it('should truncate long text in result message', async () => {
+    const longText = 'A'.repeat(100);
     const cdp = createMockCDP({
-      'Runtime.evaluate': () => ({
-        result: { value: { ok: true, tag: 'TEXTAREA' } },
-      }),
+      'Runtime.evaluate': (params) => {
+        const expr = String(params.expression || '');
+        if (expr.includes('cdpFillLiveValue')) {
+          return { result: { value: { ok: true, tag: 'TEXTAREA', value: longText, textContent: longText } } };
+        }
+        return { result: { value: { ok: true, tag: 'TEXTAREA' } } };
+      },
       'Input.insertText': () => ({}),
     });
-    const longText = 'A'.repeat(100);
     const result = await fillStr(cdp, 'sid1', 'textarea', longText, new Map());
     expect(result).toContain('...');
     expect(result.length).toBeLessThan(longText.length);
@@ -8498,7 +8511,13 @@ describe('fill --react', () => {
 
   it('keeps normal fill using Input.insertText', async () => {
     const cdp = createMockCDP({
-      'Runtime.evaluate': () => ({ result: { value: { ok: true, tag: 'INPUT' } } }),
+      'Runtime.evaluate': (params) => {
+        const expr = String(params.expression || '');
+        if (expr.includes('cdpFillLiveValue')) {
+          return { result: { value: { ok: true, tag: 'INPUT', value: 'plain', textContent: '' } } };
+        }
+        return { result: { value: { ok: true, tag: 'INPUT' } } };
+      },
       'Input.insertText': () => ({}),
     });
     await fillStr(cdp, 'sid1', '#name', 'plain', new Map());
