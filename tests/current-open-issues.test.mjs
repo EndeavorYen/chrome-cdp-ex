@@ -8124,7 +8124,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
   }
 
   async function leftoverGoldenPath(cdp, store, refMap, refState, {
-    targetId = HF_TARGET_ID,
+    targetId: _targetId = HF_TARGET_ID,
     prefix = HF_PREFIX,
   } = {}) {
     const dump = await T.perceiveStr(
@@ -8233,7 +8233,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     const refMap = new Map();
     const refState = {};
     const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
-    expect(leftoverDump).toMatch(/LICENSE  @1  \(24,180 160×22\)/);
+    expect(leftoverDump).toMatch(/LICENSE {2}@1 {2}\(24,180 160×22\)/);
     const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
 
     const actionTarget = scrollTarget();
@@ -8309,7 +8309,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
       targetId: COMFY_TARGET_ID,
       prefix: COMFY_PREFIX,
     });
-    expect(leftoverDump).toMatch(/API Reference  @1  \(16,220 140×22\)/);
+    expect(leftoverDump).toMatch(/API Reference {2}@1 {2}\(16,220 140×22\)/);
     const actionTarget = scrollTarget();
     const settleBaseline = await recaptureSettleBaseline(
       cdp, store, actionTarget, refMap, refState, COMFY_TARGET_ID,
