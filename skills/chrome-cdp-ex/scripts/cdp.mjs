@@ -80,6 +80,7 @@ import {
   goldenPathReadPageRecommendation,
 } from './lib/perception-model.mjs';
 import {
+  CARDS_SCHEMA,
   buildCardsModel,
   formatCardsJson,
   formatCardsText,
@@ -3889,6 +3890,18 @@ function formatPdfViewerOutput(meta = {}, { targetPrefix = '<target>' } = {}) {
   ].join('\n');
 }
 
+function pdfViewerHandoffModelFromOutput(output, targetPrefix = '<target>') {
+  const text = String(output || '');
+  const title = text.match(/^Page: (.*)$/m)?.[1];
+  const url = text.match(/^URL: (.*)$/m)?.[1];
+  const contentType = text.match(/^contentType: (.*)$/m)?.[1];
+  return pdfViewerHandoffModel({
+    title: !title || title === '(untitled)' ? '' : title,
+    url: !url || url === '(unknown)' ? '' : url,
+    contentType,
+  }, { targetPrefix });
+}
+
 function pdfViewerError(meta = {}, { targetPrefix = '<target>' } = {}) {
   const err = new Error(formatPdfViewerOutput(meta, { targetPrefix }));
   err.code = 'pdf_viewer';
@@ -4461,6 +4474,22 @@ function normalizeNetworkDelta(delta = {}) {
 
 function noBaselineActionDiffText() {
   return 'No changes detected.';
+}
+
+function isCardsPerceiveOutput(output) {
+  return String(output || '').includes(CARDS_SCHEMA);
+}
+
+function actionSettleBaseline(output, snapshotOpts = null) {
+  // Compact --cards dumps are a feed view, not an AX settle baseline. Reusing
+  // them after a 0-card page makes no-op press/type/clickxy look like a DOM change.
+  if (snapshotOpts?.cards === true || isCardsPerceiveOutput(output)) {
+    return {
+      output: null,
+      opts: snapshotOpts ? { ...snapshotOpts, cards: false } : null,
+    };
+  }
+  return { output: output || null, opts: snapshotOpts || null };
 }
 
 function actionDomDiffShowsChange(domDiff) {
@@ -5437,6 +5466,7 @@ function actionResultPdfViewerMeta(result = {}, dispatchText = '') {
 function actionObservationPerceiveOpts(targetId, extra = {}) {
   return {
     ...extra,
+    cards: false,
     targetPrefix: extra.targetPrefix || targetPrefixForDisplay(targetId),
   };
 }
@@ -10111,6 +10141,32 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   if (frame && (scopeSelector || excludeSelector)) {
     throw new Error('perceive --frame does not yet support --selector/--exclude; run frame-scoped perceive first, then use the listed @fN:M refs.');
   }
+
+  const pdfProbeContext = frameExecutionContextId != null
+    ? { contextId: frameExecutionContextId }
+    : { timeoutMs: STATUS_PAGE_INFO_TIMEOUT };
+  // --cards and -s previously skipped the PDF gate and treated the empty
+  // embedder as a normal HTML/cards page. Probe before AX / scoped DOM queries.
+  if (cards || scopeSelector) {
+    try {
+      const probe = JSON.parse(await evalStr(
+        cdp,
+        sid,
+        'JSON.stringify({ title: document.title, url: window.location.href, contentType: document.contentType || "" })',
+        false,
+        pdfProbeContext,
+      ));
+      if (isPdfViewerContentType(probe.contentType)) {
+        const output = formatPdfViewerOutput(probe, { targetPrefix: opts.targetPrefix });
+        lastPerceiveStore.output = output;
+        lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts({ ...opts, cards: false });
+        return output;
+      }
+    } catch (error) {
+      if (error?.code === 'pdf_viewer') throw error;
+    }
+  }
+
   // Get AX tree nodes and page metadata + layout map in parallel
   // Hoist DOM.getDocument so scope and exclude can share it
   const needsDocument = !frame && (scopeSelector || excludeSelector);
@@ -10135,10 +10191,10 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
 
   const meta = JSON.parse(metaJson);
 
-  if (isPdfViewerContentType(meta.contentType) && !cards && !scopeSelector) {
+  if (isPdfViewerContentType(meta.contentType)) {
     const output = formatPdfViewerOutput(meta, { targetPrefix: opts.targetPrefix });
     lastPerceiveStore.output = output;
-    lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts(opts);
+    lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts({ ...opts, cards: false });
     return output;
   }
 
@@ -10419,6 +10475,9 @@ function perceptionModelFromText(output, refState = {}, targetPrefix = '<target>
 
 async function perceiveModel(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts = {}, refState = null) {
   const output = await perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, opts, refState);
+  if (String(output || '').includes('chrome-cdp-ex.pdf-viewer.v1')) {
+    return pdfViewerHandoffModelFromOutput(output, opts.targetPrefix || '<target>');
+  }
   return perceptionModelFromText(output, refState || {}, opts.targetPrefix || '<target>', opts);
 }
 
@@ -11326,6 +11385,8 @@ async function selectStr(cdp, sid, selector, value) {
 }
 
 async function fullshotStr(cdp, sid, filePath, targetId) {
+  const targetPrefix = targetPrefixForDisplay(targetId);
+  await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
   const dpr = await getDpr(cdp, sid);
   const metrics = await cdpDomains(cdp).Page.getLayoutMetrics( {}, sid);
   const width = metrics.cssContentSize?.width || metrics.contentSize?.width || 1280;
@@ -17848,8 +17909,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     const actionTarget = target && typeof target === 'object'
       ? { ...target, targetId }
       : { input: String(target || ''), label: String(target || ''), targetId };
-    const baselineOutput = baselineOutputForActionTarget(refState, lastPerceiveStore.output, actionTarget);
-    const baselineOpts = lastPerceiveStore.snapshotOpts || null;
+    const baselineFromTarget = baselineOutputForActionTarget(refState, lastPerceiveStore.output, actionTarget);
+    const settleBaseline = actionSettleBaseline(baselineFromTarget, lastPerceiveStore.snapshotOpts || null);
+    const baselineOutput = settleBaseline.output;
+    const baselineOpts = settleBaseline.opts;
     const observationBaseline = createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf });
     const actionStartedAt = Date.now();
     const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput, baselineOpts));
@@ -19789,46 +19852,48 @@ function createPerceiveCommandHandler({
     const targetPrefix = targetPrefixForDisplay(targetId);
     popts.targetPrefix = targetPrefix;
     if (popts.sinceAction) popts.diffBaseline = popts.diffBaseline || session.lastAction?.baselineOutput || null;
+    const page = await pageInfo(cdp, sessionId, { targetPrefix });
+    if (isPdfViewerContentType(page.contentType)) {
+      return commandResult(
+        fopts.format === 'json'
+          ? formatJson(pdfViewerHandoffModel(page, { targetPrefix }))
+          : formatPdfViewerOutput(page, { targetPrefix }),
+        null,
+      );
+    }
     let value;
     if (fopts.qa) {
-      const page = await pageInfo(cdp, sessionId, { targetPrefix });
-      if (isPdfViewerContentType(page.contentType)) {
-        value = fopts.format === 'json'
-          ? formatJson(pdfViewerHandoffModel(page, { targetPrefix }))
-          : formatPdfViewerOutput(page, { targetPrefix });
-      } else {
-        const consoleHealth = {
-          errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
-          warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
-          exceptions: exceptionBuf.all().length,
-        };
-        const pageHealth = await collectHealth(cdp, sessionId).catch(() => null);
-        let text = '';
-        try {
-          text = await perceiveText(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
-            ...popts,
-            interactive: true,
-            maxDepth: Math.min(popts.maxDepth || 8, 6),
-          }, refState);
-        } catch (error) {
-          text = error.message || String(error);
-        }
-        const summary = buildQaSummaryModel({
-          page: { title: page.title, url: page.url },
-          pageHealth,
-          console: consoleHealth,
-          network: { failures: countNetworkFailures(netReqBuf) },
-          targetPrefix,
-          nextCommand: `cdp report ${targetPrefix}`,
-          source: 'perceive',
-        });
-        value = fopts.format === 'json'
-          ? formatJson({
-              summary,
-              perceptionPreview: truncateTextLines(text, fopts.maxDiffLines ?? 20),
-            })
-          : formatQaSummaryText(summary);
+      const consoleHealth = {
+        errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
+        warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+        exceptions: exceptionBuf.all().length,
+      };
+      const pageHealth = await collectHealth(cdp, sessionId).catch(() => null);
+      let text = '';
+      try {
+        text = await perceiveText(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
+          ...popts,
+          interactive: true,
+          maxDepth: Math.min(popts.maxDepth || 8, 6),
+        }, refState);
+      } catch (error) {
+        text = error.message || String(error);
       }
+      const summary = buildQaSummaryModel({
+        page: { title: page.title, url: page.url },
+        pageHealth,
+        console: consoleHealth,
+        network: { failures: countNetworkFailures(netReqBuf) },
+        targetPrefix,
+        nextCommand: `cdp report ${targetPrefix}`,
+        source: 'perceive',
+      });
+      value = fopts.format === 'json'
+        ? formatJson({
+            summary,
+            perceptionPreview: truncateTextLines(text, fopts.maxDiffLines ?? 20),
+          })
+        : formatQaSummaryText(summary);
     } else if (popts.cards) {
       value = await perceiveText(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
         ...popts,
@@ -22073,7 +22138,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
   isPdfViewerContentType, formatPdfViewerOutput, pdfViewerError, assertNotPdfViewerPage, pageInfoModel,
-  actionObservationPerceiveOpts, actionResultPdfViewerMeta,
+  pdfViewerHandoffModelFromOutput,
+  actionObservationPerceiveOpts, actionResultPdfViewerMeta, actionSettleBaseline, isCardsPerceiveOutput,
   actionDomDiffShowsChange, noBaselineActionDiffText,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,

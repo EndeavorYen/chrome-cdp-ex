@@ -250,11 +250,14 @@ export function buildCardsModel(nodes = [], meta = {}, refMap = null, opts = {})
   const truncated = foundCount > cap;
   const raisedLast = Math.min(MAX_CARD_CAP, foundCount);
   const previousCards = opts.previousCards;
-  const previousFingerprint = previousCards ? cardsFingerprint(previousCards) : '';
+  const hasPreviousCards = Array.isArray(previousCards);
+  const previousFingerprint = hasPreviousCards ? cardsFingerprint(previousCards) : '';
   const fingerprint = cardsFingerprint(cards);
   const previousScrollY = Number.isFinite(Number(opts.previousScrollY)) ? Number(opts.previousScrollY) : null;
   const scrolled = previousScrollY != null && scrollY != null && previousScrollY !== scrollY;
-  const unchanged = Boolean(previousFingerprint) && fingerprint === previousFingerprint;
+  // Empty previous snapshots are valid: 0 cards → 0 cards is unchanged, not a
+  // first-run dump. `cardsFingerprint([])` is '', so truthiness is the wrong gate.
+  const unchanged = hasPreviousCards && fingerprint === previousFingerprint;
   const next = unchanged
     ? CARDS_UNCHANGED_NEXT
     : virtualized

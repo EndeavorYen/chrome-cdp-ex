@@ -5919,4 +5919,339 @@ describe('issues #250-#253 open contracts', () => {
   });
 });
 
+describe('issues #255-#257 leftover contracts', () => {
+  const PDF_TARGET_ID = '9FAD7C71E2DA7ED50C67BE2092417850';
+  const PDF_PREFIX = '9FAD7C71';
+  const PDF_PAGE = {
+    title: '',
+    url: 'https://arxiv.org/pdf/2608.12307',
+    contentType: 'application/pdf',
+  };
+  const emptyBuffer = { all: () => [] };
+  const emptyDelta = {
+    console: { count: 0, errors: 0, warnings: 0, entries: [] },
+    exceptions: { count: 0, entries: [] },
+    network: { count: 0, failures: 0, pending: 0, entries: [] },
+  };
+
+  function pdfPageCdp() {
+    const calls = [];
+    return {
+      calls,
+      send(method, params = {}) {
+        calls.push({ method, params });
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('document.title') || expr.includes('contentType')) {
+            return Promise.resolve({ result: { value: JSON.stringify(PDF_PAGE) } });
+          }
+          if (expr.includes('innerWidth')) {
+            return Promise.resolve({ result: { value: JSON.stringify({ w: 1042, h: 632 }) } });
+          }
+          return Promise.resolve({ result: { value: '{}' } });
+        }
+        if (method === 'Page.captureScreenshot') {
+          throw new Error('screenshot should not run on pdf-viewer fullshot');
+        }
+        if (method === 'Page.getLayoutMetrics') {
+          throw new Error('layout metrics should not run on pdf-viewer fullshot');
+        }
+        if (method === 'Accessibility.getFullAXTree') {
+          throw new Error('ax should not run on pdf-viewer leftover perceive');
+        }
+        if (method === 'DOM.getDocument' || method === 'DOM.querySelector') {
+          throw new Error('scoped DOM should not run on pdf-viewer leftover perceive');
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+      waitForEvent() {
+        return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+      },
+    };
+  }
+
+  function pdfPerceiveHandler(overrides = {}) {
+    return T.createPerceiveCommandHandler({
+      cdp: pdfPageCdp(),
+      sessionId: 'sid',
+      targetId: PDF_TARGET_ID,
+      session: { lastAction: null },
+      consoleBuf: emptyBuffer,
+      exceptionBuf: emptyBuffer,
+      netReqBuf: emptyBuffer,
+      refMap: new Map(),
+      lastPerceiveStore: { output: null },
+      refState: {},
+      ops: {
+        readPerceiveTargetMetadata: async () => ({ targetId: PDF_TARGET_ID, url: PDF_PAGE.url }),
+        readPerceiveDocumentState: async () => ({ url: PDF_PAGE.url, readyState: 'complete' }),
+        pageInfoModel: async () => PDF_PAGE,
+        collectPageHealth: async () => {
+          throw new Error('qa health should not run on pdf-viewer leftover perceive');
+        },
+        perceiveText: async () => {
+          throw new Error('perceive tree should not run on pdf-viewer leftover flags');
+        },
+        perceiveModel: async () => {
+          throw new Error('perceive.v1 JSON should not run on pdf-viewer leftover flags');
+        },
+        ...overrides.ops,
+      },
+      ...overrides,
+    });
+  }
+
+  it('#255 leftover perceive --cards/-s/--format json on a Chrome PDF viewer emit pdf-viewer.v1', async () => {
+    const handler = pdfPerceiveHandler();
+    const next = `cdp eval ${PDF_PREFIX} "document.contentType"`;
+
+    for (const args of [['--cards'], ['--cards', '--format', 'json'], ['-s', 'body'], ['--format', 'json']]) {
+      const raw = (await handler({ args })).value;
+      if (args.includes('json')) {
+        const parsed = JSON.parse(raw);
+        expect(parsed.schema).toBe('chrome-cdp-ex.pdf-viewer.v1');
+        expect(parsed.nextCommand).toBe(next);
+        expect(JSON.stringify(parsed)).not.toMatch(/chrome-cdp-ex\.cards\.v1/);
+        expect(JSON.stringify(parsed)).not.toMatch(/chrome-cdp-ex\.perceive\.v1/);
+        expect(JSON.stringify(parsed)).not.toMatch(/cdp click .*@ref/);
+        expect(JSON.stringify(parsed)).not.toMatch(/cdp perceive .*--cards/);
+      } else {
+        expect(raw).toContain('chrome-cdp-ex.pdf-viewer.v1');
+        expect(raw).toContain(next);
+        expect(raw).not.toMatch(/chrome-cdp-ex\.cards\.v1/);
+        expect(raw).not.toMatch(/Interactive: none/);
+        expect(raw).not.toMatch(/cdp click /);
+        expect(raw).not.toMatch(/cdp perceive .*--cards/);
+      }
+    }
+
+    for (const args of [['--qa'], ['--summary']]) {
+      const text = (await handler({ args })).value;
+      expect(text).toContain('chrome-cdp-ex.pdf-viewer.v1');
+      expect(text).toContain(next);
+    }
+    const qaJson = JSON.parse((await handler({ args: ['--qa', '--format', 'json'] })).value);
+    expect(qaJson.schema).toBe('chrome-cdp-ex.pdf-viewer.v1');
+    expect(qaJson.nextCommand).toBe(next);
+
+    const cdp = pdfPageCdp();
+    const store = { output: null };
+    const cards = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      new Map(),
+      store,
+      { cards: true, targetPrefix: PDF_PREFIX },
+    );
+    expect(cards).toContain('chrome-cdp-ex.pdf-viewer.v1');
+    expect(cards).toContain(next);
+    expect(cards).not.toMatch(/chrome-cdp-ex\.cards\.v1/);
+    expect(cdp.calls.some(call => call.method === 'Accessibility.getFullAXTree')).toBe(false);
+
+    const scoped = await T.perceiveStr(
+      pdfPageCdp(),
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      new Map(),
+      { output: null },
+      { selector: 'body', targetPrefix: PDF_PREFIX },
+    );
+    expect(scoped).toContain('chrome-cdp-ex.pdf-viewer.v1');
+    expect(scoped).not.toMatch(/Interactive: none/);
+
+    const parsedModel = T.pdfViewerHandoffModelFromOutput(cards, PDF_PREFIX);
+    expect(parsedModel).toMatchObject({
+      schema: 'chrome-cdp-ex.pdf-viewer.v1',
+      url: PDF_PAGE.url,
+      nextCommand: next,
+    });
+  });
+
+  it('#255 HTML perceive --cards still returns cards.v1', async () => {
+    const handler = T.createPerceiveCommandHandler({
+      cdp: { send() { throw new Error('unexpected CDP command'); } },
+      sessionId: 'sid',
+      targetId: '1D3669785EAC5A1A211792636BAE8A07',
+      session: { lastAction: null },
+      consoleBuf: emptyBuffer,
+      exceptionBuf: emptyBuffer,
+      netReqBuf: emptyBuffer,
+      refMap: new Map(),
+      lastPerceiveStore: { output: null },
+      refState: {},
+      ops: {
+        readPerceiveTargetMetadata: async () => ({
+          targetId: '1D3669785EAC5A1A211792636BAE8A07',
+          url: 'https://x.com/home',
+        }),
+        readPerceiveDocumentState: async () => ({ url: 'https://x.com/home', readyState: 'complete' }),
+        pageInfoModel: async () => ({
+          title: 'Home / X',
+          url: 'https://x.com/home',
+          contentType: 'text/html',
+        }),
+        perceiveText: async (_cdp, _sid, _c, _e, _refs, _store, opts) => (
+          opts.format === 'json'
+            ? JSON.stringify({
+              schema: 'chrome-cdp-ex.cards.v1',
+              cards: [{ ref: '@1', handle: '@alice', text: 'visible post' }],
+              next: 'timeline virtualized; scroll and re-run --cards',
+            }, null, 2)
+            : 'chrome-cdp-ex.cards.v1  1 card\n@1  @alice  visible post'
+        ),
+      },
+    });
+    const text = (await handler({ args: ['--cards'] })).value;
+    expect(text).toContain('chrome-cdp-ex.cards.v1');
+    expect(text).toContain('@alice');
+    expect(text).not.toContain('chrome-cdp-ex.pdf-viewer.v1');
+    const parsed = JSON.parse((await handler({ args: ['--cards', '--format', 'json'] })).value);
+    expect(parsed.schema).toBe('chrome-cdp-ex.cards.v1');
+    expect(parsed.cards).toHaveLength(1);
+  });
+
+  it('#256 PDF fullshot fail-fasts as pdf-viewer.v1 without poisoning later shot', async () => {
+    T.resetScreenshotTier();
+    const cdp = pdfPageCdp();
+    await expect(T.fullshotStr(cdp, 'sid', '/tmp/pdf-full.png', PDF_TARGET_ID))
+      .rejects.toThrow(/chrome-cdp-ex\.pdf-viewer\.v1/);
+
+    let thrown;
+    try {
+      await T.fullshotStr(cdp, 'sid', '/tmp/pdf-full.png', PDF_TARGET_ID);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.code).toBe('pdf_viewer');
+    expect(thrown.message).toContain(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+    expect(thrown.message).not.toMatch(/screenshot fallback/);
+    expect(thrown.message).not.toMatch(/Full-page screenshot saved/);
+    expect(thrown.message).not.toMatch(/not available/);
+    expect(cdp.calls.some(call => call.method === 'Page.captureScreenshot')).toBe(false);
+    expect(cdp.calls.some(call => call.method === 'Page.getLayoutMetrics')).toBe(false);
+    expect(T.getScreenshotTier()).toBe(1);
+
+    const recovery = T.buildCliErrorRecovery(thrown.message, {
+      cmd: 'fullshot',
+      targetPrefix: PDF_PREFIX,
+      err: thrown,
+    });
+    expect(recovery.kind).toBe('pdf-viewer');
+    expect(recovery.run).toBe(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+
+    const shotCdp = {
+      calls: [],
+      send(method, params = {}) {
+        this.calls.push({ method, params });
+        if (method === 'Page.captureScreenshot') {
+          return Promise.resolve({ data: 'viewport-ok' });
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+      waitForEvent() {
+        return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+      },
+    };
+    const shot = await T.captureScreenshot(shotCdp, 'sid', { format: 'png' });
+    expect(shot.data).toBe('viewport-ok');
+    expect(shot.fallback).toBe(false);
+    expect(T.getScreenshotTier()).toBe(1);
+  });
+
+  it('#257 leftover perceive --cards dumps are not action settle baselines', () => {
+    const cardsDump = 'chrome-cdp-ex.cards.v1  0 cards\nnext: cdp perceive 1D366978 --cards';
+    expect(T.isCardsPerceiveOutput(cardsDump)).toBe(true);
+    expect(T.actionDomDiffShowsChange(cardsDump)).toBe(true);
+
+    const settled = T.actionSettleBaseline(cardsDump, T.perceiveSnapshotOpts({ cards: true }));
+    expect(settled.output).toBeNull();
+    expect(settled.opts.cards).toBe(false);
+    expect(T.actionObservationPerceiveOpts('1D3669785EAC5A1A211792636BAE8A07', {
+      sinceAction: true,
+      cards: true,
+    }).cards).toBe(false);
+
+    const axTree = 'Page: Example Domain — https://example.com/\nViewport: 1042×632 | Scroll: 0/0 (0%) | Focused: none\n\n(no changes detected in AX tree)';
+    expect(T.actionSettleBaseline(axTree, T.perceiveSnapshotOpts({ cursorInteractive: true, maxDepth: 8 }))).toMatchObject({
+      output: axTree,
+      opts: expect.objectContaining({ cards: false, cursorInteractive: true }),
+    });
+
+    const pressAfterCards = T.applyActionObservationDelta(T.createActionResult({
+      action: 'press',
+      target: {
+        targetId: '1D3669785EAC5A1A211792636BAE8A07',
+        input: 'Escape',
+        resolvedBy: 'key',
+        label: 'Escape',
+        expectedOutcome: 'press-no-change',
+      },
+      dispatch: { ok: true, method: 'press' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: T.noBaselineActionDiffText(), console: [], network: [], navigation: null },
+    }), emptyDelta);
+    expect(pressAfterCards.outcome.status).toBe('no-change');
+    expect(pressAfterCards.effects.diagnosis?.kind).not.toBe('dom-changed');
+    const pressText = T.formatActionText(pressAfterCards);
+    expect(pressText).toMatch(/Outcome: no-change/);
+    expect(pressText).not.toMatch(/Outcome: changed/);
+    expect(pressText).not.toMatch(/chrome-cdp-ex\.cards\.v1/);
+    expect(pressAfterCards.nextSteps.join('\n')).not.toMatch(/perceive .*--cards/);
+
+    const liar = T.applyActionObservationDelta(T.createActionResult({
+      action: 'press',
+      target: {
+        targetId: '1D3669785EAC5A1A211792636BAE8A07',
+        input: 'Escape',
+        resolvedBy: 'key',
+        label: 'Escape',
+        expectedOutcome: 'press-no-change',
+      },
+      dispatch: { ok: true, method: 'press' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: cardsDump, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    expect(liar.outcome.status).toBe('changed');
+    expect(liar.effects.diagnosis?.kind).toBe('dom-changed');
+
+    for (const [action, target] of [
+      ['clickxy', { input: '10 10', resolvedBy: 'coordinates', label: '10,10' }],
+      ['type', { input: 'hello', resolvedBy: 'focused', label: 'unfocused' }],
+    ]) {
+      const result = T.applyActionObservationDelta(T.createActionResult({
+        action,
+        target: { targetId: '1D3669785EAC5A1A211792636BAE8A07', ...target },
+        dispatch: { ok: true, method: action },
+        settle: { ok: true, durationMs: 80 },
+        effects: { domDiff: T.noBaselineActionDiffText(), console: [], network: [], navigation: null },
+      }), emptyDelta);
+      expect(result.outcome.status).toBe('no-change');
+      expect(result.effects.diagnosis?.kind).not.toBe('dom-changed');
+      expect(result.nextSteps.join('\n')).not.toMatch(/perceive .*--cards/);
+      expect(T.formatActionText(result)).not.toMatch(/chrome-cdp-ex\.cards\.v1/);
+    }
+
+    const afterDefaultPerceive = T.applyActionObservationDelta(T.createActionResult({
+      action: 'press',
+      target: {
+        targetId: '1D3669785EAC5A1A211792636BAE8A07',
+        input: 'Escape',
+        resolvedBy: 'key',
+        label: 'Escape',
+        expectedOutcome: 'press-no-change',
+      },
+      dispatch: { ok: true, method: 'press' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+    }), emptyDelta);
+    expect(afterDefaultPerceive.outcome.status).toBe('no-change');
+    expect(T.formatActionText(afterDefaultPerceive)).toMatch(/Outcome: no-change/);
+  });
+});
+
 
