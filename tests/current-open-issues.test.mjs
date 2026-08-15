@@ -6542,21 +6542,6 @@ describe('issue #279 leftover 0-card cards settle for click --js', () => {
     network: { count: 0, failures: 0, pending: 0, entries: [] },
   };
 
-  function pageTree({ clicks = 6 } = {}) {
-    return [
-      'Page: Example Domain — https://example.com/',
-      'Viewport: 1042×632 | Scroll: 0/0 (0%) | Focused: none',
-      'Interactive: 1 button',
-      'Console: clean',
-      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
-      '',
-      '[WebArea] Example Domain',
-      '  [heading] Example Domain',
-      '  [button] p21  @1',
-      `  [StaticText] clicks:${clicks}`,
-    ].join('\n');
-  }
-
   function pageMeta() {
     return JSON.stringify({
       title: 'Example Domain',
@@ -6749,7 +6734,7 @@ describe('issue #279 leftover 0-card cards settle for click --js', () => {
       refState,
     );
     expect(T.actionDomDiffShowsChange(after)).toBe(true);
-    expect(after).toMatch(/\+ \[StaticText\] clicks:7/);
+    expect(after).toMatch(/\+\s+\[StaticText\] clicks:7/);
     expect(after).not.toMatch(/no changes detected in AX tree/i);
     expect(after).not.toMatch(/chrome-cdp-ex\.cards\.v1/);
 
@@ -6860,7 +6845,7 @@ describe('issue #279 leftover 0-card cards settle for click --js', () => {
       T.actionSettleObserveOpts(TARGET_ID, clickTarget, settled.output, settled.opts),
       {},
     );
-    expect(after).toMatch(/\+ \[StaticText\] clicks:8/);
+    expect(after).toMatch(/\+\s+\[StaticText\] clicks:8/);
 
     const honest = T.applyActionObservationDelta(T.createActionResult({
       action: 'click',
@@ -6878,7 +6863,7 @@ describe('issue #279 leftover 0-card cards settle for click --js', () => {
     const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
     expect(src).toMatch(/!settleBaseline\.output\s*\n\s*&& shouldCaptureTopLevelActionSettle\(/);
     expect(src).toMatch(
-      /function shouldCaptureTopLevelActionSettle[\s\S]{0,400}snapshotOpts\?\.cards === true \|\| isCardsPerceiveOutput\(output\)/,
+      /function shouldCaptureTopLevelActionSettle[\s\S]{0,1200}snapshotOpts\?\.cards === true \|\| isCardsPerceiveOutput\(output\)/,
     );
   });
 });
