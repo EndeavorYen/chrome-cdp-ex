@@ -4117,6 +4117,18 @@ describe('Perceive diff baseline', () => {
   });
 
   it('#299 unlabeled Visible-control cap-swap samples prefer named labels and stay changed', () => {
+    // Live collector always sets label to ariaLabel || title || text || role ||
+    // tagName, so dumps are `img "img"` / `a role=link "link"`, not `img [clickable]`.
+    expect(T.formatVisibleControlLine({ tag: 'img', label: 'img', clickable: true }))
+      .toBe('img "img" [clickable]');
+    expect(T.formatVisibleControlLine({ tag: 'a', role: 'link', label: 'link', clickable: true }))
+      .toBe('a role=link "link" [clickable]');
+    const liveLine = (control) => `  ${T.formatVisibleControlLine({
+      clickable: true,
+      rect: { x: 8, y: control.y, w: 24, h: 24 },
+      hints: { id: '', classes: [] },
+      ...control,
+    })}`;
     const header = [
       'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
       'Viewport: 1042×900 | Scroll: 0/2400 (0%) | Focused: none',
@@ -4132,13 +4144,13 @@ describe('Perceive diff baseline', () => {
       '    [link] LICENSE  @1  (24,180 160×22)',
       '',
       '[Visible controls]',
-      '  img [clickable] (8,12 24×24) img.logo',
-      '  div [clickable] (8,40 32×32) div.nav-icon',
-      '  a role=link [clickable] (8,68 40×20) a[href="/"]',
-      '  a role=link "Hugging Face" [clickable] (8,100 80×22) a[href="#hf"]',
-      '  a role=link "Models" [clickable] (8,128 80×22) a[href="#models"]',
-      '  a role=link "Datasets" [clickable] (8,156 80×22) a[href="#datasets"]',
-      '  a role=link "search" [clickable] (8,184 80×22) a[href="#search"]',
+      liveLine({ tag: 'img', label: 'img', selector: 'img.logo', y: 12 }),
+      liveLine({ tag: 'div', label: 'div', selector: 'div.nav-icon', y: 40 }),
+      liveLine({ tag: 'a', role: 'link', label: 'link', selector: 'a[href="/"]', y: 68 }),
+      liveLine({ tag: 'a', role: 'link', label: 'Hugging Face', selector: 'a[href="#hf"]', y: 100 }),
+      liveLine({ tag: 'a', role: 'link', label: 'Models', selector: 'a[href="#models"]', y: 128 }),
+      liveLine({ tag: 'a', role: 'link', label: 'Datasets', selector: 'a[href="#datasets"]', y: 156 }),
+      liveLine({ tag: 'a', role: 'link', label: 'search', selector: 'a[href="#search"]', y: 184 }),
     ].join('\n');
     const currentHeader = header.map(line => line.replace('Scroll: 0/2400 (0%)', 'Scroll: 80/2400 (3%)'));
     const current = [
@@ -4148,13 +4160,13 @@ describe('Perceive diff baseline', () => {
       '    [link] LICENSE  @1  (24,100 160×22)',
       '',
       '[Visible controls]',
-      '  img [clickable] (8,12 24×24) img.hero',
-      '  div [clickable] (8,40 32×32) div.body-icon',
-      '  a role=link [clickable] (8,68 40×20) a[href="/model"]',
-      '  a role=link "MiniMaxAI" [clickable] (8,100 80×22) a[href="#mm"]',
-      '  a role=link "Text-to-Audio" [clickable] (8,128 80×22) a[href="#tta"]',
-      '  a role=link "Diffusers" [clickable] (8,156 80×22) a[href="#diff"]',
-      '  a role=link "Like" [clickable] (8,184 80×22) a[href="#like"]',
+      liveLine({ tag: 'img', label: 'img', selector: 'img.hero', y: 12 }),
+      liveLine({ tag: 'div', label: 'div', selector: 'div.body-icon', y: 40 }),
+      liveLine({ tag: 'a', role: 'link', label: 'link', selector: 'a[href="/model"]', y: 68 }),
+      liveLine({ tag: 'a', role: 'link', label: 'MiniMaxAI', selector: 'a[href="#mm"]', y: 100 }),
+      liveLine({ tag: 'a', role: 'link', label: 'Text-to-Audio', selector: 'a[href="#tta"]', y: 128 }),
+      liveLine({ tag: 'a', role: 'link', label: 'Diffusers', selector: 'a[href="#diff"]', y: 156 }),
+      liveLine({ tag: 'a', role: 'link', label: 'Like', selector: 'a[href="#like"]', y: 184 }),
     ].join('\n');
     const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
     expect(diff).toMatch(/Visible-control cap swap: 7 left, 7 entered/);

@@ -10027,15 +10027,24 @@ function isVisibleControlStructuralLine(line) {
 function visibleControlNameFromLine(line) {
   const text = stripPerceiveIdentityChrome(line).trim();
   if (!text || isVisibleControlsSectionHeader(text)) return { name: null, named: false };
-  // Accessible names only: aria-label / title / the quoted label field
-  // (` "MiniMaxAI"`). Do not treat selector href quotes (`a[href="/"]`) as
-  // a name — those unlabeled tag lines are membership, not samples (#299).
+  // Live collector always sets label to ariaLabel || title || text || role ||
+  // tagName, so formatVisibleControlLine prints `img "img"` / `a role=link
+  // "link"`. Those quoted tag/role fallbacks are membership, not sample
+  // names (#299). Do not treat selector href quotes (`a[href="/"]`) as a name.
+  const tag = (text.match(/^(?:[a-z][\w-]*|\?)\b/i) || [])[0] || '';
+  const role = (text.match(/\brole=([^\s]+)/i) || [])[1] || '';
   const aria = text.match(/\baria-label="([^"]*)"/);
-  if (aria && aria[1].trim()) return { name: aria[1], named: true };
   const title = text.match(/\btitle="([^"]*)"/);
-  if (title && title[1].trim()) return { name: title[1], named: true };
   const labeled = text.match(/\s"([^"]+)"/);
-  if (labeled && labeled[1].trim()) return { name: labeled[1], named: true };
+  const name = (aria && aria[1].trim())
+    || (title && title[1].trim())
+    || (labeled && labeled[1].trim())
+    || null;
+  if (name) {
+    const key = name.toLowerCase();
+    const named = key !== tag.toLowerCase() && key !== role.toLowerCase();
+    return { name, named };
+  }
   const fallback = text.replace(/\s+@[\w:-]+\b.*/, '').slice(0, 60) || null;
   return { name: fallback, named: false };
 }

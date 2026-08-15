@@ -7899,10 +7899,12 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
   }
 
   function hfUnlabeledControl(tag, y, selector) {
+    // Live collector: ariaLabel || title || text || role || tagName.
+    const role = tag === 'a' ? 'link' : '';
     return {
       tag,
-      role: tag === 'a' ? 'link' : '',
-      label: '',
+      role,
+      label: role || tag,
       clickable: true,
       rect: { x: 8, y, w: 24, h: 24 },
       selector,
@@ -8543,7 +8545,8 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     const refMap = new Map();
     const refState = {};
     const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
-    expect(leftoverDump).toMatch(/img \[clickable\]/);
+    expect(leftoverDump).toMatch(/img "img" \[clickable\]/);
+    expect(leftoverDump).toMatch(/a role=link "link" \[clickable\]/);
     expect(leftoverDump).toMatch(/Hugging Face/);
     const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
     const actionTarget = scrollTarget();
