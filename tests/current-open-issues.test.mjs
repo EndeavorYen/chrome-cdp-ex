@@ -4633,5 +4633,114 @@ describe('issues #227-#231 open contracts', () => {
     expect(display.properties[0].winner).toMatchObject({ value: 'block' });
     expect(display.properties[0].rules[0].winner).toBe(true);
   });
+
+  it('#234 click --qa names the post-navigation page, not the pre-nav identity', () => {
+    const result = T.createActionResult({
+      action: 'click',
+      target: {
+        targetId: '1D366978FULLTARGET',
+        input: 'a',
+        label: 'Learn more',
+        page: { title: 'Example Domain', url: 'https://example.com/' },
+      },
+      dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
+      settle: { ok: true, durationMs: 325 },
+      effects: {
+        page: { title: 'Example Domain', url: 'https://example.com/' },
+        pageHealth: {
+          status: 'populated',
+          isBlank: false,
+          confidence: 'high',
+          evidence: {
+            url: 'https://www.iana.org/help/example-domains',
+            title: 'Example Domains',
+            changed: true,
+          },
+        },
+        navigation: {
+          from: 'https://example.com/',
+          to: 'https://www.iana.org/help/example-domains',
+          changed: true,
+        },
+        domDiff: T.formatActionNavigationDiff(
+          'https://example.com/',
+          'https://www.iana.org/help/example-domains',
+        ),
+        console: [],
+        network: [],
+      },
+      nextHint: null,
+    });
+
+    const text = T.formatActionResultOutput(result, { qa: true });
+    expect(text).toMatch(/^QA summary: pass/m);
+    expect(text).toContain('Page: Example Domains');
+    expect(text).toContain('URL: https://www.iana.org/help/example-domains');
+    expect(text).toContain('Changed: changed');
+    expect(text).not.toMatch(/Page: Example Domain$/m);
+    expect(text).not.toContain('URL: https://example.com/');
+
+    const parsed = JSON.parse(T.formatActionResultOutput(result, { qa: true, format: 'json' }));
+    expect(parsed.summary.page).toMatchObject({
+      url: 'https://www.iana.org/help/example-domains',
+      title: 'Example Domains',
+    });
+    expect(parsed.summary.pageHealth.evidence).toMatchObject({
+      url: 'https://www.iana.org/help/example-domains',
+      title: 'Example Domains',
+    });
+    expect(parsed.summary.changed).toBe('changed');
+  });
+
+  it('#235 report --qa and report on a Chrome PDF viewer use pdf-viewer.v1, not perceive', async () => {
+    const session = T.createSessionState({ targetId: '9FAD7C71FULLTARGET', sessionId: 'sid' });
+    T.initializeSessionLog(session);
+    const page = {
+      title: '',
+      url: 'https://arxiv.org/pdf/2608.12307',
+      contentType: 'application/pdf',
+    };
+
+    const qaText = T.formatSessionReport(session, { qa: true, page });
+    expect(qaText).toContain('chrome-cdp-ex.pdf-viewer.v1');
+    expect(qaText).toContain('cdp eval 9FAD7C71 "document.contentType"');
+    expect(qaText).not.toMatch(/QA summary: pass/);
+    expect(qaText).not.toMatch(/Page health: populated/);
+    expect(qaText).not.toMatch(/cdp perceive 9FAD7C71 -C -d 8/);
+    expect(qaText).not.toMatch(/cdp click 9FAD7C71 @ref/);
+
+    const qaJson = JSON.parse(T.formatSessionReport(session, { format: 'json', qa: true, page }));
+    expect(qaJson.schema).toBe('chrome-cdp-ex.pdf-viewer.v1');
+    expect(qaJson.nextCommand).toBe('cdp eval 9FAD7C71 "document.contentType"');
+    expect(qaJson).not.toMatchObject({ ok: true });
+
+    const reportText = T.formatSessionReport(session, { page });
+    expect(reportText).toContain('chrome-cdp-ex.pdf-viewer.v1');
+    expect(reportText).toContain('cdp eval 9FAD7C71 "document.contentType"');
+    expect(reportText).not.toMatch(/cdp perceive 9FAD7C71 -C -d 8/);
+    expect(reportText).not.toMatch(/cdp click 9FAD7C71 @ref/);
+
+    const reportJson = JSON.parse(T.formatSessionReport(session, { format: 'json', page }));
+    expect(reportJson.nextSteps.join('\n')).toContain('cdp eval 9FAD7C71 "document.contentType"');
+    expect(reportJson.nextSteps.join('\n')).not.toMatch(/cdp perceive 9FAD7C71 -C -d 8/);
+    expect(reportJson.nextSteps.join('\n')).not.toMatch(/cdp click 9FAD7C71 @ref/);
+    expect(reportJson.recommendation.commands.join('\n')).toContain('cdp eval 9FAD7C71 "document.contentType"');
+
+    const handler = T.createReportCommandHandler(session, {
+      cdp: {},
+      sessionId: 'sid',
+      pageInfo: async () => page,
+    });
+    const qaResult = await handler({ args: ['--qa'] });
+    expect(qaResult.value).toContain('chrome-cdp-ex.pdf-viewer.v1');
+    expect(qaResult.value).toContain('cdp eval 9FAD7C71 "document.contentType"');
+    expect(qaResult.value).not.toMatch(/Next: cdp perceive/);
+
+    const defaultResult = await handler({ args: [] });
+    expect(defaultResult.value).toContain('chrome-cdp-ex.pdf-viewer.v1');
+    expect(defaultResult.value).toContain('cdp eval 9FAD7C71 "document.contentType"');
+    expect(defaultResult.value).not.toMatch(/cdp perceive 9FAD7C71 -C -d 8/);
+    expect(defaultResult.value).not.toMatch(/cdp click 9FAD7C71 @ref/);
+  });
 });
 

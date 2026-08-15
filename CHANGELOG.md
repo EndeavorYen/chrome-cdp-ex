@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#234, #235)
+
+* `click --qa` compact Page/URL and JSON `summary.page` use the post-navigation
+  identity (same as the action receipt / `pageHealth.evidence`), not the pre-nav
+  snapshot. A Learn more click that lands on iana.org no longer labels example.com.
+* `report --qa` and `report` on a Chrome PDF plugin emit `chrome-cdp-ex.pdf-viewer.v1`
+  and Next:`cdp eval <prefix> "document.contentType"`, matching `perceive` /
+  `text --auto`. They no longer claim pass/populated or recommend perceive/click @ref.
+
 ### #217 residual after #218
 
 * `hover` bounds `Input.dispatchMouseEvent` (`mouseMoved`) renderer-ack to 250ms

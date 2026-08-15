@@ -1897,6 +1897,20 @@ function parseQaModeArgs(args = [], allowed = ['text', 'json']) {
   };
 }
 
+function livePageIdentity({ page = {}, pageHealth = null, navigation = null } = {}) {
+  const health = pageHealth?.evidence || {};
+  let navTo = '';
+  if (navigation && typeof navigation === 'object') {
+    navTo = navigation.to || navigation.url || navigation.href || '';
+  } else if (typeof navigation === 'string') {
+    navTo = navigation;
+  }
+  return {
+    url: String(health.url || navTo || page.url || ''),
+    title: String(health.title || page.title || ''),
+  };
+}
+
 function buildQaSummaryModel({
   page = {},
   console: consoleHealth = {},
@@ -1904,12 +1918,12 @@ function buildQaSummaryModel({
   action = null,
   blank = null,
   pageHealth = null,
+  navigation = null,
   nextCommand = null,
   targetPrefix = null,
   source = 'qa-summary',
 } = {}) {
-  const url = page.url || pageHealth?.evidence?.url || '';
-  const title = page.title || pageHealth?.evidence?.title || '';
+  const { url, title } = livePageIdentity({ page, pageHealth, navigation });
   const isBlank = pageHealth?.isBlank ?? (blank == null ? isBlankPageUrl(url) : Boolean(blank));
   const healthStatus = pageHealth?.status || (isBlank ? 'blank' : 'populated');
   const consoleErrors = Number(consoleHealth.errors || 0) + Number(consoleHealth.exceptions || 0);
@@ -3815,18 +3829,45 @@ function isPdfViewerContentType(contentType) {
   return String(contentType || '').toLowerCase().includes('application/pdf');
 }
 
+function pdfViewerNextCommand(targetPrefix = '<target>') {
+  return `cdp eval ${targetPrefix} "document.contentType"`;
+}
+
+function pdfViewerHandoffModel(meta = {}, { targetPrefix = '<target>' } = {}) {
+  return {
+    schema: 'chrome-cdp-ex.pdf-viewer.v1',
+    title: meta.title || '',
+    url: meta.url || '',
+    contentType: meta.contentType || 'application/pdf',
+    nextCommand: pdfViewerNextCommand(targetPrefix),
+    message: 'Chrome is rendering a PDF plugin, not an HTML document.',
+  };
+}
+
+function pdfViewerReportRecommendation(targetPrefix = '<target>') {
+  const run = pdfViewerNextCommand(targetPrefix);
+  return {
+    source: 'pdf-viewer',
+    actionIndex: null,
+    action: null,
+    diagnosisKind: 'pdf-viewer',
+    strategy: 'do-not-probe-ax',
+    priority: 'high',
+    verifyCommand: run,
+    commands: [run],
+  };
+}
+
 function formatPdfViewerOutput(meta = {}, { targetPrefix = '<target>' } = {}) {
-  const title = meta.title || '(untitled)';
-  const url = meta.url || '(unknown)';
-  const type = meta.contentType || 'application/pdf';
+  const model = pdfViewerHandoffModel(meta, { targetPrefix });
   return [
-    'chrome-cdp-ex.pdf-viewer.v1',
-    'PDF viewer: Chrome is rendering a PDF plugin, not an HTML document.',
-    `Page: ${title}`,
-    `URL: ${url}`,
-    `contentType: ${type}`,
+    model.schema,
+    `PDF viewer: ${model.message}`,
+    `Page: ${model.title || '(untitled)'}`,
+    `URL: ${model.url || '(unknown)'}`,
+    `contentType: ${model.contentType}`,
     'Accessibility tree is empty for this viewer. Do not retry perceive/text as a next-probe.',
-    `Next: cdp eval ${targetPrefix} "document.contentType"`,
+    `Next: ${model.nextCommand}`,
   ].join('\n');
 }
 
@@ -5340,10 +5381,11 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
   if (qa) {
     const summary = buildQaSummaryModel({
       page: {
-        url: result.effects?.page?.url || result.page?.url || result.effects?.pageHealth?.evidence?.url || '',
-        title: result.effects?.page?.title || result.page?.title || result.effects?.pageHealth?.evidence?.title || '',
+        url: result.effects?.page?.url || result.page?.url || '',
+        title: result.effects?.page?.title || result.page?.title || '',
       },
       pageHealth: result.effects?.pageHealth || null,
+      navigation: result.effects?.navigation || null,
       console: {
         errors: Number(result.effects?.consoleDelta?.errors || 0),
         exceptions: Number(result.effects?.exceptionDelta?.count || 0),
@@ -6920,7 +6962,7 @@ function reportActionTimelineWindow(actionLog = [], lastActions = DEFAULT_REPORT
   };
 }
 
-function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFAULT_REPORT_ACTION_LIMIT, compact = false } = {}) {
+function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFAULT_REPORT_ACTION_LIMIT, compact = false, page = null } = {}) {
   const actionLog = session.actionLog || [];
   const screenshots = session.screenshots || [];
   const timelineWindow = reportActionTimelineWindow(actionLog, lastActions);
@@ -6933,14 +6975,19 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
     const index = (timelineWindow.startIndex || 1) + offset;
     return reportActionModel(entry, index, { compact });
   });
-  const recommendation = buildReportRecommendation(actionLog, target, session.targetId);
-  const nextSteps = uniqueNextStepCommands([
-    ...(recommendation.commands || []),
-    ...(actionLog.length > 0 ? [
-      `cdp record-actions ${target} --format json`,
-      `cdp export-playwright ${target}`,
-    ] : []),
-  ]);
+  const pdfViewer = isPdfViewerContentType(page?.contentType);
+  const recommendation = pdfViewer
+    ? pdfViewerReportRecommendation(target)
+    : buildReportRecommendation(actionLog, target, session.targetId);
+  const nextSteps = pdfViewer
+    ? [pdfViewerNextCommand(target)]
+    : uniqueNextStepCommands([
+      ...(recommendation.commands || []),
+      ...(actionLog.length > 0 ? [
+        `cdp record-actions ${target} --format json`,
+        `cdp export-playwright ${target}`,
+      ] : []),
+    ]);
   const environment = {
     networkThrottleSummary: formatThrottleSummary(session.networkThrottle),
     networkMocksSummary: formatNetworkMocksSummary(session),
@@ -6985,6 +7032,7 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
     recommendation,
     nextSteps: nextSteps.length ? nextSteps : defaultReportNextSteps(target, actionLog.length > 0),
   };
+  if (pdfViewer) model.pdfViewer = pdfViewerHandoffModel(page, { targetPrefix: target });
   model.reportBudget.estimatedJsonBytes = Buffer.byteLength(formatJson(model), 'utf8');
   return model;
 }
@@ -6992,8 +7040,14 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
 function formatSessionReport(session, { now = Date.now(), format = 'text', lastActions = DEFAULT_REPORT_ACTION_LIMIT, compact = false, qa = false, page = null } = {}) {
   const jsonDefaultCompact = format === 'json' && lastActions != null;
   const effectiveCompact = compact || jsonDefaultCompact;
+  const targetPrefix = targetPrefixForDisplay(session.targetId);
+  if (isPdfViewerContentType(page?.contentType) && qa) {
+    return format === 'json'
+      ? formatJson(pdfViewerHandoffModel(page, { targetPrefix }))
+      : formatPdfViewerOutput(page, { targetPrefix });
+  }
   if (qa) {
-    const model = buildSessionReportModel(session, { now, lastActions, compact: true });
+    const model = buildSessionReportModel(session, { now, lastActions, compact: true, page });
     const latest = model.latestAction || null;
     const summary = buildQaSummaryModel({
       page: { url: page?.url || latest?.url || '', title: page?.title || '' },
@@ -7027,8 +7081,8 @@ function formatSessionReport(session, { now = Date.now(), format = 'text', lastA
     }
     return formatQaSummaryText(summary);
   }
-  if (format === 'json') return formatJson(buildSessionReportModel(session, { now, lastActions, compact: effectiveCompact }));
-  const model = buildSessionReportModel(session, { now, lastActions, compact: effectiveCompact });
+  if (format === 'json') return formatJson(buildSessionReportModel(session, { now, lastActions, compact: effectiveCompact, page }));
+  const model = buildSessionReportModel(session, { now, lastActions, compact: effectiveCompact, page });
   const actionLog = session.actionLog || [];
   const timelineWindow = reportActionTimelineWindow(actionLog, lastActions);
   const screenshots = session.screenshots || [];
@@ -7112,6 +7166,9 @@ function formatSessionReport(session, { now = Date.now(), format = 'text', lastA
   }
   lines.push('', ...formatReportRecommendationLines(model.recommendation));
   lines.push('', ...formatReportNextStepLines(model.nextSteps));
+  if (isPdfViewerContentType(page?.contentType)) {
+    return [formatPdfViewerOutput(page, { targetPrefix: model.targetPrefix }), '', ...lines].join('\n');
+  }
   return lines.join('\n');
 }
 
@@ -17609,7 +17666,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
             },
           };
         }
-        if (actionTarget.page) actionResult.effects.page = actionTarget.page;
         if (actionTarget.navigated) {
           actionResult.effects.navigation = {
             from: actionTarget.pageHrefBefore,
@@ -17617,6 +17673,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
             changed: true,
           };
         }
+        const livePage = livePageIdentity({
+          page: actionTarget.page || {},
+          pageHealth: actionResult.effects.pageHealth,
+          navigation: actionResult.effects.navigation,
+        });
+        if (livePage.url || livePage.title) actionResult.effects.page = livePage;
+        else if (actionTarget.page) actionResult.effects.page = actionTarget.page;
         return actionResult;
       },
       onActionResult: (actionResult) => {
@@ -19396,7 +19459,7 @@ function createReportCommandHandler(session, { cdp = null, sessionId = null, pag
     const ropts = parseReportArgs(fopts.args);
     if (ropts.args.length) throw new Error(`report: unknown argument ${ropts.args[0]}`);
     let page = null;
-    if (ropts.qa && cdp && sessionId) {
+    if (cdp && sessionId) {
       try {
         page = await pageInfo(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(session.targetId) });
       } catch {}
@@ -21752,7 +21815,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Issues #82-#87 helpers
   isBlankPageUrl, pageTargetScore, rankPageTargets, matchPageTargets, selectPageTarget,
   parseTargetSelectArgs, buildTargetSelectModel, formatTargetSelect,
-  parseQaModeArgs, buildQaSummaryModel, formatQaSummaryText, truncateTextLines,
+  parseQaModeArgs, buildQaSummaryModel, formatQaSummaryText, livePageIdentity, truncateTextLines,
+  pdfViewerNextCommand, pdfViewerHandoffModel, pdfViewerReportRecommendation,
   classifyPageHealth, pageHealthScript, collectPageHealth,
   parseResponsiveAuditArgs, buildResponsiveAuditModel, formatResponsiveAuditReport,
   responsiveAuditViewportScript, responsiveAuditStr, countNetworkFailures,
