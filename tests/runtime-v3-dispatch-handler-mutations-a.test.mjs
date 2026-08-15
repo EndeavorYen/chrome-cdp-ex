@@ -12,11 +12,11 @@ describe('Runtime v3 handler wiring characterization A', () => {
       'html: capabilities => createDaemonReadHandlers(capabilities).text,',
     ),
     source.replace(
-      'html: args => htmlStr(cdp, sessionId, args),',
+      'html: args => htmlStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),',
       'html: args => textStr(cdp, sessionId, args),',
     ),
     source.replace(
-      'html: args => htmlStr(cdp, sessionId, args),',
+      'html: args => htmlStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),',
       'html: async args => { await htmlStr(cdp, sessionId, args); return htmlStr(cdp, sessionId, args); },',
     ),
     source.replace(

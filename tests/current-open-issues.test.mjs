@@ -3809,6 +3809,7 @@ describe('issues #210-#217 open contracts', () => {
 
   it('#216 cookiedel of a missing cookie fails closed and does not claim deleted', async () => {
     const calls = [];
+    const jar = [{ name: 'picky5', value: 'roundtrip', domain: 'example.com', path: '/' }];
     const cdp = {
       send(method, params = {}) {
         calls.push({ method, params });
@@ -3816,9 +3817,15 @@ describe('issues #210-#217 open contracts', () => {
           return Promise.resolve({ result: { value: 'https://example.com/' } });
         }
         if (method === 'Network.getCookies') {
-          return Promise.resolve({ cookies: [{ name: 'picky5', value: 'roundtrip' }] });
+          return Promise.resolve({ cookies: jar.map(cookie => ({ ...cookie })) });
         }
-        if (method === 'Network.deleteCookies') return Promise.resolve({});
+        if (method === 'Network.deleteCookies') {
+          const idx = jar.findIndex(cookie => cookie.name === params.name
+            && (!params.domain || cookie.domain === params.domain)
+            && (!params.path || cookie.path === params.path));
+          if (idx !== -1) jar.splice(idx, 1);
+          return Promise.resolve({});
+        }
         throw new Error(`unexpected ${method}`);
       },
     };
@@ -5052,4 +5059,245 @@ describe('issues #237-#239 open contracts', () => {
     expect(htmlMiss).not.toMatch(/document\.contentType/);
   });
 });
+
+describe('issues #241-#243 open contracts', () => {
+  const PDF_TARGET_ID = '9FAD7C71E2DA7ED50C67BE2092417850';
+  const PDF_PREFIX = '9FAD7C71';
+  const PDF_PAGE = {
+    title: '',
+    url: 'https://arxiv.org/pdf/2608.12307',
+    contentType: 'application/pdf',
+  };
+
+  function pdfPageCdp() {
+    const calls = [];
+    return {
+      calls,
+      send(method, params = {}) {
+        calls.push({ method, params });
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('document.title') || expr.includes('contentType')) {
+            return Promise.resolve({ result: { value: JSON.stringify(PDF_PAGE) } });
+          }
+          if (expr.includes('outerHTML')) {
+            return Promise.resolve({
+              result: {
+                value: JSON.stringify({
+                  ok: true,
+                  root: 'document',
+                  html: '<html><head><link rel="stylesheet" href="chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_embedder.css"></head><body></body></html>',
+                }),
+              },
+            });
+          }
+          if (expr.includes('{w:window.innerWidth') && expr.includes('innerHeight')) {
+            return Promise.resolve({ result: { value: JSON.stringify({ w: 1042, h: 632 }) } });
+          }
+          return Promise.resolve({ result: { value: '{}' } });
+        }
+        if (method === 'Page.captureScreenshot') {
+          throw new Error('screenshot should not run on pdf-viewer qa');
+        }
+        if (method === 'Accessibility.getFullAXTree') {
+          throw new Error('ax should not run on pdf-viewer qa');
+        }
+        if (method === 'Emulation.setDeviceMetricsOverride') {
+          throw new Error('viewport should not change on pdf-viewer qa');
+        }
+        return Promise.resolve({});
+      },
+    };
+  }
+
+  it('#241 qa on a Chrome PDF viewer emits pdf-viewer.v1, not Verdict:pass / perceive', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'cdp-qa-pdf-'));
+    const session = T.createSessionState({
+      targetId: PDF_TARGET_ID,
+      sessionId: 'sid',
+      logPath: join(tmp, 'session.jsonl'),
+      screenshotDir: join(tmp, 'shots'),
+    });
+    const cdp = pdfPageCdp();
+    const ctx = {
+      cdp,
+      sid: 'sid',
+      session,
+      targetId: PDF_TARGET_ID,
+      consoleBuf: new T.RingBuffer(8),
+      exceptionBuf: new T.RingBuffer(8),
+      refMap: new Map(),
+      lastPerceiveStore: { output: null },
+      refState: {},
+      actionFeedback: async () => '',
+    };
+    try {
+      const text = await T.qaPageStr(ctx, []);
+      expect(text).toContain('chrome-cdp-ex.pdf-viewer.v1');
+      expect(text).toContain(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+      expect(text).not.toMatch(/Verdict: pass/);
+      expect(text).not.toMatch(/cdp perceive /);
+      expect(text).not.toContain('chrome-extension://');
+      expect(cdp.calls.some(call => call.method === 'Page.captureScreenshot')).toBe(false);
+      expect(cdp.calls.some(call => call.method === 'Accessibility.getFullAXTree')).toBe(false);
+      expect(cdp.calls.some(call => call.method === 'Emulation.setDeviceMetricsOverride')).toBe(false);
+
+      const parsed = JSON.parse(await T.qaPageStr(ctx, ['--format', 'json']));
+      expect(parsed.schema).toBe('chrome-cdp-ex.pdf-viewer.v1');
+      expect(parsed.nextCommand).toBe(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+      expect(parsed.verdict).not.toBe('pass');
+      expect(JSON.stringify(parsed)).not.toMatch(/cdp perceive /);
+      expect(parsed.nextSteps || []).not.toEqual(expect.arrayContaining([
+        expect.stringMatching(/cdp perceive /),
+      ]));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('#242 html on a Chrome PDF viewer emits pdf-viewer.v1, not the empty embedder shell', async () => {
+    const cdp = pdfPageCdp();
+    await expect(T.htmlStr(cdp, 'sid', [], { targetPrefix: PDF_PREFIX }))
+      .rejects.toThrow(/chrome-cdp-ex\.pdf-viewer\.v1/);
+    await expect(T.htmlStr(cdp, 'sid', ['--auto'], { targetPrefix: PDF_PREFIX }))
+      .rejects.toThrow(/cdp eval 9FAD7C71 "document\.contentType"/);
+    await expect(T.htmlStr(cdp, 'sid', ['h1'], { targetPrefix: PDF_PREFIX }))
+      .rejects.toThrow(/pdf-viewer\.v1/);
+    expect(cdp.calls.some(call => String(call.params?.expression || '').includes('outerHTML'))).toBe(false);
+
+    let thrown;
+    try {
+      await T.htmlStr(cdp, 'sid', ['h1'], { targetPrefix: PDF_PREFIX });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.code).toBe('pdf_viewer');
+    expect(thrown.message).not.toContain('<target>');
+    expect(thrown.message).not.toContain('chrome-extension://');
+    expect(thrown.message).not.toMatch(/Kind: unknown/);
+    const recovery = T.buildCliErrorRecovery(thrown.message, {
+      cmd: 'html',
+      targetPrefix: PDF_PREFIX,
+      err: thrown,
+    });
+    expect(recovery.kind).toBe('pdf-viewer');
+    expect(recovery.run).toBe(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+    expect(recovery.run).not.toMatch(/cdp status /);
+
+    const htmlPage = {
+      send(method, params = {}) {
+        if (method !== 'Runtime.evaluate') throw new Error(`unexpected ${method}`);
+        const expr = String(params.expression || '');
+        if (expr.includes('contentType') || expr.includes('document.title')) {
+          return Promise.resolve({
+            result: {
+              value: JSON.stringify({
+                title: 'Example Domain',
+                url: 'https://example.com/',
+                contentType: 'text/html',
+              }),
+            },
+          });
+        }
+        return Promise.resolve({
+          result: { value: JSON.stringify({ ok: false, root: 'document', selector: 'h1' }) },
+        });
+      },
+    };
+    await expect(T.htmlStr(htmlPage, 'sid', ['h1'], { targetPrefix: '1D366978' }))
+      .rejects.toThrow(/cdp eval 1D366978 /);
+    const htmlMiss = await T.htmlStr(htmlPage, 'sid', ['h1'], { targetPrefix: '1D366978' })
+      .then(() => {
+        throw new Error('expected html selector miss');
+      }, error => error);
+    expect(htmlMiss.message).not.toContain('<target>');
+  });
+
+  it('#243 cookiedel of a dotted-domain cookie deletes by domain/path or fails closed', async () => {
+    expect(T.cookieDeleteParams(
+      { name: 'picky10x', domain: '.huggingface.co', path: '/' },
+      'https://huggingface.co/',
+    )).toEqual({ name: 'picky10x', domain: '.huggingface.co', path: '/' });
+    expect(T.cookieDeleteParams(
+      { name: 'picky10x', domain: '.huggingface.co', path: '/' },
+      'https://huggingface.co/',
+    )).not.toHaveProperty('url');
+
+    const jar = [{ name: 'picky10x', value: 'x', domain: '.huggingface.co', path: '/', secure: true }];
+    const calls = [];
+    const cdp = {
+      send(method, params = {}) {
+        calls.push({ method, params });
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({ result: { value: 'https://huggingface.co/' } });
+        }
+        if (method === 'Network.getCookies') {
+          return Promise.resolve({ cookies: jar.map(cookie => ({ ...cookie })) });
+        }
+        if (method === 'Network.deleteCookies') {
+          const idx = jar.findIndex(cookie => cookie.name === params.name
+            && cookie.domain === params.domain
+            && cookie.path === params.path);
+          if (idx !== -1) jar.splice(idx, 1);
+          return Promise.resolve({});
+        }
+        throw new Error(`unexpected ${method}`);
+      },
+    };
+    const deleted = await T.cookieDelStr(cdp, 'sid', 'picky10x');
+    expect(deleted).toBe('Cookie deleted: picky10x');
+    expect(jar).toEqual([]);
+    const del = calls.find(call => call.method === 'Network.deleteCookies');
+    expect(del.params).toEqual({ name: 'picky10x', domain: '.huggingface.co', path: '/' });
+    expect(del.params).not.toHaveProperty('url');
+    expect(calls.some(call => call.method === 'Runtime.evaluate')).toBe(false);
+
+    const leftover = [{ name: 'picky10x', value: 'x', domain: '.huggingface.co', path: '/' }];
+    const leftoverCalls = [];
+    const leftoverCdp = {
+      send(method, params = {}) {
+        leftoverCalls.push({ method, params });
+        if (method === 'Network.getCookies') {
+          return Promise.resolve({ cookies: leftover.map(cookie => ({ ...cookie })) });
+        }
+        if (method === 'Network.deleteCookies') return Promise.resolve({});
+        throw new Error(`unexpected ${method}`);
+      },
+    };
+    await expect(T.cookieDelStr(leftoverCdp, 'sid', 'picky10x'))
+      .rejects.toThrow(/Cookie still present: picky10x/);
+    expect(leftoverCalls.some(call => call.method === 'Network.deleteCookies')).toBe(true);
+    const leftoverRecovery = T.buildCliErrorRecovery('Cookie still present: picky10x', {
+      cmd: 'cookiedel',
+      targetPrefix: '6914C171',
+    });
+    expect(leftoverRecovery.kind).toBe('usage');
+    expect(leftoverRecovery.run).toBe('cdp cookies 6914C171');
+    const leftoverFormatted = T.formatCliError(new Error('Cookie still present: picky10x'), {
+      cmd: 'cookiedel',
+      targetPrefix: '6914C171',
+    });
+    expect(leftoverFormatted).toMatch(/Kind: usage/);
+    expect(leftoverFormatted).not.toMatch(/Cookie deleted/);
+
+    const hostJar = [{ name: 'picky10y', value: 'y', domain: 'huggingface.co', path: '/' }];
+    const hostCdp = {
+      send(method, params = {}) {
+        if (method === 'Network.getCookies') {
+          return Promise.resolve({ cookies: hostJar.map(cookie => ({ ...cookie })) });
+        }
+        if (method === 'Network.deleteCookies') {
+          const idx = hostJar.findIndex(cookie => cookie.name === params.name
+            && cookie.domain === params.domain);
+          if (idx !== -1) hostJar.splice(idx, 1);
+          return Promise.resolve({});
+        }
+        throw new Error(`unexpected ${method}`);
+      },
+    };
+    await expect(T.cookieDelStr(hostCdp, 'sid', 'picky10y')).resolves.toBe('Cookie deleted: picky10y');
+    expect(hostJar).toEqual([]);
+  });
+});
+
 

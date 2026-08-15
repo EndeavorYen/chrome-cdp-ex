@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#241, #242, #243)
+
+* `qa` on a Chrome PDF plugin emits `chrome-cdp-ex.pdf-viewer.v1` instead of
+  `Verdict: pass` / Next:`perceive`. Next is `cdp eval <prefix> "document.contentType"`.
+* `html` / `html --auto` on a Chrome PDF plugin emit `pdf-viewer.v1` and do not
+  return the empty chrome-extension embedder shell as successful HTML. Selector
+  misses interpolate the target prefix instead of literal `<target>`.
+* `cookiedel` of a dotted-domain cookie (`domain=.example.com`) deletes with the
+  cookie's domain/path (not URL-only) and re-reads the jar. If the cookie remains,
+  the command exits non-zero and does not print `Cookie deleted`.
+
 ### Open issue dogfood (#237, #238, #239)
 
 * `responsive-audit` / `visual-check` restore the tab's original viewport after the
