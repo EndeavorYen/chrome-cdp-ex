@@ -4227,6 +4227,79 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
   });
 
+  it('#301 leftover-ax-scroll changed receipt drops generic Recovery hint and stays changed', () => {
+    const previous = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 160/2400 (7%) | Focused: none',
+      'Interactive: 12 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+      '',
+      '[Visible controls]',
+      '  a role=link "Text-to-Audio" [clickable] (8,100 80×24) a[href="#tta"]',
+      '  a role=link "Diffusers" [clickable] (8,128 80×24) a[href="#diff"]',
+    ].join('\n');
+    const current = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 240/2400 (10%) | Focused: none',
+      'Interactive: 12 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '',
+      '[Visible controls]',
+      '  a role=link "MiniMax-Music3" [clickable] (8,100 80×24) a[href="#mm"]',
+      '  a role=link "Go to file" [clickable] (8,128 80×24) a[href="#file"]',
+    ].join('\n');
+    const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+    expect(T.actionDomDiffShowsChange(diff)).toBe(true);
+    expect(diff).toMatch(/Visible-control cap swap:/);
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, {
+      dispatchText: 'Scrolled by (0, 80). Position: (0, 240)',
+    });
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(text).toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Visible-control cap swap:/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/^Recovery hint:/m);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(receipt).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(receipt).toMatch(/Outcome: changed/);
+
+    const genericChanged = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 40 },
+      effects: { domDiff: '+   [StaticText] Saved', console: [], network: [], navigation: null },
+    });
+    expect(genericChanged.outcome.status).toBe('changed');
+    expect(genericChanged.receipt.recoveryHint).toBe('Continue from the observed action evidence.');
+    expect(T.formatActionText(genericChanged)).toContain('Recovery hint: Continue from the observed action evidence.');
+  });
+
   it('#299 leftover-ax-scroll no-change receipt has Next -C -d 8 without Hint --since-action', () => {
     const previous = [
       'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',

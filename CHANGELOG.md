@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#301)
+
+* Leftover golden-path `perceive -C -d 8` then `scroll` still treats a
+  Visible-control cap-swap as `Outcome: changed`. Honest leftover-ax-scroll
+  `changed` receipts no longer print the generic
+  `Recovery hint: Continue from the observed action evidence.` Outcome,
+  compact named samples, Verdict `continue`, and Next `perceive -C -d 8`
+  already carry that handoff. Generic non-leftover `changed` actions still
+  print the hint. Named samples, no Hint `--since-action`, `#297` compact
+  headline, `#295` rect-chrome no-change, `#293` leftover N>0 `--cards`,
+  leftover `-C -d 8` then mutating `click --js`, `#285` PDF Next, and
+  `#286`/`#291` hover honest-gate hold. `HOVER_MOUSE_ACK_TIMEOUT_MS`
+  stays 250.
+
 ### Open issue dogfood (#299)
 
 * Leftover golden-path `perceive -C -d 8` then `scroll` still treats a
