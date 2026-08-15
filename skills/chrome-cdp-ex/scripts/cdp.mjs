@@ -3578,13 +3578,15 @@ async function diffShotStr(cdp, sid, session, opts = {}) {
   return opts.format === 'json' ? formatJson(model) : formatDiffShotResult(model);
 }
 
-async function htmlStr(cdp, sid, selectorOrArgs) {
+async function htmlStr(cdp, sid, selectorOrArgs, extra = {}) {
   // Share selector/root resolution rules with text where practical.
   let opts;
   if (Array.isArray(selectorOrArgs)) opts = parseTextArgs(selectorOrArgs);
   else if (typeof selectorOrArgs === 'string' || selectorOrArgs == null) {
     opts = parseTextArgs(selectorOrArgs ? [selectorOrArgs] : []);
   } else opts = { selectors: [], root: null };
+  const targetPrefix = extra.targetPrefix || opts.targetPrefix || '<target>';
+  await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
   const selector = opts.selectors[0] || null;
   const root = opts.root || 'document';
   const result = await evalStr(cdp, sid, `(function() {
@@ -3614,7 +3616,7 @@ async function htmlStr(cdp, sid, selectorOrArgs) {
     const sel = parsed.selector || selector || '';
     throw new Error(
       `html: no element matched within root "${rootLabel}"${sel ? ` for selector ${sel}` : ''}. ` +
-      `Fallback: cdp eval <target> "document.querySelector(${JSON.stringify(sel || 'selector')})?.outerHTML"`
+      `Fallback: cdp eval ${targetPrefix} "document.querySelector(${JSON.stringify(sel || 'selector')})?.outerHTML"`
     );
   }
   return parsed.html || '';
@@ -3875,6 +3877,25 @@ function pdfViewerError(meta = {}, { targetPrefix = '<target>' } = {}) {
   const err = new Error(formatPdfViewerOutput(meta, { targetPrefix }));
   err.code = 'pdf_viewer';
   return err;
+}
+
+async function assertNotPdfViewerPage(cdp, sid, { targetPrefix = '<target>' } = {}) {
+  try {
+    const page = JSON.parse(await evalStr(
+      cdp,
+      sid,
+      'JSON.stringify({ title: document.title, url: window.location.href, contentType: document.contentType || "" })',
+      false,
+      { timeoutMs: STATUS_PAGE_INFO_TIMEOUT },
+    ));
+    if (isPdfViewerContentType(page.contentType)) {
+      throw pdfViewerError(page, { targetPrefix });
+    }
+    return page;
+  } catch (error) {
+    if (error?.code === 'pdf_viewer') throw error;
+    return null;
+  }
 }
 
 async function collectPageHealth(cdp, sid, { changed = false, retryIndeterminate = true } = {}) {
@@ -6104,8 +6125,14 @@ async function qaPageStr({
 }, args = []) {
   const qopts = parseQaArgs(args);
   const errors = [];
-  const originalViewport = await captureViewportSize(cdp, sid);
   const page = await pageInfoModel(cdp, sid, { targetPrefix: targetPrefixForDisplay(targetId) });
+  if (isPdfViewerContentType(page.contentType)) {
+    const targetPrefix = targetPrefixForDisplay(targetId);
+    return qopts.format === 'json'
+      ? formatJson(pdfViewerHandoffModel(page, { targetPrefix }))
+      : formatPdfViewerOutput(page, { targetPrefix });
+  }
+  const originalViewport = await captureViewportSize(cdp, sid);
   const consoleHealth = {
     errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
     warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
@@ -12806,13 +12833,28 @@ async function cookieSetStr(cdp, sid, cookieStr) {
   return `Cookie set: ${name}=${value.substring(0, 30)}${value.length > 30 ? '...' : ''} (domain: ${cookie.domain})`;
 }
 
+function cookieDeleteParams(cookie, pageUrl = '') {
+  const params = { name: cookie.name };
+  if (cookie.domain) params.domain = cookie.domain;
+  else if (pageUrl) params.url = pageUrl;
+  if (cookie.path) params.path = cookie.path;
+  if (cookie.partitionKey) params.partitionKey = cookie.partitionKey;
+  return params;
+}
+
 async function cookieDelStr(cdp, sid, name) {
   if (!name) throw new Error('Cookie name required');
-  const url = await evalStr(cdp, sid, 'window.location.href');
   const { cookies } = await cdpDomains(cdp).Network.getCookies( {}, sid);
-  const found = (cookies || []).some(cookie => cookie.name === name);
-  if (!found) throw new Error(`Cookie not found: ${name}`);
-  await cdpDomains(cdp).Network.deleteCookies( { name, url }, sid);
+  const matches = (cookies || []).filter(cookie => cookie.name === name);
+  if (!matches.length) throw new Error(`Cookie not found: ${name}`);
+  const needsUrl = matches.some(cookie => !cookie.domain);
+  const pageUrl = needsUrl ? await evalStr(cdp, sid, 'window.location.href') : '';
+  for (const cookie of matches) {
+    await cdpDomains(cdp).Network.deleteCookies( cookieDeleteParams(cookie, pageUrl), sid);
+  }
+  const { cookies: remaining } = await cdpDomains(cdp).Network.getCookies( {}, sid);
+  const leftover = (remaining || []).some(cookie => cookie.name === name);
+  if (leftover) throw new Error(`Cookie still present: ${name}`);
   return `Cookie deleted: ${name}`;
 }
 
@@ -13005,14 +13047,7 @@ async function textStr(cdp, sid, args, extra = {}) {
   else if (!Array.isArray(args)) optsArgs = [];
   const opts = parseTextArgs(optsArgs);
   if (extra.targetPrefix && !opts.targetPrefix) opts.targetPrefix = extra.targetPrefix;
-  try {
-    const page = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ title: document.title, url: window.location.href, contentType: document.contentType || "" })', false, { timeoutMs: STATUS_PAGE_INFO_TIMEOUT }));
-    if (isPdfViewerContentType(page.contentType)) {
-      throw pdfViewerError(page, { targetPrefix: opts.targetPrefix || extra.targetPrefix || '<target>' });
-    }
-  } catch (error) {
-    if (error?.code === 'pdf_viewer') throw error;
-  }
+  await assertNotPdfViewerPage(cdp, sid, { targetPrefix: opts.targetPrefix || extra.targetPrefix || '<target>' });
   const result = await evalStr(cdp, sid, textPageScript(opts));
   let parsed;
   try { parsed = JSON.parse(result); }
@@ -17800,7 +17835,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       return framesStr(cdp, sessionId, { format: fopts.format });
     },
     fullshot: args => fullshotStr(cdp, sessionId, args[0], targetId),
-    html: args => htmlStr(cdp, sessionId, args),
+    html: args => htmlStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
     text: args => textStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
     table: async (request, execution) => request.mode === 'continue'
       ? JSON.stringify(await tableArtifactStore.readContinuation(request.continuation), null, 2)
@@ -20207,14 +20242,16 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
     };
   }
   if (
-    (cmd === 'cookiedel' || lower.includes('cookie not found'))
-    && lower.includes('cookie not found')
+    (cmd === 'cookiedel' || lower.includes('cookie not found') || lower.includes('cookie still present'))
+    && (lower.includes('cookie not found') || lower.includes('cookie still present'))
   ) {
     return {
       kind: 'usage',
       strategy: 'show-help',
       run: targetPrefix ? `cdp cookies ${targetPrefix}` : 'cdp help cookiedel',
-      reason: 'The named cookie is not present. List cookies instead of claiming a delete.',
+      reason: lower.includes('cookie still present')
+        ? 'The named cookie is still present after delete. Do not claim deletion.'
+        : 'The named cookie is not present. List cookies instead of claiming a delete.',
     };
   }
   if (
@@ -21814,7 +21851,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
-  cookieDelStr, uploadStr, assertReadableUploadFiles,
+  cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles,
   navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
@@ -21836,7 +21873,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   resolveFrameRef, storeFrameScopedRefs, qualifyFrameRefsInLines, frameRefFromActionTarget,
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
-  isPdfViewerContentType, formatPdfViewerOutput, pdfViewerError, pageInfoModel,
+  isPdfViewerContentType, formatPdfViewerOutput, pdfViewerError, assertNotPdfViewerPage, pageInfoModel,
   actionObservationPerceiveOpts, actionResultPdfViewerMeta,
   actionDomDiffShowsChange, noBaselineActionDiffText,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
