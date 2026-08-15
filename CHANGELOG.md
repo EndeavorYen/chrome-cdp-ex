@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#255, #256, #257)
+
+* Leftover `perceive --cards`, `perceive -s`, and default `perceive --format json` on a
+  Chrome PDF plugin emit `chrome-cdp-ex.pdf-viewer.v1` with Next
+  `cdp eval <prefix> "document.contentType"`. They no longer dump empty cards,
+  an untitled empty tree, or Next:`click @ref`. Default perceive / `--qa` /
+  `--summary` stay pdf-viewer.v1.
+* `fullshot` on a Chrome PDF plugin fail-fasts as `pdf-viewer.v1` instead of hanging
+  ~30s, exiting 0 with a captureScreenshot-timeout "saved" fallback, and poisoning
+  later `shot` / `elshot` on that tab. Viewport-sized HTML `fullshot` stays the
+  #252 fast path.
+* `perceive --cards` dumps are not reused as action settle-diffs. After a 0-card
+  page, no-op `press Escape` / dead `clickxy` / unfocused `type` stay
+  `Outcome: no-change` and do not recommend `--cards`. Real-feed `--cards` still
+  returns `cards.v1`. Default perceive then Escape stays no-change.
+
 ### Open issue dogfood (#250, #251, #252, #253)
 
 * `perceive --qa` / `perceive --summary` and `summary` on a Chrome PDF plugin emit

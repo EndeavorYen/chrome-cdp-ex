@@ -215,6 +215,27 @@ describe('buildCardsModel', () => {
     expect(second.virtualizedWindowUnchanged).toBe(true);
     expect(second.next).toBe(CARDS_UNCHANGED_NEXT);
   });
+
+  it('treats a repeated 0-card snapshot as unchanged, not a first-run --cards retry', () => {
+    const nodes = [
+      ax(1, null, 'RootWebArea', 'Example Domain', { childIds: [2] }),
+      ax(2, 1, 'main', 'Example Domain', { childIds: [] }),
+    ];
+    const meta = { vw: 1042, vh: 632, scrollY: 0, scrollMax: 0 };
+    const first = buildCardsModel(nodes, meta, new Map(), { targetPrefix: '1D366978' });
+    expect(first.cards).toEqual([]);
+    expect(first.next).toBe('cdp perceive 1D366978 --cards');
+
+    const second = buildCardsModel(nodes, meta, new Map(), {
+      targetPrefix: '1D366978',
+      previousCards: first.cards,
+      previousScrollY: first.scrollY,
+    });
+    expect(second.cards).toEqual([]);
+    expect(second.unchanged).toBe(true);
+    expect(second.next).toBe(CARDS_UNCHANGED_NEXT);
+    expect(second.next).not.toMatch(/cdp perceive 1D366978 --cards/);
+  });
 });
 
 describe('cards output formatters', () => {
