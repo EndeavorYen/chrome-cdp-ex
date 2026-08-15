@@ -9235,25 +9235,47 @@ function nativeVisibleControlTag(tag) {
 function refAnnotationsFromTreeLines(treeLines = []) {
   const out = [];
   for (const line of treeLines) {
-    const match = String(line || '').match(/@((?:f\d+:)?\d+)\s+\((-?\d+),(-?\d+) (\d+)×(\d+)/);
+    const text = String(line || '');
+    const match = text.match(/\[([^\]]+)\](?:\s+(.*?))?\s+@((?:f\d+:)?\d+)(?:\s+\((-?\d+),(-?\d+) (\d+)×(\d+)\))?/);
     if (!match) continue;
+    const name = String(match[2] || '').replace(/\s+=\s+\S.*$/, '').replace(/\s+checked=\S.*$/, '').trim();
+    const idHint = name.split(/\s+/).find(Boolean) || '';
     out.push({
-      ref: `@${match[1]}`,
-      x: Number(match[2]),
-      y: Number(match[3]),
-      w: Number(match[4]),
-      h: Number(match[5]),
+      role: match[1],
+      name,
+      id: idHint,
+      selector: idHint ? `#${idHint}` : '',
+      ref: `@${match[3]}`,
+      x: match[4] != null ? Number(match[4]) : null,
+      y: match[5] != null ? Number(match[5]) : null,
+      w: match[6] != null ? Number(match[6]) : null,
+      h: match[7] != null ? Number(match[7]) : null,
     });
   }
   return out;
 }
 
 function attachRefToVisibleControl(control, annotations = []) {
-  if (!control?.rect || !annotations.length) return control;
+  if (!control || !annotations.length) return control;
+  const id = String(control.hints?.id || '').trim();
+  const selector = String(control.selector || '').trim();
+  const byIdentity = annotations.find(item => {
+    if (id && (item.id === id || item.selector === `#${id}` || String(item.name || '') === id)) return true;
+    if (selector && item.selector && (item.selector === selector || selector.endsWith(item.selector))) return true;
+    return false;
+  });
+  if (byIdentity) return { ...control, ref: byIdentity.ref };
+  if (!control.rect) return control;
   const { x, y, w, h } = control.rect;
-  const hit = annotations.find(item => item.x === x && item.y === y && item.w === w && item.h === h);
-  if (!hit) return control;
-  return { ...control, ref: hit.ref };
+  const hit = annotations.find(item => (
+    item.x != null
+    && Math.abs(item.x - x) <= 1
+    && Math.abs(item.y - y) <= 1
+    && Math.abs(item.w - w) <= 1
+    && Math.abs(item.h - h) <= 1
+  ));
+  if (hit) return { ...control, ref: hit.ref };
+  return control;
 }
 
 function axRoleForDomControl(control = {}) {
@@ -9276,7 +9298,7 @@ function syntheticAxNodeFromDomControl(control, nodeId) {
   const node = {
     nodeId,
     role: { value: role },
-    name: { value: control.name || '' },
+    name: { value: control.name || control.id || '' },
     backendDOMNodeId: control.backendNodeId,
   };
   if (control.parentId) node.parentId = control.parentId;
@@ -9288,6 +9310,25 @@ function syntheticAxNodeFromDomControl(control, nodeId) {
   return node;
 }
 
+function isSynthesizableDomControl(control = {}) {
+  const tag = String(control.tag || '').toLowerCase();
+  if (!nativeVisibleControlTag(tag)) return false;
+  const type = String(control.type || '').toLowerCase();
+  if (type === 'hidden') return false;
+  if (control.hidden === true) return false;
+  const display = String(control.display || '').toLowerCase();
+  const visibility = String(control.visibility || '').toLowerCase();
+  if (display === 'none' || visibility === 'hidden') return false;
+  return true;
+}
+
+function shouldSynthesizeMissingFrameInteractives(frame, axNodes = [], listed = []) {
+  if (!frame) return false;
+  const candidates = (listed || []).filter(isSynthesizableDomControl);
+  if (!candidates.length) return false;
+  return candidates.length > axInteractiveBackendCount(axNodes);
+}
+
 function mergeMissingDomInteractiveAxNodes(axNodes = [], domControls = []) {
   const have = new Set(
     (axNodes || [])
@@ -9297,6 +9338,7 @@ function mergeMissingDomInteractiveAxNodes(axNodes = [], domControls = []) {
   const extras = [];
   let index = 0;
   for (const control of domControls || []) {
+    if (!isSynthesizableDomControl(control)) continue;
     if (control?.backendNodeId == null || have.has(control.backendNodeId)) continue;
     index += 1;
     extras.push(syntheticAxNodeFromDomControl(control, `dom-interactive-${index}`));
@@ -9327,10 +9369,20 @@ function axInteractiveBackendCount(axNodes = []) {
 
 function domInteractiveListScript() {
   return `(function() {
+    const chromeCdpDomInteractiveList = true;
     const els = Array.from(document.querySelectorAll('a, button, input, select, textarea'));
-    return JSON.stringify(els.map((el, i) => {
+    const out = [];
+    for (let i = 0; i < els.length; i++) {
+      const el = els[i];
       const tag = el.tagName.toLowerCase();
       const type = String(el.type || '').toLowerCase();
+      const cs = window.getComputedStyle(el);
+      const hidden = Boolean(el.hidden)
+        || el.getAttribute('hidden') != null
+        || type === 'hidden'
+        || cs.display === 'none'
+        || cs.visibility === 'hidden';
+      if (hidden) continue;
       let role = tag;
       if (tag === 'a') role = 'link';
       else if (tag === 'button') role = 'button';
@@ -9341,23 +9393,28 @@ function domInteractiveListScript() {
         else if (['button', 'submit', 'reset', 'image'].includes(type)) role = 'button';
         else role = 'textbox';
       }
-      return {
+      out.push({
+        chromeCdpDomInteractiveList: true,
         index: i,
         tag: tag,
         type: type,
         id: el.id || '',
-        name: String(el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || '').slice(0, 80),
+        name: String(el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || el.id || '').slice(0, 80),
         value: el.value || '',
         checked: el.checked === true,
         multiple: tag === 'select' ? Boolean(el.multiple) : false,
         selected: tag === 'select' ? Array.from(el.selectedOptions || []).map(opt => opt.value) : null,
-        role: role
-      };
-    }));
+        role: role,
+        hidden: false,
+        display: cs.display,
+        visibility: cs.visibility
+      });
+    }
+    return JSON.stringify(out);
   })()`;
 }
 
-async function collectDomInteractiveControls(cdp, sid, { contextId = null, limit = 40 } = {}) {
+async function listDomInteractiveControls(cdp, sid, { contextId = null, limit = 40 } = {}) {
   let listed = [];
   try {
     const raw = await evalStr(cdp, sid, domInteractiveListScript(), false, contextId != null ? { contextId } : {});
@@ -9366,9 +9423,15 @@ async function collectDomInteractiveControls(cdp, sid, { contextId = null, limit
     return [];
   }
   if (!Array.isArray(listed) || listed.length === 0) return [];
-  const capped = listed.slice(0, Math.max(1, Math.min(Number(limit) || 40, 80)));
+  const capped = listed.filter(isSynthesizableDomControl).slice(0, Math.max(1, Math.min(Number(limit) || 40, 80)));
+  return capped;
+}
+
+async function collectDomInteractiveControls(cdp, sid, { contextId = null, limit = 40, listed = null } = {}) {
+  const candidates = listed || await listDomInteractiveControls(cdp, sid, { contextId, limit });
+  if (!Array.isArray(candidates) || candidates.length === 0) return [];
   const out = [];
-  for (const item of capped) {
+  for (const item of candidates) {
     try {
       const params = {
         expression: `document.querySelectorAll('a, button, input, select, textarea')[${Number(item.index) || 0}]`,
@@ -10497,11 +10560,17 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
   });
   axNodes = typeaheadFilter.nodes;
 
-  if (countedInteractiveElements(meta.counts) > axInteractiveBackendCount(axNodes)) {
-    const extras = await collectDomInteractiveControls(cdp, sid, {
+  if (frame) {
+    const listed = await listDomInteractiveControls(cdp, sid, {
       contextId: frameExecutionContextId,
     });
-    if (extras.length) axNodes = mergeMissingDomInteractiveAxNodes(axNodes, extras);
+    if (shouldSynthesizeMissingFrameInteractives(frame, axNodes, listed)) {
+      const extras = await collectDomInteractiveControls(cdp, sid, {
+        contextId: frameExecutionContextId,
+        listed,
+      });
+      if (extras.length) axNodes = mergeMissingDomInteractiveAxNodes(axNodes, extras);
+    }
   }
 
   const activeRefMap = frame ? new Map() : refMap;
@@ -10635,8 +10704,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
     const ranked = rankPerceiveCursorItems(
       meta.visibleControls,
       item => item.label || item.ariaLabel || item.text || item.title,
-    ).map(control => attachRefToVisibleControl(control, refAnns))
-      .filter(control => control.ref || !frame || !nativeVisibleControlTag(control.tag));
+    ).map(control => attachRefToVisibleControl(control, refAnns));
     const capped = ranked.slice(0, cursorLimit);
     const truncated = ranked.length > capped.length || meta.visibleControlsTruncated;
     treeLines.push('');
@@ -12874,14 +12942,27 @@ function javascriptDialogHandleParams(params = {}, accept) {
 
 function createJavaScriptDialogSession() {
   const pending = new Set();
+  let failedHandle = false;
+  let lastHandle = null;
   return {
     pending,
     track(promise) {
-      pending.add(promise);
-      Promise.resolve(promise).finally(() => pending.delete(promise));
-      return promise;
+      const tracked = Promise.resolve(promise).then((result) => {
+        lastHandle = result && typeof result === 'object' ? result : { ok: true, value: result };
+        if (result && result.ok === false) failedHandle = true;
+        return result;
+      }, (error) => {
+        failedHandle = true;
+        lastHandle = { ok: false, error };
+        throw error;
+      }).finally(() => {
+        pending.delete(tracked);
+      });
+      pending.add(tracked);
+      return tracked;
     },
     async waitForPending(timeoutMs = 1000) {
+      if (pending.size === 0) return;
       const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
       while (pending.size > 0 && Date.now() < deadline) {
         await Promise.race([
@@ -12890,7 +12971,36 @@ function createJavaScriptDialogSession() {
         ]);
       }
     },
+    hasPending() {
+      return pending.size > 0;
+    },
+    hasFailedHandle() {
+      return failedHandle;
+    },
+    lastHandle() {
+      return lastHandle;
+    },
   };
+}
+
+function shouldSkipActionPageEvaluate(dialogSession) {
+  return Boolean(dialogSession && typeof dialogSession.hasFailedHandle === 'function' && dialogSession.hasFailedHandle());
+}
+
+function formatDialogBlockedObserveText(dialogSession = null) {
+  const handle = dialogSession && typeof dialogSession.lastHandle === 'function' ? dialogSession.lastHandle() : null;
+  const detail = handle?.error?.message ? `: ${handle.error.message}` : '';
+  return `JavaScript dialog still open; skipped page evaluate to avoid blocking the tab daemon${detail}`;
+}
+
+async function observeAfterActionGuardingDialogs(jsDialogs, observeAfterAction) {
+  if (jsDialogs && typeof jsDialogs.hasPending === 'function' ? jsDialogs.hasPending() : jsDialogs?.pending?.size > 0) {
+    await jsDialogs.waitForPending(1500);
+  }
+  if (shouldSkipActionPageEvaluate(jsDialogs)) {
+    return formatDialogBlockedObserveText(jsDialogs);
+  }
+  return observeAfterAction();
 }
 
 async function handleOpeningJavaScriptDialog(cdp, fallbackSessionId, params, msg, {
@@ -12911,13 +13021,15 @@ async function handleOpeningJavaScriptDialog(cdp, fallbackSessionId, params, msg
   const sessions = [];
   if (msg?.sessionId) sessions.push(msg.sessionId);
   if (fallbackSessionId && fallbackSessionId !== msg?.sessionId) sessions.push(fallbackSessionId);
-  sessions.push(undefined);
   let lastError = null;
+  if (sessions.length === 0) {
+    return { ok: false, error: new Error('No page session available for JavaScript dialog handling') };
+  }
   for (let attempt = 0; attempt < retries; attempt++) {
     for (const sid of sessions) {
       try {
         await cdpDomains(cdp).Page.handleJavaScriptDialog(payload, sid);
-        return { ok: true, sessionId: sid || null, attempt };
+        return { ok: true, sessionId: sid, attempt };
       } catch (error) {
         lastError = error;
       }
@@ -18386,9 +18498,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           ? await snapshotFormControlState(cdp, sessionId, actionTarget.input, refMap, refState)
           : null;
         const text = await dispatch();
-        if (action === 'click' || action === 'jsclick' || action === 'clickxy') {
-          await sleep(50);
+        if ((action === 'click' || action === 'jsclick' || action === 'clickxy') && jsDialogs.hasPending()) {
           await jsDialogs.waitForPending(1500);
+        }
+        if (shouldSkipActionPageEvaluate(jsDialogs)) {
+          actionTarget.dialogBlocked = true;
+          actionTarget.dispatchText = String(text || '');
+          return text;
         }
         if (snapshotControls) {
           const afterControl = await snapshotFormControlState(cdp, sessionId, actionTarget.input, refMap, refState);
@@ -18420,6 +18536,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         return text;
       } catch (error) {
         await jsDialogs.waitForPending(1500).catch(() => {});
+        if (shouldSkipActionPageEvaluate(jsDialogs)) {
+          actionTarget.dialogBlocked = true;
+        }
         await pageInfoPromise;
         throw error;
       }
@@ -18440,8 +18559,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         postActionPageHealth = await collectPageHealth(cdp, sessionId, { changed: true }).catch(() => null);
         return formatActionNavigationDiff(actionTarget.pageHrefBefore, actionTarget.pageHrefAfter);
       }
-      await jsDialogs.waitForPending(1500);
-      let text = await observeAfterAction();
+      let text = await observeAfterActionGuardingDialogs(jsDialogs, observeAfterAction);
+      if (actionTarget.dialogBlocked || shouldSkipActionPageEvaluate(jsDialogs)) {
+        appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
+        return text;
+      }
       if (actionTarget.controlStateChanged) {
         const note = `Control state changed: ${actionTarget.controlStateDiff}`;
         text = actionDomDiffShowsChange(text) ? `${note}\n${text}` : note;
@@ -22544,6 +22666,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseControlsArgs, visibleControlsCollectorSource, visibleControlsPageScript, compactVisibleControlsModel, formatVisibleControlLine, formatVisibleControlsText, controlsStr,
   offsetCssRect, offsetCursorInteractiveItem, mergeMissingDomInteractiveAxNodes, syntheticAxNodeFromDomControl,
   attachRefToVisibleControl, refAnnotationsFromTreeLines, nativeVisibleControlTag,
+  isSynthesizableDomControl, shouldSynthesizeMissingFrameInteractives, listDomInteractiveControls,
+  collectDomInteractiveControls, countedInteractiveElements, axInteractiveBackendCount,
   rankPerceiveCursorItems,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
@@ -22580,6 +22704,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   // Command implementations
   getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr, filterNetlogEntries,
   javascriptDialogHandleParams, createJavaScriptDialogSession, handleOpeningJavaScriptDialog,
+  shouldSkipActionPageEvaluate, formatDialogBlockedObserveText, observeAfterActionGuardingDialogs,
   parseMockArgs, formatNetworkMocksSummary, buildMockModel, formatMockText, mockStr, handleMockRequestPaused,
   parseClockArgs, clockPageScript, formatClockSummary, buildClockModel, formatClockText, clockStr,
   parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
@@ -22616,7 +22741,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isFramedPerceiveOutput, shouldCaptureTopLevelActionSettle, actionSettleObserveOpts,
   actionDomDiffShowsChange, noBaselineActionDiffText,
   formControlStateChanged, formatFormControlStateDiff, shouldSnapshotFormControlState,
-  parseFormControlStateSnapshot,
+  parseFormControlStateSnapshot, snapshotFormControlState,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
