@@ -4625,6 +4625,26 @@ function isCardsPerceiveOutput(output) {
   return String(output || '').includes(CARDS_SCHEMA);
 }
 
+function leftoverCardsCount(output) {
+  const match = String(output || '').match(/chrome-cdp-ex\.cards\.v1\s+(\d+)\s+cards?\b/i);
+  return match ? Number(match[1]) : 0;
+}
+
+function isScrollActionTarget(actionTarget = {}) {
+  return String(actionTarget.resolvedBy || '').toLowerCase() === 'scroll'
+    || String(actionTarget.action || '').toLowerCase() === 'scroll';
+}
+
+function isLeftoverFeedCardsSettle(output, snapshotOpts = null, actionTarget = {}) {
+  // Leftover --cards / --role feed with a real feed window is the settle
+  // shape for the next scroll (#293). 0-card leftovers still recapture
+  // default AX (#257/#279). Non-scroll mutators still recapture AX so a
+  // like/click is not hidden behind cards.
+  if (!isScrollActionTarget(actionTarget)) return false;
+  if (!(snapshotOpts?.cards === true || isCardsPerceiveOutput(output))) return false;
+  return leftoverCardsCount(output) > 0;
+}
+
 function framedPerceiveRefFromOutput(output) {
   const match = String(output || '').match(/^Frame: (@f\d+)\b/m);
   return match ? match[1] : null;
@@ -4646,7 +4666,9 @@ function shouldCaptureTopLevelActionSettle(snapshotOpts = null, output = null, a
   // click --js report no-change / "No visible AX tree change" while the
   // handler ran (#279). Recapture default AX so live text changes are
   // Outcome:changed. Leftover-cards + Escape still settles as no-change
-  // against that recaptured tree.
+  // against that recaptured tree. Leftover N>0 cards then scroll keeps the
+  // cards window (#293) and must not recapture full AX.
+  if (isLeftoverFeedCardsSettle(output, snapshotOpts, actionTarget)) return false;
   if (snapshotOpts?.cards === true || isCardsPerceiveOutput(output)) return true;
   return Boolean(snapshotOpts?.frameRef) || isFramedPerceiveOutput(output);
 }
@@ -4662,7 +4684,14 @@ function actionSettleBaseline(output, snapshotOpts = null, actionTarget = {}) {
   // Compact --cards dumps are a feed view, not an AX settle baseline. Reusing
   // them after a 0-card page makes no-op press/type/clickxy look like a DOM
   // change (#257). Recapture default AX before the action (#279) instead of
-  // settling as "No changes detected."
+  // settling as "No changes detected." Leftover N>0 cards then scroll keeps
+  // that feed window so timestamp chrome is not a fake AX change (#293).
+  if (isLeftoverFeedCardsSettle(output, snapshotOpts, actionTarget)) {
+    return {
+      output: output || null,
+      opts: snapshotOpts ? { ...snapshotOpts, cards: true } : { cards: true },
+    };
+  }
   if (snapshotOpts?.cards === true || isCardsPerceiveOutput(output)) {
     return {
       output: null,
@@ -5686,7 +5715,8 @@ function actionObservationPerceiveOpts(targetId, extra = {}) {
 
 function actionSettleObserveOpts(targetId, actionTarget = {}, baselineOutput = null, baselineOpts = null) {
   const targetFrameRef = frameRefFromActionTarget(actionTarget);
-  return actionObservationPerceiveOpts(targetId, {
+  const keepFeedCards = isLeftoverFeedCardsSettle(baselineOutput, baselineOpts, actionTarget);
+  const opts = actionObservationPerceiveOpts(targetId, {
     ...resolveSinceActionPerceiveOpts(
       {
         sinceAction: true,
@@ -5700,6 +5730,11 @@ function actionSettleObserveOpts(targetId, actionTarget = {}, baselineOutput = n
     // (or an explicit --frame) may settle inside an iframe.
     frameRef: targetFrameRef || null,
   });
+  // actionObservationPerceiveOpts forces cards:false so leftover 0-card
+  // recapture stays default AX (#257/#279). Re-enable cards only when the
+  // leftover feed window is the scroll settle shape (#293).
+  if (keepFeedCards) opts.cards = true;
+  return opts;
 }
 
 function formatActionResultOutput(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false } = {}) {
@@ -19108,6 +19143,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     if (isPdfViewerPerceiveOutput(baselineFromTarget)) {
       actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'pdf-viewer-no-change';
     }
+    if (isLeftoverFeedCardsSettle(
+      baselineFromTarget,
+      lastPerceiveStore.snapshotOpts,
+      actionTarget,
+    ) && action === 'scroll') {
+      actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'cards-window-no-change';
+    }
     if (
       !settleBaseline.output
       && shouldCaptureTopLevelActionSettle(
@@ -23453,6 +23495,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isPdfViewerContentType, formatPdfViewerOutput, pdfViewerError, assertNotPdfViewerPage, pageInfoModel,
   pdfViewerHandoffModelFromOutput,
   actionObservationPerceiveOpts, actionResultPdfViewerMeta, actionSettleBaseline, isCardsPerceiveOutput,
+  leftoverCardsCount, isScrollActionTarget, isLeftoverFeedCardsSettle,
   isPdfViewerPerceiveOutput, pdfViewerSettleDiffText,
   isFramedPerceiveOutput, shouldCaptureTopLevelActionSettle, actionSettleObserveOpts,
   actionDomDiffShowsChange, noBaselineActionDiffText,

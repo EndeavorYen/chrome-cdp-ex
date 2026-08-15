@@ -9,6 +9,9 @@ import {
   buildCardsModel,
   formatCardsJson,
   formatCardsText,
+  stripRelativeTimeFromCardText,
+  cardIdentity,
+  cardsFingerprint,
 } from '../skills/chrome-cdp-ex/scripts/lib/cards-model.mjs';
 
 function ax(id, parentId, role, name, extra = {}) {
@@ -235,6 +238,102 @@ describe('buildCardsModel', () => {
     expect(second.unchanged).toBe(true);
     expect(second.next).toBe(CARDS_UNCHANGED_NEXT);
     expect(second.next).not.toMatch(/cdp perceive 1D366978 --cards/);
+  });
+
+  it('#293 cardIdentity ignores relative-time chrome in article AX names without hiding a new article', () => {
+    expect(stripRelativeTimeFromCardText('first tweet body · 2m')).toBe('first tweet body');
+    expect(stripRelativeTimeFromCardText('first tweet body · 3m')).toBe('first tweet body');
+    expect(stripRelativeTimeFromCardText('third tweet body · 3m')).toBe('third tweet body');
+
+    const twoMinutes = { url: 'https://x.com/SY239434/status/1001', handle: '@SY239434', text: 'first tweet body · 2m' };
+    const threeMinutes = { ...twoMinutes, text: 'first tweet body · 3m' };
+    const replaced = { url: 'https://x.com/SY239434/status/1003', handle: '@SY239434', text: 'third tweet body · 3m' };
+    expect(cardIdentity(twoMinutes)).toBe(cardIdentity(threeMinutes));
+    expect(cardIdentity(twoMinutes)).not.toBe(cardIdentity(replaced));
+    expect(cardsFingerprint([twoMinutes, { ...twoMinutes, url: 'https://x.com/SY239434/status/1002', text: 'second tweet body · 2m' }]))
+      .toBe(cardsFingerprint([threeMinutes, { ...threeMinutes, url: 'https://x.com/SY239434/status/1002', text: 'second tweet body · 3m' }]));
+    expect(cardsFingerprint([threeMinutes, replaced])).not.toBe(
+      cardsFingerprint([twoMinutes, { ...twoMinutes, url: 'https://x.com/SY239434/status/1002', text: 'second tweet body · 2m' }]),
+    );
+
+    const timed = [
+      ax(1, null, 'RootWebArea', 'X', { childIds: [2] }),
+      ax(2, 1, 'feed', 'Timeline', { childIds: [3, 6] }),
+      ax(3, 2, 'article', 'first tweet body · 2m', {
+        backendDOMNodeId: 201,
+        childIds: [4, 5],
+      }),
+      ax(4, 3, 'link', '@SY239434'),
+      ax(5, 3, 'link', 'post', { properties: urlProp('https://x.com/SY239434/status/1001') }),
+      ax(6, 2, 'article', 'second tweet body · 2m', {
+        backendDOMNodeId: 202,
+        childIds: [7],
+      }),
+      ax(7, 6, 'link', 'post', { properties: urlProp('https://x.com/SY239434/status/1002') }),
+    ];
+    const laterNodes = timed.map(node => {
+      if (node.nodeId === '3') return { ...node, name: { value: 'first tweet body · 3m' } };
+      if (node.nodeId === '6') return { ...node, name: { value: 'second tweet body · 3m' } };
+      return node;
+    });
+    const replacedNodes = timed.map(node => {
+      if (node.nodeId === '3') {
+        return {
+          ...node,
+          name: { value: 'second tweet body · 3m' },
+          backendDOMNodeId: 202,
+          childIds: [4, 5],
+        };
+      }
+      if (node.nodeId === '5') {
+        return { ...node, properties: urlProp('https://x.com/SY239434/status/1002') };
+      }
+      if (node.nodeId === '6') {
+        return {
+          ...node,
+          name: { value: 'third tweet body · 3m' },
+          backendDOMNodeId: 203,
+        };
+      }
+      if (node.nodeId === '7') {
+        return { ...node, properties: urlProp('https://x.com/SY239434/status/1003') };
+      }
+      return node;
+    });
+    const meta = { vh: 900, scrollY: 0, scrollMax: 4000 };
+    const first = buildCardsModel(timed, meta, new Map());
+    const clockTick = buildCardsModel(laterNodes, { ...meta, scrollY: 80 }, new Map(), {
+      previousCards: first.cards,
+      previousScrollY: 0,
+    });
+    expect(clockTick.unchanged).toBe(true);
+    expect(clockTick.next).toBe(CARDS_UNCHANGED_NEXT);
+    expect(clockTick.cards[0].text).toMatch(/3m/);
+
+    const replacedWindow = buildCardsModel(replacedNodes, { ...meta, scrollY: 80 }, new Map(), {
+      previousCards: first.cards,
+      previousScrollY: 0,
+    });
+    expect(replacedWindow.unchanged).not.toBe(true);
+    expect(replacedWindow.next).not.toBe(CARDS_UNCHANGED_NEXT);
+    expect(replacedWindow.cards.map(card => card.text).join('\n')).toMatch(/third tweet body/);
+
+    const addedThird = [
+      ...timed,
+      ax(8, 2, 'article', 'third tweet body · 3m', {
+        backendDOMNodeId: 203,
+        childIds: [9],
+      }),
+      ax(9, 8, 'link', 'post', { properties: urlProp('https://x.com/SY239434/status/1003') }),
+    ];
+    addedThird[1] = { ...addedThird[1], childIds: [3, 6, 8] };
+    const addedWindow = buildCardsModel(addedThird, { ...meta, scrollY: 80 }, new Map(), {
+      previousCards: first.cards,
+      previousScrollY: 0,
+    });
+    expect(addedWindow.cards).toHaveLength(3);
+    expect(addedWindow.unchanged).not.toBe(true);
+    expect(addedWindow.next).not.toBe(CARDS_UNCHANGED_NEXT);
   });
 });
 

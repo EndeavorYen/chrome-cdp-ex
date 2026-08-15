@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#293)
+
+* Leftover `perceive --cards` / `--role feed` with a real feed window (N>0
+  cards) is the settle shape for the next `scroll`. Recapture stays
+  `cards.v1` so timestamp chrome is not a fake AX `Outcome: changed`, and
+  an unchanged virtualized window is `no-change` / continue with Next
+  `perceive --cards` instead of `report` or `perceive -C -d 8`. Card
+  identity ignores relative-time chrome in article AX names (`· 2m`),
+  including when the clock lives in the article `name` itself rather than
+  only child StaticText. A third article entering the leftover window is
+  still `Outcome: changed` even when `expectedOutcome` is
+  `cards-window-no-change`. 0-card leftovers still
+  recapture default AX (`#257` / `#279`). Leftover feed `--cards` then
+  `click --js` still recaptures AX. `#285` leftover PDF `click --js` and
+  `#286`/`#291` hover honest-gate hold.
+
 ### Open issue dogfood (#291)
 
 * `hover` still snapshots settle-shape AX before mouseMoved and recaptures

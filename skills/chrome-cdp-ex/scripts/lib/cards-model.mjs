@@ -136,8 +136,22 @@ function extractText(cardNode, handle) {
   return compactCardText(text, CARD_TEXT_LIMIT);
 }
 
+// X article AX names often include relative time (`· 2m`, `3h`, `just now`).
+// Identity must ignore that chrome so leftover --cards then scroll does not
+// treat a clock tick as a new feed window (#293). Displayed card.text keeps
+// the time. A replaced article (url / handle / body) still changes identity.
+const RELATIVE_TIME_TOKEN_RE = /(?:^|[^\p{L}\p{N}])\s*(?:just\s+now|\d+\s*(?:seconds?|minutes?|hours?|days?|[smhd]))\b/giu;
+
+export function stripRelativeTimeFromCardText(value) {
+  return compactCardText(String(value || '').replace(RELATIVE_TIME_TOKEN_RE, ' '));
+}
+
 export function cardIdentity(card = {}) {
-  return [card.url || '', card.handle || '', card.text || ''].join('\n');
+  return [
+    card.url || '',
+    card.handle || '',
+    stripRelativeTimeFromCardText(card.text || ''),
+  ].join('\n');
 }
 
 export function cardsFingerprint(cards = []) {
