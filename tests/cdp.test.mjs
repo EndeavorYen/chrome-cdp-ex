@@ -4116,6 +4116,125 @@ describe('Perceive diff baseline', () => {
     expect(model.removed.length).toBeLessThanOrEqual(4);
   });
 
+  it('#299 unlabeled Visible-control cap-swap samples prefer named labels and stay changed', () => {
+    const header = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 0/2400 (0%) | Focused: none',
+      'Interactive: 12 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+    ];
+    const previous = [
+      ...header,
+      '[RootWebArea] MiniMax-Music3',
+      '  [navigation] Main  603×28px',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+      '',
+      '[Visible controls]',
+      '  img [clickable] (8,12 24×24) img.logo',
+      '  div [clickable] (8,40 32×32) div.nav-icon',
+      '  a role=link [clickable] (8,68 40×20) a[href="/"]',
+      '  a role=link "Hugging Face" [clickable] (8,100 80×22) a[href="#hf"]',
+      '  a role=link "Models" [clickable] (8,128 80×22) a[href="#models"]',
+      '  a role=link "Datasets" [clickable] (8,156 80×22) a[href="#datasets"]',
+      '  a role=link "search" [clickable] (8,184 80×22) a[href="#search"]',
+    ].join('\n');
+    const currentHeader = header.map(line => line.replace('Scroll: 0/2400 (0%)', 'Scroll: 80/2400 (3%)'));
+    const current = [
+      ...currentHeader,
+      '[RootWebArea] MiniMax-Music3',
+      '  [navigation] Main  603×28px  ↑above fold',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '',
+      '[Visible controls]',
+      '  img [clickable] (8,12 24×24) img.hero',
+      '  div [clickable] (8,40 32×32) div.body-icon',
+      '  a role=link [clickable] (8,68 40×20) a[href="/model"]',
+      '  a role=link "MiniMaxAI" [clickable] (8,100 80×22) a[href="#mm"]',
+      '  a role=link "Text-to-Audio" [clickable] (8,128 80×22) a[href="#tta"]',
+      '  a role=link "Diffusers" [clickable] (8,156 80×22) a[href="#diff"]',
+      '  a role=link "Like" [clickable] (8,184 80×22) a[href="#like"]',
+    ].join('\n');
+    const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+    expect(diff).toMatch(/Visible-control cap swap: 7 left, 7 entered/);
+    expect(diff).toContain('- Hugging Face');
+    expect(diff).toContain('+ MiniMaxAI');
+    expect(diff).toContain('+ Text-to-Audio');
+    expect(diff).not.toMatch(/^[-+] (?:img|div|link|a)\b/m);
+    expect(diff).not.toMatch(/img\.logo|div\.nav-icon|img\.hero|div\.body-icon/);
+    expect(diff).not.toMatch(/--- Removed/);
+    expect(T.actionDomDiffShowsChange(diff)).toBe(true);
+    expect(diff).not.toMatch(/no changes detected/i);
+
+    const model = T.buildPerceiveDiffModel(previous, current, { mode: 'since-action' });
+    expect(model.summary.changed).toBe(true);
+    expect(model.summary.kind).toBe('visible-control-cap-swap');
+    expect(model.summary.headline).toBe('Visible-control cap swap: 7 left, 7 entered');
+    expect(model.removed).toEqual(expect.arrayContaining(['Hugging Face']));
+    expect(model.added).toEqual(expect.arrayContaining(['MiniMaxAI']));
+    expect(model.removed.some(label => /^(?:img|div|link|a)\b/i.test(String(label)))).toBe(false);
+    expect(model.added.some(label => /^(?:img|div|link|a)\b/i.test(String(label)))).toBe(false);
+
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('changed');
+    expect(result.nextHint).toBeNull();
+    expect(text).toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/perceive --since-action/);
+    expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
+  });
+
+  it('#299 leftover-ax-scroll no-change receipt has Next -C -d 8 without Hint --since-action', () => {
+    const previous = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 0/2400 (0%) | Focused: none',
+      'Interactive: 3 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+    ].join('\n');
+    const current = previous.replace('Scroll: 0/2400 (0%)', 'Scroll: 80/2400 (3%)')
+      .replace('(24,180 160×22)', '(24,100 160×22)');
+    const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+    expect(T.actionDomDiffShowsChange(diff)).toBe(false);
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.nextHint).toBeNull();
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/perceive --since-action/);
+  });
+
   it('builds a JSON diff model from an explicit baseline output', () => {
     const previous = [
       'Page: Example — https://example.com',

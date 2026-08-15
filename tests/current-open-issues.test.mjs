@@ -7898,9 +7898,41 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     };
   }
 
-  function hfMeta(scrollY, files, { foldTag = false, capSwap = false } = {}) {
+  function hfUnlabeledControl(tag, y, selector) {
+    return {
+      tag,
+      role: tag === 'a' ? 'link' : '',
+      label: '',
+      clickable: true,
+      rect: { x: 8, y, w: 24, h: 24 },
+      selector,
+      hints: { id: '', classes: [] },
+    };
+  }
+
+  function noisyCapSwapChrome() {
+    return [
+      hfUnlabeledControl('img', 12, 'img.logo'),
+      hfUnlabeledControl('div', 40, 'div.nav-icon'),
+      hfUnlabeledControl('a', 68, 'a[href="/"]'),
+      ...CAP_SWAP_CHROME.map((label, i) => hfVisibleControl(label, 100 + i * 28)),
+    ];
+  }
+
+  function noisyCapSwapContent() {
+    return [
+      hfUnlabeledControl('img', 12, 'img.hero'),
+      hfUnlabeledControl('div', 40, 'div.body-icon'),
+      hfUnlabeledControl('a', 68, 'a[href="/model"]'),
+      ...CAP_SWAP_CONTENT.map((label, i) => hfVisibleControl(label, 100 + i * 28)),
+    ];
+  }
+
+  function hfMeta(scrollY, files, { foldTag = false, capSwap = false, noisyCapSwap = false } = {}) {
     const fileControls = files.map(file => hfVisibleControl(file.name, file.y - scrollY));
-    const visibleControls = capSwap
+    const visibleControls = noisyCapSwap
+      ? (scrollY > 0 ? noisyCapSwapContent() : noisyCapSwapChrome())
+      : capSwap
       ? (scrollY > 0 ? CAP_SWAP_CONTENT : CAP_SWAP_CHROME).map((label, i) => (
         hfVisibleControl(label, 12 + i * 28)
       ))
@@ -7924,7 +7956,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     });
   }
 
-  function hfAx(files, { foldTag = false, capSwap = false } = {}) {
+  function hfAx(files, { foldTag = false, capSwap = false, noisyCapSwap = false } = {}) {
     const links = files.map((file, i) => ({
       nodeId: String(20 + i),
       parentId: '10',
@@ -7932,7 +7964,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
       name: { value: file.name },
       backendDOMNodeId: file.backend,
     }));
-    const withNav = foldTag || capSwap;
+    const withNav = foldTag || capSwap || noisyCapSwap;
     return [
       {
         nodeId: '1',
@@ -7964,13 +7996,15 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     files = DEFAULT_FILES,
     foldTag = false,
     capSwap = false,
+    noisyCapSwap = false,
   } = {}) {
     const state = {
       scrollY,
       clicks,
       files: files.map(file => ({ ...file })),
       foldTag,
-      capSwap,
+      capSwap: capSwap || noisyCapSwap,
+      noisyCapSwap,
     };
     const cdp = {
       calls: [],
@@ -7998,6 +8032,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
                 value: hfMeta(state.scrollY, state.files, {
                   foldTag: state.foldTag,
                   capSwap: state.capSwap,
+                  noisyCapSwap: state.noisyCapSwap,
                 }),
               },
             });
@@ -8005,7 +8040,11 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
           return Promise.resolve({ result: { value: '{}' } });
         }
         if (method === 'Accessibility.getFullAXTree') {
-          const nodes = hfAx(state.files, { foldTag: state.foldTag, capSwap: state.capSwap });
+          const nodes = hfAx(state.files, {
+            foldTag: state.foldTag,
+            capSwap: state.capSwap,
+            noisyCapSwap: state.noisyCapSwap,
+          });
           if (state.clicks) {
             nodes.push({
               nodeId: '98',
@@ -8496,6 +8535,55 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(result.outcome.status).toBe('changed');
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
+  });
+
+  it('#299 leftover -C -d 8 then scroll cap-swap samples skip unlabeled tags and drop Hint --since-action', async () => {
+    const { cdp } = createHfPage({ noisyCapSwap: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
+    expect(leftoverDump).toMatch(/img \[clickable\]/);
+    expect(leftoverDump).toMatch(/Hugging Face/);
+    const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    expect(settleBaseline.output).toBe(leftoverDump);
+    expect(cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length).toBe(axBefore);
+    await T.scrollStr(cdp, 'sid', 'down', '80');
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/Visible-control cap swap: \d+ left, \d+ entered/);
+    expect(after).toContain('- Hugging Face');
+    expect(after).toContain('+ MiniMaxAI');
+    expect(after).not.toMatch(/^[-+] (?:img|div|link|a)\b/m);
+    expect(after).not.toMatch(/img\.logo|div\.nav-icon|img\.hero|div\.body-icon/);
+    expect(after).not.toMatch(/--- Removed \(\d+\)/);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, {
+      dispatchText: 'Scrolled by (0, 80). Position: (0, 80)',
+    });
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.nextHint).toBeNull();
+    expect(text).toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Visible-control cap swap:/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/perceive --since-action/);
+    expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(receipt).not.toMatch(/Hint: Use perceive --since-action/);
   });
 });
 

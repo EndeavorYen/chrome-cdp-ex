@@ -4638,9 +4638,10 @@ function isScrollActionTarget(actionTarget = {}) {
 
 function isLeftoverDefaultAxScrollSettle(output, snapshotOpts = null, actionTarget = {}) {
   // Leftover golden-path / default AX (`perceive -C -d 8`) is the settle
-  // shape for the next scroll (#295/#297). Viewport @ref rect chrome and
+  // shape for the next scroll (#295/#297/#299). Viewport @ref rect chrome and
   // fold tags are not a page mutation. Visible-control cap-swap membership
-  // is still changed, but the receipt summarizes it. Cards / pdf-viewer /
+  // is still changed, but the receipt summarizes it with named samples and
+  // Next `-C -d 8` without Hint `--since-action`. Cards / pdf-viewer /
   // framed leftovers keep their own settle gates.
   if (!isScrollActionTarget(actionTarget)) return false;
   if (isPdfViewerPerceiveOutput(output)) return false;
@@ -5371,10 +5372,22 @@ function buildActionRecommendation(actionResult = {}) {
   };
 }
 
+const GENERIC_SINCE_ACTION_HINT = 'Use perceive --since-action if more evidence is needed';
+
+function isGenericSinceActionHint(hint) {
+  return String(hint || '').trim() === GENERIC_SINCE_ACTION_HINT;
+}
+
 function applyActionRecommendation(actionResult) {
   const recommendation = buildActionRecommendation(actionResult);
   actionResult.recommendation = recommendation;
   actionResult.nextSteps = uniqueNextStepCommands(recommendation.commands || []);
+  if (
+    isExpectedLeftoverAxScrollNoChange(actionResult.target || {})
+    && isGenericSinceActionHint(actionResult.nextHint)
+  ) {
+    actionResult.nextHint = null;
+  }
   return actionResult;
 }
 
@@ -5584,7 +5597,7 @@ function formatActionText(result) {
   } else if (leftoverAxScrollNext) {
     lines.push(`Next: ${result.recommendation.commands[0]}`);
   }
-  if (result.nextHint) lines.push(`Hint: ${result.nextHint}`);
+  if (result.nextHint && !leftoverAxScrollNext) lines.push(`Hint: ${result.nextHint}`);
   return lines.join('\n');
 }
 
@@ -6614,7 +6627,7 @@ async function pageContainsText(cdp, sid, text) {
   }
 }
 
-async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = 'Use perceive --since-action if more evidence is needed', enrichActionResult = null, onActionResult = null, format = 'text' }) {
+async function runActionWithFeedback({ action, target = null, dispatch, feedbackPolicy, observe, dispatchMethod = action, nextHint = GENERIC_SINCE_ACTION_HINT, enrichActionResult = null, onActionResult = null, format = 'text' }) {
   const output = normalizeActionOutputOptions(format);
   const startedAt = Date.now();
   let dispatchText;
@@ -10011,24 +10024,35 @@ function isVisibleControlStructuralLine(line) {
   return isVisibleControlsSectionHeader(line) || isVisibleControlDumpLine(line);
 }
 
-function visibleControlLabelFromLine(line) {
+function visibleControlNameFromLine(line) {
   const text = stripPerceiveIdentityChrome(line).trim();
-  if (!text || isVisibleControlsSectionHeader(text)) return null;
-  const quoted = text.match(/"([^"]+)"/);
-  if (quoted) return quoted[1];
-  const aria = text.match(/aria-label="([^"]*)"/);
-  if (aria && aria[1]) return aria[1];
-  return text.replace(/\s+@[\w:-]+\b.*/, '').slice(0, 60) || null;
+  if (!text || isVisibleControlsSectionHeader(text)) return { name: null, named: false };
+  // Accessible names only: aria-label / title / the quoted label field
+  // (` "MiniMaxAI"`). Do not treat selector href quotes (`a[href="/"]`) as
+  // a name — those unlabeled tag lines are membership, not samples (#299).
+  const aria = text.match(/\baria-label="([^"]*)"/);
+  if (aria && aria[1].trim()) return { name: aria[1], named: true };
+  const title = text.match(/\btitle="([^"]*)"/);
+  if (title && title[1].trim()) return { name: title[1], named: true };
+  const labeled = text.match(/\s"([^"]+)"/);
+  if (labeled && labeled[1].trim()) return { name: labeled[1], named: true };
+  const fallback = text.replace(/\s+@[\w:-]+\b.*/, '').slice(0, 60) || null;
+  return { name: fallback, named: false };
 }
 
-function extractVisibleControlLabels(lines = []) {
+function visibleControlLabelFromLine(line) {
+  return visibleControlNameFromLine(line).name;
+}
+
+function extractVisibleControlLabels(lines = [], { namedOnly = false } = {}) {
   const labels = [];
   const seen = new Set();
   for (const line of lines) {
-    const label = visibleControlLabelFromLine(line);
-    if (!label || seen.has(label)) continue;
-    seen.add(label);
-    labels.push(label);
+    const parsed = visibleControlNameFromLine(line);
+    if (!parsed.name || (namedOnly && !parsed.named)) continue;
+    if (seen.has(parsed.name)) continue;
+    seen.add(parsed.name);
+    labels.push(parsed.name);
   }
   return labels;
 }
@@ -10049,12 +10073,16 @@ function visibleControlCapSwap(diff) {
   const added = splitVisibleControlStructural(diff.addedStructural);
   const removedLabels = extractVisibleControlLabels(removed.visible);
   const addedLabels = extractVisibleControlLabels(added.visible);
+  const removedNamed = extractVisibleControlLabels(removed.visible, { namedOnly: true });
+  const addedNamed = extractVisibleControlLabels(added.visible, { namedOnly: true });
   return {
     isCapSwap: removedLabels.length >= 2 && addedLabels.length >= 2,
     removedRest: removed.rest,
     addedRest: added.rest,
     removedLabels,
     addedLabels,
+    removedNamed,
+    addedNamed,
   };
 }
 
@@ -10064,14 +10092,14 @@ function visibleControlCapSwapHeadline(left, entered) {
 
 function formatVisibleControlCapSwapLines(swap) {
   const lines = [visibleControlCapSwapHeadline(swap.removedLabels.length, swap.addedLabels.length)];
-  const removedSamples = swap.removedLabels.slice(0, VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
-  const addedSamples = swap.addedLabels.slice(0, VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
+  const removedSamples = (swap.removedNamed || []).slice(0, VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
+  const addedSamples = (swap.addedNamed || []).slice(0, VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
   for (const label of removedSamples) lines.push(`- ${label}`);
-  if (swap.removedLabels.length > removedSamples.length) {
+  if (removedSamples.length && swap.removedLabels.length > removedSamples.length) {
     lines.push(`  ... and ${swap.removedLabels.length - removedSamples.length} more left`);
   }
   for (const label of addedSamples) lines.push(`+ ${label}`);
-  if (swap.addedLabels.length > addedSamples.length) {
+  if (addedSamples.length && swap.addedLabels.length > addedSamples.length) {
     lines.push(`  ... and ${swap.addedLabels.length - addedSamples.length} more entered`);
   }
   return lines;
@@ -10225,10 +10253,12 @@ function buildPerceiveDiffModel(previousOutput, currentOutput, { mode = 'diff', 
         swap.addedLabels.length,
       );
       if (swap.removedRest.length === 0 && swap.addedRest.length === 0) {
-        model.removed = swap.removedLabels.slice(0, VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
-        model.added = swap.addedLabels.slice(0, VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
-        model.removedOmitted = Math.max(0, swap.removedLabels.length - VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
-        model.addedOmitted = Math.max(0, swap.addedLabels.length - VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
+        const removedSamples = (swap.removedNamed || []).slice(0, VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
+        const addedSamples = (swap.addedNamed || []).slice(0, VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
+        model.removed = removedSamples;
+        model.added = addedSamples;
+        model.removedOmitted = Math.max(0, swap.removedLabels.length - removedSamples.length);
+        model.addedOmitted = Math.max(0, swap.addedLabels.length - addedSamples.length);
       } else {
         model.removed = swap.removedRest.slice(0, 20);
         model.added = swap.addedRest.slice(0, 20);
