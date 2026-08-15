@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#250, #251, #252, #253)
+
+* `perceive --qa` / `perceive --summary` and `summary` on a Chrome PDF plugin emit
+  `chrome-cdp-ex.pdf-viewer.v1` instead of untitled/indeterminate QA or a fake HTML
+  census. Next is `cdp eval <prefix> "document.contentType"`, never `report` /
+  `perceive` / `text` or literal `<target>`. HTML QA summary stay pass/populated.
+* `cascade` on a Chrome PDF plugin uses the same PDF gate as `styles` / `html` /
+  `snap`: `pdf-viewer.v1`, no embedder BODY computed styles. HTML cascade,
+  including the #231 winning-rule `[overridden]` marker, is unchanged.
+* `fullshot` of a viewport-sized page uses the working viewport capture path
+  instead of `captureBeyondViewport` + clip. A full-page clip timeout fail-closes
+  without claiming `Page.captureScreenshot` is unavailable and without skipping
+  later `shot` / `elshot` viewport captures. `#223` `diff-shot` stays fail-closed.
+* Realistic `click` bounds mouse compositor-ack like `hover` so press/release stay
+  a click, not a multi-second stall. example.com Learn more navigates again;
+  `click --js` / `jsclick` still work. A true no-nav still fail-closes.
+
 ### Open issue dogfood (#245, #246, #247, #248)
 
 * `visual-check` / `responsive-audit` on a Chrome PDF plugin emit `chrome-cdp-ex.pdf-viewer.v1`

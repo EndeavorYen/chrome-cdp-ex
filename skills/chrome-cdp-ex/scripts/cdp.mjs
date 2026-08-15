@@ -132,6 +132,7 @@ import {
 const TIMEOUT = 15000;
 const SCREENSHOT_TIMEOUT = 30000;
 const QA_SCREENSHOT_TIMEOUT_MS = 2000;
+const FULLSHOT_TIMEOUT_MS = 3000;
 const VERIFY_CLICK_SETTLE_MS = 800;
 const VERIFY_CLICK_REQUEST_WAIT_MS = 1000;
 const NAVIGATION_TIMEOUT = 30000;
@@ -3180,6 +3181,13 @@ let _screenshotTier = 1; // start at tier 1; advances on failure
 function resetScreenshotTier() { _screenshotTier = 1; }
 function getScreenshotTier() { return _screenshotTier; }
 
+// Viewport captures share a session tier so scanshot can skip a known-dead
+// compositor path. Clip / captureBeyondViewport timeouts are a different Chrome
+// code path and must not poison later `shot` / `elshot` viewport captures.
+function screenshotCaptureUsesSessionTier(params = {}) {
+  return params.captureBeyondViewport !== true && params.clip == null;
+}
+
 async function screencastFallback(cdp, sid, timeoutMs = SCREENSHOT_TIMEOUT) {
   const frame = cdp.waitForEvent('Page.screencastFrame', timeoutMs);
   try {
@@ -3219,21 +3227,27 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
     ? hooks.timeoutMs
     : SCREENSHOT_TIMEOUT;
   const skipSanityRetry = hooks.skipSanityRetry === true;
+  const useSessionTier = screenshotCaptureUsesSessionTier(params);
+  let localTier = useSessionTier ? _screenshotTier : 1;
+  const advanceTier = (next) => {
+    localTier = next;
+    if (useSessionTier) _screenshotTier = next;
+  };
   let captured;
   // Tier 1: standard captureScreenshot
-  if (_screenshotTier <= 1) {
+  if (localTier <= 1) {
     try {
       const result = await cdpDomains(cdp).Page.captureScreenshot( params, sid, timeoutMs);
       captured = { data: result.data, fallback: false, method: 'captureScreenshot' };
     } catch (err) {
       if (!err.message?.startsWith('Timeout:')) throw err;
       if (hooks.failFastOnTimeout === true) throw err;
-      _screenshotTier = 2;
+      advanceTier(2);
     }
   }
 
   // Tier 2: captureScreenshot with fromSurface:false (captures from view, not compositor)
-  if (!captured && _screenshotTier <= 2) {
+  if (!captured && localTier <= 2) {
     try {
       const result = await cdpDomains(cdp).Page.captureScreenshot(
         { ...params, fromSurface: false }, sid, timeoutMs);
@@ -3241,7 +3255,7 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
     } catch (err) {
       if (!err.message?.startsWith('Timeout:')) throw err;
       if (hooks.failFastOnTimeout === true) throw err;
-      _screenshotTier = 3;
+      advanceTier(3);
     }
   }
 
@@ -4085,7 +4099,9 @@ async function consoleStr(consoleBuf, exceptionBuf, lastReadSeq, flag) {
   return lines.join('\n');
 }
 
-async function summaryModel(cdp, sid, consoleBuf, exceptionBuf) {
+async function summaryModel(cdp, sid, consoleBuf, exceptionBuf, extra = {}) {
+  const targetPrefix = extra.targetPrefix || '<target>';
+  await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
   const expr = `
     (function() {
       const counts = {};
@@ -4187,8 +4203,8 @@ function formatSummaryText(model) {
   return lines.join('\n');
 }
 
-async function summaryStr(cdp, sid, consoleBuf, exceptionBuf) {
-  return formatSummaryText(await summaryModel(cdp, sid, consoleBuf, exceptionBuf));
+async function summaryStr(cdp, sid, consoleBuf, exceptionBuf, extra = {}) {
+  return formatSummaryText(await summaryModel(cdp, sid, consoleBuf, exceptionBuf, extra));
 }
 
 const MAX_ACTION_DELTA_ENTRIES = 5;
@@ -10519,16 +10535,27 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
   return `${out}\nElement screenshot of ${desc} — ${Math.round(r.w)}×${Math.round(r.h)} CSS px (clip: ${Math.round(clipW)}×${Math.round(clipH)} with padding)${fb}`;
 }
 
+async function dispatchMouseEventAllowingAckTimeout(cdp, sid, params) {
+  try {
+    await cdpDomains(cdp).Input.dispatchMouseEvent(params, sid, HOVER_MOUSE_ACK_TIMEOUT_MS);
+  } catch (error) {
+    // Same Chrome 151 compositor-ack stall as hover: the event is already
+    // forwarded, so waiting out the default 15s RPC would separate press from
+    // release by seconds and the link default action never runs.
+    if (!isTimeoutError(error, ['Input.dispatchMouseEvent'])) throw error;
+  }
+}
+
 // Shared: dispatch a realistic mouse click at CSS pixel coordinates.
 // Chrome's default action for <a href> requires the buttons bitmask
 // (left=1 while pressed, 0 after release). Omitting it yields mousedown
 // without a click, so the link never navigates.
 async function dispatchClick(cdp, sid, x, y) {
   const point = { x, y, modifiers: 0, pointerType: 'mouse', clickCount: 1 };
-  await cdpDomains(cdp).Input.dispatchMouseEvent({ ...point, type: 'mouseMoved', button: 'none', buttons: 0 }, sid);
-  await cdpDomains(cdp).Input.dispatchMouseEvent({ ...point, type: 'mousePressed', button: 'left', buttons: 1 }, sid);
+  await dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseMoved', button: 'none', buttons: 0 });
+  await dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mousePressed', button: 'left', buttons: 1 });
   await sleep(50);
-  await cdpDomains(cdp).Input.dispatchMouseEvent({ ...point, type: 'mouseReleased', button: 'left', buttons: 0 }, sid);
+  await dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseReleased', button: 'left', buttons: 0 });
 }
 
 function isNavigatingHref(href, pageHref = '') {
@@ -11303,17 +11330,61 @@ async function fullshotStr(cdp, sid, filePath, targetId) {
   const metrics = await cdpDomains(cdp).Page.getLayoutMetrics( {}, sid);
   const width = metrics.cssContentSize?.width || metrics.contentSize?.width || 1280;
   const height = metrics.cssContentSize?.height || metrics.contentSize?.height || 800;
+  let viewport = null;
+  try {
+    viewport = JSON.parse(await evalStr(
+      cdp,
+      sid,
+      'JSON.stringify({w:window.innerWidth,h:window.innerHeight})',
+    ));
+  } catch {}
+  const fitsViewport = fullshotFitsViewport({ width, height }, viewport);
+  const params = fitsViewport
+    ? { format: 'png' }
+    : {
+        format: 'png',
+        captureBeyondViewport: true,
+        clip: { x: 0, y: 0, width, height, scale: 1 },
+      };
+  const hooks = fitsViewport
+    ? {}
+    : {
+        timeoutMs: FULLSHOT_TIMEOUT_MS,
+        skipSanityRetry: true,
+        failFastOnTimeout: true,
+      };
 
-  const clip = { x: 0, y: 0, width, height, scale: 1 };
-  const { data, fallback } = await captureScreenshot(cdp, sid, {
-    format: 'png', captureBeyondViewport: true, clip,
-  }, clip);
+  let capture;
+  try {
+    capture = await captureScreenshot(cdp, sid, params, hooks);
+  } catch (error) {
+    if (isScreenshotTimeoutError(error)) {
+      throw new Error('fullshot: full-page capture timed out; screenshot is untrusted');
+    }
+    throw error;
+  }
+  if (!fitsViewport && capture.fallback === true) {
+    throw new Error('fullshot: full-page capture timed out; screenshot is untrusted');
+  }
 
   const out = filePath || resolve(RUNTIME_DIR, `fullshot-${(targetId || 'unknown').slice(0, 8)}.png`);
-  writeFileSync(out, Buffer.from(data, 'base64'), { mode: 0o600 });
+  writeFileSync(out, Buffer.from(capture.data, 'base64'), { mode: 0o600 });
 
-  const fb = fallback ? ' (screenshot fallback — Page.captureScreenshot not available)' : '';
+  const diagnostics = formatScreenshotCaptureDiagnostics(capture);
+  const fb = diagnostics ? ` ${diagnostics}` : '';
   return `${out}\nFull-page screenshot saved. Size: ${width}x${height} CSS px, DPR: ${dpr}${fb}\nNote: large pages produce tiny text. Use 'scanshot' for readable segmented capture.`;
+}
+
+function fullshotFitsViewport(content = {}, viewport = null) {
+  const width = Number(content.width);
+  const height = Number(content.height);
+  const viewportWidth = Number(viewport?.w);
+  const viewportHeight = Number(viewport?.h);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return true;
+  if (!Number.isFinite(viewportWidth) || !Number.isFinite(viewportHeight) || viewportWidth <= 0 || viewportHeight <= 0) {
+    return true;
+  }
+  return width <= viewportWidth + 1 && height <= viewportHeight + 1;
 }
 
 async function scanshotStr(cdp, sid, targetId) {
@@ -11368,7 +11439,7 @@ async function scanshotStr(cdp, sid, targetId) {
   await evalStr(cdp, sid, `window.scrollTo(0, ${originalY})`);
 
   const lines = [`Captured ${files.length} segment(s) of ${vw}x${vh} viewport (page height: ${scrollH}px)`];
-  if (usedFallback) lines.push(`(screenshot fallback — Page.captureScreenshot not available)`);
+  if (usedFallback) lines.push('(screenshot fallback — Page.captureScreenshot timed out)');
   for (let i = 0; i < files.length; i++) {
     lines.push(`  [${i + 1}/${files.length}] ${files[i]}`);
   }
@@ -14455,6 +14526,8 @@ async function resolveStyleSource(cdp, sid, rule) {
 
 async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts = {}) {
   if (!selector) throw new Error('CSS selector or @ref required');
+  const targetPrefix = opts.targetPrefix || '<target>';
+  await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
 
   // CSS.getMatchedStylesForNode requires these domains/document state. Enable
   // them inside cascade so the first call works even before evalraw/perceive.
@@ -17903,7 +17976,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const readCapabilities = {
     cascade: args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
-      return cascadeStr(cdp, sessionId, fopts.args[0], fopts.args[1], refMap, refState, { format: fopts.format });
+      return cascadeStr(cdp, sessionId, fopts.args[0], fopts.args[1], refMap, refState, {
+        format: fopts.format,
+        targetPrefix: targetPrefixForDisplay(targetId),
+      });
     },
     checkpoint: async args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
@@ -18016,9 +18092,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     styles: args => stylesStr(cdp, sessionId, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
     summary: async args => {
       const fopts = parseFormatArgs(args, ['text', 'json']);
+      const extra = { targetPrefix: targetPrefixForDisplay(targetId) };
       return fopts.format === 'json'
-        ? formatJson(await summaryModel(cdp, sessionId, consoleBuf, exceptionBuf))
-        : summaryStr(cdp, sessionId, consoleBuf, exceptionBuf);
+        ? formatJson(await summaryModel(cdp, sessionId, consoleBuf, exceptionBuf, extra))
+        : summaryStr(cdp, sessionId, consoleBuf, exceptionBuf, extra);
     },
     wait: args => waitStr(args[0]),
     waitfor: args => waitForStr(cdp, sessionId, args, refMap, refState),
@@ -19715,37 +19792,43 @@ function createPerceiveCommandHandler({
     let value;
     if (fopts.qa) {
       const page = await pageInfo(cdp, sessionId, { targetPrefix });
-      const consoleHealth = {
-        errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
-        warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
-        exceptions: exceptionBuf.all().length,
-      };
-      const pageHealth = await collectHealth(cdp, sessionId).catch(() => null);
-      let text = '';
-      try {
-        text = await perceiveText(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
-          ...popts,
-          interactive: true,
-          maxDepth: Math.min(popts.maxDepth || 8, 6),
-        }, refState);
-      } catch (error) {
-        text = error.message || String(error);
+      if (isPdfViewerContentType(page.contentType)) {
+        value = fopts.format === 'json'
+          ? formatJson(pdfViewerHandoffModel(page, { targetPrefix }))
+          : formatPdfViewerOutput(page, { targetPrefix });
+      } else {
+        const consoleHealth = {
+          errors: consoleBuf.all().filter(entry => entry.level === 'error').length,
+          warnings: consoleBuf.all().filter(entry => entry.level === 'warning' || entry.level === 'warn').length,
+          exceptions: exceptionBuf.all().length,
+        };
+        const pageHealth = await collectHealth(cdp, sessionId).catch(() => null);
+        let text = '';
+        try {
+          text = await perceiveText(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
+            ...popts,
+            interactive: true,
+            maxDepth: Math.min(popts.maxDepth || 8, 6),
+          }, refState);
+        } catch (error) {
+          text = error.message || String(error);
+        }
+        const summary = buildQaSummaryModel({
+          page: { title: page.title, url: page.url },
+          pageHealth,
+          console: consoleHealth,
+          network: { failures: countNetworkFailures(netReqBuf) },
+          targetPrefix,
+          nextCommand: `cdp report ${targetPrefix}`,
+          source: 'perceive',
+        });
+        value = fopts.format === 'json'
+          ? formatJson({
+              summary,
+              perceptionPreview: truncateTextLines(text, fopts.maxDiffLines ?? 20),
+            })
+          : formatQaSummaryText(summary);
       }
-      const summary = buildQaSummaryModel({
-        page: { title: page.title, url: page.url },
-        pageHealth,
-        console: consoleHealth,
-        network: { failures: countNetworkFailures(netReqBuf) },
-        targetPrefix,
-        nextCommand: `cdp report ${targetPrefix}`,
-        source: 'perceive',
-      });
-      value = fopts.format === 'json'
-        ? formatJson({
-            summary,
-            perceptionPreview: truncateTextLines(text, fopts.maxDiffLines ?? 20),
-          })
-        : formatQaSummaryText(summary);
     } else if (popts.cards) {
       value = await perceiveText(cdp, sessionId, consoleBuf, exceptionBuf, refMap, lastPerceiveStore, {
         ...popts,
@@ -21936,12 +22019,13 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   captureViewportSize, restoreViewportSize,
   qaScreenshotCaptureOptions, QA_SCREENSHOT_TIMEOUT_MS,
   diffShotScreenshotCaptureOptions,
+  FULLSHOT_TIMEOUT_MS, screenshotCaptureUsesSessionTier, fullshotFitsViewport, fullshotStr,
   VERIFY_CLICK_SETTLE_MS, VERIFY_CLICK_REQUEST_WAIT_MS,
   HOVER_MOUSE_ACK_TIMEOUT_MS,
   LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
   CLICK_NAVIGATION_WAIT_MS, CLICK_HREF_PROBE_TIMEOUT_MS,
   daemonRequestStorage, sleep,
-  dispatchClick, isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,
+  dispatchClick, dispatchMouseEventAllowingAckTimeout, isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,
   shouldSkipActionDomSettle, formatActionNavigationDiff, actionNavigationEvidence,
   actionFailurePage,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
@@ -21963,7 +22047,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseThrottleArgs, formatThrottleSummary, throttleModel, formatThrottleText, throttleStr,
   injectStr, cascadeStr, recordStr, parseRecordArgs,
   isTimeoutError, parseDelayMs, waitStr, ipcTimeoutForRequest, sendCommand, parseTargetAndCommandArgs, normalizeTargetCommandArgs,
-  parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText,
+  parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText, summaryStr,
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles,
