@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#266, #267)
+
+* Realistic `click` / `clickxy` overlap Chrome 151's mouse CDP acks instead of
+  serializing on a 250ms compositor-ack swallow, then fail closed when a
+  capture-phase probe sees no `mousedown`/`click` events. Silent `dispatch.ok`
+  with a dead handler is no longer a success. `jsclick` / `click --js` still
+  run `HTMLElement.click()`.
+* `restore` of a `checkpoint --unsafe-full` artifact writes the captured cookie
+  values. It no longer re-redacts them to the literal sentinel `<redacted>`.
+  Default redacted checkpoints still skip cookie restore.
+
 ### Open issue dogfood (#259)
 
 * Leftover `perceive --frame @fN` dumps are not reused as top-level action

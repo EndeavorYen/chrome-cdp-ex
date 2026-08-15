@@ -45,6 +45,14 @@ describe('action recovery lib', () => {
       kind: 'no-navigation',
       nextCommand: 'cdp jsclick 1D366978 a',
     });
+
+    expect(classifyActionFailure(
+      new Error('click: Input.dispatchMouseEvent completed but the page received no mousedown/click events at (51, 110). The mouse path failed closed. Try jsclick or click --js.'),
+      { action: 'click', target: { targetId: '62E1DF19', input: '#p17btn' } },
+    )).toMatchObject({
+      kind: 'no-input-events',
+      nextCommand: 'cdp jsclick 62E1DF19 #p17btn',
+    });
   });
 
   it('builds recovery policies for runtime and network diagnostics', () => {
@@ -189,7 +197,7 @@ describe('action recovery lib', () => {
 describe('recovery policy registry', () => {
   it('#95 exposes a stable registry for known diagnosis kinds', () => {
     const kinds = listRecoveryPolicyKinds();
-    for (const kind of ['overlay', 'stale-ref', 'network-failure', 'timeout', 'wrong-frame', 'console-error']) {
+    for (const kind of ['overlay', 'stale-ref', 'network-failure', 'timeout', 'wrong-frame', 'console-error', 'no-input-events']) {
       expect(kinds).toContain(kind);
       expect(getRecoveryPolicyTemplate(kind).strategy).toBeTruthy();
     }

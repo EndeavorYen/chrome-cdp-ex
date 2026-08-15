@@ -5881,7 +5881,9 @@ describe('issues #250-#253 open contracts', () => {
       },
     }, 'sid', 40, 20);
     expect(events).toHaveLength(3);
-    expect(events.every(event => event.timeoutMs === T.HOVER_MOUSE_ACK_TIMEOUT_MS)).toBe(true);
+    expect(events[0].timeoutMs).toBe(T.HOVER_MOUSE_ACK_TIMEOUT_MS);
+    expect(events[1].timeoutMs).toBe(T.CLICK_MOUSE_ACK_TIMEOUT_MS);
+    expect(events[2].timeoutMs).toBe(T.CLICK_MOUSE_ACK_TIMEOUT_MS);
     expect(events[0]).toMatchObject({ type: 'mouseMoved', button: 'none', buttons: 0, pointerType: 'mouse' });
     expect(events[1]).toMatchObject({ type: 'mousePressed', button: 'left', buttons: 1, pointerType: 'mouse' });
     expect(events[2]).toMatchObject({ type: 'mouseReleased', button: 'left', buttons: 0, pointerType: 'mouse' });
@@ -7194,6 +7196,363 @@ describe('issue #263 prompt() JavaScript dialog handling', () => {
     expect(dialogCalls.every(item => item.sessionId === 'sid-event' || item.sessionId === 'sid-page')).toBe(true);
     expect(dialogCalls.some(item => item.sessionId == null)).toBe(false);
     expect(dialogCalls.every(item => item.params.promptText === 'def')).toBe(true);
+  });
+});
+
+describe('issue #266 click mouse events must land or fail closed', () => {
+  const emptyDelta = {
+    console: { count: 0, errors: 0, warnings: 0, entries: [] },
+    exceptions: { count: 0, entries: [] },
+    network: { count: 0, failures: 0, pending: 0, entries: [] },
+  };
+  const layoutNoise = '+++ Added (1):\n+   [generic] layout-noise';
+
+  function createPicky17Page({ deliverMouseEvents = true } = {}) {
+    const state = {
+      clicks: 0,
+      checked: false,
+      probeSeen: [],
+      mouseTypes: [],
+      movedAcked: false,
+      pressedWhileMovePending: false,
+    };
+    const cdp = {
+      calls: [],
+      send(method, params = {}, sessionId, timeout) {
+        cdp.calls.push({ method, params, sessionId, timeout });
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('__chromeCdpExClickProbe') && expr.includes('installed: true')) {
+            state.probeSeen = [];
+            return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, installed: true } } });
+          }
+          if (expr.includes('__chromeCdpExClickProbe')) {
+            return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen: state.probeSeen.slice() } } });
+          }
+          if (expr.includes("type === 'checkbox'") || expr.includes('el.checked === true')) {
+            return Promise.resolve({
+              result: { value: { tag: 'input', type: 'checkbox', id: 'p17cb', checked: state.checked } },
+            });
+          }
+          if (expr === 'location.href') {
+            return Promise.resolve({ result: { value: 'https://example.com/' } });
+          }
+          return Promise.resolve({
+            result: {
+              value: {
+                ok: true,
+                x: 51,
+                y: 110,
+                w: 80,
+                h: 24,
+                tag: 'BUTTON',
+                text: 'p17-click',
+              },
+            },
+          });
+        }
+        if (method === 'Runtime.callFunctionOn') {
+          const fn = String(params.functionDeclaration || '');
+          if (fn.includes('this.click()')) {
+            state.clicks += 1;
+            state.checked = true;
+            return Promise.resolve({ result: { value: { tag: 'INPUT', text: 'p17cb' } } });
+          }
+          if (fn.includes('el.checked === true') || fn.includes("type === 'checkbox'")) {
+            return Promise.resolve({
+              result: { value: { tag: 'input', type: 'checkbox', id: 'p17cb', checked: state.checked } },
+            });
+          }
+          return Promise.resolve({
+            result: {
+              value: {
+                connected: true,
+                x: 51,
+                y: 110,
+                w: 80,
+                h: 24,
+                tag: 'BUTTON',
+                text: 'p17-click',
+              },
+            },
+          });
+        }
+        if (method === 'Input.dispatchMouseEvent') {
+          state.mouseTypes.push(params.type);
+          if (params.type === 'mousePressed' && !state.movedAcked) {
+            state.pressedWhileMovePending = true;
+          }
+          if (params.type === 'mouseMoved') state.movedAcked = true;
+          if (deliverMouseEvents) {
+            if (params.type === 'mousePressed') state.probeSeen.push('mousedown', 'pointerdown');
+            if (params.type === 'mouseReleased') {
+              state.probeSeen.push('mouseup', 'pointerup', 'click');
+              state.clicks += 1;
+              state.checked = true;
+            }
+          }
+          return Promise.resolve({});
+        }
+        if (method === 'DOM.enable') return Promise.resolve({});
+        if (method === 'DOM.getDocument') return Promise.resolve({ root: { nodeId: 1 } });
+        if (method === 'DOM.querySelector') return Promise.resolve({ nodeId: 2 });
+        if (method === 'DOM.resolveNode') return Promise.resolve({ object: { objectId: 'el-p17' } });
+        if (method === 'Page.getFrameTree') {
+          return Promise.resolve({ frameTree: { frame: { id: 'mock-root-frame' } } });
+        }
+        if (method === 'Page.createIsolatedWorld') {
+          return Promise.resolve({ executionContextId: 901 });
+        }
+        return Promise.resolve({});
+      },
+    };
+    return { cdp, state };
+  }
+
+  function settleResult({ action, selector, dispatchOk, controlChanged, controlDiff, observeText, failure }) {
+    return T.createActionResult({
+      action,
+      target: {
+        targetId: '62E1DF19',
+        input: selector,
+        resolvedBy: 'selector',
+        label: selector,
+        controlStateChanged: controlChanged,
+        controlStateDiff: controlDiff,
+      },
+      dispatch: { ok: dispatchOk, method: action },
+      settle: { ok: true, durationMs: 40 },
+      effects: {
+        domDiff: observeText,
+        console: [],
+        network: [],
+        navigation: null,
+        ...emptyDelta,
+        consoleDelta: emptyDelta.console,
+        exceptionDelta: emptyDelta.exceptions,
+        networkDelta: emptyDelta.network,
+        failure,
+      },
+    });
+  }
+
+  it('#266 mouse click delivers page events and flips checkbox .checked', async () => {
+    const { cdp, state } = createPicky17Page();
+    const before = await T.snapshotFormControlState(cdp, 'sid', '#p17cb', new Map(), {});
+    const text = await T.clickStr(cdp, 'sid', '#p17cb', new Map(), {});
+    const after = await T.snapshotFormControlState(cdp, 'sid', '#p17cb', new Map(), {});
+
+    expect(text).toContain('Clicked');
+    expect(state.clicks).toBe(1);
+    expect(state.checked).toBe(true);
+    expect(state.probeSeen).toContain('click');
+    expect(T.formControlStateChanged(before, after)).toBe(true);
+    const result = settleResult({
+      action: 'click',
+      selector: '#p17cb',
+      dispatchOk: true,
+      controlChanged: true,
+      controlDiff: T.formatFormControlStateDiff(before, after),
+      observeText: '(no changes detected in AX tree)',
+    });
+    expect(result.outcome).toMatchObject({ status: 'changed', changed: true });
+    expect(result.verdict).toMatchObject({ status: 'continue', canContinue: true });
+  });
+
+  it('#266 mouse click with no page events fails closed and settle is not changed', async () => {
+    const { cdp, state } = createPicky17Page({ deliverMouseEvents: false });
+    const before = await T.snapshotFormControlState(cdp, 'sid', '#p17cb', new Map(), {});
+    const dispatchError = await T.clickStr(cdp, 'sid', '#p17cb', new Map(), {}).then(
+      () => { throw new Error('expected mouse click to fail closed'); },
+      error => error,
+    );
+    const after = await T.snapshotFormControlState(cdp, 'sid', '#p17cb', new Map(), {});
+
+    expect(dispatchError.message).toMatch(/received no mousedown\/click events/);
+    expect(state.clicks).toBe(0);
+    expect(state.checked).toBe(false);
+    expect(state.probeSeen).toEqual([]);
+    expect(T.formControlStateChanged(before, after)).toBe(false);
+    const failure = T.classifyActionFailure(dispatchError, {
+      action: 'click',
+      target: { targetId: '62E1DF19', input: '#p17cb' },
+    });
+    const result = settleResult({
+      action: 'click',
+      selector: '#p17cb',
+      dispatchOk: false,
+      controlChanged: false,
+      observeText: layoutNoise,
+      failure,
+    });
+    expect(result.dispatch.ok).toBe(false);
+    expect(result.outcome.status).not.toBe('changed');
+    expect(result.outcome).toMatchObject({ status: 'failed', changed: false });
+    expect(failure).toMatchObject({
+      kind: 'no-input-events',
+      nextCommand: 'cdp jsclick 62E1DF19 #p17cb',
+    });
+  });
+
+  it('#266 clickxy with no page events also fails closed', async () => {
+    const { cdp, state } = createPicky17Page({ deliverMouseEvents: false });
+    await expect(T.clickXyStr(cdp, 'sid', 51, 110))
+      .rejects.toThrow(/received no mousedown\/click events at \(51, 110\)/);
+    expect(state.clicks).toBe(0);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mousePressed')).toBe(true);
+  });
+
+  it('#266 jsclick still runs the live handler without mouse events', async () => {
+    const { cdp, state } = createPicky17Page({ deliverMouseEvents: false });
+    const before = await T.snapshotFormControlState(cdp, 'sid', '#p17cb', new Map(), {});
+    const text = await T.jsClickStr(cdp, 'sid', '#p17cb', new Map(), {});
+    const after = await T.snapshotFormControlState(cdp, 'sid', '#p17cb', new Map(), {});
+
+    expect(text).toMatch(/JS-clicked/i);
+    expect(state.clicks).toBe(1);
+    expect(state.checked).toBe(true);
+    expect(state.mouseTypes).toEqual([]);
+    expect(T.formControlStateChanged(before, after)).toBe(true);
+    const result = settleResult({
+      action: 'jsclick',
+      selector: '#p17cb',
+      dispatchOk: true,
+      controlChanged: true,
+      controlDiff: T.formatFormControlStateDiff(before, after),
+      observeText: '(no changes detected in AX tree)',
+    });
+    expect(result.outcome).toMatchObject({ status: 'changed', changed: true });
+  });
+
+  it('#266 AX layout noise is not Outcome:changed when .checked / handler did not change', async () => {
+    const { cdp, state } = createPicky17Page({ deliverMouseEvents: false });
+    const before = await T.snapshotFormControlState(cdp, 'sid', '#p17cb', new Map(), {});
+    await expect(T.clickStr(cdp, 'sid', '#p17min', new Map(), {})).rejects.toThrow(/failed closed/);
+    const after = await T.snapshotFormControlState(cdp, 'sid', '#p17cb', new Map(), {});
+    expect(state.clicks).toBe(0);
+    expect(state.checked).toBe(false);
+    expect(T.formControlStateChanged(before, after)).toBe(false);
+    const result = settleResult({
+      action: 'click',
+      selector: '#p17min',
+      dispatchOk: false,
+      controlChanged: false,
+      observeText: layoutNoise,
+      failure: T.classifyActionFailure(
+        new Error('click: Input.dispatchMouseEvent completed but the page received no mousedown/click events at (208, 228). The mouse path failed closed. Try jsclick or click --js.'),
+        { action: 'click', target: { targetId: '62E1DF19', input: '#p17min' } },
+      ),
+    });
+    expect(result.outcome.status).not.toBe('changed');
+    expect(T.formatActionText(result)).not.toMatch(/Outcome: changed/i);
+  });
+
+  it('#266 sends mousePressed before mouseMoved compositor ack resolves', async () => {
+    const { cdp, state } = createPicky17Page();
+    let movedResolve;
+    const originalSend = cdp.send.bind(cdp);
+    cdp.send = (method, params = {}, sessionId, timeout) => {
+      if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseMoved') {
+        state.mouseTypes.push('mouseMoved');
+        cdp.calls.push({ method, params, sessionId, timeout });
+        return new Promise(resolve => {
+          movedResolve = () => {
+            state.movedAcked = true;
+            resolve({});
+          };
+        });
+      }
+      return originalSend(method, params, sessionId, timeout);
+    };
+
+    const pending = T.dispatchClick(cdp, 'sid', 51, 110);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(state.mouseTypes.slice(0, 2)).toEqual(['mouseMoved', 'mousePressed']);
+    expect(state.pressedWhileMovePending).toBe(true);
+    expect(state.movedAcked).toBe(false);
+    movedResolve();
+    await pending;
+    expect(state.clicks).toBe(1);
+  });
+});
+
+describe('issue #267 restore --unsafe-full cookie fidelity', () => {
+  it('#267 unsafe-full restore writes the original cookie, not the literal <redacted> sentinel', async () => {
+    const setCookies = [];
+    const cdp = {
+      calls: [],
+      send(method, params = {}) {
+        cdp.calls.push({ method, params });
+        if (method === 'Network.setCookie') {
+          setCookies.push(params);
+          return Promise.resolve({ success: true });
+        }
+        if (method === 'Page.navigate') return Promise.resolve({ loaderId: 'loader-1' });
+        if (method === 'Runtime.evaluate') {
+          if (params.expression === 'location.href') {
+            return Promise.resolve({ result: { value: 'https://example.com/#p17mut2' } });
+          }
+          return Promise.resolve({ result: { value: 'restored' } });
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+      waitForEvent() {
+        return { promise: Promise.resolve({}), cancel() {} };
+      },
+    };
+    const checkpoint = {
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      privacy: { redaction: 'unsafe-full', cookies: false, storage: false },
+      page: { url: 'https://example.com/', title: 'Example', origin: 'https://example.com' },
+      storage: { localStorage: {}, sessionStorage: {} },
+      cookies: [{ name: 'picky17full', value: 'orig', domain: 'example.com', path: '/' }],
+    };
+
+    const out = await T.restoreCheckpointStr(cdp, 'sid', ['--json', JSON.stringify(checkpoint)]);
+
+    expect(out).toContain('Restored checkpoint');
+    expect(setCookies).toHaveLength(1);
+    expect(setCookies[0]).toMatchObject({ name: 'picky17full', value: 'orig' });
+    expect(setCookies[0].value).not.toBe('<redacted>');
+    expect(T.cookiesForRestore(checkpoint.cookies)[0].value).toBe('orig');
+  });
+
+  it('#267 default redacted checkpoint restore leaves later cookies in place', async () => {
+    const setCookies = [];
+    const cdp = {
+      send(method, params = {}) {
+        if (method === 'Network.setCookie') {
+          setCookies.push(params);
+          return Promise.resolve({ success: true });
+        }
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({ result: { value: 'https://example.com/' } });
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+      waitForEvent() {
+        return { promise: Promise.resolve({}), cancel() {} };
+      },
+    };
+    const checkpoint = {
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      page: { url: 'https://example.com/', title: 'Example', origin: 'https://example.com' },
+      storage: { localStorage: {}, sessionStorage: {} },
+      cookies: [{
+        name: 'picky17full',
+        value: '<redacted>',
+        domain: 'example.com',
+        path: '/',
+        redacted: ['value'],
+      }],
+    };
+
+    const out = await T.restoreCheckpointStr(cdp, 'sid', ['--json', JSON.stringify(checkpoint)]);
+    expect(out).toContain('cookies: 0');
+    expect(setCookies).toEqual([]);
+    expect(T.cookiesForRestore(checkpoint.cookies)).toEqual([]);
   });
 });
 

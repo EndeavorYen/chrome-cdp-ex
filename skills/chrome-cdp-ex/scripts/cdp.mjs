@@ -145,6 +145,8 @@ const RELOAD_OBSERVE_TIMEOUT = 2000;
 const STATUS_PAGE_INFO_TIMEOUT = 500;
 const REF_RESOLVE_TIMEOUT = 2000;
 const HOVER_MOUSE_ACK_TIMEOUT_MS = 250;
+const CLICK_MOUSE_ACK_TIMEOUT_MS = 6000;
+const CLICK_EVENT_PROBE_KEY = '__chromeCdpExClickProbe';
 const LOADALL_DEFAULT_INTERVAL_MS = 1500;
 const LOADALL_DEFAULT_TIMEOUT_MS = 30_000;
 const LOADALL_MAX_TIMEOUT_MS = 5 * 60 * 1000;
@@ -10951,16 +10953,117 @@ async function dispatchMouseEventAllowingAckTimeout(cdp, sid, params) {
   }
 }
 
+async function dispatchClickMouseEvent(cdp, sid, params) {
+  try {
+    await cdpDomains(cdp).Input.dispatchMouseEvent(params, sid, CLICK_MOUSE_ACK_TIMEOUT_MS);
+  } catch (error) {
+    // Press/release may sit behind Chrome 151's ~5s hit-test/compositor stall.
+    // Swallow only that timeout so overlapping events can still inject; the
+    // page-side probe below fail-closes if nothing actually reached the DOM.
+    if (!isTimeoutError(error, ['Input.dispatchMouseEvent'])) throw error;
+  }
+}
+
+function clickEventProbeInstallScript() {
+  return `(function() {
+    const key = ${JSON.stringify(CLICK_EVENT_PROBE_KEY)};
+    const types = ['pointerdown', 'mousedown', 'mouseup', 'pointerup', 'click'];
+    const existing = window[key];
+    if (existing && existing.handler) {
+      for (const type of existing.types || types) {
+        window.removeEventListener(type, existing.handler, true);
+      }
+    }
+    const seen = [];
+    const handler = function(event) { seen.push(event.type); };
+    for (const type of types) window.addEventListener(type, handler, true);
+    window[key] = { types: types, handler: handler, seen: seen };
+    return { cdpClickProbe: true, ok: true, installed: true };
+  })()`;
+}
+
+function clickEventProbeReadScript() {
+  return `(function() {
+    const key = ${JSON.stringify(CLICK_EVENT_PROBE_KEY)};
+    const probe = window[key];
+    if (!probe) return { cdpClickProbe: true, ok: false };
+    const types = probe.types || ['pointerdown', 'mousedown', 'mouseup', 'pointerup', 'click'];
+    if (probe.handler) {
+      for (const type of types) window.removeEventListener(type, probe.handler, true);
+    }
+    const seen = Array.isArray(probe.seen) ? probe.seen.slice() : [];
+    try { delete window[key]; } catch (err) { window[key] = undefined; }
+    return { cdpClickProbe: true, ok: true, seen: seen };
+  })()`;
+}
+
+function parseClickEventProbeOutput(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || parsed.cdpClickProbe !== true) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function clickProbeSawPageEvent(seen) {
+  if (!Array.isArray(seen) || seen.length === 0) return false;
+  return seen.some(type => (
+    type === 'mousedown'
+    || type === 'pointerdown'
+    || type === 'mouseup'
+    || type === 'pointerup'
+    || type === 'click'
+  ));
+}
+
+async function installClickEventProbe(cdp, sid) {
+  try {
+    const raw = await evalStr(cdp, sid, clickEventProbeInstallScript());
+    const parsed = parseClickEventProbeOutput(raw);
+    return Boolean(parsed?.ok && parsed?.installed);
+  } catch {
+    return false;
+  }
+}
+
+async function readClickEventProbe(cdp, sid) {
+  try {
+    const raw = await evalStr(cdp, sid, clickEventProbeReadScript());
+    return parseClickEventProbeOutput(raw);
+  } catch {
+    return null;
+  }
+}
+
 // Shared: dispatch a realistic mouse click at CSS pixel coordinates.
 // Chrome's default action for <a href> requires the buttons bitmask
 // (left=1 while pressed, 0 after release). Omitting it yields mousedown
 // without a click, so the link never navigates.
+//
+// Chrome 151's Input.dispatchMouseEvent waits for an async widget hit-test
+// before injecting. Serializing on that ack with a 250ms swallow left
+// press/release uninjected (dispatch.ok, zero page events). Overlap the
+// CDP commands, wait long enough for the ~5s stall, then fail closed if a
+// capture-phase probe saw no mouse/click events.
 async function dispatchClick(cdp, sid, x, y) {
+  const probeInstalled = await installClickEventProbe(cdp, sid);
   const point = { x, y, modifiers: 0, pointerType: 'mouse', clickCount: 1 };
-  await dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseMoved', button: 'none', buttons: 0 });
-  await dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mousePressed', button: 'left', buttons: 1 });
+  const moved = dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseMoved', button: 'none', buttons: 0 });
+  const pressed = dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mousePressed', button: 'left', buttons: 1 });
   await sleep(50);
-  await dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseReleased', button: 'left', buttons: 0 });
+  const released = dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mouseReleased', button: 'left', buttons: 0 });
+  await Promise.all([moved, pressed, released]);
+  if (!probeInstalled) return;
+  const probe = await readClickEventProbe(cdp, sid);
+  if (probe?.ok && !clickProbeSawPageEvent(probe.seen)) {
+    throw new Error(
+      `click: Input.dispatchMouseEvent completed but the page received no mousedown/click events at (${x}, ${y}). The mouse path failed closed. Try jsclick or click --js.`
+    );
+  }
 }
 
 function isNavigatingHref(href, pageHref = '') {
@@ -12709,6 +12812,19 @@ function checkpointCookieToSetCookieParams(cookie, url) {
   return params;
 }
 
+function isRestorableCheckpointCookie(cookie) {
+  if (!cookie || typeof cookie !== 'object') return false;
+  if (!cookie.name) return false;
+  if (cookie.value === undefined || cookie.value === null) return false;
+  if (cookie.value === REDACTED_VALUE) return false;
+  if (Array.isArray(cookie.redacted) && cookie.redacted.includes('value')) return false;
+  return true;
+}
+
+function cookiesForRestore(cookies = []) {
+  return cookies.filter(isRestorableCheckpointCookie);
+}
+
 function restoreStorageScript(storage = {}) {
   const local = storage.localStorage || {};
   const session = storage.sessionStorage || {};
@@ -12751,7 +12867,7 @@ async function navigateForRestore(cdp, sid, url) {
 async function restoreCheckpointStr(cdp, sid, args) {
   const { artifact } = parseRestoreArgs(args);
   const url = artifact.page.url;
-  const cookies = sanitizeCheckpointCookies(artifact.cookies || []);
+  const cookies = cookiesForRestore(artifact.cookies || []);
   let cookieSet = 0;
   for (const cookie of cookies) {
     const result = await cdpDomains(cdp).Network.setCookie( checkpointCookieToSetCookieParams(cookie, url), sid);
@@ -21287,6 +21403,17 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       reason: 'No current element matched the selector. A missing load-more control is not a successful disappear.',
     };
   }
+  if (
+    lower.includes('received no mousedown/click events')
+    || (lower.includes('mouse path failed closed') && lower.includes('jsclick'))
+  ) {
+    return {
+      kind: 'no-input-events',
+      strategy: 'use-jsclick',
+      run: targetPrefix ? `cdp jsclick ${targetPrefix}` : 'cdp help click',
+      reason: 'The realistic mouse click did not deliver page events. Retry with jsclick instead of treating dispatch.ok as success.',
+    };
+  }
   if (lower.includes('did not navigate') || (lower.includes('try jsclick') && lower.includes('<a href'))) {
     return {
       kind: 'no-navigation',
@@ -22682,11 +22809,13 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   diffShotScreenshotCaptureOptions,
   FULLSHOT_TIMEOUT_MS, screenshotCaptureUsesSessionTier, fullshotFitsViewport, fullshotStr,
   VERIFY_CLICK_SETTLE_MS, VERIFY_CLICK_REQUEST_WAIT_MS,
-  HOVER_MOUSE_ACK_TIMEOUT_MS,
+  HOVER_MOUSE_ACK_TIMEOUT_MS, CLICK_MOUSE_ACK_TIMEOUT_MS,
   LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
   CLICK_NAVIGATION_WAIT_MS, CLICK_HREF_PROBE_TIMEOUT_MS,
   daemonRequestStorage, sleep,
-  dispatchClick, dispatchMouseEventAllowingAckTimeout, isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,
+  dispatchClick, dispatchMouseEventAllowingAckTimeout, dispatchClickMouseEvent,
+  parseClickEventProbeOutput, clickProbeSawPageEvent,
+  isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,
   shouldSkipActionDomSettle, formatActionNavigationDiff, actionNavigationEvidence,
   actionFailurePage,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
@@ -22700,7 +22829,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseDiffShotArgs, diffShotCompareScript, formatDiffShotResult, diffShotStr,
   checkpointPageScript, sanitizeCheckpointCookies, sanitizeCheckpointStorage, parseCheckpointArgs, checkpointModel, checkpointStr,
   parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs, redactExternalInputActionError, redactRestoreActionError,
-  checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,
+  checkpointCookieToSetCookieParams, isRestorableCheckpointCookie, cookiesForRestore,
+  restoreStorageScript, restoreCheckpointStr,
   // Command implementations
   getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr, filterNetlogEntries,
   javascriptDialogHandleParams, createJavaScriptDialogSession, handleOpeningJavaScriptDialog,
@@ -22714,7 +22844,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,
