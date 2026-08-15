@@ -145,7 +145,7 @@ node skills/chrome-cdp-ex/scripts/mcp-server.mjs # stdio MCP tools for agent-nat
 
 Use `use` for normal live workflows; use `attach` when you need to record the CDP host/port explicitly. The MCP server exposes doctor, list/open, `select_target`, adaptive perception, compact `controls`, overlay diagnosis, screenshot, action, `verify_click`, `dismiss_modal`, `qa_page`, `responsive_audit`, and compact report tools, with `confirm: true` required before mutating calls. MCP defaults are optimized for agent handoff; set the relevant `adaptive` / `compact` argument to `false` only when complete detail is needed.
 
-Ordinary target prefixes are resolved from live target discovery before daemon/cache state. A daemon whose bound target id disagrees with the live result is rebound once; structured CLI/MCP responses include `targetResolution` with requested, bound, and resolved ids. Explicit port aliases retain their saved endpoint contract.
+Ordinary target prefixes are resolved from live target discovery before daemon/cache state. A daemon whose bound target id disagrees with the live result is rebound once; structured CLI/MCP responses include `targetResolution` with requested, bound, and resolved ids. Port-bound aliases (`attach --port` / `use 9222/<prefix>`) also resolve through live discovery on that CDP port and must expand the prefix to the live full target id. They must not save successfully and then fail later with a fake Allow-in-Chrome prompt while the tab is already debuggable.
 
 **WSL2 efficiency tip**: Shell state doesn't persist between Bash calls. To avoid redefining `NODE_WIN` and `CDP` every time, **chain commands with `&&`** in a single Bash call:
 ```bash

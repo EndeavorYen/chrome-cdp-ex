@@ -7915,6 +7915,159 @@ describe('issue #272 replay incomplete fill must not guess empty text', () => {
   });
 });
 
+describe('issue #274 port-bound alias eval vs fake Allow', () => {
+  const LIVE_TARGET_ID = '62E1DF19ABCDEF9999DEADBEEFCAFEBABE';
+  const LIVE_PAGES = [{
+    targetId: LIVE_TARGET_ID,
+    title: 'Example Domain',
+    url: 'https://example.com/',
+    type: 'page',
+  }];
+
+  function evalLikeTargetId({ requested, alias, livePages }) {
+    const pages = T.selectLivePagesForAliasResolution({ alias, discoveredPages: livePages });
+    return T.resolveLiveTargetBinding({ requested, livePages: pages, alias }).resolvedTargetId;
+  }
+
+  it('#274 no-port use, attach --port, and use <port>/<prefix> bind the same live target as the prefix', () => {
+    const prefixId = T.resolveLiveTargetBinding({
+      requested: '62E1DF19',
+      livePages: LIVE_PAGES,
+    }).resolvedTargetId;
+    expect(prefixId).toBe(LIVE_TARGET_ID);
+
+    const noPort = T.parseAliasCommandArgs(['62E1DF19', '--name', 'p19tmp'], 'use');
+    expect(noPort.port).toBeNull();
+    expect(T.bindAliasTargetFromPages(noPort, LIVE_PAGES).targetId).toBe(LIVE_TARGET_ID);
+
+    const attach = T.parseAliasCommandArgs([
+      '--port', '9224', '--target', '62E1DF19', '--name', 'p19att',
+    ], 'attach');
+    expect(attach).toMatchObject({ port: 9224, targetId: '62E1DF19', name: 'p19att' });
+    expect(T.bindAliasTargetFromPages(attach, LIVE_PAGES)).toMatchObject({
+      targetId: LIVE_TARGET_ID,
+      title: 'Example Domain',
+      url: 'https://example.com/',
+    });
+
+    const slash = T.parseAliasCommandArgs(['9224/62E1DF19', '--name', 'p19port'], 'use');
+    expect(slash).toMatchObject({ port: 9224, targetId: '62E1DF19', name: 'p19port' });
+    expect(T.bindAliasTargetFromPages(slash, LIVE_PAGES).targetId).toBe(LIVE_TARGET_ID);
+
+    const noPortAlias = T.upsertTargetAlias(T.emptyAliasStore(), {
+      name: 'p19tmp',
+      targetId: T.bindAliasTargetFromPages(noPort, LIVE_PAGES).targetId,
+    }).aliases.p19tmp;
+    const attachAlias = T.upsertTargetAlias(T.emptyAliasStore(), {
+      name: 'p19att',
+      targetId: '62E1DF19',
+      port: 9224,
+    }).aliases.p19att;
+    const slashAlias = T.upsertTargetAlias(T.emptyAliasStore(), {
+      name: 'p19port',
+      targetId: '62E1DF19',
+      port: 9224,
+    }).aliases.p19port;
+
+    expect(evalLikeTargetId({ requested: 'p19tmp', alias: noPortAlias, livePages: LIVE_PAGES }))
+      .toBe(LIVE_TARGET_ID);
+    expect(evalLikeTargetId({ requested: 'p19att', alias: attachAlias, livePages: LIVE_PAGES }))
+      .toBe(LIVE_TARGET_ID);
+    expect(evalLikeTargetId({ requested: 'p19port', alias: slashAlias, livePages: LIVE_PAGES }))
+      .toBe(LIVE_TARGET_ID);
+    expect(evalLikeTargetId({ requested: '62E1DF19', livePages: LIVE_PAGES }))
+      .toBe(LIVE_TARGET_ID);
+  });
+
+  it('#274 port-bound bind fails closed when the prefix is missing or ambiguous; never saves a prefix-as-id', () => {
+    const attach = T.parseAliasCommandArgs([
+      '--port', '9224', '--target', '62E1DF19', '--name', 'p19att',
+    ], 'attach');
+    expect(() => T.bindAliasTargetFromPages(attach, [])).toThrow(/No live target matching prefix "62E1DF19".*9224/i);
+    expect(() => T.bindAliasTargetFromPages(attach, [
+      { targetId: '62E1DF19AAAAAAAA', title: 'A' },
+      { targetId: '62E1DF19BBBBBBBB', title: 'B' },
+    ])).toThrow(/ambiguous/i);
+
+    const noPort = T.parseAliasCommandArgs(['62E1DF19', '--name', 'p19tmp'], 'use');
+    expect(T.bindAliasTargetFromPages(noPort, []).targetId).toBe('62E1DF19');
+  });
+
+  it('#274 port-bound alias discovery stays pinned to that CDP port and does not synthesize a prefix page', () => {
+    const alias = { name: 'p19att', targetId: '62E1DF19', port: 9224, host: '127.0.0.1' };
+    expect(T.discoverOptionsForTargetAlias(alias, { HOME: '/tmp' })).toEqual({
+      env: { HOME: '/tmp', CDP_PORT: '9224', CDP_HOST: '127.0.0.1' },
+      pinCdpPort: true,
+    });
+    expect(T.discoverOptionsForTargetAlias({ name: 'p19tmp', targetId: LIVE_TARGET_ID }, { HOME: '/tmp' }))
+      .toEqual({ env: { HOME: '/tmp' }, pinCdpPort: false });
+
+    expect(T.selectLivePagesForAliasResolution({
+      alias,
+      discoveredPages: LIVE_PAGES,
+      cachedPages: [{ targetId: '62E1DF19' }],
+    })).toEqual(LIVE_PAGES);
+
+    expect(() => T.selectLivePagesForAliasResolution({
+      alias,
+      cachedPages: [{ targetId: '62E1DF19' }],
+    })).toThrow(/live target discovery is required/i);
+  });
+
+  it('#274 daemon start names the real failure when the tab is already live; never the fake Allow string', async () => {
+    const allow = 'Daemon failed to start — did you click Allow in Chrome?';
+    expect(T.formatDaemonStartFailure()).toBe(allow);
+    const honest = T.formatDaemonStartFailure({
+      liveTargetPresent: true,
+      targetId: LIVE_TARGET_ID,
+      lastError: new Error('still unavailable'),
+    });
+    expect(honest).toMatch(/62E1DF19/);
+    expect(honest).toMatch(/already debuggable/i);
+    expect(honest).toMatch(/still unavailable/);
+    expect(honest).not.toMatch(/Allow in Chrome/);
+
+    const recovery = T.buildCliErrorRecovery(honest, { cmd: 'eval', targetPrefix: 'p19att' });
+    expect(recovery.kind).toBe('daemon-disconnect');
+    expect(T.formatCliError(new Error(honest), { cmd: 'eval', targetPrefix: 'p19att' }))
+      .not.toMatch(/Allow in Chrome/);
+
+    const missingTarget = T.formatDaemonStartFailure({
+      liveTargetPresent: true,
+      targetId: '62E1DF19',
+      lastError: new Error('attach failed: No target with given id found'),
+    });
+    expect(missingTarget).not.toMatch(/Allow in Chrome/);
+    expect(T.buildCliErrorRecovery(missingTarget, { cmd: 'eval', targetPrefix: 'p19att' }).kind)
+      .toBe('target-closed');
+
+    const timeoutConnect = async () => { throw new Error('still unavailable'); };
+    await expect(T.getOrStartTabDaemon(LIVE_TARGET_ID, {
+      connect: timeoutConnect,
+      unlink() {},
+      spawnProcess: () => ({ unref() {} }),
+      delay: async () => {},
+      retries: 2,
+      retryDelayMs: 1,
+      platform: 'linux',
+      runtimeDir: '/runtime/cdp',
+      scriptPath: '/fixture/cdp.mjs',
+      execPath: '/fixture/node',
+      liveTargetPresent: true,
+    })).rejects.toThrow(/already debuggable/i);
+  });
+
+  it('#274 CLI wiring discovers port-bound aliases on that port instead of a prefix-as-id cache page', () => {
+    const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    expect(src).toMatch(/bindAliasTargetFromPages\(/);
+    expect(src).toMatch(/discoverOptionsForTargetAlias\(/);
+    expect(src).toMatch(/selectLivePagesForAliasResolution\(/);
+    expect(src).toMatch(/liveTargetPresent:/);
+    expect(src).not.toMatch(/if \(targetAlias\?\.port\) \{\s*const cachedPages/);
+    expect(src).not.toMatch(/if \(!parsed\.port\) \{\s*try \{\s*const pages = await discoverLivePagesForTargetResolution\(\)/);
+  });
+});
+
 
 
 

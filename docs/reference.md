@@ -191,7 +191,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs perceive app -C -d 8
 node skills/chrome-cdp-ex/scripts/cdp.mjs forget app
 ```
 
-`attach` is the explicit form for recording a target plus `--port` / `--host`; `use` also accepts `9222/<target>` and stores that CDP port for later commands. `list --format json` includes aliases, and text `list` shows aliases next to matching tabs.
+`attach` is the explicit form for recording a target plus `--port` / `--host`; `use` also accepts `9222/<target>` and stores that CDP port for later commands. Port-bound aliases resolve through live discovery on that CDP port (same as a no-port `use` / prefix), rather than treating the saved prefix as a full target id. If the daemon cannot start against an already-live tab, the error names the real failure instead of asking whether you clicked Allow in Chrome. `list --format json` includes aliases, and text `list` shows aliases next to matching tabs.
 
 When many tabs are open, select by URL/title instead of guessing prefixes:
 
