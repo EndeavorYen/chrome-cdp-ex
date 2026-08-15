@@ -145,6 +145,8 @@ const RELOAD_OBSERVE_TIMEOUT = 2000;
 const STATUS_PAGE_INFO_TIMEOUT = 500;
 const REF_RESOLVE_TIMEOUT = 2000;
 const HOVER_MOUSE_ACK_TIMEOUT_MS = 250;
+const HOVER_MUTATION_TIMEOUT_MS = 3000;
+const HOVER_MUTATION_MARKER = 'chrome-cdp-ex.hover-mutation.v1';
 const CLICK_MOUSE_ACK_TIMEOUT_MS = 6000;
 const CLICK_EVENT_PROBE_KEY = '__chromeCdpExClickProbe';
 const LOADALL_DEFAULT_INTERVAL_MS = 1500;
@@ -8864,6 +8866,42 @@ async function waitForSettle(cdp, sid, timeoutMs = 3000) {
   }
 }
 
+async function waitForHoverDomChange(cdp, sid, timeoutMs = HOVER_MUTATION_TIMEOUT_MS) {
+  // First MutationObserver callback from this hover, not 350ms of silence.
+  // waitForSettle treats pre-hover idle as settled and recapture then writes
+  // the idle AX tree (#286 live Chrome 151). Do not wait for mouseMoved ack.
+  const budget = Math.max(1, Number(timeoutMs) || HOVER_MUTATION_TIMEOUT_MS);
+  let timer;
+  try {
+    const outcome = await Promise.race([
+      evalStr(cdp, sid, `new Promise(resolve => {
+    const done = (value) => { obs.disconnect(); resolve(value); };
+    const obs = new MutationObserver(() => done('hover-changed'));
+    obs.observe(document.body || document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
+    void ${JSON.stringify(HOVER_MUTATION_MARKER)};
+    setTimeout(() => { obs.disconnect(); resolve('timeout'); }, ${budget});
+  })`, false, { timeoutMs: budget + 50 }),
+      new Promise(resolve => { timer = setTimeout(() => resolve('timeout'), budget); }),
+    ]);
+    return String(outcome || '').includes('hover-changed') ? 'hover-changed' : 'timeout';
+  } catch {
+    return 'timeout';
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function hoverRecaptureShowsChange(before, after) {
+  if (before == null || after == null) return false;
+  if (before === after) return false;
+  return actionDomDiffShowsChange(formatPerceiveDiffOutput(before, after, { mode: 'since-action' }));
+}
+
+function discardHoverIdleBaseline(lastPerceiveStore) {
+  if (!lastPerceiveStore || typeof lastPerceiveStore !== 'object') return;
+  lastPerceiveStore.output = null;
+}
+
 function validateUrl(url) {
   let parsed;
   try { parsed = new URL(url); } catch { throw new Error(`Invalid URL: ${url}`); }
@@ -11769,11 +11807,18 @@ async function rememberHoverSettleBaseline(
 ) {
   // Hover mutates live DOM (tooltips, :hover text) but historically printed a
   // one-liner and left last-perceive stale. Recapture default AX so the next
-  // mutator does not steal hover's delta (#286). Wait for DOM settle first —
-  // Chrome 151 mouseMoved acks are delayed, so recapture-while-idle would
-  // snapshot idle AX and let a later no-op scroll claim +hover text.
-  // Do not emit ActionResult.
-  await waitForSettle(cdp, sid);
+  // mutator does not steal hover's delta (#286). Wait for a hover-driven
+  // mutation — not waitForSettle's 350ms pre-hover silence, which recaptured
+  // idle AX on Chrome 151 while mouseenter was still queued. If that mutation
+  // never arrives (or AX still matches the pre-hover tree), discard the idle
+  // recapture so a later no-op scroll cannot claim +hover text.
+  // Do not emit ActionResult. Do not lengthen waitForSettle. Do not wait for
+  // the compositor mouseMoved ack.
+  const before = lastPerceiveStore.output;
+  const hoverChange = await waitForHoverDomChange(cdp, sid);
+  if (hoverChange === 'hover-changed') {
+    await waitForSettle(cdp, sid);
+  }
   await perceiveStr(
     cdp,
     sid,
@@ -11784,6 +11829,9 @@ async function rememberHoverSettleBaseline(
     actionObservationPerceiveOpts(targetId),
     refState,
   );
+  if (!hoverRecaptureShowsChange(before, lastPerceiveStore.output)) {
+    discardHoverIdleBaseline(lastPerceiveStore);
+  }
 }
 
 async function waitForStr(cdp, sid, args, refMap, refState) {
@@ -23327,13 +23375,14 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   diffShotScreenshotCaptureOptions,
   FULLSHOT_TIMEOUT_MS, screenshotCaptureUsesSessionTier, fullshotFitsViewport, fullshotStr,
   VERIFY_CLICK_SETTLE_MS, VERIFY_CLICK_REQUEST_WAIT_MS,
-  HOVER_MOUSE_ACK_TIMEOUT_MS, CLICK_MOUSE_ACK_TIMEOUT_MS,
+  HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_MUTATION_TIMEOUT_MS, HOVER_MUTATION_MARKER, CLICK_MOUSE_ACK_TIMEOUT_MS,
   LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
   CLICK_NAVIGATION_WAIT_MS, CLICK_HREF_PROBE_TIMEOUT_MS,
   daemonRequestStorage, sleep,
   dispatchClick, dispatchMouseEventAllowingAckTimeout, dispatchClickMouseEvent,
   parseClickEventProbeOutput, clickProbeSawPageEvent,
   isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,
+  waitForHoverDomChange, hoverRecaptureShowsChange, discardHoverIdleBaseline,
   shouldSkipActionDomSettle, formatActionNavigationDiff, actionNavigationEvidence,
   actionFailurePage,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
