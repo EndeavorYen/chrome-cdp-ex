@@ -8546,6 +8546,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     const refState = {};
     const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
     expect(leftoverDump).toMatch(/img "img" \[clickable\]/);
+    expect(leftoverDump).toMatch(/div "div" \[clickable\]/);
     expect(leftoverDump).toMatch(/a role=link "link" \[clickable\]/);
     expect(leftoverDump).toMatch(/Hugging Face/);
     const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
@@ -8556,8 +8557,14 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     await T.scrollStr(cdp, 'sid', 'down', '80');
     const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
     expect(after).toMatch(/Visible-control cap swap: \d+ left, \d+ entered/);
+    const removedSamples = [...after.matchAll(/^- (.+)$/gm)].map(match => match[1]);
+    const addedSamples = [...after.matchAll(/^\+ (.+)$/gm)].map(match => match[1]);
+    expect(removedSamples[0]).toBe('Hugging Face');
+    expect(addedSamples[0]).toBe('MiniMaxAI');
     expect(after).toContain('- Hugging Face');
     expect(after).toContain('+ MiniMaxAI');
+    expect(removedSamples).not.toEqual(expect.arrayContaining(['img', 'div', 'link', 'a']));
+    expect(addedSamples).not.toEqual(expect.arrayContaining(['img', 'div', 'link', 'a']));
     expect(after).not.toMatch(/^[-+] (?:img|div|link|a)\b/m);
     expect(after).not.toMatch(/img\.logo|div\.nav-icon|img\.hero|div\.body-icon/);
     expect(after).not.toMatch(/--- Removed \(\d+\)/);

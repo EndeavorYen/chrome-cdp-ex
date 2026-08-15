@@ -10041,6 +10041,8 @@ function visibleControlNameFromLine(line) {
     || (labeled && labeled[1].trim())
     || null;
   if (name) {
+    // Collector fallbacks equal the printed tag or role= (`img "img"`,
+    // `a role=link "link"`). Keep them in membership; they are not sample names.
     const key = name.toLowerCase();
     const named = key !== tag.toLowerCase() && key !== role.toLowerCase();
     return { name, named };
@@ -23699,6 +23701,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   actionObservationPerceiveOpts, actionResultPdfViewerMeta, actionSettleBaseline, isCardsPerceiveOutput,
   leftoverCardsCount, isScrollActionTarget, isLeftoverFeedCardsSettle,
   isLeftoverDefaultAxScrollSettle, stripPerceiveRectChrome, stripPerceiveIdentityChrome,
+  visibleControlNameFromLine, extractVisibleControlLabels,
   isPdfViewerPerceiveOutput, pdfViewerSettleDiffText,
   isFramedPerceiveOutput, shouldCaptureTopLevelActionSettle, actionSettleObserveOpts,
   actionDomDiffShowsChange, noBaselineActionDiffText,

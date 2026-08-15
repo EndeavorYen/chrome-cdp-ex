@@ -4119,10 +4119,18 @@ describe('Perceive diff baseline', () => {
   it('#299 unlabeled Visible-control cap-swap samples prefer named labels and stay changed', () => {
     // Live collector always sets label to ariaLabel || title || text || role ||
     // tagName, so dumps are `img "img"` / `a role=link "link"`, not `img [clickable]`.
-    expect(T.formatVisibleControlLine({ tag: 'img', label: 'img', clickable: true }))
-      .toBe('img "img" [clickable]');
-    expect(T.formatVisibleControlLine({ tag: 'a', role: 'link', label: 'link', clickable: true }))
-      .toBe('a role=link "link" [clickable]');
+    const unnamedImg = T.formatVisibleControlLine({ tag: 'img', label: 'img', clickable: true });
+    const unnamedDiv = T.formatVisibleControlLine({ tag: 'div', label: 'div', clickable: true });
+    const unnamedLink = T.formatVisibleControlLine({ tag: 'a', role: 'link', label: 'link', clickable: true });
+    const namedHf = T.formatVisibleControlLine({ tag: 'a', role: 'link', label: 'Hugging Face', clickable: true });
+    expect(unnamedImg).toBe('img "img" [clickable]');
+    expect(unnamedDiv).toBe('div "div" [clickable]');
+    expect(unnamedLink).toBe('a role=link "link" [clickable]');
+    expect(T.visibleControlNameFromLine(unnamedImg)).toEqual({ name: 'img', named: false });
+    expect(T.visibleControlNameFromLine(unnamedDiv)).toEqual({ name: 'div', named: false });
+    expect(T.visibleControlNameFromLine(`  ${unnamedLink} (8,68 24×24) a[href="/"]`))
+      .toEqual({ name: 'link', named: false });
+    expect(T.visibleControlNameFromLine(namedHf)).toEqual({ name: 'Hugging Face', named: true });
     const liveLine = (control) => `  ${T.formatVisibleControlLine({
       clickable: true,
       rect: { x: 8, y: control.y, w: 24, h: 24 },
@@ -4170,9 +4178,15 @@ describe('Perceive diff baseline', () => {
     ].join('\n');
     const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
     expect(diff).toMatch(/Visible-control cap swap: 7 left, 7 entered/);
+    const removedSamples = [...diff.matchAll(/^- (.+)$/gm)].map(match => match[1]);
+    const addedSamples = [...diff.matchAll(/^\+ (.+)$/gm)].map(match => match[1]);
+    expect(removedSamples[0]).toBe('Hugging Face');
+    expect(addedSamples[0]).toBe('MiniMaxAI');
     expect(diff).toContain('- Hugging Face');
     expect(diff).toContain('+ MiniMaxAI');
     expect(diff).toContain('+ Text-to-Audio');
+    expect(removedSamples).not.toEqual(expect.arrayContaining(['img', 'div', 'link', 'a']));
+    expect(addedSamples).not.toEqual(expect.arrayContaining(['img', 'div', 'link', 'a']));
     expect(diff).not.toMatch(/^[-+] (?:img|div|link|a)\b/m);
     expect(diff).not.toMatch(/img\.logo|div\.nav-icon|img\.hero|div\.body-icon/);
     expect(diff).not.toMatch(/--- Removed/);
@@ -4183,10 +4197,12 @@ describe('Perceive diff baseline', () => {
     expect(model.summary.changed).toBe(true);
     expect(model.summary.kind).toBe('visible-control-cap-swap');
     expect(model.summary.headline).toBe('Visible-control cap swap: 7 left, 7 entered');
+    expect(model.removed[0]).toBe('Hugging Face');
+    expect(model.added[0]).toBe('MiniMaxAI');
     expect(model.removed).toEqual(expect.arrayContaining(['Hugging Face']));
     expect(model.added).toEqual(expect.arrayContaining(['MiniMaxAI']));
-    expect(model.removed.some(label => /^(?:img|div|link|a)\b/i.test(String(label)))).toBe(false);
-    expect(model.added.some(label => /^(?:img|div|link|a)\b/i.test(String(label)))).toBe(false);
+    expect(model.removed.some(label => /^(?:img|div|link|a)$/i.test(String(label)))).toBe(false);
+    expect(model.added.some(label => /^(?:img|div|link|a)$/i.test(String(label)))).toBe(false);
 
     const result = T.createActionResult({
       action: 'scroll',
