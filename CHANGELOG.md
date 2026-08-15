@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#295)
+
+* Leftover golden-path `perceive -C -d 8` is the settle shape for the next
+  `scroll`. Viewport `@ref` / Visible-control rect chrome (`(x,y w×h)`) is
+  not a page mutation: unchanged AX identities stay `Outcome: no-change` /
+  continue with Next `perceive -C -d 8` instead of `report` /
+  `record-actions`. A new file, heading, or link entering the leftover tree
+  is still `Outcome: changed`. `#293` leftover N>0 `--cards` then scroll
+  stays compact `cards.v1`. Leftover `-C -d 8` then mutating `click --js`
+  still reports live text. `#285` leftover PDF `click --js` and `#286`/`#291`
+  hover honest-gate hold.
+
 ### Open issue dogfood (#293)
 
 * Leftover `perceive --cards` / `--role feed` with a real feed window (N>0

@@ -3976,6 +3976,50 @@ describe('Perceive diff baseline', () => {
     expect(diff).toContain('+   [alert] Saved');
   });
 
+  it('#295 viewport @ref rect chrome is not a perceive identity change', () => {
+    const previous = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 0/2400 (0%) | Focused: none',
+      'Interactive: 12 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+      '    [link] README.md  @2  (24,208 160×22)',
+      '',
+      '[Visible controls]',
+      '  a role=link "LICENSE" [clickable] (24,180 160×22) @1 a[href="LICENSE"]',
+    ].join('\n');
+    const current = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 80/2400 (3%) | Focused: none',
+      'Interactive: 12 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)',
+      '',
+      '[Visible controls]',
+      '  a role=link "LICENSE" [clickable] (24,100 160×22) @1 a[href="LICENSE"]',
+    ].join('\n');
+    const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+    expect(diff).toMatch(/no changes detected in AX tree/i);
+    expect(diff).not.toMatch(/--- Removed/);
+    expect(diff).not.toMatch(/\(24,180/);
+    expect(T.actionDomDiffShowsChange(diff)).toBe(false);
+
+    const addedFile = current.replace(
+      '    [link] README.md  @2  (24,128 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)\n    [link] tokenizer.json  @3  (24,156 160×22)',
+    );
+    const changed = T.formatPerceiveDiffOutput(previous, addedFile, { mode: 'since-action' });
+    expect(changed).toMatch(/tokenizer\.json/);
+    expect(T.actionDomDiffShowsChange(changed)).toBe(true);
+  });
+
   it('builds a JSON diff model from an explicit baseline output', () => {
     const previous = [
       'Page: Example — https://example.com',

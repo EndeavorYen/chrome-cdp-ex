@@ -7859,6 +7859,502 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
   });
 });
 
+describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
+  const HF_TARGET_ID = '561F7DA8ABCDEF0123456789ABCDEF01';
+  const HF_PREFIX = '561F7DA8';
+  const HF_URL = 'https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main';
+  const COMFY_TARGET_ID = '0D34570AABCDEF0123456789ABCDEF01';
+  const COMFY_PREFIX = '0D34570A';
+  const COMFY_URL = 'https://docs.comfy.org/tutorials/audio/minimax/minimax-music-3';
+  const emptyDelta = {
+    console: { count: 0, errors: 0, warnings: 0, entries: [] },
+    exceptions: { count: 0, entries: [] },
+    network: { count: 0, failures: 0, pending: 0, entries: [] },
+  };
+
+  const DEFAULT_FILES = [
+    { name: 'LICENSE', backend: 301, y: 180 },
+    { name: 'README.md', backend: 302, y: 208 },
+    { name: 'config.json', backend: 303, y: 236 },
+  ];
+  const ADDED_FILE = { name: 'tokenizer.json', backend: 304, y: 264 };
+
+  function hfMeta(scrollY, files) {
+    return JSON.stringify({
+      title: 'MiniMaxAI/MiniMax-Music3 at main',
+      url: HF_URL,
+      contentType: 'text/html',
+      vw: 1042,
+      vh: 900,
+      scrollY,
+      scrollMax: 2400,
+      counts: { a: files.length },
+      focused: 'none',
+      layoutMap: {},
+      styleHints: {},
+      cursorInteractives: [],
+      visibleControls: files.map(file => ({
+        tag: 'a',
+        role: 'link',
+        label: file.name,
+        clickable: true,
+        rect: { x: 24, y: file.y - scrollY, w: 160, h: 22 },
+        selector: `a[href="${file.name}"]`,
+        hints: { id: '', classes: [] },
+      })),
+    });
+  }
+
+  function hfAx(files) {
+    const links = files.map((file, i) => ({
+      nodeId: String(20 + i),
+      parentId: '10',
+      role: { value: 'link' },
+      name: { value: file.name },
+      backendDOMNodeId: file.backend,
+    }));
+    return [
+      { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'MiniMax-Music3' }, childIds: ['10', '99'] },
+      { nodeId: '10', parentId: '1', role: { value: 'main' }, name: { value: '' }, childIds: links.map(n => n.nodeId) },
+      ...links,
+      {
+        nodeId: '99',
+        parentId: '1',
+        role: { value: 'button' },
+        name: { value: 'p26' },
+        backendDOMNodeId: 399,
+      },
+    ];
+  }
+
+  function createHfPage({
+    scrollY = 0,
+    clicks = 0,
+    files = DEFAULT_FILES,
+  } = {}) {
+    const state = {
+      scrollY,
+      clicks,
+      files: files.map(file => ({ ...file })),
+    };
+    const cdp = {
+      calls: [],
+      send(method, params = {}) {
+        cdp.calls.push({ method, params });
+        if (method === 'Page.getFrameTree') {
+          return Promise.resolve({ frameTree: { frame: { id: 'main-frame', url: HF_URL } } });
+        }
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('scrollBy')) {
+            state.scrollY += 80;
+            return Promise.resolve({ result: { value: JSON.stringify({ x: 0, y: state.scrollY }) } });
+          }
+          if (expr.includes("resolve('stable')") || expr.includes('MutationObserver')) {
+            return Promise.resolve({ result: { value: 'stable' } });
+          }
+          if (expr.includes('#p26btn') && expr.includes('click')) {
+            state.clicks += 1;
+            return Promise.resolve({ result: { value: JSON.stringify({ tag: 'BUTTON', text: 'p26' }) } });
+          }
+          if (expr.includes('document.title') || expr.includes('contentType')) {
+            return Promise.resolve({ result: { value: hfMeta(state.scrollY, state.files) } });
+          }
+          return Promise.resolve({ result: { value: '{}' } });
+        }
+        if (method === 'Accessibility.getFullAXTree') {
+          const nodes = hfAx(state.files);
+          if (state.clicks) {
+            nodes.push({
+              nodeId: '98',
+              parentId: '1',
+              role: { value: 'StaticText' },
+              name: { value: `clicks:${state.clicks}` },
+            });
+            nodes[0].childIds = [...nodes[0].childIds, '98'];
+          }
+          return Promise.resolve({ nodes });
+        }
+        if (method === 'DOM.getDocument') return Promise.resolve({ root: { nodeId: 1 } });
+        if (method === 'DOM.querySelector') return Promise.resolve({ nodeId: 2 });
+        if (method === 'DOM.resolveNode') {
+          const id = params.backendNodeId;
+          return Promise.resolve({ object: { objectId: `hf-${id}` } });
+        }
+        if (method === 'Runtime.callFunctionOn') {
+          const fn = String(params.functionDeclaration || '');
+          if (fn.includes('this.click()')) {
+            state.clicks += 1;
+            return Promise.resolve({ result: { value: { tag: 'BUTTON', text: 'p26' } } });
+          }
+          const objectId = String(params.objectId || '');
+          const backend = Number(objectId.replace('hf-', '')) || 301;
+          if (backend === 399) {
+            return Promise.resolve({
+              result: { value: { x: 8, y: 80, w: 80, h: 24, position: '', tag: 'BUTTON', text: 'p26' } },
+            });
+          }
+          const file = state.files.find(item => item.backend === backend) || state.files[0];
+          return Promise.resolve({
+            result: {
+              value: {
+                x: 24,
+                y: file.y - state.scrollY,
+                w: 160,
+                h: 22,
+                position: '',
+                tag: 'A',
+                text: file.name,
+              },
+            },
+          });
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+    };
+    return { cdp, state };
+  }
+
+  function comfyMeta(scrollY) {
+    return JSON.stringify({
+      title: 'MiniMax Music 3 - ComfyUI',
+      url: COMFY_URL,
+      contentType: 'text/html',
+      vw: 1042,
+      vh: 900,
+      scrollY,
+      scrollMax: 1800,
+      counts: { a: 3 },
+      focused: 'none',
+      layoutMap: {},
+      styleHints: {},
+      cursorInteractives: [],
+      visibleControls: [{
+        tag: 'a',
+        role: 'link',
+        label: 'API Reference',
+        clickable: true,
+        rect: { x: 16, y: 220 - scrollY, w: 140, h: 22 },
+        selector: 'a[href="#api"]',
+        hints: { id: '', classes: [] },
+      }],
+    });
+  }
+
+  function createComfyPage() {
+    const state = { scrollY: 0 };
+    const cdp = {
+      calls: [],
+      send(method, params = {}) {
+        cdp.calls.push({ method, params });
+        if (method === 'Page.getFrameTree') {
+          return Promise.resolve({ frameTree: { frame: { id: 'main-frame', url: COMFY_URL } } });
+        }
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('scrollBy')) {
+            state.scrollY += 80;
+            return Promise.resolve({ result: { value: JSON.stringify({ x: 0, y: state.scrollY }) } });
+          }
+          if (expr.includes("resolve('stable')") || expr.includes('MutationObserver')) {
+            return Promise.resolve({ result: { value: 'stable' } });
+          }
+          if (expr.includes('document.title') || expr.includes('contentType')) {
+            return Promise.resolve({ result: { value: comfyMeta(state.scrollY) } });
+          }
+          return Promise.resolve({ result: { value: '{}' } });
+        }
+        if (method === 'Accessibility.getFullAXTree') {
+          return Promise.resolve({
+            nodes: [
+              { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'MiniMax Music 3' }, childIds: ['10'] },
+              { nodeId: '10', parentId: '1', role: { value: 'main' }, name: { value: '' }, childIds: ['20'] },
+              {
+                nodeId: '20',
+                parentId: '10',
+                role: { value: 'link' },
+                name: { value: 'API Reference' },
+                backendDOMNodeId: 401,
+              },
+            ],
+          });
+        }
+        if (method === 'DOM.resolveNode') {
+          return Promise.resolve({ object: { objectId: 'comfy-401' } });
+        }
+        if (method === 'Runtime.callFunctionOn') {
+          return Promise.resolve({
+            result: {
+              value: {
+                x: 16,
+                y: 220 - state.scrollY,
+                w: 140,
+                h: 22,
+                position: '',
+                tag: 'A',
+                text: 'API Reference',
+              },
+            },
+          });
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+    };
+    return { cdp, state };
+  }
+
+  function scrollTarget() {
+    return {
+      input: 'down 80',
+      resolvedBy: 'scroll',
+      label: 'down',
+      commandArgs: ['down', '80'],
+    };
+  }
+
+  function clickJsTarget() {
+    return {
+      input: '#p26btn',
+      resolvedBy: 'selector-or-ref',
+      label: '#p26btn',
+      commandArgs: ['--js', '#p26btn'],
+    };
+  }
+
+  async function leftoverGoldenPath(cdp, store, refMap, refState, {
+    targetId = HF_TARGET_ID,
+    prefix = HF_PREFIX,
+  } = {}) {
+    const dump = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      store,
+      { ...T.parsePerceiveArgs(['-C', '-d', '8']), targetPrefix: prefix },
+      refState,
+    );
+    expect(dump).toMatch(/^Page: /m);
+    expect(store.snapshotOpts.cursorInteractive).toBe(true);
+    expect(store.snapshotOpts.maxDepth).toBe(8);
+    expect(T.isLeftoverFeedCardsSettle(dump, store.snapshotOpts, scrollTarget())).toBe(false);
+    expect(T.isLeftoverDefaultAxScrollSettle(dump, store.snapshotOpts, scrollTarget())).toBe(true);
+    expect(T.shouldCaptureTopLevelActionSettle(store.snapshotOpts, dump, scrollTarget())).toBe(false);
+    expect(T.actionSettleBaseline(dump, store.snapshotOpts, scrollTarget()).output).toBe(dump);
+    return dump;
+  }
+
+  async function recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState, targetId = HF_TARGET_ID) {
+    const baselineFromTarget = T.baselineOutputForActionTarget(refState, store.output, actionTarget);
+    let settleBaseline = T.actionSettleBaseline(
+      baselineFromTarget,
+      store.snapshotOpts || null,
+      actionTarget,
+    );
+    if (
+      !settleBaseline.output
+      && T.shouldCaptureTopLevelActionSettle(
+        store.snapshotOpts,
+        baselineFromTarget,
+        actionTarget,
+      )
+    ) {
+      const topLevelOpts = T.actionObservationPerceiveOpts(targetId, {
+        ...(settleBaseline.opts || {}),
+        frameRef: null,
+      });
+      const before = await T.perceiveStr(
+        cdp,
+        'sid',
+        new T.RingBuffer(8),
+        new T.RingBuffer(8),
+        refMap,
+        store,
+        topLevelOpts,
+        refState,
+      );
+      settleBaseline = {
+        output: before,
+        opts: T.perceiveSnapshotOpts(topLevelOpts),
+      };
+    }
+    return settleBaseline;
+  }
+
+  async function observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState, targetId = HF_TARGET_ID) {
+    if (!settleBaseline.output) {
+      return T.noBaselineActionDiffText();
+    }
+    return T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      store,
+      T.actionSettleObserveOpts(targetId, actionTarget, settleBaseline.output, settleBaseline.opts),
+      refState,
+    );
+  }
+
+  it('#295 leftover golden-path AX is a scroll settle shape, not a cards recapture', () => {
+    const dump = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 0/2400 (0%) | Focused: none',
+      'Interactive: 3 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px',
+      '',
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+    ].join('\n');
+    const snapshotOpts = T.perceiveSnapshotOpts({ cursorInteractive: true, maxDepth: 8 });
+    const scroll = scrollTarget();
+    expect(T.isLeftoverDefaultAxScrollSettle(dump, snapshotOpts, scroll)).toBe(true);
+    expect(T.shouldCaptureTopLevelActionSettle(snapshotOpts, dump, scroll)).toBe(false);
+    const settled = T.actionSettleBaseline(dump, snapshotOpts, scroll);
+    expect(settled.output).toBe(dump);
+    expect(T.actionSettleObserveOpts(HF_TARGET_ID, scroll, settled.output, settled.opts).cards).toBe(false);
+    expect(T.actionSettleObserveOpts(HF_TARGET_ID, scroll, settled.output, settled.opts).cursorInteractive).toBe(true);
+    expect(T.actionSettleObserveOpts(HF_TARGET_ID, scroll, settled.output, settled.opts).maxDepth).toBe(8);
+
+    const cardsDump = 'chrome-cdp-ex.cards.v1  2 cards  virtualized\n@1  @SY239434  first';
+    expect(T.isLeftoverDefaultAxScrollSettle(cardsDump, T.perceiveSnapshotOpts({ cards: true }), scroll)).toBe(false);
+    const click = clickJsTarget();
+    expect(T.isLeftoverDefaultAxScrollSettle(dump, snapshotOpts, click)).toBe(false);
+  });
+
+  it('#295 leftover perceive -C -d 8 then scroll is no-change / continue, Next -C -d 8, not @ref rect chrome', async () => {
+    const { cdp, state } = createHfPage();
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
+    expect(leftoverDump).toMatch(/LICENSE  @1  \(24,180 160×22\)/);
+    const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
+
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    expect(settleBaseline.output).toBe(leftoverDump);
+    expect(settleBaseline.opts.cursorInteractive).toBe(true);
+    expect(cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length).toBe(axBefore);
+
+    const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
+    expect(dispatchText).toBe('Scrolled by (0, 80). Position: (0, 80)');
+    expect(state.scrollY).toBe(80);
+
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/no changes detected in AX tree/i);
+    expect(after).toMatch(/Scroll: 80\/2400/);
+    expect(after).not.toMatch(/--- Removed/);
+    expect(after).not.toMatch(/\(24,180/);
+    expect(T.actionDomDiffShowsChange(after)).toBe(false);
+
+    if (T.isLeftoverDefaultAxScrollSettle(leftoverDump, store.snapshotOpts, actionTarget)) {
+      actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'leftover-ax-scroll-no-change';
+    }
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.verdict.status).toBe('continue');
+    expect(text).toMatch(/Outcome: no-change/);
+    expect(text).not.toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
+    expect(text).not.toMatch(/record-actions/);
+  });
+
+  it('#295 leftover -C -d 8 then scroll that adds a file is Outcome: changed', async () => {
+    const { cdp, state } = createHfPage();
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    await leftoverGoldenPath(cdp, store, refMap, refState);
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    state.files = [...DEFAULT_FILES, ADDED_FILE];
+    await T.scrollStr(cdp, 'sid', 'down', '80');
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/tokenizer\.json/);
+    expect(after).not.toMatch(/no changes detected in AX tree/i);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    expect(result.outcome.status).toBe('changed');
+    expect(T.isExpectedNoChange(actionTarget, after, 'scroll')).toBe(true);
+  });
+
+  it('#295 leftover Comfy perceive -C -d 8 then scroll ignores heading @ref rect chrome', async () => {
+    const { cdp, state } = createComfyPage();
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState, {
+      targetId: COMFY_TARGET_ID,
+      prefix: COMFY_PREFIX,
+    });
+    expect(leftoverDump).toMatch(/API Reference  @1  \(16,220 140×22\)/);
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(
+      cdp, store, actionTarget, refMap, refState, COMFY_TARGET_ID,
+    );
+    await T.scrollStr(cdp, 'sid', 'down', '80');
+    expect(state.scrollY).toBe(80);
+    const after = await observeActionDiffForTarget(
+      cdp, store, actionTarget, settleBaseline, refMap, refState, COMFY_TARGET_ID,
+    );
+    expect(after).toMatch(/no changes detected in AX tree/i);
+    expect(T.actionDomDiffShowsChange(after)).toBe(false);
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: COMFY_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.verdict.status).toBe('continue');
+    expect(text).toMatch(/Next: cdp perceive 0D34570A -C -d 8/);
+    expect(text).not.toMatch(/cdp report 0D34570A --format json/);
+  });
+
+  it('#295 leftover -C -d 8 then mutating click --js still Outcome: changed', async () => {
+    const { cdp, state } = createHfPage({ clicks: 6 });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    await leftoverGoldenPath(cdp, store, refMap, refState);
+    const actionTarget = clickJsTarget();
+    expect(T.isLeftoverDefaultAxScrollSettle(store.output, store.snapshotOpts, actionTarget)).toBe(false);
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    expect(settleBaseline.output).toContain('[StaticText] clicks:6');
+    const dispatchText = await T.jsClickStr(cdp, 'sid', '#p26btn', refMap, refState);
+    expect(dispatchText).toMatch(/JS-clicked <BUTTON>/);
+    expect(state.clicks).toBe(7);
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+    expect(after).toMatch(/\+\s+\[StaticText\] clicks:7/);
+  });
+});
+
 describe('issue #286 hover settle baseline', () => {
   const TARGET_ID = '62E1DF195EAC5A1A211792636BAE8A07';
   const emptyDelta = {
