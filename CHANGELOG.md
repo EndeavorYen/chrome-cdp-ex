@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#279)
+
+* Leftover 0-card `perceive --cards` / `--role feed` dumps are not a valid
+  settle shape for a mutating click. Action settle recaptures a default AX
+  baseline so `click --js` that changes live text reports `Outcome: changed`,
+  not `no-change` / "No visible AX tree change" while the handler ran.
+  `#257` leftover-cards + Escape stays expected no-change.
+
 ### Open issue dogfood (#270, #271, #272)
 
 * Password-like `fill` / `type` values are redacted in every `record-actions`

@@ -4613,12 +4613,21 @@ function isFramedPerceiveOutput(output) {
 function shouldCaptureTopLevelActionSettle(snapshotOpts = null, output = null, actionTarget = {}) {
   // Frame-scoped settle is only for actions that targeted @fN / @fN:M.
   if (frameRefFromActionTarget(actionTarget)) return false;
+  // Leftover --cards / --role feed dumps are a feed view, not an AX settle
+  // shape. Discarding them (#257) without a before-snapshot made a mutating
+  // click --js report no-change / "No visible AX tree change" while the
+  // handler ran (#279). Recapture default AX so live text changes are
+  // Outcome:changed. Leftover-cards + Escape still settles as no-change
+  // against that recaptured tree.
+  if (snapshotOpts?.cards === true || isCardsPerceiveOutput(output)) return true;
   return Boolean(snapshotOpts?.frameRef) || isFramedPerceiveOutput(output);
 }
 
 function actionSettleBaseline(output, snapshotOpts = null, actionTarget = {}) {
   // Compact --cards dumps are a feed view, not an AX settle baseline. Reusing
-  // them after a 0-card page makes no-op press/type/clickxy look like a DOM change.
+  // them after a 0-card page makes no-op press/type/clickxy look like a DOM
+  // change (#257). Recapture default AX before the action (#279) instead of
+  // settling as "No changes detected."
   if (snapshotOpts?.cards === true || isCardsPerceiveOutput(output)) {
     return {
       output: null,
