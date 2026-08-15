@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#210, #211, #212, #213, #214, #215, #216, #217)
+
+* `qa` restores the tab's original viewport after desktop/mobile emulation,
+  including when a screenshot times out.
+* First no-baseline no-op `press` is `Outcome: no-change` / continue, not a
+  tree dump labeled `changed`.
+* Missing `select` option, non-select target, and missing selector are
+  `Kind: usage` / `cdp help select` (no `ReferenceError: value is not defined`).
+* `upload` of a missing path fails closed and does not plant a 0-byte ghost file.
+* Invalid/zero `wait` duration is `Kind: usage` / `cdp help wait`, not doctor or status.
+* Unknown `tab-group` name is `Kind: usage` / `cdp tab-group list`, not doctor.
+* `cookiedel` of a missing cookie exits non-zero and does not claim deletion.
+* `hover @ref` reads the current rect without the click scroll-settle loop.
+
 ### #183 / #190 residuals after #193
 
 * `target --url … --exact` with zero matches classifies as `target-resolution`

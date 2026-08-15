@@ -218,6 +218,65 @@ export function classifyActionFailure(err, { action = 'action', target = {} } = 
     };
   }
 
+  if (
+    action === 'select'
+    && (
+      lower.includes('css selector required')
+      || lower.includes('value required')
+      || lower.includes('not a <select>')
+      || lower.includes('no option value')
+    )
+  ) {
+    return {
+      ...base,
+      kind: 'usage',
+      reason: 'select requires a <select> element and an existing option value.',
+      nextCommand: 'cdp help select',
+      hints: [
+        'Pass a CSS selector for a <select> and an option value or visible label that exists.',
+        'Use perceive to inspect available controls before selecting.',
+      ],
+    };
+  }
+
+  if (
+    action === 'upload'
+    && (
+      lower.includes('file not found')
+      || lower.includes('file path')
+      || lower.includes('not a readable file')
+      || lower.includes('is not an <input type="file">')
+      || lower.includes('css selector for <input type="file"> required')
+    )
+  ) {
+    return {
+      ...base,
+      kind: 'usage',
+      reason: 'upload requires a file input and a path to an existing readable file.',
+      nextCommand: 'cdp help upload',
+      hints: [
+        'Pass a real filesystem path; missing paths are not uploaded as empty ghost files.',
+        'Target an <input type="file">, not another control.',
+      ],
+    };
+  }
+
+  if (
+    (action === 'cookiedel' || action === 'cookie')
+    && (lower.includes('cookie not found') || lower.includes('cookie name required'))
+  ) {
+    return {
+      ...base,
+      kind: 'usage',
+      reason: 'cookiedel requires the name of a cookie that exists on the current page.',
+      nextCommand: 'cdp help cookiedel',
+      hints: [
+        'List cookies with `cdp cookies` before deleting.',
+        'Do not treat a missing cookie as a successful delete.',
+      ],
+    };
+  }
+
   return base;
 }
 

@@ -229,7 +229,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs qa <target> \
   --format json
 ```
 
-It captures page info, console health, desktop/mobile screenshots, perception summaries, and optional semantic checks. Add `--click <selector-or-ref>` to include a verified interaction before the final assertions.
+It captures page info, console health, desktop/mobile screenshots, perception summaries, and optional semantic checks. Add `--click <selector-or-ref>` to include a verified interaction before the final assertions. `qa` always restores the tab's original viewport, even when a screenshot times out.
 
 For responsive regression checks, use `responsive-audit` (alias `visual-check`):
 

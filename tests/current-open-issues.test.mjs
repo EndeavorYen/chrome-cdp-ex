@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'child_process';
-import { readFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { runInNewContext } from 'node:vm';
 
 process.env.NODE_ENV = 'test';
@@ -3558,6 +3560,339 @@ describe('issues #204-#208 open contracts', () => {
     expect(text).toMatch(/Error: desktop screenshot:/);
     expect(text).toMatch(/Verdict:/);
     expect(text.length).toBeGreaterThan(0);
+  });
+});
+
+describe('issues #210-#217 open contracts', () => {
+  it('#210 qa restores the original viewport after a screenshot timeout', async () => {
+    const sizes = [];
+    let current = { w: 1042, h: 632 };
+    const tmp = mkdtempSync(join(tmpdir(), 'cdp-qa-viewport-'));
+    const session = T.createSessionState({
+      targetId: '1D3669785EAC5A1A211792636BAE8A07',
+      sessionId: 'sid',
+      logPath: join(tmp, 'session.jsonl'),
+      screenshotDir: join(tmp, 'shots'),
+    });
+    const cdp = {
+      send(method, params = {}) {
+        if (method === 'Emulation.setDeviceMetricsOverride') {
+          sizes.push(`${params.width}x${params.height}`);
+          current = { w: params.width, h: params.height };
+          return Promise.resolve({});
+        }
+        if (method === 'Page.captureScreenshot') {
+          throw new Error('Timeout: Page.captureScreenshot');
+        }
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('innerWidth') && expr.includes('innerHeight')) {
+            return Promise.resolve({ result: { value: JSON.stringify(current) } });
+          }
+          if (expr.includes('document.title')) {
+            return Promise.resolve({
+              result: { value: JSON.stringify({ title: 'Example Domain', url: 'https://example.com/', contentType: 'text/html' }) },
+            });
+          }
+          if (expr.includes('devicePixelRatio')) {
+            return Promise.resolve({ result: { value: 1 } });
+          }
+          if (expr.includes('visibleTextLength')) {
+            return Promise.resolve({
+              result: {
+                value: JSON.stringify({
+                  url: 'https://example.com/',
+                  readyState: 'complete',
+                  visibleTextLength: 40,
+                  elementCount: 12,
+                  visibleControlCount: 1,
+                  bodyRect: { width: 1042, height: 632 },
+                }),
+              },
+            });
+          }
+          return Promise.resolve({ result: { value: '{}' } });
+        }
+        if (method === 'Accessibility.getFullAXTree') {
+          throw new Error('ax unavailable in this fixture');
+        }
+        return Promise.resolve({});
+      },
+    };
+    try {
+      const out = await T.qaPageStr({
+        cdp,
+        sid: 'sid',
+        session,
+        targetId: '1D3669785EAC5A1A211792636BAE8A07',
+        consoleBuf: new T.RingBuffer(8),
+        exceptionBuf: new T.RingBuffer(8),
+        refMap: new Map(),
+        lastPerceiveStore: { output: null },
+        refState: {},
+        actionFeedback: async () => '',
+      }, []);
+      expect(out).toMatch(/Error: desktop screenshot:/);
+      expect(sizes[0]).toBe('1440x900');
+      expect(sizes.at(-1)).toBe('1042x632');
+      expect(current).toEqual({ w: 1042, h: 632 });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('#211 no-baseline no-op press is no-change, not a tree dump', () => {
+    expect(T.noBaselineActionDiffText()).toMatch(/no changes detected/i);
+    expect(T.actionDomDiffShowsChange(T.noBaselineActionDiffText())).toBe(false);
+    expect(T.actionDomDiffShowsChange('(no action baseline available; run `perceive` before a mutating command)')).toBe(false);
+
+    const result = T.createActionResult({
+      action: 'press',
+      target: {
+        targetId: 'C48C711AFULL',
+        input: 'Escape',
+        resolvedBy: 'key',
+        label: 'Escape',
+        expectedOutcome: 'press-no-change',
+      },
+      dispatch: { ok: true, method: 'press' },
+      settle: { ok: true, durationMs: 80 },
+      effects: {
+        domDiff: T.noBaselineActionDiffText(),
+        console: [],
+        network: [],
+        navigation: null,
+        consoleDelta: { count: 0, errors: 0, warnings: 0, entries: [] },
+        exceptionDelta: { count: 0, entries: [] },
+        networkDelta: { count: 0, failures: 0, pending: 0, entries: [] },
+      },
+    });
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.verdict.status).toBe('continue');
+    const text = T.formatActionText(result);
+    expect(text).toMatch(/Outcome: no-change/);
+    expect(text).not.toMatch(/Outcome: changed/);
+    expect(text).not.toMatch(/no action baseline available/);
+    expect(text).not.toMatch(/^Page:/m);
+  });
+
+  it('#212 select missing option is Kind:usage, not ReferenceError', async () => {
+    const selectEl = {
+      tagName: 'SELECT',
+      options: [
+        { value: '', textContent: '--' },
+        { value: 'a', textContent: 'Alpha' },
+        { value: 'b', textContent: 'Beta' },
+      ],
+      selectedIndex: 0,
+      value: '',
+      dispatchEvent() {},
+    };
+    let expression = '';
+    const cdp = {
+      send(method, params = {}) {
+        if (method !== 'Runtime.evaluate') throw new Error(`unexpected ${method}`);
+        expression = params.expression;
+        const result = runInNewContext(expression, {
+          document: {
+            querySelector(sel) {
+              if (sel === '#s') return selectEl;
+              if (sel === '#q') return { tagName: 'INPUT' };
+              return null;
+            },
+          },
+          Event: class Event {},
+        });
+        return Promise.resolve({ result: { value: result } });
+      },
+    };
+
+    await expect(T.selectStr(cdp, 'sid', '#s', 'zzz')).rejects.toThrow(/No option value=zzz/);
+    expect(expression).toContain(JSON.stringify('zzz'));
+    expect(expression).not.toMatch(/: value\s*[;}]/);
+
+    await expect(T.selectStr(cdp, 'sid', '#s', 'Alpha')).resolves.toBe('Selected "Alpha"');
+    expect(selectEl.value).toBe('a');
+
+    await expect(T.selectStr(cdp, 'sid', '#q', 'a')).rejects.toThrow(/Not a <select>: INPUT/);
+    await expect(T.selectStr(cdp, 'sid', '', 'a')).rejects.toThrow(/CSS selector required/);
+    await expect(T.selectStr(cdp, 'sid', '#s', undefined)).rejects.toThrow(/Value required/);
+
+    expect(T.classifyActionFailure(new Error('No option value=zzz'), {
+      action: 'select',
+      target: { targetId: '270379DA', input: '#s' },
+    })).toMatchObject({ kind: 'usage', nextCommand: 'cdp help select' });
+    expect(T.classifyActionFailure(new Error('Not a <select>: INPUT'), {
+      action: 'select',
+      target: { targetId: '270379DA', input: '#q' },
+    })).toMatchObject({ kind: 'usage', nextCommand: 'cdp help select' });
+
+    const formatted = T.formatCliError(new Error('No option value=zzz'), {
+      cmd: 'select',
+      targetPrefix: '270379DA',
+    });
+    expect(formatted).toMatch(/Kind: usage/);
+    expect(formatted).toMatch(/Next: cdp help select/);
+    expect(formatted).not.toMatch(/Action failure: unknown/);
+    expect(formatted).not.toMatch(/ReferenceError/);
+  });
+
+  it('#213 upload of a missing path fails closed and does not plant a ghost file', async () => {
+    expect(() => T.assertReadableUploadFiles('/tmp/picky5/no-such-file.bin'))
+      .toThrow(/upload: file not found/);
+    const cdp = {
+      send(method) {
+        throw new Error(`CDP ${method} must not run for a missing upload path`);
+      },
+    };
+    await expect(T.uploadStr(cdp, 'sid', '#f', '/tmp/picky5/no-such-file.bin'))
+      .rejects.toThrow(/upload: file not found/);
+
+    const usage = T.buildCliErrorRecovery('upload: file not found: /tmp/picky5/no-such-file.bin', { cmd: 'upload' });
+    expect(usage.kind).toBe('usage');
+    expect(usage.run).toBe('cdp help upload');
+    expect(T.classifyActionFailure(new Error('upload: file not found: /tmp/picky5/no-such-file.bin'), {
+      action: 'upload',
+      target: { targetId: '270379DA', input: '#f' },
+    })).toMatchObject({ kind: 'usage', nextCommand: 'cdp help upload' });
+    expect(T.classifyActionFailure(new Error('Element is not an <input type="file">'), {
+      action: 'upload',
+      target: { targetId: '270379DA', input: '#q' },
+    })).toMatchObject({ kind: 'usage', nextCommand: 'cdp help upload' });
+  });
+
+  it('#214 wait 0 / missing duration is Kind:usage / help wait, not doctor or status', () => {
+    expect(() => T.parseDelayMs('0', { name: 'wait duration' })).toThrow(/at least 1ms/);
+    expect(() => T.parseDelayMs(undefined, { name: 'wait duration' })).toThrow(/positive integer/);
+    expect(() => T.parseDelayMs('-1', { name: 'wait duration' })).toThrow(/positive integer/);
+
+    const zero = T.buildCliErrorRecovery('wait duration must be at least 1ms', { cmd: 'wait', targetPrefix: '1D366978' });
+    expect(zero.kind).toBe('usage');
+    expect(zero.run).toBe('cdp help wait');
+    expect(zero.run).not.toMatch(/status/);
+    expect(zero.run).not.toBe('cdp doctor');
+
+    const missing = T.buildCliErrorRecovery('wait duration must be a positive integer in milliseconds', {
+      cmd: 'wait',
+      targetPrefix: '1D366978',
+    });
+    expect(missing.kind).toBe('usage');
+    expect(missing.run).toBe('cdp help wait');
+
+    const noTarget = T.buildCliErrorRecovery('wait duration must be at least 1ms', { cmd: 'wait' });
+    expect(noTarget.kind).toBe('usage');
+    expect(noTarget.run).toBe('cdp help wait');
+    expect(noTarget.run).not.toBe('cdp doctor');
+
+    const formatted = T.formatCliError(new Error('wait duration must be at least 1ms'), { cmd: 'wait' });
+    expect(formatted).toMatch(/Kind: usage/);
+    expect(formatted).toMatch(/Next: cdp help wait/);
+    expect(formatted).not.toMatch(/cdp doctor/);
+    expect(formatted).not.toMatch(/cdp status/);
+    expect(T.commandUsageTemplate('wait', '1D366978')).toBe('cdp help wait');
+  });
+
+  it('#215 tab-group unknown group is Kind:usage / tab-group list, not doctor', () => {
+    expect(() => T.deleteTabGroup(T.emptyTabGroupStore(), 'picky5')).toThrow(/unknown group "picky5"/);
+    expect(T.getTabGroup(T.emptyTabGroupStore(), 'picky5')).toBeNull();
+
+    const recovery = T.buildCliErrorRecovery('tab-group: unknown group "picky5"', { cmd: 'tab-group' });
+    expect(recovery.kind).toBe('usage');
+    expect(recovery.run).toBe('cdp tab-group list');
+    expect(recovery.run).not.toBe('cdp doctor');
+
+    const formatted = T.formatCliError(new Error('tab-group: unknown group "picky5"'), { cmd: 'tab-group' });
+    expect(formatted).toMatch(/Kind: usage/);
+    expect(formatted).toMatch(/Next: cdp tab-group list/);
+    expect(formatted).not.toMatch(/cdp doctor/);
+  });
+
+  it('#216 cookiedel of a missing cookie fails closed and does not claim deleted', async () => {
+    const calls = [];
+    const cdp = {
+      send(method, params = {}) {
+        calls.push({ method, params });
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({ result: { value: 'https://example.com/' } });
+        }
+        if (method === 'Network.getCookies') {
+          return Promise.resolve({ cookies: [{ name: 'picky5', value: 'roundtrip' }] });
+        }
+        if (method === 'Network.deleteCookies') return Promise.resolve({});
+        throw new Error(`unexpected ${method}`);
+      },
+    };
+    await expect(T.cookieDelStr(cdp, 'sid', 'nosuchpicky5cookie'))
+      .rejects.toThrow(/Cookie not found: nosuchpicky5cookie/);
+    expect(calls.some(call => call.method === 'Network.deleteCookies')).toBe(false);
+
+    const deleted = await T.cookieDelStr(cdp, 'sid', 'picky5');
+    expect(deleted).toBe('Cookie deleted: picky5');
+    expect(calls.some(call => call.method === 'Network.deleteCookies' && call.params.name === 'picky5')).toBe(true);
+
+    const recovery = T.buildCliErrorRecovery('Cookie not found: nosuchpicky5cookie', {
+      cmd: 'cookiedel',
+      targetPrefix: '1D366978',
+    });
+    expect(recovery.kind).toBe('usage');
+    expect(recovery.run).toBe('cdp cookies 1D366978');
+    expect(recovery.run).not.toMatch(/Cookie deleted/);
+    const formatted = T.formatCliError(new Error('Cookie not found: nosuchpicky5cookie'), {
+      cmd: 'cookiedel',
+      targetPrefix: '1D366978',
+    });
+    expect(formatted).toMatch(/Kind: usage/);
+    expect(formatted).not.toMatch(/Cookie deleted/);
+  });
+
+  it('#217 hover skips scroll-settle and returns after a single mouseMoved', async () => {
+    const calls = [];
+    const cdp = {
+      send(method, params = {}) {
+        calls.push({ method, params });
+        if (method === 'Page.getFrameTree') {
+          return Promise.resolve({ frameTree: { frame: { id: 'root-frame' } } });
+        }
+        if (method === 'Page.createIsolatedWorld') {
+          return Promise.resolve({ executionContextId: 901 });
+        }
+        if (method === 'DOM.resolveNode') {
+          return Promise.resolve({ object: { objectId: 'hover-node' } });
+        }
+        if (method === 'Runtime.callFunctionOn') {
+          if (String(params.functionDeclaration || '').includes('ownerDocumentGetter')) {
+            return Promise.resolve({ result: { value: { connected: true } } });
+          }
+          return Promise.resolve({
+            result: { value: { x: 240, y: 180, w: 28, h: 44, tag: 'A', text: 'Learn more' } },
+          });
+        }
+        if (method === 'Input.dispatchMouseEvent') return Promise.resolve({});
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({
+            result: { value: { ok: true, x: 254, y: 202, tag: 'A' } },
+          });
+        }
+        throw new Error(`unexpected ${method}`);
+      },
+    };
+    const out = await T.hoverStr(cdp, 'sid', '@1', new Map([[1, 101]]), {});
+    expect(out).toMatch(/Hovering over <A>/);
+    expect(calls.some(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mouseMoved')).toBe(true);
+    const hoverFn = calls
+      .filter(call => call.method === 'Runtime.callFunctionOn')
+      .map(call => call.params.functionDeclaration || '')
+      .find(fn => fn.includes('getBoundingClientRect')) || '';
+    expect(hoverFn).toContain('getBoundingClientRect');
+    expect(hoverFn).not.toMatch(/requestAnimationFrame/);
+    expect(hoverFn).not.toMatch(/Date\.now\(\) \+ 1800/);
+    expect(calls.filter(call => call.method === 'Input.dispatchMouseEvent')).toHaveLength(1);
+
+    const css = await T.hoverStr(cdp, 'sid', 'a', new Map(), {});
+    expect(css).toMatch(/Hovering over <A>/);
+    const cssExpr = calls.find(call => call.method === 'Runtime.evaluate')?.params.expression || '';
+    expect(cssExpr).not.toMatch(/scrollIntoView/);
+    expect(cssExpr).not.toMatch(/requestAnimationFrame/);
   });
 });
 
