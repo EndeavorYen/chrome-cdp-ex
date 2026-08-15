@@ -523,11 +523,16 @@ export function isExpectedCardsWindowNoChange(target = {}, extraText = '') {
     || (/\bunchanged\b/i.test(blob) && /virtualized window/i.test(blob));
 }
 
+export function isExpectedLeftoverAxScrollNoChange(target = {}) {
+  return target?.expectedOutcome === 'leftover-ax-scroll-no-change';
+}
+
 export function isExpectedNoChange(target = {}, extraText = '', action = null) {
   if (isExpectedClipboardNoChange(target, extraText)) return true;
   if (target?.expectedOutcome === 'no-modal') return true;
   if (isExpectedPdfViewerNoChange(target, extraText)) return true;
   if (isExpectedCardsWindowNoChange(target, extraText)) return true;
+  if (isExpectedLeftoverAxScrollNoChange(target)) return true;
   return isExpectedPressNoChange(target, action);
 }
 
@@ -543,6 +548,9 @@ export function expectedNoChangeReason(target = {}, action = null, extraText = '
   }
   if (isExpectedCardsWindowNoChange(target, extraText)) {
     return 'Settle shape was leftover feed --cards; virtualized window did not replace cards.';
+  }
+  if (isExpectedLeftoverAxScrollNoChange(target)) {
+    return 'Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities.';
   }
   if (isExpectedPressNoChange(target, action)) {
     return 'Key press produced no visible AX tree change; continue without overlay recovery.';
@@ -643,6 +651,22 @@ export function buildNoChangeOutcomeRecommendation({
       reason: 'Settle shape was leftover feed --cards; virtualized window did not replace cards.',
       blockingSignals: [],
       recoveryHint: 'Feed window unchanged; re-run perceive --cards instead of a full AX dump.',
+      verifyCommand: nextCommand,
+      commands: uniqueNextStepCommands([nextCommand]),
+    };
+  }
+  if (isExpectedLeftoverAxScrollNoChange(targetInfo)) {
+    const nextCommand = `cdp perceive ${target} -C -d 8`;
+    return {
+      source,
+      actionIndex,
+      action,
+      outcomeStatus: 'no-change',
+      strategy: 'continue',
+      priority: 'low',
+      reason: 'Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities.',
+      blockingSignals: [],
+      recoveryHint: 'AX identities unchanged; re-run perceive -C -d 8 instead of report.',
       verifyCommand: nextCommand,
       commands: uniqueNextStepCommands([nextCommand]),
     };

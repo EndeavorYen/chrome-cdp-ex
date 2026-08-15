@@ -4635,6 +4635,19 @@ function isScrollActionTarget(actionTarget = {}) {
     || String(actionTarget.action || '').toLowerCase() === 'scroll';
 }
 
+function isLeftoverDefaultAxScrollSettle(output, snapshotOpts = null, actionTarget = {}) {
+  // Leftover golden-path / default AX (`perceive -C -d 8`) is the settle
+  // shape for the next scroll (#295). Viewport @ref rect chrome is not a
+  // page mutation. Cards / pdf-viewer / framed leftovers keep their own
+  // settle gates.
+  if (!isScrollActionTarget(actionTarget)) return false;
+  if (isPdfViewerPerceiveOutput(output)) return false;
+  if (snapshotOpts?.cards === true || isCardsPerceiveOutput(output)) return false;
+  if (snapshotOpts?.frameRef || isFramedPerceiveOutput(output)) return false;
+  const text = String(output || '');
+  return /^Page: /m.test(text) && /^Viewport: /m.test(text);
+}
+
 function isLeftoverFeedCardsSettle(output, snapshotOpts = null, actionTarget = {}) {
   // Leftover --cards / --role feed with a real feed window is the settle
   // shape for the next scroll (#293). 0-card leftovers still recapture
@@ -9949,6 +9962,14 @@ function parsePerceiveHeader(output) {
   };
 }
 
+function stripPerceiveRectChrome(line) {
+  // Viewport-CSS @ref / Visible-control suffixes (`(24,180 160×22)`,
+  // `(8,80 80×24, fixed)`) move on every scroll even when AX identities
+  // are unchanged (#295). Identity compare ignores that chrome; displayed
+  // leftover dumps still include the live rects.
+  return String(line || '').replace(/\s+\(-?\d+,-?\d+ \d+×\d+(?:, [^)]+)?\)/g, '');
+}
+
 function computePerceiveDiff(previousOutput, currentOutput) {
   const prev = previousOutput.split('\n');
   const curr = currentOutput.split('\n');
@@ -9958,8 +9979,8 @@ function computePerceiveDiff(previousOutput, currentOutput) {
   const currHeaderEnd = curr.findIndex(line => line === '');
   const prevTreeStart = prevHeaderEnd >= 0 ? prevHeaderEnd + 1 : 5;
   const currTreeStart = currHeaderEnd >= 0 ? currHeaderEnd + 1 : 5;
-  const prevTree = prev.slice(prevTreeStart);
-  const currTree = curr.slice(currTreeStart);
+  const prevTree = prev.slice(prevTreeStart).map(stripPerceiveRectChrome);
+  const currTree = curr.slice(currTreeStart).map(stripPerceiveRectChrome);
   // Line-level diff with StaticText noise filtering.
   const prevSet = new Set(prevTree);
   const currSet = new Set(currTree);
@@ -19150,6 +19171,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     ) && action === 'scroll') {
       actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'cards-window-no-change';
     }
+    if (isLeftoverDefaultAxScrollSettle(
+      baselineFromTarget,
+      lastPerceiveStore.snapshotOpts,
+      actionTarget,
+    ) && action === 'scroll') {
+      actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'leftover-ax-scroll-no-change';
+    }
     if (
       !settleBaseline.output
       && shouldCaptureTopLevelActionSettle(
@@ -23496,6 +23524,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   pdfViewerHandoffModelFromOutput,
   actionObservationPerceiveOpts, actionResultPdfViewerMeta, actionSettleBaseline, isCardsPerceiveOutput,
   leftoverCardsCount, isScrollActionTarget, isLeftoverFeedCardsSettle,
+  isLeftoverDefaultAxScrollSettle, stripPerceiveRectChrome,
   isPdfViewerPerceiveOutput, pdfViewerSettleDiffText,
   isFramedPerceiveOutput, shouldCaptureTopLevelActionSettle, actionSettleObserveOpts,
   actionDomDiffShowsChange, noBaselineActionDiffText,
