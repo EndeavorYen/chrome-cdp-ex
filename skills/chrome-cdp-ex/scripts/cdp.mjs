@@ -11769,7 +11769,11 @@ async function rememberHoverSettleBaseline(
 ) {
   // Hover mutates live DOM (tooltips, :hover text) but historically printed a
   // one-liner and left last-perceive stale. Recapture default AX so the next
-  // mutator does not steal hover's delta (#286). Do not emit ActionResult.
+  // mutator does not steal hover's delta (#286). Wait for DOM settle first —
+  // Chrome 151 mouseMoved acks are delayed, so recapture-while-idle would
+  // snapshot idle AX and let a later no-op scroll claim +hover text.
+  // Do not emit ActionResult.
+  await waitForSettle(cdp, sid);
   await perceiveStr(
     cdp,
     sid,
