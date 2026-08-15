@@ -4638,11 +4638,11 @@ function isScrollActionTarget(actionTarget = {}) {
 
 function isLeftoverDefaultAxScrollSettle(output, snapshotOpts = null, actionTarget = {}) {
   // Leftover golden-path / default AX (`perceive -C -d 8`) is the settle
-  // shape for the next scroll (#295/#297/#299). Viewport @ref rect chrome and
+  // shape for the next scroll (#295/#297/#299/#301). Viewport @ref rect chrome and
   // fold tags are not a page mutation. Visible-control cap-swap membership
   // is still changed, but the receipt summarizes it with named samples and
-  // Next `-C -d 8` without Hint `--since-action`. Cards / pdf-viewer /
-  // framed leftovers keep their own settle gates.
+  // Next `-C -d 8` without Hint `--since-action` or a generic Recovery hint.
+  // Cards / pdf-viewer / framed leftovers keep their own settle gates.
   if (!isScrollActionTarget(actionTarget)) return false;
   if (isPdfViewerPerceiveOutput(output)) return false;
   if (snapshotOpts?.cards === true || isCardsPerceiveOutput(output)) return false;
@@ -5114,6 +5114,15 @@ function actionRecoveryHint(actionResult = {}) {
   const outcome = actionResult.outcome || buildActionOutcome(actionResult);
   if (typeof recommendation.recoveryHint === 'string' && recommendation.recoveryHint.trim()) return recommendation.recoveryHint;
   if (diagnosis?.reason && diagnosis.status !== 'ok') return diagnosis.reason;
+  // Leftover golden-path AX scroll already prints Outcome:changed, the compact
+  // named cap-swap/structural diff, and Next `-C -d 8` (#301). The generic
+  // "Continue from the observed action evidence." line is leftover chrome.
+  if (
+    outcome.status === 'changed'
+    && isExpectedLeftoverAxScrollNoChange(actionResult.target || {})
+  ) {
+    return null;
+  }
   if (outcome.status === 'changed') return 'Continue from the observed action evidence.';
   if (outcome.status === 'failed') return 'Run the recovery command before retrying the action.';
   if (outcome.status === 'timeout') return 'Verify the post-action state before retrying; the action may have dispatched.';
