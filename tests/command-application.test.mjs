@@ -1192,6 +1192,8 @@ describe('Phase 4 daemon dispatch seam', () => {
     expect(calls.filter(call => call.method === 'Input.dispatchMouseEvent')).toHaveLength(6);
     expect(calls.filter(call => call.method === 'Input.dispatchMouseEvent').map(call => call.params.type))
       .toEqual(['mouseMoved', 'mousePressed', 'mouseReleased', 'mouseMoved', 'mousePressed', 'mouseReleased']);
+    expect(calls.filter(call => call.method === 'Input.dispatchMouseEvent').map(call => call.params.buttons))
+      .toEqual([0, 1, 0, 0, 1, 0]);
     expect(calls.every(call => call.sessionId === 'session-1')).toBe(true);
 
     await expect(cdpTest.closetabStr(cdp, 'ABCDEF0123456789'))

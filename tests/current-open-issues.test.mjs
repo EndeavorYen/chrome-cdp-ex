@@ -4154,3 +4154,299 @@ describe('issues #220-#225 open contracts', () => {
   });
 });
 
+describe('issues #227-#231 open contracts', () => {
+  it('#227 missing loadall selector is RC≠0 and does not claim disappeared', async () => {
+    expect(T.parseLoadAllArgs(['#more'])).toEqual({
+      selector: '#more',
+      intervalMs: T.LOADALL_DEFAULT_INTERVAL_MS,
+      timeoutMs: T.LOADALL_DEFAULT_TIMEOUT_MS,
+    });
+    expect(T.parseLoadAllArgs(['#more', '400'])).toMatchObject({ selector: '#more', intervalMs: 400, timeoutMs: 30_000 });
+    expect(T.parseLoadAllArgs(['#more', '--timeout-ms', '800'])).toMatchObject({ timeoutMs: 800, intervalMs: 1500 });
+    expect(() => T.parseLoadAllArgs([])).toThrow(/CSS selector required/);
+
+    const topic = T.helpTopicStr('loadall');
+    expect(topic).toMatch(/\[interval-ms\]/);
+    expect(topic).toMatch(/timeout-ms/);
+    expect(topic).toMatch(/click interval/);
+
+    const cdp = {
+      send(method) {
+        if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: null } });
+        return Promise.resolve({});
+      },
+    };
+    await expect(T.loadAllStr(cdp, 'sid', '#nope-load', 0, { timeoutMs: 200 }))
+      .rejects.toThrow(/Element not found: #nope-load/);
+
+    const missing = T.formatCliError(new Error('Element not found: #nope-load'), {
+      cmd: 'loadall',
+      targetPrefix: 'C48C711A',
+    });
+    expect(missing).toMatch(/Kind: selector/);
+    expect(missing).toMatch(/Next: cdp perceive C48C711A -C -d 8/);
+    expect(missing).not.toMatch(/disappeared/);
+    expect(missing).not.toMatch(/Kind: unknown/);
+
+    const usage = T.formatCliError(new Error('CSS selector required'), {
+      cmd: 'loadall',
+      targetPrefix: 'C48C711A',
+    });
+    expect(usage).toMatch(/Kind: usage/);
+    expect(usage).toMatch(/Next: cdp help loadall/);
+  });
+
+  it('#227 persistent loadall control fails at the cap and client abort stops the loop', async () => {
+    const cdp = {
+      clicks: 0,
+      send(method) {
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({ result: { value: { x: 10, y: 20 } } });
+        }
+        if (method === 'Input.dispatchMouseEvent') this.clicks += 1;
+        return Promise.resolve({});
+      },
+    };
+    await expect(T.loadAllStr(cdp, 'sid', '#more', 0, { timeoutMs: 80 }))
+      .rejects.toThrow(/still present after \d+ click\(s\) \(timeout 80ms\)/);
+    expect(cdp.clicks).toBeGreaterThan(0);
+
+    const timeoutText = T.formatCliError(
+      new Error('loadall: "#more" still present after 3 click(s) (timeout 80ms)'),
+      { cmd: 'loadall', targetPrefix: 'C48C711A' },
+    );
+    expect(timeoutText).toMatch(/Kind: timeout/);
+    expect(timeoutText).toMatch(/Next: cdp help loadall/);
+    expect(timeoutText).not.toMatch(/until it disappeared/);
+    expect(timeoutText).not.toMatch(/click Allow/);
+
+    const abortCdp = {
+      send(method) {
+        if (method === 'Runtime.evaluate') {
+          return Promise.resolve({ result: { value: { x: 10, y: 20 } } });
+        }
+        return Promise.resolve({});
+      },
+    };
+    const controller = new AbortController();
+    const pending = T.daemonRequestStorage.run({ signal: controller.signal }, () => (
+      T.loadAllStr(abortCdp, 'sid', '#b', 40, { timeoutMs: 5000 })
+    ));
+    setTimeout(() => controller.abort(new Error('loadall: aborted')), 15);
+    await expect(pending).rejects.toThrow(/aborted/);
+    const aborted = T.formatCliError(new Error('loadall: aborted'), {
+      cmd: 'loadall',
+      targetPrefix: '270379DA',
+    });
+    expect(aborted).toMatch(/Kind: timeout/);
+    expect(aborted).toMatch(/Next: cdp help loadall/);
+    expect(aborted).not.toMatch(/click Allow/);
+    expect(aborted).not.toMatch(/Kind: unknown/);
+  });
+
+  it('#228 realistic click uses the buttons bitmask and fails fast without overlay on a stuck <a href>', async () => {
+    expect(T.isNavigatingHref('https://www.iana.org/help/example-domains', 'https://example.com/')).toBe(true);
+    expect(T.isNavigatingHref('#section', 'https://example.com/')).toBe(false);
+    expect(T.CLICK_NAVIGATION_WAIT_MS).toBeLessThanOrEqual(500);
+
+    const events = [];
+    await T.dispatchClick({
+      send(method, params) {
+        if (method === 'Input.dispatchMouseEvent') events.push(params);
+        return Promise.resolve({});
+      },
+    }, 'sid', 12, 34);
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'mouseMoved', button: 'none', buttons: 0, pointerType: 'mouse', x: 12, y: 34 }),
+      expect.objectContaining({ type: 'mousePressed', button: 'left', buttons: 1, pointerType: 'mouse' }),
+      expect.objectContaining({ type: 'mouseReleased', button: 'left', buttons: 0, pointerType: 'mouse' }),
+    ]);
+
+    const noNav = T.formatCliError(
+      new Error('Click on <A href="https://www.iana.org/help/example-domains"> did not navigate. Try jsclick or click --js.'),
+      { cmd: 'click', targetPrefix: '1D366978' },
+    );
+    expect(noNav).toMatch(/Kind: no-navigation/);
+    expect(noNav).toMatch(/Next: cdp jsclick 1D366978 a/);
+    expect(noNav).not.toMatch(/overlay/);
+    expect(noNav).not.toMatch(/Kind: unknown/);
+
+    const recommendation = T.buildNoChangeOutcomeRecommendation({
+      action: 'click',
+      target: '1D366978',
+      targetInput: 'a',
+      targetInfo: { input: 'a', label: 'Learn more', dispatchText: 'Clicked <A> "Learn more"' },
+    });
+    expect(recommendation.blockingSignals).not.toContain('overlay-check-needed');
+    expect(recommendation.commands.join('\n')).not.toMatch(/\boverlay\b/);
+  });
+
+  it('#228 click --qa names the live page from page-health evidence', () => {
+    expect(T.pageHealthScript()).toMatch(/document\.title/);
+    const health = T.classifyPageHealth({
+      url: 'https://example.com/',
+      title: 'Example Domain',
+      readyState: 'complete',
+      visibleTextLength: 80,
+      elementCount: 12,
+      visibleControlCount: 1,
+      bodyRect: { width: 800, height: 600 },
+    });
+    expect(health.evidence).toMatchObject({ url: 'https://example.com/', title: 'Example Domain' });
+
+    const summary = T.buildQaSummaryModel({
+      page: { url: '', title: '' },
+      pageHealth: health,
+      console: { errors: 0, exceptions: 0 },
+      network: { failures: 0 },
+      action: { outcome: 'no-change', dispatch: { ok: true }, changed: false },
+      targetPrefix: '1D366978',
+    });
+    expect(summary.page).toMatchObject({
+      url: 'https://example.com/',
+      title: 'Example Domain',
+    });
+    const text = T.formatQaSummaryText(summary);
+    expect(text).toContain('Example Domain');
+    expect(text).toContain('https://example.com/');
+    expect(text).not.toContain('(untitled)');
+    expect(text).not.toContain('(unknown)');
+  });
+
+  it('#229 batch --parallel allows reads and classifies mutating mixes as usage', () => {
+    for (const [cmd, args] of [
+      ['list', []],
+      ['current', []],
+      ['status', []],
+      ['console', []],
+      ['overlay', []],
+      ['dialog', []],
+      ['viewport', []],
+      ['perceive', ['--qa']],
+      ['summary', []],
+      ['text', ['--auto']],
+      ['eval', ['1+1']],
+      ['eval', ['document.title']],
+    ]) {
+      expect(T.isBatchParallelUnsafeCommand(cmd, args), `${cmd} ${(args || []).join(' ')}`).toBe(false);
+    }
+    expect(T.isBatchParallelUnsafeCommand('click', ['a'])).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('dialog', ['accept'])).toBe(true);
+    expect(T.isBatchParallelUnsafeCommand('viewport', ['800x600'])).toBe(true);
+
+    const mutating = T.formatCliError(
+      new Error('batch --parallel: click mutate shared state — use sequential batch'),
+      { cmd: 'batch', targetPrefix: '1D366978' },
+    );
+    expect(mutating).toMatch(/Kind: usage/);
+    expect(mutating).toMatch(/Next: cdp help batch/);
+    expect(mutating).not.toMatch(/Kind: unknown/);
+    expect(mutating).not.toMatch(/cdp status 1D366978/);
+    expect(T.commandUsageTemplate('batch', '1D366978')).toBe('cdp help batch');
+  });
+
+  it('#230 failed flow assert is Kind:assertion / help flow, not status', async () => {
+    const out = await T.flowStr({
+      run: async () => ({ ok: true, result: 'ok' }),
+      settle: async () => '',
+      assertCondition: async () => ({ matched: false, description: 'selector #nope exists' }),
+    }, 'assert selector #nope; summary', {
+      format: 'json',
+      targetId: '1D3669785EAC5A1A211792636BAE8A07',
+    });
+    const parsed = JSON.parse(out);
+    expect(parsed).toMatchObject({
+      schema: 'chrome-cdp-ex.flow.v1',
+      halted: true,
+      counts: { failed: 1 },
+      failedStep: {
+        kind: 'assert',
+        failureKind: 'assertion',
+        nextCommand: 'cdp help flow',
+        error: 'Assertion failed: selector #nope exists',
+      },
+      nextSteps: ['cdp help flow'],
+    });
+    expect(parsed.nextSteps.join('\n')).not.toMatch(/cdp status 1D3669785EAC5A1A211792636BAE8A07/);
+
+    const text = await T.flowStr({
+      run: async () => ({ ok: true, result: 'ok' }),
+      settle: async () => '',
+      assertCondition: async () => ({ matched: false, description: 'text includes "NOPE"' }),
+    }, 'assert text NOPE', { targetId: '1D3669785EAC5A1A211792636BAE8A07', throwOnFailure: true }).catch(err => err.message);
+    expect(text).toMatch(/Assertion failed/);
+    expect(text).toMatch(/Flow halted/);
+    const formatted = T.formatCliError(new Error(text), {
+      cmd: 'flow',
+      targetPrefix: '1D366978',
+    });
+    expect(formatted).toMatch(/Kind: assertion/);
+    expect(formatted).toMatch(/Next: cdp help flow/);
+    expect(formatted).not.toMatch(/Kind: unknown/);
+    expect(formatted).not.toMatch(/cdp status 1D366978/);
+  });
+
+  it('#231 cascade marks the winning rule when specified ≠ computed', async () => {
+    const cdp = {
+      send(method) {
+        if (method === 'DOM.getDocument') return Promise.resolve({ root: { nodeId: 1 } });
+        if (method === 'DOM.querySelector') return Promise.resolve({ nodeId: 10 });
+        if (method === 'CSS.getMatchedStylesForNode') {
+          return Promise.resolve({
+            matchedCSSRules: [
+              {
+                rule: {
+                  selectorList: { text: 'h1' },
+                  origin: 'user-agent',
+                  style: {
+                    styleSheetId: 'ua.css',
+                    range: { startLine: 0 },
+                    cssProperties: [
+                      { name: 'font-size', value: '2em' },
+                      { name: 'font-weight', value: 'bold' },
+                      { name: 'display', value: 'block' },
+                    ],
+                  },
+                },
+              },
+              {
+                rule: {
+                  selectorList: { text: 'h1' },
+                  origin: 'regular',
+                  style: {
+                    styleSheetId: 'page.css',
+                    range: { startLine: 1 },
+                    cssProperties: [{ name: 'font-size', value: '1.5em' }],
+                  },
+                },
+              },
+            ],
+            inherited: [],
+          });
+        }
+        if (method === 'CSS.getComputedStyleForNode') {
+          return Promise.resolve({
+            computedStyle: [
+              { name: 'font-size', value: '24px' },
+              { name: 'font-weight', value: '700' },
+              { name: 'display', value: 'block' },
+            ],
+          });
+        }
+        if (method === 'CSS.getStyleSheetText') return Promise.resolve({ text: 'h1{}' });
+        return Promise.resolve({});
+      },
+    };
+    const fontSize = JSON.parse(await T.cascadeStr(cdp, 'sid', 'h1', 'font-size', new Map(), null, { format: 'json' }));
+    expect(fontSize.properties[0].winner).toMatchObject({ value: '1.5em', origin: 'regular' });
+    expect(fontSize.properties[0].rules.some(rule => rule.winner)).toBe(true);
+
+    const fontWeight = JSON.parse(await T.cascadeStr(cdp, 'sid', 'h1', 'font-weight', new Map(), null, { format: 'json' }));
+    expect(fontWeight.properties[0].winner).toMatchObject({ value: 'bold' });
+
+    const display = JSON.parse(await T.cascadeStr(cdp, 'sid', 'h1', 'display', new Map(), null, { format: 'json' }));
+    expect(display.properties[0].winner).toMatchObject({ value: 'block' });
+    expect(display.properties[0].rules[0].winner).toBe(true);
+  });
+});
+

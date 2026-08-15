@@ -230,7 +230,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `scroll` | `scroll <target> <dir\|x,y> [px] [--format json]` | `mutation / mutation` |
 | `hover` | `hover <target> <sel\|@ref>` | `protected-mutation / mutation` |
 | `waitfor` | `waitfor <target> <selector> [ms]` | `read / standard` |
-| `loadall` | `loadall <target> <selector> [ms]` | `protected-mutation / mutation` |
+| `loadall` | `loadall <target> <selector> [interval-ms] [--timeout-ms N]` | `protected-mutation / mutation` |
 | `wait` | `wait <target> <ms>` | `read / standard` |
 | `fill` | `fill <target> <sel\|@ref> <txt> [--format json]` | `mutation / mutation` |
 | `select` | `select <target> <selector> <val> [--format json]` | `mutation / mutation` |
@@ -593,7 +593,7 @@ scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel co
 scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
 scripts/cdp.mjs press   <target> <key> [--format json] # press key (alias: key; Enter/Escape/Tab auto-return perceive diff)
 scripts/cdp.mjs scroll  <target> <dir|x,y> [px] [--format json] # scroll page (auto-returns perceive diff)
-scripts/cdp.mjs loadall <target> <selector> [ms]  # click "load more" until gone (default 1500ms between clicks)
+scripts/cdp.mjs loadall <target> <selector> [interval-ms] [--timeout-ms N]  # click "load more" until gone (interval default 1500ms, timeout default 30000ms)
 scripts/cdp.mjs hover   <target> <sel|@ref>          # hover element (triggers :hover, tooltips)
 scripts/cdp.mjs waitfor <target> <selector> [ms]      # wait for CSS selector to appear (max 5min)
 scripts/cdp.mjs waitfor <target> --gone <sel|@ref> [ms]  # wait for element to DISAPPEAR (streaming end)

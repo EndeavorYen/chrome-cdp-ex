@@ -99,6 +99,19 @@ export function connectToDaemon(endpoint, {
   });
 }
 
+function parseLoadAllTimeoutMilliseconds(args = []) {
+  for (let i = 0; i < args.length; i++) {
+    const token = String(args[i] || '');
+    let raw = null;
+    if (token === '--timeout-ms') raw = args[i + 1];
+    else if (token.startsWith('--timeout-ms=')) raw = token.slice('--timeout-ms='.length);
+    if (raw == null) continue;
+    const milliseconds = Number(raw);
+    if (Number.isSafeInteger(milliseconds) && milliseconds >= 1) return milliseconds;
+  }
+  return 30_000;
+}
+
 function parseWaitMilliseconds(value) {
   const raw = String(value ?? '').trim();
   if (!/^\d+$/.test(raw)) return null;
@@ -116,6 +129,10 @@ export function ipcTimeoutForRequest(request) {
     return Math.min(Math.max(100, Math.trunc(request.timeoutMs)), timeoutCeiling);
   }
   if (tableCollect) return TABLE_COLLECTION_IPC_TIMEOUT;
+  if (request?.cmd === 'loadall') {
+    const loadallMs = parseLoadAllTimeoutMilliseconds(request.args || []);
+    return Math.max(IPC_TIMEOUT, Math.min(loadallMs + 5000, 5 * 60 * 1000 + 5000));
+  }
   if (request?.cmd !== 'wait') return IPC_TIMEOUT;
   const waitMs = parseWaitMilliseconds(request.args?.[0]);
   return waitMs == null ? IPC_TIMEOUT : Math.max(IPC_TIMEOUT, waitMs + 5000);

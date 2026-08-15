@@ -37,6 +37,14 @@ describe('action recovery lib', () => {
       kind: 'wrong-frame',
       nextCommand: 'cdp perceive ABC123 -C -d 8',
     });
+
+    expect(classifyActionFailure(
+      new Error('Click on <A href="https://www.iana.org/help/example-domains"> did not navigate. Try jsclick or click --js.'),
+      { action: 'click', target: { targetId: '1D366978', input: 'a' } },
+    )).toMatchObject({
+      kind: 'no-navigation',
+      nextCommand: 'cdp jsclick 1D366978 a',
+    });
   });
 
   it('builds recovery policies for runtime and network diagnostics', () => {
