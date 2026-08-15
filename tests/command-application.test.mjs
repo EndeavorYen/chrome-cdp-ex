@@ -1173,6 +1173,15 @@ describe('Phase 4 daemon dispatch seam', () => {
       send: async (method, params, sessionId) => {
         calls.push({ method, params, sessionId });
         if (method === 'Runtime.evaluate') {
+          if (String(params.expression || '').includes('__chromeCdpExClickProbe')) {
+            return {
+              result: {
+                value: String(params.expression).includes('installed: true')
+                  ? { cdpClickProbe: true, ok: true, installed: true }
+                  : { cdpClickProbe: true, ok: true, seen: ['click'] },
+              },
+            };
+          }
           loadProbe += 1;
           return {
             result: {
@@ -1188,7 +1197,10 @@ describe('Phase 4 daemon dispatch seam', () => {
 
     await expect(cdpTest.loadAllStr(cdp, 'session-1', '#load-more', 0))
       .resolves.toBe('Clicked "#load-more" 2 time(s) until it disappeared');
-    expect(calls.filter(call => call.method === 'Runtime.evaluate')).toHaveLength(3);
+    expect(calls.filter(call => (
+      call.method === 'Runtime.evaluate'
+      && !String(call.params.expression || '').includes('__chromeCdpExClickProbe')
+    ))).toHaveLength(3);
     expect(calls.filter(call => call.method === 'Input.dispatchMouseEvent')).toHaveLength(6);
     expect(calls.filter(call => call.method === 'Input.dispatchMouseEvent').map(call => call.params.type))
       .toEqual(['mouseMoved', 'mousePressed', 'mouseReleased', 'mouseMoved', 'mousePressed', 'mouseReleased']);

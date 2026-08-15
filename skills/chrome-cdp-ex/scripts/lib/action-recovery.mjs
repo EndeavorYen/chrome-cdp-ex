@@ -161,6 +161,23 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     };
   }
 
+  if (
+    lower.includes('received no mousedown/click events')
+    || (lower.includes('mouse path failed closed') && lower.includes('jsclick'))
+  ) {
+    const jsClick = input ? `cdp jsclick ${targetId} ${input}` : 'cdp help click';
+    return {
+      ...base,
+      kind: 'no-input-events',
+      reason: 'The realistic mouse click completed without delivering page mouse or click events.',
+      nextCommand: jsClick,
+      hints: [
+        `Retry with \`${jsClick}\` or \`cdp click ${targetId} ${input || '<selector>'} --js\`.`,
+        'Do not treat dispatch.ok as success when the live handler or form control did not change.',
+      ],
+    };
+  }
+
   if (isTimeoutError(err) || lower.includes('timed out') || lower.includes('timeout')) {
     return {
       ...base,
@@ -666,6 +683,16 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
       { key: 'perceive', reason: 'Refresh refs after the overlay changes.' },
     ],
     avoid: ['retrying the same click before clearing or re-checking the overlay'],
+  },
+  'no-input-events': {
+    strategy: 'use-jsclick',
+    priority: 'high',
+    verify: 'since-action',
+    intents: [
+      { key: 'next-or-perceive', reason: 'Retry with jsclick so the page handler actually runs.' },
+      { key: 'since-action', reason: 'Confirm the live handler or form control changed.' },
+    ],
+    avoid: ['treating mouse dispatch.ok as a successful click when the page received no events'],
   },
   'wrong-frame': {
     strategy: 'refresh-frame-context',

@@ -5515,10 +5515,39 @@ describe('buildPerceiveTree', () => {
 
 function createMockCDP(handlers = {}) {
   const calls = [];
+  const clickProbe = { seen: [] };
+  function recordClickProbeMouse(method, params, timeout, result) {
+    return Promise.resolve(result).then((value) => {
+      if (method !== 'Input.dispatchMouseEvent') return value;
+      const pressOrRelease = params.type === 'mousePressed' || params.type === 'mouseReleased';
+      const ackBudget = Number(timeout);
+      const compositorAckTooShort = pressOrRelease
+        && Number.isFinite(ackBudget)
+        && ackBudget < T.CLICK_MOUSE_ACK_TIMEOUT_MS;
+      if (!compositorAckTooShort && params.type === 'mouseReleased') {
+        clickProbe.seen.push('mousedown', 'mouseup', 'click');
+      }
+      return value;
+    });
+  }
   return {
     calls,
     send(method, params = {}, sessionId, timeout) {
       calls.push({ method, params, sessionId, timeout });
+      const probeSource = method === 'Runtime.evaluate'
+        ? String(params.expression || '')
+        : method === 'Runtime.callFunctionOn'
+          ? String(params.functionDeclaration || '')
+          : '';
+      if (probeSource.includes('__chromeCdpExClickProbe')) {
+        if (probeSource.includes('installed: true')) {
+          clickProbe.seen = [];
+          return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, installed: true, scope: 'target-document' } } });
+        }
+        const seen = clickProbe.seen.slice();
+        clickProbe.seen = [];
+        return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen } } });
+      }
       const trustedPresenceCall = method === 'Runtime.callFunctionOn'
         && params.functionDeclaration?.includes('ownerDocumentGetter')
         && params.functionDeclaration.includes('getClientRects');
@@ -5537,14 +5566,14 @@ function createMockCDP(handlers = {}) {
           ? handler(params, sessionId)
           : { result: { value: { connected: true } } });
       }
-      if (handlers[method]) return Promise.resolve(handlers[method](params, sessionId));
+      if (handlers[method]) return recordClickProbeMouse(method, params, timeout, handlers[method](params, sessionId));
       if (method === 'Page.getFrameTree') {
         return Promise.resolve({ frameTree: { frame: { id: 'mock-root-frame' } } });
       }
       if (method === 'Page.createIsolatedWorld') {
         return Promise.resolve({ executionContextId: 901 });
       }
-      return Promise.resolve({});
+      return recordClickProbeMouse(method, params, timeout, {});
     },
     onEvent() { return () => {}; },
     waitForEvent(method, _timeout) {
@@ -6650,7 +6679,8 @@ describe('checkpoint / restore', () => {
 
     expect(out).toContain('Restored checkpoint');
     expect(out).toContain('cookies: 1');
-    expect(cdp.calls.some(c => c.method === 'Network.setCookie' && c.params.name === 'sid' && c.params.url === 'https://example.com/app')).toBe(true);
+    expect(cdp.calls.some(c => c.method === 'Network.setCookie' && c.params.name === 'sid' && c.params.value === 'abc' && c.params.url === 'https://example.com/app')).toBe(true);
+    expect(cdp.calls.some(c => c.method === 'Network.setCookie' && c.params.value === '<redacted>')).toBe(false);
     expect(cdp.calls.some(c => c.method === 'Page.navigate' && c.params.url === 'https://example.com/app')).toBe(true);
     const storageCall = cdp.calls.find(c => c.method === 'Runtime.evaluate' && c.params.expression.includes('localStorage.setItem'));
     expect(storageCall.params.expression).toContain('"theme"');
@@ -6698,6 +6728,75 @@ describe('checkpoint / restore', () => {
     expect(out).toContain('already at checkpoint URL');
     expect(cdp.calls.some(c => c.method === 'Page.navigate')).toBe(false);
     expect(cdp.calls.some(c => c.method === 'Runtime.evaluate' && c.params.expression.includes('localStorage.setItem'))).toBe(true);
+  });
+
+  it('restores unsafe-full cookie values instead of the <redacted> sentinel', async () => {
+    const setCookies = [];
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        if (params.expression === 'location.href') {
+          return { result: { value: 'https://example.com/#p17mut2' } };
+        }
+        return { result: { value: 'restored' } };
+      },
+      'Network.setCookie': (params) => {
+        setCookies.push(params);
+        return { success: true };
+      },
+      'Page.navigate': () => ({ loaderId: 'loader-1' }),
+      'event:Page.loadEventFired': () => ({}),
+    });
+    const checkpoint = {
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      privacy: { redaction: 'unsafe-full', cookies: false, storage: false },
+      page: { url: 'https://example.com/', title: 'Example', origin: 'https://example.com' },
+      storage: { localStorage: {}, sessionStorage: {} },
+      cookies: [{ name: 'picky17full', value: 'orig', domain: 'example.com', path: '/' }],
+    };
+
+    const out = await T.restoreCheckpointStr(cdp, 'sid-1', ['--json', JSON.stringify(checkpoint)]);
+
+    expect(out).toContain('cookies: 1');
+    expect(setCookies).toEqual([
+      expect.objectContaining({
+        name: 'picky17full',
+        value: 'orig',
+        url: 'https://example.com/',
+      }),
+    ]);
+    expect(setCookies[0].value).not.toBe('<redacted>');
+    expect(T.sanitizeCheckpointCookies(checkpoint.cookies)[0].value).toBe('<redacted>');
+  });
+
+  it('does not plant the <redacted> sentinel when restoring a default checkpoint', async () => {
+    const setCookies = [];
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({ result: { value: 'https://example.com/' } }),
+      'Network.setCookie': (params) => {
+        setCookies.push(params);
+        return { success: true };
+      },
+      'Page.navigate': () => ({ loaderId: 'loader-1' }),
+      'event:Page.loadEventFired': () => ({}),
+    });
+    const checkpoint = {
+      schema: 'chrome-cdp-ex.checkpoint.v1',
+      privacy: { redaction: 'default-redacted', cookies: true, storage: true },
+      page: { url: 'https://example.com/', title: 'Example', origin: 'https://example.com' },
+      storage: { localStorage: {}, sessionStorage: {} },
+      cookies: [{
+        name: 'picky17full',
+        value: '<redacted>',
+        domain: 'example.com',
+        path: '/',
+        redacted: ['value'],
+      }],
+    };
+
+    const out = await T.restoreCheckpointStr(cdp, 'sid-1', ['--json', JSON.stringify(checkpoint)]);
+
+    expect(out).toContain('cookies: 0');
+    expect(setCookies).toEqual([]);
   });
 });
 
@@ -9948,14 +10047,38 @@ describe('recordStr', () => {
         return () => listeners.get(method)?.delete(cb);
       },
       emit(method, params) { for (const cb of listeners.get(method) || []) cb(params); },
-      send(method, params = {}, sessionId) {
-        calls.push({ method, params, sessionId });
+      send(method, params = {}, sessionId, timeout) {
+        calls.push({ method, params, sessionId, timeout });
+        const probeSource = method === 'Runtime.evaluate'
+          ? String(params.expression || '')
+          : method === 'Runtime.callFunctionOn'
+            ? String(params.functionDeclaration || '')
+            : '';
+        if (probeSource.includes('__chromeCdpExClickProbe')) {
+          if (probeSource.includes('installed: true')) {
+            cdp._clickProbeSeen = [];
+            return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, installed: true, scope: 'target-document' } } });
+          }
+          const seen = Array.isArray(cdp._clickProbeSeen) ? cdp._clickProbeSeen.slice() : ['click'];
+          cdp._clickProbeSeen = [];
+          return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen } } });
+        }
         if (method === 'Runtime.callFunctionOn'
           && params.functionDeclaration?.includes('ownerDocumentGetter')
           && !params.functionDeclaration.includes('requestAnimationFrame')) {
           return Promise.resolve({ result: { value: { connected: true } } });
         }
-        if (extraHandlers[method]) return Promise.resolve(extraHandlers[method](params, sessionId, cdp));
+        if (extraHandlers[method]) {
+          return Promise.resolve(extraHandlers[method](params, sessionId, cdp)).then((value) => {
+            if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased') {
+              cdp._clickProbeSeen = ['mousedown', 'click'];
+            }
+            return value;
+          });
+        }
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased') {
+          cdp._clickProbeSeen = ['mousedown', 'click'];
+        }
         if (method === 'Page.getFrameTree') return Promise.resolve({ frameTree: { frame: { id: 'mock-root-frame' } } });
         if (method === 'Page.createIsolatedWorld') return Promise.resolve({ executionContextId: 901 });
         if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: JSON.stringify({ totals: {}, labels: [], count: 0 }) } });

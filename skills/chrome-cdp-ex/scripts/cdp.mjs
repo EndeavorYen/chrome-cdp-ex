@@ -145,6 +145,8 @@ const RELOAD_OBSERVE_TIMEOUT = 2000;
 const STATUS_PAGE_INFO_TIMEOUT = 500;
 const REF_RESOLVE_TIMEOUT = 2000;
 const HOVER_MOUSE_ACK_TIMEOUT_MS = 250;
+const CLICK_MOUSE_ACK_TIMEOUT_MS = 6000;
+const CLICK_EVENT_PROBE_KEY = '__chromeCdpExClickProbe';
 const LOADALL_DEFAULT_INTERVAL_MS = 1500;
 const LOADALL_DEFAULT_TIMEOUT_MS = 30_000;
 const LOADALL_MAX_TIMEOUT_MS = 5 * 60 * 1000;
@@ -10951,16 +10953,259 @@ async function dispatchMouseEventAllowingAckTimeout(cdp, sid, params) {
   }
 }
 
+async function dispatchClickMouseEvent(cdp, sid, params) {
+  try {
+    await cdpDomains(cdp).Input.dispatchMouseEvent(params, sid, CLICK_MOUSE_ACK_TIMEOUT_MS);
+  } catch (error) {
+    // Press/release may sit behind Chrome 151's ~5s hit-test/compositor stall.
+    // Swallow only that timeout so overlapping events can still inject; the
+    // page-side probe below fail-closes if nothing actually reached the DOM.
+    if (!isTimeoutError(error, ['Input.dispatchMouseEvent'])) throw error;
+  }
+}
+
+function clickEventProbeInstallOnViewSource() {
+  return `function installOnView(view, scope) {
+    const key = ${JSON.stringify(CLICK_EVENT_PROBE_KEY)};
+    const types = ['pointerdown', 'mousedown', 'mouseup', 'pointerup', 'click'];
+    if (!view || typeof view.addEventListener !== 'function') {
+      return { cdpClickProbe: true, ok: false, installed: false };
+    }
+    const existing = view[key];
+    if (existing && existing.handler) {
+      for (const type of existing.types || types) {
+        view.removeEventListener(type, existing.handler, true);
+      }
+    }
+    const seen = [];
+    const handler = function(event) { seen.push(event.type); };
+    for (const type of types) view.addEventListener(type, handler, true);
+    view[key] = { types: types, handler: handler, seen: seen };
+    return { cdpClickProbe: true, ok: true, installed: true, scope: scope || 'target-document' };
+  }`;
+}
+
+function clickEventProbeReadOnViewSource() {
+  return `function readOnView(view) {
+    const key = ${JSON.stringify(CLICK_EVENT_PROBE_KEY)};
+    if (!view) return { cdpClickProbe: true, ok: false };
+    const probe = view[key];
+    if (!probe) return { cdpClickProbe: true, ok: false };
+    const types = probe.types || ['pointerdown', 'mousedown', 'mouseup', 'pointerup', 'click'];
+    if (probe.handler) {
+      for (const type of types) view.removeEventListener(type, probe.handler, true);
+    }
+    const seen = Array.isArray(probe.seen) ? probe.seen.slice() : [];
+    try { delete view[key]; } catch (err) { view[key] = undefined; }
+    return { cdpClickProbe: true, ok: true, seen: seen };
+  }`;
+}
+
+function clickEventProbeInstallOnNodeDeclaration() {
+  return `function() {
+    ${clickEventProbeInstallOnViewSource()}
+    const view = this && this.ownerDocument && this.ownerDocument.defaultView;
+    return installOnView(view, 'target-document');
+  }`;
+}
+
+function clickEventProbeReadOnNodeDeclaration() {
+  return `function() {
+    ${clickEventProbeReadOnViewSource()}
+    const view = this && this.ownerDocument && this.ownerDocument.defaultView;
+    return readOnView(view);
+  }`;
+}
+
+function clickEventProbeInstallAtPointScript(x, y) {
+  return `(function() {
+    ${clickEventProbeInstallOnViewSource()}
+    const px0 = ${JSON.stringify(Number(x))};
+    const py0 = ${JSON.stringify(Number(y))};
+    let doc = document;
+    let view = window;
+    let px = px0;
+    let py = py0;
+    let opaqueFrame = false;
+    for (let depth = 0; depth < 8; depth++) {
+      const hit = doc.elementFromPoint ? doc.elementFromPoint(px, py) : null;
+      if (!hit) break;
+      const tag = String(hit.tagName || '').toUpperCase();
+      if (tag !== 'IFRAME' && tag !== 'FRAME') {
+        view = (hit.ownerDocument && hit.ownerDocument.defaultView) || view;
+        break;
+      }
+      const nested = hit.contentDocument;
+      if (!nested) {
+        opaqueFrame = true;
+        view = hit.contentWindow || view;
+        break;
+      }
+      const rect = hit.getBoundingClientRect();
+      px -= rect.left;
+      py -= rect.top;
+      doc = nested;
+      view = hit.contentWindow || view;
+    }
+    if (opaqueFrame) return { cdpClickProbe: true, ok: true, installed: true, opaqueFrame: true, scope: 'opaque-frame' };
+    const scope = (view && view !== window) ? 'target-document' : 'top';
+    return installOnView(view || window, scope);
+  })()`;
+}
+
+function clickEventProbeReadAtPointScript(x, y) {
+  return `(function() {
+    ${clickEventProbeReadOnViewSource()}
+    const key = ${JSON.stringify(CLICK_EVENT_PROBE_KEY)};
+    const px0 = ${JSON.stringify(Number(x))};
+    const py0 = ${JSON.stringify(Number(y))};
+    let doc = document;
+    let view = window;
+    let px = px0;
+    let py = py0;
+    for (let depth = 0; depth < 8; depth++) {
+      if (view && view[key]) return readOnView(view);
+      const hit = doc.elementFromPoint ? doc.elementFromPoint(px, py) : null;
+      if (!hit) break;
+      const tag = String(hit.tagName || '').toUpperCase();
+      if (tag !== 'IFRAME' && tag !== 'FRAME') {
+        view = (hit.ownerDocument && hit.ownerDocument.defaultView) || view;
+        break;
+      }
+      const nested = hit.contentDocument;
+      if (!nested) {
+        view = hit.contentWindow || view;
+        break;
+      }
+      const rect = hit.getBoundingClientRect();
+      px -= rect.left;
+      py -= rect.top;
+      doc = nested;
+      view = hit.contentWindow || view;
+    }
+    if (view && view[key]) return readOnView(view);
+    if (window[key]) return readOnView(window);
+    return { cdpClickProbe: true, ok: false };
+  })()`;
+}
+
+function parseClickEventProbeOutput(raw) {
+  if (raw && typeof raw === 'object' && raw.cdpClickProbe === true) return raw;
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || parsed.cdpClickProbe !== true) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function clickProbeSawPageEvent(seen) {
+  if (!Array.isArray(seen) || seen.length === 0) return false;
+  return seen.some(type => (
+    type === 'mousedown'
+    || type === 'pointerdown'
+    || type === 'mouseup'
+    || type === 'pointerup'
+    || type === 'click'
+  ));
+}
+
+function clickNoPageEventsError(x, y, selector = '') {
+  const target = selector ? ` for ${selector}` : '';
+  return new Error(
+    `click: Input.dispatchMouseEvent completed but the page received no mousedown/click events at (${x}, ${y})${target}. The mouse path failed closed. Try jsclick or click --js.`
+  );
+}
+
+async function installClickEventProbe(cdp, sid, { objectId = null, x = 0, y = 0 } = {}) {
+  try {
+    if (objectId) {
+      const res = await cdpDomains(cdp).Runtime.callFunctionOn({
+        objectId,
+        functionDeclaration: clickEventProbeInstallOnNodeDeclaration(),
+        returnByValue: true,
+      }, sid);
+      if (res.exceptionDetails) return { installed: false };
+      const parsed = parseClickEventProbeOutput(res.result?.value);
+      return {
+        installed: Boolean(parsed?.ok && parsed?.installed),
+        scope: parsed?.scope || 'target-document',
+        opaqueFrame: parsed?.opaqueFrame === true,
+        objectId,
+        x,
+        y,
+      };
+    }
+    const raw = await evalStr(cdp, sid, clickEventProbeInstallAtPointScript(x, y));
+    const parsed = parseClickEventProbeOutput(raw);
+    return {
+      installed: Boolean(parsed?.ok && parsed?.installed),
+      scope: parsed?.scope || 'top',
+      opaqueFrame: parsed?.opaqueFrame === true,
+      objectId: null,
+      x,
+      y,
+    };
+  } catch {
+    return { installed: false, scope: 'top', opaqueFrame: false, objectId, x, y };
+  }
+}
+
+async function readClickEventProbe(cdp, sid, probe = {}) {
+  try {
+    if (probe.objectId) {
+      const res = await cdpDomains(cdp).Runtime.callFunctionOn({
+        objectId: probe.objectId,
+        functionDeclaration: clickEventProbeReadOnNodeDeclaration(),
+        returnByValue: true,
+      }, sid);
+      if (res.exceptionDetails) return null;
+      return parseClickEventProbeOutput(res.result?.value);
+    }
+    const raw = await evalStr(cdp, sid, clickEventProbeReadAtPointScript(probe.x, probe.y));
+    return parseClickEventProbeOutput(raw);
+  } catch {
+    return null;
+  }
+}
+
 // Shared: dispatch a realistic mouse click at CSS pixel coordinates.
 // Chrome's default action for <a href> requires the buttons bitmask
 // (left=1 while pressed, 0 after release). Omitting it yields mousedown
 // without a click, so the link never navigates.
-async function dispatchClick(cdp, sid, x, y) {
+//
+// Chrome 151's Input.dispatchMouseEvent waits for an async widget hit-test
+// before injecting. Serializing on that ack with a 250ms swallow left
+// press/release uninjected (dispatch.ok, zero page events). Overlap the
+// CDP commands, wait long enough for the ~5s stall, then fail closed unless a
+// capture-phase probe on the target document saw mouse/click events. A missing
+// probe is fail-closed for top-level clicks; framed targets must probe the
+// iframe document instead of treating a top-level empty `seen` as proof.
+async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
+  const probe = await installClickEventProbe(cdp, sid, {
+    objectId: probeTarget.objectId || null,
+    x,
+    y,
+  });
   const point = { x, y, modifiers: 0, pointerType: 'mouse', clickCount: 1 };
-  await dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseMoved', button: 'none', buttons: 0 });
-  await dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mousePressed', button: 'left', buttons: 1 });
+  const moved = dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseMoved', button: 'none', buttons: 0 });
+  const pressed = dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mousePressed', button: 'left', buttons: 1 });
   await sleep(50);
-  await dispatchMouseEventAllowingAckTimeout(cdp, sid, { ...point, type: 'mouseReleased', button: 'left', buttons: 0 });
+  const released = dispatchClickMouseEvent(cdp, sid, { ...point, type: 'mouseReleased', button: 'left', buttons: 0 });
+  await Promise.all([moved, pressed, released]);
+  const framed = probeTarget.framed === true;
+  if (probe.opaqueFrame && framed) return;
+  if (!probe.installed) {
+    if (framed) return;
+    throw clickNoPageEventsError(x, y, probeTarget.selector);
+  }
+  if (probe.scope === 'top' && framed) return;
+  const readout = await readClickEventProbe(cdp, sid, probe);
+  if (readout?.ok && clickProbeSawPageEvent(readout.seen)) return;
+  throw clickNoPageEventsError(x, y, probeTarget.selector);
 }
 
 function isNavigatingHref(href, pageHref = '') {
@@ -11077,13 +11322,23 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
   if (!selector) throw new Error('CSS selector or @ref required');
   if (isCursorRef(selector)) {
     const r = resolveCursorRef(refMap, selector, refState);
-    await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2);
+    await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2, { selector, x: r.x + r.w / 2, y: r.y + r.h / 2 });
     await confirmClickFollowedHref(cdp, sid, r);
     return `Clicked <${r.sel}> "${r.text}" (${selector})`;
   }
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState);
-    await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2);
+    let objectId = null;
+    try {
+      objectId = await resolveRefNode(cdp, sid, refMap, selector, refState, { returnRealm: 'page' });
+    } catch {
+      objectId = null;
+    }
+    await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2, {
+      selector,
+      objectId,
+      framed: Boolean(parseFrameRef(selector)),
+    });
     await confirmClickFollowedHref(cdp, sid, r);
     return `Clicked <${r.tag}> "${r.text}" (${selector})`;
   }
@@ -11111,7 +11366,7 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
   const result = await evalStr(cdp, sid, expr);
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(r.error);
-  await dispatchClick(cdp, sid, r.x, r.y);
+  await dispatchClick(cdp, sid, r.x, r.y, { selector, x: r.x, y: r.y });
   await confirmClickFollowedHref(cdp, sid, r);
   return `Clicked <${r.tag}> "${r.text}"`;
 }
@@ -11121,7 +11376,7 @@ async function clickXyStr(cdp, sid, x, y) {
   const cx = parseFloat(x);
   const cy = parseFloat(y);
   if (isNaN(cx) || isNaN(cy)) throw new Error('x and y must be numbers (CSS pixels)');
-  await dispatchClick(cdp, sid, cx, cy);
+  await dispatchClick(cdp, sid, cx, cy, { x: cx, y: cy });
   return `Clicked at CSS (${cx}, ${cy})`;
 }
 
@@ -12709,6 +12964,19 @@ function checkpointCookieToSetCookieParams(cookie, url) {
   return params;
 }
 
+function isRestorableCheckpointCookie(cookie) {
+  if (!cookie || typeof cookie !== 'object') return false;
+  if (!cookie.name) return false;
+  if (cookie.value === undefined || cookie.value === null) return false;
+  if (cookie.value === REDACTED_VALUE) return false;
+  if (Array.isArray(cookie.redacted) && cookie.redacted.includes('value')) return false;
+  return true;
+}
+
+function cookiesForRestore(cookies = []) {
+  return cookies.filter(isRestorableCheckpointCookie);
+}
+
 function restoreStorageScript(storage = {}) {
   const local = storage.localStorage || {};
   const session = storage.sessionStorage || {};
@@ -12751,7 +13019,7 @@ async function navigateForRestore(cdp, sid, url) {
 async function restoreCheckpointStr(cdp, sid, args) {
   const { artifact } = parseRestoreArgs(args);
   const url = artifact.page.url;
-  const cookies = sanitizeCheckpointCookies(artifact.cookies || []);
+  const cookies = cookiesForRestore(artifact.cookies || []);
   let cookieSet = 0;
   for (const cookie of cookies) {
     const result = await cdpDomains(cdp).Network.setCookie( checkpointCookieToSetCookieParams(cookie, url), sid);
@@ -12840,7 +13108,7 @@ async function loadAllStr(cdp, sid, selector, intervalMs = LOADALL_DEFAULT_INTER
     }
     seen = true;
     const r = JSON.parse(result);
-    await dispatchClick(cdp, sid, r.x, r.y);
+    await dispatchClick(cdp, sid, r.x, r.y, { selector, x: r.x, y: r.y });
     clicks++;
     throwIfRequestAborted('loadall: aborted');
     const remaining = deadline - Date.now();
@@ -20860,7 +21128,22 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
   }
 }
 
-function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform = process.platform, err = null } = {}) {
+function jsclickSelectorFromCliError(message, { cmd = '', args = [], err = null } = {}) {
+  const fromTarget = String(err?.target?.input || err?.clickSelector || '').trim();
+  if (fromTarget && !/^\d+(?:\.\d+)?\s*,\s*\d+/.test(fromTarget)) return fromTarget;
+  const fromMessage = String(message || '').match(
+    /no mousedown\/click events at \([^)]*\)(?: for (.+?))?\. The mouse path/i
+  );
+  if (fromMessage?.[1]) return fromMessage[1];
+  const cmdName = String(cmd || '').toLowerCase();
+  const first = args?.[0];
+  if ((cmdName === 'click' || cmdName === 'jsclick') && first && !/^\d+(\.\d+)?$/.test(String(first))) {
+    return String(first);
+  }
+  return '';
+}
+
+function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform = process.platform, err = null, args = [] } = {}) {
   const lower = String(message || '').toLowerCase();
   const target = targetPrefix || '<target>';
   if (lower.includes('emfile') || lower.includes('too many open files')) {
@@ -21287,6 +21570,20 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       reason: 'No current element matched the selector. A missing load-more control is not a successful disappear.',
     };
   }
+  if (
+    lower.includes('received no mousedown/click events')
+    || (lower.includes('mouse path failed closed') && lower.includes('jsclick'))
+  ) {
+    const selector = jsclickSelectorFromCliError(message, { cmd, args, err });
+    return {
+      kind: 'no-input-events',
+      strategy: 'use-jsclick',
+      run: (targetPrefix && selector)
+        ? `cdp jsclick ${targetPrefix} ${selector}`
+        : 'cdp help click',
+      reason: 'The realistic mouse click did not deliver page events. Retry with jsclick instead of treating dispatch.ok as success.',
+    };
+  }
   if (lower.includes('did not navigate') || (lower.includes('try jsclick') && lower.includes('<a href'))) {
     return {
       kind: 'no-navigation',
@@ -21326,7 +21623,7 @@ function cliErrorMessage(err) {
   return String(err?.message || err || '').trim() || 'unknown failure';
 }
 
-function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = process.platform } = {}) {
+function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = process.platform, args = [] } = {}) {
   const completionUnknown = err?.code === 'DAEMON_COMPLETION_UNKNOWN'
     && err?.completion === 'unknown'
     && err?.sideEffectMayHaveOccurred === true;
@@ -21341,7 +21638,7 @@ function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = proce
         run: `cdp perceive ${target} -C -d 8`,
         reason: 'The action may have occurred. Inspect current page state first; do not repeat the action until its effect is verified.',
       }
-    : buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err });
+      : buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err, args });
   const nextSteps = [];
   const commandSteps = Array.isArray(recovery.commands) && recovery.commands.length
     ? recovery.commands.map(command => command?.command).filter(Boolean)
@@ -21383,10 +21680,10 @@ function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = proce
   return model;
 }
 
-function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', platform = process.platform } = {}) {
-  if (format === 'json') return formatJson(buildCliErrorModel(err, { cmd, targetPrefix, platform }));
+function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', platform = process.platform, args = [] } = {}) {
+  if (format === 'json') return formatJson(buildCliErrorModel(err, { cmd, targetPrefix, platform, args }));
   if (err?.code === 'DAEMON_COMPLETION_UNKNOWN') {
-    const model = buildCliErrorModel(err, { cmd, targetPrefix, platform });
+    const model = buildCliErrorModel(err, { cmd, targetPrefix, platform, args });
     return [
       `Error: ${model.error.message}`,
       'Completion: unknown',
@@ -21399,14 +21696,14 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
   }
   const message = String(err?.message || err || '').trim();
   if (!message) {
-    const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix, platform });
+    const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix, platform, args });
     return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), `Next: ${recovery.run}`].join('\n');
   }
   if (message.startsWith('Action failure:')) return message;
   const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
   if (/^Next:/m.test(message)) return lines.join('\n');
 
-  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err });
+  const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err, args });
   lines.push(...formatCliErrorRecovery(recovery));
   lines.push(`Next: ${recovery.run}`);
   return lines.join('\n');
@@ -22551,7 +22848,7 @@ async function main(options = {}) {
   try {
     response = await runtimeSupervisor.execute(runtimeHandle, { cmd, args: cmdArgs });
   } catch (error) {
-    console.error(formatCliError(error, { cmd, targetPrefix: targetPrefixForDisplay(targetId), format: cliErrorFormat }));
+    console.error(formatCliError(error, { cmd, targetPrefix: targetPrefixForDisplay(targetId), format: cliErrorFormat, args: cmdArgs }));
     return finish(1);
   }
   targetResolution = completeTargetResolution(targetResolution, {
@@ -22682,11 +22979,13 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   diffShotScreenshotCaptureOptions,
   FULLSHOT_TIMEOUT_MS, screenshotCaptureUsesSessionTier, fullshotFitsViewport, fullshotStr,
   VERIFY_CLICK_SETTLE_MS, VERIFY_CLICK_REQUEST_WAIT_MS,
-  HOVER_MOUSE_ACK_TIMEOUT_MS,
+  HOVER_MOUSE_ACK_TIMEOUT_MS, CLICK_MOUSE_ACK_TIMEOUT_MS,
   LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
   CLICK_NAVIGATION_WAIT_MS, CLICK_HREF_PROBE_TIMEOUT_MS,
   daemonRequestStorage, sleep,
-  dispatchClick, dispatchMouseEventAllowingAckTimeout, isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,
+  dispatchClick, dispatchMouseEventAllowingAckTimeout, dispatchClickMouseEvent,
+  parseClickEventProbeOutput, clickProbeSawPageEvent,
+  isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,
   shouldSkipActionDomSettle, formatActionNavigationDiff, actionNavigationEvidence,
   actionFailurePage,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
@@ -22700,7 +22999,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseDiffShotArgs, diffShotCompareScript, formatDiffShotResult, diffShotStr,
   checkpointPageScript, sanitizeCheckpointCookies, sanitizeCheckpointStorage, parseCheckpointArgs, checkpointModel, checkpointStr,
   parseCheckpointArtifact, parseRestoreArgs, redactRestoreCommandArgs, redactExternalInputActionError, redactRestoreActionError,
-  checkpointCookieToSetCookieParams, restoreStorageScript, restoreCheckpointStr,
+  checkpointCookieToSetCookieParams, isRestorableCheckpointCookie, cookiesForRestore,
+  restoreStorageScript, restoreCheckpointStr,
   // Command implementations
   getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr, filterNetlogEntries,
   javascriptDialogHandleParams, createJavaScriptDialogSession, handleOpeningJavaScriptDialog,
@@ -22714,7 +23014,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,
