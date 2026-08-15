@@ -4597,6 +4597,28 @@ function noBaselineActionDiffText() {
   return 'No changes detected.';
 }
 
+function isPdfViewerPerceiveOutput(output) {
+  return String(output || '').includes('chrome-cdp-ex.pdf-viewer.v1');
+}
+
+function pdfViewerSettleDiffText() {
+  return 'No changes detected (settle shape was pdf-viewer.v1; empty AX).';
+}
+
+function rememberPdfViewerPerceive(lastPerceiveStore, opts, output) {
+  lastPerceiveStore.output = output;
+  lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts({ ...opts, cards: false });
+}
+
+function pdfViewerPerceiveResult(lastPerceiveStore, opts, output) {
+  rememberPdfViewerPerceive(lastPerceiveStore, opts, output);
+  if (!opts.sinceAction) return output;
+  if (!opts.diffBaseline || isPdfViewerPerceiveOutput(opts.diffBaseline)) {
+    return pdfViewerSettleDiffText();
+  }
+  return formatPerceiveDiffOutput(opts.diffBaseline, output, { mode: 'since-action' });
+}
+
 function isCardsPerceiveOutput(output) {
   return String(output || '').includes(CARDS_SCHEMA);
 }
@@ -4613,6 +4635,10 @@ function isFramedPerceiveOutput(output) {
 function shouldCaptureTopLevelActionSettle(snapshotOpts = null, output = null, actionTarget = {}) {
   // Frame-scoped settle is only for actions that targeted @fN / @fN:M.
   if (frameRefFromActionTarget(actionTarget)) return false;
+  // Leftover pdf-viewer.v1 is an empty-AX plugin stub, not a tree. Recapturing
+  // it would re-poison settle with the same stub (#282). Do not treat it as
+  // leftover cards/frames, which recapture a real AX baseline (#257/#279).
+  if (isPdfViewerPerceiveOutput(output)) return false;
   // Leftover --cards / --role feed dumps are a feed view, not an AX settle
   // shape. Discarding them (#257) without a before-snapshot made a mutating
   // click --js report no-change / "No visible AX tree change" while the
@@ -4624,6 +4650,13 @@ function shouldCaptureTopLevelActionSettle(snapshotOpts = null, output = null, a
 }
 
 function actionSettleBaseline(output, snapshotOpts = null, actionTarget = {}) {
+  // Leftover pdf-viewer.v1 is not an AX settle baseline. Reusing the empty
+  // stub after perceive makes no-op press (Escape / Arrow*) look like a page
+  // change (#282). Discard it and do not recapture — the next perceive is
+  // still the same stub.
+  if (isPdfViewerPerceiveOutput(output)) {
+    return { output: null, opts: snapshotOpts || null };
+  }
   // Compact --cards dumps are a feed view, not an AX settle baseline. Reusing
   // them after a 0-card page makes no-op press/type/clickxy look like a DOM
   // change (#257). Recapture default AX before the action (#279) instead of
@@ -4658,6 +4691,9 @@ function actionDomDiffShowsChange(domDiff) {
   if (/no action baseline available/i.test(text)) return false;
   if (/unchanged; still first cards/i.test(text)) return false;
   if (/\bunchanged\b/i.test(text) && /virtualized window/i.test(text)) return false;
+  // Empty-AX PDF plugin stubs are not an AX diff. Identical leftover
+  // pdf-viewer.v1 reprints are not evidence of a page change (#282).
+  if (isPdfViewerPerceiveOutput(text)) return false;
   return true;
 }
 
@@ -10635,9 +10671,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
       ));
       if (isPdfViewerContentType(probe.contentType)) {
         const output = formatPdfViewerOutput(probe, { targetPrefix: opts.targetPrefix });
-        lastPerceiveStore.output = output;
-        lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts({ ...opts, cards: false });
-        return output;
+        return pdfViewerPerceiveResult(lastPerceiveStore, opts, output);
       }
     } catch (error) {
       if (error?.code === 'pdf_viewer') throw error;
@@ -10670,9 +10704,7 @@ async function perceiveStr(cdp, sid, consoleBuf, exceptionBuf, refMap, lastPerce
 
   if (isPdfViewerContentType(meta.contentType)) {
     const output = formatPdfViewerOutput(meta, { targetPrefix: opts.targetPrefix });
-    lastPerceiveStore.output = output;
-    lastPerceiveStore.snapshotOpts = perceiveSnapshotOpts({ ...opts, cards: false });
-    return output;
+    return pdfViewerPerceiveResult(lastPerceiveStore, opts, output);
   }
 
   // Console health
@@ -18918,7 +18950,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     const targetFrameRef = frameRefFromActionTarget(target);
     await waitForSettle(cdp, sessionId);
     if (!baselineOutput) {
-      await perceiveStr(
+      const after = await perceiveStr(
         cdp,
         sessionId,
         consoleBuf,
@@ -18930,6 +18962,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         }),
         refState,
       );
+      if (isPdfViewerPerceiveOutput(after)) return pdfViewerSettleDiffText();
       return noBaselineActionDiffText();
     }
     const snapshot = actionSettleObserveOpts(targetId, target, baselineOutput, baselineOpts);
@@ -23296,6 +23329,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isPdfViewerContentType, formatPdfViewerOutput, pdfViewerError, assertNotPdfViewerPage, pageInfoModel,
   pdfViewerHandoffModelFromOutput,
   actionObservationPerceiveOpts, actionResultPdfViewerMeta, actionSettleBaseline, isCardsPerceiveOutput,
+  isPdfViewerPerceiveOutput, pdfViewerSettleDiffText,
   isFramedPerceiveOutput, shouldCaptureTopLevelActionSettle, actionSettleObserveOpts,
   actionDomDiffShowsChange, noBaselineActionDiffText,
   formControlStateChanged, formatFormControlStateDiff, shouldSnapshotFormControlState,

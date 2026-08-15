@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#282)
+
+* Leftover `perceive` on a Chrome PDF plugin (`chrome-cdp-ex.pdf-viewer.v1`)
+  is not a valid AX settle shape. No-op `press Escape` / Arrow* stay
+  `Outcome: no-change` / `Verdict: continue` instead of claiming
+  "Observed page change after action" from the same empty-AX stub.
+  Identical stub vs stub is not evidence of a plugin page turn.
+  `#257` leftover-cards + Escape and `#279` leftover-cards + mutating
+  `click --js` are unchanged.
+
 ### Open issue dogfood (#279)
 
 * Leftover 0-card `perceive --cards` / `--role feed` dumps are not a valid
