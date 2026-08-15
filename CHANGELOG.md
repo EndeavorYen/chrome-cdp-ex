@@ -6,9 +6,13 @@
 
 * Realistic `click` / `clickxy` overlap Chrome 151's mouse CDP acks instead of
   serializing on a 250ms compositor-ack swallow, then fail closed when a
-  capture-phase probe sees no `mousedown`/`click` events. Silent `dispatch.ok`
-  with a dead handler is no longer a success. `jsclick` / `click --js` still
-  run `HTMLElement.click()`.
+  capture-phase probe on the **target document** sees no `mousedown`/`click`
+  events — including when the probe cannot be installed. Framed `@fN:M` clicks
+  probe the iframe document (or ignore a top-level empty `seen`) so #261 does
+  not fail-close a working iframe handler. JSON receipts go through
+  `runActionWithFeedback`; CLI `Kind: no-input-events` Next is
+  `cdp jsclick <prefix> <sel>`. `jsclick` / `click --js` still run
+  `HTMLElement.click()` as a separate command.
 * `restore` of a `checkpoint --unsafe-full` artifact writes the captured cookie
   values. It no longer re-redacts them to the literal sentinel `<redacted>`.
   Default redacted checkpoints still skip cookie restore.

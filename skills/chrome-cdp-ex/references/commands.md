@@ -1114,7 +1114,10 @@ Use this when the realistic mouse path (CDP `Input.dispatchMouseEvent`) is block
 `jsclick` calls `HTMLElement.click()` (falling back to `dispatchEvent(new MouseEvent('click'))`).
 The default `click` is still preferred — it produces realistic event sequences
 that pass through `:active`/`:hover`/focus rings — but `jsclick` is the right
-escape hatch when you can prove the mouse path is the blocker.
+escape hatch when you can prove the mouse path is the blocker. A fail-closed
+mouse click reports `Kind: no-input-events` with Next `cdp jsclick <target> <sel>`
+(selector included). Do not treat `dispatch.ok` as success, and do not auto-jsclick
+inside `click`.
 
 ### React-controlled inputs — `fill --react`
 

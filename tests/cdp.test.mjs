@@ -5515,10 +5515,39 @@ describe('buildPerceiveTree', () => {
 
 function createMockCDP(handlers = {}) {
   const calls = [];
+  const clickProbe = { seen: [] };
+  function recordClickProbeMouse(method, params, timeout, result) {
+    return Promise.resolve(result).then((value) => {
+      if (method !== 'Input.dispatchMouseEvent') return value;
+      const pressOrRelease = params.type === 'mousePressed' || params.type === 'mouseReleased';
+      const ackBudget = Number(timeout);
+      const compositorAckTooShort = pressOrRelease
+        && Number.isFinite(ackBudget)
+        && ackBudget < T.CLICK_MOUSE_ACK_TIMEOUT_MS;
+      if (!compositorAckTooShort && params.type === 'mouseReleased') {
+        clickProbe.seen.push('mousedown', 'mouseup', 'click');
+      }
+      return value;
+    });
+  }
   return {
     calls,
     send(method, params = {}, sessionId, timeout) {
       calls.push({ method, params, sessionId, timeout });
+      const probeSource = method === 'Runtime.evaluate'
+        ? String(params.expression || '')
+        : method === 'Runtime.callFunctionOn'
+          ? String(params.functionDeclaration || '')
+          : '';
+      if (probeSource.includes('__chromeCdpExClickProbe')) {
+        if (probeSource.includes('installed: true')) {
+          clickProbe.seen = [];
+          return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, installed: true, scope: 'target-document' } } });
+        }
+        const seen = clickProbe.seen.slice();
+        clickProbe.seen = [];
+        return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen } } });
+      }
       const trustedPresenceCall = method === 'Runtime.callFunctionOn'
         && params.functionDeclaration?.includes('ownerDocumentGetter')
         && params.functionDeclaration.includes('getClientRects');
@@ -5537,14 +5566,14 @@ function createMockCDP(handlers = {}) {
           ? handler(params, sessionId)
           : { result: { value: { connected: true } } });
       }
-      if (handlers[method]) return Promise.resolve(handlers[method](params, sessionId));
+      if (handlers[method]) return recordClickProbeMouse(method, params, timeout, handlers[method](params, sessionId));
       if (method === 'Page.getFrameTree') {
         return Promise.resolve({ frameTree: { frame: { id: 'mock-root-frame' } } });
       }
       if (method === 'Page.createIsolatedWorld') {
         return Promise.resolve({ executionContextId: 901 });
       }
-      return Promise.resolve({});
+      return recordClickProbeMouse(method, params, timeout, {});
     },
     onEvent() { return () => {}; },
     waitForEvent(method, _timeout) {
@@ -10018,14 +10047,38 @@ describe('recordStr', () => {
         return () => listeners.get(method)?.delete(cb);
       },
       emit(method, params) { for (const cb of listeners.get(method) || []) cb(params); },
-      send(method, params = {}, sessionId) {
-        calls.push({ method, params, sessionId });
+      send(method, params = {}, sessionId, timeout) {
+        calls.push({ method, params, sessionId, timeout });
+        const probeSource = method === 'Runtime.evaluate'
+          ? String(params.expression || '')
+          : method === 'Runtime.callFunctionOn'
+            ? String(params.functionDeclaration || '')
+            : '';
+        if (probeSource.includes('__chromeCdpExClickProbe')) {
+          if (probeSource.includes('installed: true')) {
+            cdp._clickProbeSeen = [];
+            return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, installed: true, scope: 'target-document' } } });
+          }
+          const seen = Array.isArray(cdp._clickProbeSeen) ? cdp._clickProbeSeen.slice() : ['click'];
+          cdp._clickProbeSeen = [];
+          return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen } } });
+        }
         if (method === 'Runtime.callFunctionOn'
           && params.functionDeclaration?.includes('ownerDocumentGetter')
           && !params.functionDeclaration.includes('requestAnimationFrame')) {
           return Promise.resolve({ result: { value: { connected: true } } });
         }
-        if (extraHandlers[method]) return Promise.resolve(extraHandlers[method](params, sessionId, cdp));
+        if (extraHandlers[method]) {
+          return Promise.resolve(extraHandlers[method](params, sessionId, cdp)).then((value) => {
+            if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased') {
+              cdp._clickProbeSeen = ['mousedown', 'click'];
+            }
+            return value;
+          });
+        }
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased') {
+          cdp._clickProbeSeen = ['mousedown', 'click'];
+        }
         if (method === 'Page.getFrameTree') return Promise.resolve({ frameTree: { frame: { id: 'mock-root-frame' } } });
         if (method === 'Page.createIsolatedWorld') return Promise.resolve({ executionContextId: 901 });
         if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: JSON.stringify({ totals: {}, labels: [], count: 0 }) } });
