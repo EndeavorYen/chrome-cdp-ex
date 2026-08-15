@@ -5570,4 +5570,353 @@ describe('issues #245-#248 open contracts', () => {
   });
 });
 
+describe('issues #250-#253 open contracts', () => {
+  const PDF_TARGET_ID = '9FAD7C71E2DA7ED50C67BE2092417850';
+  const PDF_PREFIX = '9FAD7C71';
+  const PDF_PAGE = {
+    title: '',
+    url: 'https://arxiv.org/pdf/2608.12307',
+    contentType: 'application/pdf',
+  };
+
+  function pdfPageCdp() {
+    const calls = [];
+    return {
+      calls,
+      send(method, params = {}) {
+        calls.push({ method, params });
+        if (method === 'Runtime.evaluate') {
+          const expr = String(params.expression || '');
+          if (expr.includes('document.title') || expr.includes('contentType')) {
+            return Promise.resolve({ result: { value: JSON.stringify(PDF_PAGE) } });
+          }
+          if (expr.includes('getComputedStyle') || expr.includes('querySelectorAll')) {
+            throw new Error('should not inspect embedder DOM on pdf-viewer');
+          }
+          return Promise.resolve({ result: { value: '{}' } });
+        }
+        if (method === 'CSS.getComputedStyleForNode' || method === 'CSS.getMatchedStylesForNode') {
+          throw new Error('cascade should not read embedder computed styles on pdf-viewer');
+        }
+        if (method === 'DOM.getDocument' || method === 'DOM.querySelector') {
+          throw new Error('cascade should not query embedder DOM on pdf-viewer');
+        }
+        return Promise.resolve({});
+      },
+    };
+  }
+
+  it('#250 perceive --qa/--summary and summary on a Chrome PDF viewer emit pdf-viewer.v1', async () => {
+    const emptyBuffer = { all: () => [] };
+    const handler = T.createPerceiveCommandHandler({
+      cdp: pdfPageCdp(),
+      sessionId: 'sid',
+      targetId: PDF_TARGET_ID,
+      session: { lastAction: null },
+      consoleBuf: emptyBuffer,
+      exceptionBuf: emptyBuffer,
+      netReqBuf: emptyBuffer,
+      refMap: new Map(),
+      lastPerceiveStore: { output: null },
+      refState: {},
+      ops: {
+        readPerceiveTargetMetadata: async () => ({ targetId: PDF_TARGET_ID, url: PDF_PAGE.url }),
+        readPerceiveDocumentState: async () => ({ url: PDF_PAGE.url, readyState: 'complete' }),
+        pageInfoModel: async () => PDF_PAGE,
+        collectPageHealth: async () => {
+          throw new Error('qa health should not run on pdf-viewer perceive');
+        },
+        perceiveText: async () => {
+          throw new Error('perceive tree should not run on pdf-viewer qa');
+        },
+      },
+    });
+
+    for (const args of [['--qa'], ['--summary']]) {
+      const text = (await handler({ args })).value;
+      expect(text).toContain('chrome-cdp-ex.pdf-viewer.v1');
+      expect(text).toContain(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+      expect(text).not.toMatch(/QA summary:/);
+      expect(text).not.toMatch(/Page health: indeterminate/);
+      expect(text).not.toMatch(/cdp report /);
+      expect(text).not.toContain('<target>');
+    }
+
+    const parsed = JSON.parse((await handler({ args: ['--qa', '--format', 'json'] })).value);
+    expect(parsed.schema).toBe('chrome-cdp-ex.pdf-viewer.v1');
+    expect(parsed.nextCommand).toBe(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+    expect(parsed.summary?.schema).not.toBe('chrome-cdp-ex.qa-summary.v1');
+    expect(JSON.stringify(parsed)).not.toMatch(/cdp report /);
+    expect(JSON.stringify(parsed)).not.toContain('<target>');
+
+    const htmlHandler = T.createPerceiveCommandHandler({
+      cdp: { send() { throw new Error('unexpected CDP command'); } },
+      sessionId: 'sid',
+      targetId: '1D3669785EAC5A1A211792636BAE8A07',
+      session: { lastAction: null },
+      consoleBuf: emptyBuffer,
+      exceptionBuf: emptyBuffer,
+      netReqBuf: emptyBuffer,
+      refMap: new Map(),
+      lastPerceiveStore: { output: null },
+      refState: {},
+      ops: {
+        readPerceiveTargetMetadata: async () => ({
+          targetId: '1D3669785EAC5A1A211792636BAE8A07',
+          url: 'https://example.com/',
+        }),
+        readPerceiveDocumentState: async () => ({ url: 'https://example.com/', readyState: 'complete' }),
+        pageInfoModel: async () => ({
+          title: 'Example Domain',
+          url: 'https://example.com/',
+          contentType: 'text/html',
+        }),
+        collectPageHealth: async () => ({
+          status: 'populated',
+          isBlank: false,
+          evidence: { url: 'https://example.com/', title: 'Example Domain' },
+        }),
+        perceiveText: async () => 'Example Domain body',
+      },
+    });
+    const htmlQa = (await htmlHandler({ args: ['--qa'] })).value;
+    expect(htmlQa).toMatch(/QA summary: pass/);
+    expect(htmlQa).toContain('Example Domain');
+    expect(htmlQa).not.toContain('chrome-cdp-ex.pdf-viewer.v1');
+    expect(htmlQa).toContain('cdp report 1D366978');
+
+    const cdp = pdfPageCdp();
+    await expect(T.summaryStr(cdp, 'sid', new T.RingBuffer(8), new T.RingBuffer(8), { targetPrefix: PDF_PREFIX }))
+      .rejects.toThrow(/chrome-cdp-ex\.pdf-viewer\.v1/);
+    await expect(T.summaryModel(cdp, 'sid', new T.RingBuffer(8), new T.RingBuffer(8), { targetPrefix: PDF_PREFIX }))
+      .rejects.toThrow(/cdp eval 9FAD7C71 "document\.contentType"/);
+
+    let thrown;
+    try {
+      await T.summaryStr(cdp, 'sid', new T.RingBuffer(8), new T.RingBuffer(8), { targetPrefix: PDF_PREFIX });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.code).toBe('pdf_viewer');
+    expect(thrown.message).not.toContain('<target>');
+    expect(thrown.message).not.toMatch(/Interactive: none/);
+    expect(thrown.message).not.toMatch(/cdp report /);
+    const recovery = T.buildCliErrorRecovery(thrown.message, {
+      cmd: 'summary',
+      targetPrefix: PDF_PREFIX,
+      err: thrown,
+    });
+    expect(recovery.kind).toBe('pdf-viewer');
+    expect(recovery.run).toBe(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+  });
+
+  it('#251 cascade on a Chrome PDF viewer emits pdf-viewer.v1, not embedder BODY styles', async () => {
+    const cdp = pdfPageCdp();
+    await expect(T.cascadeStr(cdp, 'sid', 'body', 'color', new Map(), null, { targetPrefix: PDF_PREFIX }))
+      .rejects.toThrow(/chrome-cdp-ex\.pdf-viewer\.v1/);
+    await expect(T.cascadeStr(cdp, 'sid', 'body', null, new Map(), null, {
+      format: 'json',
+      targetPrefix: PDF_PREFIX,
+    })).rejects.toThrow(/cdp eval 9FAD7C71 "document\.contentType"/);
+
+    let thrown;
+    try {
+      await T.cascadeStr(cdp, 'sid', 'body', 'color', new Map(), null, { targetPrefix: PDF_PREFIX });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.code).toBe('pdf_viewer');
+    expect(thrown.message).not.toContain('rgb(0, 0, 0)');
+    expect(thrown.message).not.toContain('<target>');
+    expect(cdp.calls.some(call => call.method === 'CSS.getComputedStyleForNode')).toBe(false);
+    expect(cdp.calls.some(call => call.method === 'DOM.querySelector')).toBe(false);
+
+    const recovery = T.buildCliErrorRecovery(thrown.message, {
+      cmd: 'cascade',
+      targetPrefix: PDF_PREFIX,
+      err: thrown,
+    });
+    expect(recovery.kind).toBe('pdf-viewer');
+    expect(recovery.run).toBe(`cdp eval ${PDF_PREFIX} "document.contentType"`);
+  });
+
+  it('#252 fullshot clip timeout does not poison viewport shot or claim captureScreenshot unavailable', async () => {
+    expect(T.FULLSHOT_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(T.FULLSHOT_TIMEOUT_MS).toBeLessThanOrEqual(3000);
+    expect(T.screenshotCaptureUsesSessionTier({ format: 'png' })).toBe(true);
+    expect(T.screenshotCaptureUsesSessionTier({
+      format: 'png',
+      captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width: 1042, height: 4000, scale: 1 },
+    })).toBe(false);
+    expect(T.fullshotFitsViewport({ width: 1042, height: 632 }, { w: 1042, h: 632 })).toBe(true);
+    expect(T.fullshotFitsViewport({ width: 1042, height: 4000 }, { w: 1042, h: 632 })).toBe(false);
+
+    T.resetScreenshotTier();
+    const clipCdp = {
+      calls: [],
+      send(method, params = {}, sessionId, timeout) {
+        this.calls.push({ method, params, sessionId, timeout });
+        if (method === 'Page.captureScreenshot') {
+          throw new Error('Timeout: Page.captureScreenshot');
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+      waitForEvent() {
+        return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+      },
+    };
+    await expect(T.captureScreenshot(clipCdp, 'sid', {
+      format: 'png',
+      captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width: 1042, height: 4000, scale: 1 },
+    })).rejects.toThrow(/all methods timed out|Timeout: Page\.captureScreenshot/);
+    expect(T.getScreenshotTier()).toBe(1);
+
+    const tmp = mkdtempSync(join(tmpdir(), 'cdp-fullshot-'));
+    try {
+      T.resetScreenshotTier();
+      const viewportCdp = {
+        calls: [],
+        send(method, params = {}, sessionId, timeout) {
+          this.calls.push({ method, params, sessionId, timeout });
+          if (method === 'Runtime.evaluate') {
+            const expr = String(params.expression || '');
+            if (expr.includes('innerWidth')) {
+              return Promise.resolve({ result: { value: JSON.stringify({ w: 1042, h: 632 }) } });
+            }
+            return Promise.resolve({ result: { value: 1 } });
+          }
+          if (method === 'Page.getLayoutMetrics') {
+            return Promise.resolve({ cssContentSize: { width: 1042, height: 632 } });
+          }
+          if (method === 'Page.captureScreenshot') {
+            expect(params.captureBeyondViewport).not.toBe(true);
+            expect(params.clip).toBeUndefined();
+            return Promise.resolve({ data: Buffer.from('PNG').toString('base64') });
+          }
+          return Promise.resolve({});
+        },
+        onEvent() { return () => {}; },
+        waitForEvent() {
+          return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+        },
+      };
+      const out = await T.fullshotStr(viewportCdp, 'sid', join(tmp, 'full.png'), '1D3669785EAC5A1A211792636BAE8A07');
+      expect(out).toMatch(/1042x632/);
+      expect(out).not.toMatch(/not available/);
+      expect(T.getScreenshotTier()).toBe(1);
+
+      T.resetScreenshotTier();
+      const tallCdp = {
+        calls: [],
+        send(method, params = {}, sessionId, timeout) {
+          this.calls.push({ method, params, sessionId, timeout });
+          if (method === 'Runtime.evaluate') {
+            const expr = String(params.expression || '');
+            if (expr.includes('innerWidth')) {
+              return Promise.resolve({ result: { value: JSON.stringify({ w: 1042, h: 632 }) } });
+            }
+            return Promise.resolve({ result: { value: 1 } });
+          }
+          if (method === 'Page.getLayoutMetrics') {
+            return Promise.resolve({ cssContentSize: { width: 1042, height: 4000 } });
+          }
+          if (method === 'Page.captureScreenshot') {
+            throw new Error('Timeout: Page.captureScreenshot');
+          }
+          return Promise.resolve({});
+        },
+        onEvent() { return () => {}; },
+        waitForEvent() {
+          return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+        },
+      };
+      await expect(T.fullshotStr(tallCdp, 'sid', join(tmp, 'tall.png'), '1D3669785EAC5A1A211792636BAE8A07'))
+        .rejects.toThrow(/full-page capture timed out|untrusted/);
+      const captureCall = tallCdp.calls.find(call => call.method === 'Page.captureScreenshot');
+      expect(captureCall.params.captureBeyondViewport).toBe(true);
+      expect(captureCall.timeout).toBe(T.FULLSHOT_TIMEOUT_MS);
+      expect(T.getScreenshotTier()).toBe(1);
+
+      const shotCdp = {
+        calls: [],
+        send(method, params = {}) {
+          this.calls.push({ method, params });
+          if (method === 'Page.captureScreenshot') {
+            return Promise.resolve({ data: 'viewport-ok' });
+          }
+          return Promise.resolve({});
+        },
+        onEvent() { return () => {}; },
+        waitForEvent() {
+          return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+        },
+      };
+      const shot = await T.captureScreenshot(shotCdp, 'sid', { format: 'png' });
+      expect(shot.data).toBe('viewport-ok');
+      expect(shot.fallback).toBe(false);
+      expect(shotCdp.calls[0].params.fromSurface).toBeUndefined();
+      expect(T.getScreenshotTier()).toBe(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+
+    expect(T.diffShotScreenshotCaptureOptions()).toMatchObject({
+      failFastOnTimeout: true,
+      skipSanityRetry: true,
+    });
+  });
+
+  it('#253 realistic click bounds mouse compositor-ack and still follows an <a href>', async () => {
+    const events = [];
+    await T.dispatchClick({
+      send(method, params = {}, _sessionId, timeoutMs) {
+        if (method === 'Input.dispatchMouseEvent') {
+          events.push({ ...params, timeoutMs });
+          return Promise.reject(new Error('Timeout: Input.dispatchMouseEvent'));
+        }
+        return Promise.resolve({});
+      },
+    }, 'sid', 40, 20);
+    expect(events).toHaveLength(3);
+    expect(events.every(event => event.timeoutMs === T.HOVER_MOUSE_ACK_TIMEOUT_MS)).toBe(true);
+    expect(events[0]).toMatchObject({ type: 'mouseMoved', button: 'none', buttons: 0, pointerType: 'mouse' });
+    expect(events[1]).toMatchObject({ type: 'mousePressed', button: 'left', buttons: 1, pointerType: 'mouse' });
+    expect(events[2]).toMatchObject({ type: 'mouseReleased', button: 'left', buttons: 0, pointerType: 'mouse' });
+
+    let href = 'https://example.com/';
+    const cdp = {
+      send(method, params = {}) {
+        if (method === 'Runtime.evaluate') {
+          if (String(params.expression) === 'location.href') {
+            return Promise.resolve({ result: { value: href } });
+          }
+          return Promise.resolve({
+            result: {
+              value: {
+                ok: true,
+                x: 40,
+                y: 20,
+                tag: 'A',
+                text: 'Learn more',
+                href: 'https://www.iana.org/help/example-domains',
+                pageHref: 'https://example.com/',
+              },
+            },
+          });
+        }
+        if (method === 'Input.dispatchMouseEvent') {
+          if (params.type === 'mouseReleased') href = 'https://www.iana.org/help/example-domains';
+          return Promise.resolve({});
+        }
+        return Promise.resolve({});
+      },
+    };
+    await expect(T.clickStr(cdp, 'sid', 'a', new Map())).resolves.toBe('Clicked <A> "Learn more"');
+    expect(href).toBe('https://www.iana.org/help/example-domains');
+  });
+});
+
 
