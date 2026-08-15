@@ -4480,7 +4480,22 @@ function isCardsPerceiveOutput(output) {
   return String(output || '').includes(CARDS_SCHEMA);
 }
 
-function actionSettleBaseline(output, snapshotOpts = null) {
+function framedPerceiveRefFromOutput(output) {
+  const match = String(output || '').match(/^Frame: (@f\d+)\b/m);
+  return match ? match[1] : null;
+}
+
+function isFramedPerceiveOutput(output) {
+  return framedPerceiveRefFromOutput(output) != null;
+}
+
+function shouldCaptureTopLevelActionSettle(snapshotOpts = null, output = null, actionTarget = {}) {
+  // Frame-scoped settle is only for actions that targeted @fN / @fN:M.
+  if (frameRefFromActionTarget(actionTarget)) return false;
+  return Boolean(snapshotOpts?.frameRef) || isFramedPerceiveOutput(output);
+}
+
+function actionSettleBaseline(output, snapshotOpts = null, actionTarget = {}) {
   // Compact --cards dumps are a feed view, not an AX settle baseline. Reusing
   // them after a 0-card page makes no-op press/type/clickxy look like a DOM change.
   if (snapshotOpts?.cards === true || isCardsPerceiveOutput(output)) {
@@ -4489,7 +4504,21 @@ function actionSettleBaseline(output, snapshotOpts = null) {
       opts: snapshotOpts ? { ...snapshotOpts, cards: false } : null,
     };
   }
-  return { output: output || null, opts: snapshotOpts || null };
+  const actionFrame = frameRefFromActionTarget(actionTarget);
+  const outputFrame = framedPerceiveRefFromOutput(output);
+  const opts = snapshotOpts
+    ? { ...snapshotOpts, frameRef: actionFrame }
+    : snapshotOpts;
+  // Leftover perceive --frame dumps are an iframe view. Reusing them after a
+  // top-level fill/select/upload/click makes a real page mutation look like a
+  // no-op against the child AX tree.
+  if (outputFrame && outputFrame !== actionFrame) {
+    return { output: null, opts: opts || null };
+  }
+  if (!actionFrame && snapshotOpts?.frameRef) {
+    return { output: null, opts: opts || null };
+  }
+  return { output: output || null, opts: opts || null };
 }
 
 function actionDomDiffShowsChange(domDiff) {
@@ -5469,6 +5498,24 @@ function actionObservationPerceiveOpts(targetId, extra = {}) {
     cards: false,
     targetPrefix: extra.targetPrefix || targetPrefixForDisplay(targetId),
   };
+}
+
+function actionSettleObserveOpts(targetId, actionTarget = {}, baselineOutput = null, baselineOpts = null) {
+  const targetFrameRef = frameRefFromActionTarget(actionTarget);
+  return actionObservationPerceiveOpts(targetId, {
+    ...resolveSinceActionPerceiveOpts(
+      {
+        sinceAction: true,
+        diffBaseline: baselineOutput,
+        ...(targetFrameRef ? { frameRef: targetFrameRef } : {}),
+      },
+      { baselineOutput, baselineOpts },
+      [],
+    ),
+    // Never inherit leftover perceive --frame mode; only the action's @fN target
+    // (or an explicit --frame) may settle inside an iframe.
+    frameRef: targetFrameRef || null,
+  });
 }
 
 function formatActionResultOutput(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false } = {}) {
@@ -17868,18 +17915,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       );
       return noBaselineActionDiffText();
     }
-    const snapshot = actionObservationPerceiveOpts(
-      targetId,
-      resolveSinceActionPerceiveOpts(
-        {
-          sinceAction: true,
-          diffBaseline: baselineOutput,
-          ...(targetFrameRef ? { frameRef: targetFrameRef } : {}),
-        },
-        { baselineOutput, baselineOpts },
-        [],
-      ),
-    );
+    const snapshot = actionSettleObserveOpts(targetId, target, baselineOutput, baselineOpts);
     return perceiveStr(
       cdp,
       sessionId,
@@ -17910,7 +17946,38 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       ? { ...target, targetId }
       : { input: String(target || ''), label: String(target || ''), targetId };
     const baselineFromTarget = baselineOutputForActionTarget(refState, lastPerceiveStore.output, actionTarget);
-    const settleBaseline = actionSettleBaseline(baselineFromTarget, lastPerceiveStore.snapshotOpts || null);
+    let settleBaseline = actionSettleBaseline(
+      baselineFromTarget,
+      lastPerceiveStore.snapshotOpts || null,
+      actionTarget,
+    );
+    if (
+      !settleBaseline.output
+      && shouldCaptureTopLevelActionSettle(
+        lastPerceiveStore.snapshotOpts,
+        baselineFromTarget,
+        actionTarget,
+      )
+    ) {
+      const topLevelOpts = actionObservationPerceiveOpts(targetId, {
+        ...(settleBaseline.opts || {}),
+        frameRef: null,
+      });
+      const before = await perceiveStr(
+        cdp,
+        sessionId,
+        consoleBuf,
+        exceptionBuf,
+        refMap,
+        lastPerceiveStore,
+        topLevelOpts,
+        refState,
+      );
+      settleBaseline = {
+        output: before,
+        opts: perceiveSnapshotOpts(topLevelOpts),
+      };
+    }
     const baselineOutput = settleBaseline.output;
     const baselineOpts = settleBaseline.opts;
     const observationBaseline = createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf });
@@ -22140,6 +22207,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isPdfViewerContentType, formatPdfViewerOutput, pdfViewerError, assertNotPdfViewerPage, pageInfoModel,
   pdfViewerHandoffModelFromOutput,
   actionObservationPerceiveOpts, actionResultPdfViewerMeta, actionSettleBaseline, isCardsPerceiveOutput,
+  isFramedPerceiveOutput, shouldCaptureTopLevelActionSettle, actionSettleObserveOpts,
   actionDomDiffShowsChange, noBaselineActionDiffText,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
