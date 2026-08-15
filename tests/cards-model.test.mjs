@@ -317,6 +317,23 @@ describe('buildCardsModel', () => {
     expect(replacedWindow.unchanged).not.toBe(true);
     expect(replacedWindow.next).not.toBe(CARDS_UNCHANGED_NEXT);
     expect(replacedWindow.cards.map(card => card.text).join('\n')).toMatch(/third tweet body/);
+
+    const addedThird = [
+      ...timed,
+      ax(8, 2, 'article', 'third tweet body · 3m', {
+        backendDOMNodeId: 203,
+        childIds: [9],
+      }),
+      ax(9, 8, 'link', 'post', { properties: urlProp('https://x.com/SY239434/status/1003') }),
+    ];
+    addedThird[1] = { ...addedThird[1], childIds: [3, 6, 8] };
+    const addedWindow = buildCardsModel(addedThird, { ...meta, scrollY: 80 }, new Map(), {
+      previousCards: first.cards,
+      previousScrollY: 0,
+    });
+    expect(addedWindow.cards).toHaveLength(3);
+    expect(addedWindow.unchanged).not.toBe(true);
+    expect(addedWindow.next).not.toBe(CARDS_UNCHANGED_NEXT);
   });
 });
 

@@ -7414,12 +7414,12 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
     { text: 'first tweet body', backend: 201, handle: '@SY239434', statusId: '1001' },
     { text: 'second tweet body', backend: 202, handle: '@SY239434', statusId: '1002' },
   ];
-  const REPLACED_POSTS = [
-    { text: 'second tweet body', backend: 202, handle: '@SY239434', statusId: '1002' },
+  const ADDED_THIRD_POSTS = [
+    ...DEFAULT_POSTS,
     { text: 'third tweet body', backend: 203, handle: '@SY239434', statusId: '1003' },
   ];
 
-  function xMeta({ scrollY = 0 } = {}) {
+  function xMeta({ scrollY = 0, articleCount = 2 } = {}) {
     return JSON.stringify({
       title: 'SY239434 (@SY239434) / X',
       url: 'https://x.com/SY239434',
@@ -7428,7 +7428,7 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
       vh: 900,
       scrollY,
       scrollMax: 4000,
-      counts: { article: 2, button: 8 },
+      counts: { article: articleCount, button: 8 },
       focused: 'none',
       layoutMap: {},
       styleHints: {},
@@ -7455,6 +7455,7 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
       const permalinkId = `${articleId}3`;
       feedChildIds.push(articleId);
       const name = ageInArticleName ? `${post.text} · ${age}` : post.text;
+      const timeName = ageInArticleName ? 'likes' : age;
       articleNodes.push(
         {
           nodeId: articleId,
@@ -7472,7 +7473,7 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
           name: { value: 'Show this post' },
           properties: [{ name: 'url', value: { value: `https://x.com/SY239434/status/${post.statusId}` } }],
         },
-        { nodeId: timeId, parentId: articleId, role: { value: 'StaticText' }, name: { value: age } },
+        { nodeId: timeId, parentId: articleId, role: { value: 'StaticText' }, name: { value: timeName } },
       );
     }
     return [
@@ -7519,7 +7520,9 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
             return Promise.resolve({ result: { value: JSON.stringify({ tag: 'BUTTON', text: 'p25' }) } });
           }
           if (expr.includes('document.title') || expr.includes('contentType')) {
-            return Promise.resolve({ result: { value: xMeta({ scrollY: state.scrollY }) } });
+            return Promise.resolve({
+              result: { value: xMeta({ scrollY: state.scrollY, articleCount: state.posts.length }) },
+            });
           }
           return Promise.resolve({ result: { value: '{}' } });
         }
@@ -7746,7 +7749,7 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
     expect(after).toMatch(/unchanged; still first cards/i);
   });
 
-  it('#293 leftover feed --cards then scroll that replaces card identities is Outcome: changed', async () => {
+  it('#293 leftover feed --cards then scroll that adds a third article is Outcome: changed', async () => {
     const { cdp, state } = createXPage({ age: '2m', scrollY: 0 });
     const store = { output: null, snapshotOpts: null, cards: null };
     const refMap = new Map();
@@ -7757,10 +7760,13 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
     const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
     expect(settleBaseline.opts.cards).toBe(true);
 
-    state.posts = REPLACED_POSTS.map(post => ({ ...post }));
+    // Leftover window is 2 cards. Scroll adds a third article identity.
+    // expectedOutcome is set pre-scroll and must not hide that mutation.
+    state.posts = ADDED_THIRD_POSTS.map(post => ({ ...post }));
     const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
     const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
     expect(after).toContain('chrome-cdp-ex.cards.v1');
+    expect(after).toMatch(/chrome-cdp-ex\.cards\.v1\s+3 cards/);
     expect(after).toMatch(/third tweet body/);
     expect(after).not.toMatch(/unchanged; still first cards/i);
     expect(after).not.toMatch(/\[RootWebArea\]/);
@@ -7781,17 +7787,25 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
     expect(text).toMatch(/Outcome: changed/);
     expect(text).not.toMatch(/Outcome: no-change/);
     expect(receipt).toContain('third tweet body');
+    expect(receipt).toMatch(/chrome-cdp-ex\.cards\.v1\s+3 cards/);
     expect(receipt).not.toMatch(/unchanged; still first cards/);
     expect(receipt).not.toMatch(/\[RootWebArea\]/);
   });
 
   it('#293 leftover feed --cards then scroll ignores relative time in article AX name (2m→3m)', async () => {
+    // Contract: extractText/cardIdentity use article AX `name`, not child
+    // StaticText. Clock chrome lives in the name (`first tweet body · 2m`).
+    // Child StaticText is `likes`, not the time. If this helper were
+    // Outcome: changed, leftover cards.v1 would still treat timestamp-in-name
+    // as a feed mutation on live X unless 9224 `perceive --cards` lines omit
+    // the relative time. no-change here is required: identity strips `· 2m`.
     const { cdp, state } = createXPage({ age: '2m', scrollY: 0, ageInArticleName: true });
     const store = { output: null, snapshotOpts: null, cards: null };
     const refMap = new Map();
     const refState = {};
     const leftoverDump = await leftoverCards(cdp, store, refMap, refState, ['--cards']);
     expect(leftoverDump).toMatch(/first tweet body · 2m/);
+    expect(leftoverDump).not.toMatch(/\blikes\b/);
     const actionTarget = scrollTarget();
     const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
     expect(settleBaseline.opts.cards).toBe(true);
