@@ -1418,6 +1418,14 @@ function selectLivePagesForAliasResolution({
   return discoveredPages;
 }
 
+async function livePagesForTargetCommand(targetAlias, {
+  discoverPages = discoverLivePagesForTargetResolution,
+  env = process.env,
+} = {}) {
+  const discoveredPages = await discoverPages(discoverOptionsForTargetAlias(targetAlias, env));
+  return selectLivePagesForAliasResolution({ alias: targetAlias, discoveredPages });
+}
+
 function bindAliasTargetFromPages(parsed = {}, livePages = []) {
   const requested = String(parsed?.targetId || '').trim();
   if (!requested) throw new Error(`${parsed?.mode || 'use'}: --target or target id is required`);
@@ -1437,6 +1445,44 @@ function bindAliasTargetFromPages(parsed = {}, livePages = []) {
     throw new Error(`Live target prefix "${requested}" is ambiguous (${matches.length} matches).`);
   }
   return { targetId: requested, url: '', title: '' };
+}
+
+async function bindAndSaveTargetAlias(parsed, {
+  store = readTargetAliases(),
+  discoverPages = discoverLivePagesForTargetResolution,
+  writeStore = writeTargetAliases,
+  env = process.env,
+} = {}) {
+  const attachEnv = parsed.port ? {
+    ...env,
+    CDP_PORT: String(parsed.port),
+    CDP_HOST: parsed.host || env.CDP_HOST || DEFAULT_CDP_HOST,
+  } : null;
+  let targetId = parsed.targetId;
+  let boundUrl = '';
+  let boundTitle = '';
+  try {
+    const pages = await discoverPages({
+      env: attachEnv || env,
+      pinCdpPort: Boolean(parsed.port),
+    });
+    const bound = bindAliasTargetFromPages(parsed, pages);
+    targetId = bound.targetId;
+    boundUrl = bound.url;
+    boundTitle = bound.title;
+  } catch (error) {
+    if (parsed.port) throw error;
+  }
+  const next = upsertTargetAlias(store, {
+    name: parsed.name,
+    targetId,
+    port: parsed.port,
+    host: parsed.host,
+    url: boundUrl,
+    title: boundTitle,
+  });
+  writeStore(next);
+  return next;
 }
 
 const ALLOW_IN_CHROME_DAEMON_START = 'Daemon failed to start — did you click Allow in Chrome?';
@@ -19799,13 +19845,23 @@ function findAnyDaemonSocket() {
   return listDaemonSockets()[0]?.socketPath || null;
 }
 
-async function discoverLivePagesForTargetResolution({ env = process.env, pinCdpPort = false } = {}) {
+async function discoverLivePagesForTargetResolution({
+  env = process.env,
+  pinCdpPort = false,
+  findSocket = findAnyDaemonSocket,
+  connect = connectToSocket,
+  request = sendCommand,
+  resolveWsUrl = getWsUrl,
+  connectCdp,
+  listPages = getPages,
+  rememberEndpoint = rememberLiveCdpEndpointFromSession,
+} = {}) {
   if (!pinCdpPort) {
-    const existingSocket = findAnyDaemonSocket();
+    const existingSocket = findSocket();
     if (existingSocket) {
       try {
-        const conn = await connectToSocket(existingSocket);
-        const response = await sendCommand(conn, { cmd: 'list_raw' });
+        const conn = await connect(existingSocket);
+        const response = await request(conn, { cmd: 'list_raw' });
         if (response.ok) {
           const pages = JSON.parse(response.result);
           if (Array.isArray(pages)) return pages;
@@ -19813,13 +19869,17 @@ async function discoverLivePagesForTargetResolution({ env = process.env, pinCdpP
       } catch {}
     }
   }
-  const cdp = new CDP();
-  await cdp.connect(await getWsUrl({ env }));
+  const openCdp = connectCdp || (async (wsUrl) => {
+    const cdp = new CDP();
+    await cdp.connect(wsUrl);
+    return cdp;
+  });
+  const cdp = await openCdp(await resolveWsUrl({ env }));
   try {
-    try { await rememberLiveCdpEndpointFromSession(cdp, { env }); } catch {}
-    return await getPages(cdp);
+    try { await rememberEndpoint(cdp, { env }); } catch {}
+    return await listPages(cdp);
   } finally {
-    cdp.close();
+    try { cdp.close(); } catch {}
   }
 }
 
@@ -22745,30 +22805,10 @@ async function main(options = {}) {
         }
       }
       const store = readTargetAliases();
-      let targetId = parsed.targetId;
-      let boundUrl = '';
-      let boundTitle = '';
-      try {
-        const pages = await discoverLivePagesForTargetResolution({
-          env: attachEnv || process.env,
-          pinCdpPort: Boolean(parsed.port),
-        });
-        const bound = bindAliasTargetFromPages(parsed, pages);
-        targetId = bound.targetId;
-        boundUrl = bound.url;
-        boundTitle = bound.title;
-      } catch (error) {
-        if (parsed.port) throw error;
-      }
-      const next = upsertTargetAlias(store, {
-        name: parsed.name,
-        targetId,
-        port: parsed.port,
-        host: parsed.host,
-        url: boundUrl,
-        title: boundTitle,
+      const next = await bindAndSaveTargetAlias(parsed, {
+        store,
+        env: process.env,
       });
-      writeTargetAliases(next);
       console.log(formatAliasRecord(next.aliases[normalizeAliasName(parsed.name)], { format: parsed.format }));
       return finish(0);
     } catch (e) {
@@ -22871,11 +22911,7 @@ async function main(options = {}) {
     console.error(formatCliError(unknownAliasError(targetPrefix), { cmd, format: cliErrorFormat }));
     return finish(1);
   }
-  const discoveredPages = await discoverLivePagesForTargetResolution(discoverOptionsForTargetAlias(targetAlias));
-  const livePages = selectLivePagesForAliasResolution({
-    alias: targetAlias,
-    discoveredPages,
-  });
+  const livePages = await livePagesForTargetCommand(targetAlias);
   writeFileSync(PAGES_CACHE, JSON.stringify(livePages), { mode: 0o600 });
   const requestedTargetId = targetAlias?.targetId || targetPrefix;
   const preliminaryMatches = livePages.filter(page => String(page.targetId || '').toUpperCase().startsWith(String(requestedTargetId).toUpperCase()));
@@ -23126,6 +23162,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   emptyAliasStore, readTargetAliases, writeTargetAliases, upsertTargetAlias,
   removeTargetAlias, forgetTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
   aliasEnv, discoverOptionsForTargetAlias, selectLivePagesForAliasResolution, bindAliasTargetFromPages,
+  bindAndSaveTargetAlias, livePagesForTargetCommand, discoverLivePagesForTargetResolution,
   formatDaemonStartFailure,
   aliasLookupKey, looksLikeAliasToken, looksLikeHexTargetPrefix, unknownAliasError, formatCurrentAlias,
   // AX tree helpers
