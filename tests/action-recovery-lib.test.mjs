@@ -161,6 +161,28 @@ describe('action recovery lib', () => {
       recovery: { commands: [{ command: 'cdp console ABC123 --errors' }] },
     })).toEqual(['cdp console ABC123 --errors']);
   });
+
+  it('PDF plugin action misses Next eval prefix instead of perceive', () => {
+    const target = {
+      targetId: '9FAD7C71E2DA7ED50C67BE2092417850',
+      input: 'a',
+      page: {
+        title: '',
+        url: 'https://arxiv.org/pdf/2608.12307',
+        contentType: 'application/pdf',
+      },
+    };
+    expect(classifyActionFailure(new Error('Element not found: a'), {
+      action: 'click',
+      target,
+    })).toMatchObject({
+      kind: 'selector',
+      nextCommand: 'cdp eval 9FAD7C71 "document.contentType"',
+    });
+    const text = formatActionFailure(new Error('Element not found: a'), { action: 'click', target });
+    expect(text).toContain('Next: cdp eval 9FAD7C71 "document.contentType"');
+    expect(text).not.toMatch(/cdp perceive /);
+  });
 });
 
 

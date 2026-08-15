@@ -240,7 +240,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs responsive-audit <target> --format jso
 node skills/chrome-cdp-ex/scripts/cdp.mjs visual-check <target> --viewport 1440x900 --viewport 390x844 --out-dir /tmp/cdp-audit
 ```
 
-It walks a bounded set of viewports (default desktop + mobile), captures screenshots outside the repo by default (session screenshot dir or explicit `--out-dir`), and reports overflow-x, shared page-health evidence, internally clipped controls, material fixed/sticky overlaps, console health, control counts, and a pass/warn/fail summary. Mark an intentional scroll list with `data-cdp-audit-scroll="intentional"` (or use `role="listbox"` / `role="feed"`) to suppress expected off-viewport items.
+It walks a bounded set of viewports (default desktop + mobile), captures screenshots outside the repo by default (session screenshot dir or explicit `--out-dir`), and reports overflow-x, shared page-health evidence, internally clipped controls, material fixed/sticky overlaps, console health, control counts, and a pass/warn/fail summary. After the last audited size it restores the tab's previous viewport, including when a screenshot times out. Mark an intentional scroll list with `data-cdp-audit-scroll="intentional"` (or use `role="listbox"` / `role="feed"`) to suppress expected off-viewport items.
 
 Screenshot JSON records the winning capture method and retry count. A near-black frame is retried once with the alternate surface only when computed page appearance is light; legitimate dark pages are not retried.
 
@@ -254,7 +254,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target> --qa --format json
 
 MCP tools mirror these workflows: `select_target`, `responsive_audit`, plus `qa` flags on `perceive` / `click` / `report`, and `open_or_attach.reuseUrl`.
 
-All QA surfaces use the same multi-signal page-health classifier. Visible text, controls, DOM size, body geometry, and a verified changed action override a transient or missing URL sample; loading samples are resampled once and otherwise remain explicit `indeterminate` evidence. Action `--qa` Page/URL is the page after the action, including click-navigation. Chrome PDF plugin tabs emit `chrome-cdp-ex.pdf-viewer.v1` from `perceive`, `text --auto`, and `report` / `report --qa`, with Next `cdp eval <prefix> "document.contentType"` instead of another perceive/text probe.
+All QA surfaces use the same multi-signal page-health classifier. Visible text, controls, DOM size, body geometry, and a verified changed action override a transient or missing URL sample; loading samples are resampled once and otherwise remain explicit `indeterminate` evidence. Action `--qa` Page/URL is the page after the action, including click-navigation. Chrome PDF plugin tabs emit `chrome-cdp-ex.pdf-viewer.v1` from `perceive`, `text --auto`, `report` / `report --qa`, `click --qa`, and other PDF-plugin action receipts, with Next `cdp eval <prefix> "document.contentType"` instead of another perceive/text probe.
 
 See also [Browser Use mapping](browser-use-mapping.md) and [awesome-list outreach research](outreach/awesome-lists.md).
 
