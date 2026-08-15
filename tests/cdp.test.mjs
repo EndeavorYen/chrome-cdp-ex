@@ -376,12 +376,13 @@ describe('COMMANDS registry', () => {
   it('uses catalog authorization and kind to reject parallel side effects hidden by legacy mutates', () => {
     for (const name of [
       'hover', 'loadall',
-      'shot', 'screenshot', 'diff-shot', 'diffshot', 'fullshot', 'cookies',
+      'shot', 'screenshot', 'diff-shot', 'diffshot', 'fullshot',
       'checkpoint', 'components', 'report', 'batch', 'flow', 'repeat',
       'not-a-command',
     ]) {
       expect(T.isBatchParallelUnsafeCommand(name), name).toBe(true);
     }
+    expect(T.isBatchParallelUnsafeCommand('cookies')).toBe(false);
     expect(T.isBatchParallelUnsafeCommand('eval')).toBe(false);
     expect(T.isBatchParallelUnsafeCommand('status')).toBe(false);
     expect(T.isBatchParallelUnsafeCommand('frame')).toBe(false);
@@ -399,7 +400,7 @@ describe('COMMANDS registry', () => {
   it('keeps read-only extraction commands safe for parallel batch execution', () => {
     for (const name of [
       'controls', 'html', 'text', 'styles', 'summary', 'net', 'network', 'wait', 'waitfor',
-      'list', 'current', 'status', 'overlay', 'perceive', 'eval', 'cascade',
+      'list', 'current', 'status', 'overlay', 'perceive', 'eval', 'cascade', 'cookies',
     ]) {
       expect(T.isBatchParallelUnsafeCommand(name), name).toBe(false);
     }
@@ -12577,6 +12578,62 @@ describe('dismissModalStr', () => {
     expect(keyEvents.length).toBeGreaterThan(0);
     expect(evalCalls).toBeGreaterThan(0);
   });
+
+  it('#276 dismiss-modal names dialog-only scope when a blocking overlay is still up', async () => {
+    const overlay = {
+      id: 'p20ov',
+      tagName: 'DIV',
+      textContent: '',
+      parentElement: null,
+      __style: {
+        display: 'block',
+        visibility: 'visible',
+        opacity: '1',
+        position: 'fixed',
+        pointerEvents: 'auto',
+        zIndex: '99999',
+      },
+      getBoundingClientRect: () => ({
+        x: 0, y: 0, left: 0, top: 0, right: 1027, bottom: 632, width: 1027, height: 632,
+      }),
+      getAttribute: () => null,
+      matches: () => false,
+      querySelectorAll: () => [],
+    };
+    const previousWindow = globalThis.window;
+    const previousDocument = globalThis.document;
+    const previousCss = globalThis.CSS;
+    const previousGetComputedStyle = globalThis.getComputedStyle;
+    globalThis.window = { innerWidth: 1042, innerHeight: 632 };
+    globalThis.CSS = { escape: (value) => String(value) };
+    globalThis.getComputedStyle = (element) => element.__style;
+    globalThis.document = {
+      documentElement: { clientWidth: 1027, clientHeight: 632 },
+      querySelectorAll: (selector) => selector === 'body *' ? [overlay] : [],
+    };
+    try {
+      const parsed = JSON.parse(Function('source', 'return eval(source);')(T.dismissModalScript()));
+      expect(parsed).toMatchObject({ ok: false, reason: 'overlay-not-dialog' });
+      expect(parsed.overlays).toContain('#p20ov');
+    } finally {
+      globalThis.window = previousWindow;
+      globalThis.document = previousDocument;
+      globalThis.CSS = previousCss;
+      globalThis.getComputedStyle = previousGetComputedStyle;
+    }
+
+    const cdp = createMockCDP({
+      'Runtime.evaluate': () => ({
+        result: { value: JSON.stringify({ ok: false, reason: 'overlay-not-dialog', overlays: ['#p20ov'] }) },
+      }),
+    });
+    const out = await T.dismissModalStr(cdp, 'sid1');
+    expect(out).toMatch(/only handles dialog\/modal/i);
+    expect(out).toMatch(/#p20ov/);
+    expect(out).not.toMatch(/No visible modal\/dialog detected/);
+    expect(out).not.toMatch(/was present/);
+    expect(/no visible modal\/dialog detected/i.test(out)).toBe(false);
+  });
 });
 
 // =========================================================================
@@ -12637,12 +12694,16 @@ describe('overlay detector', () => {
     return element;
   }
 
-  function runOverlayPageFixture({ elements, targetPoint, topElement, targetContext = null, source = null, elementConstructor = null }) {
+  function runOverlayPageFixture({ elements, targetPoint, topElement, targetContext = null, source = null, elementConstructor = null, viewport = null }) {
     const previousWindow = globalThis.window;
     const previousDocument = globalThis.document;
     const previousCss = globalThis.CSS;
     const previousGetComputedStyle = globalThis.getComputedStyle;
     const previousElement = Object.getOwnPropertyDescriptor(globalThis, 'Element');
+    const innerWidth = viewport?.innerWidth ?? 1440;
+    const innerHeight = viewport?.innerHeight ?? 900;
+    const clientWidth = viewport?.clientWidth ?? innerWidth;
+    const clientHeight = viewport?.clientHeight ?? innerHeight;
     const pointInside = (point, element) => {
       const rect = element.getBoundingClientRect();
       return point.x >= rect.left && point.x <= rect.right
@@ -12650,8 +12711,8 @@ describe('overlay detector', () => {
     };
     const hitTest = (x, y) => (pointInside({ x, y }, topElement) ? topElement : null);
     globalThis.window = {
-      innerWidth: 1440,
-      innerHeight: 900,
+      innerWidth,
+      innerHeight,
       devicePixelRatio: 2,
     };
     globalThis.CSS = { escape: (value) => String(value) };
@@ -12662,6 +12723,8 @@ describe('overlay detector', () => {
       }
     };
     globalThis.document = {
+      documentElement: { clientWidth, clientHeight },
+      body: { clientWidth, clientHeight },
       querySelector: (selector) => elements.find(element => `#${element.id}` === selector) || null,
       querySelectorAll: (selector) => selector === 'body *'
         ? elements
@@ -12672,7 +12735,7 @@ describe('overlay detector', () => {
       const runPageScript = Function('source', 'return eval(source);');
       return {
         model: JSON.parse(runPageScript.call(targetContext, source || T.overlayDetectorScript({ targetPoint }))),
-        oracleTopElement: hitTest(targetPoint.x, targetPoint.y),
+        oracleTopElement: targetPoint ? hitTest(targetPoint.x, targetPoint.y) : topElement,
       };
     } finally {
       globalThis.window = previousWindow;
@@ -12690,6 +12753,94 @@ describe('overlay detector', () => {
     expect(script).toMatch(/aria-modal/);
     expect(script).toMatch(/role="dialog"/);
     expect(script).toContain('"input":"@4"');
+  });
+
+  it('#276 page-level overlay reports a visible fixed inset:0 overlay despite a scrollbar gutter', async () => {
+    const overlay = overlayFixtureElement({
+      id: 'p20ov',
+      position: 'fixed',
+      zIndex: '99999',
+      rect: { x: 0, y: 0, w: 1027, h: 632 },
+    });
+    const scrollbarViewport = {
+      innerWidth: 1042,
+      innerHeight: 632,
+      clientWidth: 1027,
+      clientHeight: 632,
+    };
+    const targetPoint = {
+      input: '#p20btn',
+      x: 80,
+      y: 40,
+      descriptor: '<BUTTON> "Continue"',
+    };
+    const button = overlayFixtureElement({
+      id: 'p20btn',
+      tagName: 'BUTTON',
+      text: 'Continue',
+      rect: { x: 40, y: 24, w: 80, h: 32 },
+    });
+
+    const pageLevel = runOverlayPageFixture({
+      elements: [overlay],
+      targetPoint: null,
+      topElement: overlay,
+      viewport: scrollbarViewport,
+    });
+    expect(pageLevel.model).toMatchObject({
+      schema: 'chrome-cdp-ex.overlays.v1',
+      overlayCount: 1,
+      blocking: true,
+    });
+    expect(pageLevel.model.overlayCount).toBeGreaterThanOrEqual(1);
+    expect(pageLevel.model.overlays[0]).toMatchObject({
+      selector: '#p20ov',
+      kind: 'overlay',
+      blocking: true,
+      coversViewport: true,
+    });
+
+    const targeted = runOverlayPageFixture({
+      elements: [button, overlay],
+      targetPoint,
+      topElement: overlay,
+      viewport: scrollbarViewport,
+    });
+    expect(targeted.model.target.blocked).toBe(true);
+    expect(targeted.model.overlays).toContainEqual(expect.objectContaining({ selector: '#p20ov' }));
+
+    overlay.__style.display = 'none';
+    const hidden = runOverlayPageFixture({
+      elements: [overlay],
+      targetPoint: null,
+      topElement: overlay,
+      viewport: scrollbarViewport,
+    });
+    expect(hidden.model).toMatchObject({ overlayCount: 0, blocking: false, overlays: [] });
+
+    overlay.__style.display = 'block';
+    const cdp = createMockCDP({
+      'Runtime.evaluate': (params) => {
+        const { model } = runOverlayPageFixture({
+          elements: [overlay],
+          targetPoint: null,
+          topElement: overlay,
+          viewport: scrollbarViewport,
+          source: params.expression,
+        });
+        return { result: { value: JSON.stringify(model) } };
+      },
+    });
+    const json = JSON.parse(await T.overlayStr(cdp, 'sid1', '62E1DF19ABCDEF', ['--format', 'json'], new Map(), {}));
+    expect(json).toMatchObject({
+      schema: 'chrome-cdp-ex.overlays.v1',
+      overlayCount: 1,
+      blocking: true,
+      nextCommand: 'cdp dismiss-modal 62E1DF19ABCDEF',
+    });
+    const text = await T.overlayStr(cdp, 'sid1', '62E1DF19ABCDEF', [], new Map(), {});
+    expect(text).toContain('Overlay detector: blocking');
+    expect(text).not.toContain('Overlay detector: clear');
   });
 
   it('does not classify a fixed target as its own blocking overlay', () => {

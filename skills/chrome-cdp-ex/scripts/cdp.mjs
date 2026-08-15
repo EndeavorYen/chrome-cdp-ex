@@ -16024,6 +16024,13 @@ function commandMeta(cmd) {
 
 const BATCH_PARALLEL_SAFE_SCRIPT_COMMANDS = new Set(['eval', 'eval64', 'call']);
 
+function isParallelSafeCookieList(command) {
+  return command.name === 'cookies'
+    && command.kind === 'sensitive-read'
+    && command.authorization === 'sensitive-read'
+    && command.mutates === false;
+}
+
 function isViewportMutationArg(value) {
   return /^\d+x\d+$/i.test(String(value || ''));
 }
@@ -16047,6 +16054,7 @@ function isBatchParallelUnsafeCommand(cmd, args = []) {
     return args.some(arg => isViewportMutationArg(arg));
   }
   if (BATCH_PARALLEL_SAFE_SCRIPT_COMMANDS.has(command.name)) return false;
+  if (isParallelSafeCookieList(command)) return false;
   if (command.kind !== 'read'
     || command.authorization !== 'standard'
     || command.evidencePolicy !== 'none') return true;
@@ -18275,6 +18283,10 @@ function overlayDetectorScript({ targetPoint = null, objectBoundTarget = false }
     const targetPoint = ${targetJson};
     const vw = window.innerWidth || 0;
     const vh = window.innerHeight || 0;
+    const layoutW = (document.documentElement && document.documentElement.clientWidth) || vw;
+    const layoutH = (document.documentElement && document.documentElement.clientHeight) || vh;
+    const slackX = Math.max(8, vw - layoutW);
+    const slackY = Math.max(8, vh - layoutH);
     function visible(el) {
       if (!el || el.id === '__cdp_annot_overlay__') return false;
       const cs = getComputedStyle(el);
@@ -18315,7 +18327,8 @@ function overlayDetectorScript({ targetPoint = null, objectBoundTarget = false }
         pointerEvents: cs.pointerEvents,
         zIndex: cs.zIndex,
         rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
-        coversViewport: r.left <= 8 && r.top <= 8 && r.right >= vw - 8 && r.bottom >= vh - 8,
+        coversViewport: (r.left <= slackX && r.top <= slackY && r.right >= vw - slackX && r.bottom >= vh - slackY)
+          || (r.left <= 8 && r.top <= 8 && r.right >= layoutW - 8 && r.bottom >= layoutH - 8),
         coversTarget: pointInRect(target, r),
         topAtCenter: topAtCenter === el || el.contains(topAtCenter),
         topAtTarget: topAtTarget === el || el.contains(topAtTarget),
@@ -18488,6 +18501,25 @@ function dismissModalScript() {
     }
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"], dialog, [aria-modal="true"]')).filter(visible);
     if (dialogs.length === 0) {
+      const vw = window.innerWidth || 0;
+      const vh = window.innerHeight || 0;
+      const layoutW = (document.documentElement && document.documentElement.clientWidth) || vw;
+      const layoutH = (document.documentElement && document.documentElement.clientHeight) || vh;
+      const slackX = Math.max(8, vw - layoutW);
+      const slackY = Math.max(8, vh - layoutH);
+      const overlays = [];
+      for (const el of document.querySelectorAll('body *')) {
+        if (!el || el.id === '__cdp_annot_overlay__') continue;
+        const cs = getComputedStyle(el);
+        if ((cs.position !== 'fixed' && cs.position !== 'sticky') || !visible(el) || cs.pointerEvents === 'none') continue;
+        const r = el.getBoundingClientRect();
+        const coversViewport = (r.left <= slackX && r.top <= slackY && r.right >= vw - slackX && r.bottom >= vh - slackY)
+          || (r.left <= 8 && r.top <= 8 && r.right >= layoutW - 8 && r.bottom >= layoutH - 8);
+        if (!coversViewport) continue;
+        overlays.push(el.id ? ('#' + (typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(el.id) : el.id)) : (el.tagName || 'overlay'));
+        if (overlays.length >= 5) break;
+      }
+      if (overlays.length) return JSON.stringify({ ok: false, reason: 'overlay-not-dialog', overlays });
       return JSON.stringify({ ok: false, reason: 'no-dialog' });
     }
     // Prefer an explicit close button inside a visible dialog.
@@ -18513,6 +18545,10 @@ async function dismissModalStr(cdp, sid) {
   }
   if (parsed.reason === 'no-dialog') {
     return 'No visible modal/dialog detected.';
+  }
+  if (parsed.reason === 'overlay-not-dialog') {
+    const names = (parsed.overlays || []).filter(Boolean).join(', ') || 'overlay';
+    return `dismiss-modal only handles dialog/modal patterns; blocking overlay still visible (${names}).`;
   }
   // Fallback: send Escape (does not fire window-level shortcuts the way Space does).
   await pressStr(cdp, sid, 'escape');
