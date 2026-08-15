@@ -6698,17 +6698,61 @@ function isSensitiveActionTarget(action, target = {}) {
   return SENSITIVE_ACTION_TARGET_RE.test(probe);
 }
 
+function sensitiveActionSecret(action, target = {}) {
+  if (!isSensitiveActionTarget(action, target)) return '';
+  const args = Array.isArray(target.commandArgs) ? target.commandArgs : [];
+  if (action === 'type') return args[0] == null ? '' : String(args[0]);
+  if (args[0] === '--react') return args[2] == null ? '' : String(args[2]);
+  return args[1] == null ? '' : String(args[1]);
+}
+
+function replaceSecretLiteral(value, secret) {
+  if (!secret || secret === REDACTED_VALUE || value == null) return value;
+  if (typeof value === 'string') return value.includes(secret) ? value.split(secret).join(REDACTED_VALUE) : value;
+  if (Array.isArray(value)) return value.map(item => replaceSecretLiteral(item, secret));
+  if (typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entryValue]) => [
+      key,
+      replaceSecretLiteral(entryValue, secret),
+    ]));
+  }
+  return value;
+}
+
+function redactSensitiveDispatchText(text) {
+  return String(text || '')
+    .replace(/with "(?:\\.|[^"\\])*"/g, `with "${REDACTED_VALUE}"`)
+    .replace(/with '(?:\\.|[^'\\])*'/g, `with '${REDACTED_VALUE}'`);
+}
+
+function redactSensitiveCommandArgs(action, args = []) {
+  if (action === 'type') return args.map((arg, index) => (index === 0 ? REDACTED_VALUE : arg));
+  if (args[0] === '--react') return args.map((arg, index) => (index <= 1 ? arg : REDACTED_VALUE));
+  return args.map((arg, index) => (index === 0 ? arg : REDACTED_VALUE));
+}
+
 function sanitizeActionTargetForLog(action, target = null) {
   if (!target || typeof target !== 'object') return target;
   const sanitized = {
     ...target,
     commandArgs: Array.isArray(target.commandArgs) ? [...target.commandArgs] : target.commandArgs,
   };
-  if (isSensitiveActionTarget(action, sanitized) && Array.isArray(sanitized.commandArgs) && sanitized.commandArgs.length > 1) {
-    sanitized.commandArgs = sanitized.commandArgs.map((arg, index) => index === 0 ? arg : '<redacted>');
-    sanitized.redacted = [...(sanitized.redacted || []), 'commandArgs'];
+  if (!isSensitiveActionTarget(action, sanitized)) return sanitized;
+  const secret = sensitiveActionSecret(action, sanitized);
+  let next = secret && secret !== REDACTED_VALUE
+    ? replaceSecretLiteral(sanitized, secret)
+    : sanitized;
+  const redacted = new Set(next.redacted || []);
+  if (Array.isArray(next.commandArgs) && next.commandArgs.length) {
+    next = { ...next, commandArgs: redactSensitiveCommandArgs(action, next.commandArgs) };
+    redacted.add('commandArgs');
   }
-  return sanitized;
+  if (typeof next.dispatchText === 'string') {
+    next = { ...next, dispatchText: redactSensitiveDispatchText(next.dispatchText) };
+    redacted.add('dispatchText');
+  }
+  next.redacted = [...redacted];
+  return next;
 }
 
 function sessionLogPath(targetId, runtimeDir = RUNTIME_DIR) {
@@ -6935,8 +6979,9 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
   const domDiff = actionResult.effects?.domDiff || '';
   const { summary, sample } = summarizeActionDomDiff(domDiff);
   const diagnostics = summarizeActionObservationEffects(actionResult.effects || {});
+  const secret = sensitiveActionSecret(actionResult.action, actionResult.target || {});
   const target = sanitizeActionTargetForLog(actionResult.action, actionResult.target || null);
-  const entry = redactSensitiveArtifactValue({
+  const entry = replaceSecretLiteral(redactSensitiveArtifactValue({
     sequence,
     eventId,
     ts,
@@ -6958,7 +7003,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
     verdict: actionResult.verdict || buildActionVerdict(actionResult),
     receipt,
     nextHint: actionResult.nextHint || null,
-  });
+  }), secret);
   session.actionLog.push(entry);
   if (session.actionLog.length > MAX_ACTION_LOG_ENTRIES) {
     session.actionLog.splice(0, session.actionLog.length - MAX_ACTION_LOG_ENTRIES);
@@ -7584,11 +7629,12 @@ function buildRecordActionsModel(session) {
     const needsInput = dispatchFailed
       ? [...new Set([...inferred.needsInput, 'successful-dispatch'])]
       : inferred.needsInput;
-    return {
+    const secret = sensitiveActionSecret(entry.action, entry.target || {});
+    return replaceSecretLiteral({
       index: index + 1,
       ts: entry.ts,
       action: entry.action,
-      target: entry.target || null,
+      target: sanitizeActionTargetForLog(entry.action, entry.target || null),
       command: inferred.command,
       replayable: dispatchFailed ? false : inferred.replayable,
       needsInput,
@@ -7610,7 +7656,7 @@ function buildRecordActionsModel(session) {
         verdict: entry.verdict || null,
         nextHint: entry.nextHint || null,
       },
-    };
+    }, secret);
   });
   const environment = buildRecordEnvironmentModel(session);
   return {
@@ -15394,6 +15440,24 @@ async function resolveStyleSource(cdp, sid, rule) {
   return mapStyleSource(header?.text || '', sheetId, genLine0);
 }
 
+function cssDeclarationImportant(prop = {}) {
+  if (prop.important === true) return true;
+  if (String(prop.important || '').toLowerCase() === 'important') return true;
+  return /\s!important\s*$/i.test(String(prop.text || ''));
+}
+
+function cascadeDeclarationRank(rule = {}) {
+  const important = rule.important === true;
+  const inline = rule.origin === 'inline';
+  const userAgent = rule.origin === 'user-agent';
+  if (userAgent && important) return 50;
+  if (inline && important) return 40;
+  if (important) return 30;
+  if (inline) return 20;
+  if (userAgent) return 0;
+  return 10;
+}
+
 async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts = {}) {
   if (!selector) throw new Error('CSS selector or @ref required');
   const targetPrefix = opts.targetPrefix || '<target>';
@@ -15457,6 +15521,7 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts =
         selector: selectorText,
         source,
         origin,
+        important: cssDeclarationImportant(prop),
       });
     }
   }
@@ -15467,13 +15532,14 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts =
     if (prop.name.startsWith('-webkit-') || prop.name.startsWith('-moz-')) continue;
     if (property && prop.name !== property) continue;
     if (!propRules.has(prop.name)) propRules.set(prop.name, []);
-    // Inline styles win over stylesheet rules; keep them last so cascade-order
-    // winner selection (last matching declaration) treats them as the winner.
+    // Inline styles beat non-important stylesheet rules. Keep them last so
+    // same-rank ties still follow cascade order; !important is ranked separately.
     propRules.get(prop.name).push({
       value: prop.value,
       selector: '[inline]',
       source: 'inline style attribute',
       origin: 'inline',
+      important: cssDeclarationImportant(prop),
     });
   }
 
@@ -15489,12 +15555,19 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts =
     return aliases[a] === b || aliases[b] === a;
   };
   const cascadeWinnerIndex = (rules, computedVal) => {
+    let bestRank = -1;
+    for (const rule of rules) {
+      const rank = cascadeDeclarationRank(rule);
+      if (rank > bestRank) bestRank = rank;
+    }
     let equivalent = -1;
+    let lastAtRank = -1;
     for (let i = 0; i < rules.length; i++) {
+      if (cascadeDeclarationRank(rules[i]) !== bestRank) continue;
+      lastAtRank = i;
       if (cssValuesEquivalent(rules[i].value, computedVal)) equivalent = i;
     }
-    if (equivalent >= 0) return equivalent;
-    return rules.length - 1;
+    return equivalent >= 0 ? equivalent : lastAtRank;
   };
 
   // Dedupe identical (selector, normalized value, source, origin) entries per property.
@@ -16446,23 +16519,62 @@ function parseReplayArtifact(raw) {
   return artifact;
 }
 
+function replayCommandMissingFields(action = {}, command = []) {
+  const declared = Array.isArray(action.needsInput) ? action.needsInput.filter(Boolean) : [];
+  const inferred = [];
+  const cmd = command[0];
+  if (cmd === 'fill') {
+    try {
+      const parsed = parseFillArgs(command.slice(1));
+      const textTokens = parsed.args.slice(1);
+      if (!parsed.selector) inferred.push('target');
+      if (textTokens.length === 0) inferred.push('text');
+    } catch {
+      inferred.push('text');
+    }
+  } else if (cmd === 'type') {
+    try {
+      const fopts = parseCompactFormatArgs(command.slice(1), ['text', 'json']);
+      if (!fopts.args.length) inferred.push('text');
+    } catch {
+      inferred.push('text');
+    }
+  } else if (cmd === 'select' && command.length < 3) {
+    inferred.push('value');
+  }
+  return [...new Set([...declared, ...inferred])];
+}
+
 function replayStepFromAction(action = {}) {
   const command = Array.isArray(action.command) ? action.command.map(v => String(v)) : [];
   const commandText = command.length ? formatCommandLine(command) : `${action.action || 'action'} <missing command>`;
+  const missing = replayCommandMissingFields(action, command);
   if (action.replayable !== true) {
-    const missing = Array.isArray(action.needsInput) && action.needsInput.length
-      ? action.needsInput
-      : ['review'];
-    return { skip: true, command, commandText, missing, reason: 'not replayable' };
+    return {
+      skip: true,
+      command,
+      commandText,
+      missing: missing.length ? missing : ['review'],
+      reason: 'not replayable',
+    };
   }
   if (!command.length || !command[0]) {
     return { skip: true, command, commandText, missing: ['command'], reason: 'missing command' };
   }
   if (command.includes('<redacted>')) {
-    return { skip: true, command, commandText, missing: redactedCommandNeedsInput(action.action || command[0]), reason: 'redacted input' };
+    return {
+      skip: true,
+      command,
+      commandText,
+      missing: missing.length ? missing : redactedCommandNeedsInput(action.action || command[0]),
+      reason: 'redacted input',
+    };
   }
   if (REPLAY_BLOCKED.has(command[0])) {
     return { skip: true, command, commandText, missing: ['safe command'], reason: `blocked command: ${command[0]}` };
+  }
+  if (missing.length) {
+    return { skip: true, command, commandText, missing, reason: 'missing input' };
   }
   return { cmd: command[0], args: command.slice(1), command, commandText };
 }

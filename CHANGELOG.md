@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#270, #271, #272)
+
+* Password-like `fill` / `type` values are redacted in every `record-actions`
+  field, including `target.dispatchText` and effect samples. `commandArgs`
+  stay `<redacted>` and the step stays `replayable: false`.
+* `cascade` `winner` / `editTarget` is the declaration that produces
+  `computedValue`. An injected `!important` rule beats a non-important inline
+  style instead of naming the losing inline as the edit target.
+* `replay` of an incomplete `fill` (`needsInput: ["text"]` or no text
+  argument) skips or fails closed with missing field `text`. It does not
+  guess `""` or mutate the live input. Password fills that are
+  `replayable: false` stay skipped.
+
 ### Open issue dogfood (#266, #267)
 
 * Realistic `click` / `clickxy` overlap Chrome 151's mouse CDP acks instead of

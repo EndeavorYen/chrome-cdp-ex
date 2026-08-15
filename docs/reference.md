@@ -382,7 +382,7 @@ Use `cascade` when the agent knows what looks wrong but needs the source rule:
 node skills/chrome-cdp-ex/scripts/cdp.mjs cascade <target> @ref background-color --format json
 ```
 
-`cascade` returns the winning selector, overridden rules, source location, and edit target. It also resolves common Vite, CSS Modules, and Vue source-map locations.
+`cascade` returns the winning selector, overridden rules, source location, and edit target. `winner` / `editTarget` is the declaration that produces `computedValue`, including an injected `!important` rule that beats a non-important inline style. It also resolves common Vite, CSS Modules, and Vue source-map locations.
 
 ## Session Assets
 
@@ -400,7 +400,7 @@ Use these when exploration should become reusable evidence:
 
 Missing restore/replay files are usage errors (`cdp help restore` / `cdp help replay`), not page failures. `diff-shot` fails closed if screenshot capture times out instead of reporting a fake 0% match.
 
-Report, record-actions, export-playwright, and session JSONL artifacts redact common password, token, API key, authorization, cookie, and session patterns by default while preserving command names, keys, counts, domains, and paths for debugging. Checkpoint JSON also redacts cookie values and sensitive storage keys by default. Use `checkpoint --unsafe-full --format json` only when you need a fully restorable artifact; that output intentionally includes raw cookies and storage values, so treat it like a secret.
+Report, record-actions, export-playwright, and session JSONL artifacts redact common password, token, API key, authorization, cookie, and session patterns by default while preserving command names, keys, counts, domains, and paths for debugging. Password-like fill/type values are redacted in every `record-actions` field, including `commandArgs`, `dispatchText`, and effect samples. Replay does not guess empty fill text for incomplete commands; missing `text` is skipped or failed closed. Checkpoint JSON also redacts cookie values and sensitive storage keys by default. Use `checkpoint --unsafe-full --format json` only when you need a fully restorable artifact; that output intentionally includes raw cookies and storage values, so treat it like a secret.
 
 ## Browser Setup
 
