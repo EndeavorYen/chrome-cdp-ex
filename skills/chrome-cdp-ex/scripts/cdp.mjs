@@ -130,6 +130,8 @@ import {
 const TIMEOUT = 15000;
 const SCREENSHOT_TIMEOUT = 30000;
 const QA_SCREENSHOT_TIMEOUT_MS = 2000;
+const VERIFY_CLICK_SETTLE_MS = 800;
+const VERIFY_CLICK_REQUEST_WAIT_MS = 1000;
 const NAVIGATION_TIMEOUT = 30000;
 const RELOAD_EVENT_TIMEOUT = 1000;
 const RELOAD_DISPATCH_TIMEOUT = 1000;
@@ -1567,6 +1569,53 @@ function formatTabGroup(group, { format = 'text' } = {}) {
     `Members (${group.members.length}): ${group.members.join(', ') || '(empty)'}`,
     group.updatedAt ? `Updated: ${group.updatedAt}` : null,
   ].filter(Boolean).join('\n');
+}
+
+function listKnownLiveTargetIds({
+  listDaemons = listDaemonSockets,
+  readPages = () => {
+    if (!existsSync(PAGES_CACHE)) return [];
+    try {
+      const cached = JSON.parse(readFileSync(PAGES_CACHE, 'utf8'));
+      return Array.isArray(cached) ? cached : cached.pages || [];
+    } catch {
+      return [];
+    }
+  },
+} = {}) {
+  const ids = new Set();
+  for (const daemon of listDaemons() || []) {
+    if (daemon?.targetId) ids.add(String(daemon.targetId));
+  }
+  for (const page of readPages() || []) {
+    if (page?.targetId) ids.add(String(page.targetId));
+  }
+  return [...ids];
+}
+
+function resolveTabGroupMember(member, {
+  targetIds = [],
+  resolveAlias = resolveTargetAlias,
+} = {}) {
+  const raw = String(member || '').trim();
+  if (!raw) throw new Error('tab-group: target required');
+  const alias = resolveAlias(raw);
+  const wanted = alias?.targetId || raw;
+  const candidates = (targetIds || []).map(id => String(id));
+  if (!candidates.length) {
+    throw new Error(`No live target matching prefix "${raw}".`);
+  }
+  try {
+    resolvePrefix(wanted, candidates, 'live target');
+  } catch (error) {
+    if (/ambiguous/i.test(error.message || '')) throw error;
+    throw new Error(`No live target matching prefix "${raw}".`);
+  }
+  return raw;
+}
+
+function resolveTabGroupMembers(members = [], options = {}) {
+  return members.map(member => resolveTabGroupMember(member, options));
 }
 
 function parseBroadcastArgs(args = []) {
@@ -3127,6 +3176,7 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
       captured = { data: result.data, fallback: false, method: 'captureScreenshot' };
     } catch (err) {
       if (!err.message?.startsWith('Timeout:')) throw err;
+      if (hooks.failFastOnTimeout === true) throw err;
       _screenshotTier = 2;
     }
   }
@@ -3139,6 +3189,7 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
       captured = { data: result.data, fallback: true, method: 'captureScreenshot-fromSurface-false' };
     } catch (err) {
       if (!err.message?.startsWith('Timeout:')) throw err;
+      if (hooks.failFastOnTimeout === true) throw err;
       _screenshotTier = 3;
     }
   }
@@ -3401,7 +3452,18 @@ function nextDiffShotArtifactPaths(session) {
 }
 
 async function diffShotStr(cdp, sid, session, opts = {}) {
-  const shot = await captureScreenshot(cdp, sid, { format: 'png' });
+  let shot;
+  try {
+    shot = await captureScreenshot(cdp, sid, { format: 'png' }, diffShotScreenshotCaptureOptions());
+  } catch (error) {
+    if (isScreenshotTimeoutError(error)) {
+      throw new Error('diff-shot: screenshot capture timed out; comparison is untrusted');
+    }
+    throw error;
+  }
+  if (shot.fallback === true) {
+    throw new Error('diff-shot: screenshot capture timed out; comparison is untrusted');
+  }
   const targetId = session.targetId;
   const reset = opts.reset || !session.diffShot?.baselineData;
   const paths = nextDiffShotArtifactPaths(session);
@@ -5245,6 +5307,9 @@ function parseVerifyClickArgs(args = []) {
     }
   }
   if (positional.length !== 1) throw new Error('verify-click requires exactly one selector or @ref');
+  if (opts.expectStatus != null && !opts.expectRequest) {
+    throw new Error('verify-click: --expect-status requires --expect-request');
+  }
   opts.selector = positional[0];
   return opts;
 }
@@ -5369,6 +5434,10 @@ function formatSemanticInteractionResult(model) {
     }
   }
   lines.push(`Verdict: ${model.verdict}`);
+  if (model.verdict === 'fail') {
+    lines.push('Kind: assertion');
+    lines.push('Next: cdp help verify-click');
+  }
   return lines.join('\n');
 }
 
@@ -5385,6 +5454,14 @@ function qaScreenshotCaptureOptions() {
   return {
     timeoutMs: QA_SCREENSHOT_TIMEOUT_MS,
     skipSanityRetry: true,
+  };
+}
+
+function diffShotScreenshotCaptureOptions() {
+  return {
+    timeoutMs: QA_SCREENSHOT_TIMEOUT_MS,
+    skipSanityRetry: true,
+    failFastOnTimeout: true,
   };
 }
 
@@ -14212,21 +14289,53 @@ function commandOwnsActionEvidence(command = null) {
     && record.feedbackPolicy !== null;
 }
 
+function commandCatalogName(command = null) {
+  return COMMAND_SURFACE.resolve(command)?.name || command || '';
+}
+
+function batchOutputHasFailure(output, parsed = maybeParseJson(output)) {
+  if (parsed?.schema === 'chrome-cdp-ex.batch.v1') return Number(parsed.counts?.failed) > 0;
+  if (Array.isArray(parsed)) return parsed.some(step => step && step.ok === false);
+  return / \(error\)|: ERROR /m.test(String(output || ''));
+}
+
+function semanticAssertionFailureMessage(model = null, output = '') {
+  const failed = (model?.assertions || [])
+    .filter(assertion => assertion?.status === 'fail')
+    .map(assertion => assertion.message)
+    .filter(Boolean);
+  if (failed.length) return failed.join('; ');
+  if (/^Verdict:\s*fail$/m.test(String(output || ''))) return 'Verdict: fail';
+  return 'assertion failed';
+}
+
 function classifyCommandResultSemantics(result = null, { command = null } = {}) {
   const transportOk = result?.ok === true
     || (Number.isInteger(result?.code) && result.code === 0);
   const output = Object.hasOwn(result || {}, 'result') ? result.result : result?.stdout;
-  const model = commandOwnsActionEvidence(command) ? maybeParseJson(output) : null;
-  const { action, dispatch } = actionDispatchSemanticsFromModel(model);
+  const parsed = maybeParseJson(output);
+  const ownsAction = commandOwnsActionEvidence(command);
+  const catalogName = commandCatalogName(command);
+  const model = ownsAction || catalogName === 'batch' ? parsed : null;
+  const { action, dispatch } = actionDispatchSemanticsFromModel(ownsAction ? parsed : null);
   const dispatchFailed = dispatch?.ok === false;
+  const assertionFailed = catalogName === 'verify-click' && (
+    parsed?.verdict === 'fail'
+    || /^Verdict:\s*fail$/m.test(String(output || ''))
+  );
+  const batchFailed = catalogName === 'batch' && batchOutputHasFailure(output, parsed);
   const error = result?.error
     || (dispatchFailed
       ? actionDispatchFailureMessage(action, dispatch)
-      : null);
+      : null)
+    || (assertionFailed ? semanticAssertionFailureMessage(parsed, output) : null)
+    || (batchFailed ? 'batch step failed' : null);
   return {
-    ok: transportOk && !dispatchFailed,
+    ok: transportOk && !dispatchFailed && !assertionFailed && !batchFailed,
     transportOk,
     dispatchFailed,
+    assertionFailed,
+    batchFailed,
     error,
     model,
     action,
@@ -14374,7 +14483,10 @@ function buildBatchResultModel(results = [], { targetId = null, mode = 'sequenti
     for (const command of recoveryCommandsFromVerdict(step.verdict)) pushNext(command);
   }
   if (failedSteps.length && nextSteps.length === 0) {
-    nextSteps.push(targetId ? `cdp status ${targetId}` : 'cdp status <target>');
+    const unknownCommand = failedSteps.some(step => /unknown command/i.test(step.error || ''));
+    nextSteps.push(unknownCommand
+      ? 'cdp help'
+      : (targetId ? `cdp status ${targetId}` : 'cdp status <target>'));
   }
   return {
     schema: 'chrome-cdp-ex.batch.v1',
@@ -17566,12 +17678,20 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     'verify-click': async args => {
       const vopts = parseVerifyClickArgs(args);
       let captured = null;
+      const observeAssertions = async () => {
+        if (vopts.expectRequest) {
+          await waitForActionNetworkQuiet(pendingReqs, { timeoutMs: VERIFY_CLICK_REQUEST_WAIT_MS });
+          return '(verify-click request window)';
+        }
+        await waitForSettle(cdp, sessionId, VERIFY_CLICK_SETTLE_MS);
+        return '(verify-click assertion window)';
+      };
       await actionFeedback(
         'click',
         () => clickStr(cdp, sessionId, vopts.selector, refMap, refState),
         { input: vopts.selector, resolvedBy: 'selector-or-ref', label: vopts.selector || '', commandArgs: [vopts.selector] },
         'settle-diff',
-        null,
+        observeAssertions,
         'json',
         result => { captured = result; },
       );
@@ -19208,7 +19328,7 @@ async function executeDaemonApplicationRoute(requestInput, context, execution = 
     { ok: true, result: route.result },
     { command: request.cmd },
   );
-  if (semantics.dispatchFailed) {
+  if (!semantics.ok) {
     return {
       handled: route.handled,
       ok: false,
@@ -19361,9 +19481,9 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
     case 'flow':
       return `cdp flow ${target} "click @1; wait dom stable; summary"`;
     case 'replay':
-      return `cdp replay ${target} --file <record-actions.json>`;
+      return 'cdp help replay';
     case 'restore':
-      return `cdp restore ${target} --file <checkpoint.json>`;
+      return 'cdp help restore';
     case 'inject':
       return `cdp inject ${target} --css "body { outline: 1px solid red }"`;
     case 'stop':
@@ -19376,6 +19496,11 @@ function commandUsageTemplate(cmd = '', targetPrefix = '') {
       return 'cdp help waitfor';
     case 'wait':
       return 'cdp help wait';
+    case 'repeat':
+      return 'cdp help repeat';
+    case 'verify-click':
+    case 'verifyclick':
+      return 'cdp help verify-click';
     case 'tab-group':
     case 'tabgroup':
       return 'cdp help tab-group';
@@ -19506,6 +19631,80 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       strategy: 'show-help',
       run: 'cdp help wait',
       reason: 'wait requires a positive millisecond duration. Print usage instead of probing doctor/status.',
+    };
+  }
+  if (
+    (cmd === 'repeat'
+      || lower.includes('repeat requires')
+      || lower.includes('repeat: count')
+      || lower.includes('repeat: command name required'))
+    && (
+      lower.includes('repeat requires')
+      || lower.includes('count must be a positive integer')
+      || lower.includes('command name required')
+      || lower.includes('exceeds cap')
+    )
+  ) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help repeat',
+      reason: 'repeat requires a positive count and a command. Print usage instead of probing status.',
+    };
+  }
+  if (
+    (cmd === 'verify-click' || cmd === 'verifyclick' || lower.includes('verify-click:'))
+    && (
+      lower.includes('requires')
+      || lower.includes('exactly one selector')
+      || lower.includes('unknown argument')
+    )
+  ) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help verify-click',
+      reason: 'verify-click needs a selector and paired network assertions. --expect-status alone is not a check.',
+    };
+  }
+  if (
+    (cmd === 'restore' || cmd === 'replay'
+      || lower.includes('restore:')
+      || lower.includes('replay:'))
+    && (
+      lower.includes('enoent')
+      || lower.includes('no such file')
+      || lower.includes('unsupported') && lower.includes('schema')
+      || lower.includes('requires --file')
+      || lower.includes('requires --json')
+      || lower.includes('invalid checkpoint')
+      || lower.includes('invalid json artifact')
+      || lower.includes('artifact must be')
+      || lower.includes('checkpoint artifact must')
+    )
+  ) {
+    const helpCmd = cmd === 'replay' || lower.includes('replay') ? 'replay' : 'restore';
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: `cdp help ${helpCmd}`,
+      reason: `${helpCmd} needs an existing artifact with a supported schema. Missing files are local usage, not a page failure.`,
+    };
+  }
+  if (
+    (cmd === 'diff-shot' || cmd === 'diffshot' || lower.includes('diff-shot:'))
+    && (
+      lower.includes('timed out')
+      || lower.includes('untrusted')
+      || lower.includes('capture timed out')
+      || lower.includes('timeout: page.capturescreenshot')
+    )
+  ) {
+    return {
+      kind: 'timeout',
+      strategy: 'retry-or-use-shot',
+      run: 'cdp help diff-shot',
+      reason: 'Screenshot capture timed out. Do not treat a missing capture as 0% changed.',
     };
   }
   if (
@@ -20184,7 +20383,7 @@ export async function executeCdpCli(command, { runMain = main, hostProcess = pro
   }
   const normalized = { code, stdout: stdout.trim(), stderr: stderr.trim() };
   if (normalized.code === 0
-    && classifyCommandResultSemantics(normalized, { command: command[0] }).dispatchFailed) {
+    && !classifyCommandResultSemantics(normalized, { command: command[0] }).ok) {
     normalized.code = 1;
   }
   return normalized;
@@ -20216,7 +20415,7 @@ function emitTargetCommandResponse(response, {
       { ok: response?.ok === true, result: output },
       { command: cmd },
     );
-    if (response?.ok === false || semantics.dispatchFailed) process.exitCode = 1;
+    if (response?.ok === false || !semantics.ok) process.exitCode = 1;
     return;
   }
   if (response?.ok === false) {
@@ -20313,7 +20512,11 @@ async function main(options = {}) {
       if (opts.action === 'create') {
         const [name, ...members] = opts.args;
         if (!name) throw new Error('tab-group create: name required');
-        store = upsertTabGroup(store, { name, members });
+        const liveTargetIds = listKnownLiveTargetIds();
+        store = upsertTabGroup(store, {
+          name,
+          members: resolveTabGroupMembers(members, { targetIds: liveTargetIds }),
+        });
         writeTabGroups(store);
         console.log(formatTabGroup(store.groups[normalizeTabGroupName(name)], { format: opts.format }));
         return finish(0);
@@ -20321,7 +20524,10 @@ async function main(options = {}) {
       if (opts.action === 'add') {
         const [name, member] = opts.args;
         if (!name || !member) throw new Error('tab-group add: name and target required');
-        store = upsertTabGroup(store, { name, members: [member] });
+        store = upsertTabGroup(store, {
+          name,
+          members: resolveTabGroupMembers([member], { targetIds: listKnownLiveTargetIds() }),
+        });
         writeTabGroups(store);
         console.log(formatTabGroup(store.groups[normalizeTabGroupName(name)], { format: opts.format }));
         return finish(0);
@@ -21057,6 +21263,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseQaArgs, buildQaPageModel, formatQaPageReport, qaPageStr,
   captureViewportSize, restoreViewportSize,
   qaScreenshotCaptureOptions, QA_SCREENSHOT_TIMEOUT_MS,
+  diffShotScreenshotCaptureOptions,
+  VERIFY_CLICK_SETTLE_MS, VERIFY_CLICK_REQUEST_WAIT_MS,
   HOVER_MOUSE_ACK_TIMEOUT_MS,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest, isNetworkFailure,
@@ -21148,6 +21356,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   emptyTabGroupStore, normalizeTabGroupName, normalizeTabGroupStore, readTabGroups, writeTabGroups,
   upsertTabGroup, removeTabGroupMember, deleteTabGroup, getTabGroup,
   parseTabGroupArgs, formatTabGroupStore, formatTabGroup,
+  listKnownLiveTargetIds, resolveTabGroupMember, resolveTabGroupMembers,
   parseBroadcastArgs, buildBroadcastModel, formatBroadcastResult,
   parseComponentsArgs, frameworkDetectorScript, reactComponentsTreeScript, vueComponentsTreeScript,
   sanitizeComponentValue, sanitizeComponentResult, componentsStr, chooseAdaptivePerceiveLast,

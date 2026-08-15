@@ -7,7 +7,7 @@ import { runInNewContext } from 'node:vm';
 
 process.env.NODE_ENV = 'test';
 
-const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+const { __test__: T, executeCdpCli } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const {
   MCP_TOOL_DEFINITIONS,
   buildMcpToolCommand,
@@ -3903,6 +3903,254 @@ describe('issues #210-#217 open contracts', () => {
     const cssExpr = calls.find(call => call.method === 'Runtime.evaluate')?.params.expression || '';
     expect(cssExpr).not.toMatch(/scrollIntoView/);
     expect(cssExpr).not.toMatch(/requestAnimationFrame/);
+  });
+});
+
+describe('issues #220-#225 open contracts', () => {
+  it('#220 verify-click assertion fail is RC≠0; unused --expect-status is usage', async () => {
+    expect(() => T.parseVerifyClickArgs(['#b', '--expect-status', '200']))
+      .toThrow(/--expect-status requires --expect-request/);
+    expect(() => T.parseVerifyClickArgs(['#b', '--expect-request', 'GET /', '--expect-status', '200']))
+      .not.toThrow();
+
+    const failed = T.buildSemanticInteractionModel({
+      action: 'click',
+      target: { input: '#b', label: '#b' },
+      dispatch: { ok: true, method: 'click' },
+      effects: { network: [], consoleDelta: {}, exceptionDelta: {} },
+    }, { expectText: 'NOPE-NOT-HERE' }, { textMatched: false });
+    expect(failed).toMatchObject({ verdict: 'fail' });
+    const text = T.formatSemanticInteractionResult(failed);
+    expect(text).toMatch(/Verdict: fail/);
+    expect(text).toMatch(/Kind: assertion/);
+    expect(text).toMatch(/Next: cdp help verify-click/);
+    expect(text).not.toMatch(/cdp status/);
+
+    const semantics = T.classifyCommandResultSemantics(
+      { ok: true, result: JSON.stringify(failed) },
+      { command: 'verify-click' },
+    );
+    expect(semantics.ok).toBe(false);
+    expect(semantics.assertionFailed).toBe(true);
+    expect(semantics.dispatchFailed).toBe(false);
+
+    const processLike = { exitCode: 0 };
+    const logs = [];
+    T.emitTargetCommandResponse(
+      { ok: true, result: JSON.stringify(failed) },
+      { cmd: 'verify-click', console: { log: value => logs.push(String(value)) }, process: processLike },
+    );
+    expect(processLike.exitCode).toBe(1);
+    expect(logs.join('\n')).toMatch(/"verdict":\s*"fail"/);
+
+    const textProcess = { exitCode: 0 };
+    T.emitTargetCommandResponse(
+      { ok: true, result: text },
+      { cmd: 'verify-click', console: { log() {} }, process: textProcess },
+    );
+    expect(textProcess.exitCode).toBe(1);
+
+    const usage = T.buildCliErrorRecovery('verify-click: --expect-status requires --expect-request', {
+      cmd: 'verify-click',
+      targetPrefix: '270379DA',
+    });
+    expect(usage.kind).toBe('usage');
+    expect(usage.run).toBe('cdp help verify-click');
+    expect(T.VERIFY_CLICK_SETTLE_MS).toBeLessThan(2000);
+    expect(T.VERIFY_CLICK_REQUEST_WAIT_MS).toBeLessThanOrEqual(1500);
+  });
+
+  it('#221 tab-group add/create of an unknown target fails closed and does not plant a ghost', () => {
+    const live = ['1D3669785EAC5A1A211792636BAE8A07', '270379DA32DEEE448FF70D9EEE154209'];
+    expect(T.resolveTabGroupMember('1D366978', { targetIds: live })).toBe('1D366978');
+    expect(() => T.resolveTabGroupMember('NOTEXIST', { targetIds: live }))
+      .toThrow(/No live target matching prefix "NOTEXIST"/);
+    expect(() => T.resolveTabGroupMembers(['NOTEXIST', '1D366978'], { targetIds: live }))
+      .toThrow(/No live target matching prefix "NOTEXIST"/);
+    expect(T.resolveTabGroupMembers(['1D366978', '270379DA'], { targetIds: live }))
+      .toEqual(['1D366978', '270379DA']);
+
+    let store = T.emptyTabGroupStore();
+    store = T.upsertTabGroup(store, {
+      name: 'picky6',
+      members: T.resolveTabGroupMembers(['1D366978', '270379DA'], { targetIds: live }),
+    });
+    expect(T.getTabGroup(store, 'picky6').members).toEqual(['1D366978', '270379DA']);
+    expect(() => T.upsertTabGroup(store, {
+      name: 'picky6',
+      members: T.resolveTabGroupMembers(['NOTEXIST'], { targetIds: live }),
+    })).toThrow(/No live target matching prefix "NOTEXIST"/);
+    expect(T.getTabGroup(store, 'picky6').members).toEqual(['1D366978', '270379DA']);
+
+    const recovery = T.buildCliErrorRecovery('No live target matching prefix "NOTEXIST".', { cmd: 'tab-group' });
+    expect(recovery.kind).toBe('target-resolution');
+    expect(recovery.run).toMatch(/^cdp list/);
+    expect(T.listKnownLiveTargetIds({
+      listDaemons: () => [{ targetId: '1D3669785EAC5A1A211792636BAE8A07' }],
+      readPages: () => [{ targetId: '270379DA32DEEE448FF70D9EEE154209' }],
+    })).toEqual(expect.arrayContaining([
+      '1D3669785EAC5A1A211792636BAE8A07',
+      '270379DA32DEEE448FF70D9EEE154209',
+    ]));
+  });
+
+  it('#222 batch failed steps make the command RC≠0 and unknown cmds Next help', async () => {
+    const unknown = T.formatBatchResults([{
+      cmd: 'not-a-cmd',
+      ok: false,
+      error: 'Unknown command: not-a-cmd',
+    }], 'model', { targetId: '270379DA32DEEE448FF70D9EEE154209' });
+    const unknownModel = JSON.parse(unknown);
+    expect(unknownModel.counts.failed).toBe(1);
+    expect(unknownModel.nextSteps).toEqual(['cdp help']);
+    expect(unknownModel.nextSteps.join('\n')).not.toMatch(/cdp status 270379DA32DEEE448FF70D9EEE154209/);
+
+    const semantics = T.classifyCommandResultSemantics(
+      { ok: true, result: unknown },
+      { command: 'batch' },
+    );
+    expect(semantics.ok).toBe(false);
+    expect(semantics.batchFailed).toBe(true);
+
+    const processLike = { exitCode: 0 };
+    T.emitTargetCommandResponse(
+      { ok: true, result: unknown },
+      { cmd: 'batch', console: { log() {} }, process: processLike },
+    );
+    expect(processLike.exitCode).toBe(1);
+
+    const legacy = JSON.stringify([{ cmd: 'not-a-cmd', ok: false, error: 'Unknown command: not-a-cmd' }], null, 2);
+    expect(T.classifyCommandResultSemantics(
+      { ok: true, result: legacy },
+      { command: 'batch' },
+    ).ok).toBe(false);
+
+    await expect(executeCdpCli(
+      ['batch', 'ABC12345', 'not-a-cmd foo'],
+      { runMain: async ({ console }) => { console.log(legacy); } },
+    )).resolves.toMatchObject({ code: 1, stdout: legacy, stderr: '' });
+  });
+
+  it('#223 diff-shot screenshot timeout is a classified failure, not a fake 0% diff', async () => {
+    expect(T.diffShotScreenshotCaptureOptions()).toMatchObject({
+      timeoutMs: T.QA_SCREENSHOT_TIMEOUT_MS,
+      skipSanityRetry: true,
+      failFastOnTimeout: true,
+    });
+    expect(T.diffShotScreenshotCaptureOptions().timeoutMs).toBeLessThanOrEqual(3000);
+
+    T.resetScreenshotTier();
+    const cdp = {
+      calls: [],
+      send(method, params = {}, sessionId, timeout) {
+        this.calls.push({ method, params, sessionId, timeout });
+        if (method === 'Page.captureScreenshot') {
+          throw new Error('Timeout: Page.captureScreenshot');
+        }
+        return Promise.resolve({});
+      },
+      onEvent() { return () => {}; },
+      waitForEvent() {
+        return { promise: Promise.reject(new Error('timeout')), cancel() {} };
+      },
+    };
+    await expect(T.captureScreenshot(cdp, 'sid', { format: 'png' }, T.diffShotScreenshotCaptureOptions()))
+      .rejects.toThrow(/Timeout: Page\.captureScreenshot/);
+    expect(cdp.calls.filter(call => call.method === 'Page.captureScreenshot')).toHaveLength(1);
+    expect(cdp.calls[0].timeout).toBe(T.QA_SCREENSHOT_TIMEOUT_MS);
+    expect(T.getScreenshotTier()).toBe(1);
+
+    const session = { targetId: '1D366978', screenshotDir: '/tmp/diff-shot-untrusted' };
+    await expect(T.diffShotStr(cdp, 'sid', session, { reset: true }))
+      .rejects.toThrow(/timed out|untrusted/i);
+    const recovery = T.buildCliErrorRecovery('diff-shot: screenshot capture timed out; comparison is untrusted', {
+      cmd: 'diff-shot',
+      targetPrefix: '1D366978',
+    });
+    expect(recovery.kind).toBe('timeout');
+    expect(recovery.run).toBe('cdp help diff-shot');
+    expect(recovery.run).not.toMatch(/status/);
+  });
+
+  it('#224 restore/replay missing file is Kind:usage / help, not perceive or status', () => {
+    const enoent = new Error("ENOENT: no such file or directory, open '[checkpoint-path-redacted]'");
+    expect(T.classifyActionFailure(enoent, {
+      action: 'restore',
+      target: { targetId: '1D366978' },
+    })).toMatchObject({ kind: 'usage', nextCommand: 'cdp help restore' });
+
+    const restoreMissing = T.buildCliErrorRecovery(
+      "ENOENT: no such file or directory, open '[checkpoint-path-redacted]'",
+      { cmd: 'restore', targetPrefix: '1D366978' },
+    );
+    expect(restoreMissing.kind).toBe('usage');
+    expect(restoreMissing.run).toBe('cdp help restore');
+    expect(restoreMissing.run).not.toMatch(/perceive|status/);
+
+    const schema = T.buildCliErrorRecovery('restore: unsupported checkpoint schema (missing)', {
+      cmd: 'restore',
+      targetPrefix: '1D366978',
+    });
+    expect(schema.kind).toBe('usage');
+    expect(schema.run).toBe('cdp help restore');
+
+    const restoreArgs = T.buildCliErrorRecovery('restore requires --file <path> or --json <checkpoint-json>', {
+      cmd: 'restore',
+      targetPrefix: '1D366978',
+    });
+    expect(restoreArgs.kind).toBe('usage');
+    expect(restoreArgs.run).toBe('cdp help restore');
+
+    const formattedRestore = T.formatCliError(enoent, { cmd: 'restore', targetPrefix: '1D366978' });
+    expect(formattedRestore).toMatch(/Kind: usage/);
+    expect(formattedRestore).toMatch(/Next: cdp help restore/);
+    expect(formattedRestore).not.toMatch(/Action failure: unknown/);
+    expect(formattedRestore).not.toMatch(/cdp perceive/);
+    expect(formattedRestore).not.toMatch(/cdp status/);
+
+    const replayEnoent = T.buildCliErrorRecovery(
+      'ENOENT: no such file or directory, open \'/tmp/picky6/no-such-replay.json\'',
+      { cmd: 'replay', targetPrefix: '1D366978' },
+    );
+    expect(replayEnoent.kind).toBe('usage');
+    expect(replayEnoent.run).toBe('cdp help replay');
+    const replaySchema = T.buildCliErrorRecovery('replay: unsupported artifact schema (missing)', {
+      cmd: 'replay',
+      targetPrefix: '1D366978',
+    });
+    expect(replaySchema.kind).toBe('usage');
+    expect(replaySchema.run).toBe('cdp help replay');
+    expect(T.commandUsageTemplate('restore', '1D366978')).toBe('cdp help restore');
+    expect(T.commandUsageTemplate('replay', '1D366978')).toBe('cdp help replay');
+  });
+
+  it('#225 repeat 0 / missing args is Kind:usage / help repeat, not status', () => {
+    expect(() => T.parseRepeatArgs(['0', 'eval', '1+1'])).toThrow(/positive integer/);
+    expect(() => T.parseRepeatArgs([])).toThrow(/repeat requires/);
+
+    const zero = T.buildCliErrorRecovery('repeat: count must be a positive integer, got "0"', {
+      cmd: 'repeat',
+      targetPrefix: '270379DA',
+    });
+    expect(zero.kind).toBe('usage');
+    expect(zero.run).toBe('cdp help repeat');
+    expect(zero.run).not.toMatch(/status/);
+
+    const missing = T.buildCliErrorRecovery('repeat requires <count> <cmd> [args...]', {
+      cmd: 'repeat',
+      targetPrefix: '270379DA',
+    });
+    expect(missing.kind).toBe('usage');
+    expect(missing.run).toBe('cdp help repeat');
+
+    const formatted = T.formatCliError(new Error('repeat: count must be a positive integer, got "0"'), {
+      cmd: 'repeat',
+      targetPrefix: '270379DA',
+    });
+    expect(formatted).toMatch(/Kind: usage/);
+    expect(formatted).toMatch(/Next: cdp help repeat/);
+    expect(formatted).not.toMatch(/cdp status/);
+    expect(T.commandUsageTemplate('repeat', '270379DA')).toBe('cdp help repeat');
   });
 });
 

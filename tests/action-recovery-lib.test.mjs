@@ -173,4 +173,23 @@ describe('recovery policy registry', () => {
       'cdp perceive ABC123 -C -d 8',
     ]));
   });
+
+  it('classifies restore/replay missing files and verify-click usage as Kind:usage', () => {
+    expect(classifyActionFailure(new Error("ENOENT: no such file or directory, open '[checkpoint-path-redacted]'"), {
+      action: 'restore',
+      target: { targetId: '1D366978' },
+    })).toMatchObject({ kind: 'usage', nextCommand: 'cdp help restore' });
+    expect(classifyActionFailure(new Error('restore: unsupported checkpoint schema (missing)'), {
+      action: 'restore',
+      target: { targetId: '1D366978' },
+    })).toMatchObject({ kind: 'usage', nextCommand: 'cdp help restore' });
+    expect(classifyActionFailure(new Error('replay requires --json <record-actions-json> or --file <path>'), {
+      action: 'replay',
+      target: { targetId: '1D366978' },
+    })).toMatchObject({ kind: 'usage', nextCommand: 'cdp help replay' });
+    expect(classifyActionFailure(new Error('verify-click: --expect-status requires --expect-request'), {
+      action: 'verify-click',
+      target: { targetId: '270379DA', input: '#b' },
+    })).toMatchObject({ kind: 'usage', nextCommand: 'cdp help verify-click' });
+  });
 });
