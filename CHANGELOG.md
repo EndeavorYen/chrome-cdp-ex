@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#297)
+
+* Leftover golden-path `perceive -C -d 8` then `scroll` still treats a
+  Visible-control cap-swap as `Outcome: changed` (membership, not rect
+  chrome). The settle receipt now summarizes that swap instead of reprinting
+  8+8 / 9+9 full control lines, and a fold-tag-only change on the same
+  `[navigation] Main` identity is not a Removed+Added pair. A new file,
+  heading, or link still prints a structural diff. Next stays
+  `perceive -C -d 8` on this leftover scroll, including the honest cap-swap
+  `changed` case, instead of a Hint-only handoff or `report` /
+  `record-actions`. `#295` rect-chrome no-change, `#293` leftover N>0
+  `--cards`, leftover `-C -d 8` then mutating `click --js`, `#285` PDF
+  Next, and `#286`/`#291` hover honest-gate hold. `HOVER_MOUSE_ACK_TIMEOUT_MS`
+  stays 250.
+
 ### Open issue dogfood (#295)
 
 * Leftover golden-path `perceive -C -d 8` is the settle shape for the next
