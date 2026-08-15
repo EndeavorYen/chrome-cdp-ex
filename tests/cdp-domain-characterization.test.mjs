@@ -323,10 +323,11 @@ function domainInvocations() {
     {
       domain: 'DOM+CSS',
       methods: [
+        'Runtime.evaluate',
         'DOM.enable', 'CSS.enable', 'DOM.getDocument', 'DOM.querySelector',
         'CSS.getMatchedStylesForNode', 'CSS.getComputedStyleForNode',
       ],
-      callDigest: '2814338de4966427fb0d2f49b8a643640981ffaa290196da0e7e68057f221460',
+      callDigest: '02ca5b179b3d686a5f7ca8f9018eae630c4f67ddc69c6db699fef877cfc13449',
       result: 'No matching CSS rules found for this element',
       invoke: cdp => cdpTest.cascadeStr(cdp, 'SESSION', '.fixture', null, new Map()),
     },
@@ -393,8 +394,8 @@ describe('Phase 6 direct CDP characterization', () => {
   it('freezes every direct method, caller, session, and timeout boundary', () => {
     const inventory = directCdpInventory(source);
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
-    expect(inventory).toHaveLength(139);
-    expect(digest).toBe('sha256:8b22560af13b7ac2c2ef9a857f79a9d4ee57fe1ae9d793c1b6eb9101f5928620');
+    expect(inventory).toHaveLength(137);
+    expect(digest).toBe('sha256:590164805838faa34fec026722999fb21386fd2e261e9b1aefcb976861a1f1df');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'HOVER_MOUSE_ACK_TIMEOUT_MS',
