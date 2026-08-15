@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### #217 residual after #218
+
+* `hover` bounds `Input.dispatchMouseEvent` (`mouseMoved`) renderer-ack to 250ms
+  and treats that timeout as success. Live Chrome 151 withholds the ack for ~5s
+  on a static page; the event is already forwarded, so hover must not wait it out.
+
 ### Open issue dogfood (#210, #211, #212, #213, #214, #215, #216, #217)
 
 * `qa` restores the tab's original viewport after desktop/mobile emulation,
