@@ -138,6 +138,7 @@ const RELOAD_READY_PROBE_TIMEOUT = 500;
 const RELOAD_OBSERVE_TIMEOUT = 2000;
 const STATUS_PAGE_INFO_TIMEOUT = 500;
 const REF_RESOLVE_TIMEOUT = 2000;
+const HOVER_MOUSE_ACK_TIMEOUT_MS = 250;
 const IDLE_TIMEOUT = 20 * 60 * 1000;
 const FIRE_AND_FORGET_KEEPALIVE = 60 * 60 * 1000;
 const DAEMON_CONNECT_RETRIES = 20;
@@ -10428,12 +10429,27 @@ async function scrollStr(cdp, sid, direction, amount) {
   return `Scrolled by (${dx}, ${dy}). Position: (${pos.x}, ${pos.y})`;
 }
 
+async function dispatchHoverMove(cdp, sid, x, y) {
+  try {
+    await cdpDomains(cdp).Input.dispatchMouseEvent(
+      { x, y, type: 'mouseMoved', button: 'none', modifiers: 0 },
+      sid,
+      HOVER_MOUSE_ACK_TIMEOUT_MS,
+    );
+  } catch (error) {
+    // Chrome waits for a renderer/compositor ack on mouseMoved. On live Chrome 151
+    // that ack is often withheld until a ~5s input timeout, then the RPC still
+    // succeeds. The event was already forwarded; do not block hover on the ack.
+    if (!isTimeoutError(error, ['Input.dispatchMouseEvent'])) throw error;
+  }
+}
+
 async function hoverStr(cdp, sid, selector, refMap, refState) {
   if (!selector) throw new Error('CSS selector or @ref required');
   if (isRef(selector)) {
     const { rect: r } = await resolveRefRectNoScroll(cdp, sid, refMap, selector, refState);
     const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
-    await cdpDomains(cdp).Input.dispatchMouseEvent( { x: cx, y: cy, type: 'mouseMoved', button: 'none', modifiers: 0 }, sid);
+    await dispatchHoverMove(cdp, sid, cx, cy);
     return `Hovering over <${r.tag || '?'}> at CSS (${Math.round(cx)}, ${Math.round(cy)}) (${selector})`;
   }
   const expr = `
@@ -10447,7 +10463,7 @@ async function hoverStr(cdp, sid, selector, refMap, refState) {
   const result = await evalStr(cdp, sid, expr);
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(r.error);
-  await cdpDomains(cdp).Input.dispatchMouseEvent( { x: r.x, y: r.y, type: 'mouseMoved', button: 'none', modifiers: 0 }, sid);
+  await dispatchHoverMove(cdp, sid, r.x, r.y);
   return `Hovering over <${r.tag}> at CSS (${Math.round(r.x)}, ${Math.round(r.y)})`;
 }
 
@@ -21041,6 +21057,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseQaArgs, buildQaPageModel, formatQaPageReport, qaPageStr,
   captureViewportSize, restoreViewportSize,
   qaScreenshotCaptureOptions, QA_SCREENSHOT_TIMEOUT_MS,
+  HOVER_MOUSE_ACK_TIMEOUT_MS,
   createActionObservationBaseline, buildActionObservationDelta, applyActionObservationDelta,
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest, isNetworkFailure,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
@@ -21064,7 +21081,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, uploadStr, assertReadableUploadFiles,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, selectStr, loadAllStr, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, selectStr, loadAllStr, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,

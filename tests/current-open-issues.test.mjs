@@ -3845,11 +3845,14 @@ describe('issues #210-#217 open contracts', () => {
     expect(formatted).not.toMatch(/Cookie deleted/);
   });
 
-  it('#217 hover skips scroll-settle and returns after a single mouseMoved', async () => {
+  it('#217 hover bounds mouseMoved renderer-ack instead of waiting ~5s', async () => {
+    expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBeLessThan(2000);
+
     const calls = [];
     const cdp = {
-      send(method, params = {}) {
-        calls.push({ method, params });
+      send(method, params = {}, sessionId, timeoutMs) {
+        calls.push({ method, params, sessionId, timeoutMs });
         if (method === 'Page.getFrameTree') {
           return Promise.resolve({ frameTree: { frame: { id: 'root-frame' } } });
         }
@@ -3867,7 +3870,10 @@ describe('issues #210-#217 open contracts', () => {
             result: { value: { x: 240, y: 180, w: 28, h: 44, tag: 'A', text: 'Learn more' } },
           });
         }
-        if (method === 'Input.dispatchMouseEvent') return Promise.resolve({});
+        if (method === 'Input.dispatchMouseEvent') {
+          expect(timeoutMs).toBe(T.HOVER_MOUSE_ACK_TIMEOUT_MS);
+          return Promise.reject(new Error('Timeout: Input.dispatchMouseEvent'));
+        }
         if (method === 'Runtime.evaluate') {
           return Promise.resolve({
             result: { value: { ok: true, x: 254, y: 202, tag: 'A' } },
@@ -3879,6 +3885,7 @@ describe('issues #210-#217 open contracts', () => {
     const out = await T.hoverStr(cdp, 'sid', '@1', new Map([[1, 101]]), {});
     expect(out).toMatch(/Hovering over <A>/);
     expect(calls.some(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mouseMoved')).toBe(true);
+    expect(calls.some(call => call.method === 'Input.dispatchMouseEvent' && call.timeoutMs === T.HOVER_MOUSE_ACK_TIMEOUT_MS)).toBe(true);
     const hoverFn = calls
       .filter(call => call.method === 'Runtime.callFunctionOn')
       .map(call => call.params.functionDeclaration || '')
@@ -3890,6 +3897,9 @@ describe('issues #210-#217 open contracts', () => {
 
     const css = await T.hoverStr(cdp, 'sid', 'a', new Map(), {});
     expect(css).toMatch(/Hovering over <A>/);
+    const mouseCalls = calls.filter(call => call.method === 'Input.dispatchMouseEvent');
+    expect(mouseCalls).toHaveLength(2);
+    expect(mouseCalls.every(call => call.timeoutMs === T.HOVER_MOUSE_ACK_TIMEOUT_MS)).toBe(true);
     const cssExpr = calls.find(call => call.method === 'Runtime.evaluate')?.params.expression || '';
     expect(cssExpr).not.toMatch(/scrollIntoView/);
     expect(cssExpr).not.toMatch(/requestAnimationFrame/);
