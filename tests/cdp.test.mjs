@@ -4116,6 +4116,153 @@ describe('Perceive diff baseline', () => {
     expect(model.removed.length).toBeLessThanOrEqual(4);
   });
 
+  it('#299 unlabeled Visible-control cap-swap samples prefer named labels and stay changed', () => {
+    // Live collector always sets label to ariaLabel || title || text || role ||
+    // tagName, so dumps are `img "img"` / `a role=link "link"`, not `img [clickable]`.
+    const unnamedImg = T.formatVisibleControlLine({ tag: 'img', label: 'img', clickable: true });
+    const unnamedDiv = T.formatVisibleControlLine({ tag: 'div', label: 'div', clickable: true });
+    const unnamedLink = T.formatVisibleControlLine({ tag: 'a', role: 'link', label: 'link', clickable: true });
+    const namedHf = T.formatVisibleControlLine({ tag: 'a', role: 'link', label: 'Hugging Face', clickable: true });
+    expect(unnamedImg).toBe('img "img" [clickable]');
+    expect(unnamedDiv).toBe('div "div" [clickable]');
+    expect(unnamedLink).toBe('a role=link "link" [clickable]');
+    expect(T.visibleControlNameFromLine(unnamedImg)).toEqual({ name: 'img', named: false });
+    expect(T.visibleControlNameFromLine(unnamedDiv)).toEqual({ name: 'div', named: false });
+    expect(T.visibleControlNameFromLine(`  ${unnamedLink} (8,68 24×24) a[href="/"]`))
+      .toEqual({ name: 'link', named: false });
+    expect(T.visibleControlNameFromLine(namedHf)).toEqual({ name: 'Hugging Face', named: true });
+    const liveLine = (control) => `  ${T.formatVisibleControlLine({
+      clickable: true,
+      rect: { x: 8, y: control.y, w: 24, h: 24 },
+      hints: { id: '', classes: [] },
+      ...control,
+    })}`;
+    const header = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 0/2400 (0%) | Focused: none',
+      'Interactive: 12 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+    ];
+    const previous = [
+      ...header,
+      '[RootWebArea] MiniMax-Music3',
+      '  [navigation] Main  603×28px',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+      '',
+      '[Visible controls]',
+      liveLine({ tag: 'img', label: 'img', selector: 'img.logo', y: 12 }),
+      liveLine({ tag: 'div', label: 'div', selector: 'div.nav-icon', y: 40 }),
+      liveLine({ tag: 'a', role: 'link', label: 'link', selector: 'a[href="/"]', y: 68 }),
+      liveLine({ tag: 'a', role: 'link', label: 'Hugging Face', selector: 'a[href="#hf"]', y: 100 }),
+      liveLine({ tag: 'a', role: 'link', label: 'Models', selector: 'a[href="#models"]', y: 128 }),
+      liveLine({ tag: 'a', role: 'link', label: 'Datasets', selector: 'a[href="#datasets"]', y: 156 }),
+      liveLine({ tag: 'a', role: 'link', label: 'search', selector: 'a[href="#search"]', y: 184 }),
+    ].join('\n');
+    const currentHeader = header.map(line => line.replace('Scroll: 0/2400 (0%)', 'Scroll: 80/2400 (3%)'));
+    const current = [
+      ...currentHeader,
+      '[RootWebArea] MiniMax-Music3',
+      '  [navigation] Main  603×28px  ↑above fold',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '',
+      '[Visible controls]',
+      liveLine({ tag: 'img', label: 'img', selector: 'img.hero', y: 12 }),
+      liveLine({ tag: 'div', label: 'div', selector: 'div.body-icon', y: 40 }),
+      liveLine({ tag: 'a', role: 'link', label: 'link', selector: 'a[href="/model"]', y: 68 }),
+      liveLine({ tag: 'a', role: 'link', label: 'MiniMaxAI', selector: 'a[href="#mm"]', y: 100 }),
+      liveLine({ tag: 'a', role: 'link', label: 'Text-to-Audio', selector: 'a[href="#tta"]', y: 128 }),
+      liveLine({ tag: 'a', role: 'link', label: 'Diffusers', selector: 'a[href="#diff"]', y: 156 }),
+      liveLine({ tag: 'a', role: 'link', label: 'Like', selector: 'a[href="#like"]', y: 184 }),
+    ].join('\n');
+    const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+    expect(diff).toMatch(/Visible-control cap swap: 7 left, 7 entered/);
+    const removedSamples = [...diff.matchAll(/^- (.+)$/gm)].map(match => match[1]);
+    const addedSamples = [...diff.matchAll(/^\+ (.+)$/gm)].map(match => match[1]);
+    expect(removedSamples[0]).toBe('Hugging Face');
+    expect(addedSamples[0]).toBe('MiniMaxAI');
+    expect(diff).toContain('- Hugging Face');
+    expect(diff).toContain('+ MiniMaxAI');
+    expect(diff).toContain('+ Text-to-Audio');
+    expect(removedSamples).not.toEqual(expect.arrayContaining(['img', 'div', 'link', 'a']));
+    expect(addedSamples).not.toEqual(expect.arrayContaining(['img', 'div', 'link', 'a']));
+    expect(diff).not.toMatch(/^[-+] (?:img|div|link|a)\b/m);
+    expect(diff).not.toMatch(/img\.logo|div\.nav-icon|img\.hero|div\.body-icon/);
+    expect(diff).not.toMatch(/--- Removed/);
+    expect(T.actionDomDiffShowsChange(diff)).toBe(true);
+    expect(diff).not.toMatch(/no changes detected/i);
+
+    const model = T.buildPerceiveDiffModel(previous, current, { mode: 'since-action' });
+    expect(model.summary.changed).toBe(true);
+    expect(model.summary.kind).toBe('visible-control-cap-swap');
+    expect(model.summary.headline).toBe('Visible-control cap swap: 7 left, 7 entered');
+    expect(model.removed[0]).toBe('Hugging Face');
+    expect(model.added[0]).toBe('MiniMaxAI');
+    expect(model.removed).toEqual(expect.arrayContaining(['Hugging Face']));
+    expect(model.added).toEqual(expect.arrayContaining(['MiniMaxAI']));
+    expect(model.removed.some(label => /^(?:img|div|link|a)$/i.test(String(label)))).toBe(false);
+    expect(model.added.some(label => /^(?:img|div|link|a)$/i.test(String(label)))).toBe(false);
+
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('changed');
+    expect(result.nextHint).toBeNull();
+    expect(text).toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/perceive --since-action/);
+    expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
+  });
+
+  it('#299 leftover-ax-scroll no-change receipt has Next -C -d 8 without Hint --since-action', () => {
+    const previous = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 0/2400 (0%) | Focused: none',
+      'Interactive: 3 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+    ].join('\n');
+    const current = previous.replace('Scroll: 0/2400 (0%)', 'Scroll: 80/2400 (3%)')
+      .replace('(24,180 160×22)', '(24,100 160×22)');
+    const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+    expect(T.actionDomDiffShowsChange(diff)).toBe(false);
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.nextHint).toBeNull();
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/perceive --since-action/);
+  });
+
   it('builds a JSON diff model from an explicit baseline output', () => {
     const previous = [
       'Page: Example — https://example.com',

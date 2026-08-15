@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#299)
+
+* Leftover golden-path `perceive -C -d 8` then `scroll` still treats a
+  Visible-control cap-swap as `Outcome: changed`. Samples now prefer
+  accessible names. Live collector fallbacks (`img "img"` /
+  `a role=link "link"`) stay in headline membership but do not occupy
+  the 4-sample cap. Leftover-ax-scroll receipts print Next
+  `perceive -C -d 8` without Hint `--since-action`. A new file,
+  heading, or link still prints a structural diff. `#297` compact
+  headline, `#295` rect-chrome no-change, `#293` leftover N>0 `--cards`,
+  leftover `-C -d 8` then mutating `click --js`, `#285` PDF Next, and
+  `#286`/`#291` hover honest-gate hold. `HOVER_MOUSE_ACK_TIMEOUT_MS`
+  stays 250.
+
 ### Open issue dogfood (#297)
 
 * Leftover golden-path `perceive -C -d 8` then `scroll` still treats a
