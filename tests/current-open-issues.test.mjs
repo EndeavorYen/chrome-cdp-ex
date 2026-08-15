@@ -7283,6 +7283,13 @@ describe('issue #266 click mouse events must land or fail closed', () => {
             state.pressedWhileMovePending = true;
           }
           if (params.type === 'mouseMoved') state.movedAcked = true;
+          // Chrome 151 injects press/release only after the async widget
+          // hit-test ack. Swallowing the 250ms hover compositor-ack leaves
+          // the page with zero mouse events (live #266).
+          const pressOrRelease = params.type === 'mousePressed' || params.type === 'mouseReleased';
+          if (pressOrRelease && Number(timeout) < T.CLICK_MOUSE_ACK_TIMEOUT_MS) {
+            return Promise.reject(new Error('Timeout: Input.dispatchMouseEvent'));
+          }
           if (deliverMouseEvents) {
             if (params.type === 'mousePressed') state.probeSeen.push('mousedown', 'pointerdown');
             if (params.type === 'mouseReleased') {
@@ -7447,6 +7454,22 @@ describe('issue #266 click mouse events must land or fail closed', () => {
     expect(T.formatActionText(result)).not.toMatch(/Outcome: changed/i);
   });
 
+  it('#266 250ms compositor-ack swallow does not deliver page events and fails closed', async () => {
+    const { cdp, state } = createPicky17Page();
+    const originalSend = cdp.send.bind(cdp);
+    cdp.send = (method, params = {}, sessionId, timeout) => {
+      if (method === 'Input.dispatchMouseEvent' && (params.type === 'mousePressed' || params.type === 'mouseReleased')) {
+        return originalSend(method, params, sessionId, T.HOVER_MOUSE_ACK_TIMEOUT_MS);
+      }
+      return originalSend(method, params, sessionId, timeout);
+    };
+    await expect(T.clickStr(cdp, 'sid', '#p17cb', new Map(), {}))
+      .rejects.toThrow(/received no mousedown\/click events/);
+    expect(state.clicks).toBe(0);
+    expect(state.checked).toBe(false);
+    expect(state.probeSeen).toEqual([]);
+  });
+
   it('#266 sends mousePressed before mouseMoved compositor ack resolves', async () => {
     const { cdp, state } = createPicky17Page();
     let movedResolve;
@@ -7515,6 +7538,7 @@ describe('issue #267 restore --unsafe-full cookie fidelity', () => {
     expect(setCookies).toHaveLength(1);
     expect(setCookies[0]).toMatchObject({ name: 'picky17full', value: 'orig' });
     expect(setCookies[0].value).not.toBe('<redacted>');
+    expect(T.sanitizeCheckpointCookies(checkpoint.cookies)[0].value).toBe('<redacted>');
     expect(T.cookiesForRestore(checkpoint.cookies)[0].value).toBe('orig');
   });
 

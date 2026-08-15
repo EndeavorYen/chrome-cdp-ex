@@ -6736,6 +6736,7 @@ describe('checkpoint / restore', () => {
       }),
     ]);
     expect(setCookies[0].value).not.toBe('<redacted>');
+    expect(T.sanitizeCheckpointCookies(checkpoint.cookies)[0].value).toBe('<redacted>');
   });
 
   it('does not plant the <redacted> sentinel when restoring a default checkpoint', async () => {
