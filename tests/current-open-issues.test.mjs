@@ -4313,6 +4313,191 @@ describe('issues #227-#231 open contracts', () => {
     expect(text).not.toContain('(unknown)');
   });
 
+  it('#228 treats a Document GET / href change as navigation instead of 8s no-change + overlay', () => {
+    expect(T.shouldSkipActionDomSettle(
+      'https://example.com/',
+      'https://www.iana.org/help/example-domains',
+    )).toBe(true);
+    expect(T.shouldSkipActionDomSettle('https://example.com/', 'https://example.com/')).toBe(false);
+    expect(T.formatActionNavigationDiff(
+      'https://example.com/',
+      'https://www.iana.org/help/example-domains',
+    )).toMatch(/Navigated.*example\.com.*example-domains/);
+
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: {
+        targetId: '1D366978FULL',
+        input: 'a',
+        label: 'Learn more',
+        dispatchText: 'Clicked <A> "Learn more"',
+      },
+      dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
+      settle: { ok: true, durationMs: 180 },
+      effects: {
+        domDiff: T.noBaselineActionDiffText(),
+        console: [],
+        network: [],
+        navigation: {
+          from: 'https://example.com/',
+          to: 'https://www.iana.org/help/example-domains',
+          changed: true,
+        },
+        pageHealth: {
+          status: 'populated',
+          isBlank: false,
+          evidence: {
+            url: 'https://www.iana.org/help/example-domains',
+            title: 'Example Domains',
+          },
+        },
+      },
+      nextHint: null,
+    }), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 0,
+        pending: 0,
+        entries: [{
+          method: 'GET',
+          url: 'https://www.iana.org/help/example-domains',
+          status: 200,
+          type: 'Document',
+          duration: 60,
+        }],
+      },
+    });
+
+    expect(result.outcome).toMatchObject({
+      status: 'changed',
+      changed: true,
+      evidence: 'navigation',
+    });
+    expect(result.receipt.outcome).toBe('changed');
+    expect(result.receipt.blockingSignals || []).not.toContain('overlay-check-needed');
+    expect(result.recommendation.commands.join('\n')).not.toMatch(/\boverlay\b/);
+    expect(T.formatActionText(result)).toContain('Network sample: GET /help/example-domains -> 200 in 60ms');
+    expect(T.formatActionText(result)).not.toMatch(/Outcome: no-change/);
+    expect(result.settle.durationMs).toBeLessThan(500);
+
+    const networkOnly = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { targetId: '1D366978FULL', input: 'a', label: 'Learn more' },
+      dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
+      settle: { ok: true, durationMs: 90 },
+      effects: { domDiff: T.noBaselineActionDiffText(), console: [], network: [], navigation: null },
+    }), {
+      console: { count: 0, errors: 0, warnings: 0, entries: [] },
+      exceptions: { count: 0, entries: [] },
+      network: {
+        count: 1,
+        failures: 0,
+        pending: 0,
+        entries: [{
+          method: 'GET',
+          url: 'https://www.iana.org/help/example-domains',
+          status: 200,
+          type: 'Document',
+          duration: 60,
+        }],
+      },
+    });
+    expect(networkOnly.outcome).toMatchObject({ status: 'changed', changed: true, evidence: 'navigation' });
+    expect(networkOnly.receipt.blockingSignals || []).not.toContain('overlay-check-needed');
+
+    const hrefOnly = T.createActionResult({
+      action: 'click',
+      target: { targetId: '1D366978FULL', input: 'a', label: 'Learn more' },
+      dispatch: { ok: true, method: 'Input.dispatchMouseEvent' },
+      settle: { ok: true, durationMs: 80 },
+      effects: {
+        domDiff: T.noBaselineActionDiffText(),
+        console: [],
+        network: [],
+        navigation: {
+          from: 'https://example.com/',
+          to: 'https://www.iana.org/help/example-domains',
+          changed: true,
+        },
+      },
+    });
+    expect(hrefOnly.outcome).toMatchObject({ status: 'changed', changed: true, evidence: 'navigation' });
+    expect(hrefOnly.receipt.blockingSignals || []).not.toContain('overlay-check-needed');
+  });
+
+  it('#228 fail-fast no-navigation stays within 500ms even if location.href eval hangs', async () => {
+    const started = Date.now();
+    const cdp = {
+      send() {
+        return new Promise(() => {});
+      },
+    };
+    await expect(T.confirmClickFollowedHref(cdp, 'sid', {
+      tag: 'A',
+      href: 'https://www.iana.org/help/example-domains',
+      pageHref: 'https://example.com/',
+    })).rejects.toThrow(/did not navigate/);
+    expect(Date.now() - started).toBeLessThanOrEqual(T.CLICK_NAVIGATION_WAIT_MS + 150);
+
+    const hangSettleStarted = Date.now();
+    await expect(T.waitForSettle(cdp, 'sid', 120)).resolves.toMatch(/timeout|stable/);
+    expect(Date.now() - hangSettleStarted).toBeLessThan(400);
+  });
+
+  it('#228 click --qa names the live page on the no-navigation failure path', async () => {
+    const failure = T.formatActionFailure(
+      new Error('Click on <A href="https://www.iana.org/help/example-domains"> did not navigate. Try jsclick or click --js.'),
+      {
+        action: 'click',
+        target: {
+          targetId: '1D366978FULL',
+          input: 'a',
+          page: { title: 'Example Domain', url: 'https://example.com/' },
+        },
+      },
+    );
+    expect(failure).toMatch(/Action failure: no-navigation/);
+    expect(failure).toContain('Example Domain');
+    expect(failure).toContain('https://example.com/');
+    expect(failure).not.toMatch(/Action failure: overlay/);
+    expect(failure).not.toMatch(/Next:.*\boverlay\b/);
+
+    let captured = null;
+    await expect(T.runActionWithFeedback({
+      action: 'click',
+      target: {
+        targetId: '1D366978FULL',
+        input: 'a',
+        label: 'Learn more',
+        page: { title: 'Example Domain', url: 'https://example.com/' },
+      },
+      dispatch: async () => {
+        throw new Error('Click on <A href="https://www.iana.org/help/example-domains"> did not navigate. Try jsclick or click --js.');
+      },
+      feedbackPolicy: 'settle-diff',
+      observe: async () => T.noBaselineActionDiffText(),
+      enrichActionResult: (result) => {
+        result.effects.page = result.target.page;
+        result.effects.pageHealth = {
+          status: 'populated',
+          isBlank: false,
+          evidence: result.target.page,
+        };
+      },
+      onActionResult: (result) => { captured = result; },
+      format: { format: 'text', qa: true },
+    })).rejects.toThrow(/Example Domain/);
+
+    expect(captured.dispatch.ok).toBe(false);
+    const qa = T.formatActionResultOutput(captured, { qa: true });
+    expect(qa).toContain('Example Domain');
+    expect(qa).toContain('https://example.com/');
+    expect(qa).not.toContain('(untitled)');
+    expect(qa).not.toContain('(unknown)');
+  });
+
   it('#229 batch --parallel allows reads and classifies mutating mixes as usage', () => {
     for (const [cmd, args] of [
       ['list', []],
