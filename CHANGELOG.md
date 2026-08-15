@@ -8,10 +8,13 @@
   cards) is the settle shape for the next `scroll`. Recapture stays
   `cards.v1` so timestamp chrome is not a fake AX `Outcome: changed`, and
   an unchanged virtualized window is `no-change` / continue with Next
-  `perceive --cards` instead of `report` or `perceive -C -d 8`. 0-card
-  leftovers still recapture default AX (`#257` / `#279`). Leftover feed
-  `--cards` then `click --js` still recaptures AX. `#285` leftover PDF
-  `click --js` and `#286`/`#291` hover honest-gate hold.
+  `perceive --cards` instead of `report` or `perceive -C -d 8`. Card
+  identity ignores relative-time chrome in article AX names (`· 2m`); a
+  replaced article is still `Outcome: changed` even when
+  `expectedOutcome` is `cards-window-no-change`. 0-card leftovers still
+  recapture default AX (`#257` / `#279`). Leftover feed `--cards` then
+  `click --js` still recaptures AX. `#285` leftover PDF `click --js` and
+  `#286`/`#291` hover honest-gate hold.
 
 ### Open issue dogfood (#291)
 

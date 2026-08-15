@@ -7410,6 +7410,15 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
     network: { count: 0, failures: 0, pending: 0, entries: [] },
   };
 
+  const DEFAULT_POSTS = [
+    { text: 'first tweet body', backend: 201, handle: '@SY239434', statusId: '1001' },
+    { text: 'second tweet body', backend: 202, handle: '@SY239434', statusId: '1002' },
+  ];
+  const REPLACED_POSTS = [
+    { text: 'second tweet body', backend: 202, handle: '@SY239434', statusId: '1002' },
+    { text: 'third tweet body', backend: 203, handle: '@SY239434', statusId: '1003' },
+  ];
+
   function xMeta({ scrollY = 0 } = {}) {
     return JSON.stringify({
       title: 'SY239434 (@SY239434) / X',
@@ -7436,29 +7445,59 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
     });
   }
 
-  function xAx({ age = '2m', clicks = 0 } = {}) {
+  function xAx({ age = '2m', clicks = 0, ageInArticleName = false, posts = DEFAULT_POSTS } = {}) {
+    const articleNodes = [];
+    const feedChildIds = [];
+    for (const [index, post] of posts.entries()) {
+      const articleId = String(20 + index);
+      const handleId = `${articleId}1`;
+      const timeId = `${articleId}2`;
+      const permalinkId = `${articleId}3`;
+      feedChildIds.push(articleId);
+      const name = ageInArticleName ? `${post.text} · ${age}` : post.text;
+      articleNodes.push(
+        {
+          nodeId: articleId,
+          parentId: '10',
+          role: { value: 'article' },
+          name: { value: name },
+          backendDOMNodeId: post.backend,
+          childIds: [handleId, permalinkId, timeId],
+        },
+        { nodeId: handleId, parentId: articleId, role: { value: 'link' }, name: { value: post.handle } },
+        {
+          nodeId: permalinkId,
+          parentId: articleId,
+          role: { value: 'link' },
+          name: { value: 'Show this post' },
+          properties: [{ name: 'url', value: { value: `https://x.com/SY239434/status/${post.statusId}` } }],
+        },
+        { nodeId: timeId, parentId: articleId, role: { value: 'StaticText' }, name: { value: age } },
+      );
+    }
     return [
       { nodeId: '1', role: { value: 'RootWebArea' }, name: { value: 'SY239434' }, childIds: ['10', '4', '5'] },
-      { nodeId: '10', parentId: '1', role: { value: 'feed' }, name: { value: 'Timeline' }, childIds: ['2', '3'] },
-      {
-        nodeId: '2', parentId: '10', role: { value: 'article' }, name: { value: 'first tweet body' },
-        backendDOMNodeId: 201, childIds: ['21', '22'],
-      },
-      { nodeId: '21', parentId: '2', role: { value: 'link' }, name: { value: '@SY239434' } },
-      { nodeId: '22', parentId: '2', role: { value: 'StaticText' }, name: { value: age } },
-      {
-        nodeId: '3', parentId: '10', role: { value: 'article' }, name: { value: 'second tweet body' },
-        backendDOMNodeId: 202, childIds: ['31', '32'],
-      },
-      { nodeId: '31', parentId: '3', role: { value: 'link' }, name: { value: '@SY239434' } },
-      { nodeId: '32', parentId: '3', role: { value: 'StaticText' }, name: { value: age } },
+      { nodeId: '10', parentId: '1', role: { value: 'feed' }, name: { value: 'Timeline' }, childIds: feedChildIds },
+      ...articleNodes,
       { nodeId: '4', parentId: '1', role: { value: 'button' }, name: { value: 'p25' }, backendDOMNodeId: 25 },
       { nodeId: '5', parentId: '1', role: { value: 'StaticText' }, name: { value: `clicks:${clicks}` } },
     ];
   }
 
-  function createXPage({ age = '2m', scrollY = 0, clicks = 0 } = {}) {
-    const state = { age, scrollY, clicks };
+  function createXPage({
+    age = '2m',
+    scrollY = 0,
+    clicks = 0,
+    ageInArticleName = false,
+    posts = DEFAULT_POSTS,
+  } = {}) {
+    const state = {
+      age,
+      scrollY,
+      clicks,
+      ageInArticleName,
+      posts: posts.map(post => ({ ...post })),
+    };
     const cdp = {
       calls: [],
       send(method, params = {}) {
@@ -7485,7 +7524,14 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
           return Promise.resolve({ result: { value: '{}' } });
         }
         if (method === 'Accessibility.getFullAXTree') {
-          return Promise.resolve({ nodes: xAx({ age: state.age, clicks: state.clicks }) });
+          return Promise.resolve({
+            nodes: xAx({
+              age: state.age,
+              clicks: state.clicks,
+              ageInArticleName: state.ageInArticleName,
+              posts: state.posts,
+            }),
+          });
         }
         if (method === 'DOM.getDocument') {
           return Promise.resolve({ root: { nodeId: 1 } });
@@ -7698,6 +7744,80 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
     const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
     expect(T.actionDomDiffShowsChange(after)).toBe(false);
     expect(after).toMatch(/unchanged; still first cards/i);
+  });
+
+  it('#293 leftover feed --cards then scroll that replaces card identities is Outcome: changed', async () => {
+    const { cdp, state } = createXPage({ age: '2m', scrollY: 0 });
+    const store = { output: null, snapshotOpts: null, cards: null };
+    const refMap = new Map();
+    const refState = {};
+    await leftoverCards(cdp, store, refMap, refState, ['--cards']);
+    const actionTarget = scrollTarget();
+    expect(actionTarget.expectedOutcome).toBe('cards-window-no-change');
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    expect(settleBaseline.opts.cards).toBe(true);
+
+    state.posts = REPLACED_POSTS.map(post => ({ ...post }));
+    const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toContain('chrome-cdp-ex.cards.v1');
+    expect(after).toMatch(/third tweet body/);
+    expect(after).not.toMatch(/unchanged; still first cards/i);
+    expect(after).not.toMatch(/\[RootWebArea\]/);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+    expect(T.isExpectedNoChange(actionTarget, after, 'scroll')).toBe(true);
+
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: X_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, { dispatchText });
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+    expect(text).toMatch(/Outcome: changed/);
+    expect(text).not.toMatch(/Outcome: no-change/);
+    expect(receipt).toContain('third tweet body');
+    expect(receipt).not.toMatch(/unchanged; still first cards/);
+    expect(receipt).not.toMatch(/\[RootWebArea\]/);
+  });
+
+  it('#293 leftover feed --cards then scroll ignores relative time in article AX name (2m→3m)', async () => {
+    const { cdp, state } = createXPage({ age: '2m', scrollY: 0, ageInArticleName: true });
+    const store = { output: null, snapshotOpts: null, cards: null };
+    const refMap = new Map();
+    const refState = {};
+    const leftoverDump = await leftoverCards(cdp, store, refMap, refState, ['--cards']);
+    expect(leftoverDump).toMatch(/first tweet body · 2m/);
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    expect(settleBaseline.opts.cards).toBe(true);
+
+    state.age = '3m';
+    const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toContain('chrome-cdp-ex.cards.v1');
+    expect(after).toMatch(/first tweet body · 3m/);
+    expect(after).toMatch(/unchanged; still first cards/i);
+    expect(T.actionDomDiffShowsChange(after)).toBe(false);
+
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: X_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.verdict.status).toBe('continue');
+    expect(text).toMatch(/Outcome: no-change/);
+    expect(text).not.toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Next: cdp perceive 2E94F948 --cards/);
+    expect(dispatchText).toBe('Scrolled by (0, 80). Position: (0, 80)');
   });
 
   it('#293 leftover feed --cards then click --js still recaptures default AX (#279 hold)', async () => {
