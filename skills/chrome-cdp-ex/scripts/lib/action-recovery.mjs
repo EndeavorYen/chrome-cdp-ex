@@ -512,10 +512,22 @@ export function isExpectedPdfViewerNoChange(target = {}, extraText = '') {
     || blob.includes('chrome-cdp-ex.pdf-viewer.v1');
 }
 
+export function isExpectedCardsWindowNoChange(target = {}, extraText = '') {
+  if (target?.expectedOutcome === 'cards-window-no-change') return true;
+  const blob = [
+    extraText,
+    target?.dispatchText,
+    target?.domDiff,
+  ].filter(Boolean).join('\n');
+  return /unchanged; still first cards/i.test(blob)
+    || (/\bunchanged\b/i.test(blob) && /virtualized window/i.test(blob));
+}
+
 export function isExpectedNoChange(target = {}, extraText = '', action = null) {
   if (isExpectedClipboardNoChange(target, extraText)) return true;
   if (target?.expectedOutcome === 'no-modal') return true;
   if (isExpectedPdfViewerNoChange(target, extraText)) return true;
+  if (isExpectedCardsWindowNoChange(target, extraText)) return true;
   return isExpectedPressNoChange(target, action);
 }
 
@@ -528,6 +540,9 @@ export function expectedNoChangeReason(target = {}, action = null, extraText = '
   }
   if (isExpectedPdfViewerNoChange(target, extraText)) {
     return 'Settle shape was pdf-viewer.v1 (empty AX); continue without overlay/perceive recovery.';
+  }
+  if (isExpectedCardsWindowNoChange(target, extraText)) {
+    return 'Settle shape was leftover feed --cards; virtualized window did not replace cards.';
   }
   if (isExpectedPressNoChange(target, action)) {
     return 'Key press produced no visible AX tree change; continue without overlay recovery.';
@@ -612,6 +627,22 @@ export function buildNoChangeOutcomeRecommendation({
       reason: 'Settle shape was pdf-viewer.v1 (empty AX); continue without overlay/perceive recovery.',
       blockingSignals: [],
       recoveryHint: 'PDF plugin empty-AX settle; confirm with eval document.contentType.',
+      verifyCommand: nextCommand,
+      commands: uniqueNextStepCommands([nextCommand]),
+    };
+  }
+  if (isExpectedCardsWindowNoChange(targetInfo, extraText)) {
+    const nextCommand = `cdp perceive ${target} --cards`;
+    return {
+      source,
+      actionIndex,
+      action,
+      outcomeStatus: 'no-change',
+      strategy: 'continue',
+      priority: 'low',
+      reason: 'Settle shape was leftover feed --cards; virtualized window did not replace cards.',
+      blockingSignals: [],
+      recoveryHint: 'Feed window unchanged; re-run perceive --cards instead of a full AX dump.',
       verifyCommand: nextCommand,
       commands: uniqueNextStepCommands([nextCommand]),
     };

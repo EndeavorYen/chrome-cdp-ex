@@ -233,6 +233,27 @@ describe('action recovery lib', () => {
     expect(scroll.commands).toEqual(['cdp eval CFD023D2 "document.contentType"']);
     expect(scroll.commands.join('\n')).not.toMatch(/perceive .* -C/);
   });
+
+  it('#293 leftover feed --cards no-change scroll Next perceive --cards, not -C -d 8', () => {
+    const extraText = 'unchanged; still first cards; virtualized window did not replace cards';
+    const rec = buildNoChangeOutcomeRecommendation({
+      action: 'scroll',
+      target: '2E94F948',
+      targetInput: 'down 80',
+      targetInfo: {
+        targetId: '2E94F948ABCDEF0123456789ABCDEF01',
+        input: 'down 80',
+        resolvedBy: 'scroll',
+        expectedOutcome: 'cards-window-no-change',
+      },
+      extraText,
+    });
+    expect(rec.strategy).toBe('continue');
+    expect(rec.blockingSignals).toEqual([]);
+    expect(rec.commands).toEqual(['cdp perceive 2E94F948 --cards']);
+    expect(rec.commands.join('\n')).not.toMatch(/perceive .* -C/);
+    expect(rec.commands.join('\n')).not.toMatch(/\breport\b/);
+  });
 });
 
 
