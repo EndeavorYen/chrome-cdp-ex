@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### perf: skip fill leftover settle on search submit (#335)
+
+* Sequential `batch --compact 'fill … | press Enter'` still lands on the
+  listing URL (`/models?search=bert`), not the typeahead first repo.
+  Mid-pipe fill is report-only: leftover typeahead AX and pending
+  `/api/quicksearch` are not the success signal. Standalone fill still
+  settle-diffs. No `--submit` / `--skip-settle` flag.
+* Search-submit `press Enter` waits for the listing link after that fill,
+  then `jsclick`s it and returns when the listing URL has committed.
+  Typeahead-overlay mouse compositor wait is not paid. A miss still
+  counts if the listing URL already loaded; it does not send Enter.
+  Compact receipts stay skinny.
+
 ### fix: text --auto reads Chrome PDF plugin page-1 text (#283)
 
 * `text --auto` on a Chrome PDF plugin tab (`application/pdf`) returns

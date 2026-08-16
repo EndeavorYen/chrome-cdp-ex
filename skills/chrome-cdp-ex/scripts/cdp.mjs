@@ -160,6 +160,7 @@ const LOADALL_DEFAULT_INTERVAL_MS = 1500;
 const LOADALL_DEFAULT_TIMEOUT_MS = 30_000;
 const LOADALL_MAX_TIMEOUT_MS = 5 * 60 * 1000;
 const CLICK_NAVIGATION_WAIT_MS = 500;
+const SEARCH_SUBMIT_PROBE_WAIT_MS = 1500;
 const CLICK_HREF_PROBE_TIMEOUT_MS = 120;
 const IDLE_TIMEOUT = 20 * 60 * 1000;
 const daemonRequestStorage = new AsyncLocalStorage();
@@ -12452,6 +12453,28 @@ function pressFeedbackPolicy(keyName, probe) {
   return 'settle-diff';
 }
 
+function isSearchSubmitPressCommand(command) {
+  if (!command || typeof command !== 'object') return false;
+  const cmd = String(command.cmd || '').trim().toLowerCase();
+  if (cmd !== 'press' && cmd !== 'key') return false;
+  return isEnterKeyName(command.args?.[0]);
+}
+
+function fillFeedbackPolicy(nextCommand) {
+  // Mid-pipe fill before search-submit press: leftover typeahead AX and
+  // pending /api/quicksearch are not the success signal. Standalone fill
+  // still settle-diffs. Do not invent --submit / --skip-settle flags.
+  return isSearchSubmitPressCommand(nextCommand) ? 'report-only' : 'settle-diff';
+}
+
+function batchCommandLookahead(commands = [], { parallel = false } = {}) {
+  const list = Array.isArray(commands) ? commands : [];
+  return list.map((command, index) => ({
+    ...command,
+    nextCommand: parallel ? null : list[index + 1] || null,
+  }));
+}
+
 function formatSearchSubmitPressText(probe = {}) {
   return `Pressed Enter. Submitted search via ${probe.selector}`;
 }
@@ -12491,6 +12514,20 @@ async function probeSearchSubmit(cdp, sid) {
   return { ok: false };
 }
 
+async function waitForSearchSubmitProbe(cdp, sid, timeoutMs = SEARCH_SUBMIT_PROBE_WAIT_MS) {
+  const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : SEARCH_SUBMIT_PROBE_WAIT_MS;
+  const deadline = Date.now() + budget;
+  let probe = await probeSearchSubmit(cdp, sid);
+  if (probe?.ok && probe.selector) return probe;
+  while (Date.now() < deadline) {
+    const pause = Math.min(40, deadline - Date.now());
+    if (pause > 0) await sleep(pause);
+    probe = await probeSearchSubmit(cdp, sid);
+    if (probe?.ok && probe.selector) return probe;
+  }
+  return probe?.ok && probe.selector ? probe : { ok: false };
+}
+
 async function currentSearchListingHref(cdp, sid) {
   const href = await evalPageHref(cdp, sid);
   return isSearchListingHref(href) ? href : '';
@@ -12514,20 +12551,22 @@ async function submitSearchListing(cdp, sid, probe, refMap, refState) {
   const selector = probe?.selector;
   if (!selector) throw new Error('Search listing selector required');
   const maps = refMap instanceof Map ? refMap : new Map();
-  try {
-    await clickStr(cdp, sid, selector, maps, refState);
-    return;
-  } catch {
-    // Realistic mouse often fail-closes on typeahead overlays after navigation
-    // already started. Do not send Enter — that activates the first repo hit.
-    if (await currentSearchListingHref(cdp, sid)) return;
-  }
+  // Typeahead overlays fail-close realistic mouse (compositor ack +
+  // scrollSettledRect). Listing URL commit is the success signal, same
+  // idea as Playwright noWaitAfter / waitUntil: commit. Prefer jsclick,
+  // then return as soon as /models?search= (or /search?q=) is current.
   try {
     await jsClickStr(cdp, sid, selector, maps, refState);
   } catch (error) {
-    if (await waitForSearchListingHref(cdp, sid)) return;
-    throw error;
+    if (await currentSearchListingHref(cdp, sid)) return;
+    try {
+      await clickStr(cdp, sid, selector, maps, refState);
+    } catch {
+      if (await waitForSearchListingHref(cdp, sid)) return;
+      throw error;
+    }
   }
+  if (await currentSearchListingHref(cdp, sid)) return;
   if (await waitForSearchListingHref(cdp, sid)) return;
   throw new Error(
     `Search submit via ${selector} did not reach a results listing. Try jsclick ${selector}.`
@@ -12546,6 +12585,11 @@ async function pressStr(cdp, sid, keyName, opts = {}) {
     if (probe && probe.ok && probe.selector) {
       await submitSearchListing(cdp, sid, probe, opts.refMap, opts.refState);
       return formatSearchSubmitPressText(probe);
+    }
+    if (opts.requireSearchSubmit) {
+      throw new Error(
+        'Search submit did not find a results listing after fill. Try jsclick a[href*="models?search="].'
+      );
     }
   }
   const base = {
@@ -20571,9 +20615,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     ),
     fill: async args => {
       const parsed = parseFillArgs(args);
+      const feedbackPolicy = fillFeedbackPolicy(session.batchNextCommand);
       const value = parsed.react
-        ? await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { react: true }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: ['--react', parsed.selector, parsed.text] }, 'settle-diff', null, parsed.fopts)
-        : await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: [parsed.selector, parsed.text] }, 'settle-diff', null, parsed.fopts);
+        ? await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { react: true }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: ['--react', parsed.selector, parsed.text] }, feedbackPolicy, null, parsed.fopts)
+        : await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: [parsed.selector, parsed.text] }, feedbackPolicy, null, parsed.fopts);
+      if (feedbackPolicy === 'report-only') session.awaitSearchSubmitListing = true;
       return commandResult(value, { kind: 'action-receipt' });
     },
     hover: async args => {
@@ -20675,12 +20721,21 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const usage = pressUsageError(fopts.args[0]);
       if (usage) throw usage;
       let searchSubmit = { ok: false };
+      const awaitListing = session.awaitSearchSubmitListing === true;
+      session.awaitSearchSubmitListing = false;
       if (isEnterKeyName(fopts.args[0])) {
-        searchSubmit = await probeSearchSubmit(cdp, sessionId);
+        searchSubmit = awaitListing
+          ? await waitForSearchSubmitProbe(cdp, sessionId)
+          : await probeSearchSubmit(cdp, sessionId);
       }
       const value = await actionFeedback(
         'press',
-        () => pressStr(cdp, sessionId, fopts.args[0], { searchSubmit, refMap, refState }),
+        () => pressStr(cdp, sessionId, fopts.args[0], {
+          searchSubmit,
+          requireSearchSubmit: awaitListing,
+          refMap,
+          refState,
+        }),
         {
           input: fopts.args[0],
           resolvedBy: 'key',
@@ -20856,12 +20911,20 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         const unsafe = commands.filter(command => isBatchParallelUnsafeCommand(command.cmd, command.args || []));
         if (unsafe.length) throw new Error(`batch --parallel: ${[...new Set(unsafe.map(command => command.cmd))].join(', ')} mutate shared state — use sequential batch`);
       }
+      const sequenced = batchCommandLookahead(commands, { parallel });
       const autoActionJson = parsedBatch.output === 'model';
-      const runOne = command => handleCommand({
-          cmd: command.cmd,
-          args: autoActionJsonArgs(command.cmd, command.args || [], autoActionJson),
-        });
-      const results = await runBatchCommands({ run: runOne }, commands, { parallel });
+      const runOne = command => {
+        session.batchNextCommand = command.nextCommand || null;
+        try {
+          return handleCommand({
+            cmd: command.cmd,
+            args: autoActionJsonArgs(command.cmd, command.args || [], autoActionJson),
+          });
+        } finally {
+          session.batchNextCommand = null;
+        }
+      };
+      const results = await runBatchCommands({ run: runOne }, sequenced, { parallel });
       const format = parsedBatch.output === 'legacy-json' ? 'json' : parsedBatch.output;
       return formatBatchResults(results, format, { targetId, mode: parallel ? 'parallel' : 'sequential' });
     },
@@ -22008,6 +22071,9 @@ ACTION FEEDBACK
   names scrollIntoView first. Mouse click @ref still
   fail-closes with no-input-events. scroll to top/to bottom is also
   report-only (window document or nested overflow).
+  Sequential batch fill then press Enter is report-only on the fill:
+  leftover typeahead AX / quicksearch is not the success signal.
+  Search-submit press returns on the listing URL via jsclick.
   qa returns a semantic QA report and includes action evidence when --click is used.
   back, forward, and nav return action evidence plus a full perceive.
   reload returns action evidence plus a bounded lightweight page observation.
@@ -24494,8 +24560,10 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   collectDomInteractiveControls, countedInteractiveElements, axInteractiveBackendCount,
   rankPerceiveCursorItems, isSearchListingHref, isSearchListingText, isSearchListingControl,
   searchListingSelector, rankSearchListingFirst, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP,
-  pressFeedbackPolicy, probeSearchSubmit, formatSearchSubmitPressText, isEnterKeyName,
-  searchSubmitProbeExpression, submitSearchListing, waitForSearchListingHref,
+  pressFeedbackPolicy, fillFeedbackPolicy, isSearchSubmitPressCommand, batchCommandLookahead,
+  probeSearchSubmit, formatSearchSubmitPressText, isEnterKeyName,
+  searchSubmitProbeExpression, submitSearchListing, waitForSearchListingHref, waitForSearchSubmitProbe,
+  SEARCH_SUBMIT_PROBE_WAIT_MS,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,

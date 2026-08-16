@@ -110,8 +110,8 @@ describe('Runtime v3 final dispatch characterization', { timeout: 90_000 }, () =
       'const route = await fakeLegacyRoute({',
     ))).toThrow(/application ownership|general application dispatch/);
     expect(() => buildRuntimeDispatchInventory(source.replace(
-      'const runOne = command => handleCommand({',
-      "await handleCommand({ cmd: 'summary', args: [] });\n      const runOne = command => handleCommand({",
+      'const runOne = command => {\n        session.batchNextCommand = command.nextCommand || null;\n        try {\n          return handleCommand({',
+      "await handleCommand({ cmd: 'summary', args: [] });\n      const runOne = command => {\n        session.batchNextCommand = command.nextCommand || null;\n        try {\n          return handleCommand({",
     ))).toThrow(/workflow capability batch must call handleCommand exactly once/);
     try {
       expect(buildRuntimeDispatchInventory(source.replace(

@@ -65,6 +65,7 @@ function createSearchSubmitCdp({
   mouseDeliversPageEvents = true,
   mouseNavigates = true,
   jsClickNavigates = true,
+  jsClickThrows = false,
 } = {}) {
   const calls = [];
   const clickProbe = { seen: [] };
@@ -89,6 +90,7 @@ function createSearchSubmitCdp({
         return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen } } });
       }
       if (method === 'Runtime.callFunctionOn' && String(params.functionDeclaration || '').includes('scrollIntoView')) {
+        if (jsClickThrows) return Promise.reject(new Error('jsclick missed listing'));
         if (jsClickNavigates) href = HF_RESULTS;
         return Promise.resolve({ result: { value: { tag: 'A', text: RESULTS_TEXT } } });
       }
@@ -107,7 +109,8 @@ function createSearchSubmitCdp({
       if (method === 'Runtime.evaluate') {
         const expr = String(params.expression || '');
         if (expr.includes('chrome-cdp-ex.search-submit')) {
-          return Promise.resolve({ result: { value: probe } });
+          const value = typeof probe === 'function' ? probe() : probe;
+          return Promise.resolve({ result: { value } });
         }
         if (expr.includes('requestAnimationFrame')) {
           return Promise.resolve({
@@ -202,11 +205,10 @@ describe('issue #328 press Enter submits search listing, not typeahead first hit
       .filter(call => call.method === 'Input.dispatchKeyEvent')
       .map(call => call.params.type);
     expect(keyTypes).toEqual([]);
-    const mouseTypes = cdp.calls
-      .filter(call => call.method === 'Input.dispatchMouseEvent')
-      .map(call => call.params.type);
-    expect(mouseTypes).toContain('mousePressed');
-    expect(mouseTypes).toContain('mouseReleased');
+    expect(cdp.calls.some(call =>
+      call.method === 'Runtime.callFunctionOn'
+      && String(call.params.functionDeclaration || '').includes('scrollIntoView')
+    )).toBe(true);
     expect(cdp.hrefOf()).toBe(HF_RESULTS);
     expect(cdp.hrefOf()).not.toBe(HF_FIRST_HIT);
   });
@@ -239,16 +241,12 @@ describe('issue #328 press Enter submits search listing, not typeahead first hit
     expect(T.pressFeedbackPolicy('tab')).toBe('settle-diff');
   });
 
-  it('treats a fail-closed mouse click as success when the listing URL already loaded', async () => {
+  it('treats a fail-closed listing click as success when the listing URL already loaded', async () => {
     const cdp = createSearchSubmitCdp({ mouseDeliversPageEvents: false, mouseNavigates: true });
     const out = await T.pressStr(cdp, 'sid', 'enter');
     expect(out).toMatch(/Submitted search/i);
     expect(out).toContain(RESULTS_SELECTOR);
     expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
-    expect(cdp.calls.some(call =>
-      call.method === 'Runtime.callFunctionOn'
-      && String(call.params.functionDeclaration || '').includes('scrollIntoView')
-    )).toBe(false);
     expect(cdp.hrefOf()).toBe(HF_RESULTS);
     expect(cdp.hrefOf()).not.toBe(HF_FIRST_HIT);
   });
@@ -312,5 +310,137 @@ describe('issue #328 press Enter submits search listing, not typeahead first hit
     expect(text).not.toMatch(/Next: perceive -C -d 8/);
     expect(text.length).toBeLessThan(800);
     expect(cdp.hrefOf()).toBe(HF_RESULTS);
+  });
+});
+
+describe('issue #335 skip fill leftover settle before search-submit press', () => {
+  it('treats fill leftover typeahead as skippable only when the next batch command is search-submit press', () => {
+    expect(T.isSearchSubmitPressCommand({ cmd: 'press', args: ['Enter'] })).toBe(true);
+    expect(T.isSearchSubmitPressCommand({ cmd: 'key', args: ['enter'] })).toBe(true);
+    expect(T.isSearchSubmitPressCommand({ cmd: 'press', args: ['escape'] })).toBe(false);
+    expect(T.isSearchSubmitPressCommand({ cmd: 'fill', args: ['input', 'bert'] })).toBe(false);
+    expect(T.fillFeedbackPolicy({ cmd: 'press', args: ['Enter'] })).toBe('report-only');
+    expect(T.fillFeedbackPolicy({ cmd: 'press', args: ['escape'] })).toBe('settle-diff');
+    expect(T.fillFeedbackPolicy({ cmd: 'click', args: ['#go'] })).toBe('settle-diff');
+    expect(T.fillFeedbackPolicy(null)).toBe('settle-diff');
+  });
+
+  it('attaches sequential batch lookahead so mid-pipe fill can see the following press', () => {
+    const sequenced = T.batchCommandLookahead([
+      { cmd: 'fill', args: ['input[placeholder*="Search"]', 'bert'] },
+      { cmd: 'press', args: ['Enter'] },
+    ]);
+    expect(T.fillFeedbackPolicy(sequenced[0].nextCommand)).toBe('report-only');
+    expect(sequenced[1].nextCommand).toBeNull();
+    const parallel = T.batchCommandLookahead(sequenced, { parallel: true });
+    expect(T.fillFeedbackPolicy(parallel[0].nextCommand)).toBe('settle-diff');
+  });
+
+  it('does not dump leftover AX or wait network-quiet for mid-pipe fill before search-submit press', async () => {
+    let observed = false;
+    const text = await T.runActionWithFeedback({
+      action: 'fill',
+      target: {
+        targetId: '54A7C685ABCDEF0123456789ABCDEF01',
+        input: 'input[placeholder*="Search"]',
+        resolvedBy: 'selector-or-ref',
+        label: 'input[placeholder*="Search"]',
+        commandArgs: ['input[placeholder*="Search"]', 'bert'],
+      },
+      dispatch: async () => 'Filled <INPUT> with "bert"',
+      feedbackPolicy: T.fillFeedbackPolicy({ cmd: 'press', args: ['Enter'] }),
+      observe: async () => {
+        observed = true;
+        return leftoverGoldenPathDump();
+      },
+    });
+    expect(observed).toBe(false);
+    expect(text).toMatch(/Filled <INPUT> with "bert"/);
+    expect(text).not.toMatch(/RootWebArea/);
+    expect(text).not.toMatch(/no changes detected in AX tree/);
+    expect(text).not.toMatch(/quicksearch/);
+  });
+
+  it('still settle-diffs standalone fill so leftover typeahead remains visible', async () => {
+    let observed = false;
+    const text = await T.runActionWithFeedback({
+      action: 'fill',
+      target: {
+        targetId: '54A7C685ABCDEF0123456789ABCDEF01',
+        input: '#name',
+        resolvedBy: 'selector-or-ref',
+        label: '#name',
+        commandArgs: ['#name', 'bert'],
+      },
+      dispatch: async () => 'Filled <INPUT> with "bert"',
+      feedbackPolicy: T.fillFeedbackPolicy(null),
+      observe: async () => {
+        observed = true;
+        return leftoverGoldenPathDump();
+      },
+    });
+    expect(observed).toBe(true);
+    expect(text).toMatch(/RootWebArea/);
+  });
+
+  it('polls for the listing probe after skip-settle fill instead of sending raw Enter', async () => {
+    let probes = 0;
+    const cdp = createSearchSubmitCdp({
+      probe: () => {
+        probes += 1;
+        if (probes < 3) return { ok: false };
+        return { ok: true, selector: RESULTS_SELECTOR, href: '/models?search=bert', text: RESULTS_TEXT };
+      },
+    });
+    const probe = await T.waitForSearchSubmitProbe(cdp, 'sid', 400);
+    expect(probe.ok).toBe(true);
+    expect(probe.selector).toBe(RESULTS_SELECTOR);
+    expect(probes).toBeGreaterThanOrEqual(3);
+  });
+
+  it('fails closed after skip-settle fill when the listing never appears, without sending Enter', async () => {
+    const cdp = createSearchSubmitCdp({ probe: { ok: false } });
+    await expect(T.pressStr(cdp, 'sid', 'enter', { requireSearchSubmit: true })).rejects.toThrow(/results listing/i);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
+  });
+});
+
+describe('issue #335 search-submit returns on listing URL commit', () => {
+  it('submits the listing via jsclick and returns on the listing URL without mouse compositor wait', async () => {
+    const cdp = createSearchSubmitCdp();
+    const out = await T.pressStr(cdp, 'sid', 'enter');
+    expect(out).toMatch(/Submitted search/i);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+    expect(cdp.calls.some(call =>
+      call.method === 'Runtime.callFunctionOn'
+      && String(call.params.functionDeclaration || '').includes('scrollIntoView')
+    )).toBe(true);
+    expect(cdp.hrefOf()).toBe(HF_RESULTS);
+    expect(cdp.hrefOf()).not.toBe(HF_FIRST_HIT);
+  });
+
+  it('treats a failed listing click as success when the listing URL already committed', async () => {
+    const cdp = createSearchSubmitCdp({
+      pageHref: HF_RESULTS,
+      jsClickNavigates: false,
+      jsClickThrows: true,
+      mouseDeliversPageEvents: false,
+      mouseNavigates: false,
+    });
+    const out = await T.pressStr(cdp, 'sid', 'enter');
+    expect(out).toMatch(/Submitted search/i);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
+    expect(cdp.hrefOf()).toBe(HF_RESULTS);
+  });
+
+  it('keeps compact batch receipts skinny for fill then search-submit press', () => {
+    const formatted = T.formatBatchResults([
+      { cmd: 'fill', ok: true, result: 'Filled <INPUT> with "bert"\n---\nfill: dispatched via fill' },
+      { cmd: 'press', ok: true, result: `Pressed Enter. Submitted search via ${RESULTS_SELECTOR}\n---\npress: dispatched via press` },
+    ], 'compact');
+    expect(formatted).toContain('Filled <INPUT> with "bert"');
+    expect(formatted).toContain(`Submitted search via ${RESULTS_SELECTOR}`);
+    expect(formatted.length).toBeLessThan(220);
+    expect(formatted).not.toMatch(/RootWebArea/);
   });
 });
