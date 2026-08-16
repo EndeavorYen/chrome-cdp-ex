@@ -4445,6 +4445,163 @@ describe('Perceive diff baseline', () => {
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
   });
 
+  it('#305 leftover-ax-scroll cap-swap samples skip relative-time / GMT and stay changed', () => {
+    // Live leftover-ax-scroll named samples after overlay 3577e604. HF file-row
+    // `<a>…<time title="Thu, 13 Aug 2026 15:18:27 GMT">2 days ago</time></a>`:
+    // collector label for <a> is inner text; <time> label is title (title wins).
+    const relativeTime = T.formatVisibleControlLine({
+      tag: 'a',
+      role: 'link',
+      label: '2 days ago',
+      clickable: true,
+      rect: { x: 720, y: 184, w: 72, h: 16 },
+      selector: 'a.truncate',
+      hints: { classes: ['truncate'] },
+    });
+    const timeGmt = T.formatVisibleControlLine({
+      tag: 'time',
+      label: 'Thu, 13 Aug 2026 15:18:27 GMT',
+      title: 'Thu, 13 Aug 2026 15:18:27 GMT',
+      clickable: true,
+      rect: { x: 800, y: 184, w: 72, h: 16 },
+      selector: 'time[title="Thu, 13 Aug 2026 15:18:27 GMT"]',
+      hints: { classes: ['ml-auto', 'hidden', 'flex-none'] },
+    });
+    expect(relativeTime).toBe('a role=link "2 days ago" [clickable] (720,184 72×16) a.truncate .truncate');
+    expect(timeGmt).toBe(
+      'time "Thu, 13 Aug 2026 15:18:27 GMT" [clickable] (800,184 72×16) time[title="Thu, 13 Aug 2026 15:18:27 GMT"] .ml-auto.hidden.flex-none',
+    );
+    expect(T.visibleControlNameFromLine(`  ${relativeTime}`))
+      .toEqual({ name: '2 days ago', named: false });
+    expect(T.visibleControlNameFromLine(`  ${timeGmt}`))
+      .toEqual({ name: 'Thu, 13 Aug 2026 15:18:27 GMT', named: false });
+    expect(T.isVisibleControlTimestampName('2 days ago')).toBe(true);
+    expect(T.isVisibleControlTimestampName('Thu, 13 Aug 2026 15:18:27 GMT')).toBe(true);
+    expect(T.visibleControlNameFromLine('  a role=link "main" [clickable] (8,72 80×22) a[href="#main"]'))
+      .toEqual({ name: 'main', named: true });
+    expect(T.visibleControlNameFromLine('  a role=link "condition_encoder" [clickable] (8,100 80×22) a[href="#enc"]'))
+      .toEqual({ name: 'condition_encoder', named: true });
+    expect(T.isPerceiveDecorativeTitleChrome(`  ${relativeTime}`)).toBe(false);
+    expect(T.isPerceiveDecorativeTitleChrome(`  ${timeGmt}`)).toBe(false);
+
+    const header = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 320/2400 (13%) | Focused: none',
+      'Interactive: 12 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+    ];
+    const previous = [
+      ...header,
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+      '    [link] README.md  @2  (24,208 160×22)',
+      '',
+      '[Visible controls]',
+      '  a role=link "ryanlee-dev" [clickable] (8,100 80×22) a[href="#ryan"]',
+      '  a role=link "Update README.md" [clickable] (8,128 80×22) a[href="#readme"]',
+      '  a role=link "fbdf52f" [clickable] (8,156 80×22) a[href="#sha"]',
+      '  a role=link "assets" [clickable] (8,184 80×22) a[href="#assets"]',
+    ].join('\n');
+    const currentHeader = header.map(line => line.replace('Scroll: 320/2400 (13%)', 'Scroll: 400/2400 (17%)'));
+    const current = [
+      ...currentHeader,
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)',
+      '',
+      '[Visible controls]',
+      '  a role=link "condition_encoder" [clickable] (8,100 80×22) a[href="#enc"]',
+      '  a role=link "Add diffusers weights (modular pipeline) (#2)" [clickable] (8,128 80×22) a[href="#commit"]',
+      `  ${relativeTime}`,
+      `  ${timeGmt}`,
+      '  a role=link "config.json" [clickable] (8,212 80×22) a[href="#config"]',
+    ].join('\n');
+    const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+    expect(T.actionDomDiffShowsChange(diff)).toBe(true);
+    expect(diff).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(diff).toContain('- ryanlee-dev');
+    expect(diff).toContain('- Update README.md');
+    expect(diff).toContain('- fbdf52f');
+    expect(diff).toContain('- assets');
+    expect(diff).toContain('+ condition_encoder');
+    expect(diff).toContain('+ Add diffusers weights (modular pipeline) (#2)');
+    expect(diff).toContain('+ config.json');
+    const addedSamples = [...diff.matchAll(/^\+ (.+)$/gm)].map(match => match[1]);
+    expect(addedSamples).toEqual([
+      'condition_encoder',
+      'Add diffusers weights (modular pipeline) (#2)',
+      'config.json',
+    ]);
+    expect(diff).not.toMatch(/^\+ 2 days ago$/m);
+    expect(diff).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
+    expect(diff).not.toMatch(/\+\+\+ Added/);
+    expect(diff).not.toMatch(/span\[title=/);
+    expect(diff).not.toMatch(/time\[title=/);
+
+    const addedFile = current.replace(
+      '    [link] README.md  @2  (24,128 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)\n    [link] config.json  @3  (24,156 160×22)\n    [heading] Files and versions  @4  (24,184 200×22)',
+    );
+    const changed = T.formatPerceiveDiffOutput(previous, addedFile, { mode: 'since-action' });
+    expect(changed).toMatch(/\[link\] config\.json/);
+    expect(changed).toMatch(/\[heading\] Files and versions/);
+    expect(changed).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(changed).not.toMatch(/^\+ 2 days ago$/m);
+    expect(changed).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
+    expect(T.actionDomDiffShowsChange(changed)).toBe(true);
+
+    const model = T.buildPerceiveDiffModel(previous, current, { mode: 'since-action' });
+    expect(model.summary.changed).toBe(true);
+    expect(model.summary.kind).toBe('visible-control-cap-swap');
+    expect(model.summary.headline).toBe('Visible-control cap swap: 4 left, 5 entered');
+    expect(model.added).toEqual([
+      'condition_encoder',
+      'Add diffusers weights (modular pipeline) (#2)',
+      'config.json',
+    ]);
+    expect(model.added).not.toEqual(expect.arrayContaining([
+      '2 days ago',
+      'Thu, 13 Aug 2026 15:18:27 GMT',
+    ]));
+
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, {
+      dispatchText: 'Scrolled by (0, 80). Position: (0, 400)',
+    });
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(text).toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(text).toMatch(/\+ config\.json/);
+    expect(text).not.toMatch(/^\+ 2 days ago$/m);
+    expect(text).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/\+\+\+ Added/);
+    expect(text).not.toMatch(/span\[title=/);
+    expect(receipt).toMatch(/Outcome: changed/);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(receipt).not.toMatch(/^\+ 2 days ago$/m);
+    expect(receipt).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
+  });
+
   it('#299 leftover-ax-scroll no-change receipt has Next -C -d 8 without Hint --since-action', () => {
     const previous = [
       'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',

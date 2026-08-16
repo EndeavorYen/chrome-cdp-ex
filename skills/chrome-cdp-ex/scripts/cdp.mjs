@@ -10056,6 +10056,19 @@ function isPerceiveDecorativeTitleChrome(line) {
   return /^(?:[a-z][\w-]*)\s+"[^"]+"\s*$/i.test(text);
 }
 
+function isVisibleControlTimestampName(name) {
+  // Relative-time / HTTP-date GMT strings are membership chrome, not sample
+  // names (#305). Same family as #299 (tag/role fallbacks stay counted) and
+  // #293 (timestamp is not an identity name). Do not treat `main` as a
+  // special case.
+  const text = String(name || '').trim();
+  if (!text) return false;
+  if (/^[A-Z][a-z]{2}, \d{1,2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/i.test(text)) {
+    return true;
+  }
+  return /^(?:just now|\d+\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)$/i.test(text);
+}
+
 function visibleControlNameFromLine(line) {
   const text = stripPerceiveIdentityChrome(line).trim();
   if (!text || isVisibleControlsSectionHeader(text)) return { name: null, named: false };
@@ -10074,9 +10087,12 @@ function visibleControlNameFromLine(line) {
     || null;
   if (name) {
     // Collector fallbacks equal the printed tag or role= (`img "img"`,
-    // `a role=link "link"`). Keep them in membership; they are not sample names.
+    // `a role=link "link"`). Relative-time / GMT title strings occupy the
+    // same membership-not-sample bucket (#305).
     const key = name.toLowerCase();
-    const named = key !== tag.toLowerCase() && key !== role.toLowerCase();
+    const named = key !== tag.toLowerCase()
+      && key !== role.toLowerCase()
+      && !isVisibleControlTimestampName(name);
     return { name, named };
   }
   const fallback = text.replace(/\s+@[\w:-]+\b.*/, '').slice(0, 60) || null;
@@ -23734,7 +23750,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   actionObservationPerceiveOpts, actionResultPdfViewerMeta, actionSettleBaseline, isCardsPerceiveOutput,
   leftoverCardsCount, isScrollActionTarget, isLeftoverFeedCardsSettle,
   isLeftoverDefaultAxScrollSettle, stripPerceiveRectChrome, stripPerceiveIdentityChrome,
-  isPerceiveDecorativeTitleChrome, visibleControlNameFromLine, extractVisibleControlLabels,
+  isPerceiveDecorativeTitleChrome, isVisibleControlTimestampName, visibleControlNameFromLine, extractVisibleControlLabels,
   isPdfViewerPerceiveOutput, pdfViewerSettleDiffText,
   isFramedPerceiveOutput, shouldCaptureTopLevelActionSettle, actionSettleObserveOpts,
   actionDomDiffShowsChange, noBaselineActionDiffText,

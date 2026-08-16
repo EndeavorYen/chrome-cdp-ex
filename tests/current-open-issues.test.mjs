@@ -7885,6 +7885,14 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
   const CAP_SWAP_CONTENT = [
     'MiniMaxAI', 'MiniMax-Music3', 'Copy', 'Like', 'LICENSE', 'README.md', 'config.json', 'Files',
   ];
+  const TIMESTAMP_CAP_SWAP_CHROME = [
+    'ryanlee-dev', 'Update README.md', 'fbdf52f', 'assets',
+  ];
+  const TIMESTAMP_CAP_SWAP_CONTENT = [
+    'condition_encoder',
+    'Add diffusers weights (modular pipeline) (#2)',
+    'config.json',
+  ];
 
   function hfVisibleControl(label, y) {
     return {
@@ -7956,9 +7964,48 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     ];
   }
 
-  function hfMeta(scrollY, files, { foldTag = false, capSwap = false, noisyCapSwap = false, titleChrome = false } = {}) {
+  function hfTimestampChromeControls() {
+    // Live leftover-ax-scroll named samples after overlay 3577e604. HF file-row
+    // `<a>…<time title="Thu, 13 Aug 2026 15:18:27 GMT">2 days ago</time></a>`:
+    // collector label for <a> is inner text; <time> label is title (title wins).
+    return [
+      {
+        tag: 'a',
+        role: 'link',
+        label: '2 days ago',
+        clickable: true,
+        rect: { x: 720, y: 184, w: 72, h: 16 },
+        selector: 'a.truncate',
+        hints: { classes: ['truncate'] },
+      },
+      {
+        tag: 'time',
+        label: 'Thu, 13 Aug 2026 15:18:27 GMT',
+        title: 'Thu, 13 Aug 2026 15:18:27 GMT',
+        clickable: true,
+        rect: { x: 800, y: 184, w: 72, h: 16 },
+        selector: 'time[title="Thu, 13 Aug 2026 15:18:27 GMT"]',
+        hints: { classes: ['ml-auto', 'hidden', 'flex-none'] },
+      },
+    ];
+  }
+
+  function hfMeta(scrollY, files, {
+    foldTag = false,
+    capSwap = false,
+    noisyCapSwap = false,
+    titleChrome = false,
+    timestampCapSwap = false,
+  } = {}) {
     const fileControls = files.map(file => hfVisibleControl(file.name, file.y - scrollY));
-    let visibleControls = noisyCapSwap
+    let visibleControls = timestampCapSwap
+      ? (scrollY > 0
+        ? [
+          ...TIMESTAMP_CAP_SWAP_CONTENT.map((label, i) => hfVisibleControl(label, 100 + i * 28)),
+          ...hfTimestampChromeControls(),
+        ]
+        : TIMESTAMP_CAP_SWAP_CHROME.map((label, i) => hfVisibleControl(label, 100 + i * 28)))
+      : noisyCapSwap
       ? (scrollY > 0 ? noisyCapSwapContent() : noisyCapSwapChrome())
       : capSwap
       ? (scrollY > 0 ? CAP_SWAP_CONTENT : CAP_SWAP_CHROME).map((label, i) => (
@@ -7987,7 +8034,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     });
   }
 
-  function hfAx(files, { foldTag = false, capSwap = false, noisyCapSwap = false } = {}) {
+  function hfAx(files, { foldTag = false, capSwap = false, noisyCapSwap = false, timestampCapSwap = false } = {}) {
     const links = files.map((file, i) => ({
       nodeId: String(20 + i),
       parentId: '10',
@@ -7995,7 +8042,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
       name: { value: file.name },
       backendDOMNodeId: file.backend,
     }));
-    const withNav = foldTag || capSwap || noisyCapSwap;
+    const withNav = foldTag || capSwap || noisyCapSwap || timestampCapSwap;
     return [
       {
         nodeId: '1',
@@ -8029,15 +8076,17 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     capSwap = false,
     noisyCapSwap = false,
     titleChrome = false,
+    timestampCapSwap = false,
   } = {}) {
     const state = {
       scrollY,
       clicks,
       files: files.map(file => ({ ...file })),
       foldTag,
-      capSwap: capSwap || noisyCapSwap,
+      capSwap: capSwap || noisyCapSwap || timestampCapSwap,
       noisyCapSwap,
       titleChrome,
+      timestampCapSwap,
     };
     const cdp = {
       calls: [],
@@ -8067,6 +8116,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
                   capSwap: state.capSwap,
                   noisyCapSwap: state.noisyCapSwap,
                   titleChrome: state.titleChrome,
+                  timestampCapSwap: state.timestampCapSwap,
                 }),
               },
             });
@@ -8078,6 +8128,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
             foldTag: state.foldTag,
             capSwap: state.capSwap,
             noisyCapSwap: state.noisyCapSwap,
+            timestampCapSwap: state.timestampCapSwap,
           });
           if (state.clicks) {
             nodes.push({
@@ -8787,6 +8838,118 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).toMatch(/tokenizer\.json/);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/span\[title=/);
+  });
+
+  it('#305 leftover -C -d 8 then scroll cap-swap samples skip relative-time / GMT and stay changed', async () => {
+    const { cdp } = createHfPage({ timestampCapSwap: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
+    expect(leftoverDump).toMatch(/ryanlee-dev/);
+    expect(leftoverDump).toMatch(/assets/);
+    const relativeDump = T.formatVisibleControlLine(hfTimestampChromeControls()[0]);
+    const gmtDump = T.formatVisibleControlLine(hfTimestampChromeControls()[1]);
+    expect(relativeDump).toBe('a role=link "2 days ago" [clickable] (720,184 72×16) a.truncate .truncate');
+    expect(gmtDump).toContain('time "Thu, 13 Aug 2026 15:18:27 GMT" [clickable]');
+    expect(gmtDump).toContain('time[title="Thu, 13 Aug 2026 15:18:27 GMT"]');
+    const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    expect(settleBaseline.output).toBe(leftoverDump);
+    expect(cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length).toBe(axBefore);
+    const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
+    expect(dispatchText).toBe('Scrolled by (0, 80). Position: (0, 80)');
+    const afterDump = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      { output: leftoverDump, snapshotOpts: store.snapshotOpts },
+      { ...T.parsePerceiveArgs(['-C', '-d', '8']), targetPrefix: HF_PREFIX },
+      refState,
+    );
+    expect(afterDump).toContain(relativeDump);
+    expect(afterDump).toContain(gmtDump);
+    expect(afterDump).toMatch(/condition_encoder/);
+    expect(afterDump).toMatch(/config\.json/);
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(after).toContain('- ryanlee-dev');
+    expect(after).toContain('+ condition_encoder');
+    expect(after).toContain('+ Add diffusers weights (modular pipeline) (#2)');
+    expect(after).toContain('+ config.json');
+    const addedSamples = [...after.matchAll(/^\+ (.+)$/gm)].map(match => match[1]);
+    expect(addedSamples).toEqual([
+      'condition_encoder',
+      'Add diffusers weights (modular pipeline) (#2)',
+      'config.json',
+    ]);
+    expect(after).not.toMatch(/^\+ 2 days ago$/m);
+    expect(after).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
+    expect(after).not.toMatch(/\+\+\+ Added/);
+    expect(after).not.toMatch(/time\[title=/);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, { dispatchText });
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(text).toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(text).toMatch(/\+ config\.json/);
+    expect(text).not.toMatch(/^\+ 2 days ago$/m);
+    expect(text).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/\+\+\+ Added/);
+    expect(receipt).toMatch(/Outcome: changed/);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(receipt).not.toMatch(/^\+ 2 days ago$/m);
+    expect(receipt).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
+  });
+
+  it('#305 leftover -C -d 8 timestamp samples plus a new file still prints tokenizer.json', async () => {
+    const { cdp, state } = createHfPage({ timestampCapSwap: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    await leftoverGoldenPath(cdp, store, refMap, refState);
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    state.files = [...DEFAULT_FILES, ADDED_FILE];
+    await T.scrollStr(cdp, 'sid', 'down', '80');
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/tokenizer\.json/);
+    expect(after).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(after).not.toMatch(/^\+ 2 days ago$/m);
+    expect(after).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('changed');
+    expect(text).toMatch(/tokenizer\.json/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/^\+ 2 days ago$/m);
   });
 });
 
