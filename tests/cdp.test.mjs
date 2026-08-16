@@ -5074,7 +5074,7 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/^Page:/m);
     expect(text).not.toMatch(/^Viewport:/m);
     expect(text).not.toMatch(/Focused:/);
-    expect(text).toMatch(/\(no changes detected in AX tree\)/);
+    expect(text).not.toMatch(/\(no changes detected in AX tree\)/);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
@@ -5179,7 +5179,7 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/^Page:/m);
     expect(text).not.toMatch(/^Viewport:/m);
     expect(text).not.toMatch(/Focused:/);
-    expect(text).toMatch(/\(no changes detected in AX tree\)/);
+    expect(text).not.toMatch(/\(no changes detected in AX tree\)/);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
@@ -5193,7 +5193,7 @@ describe('Perceive diff baseline', () => {
     expect(receipt).not.toMatch(/^Page:/m);
     expect(receipt).not.toMatch(/^Viewport:/m);
     expect(receipt).not.toMatch(/Focused:/);
-    expect(receipt).toMatch(/\(no changes detected in AX tree\)/);
+    expect(receipt).not.toMatch(/\(no changes detected in AX tree\)/);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(receipt).toMatch(/Settle: ok in 1527ms/);
     expect(receipt.length).toBeLessThan(476);
@@ -5335,7 +5335,7 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/^Page:/m);
     expect(text).not.toMatch(/^Viewport:/m);
     expect(text).not.toMatch(/Focused:/);
-    expect(text).toMatch(/\(no changes detected in AX tree\)/);
+    expect(text).not.toMatch(/\(no changes detected in AX tree\)/);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
@@ -5348,7 +5348,7 @@ describe('Perceive diff baseline', () => {
     expect(receipt).not.toMatch(/^Page:/m);
     expect(receipt).not.toMatch(/^Viewport:/m);
     expect(receipt).not.toMatch(/Focused:/);
-    expect(receipt).toMatch(/\(no changes detected in AX tree\)/);
+    expect(receipt).not.toMatch(/\(no changes detected in AX tree\)/);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(receipt).toMatch(/Settle: ok in 1061ms/);
     expect(receipt.length).toBeLessThan(381);
@@ -5460,6 +5460,235 @@ describe('Perceive diff baseline', () => {
     expect(genericNoChangeWithHeader.outcome.status).toBe('no-change');
     expect(T.formatActionText(genericNoChangeWithHeader)).toMatch(/^Page: Example/m);
     expect(T.formatActionText(genericNoChangeWithHeader)).toMatch(/^Viewport: 1280×720/m);
+    expect(T.formatActionText(genericNoChangeWithHeader)).toMatch(/^Outcome: no-change — /m);
+  });
+
+  it('#318 leftover-ax-scroll no-change receipt drops tautological AX body when Next is already perceive', () => {
+    // Live leftover-ax-scroll ActionResult after overlay a972d528 (Fixes #316).
+    // Bob 9224: leftover perceive 561F7DA8 -C -d 8 then scroll down 80 on HF
+    // Music3 already at scrollY 547/547 (100%). Position stayed (0, 547) —
+    // honest no-change, not a hidden cap-swap. Page / Viewport header is
+    // gone. Settle-shape Outcome suffix is gone. Recovery hint is gone.
+    // Next is already perceive -C -d 8. The leftover chrome is the
+    // tautological AX body. Outcome already states no-change. Do not drop
+    // the AX body from leftover-ax-scroll changed or from the leftover
+    // perceive dump itself. Do not eat settle 1178ms with a new path.
+    const LIVE_INTERACTIVE = 'Interactive: 113 a, 1 input[text], 21 button, 9 div, 2 input[search], 1 iframe';
+    const LIVE_COORDS = 'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)';
+    const LIVE_RECOVERY_HINT = 'AX identities unchanged; re-run perceive -C -d 8 instead of report.';
+    const LIVE_SETTLE_SHAPE_REASON = 'Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities.';
+    const LIVE_PAGE = 'Page: MiniMaxAI/MiniMax-Music3 at main — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main';
+    const LIVE_VIEWPORT = 'Viewport: 1042×632 | Scroll: 547/547 (100%) | Focused: none';
+    const LIVE_AX_BODY = '(no changes detected in AX tree)';
+    const header = [
+      LIVE_PAGE,
+      LIVE_VIEWPORT,
+      LIVE_INTERACTIVE,
+      'Console: clean',
+      LIVE_COORDS,
+      '',
+    ];
+    const dump = [
+      ...header,
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)',
+    ].join('\n');
+    expect(dump).toContain(LIVE_PAGE);
+    expect(dump).toContain(LIVE_VIEWPORT);
+    expect(dump).toContain(LIVE_INTERACTIVE);
+    expect(dump).toContain(LIVE_COORDS);
+    expect(dump).toContain('Scroll: 547/547 (100%)');
+    expect(dump).toContain('Focused: none');
+
+    const diff = T.formatPerceiveDiffOutput(dump, dump, { mode: 'since-action' });
+    expect(T.actionDomDiffShowsChange(diff)).toBe(false);
+    expect(diff).toMatch(/no changes detected in AX tree/i);
+    expect(diff).toContain(LIVE_PAGE);
+    expect(diff).toContain(LIVE_VIEWPORT);
+    expect(diff).toContain(LIVE_INTERACTIVE);
+    expect(diff).toContain(LIVE_COORDS);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).toContain(LIVE_PAGE);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).toContain(LIVE_VIEWPORT);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).not.toContain(LIVE_INTERACTIVE);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).not.toContain(LIVE_COORDS);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).toMatch(/no changes detected in AX tree/i);
+    expect(T.stripLeftoverAxScrollNoChangeIdentityChrome(diff)).not.toContain(LIVE_PAGE);
+    expect(T.stripLeftoverAxScrollNoChangeIdentityChrome(diff)).not.toContain(LIVE_VIEWPORT);
+    expect(T.stripLeftoverAxScrollNoChangeIdentityChrome(diff)).not.toMatch(/Focused:/);
+    expect(T.stripLeftoverAxScrollNoChangeIdentityChrome(diff)).toMatch(/no changes detected in AX tree/i);
+    expect(T.stripLeftoverAxScrollNoChangeAxBodyChrome(diff)).not.toMatch(/no changes detected in AX tree/i);
+    expect(T.stripLeftoverAxScrollNoChangeAxBodyChrome(diff)).toContain(LIVE_PAGE);
+    expect(T.stripLeftoverAxScrollNoChangeAxBodyChrome(
+      T.stripLeftoverAxScrollNoChangeIdentityChrome(diff),
+    )).not.toMatch(/no changes detected in AX tree/i);
+
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 1178 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, {
+      dispatchText: 'Scrolled by (0, 80). Position: (0, 547)',
+    });
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(result.recommendation.recoveryHint).toBeNull();
+    expect(result.nextHint).toBeNull();
+    expect(text).toMatch(/^Outcome: no-change$/m);
+    expect(text).not.toMatch(LIVE_SETTLE_SHAPE_REASON);
+    expect(text).toMatch(/^Verdict: continue$/m);
+    expect(text).toMatch(/^Settle: ok in 1178ms$/m);
+    expect(text).not.toMatch(LIVE_RECOVERY_HINT);
+    expect(text).not.toMatch(/^Recovery hint:/m);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/^Interactive:/m);
+    expect(text).not.toMatch(/^Console: clean$/m);
+    expect(text).not.toMatch(/^Coords: /m);
+    expect(text).not.toMatch(/use clickxy with these values/);
+    expect(text).not.toMatch(/^Page:/m);
+    expect(text).not.toMatch(/^Viewport:/m);
+    expect(text).not.toMatch(/Focused:/);
+    expect(text).not.toMatch(LIVE_AX_BODY);
+    expect(text).not.toMatch(/no changes detected in AX tree/i);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
+    expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
+    expect(receipt).toMatch(/^Outcome: no-change$/m);
+    expect(receipt).not.toMatch(LIVE_SETTLE_SHAPE_REASON);
+    expect(receipt).not.toMatch(LIVE_RECOVERY_HINT);
+    expect(receipt).not.toMatch(/^Recovery hint:/m);
+    expect(receipt).not.toMatch(/^Interactive:/m);
+    expect(receipt).not.toMatch(/^Page:/m);
+    expect(receipt).not.toMatch(/^Viewport:/m);
+    expect(receipt).not.toMatch(/Focused:/);
+    expect(receipt).not.toMatch(LIVE_AX_BODY);
+    expect(receipt).not.toMatch(/no changes detected in AX tree/i);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(receipt).toMatch(/Settle: ok in 1178ms/);
+    expect(receipt.length).toBeLessThan(218);
+    expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
+
+    const addedFileDump = dump.replace(
+      '    [link] README.md  @2  (24,128 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)\n    [link] tokenizer.json  @3  (24,156 160×22)',
+    );
+    const changedDiff = T.formatPerceiveDiffOutput(dump, addedFileDump, { mode: 'since-action' });
+    expect(T.actionDomDiffShowsChange(changedDiff)).toBe(true);
+    expect(changedDiff).toMatch(/tokenizer\.json/);
+    const changed = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 1481 },
+      effects: { domDiff: changedDiff, console: [], network: [], navigation: null },
+    });
+    const changedText = T.formatActionText(changed);
+    expect(changed.outcome.status).toBe('changed');
+    expect(changed.receipt.recoveryHint).toBeNull();
+    expect(changedText).toMatch(/^Outcome: changed$/m);
+    expect(changedText).not.toMatch(/^Outcome: no-change$/m);
+    expect(changedText).toMatch(/^Page:/m);
+    expect(changedText).toMatch(/^Viewport:/m);
+    expect(changedText).toMatch(/tokenizer\.json/);
+    expect(changedText).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(changedText).not.toMatch(/^Recovery hint:/m);
+
+    const leftoverCardsWithHeader = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '2E94F948ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'cards-window-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: {
+        domDiff: [
+          'Page: X feed — https://x.com/home',
+          'Viewport: 1042×632 | Scroll: 80/800 (10%) | Focused: none',
+          'chrome-cdp-ex.cards.v1  2 cards  virtualized',
+          '(no changes detected in AX tree)',
+        ].join('\n'),
+        console: [],
+        network: [],
+        navigation: null,
+      },
+    });
+    expect(leftoverCardsWithHeader.outcome.status).toBe('no-change');
+    const cardsText = T.formatActionText(leftoverCardsWithHeader);
+    expect(cardsText).toMatch(/^Page: X feed/m);
+    expect(cardsText).toMatch(/^Viewport: 1042×632/m);
+    expect(cardsText).toMatch(/chrome-cdp-ex\.cards\.v1/);
+    expect(cardsText).toMatch(/\(no changes detected in AX tree\)/);
+    expect(cardsText).toMatch(/Next: cdp perceive 2E94F948 --cards/);
+
+    const leftoverPdfWithHeader = T.createActionResult({
+      action: 'click',
+      target: {
+        targetId: 'CFD023D2ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'pdf-viewer-no-change',
+        resolvedBy: 'selector-or-ref',
+        label: 'body',
+      },
+      dispatch: { ok: true, method: 'jsclick' },
+      settle: { ok: true, durationMs: 40 },
+      effects: {
+        domDiff: [
+          'Page: paper.pdf — https://example.com/paper.pdf',
+          'Viewport: 1042×632 | Scroll: 0/0 (0%) | Focused: none',
+          'chrome-cdp-ex.pdf-viewer.v1',
+          '(no changes detected in AX tree)',
+        ].join('\n'),
+        console: [],
+        network: [],
+        navigation: null,
+      },
+    });
+    expect(leftoverPdfWithHeader.outcome.status).toBe('no-change');
+    const pdfText = T.formatActionText(leftoverPdfWithHeader);
+    expect(pdfText).toMatch(/^Page: paper\.pdf/m);
+    expect(pdfText).toMatch(/^Viewport: 1042×632/m);
+    expect(pdfText).toMatch(/chrome-cdp-ex\.pdf-viewer\.v1/);
+    expect(pdfText).toMatch(/\(no changes detected in AX tree\)/);
+
+    const genericNoChangeWithHeader = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 40 },
+      effects: {
+        domDiff: [
+          'Page: Example — https://example.com',
+          'Viewport: 1280×720 | Scroll: 0/0 (0%) | Focused: none',
+          '(no changes detected in AX tree)',
+        ].join('\n'),
+        console: [],
+        network: [],
+        navigation: null,
+      },
+    });
+    expect(genericNoChangeWithHeader.outcome.status).toBe('no-change');
+    expect(T.formatActionText(genericNoChangeWithHeader)).toMatch(/^Page: Example/m);
+    expect(T.formatActionText(genericNoChangeWithHeader)).toMatch(/^Viewport: 1280×720/m);
+    expect(T.formatActionText(genericNoChangeWithHeader)).toMatch(/\(no changes detected in AX tree\)/);
     expect(T.formatActionText(genericNoChangeWithHeader)).toMatch(/^Outcome: no-change — /m);
   });
 

@@ -9360,7 +9360,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).not.toMatch(/^Page:/m);
     expect(text).not.toMatch(/^Viewport:/m);
     expect(text).not.toMatch(/Focused:/);
-    expect(text).toMatch(/\(no changes detected in AX tree\)/);
+    expect(text).not.toMatch(/\(no changes detected in AX tree\)/);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
@@ -9445,7 +9445,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).not.toMatch(/^Page:/m);
     expect(text).not.toMatch(/^Viewport:/m);
     expect(text).not.toMatch(/Focused:/);
-    expect(text).toMatch(/\(no changes detected in AX tree\)/);
+    expect(text).not.toMatch(/\(no changes detected in AX tree\)/);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
@@ -9455,7 +9455,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(receipt).not.toMatch(/^Interactive:/m);
     expect(receipt).not.toMatch(/^Page:/m);
     expect(receipt).not.toMatch(/^Viewport:/m);
-    expect(receipt).toMatch(/\(no changes detected in AX tree\)/);
+    expect(receipt).not.toMatch(/\(no changes detected in AX tree\)/);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(receipt.length).toBeLessThan(476);
     expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
@@ -9539,7 +9539,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).not.toMatch(/^Page:/m);
     expect(text).not.toMatch(/^Viewport:/m);
     expect(text).not.toMatch(/Focused:/);
-    expect(text).toMatch(/\(no changes detected in AX tree\)/);
+    expect(text).not.toMatch(/\(no changes detected in AX tree\)/);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
@@ -9550,9 +9550,111 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(receipt).not.toMatch(/^Page:/m);
     expect(receipt).not.toMatch(/^Viewport:/m);
     expect(receipt).not.toMatch(/Focused:/);
-    expect(receipt).toMatch(/\(no changes detected in AX tree\)/);
+    expect(receipt).not.toMatch(/\(no changes detected in AX tree\)/);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(receipt.length).toBeLessThan(381);
+    expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
+  });
+
+  it('#318 leftover -C -d 8 then already-at-bottom scroll drops tautological AX body', async () => {
+    // Live leftover-ax-scroll after overlay a972d528: HF already at
+    // scrollY 547/547 (100%). scroll down 80 stays Position (0, 547).
+    // Honest no-change. Page / Viewport header is gone. Settle-shape
+    // Outcome suffix is gone. Recovery hint is gone. Perceive dump still
+    // has Page/Viewport/Interactive/Coords and the AX no-change body.
+    // Action receipt must not reprint (no changes detected in AX tree)
+    // after a no-op whose Next is already perceive. Outcome already
+    // states no-change. Position stays on the action line. Settle 1178ms
+    // stays as recorded — do not invent a new settle path.
+    const LIVE_RECOVERY_HINT = 'AX identities unchanged; re-run perceive -C -d 8 instead of report.';
+    const LIVE_SETTLE_SHAPE_REASON = 'Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities.';
+    const LIVE_AX_BODY = '(no changes detected in AX tree)';
+    const { cdp, state } = createHfPage({ scrollY: 547, liveCensusCapSwap: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
+    expect(leftoverDump).toContain(LIVE_INTERACTIVE);
+    expect(leftoverDump).toContain(LIVE_COORDS);
+    expect(leftoverDump).toMatch(/^Page: /m);
+    expect(leftoverDump).toMatch(/Viewport: 1042×632 \| Scroll: 547\/547 \(100%\)/);
+    expect(leftoverDump).toMatch(/Focused: none/);
+    expect(leftoverDump).toMatch(/qwen_7B/);
+    const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    expect(settleBaseline.output).toBe(leftoverDump);
+    expect(cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length).toBe(axBefore);
+    const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
+    expect(dispatchText).toBe('Scrolled by (0, 80). Position: (0, 547)');
+    expect(state.scrollY).toBe(547);
+    const afterDump = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      { output: leftoverDump, snapshotOpts: store.snapshotOpts },
+      { ...T.parsePerceiveArgs(['-C', '-d', '8']), targetPrefix: HF_PREFIX },
+      refState,
+    );
+    expect(afterDump).toContain(LIVE_INTERACTIVE);
+    expect(afterDump).toContain(LIVE_COORDS);
+    expect(afterDump).toMatch(/^Page: /m);
+    expect(afterDump).toMatch(/Viewport: 1042×632 \| Scroll: 547\/547 \(100%\)/);
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/no changes detected in AX tree/i);
+    expect(after).toMatch(/^Page: /m);
+    expect(after).toMatch(/^Viewport:/m);
+    expect(T.actionDomDiffShowsChange(after)).toBe(false);
+    expect(after).not.toMatch(/Visible-control cap swap:/);
+
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 1178 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, { dispatchText });
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(result.recommendation.recoveryHint).toBeNull();
+    expect(text).toMatch(/^Outcome: no-change$/m);
+    expect(text).not.toMatch(LIVE_SETTLE_SHAPE_REASON);
+    expect(text).toMatch(/^Verdict: continue$/m);
+    expect(text).toMatch(/^Settle: ok in 1178ms$/m);
+    expect(text).not.toMatch(LIVE_RECOVERY_HINT);
+    expect(text).not.toMatch(/^Recovery hint:/m);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/^Interactive:/m);
+    expect(text).not.toMatch(/^Console: clean$/m);
+    expect(text).not.toMatch(/^Coords: /m);
+    expect(text).not.toMatch(/use clickxy with these values/);
+    expect(text).not.toMatch(/^Page:/m);
+    expect(text).not.toMatch(/^Viewport:/m);
+    expect(text).not.toMatch(/Focused:/);
+    expect(text).not.toMatch(LIVE_AX_BODY);
+    expect(text).not.toMatch(/no changes detected in AX tree/i);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
+    expect(receipt).not.toMatch(LIVE_SETTLE_SHAPE_REASON);
+    expect(receipt).not.toMatch(LIVE_RECOVERY_HINT);
+    expect(receipt).not.toMatch(/^Recovery hint:/m);
+    expect(receipt).not.toMatch(/^Interactive:/m);
+    expect(receipt).not.toMatch(/^Page:/m);
+    expect(receipt).not.toMatch(/^Viewport:/m);
+    expect(receipt).not.toMatch(/Focused:/);
+    expect(receipt).not.toMatch(LIVE_AX_BODY);
+    expect(receipt).not.toMatch(/no changes detected in AX tree/i);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(receipt).toMatch(/Settle: ok in 1178ms/);
+    expect(receipt.length).toBeLessThan(218);
     expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
   });
 });

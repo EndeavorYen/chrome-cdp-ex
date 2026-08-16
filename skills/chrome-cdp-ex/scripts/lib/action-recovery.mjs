@@ -668,9 +668,11 @@ export function buildNoChangeOutcomeRecommendation({
       blockingSignals: [],
       // Next is already perceive -C -d 8. "re-run perceive instead of report"
       // restates that command (#311). formatActionText also drops this
-      // settle-shape Outcome reason on honest no-change (#313) and the
-      // reprinted Page / Viewport identity header (#316) because Position
-      // already states scroll identity and Next is already perceive. Keep
+      // settle-shape Outcome reason on honest no-change (#313), the
+      // reprinted Page / Viewport identity header (#316), and the
+      // tautological AX body "(no changes detected in AX tree)" (#318)
+      // because Outcome already states no-change, Position already states
+      // scroll identity, and Next is already perceive. Keep
       // Outcome/Verdict/Next; do not author a Recovery hint that tells the
       // model to do what Next already says.
       recoveryHint: null,
