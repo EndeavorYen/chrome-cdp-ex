@@ -785,7 +785,7 @@ function validateStep(id, stdout, {
     return stdout;
   }
   if (id === 'hover') {
-    if (!/^Hovering over <BUTTON> at CSS \(\d+, \d+\)$/.test(stdout)) {
+    if (!/^Hovering over <BUTTON> at CSS \(\d+, \d+\)(?: .+)?$/.test(stdout)) {
       throw new Error(`hover fixture output is invalid: ${JSON.stringify(stdout)}`);
     }
     return stdout;

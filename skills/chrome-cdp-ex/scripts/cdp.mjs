@@ -154,6 +154,7 @@ const REF_RESOLVE_TIMEOUT = 2000;
 const HOVER_MOUSE_ACK_TIMEOUT_MS = 250;
 const HOVER_MUTATION_TIMEOUT_MS = 3000;
 const HOVER_MUTATION_MARKER = 'chrome-cdp-ex.hover-mutation.v1';
+const HOVER_REVEAL_MARKER = 'chrome-cdp-ex.hover-reveal.v1';
 const CLICK_MOUSE_ACK_TIMEOUT_MS = 6000;
 const CLICK_EVENT_PROBE_KEY = '__chromeCdpExClickProbe';
 const LOADALL_DEFAULT_INTERVAL_MS = 1500;
@@ -12467,6 +12468,20 @@ function fillFeedbackPolicy(nextCommand) {
   return isSearchSubmitPressCommand(nextCommand) ? 'report-only' : 'settle-diff';
 }
 
+function isHoverConfirmEvalCommand(command) {
+  if (!command || typeof command !== 'object') return false;
+  const cmd = String(command.cmd || '').trim().toLowerCase();
+  return cmd === 'eval';
+}
+
+function hoverFeedbackPolicy(nextCommand) {
+  // Sequential batch hover then eval: leftover AX recapture races CSS
+  // :hover (opacity / group-hover). Confirm eval is the success signal.
+  // Standalone hover still recaptures so a later no-op mutator does not
+  // steal hover's AX delta (#286). Do not invent a hover family.
+  return isHoverConfirmEvalCommand(nextCommand) ? 'report-only' : 'settle-diff';
+}
+
 function batchCommandLookahead(commands = [], { parallel = false } = {}) {
   const list = Array.isArray(commands) ? commands : [];
   return list.map((command, index) => ({
@@ -12953,27 +12968,185 @@ async function dispatchHoverMove(cdp, sid, x, y) {
   }
 }
 
+function hoverRevealStateJs(elExpr) {
+  return `
+    const el = ${elExpr};
+    if (!el) return { ok: false, marker: ${JSON.stringify(HOVER_REVEAL_MARKER)} };
+    const style = getComputedStyle(el);
+    const opacity = Number(style.opacity);
+    const visibility = String(style.visibility || '');
+    const display = String(style.display || '');
+    const visible = Number.isFinite(opacity) && opacity > 0 && visibility !== 'hidden' && display !== 'none';
+    let groupHover = false;
+    try { groupHover = el.matches(':hover') || !!el.closest(':hover'); } catch {}
+    return {
+      ok: true,
+      marker: ${JSON.stringify(HOVER_REVEAL_MARKER)},
+      opacity,
+      visibility,
+      display,
+      visible,
+      groupHover,
+      href: String(location.href || ''),
+      tag: el.tagName,
+    };
+  `;
+}
+
+function hoverRevealStateExpression(selector) {
+  return `(function() {
+    void ${JSON.stringify(HOVER_REVEAL_MARKER)};
+    ${hoverRevealStateJs(`document.querySelector(${JSON.stringify(selector)})`)}
+  })()`;
+}
+
+function hoverRevealStateAtPointExpression(x, y) {
+  return `(function() {
+    void ${JSON.stringify(HOVER_REVEAL_MARKER)};
+    ${hoverRevealStateJs(`document.elementFromPoint(${Number(x)}, ${Number(y)})`)}
+  })()`;
+}
+
+function formatHoverOpacity(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value ?? '');
+  if (Number.isInteger(n)) return String(n);
+  return String(Math.round(n * 1000) / 1000);
+}
+
+function parseHoverRevealState(raw) {
+  let value = raw;
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try { value = JSON.parse(trimmed); } catch { return null; }
+  }
+  if (!value || typeof value !== 'object') return null;
+  const opacity = Number(value.opacity);
+  if (value.marker !== HOVER_REVEAL_MARKER && !Number.isFinite(opacity)) return null;
+  return {
+    ok: value.ok !== false,
+    marker: HOVER_REVEAL_MARKER,
+    opacity: Number.isFinite(opacity) ? opacity : null,
+    visibility: value.visibility != null ? String(value.visibility) : '',
+    display: value.display != null ? String(value.display) : '',
+    visible: value.visible === true || (
+      Number.isFinite(opacity)
+      && opacity > 0
+      && value.visibility !== 'hidden'
+      && value.display !== 'none'
+    ),
+    groupHover: value.groupHover === true,
+    href: value.href != null ? String(value.href) : undefined,
+    tag: value.tag,
+    x: value.x,
+    y: value.y,
+  };
+}
+
+function formatHoverRevealClause(before, after) {
+  if (!after) return '';
+  const parts = [];
+  if (before?.opacity != null && after.opacity != null) {
+    parts.push(`opacity ${formatHoverOpacity(before.opacity)}→${formatHoverOpacity(after.opacity)}`);
+  } else if (after.opacity != null) {
+    parts.push(`opacity ${formatHoverOpacity(after.opacity)}`);
+  }
+  if (after.visible === true) parts.push('visible');
+  else if (after.visible === false) parts.push('hidden');
+  if (after.groupHover === true) parts.push('groupHover');
+  return parts.length ? ` ${parts.join(' ')}` : '';
+}
+
+async function readHoverRevealState(cdp, sid, selector, point = null) {
+  const expr = selector
+    ? hoverRevealStateExpression(selector)
+    : hoverRevealStateAtPointExpression(point?.x, point?.y);
+  try {
+    return parseHoverRevealState(await evalStr(cdp, sid, expr));
+  } catch {
+    return null;
+  }
+}
+
 async function hoverStr(cdp, sid, selector, refMap, refState) {
   if (!selector) throw new Error('CSS selector or @ref required');
   if (isRef(selector)) {
     const { rect: r } = await resolveRefRectNoScroll(cdp, sid, refMap, selector, refState);
     const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+    const before = await readHoverRevealState(cdp, sid, null, { x: cx, y: cy });
     await dispatchHoverMove(cdp, sid, cx, cy);
-    return `Hovering over <${r.tag || '?'}> at CSS (${Math.round(cx)}, ${Math.round(cy)}) (${selector})`;
+    const after = await readHoverRevealState(cdp, sid, null, { x: cx, y: cy });
+    return `Hovering over <${r.tag || '?'}> at CSS (${Math.round(cx)}, ${Math.round(cy)}) (${selector})${formatHoverRevealClause(before, after)}`;
   }
   const expr = `
     (function() {
+      void ${JSON.stringify(HOVER_REVEAL_MARKER)};
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
       const rect = el.getBoundingClientRect();
-      return { ok: true, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, tag: el.tagName };
+      const style = getComputedStyle(el);
+      const opacity = Number(style.opacity);
+      const visibility = String(style.visibility || '');
+      const display = String(style.display || '');
+      const visible = Number.isFinite(opacity) && opacity > 0 && visibility !== 'hidden' && display !== 'none';
+      let groupHover = false;
+      try { groupHover = el.matches(':hover') || !!el.closest(':hover'); } catch {}
+      return {
+        ok: true,
+        marker: ${JSON.stringify(HOVER_REVEAL_MARKER)},
+        x: rect.x + rect.width / 2,
+        y: rect.y + rect.height / 2,
+        tag: el.tagName,
+        opacity,
+        visibility,
+        display,
+        visible,
+        groupHover,
+        href: String(location.href || ''),
+      };
     })()
   `;
   const result = await evalStr(cdp, sid, expr);
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(r.error);
+  const before = parseHoverRevealState(result);
   await dispatchHoverMove(cdp, sid, r.x, r.y);
-  return `Hovering over <${r.tag}> at CSS (${Math.round(r.x)}, ${Math.round(r.y)})`;
+  const after = await readHoverRevealState(cdp, sid, selector);
+  return `Hovering over <${r.tag}> at CSS (${Math.round(r.x)}, ${Math.round(r.y)})${formatHoverRevealClause(before, after)}`;
+}
+
+async function dispatchHoverWithLeftoverPolicy({
+  cdp,
+  sid,
+  selector,
+  refMap,
+  refState,
+  consoleBuf,
+  exceptionBuf,
+  lastPerceiveStore,
+  targetId,
+  nextCommand = null,
+} = {}) {
+  const dispatch = () => hoverStr(cdp, sid, selector, refMap, refState);
+  if (hoverFeedbackPolicy(nextCommand) === 'report-only') {
+    return dispatch();
+  }
+  let text;
+  await rememberHoverSettleBaseline(
+    cdp,
+    sid,
+    consoleBuf,
+    exceptionBuf,
+    refMap,
+    lastPerceiveStore,
+    refState,
+    targetId,
+    async () => {
+      text = await dispatch();
+    },
+  );
+  return text;
 }
 
 async function rememberHoverSettleBaseline(
@@ -20695,20 +20868,18 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       return commandResult(value, { kind: 'action-receipt' });
     },
     hover: async args => {
-      let text;
-      await rememberHoverSettleBaseline(
+      const text = await dispatchHoverWithLeftoverPolicy({
         cdp,
-        sessionId,
+        sid: sessionId,
+        selector: args[0],
+        refMap,
+        refState,
         consoleBuf,
         exceptionBuf,
-        refMap,
         lastPerceiveStore,
-        refState,
         targetId,
-        async () => {
-          text = await hoverStr(cdp, sessionId, args[0], refMap, refState);
-        },
-      );
+        nextCommand: session.batchNextCommand,
+      });
       return commandResult(text, null);
     },
     inject: async args => {
@@ -22140,6 +22311,8 @@ ACTION FEEDBACK
   report-only (window document or nested overflow).
   Sequential batch fill then press Enter is report-only on the fill:
   leftover typeahead AX / quicksearch is not the success signal.
+  Sequential batch hover then eval is report-only on the hover:
+  leftover AX recapture races CSS :hover and is not the success signal.
   Search-submit press probes once or opens /models?search=<filled>,
   then returns on the listing URL. No 1500 ms typeahead poll.
   qa returns a semantic QA report and includes action evidence when --click is used.
@@ -24630,6 +24803,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   searchListingSelector, rankSearchListingFirst, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP,
   pressFeedbackPolicy, fillFeedbackPolicy, isSearchSubmitPressCommand, batchCommandLookahead,
   runWithBatchLookahead,
+  hoverFeedbackPolicy, isHoverConfirmEvalCommand, dispatchHoverWithLeftoverPolicy,
+  hoverRevealStateExpression, parseHoverRevealState, formatHoverRevealClause,
   probeSearchSubmit, formatSearchSubmitPressText, isEnterKeyName,
   searchSubmitProbeExpression, searchListingProbeFromQuery, submitSearchListing,
   waitForSearchListingHref, waitForSearchSubmitProbe, navigateSearchListingIssued,
@@ -24649,7 +24824,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   diffShotScreenshotCaptureOptions,
   FULLSHOT_TIMEOUT_MS, screenshotCaptureUsesSessionTier, fullshotFitsViewport, fullshotStr,
   VERIFY_CLICK_SETTLE_MS, VERIFY_CLICK_REQUEST_WAIT_MS,
-  HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_MUTATION_TIMEOUT_MS, HOVER_MUTATION_MARKER, CLICK_MOUSE_ACK_TIMEOUT_MS,
+  HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_MUTATION_TIMEOUT_MS, HOVER_MUTATION_MARKER, HOVER_REVEAL_MARKER, CLICK_MOUSE_ACK_TIMEOUT_MS,
   LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
   CLICK_NAVIGATION_WAIT_MS, CLICK_HREF_PROBE_TIMEOUT_MS,
   daemonRequestStorage, sleep,
