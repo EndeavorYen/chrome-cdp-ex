@@ -5001,6 +5001,104 @@ describe('Perceive diff baseline', () => {
     expect(T.formatActionText(genericChanged)).toContain('Verdict: continue — Observed page change after action.');
   });
 
+  it('#311 leftover-ax-scroll no-change receipt drops tautological Recovery hint when Next is already perceive', () => {
+    // Live leftover-ax-scroll ActionResult after overlay 0546edbe (Fixes #309).
+    // Bob 9224: leftover perceive 561F7DA8 -C -d 8 then scroll down 80 on HF
+    // Music3 already at scrollY 547/547 (100%). Position stayed (0, 547) —
+    // honest no-change, not a hidden cap-swap. Interactive / Console / Coords
+    // already gone from the action receipt. Next is already perceive -C -d 8.
+    // The leftover chrome is Recovery hint restating that Next command.
+    const LIVE_INTERACTIVE = 'Interactive: 113 a, 1 input[text], 21 button, 9 div, 2 input[search], 1 iframe';
+    const LIVE_COORDS = 'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)';
+    const LIVE_RECOVERY_HINT = 'AX identities unchanged; re-run perceive -C -d 8 instead of report.';
+    const header = [
+      'Page: MiniMaxAI/MiniMax-Music3 at main — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×632 | Scroll: 547/547 (100%) | Focused: none',
+      LIVE_INTERACTIVE,
+      'Console: clean',
+      LIVE_COORDS,
+      '',
+    ];
+    const dump = [
+      ...header,
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)',
+    ].join('\n');
+    expect(dump).toContain(LIVE_INTERACTIVE);
+    expect(dump).toContain(LIVE_COORDS);
+    expect(dump).toContain('Scroll: 547/547 (100%)');
+
+    const diff = T.formatPerceiveDiffOutput(dump, dump, { mode: 'since-action' });
+    expect(T.actionDomDiffShowsChange(diff)).toBe(false);
+    expect(diff).toMatch(/no changes detected in AX tree/i);
+    expect(diff).toContain(LIVE_INTERACTIVE);
+    expect(diff).toContain(LIVE_COORDS);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).not.toContain(LIVE_INTERACTIVE);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).not.toContain(LIVE_COORDS);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).toMatch(/no changes detected in AX tree/i);
+
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 826 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, {
+      dispatchText: 'Scrolled by (0, 80). Position: (0, 547)',
+    });
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(result.recommendation.recoveryHint).toBeNull();
+    expect(result.nextHint).toBeNull();
+    expect(text).toMatch(/^Outcome: no-change — Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities\.$/m);
+    expect(text).toMatch(/^Verdict: continue$/m);
+    expect(text).toMatch(/^Settle: ok in 826ms$/m);
+    expect(text).not.toMatch(LIVE_RECOVERY_HINT);
+    expect(text).not.toMatch(/^Recovery hint:/m);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/^Interactive:/m);
+    expect(text).not.toMatch(/^Console: clean$/m);
+    expect(text).not.toMatch(/^Coords: /m);
+    expect(text).not.toMatch(/use clickxy with these values/);
+    expect(text).toMatch(/Page: MiniMaxAI\/MiniMax-Music3 at main/);
+    expect(text).toMatch(/Viewport: 1042×632 \| Scroll: 547\/547 \(100%\)/);
+    expect(text).toMatch(/\(no changes detected in AX tree\)/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
+    expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
+    expect(receipt).toMatch(/^Outcome: no-change — Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities\.$/m);
+    expect(receipt).not.toMatch(LIVE_RECOVERY_HINT);
+    expect(receipt).not.toMatch(/^Recovery hint:/m);
+    expect(receipt).not.toMatch(/^Interactive:/m);
+    expect(receipt).not.toMatch(/use clickxy with these values/);
+    expect(receipt).toMatch(/Viewport: 1042×632 \| Scroll: 547\/547 \(100%\)/);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(receipt).toMatch(/Settle: ok in 826ms/);
+    expect(receipt.length).toBeLessThan(558);
+
+    const genericNoChange = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 40 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+    });
+    expect(genericNoChange.outcome.status).toBe('no-change');
+    expect(genericNoChange.receipt.recoveryHint).toMatch(/no visible AX tree change/i);
+    expect(T.formatActionText(genericNoChange)).toMatch(/^Recovery hint:/m);
+  });
+
   it('#299 leftover-ax-scroll no-change receipt has Next -C -d 8 without Hint --since-action', () => {
     const previous = [
       'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',

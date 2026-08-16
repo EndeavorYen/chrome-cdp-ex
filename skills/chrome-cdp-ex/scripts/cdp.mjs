@@ -4638,11 +4638,13 @@ function isScrollActionTarget(actionTarget = {}) {
 
 function isLeftoverDefaultAxScrollSettle(output, snapshotOpts = null, actionTarget = {}) {
   // Leftover golden-path / default AX (`perceive -C -d 8`) is the settle
-  // shape for the next scroll (#295/#297/#299/#301). Viewport @ref rect chrome and
+  // shape for the next scroll (#295/#297/#299/#301/#311). Viewport @ref rect chrome and
   // fold tags are not a page mutation. Visible-control cap-swap membership
   // is still changed, but the receipt summarizes it with unique named samples
   // (shared commit titles do not occupy both sides, #307) and
   // Next `-C -d 8` without Hint `--since-action` or a generic Recovery hint.
+  // Honest leftover-ax-scroll no-change whose Next is already perceive does
+  // not reprint "re-run perceive -C -d 8 instead of report" (#311).
   // Cards / pdf-viewer / framed leftovers keep their own settle gates.
   if (!isScrollActionTarget(actionTarget)) return false;
   if (isPdfViewerPerceiveOutput(output)) return false;
@@ -5109,10 +5111,33 @@ function actionBlockingSignals(actionResult = {}) {
   return [...new Set(signals)];
 }
 
+function leftoverAxScrollNextIsPerceive(actionResult = {}) {
+  const next = String(
+    actionResult.recommendation?.commands?.[0]
+    || actionResult.recommendation?.verifyCommand
+    || '',
+  );
+  return /\bperceive\s+\S+\s+-C\s+-d\s+8\b/.test(next);
+}
+
 function actionRecoveryHint(actionResult = {}) {
   const recommendation = actionResult.recommendation || {};
   const diagnosis = actionResult.effects?.diagnosis || null;
   const outcome = actionResult.outcome || buildActionOutcome(actionResult);
+  const leftoverAxScroll = isExpectedLeftoverAxScrollNoChange(actionResult.target || {});
+  // Leftover-ax-scroll whose Next is already perceive -C -d 8:
+  // no-change "AX identities unchanged; re-run perceive -C -d 8 instead of
+  // report." restates Next (#311). changed generic "Continue from the
+  // observed action evidence." is leftover chrome (#301). Do not drop a
+  // Recovery hint on generic non-leftover actions, or when Next is report /
+  // investigate.
+  if (
+    leftoverAxScroll
+    && leftoverAxScrollNextIsPerceive(actionResult)
+    && (outcome.status === 'no-change' || outcome.status === 'changed')
+  ) {
+    return null;
+  }
   if (typeof recommendation.recoveryHint === 'string' && recommendation.recoveryHint.trim()) return recommendation.recoveryHint;
   if (diagnosis?.reason && diagnosis.status !== 'ok') return diagnosis.reason;
   // Leftover golden-path AX scroll already prints Outcome:changed, the compact
@@ -5120,7 +5145,7 @@ function actionRecoveryHint(actionResult = {}) {
   // "Continue from the observed action evidence." line is leftover chrome.
   if (
     outcome.status === 'changed'
-    && isExpectedLeftoverAxScrollNoChange(actionResult.target || {})
+    && leftoverAxScroll
   ) {
     return null;
   }
