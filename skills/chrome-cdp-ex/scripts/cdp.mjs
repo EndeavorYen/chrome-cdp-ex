@@ -11990,11 +11990,15 @@ const NAMED_IN_VIEWPORT_CLICK_SELECTOR = 'a, button, [role="link"], [role="butto
 function isLikelyCssSelector(value) {
   const selector = String(value || '').trim();
   if (!selector) return false;
-  if (/^[#.\[*:]/.test(selector)) return true;
-  if (/^[a-zA-Z][\w-]*$/.test(selector)) return true;
-  if (/^[a-zA-Z][\w-]*[#.\[:]/.test(selector)) return true;
-  if (/^[a-zA-Z#.*\[][\w#.\-\[\]="':()*]*(\s*[>+~]\s*|\s+)[#.\[*:a-zA-Z]/.test(selector)) return true;
-  return false;
+  const start = selector[0];
+  if (start === '#' || start === '.' || start === '[' || start === '*' || start === ':') return true;
+  if (/^[A-Za-z][\w-]*$/.test(selector)) return true;
+  if (/^[A-Za-z][\w-]*[#.:]/.test(selector)) return true;
+  if (/^[A-Za-z][\w-]*\[/.test(selector)) return true;
+  if (!/\s/.test(selector)) return false;
+  const rest = selector.replace(/^\S+(?:\s*[>+~]\s*|\s+)/, '');
+  const next = rest[0];
+  return next === '#' || next === '.' || next === '[' || next === '*' || next === ':' || /^[A-Za-z]/.test(next || '');
 }
 
 function isNamedClickQuery(value) {
