@@ -70,7 +70,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `clickxy` | `clickxy <target> <x> <y> [--format json]` | `mutation / mutation` |
 | `type` | `type <target> <text> [--format json]` | `mutation / mutation` |
 | `press` | `press\|key <target> <key> [--format json]` | `mutation / mutation` |
-| `scroll` | `scroll <target> <dir\|x,y\|to top\|to bottom> [px] [--format json]` | `mutation / mutation` |
+| `scroll` | `scroll <target> <dir\|x,y\|to top\|to bottom> [px] [--scroll-container SELECTOR] [--format json]` | `mutation / mutation` |
 | `hover` | `hover <target> <sel\|@ref>` | `protected-mutation / mutation` |
 | `waitfor` | `waitfor <target> <selector> [ms]` | `read / standard` |
 | `loadall` | `loadall <target> <selector> [interval-ms] [--timeout-ms N]` | `protected-mutation / mutation` |

@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### feat: scroll nested overflow to top/bottom (#326)
+
+* `scroll to top` and `scroll to bottom` still use the existing `scroll`
+  command. When the window document cannot scroll, they scroll the nearest
+  overflow container (`container.scrollTop`, same idea as
+  `table --collect --scroll-container`) instead of reporting document
+  `0 / 0` as `at-bottom: yes`. An explicit `--scroll-container SELECTOR`
+  (or `@ref`) targets that container, walking up to the nearest overflow
+  ancestor when the node itself is not scrollable.
+* Container receipts stay skinny: that container's `scrollTop` /
+  `scrollMax` / `at-bottom` or `at-top`. Short of the container edge is a
+  failed action. Relative `scroll down N` leftover settle-diff is
+  unchanged.
+
 ### feat: scroll to top/bottom as first-class command (#323)
 
 * `scroll to top` and `scroll to bottom` are first-class window-document
