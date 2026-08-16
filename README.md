@@ -206,8 +206,8 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `responsive-audit` | `responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]` | `mutation / mutation` |
 | `verify-click` | `verify-click <target> <sel\|@ref> [--format json]` | `mutation / mutation` |
 | `net` | `net <target>` | `read / standard` |
-| `click` | `click <target> <sel\|@ref> [--js\|-j] [--format json] [--qa\|--summary]` | `mutation / mutation` |
-| `jsclick` | `jsclick <target> <sel\|@ref>` | `mutation / mutation` |
+| `click` | `click <target> <sel\|@ref\|name> [--js\|-j] [--format json] [--qa\|--summary]` | `mutation / mutation` |
+| `jsclick` | `jsclick <target> <sel\|@ref\|name>` | `mutation / mutation` |
 | `clickxy` | `clickxy <target> <x> <y> [--format json]` | `mutation / mutation` |
 | `type` | `type <target> <text> [--format json]` | `mutation / mutation` |
 | `press` | `press\|key <target> <key> [--format json]` | `mutation / mutation` |

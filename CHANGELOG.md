@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### feat: click in-viewport named link without fat perceive (#327)
+
+* `click` / `jsclick` accept an in-viewport accessible name (for example
+  `"Browse 2M+ models"`). That path uses `HTMLElement.click()` in one step
+  with a skinny URL receipt, so the agent does not need `perceive -C -d 8`
+  then a failed mouse `click @ref` then `jsclick`.
+* Named queries do not `scrollIntoView` or scroll to find a namesake below
+  the fold. Off-viewport names fail closed. Short of the navigating href is
+  FAIL.
+* Mouse `click` `@ref` / CSS still fail-closes with `no-input-events` and
+  Next `jsclick`. Leftover settle-diff for those forms is unchanged.
+
 ### feat: scroll nested overflow to top/bottom (#326)
 
 * `scroll to top` and `scroll to bottom` still use the existing `scroll`
