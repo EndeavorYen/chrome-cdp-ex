@@ -4645,8 +4645,10 @@ function isLeftoverDefaultAxScrollSettle(output, snapshotOpts = null, actionTarg
   // Next `-C -d 8` without Hint `--since-action` or a generic Recovery hint.
   // Honest leftover-ax-scroll no-change whose Next is already perceive does
   // not reprint "re-run perceive -C -d 8 instead of report" (#311), the
-  // settle-shape Outcome reason essay (#313), or the reprinted Page /
-  // Viewport identity header (#316). Position already states scroll identity.
+  // settle-shape Outcome reason essay (#313), the reprinted Page /
+  // Viewport identity header (#316), or the tautological AX body
+  // "(no changes detected in AX tree)" (#318). Outcome already states
+  // no-change. Position already states scroll identity.
   // Cards / pdf-viewer / framed leftovers keep their own settle gates.
   if (!isScrollActionTarget(actionTarget)) return false;
   if (isPdfViewerPerceiveOutput(output)) return false;
@@ -5621,6 +5623,21 @@ function stripLeftoverAxScrollNoChangeIdentityChrome(diff) {
     .replace(/^\n+/, '');
 }
 
+const LEFTOVER_AX_SCROLL_NO_CHANGE_BODY_RE = /^\(no changes detected in AX tree\)$/i;
+
+function stripLeftoverAxScrollNoChangeAxBodyChrome(diff) {
+  // Honest leftover-ax-scroll no-change whose Next is already perceive.
+  // Outcome already states no-change. The AX body restates that (#318).
+  // Do not strip from leftover-ax-scroll changed or from the leftover
+  // perceive dump itself.
+  return String(diff || '')
+    .split('\n')
+    .filter(line => !LEFTOVER_AX_SCROLL_NO_CHANGE_BODY_RE.test(line.trim()))
+    .join('\n')
+    .replace(/^\n+/, '')
+    .replace(/\n+$/, '');
+}
+
 function formatActionText(result) {
   const diagnostics = summarizeActionObservationEffects(result.effects || {});
   const diagnosis = result.effects?.diagnosis || null;
@@ -5635,9 +5652,9 @@ function formatActionText(result) {
       && result.outcome.status === 'changed'
       && result.outcome.reason === GENERIC_CHANGED_REASON;
     // Honest leftover-ax-scroll no-change whose Next is already perceive
-    // already prints (no changes detected in AX tree). The settle-shape
-    // essay restates that body (#313). Do not drop Outcome reasons on
-    // generic non-leftover actions, leftover --cards, or pdf-viewer.v1.
+    // already prints Outcome: no-change. The settle-shape essay restates
+    // that Outcome (#313). Do not drop Outcome reasons on generic
+    // non-leftover actions, leftover --cards, or pdf-viewer.v1.
     const skipLeftoverNoChangeReason = leftoverAxScroll
       && leftoverAxScrollNextIsPerceive(result)
       && result.outcome.status === 'no-change'
@@ -5688,8 +5705,9 @@ function formatActionText(result) {
       && result.outcome.status === 'no-change'
     ) {
       formatted = stripLeftoverAxScrollNoChangeIdentityChrome(formatted);
+      formatted = stripLeftoverAxScrollNoChangeAxBodyChrome(formatted);
     }
-    lines.push('---', formatted);
+    if (formatted.trim()) lines.push('---', formatted);
   }
   if (diagnosis?.nextCommand && diagnosis.status !== 'ok') lines.push(`Next: ${diagnosis.nextCommand}`);
   if (!diagnosis?.nextCommand && result.outcome?.status === 'no-change' && result.recommendation?.commands?.[0]) {
@@ -23789,6 +23807,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isExpectedNoChange, overlaySelectorArg,
   createActionResult, buildActionReceipt, formatActionText, formatActionResultOutput, runActionWithFeedback,
   stripLeftoverAxScrollCensusChrome, stripLeftoverAxScrollNoChangeIdentityChrome,
+  stripLeftoverAxScrollNoChangeAxBodyChrome,
   parseVerifyClickArgs, buildSemanticInteractionModel, formatSemanticInteractionResult, formatActionWorkflowCommandOutput,
   parseQaArgs, buildQaPageModel, formatQaPageReport, qaPageStr,
   captureViewportSize, restoreViewportSize,
