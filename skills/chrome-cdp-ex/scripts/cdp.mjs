@@ -12128,16 +12128,21 @@ function namedInViewportClickExpression(name) {
     const nodes = Array.from(document.querySelectorAll(${JSON.stringify(NAMED_IN_VIEWPORT_CLICK_SELECTOR)}));
     const named = nodes.filter(el => nameOf(el) === wanted);
     const visible = named.filter(inViewport);
-    if (!visible.length) {
-      if (named.length) {
+    const scrollYBefore = Math.round(window.scrollY || 0);
+    let el = visible[0] || null;
+    let scrolled = false;
+    if (!el) {
+      if (!named.length) return JSON.stringify({ ok: false, error: 'Named control not found: ' + wanted });
+      if (named.length !== 1) {
         return JSON.stringify({
           ok: false,
-          error: 'Named control is not in the viewport. This command does not scroll to find it: ' + wanted,
+          error: 'Named control is not unique and none are in the viewport: ' + wanted,
         });
       }
-      return JSON.stringify({ ok: false, error: 'Named control not found: ' + wanted });
+      el = named[0];
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      scrolled = true;
     }
-    const el = visible[0];
     const rect = el.getBoundingClientRect();
     const href = el.href || el.getAttribute('href') || null;
     const pageHref = location.href;
@@ -12153,6 +12158,9 @@ function namedInViewportClickExpression(name) {
       y: rect.y,
       w: rect.width,
       h: rect.height,
+      scrolled,
+      scrollYBefore,
+      scrollYAfter: Math.round(window.scrollY || 0),
     });
   })()`;
 }
@@ -12163,7 +12171,10 @@ async function namedInViewportJsClickStr(cdp, sid, name) {
   if (!parsed.ok) throw new Error(parsed.error);
   const href = await confirmClickFollowedHref(cdp, sid, parsed);
   const line = `JS-clicked <${parsed.tag || '?'}> "${parsed.text || ''}"`;
-  return href ? `${line}\nURL: ${href}` : line;
+  const scrollLine = parsed.scrolled
+    ? `\nScroll: ${parsed.scrollYBefore} → ${parsed.scrollYAfter}`
+    : '';
+  return href ? `${line}${scrollLine}\nURL: ${href}` : `${line}${scrollLine}`;
 }
 
 // JS-fallback click: uses HTMLElement.click() / dispatchEvent in the page
@@ -12172,11 +12183,10 @@ async function namedInViewportJsClickStr(cdp, sid, name) {
 // transforms, or when an MUD/game UI binds handlers only to synthetic clicks.
 // This path is intentionally separate from clickStr — agents opt into it via
 // `jsclick` or `click --js` so the default behaviour stays a realistic mouse
-// dispatch. Named in-viewport queries use this path in one step (no mouse
-// fail-close, no scrollIntoView) because headed CDP mouse often delivers
-// no page events on a visible link.
+// dispatch. Named queries use this path in one step (no mouse fail-close).
+// Off-screen unique names reuse the CSS jsclick scrollIntoView, then el.click().
 async function jsClickStr(cdp, sid, selector, refMap, refState) {
-  if (!selector) throw new Error('CSS selector, @ref, or in-viewport name required');
+  if (!selector) throw new Error('CSS selector, @ref, or accessible name required');
   if (isNamedClickQuery(selector)) return namedInViewportJsClickStr(cdp, sid, selector);
   const objectId = isRef(selector)
     ? await resolveRefNode(cdp, sid, refMap, selector, refState)
@@ -12202,11 +12212,12 @@ async function jsClickStr(cdp, sid, selector, refMap, refState) {
   }
 }
 
-// Click element by CSS selector, @ref, or in-viewport accessible name.
-// Named in-viewport queries take the jsclick path in one step: headed CDP
-// mouse often completes dispatch.ok with zero page events (no-input-events).
+// Click element by CSS selector, @ref, or accessible name.
+// Named queries take the jsclick path in one step: headed CDP mouse often
+// completes dispatch.ok with zero page events (no-input-events). A unique
+// off-screen name reuses scrollIntoView({block,inline:center}) then el.click().
 async function clickStr(cdp, sid, selector, refMap, refState) {
-  if (!selector) throw new Error('CSS selector, @ref, or in-viewport name required');
+  if (!selector) throw new Error('CSS selector, @ref, or accessible name required');
   if (isNamedClickQuery(selector)) return jsClickStr(cdp, sid, selector, refMap, refState);
   if (isCursorRef(selector)) {
     const r = resolveCursorRef(refMap, selector, refState);
@@ -21798,10 +21809,10 @@ Usage: cdp <command> [args]
 {{command:click}}
                                     --js / -j: use HTMLElement.click() (JS fallback)
                                     --qa/--summary: compact pass/fail QA receipt without full DOM dump
-                                    name: in-viewport accessible name; one-step jsclick, skinny URL receipt
+                                    name: accessible name; one-step jsclick, skinny URL receipt
 {{command:jsclick}}
                                     Use when overlays or hit-testing block the realistic mouse path.
-                                    name: in-viewport accessible name (no scroll-to-find, no perceive dump)
+                                    name: accessible name; scrollIntoView if off-screen, no perceive dump
 {{command:clickxy}}
 {{command:type}}
                                     Works in cross-origin iframes unlike eval-based approaches
@@ -21920,8 +21931,9 @@ ACTION FEEDBACK
   click, verify-click, jsclick, clickxy, fill, type, press, select, scroll,
   upload, inject, dismiss-modal, and viewport (when resizing) automatically wait for DOM to
   settle and return compact action evidence plus a perceive diff.
-  Named in-viewport click / jsclick (a visible control name, not @ref or CSS)
-  is report-only: skinny URL receipt, no AX dump. Mouse click @ref still
+  Named click / jsclick (a control name, not @ref or CSS)
+  is report-only: skinny URL receipt, no AX dump. Unique off-screen
+  names scrollIntoView first. Mouse click @ref still
   fail-closes with no-input-events. scroll to top/to bottom is also
   report-only (window document or nested overflow).
   qa returns a semantic QA report and includes action evidence when --click is used.
