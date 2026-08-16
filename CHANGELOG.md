@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### perf: skip typeahead listing probe wait on search-submit (#339)
+
+* Sequential `batch --compact 'fill … | press Enter'` still lands on
+  `/models?search=bert`, not the typeahead first repo. After report-only
+  fill, `press` probes once for the listing link instead of polling
+  1500 ms for typeahead. If the listing is not visible yet, it opens
+  `/models?search=<filled>` from the value just set and returns on
+  listing URL commit. Typeahead first-model click is still FAIL. No
+  `--submit` flag. Compact receipts stay skinny.
+
 ### fix: sequential batch fill report-only applies live (#337)
 
 * Sequential `batch fill | press Enter` still skips mid-pipe leftover AX

@@ -106,6 +106,13 @@ function createSearchSubmitCdp({
         }
         return Promise.resolve({});
       }
+      if (method === 'Page.enable') {
+        return Promise.resolve({});
+      }
+      if (method === 'Page.navigate') {
+        href = String(params.url || href);
+        return Promise.resolve({ loaderId: 'search-submit-nav' });
+      }
       if (method === 'Runtime.evaluate') {
         const expr = String(params.expression || '');
         if (expr.includes('chrome-cdp-ex.search-submit')) {
@@ -461,25 +468,102 @@ describe('issue #335 skip fill leftover settle before search-submit press', () =
     expect(text).toMatch(/RootWebArea/);
   });
 
-  it('polls for the listing probe after skip-settle fill instead of sending raw Enter', async () => {
+  it('still fail-closes skip-settle fill when the listing never appears, without sending Enter', async () => {
+    const cdp = createSearchSubmitCdp({ probe: { ok: false } });
+    await expect(T.pressStr(cdp, 'sid', 'enter', { requireSearchSubmit: true })).rejects.toThrow(/results listing/i);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
+  });
+});
+
+describe('issue #339 skip typeahead listing probe wait after report-only fill', () => {
+  it('builds /models?search=<filled> from the value just set, not a typeahead first-model repo', () => {
+    const probe = T.searchListingProbeFromQuery('bert', HF_HOME);
+    expect(probe.ok).toBe(true);
+    expect(probe.selector).toBe(RESULTS_SELECTOR);
+    expect(probe.href).toBe('/models?search=bert');
+    expect(probe.navigateHref).toBe(HF_RESULTS);
+    expect(probe.synthesized).toBe(true);
+    expect(probe.href).not.toContain('google-bert');
+    expect(T.isSearchListingHref(probe.navigateHref)).toBe(true);
+    expect(T.isSearchListingHref(HF_FIRST_HIT)).toBe(false);
+  });
+
+  it('does not invent a listing URL on a non-Hugging-Face origin', () => {
+    expect(T.searchListingProbeFromQuery('bert', 'https://example.com/').ok).toBe(false);
+    expect(T.searchListingProbeFromQuery('bert', '').ok).toBe(false);
+    expect(T.searchListingProbeFromQuery('', HF_HOME).ok).toBe(false);
+  });
+
+  it('after report-only fill, probe wait is not the 1500 ms typeahead poll', async () => {
     let probes = 0;
     const cdp = createSearchSubmitCdp({
       probe: () => {
         probes += 1;
-        if (probes < 3) return { ok: false };
-        return { ok: true, selector: RESULTS_SELECTOR, href: '/models?search=bert', text: RESULTS_TEXT };
+        return { ok: false };
       },
     });
-    const probe = await T.waitForSearchSubmitProbe(cdp, 'sid', 400);
+    const started = Date.now();
+    const probe = await T.waitForSearchSubmitProbe(cdp, 'sid', { filledQuery: 'bert' });
+    const elapsedMs = Date.now() - started;
     expect(probe.ok).toBe(true);
     expect(probe.selector).toBe(RESULTS_SELECTOR);
-    expect(probes).toBeGreaterThanOrEqual(3);
+    expect(probe.synthesized).toBe(true);
+    expect(probe.navigateHref).toBe(HF_RESULTS);
+    expect(probes).toBe(1);
+    expect(elapsedMs).toBeLessThan(250);
   });
 
-  it('fails closed after skip-settle fill when the listing never appears, without sending Enter', async () => {
+  it('listing URL still wins via synthesized navigate when typeahead is not visible yet', async () => {
     const cdp = createSearchSubmitCdp({ probe: { ok: false } });
-    await expect(T.pressStr(cdp, 'sid', 'enter', { requireSearchSubmit: true })).rejects.toThrow(/results listing/i);
+    const probe = await T.waitForSearchSubmitProbe(cdp, 'sid', { filledQuery: 'bert' });
+    await T.submitSearchListing(cdp, 'sid', probe, new Map(), {});
+    expect(cdp.hrefOf()).toBe(HF_RESULTS);
+    expect(cdp.hrefOf()).not.toBe(HF_FIRST_HIT);
+    expect(cdp.calls.some(call => call.method === 'Page.navigate' && call.params.url === HF_RESULTS)).toBe(true);
     expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+  });
+
+  it('typeahead first-model still fails: synthesized submit does not click the first repo or send Enter', async () => {
+    const cdp = createSearchSubmitCdp({ probe: { ok: false } });
+    const probe = T.searchListingProbeFromQuery('bert', HF_HOME);
+    const out = await T.pressStr(cdp, 'sid', 'enter', { searchSubmit: probe, requireSearchSubmit: true });
+    expect(out).toMatch(/Submitted search/i);
+    expect(out).toContain(RESULTS_SELECTOR);
+    expect(out).not.toMatch(/google-bert/);
+    expect(cdp.hrefOf()).toBe(HF_RESULTS);
+    expect(cdp.hrefOf()).not.toBe(HF_FIRST_HIT);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
+    expect(cdp.calls.some(call =>
+      String(call.params?.functionDeclaration || '').includes('scrollIntoView')
+      && String(call.params?.functionDeclaration || '').includes('.click(')
+    )).toBe(false);
+  });
+
+  it('still jsclicks a visible listing instead of synthesizing a navigate', async () => {
+    const cdp = createSearchSubmitCdp();
+    const probe = await T.waitForSearchSubmitProbe(cdp, 'sid', { filledQuery: 'bert' });
+    expect(probe.ok).toBe(true);
+    expect(probe.synthesized).not.toBe(true);
+    expect(probe.selector).toBe(RESULTS_SELECTOR);
+    const out = await T.pressStr(cdp, 'sid', 'enter', { searchSubmit: probe });
+    expect(out).toMatch(/Submitted search/i);
+    expect(cdp.calls.some(call => call.method === 'Page.navigate')).toBe(false);
+    expect(cdp.calls.some(call =>
+      call.method === 'Runtime.callFunctionOn'
+      && String(call.params.functionDeclaration || '').includes('scrollIntoView')
+    )).toBe(true);
+    expect(cdp.hrefOf()).toBe(HF_RESULTS);
+    expect(cdp.hrefOf()).not.toBe(HF_FIRST_HIT);
+  });
+
+  it('press after report-only fill passes the filled query into the listing probe, not a 1500 ms poll', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(fileURLToPath(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url)), 'utf8');
+    expect(src).toMatch(/session\.searchSubmitQuery = parsed\.text/);
+    expect(src).toMatch(/waitForSearchSubmitProbe\(\s*cdp,\s*sessionId,\s*\{\s*filledQuery/);
+    expect(src).not.toMatch(/awaitListing\s*\n\s*\? await waitForSearchSubmitProbe\(cdp, sessionId\)/);
   });
 });
 
