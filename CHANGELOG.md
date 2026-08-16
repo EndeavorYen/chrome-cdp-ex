@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#305)
+
+* Leftover golden-path `perceive -C -d 8` then `scroll` still treats a
+  Visible-control cap-swap as `Outcome: changed`. Relative-time / GMT
+  title strings in the live formatter shape (`a role=link "2 days ago"` /
+  `time "Thu, 13 Aug 2026 15:18:27 GMT" [clickable]`) stay in headline
+  membership but do not occupy the named 4-sample cap, so the remaining
+  useful name fills the cap. Counts stay honest. A new file, heading, or
+  link still prints a structural diff. Named samples, no Hint
+  `--since-action`, no generic Recovery hint, no `+++ Added` signed-commit
+  / `time` GMT selector dump, `#297` compact headline, `#295` rect-chrome
+  no-change, `#293` leftover N>0 `--cards`, leftover `-C -d 8` then
+  mutating `click --js`, `#285` PDF Next, and `#286`/`#291` hover
+  honest-gate hold. `HOVER_MOUSE_ACK_TIMEOUT_MS` stays 250.
+
 ### Open issue dogfood (#303)
 
 * Leftover golden-path `perceive -C -d 8` then `scroll` still treats a
