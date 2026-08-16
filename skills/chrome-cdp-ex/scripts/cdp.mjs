@@ -12395,14 +12395,6 @@ function documentScrollEdgeExpression(edge, containerSelector = null) {
   return scrollEdgeExpression(edge, containerSelector);
 }
 
-function scrollEdgeFromNodeDeclaration(edge) {
-  const dest = edge === 'top' ? 'top' : 'bottom';
-  return `function() {
-    ${scrollEdgeLogicSource()}
-    return JSON.stringify(runScrollEdge(null, ${JSON.stringify(dest)}, this));
-  }`;
-}
-
 function documentScrollReachedEdge(edge, pos = {}) {
   return edge === 'top' ? pos.atTop === true : pos.atBottom === true;
 }
@@ -12435,26 +12427,16 @@ function parseScrollEdgePayload(raw) {
   }
 }
 
-async function dispatchScrollEdge(cdp, sid, edge, container, refMap, refState) {
-  if (container && isRef(container)) {
-    const objectId = await resolveRefNode(cdp, sid, refMap, container, refState);
-    const result = await cdpDomains(cdp).Runtime.callFunctionOn({
-      objectId,
-      functionDeclaration: scrollEdgeFromNodeDeclaration(edge),
-      returnByValue: true,
-    }, sid);
-    return parseScrollEdgePayload(result?.result?.value);
-  }
-  const raw = await evalStr(cdp, sid, scrollEdgeExpression(edge, container));
-  return parseScrollEdgePayload(raw);
-}
-
-async function scrollStr(cdp, sid, direction, amount, extraArgs = [], refMap = null, refState = null) {
+async function scrollStr(cdp, sid, direction, amount, extraArgs = []) {
   const rest = Array.isArray(extraArgs) ? extraArgs : [];
   const edge = parseScrollEdge(direction, amount);
   if (edge) {
     const container = parseScrollContainerArg(rest);
-    const pos = await dispatchScrollEdge(cdp, sid, edge, container, refMap, refState);
+    if (container && isRef(container)) {
+      throw new Error('scroll: --scroll-container requires a CSS selector (same as table --scroll-container)');
+    }
+    const raw = await evalStr(cdp, sid, scrollEdgeExpression(edge, container));
+    const pos = parseScrollEdgePayload(raw);
     if (pos && pos.ok === false) throw new Error(pos.error || 'scroll failed');
     if (!documentScrollReachedEdge(edge, pos)) {
       throw new Error(formatDocumentScrollEdgeFailure(edge, pos));
@@ -16262,7 +16244,7 @@ async function recordStr(cdp, sid, args, refs) {
       else if (opts.action === 'fill') actionText = await fillStr(cdp, sid, opts.actionArgs[0], opts.actionArgs.slice(1).join(' '), refs);
       else if (opts.action === 'select') actionText = await selectStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1]);
       else if (opts.action === 'type') actionText = await typeStr(cdp, sid, opts.actionArgs.join(' '));
-      else if (opts.action === 'scroll') actionText = await scrollStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1], opts.actionArgs.slice(2), refs);
+      else if (opts.action === 'scroll') actionText = await scrollStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1], opts.actionArgs.slice(2));
       else if (opts.action === 'nav' || opts.action === 'navigate') actionText = await navStr(cdp, sid, opts.actionArgs[0]);
       else throw new Error(`record --action does not support: ${opts.action}`);
       events.push({ kind: 'action', summary: actionText.split('\n')[0], ts: Date.now() });
@@ -20377,7 +20359,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback(
         'scroll',
-        () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1], fopts.args.slice(2), refMap, refState),
+        () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1], fopts.args.slice(2)),
         scrollActionTarget(fopts.args),
         scrollFeedbackPolicy(fopts.args[0], fopts.args[1]),
         null,

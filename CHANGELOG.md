@@ -9,8 +9,8 @@
   overflow container (`container.scrollTop`, same idea as
   `table --collect --scroll-container`) instead of reporting document
   `0 / 0` as `at-bottom: yes`. An explicit `--scroll-container SELECTOR`
-  (or `@ref`) targets that container, walking up to the nearest overflow
-  ancestor when the node itself is not scrollable.
+  targets that container, walking up to the nearest overflow ancestor
+  when the node itself is not scrollable.
 * Container receipts stay skinny: that container's `scrollTop` /
   `scrollMax` / `at-bottom` or `at-top`. Short of the container edge is a
   failed action. Relative `scroll down N` leftover settle-diff is

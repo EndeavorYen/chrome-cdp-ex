@@ -540,6 +540,8 @@ describe('issue #326 scroll nested overflow to top/bottom', () => {
     expect(target.expectedOutcome).toBe('leftover-ax-scroll-no-change');
     const page = createNestedOverflowPage({ containerScrollTop: 0 });
     const cdp = documentScrollCdp(page);
+    await expect(T.scrollStr(cdp, 'sid', 'to', 'bottom', ['--scroll-container', '@3']))
+      .rejects.toThrow(/requires a CSS selector/);
     const text = await T.scrollStr(cdp, 'sid', 'down', '80');
     expect(page.content.scrollTop).toBe(0);
     expect(text).toBe('Scrolled by (0, 80). Position: (0, 0)');
