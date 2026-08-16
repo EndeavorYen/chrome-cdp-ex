@@ -47,6 +47,7 @@ export const REQUIRED_RELEASE_ENTRIES = [
   'package/skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/page-health.mjs',
+  'package/skills/chrome-cdp-ex/scripts/lib/pdf-text.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/perception-model.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/responsive-audit.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs',

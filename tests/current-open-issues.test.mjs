@@ -3480,7 +3480,7 @@ describe('issues #204-#208 open contracts', () => {
     expect(missing.run).toBe('cdp help waitfor');
   });
 
-  it('#207 text --auto PDF Next uses the resolved prefix, not <target>', async () => {
+  it('#207 PDF stub Next uses the resolved prefix, not <target>', async () => {
     const printed = T.formatPdfViewerOutput({
       title: '',
       url: 'https://arxiv.org/pdf/2608.12307',
@@ -3488,6 +3488,7 @@ describe('issues #204-#208 open contracts', () => {
     }, { targetPrefix: '9FAD7C71' });
     expect(printed).toContain('cdp eval 9FAD7C71 "document.contentType"');
     expect(printed).not.toContain('<target>');
+    expect(printed).toContain('text --auto');
 
     let calls = 0;
     const cdp = {
@@ -3505,17 +3506,71 @@ describe('issues #204-#208 open contracts', () => {
         });
       },
     };
-    await expect(T.textStr(cdp, 'sid', ['--auto'], { targetPrefix: '9FAD7C71' }))
+    await expect(T.textStr(cdp, 'sid', [], { targetPrefix: '9FAD7C71' }))
       .rejects.toThrow(/cdp eval 9FAD7C71 "document\.contentType"/);
     expect(calls).toBe(1);
     try {
-      await T.textStr(cdp, 'sid', ['--auto'], { targetPrefix: '9FAD7C71' });
+      await T.textStr(cdp, 'sid', [], { targetPrefix: '9FAD7C71' });
       throw new Error('expected pdf viewer error');
     } catch (error) {
       if (error.message === 'expected pdf viewer error') throw error;
       expect(error.code).toBe('pdf_viewer');
       expect(error.message).not.toContain('<target>');
     }
+  });
+
+  it('#283 text --auto on a Chrome PDF plugin returns page-1 text, not pdf-viewer.v1', async () => {
+    const { paidPathPdfBytes, PDF_PAGE1_LANDMARK } = await import('./pdf-text-fixtures.mjs');
+    const pdfBytes = paidPathPdfBytes();
+    const page = {
+      title: 'ignored-tab-title',
+      url: 'https://arxiv.org/pdf/2608.12307',
+      contentType: 'application/pdf',
+    };
+    const cdp = {
+      send(method, params = {}) {
+        if (method !== 'Runtime.evaluate') throw new Error(`unexpected ${method}`);
+        const expr = String(params.expression || '');
+        if (expr.includes('document.title') || expr.includes('contentType')) {
+          return Promise.resolve({ result: { value: JSON.stringify(page) } });
+        }
+        throw new Error(`unexpected eval ${expr.slice(0, 80)}`);
+      },
+    };
+    const out = await T.textStr(cdp, 'sid', ['--auto'], {
+      targetPrefix: 'CFD023D2',
+      loadPdfBytes: async () => pdfBytes,
+    });
+    expect(out).toContain(PDF_PAGE1_LANDMARK);
+    expect(out).not.toContain('chrome-cdp-ex.pdf-viewer.v1');
+    expect(out).not.toMatch(/Kind:\s*unknown/);
+
+    const viaPageFetch = await T.textStr({
+      send(method, params = {}) {
+        if (method !== 'Runtime.evaluate') throw new Error(`unexpected ${method}`);
+        const expr = String(params.expression || '');
+        if (expr.includes('document.title') || expr.includes('contentType')) {
+          return Promise.resolve({ result: { value: JSON.stringify(page) } });
+        }
+        if (expr.includes('fetch(')) {
+          return Promise.resolve({ result: { value: pdfBytes.toString('base64') } });
+        }
+        throw new Error(`unexpected eval ${expr.slice(0, 80)}`);
+      },
+    }, 'sid', ['--auto'], { targetPrefix: 'CFD023D2' });
+    expect(viaPageFetch).toContain(PDF_PAGE1_LANDMARK);
+
+    const viaNodeFetch = await T.textStr(cdp, 'sid', ['--auto'], {
+      targetPrefix: 'CFD023D2',
+      fetch: async (url) => {
+        expect(url).toBe(page.url);
+        return { ok: true, arrayBuffer: async () => pdfBytes };
+      },
+    });
+    expect(viaNodeFetch).toContain(PDF_PAGE1_LANDMARK);
+
+    await expect(T.textStr(cdp, 'sid', ['--auto'], { targetPrefix: 'CFD023D2' }))
+      .rejects.toThrow(/chrome-cdp-ex\.pdf-viewer\.v1/);
   });
 
   it('#208 qa screenshot capture is bounded and still yields a receipt', async () => {

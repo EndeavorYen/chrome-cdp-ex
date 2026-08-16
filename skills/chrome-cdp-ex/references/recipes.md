@@ -23,6 +23,8 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs text <target> --auto
 
 Do not start with `perceive -C -d 8` when you only need readable text. Prefer `text --auto`, then a one-line `eval` / `call` if a selector or network fetch is cheaper.
 
+On a Chrome PDF plugin tab (`application/pdf`, empty AX), `text --auto` still applies: it prints page-1 text from the PDF bytes. Do not retry `perceive` on `pdf-viewer.v1`. Leftover-press settle on that stub is unchanged.
+
 ### Hugging Face model card / license file
 
 License badges on the model card are often images, so `text` will not see the license name. Fetch the raw file from the already-open tab:
