@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### fix: sequential batch fill report-only applies live (#337)
+
+* Sequential `batch fill | press Enter` still skips mid-pipe leftover AX
+  and pending `/api/quicksearch`. #336 set `batchNextCommand` then returned
+  `handleCommand(...)` from a `try/finally` that cleared lookahead as soon as
+  the Promise was created. Fill runs after the first daemon `await`, so it
+  still settle-diffed. Lookahead now stays until that fill handler reads it.
+  Standalone fill still settle-diffs. No `--submit` flag.
+
 ### perf: skip fill leftover settle on search submit (#335)
 
 * Sequential `batch --compact 'fill … | press Enter'` still lands on the

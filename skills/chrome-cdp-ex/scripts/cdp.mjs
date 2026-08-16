@@ -12475,6 +12475,18 @@ function batchCommandLookahead(commands = [], { parallel = false } = {}) {
   }));
 }
 
+async function runWithBatchLookahead(session, nextCommand, run) {
+  // Keep lookahead until `run()` finishes, including across the first
+  // handleCommand await (executeDaemonApplicationRoute). A sync try/finally
+  // around `return handleCommand(...)` clears it before fillFeedbackPolicy.
+  session.batchNextCommand = nextCommand || null;
+  try {
+    return await run();
+  } finally {
+    session.batchNextCommand = null;
+  }
+}
+
 function formatSearchSubmitPressText(probe = {}) {
   return `Pressed Enter. Submitted search via ${probe.selector}`;
 }
@@ -20913,17 +20925,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       }
       const sequenced = batchCommandLookahead(commands, { parallel });
       const autoActionJson = parsedBatch.output === 'model';
-      const runOne = command => {
-        session.batchNextCommand = command.nextCommand || null;
-        try {
-          return handleCommand({
-            cmd: command.cmd,
-            args: autoActionJsonArgs(command.cmd, command.args || [], autoActionJson),
-          });
-        } finally {
-          session.batchNextCommand = null;
-        }
-      };
+      const runOne = command => runWithBatchLookahead(session, command.nextCommand, () => handleCommand({
+        cmd: command.cmd,
+        args: autoActionJsonArgs(command.cmd, command.args || [], autoActionJson),
+      }));
       const results = await runBatchCommands({ run: runOne }, sequenced, { parallel });
       const format = parsedBatch.output === 'legacy-json' ? 'json' : parsedBatch.output;
       return formatBatchResults(results, format, { targetId, mode: parallel ? 'parallel' : 'sequential' });
@@ -24561,6 +24566,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   rankPerceiveCursorItems, isSearchListingHref, isSearchListingText, isSearchListingControl,
   searchListingSelector, rankSearchListingFirst, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP,
   pressFeedbackPolicy, fillFeedbackPolicy, isSearchSubmitPressCommand, batchCommandLookahead,
+  runWithBatchLookahead,
   probeSearchSubmit, formatSearchSubmitPressText, isEnterKeyName,
   searchSubmitProbeExpression, submitSearchListing, waitForSearchListingHref, waitForSearchSubmitProbe,
   SEARCH_SUBMIT_PROBE_WAIT_MS,
