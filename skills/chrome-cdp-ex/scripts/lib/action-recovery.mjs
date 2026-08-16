@@ -666,7 +666,10 @@ export function buildNoChangeOutcomeRecommendation({
       priority: 'low',
       reason: 'Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities.',
       blockingSignals: [],
-      recoveryHint: 'AX identities unchanged; re-run perceive -C -d 8 instead of report.',
+      // Next is already perceive -C -d 8. "re-run perceive instead of report"
+      // restates that command (#311). Keep Outcome/Verdict/Next; do not author
+      // a Recovery hint that tells the model to do what Next already says.
+      recoveryHint: null,
       verifyCommand: nextCommand,
       commands: uniqueNextStepCommands([nextCommand]),
     };

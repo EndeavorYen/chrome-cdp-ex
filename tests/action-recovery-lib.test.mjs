@@ -274,6 +274,27 @@ describe('action recovery lib', () => {
     expect(rec.commands).toEqual(['cdp perceive 561F7DA8 -C -d 8']);
     expect(rec.commands.join('\n')).not.toMatch(/\breport\b/);
     expect(rec.commands.join('\n')).not.toMatch(/record-actions/);
+    expect(rec.recoveryHint).toBeNull();
+  });
+
+  it('#311 leftover golden-path AX no-change does not author a Recovery hint that restates Next perceive', () => {
+    const rec = buildNoChangeOutcomeRecommendation({
+      action: 'scroll',
+      target: '561F7DA8',
+      targetInput: 'down 80',
+      targetInfo: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        input: 'down 80',
+        resolvedBy: 'scroll',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+      },
+      extraText: '(no changes detected in AX tree)',
+    });
+    expect(rec.strategy).toBe('continue');
+    expect(rec.outcomeStatus).toBe('no-change');
+    expect(rec.commands).toEqual(['cdp perceive 561F7DA8 -C -d 8']);
+    expect(rec.recoveryHint).toBeNull();
+    expect(rec.reason).toMatch(/leftover golden-path AX/);
   });
 });
 
