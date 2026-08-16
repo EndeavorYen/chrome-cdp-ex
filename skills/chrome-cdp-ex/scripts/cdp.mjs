@@ -4667,9 +4667,10 @@ function isDocumentScrollEdgeTarget(actionTarget = {}) {
 }
 
 function tagScrollLeftoverSettle(action, actionTarget, output, snapshotOpts = null) {
-  // Edge forms are report-only window-document scroll. After leftover
-  // `perceive -C -d 8` they must not inherit leftover-ax-scroll-no-change
-  // (or leftover cards) so the receipt does not grow Next: perceive -C -d 8.
+  // Edge forms are report-only (`to top` / `to bottom` for the window
+  // document or nested overflow). After leftover `perceive -C -d 8` they
+  // must not inherit leftover-ax-scroll-no-change (or leftover cards) so
+  // the receipt does not grow Next: perceive -C -d 8.
   // Relative `scroll down N` still uses settle-diff leftover tagging.
   if (!actionTarget || action !== 'scroll') return actionTarget;
   if (isDocumentScrollEdgeTarget(actionTarget)) return actionTarget;
@@ -8216,12 +8217,23 @@ function playwrightStepFromCommand(action = {}) {
     case 'scroll': {
       let edge = null;
       try { edge = parseScrollEdge(args[0], args[1]); } catch { edge = null; }
-      if (edge === 'top') {
-        return finish(['await page.evaluate(() => window.scrollTo(0, 0));']);
-      }
-      if (edge === 'bottom') {
+      let container = null;
+      try { container = parseScrollContainerArg(args.slice(2)); } catch { container = null; }
+      if (edge === 'top' || edge === 'bottom') {
+        if (container && !isPlaywrightPortableSelector(container)) {
+          return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
+        }
+        if (container) {
+          const topExpr = edge === 'top'
+            ? 'el.scrollTop = 0'
+            : 'el.scrollTop = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0))';
+          return finish([
+            `await page.locator(${JSON.stringify(container)}).evaluate((el) => { ${topExpr}; });`,
+          ]);
+        }
+        const dest = edge === 'top' ? '0' : 'edge';
         return finish([
-          'await page.evaluate(() => { const el = document.scrollingElement || document.documentElement; window.scrollTo(0, Math.max(0, (el.scrollHeight || 0) - window.innerHeight)); });',
+          `await page.evaluate(() => { const tolerance = 2; const scrolling = document.scrollingElement || document.documentElement; const docMax = Math.max(0, Math.round((Number(scrolling && scrolling.scrollHeight) || 0) - window.innerHeight)); if (docMax > tolerance) { window.scrollTo(0, ${edge === 'top' ? '0' : 'docMax'}); return; } let best = null; let bestScore = 0; const nodes = document.querySelectorAll ? document.querySelectorAll('*') : []; for (let i = 0; i < nodes.length; i++) { const el = nodes[i]; if (el === document.documentElement || el === document.body || el === document.scrollingElement) continue; const max = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)); if (max <= tolerance) continue; const style = window.getComputedStyle ? window.getComputedStyle(el) : null; if (!/(auto|scroll|overlay|hidden)/.test(String((style && (style.overflowY || style.overflow)) || ''))) continue; const score = max * Math.max(1, (el.clientWidth || 0) * (el.clientHeight || 0)); if (score > bestScore) { best = el; bestScore = score; } } if (best) best.scrollTop = ${dest === '0' ? '0' : 'Math.max(0, (best.scrollHeight || 0) - (best.clientHeight || 0))'}; });`,
         ]);
       }
       const direction = args[0] || '';
@@ -12200,6 +12212,28 @@ function parseScrollEdge(direction, amount) {
   throw new Error('Direction required: to top or to bottom');
 }
 
+function parseScrollContainerArg(args = []) {
+  const list = Array.isArray(args) ? args : [];
+  let container = null;
+  for (let i = 0; i < list.length; i++) {
+    const token = list[i];
+    if (token === '--scroll-container') {
+      const value = list[++i];
+      if (value == null || String(value).startsWith('--')) {
+        throw new Error('scroll: --scroll-container requires a selector');
+      }
+      if (container != null) throw new Error('scroll: duplicate --scroll-container');
+      container = String(value);
+      continue;
+    }
+    if (String(token).startsWith('--')) {
+      throw new Error(`scroll: unknown argument ${token}`);
+    }
+    throw new Error(`scroll: unexpected argument ${token}`);
+  }
+  return container;
+}
+
 function scrollFeedbackPolicy(direction, amount) {
   return parseScrollEdge(direction, amount) ? 'report-only' : 'settle-diff';
 }
@@ -12219,25 +12253,146 @@ function scrollActionTarget(args = [], extra = {}) {
   return target;
 }
 
-function documentScrollEdgeExpression(edge) {
-  const dest = edge === 'top' ? 'top' : 'bottom';
+function scrollEdgeLogicSource() {
   const tolerance = DOCUMENT_SCROLL_EDGE_TOLERANCE_PX;
-  return `(function() {
-    /* chrome-cdp-ex.document-scroll-edge */
-    const el = document.scrollingElement || document.documentElement;
-    const measure = () => {
+  return `
+    const tolerance = ${tolerance};
+    const measureDocument = function() {
+      const el = document.scrollingElement || document.documentElement;
       const scrollY = Math.round(window.scrollY);
       const scrollMax = Math.max(0, Math.round((Number(el && el.scrollHeight) || 0) - window.innerHeight));
       return {
-        scrollY,
-        scrollMax,
-        atTop: scrollY <= ${tolerance},
-        atBottom: scrollMax <= ${tolerance} || scrollY >= scrollMax - ${tolerance},
+        kind: 'document',
+        scrollY: scrollY,
+        scrollMax: scrollMax,
+        atTop: scrollY <= tolerance,
+        atBottom: scrollMax <= tolerance || scrollY >= scrollMax - tolerance,
       };
     };
-    window.scrollTo(0, ${dest === 'top' ? '0' : 'measure().scrollMax'});
-    return JSON.stringify(measure());
+    const measureEl = function(el) {
+      const scrollTop = Math.round(Number(el && el.scrollTop) || 0);
+      const clientHeight = Math.round(Number(el && el.clientHeight) || 0);
+      const scrollHeight = Math.round(Number(el && el.scrollHeight) || 0);
+      const scrollMax = Math.max(0, scrollHeight - clientHeight);
+      return {
+        scrollTop: scrollTop,
+        scrollMax: scrollMax,
+        atTop: scrollTop <= tolerance,
+        atBottom: scrollMax <= tolerance || scrollTop >= scrollMax - tolerance,
+      };
+    };
+    const clipsY = function(el) {
+      const style = typeof window.getComputedStyle === 'function' ? window.getComputedStyle(el) : null;
+      return /(auto|scroll|overlay|hidden)/.test(String((style && (style.overflowY || style.overflow)) || ''));
+    };
+    const isDocumentScroller = function(el) {
+      return !el
+        || el === document.documentElement
+        || el === document.body
+        || el === document.scrollingElement;
+    };
+    const isOverflow = function(el) {
+      if (isDocumentScroller(el)) return false;
+      const max = Math.max(0, (Number(el.scrollHeight) || 0) - (Number(el.clientHeight) || 0));
+      return max > tolerance && clipsY(el);
+    };
+    const nearestOverflow = function(start) {
+      for (let el = start; el && !isDocumentScroller(el); el = el.parentElement) {
+        if (isOverflow(el)) return el;
+      }
+      return null;
+    };
+    const primaryOverflow = function() {
+      const nodes = document.querySelectorAll ? document.querySelectorAll('*') : [];
+      let best = null;
+      let bestScore = 0;
+      for (let i = 0; i < nodes.length; i++) {
+        const el = nodes[i];
+        if (!isOverflow(el)) continue;
+        const max = Math.max(0, (Number(el.scrollHeight) || 0) - (Number(el.clientHeight) || 0));
+        const area = (Number(el.clientWidth) || 0) * (Number(el.clientHeight) || 0);
+        const score = max * Math.max(1, area);
+        if (score > bestScore) {
+          best = el;
+          bestScore = score;
+        }
+      }
+      return best;
+    };
+    const identityOf = function(el) {
+      if (!el) return 'container';
+      if (el.id) return '#' + String(el.id);
+      return el.tagName ? String(el.tagName).toLowerCase() : 'container';
+    };
+    const applyEdge = function(el, dest) {
+      const max = Math.max(0, (Number(el.scrollHeight) || 0) - (Number(el.clientHeight) || 0));
+      el.scrollTop = dest === 'top' ? 0 : max;
+      if (typeof Event === 'function' && typeof el.dispatchEvent === 'function') {
+        try { el.dispatchEvent(new Event('scroll')); } catch {}
+      }
+    };
+    const finishContainer = function(el) {
+      const measured = measureEl(el);
+      return {
+        ok: true,
+        kind: 'container',
+        selector: identityOf(el),
+        scrollTop: measured.scrollTop,
+        scrollMax: measured.scrollMax,
+        atTop: measured.atTop,
+        atBottom: measured.atBottom,
+      };
+    };
+    const resolveContainer = function(requested, startNode) {
+      if (startNode) {
+        if (isOverflow(startNode)) return { ok: true, el: startNode };
+        const ancestor = nearestOverflow(startNode);
+        if (ancestor) return { ok: true, el: ancestor };
+        return { ok: false, error: 'scroll-container is not scrollable' };
+      }
+      if (!requested) return { ok: true, el: null };
+      if (typeof document.querySelector !== 'function') {
+        return { ok: false, error: 'scroll-container not found' };
+      }
+      const found = document.querySelector(requested);
+      if (!found) return { ok: false, error: 'scroll-container not found' };
+      if (isOverflow(found)) return { ok: true, el: found };
+      const ancestor = nearestOverflow(found);
+      if (ancestor) return { ok: true, el: ancestor };
+      return { ok: false, error: 'scroll-container is not scrollable' };
+    };
+    const runScrollEdge = function(requested, dest, startNode) {
+      const resolved = resolveContainer(requested, startNode);
+      if (resolved.ok === false) return resolved;
+      if (resolved.el) {
+        applyEdge(resolved.el, dest);
+        return finishContainer(resolved.el);
+      }
+      const doc = measureDocument();
+      if (doc.scrollMax > tolerance) {
+        window.scrollTo(0, dest === 'top' ? 0 : doc.scrollMax);
+        return Object.assign({ ok: true }, measureDocument());
+      }
+      const overflow = primaryOverflow();
+      if (!overflow) return Object.assign({ ok: true }, doc);
+      applyEdge(overflow, dest);
+      return finishContainer(overflow);
+    };
+  `;
+}
+
+function scrollEdgeExpression(edge, containerSelector = null) {
+  const dest = edge === 'top' ? 'top' : 'bottom';
+  const requested = containerSelector == null ? 'null' : JSON.stringify(containerSelector);
+  return `(function() {
+    /* chrome-cdp-ex.scroll-edge */
+    ${scrollEdgeLogicSource()}
+    return JSON.stringify(runScrollEdge(${requested}, ${JSON.stringify(dest)}, null));
   })()`;
+}
+
+function documentScrollEdgeExpression(edge, containerSelector = null) {
+  return scrollEdgeExpression(edge, containerSelector);
 }
 
 function documentScrollReachedEdge(edge, pos = {}) {
@@ -12246,23 +12401,50 @@ function documentScrollReachedEdge(edge, pos = {}) {
 
 function formatDocumentScrollEdgeText(edge, pos = {}) {
   const flag = edge === 'top' ? 'at-top' : 'at-bottom';
+  if (pos.kind === 'container') {
+    const who = pos.selector ? `${pos.selector} ` : '';
+    return `Scrolled to ${edge}. ${who}scrollTop: ${pos.scrollTop} / ${pos.scrollMax} max (${flag}: yes)`;
+  }
   return `Scrolled to ${edge}. scrollY: ${pos.scrollY} / ${pos.scrollMax} max (${flag}: yes)`;
 }
 
 function formatDocumentScrollEdgeFailure(edge, pos = {}) {
   const flag = edge === 'top' ? 'at-top' : 'at-bottom';
+  if (pos.kind === 'container') {
+    const who = pos.selector ? `${pos.selector} ` : '';
+    return `Did not reach container ${edge}. ${who}scrollTop: ${pos.scrollTop} / ${pos.scrollMax} max (${flag}: no)`;
+  }
   return `Did not reach document ${edge}. scrollY: ${pos.scrollY} / ${pos.scrollMax} max (${flag}: no)`;
 }
 
-async function scrollStr(cdp, sid, direction, amount) {
+function parseScrollEdgePayload(raw) {
+  if (raw && typeof raw === 'object') return raw;
+  if (typeof raw !== 'string' || !raw) throw new Error('scroll edge returned no result');
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error('scroll edge returned no result');
+  }
+}
+
+async function scrollStr(cdp, sid, direction, amount, extraArgs = []) {
+  const rest = Array.isArray(extraArgs) ? extraArgs : [];
   const edge = parseScrollEdge(direction, amount);
   if (edge) {
-    const result = await evalStr(cdp, sid, documentScrollEdgeExpression(edge));
-    const pos = JSON.parse(result);
+    const container = parseScrollContainerArg(rest);
+    if (container && isRef(container)) {
+      throw new Error('scroll: --scroll-container requires a CSS selector (same as table --scroll-container)');
+    }
+    const raw = await evalStr(cdp, sid, scrollEdgeExpression(edge, container));
+    const pos = parseScrollEdgePayload(raw);
+    if (pos && pos.ok === false) throw new Error(pos.error || 'scroll failed');
     if (!documentScrollReachedEdge(edge, pos)) {
       throw new Error(formatDocumentScrollEdgeFailure(edge, pos));
     }
     return formatDocumentScrollEdgeText(edge, pos);
+  }
+  if (rest.includes('--scroll-container')) {
+    throw new Error('scroll: --scroll-container is only valid with to top/to bottom');
   }
   const px = parseInt(amount) || 500;
   const dirMap = { down: [0, px], up: [0, -px], left: [-px, 0], right: [px, 0] };
@@ -16062,7 +16244,7 @@ async function recordStr(cdp, sid, args, refs) {
       else if (opts.action === 'fill') actionText = await fillStr(cdp, sid, opts.actionArgs[0], opts.actionArgs.slice(1).join(' '), refs);
       else if (opts.action === 'select') actionText = await selectStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1]);
       else if (opts.action === 'type') actionText = await typeStr(cdp, sid, opts.actionArgs.join(' '));
-      else if (opts.action === 'scroll') actionText = await scrollStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1]);
+      else if (opts.action === 'scroll') actionText = await scrollStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1], opts.actionArgs.slice(2));
       else if (opts.action === 'nav' || opts.action === 'navigate') actionText = await navStr(cdp, sid, opts.actionArgs[0]);
       else throw new Error(`record --action does not support: ${opts.action}`);
       events.push({ kind: 'action', summary: actionText.split('\n')[0], ts: Date.now() });
@@ -20177,7 +20359,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const value = await actionFeedback(
         'scroll',
-        () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1]),
+        () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1], fopts.args.slice(2)),
         scrollActionTarget(fopts.args),
         scrollFeedbackPolicy(fopts.args[0], fopts.args[1]),
         null,
@@ -23967,7 +24149,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,

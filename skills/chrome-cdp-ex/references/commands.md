@@ -227,7 +227,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `clickxy` | `clickxy <target> <x> <y> [--format json]` | `mutation / mutation` |
 | `type` | `type <target> <text> [--format json]` | `mutation / mutation` |
 | `press` | `press\|key <target> <key> [--format json]` | `mutation / mutation` |
-| `scroll` | `scroll <target> <dir\|x,y\|to top\|to bottom> [px] [--format json]` | `mutation / mutation` |
+| `scroll` | `scroll <target> <dir\|x,y\|to top\|to bottom> [px] [--scroll-container SELECTOR] [--format json]` | `mutation / mutation` |
 | `hover` | `hover <target> <sel\|@ref>` | `protected-mutation / mutation` |
 | `waitfor` | `waitfor <target> <selector> [ms]` | `read / standard` |
 | `loadall` | `loadall <target> <selector> [interval-ms] [--timeout-ms N]` | `protected-mutation / mutation` |
@@ -596,8 +596,9 @@ scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel co
 scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
 scripts/cdp.mjs press   <target> <key> [--format json] # press key (alias: key; Enter/Escape/Tab auto-return perceive diff)
 scripts/cdp.mjs scroll  <target> <dir|x,y> [px] [--format json] # relative scroll (auto-returns perceive diff)
-scripts/cdp.mjs scroll  <target> to bottom [--format json] # window document end; skinny scrollY/scrollMax/at-bottom
-scripts/cdp.mjs scroll  <target> to top [--format json]    # window document start; skinny scrollY/scrollMax/at-top
+scripts/cdp.mjs scroll  <target> to bottom [--format json] # document end, or nested overflow when the document cannot scroll; skinny scrollY or scrollTop / scrollMax / at-bottom
+scripts/cdp.mjs scroll  <target> to top [--format json]    # document start, or nested overflow when the document cannot scroll; skinny scrollY or scrollTop / scrollMax / at-top
+scripts/cdp.mjs scroll  <target> to bottom --scroll-container SELECTOR [--format json] # explicit overflow container (same idea as table --scroll-container)
 scripts/cdp.mjs loadall <target> <selector> [interval-ms] [--timeout-ms N]  # click "load more" until gone (interval default 1500ms, timeout default 30000ms)
 scripts/cdp.mjs hover   <target> <sel|@ref>          # hover element (triggers :hover, tooltips)
 scripts/cdp.mjs waitfor <target> <selector> [ms]      # wait for CSS selector to appear (max 5min)
