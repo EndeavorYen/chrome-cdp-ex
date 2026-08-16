@@ -4640,7 +4640,8 @@ function isLeftoverDefaultAxScrollSettle(output, snapshotOpts = null, actionTarg
   // Leftover golden-path / default AX (`perceive -C -d 8`) is the settle
   // shape for the next scroll (#295/#297/#299/#301). Viewport @ref rect chrome and
   // fold tags are not a page mutation. Visible-control cap-swap membership
-  // is still changed, but the receipt summarizes it with named samples and
+  // is still changed, but the receipt summarizes it with unique named samples
+  // (shared commit titles do not occupy both sides, #307) and
   // Next `-C -d 8` without Hint `--since-action` or a generic Recovery hint.
   // Cards / pdf-viewer / framed leftovers keep their own settle gates.
   if (!isScrollActionTarget(actionTarget)) return false;
@@ -10112,6 +10113,22 @@ function extractVisibleControlLabels(lines = [], { namedOnly = false } = {}) {
   return labels;
 }
 
+const VISIBLE_CONTROL_CAP_SWAP_SAMPLE = 4;
+
+function uniqueVisibleControlCapSwapSamples(removedNamed = [], addedNamed = [], limit = VISIBLE_CONTROL_CAP_SWAP_SAMPLE) {
+  // Names that appear on both sides (live: a shared commit title on every
+  // HF file row) are still membership, but they are leftover sample chrome
+  // when they occupy a named slot on both sides and push a unique file
+  // name into `... and 1 more` (#307). Prefer unique names. Do not treat
+  // `main` as a special case.
+  const addedSet = new Set(addedNamed);
+  const removedSet = new Set(removedNamed);
+  return {
+    removedSamples: removedNamed.filter(name => !addedSet.has(name)).slice(0, limit),
+    addedSamples: addedNamed.filter(name => !removedSet.has(name)).slice(0, limit),
+  };
+}
+
 function splitVisibleControlStructural(lines = []) {
   const visible = [];
   const rest = [];
@@ -10121,8 +10138,6 @@ function splitVisibleControlStructural(lines = []) {
   return { visible, rest };
 }
 
-const VISIBLE_CONTROL_CAP_SWAP_SAMPLE = 4;
-
 function visibleControlCapSwap(diff) {
   const removed = splitVisibleControlStructural(diff.removedStructural);
   const added = splitVisibleControlStructural(diff.addedStructural);
@@ -10130,6 +10145,7 @@ function visibleControlCapSwap(diff) {
   const addedLabels = extractVisibleControlLabels(added.visible);
   const removedNamed = extractVisibleControlLabels(removed.visible, { namedOnly: true });
   const addedNamed = extractVisibleControlLabels(added.visible, { namedOnly: true });
+  const samples = uniqueVisibleControlCapSwapSamples(removedNamed, addedNamed);
   return {
     isCapSwap: removedLabels.length >= 2 && addedLabels.length >= 2,
     removedRest: removed.rest,
@@ -10138,6 +10154,7 @@ function visibleControlCapSwap(diff) {
     addedLabels,
     removedNamed,
     addedNamed,
+    ...samples,
   };
 }
 
@@ -10147,8 +10164,8 @@ function visibleControlCapSwapHeadline(left, entered) {
 
 function formatVisibleControlCapSwapLines(swap) {
   const lines = [visibleControlCapSwapHeadline(swap.removedLabels.length, swap.addedLabels.length)];
-  const removedSamples = (swap.removedNamed || []).slice(0, VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
-  const addedSamples = (swap.addedNamed || []).slice(0, VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
+  const removedSamples = swap.removedSamples || [];
+  const addedSamples = swap.addedSamples || [];
   for (const label of removedSamples) lines.push(`- ${label}`);
   if (removedSamples.length && swap.removedLabels.length > removedSamples.length) {
     lines.push(`  ... and ${swap.removedLabels.length - removedSamples.length} more left`);
@@ -10309,8 +10326,8 @@ function buildPerceiveDiffModel(previousOutput, currentOutput, { mode = 'diff', 
         swap.addedLabels.length,
       );
       if (swap.removedRest.length === 0 && swap.addedRest.length === 0) {
-        const removedSamples = (swap.removedNamed || []).slice(0, VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
-        const addedSamples = (swap.addedNamed || []).slice(0, VISIBLE_CONTROL_CAP_SWAP_SAMPLE);
+        const removedSamples = swap.removedSamples || [];
+        const addedSamples = swap.addedSamples || [];
         model.removed = removedSamples;
         model.added = addedSamples;
         model.removedOmitted = Math.max(0, swap.removedLabels.length - removedSamples.length);
@@ -23751,6 +23768,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   leftoverCardsCount, isScrollActionTarget, isLeftoverFeedCardsSettle,
   isLeftoverDefaultAxScrollSettle, stripPerceiveRectChrome, stripPerceiveIdentityChrome,
   isPerceiveDecorativeTitleChrome, isVisibleControlTimestampName, visibleControlNameFromLine, extractVisibleControlLabels,
+  uniqueVisibleControlCapSwapSamples,
   isPdfViewerPerceiveOutput, pdfViewerSettleDiffText,
   isFramedPerceiveOutput, shouldCaptureTopLevelActionSettle, actionSettleObserveOpts,
   actionDomDiffShowsChange, noBaselineActionDiffText,

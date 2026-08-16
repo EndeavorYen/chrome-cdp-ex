@@ -4602,6 +4602,186 @@ describe('Perceive diff baseline', () => {
     expect(receipt).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
   });
 
+  it('#307 leftover-ax-scroll cap-swap samples skip a shared commit title on both sides', () => {
+    // Live leftover-ax-scroll named samples after overlay f9fa4971. HF file-row
+    // commit links share the title `Add diffusers weights (modular pipeline) (#2)`
+    // but keep distinct hrefs, so identity-chrome strip still treats them as
+    // left AND entered membership. The 4-sample picker must not spend a named
+    // slot on both sides; unique file names fill the cap.
+    const commitLeft = T.formatVisibleControlLine({
+      tag: 'a',
+      role: 'link',
+      label: 'Add diffusers weights (modular pipeline) (#2)',
+      clickable: true,
+      rect: { x: 8, y: 128, w: 280, h: 22 },
+      selector: 'a[href="/MiniMaxAI/MiniMax-Music3/commit/left"]',
+    });
+    const commitEntered = T.formatVisibleControlLine({
+      tag: 'a',
+      role: 'link',
+      label: 'Add diffusers weights (modular pipeline) (#2)',
+      clickable: true,
+      rect: { x: 8, y: 128, w: 280, h: 22 },
+      selector: 'a[href="/MiniMaxAI/MiniMax-Music3/commit/entered"]',
+    });
+    expect(commitLeft).toBe(
+      'a role=link "Add diffusers weights (modular pipeline) (#2)" [clickable] (8,128 280×22) a[href="/MiniMaxAI/MiniMax-Music3/commit/left"]',
+    );
+    expect(commitEntered).toBe(
+      'a role=link "Add diffusers weights (modular pipeline) (#2)" [clickable] (8,128 280×22) a[href="/MiniMaxAI/MiniMax-Music3/commit/entered"]',
+    );
+    expect(T.visibleControlNameFromLine(`  ${commitLeft}`))
+      .toEqual({ name: 'Add diffusers weights (modular pipeline) (#2)', named: true });
+    expect(T.visibleControlNameFromLine(`  ${commitEntered}`))
+      .toEqual({ name: 'Add diffusers weights (modular pipeline) (#2)', named: true });
+    expect(T.visibleControlNameFromLine('  a role=link "main" [clickable] (8,72 80×22) a[href="#main"]'))
+      .toEqual({ name: 'main', named: true });
+    expect(T.visibleControlNameFromLine('  a role=link "condition_encoder" [clickable] (8,100 80×22) a[href="#enc"]'))
+      .toEqual({ name: 'condition_encoder', named: true });
+    expect(T.visibleControlNameFromLine('  a role=link "tokenizer.json" [clickable] (8,184 80×22) a[href="#tok"]'))
+      .toEqual({ name: 'tokenizer.json', named: true });
+    expect(T.uniqueVisibleControlCapSwapSamples(
+      ['condition_encoder', 'Add diffusers weights (modular pipeline) (#2)', 'figures', 'tokenizer.json'],
+      ['language_model', 'Add diffusers weights (modular pipeline) (#2)', 'qwen_7B', 'speech_tokenizer'],
+    )).toEqual({
+      removedSamples: ['condition_encoder', 'figures', 'tokenizer.json'],
+      addedSamples: ['language_model', 'qwen_7B', 'speech_tokenizer'],
+    });
+
+    const header = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 400/2400 (17%) | Focused: none',
+      'Interactive: 12 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+    ];
+    const previous = [
+      ...header,
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+      '    [link] README.md  @2  (24,208 160×22)',
+      '',
+      '[Visible controls]',
+      '  a role=link "condition_encoder" [clickable] (8,100 80×22) a[href="#enc"]',
+      `  ${commitLeft}`,
+      '  a role=link "figures" [clickable] (8,156 80×22) a[href="#figures"]',
+      '  a role=link "tokenizer.json" [clickable] (8,184 80×22) a[href="#tok"]',
+    ].join('\n');
+    const currentHeader = header.map(line => line.replace('Scroll: 400/2400 (17%)', 'Scroll: 480/2400 (20%)'));
+    const current = [
+      ...currentHeader,
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)',
+      '',
+      '[Visible controls]',
+      '  a role=link "language_model" [clickable] (8,100 80×22) a[href="#lm"]',
+      `  ${commitEntered}`,
+      '  a role=link "qwen_7B" [clickable] (8,156 80×22) a[href="#qwen"]',
+      '  a role=link "speech_tokenizer" [clickable] (8,184 80×22) a[href="#speech"]',
+    ].join('\n');
+    const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+    expect(T.actionDomDiffShowsChange(diff)).toBe(true);
+    expect(diff).toMatch(/Visible-control cap swap: 4 left, 4 entered/);
+    expect(diff).toContain('- condition_encoder');
+    expect(diff).toContain('- figures');
+    expect(diff).toContain('- tokenizer.json');
+    expect(diff).toContain('+ language_model');
+    expect(diff).toContain('+ qwen_7B');
+    expect(diff).toContain('+ speech_tokenizer');
+    const removedSamples = [...diff.matchAll(/^- (.+)$/gm)].map(match => match[1]);
+    const addedSamples = [...diff.matchAll(/^\+ (.+)$/gm)].map(match => match[1]);
+    expect(removedSamples).toEqual([
+      'condition_encoder',
+      'figures',
+      'tokenizer.json',
+    ]);
+    expect(addedSamples).toEqual([
+      'language_model',
+      'qwen_7B',
+      'speech_tokenizer',
+    ]);
+    expect(diff).toMatch(/ {2}\.\.\. and 1 more left/);
+    expect(diff).toMatch(/ {2}\.\.\. and 1 more entered/);
+    expect(diff).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(diff).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(diff).not.toMatch(/\+\+\+ Added/);
+    expect(diff).not.toMatch(/span\[title=/);
+    expect(diff).not.toMatch(/time\[title=/);
+    expect(diff).not.toMatch(/^\+ 2 days ago$/m);
+    expect(diff).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
+
+    const addedFile = current.replace(
+      '    [link] README.md  @2  (24,128 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)\n    [link] config.json  @3  (24,156 160×22)\n    [heading] Files and versions  @4  (24,184 200×22)',
+    );
+    const changed = T.formatPerceiveDiffOutput(previous, addedFile, { mode: 'since-action' });
+    expect(changed).toMatch(/\[link\] config\.json/);
+    expect(changed).toMatch(/\[heading\] Files and versions/);
+    expect(changed).toMatch(/Visible-control cap swap: 4 left, 4 entered/);
+    expect(changed).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(changed).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(T.actionDomDiffShowsChange(changed)).toBe(true);
+
+    const model = T.buildPerceiveDiffModel(previous, current, { mode: 'since-action' });
+    expect(model.summary.changed).toBe(true);
+    expect(model.summary.kind).toBe('visible-control-cap-swap');
+    expect(model.summary.headline).toBe('Visible-control cap swap: 4 left, 4 entered');
+    expect(model.removed).toEqual([
+      'condition_encoder',
+      'figures',
+      'tokenizer.json',
+    ]);
+    expect(model.added).toEqual([
+      'language_model',
+      'qwen_7B',
+      'speech_tokenizer',
+    ]);
+    expect(model.removed).not.toEqual(expect.arrayContaining([
+      'Add diffusers weights (modular pipeline) (#2)',
+    ]));
+    expect(model.added).not.toEqual(expect.arrayContaining([
+      'Add diffusers weights (modular pipeline) (#2)',
+    ]));
+
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, {
+      dispatchText: 'Scrolled by (0, 80). Position: (0, 480)',
+    });
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(text).toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Visible-control cap swap: 4 left, 4 entered/);
+    expect(text).toMatch(/- tokenizer\.json/);
+    expect(text).toMatch(/\+ speech_tokenizer/);
+    expect(text).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(text).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/\+\+\+ Added/);
+    expect(text).not.toMatch(/span\[title=/);
+    expect(receipt).toMatch(/Outcome: changed/);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(receipt).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(receipt).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+  });
+
   it('#299 leftover-ax-scroll no-change receipt has Next -C -d 8 without Hint --since-action', () => {
     const previous = [
       'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
