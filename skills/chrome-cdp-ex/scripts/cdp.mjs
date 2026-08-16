@@ -8182,6 +8182,9 @@ function playwrightStepFromCommand(action = {}) {
     case 'click':
     case 'jsclick': {
       const selector = args[0] === '--js' || args[0] === '-j' ? args[1] : args[0];
+      if (isNamedClickQuery(selector)) {
+        return finish([`await page.getByRole('link', { name: ${JSON.stringify(selector)} }).click();`]);
+      }
       if (!isPlaywrightPortableSelector(selector)) return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
       return finish([`await page.locator(${JSON.stringify(selector)}).click();`]);
     }
@@ -11981,15 +11984,119 @@ async function resolveSelectorNode(cdp, sid, selector) {
   return object.objectId;
 }
 
+const NAMED_IN_VIEWPORT_CLICK_OUTCOME = 'named-in-viewport-click';
+const NAMED_IN_VIEWPORT_CLICK_SELECTOR = 'a, button, [role="link"], [role="button"]';
+
+function isLikelyCssSelector(value) {
+  const selector = String(value || '').trim();
+  if (!selector) return false;
+  if (/^[#.\[*:]/.test(selector)) return true;
+  if (/^[a-zA-Z][\w-]*$/.test(selector)) return true;
+  if (/^[a-zA-Z][\w-]*[#.\[:]/.test(selector)) return true;
+  if (/^[a-zA-Z#.*\[][\w#.\-\[\]="':()*]*(\s*[>+~]\s*|\s+)[#.\[*:a-zA-Z]/.test(selector)) return true;
+  return false;
+}
+
+function isNamedClickQuery(value) {
+  const selector = String(value || '').trim();
+  if (!selector) return false;
+  if (isRef(selector) || isCursorRef(selector)) return false;
+  return !isLikelyCssSelector(selector);
+}
+
+function clickFeedbackPolicy(selector, maybeName) {
+  const query = selector === '--js' || selector === '-j' ? maybeName : selector;
+  return isNamedClickQuery(query) ? 'report-only' : 'settle-diff';
+}
+
+function jsclickFeedbackPolicy(selector) {
+  return clickFeedbackPolicy(selector);
+}
+
+function namedClickActionTarget(input, extra = {}) {
+  const named = isNamedClickQuery(input);
+  const target = {
+    input: extra.input ?? input,
+    resolvedBy: extra.resolvedBy ?? (named ? 'name' : 'selector-or-ref'),
+    label: extra.label ?? (input || ''),
+    commandArgs: extra.commandArgs ?? [input],
+  };
+  if (extra.targetId) target.targetId = extra.targetId;
+  if (named) {
+    target.expectedOutcome = NAMED_IN_VIEWPORT_CLICK_OUTCOME;
+    target.dispatchMethod = 'jsclick';
+  }
+  return target;
+}
+
+function namedInViewportClickExpression(name) {
+  const wanted = String(name || '').replace(/\s+/g, ' ').trim();
+  return `(function() {
+    /* chrome-cdp-ex.named-in-viewport-click */
+    const wanted = ${JSON.stringify(wanted)};
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const inViewport = (el) => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 && rect.top < vh && rect.left < vw;
+    };
+    const nameOf = (el) => normalize(
+      el.getAttribute('aria-label') || el.innerText || el.textContent || el.getAttribute('title') || ''
+    );
+    const nodes = Array.from(document.querySelectorAll(${JSON.stringify(NAMED_IN_VIEWPORT_CLICK_SELECTOR)}));
+    const named = nodes.filter(el => nameOf(el) === wanted);
+    const visible = named.filter(inViewport);
+    if (!visible.length) {
+      if (named.length) {
+        return JSON.stringify({
+          ok: false,
+          error: 'Named control is not in the viewport. This command does not scroll to find it: ' + wanted,
+        });
+      }
+      return JSON.stringify({ ok: false, error: 'Named control not found: ' + wanted });
+    }
+    const el = visible[0];
+    const rect = el.getBoundingClientRect();
+    const href = el.href || el.getAttribute('href') || null;
+    const pageHref = location.href;
+    if (typeof el.click === 'function') el.click();
+    else el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+    return JSON.stringify({
+      ok: true,
+      tag: el.tagName,
+      text: nameOf(el).substring(0, 80),
+      href,
+      pageHref,
+      x: rect.x,
+      y: rect.y,
+      w: rect.width,
+      h: rect.height,
+    });
+  })()`;
+}
+
+async function namedInViewportJsClickStr(cdp, sid, name) {
+  const result = await evalStr(cdp, sid, namedInViewportClickExpression(name));
+  const parsed = JSON.parse(result);
+  if (!parsed.ok) throw new Error(parsed.error);
+  const href = await confirmClickFollowedHref(cdp, sid, parsed);
+  const line = `JS-clicked <${parsed.tag || '?'}> "${parsed.text || ''}"`;
+  return href ? `${line}\nURL: ${href}` : line;
+}
+
 // JS-fallback click: uses HTMLElement.click() / dispatchEvent in the page
 // instead of CDP Input.dispatchMouseEvent. Useful when the page intercepts
 // real-pointer events with overlays, has misaligned hit testing under custom
 // transforms, or when an MUD/game UI binds handlers only to synthetic clicks.
 // This path is intentionally separate from clickStr — agents opt into it via
 // `jsclick` or `click --js` so the default behaviour stays a realistic mouse
-// dispatch.
+// dispatch. Named in-viewport queries use this path in one step (no mouse
+// fail-close, no scrollIntoView) because headed CDP mouse often delivers
+// no page events on a visible link.
 async function jsClickStr(cdp, sid, selector, refMap, refState) {
-  if (!selector) throw new Error('CSS selector or @ref required');
+  if (!selector) throw new Error('CSS selector, @ref, or in-viewport name required');
+  if (isNamedClickQuery(selector)) return namedInViewportJsClickStr(cdp, sid, selector);
   const objectId = isRef(selector)
     ? await resolveRefNode(cdp, sid, refMap, selector, refState)
     : await resolveSelectorNode(cdp, sid, selector);
@@ -12014,9 +12121,12 @@ async function jsClickStr(cdp, sid, selector, refMap, refState) {
   }
 }
 
-// Click element by CSS selector or @ref
+// Click element by CSS selector, @ref, or in-viewport accessible name.
+// Named in-viewport queries take the jsclick path in one step: headed CDP
+// mouse often completes dispatch.ok with zero page events (no-input-events).
 async function clickStr(cdp, sid, selector, refMap, refState) {
-  if (!selector) throw new Error('CSS selector or @ref required');
+  if (!selector) throw new Error('CSS selector, @ref, or in-viewport name required');
+  if (isNamedClickQuery(selector)) return jsClickStr(cdp, sid, selector, refMap, refState);
   if (isCursorRef(selector)) {
     const r = resolveCursorRef(refMap, selector, refState);
     await dispatchClick(cdp, sid, r.x + r.w / 2, r.y + r.h / 2, { selector, x: r.x + r.w / 2, y: r.y + r.h / 2 });
@@ -19954,6 +20064,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       action,
       target: actionTarget,
       dispatch: wrappedDispatch,
+      dispatchMethod: actionTarget.dispatchMethod || action,
       feedbackPolicy,
       observe: observeThenFlush,
       enrichActionResult: async (actionResult) => {
@@ -20245,7 +20356,15 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     },
     jsclick: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-      const value = await actionFeedback('jsclick', () => jsClickStr(cdp, sessionId, fopts.args[0], refMap, refState), { input: fopts.args[0], resolvedBy: 'selector-or-ref', label: fopts.args[0] || '', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
+      const selector = fopts.args[0];
+      const value = await actionFeedback(
+        'jsclick',
+        () => jsClickStr(cdp, sessionId, selector, refMap, refState),
+        namedClickActionTarget(selector),
+        jsclickFeedbackPolicy(selector),
+        null,
+        fopts,
+      );
       return commandResult(value, { kind: 'action-receipt' });
     },
     keepalive: async args => commandResult(
@@ -21479,8 +21598,10 @@ Usage: cdp <command> [args]
 {{command:click}}
                                     --js / -j: use HTMLElement.click() (JS fallback)
                                     --qa/--summary: compact pass/fail QA receipt without full DOM dump
+                                    name: in-viewport accessible name; one-step jsclick, skinny URL receipt
 {{command:jsclick}}
                                     Use when overlays or hit-testing block the realistic mouse path.
+                                    name: in-viewport accessible name (no scroll-to-find, no perceive dump)
 {{command:clickxy}}
 {{command:type}}
                                     Works in cross-origin iframes unlike eval-based approaches
@@ -21599,6 +21720,10 @@ ACTION FEEDBACK
   click, verify-click, jsclick, clickxy, fill, type, press, select, scroll,
   upload, inject, dismiss-modal, and viewport (when resizing) automatically wait for DOM to
   settle and return compact action evidence plus a perceive diff.
+  Named in-viewport click / jsclick (a visible control name, not @ref or CSS)
+  is report-only: skinny URL receipt, no AX dump. Mouse click @ref still
+  fail-closes with no-input-events. scroll to top/to bottom is also
+  report-only (window document or nested overflow).
   qa returns a semantic QA report and includes action evidence when --click is used.
   back, forward, and nav return action evidence plus a full perceive.
   reload returns action evidence plus a bounded lightweight page observation.
@@ -21999,33 +22124,19 @@ function createClickCommandHandler({ actionFeedback, click, jsClick }) {
   return async ({ args }) => {
     const parsed = parseClickArgs(args);
     const selector = parsed.selector;
-    const value = parsed.js
-      ? await actionFeedback(
-        'click',
-        () => jsClick(selector),
-        {
-          input: selector,
-          resolvedBy: 'selector-or-ref',
-          label: selector || '',
-          commandArgs: ['--js', selector],
-        },
-        'settle-diff',
-        null,
-        parsed.fopts
-      )
-      : await actionFeedback(
-        'click',
-        () => click(selector),
-        {
-          input: selector,
-          resolvedBy: 'selector-or-ref',
-          label: selector || '',
-          commandArgs: [selector],
-        },
-        'settle-diff',
-        null,
-        parsed.fopts
-      );
+    const named = isNamedClickQuery(selector);
+    const useJs = parsed.js || named;
+    const target = namedClickActionTarget(selector, {
+      commandArgs: parsed.js ? ['--js', selector] : [selector],
+    });
+    const value = await actionFeedback(
+      'click',
+      () => (useJs ? jsClick(selector) : click(selector)),
+      target,
+      clickFeedbackPolicy(selector),
+      null,
+      parsed.fopts
+    );
     return commandResult(value, { kind: 'action-receipt' });
   };
 }
@@ -24119,6 +24230,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   daemonRequestStorage, sleep,
   dispatchClick, dispatchMouseEventAllowingAckTimeout, dispatchClickMouseEvent,
   parseClickEventProbeOutput, clickProbeSawPageEvent,
+  isNamedClickQuery, isLikelyCssSelector, clickFeedbackPolicy, jsclickFeedbackPolicy,
+  namedClickActionTarget, namedInViewportClickExpression, NAMED_IN_VIEWPORT_CLICK_OUTCOME,
   isNavigatingHref, confirmClickFollowedHref, evalPageHref, waitForSettle,
   waitForHoverDomChange, hoverRecaptureShowsChange, discardHoverIdleBaseline,
   shouldSkipActionDomSettle, formatActionNavigationDiff, actionNavigationEvidence,

@@ -222,8 +222,8 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `responsive-audit` | `responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]` | `mutation / mutation` |
 | `verify-click` | `verify-click <target> <sel\|@ref> [--format json]` | `mutation / mutation` |
 | `net` | `net <target>` | `read / standard` |
-| `click` | `click <target> <sel\|@ref> [--js\|-j] [--format json] [--qa\|--summary]` | `mutation / mutation` |
-| `jsclick` | `jsclick <target> <sel\|@ref>` | `mutation / mutation` |
+| `click` | `click <target> <sel\|@ref\|name> [--js\|-j] [--format json] [--qa\|--summary]` | `mutation / mutation` |
+| `jsclick` | `jsclick <target> <sel\|@ref\|name>` | `mutation / mutation` |
 | `clickxy` | `clickxy <target> <x> <y> [--format json]` | `mutation / mutation` |
 | `type` | `type <target> <text> [--format json]` | `mutation / mutation` |
 | `press` | `press\|key <target> <key> [--format json]` | `mutation / mutation` |
@@ -592,6 +592,8 @@ scripts/cdp.mjs html    <target> [selector]   # full page or element HTML
 scripts/cdp.mjs nav     <target> <url> [--format json] # navigate and wait for load
 scripts/cdp.mjs net     <target>               # resource timing entries
 scripts/cdp.mjs click   <target> <sel|@ref> [--format json] # click (auto-returns perceive diff)
+scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # in-viewport name; one-step jsclick, skinny URL
+scripts/cdp.mjs jsclick <target> "Browse 2M+ models" [--format json] # same named in-viewport path; no scroll-to-find
 scripts/cdp.mjs clickxy <target> <x> <y> [--format json] # click at CSS pixel coords (auto-returns perceive diff)
 scripts/cdp.mjs type    <target> <text> [--format json] # Input.insertText at current focus; works in cross-origin iframes
 scripts/cdp.mjs press   <target> <key> [--format json] # press key (alias: key; Enter/Escape/Tab auto-return perceive diff)
@@ -1107,6 +1109,7 @@ classified `Unknown ref` error. Switch to a stable selector
 ```bash
 cdp jsclick <t> @17                                       # @ref form
 cdp click   <t> --js "button[data-action='confirm']"     # CSS form
+cdp jsclick <t> "Browse 2M+ models"                      # in-viewport name; no perceive dump
 ```
 
 Use this when the realistic mouse path (CDP `Input.dispatchMouseEvent`) is blocked:
@@ -1115,12 +1118,15 @@ Use this when the realistic mouse path (CDP `Input.dispatchMouseEvent`) is block
 - A Vue/React component listens only for synthetic clicks bubbled through its root.
 
 `jsclick` calls `HTMLElement.click()` (falling back to `dispatchEvent(new MouseEvent('click'))`).
-The default `click` is still preferred — it produces realistic event sequences
-that pass through `:active`/`:hover`/focus rings — but `jsclick` is the right
-escape hatch when you can prove the mouse path is the blocker. A fail-closed
-mouse click reports `Kind: no-input-events` with Next `cdp jsclick <target> <sel>`
-(selector included). Do not treat `dispatch.ok` as success, and do not auto-jsclick
-inside `click`.
+The default `click` `@ref` / CSS path is still preferred — it produces realistic
+event sequences that pass through `:active`/`:hover`/focus rings — but `jsclick`
+is the right escape hatch when you can prove the mouse path is the blocker. A
+fail-closed mouse click reports `Kind: no-input-events` with Next
+`cdp jsclick <target> <sel>` (selector included). Do not treat `dispatch.ok` as
+success, and do not auto-jsclick inside mouse `click` `@ref` / CSS. A named
+in-viewport query (`click` / `jsclick` `"Browse 2M+ models"`) is the one-step
+jsclick path: no `perceive -C -d 8`, no scroll-to-find, skinny URL receipt.
+Short of the navigating href is FAIL.
 
 ### React-controlled inputs — `fill --react`
 
