@@ -667,8 +667,11 @@ export function buildNoChangeOutcomeRecommendation({
       reason: 'Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities.',
       blockingSignals: [],
       // Next is already perceive -C -d 8. "re-run perceive instead of report"
-      // restates that command (#311). Keep Outcome/Verdict/Next; do not author
-      // a Recovery hint that tells the model to do what Next already says.
+      // restates that command (#311). formatActionText also drops this
+      // settle-shape Outcome reason on honest no-change (#313) because the
+      // body already says (no changes detected in AX tree). Keep
+      // Outcome/Verdict/Next; do not author a Recovery hint that tells the
+      // model to do what Next already says.
       recoveryHint: null,
       verifyCommand: nextCommand,
       commands: uniqueNextStepCommands([nextCommand]),

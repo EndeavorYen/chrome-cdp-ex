@@ -5060,7 +5060,8 @@ describe('Perceive diff baseline', () => {
     expect(result.receipt.recoveryHint).toBeNull();
     expect(result.recommendation.recoveryHint).toBeNull();
     expect(result.nextHint).toBeNull();
-    expect(text).toMatch(/^Outcome: no-change — Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities\.$/m);
+    expect(text).toMatch(/^Outcome: no-change$/m);
+    expect(text).not.toMatch(/Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities/);
     expect(text).toMatch(/^Verdict: continue$/m);
     expect(text).toMatch(/^Settle: ok in 826ms$/m);
     expect(text).not.toMatch(LIVE_RECOVERY_HINT);
@@ -5077,7 +5078,8 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
     expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
-    expect(receipt).toMatch(/^Outcome: no-change — Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities\.$/m);
+    expect(receipt).toMatch(/^Outcome: no-change$/m);
+    expect(receipt).not.toMatch(/Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities/);
     expect(receipt).not.toMatch(LIVE_RECOVERY_HINT);
     expect(receipt).not.toMatch(/^Recovery hint:/m);
     expect(receipt).not.toMatch(/^Interactive:/m);
@@ -5097,6 +5099,145 @@ describe('Perceive diff baseline', () => {
     expect(genericNoChange.outcome.status).toBe('no-change');
     expect(genericNoChange.receipt.recoveryHint).toMatch(/no visible AX tree change/i);
     expect(T.formatActionText(genericNoChange)).toMatch(/^Recovery hint:/m);
+    expect(T.formatActionText(genericNoChange)).toMatch(/^Outcome: no-change — /m);
+  });
+
+  it('#313 leftover-ax-scroll no-change receipt drops settle-shape Outcome reason when Next is already perceive', () => {
+    // Live leftover-ax-scroll ActionResult after overlay b302e9f9 (Fixes #311).
+    // Bob 9224: leftover perceive 561F7DA8 -C -d 8 then scroll down 80 on HF
+    // Music3 already at scrollY 547/547 (100%). Position stayed (0, 547) —
+    // honest no-change, not a hidden cap-swap. Recovery hint is gone. Next is
+    // already perceive -C -d 8. The leftover chrome is the settle-shape
+    // Outcome reason essay. Body already says (no changes detected in AX tree).
+    const LIVE_INTERACTIVE = 'Interactive: 113 a, 1 input[text], 21 button, 9 div, 2 input[search], 1 iframe';
+    const LIVE_COORDS = 'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)';
+    const LIVE_RECOVERY_HINT = 'AX identities unchanged; re-run perceive -C -d 8 instead of report.';
+    const LIVE_SETTLE_SHAPE_REASON = 'Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities.';
+    const header = [
+      'Page: MiniMaxAI/MiniMax-Music3 at main — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×632 | Scroll: 547/547 (100%) | Focused: none',
+      LIVE_INTERACTIVE,
+      'Console: clean',
+      LIVE_COORDS,
+      '',
+    ];
+    const dump = [
+      ...header,
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)',
+    ].join('\n');
+    expect(dump).toContain(LIVE_INTERACTIVE);
+    expect(dump).toContain(LIVE_COORDS);
+    expect(dump).toContain('Scroll: 547/547 (100%)');
+
+    const diff = T.formatPerceiveDiffOutput(dump, dump, { mode: 'since-action' });
+    expect(T.actionDomDiffShowsChange(diff)).toBe(false);
+    expect(diff).toMatch(/no changes detected in AX tree/i);
+    expect(diff).toContain(LIVE_INTERACTIVE);
+    expect(diff).toContain(LIVE_COORDS);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).not.toContain(LIVE_INTERACTIVE);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).not.toContain(LIVE_COORDS);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).toMatch(/no changes detected in AX tree/i);
+
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 1527 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, {
+      dispatchText: 'Scrolled by (0, 80). Position: (0, 547)',
+    });
+    expect(result.outcome.status).toBe('no-change');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(result.recommendation.recoveryHint).toBeNull();
+    expect(result.nextHint).toBeNull();
+    expect(text).toMatch(/^Outcome: no-change$/m);
+    expect(text).not.toMatch(LIVE_SETTLE_SHAPE_REASON);
+    expect(text).toMatch(/^Verdict: continue$/m);
+    expect(text).toMatch(/^Settle: ok in 1527ms$/m);
+    expect(text).not.toMatch(LIVE_RECOVERY_HINT);
+    expect(text).not.toMatch(/^Recovery hint:/m);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/^Interactive:/m);
+    expect(text).not.toMatch(/^Console: clean$/m);
+    expect(text).not.toMatch(/^Coords: /m);
+    expect(text).not.toMatch(/use clickxy with these values/);
+    expect(text).toMatch(/Page: MiniMaxAI\/MiniMax-Music3 at main/);
+    expect(text).toMatch(/Viewport: 1042×632 \| Scroll: 547\/547 \(100%\)/);
+    expect(text).toMatch(/\(no changes detected in AX tree\)/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
+    expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
+    expect(receipt).toMatch(/^Outcome: no-change$/m);
+    expect(receipt).not.toMatch(LIVE_SETTLE_SHAPE_REASON);
+    expect(receipt).not.toMatch(LIVE_RECOVERY_HINT);
+    expect(receipt).not.toMatch(/^Recovery hint:/m);
+    expect(receipt).not.toMatch(/^Interactive:/m);
+    expect(receipt).not.toMatch(/use clickxy with these values/);
+    expect(receipt).toMatch(/Viewport: 1042×632 \| Scroll: 547\/547 \(100%\)/);
+    expect(receipt).toMatch(/\(no changes detected in AX tree\)/);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(receipt).toMatch(/Settle: ok in 1527ms/);
+    expect(receipt.length).toBeLessThan(476);
+    expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
+
+    const genericNoChange = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 40 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+    });
+    expect(genericNoChange.outcome.status).toBe('no-change');
+    expect(genericNoChange.receipt.recoveryHint).toMatch(/no visible AX tree change/i);
+    expect(T.formatActionText(genericNoChange)).toMatch(/^Recovery hint:/m);
+    expect(T.formatActionText(genericNoChange)).toMatch(/^Outcome: no-change — /m);
+
+    const leftoverCardsNoChange = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '2E94F948ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'cards-window-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+    });
+    expect(leftoverCardsNoChange.outcome.status).toBe('no-change');
+    expect(T.formatActionText(leftoverCardsNoChange)).toMatch(
+      /^Outcome: no-change — Settle shape was leftover feed --cards; virtualized window did not replace cards\.$/m,
+    );
+
+    const leftoverPdfNoChange = T.createActionResult({
+      action: 'click',
+      target: {
+        targetId: 'CFD023D2ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'pdf-viewer-no-change',
+        resolvedBy: 'selector-or-ref',
+        label: 'body',
+      },
+      dispatch: { ok: true, method: 'jsclick' },
+      settle: { ok: true, durationMs: 40 },
+      effects: { domDiff: '(no changes detected in AX tree)', console: [], network: [], navigation: null },
+    });
+    expect(leftoverPdfNoChange.outcome.status).toBe('no-change');
+    expect(T.formatActionText(leftoverPdfNoChange)).toMatch(
+      /^Outcome: no-change — Settle shape was pdf-viewer\.v1/m,
+    );
   });
 
   it('#299 leftover-ax-scroll no-change receipt has Next -C -d 8 without Hint --since-action', () => {
