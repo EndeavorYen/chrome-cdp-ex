@@ -5565,16 +5565,42 @@ function summarizeActionObservationEffects(effects = {}) {
   };
 }
 
+const LEFTOVER_AX_SCROLL_CENSUS_RE = /^(Interactive: |Console: |Coords: )/;
+const GENERIC_CHANGED_REASON = 'Observed page change after action.';
+
+function stripLeftoverAxScrollCensusChrome(diff) {
+  // Leftover-ax-scroll Next is already `perceive -C -d 8`. Interactive census,
+  // Console: clean, and the clickxy Coords tutorial do not change that step
+  // (#309). Do not rewrite the leftover perceive dump itself.
+  return String(diff || '')
+    .split('\n')
+    .filter(line => !LEFTOVER_AX_SCROLL_CENSUS_RE.test(line))
+    .join('\n');
+}
+
 function formatActionText(result) {
   const diagnostics = summarizeActionObservationEffects(result.effects || {});
   const diagnosis = result.effects?.diagnosis || null;
+  const leftoverAxScroll = isExpectedLeftoverAxScrollNoChange(result.target);
+  const leftoverAxScrollNext = leftoverAxScroll && result.recommendation?.commands?.[0];
   const lines = [
     `${result.action}: ${result.dispatch.ok ? 'dispatched' : 'failed'} via ${result.dispatch.method}`,
   ];
   if (result.target?.label) lines.push(`Target: ${result.target.label}`);
-  if (result.outcome?.status) lines.push(`Outcome: ${result.outcome.status}${result.outcome.reason ? ` — ${result.outcome.reason}` : ''}`);
+  if (result.outcome?.status) {
+    const skipGenericChangedReason = leftoverAxScroll
+      && result.outcome.status === 'changed'
+      && result.outcome.reason === GENERIC_CHANGED_REASON;
+    const reason = skipGenericChangedReason || !result.outcome.reason
+      ? ''
+      : ` — ${result.outcome.reason}`;
+    lines.push(`Outcome: ${result.outcome.status}${reason}`);
+  }
   if (result.receipt?.outcome) {
-    lines.push(`Receipt: ${result.receipt.outcome}`);
+    const skipReceiptStatus = leftoverAxScroll
+      && result.receipt.outcome === result.outcome?.status
+      && !(Array.isArray(result.receipt.blockingSignals) && result.receipt.blockingSignals.length);
+    if (!skipReceiptStatus) lines.push(`Receipt: ${result.receipt.outcome}`);
     if (Array.isArray(result.receipt.blockingSignals) && result.receipt.blockingSignals.length) {
       lines.push(`Blocking signals: ${result.receipt.blockingSignals.join(', ')}`);
     }
@@ -5586,7 +5612,11 @@ function formatActionText(result) {
   }
   if (result.effects?.observationError?.message) lines.push(`Observation error: ${result.effects.observationError.message}`);
   if (result.verdict?.status) {
-    lines.push(`Verdict: ${result.verdict.status}${result.verdict.reason ? ` — ${result.verdict.reason}` : ''}`);
+    const skipDupReason = leftoverAxScroll
+      && result.verdict.reason
+      && result.verdict.reason === result.outcome?.reason;
+    const reason = skipDupReason || !result.verdict.reason ? '' : ` — ${result.verdict.reason}`;
+    lines.push(`Verdict: ${result.verdict.status}${reason}`);
   }
   if (result.settle) {
     const duration = result.settle.durationMs ? ` in ${result.settle.durationMs}ms` : '';
@@ -5598,10 +5628,11 @@ function formatActionText(result) {
   if (diagnostics.exceptionSample) lines.push(`Exception sample: ${diagnostics.exceptionSample}`);
   if (diagnostics.networkSummary) lines.push(diagnostics.networkSummary);
   if (diagnostics.networkSample) lines.push(`Network sample: ${diagnostics.networkSample}`);
-  if (result.effects?.domDiff) lines.push('---', redactSensitiveString(result.effects.domDiff));
+  if (result.effects?.domDiff) {
+    const diff = redactSensitiveString(result.effects.domDiff);
+    lines.push('---', leftoverAxScroll ? stripLeftoverAxScrollCensusChrome(diff) : diff);
+  }
   if (diagnosis?.nextCommand && diagnosis.status !== 'ok') lines.push(`Next: ${diagnosis.nextCommand}`);
-  const leftoverAxScrollNext = isExpectedLeftoverAxScrollNoChange(result.target)
-    && result.recommendation?.commands?.[0];
   if (!diagnosis?.nextCommand && result.outcome?.status === 'no-change' && result.recommendation?.commands?.[0]) {
     lines.push(`Next: ${result.recommendation.commands[0]}`);
   } else if (leftoverAxScrollNext) {
@@ -23698,6 +23729,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   buildActionRecoveryPlan, buildNoChangeOutcomeRecommendation,
   isExpectedNoChange, overlaySelectorArg,
   createActionResult, buildActionReceipt, formatActionText, formatActionResultOutput, runActionWithFeedback,
+  stripLeftoverAxScrollCensusChrome,
   parseVerifyClickArgs, buildSemanticInteractionModel, formatSemanticInteractionResult, formatActionWorkflowCommandOutput,
   parseQaArgs, buildQaPageModel, formatQaPageReport, qaPageStr,
   captureViewportSize, restoreViewportSize,
