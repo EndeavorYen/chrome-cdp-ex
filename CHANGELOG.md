@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### feat: scroll to top/bottom as first-class command (#323)
+
+* `scroll to top` and `scroll to bottom` are first-class window-document
+  commands. The receipt reports `scrollY`, `scrollMax`, and `at-top` /
+  `at-bottom` without reprinting the AX tree. Relative `scroll down N`
+  still uses settle-diff leftover AX behavior. Nested overflow is a
+  different job.
+
 ### Open issue dogfood (#320)
 
 * Leftover golden-path `perceive -C -d 8` then `scroll` still treats unchanged

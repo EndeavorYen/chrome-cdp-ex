@@ -8192,6 +8192,16 @@ function playwrightStepFromCommand(action = {}) {
         : skip('missing coordinates');
     }
     case 'scroll': {
+      let edge = null;
+      try { edge = parseScrollEdge(args[0], args[1]); } catch { edge = null; }
+      if (edge === 'top') {
+        return finish(['await page.evaluate(() => window.scrollTo(0, 0));']);
+      }
+      if (edge === 'bottom') {
+        return finish([
+          'await page.evaluate(() => { const el = document.scrollingElement || document.documentElement; window.scrollTo(0, Math.max(0, (el.scrollHeight || 0) - window.innerHeight)); });',
+        ]);
+      }
       const direction = args[0] || '';
       const amount = Number(args[1] || 500);
       const dirMap = { down: [0, amount], up: [0, -amount], left: [-amount, 0], right: [amount, 0] };
@@ -12158,7 +12168,54 @@ async function pressStr(cdp, sid, keyName) {
   return `Pressed ${mapped.key}`;
 }
 
+const DOCUMENT_SCROLL_EDGE_TOLERANCE_PX = 2;
+
+function parseScrollEdge(direction, amount) {
+  const first = String(direction || '').trim().toLowerCase();
+  if (first !== 'to') return null;
+  const second = String(amount || '').trim().toLowerCase();
+  if (second === 'top' || second === 'bottom') return second;
+  throw new Error('Direction required: to top or to bottom');
+}
+
+function scrollFeedbackPolicy(direction, amount) {
+  return parseScrollEdge(direction, amount) ? 'report-only' : 'settle-diff';
+}
+
+function documentScrollEdgeExpression(edge) {
+  const dest = edge === 'top' ? 'top' : 'bottom';
+  const tolerance = DOCUMENT_SCROLL_EDGE_TOLERANCE_PX;
+  return `(function() {
+    /* chrome-cdp-ex.document-scroll-edge */
+    const el = document.scrollingElement || document.documentElement;
+    const measure = () => {
+      const scrollY = Math.round(window.scrollY);
+      const scrollMax = Math.max(0, Math.round((Number(el && el.scrollHeight) || 0) - window.innerHeight));
+      return {
+        scrollY,
+        scrollMax,
+        atTop: scrollY <= ${tolerance},
+        atBottom: scrollMax <= ${tolerance} || scrollY >= scrollMax - ${tolerance},
+      };
+    };
+    window.scrollTo(0, ${dest === 'top' ? '0' : 'measure().scrollMax'});
+    return JSON.stringify(measure());
+  })()`;
+}
+
+function formatDocumentScrollEdgeText(edge, pos = {}) {
+  const flag = edge === 'top' ? 'at-top' : 'at-bottom';
+  const reached = edge === 'top' ? pos.atTop === true : pos.atBottom === true;
+  return `Scrolled to ${edge}. scrollY: ${pos.scrollY} / ${pos.scrollMax} max (${flag}: ${reached ? 'yes' : 'no'})`;
+}
+
 async function scrollStr(cdp, sid, direction, amount) {
+  const edge = parseScrollEdge(direction, amount);
+  if (edge) {
+    const result = await evalStr(cdp, sid, documentScrollEdgeExpression(edge));
+    const pos = JSON.parse(result);
+    return formatDocumentScrollEdgeText(edge, pos);
+  }
   const px = parseInt(amount) || 500;
   const dirMap = { down: [0, px], up: [0, -px], left: [-px, 0], right: [px, 0] };
   let dx, dy;
@@ -12168,7 +12225,7 @@ async function scrollStr(cdp, sid, direction, amount) {
     [dx, dy] = direction.split(',').map(Number);
     if (isNaN(dx) || isNaN(dy)) throw new Error('Invalid coordinates. Use "down", "up", or "x,y"');
   } else {
-    throw new Error('Direction required: down, up, left, right, or x,y');
+    throw new Error('Direction required: down, up, left, right, x,y, or to top/to bottom');
   }
   const result = await evalStr(cdp, sid, `(window.scrollBy(${dx}, ${dy}), JSON.stringify({ x: Math.round(window.scrollX), y: Math.round(window.scrollY) }))`);
   const pos = JSON.parse(result);
@@ -20078,7 +20135,21 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     },
     scroll: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-      const value = await actionFeedback('scroll', () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: [fopts.args[0], fopts.args[1]].filter(Boolean).join(' '), resolvedBy: 'scroll', label: fopts.args[0] || 'scroll', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
+      const edge = parseScrollEdge(fopts.args[0], fopts.args[1]);
+      const input = [fopts.args[0], fopts.args[1]].filter(Boolean).join(' ');
+      const value = await actionFeedback(
+        'scroll',
+        () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1]),
+        {
+          input,
+          resolvedBy: 'scroll',
+          label: edge ? `to ${edge}` : (fopts.args[0] || 'scroll'),
+          commandArgs: [fopts.args[0], fopts.args[1]],
+        },
+        scrollFeedbackPolicy(fopts.args[0], fopts.args[1]),
+        null,
+        fopts,
+      );
       return commandResult(value, { kind: 'action-receipt' });
     },
     select: async args => {
@@ -23863,7 +23934,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, scrollFeedbackPolicy, documentScrollEdgeExpression, formatDocumentScrollEdgeText, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,
