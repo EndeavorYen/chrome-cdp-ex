@@ -12388,34 +12388,24 @@ function searchSubmitProbeExpression() {
   return `(function() {
     /* chrome-cdp-ex.search-submit */
     ${searchListingHelpersSource()}
-    function isFocusedSearchField(el) {
-      if (!el || !el.tagName) return false;
-      const tag = String(el.tagName).toUpperCase();
-      if (tag !== 'INPUT' && tag !== 'TEXTAREA') return false;
-      const type = String(el.type || '').toLowerCase();
-      const role = String(el.getAttribute('role') || '').toLowerCase();
-      if (type === 'search' || role === 'searchbox' || role === 'combobox') return true;
-      const blob = [el.id, el.name, el.className, el.getAttribute('placeholder'), el.getAttribute('aria-label'), el.getAttribute('autocomplete')].join(' ').toLowerCase();
-      return /\\b(search|typeahead|autocomplete)\\b/.test(blob);
-    }
-    const focused = document.activeElement;
-    if (!isFocusedSearchField(focused)) return { ok: false };
-    const links = Array.from(document.querySelectorAll('a[href]'));
-    for (const el of links) {
-      const href = el.getAttribute('href') || '';
-      const text = String(el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-      if (!(isSearchListingHref(href) || isSearchListingText(text))) continue;
-      const cs = window.getComputedStyle(el);
-      const rect = el.getBoundingClientRect();
-      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
-      if (rect.width < 4 || rect.height < 4) continue;
-      return {
-        ok: true,
-        selector: searchListingSelector(href),
-        href: href,
-        text: text.slice(0, 80),
-      };
-    }
+    try {
+      const links = Array.from(document.querySelectorAll('a[href]'));
+      for (const el of links) {
+        const href = el.getAttribute('href') || '';
+        const text = String(el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+        if (!(isSearchListingHref(href) || isSearchListingText(text))) continue;
+        const cs = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+        if (rect.width < 4 || rect.height < 4) continue;
+        return {
+          ok: true,
+          selector: searchListingSelector(href),
+          href: href,
+          text: text.slice(0, 80),
+        };
+      }
+    } catch {}
     return { ok: false };
   })()`;
 }
@@ -12429,6 +12419,49 @@ async function probeSearchSubmit(cdp, sid) {
   return { ok: false };
 }
 
+async function currentSearchListingHref(cdp, sid) {
+  const href = await evalPageHref(cdp, sid);
+  return isSearchListingHref(href) ? href : '';
+}
+
+async function waitForSearchListingHref(cdp, sid, timeoutMs = CLICK_NAVIGATION_WAIT_MS) {
+  const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : CLICK_NAVIGATION_WAIT_MS;
+  const deadline = Date.now() + budget;
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const href = await currentSearchListingHref(cdp, sid);
+    if (href) return href;
+    const pause = Math.min(40, deadline - Date.now());
+    if (pause > 0) await sleep(pause);
+  }
+  return '';
+}
+
+async function submitSearchListing(cdp, sid, probe, refMap, refState) {
+  const selector = probe?.selector;
+  if (!selector) throw new Error('Search listing selector required');
+  const maps = refMap instanceof Map ? refMap : new Map();
+  try {
+    await clickStr(cdp, sid, selector, maps, refState);
+    return;
+  } catch {
+    // Realistic mouse often fail-closes on typeahead overlays after navigation
+    // already started. Do not send Enter — that activates the first repo hit.
+    if (await currentSearchListingHref(cdp, sid)) return;
+  }
+  try {
+    await jsClickStr(cdp, sid, selector, maps, refState);
+  } catch (error) {
+    if (await waitForSearchListingHref(cdp, sid)) return;
+    throw error;
+  }
+  if (await waitForSearchListingHref(cdp, sid)) return;
+  throw new Error(
+    `Search submit via ${selector} did not reach a results listing. Try jsclick ${selector}.`
+  );
+}
+
 async function pressStr(cdp, sid, keyName, opts = {}) {
   const usage = pressUsageError(keyName);
   if (usage) throw usage;
@@ -12439,12 +12472,8 @@ async function pressStr(cdp, sid, keyName, opts = {}) {
       ? opts.searchSubmit
       : await probeSearchSubmit(cdp, sid);
     if (probe && probe.ok && probe.selector) {
-      try {
-        await clickStr(cdp, sid, probe.selector, new Map());
-        return formatSearchSubmitPressText(probe);
-      } catch {
-        // Fall through to a real Enter if the listing control is gone.
-      }
+      await submitSearchListing(cdp, sid, probe, opts.refMap, opts.refState);
+      return formatSearchSubmitPressText(probe);
     }
   }
   const base = {
@@ -20568,13 +20597,15 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       }
       const value = await actionFeedback(
         'press',
-        () => pressStr(cdp, sessionId, fopts.args[0], { searchSubmit }),
+        () => pressStr(cdp, sessionId, fopts.args[0], { searchSubmit, refMap, refState }),
         {
           input: fopts.args[0],
           resolvedBy: 'key',
           label: fopts.args[0] || '',
           commandArgs: [fopts.args[0]],
-          ...(searchSubmit.ok ? {} : { expectedOutcome: 'press-no-change' }),
+          ...(searchSubmit.ok
+            ? { expectedOutcome: 'search-submit' }
+            : { expectedOutcome: 'press-no-change' }),
         },
         pressFeedbackPolicy(fopts.args[0], searchSubmit),
         null,
@@ -24380,6 +24411,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   rankPerceiveCursorItems, isSearchListingHref, isSearchListingText, isSearchListingControl,
   searchListingSelector, rankSearchListingFirst, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP,
   pressFeedbackPolicy, probeSearchSubmit, formatSearchSubmitPressText, isEnterKeyName,
+  searchSubmitProbeExpression, submitSearchListing, waitForSearchListingHref,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,

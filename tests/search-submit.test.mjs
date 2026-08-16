@@ -62,6 +62,9 @@ function createSearchSubmitCdp({
     text: RESULTS_TEXT,
   },
   pageHref = HF_HOME,
+  mouseDeliversPageEvents = true,
+  mouseNavigates = true,
+  jsClickNavigates = true,
 } = {}) {
   const calls = [];
   const clickProbe = { seen: [] };
@@ -85,6 +88,10 @@ function createSearchSubmitCdp({
         clickProbe.seen = [];
         return Promise.resolve({ result: { value: { cdpClickProbe: true, ok: true, seen } } });
       }
+      if (method === 'Runtime.callFunctionOn' && String(params.functionDeclaration || '').includes('scrollIntoView')) {
+        if (jsClickNavigates) href = HF_RESULTS;
+        return Promise.resolve({ result: { value: { tag: 'A', text: RESULTS_TEXT } } });
+      }
       if (method === 'Input.dispatchMouseEvent') {
         const pressOrRelease = params.type === 'mousePressed' || params.type === 'mouseReleased';
         const ackBudget = Number(timeout);
@@ -92,8 +99,8 @@ function createSearchSubmitCdp({
           && Number.isFinite(ackBudget)
           && ackBudget < T.CLICK_MOUSE_ACK_TIMEOUT_MS;
         if (!compositorAckTooShort && params.type === 'mouseReleased') {
-          clickProbe.seen.push('mousedown', 'mouseup', 'click');
-          if (probe?.ok) href = HF_RESULTS;
+          if (mouseDeliversPageEvents) clickProbe.seen.push('mousedown', 'mouseup', 'click');
+          if (mouseNavigates && probe?.ok) href = HF_RESULTS;
         }
         return Promise.resolve({});
       }
@@ -111,8 +118,8 @@ function createSearchSubmitCdp({
                 y: 80,
                 tag: 'A',
                 text: RESULTS_TEXT,
-                href: HF_RESULTS,
-                pageHref,
+                href: '/models?search=bert',
+                pageHref: href,
               },
             },
           });
@@ -124,6 +131,15 @@ function createSearchSubmitCdp({
       }
       if (method === 'Page.getFrameTree') {
         return Promise.resolve({ frameTree: { frame: { id: 'mock-root-frame' } } });
+      }
+      if (method === 'DOM.getDocument') {
+        return Promise.resolve({ root: { nodeId: 1 } });
+      }
+      if (method === 'DOM.querySelector') {
+        return Promise.resolve({ nodeId: 2 });
+      }
+      if (method === 'DOM.resolveNode') {
+        return Promise.resolve({ object: { objectId: 'OBJECT' } });
       }
       return Promise.resolve({});
     },
@@ -221,6 +237,49 @@ describe('issue #328 press Enter submits search listing, not typeahead first hit
     expect(T.pressFeedbackPolicy('enter', { ok: false })).toBe('settle-diff');
     expect(T.pressFeedbackPolicy('escape')).toBe('settle-diff');
     expect(T.pressFeedbackPolicy('tab')).toBe('settle-diff');
+  });
+
+  it('treats a fail-closed mouse click as success when the listing URL already loaded', async () => {
+    const cdp = createSearchSubmitCdp({ mouseDeliversPageEvents: false, mouseNavigates: true });
+    const out = await T.pressStr(cdp, 'sid', 'enter');
+    expect(out).toMatch(/Submitted search/i);
+    expect(out).toContain(RESULTS_SELECTOR);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
+    expect(cdp.calls.some(call =>
+      call.method === 'Runtime.callFunctionOn'
+      && String(call.params.functionDeclaration || '').includes('scrollIntoView')
+    )).toBe(false);
+    expect(cdp.hrefOf()).toBe(HF_RESULTS);
+    expect(cdp.hrefOf()).not.toBe(HF_FIRST_HIT);
+  });
+
+  it('falls back to jsclick instead of Enter when the mouse path misses the overlay', async () => {
+    const cdp = createSearchSubmitCdp({
+      mouseDeliversPageEvents: false,
+      mouseNavigates: false,
+      jsClickNavigates: true,
+    });
+    const out = await T.pressStr(cdp, 'sid', 'enter');
+    expect(out).toMatch(/Submitted search/i);
+    expect(out).toContain(RESULTS_SELECTOR);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
+    expect(cdp.calls.some(call =>
+      call.method === 'Runtime.callFunctionOn'
+      && String(call.params.functionDeclaration || '').includes('scrollIntoView')
+    )).toBe(true);
+    expect(cdp.hrefOf()).toBe(HF_RESULTS);
+    expect(cdp.hrefOf()).not.toBe(HF_FIRST_HIT);
+  });
+
+  it('does not send Enter when search submit cannot reach a listing', async () => {
+    const cdp = createSearchSubmitCdp({
+      mouseDeliversPageEvents: false,
+      mouseNavigates: false,
+      jsClickNavigates: false,
+    });
+    await expect(T.pressStr(cdp, 'sid', 'enter')).rejects.toThrow(/results listing/i);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchKeyEvent')).toBe(false);
+    expect(cdp.hrefOf()).toBe(HF_HOME);
   });
 
   it('prints a skinny report-only receipt without leftover AX after search submit', async () => {

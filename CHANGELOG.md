@@ -4,10 +4,13 @@
 
 ### feat: submit search to results, not typeahead first hit (#328)
 
-* `press Enter` on a focused search/combobox with a visible listing link
-  (`See N model results`, `a[href*="models?search="]`, `/search?q=`) clicks
-  that listing instead of sending raw Enter, so Hugging Face header search
-  lands on `/models?search=bert` rather than the first typeahead repo.
+* `press Enter` with a visible listing link (`See N model results`,
+  `a[href*="models?search="]`, `/search?q=`) submits that listing instead of
+  sending raw Enter, so Hugging Face header search lands on
+  `/models?search=bert` rather than the first typeahead repo. A fail-closed
+  realistic mouse click still counts if the listing URL already loaded;
+  otherwise `press` uses the existing `jsclick` path. It does not fall
+  through to Enter.
 * `perceive -C -d 8` Visible controls rank that listing link ahead of
   typeahead repo hits (before the collector cap), with a stable
   `a[href="/models?search=…"]` selector for `click`.

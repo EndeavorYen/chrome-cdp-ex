@@ -355,7 +355,7 @@ function domainInvocations() {
     {
       domain: 'Input',
       methods: ['Runtime.evaluate', 'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent'],
-      callDigest: 'b85add6ab53594cbb4b9bdf700d3ebe86ea3bd36bea9f66caded88925f191065',
+      callDigest: '1eec913655d7b158d1c9a77c0e97ca5ab6dbe43ec74bb5e415966ab9ce36954b',
       result: 'Pressed Enter',
       invoke: cdp => cdpTest.pressStr(cdp, 'SESSION', 'Enter'),
     },
