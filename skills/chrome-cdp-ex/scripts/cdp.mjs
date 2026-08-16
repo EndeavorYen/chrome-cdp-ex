@@ -12526,11 +12526,51 @@ async function probeSearchSubmit(cdp, sid) {
   return { ok: false };
 }
 
-async function waitForSearchSubmitProbe(cdp, sid, timeoutMs = SEARCH_SUBMIT_PROBE_WAIT_MS) {
-  const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : SEARCH_SUBMIT_PROBE_WAIT_MS;
-  const deadline = Date.now() + budget;
+function searchListingProbeFromQuery(query, pageHref) {
+  const q = String(query || '').trim();
+  const raw = String(pageHref || '').trim();
+  if (!q || !raw) return { ok: false };
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false };
+  }
+  const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+  if (host !== 'huggingface.co') return { ok: false };
+  const relative = `/models?search=${encodeURIComponent(q)}`;
+  return {
+    ok: true,
+    selector: searchListingSelector(relative),
+    href: relative,
+    text: relative,
+    navigateHref: `${parsed.origin}${relative}`,
+    synthesized: true,
+  };
+}
+
+function searchSubmitProbeOptions(timeoutMs, opts = {}) {
+  if (timeoutMs && typeof timeoutMs === 'object' && !Array.isArray(timeoutMs)) {
+    return timeoutMs;
+  }
+  return opts && typeof opts === 'object' ? opts : {};
+}
+
+async function waitForSearchSubmitProbe(cdp, sid, timeoutMs = SEARCH_SUBMIT_PROBE_WAIT_MS, opts = {}) {
+  const options = searchSubmitProbeOptions(timeoutMs, opts);
+  const filledQuery = String(options.filledQuery || '');
   let probe = await probeSearchSubmit(cdp, sid);
   if (probe?.ok && probe.selector) return probe;
+  // After report-only fill we already know the query. Do not poll 1500 ms
+  // for the typeahead listing link; synthesize /models?search=<filled>
+  // and let submitSearchListing navigate, then return on listing commit.
+  if (filledQuery.trim()) {
+    return searchListingProbeFromQuery(filledQuery, await evalPageHref(cdp, sid));
+  }
+  const budget = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : (Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : SEARCH_SUBMIT_PROBE_WAIT_MS);
+  const deadline = Date.now() + budget;
   while (Date.now() < deadline) {
     const pause = Math.min(40, deadline - Date.now());
     if (pause > 0) await sleep(pause);
@@ -12559,8 +12599,25 @@ async function waitForSearchListingHref(cdp, sid, timeoutMs = CLICK_NAVIGATION_W
   return '';
 }
 
+async function navigateSearchListingIssued(cdp, sid, url) {
+  await cdpDomains(cdp).Page.enable({}, sid).catch(() => {});
+  const result = await cdpDomains(cdp).Page.navigate({ url }, sid);
+  if (result?.errorText) throw new Error(result.errorText);
+}
+
 async function submitSearchListing(cdp, sid, probe, refMap, refState) {
   const selector = probe?.selector;
+  const navigateHref = String(probe?.navigateHref || '').trim();
+  if (probe?.synthesized && navigateHref) {
+    // Typeahead listing is not required. Issue listing navigation and
+    // return on href commit — same idea as Playwright waitUntil: commit.
+    await navigateSearchListingIssued(cdp, sid, navigateHref);
+    if (await currentSearchListingHref(cdp, sid)) return;
+    if (await waitForSearchListingHref(cdp, sid)) return;
+    throw new Error(
+      `Search submit via ${selector || navigateHref} did not reach a results listing. Try jsclick ${selector || 'a[href*="models?search="]'}.`
+    );
+  }
   if (!selector) throw new Error('Search listing selector required');
   const maps = refMap instanceof Map ? refMap : new Map();
   // Typeahead overlays fail-close realistic mouse (compositor ack +
@@ -20631,7 +20688,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const value = parsed.react
         ? await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { react: true }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: ['--react', parsed.selector, parsed.text] }, feedbackPolicy, null, parsed.fopts)
         : await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: [parsed.selector, parsed.text] }, feedbackPolicy, null, parsed.fopts);
-      if (feedbackPolicy === 'report-only') session.awaitSearchSubmitListing = true;
+      if (feedbackPolicy === 'report-only') {
+        session.awaitSearchSubmitListing = true;
+        session.searchSubmitQuery = parsed.text;
+      }
       return commandResult(value, { kind: 'action-receipt' });
     },
     hover: async args => {
@@ -20734,10 +20794,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       if (usage) throw usage;
       let searchSubmit = { ok: false };
       const awaitListing = session.awaitSearchSubmitListing === true;
+      const filledQuery = session.searchSubmitQuery;
       session.awaitSearchSubmitListing = false;
+      session.searchSubmitQuery = undefined;
       if (isEnterKeyName(fopts.args[0])) {
         searchSubmit = awaitListing
-          ? await waitForSearchSubmitProbe(cdp, sessionId)
+          ? await waitForSearchSubmitProbe(cdp, sessionId, { filledQuery })
           : await probeSearchSubmit(cdp, sessionId);
       }
       const value = await actionFeedback(
@@ -22078,7 +22140,8 @@ ACTION FEEDBACK
   report-only (window document or nested overflow).
   Sequential batch fill then press Enter is report-only on the fill:
   leftover typeahead AX / quicksearch is not the success signal.
-  Search-submit press returns on the listing URL via jsclick.
+  Search-submit press probes once or opens /models?search=<filled>,
+  then returns on the listing URL. No 1500 ms typeahead poll.
   qa returns a semantic QA report and includes action evidence when --click is used.
   back, forward, and nav return action evidence plus a full perceive.
   reload returns action evidence plus a bounded lightweight page observation.
@@ -24568,7 +24631,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   pressFeedbackPolicy, fillFeedbackPolicy, isSearchSubmitPressCommand, batchCommandLookahead,
   runWithBatchLookahead,
   probeSearchSubmit, formatSearchSubmitPressText, isEnterKeyName,
-  searchSubmitProbeExpression, submitSearchListing, waitForSearchListingHref, waitForSearchSubmitProbe,
+  searchSubmitProbeExpression, searchListingProbeFromQuery, submitSearchListing,
+  waitForSearchListingHref, waitForSearchSubmitProbe, navigateSearchListingIssued,
   SEARCH_SUBMIT_PROBE_WAIT_MS,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
