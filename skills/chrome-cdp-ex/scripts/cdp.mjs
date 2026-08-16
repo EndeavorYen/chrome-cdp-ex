@@ -4644,8 +4644,9 @@ function isLeftoverDefaultAxScrollSettle(output, snapshotOpts = null, actionTarg
   // (shared commit titles do not occupy both sides, #307) and
   // Next `-C -d 8` without Hint `--since-action` or a generic Recovery hint.
   // Honest leftover-ax-scroll no-change whose Next is already perceive does
-  // not reprint "re-run perceive -C -d 8 instead of report" (#311) or the
-  // settle-shape Outcome reason essay (#313).
+  // not reprint "re-run perceive -C -d 8 instead of report" (#311), the
+  // settle-shape Outcome reason essay (#313), or the reprinted Page /
+  // Viewport identity header (#316). Position already states scroll identity.
   // Cards / pdf-viewer / framed leftovers keep their own settle gates.
   if (!isScrollActionTarget(actionTarget)) return false;
   if (isPdfViewerPerceiveOutput(output)) return false;
@@ -5605,6 +5606,21 @@ function stripLeftoverAxScrollCensusChrome(diff) {
     .join('\n');
 }
 
+const LEFTOVER_AX_SCROLL_IDENTITY_HEADER_RE = /^(Page: |Viewport: )/;
+
+function stripLeftoverAxScrollNoChangeIdentityChrome(diff) {
+  // Honest leftover-ax-scroll no-change whose Next is already perceive.
+  // Position already states scroll identity. Viewport Scroll restates that
+  // Position. Page URL restates leftover session identity that Next
+  // perceive re-establishes (#316). Do not strip from leftover-ax-scroll
+  // changed or from the leftover perceive dump itself.
+  return String(diff || '')
+    .split('\n')
+    .filter(line => !LEFTOVER_AX_SCROLL_IDENTITY_HEADER_RE.test(line))
+    .join('\n')
+    .replace(/^\n+/, '');
+}
+
 function formatActionText(result) {
   const diagnostics = summarizeActionObservationEffects(result.effects || {});
   const diagnosis = result.effects?.diagnosis || null;
@@ -5665,7 +5681,15 @@ function formatActionText(result) {
   if (diagnostics.networkSample) lines.push(`Network sample: ${diagnostics.networkSample}`);
   if (result.effects?.domDiff) {
     const diff = redactSensitiveString(result.effects.domDiff);
-    lines.push('---', leftoverAxScroll ? stripLeftoverAxScrollCensusChrome(diff) : diff);
+    let formatted = leftoverAxScroll ? stripLeftoverAxScrollCensusChrome(diff) : diff;
+    if (
+      leftoverAxScroll
+      && leftoverAxScrollNextIsPerceive(result)
+      && result.outcome.status === 'no-change'
+    ) {
+      formatted = stripLeftoverAxScrollNoChangeIdentityChrome(formatted);
+    }
+    lines.push('---', formatted);
   }
   if (diagnosis?.nextCommand && diagnosis.status !== 'ok') lines.push(`Next: ${diagnosis.nextCommand}`);
   if (!diagnosis?.nextCommand && result.outcome?.status === 'no-change' && result.recommendation?.commands?.[0]) {
@@ -23764,7 +23788,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   buildActionRecoveryPlan, buildNoChangeOutcomeRecommendation,
   isExpectedNoChange, overlaySelectorArg,
   createActionResult, buildActionReceipt, formatActionText, formatActionResultOutput, runActionWithFeedback,
-  stripLeftoverAxScrollCensusChrome,
+  stripLeftoverAxScrollCensusChrome, stripLeftoverAxScrollNoChangeIdentityChrome,
   parseVerifyClickArgs, buildSemanticInteractionModel, formatSemanticInteractionResult, formatActionWorkflowCommandOutput,
   parseQaArgs, buildQaPageModel, formatQaPageReport, qaPageStr,
   captureViewportSize, restoreViewportSize,
