@@ -7893,15 +7893,16 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     'Add diffusers weights (modular pipeline) (#2)',
     'config.json',
   ];
+  const SHARED_COMMIT_TITLE = 'Add diffusers weights (modular pipeline) (#2)';
 
-  function hfVisibleControl(label, y) {
+  function hfVisibleControl(label, y, selector = null) {
     return {
       tag: 'a',
       role: 'link',
       label,
       clickable: true,
       rect: { x: 24, y, w: 160, h: 22 },
-      selector: `a[href="#${label.replace(/\s+/g, '-')}"]`,
+      selector: selector || `a[href="#${label.replace(/\s+/g, '-')}"]`,
       hints: { id: '', classes: [] },
     };
   }
@@ -7990,15 +7991,39 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     ];
   }
 
+  function sharedCommitCapSwapChrome() {
+    // Live leftover-ax-scroll named samples after overlay f9fa4971. Each HF
+    // file row reprints the same commit title with a distinct href, so the
+    // name is both left and entered membership.
+    return [
+      hfVisibleControl('condition_encoder', 100),
+      hfVisibleControl(SHARED_COMMIT_TITLE, 128, 'a[href="/MiniMaxAI/MiniMax-Music3/commit/left"]'),
+      hfVisibleControl('figures', 156),
+      hfVisibleControl('tokenizer.json', 184),
+    ];
+  }
+
+  function sharedCommitCapSwapContent() {
+    return [
+      hfVisibleControl('language_model', 100),
+      hfVisibleControl(SHARED_COMMIT_TITLE, 128, 'a[href="/MiniMaxAI/MiniMax-Music3/commit/entered"]'),
+      hfVisibleControl('qwen_7B', 156),
+      hfVisibleControl('speech_tokenizer', 184),
+    ];
+  }
+
   function hfMeta(scrollY, files, {
     foldTag = false,
     capSwap = false,
     noisyCapSwap = false,
     titleChrome = false,
     timestampCapSwap = false,
+    sharedCommitCapSwap = false,
   } = {}) {
     const fileControls = files.map(file => hfVisibleControl(file.name, file.y - scrollY));
-    let visibleControls = timestampCapSwap
+    let visibleControls = sharedCommitCapSwap
+      ? (scrollY > 0 ? sharedCommitCapSwapContent() : sharedCommitCapSwapChrome())
+      : timestampCapSwap
       ? (scrollY > 0
         ? [
           ...TIMESTAMP_CAP_SWAP_CONTENT.map((label, i) => hfVisibleControl(label, 100 + i * 28)),
@@ -8034,7 +8059,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     });
   }
 
-  function hfAx(files, { foldTag = false, capSwap = false, noisyCapSwap = false, timestampCapSwap = false } = {}) {
+  function hfAx(files, { foldTag = false, capSwap = false, noisyCapSwap = false, timestampCapSwap = false, sharedCommitCapSwap = false } = {}) {
     const links = files.map((file, i) => ({
       nodeId: String(20 + i),
       parentId: '10',
@@ -8042,7 +8067,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
       name: { value: file.name },
       backendDOMNodeId: file.backend,
     }));
-    const withNav = foldTag || capSwap || noisyCapSwap || timestampCapSwap;
+    const withNav = foldTag || capSwap || noisyCapSwap || timestampCapSwap || sharedCommitCapSwap;
     return [
       {
         nodeId: '1',
@@ -8077,16 +8102,18 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     noisyCapSwap = false,
     titleChrome = false,
     timestampCapSwap = false,
+    sharedCommitCapSwap = false,
   } = {}) {
     const state = {
       scrollY,
       clicks,
       files: files.map(file => ({ ...file })),
       foldTag,
-      capSwap: capSwap || noisyCapSwap || timestampCapSwap,
+      capSwap: capSwap || noisyCapSwap || timestampCapSwap || sharedCommitCapSwap,
       noisyCapSwap,
       titleChrome,
       timestampCapSwap,
+      sharedCommitCapSwap,
     };
     const cdp = {
       calls: [],
@@ -8117,6 +8144,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
                   noisyCapSwap: state.noisyCapSwap,
                   titleChrome: state.titleChrome,
                   timestampCapSwap: state.timestampCapSwap,
+                  sharedCommitCapSwap: state.sharedCommitCapSwap,
                 }),
               },
             });
@@ -8129,6 +8157,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
             capSwap: state.capSwap,
             noisyCapSwap: state.noisyCapSwap,
             timestampCapSwap: state.timestampCapSwap,
+            sharedCommitCapSwap: state.sharedCommitCapSwap,
           });
           if (state.clicks) {
             nodes.push({
@@ -8950,6 +8979,138 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).toMatch(/tokenizer\.json/);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/^\+ 2 days ago$/m);
+  });
+
+  it('#307 leftover -C -d 8 then scroll cap-swap samples skip a shared commit title on both sides', async () => {
+    const { cdp } = createHfPage({ sharedCommitCapSwap: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
+    expect(leftoverDump).toMatch(/condition_encoder/);
+    expect(leftoverDump).toMatch(/figures/);
+    expect(leftoverDump).toMatch(/tokenizer\.json/);
+    const commitLeft = T.formatVisibleControlLine(sharedCommitCapSwapChrome()[1]);
+    const commitEntered = T.formatVisibleControlLine(sharedCommitCapSwapContent()[1]);
+    expect(commitLeft).toBe(
+      'a role=link "Add diffusers weights (modular pipeline) (#2)" [clickable] (24,128 160×22) a[href="/MiniMaxAI/MiniMax-Music3/commit/left"]',
+    );
+    expect(commitEntered).toBe(
+      'a role=link "Add diffusers weights (modular pipeline) (#2)" [clickable] (24,128 160×22) a[href="/MiniMaxAI/MiniMax-Music3/commit/entered"]',
+    );
+    expect(leftoverDump).toMatch(
+      /a role=link "Add diffusers weights \(modular pipeline\) \(#2\)" \[clickable\] \(24,128 160×22\)(?: @\d+)? a\[href="\/MiniMaxAI\/MiniMax-Music3\/commit\/left"\]/,
+    );
+    const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    expect(settleBaseline.output).toBe(leftoverDump);
+    expect(cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length).toBe(axBefore);
+    const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
+    expect(dispatchText).toBe('Scrolled by (0, 80). Position: (0, 80)');
+    const afterDump = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      { output: leftoverDump, snapshotOpts: store.snapshotOpts },
+      { ...T.parsePerceiveArgs(['-C', '-d', '8']), targetPrefix: HF_PREFIX },
+      refState,
+    );
+    expect(afterDump).toMatch(
+      /a role=link "Add diffusers weights \(modular pipeline\) \(#2\)" \[clickable\] \(24,128 160×22\)(?: @\d+)? a\[href="\/MiniMaxAI\/MiniMax-Music3\/commit\/entered"\]/,
+    );
+    expect(afterDump).toMatch(/language_model/);
+    expect(afterDump).toMatch(/qwen_7B/);
+    expect(afterDump).toMatch(/speech_tokenizer/);
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/Visible-control cap swap: 4 left, 4 entered/);
+    expect(after).toContain('- condition_encoder');
+    expect(after).toContain('- figures');
+    expect(after).toContain('- tokenizer.json');
+    expect(after).toContain('+ language_model');
+    expect(after).toContain('+ qwen_7B');
+    expect(after).toContain('+ speech_tokenizer');
+    const removedSamples = [...after.matchAll(/^- (.+)$/gm)].map(match => match[1]);
+    const addedSamples = [...after.matchAll(/^\+ (.+)$/gm)].map(match => match[1]);
+    expect(removedSamples).toEqual([
+      'condition_encoder',
+      'figures',
+      'tokenizer.json',
+    ]);
+    expect(addedSamples).toEqual([
+      'language_model',
+      'qwen_7B',
+      'speech_tokenizer',
+    ]);
+    expect(after).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(after).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(after).not.toMatch(/\+\+\+ Added/);
+    expect(after).not.toMatch(/span\[title=/);
+    expect(after).not.toMatch(/time\[title=/);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, { dispatchText });
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(text).toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Visible-control cap swap: 4 left, 4 entered/);
+    expect(text).toMatch(/- tokenizer\.json/);
+    expect(text).toMatch(/\+ speech_tokenizer/);
+    expect(text).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(text).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/\+\+\+ Added/);
+    expect(receipt).toMatch(/Outcome: changed/);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(receipt).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(receipt).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+  });
+
+  it('#307 leftover -C -d 8 shared commit samples plus a new file still prints tokenizer.json', async () => {
+    const { cdp, state } = createHfPage({ sharedCommitCapSwap: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    await leftoverGoldenPath(cdp, store, refMap, refState);
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    state.files = [...DEFAULT_FILES, ADDED_FILE];
+    await T.scrollStr(cdp, 'sid', 'down', '80');
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/\[link\] tokenizer\.json/);
+    expect(after).toMatch(/Visible-control cap swap: 4 left, 4 entered/);
+    expect(after).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(after).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('changed');
+    expect(text).toMatch(/\[link\] tokenizer\.json/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+    expect(text).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
   });
 });
 
