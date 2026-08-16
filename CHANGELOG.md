@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### feat: scroll to top/bottom as first-class command (#323)
+
+* `scroll to top` and `scroll to bottom` are first-class window-document
+  commands. The receipt reports `scrollY`, `scrollMax`, and `at-top` /
+  `at-bottom` without reprinting the AX tree. Relative `scroll down N`
+  still uses settle-diff leftover AX behavior. Nested overflow is a
+  different job.
+* Short of the requested window-document edge is a failed action (`scrollY`
+  still below `scrollMax - 2`, or still above top tolerance), not a success
+  headline with `at-bottom: no` / `at-top: no`.
+* Edge forms stay off leftover-ax-scroll no-change tagging after leftover
+  `perceive -C -d 8`, so the receipt does not grow `Next: perceive -C -d 8`.
+  Relative `scroll down N` leftover settle-diff is unchanged.
+
 ### Open issue dogfood (#320)
 
 * Leftover golden-path `perceive -C -d 8` then `scroll` still treats unchanged
