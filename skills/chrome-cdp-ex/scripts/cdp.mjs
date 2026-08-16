@@ -10011,11 +10011,24 @@ function stripPerceiveRectChrome(line) {
   return String(line || '').replace(/\s+\(-?\d+,-?\d+ \d+×\d+(?:, [^)]+)?\)/g, '');
 }
 
+function stripPerceiveSelectorChrome(line) {
+  // Title-only Visible-control dump lines reprint the quoted name as
+  // `span[title="…"]` / `time[title="…"]` plus trailing CSS class hints
+  // (` .mx-2.text-green-500.dark:text-green-600`). That duplicated
+  // selector+class chrome is identity chrome (#303), like rects / fold tags.
+  // Displayed leftover dumps still include the live selectors.
+  return String(line || '')
+    .replace(/\s+[a-z][\w-]*\[(?:title|aria-label)="[^"]*"\]/gi, '')
+    .replace(/\s+(?:\.[^\s]+)+$/g, '');
+}
+
 function stripPerceiveIdentityChrome(line) {
   // Fold tags (`↑above fold` / `↓below fold`) are viewport chrome on the
-  // same landmark identity (#297). Do not strip Visible-control membership.
-  return stripPerceiveRectChrome(line)
-    .replace(/\s+[↑↓](?:above|below) fold\b/g, '');
+  // same landmark identity (#297). Title-only selector+class chrome is
+  // identity chrome (#303). Do not strip Visible-control membership.
+  return stripPerceiveSelectorChrome(
+    stripPerceiveRectChrome(line).replace(/\s+[↑↓](?:above|below) fold\b/g, ''),
+  );
 }
 
 function isVisibleControlsSectionHeader(line) {
@@ -10031,6 +10044,16 @@ function isVisibleControlDumpLine(line) {
 
 function isVisibleControlStructuralLine(line) {
   return isVisibleControlsSectionHeader(line) || isVisibleControlDumpLine(line);
+}
+
+function isPerceiveDecorativeTitleChrome(line) {
+  // Collector includes `[title]` even when the node is not clickable.
+  // After identity-chrome strip those rows are `span "…"` / `time "Fri, … GMT"`.
+  // They are signed-commit / timestamp chrome, not a file / heading / link (#303).
+  const text = stripPerceiveIdentityChrome(line).trim();
+  if (!text || isVisibleControlsSectionHeader(text) || isVisibleControlDumpLine(text)) return false;
+  if (/^\[/.test(text)) return false;
+  return /^(?:[a-z][\w-]*)\s+"[^"]+"\s*$/i.test(text);
 }
 
 function visibleControlNameFromLine(line) {
@@ -10140,8 +10163,9 @@ function computePerceiveDiff(previousOutput, currentOutput) {
   const isTextOnly = l => /^\s*\[StaticText\]/.test(l) && !isPriorityPerceiveTextLine(l);
   const isTextSummary = l => /^\s*\.\.\. \d+ earlier text node\(s\) omitted \(--last \d+\)/.test(l);
   const isCompactTextChange = l => isTextOnly(l) || isTextSummary(l);
-  const removedStructural = removed.filter(l => !isCompactTextChange(l));
-  const addedStructural = added.filter(l => !isCompactTextChange(l));
+  const isIdentityChrome = l => isCompactTextChange(l) || isPerceiveDecorativeTitleChrome(l);
+  const removedStructural = removed.filter(l => !isIdentityChrome(l));
+  const addedStructural = added.filter(l => !isIdentityChrome(l));
   const removedTextLines = removed.filter(isTextOnly);
   const addedTextLines = added.filter(isTextOnly);
   return {
@@ -23710,7 +23734,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   actionObservationPerceiveOpts, actionResultPdfViewerMeta, actionSettleBaseline, isCardsPerceiveOutput,
   leftoverCardsCount, isScrollActionTarget, isLeftoverFeedCardsSettle,
   isLeftoverDefaultAxScrollSettle, stripPerceiveRectChrome, stripPerceiveIdentityChrome,
-  visibleControlNameFromLine, extractVisibleControlLabels,
+  isPerceiveDecorativeTitleChrome, visibleControlNameFromLine, extractVisibleControlLabels,
   isPdfViewerPerceiveOutput, pdfViewerSettleDiffText,
   isFramedPerceiveOutput, shouldCaptureTopLevelActionSettle, actionSettleObserveOpts,
   actionDomDiffShowsChange, noBaselineActionDiffText,

@@ -4300,6 +4300,151 @@ describe('Perceive diff baseline', () => {
     expect(T.formatActionText(genericChanged)).toContain('Recovery hint: Continue from the observed action evidence.');
   });
 
+  it('#303 leftover-ax-scroll +++ Added does not reprint signed-commit / time GMT selector chrome', () => {
+    const signed = T.formatVisibleControlLine({
+      tag: 'span',
+      label: 'This commit is signed and the signature is verified',
+      title: 'This commit is signed and the signature is verified',
+      selector: 'span[title="This commit is signed and the signature is verified"]',
+      hints: { classes: ['mx-2', 'text-green-500', 'dark:text-green-600'] },
+    });
+    const timeGmt = T.formatVisibleControlLine({
+      tag: 'time',
+      label: 'Fri, 14 Aug 2026 10:51:40 GMT',
+      title: 'Fri, 14 Aug 2026 10:51:40 GMT',
+      selector: 'time[title="Fri, 14 Aug 2026 10:51:40 GMT"]',
+      hints: { classes: ['ml-auto', 'hidden', 'flex-none'] },
+    });
+    expect(signed).toBe(
+      'span "This commit is signed and the signature is verified" span[title="This commit is signed and the signature is verified"] .mx-2.text-green-500.dark:text-green-600',
+    );
+    expect(timeGmt).toBe(
+      'time "Fri, 14 Aug 2026 10:51:40 GMT" time[title="Fri, 14 Aug 2026 10:51:40 GMT"] .ml-auto.hidden.flex-none',
+    );
+    expect(T.stripPerceiveIdentityChrome(`  ${signed}`).trim())
+      .toBe('span "This commit is signed and the signature is verified"');
+    expect(T.stripPerceiveIdentityChrome(`  ${timeGmt}`).trim())
+      .toBe('time "Fri, 14 Aug 2026 10:51:40 GMT"');
+    expect(T.isPerceiveDecorativeTitleChrome(`  ${signed}`)).toBe(true);
+    expect(T.isPerceiveDecorativeTitleChrome(`  ${timeGmt}`)).toBe(true);
+    expect(T.isPerceiveDecorativeTitleChrome('    [link] Update README.md  @3  (24,156 160×22)')).toBe(false);
+    expect(T.isPerceiveDecorativeTitleChrome('  a role=link "assets" [clickable] (8,184 80×22) a[href="#assets"]')).toBe(false);
+
+    const header = [
+      'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×900 | Scroll: 0/2400 (0%) | Focused: none',
+      'Interactive: 12 a',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+    ];
+    const previous = [
+      ...header,
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+      '    [link] README.md  @2  (24,208 160×22)',
+      '',
+      '[Visible controls]',
+      '  a role=link "main" [clickable] (8,72 80×22) a[href="#main"]',
+      '  a role=link "MiniMax-Music3" [clickable] (8,100 80×22) a[href="#mm"]',
+      '  a role=link "Go to file" [clickable] (8,128 80×22) a[href="#file"]',
+      '  a role=link "4 contributors" [clickable] (8,156 80×22) a[href="#contrib"]',
+    ].join('\n');
+    const currentHeader = header.map(line => line.replace('Scroll: 0/2400 (0%)', 'Scroll: 80/2400 (3%)'));
+    const current = [
+      ...currentHeader,
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)',
+      '',
+      '[Visible controls]',
+      `  ${signed}`,
+      `  ${timeGmt}`,
+      '  a role=link "ryanlee-dev" [clickable] (8,100 80×22) a[href="#ryan"]',
+      '  a role=link "Update README.md" [clickable] (8,128 80×22) a[href="#readme"]',
+      '  a role=link "fbdf52f" [clickable] (8,156 80×22) a[href="#sha"]',
+      '  a role=link "assets" [clickable] (8,184 80×22) a[href="#assets"]',
+    ].join('\n');
+    const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+    expect(T.actionDomDiffShowsChange(diff)).toBe(true);
+    expect(diff).toMatch(/Visible-control cap swap: 4 left, 4 entered/);
+    expect(diff).toContain('- main');
+    expect(diff).toContain('- MiniMax-Music3');
+    expect(diff).toContain('+ ryanlee-dev');
+    expect(diff).toContain('+ Update README.md');
+    expect(diff).toContain('+ fbdf52f');
+    expect(diff).toContain('+ assets');
+    expect(diff).not.toMatch(/\+\+\+ Added/);
+    expect(diff).not.toMatch(/span\[title=/);
+    expect(diff).not.toMatch(/time\[title=/);
+    expect(diff).not.toMatch(/This commit is signed/);
+    expect(diff).not.toMatch(/10:51:40 GMT/);
+    expect(diff).not.toMatch(/\.mx-2\.text-green-500/);
+    expect(diff).not.toMatch(/\.ml-auto\.hidden/);
+
+    const addedFile = current.replace(
+      '    [link] README.md  @2  (24,128 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)\n    [link] config.json  @3  (24,156 160×22)\n    [link] assets  @4  (24,184 160×22)',
+    );
+    const changed = T.formatPerceiveDiffOutput(previous, addedFile, { mode: 'since-action' });
+    expect(changed).toMatch(/config\.json/);
+    expect(changed).toMatch(/\[link\] assets/);
+    expect(changed).toMatch(/Visible-control cap swap:/);
+    expect(changed).not.toMatch(/span\[title=/);
+    expect(changed).not.toMatch(/This commit is signed/);
+    expect(T.actionDomDiffShowsChange(changed)).toBe(true);
+
+    const titleOnly = [
+      ...currentHeader,
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)',
+      '',
+      '[Visible controls]',
+      '  a role=link "main" [clickable] (8,72 80×22) a[href="#main"]',
+      '  a role=link "MiniMax-Music3" [clickable] (8,100 80×22) a[href="#mm"]',
+      '  a role=link "Go to file" [clickable] (8,128 80×22) a[href="#file"]',
+      '  a role=link "4 contributors" [clickable] (8,156 80×22) a[href="#contrib"]',
+      `  ${signed}`,
+      `  ${timeGmt}`,
+    ].join('\n');
+    const noChange = T.formatPerceiveDiffOutput(previous, titleOnly, { mode: 'since-action' });
+    expect(noChange).toMatch(/no changes detected in AX tree/i);
+    expect(noChange).not.toMatch(/\+\+\+ Added/);
+    expect(noChange).not.toMatch(/span\[title=/);
+    expect(T.actionDomDiffShowsChange(noChange)).toBe(false);
+
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, {
+      dispatchText: 'Scrolled by (0, 80). Position: (0, 80)',
+    });
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(text).toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Visible-control cap swap:/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/span\[title=/);
+    expect(text).not.toMatch(/This commit is signed/);
+    expect(receipt).not.toMatch(/\+\+\+ Added/);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+  });
+
   it('#299 leftover-ax-scroll no-change receipt has Next -C -d 8 without Hint --since-action', () => {
     const previous = [
       'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
