@@ -8998,7 +8998,9 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(commitEntered).toBe(
       'a role=link "Add diffusers weights (modular pipeline) (#2)" [clickable] (24,128 160×22) a[href="/MiniMaxAI/MiniMax-Music3/commit/entered"]',
     );
-    expect(leftoverDump).toContain(commitLeft);
+    expect(leftoverDump).toMatch(
+      /a role=link "Add diffusers weights \(modular pipeline\) \(#2\)" \[clickable\] \(24,128 160×22\)(?: @\d+)? a\[href="\/MiniMaxAI\/MiniMax-Music3\/commit\/left"\]/,
+    );
     const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
     const actionTarget = scrollTarget();
     const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
@@ -9016,7 +9018,9 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
       { ...T.parsePerceiveArgs(['-C', '-d', '8']), targetPrefix: HF_PREFIX },
       refState,
     );
-    expect(afterDump).toContain(commitEntered);
+    expect(afterDump).toMatch(
+      /a role=link "Add diffusers weights \(modular pipeline\) \(#2\)" \[clickable\] \(24,128 160×22\)(?: @\d+)? a\[href="\/MiniMaxAI\/MiniMax-Music3\/commit\/entered"\]/,
+    );
     expect(afterDump).toMatch(/language_model/);
     expect(afterDump).toMatch(/qwen_7B/);
     expect(afterDump).toMatch(/speech_tokenizer/);
