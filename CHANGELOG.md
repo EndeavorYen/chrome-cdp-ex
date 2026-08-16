@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### feat: submit search to results, not typeahead first hit (#328)
+
+* `press Enter` on a focused search/combobox with a visible listing link
+  (`See N model results`, `a[href*="models?search="]`, `/search?q=`) clicks
+  that listing instead of sending raw Enter, so Hugging Face header search
+  lands on `/models?search=bert` rather than the first typeahead repo.
+* `perceive -C -d 8` Visible controls rank that listing link ahead of
+  typeahead repo hits (before the collector cap), with a stable
+  `a[href="/models?search=…"]` selector for `click`.
+* Search-submit Enter uses report-only, so leftover `perceive -C -d 8`
+  settle is not eaten. Other keys still settle-diff. Receipt stays skinny.
+
 ### feat: click in-viewport named link without fat perceive (#327)
 
 * `click` / `jsclick` accept an in-viewport accessible name (for example
