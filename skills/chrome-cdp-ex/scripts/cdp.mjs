@@ -18,6 +18,12 @@ import { fileURLToPath } from 'url';
 import net from 'net';
 import { autoActionJsonArgs as autoActionJsonArgsForCommands } from './lib/action-evidence.mjs';
 import {
+  bufferFromPdfBase64,
+  extractPdfPageText,
+  MAX_PDF_BYTES,
+  pdfPageFetchExpression,
+} from './lib/pdf-text.mjs';
+import {
   classifyRawCdpMethod,
   commandResult,
   createCommandExecutionContext,
@@ -4009,7 +4015,7 @@ function formatPdfViewerOutput(meta = {}, { targetPrefix = '<target>' } = {}) {
     `Page: ${model.title || '(untitled)'}`,
     `URL: ${model.url || '(unknown)'}`,
     `contentType: ${model.contentType}`,
-    'Accessibility tree is empty for this viewer. Do not retry perceive/text as a next-probe.',
+    'Accessibility tree is empty for this viewer. Do not retry perceive. Use text --auto to read page-1 text.',
     `Next: ${model.nextCommand}`,
   ].join('\n');
 }
@@ -4032,7 +4038,7 @@ function pdfViewerError(meta = {}, { targetPrefix = '<target>' } = {}) {
   return err;
 }
 
-async function assertNotPdfViewerPage(cdp, sid, { targetPrefix = '<target>' } = {}) {
+async function assertNotPdfViewerPage(cdp, sid, { targetPrefix = '<target>', allowPdf = false } = {}) {
   try {
     const page = JSON.parse(await evalStr(
       cdp,
@@ -4041,13 +4047,68 @@ async function assertNotPdfViewerPage(cdp, sid, { targetPrefix = '<target>' } = 
       false,
       { timeoutMs: STATUS_PAGE_INFO_TIMEOUT },
     ));
-    if (isPdfViewerContentType(page.contentType)) {
+    if (isPdfViewerContentType(page.contentType) && !allowPdf) {
       throw pdfViewerError(page, { targetPrefix });
     }
     return page;
   } catch (error) {
     if (error?.code === 'pdf_viewer') throw error;
     return null;
+  }
+}
+
+function fileUrlToPath(url) {
+  try {
+    const parsed = new URL(String(url || ''));
+    if (parsed.protocol !== 'file:') return null;
+    return decodeURIComponent(parsed.pathname);
+  } catch {
+    return null;
+  }
+}
+
+function asPdfBuffer(loaded) {
+  if (Buffer.isBuffer(loaded)) return loaded;
+  if (loaded instanceof Uint8Array) return Buffer.from(loaded);
+  return Buffer.alloc(0);
+}
+
+async function loadPdfBytesForText(cdp, sid, url, extra = {}) {
+  if (typeof extra.loadPdfBytes === 'function') {
+    return asPdfBuffer(await extra.loadPdfBytes(url));
+  }
+  const filePath = fileUrlToPath(url);
+  if (filePath) {
+    try {
+      const bytes = readFileSync(filePath);
+      if (bytes.length && bytes.length <= (extra.maxPdfBytes || MAX_PDF_BYTES)) return bytes;
+    } catch {
+      // Fall through to in-page / Node fetch.
+    }
+  }
+  try {
+    const encoded = await evalStr(
+      cdp,
+      sid,
+      pdfPageFetchExpression(url, extra.maxPdfBytes || MAX_PDF_BYTES),
+      false,
+      { timeoutMs: extra.pdfFetchTimeoutMs || TIMEOUT },
+    );
+    const fromPage = bufferFromPdfBase64(encoded);
+    if (fromPage.length) return fromPage;
+  } catch {
+    // Chrome PDF plugin pages often block fetch; Node fetch is the fallback.
+  }
+  const fetchImpl = extra.fetch || (process.env.NODE_ENV === 'test' ? null : globalThis.fetch);
+  if (typeof fetchImpl !== 'function' || !url) return Buffer.alloc(0);
+  try {
+    const response = await fetchImpl(url, { redirect: 'follow' });
+    if (!response?.ok) return Buffer.alloc(0);
+    const buf = Buffer.from(await response.arrayBuffer());
+    if (!buf.length || buf.length > (extra.maxPdfBytes || MAX_PDF_BYTES)) return Buffer.alloc(0);
+    return buf;
+  } catch {
+    return Buffer.alloc(0);
   }
 }
 
@@ -15399,7 +15460,18 @@ async function textStr(cdp, sid, args, extra = {}) {
   else if (!Array.isArray(args)) optsArgs = [];
   const opts = parseTextArgs(optsArgs);
   if (extra.targetPrefix && !opts.targetPrefix) opts.targetPrefix = extra.targetPrefix;
-  await assertNotPdfViewerPage(cdp, sid, { targetPrefix: opts.targetPrefix || extra.targetPrefix || '<target>' });
+  const targetPrefix = opts.targetPrefix || extra.targetPrefix || '<target>';
+  if (opts.auto) {
+    const page = await assertNotPdfViewerPage(cdp, sid, { targetPrefix, allowPdf: true });
+    if (page && isPdfViewerContentType(page.contentType)) {
+      const bytes = await loadPdfBytesForText(cdp, sid, page.url, extra);
+      const text = extractPdfPageText(bytes);
+      if (text) return text;
+      throw pdfViewerError(page, { targetPrefix });
+    }
+  } else {
+    await assertNotPdfViewerPage(cdp, sid, { targetPrefix });
+  }
   const result = await evalStr(cdp, sid, textPageScript(opts));
   let parsed;
   try { parsed = JSON.parse(result); }
@@ -21847,7 +21919,7 @@ Usage: cdp <command> [args]
                                     off/reset clears overrides; JSON returns chrome-cdp-ex.emulate.v1
 {{command:upload}}
 {{command:text}}
-                                    --auto: extract main content (strips nav/aside/script/style)
+                                    --auto: extract main content (strips nav/aside/script/style); PDF plugin tabs return page-1 text
                                     -x / --exclude: extra CSS selectors to strip
                                     --root auto|body|document|default|<sel>: search root for selector resolution
                                     On no-match, error includes root/scope and an eval fallback
@@ -24499,6 +24571,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   rememberFramePerceiveOutput, baselineOutputForActionTarget, frameViewportOffset,
   parseTextArgs, textPageScript, textStr, formatTextNoMatchError, htmlStr,
   isPdfViewerContentType, formatPdfViewerOutput, pdfViewerError, assertNotPdfViewerPage, pageInfoModel,
+  extractPdfPageText, loadPdfBytesForText,
   pdfViewerHandoffModelFromOutput,
   actionObservationPerceiveOpts, actionResultPdfViewerMeta, actionSettleBaseline, isCardsPerceiveOutput,
   leftoverCardsCount, isScrollActionTarget, isLeftoverFeedCardsSettle,

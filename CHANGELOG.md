@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### fix: text --auto reads Chrome PDF plugin page-1 text (#283)
+
+* `text --auto` on a Chrome PDF plugin tab (`application/pdf`) returns
+  page-1 text from the PDF bytes (FlateDecode / object streams / TJ
+  kerning, the same print-to-text path other tools use) instead of the
+  empty `chrome-cdp-ex.pdf-viewer.v1` stub. Paid landmark: `AI4AI at
+  Test-Time` on `https://arxiv.org/pdf/2608.12307`.
+* `perceive` / `html` / `qa` and leftover-press settle stay
+  `pdf-viewer.v1`. Identical stub vs stub is still not a page change.
+  Plain `text` without `--auto` still fail-closes as the stub.
+
 ### feat: named click scrolls off-screen text into view (#332)
 
 * Named `click` / `jsclick` still finds a control by accessible name in one
