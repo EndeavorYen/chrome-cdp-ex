@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#303)
+
+* Leftover golden-path `perceive -C -d 8` then `scroll` still treats a
+  Visible-control cap-swap as `Outcome: changed`. Title-only Visible-control
+  dump lines in the live formatter shape (`span "…" span[title="…"] .classes`
+  / `time "Fri, … GMT" time[title="…"] .classes`) are identity chrome, not a
+  structural `+++ Added` selector dump. A new file, heading, or link still
+  prints a structural diff. Named samples, no Hint `--since-action`, no
+  generic Recovery hint, `#297` compact headline, `#295` rect-chrome
+  no-change, `#293` leftover N>0 `--cards`, leftover `-C -d 8` then mutating
+  `click --js`, `#285` PDF Next, and `#286`/`#291` hover honest-gate hold.
+  `HOVER_MOUSE_ACK_TIMEOUT_MS` stays 250.
+
 ### Open issue dogfood (#301)
 
 * Leftover golden-path `perceive -C -d 8` then `scroll` still treats a

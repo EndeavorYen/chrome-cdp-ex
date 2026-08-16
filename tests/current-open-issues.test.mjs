@@ -7930,15 +7930,44 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     ];
   }
 
-  function hfMeta(scrollY, files, { foldTag = false, capSwap = false, noisyCapSwap = false } = {}) {
+  function hfTitleChromeControls() {
+    // Live leftover-ax-scroll Added lines after overlay f16bf750. Collector
+    // includes [title] even when not clickable; formatVisibleControlLine
+    // reprints title= selector + CSS classes.
+    return [
+      {
+        tag: 'span',
+        label: 'This commit is signed and the signature is verified',
+        title: 'This commit is signed and the signature is verified',
+        clickable: false,
+        rect: { x: 400, y: 120, w: 18, h: 18 },
+        selector: 'span[title="This commit is signed and the signature is verified"]',
+        hints: { classes: ['mx-2', 'text-green-500', 'dark:text-green-600'] },
+      },
+      {
+        tag: 'time',
+        label: 'Fri, 14 Aug 2026 10:51:40 GMT',
+        title: 'Fri, 14 Aug 2026 10:51:40 GMT',
+        clickable: false,
+        rect: { x: 800, y: 120, w: 40, h: 16 },
+        selector: 'time[title="Fri, 14 Aug 2026 10:51:40 GMT"]',
+        hints: { classes: ['ml-auto', 'hidden', 'flex-none'] },
+      },
+    ];
+  }
+
+  function hfMeta(scrollY, files, { foldTag = false, capSwap = false, noisyCapSwap = false, titleChrome = false } = {}) {
     const fileControls = files.map(file => hfVisibleControl(file.name, file.y - scrollY));
-    const visibleControls = noisyCapSwap
+    let visibleControls = noisyCapSwap
       ? (scrollY > 0 ? noisyCapSwapContent() : noisyCapSwapChrome())
       : capSwap
       ? (scrollY > 0 ? CAP_SWAP_CONTENT : CAP_SWAP_CHROME).map((label, i) => (
         hfVisibleControl(label, 12 + i * 28)
       ))
       : fileControls;
+    if (titleChrome && scrollY > 0) {
+      visibleControls = [...hfTitleChromeControls(), ...visibleControls];
+    }
     return JSON.stringify({
       title: 'MiniMaxAI/MiniMax-Music3 at main',
       url: HF_URL,
@@ -7999,6 +8028,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     foldTag = false,
     capSwap = false,
     noisyCapSwap = false,
+    titleChrome = false,
   } = {}) {
     const state = {
       scrollY,
@@ -8007,6 +8037,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
       foldTag,
       capSwap: capSwap || noisyCapSwap,
       noisyCapSwap,
+      titleChrome,
     };
     const cdp = {
       calls: [],
@@ -8035,6 +8066,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
                   foldTag: state.foldTag,
                   capSwap: state.capSwap,
                   noisyCapSwap: state.noisyCapSwap,
+                  titleChrome: state.titleChrome,
                 }),
               },
             });
@@ -8638,6 +8670,119 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(receipt).toMatch(/Outcome: changed/);
     expect(receipt).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+  });
+
+  it('#303 leftover -C -d 8 then scroll drops signed-commit / time GMT Added chrome and stays changed', async () => {
+    const { cdp } = createHfPage({ noisyCapSwap: true, titleChrome: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
+    expect(leftoverDump).toMatch(/^Page: /m);
+    expect(leftoverDump).not.toMatch(/This commit is signed/);
+    const signed = T.formatVisibleControlLine({
+      tag: 'span',
+      label: 'This commit is signed and the signature is verified',
+      title: 'This commit is signed and the signature is verified',
+      selector: 'span[title="This commit is signed and the signature is verified"]',
+      hints: { classes: ['mx-2', 'text-green-500', 'dark:text-green-600'] },
+    });
+    const timeGmt = T.formatVisibleControlLine({
+      tag: 'time',
+      label: 'Fri, 14 Aug 2026 10:51:40 GMT',
+      title: 'Fri, 14 Aug 2026 10:51:40 GMT',
+      selector: 'time[title="Fri, 14 Aug 2026 10:51:40 GMT"]',
+      hints: { classes: ['ml-auto', 'hidden', 'flex-none'] },
+    });
+    expect(signed).toBe(
+      'span "This commit is signed and the signature is verified" span[title="This commit is signed and the signature is verified"] .mx-2.text-green-500.dark:text-green-600',
+    );
+    expect(timeGmt).toBe(
+      'time "Fri, 14 Aug 2026 10:51:40 GMT" time[title="Fri, 14 Aug 2026 10:51:40 GMT"] .ml-auto.hidden.flex-none',
+    );
+    const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    expect(settleBaseline.output).toBe(leftoverDump);
+    expect(cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length).toBe(axBefore);
+    const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
+    expect(dispatchText).toBe('Scrolled by (0, 80). Position: (0, 80)');
+    const afterDump = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      { output: leftoverDump, snapshotOpts: store.snapshotOpts },
+      { ...T.parsePerceiveArgs(['-C', '-d', '8']), targetPrefix: HF_PREFIX },
+      refState,
+    );
+    expect(afterDump).toContain(signed);
+    expect(afterDump).toContain(timeGmt);
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).not.toMatch(/\+\+\+ Added/);
+    expect(after).not.toMatch(/^\+ .*span\[title=/m);
+    expect(after).not.toMatch(/^\+ .*time\[title=/m);
+    expect(after).not.toMatch(/^\+ .*This commit is signed/m);
+    expect(after).not.toMatch(/^\+ .*10:51:40 GMT/m);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, { dispatchText });
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(text).toMatch(/Outcome: changed/);
+    expect(text).toMatch(/Visible-control cap swap:/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/\+\+\+ Added/);
+    expect(text).not.toMatch(/span\[title=/);
+    expect(text).not.toMatch(/This commit is signed/);
+    expect(receipt).toMatch(/Outcome: changed/);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(receipt).not.toMatch(/\+\+\+ Added/);
+  });
+
+  it('#303 leftover -C -d 8 title chrome plus a new file still prints tokenizer.json', async () => {
+    const { cdp, state } = createHfPage({ noisyCapSwap: true, titleChrome: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    await leftoverGoldenPath(cdp, store, refMap, refState);
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    state.files = [...DEFAULT_FILES, ADDED_FILE];
+    await T.scrollStr(cdp, 'sid', 'down', '80');
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/tokenizer\.json/);
+    expect(after).toMatch(/Visible-control cap swap:/);
+    expect(after).not.toMatch(/\+\+\+ Added \(\d+\):[\s\S]*This commit is signed/);
+    expect(after).not.toMatch(/^\+ .*span\[title=/m);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('changed');
+    expect(text).toMatch(/tokenizer\.json/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/span\[title=/);
   });
 });
 
