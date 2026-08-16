@@ -10116,8 +10116,9 @@ describe('issue #286 hover settle baseline', () => {
 
   it('#286 hover handler refreshes last-perceive settle baseline', () => {
     const src = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
-    expect(src).toMatch(/hover: async args =>[\s\S]{0,800}rememberHoverSettleBaseline\(/);
-    expect(src).toMatch(/hover: async args =>[\s\S]{0,1200}hoverStr\(/);
+    expect(src).toMatch(/hover: async args =>[\s\S]{0,1600}dispatchHoverWithLeftoverPolicy\(/);
+    expect(src).toMatch(/async function dispatchHoverWithLeftoverPolicy[\s\S]{0,2000}rememberHoverSettleBaseline\(/);
+    expect(src).toMatch(/async function dispatchHoverWithLeftoverPolicy[\s\S]{0,2000}hoverStr\(/);
     expect(src).not.toMatch(
       /async function rememberHoverSettleBaseline[\s\S]{0,2800}waitForHoverDomChange\(/,
     );

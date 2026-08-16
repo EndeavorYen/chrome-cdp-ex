@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### perf: skip hover leftover AX recapture before confirm eval (#341)
+
+* Sequential `batch --compact 'hover … | eval …'` skips leftover AX
+  recapture on hover. Dumping settle-shape AX after `mouseMoved` races CSS
+  `:hover` (HF permalink `md:opacity-0` / group-hover). Confirm `eval` is
+  the success signal. Standalone hover still recaptures so a later no-op
+  mutator does not steal hover's AX delta. No new hover command or flags.
+* Hover receipts name `opacity 0→1` / `visible` / `groupHover` from a
+  cheap computed-style snapshot, not Accessibility.getFullAXTree.
+  Compositor-ack swallow stays 250 ms. `evalraw` mouseMoved is not the
+  happy path.
+
 ### perf: skip typeahead listing probe wait on search-submit (#339)
 
 * Sequential `batch --compact 'fill … | press Enter'` still lands on
