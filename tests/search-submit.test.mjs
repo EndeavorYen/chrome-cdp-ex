@@ -336,6 +336,84 @@ describe('issue #335 skip fill leftover settle before search-submit press', () =
     expect(T.fillFeedbackPolicy(parallel[0].nextCommand)).toBe('settle-diff');
   });
 
+  it('awaits sequential-batch work before clearing lookahead so fillFeedbackPolicy can run after the daemon yield', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(fileURLToPath(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url)), 'utf8');
+    expect(src).toMatch(/async function runWithBatchLookahead[\s\S]*?return await run\(\)/);
+    expect(src).toMatch(/const runOne = command => runWithBatchLookahead\(\s*session,\s*command\.nextCommand/);
+    expect(src).not.toMatch(/try \{\s*return handleCommand\(\{/);
+  });
+
+  it('the pre-fix try/finally around return handleCommand() loses lookahead at the first await', async () => {
+    const session = { batchNextCommand: null };
+    const next = { cmd: 'press', args: ['Enter'] };
+    let afterYield;
+    const handleCommand = async () => {
+      await Promise.resolve();
+      afterYield = T.fillFeedbackPolicy(session.batchNextCommand);
+    };
+    const runOne = () => {
+      session.batchNextCommand = next;
+      try {
+        return handleCommand();
+      } finally {
+        session.batchNextCommand = null;
+      }
+    };
+    await runOne();
+    expect(afterYield).toBe('settle-diff');
+  });
+
+  it('keeps fill report-only across the first handleCommand await, not only before it', async () => {
+    const session = { batchNextCommand: null };
+    const sequenced = T.batchCommandLookahead([
+      { cmd: 'fill', args: ['input[placeholder*="Search"]', 'bert'] },
+      { cmd: 'press', args: ['Enter'] },
+    ]);
+    let policyAfterYield;
+    let observed = false;
+    const text = await T.runWithBatchLookahead(session, sequenced[0].nextCommand, async () => {
+      // Same first yield as handleCommand → executeDaemonApplicationRoute.
+      await Promise.resolve();
+      policyAfterYield = T.fillFeedbackPolicy(session.batchNextCommand);
+      return T.runActionWithFeedback({
+        action: 'fill',
+        target: {
+          targetId: '54A7C685ABCDEF0123456789ABCDEF01',
+          input: 'input[placeholder*="Search"]',
+          resolvedBy: 'selector-or-ref',
+          label: 'input[placeholder*="Search"]',
+          commandArgs: ['input[placeholder*="Search"]', 'bert'],
+        },
+        dispatch: async () => 'Filled <INPUT> with "bert"',
+        feedbackPolicy: policyAfterYield,
+        observe: async () => {
+          observed = true;
+          return leftoverGoldenPathDump();
+        },
+      });
+    });
+    expect(policyAfterYield).toBe('report-only');
+    expect(observed).toBe(false);
+    expect(text).toMatch(/Filled <INPUT> with "bert"/);
+    expect(text).not.toMatch(/RootWebArea/);
+    expect(text).not.toMatch(/no changes detected in AX tree/);
+    expect(text).not.toMatch(/Outcome: attention/);
+    expect(text).not.toMatch(/quicksearch/);
+    expect(session.batchNextCommand).toBeNull();
+  });
+
+  it('clears sequential-batch lookahead after the daemon route even when it rejects', async () => {
+    const session = { batchNextCommand: 'stale' };
+    await expect(T.runWithBatchLookahead(session, { cmd: 'press', args: ['Enter'] }, async () => {
+      await Promise.resolve();
+      expect(T.fillFeedbackPolicy(session.batchNextCommand)).toBe('report-only');
+      throw new Error('daemon route failed');
+    })).rejects.toThrow(/daemon route failed/);
+    expect(session.batchNextCommand).toBeNull();
+  });
+
   it('does not dump leftover AX or wait network-quiet for mid-pipe fill before search-submit press', async () => {
     let observed = false;
     const text = await T.runActionWithFeedback({
