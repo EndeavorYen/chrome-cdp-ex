@@ -4660,6 +4660,28 @@ function isLeftoverDefaultAxScrollSettle(output, snapshotOpts = null, actionTarg
   return /^Page: /m.test(text) && /^Viewport: /m.test(text);
 }
 
+const DOCUMENT_SCROLL_EDGE_OUTCOME = 'document-scroll-edge';
+
+function isDocumentScrollEdgeTarget(actionTarget = {}) {
+  return actionTarget?.expectedOutcome === DOCUMENT_SCROLL_EDGE_OUTCOME;
+}
+
+function tagScrollLeftoverSettle(action, actionTarget, output, snapshotOpts = null) {
+  // Edge forms are report-only window-document scroll. After leftover
+  // `perceive -C -d 8` they must not inherit leftover-ax-scroll-no-change
+  // (or leftover cards) so the receipt does not grow Next: perceive -C -d 8.
+  // Relative `scroll down N` still uses settle-diff leftover tagging.
+  if (!actionTarget || action !== 'scroll') return actionTarget;
+  if (isDocumentScrollEdgeTarget(actionTarget)) return actionTarget;
+  if (isLeftoverFeedCardsSettle(output, snapshotOpts, actionTarget)) {
+    actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'cards-window-no-change';
+  }
+  if (isLeftoverDefaultAxScrollSettle(output, snapshotOpts, actionTarget)) {
+    actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'leftover-ax-scroll-no-change';
+  }
+  return actionTarget;
+}
+
 function isLeftoverFeedCardsSettle(output, snapshotOpts = null, actionTarget = {}) {
   // Leftover --cards / --role feed with a real feed window is the settle
   // shape for the next scroll (#293). 0-card leftovers still recapture
@@ -12182,6 +12204,21 @@ function scrollFeedbackPolicy(direction, amount) {
   return parseScrollEdge(direction, amount) ? 'report-only' : 'settle-diff';
 }
 
+function scrollActionTarget(args = [], extra = {}) {
+  const direction = args[0];
+  const amount = args[1];
+  const edge = parseScrollEdge(direction, amount);
+  const target = {
+    input: extra.input ?? [direction, amount].filter(Boolean).join(' '),
+    resolvedBy: extra.resolvedBy ?? 'scroll',
+    label: extra.label ?? (edge ? `to ${edge}` : (direction || 'scroll')),
+    commandArgs: extra.commandArgs ?? [direction, amount],
+  };
+  if (extra.targetId) target.targetId = extra.targetId;
+  if (edge) target.expectedOutcome = DOCUMENT_SCROLL_EDGE_OUTCOME;
+  return target;
+}
+
 function documentScrollEdgeExpression(edge) {
   const dest = edge === 'top' ? 'top' : 'bottom';
   const tolerance = DOCUMENT_SCROLL_EDGE_TOLERANCE_PX;
@@ -12203,10 +12240,18 @@ function documentScrollEdgeExpression(edge) {
   })()`;
 }
 
+function documentScrollReachedEdge(edge, pos = {}) {
+  return edge === 'top' ? pos.atTop === true : pos.atBottom === true;
+}
+
 function formatDocumentScrollEdgeText(edge, pos = {}) {
   const flag = edge === 'top' ? 'at-top' : 'at-bottom';
-  const reached = edge === 'top' ? pos.atTop === true : pos.atBottom === true;
-  return `Scrolled to ${edge}. scrollY: ${pos.scrollY} / ${pos.scrollMax} max (${flag}: ${reached ? 'yes' : 'no'})`;
+  return `Scrolled to ${edge}. scrollY: ${pos.scrollY} / ${pos.scrollMax} max (${flag}: yes)`;
+}
+
+function formatDocumentScrollEdgeFailure(edge, pos = {}) {
+  const flag = edge === 'top' ? 'at-top' : 'at-bottom';
+  return `Did not reach document ${edge}. scrollY: ${pos.scrollY} / ${pos.scrollMax} max (${flag}: no)`;
 }
 
 async function scrollStr(cdp, sid, direction, amount) {
@@ -12214,6 +12259,9 @@ async function scrollStr(cdp, sid, direction, amount) {
   if (edge) {
     const result = await evalStr(cdp, sid, documentScrollEdgeExpression(edge));
     const pos = JSON.parse(result);
+    if (!documentScrollReachedEdge(edge, pos)) {
+      throw new Error(formatDocumentScrollEdgeFailure(edge, pos));
+    }
     return formatDocumentScrollEdgeText(edge, pos);
   }
   const px = parseInt(amount) || 500;
@@ -19583,20 +19631,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     if (isPdfViewerPerceiveOutput(baselineFromTarget)) {
       actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'pdf-viewer-no-change';
     }
-    if (isLeftoverFeedCardsSettle(
+    tagScrollLeftoverSettle(
+      action,
+      actionTarget,
       baselineFromTarget,
       lastPerceiveStore.snapshotOpts,
-      actionTarget,
-    ) && action === 'scroll') {
-      actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'cards-window-no-change';
-    }
-    if (isLeftoverDefaultAxScrollSettle(
-      baselineFromTarget,
-      lastPerceiveStore.snapshotOpts,
-      actionTarget,
-    ) && action === 'scroll') {
-      actionTarget.expectedOutcome = actionTarget.expectedOutcome || 'leftover-ax-scroll-no-change';
-    }
+    );
     if (
       !settleBaseline.output
       && shouldCaptureTopLevelActionSettle(
@@ -20135,17 +20175,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     },
     scroll: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-      const edge = parseScrollEdge(fopts.args[0], fopts.args[1]);
-      const input = [fopts.args[0], fopts.args[1]].filter(Boolean).join(' ');
       const value = await actionFeedback(
         'scroll',
         () => scrollStr(cdp, sessionId, fopts.args[0], fopts.args[1]),
-        {
-          input,
-          resolvedBy: 'scroll',
-          label: edge ? `to ${edge}` : (fopts.args[0] || 'scroll'),
-          commandArgs: [fopts.args[0], fopts.args[1]],
-        },
+        scrollActionTarget(fopts.args),
         scrollFeedbackPolicy(fopts.args[0], fopts.args[1]),
         null,
         fopts,
@@ -23934,7 +23967,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, scrollFeedbackPolicy, documentScrollEdgeExpression, formatDocumentScrollEdgeText, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,
@@ -23959,6 +23992,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   pdfViewerHandoffModelFromOutput,
   actionObservationPerceiveOpts, actionResultPdfViewerMeta, actionSettleBaseline, isCardsPerceiveOutput,
   leftoverCardsCount, isScrollActionTarget, isLeftoverFeedCardsSettle,
+  isDocumentScrollEdgeTarget, tagScrollLeftoverSettle,
   isLeftoverDefaultAxScrollSettle, stripPerceiveRectChrome, stripPerceiveIdentityChrome,
   isPerceiveDecorativeTitleChrome, isVisibleControlTimestampName, visibleControlNameFromLine, extractVisibleControlLabels,
   uniqueVisibleControlCapSwapSamples,
