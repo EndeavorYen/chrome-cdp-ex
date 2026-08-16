@@ -9449,13 +9449,81 @@ function perceiveCursorItemSkipHaystack(item, nameOf) {
   ].filter(Boolean).join('\n');
 }
 
+function isSearchListingHref(href) {
+  const raw = String(href || '').trim();
+  if (!raw) return false;
+  let path = raw;
+  let query = '';
+  try {
+    const parsed = raw.includes('://') ? new URL(raw) : new URL(raw, 'https://search-listing.invalid');
+    path = parsed.pathname || '/';
+    query = parsed.search || '';
+  } catch {
+    const q = raw.indexOf('?');
+    if (q >= 0) {
+      path = raw.slice(0, q);
+      query = raw.slice(q);
+    }
+  }
+  const params = new URLSearchParams(query.startsWith('?') ? query.slice(1) : query);
+  const listingPath = /^\/(models|datasets|spaces|posts)?\/?$/i.test(path) || /\/search\/?$/i.test(path);
+  return listingPath && (params.has('search') || params.has('q'));
+}
+
+function isSearchListingText(text) {
+  return /\bsee\b[\s\S]{0,80}\bresults\b/i.test(String(text || ''));
+}
+
+function isSearchListingControl(item) {
+  if (!item || typeof item !== 'object') return false;
+  const href = item.href || '';
+  const selector = item.selector || '';
+  const hay = [item.label, item.text, item.ariaLabel, item.title, href, selector].filter(Boolean).join('\n');
+  return isSearchListingHref(href) || isSearchListingHref(selector) || isSearchListingText(hay);
+}
+
+function searchListingSelector(href) {
+  const raw = String(href || '').trim();
+  if (!raw) return 'a[href*="?search="]';
+  try {
+    const parsed = raw.includes('://') ? new URL(raw) : new URL(raw, 'https://search-listing.invalid');
+    const relative = `${parsed.pathname}${parsed.search}`;
+    return `a[href="${relative.replace(/"/g, '\\"')}"]`;
+  } catch {
+    return `a[href="${raw.replace(/"/g, '\\"')}"]`;
+  }
+}
+
+function rankSearchListingFirst(items) {
+  const listing = [];
+  const rest = [];
+  for (const item of items || []) {
+    (isSearchListingControl(item) ? listing : rest).push(item);
+  }
+  return listing.concat(rest);
+}
+
+function searchListingHelpersSource() {
+  return [
+    isSearchListingHref,
+    isSearchListingText,
+    isSearchListingControl,
+    searchListingSelector,
+    rankSearchListingFirst,
+  ].map(fn => Function.prototype.toString.call(fn)).join('\n');
+}
+
 function rankPerceiveCursorItems(items, nameOf) {
+  const listing = [];
   const skip = [];
   const rest = [];
   for (const item of items || []) {
-    (isSkipLinkName(perceiveCursorItemSkipHaystack(item, nameOf)) ? skip : rest).push(item);
+    const hay = perceiveCursorItemSkipHaystack(item, nameOf);
+    if (isSearchListingControl(item) || isSearchListingText(hay)) listing.push(item);
+    else if (isSkipLinkName(hay)) skip.push(item);
+    else rest.push(item);
   }
-  return rest.concat(skip);
+  return listing.concat(rest, skip);
 }
 
 function parseControlsArgs(args) {
@@ -9506,6 +9574,7 @@ function compactVisibleControlsModel(model = {}) {
 function visibleControlsCollectorSource() {
   return String.raw`
       function chromeCdpVisibleControls(options) {
+` + searchListingHelpersSource() + String.raw`
         const vw = window.innerWidth || 0;
         const vh = window.innerHeight || 0;
         const limit = Math.max(1, Math.min(Number(options.limit) || 30, 100));
@@ -9567,6 +9636,12 @@ function visibleControlsCollectorSource() {
 
         function selectorFor(el) {
           const tag = el.tagName.toLowerCase();
+          if (tag === 'a') {
+            const href = el.getAttribute('href') || '';
+            if (isSearchListingHref(href) || isSearchListingText(el.textContent || '')) {
+              return searchListingSelector(href);
+            }
+          }
           if (el.id) return tag + '#' + esc(el.id);
           const aria = el.getAttribute('aria-label');
           if (aria) return tag + '[aria-label="' + String(aria).replace(/"/g, '\\"') + '"]';
@@ -9648,6 +9723,7 @@ function visibleControlsCollectorSource() {
             title,
             label,
             text,
+            href: el.tagName === 'A' ? (el.getAttribute('href') || '') : '',
             disabled: Boolean(el.disabled) || el.getAttribute('aria-disabled') === 'true',
             clickable,
             rect: { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) },
@@ -9655,7 +9731,8 @@ function visibleControlsCollectorSource() {
             hints: { id: el.id || '', classes },
           });
         }
-        const total = controls.length;
+        const ranked = rankSearchListingFirst(controls);
+        const total = ranked.length;
         return {
           schema,
           scope,
@@ -9664,7 +9741,7 @@ function visibleControlsCollectorSource() {
           total,
           returned: Math.min(total, limit),
           truncated: total > limit,
-          controls: controls.slice(0, limit),
+          controls: ranked.slice(0, limit),
         };
       }
   `;
@@ -12294,11 +12371,111 @@ function pressUsageError(keyName) {
   return null;
 }
 
-async function pressStr(cdp, sid, keyName) {
+function isEnterKeyName(keyName) {
+  return String(keyName || '').trim().toLowerCase() === 'enter';
+}
+
+function pressFeedbackPolicy(keyName, probe) {
+  if (isEnterKeyName(keyName) && probe && probe.ok && probe.selector) return 'report-only';
+  return 'settle-diff';
+}
+
+function formatSearchSubmitPressText(probe = {}) {
+  return `Pressed Enter. Submitted search via ${probe.selector}`;
+}
+
+function searchSubmitProbeExpression() {
+  return `(function() {
+    /* chrome-cdp-ex.search-submit */
+    ${searchListingHelpersSource()}
+    try {
+      const links = Array.from(document.querySelectorAll('a[href]'));
+      for (const el of links) {
+        const href = el.getAttribute('href') || '';
+        const text = String(el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+        if (!(isSearchListingHref(href) || isSearchListingText(text))) continue;
+        const cs = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+        if (rect.width < 4 || rect.height < 4) continue;
+        return {
+          ok: true,
+          selector: searchListingSelector(href),
+          href: href,
+          text: text.slice(0, 80),
+        };
+      }
+    } catch {}
+    return { ok: false };
+  })()`;
+}
+
+async function probeSearchSubmit(cdp, sid) {
+  try {
+    const raw = await evalStr(cdp, sid, searchSubmitProbeExpression());
+    const probe = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (probe && probe.ok && probe.selector) return probe;
+  } catch {}
+  return { ok: false };
+}
+
+async function currentSearchListingHref(cdp, sid) {
+  const href = await evalPageHref(cdp, sid);
+  return isSearchListingHref(href) ? href : '';
+}
+
+async function waitForSearchListingHref(cdp, sid, timeoutMs = CLICK_NAVIGATION_WAIT_MS) {
+  const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : CLICK_NAVIGATION_WAIT_MS;
+  const deadline = Date.now() + budget;
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const href = await currentSearchListingHref(cdp, sid);
+    if (href) return href;
+    const pause = Math.min(40, deadline - Date.now());
+    if (pause > 0) await sleep(pause);
+  }
+  return '';
+}
+
+async function submitSearchListing(cdp, sid, probe, refMap, refState) {
+  const selector = probe?.selector;
+  if (!selector) throw new Error('Search listing selector required');
+  const maps = refMap instanceof Map ? refMap : new Map();
+  try {
+    await clickStr(cdp, sid, selector, maps, refState);
+    return;
+  } catch {
+    // Realistic mouse often fail-closes on typeahead overlays after navigation
+    // already started. Do not send Enter — that activates the first repo hit.
+    if (await currentSearchListingHref(cdp, sid)) return;
+  }
+  try {
+    await jsClickStr(cdp, sid, selector, maps, refState);
+  } catch (error) {
+    if (await waitForSearchListingHref(cdp, sid)) return;
+    throw error;
+  }
+  if (await waitForSearchListingHref(cdp, sid)) return;
+  throw new Error(
+    `Search submit via ${selector} did not reach a results listing. Try jsclick ${selector}.`
+  );
+}
+
+async function pressStr(cdp, sid, keyName, opts = {}) {
   const usage = pressUsageError(keyName);
   if (usage) throw usage;
   const mapped = keyForPress(keyName);
   const modifiers = mapped.shift ? 8 : 0;
+  if (isEnterKeyName(keyName)) {
+    const probe = opts.searchSubmit && typeof opts.searchSubmit === 'object'
+      ? opts.searchSubmit
+      : await probeSearchSubmit(cdp, sid);
+    if (probe && probe.ok && probe.selector) {
+      await submitSearchListing(cdp, sid, probe, opts.refMap, opts.refState);
+      return formatSearchSubmitPressText(probe);
+    }
+  }
   const base = {
     key: mapped.key,
     code: mapped.code,
@@ -20414,7 +20591,26 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const usage = pressUsageError(fopts.args[0]);
       if (usage) throw usage;
-      const value = await actionFeedback('press', () => pressStr(cdp, sessionId, fopts.args[0]), { input: fopts.args[0], resolvedBy: 'key', label: fopts.args[0] || '', commandArgs: [fopts.args[0]], expectedOutcome: 'press-no-change' }, 'settle-diff', null, fopts);
+      let searchSubmit = { ok: false };
+      if (isEnterKeyName(fopts.args[0])) {
+        searchSubmit = await probeSearchSubmit(cdp, sessionId);
+      }
+      const value = await actionFeedback(
+        'press',
+        () => pressStr(cdp, sessionId, fopts.args[0], { searchSubmit, refMap, refState }),
+        {
+          input: fopts.args[0],
+          resolvedBy: 'key',
+          label: fopts.args[0] || '',
+          commandArgs: [fopts.args[0]],
+          ...(searchSubmit.ok
+            ? { expectedOutcome: 'search-submit' }
+            : { expectedOutcome: 'press-no-change' }),
+        },
+        pressFeedbackPolicy(fopts.args[0], searchSubmit),
+        null,
+        fopts,
+      );
       return commandResult(value, { kind: 'action-receipt' });
     },
     qa: async args => commandResult(await qaPageStr({
@@ -24212,7 +24408,10 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   attachRefToVisibleControl, refAnnotationsFromTreeLines, nativeVisibleControlTag,
   isSynthesizableDomControl, shouldSynthesizeMissingFrameInteractives, listDomInteractiveControls,
   collectDomInteractiveControls, countedInteractiveElements, axInteractiveBackendCount,
-  rankPerceiveCursorItems,
+  rankPerceiveCursorItems, isSearchListingHref, isSearchListingText, isSearchListingControl,
+  searchListingSelector, rankSearchListingFirst, PERCEIVE_CURSOR_SURFACE_DEFAULT_CAP,
+  pressFeedbackPolicy, probeSearchSubmit, formatSearchSubmitPressText, isEnterKeyName,
+  searchSubmitProbeExpression, submitSearchListing, waitForSearchListingHref,
   createPerceptionModel, formatPerceptionJson, perceptionModelFromText, perceiveModel, perceiveDiffModel,
   createSessionState, invalidateSessionRefs,
   classifyActionFailure, formatActionFailure,

@@ -309,7 +309,7 @@ function domainInvocations() {
     {
       domain: 'Accessibility',
       methods: ['Accessibility.getFullAXTree', 'Runtime.evaluate'],
-      callDigest: 'ad424d3e3f6e6ed6fef05f0f0e251768595b44f77d5a7114301881862337acdb',
+      callDigest: '5c3f20c22d8315fdba6571ea5271840559e78056fc5af381dbade0986a15d31a',
       result: 'Page: Fixture — http://127.0.0.1/fixture\nViewport: 800×600 | Scroll: 0/0 (0%) | Focused: null\nInteractive: none\nConsole: clean\nCoords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)\n',
       invoke: cdp => cdpTest.perceiveStr(
         cdp,
@@ -354,8 +354,8 @@ function domainInvocations() {
     },
     {
       domain: 'Input',
-      methods: ['Input.dispatchKeyEvent', 'Input.dispatchKeyEvent'],
-      callDigest: 'd1168c59b216df65f7a8df273f0b649936168f7d6fa509a0fb5794b7cde87f75',
+      methods: ['Runtime.evaluate', 'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent'],
+      callDigest: '1eec913655d7b158d1c9a77c0e97ca5ab6dbe43ec74bb5e415966ab9ce36954b',
       result: 'Pressed Enter',
       invoke: cdp => cdpTest.pressStr(cdp, 'SESSION', 'Enter'),
     },
