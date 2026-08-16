@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#320)
+
+* Leftover golden-path `perceive -C -d 8` then `scroll` still treats unchanged
+  identities as honest `Outcome: no-change`. Already-at-bottom leftover-ax-scroll
+  receipts whose Next is already `perceive -C -d 8` no longer reprint
+  `scroll: dispatched via scroll` / `Target: down`. `Scrolled by … Position: …`
+  already states the action and the honest no-move. `Outcome: no-change`,
+  Verdict `continue`, Settle ms, and Next `-C -d 8` stay. A Visible-control
+  cap-swap stays `Outcome: changed` with compact unique named samples and still
+  prints dispatched/Target, its body, and Page / Viewport. Leftover `--cards`
+  / `pdf-viewer.v1` / generic non-leftover actions keep their own
+  dispatched/Target. Interactive census / `Console: clean` / Coords clickxy
+  tutorial stay dropped on the action receipt; no Recovery hint that restates
+  Next, no settle-shape Outcome reason, no reprinted Page / Viewport on honest
+  no-change, no tautological AX body on honest no-change, no Hint
+  `--since-action`, no generic Recovery hint on leftover changed, no
+  `+++ Added` signed-commit / `time` GMT selector dump, no relative-time /
+  GMT named samples, shared commit title not on both sample sides, `#297`
+  compact headline, `#295` rect-chrome no-change, `#293` leftover N>0
+  `--cards`, leftover `-C -d 8` then mutating `click --js`, `#285` PDF
+  Next, and `#286`/`#291` hover honest-gate hold.
+  `HOVER_MOUSE_ACK_TIMEOUT_MS` stays 250.
+
 ### Open issue dogfood (#318)
 
 * Leftover golden-path `perceive -C -d 8` then `scroll` still treats unchanged

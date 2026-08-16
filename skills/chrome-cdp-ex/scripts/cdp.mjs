@@ -4646,9 +4646,11 @@ function isLeftoverDefaultAxScrollSettle(output, snapshotOpts = null, actionTarg
   // Honest leftover-ax-scroll no-change whose Next is already perceive does
   // not reprint "re-run perceive -C -d 8 instead of report" (#311), the
   // settle-shape Outcome reason essay (#313), the reprinted Page /
-  // Viewport identity header (#316), or the tautological AX body
-  // "(no changes detected in AX tree)" (#318). Outcome already states
-  // no-change. Position already states scroll identity.
+  // Viewport identity header (#316), the tautological AX body
+  // "(no changes detected in AX tree)" (#318), or the tautological
+  // "scroll: dispatched via scroll" / "Target: down" restatement (#320).
+  // Outcome already states no-change. Position already states scroll
+  // identity. Leftover-ax-scroll changed still prints dispatched/Target.
   // Cards / pdf-viewer / framed leftovers keep their own settle gates.
   if (!isScrollActionTarget(actionTarget)) return false;
   if (isPdfViewerPerceiveOutput(output)) return false;
@@ -5643,10 +5645,20 @@ function formatActionText(result) {
   const diagnosis = result.effects?.diagnosis || null;
   const leftoverAxScroll = isExpectedLeftoverAxScrollNoChange(result.target);
   const leftoverAxScrollNext = leftoverAxScroll && result.recommendation?.commands?.[0];
-  const lines = [
-    `${result.action}: ${result.dispatch.ok ? 'dispatched' : 'failed'} via ${result.dispatch.method}`,
-  ];
-  if (result.target?.label) lines.push(`Target: ${result.target.label}`);
+  // Honest leftover-ax-scroll no-change whose Next is already perceive.
+  // Scrolled by / Position already states the action. dispatched via
+  // scroll + Target: down restates that same leftover input (#320).
+  // Do not strip from leftover-ax-scroll changed, leftover --cards,
+  // pdf-viewer.v1, or generic non-leftover actions.
+  const skipLeftoverNoChangeDispatchChrome = leftoverAxScroll
+    && leftoverAxScrollNextIsPerceive(result)
+    && result.outcome?.status === 'no-change'
+    && result.dispatch?.ok;
+  const lines = [];
+  if (!skipLeftoverNoChangeDispatchChrome) {
+    lines.push(`${result.action}: ${result.dispatch.ok ? 'dispatched' : 'failed'} via ${result.dispatch.method}`);
+    if (result.target?.label) lines.push(`Target: ${result.target.label}`);
+  }
   if (result.outcome?.status) {
     const skipGenericChangedReason = leftoverAxScroll
       && result.outcome.status === 'changed'
