@@ -74,9 +74,9 @@ describe('Phase 6 command-surface characterization', () => {
         expect(cdpTest.commandMeta(spelling), spelling).toBe(command);
       }
     }
-    expect(Buffer.byteLength(cdpTest.helpStr())).toBe(23927);
+    expect(Buffer.byteLength(cdpTest.helpStr())).toBe(23928);
     expect(`sha256:${createHash('sha256').update(cdpTest.helpStr()).digest('hex')}`)
-      .toBe('sha256:1b4469e3fae3017bf4c37abe5732039337e714a04aa36504937a91173134531b');
+      .toBe('sha256:c4215ae4d2bfa5147fed1001769d7023a10bfb987e49c8ec1f4033fb1a83a9cc');
     expect(cdpTest.helpStr()).toMatch(/\.\n$/);
     expect(cdpTest.helpStr().trim()).toBe(contract.cliCases.find(entry => entry.id === 'help').stdout);
     expect(contract.cliCases.find(entry => entry.id === 'no-args-help').stdout)
@@ -101,10 +101,10 @@ describe('Phase 6 command-surface characterization', () => {
         });
         expect(result.status, args.join(' ') || '<no args>').toBe(0);
         expect(result.stderr).toHaveLength(0);
-        expect(result.stdout).toHaveLength(23928);
+        expect(result.stdout).toHaveLength(23929);
         expect(result.stdout.subarray(-2)).toEqual(Buffer.from('\n\n'));
         expect(`sha256:${createHash('sha256').update(result.stdout).digest('hex')}`)
-          .toBe('sha256:cc02e07fc69015350da962be8f1046de70eb9660d808db074097c616ddd25c43');
+          .toBe('sha256:e05d302638eda87dc5a3013449bd77a701fbaa834b00d69e118aeb6e743cae7d');
       }
     } finally {
       rmSync(runtimeRoot, { recursive: true, force: true });
@@ -120,7 +120,7 @@ describe('Phase 6 command-surface characterization', () => {
     expect(MCP_RESOURCE_TEMPLATES).toEqual(contract.mcp.resourceTemplates);
     expect([...MCP_RUN_COMMAND_ALLOWLIST].sort()).toEqual(contract.mcp.runCommandAllowlist);
     expect(digestJson(MCP_TOOL_DEFINITIONS))
-      .toBe('sha256:81540b7b3544232ecc43dbe50020489523064dd058026d2fcfbac957c3180685');
+      .toBe('sha256:afd65413858df961c530ec797373d66766013bf90de6614c605a9a404c7f44b3');
     expect(digestJson(MCP_RESOURCE_TEMPLATES))
       .toBe('sha256:3b37cd2d5f067d70ecda6570c7d9ca3316610e116962ee547cce0386eda8e37d');
     expect(digestJson(MCP_RUN_COMMAND_ALLOWLIST))

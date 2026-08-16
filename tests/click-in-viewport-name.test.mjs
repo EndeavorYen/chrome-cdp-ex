@@ -6,9 +6,12 @@ const { COMMAND_SURFACE } = await import('../skills/chrome-cdp-ex/scripts/lib/co
 
 const HF_HOME = 'https://huggingface.co/';
 const HF_MODELS = 'https://huggingface.co/models';
+const HF_SPACES = 'https://huggingface.co/spaces';
 const HF_HOME_VIEWPORT = { width: 1042, height: 632 };
 const HERO_NAME = 'Browse 2M+ models';
+const APPS_NAME = 'Browse 1M+ applications';
 const TARGET_ID = '54A7C685ABCDEF0123456789ABCDEF01';
+const JSCLICK_SCROLL_INTO_VIEW = { block: 'center', inline: 'center' };
 
 function leftoverGoldenPathDump() {
   return [
@@ -29,6 +32,7 @@ function makeLink({
   href,
   rect,
   tagName = 'A',
+  pageState = null,
 } = {}) {
   const el = {
     tagName,
@@ -59,10 +63,17 @@ function makeLink({
       if (typeof el.onClick === 'function') el.onClick();
     },
     clicked: false,
-    scrollIntoView() {
+    scrollIntoView(opts) {
       el.scrolledIntoView = true;
+      el.scrollIntoViewOpts = opts ? { ...opts } : {};
+      if (!pageState) return;
+      const next = Math.max(0, Math.round(
+        pageState.scrollY + rect.y - pageState.innerHeight / 2 + rect.h / 2,
+      ));
+      pageState.scrollY = next;
     },
     scrolledIntoView: false,
+    scrollIntoViewOpts: null,
   };
   return el;
 }
@@ -83,21 +94,25 @@ function createHfHomePage({
     text: 'Models',
     href: '/models',
     rect: { x: 80, y: 12, w: 64, h: 20 },
+    pageState: state,
   });
   const hero = makeLink({
     text: HERO_NAME,
     href: '/models',
     rect: { x: 40, y: 220, w: 220, h: 28 },
+    pageState: state,
   });
   const belowFoldHero = makeLink({
     text: HERO_NAME,
     href: '/models',
     rect: { x: 40, y: 1800, w: 220, h: 28 },
+    pageState: state,
   });
   const apps = makeLink({
-    text: 'Browse 1M+ applications',
+    text: APPS_NAME,
     href: '/spaces',
-    rect: { x: 280, y: 220, w: 240, h: 28 },
+    rect: { x: 40, y: 1357, w: 240, h: 28 },
+    pageState: state,
   });
   hero.onClick = () => {
     if (heroNavigates) state.href = HF_MODELS;
@@ -107,6 +122,9 @@ function createHfHomePage({
   };
   navModels.onClick = () => {
     if (heroNavigates) state.href = HF_MODELS;
+  };
+  apps.onClick = () => {
+    state.href = HF_SPACES;
   };
   const links = [navModels, hero, belowFoldHero, apps];
   const windowObj = {
@@ -234,6 +252,9 @@ describe('issue #327 click in-viewport named link', () => {
     expect(click.feedbackPolicy).toBe('settle-diff');
     expect(jsclick.feedbackPolicy).toBe('settle-diff');
     expect(T.helpStr()).toMatch(/<sel\|@ref\|name>/);
+    expect(T.helpStr()).toMatch(/scrollIntoView if off-screen/);
+    expect(click.help.summary).toMatch(/accessible name/);
+    expect(jsclick.help.summary).toMatch(/accessible name/);
     expect(T.helpTopicStr('click')).toMatch(/name/);
     expect(T.helpTopicStr('jsclick')).toMatch(/name/);
   });
@@ -254,7 +275,6 @@ describe('issue #327 click in-viewport named link', () => {
     expect(cdp.calls.some(call => call.method === 'Runtime.callFunctionOn')).toBe(false);
     const expr = cdp.calls.find(call => call.method === 'Runtime.evaluate' && String(call.params.expression || '').includes('chrome-cdp-ex.named-in-viewport-click'))?.params.expression;
     expect(expr).toBeTruthy();
-    expect(expr).not.toContain('scrollIntoView');
     expect(expr).not.toContain('scrollTo');
     expect(expr).not.toContain('scrollBy');
   });
@@ -312,16 +332,97 @@ describe('issue #327 click in-viewport named link', () => {
     expect(page.hero.clicked).toBe(true);
   });
 
-  it('does not scroll to find an off-viewport namesake', async () => {
+  it('scrolls a unique off-viewport named control into view then jsclicks it', async () => {
     const page = createHfHomePage();
-    page.hero.innerText = 'Hidden hero';
-    page.hero.textContent = 'Hidden hero';
     const cdp = hfHomeCdp(page);
-    await expect(T.jsClickStr(cdp, 'sid', HERO_NAME)).rejects.toThrow(/not in the viewport/i);
-    expect(page.belowFoldHero.clicked).toBe(false);
-    expect(page.belowFoldHero.scrolledIntoView).toBe(false);
+    const text = await T.jsClickStr(cdp, 'sid', APPS_NAME);
+    expect(page.apps.clicked).toBe(true);
+    expect(page.apps.scrolledIntoView).toBe(true);
+    expect(page.apps.scrollIntoViewOpts).toEqual(JSCLICK_SCROLL_INTO_VIEW);
+    expect(page.hero.clicked).toBe(false);
+    expect(page.hero.scrolledIntoView).toBe(false);
+    expect(page.state.scrollY).toBeGreaterThan(0);
+    expect(page.state.href).toBe(HF_SPACES);
+    expect(text).toMatch(/JS-clicked <A> "Browse 1M\+ applications"/);
+    expect(text).toMatch(/URL: https:\/\/huggingface\.co\/spaces/);
+    expect(text).toMatch(/Scroll: 0 → \d+/);
+    expect(text.length).toBeLessThan(400);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+    const expr = cdp.calls.find(call => call.method === 'Runtime.evaluate' && String(call.params.expression || '').includes('chrome-cdp-ex.named-in-viewport-click'))?.params.expression;
+    expect(expr).toContain('scrollIntoView');
+    expect(expr).toContain("block: 'center'");
+  });
+
+  it('named click from scrollY 0 lands on /spaces without a prior scroll command', async () => {
+    const page = createHfHomePage();
+    const cdp = hfHomeCdp(page);
+    expect(page.state.scrollY).toBe(0);
+    const text = await T.clickStr(cdp, 'sid', APPS_NAME);
+    expect(page.apps.scrolledIntoView).toBe(true);
+    expect(page.apps.clicked).toBe(true);
+    expect(page.state.href).toBe(HF_SPACES);
+    expect(page.state.scrollY).toBeGreaterThan(0);
+    expect(text).toMatch(/Scroll: 0 → \d+/);
+    expect(text).not.toMatch(/RootWebArea/);
+    expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+  });
+
+  it('keeps the off-screen named-click receipt skinny and report-only', async () => {
+    const page = createHfHomePage();
+    const cdp = hfHomeCdp(page);
+    const dispatchText = await T.clickStr(cdp, 'sid', APPS_NAME);
+    let observed = false;
+    const text = await T.runActionWithFeedback({
+      action: 'click',
+      target: T.namedClickActionTarget(APPS_NAME, { targetId: TARGET_ID }),
+      dispatch: async () => dispatchText,
+      dispatchMethod: 'jsclick',
+      feedbackPolicy: T.clickFeedbackPolicy(APPS_NAME),
+      observe: async () => {
+        observed = true;
+        return leftoverGoldenPathDump();
+      },
+    });
+    expect(observed).toBe(false);
+    expect(text).toContain(dispatchText);
+    expect(text).toMatch(/huggingface\.co\/spaces/);
+    expect(text).toMatch(/Scroll: 0 → \d+/);
+    expect(text).not.toMatch(/RootWebArea/);
+    expect(text).not.toMatch(/no changes detected in AX tree/);
+    expect(text.length).toBeLessThan(800);
+  });
+
+  it('still fails closed when the named control does not exist', async () => {
+    const page = createHfHomePage();
+    const cdp = hfHomeCdp(page);
+    await expect(T.jsClickStr(cdp, 'sid', 'Browse 9M+ unicorns')).rejects.toThrow(/Named control not found/i);
+    expect(page.apps.clicked).toBe(false);
+    expect(page.apps.scrolledIntoView).toBe(false);
     expect(page.state.scrollY).toBe(0);
     expect(page.state.href).toBe(HF_HOME);
+  });
+
+  it('n=3 off-screen named click stays one step, skinny chars, and lands on /spaces', async () => {
+    for (let n = 1; n <= 3; n += 1) {
+      const page = createHfHomePage();
+      const cdp = hfHomeCdp(page);
+      const dispatchText = await T.clickStr(cdp, 'sid', APPS_NAME);
+      const text = await T.runActionWithFeedback({
+        action: 'click',
+        target: T.namedClickActionTarget(APPS_NAME, { targetId: TARGET_ID }),
+        dispatch: async () => dispatchText,
+        dispatchMethod: 'jsclick',
+        feedbackPolicy: T.clickFeedbackPolicy(APPS_NAME),
+        observe: async () => leftoverGoldenPathDump(),
+      });
+      expect(page.state.href).toBe(HF_SPACES);
+      expect(page.apps.scrolledIntoView).toBe(true);
+      expect(page.state.scrollY).toBeGreaterThan(0);
+      expect(text.length).toBeLessThan(800);
+      expect(text).toMatch(/Scroll: 0 → \d+/);
+      expect(text).not.toMatch(/RootWebArea/);
+      expect(cdp.calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+    }
   });
 
   it('keeps leftover @ref click on settle-diff and the mouse path', () => {

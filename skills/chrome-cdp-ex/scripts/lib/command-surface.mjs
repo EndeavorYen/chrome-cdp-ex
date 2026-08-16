@@ -500,13 +500,13 @@ export const MCP_TOOL_DEFINITIONS = Object.freeze([
   },
   {
     name: 'click',
-    description: 'Click a selector, @ref, or in-viewport name and return action evidence. Requires confirm: true.',
+    description: 'Click a selector, @ref, or accessible name and return action evidence. Requires confirm: true.',
     inputSchema: {
       type: 'object',
       required: ['target', 'selector', 'confirm'],
       properties: {
         target: stringSchema('Target prefix or named alias.'),
-        selector: stringSchema('CSS selector, @ref, @c ref, or in-viewport accessible name.'),
+        selector: stringSchema('CSS selector, @ref, @c ref, or accessible name.'),
         js: booleanSchema('Use HTMLElement.click() fallback instead of CDP mouse events.'),
         qa: booleanSchema('Return a compact QA summary instead of full action evidence.'),
         confirm: booleanSchema('Must be true to acknowledge browser-state mutation.', { const: true }),
@@ -834,8 +834,8 @@ const COMMAND_SURFACE_INPUT = [
   {"name":"qa","aliases":["qa-page"],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Accessibility","DOM","Runtime","Page","Input","Network","Emulation"],"help":{"synopsis":"qa <target> [--desktop WxH] [--mobile WxH] [--format json]","summary":"Live UI smoke: page info, console health, screenshots, perception, assertions","order":34,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"qa_page","mapper":"qa-page"}},
   {"name":"responsive-audit","aliases":["visual-check"],"needsTarget":true,"mutates":true,"feedbackPolicy":"report-only","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Accessibility","DOM","Runtime","Page","Emulation"],"help":{"synopsis":"responsive-audit <target> [--viewport WxH ...] [--out-dir DIR] [--format json]","summary":"Built-in responsive visual audit (alias: visual-check).","order":35,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"responsive_audit","mapper":"responsive-audit"}},
   {"name":"verify-click","aliases":["verifyclick"],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["DOM","Runtime","Input","Network"],"help":{"synopsis":"verify-click <target> <sel|@ref> [--format json]","summary":"Click once and assert text/network/console outcomes","order":36,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"verify_click","mapper":"verify-click"}},
-  {"name":"click","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["DOM","Runtime","Input"],"help":{"synopsis":"click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]","summary":"Click by CSS selector, @ref, or in-viewport accessible name","order":38,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"click","mapper":"click"}},
-  {"name":"jsclick","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["DOM","Runtime"],"help":{"synopsis":"jsclick <target> <sel|@ref|name>","summary":"JS-only click by CSS selector, @ref, or in-viewport name","order":39,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
+  {"name":"click","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["DOM","Runtime","Input"],"help":{"synopsis":"click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]","summary":"Click by CSS selector, @ref, or accessible name","order":38,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"click","mapper":"click"}},
+  {"name":"jsclick","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["DOM","Runtime"],"help":{"synopsis":"jsclick <target> <sel|@ref|name>","summary":"JS-only click by CSS selector, @ref, or accessible name","order":39,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"clickxy","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Input"],"help":{"synopsis":"clickxy <target> <x> <y> [--format json]","summary":"Click at CSS pixel coordinates (see coordinate note below)","order":40,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"type","aliases":[],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Input"],"help":{"synopsis":"type <target> <text> [--format json]","summary":"Type text at current focus via Input.insertText","order":41,"section":"interaction"},"mcp":{"exposure":"run-command","toolName":null,"mapper":null}},
   {"name":"press","aliases":["key"],"needsTarget":true,"mutates":true,"feedbackPolicy":"settle-diff","outputFormats":["text","json"],"kind":"mutation","authorization":"mutation","evidencePolicy":"action-receipt","domains":["Input"],"help":{"synopsis":"press|key <target> <key> [--format json]","summary":"Press key (Enter, Tab, Escape, Backspace, Space, Arrow*)","order":42,"section":"interaction"},"mcp":{"exposure":"tool-and-run-command","toolName":"press","mapper":"press"}},
@@ -944,8 +944,8 @@ function surfaceDigest(value) {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-export const COMMAND_SURFACE_IDENTITY = '96fe51f8c74aa3d79914f2f1d17858217751f91766a0e34501db19e09299c97a';
-export const MCP_SURFACE_IDENTITY = '171731dc2133889ea1cd07cac240ca99a76e76aee98e50f8336157a7a8f995a2';
+export const COMMAND_SURFACE_IDENTITY = '4010284c1136fd3b1d67f6cfac8acc2c4b36e36d0742a802162522726365d695';
+export const MCP_SURFACE_IDENTITY = 'f8b46d0138186f60b9aaf3cb10947546a7514ee6c62a047da74425503407eed1';
 if (surfaceDigest(COMMAND_SURFACE.commands) !== COMMAND_SURFACE_IDENTITY) {
   fail('commands', `reviewed catalog identity drifted (${surfaceDigest(COMMAND_SURFACE.commands)})`);
 }

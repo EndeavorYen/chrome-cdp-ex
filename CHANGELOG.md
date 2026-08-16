@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### feat: named click scrolls off-screen text into view (#332)
+
+* Named `click` / `jsclick` still finds a control by accessible name in one
+  step with a skinny URL receipt. A unique off-screen hit now reuses the
+  existing CSS / `@ref` `jsclick` `scrollIntoView({ block: 'center',
+  inline: 'center' })` then `el.click()`, so `click "Browse 1M+ applications"`
+  from scrollY 0 lands on `/spaces` without a prior `scroll down` loop.
+* The receipt may include `Scroll: <before> → <after>`. It stays skinny
+  (no perceive dump). In-viewport named clicks still do not scroll. Missing
+  names still fail closed. Mouse `click` `@ref` / CSS is unchanged.
+
 ### feat: submit search to results, not typeahead first hit (#328)
 
 * `press Enter` with a visible listing link (`See N model results`,
@@ -23,9 +34,8 @@
   `"Browse 2M+ models"`). That path uses `HTMLElement.click()` in one step
   with a skinny URL receipt, so the agent does not need `perceive -C -d 8`
   then a failed mouse `click @ref` then `jsclick`.
-* Named queries do not `scrollIntoView` or scroll to find a namesake below
-  the fold. Off-viewport names fail closed. Short of the navigating href is
-  FAIL.
+* In-viewport named queries do not `scrollIntoView`. Short of the navigating
+  href is FAIL. Unique off-screen names are #332.
 * Mouse `click` `@ref` / CSS still fail-closes with `no-input-events` and
   Next `jsclick`. Leftover settle-diff for those forms is unchanged.
 
