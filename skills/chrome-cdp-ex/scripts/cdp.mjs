@@ -4638,13 +4638,14 @@ function isScrollActionTarget(actionTarget = {}) {
 
 function isLeftoverDefaultAxScrollSettle(output, snapshotOpts = null, actionTarget = {}) {
   // Leftover golden-path / default AX (`perceive -C -d 8`) is the settle
-  // shape for the next scroll (#295/#297/#299/#301/#311). Viewport @ref rect chrome and
+  // shape for the next scroll (#295/#297/#299/#301/#311/#313). Viewport @ref rect chrome and
   // fold tags are not a page mutation. Visible-control cap-swap membership
   // is still changed, but the receipt summarizes it with unique named samples
   // (shared commit titles do not occupy both sides, #307) and
   // Next `-C -d 8` without Hint `--since-action` or a generic Recovery hint.
   // Honest leftover-ax-scroll no-change whose Next is already perceive does
-  // not reprint "re-run perceive -C -d 8 instead of report" (#311).
+  // not reprint "re-run perceive -C -d 8 instead of report" (#311) or the
+  // settle-shape Outcome reason essay (#313).
   // Cards / pdf-viewer / framed leftovers keep their own settle gates.
   if (!isScrollActionTarget(actionTarget)) return false;
   if (isPdfViewerPerceiveOutput(output)) return false;
@@ -5592,6 +5593,7 @@ function summarizeActionObservationEffects(effects = {}) {
 
 const LEFTOVER_AX_SCROLL_CENSUS_RE = /^(Interactive: |Console: |Coords: )/;
 const GENERIC_CHANGED_REASON = 'Observed page change after action.';
+const LEFTOVER_AX_SCROLL_NO_CHANGE_REASON = 'Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities.';
 
 function stripLeftoverAxScrollCensusChrome(diff) {
   // Leftover-ax-scroll Next is already `perceive -C -d 8`. Interactive census,
@@ -5616,7 +5618,15 @@ function formatActionText(result) {
     const skipGenericChangedReason = leftoverAxScroll
       && result.outcome.status === 'changed'
       && result.outcome.reason === GENERIC_CHANGED_REASON;
-    const reason = skipGenericChangedReason || !result.outcome.reason
+    // Honest leftover-ax-scroll no-change whose Next is already perceive
+    // already prints (no changes detected in AX tree). The settle-shape
+    // essay restates that body (#313). Do not drop Outcome reasons on
+    // generic non-leftover actions, leftover --cards, or pdf-viewer.v1.
+    const skipLeftoverNoChangeReason = leftoverAxScroll
+      && leftoverAxScrollNextIsPerceive(result)
+      && result.outcome.status === 'no-change'
+      && result.outcome.reason === LEFTOVER_AX_SCROLL_NO_CHANGE_REASON;
+    const reason = skipGenericChangedReason || skipLeftoverNoChangeReason || !result.outcome.reason
       ? ''
       : ` — ${result.outcome.reason}`;
     lines.push(`Outcome: ${result.outcome.status}${reason}`);

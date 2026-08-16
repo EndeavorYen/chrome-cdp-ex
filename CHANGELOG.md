@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#313)
+
+* Leftover golden-path `perceive -C -d 8` then `scroll` still treats unchanged
+  identities as honest `Outcome: no-change`. Already-at-bottom leftover-ax-scroll
+  receipts whose Next is already `perceive -C -d 8` print `Outcome: no-change`
+  without the settle-shape reason `Settle shape was leftover golden-path AX;
+  viewport rect chrome did not replace identities.` The body already says
+  `(no changes detected in AX tree)`. Verdict `continue` and Next `-C -d 8`
+  stay. A Visible-control cap-swap stays `Outcome: changed` with compact unique
+  named samples. Generic non-leftover actions still print an Outcome reason.
+  Leftover `--cards` / `pdf-viewer.v1` no-change still print their settle-shape
+  Outcome reasons. Interactive census / `Console: clean` / Coords clickxy
+  tutorial stay dropped on the action receipt; the leftover `perceive -C -d 8`
+  dump itself still prints those header lines. No Recovery hint that restates
+  Next, no Hint `--since-action`, no generic Recovery hint on leftover
+  changed, no `+++ Added` signed-commit / `time` GMT selector dump, no
+  relative-time / GMT named samples, shared commit title not on both sample
+  sides, `#297` compact headline, `#295` rect-chrome no-change, `#293`
+  leftover N>0 `--cards`, leftover `-C -d 8` then mutating `click --js`,
+  `#285` PDF Next, and `#286`/`#291` hover honest-gate hold.
+  `HOVER_MOUSE_ACK_TIMEOUT_MS` stays 250.
+
 ### Open issue dogfood (#311)
 
 * Leftover golden-path `perceive -C -d 8` then `scroll` still treats unchanged

@@ -296,6 +296,26 @@ describe('action recovery lib', () => {
     expect(rec.recoveryHint).toBeNull();
     expect(rec.reason).toMatch(/leftover golden-path AX/);
   });
+
+  it('#313 leftover golden-path AX no-change still authors the settle-shape reason internally', () => {
+    const rec = buildNoChangeOutcomeRecommendation({
+      action: 'scroll',
+      target: '561F7DA8',
+      targetInput: 'down 80',
+      targetInfo: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        input: 'down 80',
+        resolvedBy: 'scroll',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+      },
+      extraText: '(no changes detected in AX tree)',
+    });
+    expect(rec.strategy).toBe('continue');
+    expect(rec.outcomeStatus).toBe('no-change');
+    expect(rec.commands).toEqual(['cdp perceive 561F7DA8 -C -d 8']);
+    expect(rec.recoveryHint).toBeNull();
+    expect(rec.reason).toBe('Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities.');
+  });
 });
 
 
