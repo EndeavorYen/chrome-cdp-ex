@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Open issue dogfood (#309)
+
+* Leftover golden-path `perceive -C -d 8` then `scroll` still treats a
+  Visible-control cap-swap as `Outcome: changed`. Honest leftover-ax-scroll
+  receipts whose Next is already `perceive -C -d 8` no longer reprint
+  Interactive census / `Console: clean` / Coords clickxy tutorial chrome,
+  and no longer reprint Outcome / Receipt / Verdict as the same
+  "Observed page change after action" sentence three times. The leftover
+  `perceive -C -d 8` dump itself still prints those header lines. A new
+  file, heading, or link still prints a structural diff. Named samples,
+  no Hint `--since-action`, no generic Recovery hint, no `+++ Added`
+  signed-commit / `time` GMT selector dump, no relative-time / GMT named
+  samples, shared commit title not on both sample sides, `#297` compact
+  headline, `#295` rect-chrome no-change, `#293` leftover N>0 `--cards`,
+  leftover `-C -d 8` then mutating `click --js`, `#285` PDF Next, and
+  `#286`/`#291` hover honest-gate hold. `HOVER_MOUSE_ACK_TIMEOUT_MS`
+  stays 250.
+
 ### Open issue dogfood (#307)
 
 * Leftover golden-path `perceive -C -d 8` then `scroll` still treats a

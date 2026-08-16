@@ -7894,6 +7894,16 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     'config.json',
   ];
   const SHARED_COMMIT_TITLE = 'Add diffusers weights (modular pipeline) (#2)';
+  const LIVE_INTERACTIVE = 'Interactive: 113 a, 1 input[text], 21 button, 9 div, 2 input[search], 1 iframe';
+  const LIVE_COORDS = 'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)';
+  const LIVE_CENSUS_COUNTS = {
+    a: 113,
+    'input[text]': 1,
+    button: 21,
+    div: 9,
+    'input[search]': 2,
+    iframe: 1,
+  };
 
   function hfVisibleControl(label, y, selector = null) {
     return {
@@ -8012,6 +8022,37 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     ];
   }
 
+  function liveCensusCapSwapChrome() {
+    // Live leftover-ax-scroll after overlay cd661234: 4 left / 5 entered.
+    // Named samples are language_model + shared commit left; qwen_7B /
+    // upload-large-folder / rvq_depth_decoder entered. Unlabeled img/div
+    // vs link/button fill the "... and 2 more" membership.
+    return [
+      hfVisibleControl('language_model', 100),
+      hfVisibleControl(SHARED_COMMIT_TITLE, 128, 'a[href="/MiniMaxAI/MiniMax-Music3/commit/left"]'),
+      hfUnlabeledControl('img', 156, 'img.logo'),
+      hfUnlabeledControl('div', 184, 'div.nav-icon'),
+    ];
+  }
+
+  function liveCensusCapSwapContent() {
+    return [
+      hfVisibleControl('qwen_7B', 100),
+      hfVisibleControl('Add files using upload-large-folder tool', 128),
+      hfVisibleControl('rvq_depth_decoder', 156),
+      hfUnlabeledControl('a', 184, 'a[href="/model"]'),
+      {
+        tag: 'button',
+        role: 'button',
+        label: 'button',
+        clickable: true,
+        rect: { x: 8, y: 212, w: 24, h: 24 },
+        selector: 'button.icon',
+        hints: { id: '', classes: ['icon'] },
+      },
+    ];
+  }
+
   function hfMeta(scrollY, files, {
     foldTag = false,
     capSwap = false,
@@ -8019,9 +8060,12 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     titleChrome = false,
     timestampCapSwap = false,
     sharedCommitCapSwap = false,
+    liveCensusCapSwap = false,
   } = {}) {
     const fileControls = files.map(file => hfVisibleControl(file.name, file.y - scrollY));
-    let visibleControls = sharedCommitCapSwap
+    let visibleControls = liveCensusCapSwap
+      ? (scrollY > 0 ? liveCensusCapSwapContent() : liveCensusCapSwapChrome())
+      : sharedCommitCapSwap
       ? (scrollY > 0 ? sharedCommitCapSwapContent() : sharedCommitCapSwapChrome())
       : timestampCapSwap
       ? (scrollY > 0
@@ -8045,12 +8089,12 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
       url: HF_URL,
       contentType: 'text/html',
       vw: 1042,
-      vh: 900,
+      vh: liveCensusCapSwap ? 632 : 900,
       scrollY,
-      scrollMax: 2400,
-      counts: { a: files.length },
+      scrollMax: liveCensusCapSwap ? 547 : 2400,
+      counts: liveCensusCapSwap ? LIVE_CENSUS_COUNTS : { a: files.length },
       focused: 'none',
-      layoutMap: foldTag || capSwap
+      layoutMap: foldTag || capSwap || liveCensusCapSwap
         ? { navigation: [{ w: 603, h: 28, ...(scrollY > 0 ? { vis: 'above' } : {}) }] }
         : {},
       styleHints: {},
@@ -8059,7 +8103,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     });
   }
 
-  function hfAx(files, { foldTag = false, capSwap = false, noisyCapSwap = false, timestampCapSwap = false, sharedCommitCapSwap = false } = {}) {
+  function hfAx(files, { foldTag = false, capSwap = false, noisyCapSwap = false, timestampCapSwap = false, sharedCommitCapSwap = false, liveCensusCapSwap = false } = {}) {
     const links = files.map((file, i) => ({
       nodeId: String(20 + i),
       parentId: '10',
@@ -8067,7 +8111,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
       name: { value: file.name },
       backendDOMNodeId: file.backend,
     }));
-    const withNav = foldTag || capSwap || noisyCapSwap || timestampCapSwap || sharedCommitCapSwap;
+    const withNav = foldTag || capSwap || noisyCapSwap || timestampCapSwap || sharedCommitCapSwap || liveCensusCapSwap;
     return [
       {
         nodeId: '1',
@@ -8103,17 +8147,19 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     titleChrome = false,
     timestampCapSwap = false,
     sharedCommitCapSwap = false,
+    liveCensusCapSwap = false,
   } = {}) {
     const state = {
       scrollY,
       clicks,
       files: files.map(file => ({ ...file })),
       foldTag,
-      capSwap: capSwap || noisyCapSwap || timestampCapSwap || sharedCommitCapSwap,
+      capSwap: capSwap || noisyCapSwap || timestampCapSwap || sharedCommitCapSwap || liveCensusCapSwap,
       noisyCapSwap,
       titleChrome,
       timestampCapSwap,
       sharedCommitCapSwap,
+      liveCensusCapSwap,
     };
     const cdp = {
       calls: [],
@@ -8145,6 +8191,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
                   titleChrome: state.titleChrome,
                   timestampCapSwap: state.timestampCapSwap,
                   sharedCommitCapSwap: state.sharedCommitCapSwap,
+                  liveCensusCapSwap: state.liveCensusCapSwap,
                 }),
               },
             });
@@ -8158,6 +8205,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
             noisyCapSwap: state.noisyCapSwap,
             timestampCapSwap: state.timestampCapSwap,
             sharedCommitCapSwap: state.sharedCommitCapSwap,
+            liveCensusCapSwap: state.liveCensusCapSwap,
           });
           if (state.clicks) {
             nodes.push({
@@ -9111,6 +9159,131 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
     expect(text).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+  });
+
+  it('#309 leftover -C -d 8 then scroll drops Interactive/Coords census and Outcome tautology', async () => {
+    const { cdp } = createHfPage({ liveCensusCapSwap: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
+    expect(leftoverDump).toContain(LIVE_INTERACTIVE);
+    expect(leftoverDump).toContain(LIVE_COORDS);
+    expect(leftoverDump).toMatch(/^Console: clean$/m);
+    expect(leftoverDump).toMatch(/language_model/);
+    const languageModel = T.formatVisibleControlLine(liveCensusCapSwapChrome()[0]);
+    const commitLeft = T.formatVisibleControlLine(liveCensusCapSwapChrome()[1]);
+    const qwen = T.formatVisibleControlLine(liveCensusCapSwapContent()[0]);
+    const upload = T.formatVisibleControlLine(liveCensusCapSwapContent()[1]);
+    const rvq = T.formatVisibleControlLine(liveCensusCapSwapContent()[2]);
+    expect(languageModel).toContain('"language_model"');
+    expect(commitLeft).toContain('"Add diffusers weights (modular pipeline) (#2)"');
+    expect(qwen).toContain('"qwen_7B"');
+    expect(upload).toContain('"Add files using upload-large-folder tool"');
+    expect(rvq).toContain('"rvq_depth_decoder"');
+    expect(leftoverDump).toContain(languageModel.split(' (')[0]);
+    const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    expect(settleBaseline.output).toBe(leftoverDump);
+    expect(cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length).toBe(axBefore);
+    const dispatchText = await T.scrollStr(cdp, 'sid', 'down', '80');
+    expect(dispatchText).toBe('Scrolled by (0, 80). Position: (0, 80)');
+    const afterDump = await T.perceiveStr(
+      cdp,
+      'sid',
+      new T.RingBuffer(8),
+      new T.RingBuffer(8),
+      refMap,
+      { output: leftoverDump, snapshotOpts: store.snapshotOpts },
+      { ...T.parsePerceiveArgs(['-C', '-d', '8']), targetPrefix: HF_PREFIX },
+      refState,
+    );
+    expect(afterDump).toContain(LIVE_INTERACTIVE);
+    expect(afterDump).toContain(LIVE_COORDS);
+    expect(afterDump).toMatch(/qwen_7B/);
+    expect(afterDump).toMatch(/Add files using upload-large-folder tool/);
+    expect(afterDump).toMatch(/rvq_depth_decoder/);
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(after).toContain('- language_model');
+    expect(after).toContain('- Add diffusers weights (modular pipeline) (#2)');
+    expect(after).toContain('+ qwen_7B');
+    expect(after).toContain('+ Add files using upload-large-folder tool');
+    expect(after).toContain('+ rvq_depth_decoder');
+    expect(after).toContain(LIVE_INTERACTIVE);
+    expect(after).toContain(LIVE_COORDS);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 1481 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, { dispatchText });
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(text).toMatch(/^Outcome: changed$/m);
+    expect(text).toMatch(/^Verdict: continue$/m);
+    expect(text).not.toMatch(/Observed page change after action/);
+    expect(text).not.toMatch(/^Receipt: changed$/m);
+    expect(text).not.toMatch(/^Interactive:/m);
+    expect(text).not.toMatch(/^Console: clean$/m);
+    expect(text).not.toMatch(/^Coords: /m);
+    expect(text).not.toMatch(/use clickxy with these values/);
+    expect(text).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(text).toContain('- language_model');
+    expect(text).toContain('+ qwen_7B');
+    expect(text).toContain('+ rvq_depth_decoder');
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/\+\+\+ Added/);
+    expect(receipt).toMatch(/^Outcome: changed$/m);
+    expect(receipt).not.toMatch(/^Receipt: changed$/m);
+    expect(receipt).not.toMatch(/Observed page change after action/);
+    expect(receipt).not.toMatch(/^Interactive:/m);
+    expect(receipt).not.toMatch(/use clickxy with these values/);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+  });
+
+  it('#309 leftover -C -d 8 census drop plus a new file still prints tokenizer.json', async () => {
+    const { cdp, state } = createHfPage({ liveCensusCapSwap: true });
+    const store = { output: null, snapshotOpts: null };
+    const refMap = new Map();
+    const refState = {};
+    const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
+    expect(leftoverDump).toContain(LIVE_INTERACTIVE);
+    const actionTarget = scrollTarget();
+    const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
+    state.files = [...DEFAULT_FILES, ADDED_FILE];
+    await T.scrollStr(cdp, 'sid', 'down', '80');
+    const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
+    expect(after).toMatch(/tokenizer\.json/);
+    expect(after).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(T.actionDomDiffShowsChange(after)).toBe(true);
+    actionTarget.expectedOutcome = 'leftover-ax-scroll-no-change';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'scroll',
+      target: { targetId: HF_TARGET_ID, ...actionTarget },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 1481 },
+      effects: { domDiff: after, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    const text = T.formatActionText(result);
+    expect(result.outcome.status).toBe('changed');
+    expect(text).toMatch(/tokenizer\.json/);
+    expect(text).toMatch(/^Outcome: changed$/m);
+    expect(text).not.toMatch(/^Receipt: changed$/m);
+    expect(text).not.toMatch(/^Interactive:/m);
+    expect(text).not.toMatch(/use clickxy with these values/);
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
   });
 });
 

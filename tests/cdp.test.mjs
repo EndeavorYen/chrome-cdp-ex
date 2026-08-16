@@ -4782,6 +4782,225 @@ describe('Perceive diff baseline', () => {
     expect(receipt).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
   });
 
+  it('#309 leftover-ax-scroll changed receipt drops Interactive/Coords census and Outcome tautology', () => {
+    // Live leftover-ax-scroll ActionResult after overlay cd661234. Cap-swap is
+    // already honest changed / named / unique. The leftover chrome is the
+    // unchanged Interactive census + clickxy Coords tutorial, plus Outcome /
+    // Receipt / Verdict reprinting "Observed page change after action." Next
+    // is already perceive -C -d 8, not clickxy.
+    const LIVE_INTERACTIVE = 'Interactive: 113 a, 1 input[text], 21 button, 9 div, 2 input[search], 1 iframe';
+    const LIVE_COORDS = 'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)';
+    const languageModel = T.formatVisibleControlLine({
+      tag: 'a',
+      role: 'link',
+      label: 'language_model',
+      clickable: true,
+      rect: { x: 8, y: 100, w: 160, h: 22 },
+      selector: 'a[href="#lm"]',
+    });
+    const commitLeft = T.formatVisibleControlLine({
+      tag: 'a',
+      role: 'link',
+      label: 'Add diffusers weights (modular pipeline) (#2)',
+      clickable: true,
+      rect: { x: 8, y: 128, w: 280, h: 22 },
+      selector: 'a[href="/MiniMaxAI/MiniMax-Music3/commit/left"]',
+    });
+    const imgLeft = T.formatVisibleControlLine({
+      tag: 'img',
+      label: 'img',
+      clickable: true,
+      rect: { x: 8, y: 156, w: 24, h: 24 },
+      selector: 'img.logo',
+    });
+    const divLeft = T.formatVisibleControlLine({
+      tag: 'div',
+      label: 'div',
+      clickable: true,
+      rect: { x: 8, y: 184, w: 24, h: 24 },
+      selector: 'div.nav-icon',
+    });
+    const qwen = T.formatVisibleControlLine({
+      tag: 'a',
+      role: 'link',
+      label: 'qwen_7B',
+      clickable: true,
+      rect: { x: 8, y: 100, w: 160, h: 22 },
+      selector: 'a[href="#qwen"]',
+    });
+    const upload = T.formatVisibleControlLine({
+      tag: 'a',
+      role: 'link',
+      label: 'Add files using upload-large-folder tool',
+      clickable: true,
+      rect: { x: 8, y: 128, w: 280, h: 22 },
+      selector: 'a[href="#upload"]',
+    });
+    const rvq = T.formatVisibleControlLine({
+      tag: 'a',
+      role: 'link',
+      label: 'rvq_depth_decoder',
+      clickable: true,
+      rect: { x: 8, y: 156, w: 160, h: 22 },
+      selector: 'a[href="#rvq"]',
+    });
+    const linkEntered = T.formatVisibleControlLine({
+      tag: 'a',
+      role: 'link',
+      label: 'link',
+      clickable: true,
+      rect: { x: 8, y: 184, w: 24, h: 24 },
+      selector: 'a[href="/model"]',
+    });
+    const buttonEntered = T.formatVisibleControlLine({
+      tag: 'button',
+      role: 'button',
+      label: 'button',
+      clickable: true,
+      rect: { x: 8, y: 212, w: 24, h: 24 },
+      selector: 'button.icon',
+    });
+    expect(languageModel).toContain('"language_model"');
+    expect(commitLeft).toContain('"Add diffusers weights (modular pipeline) (#2)"');
+    expect(qwen).toContain('"qwen_7B"');
+    expect(upload).toContain('"Add files using upload-large-folder tool"');
+    expect(rvq).toContain('"rvq_depth_decoder"');
+
+    const header = [
+      'Page: MiniMaxAI/MiniMax-Music3 at main — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
+      'Viewport: 1042×632 | Scroll: 467/547 (85%) | Focused: none',
+      LIVE_INTERACTIVE,
+      'Console: clean',
+      LIVE_COORDS,
+      '',
+    ];
+    const previous = [
+      ...header,
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,180 160×22)',
+      '    [link] README.md  @2  (24,208 160×22)',
+      '',
+      '[Visible controls]',
+      `  ${languageModel}`,
+      `  ${commitLeft}`,
+      `  ${imgLeft}`,
+      `  ${divLeft}`,
+    ].join('\n');
+    const currentHeader = header.map(line => line.replace(
+      'Scroll: 467/547 (85%)',
+      'Scroll: 547/547 (100%)',
+    ));
+    const current = [
+      ...currentHeader,
+      '[RootWebArea] MiniMax-Music3',
+      '    [link] LICENSE  @1  (24,100 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)',
+      '',
+      '[Visible controls]',
+      `  ${qwen}`,
+      `  ${upload}`,
+      `  ${rvq}`,
+      `  ${linkEntered}`,
+      `  ${buttonEntered}`,
+    ].join('\n');
+    expect(previous).toContain(LIVE_INTERACTIVE);
+    expect(previous).toContain(LIVE_COORDS);
+    expect(current).toContain(LIVE_INTERACTIVE);
+    expect(current).toContain('Scroll: 547/547 (100%)');
+
+    const diff = T.formatPerceiveDiffOutput(previous, current, { mode: 'since-action' });
+    expect(T.actionDomDiffShowsChange(diff)).toBe(true);
+    expect(diff).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(diff).toContain('- language_model');
+    expect(diff).toContain('- Add diffusers weights (modular pipeline) (#2)');
+    expect(diff).toContain('+ qwen_7B');
+    expect(diff).toContain('+ Add files using upload-large-folder tool');
+    expect(diff).toContain('+ rvq_depth_decoder');
+    expect(diff).toMatch(/ {2}\.\.\. and 2 more left/);
+    expect(diff).toMatch(/ {2}\.\.\. and 2 more entered/);
+    expect(diff).toContain(LIVE_INTERACTIVE);
+    expect(diff).toContain(LIVE_COORDS);
+    expect(diff).toMatch(/^Console: clean$/m);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).not.toContain(LIVE_INTERACTIVE);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).not.toContain(LIVE_COORDS);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).not.toMatch(/^Console: clean$/m);
+    expect(T.stripLeftoverAxScrollCensusChrome(diff)).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(diff).not.toMatch(/\+\+\+ Added/);
+    expect(diff).not.toMatch(/span\[title=/);
+    expect(diff).not.toMatch(/time\[title=/);
+    expect(diff).not.toMatch(/^\+ 2 days ago$/m);
+    expect(diff).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
+
+    const addedFile = current.replace(
+      '    [link] README.md  @2  (24,128 160×22)',
+      '    [link] README.md  @2  (24,128 160×22)\n    [link] config.json  @3  (24,156 160×22)\n    [heading] Files and versions  @4  (24,184 200×22)',
+    );
+    const changed = T.formatPerceiveDiffOutput(previous, addedFile, { mode: 'since-action' });
+    expect(changed).toMatch(/\[link\] config\.json/);
+    expect(changed).toMatch(/\[heading\] Files and versions/);
+    expect(changed).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(T.actionDomDiffShowsChange(changed)).toBe(true);
+
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: '561F7DA8ABCDEF0123456789ABCDEF01',
+        expectedOutcome: 'leftover-ax-scroll-no-change',
+        resolvedBy: 'scroll',
+        label: 'down',
+      },
+      dispatch: { ok: true, method: 'scroll' },
+      settle: { ok: true, durationMs: 1481 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+      nextHint: 'Use perceive --since-action if more evidence is needed',
+    });
+    const text = T.formatActionText(result);
+    const receipt = T.formatActionResultOutput(result, {
+      dispatchText: 'Scrolled by (0, 80). Position: (0, 547)',
+    });
+    expect(result.outcome.status).toBe('changed');
+    expect(result.verdict.status).toBe('continue');
+    expect(result.receipt.recoveryHint).toBeNull();
+    expect(text).toMatch(/^Outcome: changed$/m);
+    expect(text).toMatch(/^Verdict: continue$/m);
+    expect(text).not.toMatch(/Observed page change after action/);
+    expect(text).not.toMatch(/^Receipt: changed$/m);
+    expect(text).not.toMatch(/^Interactive:/m);
+    expect(text).not.toMatch(/^Console: clean$/m);
+    expect(text).not.toMatch(/^Coords: /m);
+    expect(text).not.toMatch(/use clickxy with these values/);
+    expect(text).toMatch(/Page: MiniMaxAI\/MiniMax-Music3 at main/);
+    expect(text).toMatch(/Viewport: 1042×632 \| Scroll: 547\/547 \(100%\)/);
+    expect(text).toMatch(/Visible-control cap swap: 4 left, 5 entered/);
+    expect(text).toContain('- language_model');
+    expect(text).toContain('+ qwen_7B');
+    expect(text).toContain('+ Add files using upload-large-folder tool');
+    expect(text).toContain('+ rvq_depth_decoder');
+    expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(text).not.toMatch(/Hint: Use perceive --since-action/);
+    expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
+    expect(text).not.toMatch(/\+\+\+ Added/);
+    expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
+    expect(receipt).toMatch(/^Outcome: changed$/m);
+    expect(receipt).not.toMatch(/^Receipt: changed$/m);
+    expect(receipt).not.toMatch(/Observed page change after action/);
+    expect(receipt).not.toMatch(/^Interactive:/m);
+    expect(receipt).not.toMatch(/use clickxy with these values/);
+    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+
+    const genericChanged = T.createActionResult({
+      action: 'click',
+      target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 40 },
+      effects: { domDiff: '+   [StaticText] Saved', console: [], network: [], navigation: null },
+    });
+    expect(genericChanged.outcome.status).toBe('changed');
+    expect(T.formatActionText(genericChanged)).toContain('Outcome: changed — Observed page change after action.');
+    expect(T.formatActionText(genericChanged)).toContain('Receipt: changed');
+    expect(T.formatActionText(genericChanged)).toContain('Verdict: continue — Observed page change after action.');
+  });
+
   it('#299 leftover-ax-scroll no-change receipt has Next -C -d 8 without Hint --since-action', () => {
     const previous = [
       'Page: MiniMax-Music3 — https://huggingface.co/MiniMaxAI/MiniMax-Music3/tree/main',
