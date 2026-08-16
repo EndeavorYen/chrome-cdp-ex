@@ -8680,26 +8680,30 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     const leftoverDump = await leftoverGoldenPath(cdp, store, refMap, refState);
     expect(leftoverDump).toMatch(/^Page: /m);
     expect(leftoverDump).not.toMatch(/This commit is signed/);
-    const signed = T.formatVisibleControlLine({
+    const signedReceipt = T.formatVisibleControlLine({
       tag: 'span',
       label: 'This commit is signed and the signature is verified',
       title: 'This commit is signed and the signature is verified',
       selector: 'span[title="This commit is signed and the signature is verified"]',
       hints: { classes: ['mx-2', 'text-green-500', 'dark:text-green-600'] },
     });
-    const timeGmt = T.formatVisibleControlLine({
+    const timeReceipt = T.formatVisibleControlLine({
       tag: 'time',
       label: 'Fri, 14 Aug 2026 10:51:40 GMT',
       title: 'Fri, 14 Aug 2026 10:51:40 GMT',
       selector: 'time[title="Fri, 14 Aug 2026 10:51:40 GMT"]',
       hints: { classes: ['ml-auto', 'hidden', 'flex-none'] },
     });
-    expect(signed).toBe(
+    expect(signedReceipt).toBe(
       'span "This commit is signed and the signature is verified" span[title="This commit is signed and the signature is verified"] .mx-2.text-green-500.dark:text-green-600',
     );
-    expect(timeGmt).toBe(
+    expect(timeReceipt).toBe(
       'time "Fri, 14 Aug 2026 10:51:40 GMT" time[title="Fri, 14 Aug 2026 10:51:40 GMT"] .ml-auto.hidden.flex-none',
     );
+    const signedDump = T.formatVisibleControlLine(hfTitleChromeControls()[0]);
+    const timeDump = T.formatVisibleControlLine(hfTitleChromeControls()[1]);
+    expect(signedDump).toContain('(400,120 18×18)');
+    expect(signedDump).toContain('span[title="This commit is signed and the signature is verified"]');
     const axBefore = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
     const actionTarget = scrollTarget();
     const settleBaseline = await recaptureSettleBaseline(cdp, store, actionTarget, refMap, refState);
@@ -8717,8 +8721,8 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
       { ...T.parsePerceiveArgs(['-C', '-d', '8']), targetPrefix: HF_PREFIX },
       refState,
     );
-    expect(afterDump).toContain(signed);
-    expect(afterDump).toContain(timeGmt);
+    expect(afterDump).toContain(signedDump);
+    expect(afterDump).toContain(timeDump);
     const after = await observeActionDiffForTarget(cdp, store, actionTarget, settleBaseline, refMap, refState);
     expect(after).not.toMatch(/\+\+\+ Added/);
     expect(after).not.toMatch(/^\+ .*span\[title=/m);
