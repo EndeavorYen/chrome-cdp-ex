@@ -158,6 +158,8 @@ function checkReleaseMetadataContract(docs) {
       if (hasCandidateReleaseClaim(text, version)) {
         failures.push(`${label} must not present unreleased candidate v${version} as a published or measured release`);
       }
+    } else if (/\bunreleased candidate\b/i.test(text)) {
+      failures.push(`${label} must not keep the unreleased-candidate banner after v${version} is published`);
     }
   }
   return failures;

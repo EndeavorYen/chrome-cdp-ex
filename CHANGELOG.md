@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [2.16.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.15.0...v2.16.0) (2026-08-17)
+
+v2.16.0 makes live-session attach the product: agents use the Chrome tab you
+already have, finish common jobs in one step, and get a skinny receipt. It adds
+named in-viewport and off-screen click, search-submit to listing results rather
+than typeahead, first-class scroll to top/bottom (including nested overflow),
+Chrome PDF plugin page-1 text, and overlay detect on the locked board. Document
+nav, hover, fill, and scroll keep the same commands while dropping leftover AX
+and load-event wait from the happy path. The README first screen is Cool visual
+→ live-session advantage → user-facing 10/8/9 win score plus steps / token /
+time bar charts (chrome-cdp-ex 10 PASS, Browser Use 8 PASS, Playwright 9 PASS;
+measured 2026-08-17 on `22c525d4` with same-machine Playwright n=3). The
+ten-row lab table lives in `docs/pk-324-board.md`, not the README.
+
 ### docs: lead README with cool visual and win-score PK
 
 * README first screen is Cool (poster / 60-second demo / redesign stills)

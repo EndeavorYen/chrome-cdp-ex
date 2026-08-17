@@ -14,6 +14,15 @@ function unreleasedChangelog(text) {
   return match ? match[0] : '';
 }
 
+function latestPublishedChangelog(text) {
+  const match = text.match(/^## \[\d+\.\d+\.\d+\][\s\S]*?(?=^## \[)/m);
+  return match ? match[0] : '';
+}
+
+function currentFacingChangelog(text) {
+  return `${unreleasedChangelog(text)}\n${latestPublishedChangelog(text)}`;
+}
+
 describe('claim-honest table documentation', () => {
   it('removes unbounded full-table claims from current-facing docs', () => {
     const currentFacing = [
@@ -21,7 +30,7 @@ describe('claim-honest table documentation', () => {
       files.reference,
       files.readme,
       files.skill,
-      unreleasedChangelog(files.changelog),
+      currentFacingChangelog(files.changelog),
     ].join('\n');
     expect(currentFacing).not.toMatch(/Full table data/i);
     expect(currentFacing).not.toMatch(/no row limit/i);
@@ -30,7 +39,7 @@ describe('claim-honest table documentation', () => {
   });
 
   it('explains bounded observation, completeness, collection, continuation, ceilings, confirmation, and loadall', () => {
-    const docs = `${files.commands}\n${unreleasedChangelog(files.changelog)}`;
+    const docs = `${files.commands}\n${currentFacingChangelog(files.changelog)}`;
     expect(docs).toMatch(/bounded observation/i);
     expect(docs).toMatch(/completeness/i);
     expect(docs).toMatch(/--collect/);

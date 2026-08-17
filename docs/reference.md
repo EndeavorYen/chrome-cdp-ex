@@ -1,7 +1,5 @@
 # chrome-cdp-ex Reference
 
-> **Unreleased candidate:** repository metadata is v2.16.0; install links and measured release evidence remain pinned to published v2.15.0.
-
 > **TL;DR** — This is the technical reference for `chrome-cdp-ex`: command map, action evidence behavior, browser setup, Electron/WSL2 notes, and benchmark rules. Start with the README when you want the product story.
 
 ## Command Map
@@ -166,13 +164,13 @@ For large pages, `perceive --adaptive` (or `perceive --last auto`) chooses a tex
 
 Official releases live on GitHub, not the npm registry. Use the release tag, release notes, GitHub Pages proof page, and attached tarball as the publish surface.
 
-Pinned install: [v2.15.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0).
+Pinned install: [v2.16.0 release notes](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.16.0).
 
 ```bash
-curl -L -o pi-chrome-cdp-2.15.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.15.0/pi-chrome-cdp-2.15.0.tgz
-mkdir -p chrome-cdp-ex-v2.15.0
-tar -xzf pi-chrome-cdp-2.15.0.tgz -C chrome-cdp-ex-v2.15.0 --strip-components=1
-cd chrome-cdp-ex-v2.15.0
+curl -L -o pi-chrome-cdp-2.16.0.tgz https://github.com/EndeavorYen/chrome-cdp-ex/releases/download/v2.16.0/pi-chrome-cdp-2.16.0.tgz
+mkdir -p chrome-cdp-ex-v2.16.0
+tar -xzf pi-chrome-cdp-2.16.0.tgz -C chrome-cdp-ex-v2.16.0 --strip-components=1
+cd chrome-cdp-ex-v2.16.0
 claude --plugin-dir .
 ```
 
