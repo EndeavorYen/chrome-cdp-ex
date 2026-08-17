@@ -35,9 +35,23 @@ Playwright is for clean isolated tests. This is for the session that already has
 
 ## 10 jobs. Who finishes.
 
-10 jobs. chrome-cdp-ex **10 PASS**. Browser Use **8 PASS**. Playwright **9 PASS**.
-
 Measured 2026-08-17. chrome-cdp-ex and Browser Use on main `22c525d4`. Playwright: same machine, headed Chromium, 1042×632, n=3 median.
+
+| | chrome-cdp-ex | Browser Use | Playwright |
+|---|:---:|:---:|:---:|
+| **Total success** | **10/10** | 8/10 | 9/10 |
+| scroll to bottom (HF home) | **PASS** | **PASS** | **PASS** |
+| nested overflow (Comfy #content-container) | **PASS** | **PASS** | **PASS** |
+| click Browse 2M+ models | **PASS** | **PASS** | **PASS** |
+| search submit bert | **PASS** | **PASS** | **PASS** |
+| nav example.org | **PASS** | **PASS** | **PASS** |
+| read HF home | **PASS** | **PASS** | **PASS** |
+| hover reveal | **PASS** | **PASS** | **PASS** |
+| **PDF text one page** | **PASS** | FAIL | FAIL |
+| **overlay detect** | **PASS** | FAIL | **PASS** |
+| click Browse 1M+ applications | **PASS** | **PASS** | **PASS** |
+
+Same locked jobs, not first glance — steps, tokens, and wall clock.
 
 Blue = chrome-cdp-ex · Amber = Browser Use · Green = Playwright. X-axis is the 10 jobs. Not averaged.
 

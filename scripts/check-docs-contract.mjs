@@ -225,8 +225,9 @@ export const LOCKED_LIVE_SESSION_BOARD = LOCKED_PK_BOARD;
 export const README_FIRST_SCREEN_MARKERS = Object.freeze([
   ['cool', 'codex-killer-path-demo-poster.png', 'Cool visual (poster / 60-second demo)'],
   ['advantage', '## The tab you already have', 'project advantage'],
-  ['scoreboard', '**10 PASS**', 'win score'],
-  ['charts', 'experiment/pk-324-steps.svg', 'PK bar charts'],
+  ['comparison', '## 10 jobs. Who finishes.', 'comparison PK table'],
+  ['scoreboard', '**10/10**', 'PK table total 10/10'],
+  ['charts', 'experiment/pk-324-steps.svg', 'PK bar charts below the table'],
   ['demo', '## Demo', 'demo links'],
   ['quickstart', '## Quick start', 'Quick Start'],
 ]);
@@ -326,9 +327,91 @@ export function checkPk324ChartContract(charts = {}) {
   return failures;
 }
 
+function hasBoldCell(text, value) {
+  const escaped = String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\*\\*${escaped}\\*\\*|<strong>${escaped}</strong>`, 'i').test(text);
+}
+
+function comparisonSection(readme) {
+  const start = readme.search(/^## 10 jobs\. Who finishes\./m);
+  const end = readme.search(/^## Demo\b/m);
+  if (start === -1) return '';
+  return end > start ? readme.slice(start, end) : readme.slice(start);
+}
+
+function jobNeedleIndex(text, jobName) {
+  const idx = text.indexOf(jobName);
+  if (idx !== -1) return idx;
+  if (jobName.includes('#content-container') && text.includes('#content-container')) {
+    return text.indexOf('#content-container');
+  }
+  return -1;
+}
+
+export function checkReadmePkTableContract(readme) {
+  const failures = [];
+  const section = comparisonSection(readme);
+  if (!section) {
+    failures.push('README comparison heading must stay ## 10 jobs. Who finishes.');
+    return failures;
+  }
+  if (!/chrome-cdp-ex[\s\S]{0,120}Browser Use[\s\S]{0,120}Playwright/.test(section)) {
+    failures.push('README PK table columns must be chrome-cdp-ex | Browser Use | Playwright');
+  }
+  if (!hasBoldCell(section, '10/10')) {
+    failures.push('README PK table must bold chrome-cdp-ex total success 10/10');
+  }
+  if (!/\b8\/10\b/.test(section) || !/\b9\/10\b/.test(section)) {
+    failures.push('README PK table must show Browser Use 8/10 and Playwright 9/10');
+  }
+  if (hasBoldCell(section, '8/10') || hasBoldCell(section, '9/10')) {
+    failures.push('README PK table must bold only the winning total (chrome-cdp-ex 10/10)');
+  }
+
+  const totalIdx = Math.max(section.indexOf('**10/10**'), section.indexOf('<strong>10/10</strong>'));
+  const chartIdx = section.indexOf('experiment/pk-324-steps.svg');
+  if (chartIdx !== -1 && totalIdx !== -1 && chartIdx < totalIdx) {
+    failures.push('README bar charts must sit below the PK table, not first glance');
+  }
+
+  if (/PASS\s*\/\s*\d+\s*\/\s*\d+\s*\/\s*\d+/.test(readme)
+    || /FAIL\s*\/\s*\d+\s*\/\s*\d+\s*\/\s*\d+/.test(readme)) {
+    failures.push('README must not keep engineer mashup cells (success / steps / time / token)');
+  }
+
+  for (const [index, job] of LOCKED_PK_BOARD.jobs.entries()) {
+    const start = jobNeedleIndex(section, job.name);
+    if (start === -1) {
+      failures.push(`README PK table is missing job: ${job.name}`);
+      continue;
+    }
+    const next = LOCKED_PK_BOARD.jobs[index + 1];
+    const end = next ? jobNeedleIndex(section, next.name) : section.length;
+    const row = section.slice(start, end === -1 ? section.length : end);
+    const expectedFails = ['cdp', 'browserUse', 'playwright']
+      .filter(tool => job[tool].success === 'FAIL').length;
+    const actualFails = (row.match(/FAIL/g) || []).length;
+    if (expectedFails > 0 && actualFails < expectedFails) {
+      failures.push(`README PK table must keep ${expectedFails} FAIL cell(s) visible on ${job.name}`);
+    }
+    if (job.cdp.success === 'PASS' && !hasBoldCell(row, 'PASS')) {
+      failures.push(`README PK table must bold the winning PASS cell on ${job.name}`);
+    }
+  }
+
+  if (!hasBoldCell(section, 'PDF text one page')) {
+    failures.push('README PK table must keep the PDF FAIL row visually emphasized');
+  }
+  if (!hasBoldCell(section, 'overlay detect')) {
+    failures.push('README PK table must keep the overlay FAIL row visually emphasized');
+  }
+  return failures;
+}
+
 export function checkReadmeFaceContract(readme, extras = {}) {
   const failures = [];
   failures.push(...checkReadmeFirstScreenOrder(readme));
+  failures.push(...checkReadmePkTableContract(readme));
   if (!/browser you already have open/i.test(readme)) {
     failures.push('README is missing the live-session hook');
   }
@@ -337,14 +420,6 @@ export function checkReadmeFaceContract(readme, extras = {}) {
   }
   if (!readme.includes(LOCKED_PK_BOARD.date) || !readme.includes(LOCKED_PK_BOARD.sha)) {
     failures.push(`README is missing the locked live-session board identity (${LOCKED_PK_BOARD.date} / ${LOCKED_PK_BOARD.sha})`);
-  }
-  if (!readme.includes('**10 PASS**') || !readme.includes('**8 PASS**') || !readme.includes('**9 PASS**')) {
-    failures.push('README must show the 10/8/9 win score for chrome-cdp-ex / Browser Use / Playwright');
-  }
-  if (!readme.includes('chrome-cdp-ex **10 PASS**')
-    || !readme.includes('Browser Use **8 PASS**')
-    || !readme.includes('Playwright **9 PASS**')) {
-    failures.push('README win score must name chrome-cdp-ex 10 PASS, Browser Use 8 PASS, Playwright 9 PASS');
   }
   for (const face of PK_324_CHART_FACES) {
     if (!readme.includes(PK_324_CHART_FILES[face])) {
