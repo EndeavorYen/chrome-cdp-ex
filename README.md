@@ -37,21 +37,11 @@ Playwright is for clean isolated tests. This is for the session that already has
 
 Measured 2026-08-17. chrome-cdp-ex and Browser Use on main `22c525d4`. Playwright: same machine, headed Chromium, 1042×632, n=3 median.
 
-| | chrome-cdp-ex | Browser Use | Playwright |
-|---|:---:|:---:|:---:|
-| **Total success** | **10/10** | 8/10 | 9/10 |
-| scroll to bottom (HF home) | **PASS** | **PASS** | **PASS** |
-| nested overflow (Comfy #content-container) | **PASS** | **PASS** | **PASS** |
-| click Browse 2M+ models | **PASS** | **PASS** | **PASS** |
-| search submit bert | **PASS** | **PASS** | **PASS** |
-| nav example.org | **PASS** | **PASS** | **PASS** |
-| read HF home | **PASS** | **PASS** | **PASS** |
-| hover reveal | **PASS** | **PASS** | **PASS** |
-| **PDF text one page** | **PASS** | FAIL | FAIL |
-| **overlay detect** | **PASS** | FAIL | **PASS** |
-| click Browse 1M+ applications | **PASS** | **PASS** | **PASS** |
+<p align="center">
+  <img src="experiment/pk-324-scoreboard.svg" alt="PK scoreboard for chrome-cdp-ex, Browser Use, and Playwright: total success 10/10, 8/10, 9/10. Each job cell is PASS or FAIL plus steps / token / wall ms. FAIL cells are marked in red." width="720">
+</p>
 
-Same locked jobs, not first glance — steps, tokens, and wall clock.
+Each job cell is PASS or FAIL, then steps / token / wall ms. Bold numbers win that face among PASS cells only; FAIL cannot win.
 
 Blue = chrome-cdp-ex · Amber = Browser Use · Green = Playwright. X-axis is the 10 jobs. Not averaged.
 

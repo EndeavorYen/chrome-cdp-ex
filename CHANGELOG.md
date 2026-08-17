@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### docs: draw the README PK scoreboard as SVG
+
+* README comparison first glance is a generated scoreboard SVG (PASS/FAIL
+  plus steps / token / wall ms). The markdown grid stays in
+  `docs/pk-324-board.md`. Install stays pinned to published v2.16.0.
+
 ### docs: make README comparison a horizontal PK table
 
 * README comparison is a horizontal success PK table (chrome-cdp-ex **10/10**,

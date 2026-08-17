@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 import { checkDocsContract, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
-import { PK_324_CHART_FILES } from '../scripts/lib/pk-324-board.mjs';
+import { PK_324_CHART_FILES, PK_324_SCOREBOARD_FILE } from '../scripts/lib/pk-324-board.mjs';
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const reference = readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
@@ -22,6 +22,7 @@ const pkCharts = Object.fromEntries(Object.entries(PK_324_CHART_FILES).map(([fac
   face,
   readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8'),
 ]));
+const pkScoreboard = readFileSync(new URL(`../${PK_324_SCOREBOARD_FILE}`, import.meta.url), 'utf8');
 const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 const releaseWorkflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 const runtimeV3ArchitectureUrl = new URL('../docs/architecture/runtime-v3.md', import.meta.url);
@@ -80,12 +81,13 @@ describe('Killer Path docs contract', () => {
     ]));
   });
 
-  it('requires README to lead Cool → advantage → horizontal PK table → demo → Quick Start', () => {
+  it('requires README to lead Cool → advantage → SVG scoreboard → demo → Quick Start', () => {
     const docs = {
       readme,
       reference,
       pkBoard,
       pkCharts,
+      pkScoreboard,
       selfImprovementLoop,
       skill,
       killerPath,
@@ -106,8 +108,12 @@ describe('Killer Path docs contract', () => {
     );
     expect(checkDocsContract({
       ...docs,
-      readme: readme.replace('**10/10**', '**9/10**'),
-    }, [])).toContain('README PK table must bold chrome-cdp-ex total success 10/10');
+      readme: readme.replace('experiment/pk-324-scoreboard.svg', 'experiment/pk-324-steps.svg'),
+    }, [])).toContain('README comparison first glance must be the PK scoreboard SVG');
+    expect(checkDocsContract({
+      ...docs,
+      pkScoreboard: pkScoreboard.replace('data-value="10/10"', 'data-value="9/10"'),
+    }, [])).toContain('PK scoreboard SVG must bold chrome-cdp-ex total success 10/10');
     expect(checkDocsContract({
       ...docs,
       readme: `${readme}\n<th colspan="4">chrome-cdp-ex</th>\n<th>success</th>\n<td>PASS</td><td>1</td><td>139</td><td>62</td>\n`,
@@ -118,8 +124,12 @@ describe('Killer Path docs contract', () => {
     }, [])).toContain('README must not keep engineer mashup cells (success / steps / time / token)');
     expect(checkDocsContract({
       ...docs,
-      readme: readme.replace(/\*\*PDF text one page\*\*[^\n]+/, '| PDF text one page | **PASS** | **PASS** | **PASS** |'),
-    }, [])).toContain('README PK table must keep 2 FAIL cell(s) visible on PDF text one page');
+      readme: `${readme}\n| PDF text one page | **PASS** | FAIL | FAIL |\n`,
+    }, [])).toContain('README must not keep a markdown PK grid as the first-glance comparison');
+    expect(checkDocsContract({
+      ...docs,
+      pkScoreboard: pkScoreboard.replace(/data-success="FAIL"/g, 'data-success="PASS"'),
+    }, [])).toContain('PK scoreboard SVG must keep 2 FAIL cell(s) visible on PDF text one page');
     expect(checkDocsContract({
       ...docs,
       pkBoard: pkBoard.replace('PASS / 1 / 139 / 62', 'PASS / 1 / 138 / 62'),
@@ -132,6 +142,10 @@ describe('Killer Path docs contract', () => {
       ...docs,
       readme: `${readme}\n## Five success cases\n`,
     }, [])).toContain('README must not restore the command-catalog first screen');
+    expect(checkDocsContract({
+      ...docs,
+      pkScoreboard: `${pkScoreboard}\n<text>cost / cp</text>\n`,
+    }, [])).toContain('PK scoreboard SVG must not add a cost/cp column');
   });
 
   it('documents a checked-in measured baseline artifact for comparison reruns', () => {
