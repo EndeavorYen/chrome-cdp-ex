@@ -4,7 +4,7 @@ Measured 2026-08-17. chrome-cdp-ex and Browser Use on main `22c525d4` (page-leve
 
 Win score for the 10 jobs: chrome-cdp-ex **10 PASS**, Browser Use **8 PASS**, Playwright **9 PASS**.
 
-README first screen keeps that score and the steps / token / time bar charts. This page is the engineer grid.
+README comparison is the success PK table (10/10 · 8/10 · 9/10). Steps / token / time bar charts sit below that table. This page is the engineer grid (success / steps / time / token).
 
 | job | chrome-cdp-ex success / steps / time / token | Browser Use | Playwright |
 |---|---|---|---|

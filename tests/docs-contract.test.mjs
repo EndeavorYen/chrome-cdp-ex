@@ -80,7 +80,7 @@ describe('Killer Path docs contract', () => {
     ]));
   });
 
-  it('requires README to lead Cool → advantage → win score + charts → demo → Quick Start', () => {
+  it('requires README to lead Cool → advantage → horizontal PK table → demo → Quick Start', () => {
     const docs = {
       readme,
       reference,
@@ -106,12 +106,20 @@ describe('Killer Path docs contract', () => {
     );
     expect(checkDocsContract({
       ...docs,
-      readme: readme.replace('chrome-cdp-ex **10 PASS**', 'chrome-cdp-ex **9 PASS**'),
-    }, [])).toContain('README win score must name chrome-cdp-ex 10 PASS, Browser Use 8 PASS, Playwright 9 PASS');
+      readme: readme.replace('**10/10**', '**9/10**'),
+    }, [])).toContain('README PK table must bold chrome-cdp-ex total success 10/10');
     expect(checkDocsContract({
       ...docs,
       readme: `${readme}\n<th colspan="4">chrome-cdp-ex</th>\n<th>success</th>\n<td>PASS</td><td>1</td><td>139</td><td>62</td>\n`,
     }, [])).toContain('README must not keep the ten-row lab table');
+    expect(checkDocsContract({
+      ...docs,
+      readme: `${readme}\nPASS / 1 / 139 / 62\n`,
+    }, [])).toContain('README must not keep engineer mashup cells (success / steps / time / token)');
+    expect(checkDocsContract({
+      ...docs,
+      readme: readme.replace(/\*\*PDF text one page\*\*[^\n]+/, '| PDF text one page | **PASS** | **PASS** | **PASS** |'),
+    }, [])).toContain('README PK table must keep 2 FAIL cell(s) visible on PDF text one page');
     expect(checkDocsContract({
       ...docs,
       pkBoard: pkBoard.replace('PASS / 1 / 139 / 62', 'PASS / 1 / 138 / 62'),

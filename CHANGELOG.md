@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### docs: make README comparison a horizontal PK table
+
+* README comparison is a horizontal success PK table (chrome-cdp-ex **10/10**,
+  Browser Use 8/10, Playwright 9/10) with PDF and overlay FAIL visible.
+  Steps / token / time bar charts sit below the table. The engineer grid
+  stays in `docs/pk-324-board.md`. Install stays pinned to published v2.16.0.
+
 ## [2.16.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.15.0...v2.16.0) (2026-08-17)
 
 v2.16.0 makes live-session attach the product: agents use the Chrome tab you
