@@ -74,23 +74,43 @@ describe('Killer Path docs contract', () => {
     ]));
   });
 
-  it('requires README promotion claims to be benchmark-gated', () => {
-    const docsWithoutChecklist = {
-      readme: readme.replace(/### Promotion checklist[\s\S]+?(?=\n### |\n## |$)/, ''),
+  it('requires README to lead with the live-session one-step board', () => {
+    const docs = {
+      readme,
       reference,
       selfImprovementLoop,
       skill,
       killerPath,
+      packageJson,
+      pluginManifest,
+      changelog,
+      claude,
+      contributing,
+      design,
     };
 
-    expect(checkDocsContract(docsWithoutChecklist, [])).toEqual(expect.arrayContaining([
-      'README is missing benchmark-gated promotion checklist',
-      'README promotion checklist must block claims when benchmark gates fail',
-    ]));
+    expect(checkDocsContract(docs, [])).toEqual([]);
+    expect(checkDocsContract({
+      ...docs,
+      readme: readme.replace(/22c525d4/g, 'deadbeef'),
+    }, [])).toContain(
+      'README is missing the locked live-session board identity (2026-08-17 / 22c525d4)',
+    );
+    expect(checkDocsContract({
+      ...docs,
+      readme: `${readme}\n| job | chrome-cdp-ex | Playwright |\n`,
+    }, [])).toContain('README must not put Playwright in the score table');
+    expect(checkDocsContract({
+      ...docs,
+      readme: `${readme}\nPlaywright did the same click in 156 ms.\n`,
+    }, [])).toContain('README must not invent Playwright timings');
+    expect(checkDocsContract({
+      ...docs,
+      readme: `${readme}\n## Five success cases\n`,
+    }, [])).toContain('README must not restore the command-catalog first screen');
   });
 
   it('documents a checked-in measured baseline artifact for comparison reruns', () => {
-    expect(readme).toContain('docs/benchmarks/measured-baselines.example.json');
     expect(reference).toContain('docs/benchmarks/measured-baselines.example.json');
   });
 
@@ -265,11 +285,10 @@ describe('Repository release gates', () => {
     const codexIntegration = readFileSync(new URL('../docs/integrations/codex.md', import.meta.url), 'utf8');
     const codexKillerPath = readFileSync(new URL('../docs/examples/codex-killer-path.md', import.meta.url), 'utf8');
 
-    for (const surface of [readme, codexIntegration, codexKillerPath]) {
+    for (const surface of [codexIntegration, codexKillerPath]) {
       expect(surface).toContain('Phase 1 candidate');
+      expect(surface).toMatch(/historical/i);
     }
-    expect(readme).toContain('historical for the current tree');
-    expect(readme).toContain('current Runtime v3 benchmark');
     const benchmark = readFileSync(new URL('../experiment/benchmark.html', import.meta.url), 'utf8');
     expect(benchmark).toContain('Smart Eye benchmark · latest measured release');
     expect(benchmark).not.toContain('historical for current tree');

@@ -36,7 +36,7 @@ describe('command-surface documentation generator', () => {
     const help = commands.find(command => command.name === 'help');
     help.help.synopsis = 'help `tick` | pipe';
     help.help.summary = 'Use <select> & <input> safely.';
-    const block = renderGeneratedRegion('README.md', defineCommandSurface(commands));
+    const block = renderGeneratedRegion('docs/reference.md', defineCommandSurface(commands));
     expect(block).toContain('``help `tick` \\| pipe``');
     expect(block).not.toContain('Use &lt;select&gt;');
     expect(block).not.toContain('<select>');
@@ -44,7 +44,7 @@ describe('command-surface documentation generator', () => {
 
   it('replaces exactly one bounded region and preserves all outside bytes', () => {
     const source = `before\n${START}\nstale\n${END}\nafter\n`;
-    const output = replaceGeneratedRegion(source, 'README.md', 'fresh');
+    const output = replaceGeneratedRegion(source, 'docs/reference.md', 'fresh');
     expect(output).toBe(`before\n${START}\nfresh\n${END}\nafter\n`);
     for (const invalid of [
       'no markers',
@@ -53,7 +53,7 @@ describe('command-surface documentation generator', () => {
       `${START}\na\n${START}\nb\n${END}`,
       `${START}\na\n${END}\n${END}`,
       `${START}\n${START}\n${END}\n${END}`,
-    ]) expect(() => replaceGeneratedRegion(invalid, 'README.md', 'fresh')).toThrow(/marker/i);
+    ]) expect(() => replaceGeneratedRegion(invalid, 'docs/reference.md', 'fresh')).toThrow(/marker/i);
   });
 
   it('defaults to read-only check, writes explicitly, and is idempotent', () => {
@@ -107,15 +107,15 @@ describe('command-surface documentation generator', () => {
       }
       for (const path of GENERATED_FILES) expect(lstatSync(join(root, path)).mode & 0o777).toBe(0o666);
 
-      writeFileSync(join(root, 'README.md'), `before\n${START}\nstale\n${END}\nafter\n`);
+      writeFileSync(join(root, 'docs/reference.md'), `before\n${START}\nstale\n${END}\nafter\n`);
       expect(() => generateCommandSurfaces({
         rootDir: root,
         write: true,
-        files: ['README.md'],
+        files: ['docs/reference.md'],
         io: { rename: () => { throw new Error('rename failed'); } },
       })).toThrow('rename failed');
-      expect(readFileSync(join(root, 'README.md'), 'utf8')).toContain('stale');
-      expect(readdirSync(root).filter(name => name.endsWith('.tmp'))).toEqual([]);
+      expect(readFileSync(join(root, 'docs/reference.md'), 'utf8')).toContain('stale');
+      expect(readdirSync(join(root, 'docs')).filter(name => name.endsWith('.tmp'))).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -125,12 +125,13 @@ describe('command-surface documentation generator', () => {
     const root = mkdtempSync(join(tmpdir(), 'chrome-cdp-doc-generator-'));
     const outside = mkdtempSync(join(tmpdir(), 'chrome-cdp-doc-outside-'));
     try {
-      writeFileSync(join(outside, 'README.md'), `${START}\nstale\n${END}\n`);
-      symlinkSync(join(outside, 'README.md'), join(root, 'README.md'));
-      expect(() => generateCommandSurfaces({ rootDir: root, write: true, files: ['README.md'] }))
+      mkdirSync(join(root, 'docs'), { recursive: true });
+      writeFileSync(join(outside, 'reference.md'), `${START}\nstale\n${END}\n`);
+      symlinkSync(join(outside, 'reference.md'), join(root, 'docs/reference.md'));
+      expect(() => generateCommandSurfaces({ rootDir: root, write: true, files: ['docs/reference.md'] }))
         .toThrow(/symlink|containment/i);
-      expect(lstatSync(join(root, 'README.md')).isSymbolicLink()).toBe(true);
-      expect(readFileSync(join(outside, 'README.md'), 'utf8')).toContain('stale');
+      expect(lstatSync(join(root, 'docs/reference.md')).isSymbolicLink()).toBe(true);
+      expect(readFileSync(join(outside, 'reference.md'), 'utf8')).toContain('stale');
       expect(() => generateCommandSurfaces({ rootDir: root, files: ['../outside.md'] }))
         .toThrow(/allowlist|containment/i);
       expect(existsSync(join(root, '..', 'outside.md'))).toBe(false);

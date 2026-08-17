@@ -210,6 +210,105 @@ function checkSelfImprovementLoopContract(docs) {
   return failures;
 }
 
+export const LOCKED_LIVE_SESSION_BOARD = Object.freeze({
+  date: '2026-08-17',
+  sha: '22c525d4',
+  opponent: 'Browser Use',
+  jobs: Object.freeze([
+    'scroll to bottom (HF home)',
+    'nested overflow (Comfy `#content-container`)',
+    'click Browse 2M+ models',
+    'search submit bert',
+    'nav example.org',
+    'read HF home',
+    'hover reveal',
+    'PDF text one page',
+    'overlay detect',
+    'click Browse 1M+ applications',
+  ]),
+  scores: Object.freeze([
+    '1 / 62 / 139 PASS',
+    '1 / 118 / 227 PASS',
+    '1 / 83 / 144 PASS',
+    '3 / 6307 / 391 PASS',
+    '1 / 549 / 487 PASS',
+    '2 / 7636 / 507 PASS',
+    '1 / 114 / 410 PASS',
+    '5 / 770 / 1261 PASS',
+    '1 / 69 / 297 PASS',
+    '1 / 86 / 16 PASS',
+    '1 / 3863 / 152 PASS',
+    '1 / 7540 / 6 PASS',
+    '1 / 192 / 145 PASS',
+    '2 / 12025 / 14 PASS',
+    '1 / 4323 / 232 PASS',
+    '1 / 94 / 5 FAIL',
+    '1 / 232 / 142 PASS',
+    '1 / 35139 / 21 FAIL',
+    '1 / 580 / 457 PASS',
+    '2 / 7640 / 625 PASS',
+  ]),
+  wallAdmissions: Object.freeze(['16 ms vs 297', '6 vs 152', '14 vs 145', '21 vs 142']),
+});
+
+export function checkReadmeFaceContract(readme) {
+  const failures = [];
+  if (!/browser you already have open/i.test(readme)) {
+    failures.push('README is missing the live-session hook');
+  }
+  if (!/one step/i.test(readme) || !/short receipt|skinny/i.test(readme)) {
+    failures.push('README is missing the one-step receipt face');
+  }
+  if (!readme.includes(LOCKED_LIVE_SESSION_BOARD.date) || !readme.includes(LOCKED_LIVE_SESSION_BOARD.sha)) {
+    failures.push(`README is missing the locked live-session board identity (${LOCKED_LIVE_SESSION_BOARD.date} / ${LOCKED_LIVE_SESSION_BOARD.sha})`);
+  }
+  if (!readme.includes(LOCKED_LIVE_SESSION_BOARD.opponent)) {
+    failures.push('README is missing the Browser Use comparison');
+  }
+  if (!/steps\s*\/\s*agent-facing chars\s*\/\s*wall ms/i.test(readme)) {
+    failures.push('README must say the board columns are steps / agent-facing chars / wall ms');
+  }
+  for (const job of LOCKED_LIVE_SESSION_BOARD.jobs) {
+    if (!readme.includes(job)) failures.push(`README is missing locked board job: ${job}`);
+  }
+  for (const score of LOCKED_LIVE_SESSION_BOARD.scores) {
+    if (!readme.includes(score)) failures.push(`README is missing locked board score: ${score}`);
+  }
+  if (!/(faster|quicker).{0,120}(wall|clock)|(wall|clock).{0,120}(faster|quicker)/is.test(readme)) {
+    failures.push('README must admit Browser Use is faster on wall-clock for some jobs');
+  }
+  for (const admission of LOCKED_LIVE_SESSION_BOARD.wallAdmissions) {
+    if (!readme.includes(admission)) {
+      failures.push(`README must admit the locked wall-clock loss: ${admission}`);
+    }
+  }
+  if (!/empty/i.test(readme) || !readme.includes('1 / 94 / 5 FAIL')) {
+    failures.push('README must show Browser Use failing PDF text as empty');
+  }
+  if (!/overlay/i.test(readme) || !readme.includes('1 / 35139 / 21 FAIL')) {
+    failures.push('README must show Browser Use failing overlay detect');
+  }
+  if (/^\|.*playwright.*\|/im.test(readme)) {
+    failures.push('README must not put Playwright in the score table');
+  }
+  if (/playwright[^\n]{0,120}\d+\s*ms/i.test(readme) || /\d+\s*ms[^\n]{0,120}playwright/i.test(readme)) {
+    failures.push('README must not invent Playwright timings');
+  }
+  if (readme.includes('## Five success cases') || readme.includes('### Promotion checklist') || readme.includes('commands-81')) {
+    failures.push('README must not restore the command-catalog first screen');
+  }
+  if (!readme.includes('./bin/chrome-cdp doctor')) {
+    failures.push('README is missing a doctor start path');
+  }
+  if (!readme.includes('INTEGRATIONS.md') && !readme.includes('docs/integrations/')) {
+    failures.push('README is missing cross-host integrations entry point');
+  }
+  if (!/\bMIT\b/.test(readme) || !readme.includes('LICENSE')) {
+    failures.push('README is missing license');
+  }
+  return failures;
+}
+
 export function checkDocsContract(docs, commands) {
   const failures = [];
 
@@ -223,62 +322,7 @@ export function checkDocsContract(docs, commands) {
     }
   }
 
-  if (!docs.readme.includes('Playwright is') || !docs.readme.includes('live-page perception')) {
-    failures.push('README is missing product positioning language');
-  }
-
-  const requiredReadmeSections = [
-    '## Use this when',
-    '## Do not use this when',
-    '## Five success cases',
-    '### Latest dogfood snapshot',
-  ];
-  for (const section of requiredReadmeSections) {
-    if (!docs.readme.includes(section)) {
-      failures.push(`README is missing first-impression section: ${section}`);
-    }
-  }
-
-  const requiredSuccessCases = [
-    'Logged-in dashboard inspection',
-    'Action evidence after form input',
-    'CSS source tracing',
-    'Long-session debugging',
-    'Workflow capture and replay',
-  ];
-  for (const item of requiredSuccessCases) {
-    if (!docs.readme.includes(item)) {
-      failures.push(`README is missing success case: ${item}`);
-    }
-  }
-
-  const requiredBenchmarkProof = [
-    'Total time',
-    'Action evidence coverage',
-    'Stale-ref recovery',
-    'Quality gate',
-  ];
-  for (const item of requiredBenchmarkProof) {
-    if (!docs.readme.includes(item)) {
-      failures.push(`README is missing dogfood benchmark proof: ${item}`);
-    }
-  }
-
-  if (!docs.readme.includes('docs/examples/killer-path.md')) {
-    failures.push('README is missing a first-run Killer Path example link');
-  }
-  if (!docs.readme.includes('INTEGRATIONS.md') && !docs.readme.includes('docs/integrations/')) {
-    failures.push('README is missing cross-host integrations entry point');
-  }
-  if (!docs.readme.includes('### Promotion checklist')) {
-    failures.push('README is missing benchmark-gated promotion checklist');
-  }
-  if (!docs.readme.includes('gate.passed') || !docs.readme.includes('block promotion')) {
-    failures.push('README promotion checklist must block claims when benchmark gates fail');
-  }
-  if (!docs.readme.includes('heuristic-smoke-baseline') || !docs.readme.includes('--comparison-baselines')) {
-    failures.push('README promotion checklist must require measured comparison baselines');
-  }
+  failures.push(...checkReadmeFaceContract(docs.readme || ''));
 
   const requiredKillerPathTerms = [
     'TL;DR',

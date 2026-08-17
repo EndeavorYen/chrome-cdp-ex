@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### docs: lead README with the live-session one-step board
+
+* README leads with the live Chrome attach, one-step receipt, and the
+  2026-08-17 `22c525d4` Browser Use board (steps / agent-facing chars /
+  wall ms). The 81-command catalog, five success cases, caution wall, and
+  promotion checklist are no longer the first screen. Install still starts
+  at `doctor`. No Playwright scores.
+
 ### perf: faster document nav wait (#347)
 
 * Successful `nav` still lands on the destination when `readyState` is
