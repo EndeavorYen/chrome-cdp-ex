@@ -151,7 +151,7 @@ describe('Killer Path docs contract', () => {
     );
   });
 
-  it('keeps an unreleased package candidate separate from pinned published release links', () => {
+  it('pins published release install links to the package version', () => {
     const docs = {
       readme,
       reference,
@@ -169,42 +169,23 @@ describe('Killer Path docs contract', () => {
     expect(checkDocsContract(docs, [])).toEqual([]);
     expect(checkDocsContract({
       ...docs,
-      readme: readme.replace(/^> \*\*Unreleased candidate:\*\*.*\n/m, ''),
+      readme: `> **Unreleased candidate:** repository metadata is v2.16.0; install links remain pinned to published v2.15.0.\n${readme}`,
     }, [])).toContain(
-      'README.md must identify v2.16.0 as an unreleased candidate while v2.15.0 remains published',
+      'README.md must not keep the unreleased-candidate banner after v2.16.0 is published',
     );
     expect(checkDocsContract({
       ...docs,
       readme: docs.readme
-        .replaceAll('v2.15.0', 'v2.16.0')
-        .replaceAll('pi-chrome-cdp-2.15.0.tgz', 'pi-chrome-cdp-2.16.0.tgz'),
+        .replaceAll('v2.16.0', 'v2.15.0')
+        .replaceAll('pi-chrome-cdp-2.16.0.tgz', 'pi-chrome-cdp-2.15.0.tgz'),
     }, [])).toEqual(expect.arrayContaining([
-      'README.md is missing the published release tag v2.15.0',
-      'README.md is missing the published release tarball pi-chrome-cdp-2.15.0.tgz',
-      'README.md must not fabricate an unreleased release tag v2.16.0',
-      'README.md must not fabricate an unreleased tarball pi-chrome-cdp-2.16.0.tgz',
+      'README.md is missing the published release tag v2.16.0',
+      'README.md is missing the published release tarball pi-chrome-cdp-2.16.0.tgz',
     ]));
     expect(checkDocsContract({
       ...docs,
-      changelog: changelog.replace('## [2.15.0]', '## [9.8.7]'),
+      changelog: changelog.replace('## [2.16.0]', '## [9.8.7]'),
     }, [])).toContain('README.md is missing the published release tag v9.8.7');
-
-    for (const falseClaim of [
-      '[![Release v2.16.0](https://img.shields.io/badge/release-v2.15.0-brightgreen)]',
-      '**Pinned release (v2.16.0):**',
-      'Latest measured release: v2.16.0 passed 10/10 rounds.',
-      '[v2.16.0 release notes →](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)',
-      '[v2.16.0 release](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)',
-      'Release: v2.16.0',
-      'Pinned release: v2.16.0',
-      'Latest release: v2.16.0',
-      'Measured candidate v2.16.0 — release pending.',
-      '[Latest: v2.16.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)',
-      '[v2.16.0 — pinned](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.15.0)',
-    ]) {
-      expect(checkDocsContract({ ...docs, readme: `${docs.readme}\n${falseClaim}\n` }, []), falseClaim)
-        .toContain('README.md must not present unreleased candidate v2.16.0 as a published or measured release');
-    }
   });
 
   it('rejects stale contributor paths, obsolete line counts, and shipped features marked future', () => {

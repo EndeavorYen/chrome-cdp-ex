@@ -39,6 +39,18 @@ function staysWithin(rootDir, candidate) {
     && !isAbsolute(pathFromRoot);
 }
 
+function recordedHistoricalIdentity(version) {
+  return HISTORICAL_CANDIDATE_IDENTITIES[version] || null;
+}
+
+function isRecordedHistoricalEvidence(manifest) {
+  const identity = recordedHistoricalIdentity(manifest?.productVersion);
+  return Boolean(identity)
+    && manifest?.environment?.evidenceScope === 'historical-candidate'
+    && manifest?.environment?.currentTree === false
+    && manifest?.environment?.candidateIdentity === identity;
+}
+
 export function validateHostValidation(manifest, {
   packageVersion,
   publishedVersion = packageVersion,
@@ -49,15 +61,19 @@ export function validateHostValidation(manifest, {
   if (manifest?.schema !== 'chrome-cdp-ex.host-validation.v1') {
     errors.push(`Host validation schema must be chrome-cdp-ex.host-validation.v1`);
   }
-  const historicalPublishedEvidence = manifest?.productVersion === publishedVersion
-    && manifest?.environment?.evidenceScope === 'historical-candidate'
-    && manifest?.environment?.currentTree === false;
-  if (manifest?.productVersion !== packageVersion && !historicalPublishedEvidence) {
-    errors.push(`Host validation productVersion ${manifest?.productVersion || 'missing'} matches neither package version ${packageVersion} nor published historical version ${publishedVersion}`);
+  const historicalLabel = Object.keys(HISTORICAL_CANDIDATE_IDENTITIES).join(', ') || publishedVersion;
+  if (manifest?.productVersion !== packageVersion && !isRecordedHistoricalEvidence(manifest)) {
+    errors.push(`Host validation productVersion ${manifest?.productVersion || 'missing'} matches neither package version ${packageVersion} nor published historical version ${historicalLabel}`);
   }
-  const publishedCandidateIdentity = HISTORICAL_CANDIDATE_IDENTITIES[publishedVersion] || null;
+  for (const [version, identity] of Object.entries(HISTORICAL_CANDIDATE_IDENTITIES)) {
+    if (manifest?.environment?.candidateIdentity === identity && manifest?.productVersion !== version) {
+      errors.push(`Host validation historical evidence must bind published version ${version} to candidate identity ${identity}`);
+    }
+  }
+  const publishedCandidateIdentity = recordedHistoricalIdentity(publishedVersion);
   if (packageVersion !== publishedVersion
     && manifest?.environment?.evidenceScope === 'historical-candidate'
+    && !isRecordedHistoricalEvidence(manifest)
     && (manifest?.productVersion !== publishedVersion
       || !publishedCandidateIdentity
       || manifest?.environment?.candidateIdentity !== publishedCandidateIdentity)) {
@@ -142,20 +158,25 @@ export function checkHostValidation({
     supportedHosts: SUPPORTED_HOSTS,
     rootDir,
   });
-  return { manifest, errors };
+  return {
+    manifest,
+    errors,
+    packageVersion: packageJson.version,
+    publishedVersion,
+  };
 }
 
 function main() {
-  const { manifest, errors } = checkHostValidation();
+  const { manifest, errors, packageVersion, publishedVersion } = checkHostValidation();
   if (errors.length) {
     process.stderr.write(`${errors.join('\n')}\n`);
     process.exitCode = 1;
     return;
   }
-  const packageVersion = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8')).version;
+  const relation = packageVersion === publishedVersion ? 'package' : 'candidate';
   const scope = manifest.productVersion === packageVersion
     ? `product v${manifest.productVersion}`
-    : `historical product v${manifest.productVersion} under candidate v${packageVersion}`;
+    : `historical product v${manifest.productVersion} under ${relation} v${packageVersion}`;
   process.stdout.write(`Host validation OK: ${manifest.hosts.length} hosts, ${scope}\n`);
 }
 
