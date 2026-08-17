@@ -98,7 +98,7 @@ describe('Killer Path docs contract', () => {
     );
     expect(checkDocsContract({
       ...docs,
-      readme: readme.replace('| Playwright |', '|'),
+      readme: readme.replace('<th colspan="4">Playwright</th>', ''),
     }, [])).toContain('README must use a 3-column chrome-cdp-ex / Browser Use / Playwright board');
     expect(checkDocsContract({
       ...docs,

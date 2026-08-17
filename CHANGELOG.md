@@ -6,10 +6,9 @@
 
 * README leads with the live Chrome attach, one-step receipt, and the
   2026-08-17 `22c525d4` three-column board vs Browser Use and same-machine
-  Playwright (steps / chars / wall ms). The 81-command catalog, five
-  success cases, caution wall, and promotion checklist are no longer the
-  first screen. Install still starts at `doctor`. Playwright cells are the
-  measured n=3 median only.
+  Playwright. Table faces are success / steps / time / token. Overlay and
+  PDF rows state the PASS/FAIL judgment, not only a char count. Install
+  still starts at `doctor`.
 
 ### perf: faster document nav wait (#347)
 

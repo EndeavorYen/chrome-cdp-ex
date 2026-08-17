@@ -17,22 +17,93 @@ Playwright is for clean isolated tests. This is for the session that already has
 
 ## One step. Skinny receipt.
 
-Measured 2026-08-17. chrome-cdp-ex and Browser Use on main `22c525d4` (page-level Chrome). Playwright: independent headed Chromium, same machine. Viewport 1042×632. n=3 median. Each cell is **steps / chars / wall ms**, then PASS or FAIL. Chars are tokens: UTF-8 length of the operate call's real return / printed status; void click/hover/press is 0.
+Measured 2026-08-17. chrome-cdp-ex and Browser Use on main `22c525d4` (page-level Chrome). Playwright: independent headed Chromium, same machine. Viewport 1042×632. n=3 median.
 
-| job | chrome-cdp-ex | Browser Use | Playwright |
-|---|---|---|---|
-| scroll to bottom (HF home) | 1 / 62 / 139 PASS | 1 / 118 / 227 PASS | 1 / 41 / 2 PASS |
-| nested overflow (Comfy `#content-container`) | 1 / 83 / 144 PASS | 3 / 6307 / 391 PASS | 1 / 70 / 72 PASS |
-| click Browse 2M+ models | 1 / 549 / 487 PASS | 2 / 7636 / 507 PASS | 1 / 0 / 352 PASS |
-| search submit bert | 1 / 114 / 410 PASS | 5 / 770 / 1261 PASS | 2 / 0 / 1047 PASS |
-| nav example.org | 1 / 69 / 297 PASS | 1 / 86 / 16 PASS | 1 / 35 / 12 PASS |
-| read HF home | 1 / 3863 / 152 PASS | 1 / 7540 / 6 PASS | 1 / 4427 / 3 PASS |
-| hover reveal | 1 / 192 / 145 PASS | 2 / 12025 / 14 PASS | 1 / 0 / 67 PASS |
-| PDF text one page | 1 / 4323 / 232 PASS | 1 / 94 / 5 FAIL | 1 / 0 / 2 FAIL |
-| overlay detect | 1 / 232 / 142 PASS | 1 / 35139 / 21 FAIL | 1 / 178 / 1 PASS |
-| click Browse 1M+ applications | 1 / 580 / 457 PASS | 2 / 7640 / 625 PASS | 1 / 0 / 318 PASS |
+<table>
+  <thead>
+    <tr>
+      <th rowspan="2">job</th>
+      <th colspan="4">chrome-cdp-ex</th>
+      <th colspan="4">Browser Use</th>
+      <th colspan="4">Playwright</th>
+    </tr>
+    <tr>
+      <th>success</th><th>steps</th><th>time</th><th>token</th>
+      <th>success</th><th>steps</th><th>time</th><th>token</th>
+      <th>success</th><th>steps</th><th>time</th><th>token</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>scroll to bottom (HF home)</td>
+      <td>PASS</td><td>1</td><td>139</td><td>62</td>
+      <td>PASS</td><td>1</td><td>227</td><td>118</td>
+      <td>PASS</td><td>1</td><td>2</td><td>41</td>
+    </tr>
+    <tr>
+      <td>nested overflow (Comfy <code>#content-container</code>)</td>
+      <td>PASS</td><td>1</td><td>144</td><td>83</td>
+      <td>PASS</td><td>3</td><td>391</td><td>6307</td>
+      <td>PASS</td><td>1</td><td>72</td><td>70</td>
+    </tr>
+    <tr>
+      <td>click Browse 2M+ models</td>
+      <td>PASS</td><td>1</td><td>487</td><td>549</td>
+      <td>PASS</td><td>2</td><td>507</td><td>7636</td>
+      <td>PASS</td><td>1</td><td>352</td><td>0</td>
+    </tr>
+    <tr>
+      <td>search submit bert</td>
+      <td>PASS</td><td>1</td><td>410</td><td>114</td>
+      <td>PASS</td><td>5</td><td>1261</td><td>770</td>
+      <td>PASS</td><td>2</td><td>1047</td><td>0</td>
+    </tr>
+    <tr>
+      <td>nav example.org</td>
+      <td>PASS</td><td>1</td><td>297</td><td>69</td>
+      <td>PASS</td><td>1</td><td>16</td><td>86</td>
+      <td>PASS</td><td>1</td><td>12</td><td>35</td>
+    </tr>
+    <tr>
+      <td>read HF home</td>
+      <td>PASS</td><td>1</td><td>152</td><td>3863</td>
+      <td>PASS</td><td>1</td><td>6</td><td>7540</td>
+      <td>PASS</td><td>1</td><td>3</td><td>4427</td>
+    </tr>
+    <tr>
+      <td>hover reveal</td>
+      <td>PASS</td><td>1</td><td>145</td><td>192</td>
+      <td>PASS</td><td>2</td><td>14</td><td>12025</td>
+      <td>PASS</td><td>1</td><td>67</td><td>0</td>
+    </tr>
+    <tr>
+      <td>PDF text one page</td>
+      <td>PASS</td><td>1</td><td>232</td><td>4323</td>
+      <td>FAIL</td><td>1</td><td>5</td><td>94</td>
+      <td>FAIL</td><td>1</td><td>2</td><td>0</td>
+    </tr>
+    <tr>
+      <td>overlay detect</td>
+      <td>PASS</td><td>1</td><td>142</td><td>232</td>
+      <td>FAIL</td><td>1</td><td>21</td><td>35139</td>
+      <td>PASS</td><td>1</td><td>1</td><td>178</td>
+    </tr>
+    <tr>
+      <td>click Browse 1M+ applications</td>
+      <td>PASS</td><td>1</td><td>457</td><td>580</td>
+      <td>PASS</td><td>2</td><td>625</td><td>7640</td>
+      <td>PASS</td><td>1</td><td>318</td><td>0</td>
+    </tr>
+  </tbody>
+</table>
 
-Playwright is quicker on the clock for most of these jobs. The win is steps, chars, and the jobs others fail: PDF text comes back empty for both Browser Use and Playwright, and Browser Use's overlay snapshot still looks clear.
+**time** is wall ms. token = UTF-8 characters each tool returned to the agent. Playwright void click/hover = 0. No invented snapshot.
+
+Same overlay ruler: overlay still up + a snapshot that looks like a cleared page = FAIL. Playwright is PASS because the operate evaluate reported **blocking**, not clear, while `#sp_message_container_1476394` was still `display=block` `visibility=visible` `opacity=1` rect `(0,0 1042×632)`, mid `sp_message_iframe_1476394`. Did not dismiss. Browser Use FAIL: snapshot looked clear while that overlay was visible.
+
+PDF: Playwright FAIL as measured (empty `innerText`, no `AI4AI`). Browser Use FAIL too. chrome-cdp-ex PASS, 1 step, 232 ms, 4323 tokens.
+
+Playwright is quicker on the clock for most of these jobs. The win is steps, tokens, and the jobs others fail.
 
 ## Start
 
