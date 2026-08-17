@@ -5230,6 +5230,9 @@ function actionRecoveryHint(actionResult = {}) {
   ) {
     return null;
   }
+  // Successful bounded document nav already prints URL + title. Generic
+  // "Continue from the observed action evidence." is leftover chrome (#343).
+  if (isSuccessfulBoundedDocumentNav(actionResult)) return null;
   if (typeof recommendation.recoveryHint === 'string' && recommendation.recoveryHint.trim()) return recommendation.recoveryHint;
   if (diagnosis?.reason && diagnosis.status !== 'ok') return diagnosis.reason;
   // Leftover golden-path AX scroll already prints Outcome:changed, the compact
@@ -5515,6 +5518,12 @@ function applyActionRecommendation(actionResult) {
   ) {
     actionResult.nextHint = null;
   }
+  if (
+    isSuccessfulBoundedDocumentNav(actionResult)
+    && isGenericSinceActionHint(actionResult.nextHint)
+  ) {
+    actionResult.nextHint = null;
+  }
   return actionResult;
 }
 
@@ -5726,7 +5735,70 @@ function stripLeftoverAxScrollNoChangeAxBodyChrome(diff) {
     .replace(/\n+$/, '');
 }
 
-function formatActionText(result) {
+const NAVIGATION_OBSERVATION_HEADING_RE = /^Navigation observation:/m;
+const DOCUMENT_NAV_PLACEHOLDER_RE = /^\((untitled|unknown)\)$/i;
+
+function parseBoundedNavObservation(domDiff = '') {
+  const text = String(domDiff || '');
+  return {
+    page: text.match(/^Page:\s*(.*)$/m)?.[1]?.trim() || '',
+    url: text.match(/^URL:\s*(.*)$/m)?.[1]?.trim() || '',
+    readyState: text.match(/^Ready state:\s*(.*)$/m)?.[1]?.trim() || '',
+  };
+}
+
+function cleanDocumentNavField(value) {
+  const text = String(value || '').trim();
+  if (!text || DOCUMENT_NAV_PLACEHOLDER_RE.test(text)) return '';
+  return text;
+}
+
+function documentNavIdentity(result = {}) {
+  const parsed = parseBoundedNavObservation(result.effects?.domDiff);
+  const page = result.effects?.page || {};
+  const health = result.effects?.pageHealth?.evidence || {};
+  return {
+    url: cleanDocumentNavField(parsed.url || health.url || page.url || result.target?.input || ''),
+    title: cleanDocumentNavField(parsed.page || health.title || page.title || ''),
+    readyState: cleanDocumentNavField(parsed.readyState || health.readyState || page.readyState || ''),
+  };
+}
+
+function isBoundedDocumentNavObservation(result = {}) {
+  const action = String(result.action || '').toLowerCase();
+  if (action !== 'nav' && action !== 'navigate') return false;
+  return NAVIGATION_OBSERVATION_HEADING_RE.test(String(result.effects?.domDiff || ''));
+}
+
+function isSuccessfulBoundedDocumentNav(result = {}) {
+  if (!isBoundedDocumentNavObservation(result)) return false;
+  if (result.dispatch?.ok === false) return false;
+  if (result.settle?.ok === false) return false;
+  if (result.effects?.failure?.kind) return false;
+  if (result.effects?.observationError?.message) return false;
+  const diagnosis = result.effects?.diagnosis;
+  if (diagnosis && diagnosis.status !== 'ok') return false;
+  if (result.outcome?.needsAttention === true) return false;
+  if (result.outcome?.status && result.outcome.status !== 'changed') return false;
+  if (actionBlockingSignals(result).length) return false;
+  const identity = documentNavIdentity(result);
+  return Boolean(identity.url || identity.title);
+}
+
+function formatSuccessfulDocumentNavText(result, { compact = false } = {}) {
+  const { url, title, readyState } = documentNavIdentity(result);
+  if (compact) return [url, title].filter(Boolean).join('  ');
+  const lines = [];
+  if (title) lines.push(`Page: ${title}`);
+  if (url) lines.push(`URL: ${url}`);
+  if (readyState) lines.push(`Ready state: ${readyState}`);
+  return lines.join('\n');
+}
+
+function formatActionText(result, { compact = false, full = false } = {}) {
+  if (!full && isSuccessfulBoundedDocumentNav(result)) {
+    return formatSuccessfulDocumentNavText(result, { compact });
+  }
   const diagnostics = summarizeActionObservationEffects(result.effects || {});
   const diagnosis = result.effects?.diagnosis || null;
   const leftoverAxScroll = isExpectedLeftoverAxScrollNoChange(result.target);
@@ -6046,6 +6118,12 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
     }
     const model = compactActionResultForJson(result, { compact });
     return compact ? JSON.stringify(model) : formatJson(model);
+  }
+  if (!full && isSuccessfulBoundedDocumentNav(result)) {
+    let text = formatSuccessfulDocumentNavText(result, { compact });
+    if (maxDiffLines != null) text = truncateTextLines(text, maxDiffLines);
+    if (!timeoutError) return text;
+    return `${text}\n(success but observation timed out after action dispatch: ${timeoutError.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
   }
   let text = dispatchText ? `${dispatchText}\n---\n${formatActionText(result)}` : formatActionText(result);
   if (maxDiffLines != null) text = truncateTextLines(text, maxDiffLines);
@@ -22150,6 +22228,7 @@ Usage: cdp <command> [args]
 {{command:diff-shot}}
 {{command:html}}
 {{command:nav}}
+                                    Successful document nav is URL+title (+ readyState). --compact is one line.
 {{command:mock}}
                                     add <urlPattern> --status code --body text [--content-type type]
 {{command:clock}}

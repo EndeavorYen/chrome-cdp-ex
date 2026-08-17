@@ -187,7 +187,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `shot` | `shot <target> [file\|--annotate]` | `conditional-mutation / conditional` |
 | `diff-shot` | `diff-shot <target> [--reset] [--threshold pct]` | `conditional-mutation / conditional` |
 | `html` | `html <target> [selector]` | `read / standard` |
-| `nav` | `nav <target> <url> [--perceive] [--format json]` | `mutation / mutation` |
+| `nav` | `nav <target> <url> [--perceive] [--format json] [--qa\|--summary] [--compact]` | `mutation / mutation` |
 | `mock` | `mock <target> [add\|clear]` | `mutation / mutation` |
 | `clock` | `clock <target> [freeze\|offset\|reset]` | `mutation / mutation` |
 | `throttle` | `throttle <target> [off\|offline\|slow-3g\|fast-3g\|lte\|custom]` | `mutation / mutation` |

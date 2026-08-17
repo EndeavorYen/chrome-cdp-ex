@@ -203,7 +203,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `shot` | `shot <target> [file\|--annotate]` | `conditional-mutation / conditional` |
 | `diff-shot` | `diff-shot <target> [--reset] [--threshold pct]` | `conditional-mutation / conditional` |
 | `html` | `html <target> [selector]` | `read / standard` |
-| `nav` | `nav <target> <url> [--perceive] [--format json]` | `mutation / mutation` |
+| `nav` | `nav <target> <url> [--perceive] [--format json] [--qa\|--summary] [--compact]` | `mutation / mutation` |
 | `mock` | `mock <target> [add\|clear]` | `mutation / mutation` |
 | `clock` | `clock <target> [freeze\|offset\|reset]` | `mutation / mutation` |
 | `throttle` | `throttle <target> [off\|offline\|slow-3g\|fast-3g\|lte\|custom]` | `mutation / mutation` |
@@ -531,20 +531,22 @@ If dispatch fails, read the classified `Action failure:` block instead of retryi
 | `back`, `forward` | action evidence + full perceive |
 | `reload` | action evidence + bounded lightweight page observation |
 | `viewport` (when resizing) | action evidence + perceive diff |
-| `nav` | action evidence + **bounded page observation** (title/url/readyState). Pass `--perceive` only when a full AX dump is required |
+| `nav` | action evidence + **URL + title** (and readyState). `--compact` is one line. Pass `--perceive` only when a full AX dump is required |
 
 Example:
 ```
 $ cdp nav <target> https://example.com
-Navigated to https://example.com
----
-Navigation observation:
 Page: Example Store
 URL: https://example.com
 Ready state: complete
 ```
 
-Use `cdp nav <target> <url> --perceive` only when you need the full accessibility tree immediately. Default nav stays compact so GitHub/X telemetry 404s and empty AX dumps do not hijack the next probe.
+```
+$ cdp nav <target> https://example.com --compact
+https://example.com  Example Store
+```
+
+Use `cdp nav <target> <url> --perceive` only when you need the full accessibility tree immediately. Default nav stays URL+title so GitHub/X telemetry 404s and empty AX dumps do not hijack the next probe.
 
 This eliminates the observe-act-observe loop and makes agents ~2x more efficient.
 
@@ -589,7 +591,7 @@ Use `cascade` when you need to answer "which file do I edit to change this style
 
 ```bash
 scripts/cdp.mjs html    <target> [selector]   # full page or element HTML
-scripts/cdp.mjs nav     <target> <url> [--format json] # navigate and wait for load
+scripts/cdp.mjs nav     <target> <url> [--compact] [--format json] # URL+title; --compact is one line
 scripts/cdp.mjs net     <target>               # resource timing entries
 scripts/cdp.mjs click   <target> <sel|@ref> [--format json] # click (auto-returns perceive diff)
 scripts/cdp.mjs click   <target> "Browse 2M+ models" [--format json] # named control; one-step jsclick, skinny URL
@@ -844,18 +846,19 @@ CSS px = screenshot image px / DPR
 
 ### Navigating to a URL (prefer `nav` over `open`)
 
-`nav` waits for load, then returns a **bounded page observation** (title/url/readyState). Pass `--perceive` only when a full AX dump is required.
+`nav` waits for load, then returns **URL + title** (and readyState). `--compact` is one line. Pass `--perceive` only when a full AX dump is required.
 
 1. **If you already have a target ID** (from a prior `list` or command):
    ```bash
-   scripts/cdp.mjs nav <target> <url>        # navigates + compact page observation
+   scripts/cdp.mjs nav <target> <url>        # navigates + URL/title receipt
+   scripts/cdp.mjs nav <target> <url> --compact  # one-line URL + title
    scripts/cdp.mjs nav <target> <url> --perceive  # optional full AX dump
    ```
 
 2. **If no target ID yet**, run `list` first to find a reusable tab:
    ```bash
    scripts/cdp.mjs list                       # find an existing tab
-   scripts/cdp.mjs nav <target> <url>         # navigates + compact page observation
+   scripts/cdp.mjs nav <target> <url>         # navigates + URL/title receipt
    ```
 
 3. **Only use `open`** when `list` returned empty (no tabs at all), or the user explicitly needs simultaneous tab access. For comparing pages, use `nav` to switch between URLs in a single tab — perceive data stays in your context.
@@ -872,9 +875,9 @@ CSS px = screenshot image px / DPR
 
 **Use a single tab + `nav`** — perceive output is text in your context, so you don't need both pages open simultaneously. This avoids extra "Allow debugging?" approvals.
 
-1. `nav <target> <url-A>` — compact navigation observation of page A (save this in context)
+1. `nav <target> <url-A>` — URL+title receipt of page A (save this in context)
 2. Optionally: `elshot <target> @ref` — capture key visual sections of page A
-3. `nav <target> <url-B>` — compact navigation observation of page B
+3. `nav <target> <url-B>` — URL+title receipt of page B
 4. Optionally: `elshot <target> @ref` — capture matching sections of page B
 5. Compare the two observations + elshots from context
 

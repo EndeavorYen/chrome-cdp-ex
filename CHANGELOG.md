@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### perf: skinny document nav receipt to URL and title (#343)
+
+* Successful `nav` text is URL + title + readyState (68 chars on
+  example.org), not the 564-char Recovery/Hint/Outcome essay. Same
+  one-step document nav still waits until usable. `--compact` is no
+  longer a text no-op: it prints one line (`URL  title`, 36 chars).
+  `--qa` / `--summary` stay the existing QA summary. `--perceive` still
+  dumps AX. Attention/failed navs keep the fat receipt. No `--goto`.
+
 ### perf: skip hover leftover AX recapture before confirm eval (#341)
 
 * Sequential `batch --compact 'hover … | eval …'` skips leftover AX
