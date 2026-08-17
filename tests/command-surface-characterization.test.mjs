@@ -224,7 +224,7 @@ describe('Phase 6 command-surface characterization', () => {
   });
 
   it('keeps the characterized documentation files and explicit generated-region boundary', () => {
-    const files = ['README.md', 'docs/reference.md', 'skills/chrome-cdp-ex/references/commands.md'];
+    const files = ['docs/reference.md', 'skills/chrome-cdp-ex/references/commands.md'];
     for (const path of files) {
       const text = readFileSync(join(rootDir, path), 'utf8');
       expect(text.match(/chrome-cdp-ex:generated-command-surface:start/g)).toHaveLength(1);

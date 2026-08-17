@@ -16,7 +16,6 @@ import { fileURLToPath } from 'node:url';
 import { COMMAND_SURFACE, isCommandSurface } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 
 export const GENERATED_FILES = Object.freeze([
-  'README.md',
   'docs/reference.md',
   'skills/chrome-cdp-ex/references/commands.md',
 ]);

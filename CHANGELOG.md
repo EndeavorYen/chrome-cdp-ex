@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### docs: lead README with the live-session one-step board
+
+* README leads with the live Chrome attach, one-step receipt, and the
+  2026-08-17 `22c525d4` three-column board vs Browser Use and same-machine
+  Playwright. Table faces are success / steps / time / token. Overlay and
+  PDF rows state the PASS/FAIL judgment, not only a char count. Install
+  still starts at `doctor`.
+
 ### perf: faster document nav wait (#347)
 
 * Successful `nav` still lands on the destination when `readyState` is
