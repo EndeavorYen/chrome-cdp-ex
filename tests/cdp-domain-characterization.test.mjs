@@ -268,6 +268,9 @@ function responseFor(method, params = {}) {
         return { result: { value: JSON.stringify({ title: 'Fixture', url: 'https://example.test/fixture', readyState: 'complete' }) } };
       }
       if (params.expression === 'document.readyState') return { result: { value: 'complete' } };
+      if (String(params.expression).includes('location.href') && String(params.expression).includes('readyState')) {
+        return { result: { value: JSON.stringify({ url: 'https://example.test/fixture', readyState: 'complete' }) } };
+      }
       return { result: { value: 7 } };
     case 'DOM.getDocument': return { root: { nodeId: 1 } };
     case 'DOM.resolveNode': return { object: { objectId: 'OBJECT' } };
@@ -369,7 +372,7 @@ function domainInvocations() {
     {
       domain: 'Page',
       methods: ['Page.enable', 'Page.navigate', 'Runtime.evaluate'],
-      callDigest: '28a1c2f14e318795e2b3dff815a9bad8141cd4f8173b9f0fea2064b46bcc1115',
+      callDigest: 'ba8527f587c062699a1f37c91b1f27a04db1b39a62236a2831604c570a9b55e7',
       result: 'Navigated to https://example.test/fixture',
       invoke: cdp => cdpTest.navStr(cdp, 'SESSION', 'https://example.test/fixture'),
     },

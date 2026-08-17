@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### perf: faster document nav wait (#347)
+
+* Successful `nav` still lands on the destination when `readyState` is
+  complete. It returns when the dest URL is committed and the document is
+  complete, without also waiting `Page.loadEventFired` plus the leftover
+  150 ms action network-quiet floor after a cached document GET. Same
+  one-step `nav` command; no `--wait-until` / `--skip-settle`. Click-initiated
+  navigation still uses the short 50/250 quiet window.
+
 ### perf: skinny document-scroll-edge receipt (#345)
 
 * Successful `scroll to bottom` / `scroll to top` text is the #323 line
