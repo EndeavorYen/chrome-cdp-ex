@@ -5233,6 +5233,9 @@ function actionRecoveryHint(actionResult = {}) {
   // Successful bounded document nav already prints URL + title. Generic
   // "Continue from the observed action evidence." is leftover chrome (#343).
   if (isSuccessfulBoundedDocumentNav(actionResult)) return null;
+  // Successful document-scroll-edge already prints scrollY / scrollMax /
+  // at-bottom. "Capture a fresh observation…" restates Hint perceive (#345).
+  if (isSuccessfulBoundedDocumentScrollEdge(actionResult)) return null;
   if (typeof recommendation.recoveryHint === 'string' && recommendation.recoveryHint.trim()) return recommendation.recoveryHint;
   if (diagnosis?.reason && diagnosis.status !== 'ok') return diagnosis.reason;
   // Leftover golden-path AX scroll already prints Outcome:changed, the compact
@@ -5524,6 +5527,12 @@ function applyActionRecommendation(actionResult) {
   ) {
     actionResult.nextHint = null;
   }
+  if (
+    isSuccessfulBoundedDocumentScrollEdge(actionResult)
+    && isGenericSinceActionHint(actionResult.nextHint)
+  ) {
+    actionResult.nextHint = null;
+  }
   return actionResult;
 }
 
@@ -5795,9 +5804,40 @@ function formatSuccessfulDocumentNavText(result, { compact = false } = {}) {
   return lines.join('\n');
 }
 
-function formatActionText(result, { compact = false, full = false } = {}) {
+const DOCUMENT_SCROLL_EDGE_DISPATCH_RE = /^Scrolled to (top|bottom)\.\s+(.+)$/;
+
+function documentScrollEdgeDispatchText(result = {}, dispatchText = '') {
+  return String(dispatchText || result.target?.dispatchText || '').trim();
+}
+
+function isSuccessfulBoundedDocumentScrollEdge(result = {}) {
+  if (String(result.action || '').toLowerCase() !== 'scroll') return false;
+  if (!isDocumentScrollEdgeTarget(result.target || {})) return false;
+  if (result.dispatch?.ok === false) return false;
+  if (result.settle?.ok === false) return false;
+  if (result.effects?.failure?.kind) return false;
+  if (result.effects?.observationError?.message) return false;
+  const diagnosis = result.effects?.diagnosis;
+  if (diagnosis && diagnosis.status !== 'ok') return false;
+  if (result.outcome?.needsAttention === true) return false;
+  if (result.outcome?.status && result.outcome.status !== 'dispatched') return false;
+  return actionBlockingSignals(result).length === 0;
+}
+
+function formatSuccessfulDocumentScrollEdgeText(result, { compact = false, dispatchText = '' } = {}) {
+  const text = documentScrollEdgeDispatchText(result, dispatchText);
+  if (!text) return '';
+  if (!compact) return text;
+  const match = text.match(DOCUMENT_SCROLL_EDGE_DISPATCH_RE);
+  return match ? match[2] : text;
+}
+
+function formatActionText(result, { compact = false, full = false, dispatchText = '' } = {}) {
   if (!full && isSuccessfulBoundedDocumentNav(result)) {
     return formatSuccessfulDocumentNavText(result, { compact });
+  }
+  if (!full && isSuccessfulBoundedDocumentScrollEdge(result)) {
+    return formatSuccessfulDocumentScrollEdgeText(result, { compact, dispatchText });
   }
   const diagnostics = summarizeActionObservationEffects(result.effects || {});
   const diagnosis = result.effects?.diagnosis || null;
@@ -6121,6 +6161,12 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
   }
   if (!full && isSuccessfulBoundedDocumentNav(result)) {
     let text = formatSuccessfulDocumentNavText(result, { compact });
+    if (maxDiffLines != null) text = truncateTextLines(text, maxDiffLines);
+    if (!timeoutError) return text;
+    return `${text}\n(success but observation timed out after action dispatch: ${timeoutError.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
+  }
+  if (!full && isSuccessfulBoundedDocumentScrollEdge(result)) {
+    let text = formatSuccessfulDocumentScrollEdgeText(result, { compact, dispatchText });
     if (maxDiffLines != null) text = truncateTextLines(text, maxDiffLines);
     if (!timeoutError) return text;
     return `${text}\n(success but observation timed out after action dispatch: ${timeoutError.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
@@ -22270,6 +22316,7 @@ Usage: cdp <command> [args]
                                     Works in cross-origin iframes unlike eval-based approaches
 {{command:press}}
 {{command:scroll}}
+                                    Successful document-scroll-edge is scrollY/scrollMax/at-bottom. --compact is metrics only.
 {{command:hover}}
 {{command:waitfor}}
   waitfor <target> --gone <sel|@ref> [ms]  Wait for element to DISAPPEAR (streaming end)
