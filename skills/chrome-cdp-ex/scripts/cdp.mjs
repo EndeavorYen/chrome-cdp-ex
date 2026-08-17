@@ -5810,7 +5810,7 @@ function documentScrollEdgeDispatchText(result = {}, dispatchText = '') {
   return String(dispatchText || result.target?.dispatchText || '').trim();
 }
 
-function isSuccessfulBoundedDocumentScrollEdge(result = {}) {
+function isSuccessfulBoundedDocumentScrollEdge(result = {}, { dispatchText = '' } = {}) {
   if (String(result.action || '').toLowerCase() !== 'scroll') return false;
   if (!isDocumentScrollEdgeTarget(result.target || {})) return false;
   if (result.dispatch?.ok === false) return false;
@@ -5821,7 +5821,8 @@ function isSuccessfulBoundedDocumentScrollEdge(result = {}) {
   if (diagnosis && diagnosis.status !== 'ok') return false;
   if (result.outcome?.needsAttention === true) return false;
   if (result.outcome?.status && result.outcome.status !== 'dispatched') return false;
-  return actionBlockingSignals(result).length === 0;
+  if (actionBlockingSignals(result).length) return false;
+  return DOCUMENT_SCROLL_EDGE_DISPATCH_RE.test(documentScrollEdgeDispatchText(result, dispatchText));
 }
 
 function formatSuccessfulDocumentScrollEdgeText(result, { compact = false, dispatchText = '' } = {}) {
@@ -5836,7 +5837,7 @@ function formatActionText(result, { compact = false, full = false, dispatchText 
   if (!full && isSuccessfulBoundedDocumentNav(result)) {
     return formatSuccessfulDocumentNavText(result, { compact });
   }
-  if (!full && isSuccessfulBoundedDocumentScrollEdge(result)) {
+  if (!full && isSuccessfulBoundedDocumentScrollEdge(result, { dispatchText })) {
     return formatSuccessfulDocumentScrollEdgeText(result, { compact, dispatchText });
   }
   const diagnostics = summarizeActionObservationEffects(result.effects || {});
@@ -6165,7 +6166,7 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
     if (!timeoutError) return text;
     return `${text}\n(success but observation timed out after action dispatch: ${timeoutError.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
   }
-  if (!full && isSuccessfulBoundedDocumentScrollEdge(result)) {
+  if (!full && isSuccessfulBoundedDocumentScrollEdge(result, { dispatchText })) {
     let text = formatSuccessfulDocumentScrollEdgeText(result, { compact, dispatchText });
     if (maxDiffLines != null) text = truncateTextLines(text, maxDiffLines);
     if (!timeoutError) return text;

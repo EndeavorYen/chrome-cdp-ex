@@ -208,4 +208,59 @@ describe('#345 skinny document-scroll-edge receipt', () => {
     expect(text).not.toMatch(/RootWebArea/);
     expect(text.length).toBeLessThanOrEqual(BROWSER_USE_SCROLL_CHARS);
   });
+
+  it('does not skinny a document-scroll-edge result with no scrollY line', () => {
+    const result = hfDocumentScrollEdgeResult({ dispatchText: '' });
+    result.target.dispatchText = '';
+    const text = T.formatActionResultOutput(result, { dispatchText: '' });
+    expect(text).not.toBe('');
+    expect(text).toMatch(/Outcome:/);
+    expect(text).toMatch(/Recovery hint:/);
+    expect(text.length).toBeGreaterThan(BROWSER_USE_SCROLL_CHARS);
+  });
+
+  it('keeps the fat receipt when document-scroll-edge dispatch fails', () => {
+    const result = T.createActionResult({
+      action: 'scroll',
+      target: {
+        targetId: TARGET_ID,
+        input: 'to bottom',
+        resolvedBy: 'scroll',
+        label: 'to bottom',
+        expectedOutcome: T.DOCUMENT_SCROLL_EDGE_OUTCOME,
+        dispatchText: 'Did not reach document bottom. scrollY: 100 / 5295 max (at-bottom: no)',
+      },
+      dispatch: { ok: false, method: 'scroll', error: 'Did not reach document bottom' },
+      settle: { ok: false, durationMs: 3 },
+      effects: {
+        failure: { kind: 'timeout', reason: 'Did not reach document bottom' },
+        domDiff: null,
+        console: [],
+        network: [],
+        navigation: null,
+      },
+      nextHint: GENERIC_HINT,
+    });
+    const text = T.formatActionResultOutput(result, {
+      dispatchText: 'Did not reach document bottom. scrollY: 100 / 5295 max (at-bottom: no)',
+    });
+    expect(result.outcome.status).toBe('failed');
+    expect(text).toMatch(/Recovery hint:/);
+    expect(text).not.toBe(DISPATCH_TEXT);
+    expect(text.length).toBeGreaterThan(BROWSER_USE_SCROLL_CHARS);
+  });
+
+  it('prints at-top metrics for successful scroll to top, including --compact', () => {
+    const dispatchText = 'Scrolled to top. scrollY: 0 / 5295 max (at-top: yes)';
+    const result = hfDocumentScrollEdgeResult({ dispatchText });
+    result.target.input = 'to top';
+    result.target.label = 'to top';
+    result.target.commandArgs = ['to', 'top'];
+    const text = T.formatActionResultOutput(result, { dispatchText });
+    const compact = T.formatActionResultOutput(result, { dispatchText, compact: true });
+    expect(text).toBe(dispatchText);
+    expect(compact).toBe('scrollY: 0 / 5295 max (at-top: yes)');
+    expect(compact.length).toBeLessThan(text.length);
+    expect(text).not.toMatch(/^Recovery hint:/m);
+  });
 });

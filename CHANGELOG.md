@@ -5,11 +5,11 @@
 ### perf: skinny document-scroll-edge receipt (#345)
 
 * Successful `scroll to bottom` / `scroll to top` text is the #323 line
-  (`scrollY` / `scrollMax` / at-bottom, 62 chars on huggingface.co), not
+  (`scrollY` / `scrollMax` / at-bottom, 61 chars on huggingface.co), not
   the 469-char Recovery/Hint/Outcome essay. Same one-step document edge
   still reaches `scrollY ≈ scrollMax`. `--compact` is no longer a text
   no-op: it prints metrics only (`scrollY: 5295 / 5295 max (at-bottom: yes)`,
-  42 chars). `--qa` / `--summary` stay the existing QA summary.
+  41 chars). `--qa` / `--summary` stay the existing QA summary.
   Attention/failed/relative leftover-ax-scroll keep the fat receipt. No
   new scroll command.
 
