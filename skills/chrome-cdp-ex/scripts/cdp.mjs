@@ -3771,6 +3771,107 @@ async function htmlStr(cdp, sid, selectorOrArgs, extra = {}) {
   return parsed.html || '';
 }
 
+const NAV_DOCUMENT_PROBE_INTERVAL_MS = 25;
+const NAV_DOCUMENT_PROBE_EXPR = 'JSON.stringify({url: location.href || "", readyState: document.readyState || ""})';
+
+function parseNavigationDocumentProbe(raw) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return {
+      url: String(raw.url || ''),
+      readyState: String(raw.readyState || ''),
+    };
+  }
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  if (text === 'complete' || text === 'interactive' || text === 'loading') {
+    return { url: '', readyState: text };
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        url: String(parsed.url || ''),
+        readyState: String(parsed.readyState || ''),
+      };
+    }
+  } catch {
+    // Probe results are best-effort; keep polling until dest+complete or timeout.
+  }
+  return null;
+}
+
+function navigationDocumentIsReady(parsed, url) {
+  return Boolean(parsed)
+    && parsed.readyState === 'complete'
+    && navigationDestinationMatches(parsed.url, url);
+}
+
+async function probeNavigationDocument(cdp, sid, options = {}) {
+  const raw = await evalStr(cdp, sid, NAV_DOCUMENT_PROBE_EXPR, false, {
+    timeoutMs: options.probeTimeoutMs,
+  });
+  return parseNavigationDocumentProbe(raw);
+}
+
+async function waitForCommittedDocumentReady(cdp, sid, url, timeoutMs = 5000, options = {}) {
+  const deadline = Date.now() + timeoutMs;
+  const sleepFn = options.sleepFn || sleep;
+  const loadEvent = options.loadEvent;
+  const frameEvent = options.frameEvent;
+  let lastState = '';
+  let lastError;
+  let loadDone = false;
+  let frameDone = false;
+
+  const check = async () => {
+    try {
+      const parsed = await probeNavigationDocument(cdp, sid, options);
+      lastState = parsed?.readyState || '';
+      if (parsed?.url) lastState = `${parsed.readyState} ${parsed.url}`;
+      return navigationDocumentIsReady(parsed, url);
+    } catch (error) {
+      lastError = error;
+      return false;
+    }
+  };
+
+  if (await check()) return;
+
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const wakes = [sleepFn(Math.min(NAV_DOCUMENT_PROBE_INTERVAL_MS, remaining)).then(() => 'poll')];
+    if (loadEvent?.promise && !loadDone) {
+      wakes.push(loadEvent.promise.then(() => {
+        loadDone = true;
+        return 'load';
+      }).catch(() => {
+        loadDone = true;
+        return 'load-fail';
+      }));
+    }
+    if (frameEvent?.promise && !frameDone) {
+      wakes.push(frameEvent.promise.then(() => {
+        frameDone = true;
+        return 'frame';
+      }).catch(() => {
+        frameDone = true;
+        return 'frame-fail';
+      }));
+    }
+    await Promise.race(wakes);
+    if (await check()) return;
+  }
+
+  if (lastState) {
+    throw new Error(`Timed out waiting for navigation to finish (last readyState: ${lastState})`);
+  }
+  if (lastError) {
+    throw new Error(`Timed out waiting for navigation to finish (${lastError.message})`);
+  }
+  throw new Error('Timed out waiting for navigation to finish');
+}
+
 async function waitForDocumentReady(cdp, sid, timeoutMs = NAVIGATION_TIMEOUT, options = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastState = '';
@@ -3858,6 +3959,11 @@ async function navStr(cdp, sid, url, opts = {}) {
   validateUrl(url);
   await cdpDomains(cdp).Page.enable( {}, sid);
   const loadEvent = cdp.waitForEvent('Page.loadEventFired', NAVIGATION_TIMEOUT);
+  const frameEvent = cdp.waitForEvent('Page.frameNavigated', NAVIGATION_TIMEOUT);
+  const cancelNavWaiters = () => {
+    loadEvent.cancel();
+    frameEvent.cancel();
+  };
   const targetId = opts.targetId || null;
   let navigateSettled = false;
   const navigatePromise = (async () => {
@@ -3884,12 +3990,12 @@ async function navStr(cdp, sid, url, opts = {}) {
         ])
       : await navigatePromise;
   } catch (e) {
-    loadEvent.cancel();
+    cancelNavWaiters();
     throw e;
   }
 
   if (outcome.kind === 'observed') {
-    loadEvent.cancel();
+    cancelNavWaiters();
     navigatePromise.catch(() => {});
     await settleObservedNavigation(cdp, sid, {
       targetId,
@@ -3902,17 +4008,18 @@ async function navStr(cdp, sid, url, opts = {}) {
 
   const result = outcome.result;
   if (result.errorText) {
-    loadEvent.cancel();
+    cancelNavWaiters();
     throw new Error(result.errorText);
   }
-  if (result.loaderId) {
-    await loadEvent.promise;
-  } else {
-    loadEvent.cancel();
+  try {
+    await waitForCommittedDocumentReady(cdp, sid, url, opts.readyTimeoutMs ?? 5000, {
+      probeTimeoutMs: opts.probeTimeoutMs,
+      loadEvent,
+      frameEvent,
+    });
+  } finally {
+    cancelNavWaiters();
   }
-  await waitForDocumentReady(cdp, sid, opts.readyTimeoutMs ?? 5000, {
-    probeTimeoutMs: opts.probeTimeoutMs,
-  });
   return `Navigated to ${url}`;
 }
 
@@ -15577,6 +15684,14 @@ function clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, 
   }
 }
 
+function actionNetworkQuietOptions(action, { navigated = false } = {}) {
+  // Document nav already waited until dest URL committed + readyState complete.
+  // Do not add the leftover 150ms quiet floor after a cached document GET.
+  if (action === 'nav') return null;
+  if (navigated) return { quietMs: 50, timeoutMs: 250 };
+  return { quietMs: 150, timeoutMs: 1000 };
+}
+
 async function waitForActionNetworkQuiet(pendingReqs, { quietMs = 150, timeoutMs = 1000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let quietSince = pendingReqs?.size ? 0 : Date.now();
@@ -20713,7 +20828,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       }
       if (actionTarget.navigated) {
         appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
-        await waitForActionNetworkQuiet(pendingReqs, { quietMs: 50, timeoutMs: 250 });
+        const quietOpts = actionNetworkQuietOptions(action, { navigated: true });
+        if (quietOpts) await waitForActionNetworkQuiet(pendingReqs, quietOpts);
         appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
         postActionPageHealth = await collectPageHealth(cdp, sessionId, { changed: true }).catch(() => null);
         return formatActionNavigationDiff(actionTarget.pageHrefBefore, actionTarget.pageHrefAfter);
@@ -20727,7 +20843,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         const note = `Control state changed: ${actionTarget.controlStateDiff}`;
         text = actionDomDiffShowsChange(text) ? `${note}\n${text}` : note;
       }
-      await waitForActionNetworkQuiet(pendingReqs);
+      const quietOpts = actionNetworkQuietOptions(action);
+      if (quietOpts) await waitForActionNetworkQuiet(pendingReqs, quietOpts);
       appendPendingActionNetworkEntries(pendingReqs, netReqBuf, actionStartedAt);
       postActionPageHealth = await collectPageHealth(cdp, sessionId, {
         changed: actionDomDiffShowsChange(text) || Boolean(actionTarget.controlStateChanged),
@@ -24990,6 +25107,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles,
   navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
   classifyCommandResultSemantics,

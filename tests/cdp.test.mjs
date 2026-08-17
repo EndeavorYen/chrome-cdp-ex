@@ -9961,7 +9961,9 @@ describe('navStr', () => {
       'Page.enable': () => ({}),
       'Page.navigate': () => ({ loaderId: 'loader1' }),
       'event:Page.loadEventFired': () => ({}),
-      'Runtime.evaluate': () => ({ result: { value: 'complete' } }),
+      'Runtime.evaluate': () => ({
+        result: { value: JSON.stringify({ url: 'https://example.com', readyState: 'complete' }) },
+      }),
     });
     const result = await navStr(cdp, 'sid1', 'https://example.com');
     expect(result).toBe('Navigated to https://example.com');

@@ -546,7 +546,7 @@ $ cdp nav <target> https://example.com --compact
 https://example.com  Example Store
 ```
 
-Use `cdp nav <target> <url> --perceive` only when you need the full accessibility tree immediately. Default nav stays URL+title so GitHub/X telemetry 404s and empty AX dumps do not hijack the next probe.
+Use `cdp nav <target> <url> --perceive` only when you need the full accessibility tree immediately. Default nav stays URL+title so GitHub/X telemetry 404s and empty AX dumps do not hijack the next probe. Document `nav` waits until the destination URL is committed and `readyState` is complete; it does not also wait `loadEventFired` plus a leftover 150 ms network-quiet floor.
 
 This eliminates the observe-act-observe loop and makes agents ~2x more efficient.
 
