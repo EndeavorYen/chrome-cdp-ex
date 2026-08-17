@@ -14,6 +14,23 @@
     line-height: 1.5;
   }
 
+  .door {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    justify-content: center;
+    align-items: center;
+    padding: 16px 24px 0;
+    font-size: 13px;
+    color: #777;
+  }
+  .door a {
+    color: #60a5fa;
+    text-decoration: none;
+  }
+  .door a:hover { color: #fff; }
+  .door strong { color: #e0e0e0; }
+
   /* Header */
   header {
     text-align: center;
@@ -376,6 +393,14 @@
 </style>
 </head>
 <body>
+
+<nav class="door" aria-label="chrome-cdp-ex first screen">
+  <a href="https://github.com/EndeavorYen/chrome-cdp-ex#readme">README</a>
+  <span>10 jobs · <strong>10 PASS</strong> / 8 PASS / 9 PASS</span>
+  <a href="codex-killer-path-demo.html">Killer Path demo</a>
+  <a href="codex-killer-path-demo.mp4">60s video</a>
+  <a href="benchmark.html">Smart Eye</a>
+</nav>
 
 <header>
   <h1>Which tool <span>sees</span> better?</h1>
