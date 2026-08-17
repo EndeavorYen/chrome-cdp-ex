@@ -105,10 +105,19 @@ export const PK_324_CHART_FILES = Object.freeze({
   token: 'experiment/pk-324-token.svg',
   time: 'experiment/pk-324-time.svg',
 });
+export const PK_324_SCOREBOARD_FILE = 'experiment/pk-324-scoreboard.svg';
+export const README_SCORE_FACES = Object.freeze(['steps', 'token', 'time']);
 
 export function scoreCell(row, toolKey) {
   const cell = row[toolKey];
   return `${cell.success} / ${cell.steps} / ${cell.time} / ${cell.token}`;
+}
+
+export function passFaceWinners(job, face) {
+  const keys = ['cdp', 'browserUse', 'playwright'];
+  const pass = keys.filter(key => job[key].success === 'PASS');
+  const min = Math.min(...pass.map(key => job[key][face]));
+  return pass.filter(key => job[key][face] === min);
 }
 
 function escapeXml(value) {
@@ -216,3 +225,96 @@ export function renderPk324ChartSvg(face, board = LOCKED_PK_BOARD) {
 export function renderPk324Charts(board = LOCKED_PK_BOARD) {
   return Object.fromEntries(PK_324_CHART_FACES.map(face => [face, renderPk324ChartSvg(face, board)]));
 }
+
+export function renderPk324ScoreboardSvg(board = LOCKED_PK_BOARD) {
+  const width = 960;
+  const height = 648;
+  const padX = 20;
+  const labelWidth = 276;
+  const tableX = padX + labelWidth;
+  const tableRight = width - padX;
+  const colWidth = (tableRight - tableX) / board.tools.length;
+  const headerY = 28;
+  const colHeaderY = 74;
+  const tableTop = 86;
+  const totalRowHeight = 40;
+  const jobRowHeight = 46;
+  const jobsTop = tableTop + totalRowHeight;
+  const failFill = '#3f1518';
+  const failStroke = '#f87171';
+  const passFill = '#111827';
+  const totalFill = '#0f172a';
+
+  const legend = board.tools.map((tool, index) => {
+    const x = tableX + index * colWidth + 10;
+    return [
+      `<rect x="${x.toFixed(1)}" y="62" width="10" height="10" rx="2" fill="${tool.color}"/>`,
+      `<text x="${(x + 16).toFixed(1)}" y="${colHeaderY}" fill="#e5e7eb" font-size="13">${escapeXml(tool.label)}</text>`,
+    ].join('');
+  }).join('');
+
+  const totals = board.tools.map((tool, index) => {
+    const valueKey = tool.key === 'cdp' ? 'chromeCdpEx' : tool.key;
+    const score = `${board.scoreboard[valueKey]}/10`;
+    const x = tableX + index * colWidth;
+    const winner = tool.key === 'cdp';
+    const weight = winner ? ' font-weight="700"' : '';
+    const fill = winner ? tool.color : '#e5e7eb';
+    return [
+      `<g class="pk-total" data-tool="${escapeXml(tool.label)}">`,
+      `<rect x="${x.toFixed(2)}" y="${tableTop}" width="${colWidth.toFixed(2)}" height="${totalRowHeight}" fill="${totalFill}"/>`,
+      `<text x="${(x + colWidth / 2).toFixed(1)}" y="${tableTop + 26}" text-anchor="middle" fill="${fill}" font-size="18" data-value="${score}"${weight}>${score}</text>`,
+      '</g>',
+    ].join('');
+  }).join('');
+
+  const jobRows = board.jobs.map((job, jobIndex) => {
+    const y = jobsTop + jobIndex * jobRowHeight;
+    const label = `<text x="${padX + 8}" y="${y + 28}" fill="#e5e7eb" font-size="12">${escapeXml(job.name)}</text>`;
+    const cells = board.tools.map((tool, toolIndex) => {
+      const cell = job[tool.key];
+      const x = tableX + toolIndex * colWidth;
+      const failed = cell.success === 'FAIL';
+      const className = failed ? 'pk-cell pk-fail' : 'pk-cell';
+      const rect = failed
+        ? `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${colWidth.toFixed(2)}" height="${jobRowHeight}" fill="${failFill}" stroke="${failStroke}" stroke-width="1"/>`
+        : `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${colWidth.toFixed(2)}" height="${jobRowHeight}" fill="${passFill}"/>`;
+      const statusFill = failed ? '#f87171' : '#86efac';
+      const faces = README_SCORE_FACES.map((face, faceIndex) => {
+        const value = cell[face];
+        const win = !failed && passFaceWinners(job, face).includes(tool.key);
+        const weight = win ? ' font-weight="700"' : '';
+        const faceFill = failed ? '#fca5a5' : win ? '#f9fafb' : '#9ca3af';
+        const prefix = faceIndex === 0 ? '' : '<tspan fill="#6b7280"> / </tspan>';
+        return `${prefix}<tspan data-face="${face}" fill="${faceFill}"${weight}>${value}</tspan>`;
+      }).join('');
+      const visibleScore = `${cell.steps} / ${cell.token} / ${cell.time}`;
+      return [
+        `<g class="${className}" data-job="${escapeXml(job.name)}" data-tool="${escapeXml(tool.label)}" data-success="${cell.success}" data-steps="${cell.steps}" data-token="${cell.token}" data-time="${cell.time}">`,
+        rect,
+        `<text x="${(x + colWidth / 2).toFixed(1)}" y="${(y + 17).toFixed(1)}" text-anchor="middle" fill="${statusFill}" font-size="11">${cell.success}</text>`,
+        `<text x="${(x + colWidth / 2).toFixed(1)}" y="${(y + 34).toFixed(1)}" text-anchor="middle" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">${faces}</text>`,
+        `<text class="pk-score-text" font-size="0">${escapeXml(visibleScore)}</text>`,
+        '</g>',
+      ].join('');
+    }).join('');
+    return `${label}${cells}`;
+  }).join('');
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="PK scoreboard for chrome-cdp-ex, Browser Use, and Playwright">`,
+    '<rect width="100%" height="100%" fill="#0b0f14"/>',
+    `<text x="${padX}" y="${headerY}" fill="#f9fafb" font-size="18" font-family="ui-sans-serif, system-ui, sans-serif" font-weight="700">10 jobs. Who finishes.</text>`,
+    `<text x="${width - padX}" y="${headerY}" text-anchor="end" fill="#9ca3af" font-size="12" font-family="ui-sans-serif, system-ui, sans-serif">${escapeXml(board.date)} · ${escapeXml(board.sha)}</text>`,
+    `<text x="${padX}" y="48" fill="#9ca3af" font-size="12" font-family="ui-sans-serif, system-ui, sans-serif">steps / token / wall ms · PASS winners bold · FAIL cannot win</text>`,
+    `<text x="${padX + 8}" y="${tableTop + 26}" fill="#e5e7eb" font-size="13" font-weight="700">Total success</text>`,
+    `<g font-family="ui-sans-serif, system-ui, sans-serif">${legend}</g>`,
+    `<g font-family="ui-sans-serif, system-ui, sans-serif">${totals}</g>`,
+    `<g font-family="ui-sans-serif, system-ui, sans-serif">${jobRows}</g>`,
+    `<text x="${padX}" y="${height - 16}" fill="#6b7280" font-size="11" font-family="ui-sans-serif, system-ui, sans-serif">X-axis = 10 jobs · ${escapeXml(board.date)} · ${escapeXml(board.sha)} · FAIL cells marked in red</text>`,
+    '</svg>',
+    '',
+  ].join('\n');
+}
+

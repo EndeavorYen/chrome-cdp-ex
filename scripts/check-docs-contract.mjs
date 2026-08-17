@@ -7,7 +7,9 @@ import {
   LOCKED_PK_BOARD,
   PK_324_CHART_FACES,
   PK_324_CHART_FILES,
+  PK_324_SCOREBOARD_FILE,
   renderPk324ChartSvg,
+  renderPk324ScoreboardSvg,
   scoreCell,
 } from './lib/pk-324-board.mjs';
 
@@ -226,8 +228,8 @@ export const README_FIRST_SCREEN_MARKERS = Object.freeze([
   ['cool', 'codex-killer-path-demo-poster.png', 'Cool visual (poster / 60-second demo)'],
   ['advantage', '## The tab you already have', 'project advantage'],
   ['comparison', '## 10 jobs. Who finishes.', 'comparison PK table'],
-  ['scoreboard', '**10/10**', 'PK table total 10/10'],
-  ['charts', 'experiment/pk-324-steps.svg', 'PK bar charts below the table'],
+  ['scoreboard', 'experiment/pk-324-scoreboard.svg', 'PK scoreboard SVG'],
+  ['charts', 'experiment/pk-324-steps.svg', 'PK bar charts below the scoreboard'],
   ['demo', '## Demo', 'demo links'],
   ['quickstart', '## Quick start', 'Quick Start'],
 ]);
@@ -327,11 +329,6 @@ export function checkPk324ChartContract(charts = {}) {
   return failures;
 }
 
-function hasBoldCell(text, value) {
-  const escaped = String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`\\*\\*${escaped}\\*\\*|<strong>${escaped}</strong>`, 'i').test(text);
-}
-
 function comparisonSection(readme) {
   const start = readme.search(/^## 10 jobs\. Who finishes\./m);
   const end = readme.search(/^## Demo\b/m);
@@ -339,13 +336,54 @@ function comparisonSection(readme) {
   return end > start ? readme.slice(start, end) : readme.slice(start);
 }
 
-function jobNeedleIndex(text, jobName) {
-  const idx = text.indexOf(jobName);
-  if (idx !== -1) return idx;
-  if (jobName.includes('#content-container') && text.includes('#content-container')) {
-    return text.indexOf('#content-container');
+export function checkPk324ScoreboardContract(svg) {
+  const failures = [];
+  const actual = svg || '';
+  const expected = renderPk324ScoreboardSvg();
+  if (!actual.includes('data-value="10/10"') || !/data-value="10\/10"[^>]*font-weight="700"/.test(actual)) {
+    failures.push('PK scoreboard SVG must bold chrome-cdp-ex total success 10/10');
   }
-  return -1;
+  if (!actual.includes('data-value="8/10"') || !actual.includes('data-value="9/10"')) {
+    failures.push('PK scoreboard SVG must show Browser Use 8/10 and Playwright 9/10');
+  }
+  if (/data-value="8\/10"[^>]*font-weight="700"/.test(actual)
+    || /data-value="9\/10"[^>]*font-weight="700"/.test(actual)) {
+    failures.push('PK scoreboard SVG must bold only the winning total (chrome-cdp-ex 10/10)');
+  }
+  if (!actual.includes('steps / token / wall ms')) {
+    failures.push('PK scoreboard SVG must label job cells as steps / token / wall ms');
+  }
+  if (/\bcost\b|\bcp\b/i.test(actual)) {
+    failures.push('PK scoreboard SVG must not add a cost/cp column');
+  }
+  for (const job of LOCKED_PK_BOARD.jobs) {
+    const expectedFails = LOCKED_PK_BOARD.tools.filter(tool => job[tool.key].success === 'FAIL').length;
+    const failRe = new RegExp(
+      `data-job="${job.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}" data-tool="[^"]+" data-success="FAIL"`,
+      'g',
+    );
+    const actualFails = (actual.match(failRe) || []).length;
+    if (expectedFails > 0 && actualFails < expectedFails) {
+      failures.push(`PK scoreboard SVG must keep ${expectedFails} FAIL cell(s) visible on ${job.name}`);
+    }
+    for (const tool of LOCKED_PK_BOARD.tools) {
+      const cell = job[tool.key];
+      const needle = `data-job="${job.name}" data-tool="${tool.label}" data-success="${cell.success}" data-steps="${cell.steps}" data-token="${cell.token}" data-time="${cell.time}"`;
+      if (!actual.includes(needle)) {
+        failures.push(`PK scoreboard SVG is missing locked cell: ${job.name} ${tool.label} ${cell.success} ${cell.steps}/${cell.token}/${cell.time}`);
+      }
+      if (cell.success === 'FAIL' && !actual.includes(`data-job="${job.name}" data-tool="${tool.label}" data-success="FAIL"`)) {
+        failures.push(`PK scoreboard SVG must color-mark FAIL on ${job.name} ${tool.label}`);
+      }
+    }
+  }
+  if (actual && actual !== expected) {
+    failures.push(`${PK_324_SCOREBOARD_FILE} does not match the locked scoreboard`);
+  }
+  if (!actual) {
+    failures.push(`Missing PK scoreboard ${PK_324_SCOREBOARD_FILE}`);
+  }
+  return failures;
 }
 
 export function checkReadmePkTableContract(readme) {
@@ -355,23 +393,17 @@ export function checkReadmePkTableContract(readme) {
     failures.push('README comparison heading must stay ## 10 jobs. Who finishes.');
     return failures;
   }
+  if (!section.includes(PK_324_SCOREBOARD_FILE)) {
+    failures.push('README comparison first glance must be the PK scoreboard SVG');
+  }
   if (!/chrome-cdp-ex[\s\S]{0,120}Browser Use[\s\S]{0,120}Playwright/.test(section)) {
     failures.push('README PK table columns must be chrome-cdp-ex | Browser Use | Playwright');
   }
-  if (!hasBoldCell(section, '10/10')) {
-    failures.push('README PK table must bold chrome-cdp-ex total success 10/10');
-  }
-  if (!/\b8\/10\b/.test(section) || !/\b9\/10\b/.test(section)) {
-    failures.push('README PK table must show Browser Use 8/10 and Playwright 9/10');
-  }
-  if (hasBoldCell(section, '8/10') || hasBoldCell(section, '9/10')) {
-    failures.push('README PK table must bold only the winning total (chrome-cdp-ex 10/10)');
-  }
 
-  const totalIdx = Math.max(section.indexOf('**10/10**'), section.indexOf('<strong>10/10</strong>'));
+  const scoreboardIdx = section.indexOf(PK_324_SCOREBOARD_FILE);
   const chartIdx = section.indexOf('experiment/pk-324-steps.svg');
-  if (chartIdx !== -1 && totalIdx !== -1 && chartIdx < totalIdx) {
-    failures.push('README bar charts must sit below the PK table, not first glance');
+  if (chartIdx !== -1 && scoreboardIdx !== -1 && chartIdx < scoreboardIdx) {
+    failures.push('README bar charts must sit below the PK scoreboard SVG, not first glance');
   }
 
   if (/PASS\s*\/\s*\d+\s*\/\s*\d+\s*\/\s*\d+/.test(readme)
@@ -379,31 +411,17 @@ export function checkReadmePkTableContract(readme) {
     failures.push('README must not keep engineer mashup cells (success / steps / time / token)');
   }
 
-  for (const [index, job] of LOCKED_PK_BOARD.jobs.entries()) {
-    const start = jobNeedleIndex(section, job.name);
-    if (start === -1) {
-      failures.push(`README PK table is missing job: ${job.name}`);
-      continue;
-    }
-    const next = LOCKED_PK_BOARD.jobs[index + 1];
-    const end = next ? jobNeedleIndex(section, next.name) : section.length;
-    const row = section.slice(start, end === -1 ? section.length : end);
-    const expectedFails = ['cdp', 'browserUse', 'playwright']
-      .filter(tool => job[tool].success === 'FAIL').length;
-    const actualFails = (row.match(/FAIL/g) || []).length;
-    if (expectedFails > 0 && actualFails < expectedFails) {
-      failures.push(`README PK table must keep ${expectedFails} FAIL cell(s) visible on ${job.name}`);
-    }
-    if (job.cdp.success === 'PASS' && !hasBoldCell(row, 'PASS')) {
-      failures.push(`README PK table must bold the winning PASS cell on ${job.name}`);
-    }
+  if (/^\s*\|[^\n]*\b(?:PASS|FAIL)\b[^\n]*\|/m.test(readme)
+    || /^\s*\|\s*\|?\s*chrome-cdp-ex\s*\|\s*Browser Use\s*\|\s*Playwright\s*\|/m.test(readme)
+    || /^\s*\|\s*job\s*\|/m.test(readme)) {
+    failures.push('README must not keep a markdown PK grid as the first-glance comparison');
   }
 
-  if (!hasBoldCell(section, 'PDF text one page')) {
-    failures.push('README PK table must keep the PDF FAIL row visually emphasized');
+  if (!/steps\s*\/\s*token\s*\/\s*wall\s*ms/i.test(section)) {
+    failures.push('README PK table must label job cells as steps / token / wall ms');
   }
-  if (!hasBoldCell(section, 'overlay detect')) {
-    failures.push('README PK table must keep the overlay FAIL row visually emphasized');
+  if (/\bcost\b|\bcp\b/i.test(section)) {
+    failures.push('README PK table must not add a cost/cp column');
   }
   return failures;
 }
@@ -477,6 +495,7 @@ export function checkReadmeFaceContract(readme, extras = {}) {
   }
   if (Object.hasOwn(extras, 'pkBoard')) failures.push(...checkPk324BoardContract(extras.pkBoard || ''));
   if (Object.hasOwn(extras, 'pkCharts')) failures.push(...checkPk324ChartContract(extras.pkCharts || {}));
+  if (Object.hasOwn(extras, 'pkScoreboard')) failures.push(...checkPk324ScoreboardContract(extras.pkScoreboard || ''));
   return failures;
 }
 
@@ -496,6 +515,7 @@ export function checkDocsContract(docs, commands) {
   failures.push(...checkReadmeFaceContract(docs.readme || '', {
     ...(Object.hasOwn(docs, 'pkBoard') ? { pkBoard: docs.pkBoard || '' } : {}),
     ...(Object.hasOwn(docs, 'pkCharts') ? { pkCharts: docs.pkCharts || {} } : {}),
+    ...(Object.hasOwn(docs, 'pkScoreboard') ? { pkScoreboard: docs.pkScoreboard || '' } : {}),
   }));
 
   const requiredKillerPathTerms = [
@@ -549,11 +569,18 @@ function readDocs() {
       pkCharts[face] = '';
     }
   }
+  let pkScoreboard = '';
+  try {
+    pkScoreboard = read(PK_324_SCOREBOARD_FILE);
+  } catch {
+    pkScoreboard = '';
+  }
   return {
     readme: read('README.md'),
     reference: read('docs/reference.md'),
     pkBoard: read('docs/pk-324-board.md'),
     pkCharts,
+    pkScoreboard,
     selfImprovementLoop: read('docs/self-improvement-loop.md'),
     skill: readSkillCorpus(),
     killerPath: read('docs/examples/killer-path.md'),
