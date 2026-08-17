@@ -96,6 +96,10 @@ jobs:
           } >> release-notes.md
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
 
+      - name: Neutralize CLI @tokens in release notes
+        if: steps.readiness.outputs.ready == 'true' && steps.check.outputs.exists == 'false'
+        run: node scripts/sanitize-release-notes.mjs release-notes.md
+
       - name: Create release
         if: steps.readiness.outputs.ready == 'true' && steps.check.outputs.exists == 'false'
         env:
