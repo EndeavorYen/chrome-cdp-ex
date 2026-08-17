@@ -214,6 +214,7 @@ export const LOCKED_LIVE_SESSION_BOARD = Object.freeze({
   date: '2026-08-17',
   sha: '22c525d4',
   opponent: 'Browser Use',
+  playwright: 'Playwright',
   jobs: Object.freeze([
     'scroll to bottom (HF home)',
     'nested overflow (Comfy `#content-container`)',
@@ -247,8 +248,17 @@ export const LOCKED_LIVE_SESSION_BOARD = Object.freeze({
     '1 / 35139 / 21 FAIL',
     '1 / 580 / 457 PASS',
     '2 / 7640 / 625 PASS',
+    '1 / 41 / 2 PASS',
+    '1 / 70 / 72 PASS',
+    '1 / 0 / 352 PASS',
+    '2 / 0 / 1047 PASS',
+    '1 / 35 / 12 PASS',
+    '1 / 4427 / 3 PASS',
+    '1 / 0 / 67 PASS',
+    '1 / 0 / 2 FAIL',
+    '1 / 178 / 1 PASS',
+    '1 / 0 / 318 PASS',
   ]),
-  wallAdmissions: Object.freeze(['16 ms vs 297', '6 vs 152', '14 vs 145', '21 vs 142']),
 });
 
 export function checkReadmeFaceContract(readme) {
@@ -265,8 +275,14 @@ export function checkReadmeFaceContract(readme) {
   if (!readme.includes(LOCKED_LIVE_SESSION_BOARD.opponent)) {
     failures.push('README is missing the Browser Use comparison');
   }
-  if (!/steps\s*\/\s*agent-facing chars\s*\/\s*wall ms/i.test(readme)) {
-    failures.push('README must say the board columns are steps / agent-facing chars / wall ms');
+  if (!/^\| job \| chrome-cdp-ex \| Browser Use \| Playwright \|$/m.test(readme)) {
+    failures.push('README must use a 3-column chrome-cdp-ex / Browser Use / Playwright board');
+  }
+  if (!/steps\s*\/\s*chars\s*\/\s*wall ms/i.test(readme)) {
+    failures.push('README must say the board cells are steps / chars / wall ms');
+  }
+  if (!/UTF-8 length/i.test(readme) || !/void click\/hover\/press/i.test(readme)) {
+    failures.push('README is missing the token-counting line');
   }
   for (const job of LOCKED_LIVE_SESSION_BOARD.jobs) {
     if (!readme.includes(job)) failures.push(`README is missing locked board job: ${job}`);
@@ -274,25 +290,20 @@ export function checkReadmeFaceContract(readme) {
   for (const score of LOCKED_LIVE_SESSION_BOARD.scores) {
     if (!readme.includes(score)) failures.push(`README is missing locked board score: ${score}`);
   }
-  if (!/(faster|quicker).{0,120}(wall|clock)|(wall|clock).{0,120}(faster|quicker)/is.test(readme)) {
-    failures.push('README must admit Browser Use is faster on wall-clock for some jobs');
+  if (!/playwright.{0,80}(faster|quicker)|(faster|quicker).{0,80}playwright/is.test(readme)) {
+    failures.push('README must admit Playwright is faster on wall-clock for some jobs');
   }
-  for (const admission of LOCKED_LIVE_SESSION_BOARD.wallAdmissions) {
-    if (!readme.includes(admission)) {
-      failures.push(`README must admit the locked wall-clock loss: ${admission}`);
-    }
-  }
-  if (!/empty/i.test(readme) || !readme.includes('1 / 94 / 5 FAIL')) {
-    failures.push('README must show Browser Use failing PDF text as empty');
+  if (!/empty/i.test(readme) || !readme.includes('1 / 94 / 5 FAIL') || !readme.includes('1 / 0 / 2 FAIL')) {
+    failures.push('README must show Browser Use and Playwright failing PDF text as empty');
   }
   if (!/overlay/i.test(readme) || !readme.includes('1 / 35139 / 21 FAIL')) {
     failures.push('README must show Browser Use failing overlay detect');
   }
-  if (/^\|.*playwright.*\|/im.test(readme)) {
-    failures.push('README must not put Playwright in the score table');
-  }
-  if (/playwright[^\n]{0,120}\d+\s*ms/i.test(readme) || /\d+\s*ms[^\n]{0,120}playwright/i.test(readme)) {
+  if (readme.includes('156 ms') || /page\.content\(\)/.test(readme)) {
     failures.push('README must not invent Playwright timings');
+  }
+  if (/cloud.?vm|connectOverCDP|\b9224\b/i.test(readme)) {
+    failures.push('README must not add a cloud-VM wall');
   }
   if (readme.includes('## Five success cases') || readme.includes('### Promotion checklist') || readme.includes('commands-81')) {
     failures.push('README must not restore the command-catalog first screen');

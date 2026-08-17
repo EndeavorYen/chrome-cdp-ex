@@ -98,8 +98,8 @@ describe('Killer Path docs contract', () => {
     );
     expect(checkDocsContract({
       ...docs,
-      readme: `${readme}\n| job | chrome-cdp-ex | Playwright |\n`,
-    }, [])).toContain('README must not put Playwright in the score table');
+      readme: readme.replace('| Playwright |', '|'),
+    }, [])).toContain('README must use a 3-column chrome-cdp-ex / Browser Use / Playwright board');
     expect(checkDocsContract({
       ...docs,
       readme: `${readme}\nPlaywright did the same click in 156 ms.\n`,

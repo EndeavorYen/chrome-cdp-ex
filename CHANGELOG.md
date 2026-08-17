@@ -5,10 +5,11 @@
 ### docs: lead README with the live-session one-step board
 
 * README leads with the live Chrome attach, one-step receipt, and the
-  2026-08-17 `22c525d4` Browser Use board (steps / agent-facing chars /
-  wall ms). The 81-command catalog, five success cases, caution wall, and
-  promotion checklist are no longer the first screen. Install still starts
-  at `doctor`. No Playwright scores.
+  2026-08-17 `22c525d4` three-column board vs Browser Use and same-machine
+  Playwright (steps / chars / wall ms). The 81-command catalog, five
+  success cases, caution wall, and promotion checklist are no longer the
+  first screen. Install still starts at `doctor`. Playwright cells are the
+  measured n=3 median only.
 
 ### perf: faster document nav wait (#347)
 

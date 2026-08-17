@@ -17,22 +17,22 @@ Playwright is for clean isolated tests. This is for the session that already has
 
 ## One step. Skinny receipt.
 
-Measured 2026-08-17 on main `22c525d4` against Browser Use (page-level Chrome). Viewport 1042×632. n=3 median. Each cell is **steps / agent-facing chars / wall ms**.
+Measured 2026-08-17. chrome-cdp-ex and Browser Use on main `22c525d4` (page-level Chrome). Playwright: independent headed Chromium, same machine. Viewport 1042×632. n=3 median. Each cell is **steps / chars / wall ms**, then PASS or FAIL. Chars are tokens: UTF-8 length of the operate call's real return / printed status; void click/hover/press is 0.
 
-| job | chrome-cdp-ex | Browser Use |
-|---|---|---|
-| scroll to bottom (HF home) | 1 / 62 / 139 PASS | 1 / 118 / 227 PASS |
-| nested overflow (Comfy `#content-container`) | 1 / 83 / 144 PASS | 3 / 6307 / 391 PASS |
-| click Browse 2M+ models | 1 / 549 / 487 PASS | 2 / 7636 / 507 PASS |
-| search submit bert | 1 / 114 / 410 PASS | 5 / 770 / 1261 PASS |
-| nav example.org | 1 / 69 / 297 PASS | 1 / 86 / 16 PASS |
-| read HF home | 1 / 3863 / 152 PASS | 1 / 7540 / 6 PASS |
-| hover reveal | 1 / 192 / 145 PASS | 2 / 12025 / 14 PASS |
-| PDF text one page | 1 / 4323 / 232 PASS | 1 / 94 / 5 FAIL |
-| overlay detect | 1 / 232 / 142 PASS | 1 / 35139 / 21 FAIL |
-| click Browse 1M+ applications | 1 / 580 / 457 PASS | 2 / 7640 / 625 PASS |
+| job | chrome-cdp-ex | Browser Use | Playwright |
+|---|---|---|---|
+| scroll to bottom (HF home) | 1 / 62 / 139 PASS | 1 / 118 / 227 PASS | 1 / 41 / 2 PASS |
+| nested overflow (Comfy `#content-container`) | 1 / 83 / 144 PASS | 3 / 6307 / 391 PASS | 1 / 70 / 72 PASS |
+| click Browse 2M+ models | 1 / 549 / 487 PASS | 2 / 7636 / 507 PASS | 1 / 0 / 352 PASS |
+| search submit bert | 1 / 114 / 410 PASS | 5 / 770 / 1261 PASS | 2 / 0 / 1047 PASS |
+| nav example.org | 1 / 69 / 297 PASS | 1 / 86 / 16 PASS | 1 / 35 / 12 PASS |
+| read HF home | 1 / 3863 / 152 PASS | 1 / 7540 / 6 PASS | 1 / 4427 / 3 PASS |
+| hover reveal | 1 / 192 / 145 PASS | 2 / 12025 / 14 PASS | 1 / 0 / 67 PASS |
+| PDF text one page | 1 / 4323 / 232 PASS | 1 / 94 / 5 FAIL | 1 / 0 / 2 FAIL |
+| overlay detect | 1 / 232 / 142 PASS | 1 / 35139 / 21 FAIL | 1 / 178 / 1 PASS |
+| click Browse 1M+ applications | 1 / 580 / 457 PASS | 2 / 7640 / 625 PASS | 1 / 0 / 318 PASS |
 
-Browser Use is quicker on the clock for nav (16 ms vs 297), read (6 vs 152), hover (14 vs 145), and overlay detect (21 vs 142). The win is steps, chars, and the jobs they fail: PDF text comes back empty, and an overlay snapshot still looks clear.
+Playwright is quicker on the clock for most of these jobs. The win is steps, chars, and the jobs others fail: PDF text comes back empty for both Browser Use and Playwright, and Browser Use's overlay snapshot still looks clear.
 
 ## Start
 
