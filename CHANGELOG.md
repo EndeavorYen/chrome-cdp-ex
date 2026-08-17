@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### docs: lead README with cool visual and win-score PK
+
+* README first screen is Cool (poster / 60-second demo / redesign stills)
+  → live-session one-step punch → 10/8/9 win score plus steps / token /
+  time bar charts → demo pages → short `doctor` / `list` Quick Start.
+  The ten-row lab grid moved to `docs/pk-324-board.md`. Install stays
+  pinned to published v2.15.0.
+
 ### docs: lead README with the live-session one-step board
 
 * README leads with the live Chrome attach, one-step receipt, and the

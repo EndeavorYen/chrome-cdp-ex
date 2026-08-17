@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 import { checkDocsContract, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
+import { PK_324_CHART_FILES } from '../scripts/lib/pk-324-board.mjs';
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const reference = readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
@@ -16,6 +17,11 @@ const changelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf
 const claude = readFileSync(new URL('../CLAUDE.md', import.meta.url), 'utf8');
 const contributing = readFileSync(new URL('../CONTRIBUTING.md', import.meta.url), 'utf8');
 const design = readFileSync(new URL('../DESIGN.md', import.meta.url), 'utf8');
+const pkBoard = readFileSync(new URL('../docs/pk-324-board.md', import.meta.url), 'utf8');
+const pkCharts = Object.fromEntries(Object.entries(PK_324_CHART_FILES).map(([face, rel]) => [
+  face,
+  readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8'),
+]));
 const ciWorkflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 const releaseWorkflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 const runtimeV3ArchitectureUrl = new URL('../docs/architecture/runtime-v3.md', import.meta.url);
@@ -74,10 +80,12 @@ describe('Killer Path docs contract', () => {
     ]));
   });
 
-  it('requires README to lead with the live-session one-step board', () => {
+  it('requires README to lead Cool → advantage → win score + charts → demo → Quick Start', () => {
     const docs = {
       readme,
       reference,
+      pkBoard,
+      pkCharts,
       selfImprovementLoop,
       skill,
       killerPath,
@@ -98,8 +106,16 @@ describe('Killer Path docs contract', () => {
     );
     expect(checkDocsContract({
       ...docs,
-      readme: readme.replace('<th colspan="4">Playwright</th>', ''),
-    }, [])).toContain('README must use a 3-column chrome-cdp-ex / Browser Use / Playwright board');
+      readme: readme.replace('chrome-cdp-ex **10 PASS**', 'chrome-cdp-ex **9 PASS**'),
+    }, [])).toContain('README win score must name chrome-cdp-ex 10 PASS, Browser Use 8 PASS, Playwright 9 PASS');
+    expect(checkDocsContract({
+      ...docs,
+      readme: `${readme}\n<th colspan="4">chrome-cdp-ex</th>\n<th>success</th>\n<td>PASS</td><td>1</td><td>139</td><td>62</td>\n`,
+    }, [])).toContain('README must not keep the ten-row lab table');
+    expect(checkDocsContract({
+      ...docs,
+      pkBoard: pkBoard.replace('PASS / 1 / 139 / 62', 'PASS / 1 / 138 / 62'),
+    }, [])).toContain('docs/pk-324-board.md is missing locked board cell: scroll to bottom (HF home) PASS / 1 / 139 / 62');
     expect(checkDocsContract({
       ...docs,
       readme: `${readme}\nPlaywright did the same click in 156 ms.\n`,

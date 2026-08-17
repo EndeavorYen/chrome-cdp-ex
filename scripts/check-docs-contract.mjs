@@ -3,6 +3,13 @@ import { readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { generateCommandSurfaces } from './generate-command-surfaces.mjs';
+import {
+  LOCKED_PK_BOARD,
+  PK_324_CHART_FACES,
+  PK_324_CHART_FILES,
+  renderPk324ChartSvg,
+  scoreCell,
+} from './lib/pk-324-board.mjs';
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -210,108 +217,174 @@ function checkSelfImprovementLoopContract(docs) {
   return failures;
 }
 
-export const LOCKED_LIVE_SESSION_BOARD = Object.freeze({
-  date: '2026-08-17',
-  sha: '22c525d4',
-  opponent: 'Browser Use',
-  playwright: 'Playwright',
-  jobs: Object.freeze([
-    'scroll to bottom (HF home)',
-    'nested overflow (Comfy',
-    '#content-container',
-    'click Browse 2M+ models',
-    'search submit bert',
-    'nav example.org',
-    'read HF home',
-    'hover reveal',
-    'PDF text one page',
-    'overlay detect',
-    'click Browse 1M+ applications',
-  ]),
-  scores: Object.freeze([
-    '<td>PASS</td><td>1</td><td>139</td><td>62</td>',
-    '<td>PASS</td><td>1</td><td>227</td><td>118</td>',
-    '<td>PASS</td><td>1</td><td>2</td><td>41</td>',
-    '<td>PASS</td><td>1</td><td>144</td><td>83</td>',
-    '<td>PASS</td><td>3</td><td>391</td><td>6307</td>',
-    '<td>PASS</td><td>1</td><td>72</td><td>70</td>',
-    '<td>PASS</td><td>1</td><td>487</td><td>549</td>',
-    '<td>PASS</td><td>2</td><td>507</td><td>7636</td>',
-    '<td>PASS</td><td>1</td><td>352</td><td>0</td>',
-    '<td>PASS</td><td>1</td><td>410</td><td>114</td>',
-    '<td>PASS</td><td>5</td><td>1261</td><td>770</td>',
-    '<td>PASS</td><td>2</td><td>1047</td><td>0</td>',
-    '<td>PASS</td><td>1</td><td>297</td><td>69</td>',
-    '<td>PASS</td><td>1</td><td>16</td><td>86</td>',
-    '<td>PASS</td><td>1</td><td>12</td><td>35</td>',
-    '<td>PASS</td><td>1</td><td>152</td><td>3863</td>',
-    '<td>PASS</td><td>1</td><td>6</td><td>7540</td>',
-    '<td>PASS</td><td>1</td><td>3</td><td>4427</td>',
-    '<td>PASS</td><td>1</td><td>145</td><td>192</td>',
-    '<td>PASS</td><td>2</td><td>14</td><td>12025</td>',
-    '<td>PASS</td><td>1</td><td>67</td><td>0</td>',
-    '<td>PASS</td><td>1</td><td>232</td><td>4323</td>',
-    '<td>FAIL</td><td>1</td><td>5</td><td>94</td>',
-    '<td>FAIL</td><td>1</td><td>2</td><td>0</td>',
-    '<td>PASS</td><td>1</td><td>142</td><td>232</td>',
-    '<td>FAIL</td><td>1</td><td>21</td><td>35139</td>',
-    '<td>PASS</td><td>1</td><td>1</td><td>178</td>',
-    '<td>PASS</td><td>1</td><td>457</td><td>580</td>',
-    '<td>PASS</td><td>2</td><td>625</td><td>7640</td>',
-    '<td>PASS</td><td>1</td><td>318</td><td>0</td>',
-  ]),
-});
+export { LOCKED_PK_BOARD };
+export const LOCKED_LIVE_SESSION_BOARD = LOCKED_PK_BOARD;
 
-export function checkReadmeFaceContract(readme) {
+export const README_FIRST_SCREEN_MARKERS = Object.freeze([
+  ['cool', 'codex-killer-path-demo-poster.png', 'Cool visual (poster / 60-second demo)'],
+  ['advantage', '## The tab you already have', 'project advantage'],
+  ['scoreboard', '**10 PASS**', 'win score'],
+  ['charts', 'experiment/pk-324-steps.svg', 'PK bar charts'],
+  ['demo', '## Demo', 'demo links'],
+  ['quickstart', '## Quick start', 'Quick Start'],
+]);
+
+function markerIndex(text, marker) {
+  return text.indexOf(marker);
+}
+
+export function checkReadmeFirstScreenOrder(readme) {
   const failures = [];
+  let cursor = -1;
+  for (const [id, marker, label] of README_FIRST_SCREEN_MARKERS) {
+    const index = markerIndex(readme, marker);
+    if (index === -1) {
+      failures.push(`README first screen is missing ${id}: ${label}`);
+      continue;
+    }
+    if (index < cursor) {
+      failures.push(`README first screen is out of order: ${label} must follow the previous locked section`);
+    }
+    cursor = index;
+  }
+  return failures;
+}
+
+export function checkPk324BoardContract(pkBoard) {
+  const failures = [];
+  const board = pkBoard || '';
+  if (!board.includes(LOCKED_PK_BOARD.date) || !board.includes(LOCKED_PK_BOARD.sha)) {
+    failures.push(`docs/pk-324-board.md is missing the locked board identity (${LOCKED_PK_BOARD.date} / ${LOCKED_PK_BOARD.sha})`);
+  }
+  if (!board.includes('1042×632') || !/\bn\s*=\s*3\b/.test(board)) {
+    failures.push('docs/pk-324-board.md is missing the Playwright same-machine viewport / n=3 median line');
+  }
+  if (!board.includes('token = UTF-8 characters each tool returned to the agent')
+    && !board.includes('token = UTF-8 chars returned to the agent')) {
+    failures.push('docs/pk-324-board.md is missing the token footnote');
+  }
+  if (!board.includes('Playwright void click/hover = 0') || !/no invented snapshot/i.test(board)) {
+    failures.push('docs/pk-324-board.md is missing the token-counting line');
+  }
+  if (!board.includes('time is wall ms')) {
+    failures.push('docs/pk-324-board.md is missing the wall-ms footnote');
+  }
+  for (const job of LOCKED_PK_BOARD.jobs) {
+    if (!board.includes(job.name) && !(job.name.includes('#content-container') && board.includes('#content-container'))) {
+      failures.push(`docs/pk-324-board.md is missing locked board job: ${job.name}`);
+    }
+    for (const tool of ['cdp', 'browserUse', 'playwright']) {
+      const cell = scoreCell(job, tool);
+      if (!board.includes(cell)) failures.push(`docs/pk-324-board.md is missing locked board cell: ${job.name} ${cell}`);
+    }
+  }
+  if (!board.includes('empty innerText') || !board.includes('AI4AI')) {
+    failures.push('docs/pk-324-board.md must show PDF FAIL for Browser Use and Playwright, PASS for chrome-cdp-ex');
+  }
+  if (!board.includes('blocking')
+    || !board.includes('#sp_message_container_1476394')
+    || !board.includes('sp_message_iframe_1476394')
+    || !/did not dismiss/i.test(board)
+    || !board.includes('snapshot looked clear')) {
+    failures.push('docs/pk-324-board.md must explain overlay detect PASS/FAIL, not only the token count');
+  }
+  for (const slower of LOCKED_PK_BOARD.slowerThanBrowserUse) {
+    if (!board.includes(`${slower.cdp} vs ${slower.browserUse}`)) {
+      failures.push(`docs/pk-324-board.md must state the slower wall-clock pair ${slower.job} (${slower.cdp} vs ${slower.browserUse})`);
+    }
+  }
+  if (/\bmean wall\b|\baveraged time\b|\bavg wall\b/i.test(board) && !/do not average/i.test(board)) {
+    failures.push('docs/pk-324-board.md must not average time across heterogeneous jobs');
+  }
+  return failures;
+}
+
+export function checkPk324ChartContract(charts = {}) {
+  const failures = [];
+  for (const face of PK_324_CHART_FACES) {
+    const actual = charts[face] || '';
+    const expected = renderPk324ChartSvg(face);
+    if (!actual) {
+      failures.push(`Missing PK chart ${PK_324_CHART_FILES[face]}`);
+      continue;
+    }
+    if (actual !== expected) {
+      failures.push(`${PK_324_CHART_FILES[face]} does not match the locked ${face} chart`);
+    }
+    for (const job of LOCKED_PK_BOARD.jobs) {
+      for (const tool of LOCKED_PK_BOARD.tools) {
+        const value = job[tool.key][face];
+        const needle = `data-job="${job.name}" data-tool="${tool.label}" data-face="${face}" data-value="${value}"`;
+        if (!actual.includes(needle)) {
+          failures.push(`${PK_324_CHART_FILES[face]} is missing locked ${face} bar ${job.name} ${tool.label}=${value}`);
+        }
+      }
+    }
+  }
+  return failures;
+}
+
+export function checkReadmeFaceContract(readme, extras = {}) {
+  const failures = [];
+  failures.push(...checkReadmeFirstScreenOrder(readme));
   if (!/browser you already have open/i.test(readme)) {
     failures.push('README is missing the live-session hook');
   }
   if (!/one step/i.test(readme) || !/short receipt|skinny/i.test(readme)) {
     failures.push('README is missing the one-step receipt face');
   }
-  if (!readme.includes(LOCKED_LIVE_SESSION_BOARD.date) || !readme.includes(LOCKED_LIVE_SESSION_BOARD.sha)) {
-    failures.push(`README is missing the locked live-session board identity (${LOCKED_LIVE_SESSION_BOARD.date} / ${LOCKED_LIVE_SESSION_BOARD.sha})`);
+  if (!readme.includes(LOCKED_PK_BOARD.date) || !readme.includes(LOCKED_PK_BOARD.sha)) {
+    failures.push(`README is missing the locked live-session board identity (${LOCKED_PK_BOARD.date} / ${LOCKED_PK_BOARD.sha})`);
   }
-  if (!readme.includes('<th colspan="4">chrome-cdp-ex</th>')
-    || !readme.includes('<th colspan="4">Browser Use</th>')
-    || !readme.includes('<th colspan="4">Playwright</th>')) {
-    failures.push('README must use a 3-column chrome-cdp-ex / Browser Use / Playwright board');
+  if (!readme.includes('**10 PASS**') || !readme.includes('**8 PASS**') || !readme.includes('**9 PASS**')) {
+    failures.push('README must show the 10/8/9 win score for chrome-cdp-ex / Browser Use / Playwright');
   }
-  if ((readme.match(/<th>success<\/th>/g) || []).length < 3
-    || (readme.match(/<th>steps<\/th>/g) || []).length < 3
-    || (readme.match(/<th>time<\/th>/g) || []).length < 3
-    || (readme.match(/<th>token<\/th>/g) || []).length < 3) {
-    failures.push('README table headers must be success / steps / time / token');
+  if (!readme.includes('chrome-cdp-ex **10 PASS**')
+    || !readme.includes('Browser Use **8 PASS**')
+    || !readme.includes('Playwright **9 PASS**')) {
+    failures.push('README win score must name chrome-cdp-ex 10 PASS, Browser Use 8 PASS, Playwright 9 PASS');
   }
-  if (!readme.includes('token = UTF-8 characters each tool returned to the agent')) {
-    failures.push('README is missing the token footnote');
+  for (const face of PK_324_CHART_FACES) {
+    if (!readme.includes(PK_324_CHART_FILES[face])) {
+      failures.push(`README is missing the ${face} PK chart ${PK_324_CHART_FILES[face]}`);
+    }
   }
-  if (!readme.includes('Playwright void click/hover = 0') || !/no invented snapshot/i.test(readme)) {
-    failures.push('README is missing the token-counting line');
+  if (!readme.includes('docs/pk-324-board.md')) {
+    failures.push('README must link the engineer grid at docs/pk-324-board.md');
   }
-  for (const job of LOCKED_LIVE_SESSION_BOARD.jobs) {
-    if (!readme.includes(job)) failures.push(`README is missing locked board job: ${job}`);
+  if (!readme.includes('experiment/codex-killer-path-demo.mp4')
+    || !readme.includes('experiment/codex-killer-path-demo-poster.png')) {
+    failures.push('README Cool section must restore the clickable Codex poster / 60-second demo');
   }
-  for (const score of LOCKED_LIVE_SESSION_BOARD.scores) {
-    if (!readme.includes(score)) failures.push(`README is missing locked board score: ${score}`);
+  if (!readme.includes('experiment/showcase.html')
+    || !readme.includes('experiment/codex-killer-path-demo.html')
+    || !readme.includes('experiment/benchmark.html')) {
+    failures.push('README Demo section must link showcase, killer-path demo, and benchmark pages');
+  }
+  if (!readme.includes('./bin/chrome-cdp doctor') || !readme.includes('./bin/chrome-cdp list')) {
+    failures.push('README Quick Start must stay doctor → list');
+  }
+  if (!readme.includes('INTEGRATIONS.md') && !readme.includes('docs/integrations/')) {
+    failures.push('README is missing cross-host integrations entry point');
+  }
+  if (!/\bMIT\b/.test(readme) || !readme.includes('LICENSE')) {
+    failures.push('README is missing license');
+  }
+  for (const slower of LOCKED_PK_BOARD.slowerThanBrowserUse) {
+    if (!readme.includes(`${slower.cdp} vs ${slower.browserUse}`)) {
+      failures.push(`README must draw the slower wall-clock pair ${slower.job} (${slower.cdp} vs ${slower.browserUse}) honestly`);
+    }
   }
   if (!/playwright.{0,80}(faster|quicker)|(faster|quicker).{0,80}playwright/is.test(readme)) {
     failures.push('README must admit Playwright is faster on wall-clock for some jobs');
   }
-  if (!readme.includes('empty `innerText`') || !readme.includes('AI4AI')
-    || !readme.includes('<td>FAIL</td><td>1</td><td>5</td><td>94</td>')
-    || !readme.includes('<td>FAIL</td><td>1</td><td>2</td><td>0</td>')
-    || !readme.includes('<td>PASS</td><td>1</td><td>232</td><td>4323</td>')) {
-    failures.push('README must show PDF FAIL for Browser Use and Playwright, PASS 1/4323/232 for chrome-cdp-ex');
+  if (/\bmean wall\b|\baveraged time\b|\bavg wall\b/i.test(readme) && !/not averaged/i.test(readme)) {
+    failures.push('README must not average time across heterogeneous jobs');
   }
-  if (!readme.includes('blocking')
-    || !readme.includes('#sp_message_container_1476394')
-    || !readme.includes('sp_message_iframe_1476394')
-    || !/did not dismiss/i.test(readme)
-    || !readme.includes('snapshot looked clear')
-    || !readme.includes('<td>FAIL</td><td>1</td><td>21</td><td>35139</td>')) {
-    failures.push('README must explain overlay detect PASS/FAIL, not only the token count');
+  if (readme.includes('<th colspan="4">chrome-cdp-ex</th>')
+    || readme.includes('<th>success</th>')
+    || /<td>PASS<\/td><td>1<\/td><td>139<\/td><td>62<\/td>/.test(readme)) {
+    failures.push('README must not keep the ten-row lab table');
   }
   if (readme.includes('156 ms') || /page\.content\(\)/.test(readme)) {
     failures.push('README must not invent Playwright timings');
@@ -322,15 +395,11 @@ export function checkReadmeFaceContract(readme) {
   if (readme.includes('## Five success cases') || readme.includes('### Promotion checklist') || readme.includes('commands-81')) {
     failures.push('README must not restore the command-catalog first screen');
   }
-  if (!readme.includes('./bin/chrome-cdp doctor')) {
-    failures.push('README is missing a doctor start path');
+  if (readme.includes('#sp_message_container_1476394') || readme.includes('empty `innerText`')) {
+    failures.push('README must not restore the overlay/PDF caution wall; keep those notes on docs/pk-324-board.md');
   }
-  if (!readme.includes('INTEGRATIONS.md') && !readme.includes('docs/integrations/')) {
-    failures.push('README is missing cross-host integrations entry point');
-  }
-  if (!/\bMIT\b/.test(readme) || !readme.includes('LICENSE')) {
-    failures.push('README is missing license');
-  }
+  if (Object.hasOwn(extras, 'pkBoard')) failures.push(...checkPk324BoardContract(extras.pkBoard || ''));
+  if (Object.hasOwn(extras, 'pkCharts')) failures.push(...checkPk324ChartContract(extras.pkCharts || {}));
   return failures;
 }
 
@@ -347,7 +416,10 @@ export function checkDocsContract(docs, commands) {
     }
   }
 
-  failures.push(...checkReadmeFaceContract(docs.readme || ''));
+  failures.push(...checkReadmeFaceContract(docs.readme || '', {
+    ...(Object.hasOwn(docs, 'pkBoard') ? { pkBoard: docs.pkBoard || '' } : {}),
+    ...(Object.hasOwn(docs, 'pkCharts') ? { pkCharts: docs.pkCharts || {} } : {}),
+  }));
 
   const requiredKillerPathTerms = [
     'TL;DR',
@@ -392,9 +464,19 @@ function readSkillCorpus() {
 
 function readDocs() {
   const read = path => readFileSync(resolve(ROOT_DIR, path), 'utf8');
+  const pkCharts = {};
+  for (const [face, rel] of Object.entries(PK_324_CHART_FILES)) {
+    try {
+      pkCharts[face] = read(rel);
+    } catch {
+      pkCharts[face] = '';
+    }
+  }
   return {
     readme: read('README.md'),
     reference: read('docs/reference.md'),
+    pkBoard: read('docs/pk-324-board.md'),
+    pkCharts,
     selfImprovementLoop: read('docs/self-improvement-loop.md'),
     skill: readSkillCorpus(),
     killerPath: read('docs/examples/killer-path.md'),
