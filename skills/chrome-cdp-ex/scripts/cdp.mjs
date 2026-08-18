@@ -189,6 +189,7 @@ const LAST_CDP_ENDPOINT_SCHEMA = 'chrome-cdp-ex.cdp-last-endpoint.v1';
 const DAEMON_METADATA_SCHEMA = 'chrome-cdp-ex.daemon-metadata.v1';
 const ALLOW_STALE_DAEMON_FLAG = '--allow-stale-daemon';
 const DEFAULT_CDP_HOST = '127.0.0.1';
+const DEFAULT_CDP_PROBE_PORT = '9224';
 const DEFAULT_SPAWN_READY_TIMEOUT_MS = 5000;
 const TABLE_COLLECTION_DEADLINES = Object.freeze({
   pageMs: 295000,
@@ -2088,6 +2089,43 @@ function truncateTextLines(text = '', maxLines = null) {
 // Browser metadata from /json/version — set when connecting via CDP_PORT
 let _browserInfo = null;
 
+async function wsUrlFromCdpHttp({
+  host,
+  port,
+  fetcher,
+  remembered,
+  rememberReachable,
+}) {
+  let res;
+  try {
+    res = await fetcher(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
+  } catch (e) {
+    throw cdpUnreachableError({ host, port, cause: e?.message || e, lastEndpoint: remembered });
+  }
+  if (res.ok) {
+    const info = await res.json();
+    if (!info.webSocketDebuggerUrl) throw new Error(`CDP on port ${port}: /json/version has no webSocketDebuggerUrl`);
+    _browserInfo = info;
+    rememberReachable({ host, port });
+    // Extract path only — don't trust the hostname in the response (may be "localhost"
+    // while CDP_HOST points elsewhere, e.g. WSL2→Windows)
+    const wsPath = new URL(info.webSocketDebuggerUrl).pathname;
+    return `ws://${host}:${port}${wsPath}`;
+  }
+  // Chrome 136+ / SSH tunnel / websocket-only mode: HTTP discovery returns 404 but
+  // direct WebSocket handshake to /devtools/browser still works. Do not fall back on
+  // other HTTP failures — those usually mean a non-CDP service is bound to the port.
+  if (res.status === 404) {
+    rememberReachable({ host, port });
+    return `ws://${host}:${port}/devtools/browser`;
+  }
+  throw cdpUnreachableError({ host, port, cause: `HTTP ${res.status}`, lastEndpoint: remembered });
+}
+
+function missingCdpDiscoveryError() {
+  return new Error('No DevToolsActivePort found and no CDP_PORT set.\n  Chrome: enable at chrome://inspect/#remote-debugging\n  Electron: set CDP_PORT=<port> (app must use --remote-debugging-port)');
+}
+
 async function getWsUrl({
   env = process.env,
   fetcher = fetch,
@@ -2103,31 +2141,13 @@ async function getWsUrl({
 
   // CDP_PORT: explicit port (e.g. Electron with --remote-debugging-port=9222)
   if (env.CDP_PORT) {
-    const port = env.CDP_PORT;
-    let res;
-    try {
-      res = await fetcher(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
-    } catch (e) {
-      throw cdpUnreachableError({ host, port, cause: e?.message || e, lastEndpoint: remembered });
-    }
-    if (res.ok) {
-      const info = await res.json();
-      if (!info.webSocketDebuggerUrl) throw new Error(`CDP on port ${port}: /json/version has no webSocketDebuggerUrl`);
-      _browserInfo = info;
-      rememberReachable({ host, port });
-      // Extract path only — don't trust the hostname in the response (may be "localhost"
-      // while CDP_HOST points elsewhere, e.g. WSL2→Windows)
-      const wsPath = new URL(info.webSocketDebuggerUrl).pathname;
-      return `ws://${host}:${port}${wsPath}`;
-    }
-    // Chrome 136+ / SSH tunnel / websocket-only mode: HTTP discovery returns 404 but
-    // direct WebSocket handshake to /devtools/browser still works. Do not fall back on
-    // other HTTP failures — those usually mean a non-CDP service is bound to the port.
-    if (res.status === 404) {
-      rememberReachable({ host, port });
-      return `ws://${host}:${port}/devtools/browser`;
-    }
-    throw cdpUnreachableError({ host, port, cause: `HTTP ${res.status}`, lastEndpoint: remembered });
+    return wsUrlFromCdpHttp({
+      host,
+      port: env.CDP_PORT,
+      fetcher,
+      remembered,
+      rememberReachable,
+    });
   }
 
   // DevToolsActivePort file discovery (Chrome, Edge, Brave, etc.)
@@ -2176,7 +2196,28 @@ async function getWsUrl({
     ]),
   ].filter(Boolean);
   const portFile = candidates.find(p => existsSync(p));
-  if (!portFile) {
+  if (portFile) {
+    const lines = readFileSync(portFile, 'utf8').trim().split('\n');
+    if (lines.length < 2 || !lines[0] || !lines[1]) throw new Error(`Invalid DevToolsActivePort file: ${portFile}`);
+    rememberReachable({
+      host,
+      port: lines[0],
+      profileDir: profileDirFromDevToolsActivePort(portFile),
+    });
+    return `ws://${host}:${lines[0]}${lines[1]}`;
+  }
+
+  // Chrome 136+ often does not write DevToolsActivePort. Probe the same HTTP
+  // path as CDP_PORT=9224, including the 404 → /devtools/browser fallback.
+  try {
+    return await wsUrlFromCdpHttp({
+      host,
+      port: DEFAULT_CDP_PROBE_PORT,
+      fetcher,
+      remembered,
+      rememberReachable,
+    });
+  } catch {
     if (remembered?.profileDir) {
       throw cdpUnreachableError({
         host,
@@ -2185,16 +2226,8 @@ async function getWsUrl({
         lastEndpoint: remembered,
       });
     }
-    throw new Error('No DevToolsActivePort found and no CDP_PORT set.\n  Chrome: enable at chrome://inspect/#remote-debugging\n  Electron: set CDP_PORT=<port> (app must use --remote-debugging-port)');
+    throw missingCdpDiscoveryError();
   }
-  const lines = readFileSync(portFile, 'utf8').trim().split('\n');
-  if (lines.length < 2 || !lines[0] || !lines[1]) throw new Error(`Invalid DevToolsActivePort file: ${portFile}`);
-  rememberReachable({
-    host,
-    port: lines[0],
-    profileDir: profileDirFromDevToolsActivePort(portFile),
-  });
-  return `ws://${host}:${lines[0]}${lines[1]}`;
 }
 
 const sleep = (ms, signal = daemonRequestAbortSignal()) => {
@@ -18745,33 +18778,38 @@ async function checkCdpReachability({
     const m = ua.match(/Electron\/([\d.]+)/);
     return m ? `${product} (Electron ${m[1]})` : product;
   };
-  if (port) {
+  const checkExplicitPort = async (p) => {
     try {
-      const info = await tryFetch(port);
+      const info = await tryFetch(p);
       if (!info.webSocketDebuggerUrl) {
         return {
-          status: 'WARN', label: 'CDP', detail: `port ${port}: no webSocketDebuggerUrl`,
+          status: 'WARN', label: 'CDP', detail: `port ${p}: no webSocketDebuggerUrl`,
           hint: 'Browser exposes /json/version but not the debugger WebSocket — toggle remote debugging again',
           host,
-          port: String(port),
+          port: String(p),
         };
       }
-      rememberReachable({ host, port });
-      return { status: 'OK', label: 'CDP', detail: `${host}:${port} → ${describe(info)}`, host, port: String(port) };
+      rememberReachable({ host, port: p });
+      return { status: 'OK', label: 'CDP', detail: `${host}:${p} → ${describe(info)}`, host, port: String(p) };
     } catch (e) {
       // Chrome 136+ / websocket-only: HTTP 404 still has a live /devtools/browser socket.
       // Connection refused, timeout, and other HTTP failures must fail fast.
       if (isCdpHttp404(e)) {
         try {
-          const wsOpen = await openCdpWebSocket(`ws://${host}:${port}/devtools/browser`, { connectWebSocket });
+          const wsOpen = await openCdpWebSocket(`ws://${host}:${p}/devtools/browser`, { connectWebSocket });
           if (wsOpen) {
-            rememberReachable({ host, port });
-            return { status: 'OK', label: 'CDP', detail: `${host}:${port} → connected via WebSocket fallback`, host, port: String(port) };
+            rememberReachable({ host, port: p });
+            return { status: 'OK', label: 'CDP', detail: `${host}:${p} → connected via WebSocket fallback`, host, port: String(p) };
           }
         } catch {}
       }
-      return unreachable(port, e.message);
+      return { unreachable: true, cause: e.message };
     }
+  };
+  if (port) {
+    const result = await checkExplicitPort(port);
+    if (result.unreachable) return unreachable(port, result.cause);
+    return result;
   }
   // Auto-discover via DevToolsActivePort (light reuse — avoids full ws connect)
   const home = homedir();
@@ -18786,6 +18824,8 @@ async function checkCdpReachability({
   ].filter(Boolean);
   const found = tryPaths.find(p => existsSync(p));
   if (!found) {
+    const probed = await checkExplicitPort(DEFAULT_CDP_PROBE_PORT);
+    if (!probed.unreachable) return probed;
     if (remembered?.profileDir && remembered?.port) {
       return unreachable(remembered.port, 'no DevToolsActivePort and no CDP_PORT set');
     }
