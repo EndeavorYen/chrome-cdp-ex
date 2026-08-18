@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### fix(infra): probe 127.0.0.1:9224 when DevToolsActivePort is missing
+
+* `list` / `doctor` still try `CDP_PORT` then `DevToolsActivePort`. When both
+  miss, they probe `http://127.0.0.1:9224/json/version` on the same path as
+  `CDP_PORT=9224` (including the HTTP 404 → `/devtools/browser` fallback).
+  Chrome 136+ often does not write that file. A closed 9224 stays an
+  environment miss; do not spawn a new profile.
+
 ### docs: draw the README PK scoreboard as SVG
 
 * README comparison first glance is a generated scoreboard SVG (PASS/FAIL

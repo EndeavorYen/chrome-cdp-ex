@@ -25,6 +25,8 @@ Common recoveries:
 
 Dead CDP must fail fast with a same-profile relaunch receipt. Do not invent `DISPLAY`, a second `--user-data-dir`, or a fresh empty Chrome profile — that logs the user out of sites like X.
 
+`list` and `doctor` already probe `http://127.0.0.1:9224/json/version` when `CDP_PORT` and `DevToolsActivePort` are both missing. If that probe returns 200, the live tabs are listed — do not ask the user to toggle `chrome://inspect` or spawn a debug profile.
+
 1. Read the printed `error=cdp_unreachable` receipt. If it includes a relaunch line, run that exact command (same port and `--user-data-dir`).
 2. Check live targets:
 

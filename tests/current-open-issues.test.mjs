@@ -12195,6 +12195,140 @@ describe('issues #276-#277 overlay detector and parallel cookies', () => {
   });
 });
 
+describe('issue #356 probe 127.0.0.1:9224 when DevToolsActivePort is missing', () => {
+  const previousEnv = {};
+
+  function isolateEmptyProfileHome() {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'cdp-356-home-'));
+    for (const key of ['HOME', 'USERPROFILE', 'LOCALAPPDATA', 'CDP_PORT', 'CDP_PORT_FILE', 'CDP_HOST']) {
+      previousEnv[key] = process.env[key];
+    }
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    process.env.LOCALAPPDATA = join(fakeHome, 'AppData', 'Local');
+    delete process.env.CDP_PORT;
+    delete process.env.CDP_PORT_FILE;
+    delete process.env.CDP_HOST;
+    return fakeHome;
+  }
+
+  function restoreIsolatedHome(fakeHome) {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(fakeHome, { recursive: true, force: true });
+  }
+
+  function emptyDiscoveryEnv(fakeHome) {
+    return {
+      HOME: fakeHome,
+      USERPROFILE: fakeHome,
+      LOCALAPPDATA: join(fakeHome, 'AppData', 'Local'),
+    };
+  }
+
+  it('#356 discovers ws url from 127.0.0.1:9224 /json/version when no env and no DevToolsActivePort file', async () => {
+    const fakeHome = isolateEmptyProfileHome();
+    try {
+      const fetched = [];
+      const fetcher = async (url) => {
+        fetched.push(url);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            Browser: 'Chrome/151.0.0.0',
+            webSocketDebuggerUrl: 'ws://127.0.0.1:9224/devtools/browser/4C9C3AC5',
+          }),
+        };
+      };
+
+      await expect(T.getWsUrl({
+        env: emptyDiscoveryEnv(fakeHome),
+        fetcher,
+        lastEndpoint: null,
+        rememberEndpoint: () => {},
+      })).resolves.toBe('ws://127.0.0.1:9224/devtools/browser/4C9C3AC5');
+      expect(fetched).toEqual(['http://127.0.0.1:9224/json/version']);
+    } finally {
+      restoreIsolatedHome(fakeHome);
+    }
+  });
+
+  it('#356 falls back to ws://127.0.0.1:9224/devtools/browser when /json/version is 404', async () => {
+    const fakeHome = isolateEmptyProfileHome();
+    try {
+      const fetcher = async () => ({ ok: false, status: 404, json: async () => ({}) });
+      await expect(T.getWsUrl({
+        env: emptyDiscoveryEnv(fakeHome),
+        fetcher,
+        lastEndpoint: null,
+        rememberEndpoint: () => {},
+      })).resolves.toBe('ws://127.0.0.1:9224/devtools/browser');
+    } finally {
+      restoreIsolatedHome(fakeHome);
+    }
+  });
+
+  it('#356 still fails as environment when 127.0.0.1:9224 is closed', async () => {
+    const fakeHome = isolateEmptyProfileHome();
+    try {
+      const fetcher = async () => {
+        throw new Error('connect ECONNREFUSED 127.0.0.1:9224');
+      };
+      await expect(T.getWsUrl({
+        env: emptyDiscoveryEnv(fakeHome),
+        fetcher,
+        lastEndpoint: null,
+        rememberEndpoint: () => {},
+      })).rejects.toThrow(/No DevToolsActivePort found and no CDP_PORT set/);
+
+      const doctor = await T.checkCdpReachability({
+        env: emptyDiscoveryEnv(fakeHome),
+        fetcher,
+        lastEndpoint: null,
+        rememberEndpoint: () => {},
+      });
+      expect(doctor.status).toBe('FAIL');
+      expect(doctor.detail).toMatch(/no DevToolsActivePort and no CDP_PORT set/i);
+      expect(doctor.error).not.toBe('cdp_unreachable');
+    } finally {
+      restoreIsolatedHome(fakeHome);
+    }
+  });
+
+  it('#356 doctor CDP check PASSes on the same 9224 /json/version probe', async () => {
+    const fakeHome = isolateEmptyProfileHome();
+    try {
+      const fetcher = async (url) => {
+        expect(url).toBe('http://127.0.0.1:9224/json/version');
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            Browser: 'Chrome/151.0.0.0',
+            webSocketDebuggerUrl: 'ws://127.0.0.1:9224/devtools/browser/F0C6A8F5',
+          }),
+        };
+      };
+      const r = await T.checkCdpReachability({
+        env: emptyDiscoveryEnv(fakeHome),
+        fetcher,
+        lastEndpoint: null,
+        rememberEndpoint: () => {},
+      });
+      expect(r.status).toBe('OK');
+      expect(r.port).toBe('9224');
+      expect(r.host).toBe('127.0.0.1');
+      expect(r.detail).toMatch(/9224/);
+      expect(r.detail).toMatch(/Chrome\/151/);
+    } finally {
+      restoreIsolatedHome(fakeHome);
+    }
+  });
+});
+
 
 
 
