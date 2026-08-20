@@ -18996,9 +18996,8 @@ async function checkCdpReachability({
   if (!found) {
     const probed = await checkExplicitPort(DEFAULT_CDP_PROBE_PORT);
     if (!probed.unreachable) return probed;
-    if (remembered?.profileDir && remembered?.port) {
-      return unreachable(remembered.port, 'no DevToolsActivePort and no CDP_PORT set');
-    }
+    // Unset CDP_PORT: empty 9222 is daily-profile (ask first), not a stale
+    // last-endpoint relaunch (Chrome leftover must not beat preferred Edge).
     return {
       status: 'FAIL', label: 'CDP', detail: 'no DevToolsActivePort and no CDP_PORT set',
       hint: 'Daily Chrome attach failed on 9222. Isolated spawn is fallback only and is not the daily profile. Or set CDP_PORT=<port> for an Electron app',
@@ -19251,7 +19250,60 @@ function checkBrowserPermission({ daemons = null, tabs = null, cdp = null, envir
   };
 }
 
-function detectRuntimeEnvironment({ platform = process.platform, env = process.env, fs = { existsSync } } = {}) {
+function normalizePreferredBrowserName(name) {
+  const raw = String(name || '').trim().toLowerCase();
+  if (!raw) return null;
+  if (raw === 'edge' || raw === 'msedge' || raw === 'microsoft-edge') return 'edge';
+  if (raw === 'chrome' || raw === 'google-chrome' || raw === 'chromium' || raw === 'google chrome') return 'chrome';
+  if (raw === 'brave' || raw === 'brave-browser') return 'brave';
+  if (/edgemac|microsoft\.edge/.test(raw)) return 'edge';
+  if (/google\.chrome|chromium/.test(raw)) return 'chrome';
+  if (/brave/.test(raw)) return 'brave';
+  return null;
+}
+
+function pickPreferredBrowser(candidates, { env = {}, defaultBrowser } = {}) {
+  const named = normalizePreferredBrowserName(env.CDP_DEBUG_BROWSER || env.CDP_DAILY_BROWSER || defaultBrowser);
+  if (named) {
+    const match = candidates.find(candidate => candidate.browser === named);
+    if (match) return match;
+  }
+  return candidates.find(candidate => candidate.browser === 'chrome') || candidates[0] || null;
+}
+
+function detectDefaultBrowserName({
+  platform = process.platform,
+  env = process.env,
+  home,
+  spawnSyncFn = spawnSync,
+} = {}) {
+  if (platform !== 'darwin') return null;
+  const resolvedHome = home || env.HOME || env.USERPROFILE || homedir();
+  const plist = resolve(resolvedHome, 'Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist');
+  try {
+    const result = spawnSyncFn('plutil', ['-convert', 'json', '-o', '-', plist], {
+      encoding: 'utf8',
+      timeout: 2000,
+    });
+    if (result?.status !== 0 || !result.stdout) return null;
+    const data = JSON.parse(result.stdout);
+    const handlers = Array.isArray(data?.LSHandlers) ? data.LSHandlers : [];
+    const http = [...handlers].reverse().find(handler => (
+      handler?.LSHandlerURLScheme === 'http' || handler?.LSHandlerURLScheme === 'https'
+    ));
+    return normalizePreferredBrowserName(http?.LSHandlerRoleAll || http?.LSHandlerRoleViewer || '');
+  } catch {
+    return null;
+  }
+}
+
+function detectRuntimeEnvironment({
+  platform = process.platform,
+  env = process.env,
+  fs = { existsSync },
+  defaultBrowser,
+  spawnSyncFn,
+} = {}) {
   const displayAvailable = Boolean(env?.DISPLAY || env?.WAYLAND_DISPLAY);
   const remoteSignals = [
     env?.SSH_CONNECTION,
@@ -19265,7 +19317,10 @@ function detectRuntimeEnvironment({ platform = process.platform, env = process.e
   const browserCandidates = ['chrome', 'edge', 'brave']
     .map(browser => ({ browser, executable: detectBrowserPath(browser, platform, fs, env) }))
     .filter(candidate => candidate.executable);
-  const preferred = browserCandidates.find(candidate => candidate.browser === 'chrome') || browserCandidates[0] || null;
+  const detectedDefault = defaultBrowser !== undefined
+    ? defaultBrowser
+    : detectDefaultBrowserName({ platform, env, spawnSyncFn });
+  const preferred = pickPreferredBrowser(browserCandidates, { env, defaultBrowser: detectedDefault });
   return {
     platform,
     displayAvailable,
@@ -19968,6 +20023,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
     else if (a === '--disable-gpu') opts.disableGpu = true;
     else if (a === '--wait-ms') opts.waitMs = parseNonNegativeInteger(tokens[++i], 'spawn-debug-browser: --wait-ms');
     else if (String(a).startsWith('--wait-ms=')) opts.waitMs = parseNonNegativeInteger(String(a).slice('--wait-ms='.length), 'spawn-debug-browser: --wait-ms');
+    else if (a === '--help' || a === '-h' || String(a).startsWith('--')) opts.helpRequested = true;
     else if (['edge','chrome','brave','google-chrome','msedge','chromium'].includes(a.toLowerCase())) {
       const norm = a.toLowerCase();
       if (norm === 'msedge') opts.browser = 'edge';
@@ -20306,6 +20362,12 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   const listTargets = deps.listSpawnedDebugTargets || listSpawnedDebugTargets;
   const fetcher = deps.fetcher || fetch;
   const opts = parseSpawnDebugBrowserArgs(args, env, { platform });
+  if (opts.helpRequested) {
+    const err = new Error('spawn-debug-browser: help requested');
+    err.code = 'help_requested';
+    err.helpTopic = 'spawn-debug-browser';
+    throw err;
+  }
   const plan = buildSpawnDebugBrowserPlan(opts, platform, fs, env);
   const portState = await probePort({ host: plan.host, port: plan.port });
   if (portState?.occupied) {
@@ -25002,6 +25064,10 @@ async function main(options = {}) {
       console.log(out);
       return finish(0);
     } catch (e) {
+      if (e?.code === 'help_requested') {
+        console.log(helpTopicStr(e.helpTopic || 'spawn-debug-browser'));
+        return finish(0);
+      }
       console.error(formatCliError(e, { cmd }));
       return finish(1);
     }

@@ -4,6 +4,12 @@
 
 ### Agent reliability
 
+* Empty 9222 recommends `--daily-profile` for doctor's `preferredBrowser`
+  (macOS default HTTP handler when Edge/Chrome/Brave; not hardcoded
+  chrome or edge), ask first. Isolated tmp spawn stays fallback and is
+  not the daily profile. `spawn-debug-browser --help` / unknown flags
+  print help and do not launch a browser (#364).
+
 * Leftover isolated `chrome-cdp-ex-*` debug Chrome on 9222 is not daily
   attach success. Doctor/`list` recommend `--daily-profile` (ask first)
   and do not kill the occupant. Explicit `CDP_PORT` still attaches.
