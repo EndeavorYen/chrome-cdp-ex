@@ -19156,9 +19156,13 @@ function defaultIsolatedSpawnCommand(environment, prefix = 'cdp') {
   return `${prefix} spawn-debug-browser ${preferredDebugBrowserName(environment)} --port ${DEFAULT_DEBUG_PORT} --url https://example.com`;
 }
 
+function defaultDailyProfileEnableCommand(environment, prefix = 'cdp') {
+  return `${prefix} spawn-debug-browser ${preferredDebugBrowserName(environment)} --daily-profile --port ${DEFAULT_DEBUG_PORT}`;
+}
+
 function isolatedSpawnFallbackAsk(environment, prefix = 'cdp') {
   const browser = preferredDebugBrowserName(environment);
-  return `Attach to daily ${browser} first (CDP_PORT=${DEFAULT_DEBUG_PORT} ${prefix} list). Isolated spawn is fallback only and is not the daily profile.`;
+  return `Enable debug on daily ${browser} first (${defaultDailyProfileEnableCommand(environment, prefix)}). Isolated spawn is fallback only and is not the daily profile.`;
 }
 
 function environmentRecoveryCommand(envInfo) {
@@ -19262,7 +19266,7 @@ function doctorWizardModel(checks) {
       ? cdp.relaunch
       : cdp.port
         ? `enable browser remote debugging, then rerun: ${prefix} doctor`
-        : (environment?.recovery?.command || defaultIsolatedSpawnCommand(environment, prefix));
+        : (environment?.recovery?.command || defaultDailyProfileEnableCommand(environment, prefix));
   } else if (cdp?.status === 'WARN') {
     status = 'waiting for stable browser CDP';
     currentStep = `re-toggle browser remote debugging, then rerun: ${prefix} doctor`;
@@ -19385,7 +19389,7 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-cdp',
-      run: defaultIsolatedSpawnCommand(environment, prefix),
+      run: defaultDailyProfileEnableCommand(environment, prefix),
       ask: isolatedSpawnFallbackAsk(environment, prefix),
       after: `${prefix} list`,
       requiresUserAction: true,
@@ -19491,7 +19495,7 @@ function doctorNextSteps(checks) {
       lines.push(`  2. Then run: ${prefix} list`);
       lines.push('  3. Isolated spawn is fallback only and is not the daily profile.');
     } else {
-      lines.push(`  1. Attach daily browser first: CDP_PORT=${DEFAULT_DEBUG_PORT} ${prefix} list`);
+      lines.push(`  1. Enable daily-profile debug: ${defaultDailyProfileEnableCommand(environment, prefix)}`);
       lines.push(`  2. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment, prefix)}`);
       lines.push(`  3. Then run: ${prefix} list`);
     }
@@ -19732,7 +19736,56 @@ const DEFAULT_BROWSER_PATHS = {
   },
 };
 
-function parseSpawnDebugBrowserArgs(args, env = process.env) {
+function defaultBrowserUserDataDir(browser, { platform = process.platform, env = process.env, home } = {}) {
+  const resolvedHome = home || env.HOME || env.USERPROFILE || homedir();
+  const localAppData = env.LOCALAPPDATA || '';
+  const dirs = {
+    darwin: {
+      chrome: resolve(resolvedHome, 'Library/Application Support/Google/Chrome'),
+      edge: resolve(resolvedHome, 'Library/Application Support/Microsoft Edge'),
+      brave: resolve(resolvedHome, 'Library/Application Support/BraveSoftware/Brave-Browser'),
+    },
+    linux: {
+      chrome: resolve(resolvedHome, '.config/google-chrome'),
+      edge: resolve(resolvedHome, '.config/microsoft-edge'),
+      brave: resolve(resolvedHome, '.config/BraveSoftware/Brave-Browser'),
+    },
+    win32: {
+      chrome: resolve(localAppData, 'Google/Chrome/User Data'),
+      edge: resolve(localAppData, 'Microsoft/Edge/User Data'),
+      brave: resolve(localAppData, 'BraveSoftware/Brave-Browser/User Data'),
+    },
+  };
+  const table = dirs[platform] || dirs.linux;
+  return table[browser] || table.chrome || null;
+}
+
+function defaultIsProfileLocked(profileDir, fs = { existsSync }) {
+  if (!profileDir) return false;
+  return Boolean(
+    fs.existsSync(resolve(profileDir, 'SingletonLock'))
+    || fs.existsSync(resolve(profileDir, 'lockfile')),
+  );
+}
+
+const DAILY_BROWSER_APP_NAMES = {
+  darwin: {
+    chrome: 'Google Chrome',
+    edge: 'Microsoft Edge',
+    brave: 'Brave Browser',
+  },
+};
+
+async function defaultQuitBrowser(plan, { platform = process.platform, spawnSyncFn = spawnSync } = {}) {
+  const app = DAILY_BROWSER_APP_NAMES[platform]?.[plan.browser];
+  if (platform === 'darwin' && app) {
+    spawnSyncFn('osascript', ['-e', `quit app "${app}"`], { timeout: 15000 });
+    return;
+  }
+  throw new Error(`Daily ${plan.browser} is running without debug. Isolated spawn is fallback only and is not the daily profile.`);
+}
+
+function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
   const fopts = parseFormatArgs(args || [], ['text', 'json']);
   const opts = {
     browser: (env && env.CDP_DEBUG_BROWSER) || 'edge',
@@ -19741,6 +19794,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env) {
     url: null,
     profileDir: null,
     executable: null,
+    dailyProfile: false,
     headless: false,
     noSandbox: false,
     disableGpu: false,
@@ -19754,6 +19808,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env) {
     else if (a === '--host') opts.host = tokens[++i] || opts.host;
     else if (a === '--url' || a === '-u') opts.url = tokens[++i];
     else if (a === '--profile-dir' || a === '--user-data-dir') opts.profileDir = tokens[++i];
+    else if (a === '--daily-profile') opts.dailyProfile = true;
     else if (a === '--browser') opts.browser = (tokens[++i] || opts.browser).toLowerCase();
     else if (a === '--exe' || a === '--executable') opts.executable = tokens[++i];
     else if (a === '--headless') opts.headless = 'new';
@@ -19769,9 +19824,14 @@ function parseSpawnDebugBrowserArgs(args, env = process.env) {
       else opts.browser = norm;
     }
   }
-  if (!opts.profileDir) {
-    const tmp = (env && env.TMPDIR) || '/tmp';
-    opts.profileDir = `${tmp.replace(/\/$/, '')}/chrome-cdp-ex-${opts.browser}-debug-profile-${opts.port}`;
+  if (opts.dailyProfile && !opts.profileDir) {
+    opts.profileDir = defaultBrowserUserDataDir(opts.browser, {
+      platform: extras.platform || process.platform,
+      env,
+    });
+  } else if (!opts.profileDir) {
+    const tmp = String((env && env.TMPDIR) || '/tmp').replace(/\/$/, '');
+    opts.profileDir = `${tmp}/chrome-cdp-ex-${opts.browser}-debug-profile-${opts.port}`;
   }
   return opts;
 }
@@ -19846,6 +19906,7 @@ function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = n
     targetId,
     targetPrefix,
     title: target?.title || null,
+    dailyProfile: Boolean(plan.dailyProfile),
     nextCommand,
     cleanup: {
       stopHint: `CDP_PORT=${plan.port} cdp stop${targetPrefix ? ` ${targetPrefix}` : ''}`,
@@ -19858,7 +19919,9 @@ function formatSpawnDebugBrowserOutput(model, { format = 'text' } = {}) {
   if (format === 'json') return formatJson(model);
   const heading = model.attached
     ? `Attached to existing ${model.browser} debug session on CDP_PORT=${model.port}`
-    : `Spawned ${model.browser} debug profile on CDP_PORT=${model.port} (pid ${model.pid || '?'})`;
+    : model.dailyProfile
+      ? `Enabled daily ${model.browser} debug on CDP_PORT=${model.port} (pid ${model.pid || '?'})`
+      : `Spawned ${model.browser} debug profile on CDP_PORT=${model.port} (pid ${model.pid || '?'})`;
   const lines = [
     heading,
     `  CDP ready:  ${model.product || `${model.host}:${model.port}`}`,
@@ -19876,7 +19939,9 @@ function formatSpawnDebugBrowserOutput(model, { format = 'text' } = {}) {
     lines.push(`(Profile is disposable — delete ${model.profileDir} to reset.)`);
   } else {
     lines.push(`Stop: ${model.cleanup?.stopHint || `CDP_PORT=${model.port} cdp stop`}`);
-    lines.push('(Reused existing profile — do not delete this user-data-dir.)');
+    lines.push(model.dailyProfile
+      ? '(This is the daily profile — logged-in tabs. Isolated spawn is fallback only and is not the daily profile.)'
+      : '(Reused existing profile — do not delete this user-data-dir.)');
   }
   return lines.join('\n');
 }
@@ -19928,7 +19993,7 @@ function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { ex
   if (opts.noSandbox) args.push('--no-sandbox');
   if (opts.disableGpu) args.push('--disable-gpu');
   if (opts.url) args.push(opts.url);
-  return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs };
+  return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile) };
 }
 
 function captureSpawnOutput(child, maxBytes = 4096) {
@@ -20089,7 +20154,7 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   const waitForCdp = deps.waitForSpawnedCdp || waitForSpawnedCdp;
   const listTargets = deps.listSpawnedDebugTargets || listSpawnedDebugTargets;
   const fetcher = deps.fetcher || fetch;
-  const opts = parseSpawnDebugBrowserArgs(args, env);
+  const opts = parseSpawnDebugBrowserArgs(args, env, { platform });
   const plan = buildSpawnDebugBrowserPlan(opts, platform, fs, env);
   const portState = await probePort({ host: plan.host, port: plan.port });
   if (portState?.occupied) {
@@ -20111,6 +20176,15 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
       return text;
     }
     return formatSpawnDebugBrowserOutput(model, { format: 'json' });
+  }
+  if (opts.dailyProfile) {
+    const locked = typeof deps.isProfileLocked === 'function'
+      ? deps.isProfileLocked(plan.profileDir)
+      : defaultIsProfileLocked(plan.profileDir, fs);
+    if (locked) {
+      const quitter = deps.quitBrowser || defaultQuitBrowser;
+      await quitter(plan, { platform, fs });
+    }
   }
   try { fs.mkdirSync(plan.profileDir, { recursive: true }); } catch {}
   const child = launcher(plan.exe, plan.args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });

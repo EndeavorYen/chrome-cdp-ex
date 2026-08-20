@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Agent reliability
+
+* When 9222 is empty, doctor recommends enabling debug on the daily Chrome
+  profile (`spawn-debug-browser --daily-profile`) before isolated spawn.
+  Isolated spawn remains fallback only and is not the daily profile.
+  Occupied live 9222 stays attach success (#360).
+
 ### fix: stop first-step doctor/spawn loop when CDP is already up
 
 * Stop the first-step doctor/spawn loop when Chrome is already listening on

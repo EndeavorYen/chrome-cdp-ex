@@ -34,7 +34,7 @@ Refresh `@ref` handles after navigation, DOM rewrites, modal changes, or failed 
 
 ## Prerequisites
 
-- **Existing daily browser:** run `doctor` then `list`. Do not start by clicking `chrome://inspect`. If port 9222 already has a live debug Chrome, that is success (`CDP_PORT=9222` + `list`).
+- **Existing daily browser:** run `doctor` then `list`. Do not start by clicking `chrome://inspect`. If port 9222 already has a live debug Chrome, that is success (`CDP_PORT=9222` + `list`). If 9222 is empty, enable debug on the daily profile first: `bin/chrome-cdp spawn-debug-browser chrome --daily-profile --port 9222` (may restart that Chrome; ask first).
 - **No reachable daily browser:** with user consent, launch an isolated debug profile as fallback (not the daily profile), using doctor's `preferredBrowser` (chrome on this Mac), e.g. `bin/chrome-cdp spawn-debug-browser chrome --port 9222 --url https://example.com`.
 - **Electron:** launch the app with a remote debugging port and set `CDP_PORT=<port>` before running commands.
 - **Runtime:** Node.js 22 is required because the runtime uses built-in WebSocket and has zero runtime npm dependencies. If `node -v` is <22, use the Node 22 path printed by doctor.
