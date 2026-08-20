@@ -419,7 +419,7 @@ Configuration:
 | `CDP_HOST` | Override the CDP host, default `127.0.0.1`. |
 | `CDP_PORT_FILE` | Override the `DevToolsActivePort` file path. |
 
-When neither `CDP_PORT` nor a `DevToolsActivePort` file is present, discovery probes `http://127.0.0.1:9224/json/version` using the same path as `CDP_PORT=9224` (including the HTTP 404 → `ws://127.0.0.1:9224/devtools/browser` fallback). Chrome 136+ often does not write that file. A closed 9224 is still an environment miss — do not spawn a new debug profile.
+When neither `CDP_PORT` nor a `DevToolsActivePort` file is present, discovery probes spawn-default `http://127.0.0.1:9222/json/version` first, then `http://127.0.0.1:9224/json/version` using the same path as `CDP_PORT` (including the HTTP 404 → `/devtools/browser` fallback). Chrome 136+ often does not write that file. A live occupant is attach success; a closed 9222/9224 is still an environment miss — do not spawn a new debug profile.
 
 `spawn-debug-browser` waits until `/json/version` answers before reporting success. If the browser exits early or CDP never becomes ready, the error includes captured stdout/stderr and a recovery command. `doctor` includes an `Environment` check and recommends `--headless --no-sandbox --exe <path>` when it detects Linux CI, containers, SSH-style remote shells, or no display.
 

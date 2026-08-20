@@ -13568,8 +13568,7 @@ describe('doctorWizardSummary', () => {
 
     expect(out).toContain('Wizard:');
     expect(out).toContain('Status: blocked at browser CDP');
-    expect(out).toContain('Current step: enable browser remote debugging');
-    expect(out).toContain('cdp doctor');
+    expect(out).toContain('Current step: cdp spawn-debug-browser edge --port 9222 --url https://example.com');
   });
 
   it('points to open when CDP is ready but no debuggable page exists', () => {
@@ -14479,18 +14478,35 @@ describe('spawnDebugBrowserStr', () => {
     await expect(probe).resolves.toEqual({ occupied: true });
   });
 
-  it.each([
-    ['responsive CDP listener', { occupied: true, cdpResponsive: true }],
-    ['unresponsive listener', { occupied: true, cdpResponsive: false }],
-  ])('rejects an occupied port before spawning for a %s', async (_label, probeResult) => {
+  it('attaches when the requested port already has a live debug Chrome', async () => {
+    let spawnCalls = 0;
+    const fs = { existsSync: () => true, mkdirSync: () => {} };
+
+    const out = await spawnDebugBrowserStr(['chrome', '--port', '9333'], { TMPDIR: '/tmp' }, {
+      fs,
+      platform: 'darwin',
+      probeTcpPort: async () => ({ occupied: true }),
+      waitForSpawnedCdp: async () => ({ ok: true, port: 9333, product: 'Chrome/126' }),
+      spawn: () => {
+        spawnCalls++;
+        return { pid: 4242, unref() {} };
+      },
+    });
+
+    expect(spawnCalls).toBe(0);
+    expect(out).toContain('CDP_PORT=9333');
+    expect(out).toContain('cdp list');
+  });
+
+  it('still rejects an occupied port that is not a live debug Chrome', async () => {
     let spawnCalls = 0;
     const fs = { existsSync: () => true, mkdirSync: () => {} };
 
     await expect(spawnDebugBrowserStr(['chrome', '--port', '9333'], { TMPDIR: '/tmp' }, {
       fs,
       platform: 'darwin',
-      probeTcpPort: async () => probeResult,
-      waitForSpawnedCdp: async () => ({ ok: true, port: 9333, product: 'Chrome/126' }),
+      probeTcpPort: async () => ({ occupied: true }),
+      waitForSpawnedCdp: async () => ({ ok: false, timeout: true }),
       spawn: () => {
         spawnCalls++;
         return { pid: 4242, unref() {} };
