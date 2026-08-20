@@ -13568,7 +13568,7 @@ describe('doctorWizardSummary', () => {
 
     expect(out).toContain('Wizard:');
     expect(out).toContain('Status: blocked at browser CDP');
-    expect(out).toContain('Current step: cdp spawn-debug-browser edge --port 9222 --url https://example.com');
+    expect(out).toContain('Current step: cdp spawn-debug-browser edge --daily-profile --port 9222');
   });
 
   it('points to open when CDP is ready but no debuggable page exists', () => {

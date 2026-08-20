@@ -364,6 +364,7 @@ export function buildMcpToolCommand(name, args = {}) {
       const command = ['spawn-debug-browser', String(args.browser || 'edge')];
       if (args.port != null) command.push('--port', String(args.port));
       if (args.url) command.push('--url', String(args.url));
+      if (args.dailyProfile) command.push('--daily-profile');
       if (args.headless) command.push('--headless');
       if (args.noSandbox) command.push('--no-sandbox');
       return command;
