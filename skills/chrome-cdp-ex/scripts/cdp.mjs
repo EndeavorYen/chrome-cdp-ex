@@ -18996,9 +18996,8 @@ async function checkCdpReachability({
   if (!found) {
     const probed = await checkExplicitPort(DEFAULT_CDP_PROBE_PORT);
     if (!probed.unreachable) return probed;
-    if (remembered?.profileDir && remembered?.port) {
-      return unreachable(remembered.port, 'no DevToolsActivePort and no CDP_PORT set');
-    }
+    // Unset CDP_PORT: empty 9222 is daily-profile (ask first), not a stale
+    // last-endpoint relaunch (Chrome leftover must not beat preferred Edge).
     return {
       status: 'FAIL', label: 'CDP', detail: 'no DevToolsActivePort and no CDP_PORT set',
       hint: 'Daily Chrome attach failed on 9222. Isolated spawn is fallback only and is not the daily profile. Or set CDP_PORT=<port> for an Electron app',

@@ -61,6 +61,50 @@ describe('#364 daily Edge first step; spawn --help must not launch', () => {
     expect(report).not.toMatch(/spawn-debug-browser edge --port 9311/);
   });
 
+  it('does not let a stale Chrome last-endpoint beat daily Edge --daily-profile when 9222 is empty', async () => {
+    const lastEndpoint = {
+      host: '127.0.0.1',
+      port: '9222',
+      profileDir: '/Users/simon/Library/Application Support/Google/Chrome',
+      exe: CHROME_EXE,
+      browser: 'chrome',
+      launchedAt: '2026-08-14T09:00:00.000Z',
+    };
+    const fetcher = async () => {
+      const err = new Error('connect ECONNREFUSED 127.0.0.1:9222');
+      err.code = 'ECONNREFUSED';
+      throw err;
+    };
+    const cdp = await T.checkCdpReachability({
+      env: {},
+      fetcher,
+      lastEndpoint,
+      home: '/tmp/chrome-cdp-ex-no-devtools-home',
+      existsSync: () => false,
+      connectWebSocket: () => {
+        throw new Error('WebSocket fallback should not run after connection refused');
+      },
+    });
+    const checks = [
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      edgeEnvironmentCheck(),
+      cdp,
+    ];
+    const model = T.buildDoctorModel(checks);
+    const report = T.formatDoctorReport(checks);
+    const wizard = T.doctorWizardModel(checks);
+
+    expect(cdp.status).toBe('FAIL');
+    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser edge --daily-profile --port 9222/);
+    expect(model.recommendation.strategy).not.toBe('relaunch-same-profile');
+    expect(model.recommendation.consentRequired).toBe(true);
+    expect(model.recommendation.run).not.toMatch(/Google Chrome|Google\/Chrome|--user-data-dir/);
+    expect(`${model.recommendation.ask || ''} ${model.recommendation.reason || ''}`).toMatch(/not the daily profile/i);
+    expect(wizard.currentStep).toMatch(/edge --daily-profile --port 9222/);
+    expect(report).toMatch(/spawn-debug-browser edge --daily-profile/);
+    expect(report).not.toMatch(/relaunch the same debug browser profile/i);
+  });
+
   it('parses --help and unknown flags as help, not as a spawn plan', () => {
     for (const args of [['--help'], ['-h'], ['--wat']]) {
       const opts = T.parseSpawnDebugBrowserArgs(args, { TMPDIR: '/tmp' });
