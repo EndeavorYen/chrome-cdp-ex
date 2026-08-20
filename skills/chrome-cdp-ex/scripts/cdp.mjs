@@ -190,7 +190,9 @@ const DAEMON_METADATA_SCHEMA = 'chrome-cdp-ex.daemon-metadata.v1';
 const ALLOW_STALE_DAEMON_FLAG = '--allow-stale-daemon';
 const DEFAULT_CDP_HOST = '127.0.0.1';
 const DEFAULT_CDP_PROBE_PORT = '9224';
-const DEFAULT_SPAWN_READY_TIMEOUT_MS = 5000;
+const DEFAULT_DEBUG_PORT = 9222;
+const DEFAULT_SPAWN_READY_TIMEOUT_MS = 20000;
+const SPAWN_ALIVE_WAIT_CAP_MS = 60000;
 const TABLE_COLLECTION_DEADLINES = Object.freeze({
   pageMs: 295000,
   serverMs: 300000,
@@ -2148,6 +2150,19 @@ async function getWsUrl({
       remembered,
       rememberReachable,
     });
+  }
+
+  // Probe spawn-default 9222 (and CDP_LAST_PORT) before DevToolsActivePort / FAIL.
+  for (const candidate of defaultSpawnProbePorts(env)) {
+    try {
+      return await wsUrlFromCdpHttp({
+        host,
+        port: candidate,
+        fetcher,
+        remembered,
+        rememberReachable,
+      });
+    } catch {}
   }
 
   // DevToolsActivePort file discovery (Chrome, Edge, Brave, etc.)
@@ -18731,6 +18746,13 @@ function checkFdLimit({ limit = detectFdLimit(), platform = process.platform } =
   };
 }
 
+function defaultSpawnProbePorts(env = {}) {
+  const ports = [String(DEFAULT_DEBUG_PORT)];
+  const lastPort = env.CDP_LAST_PORT;
+  if (lastPort && String(lastPort) !== ports[0]) ports.push(String(lastPort));
+  return ports;
+}
+
 async function checkCdpReachability({
   env = process.env,
   fetcher = fetch,
@@ -18739,6 +18761,8 @@ async function checkCdpReachability({
   readLastEndpoint = readLastCdpEndpoint,
   rememberEndpoint = rememberLastCdpEndpoint,
   connectWebSocket,
+  home = homedir(),
+  existsSync: pathExists = existsSync,
 } = {}) {
   const port = env.CDP_PORT;
   const remembered = lastEndpoint !== undefined ? lastEndpoint : readLastEndpoint();
@@ -18806,13 +18830,28 @@ async function checkCdpReachability({
       return { unreachable: true, cause: e.message };
     }
   };
+  const probeDefaultPorts = async () => {
+    for (const candidate of defaultSpawnProbePorts(env)) {
+      const result = await checkExplicitPort(candidate);
+      if (result.unreachable) continue;
+      if (result.status === 'OK') {
+        return {
+          ...result,
+          detail: `${result.detail} (probed default spawn port)`,
+        };
+      }
+    }
+    return null;
+  };
   if (port) {
     const result = await checkExplicitPort(port);
     if (result.unreachable) return unreachable(port, result.cause);
     return result;
   }
+  const probed = await probeDefaultPorts();
+  if (probed) return probed;
+
   // Auto-discover via DevToolsActivePort (light reuse — avoids full ws connect)
-  const home = homedir();
   const localAppData = env.LOCALAPPDATA || process.env.LOCALAPPDATA || '';
   const tryPaths = [
     env.CDP_PORT_FILE,
@@ -18822,7 +18861,7 @@ async function checkCdpReachability({
     resolve(home, '.config/chromium/DevToolsActivePort'),
     resolve(localAppData, 'Google\\Chrome\\User Data\\DevToolsActivePort'),
   ].filter(Boolean);
-  const found = tryPaths.find(p => existsSync(p));
+  const found = tryPaths.find(p => pathExists(p));
   if (!found) {
     const probed = await checkExplicitPort(DEFAULT_CDP_PROBE_PORT);
     if (!probed.unreachable) return probed;
@@ -18831,7 +18870,7 @@ async function checkCdpReachability({
     }
     return {
       status: 'FAIL', label: 'CDP', detail: 'no DevToolsActivePort and no CDP_PORT set',
-      hint: 'Toggle chrome://inspect/#remote-debugging in Chrome, or set CDP_PORT=<port> for an Electron app',
+      hint: 'Daily Chrome attach failed on 9222. Isolated spawn is fallback only and is not the daily profile. Or set CDP_PORT=<port> for an Electron app',
     };
   }
   let lines;
@@ -19107,6 +19146,21 @@ function detectRuntimeEnvironment({ platform = process.platform, env = process.e
   };
 }
 
+function preferredDebugBrowserName(environment) {
+  return environment?.environment?.preferredBrowser?.browser
+    || environment?.preferredBrowser?.browser
+    || 'edge';
+}
+
+function defaultIsolatedSpawnCommand(environment) {
+  return `cdp spawn-debug-browser ${preferredDebugBrowserName(environment)} --port ${DEFAULT_DEBUG_PORT} --url https://example.com`;
+}
+
+function isolatedSpawnFallbackAsk(environment) {
+  const browser = preferredDebugBrowserName(environment);
+  return `Attach to daily ${browser} first (CDP_PORT=${DEFAULT_DEBUG_PORT} cdp list). Isolated spawn is fallback only and is not the daily profile.`;
+}
+
 function environmentRecoveryCommand(envInfo) {
   const candidate = envInfo.preferredBrowser;
   if (!candidate) return null;
@@ -19189,6 +19243,7 @@ function doctorWizardSummary(checks) {
 function doctorWizardModel(checks) {
   const node = checks.find(c => c.label === 'Node');
   const cdp = checks.find(c => c.label === 'CDP');
+  const environment = checks.find(c => c.label === 'Environment');
   const tabs = checks.find(c => c.label === 'Tabs');
   const permission = checks.find(c => c.label === 'Permission');
   const probe = doctorProbeFromChecks(checks);
@@ -19205,7 +19260,7 @@ function doctorWizardModel(checks) {
     status = 'blocked at browser CDP';
     currentStep = cdp.relaunch
       ? cdp.relaunch
-      : `enable browser remote debugging, then rerun: ${prefix} doctor`;
+      : (environment?.recovery?.command || defaultIsolatedSpawnCommand(environment));
   } else if (cdp?.status === 'WARN') {
     status = 'waiting for stable browser CDP';
     currentStep = `re-toggle browser remote debugging, then rerun: ${prefix} doctor`;
@@ -19318,19 +19373,18 @@ function doctorRecommendationModel(checks) {
         ...base,
         stage: 'browser-cdp',
         run: environment.recovery.command,
-        ask: `Approve launching an isolated local debug browser profile, then run: ${prefix} list.`,
+        ask: isolatedSpawnFallbackAsk(environment),
         after: `${prefix} list`,
         requiresUserAction: true,
         consentRequired: true,
-        reason: `${cdp.detail || 'Chrome is not reachable.'} Environment looks ${environment.detail || 'headless/remote'}.`,
+        reason: `${cdp.detail || 'Chrome is not reachable.'} Environment looks ${environment.detail || 'headless/remote'}. Isolated spawn is fallback only and is not the daily profile.`,
       };
     }
     return {
       ...base,
       stage: 'browser-cdp',
-      strategy: 'enable-existing-debugging',
-      run: `${prefix} spawn-debug-browser edge --port 9222 --url https://example.com`,
-      ask: `Open chrome://inspect/#remote-debugging or edge://inspect, enable remote debugging, then run: ${prefix} doctor.`,
+      run: defaultIsolatedSpawnCommand(environment),
+      ask: isolatedSpawnFallbackAsk(environment),
       after: `${prefix} list`,
       requiresUserAction: true,
       consentRequired: true,
@@ -19433,10 +19487,10 @@ function doctorNextSteps(checks) {
     } else if (environment?.recovery?.command) {
       lines.push(`  1. ${environment.recovery.command}`);
       lines.push(`  2. Then run: ${prefix} list`);
-      lines.push(`  3. Existing browser alternative: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: ${prefix} doctor`);
+      lines.push('  3. Isolated spawn is fallback only and is not the daily profile.');
     } else {
-      lines.push(`  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: ${prefix} doctor`);
-      lines.push(`  2. Isolated profile: ${prefix} spawn-debug-browser edge --port 9222 --url https://example.com`);
+      lines.push(`  1. Attach daily browser first: CDP_PORT=${DEFAULT_DEBUG_PORT} ${prefix} list`);
+      lines.push(`  2. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment)}`);
       lines.push(`  3. Then run: ${prefix} list`);
     }
     return lines;
@@ -19620,6 +19674,8 @@ async function runDoctorChecks(opts = {}) {
     lastEndpoint: opts.lastEndpoint,
     readLastEndpoint: opts.readLastEndpoint,
     connectWebSocket: opts.connectWebSocket,
+    home: opts.home,
+    existsSync: fs.existsSync,
   });
   checks[4] = reconcileRuntimeEnvironmentCheck(checks[4], cdp);
   checks.push(cdp);
@@ -19767,16 +19823,17 @@ function pickSpawnedTarget(pages = [], url = null) {
   return rankPageTargets(pages)[0] || null;
 }
 
-function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = null } = {}) {
+function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = null, attached = false } = {}) {
   const targetId = target?.targetId || null;
   const targetPrefix = targetId ? String(targetId).slice(0, getDisplayPrefixLength([targetId])) : null;
-  const nextCommand = targetPrefix
-    ? `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`
-    : `CDP_PORT=${plan.port} cdp list`;
+  const nextCommand = attached || !targetPrefix
+    ? `CDP_PORT=${plan.port} cdp list`
+    : `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`;
   const disposable = isDisposableSpawnProfileDir(plan.profileDir);
   return {
     schema: 'chrome-cdp-ex.spawn-debug-browser.v1',
     ready: readiness?.ok === true,
+    attached: Boolean(attached),
     browser: plan.browser,
     pid: child?.pid || null,
     profileDir: plan.profileDir,
@@ -19797,8 +19854,11 @@ function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = n
 
 function formatSpawnDebugBrowserOutput(model, { format = 'text' } = {}) {
   if (format === 'json') return formatJson(model);
+  const heading = model.attached
+    ? `Attached to existing ${model.browser} debug session on CDP_PORT=${model.port}`
+    : `Spawned ${model.browser} debug profile on CDP_PORT=${model.port} (pid ${model.pid || '?'})`;
   const lines = [
-    `Spawned ${model.browser} debug profile on CDP_PORT=${model.port} (pid ${model.pid || '?'})`,
+    heading,
     `  CDP ready:  ${model.product || `${model.host}:${model.port}`}`,
     `  Executable: (see profile)`,
     `  Profile:    ${model.profileDir}`,
@@ -19884,7 +19944,11 @@ function captureSpawnOutput(child, maxBytes = 4096) {
 
 async function waitForSpawnedCdp({ port, host = DEFAULT_CDP_HOST, timeoutMs = DEFAULT_SPAWN_READY_TIMEOUT_MS, child = null, fetcher = fetch, output = null } = {}) {
   const timeout = Math.min(Math.max(Number(timeoutMs) || DEFAULT_SPAWN_READY_TIMEOUT_MS, 0), 120000);
-  const deadline = Date.now() + timeout;
+  const started = Date.now();
+  const hardCap = child
+    ? Math.min(Math.max(timeout, SPAWN_ALIVE_WAIT_CAP_MS), 120000)
+    : timeout;
+  const deadline = started + hardCap;
   let exited = false;
   let exitCode = null;
   let signal = null;
@@ -20027,7 +20091,24 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   const plan = buildSpawnDebugBrowserPlan(opts, platform, fs, env);
   const portState = await probePort({ host: plan.host, port: plan.port });
   if (portState?.occupied) {
-    throw new Error(`spawn-debug-browser: port ${plan.port} is already in use on ${plan.host}. Choose another port with --port <N>.`);
+    const readiness = await waitForCdp({
+      port: plan.port,
+      host: plan.host,
+      timeoutMs: Math.min(plan.waitMs || DEFAULT_SPAWN_READY_TIMEOUT_MS, 2000),
+      fetcher,
+    });
+    if (!readiness.ok) {
+      throw new Error(`spawn-debug-browser: port ${plan.port} is already in use on ${plan.host}. Choose another port with --port <N>.`);
+    }
+    const pages = await listTargets({ port: plan.port, host: plan.host, fetcher });
+    const target = pickSpawnedTarget(pages, plan.url);
+    const model = buildSpawnDebugBrowserModel(plan, readiness, { attached: true, target });
+    if (opts.format !== 'json') {
+      const text = formatSpawnDebugBrowserOutput(model, { format: 'text' })
+        .replace('  Executable: (see profile)', `  Executable: ${plan.exe}`);
+      return text;
+    }
+    return formatSpawnDebugBrowserOutput(model, { format: 'json' });
   }
   try { fs.mkdirSync(plan.profileDir, { recursive: true }); } catch {}
   const child = launcher(plan.exe, plan.args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });

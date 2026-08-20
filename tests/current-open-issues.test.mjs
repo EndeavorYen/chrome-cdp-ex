@@ -12234,6 +12234,9 @@ describe('issue #356 probe 127.0.0.1:9224 when DevToolsActivePort is missing', (
       const fetched = [];
       const fetcher = async (url) => {
         fetched.push(url);
+        if (String(url).includes(':9222/')) {
+          throw new Error('connect ECONNREFUSED 127.0.0.1:9222');
+        }
         return {
           ok: true,
           status: 200,
@@ -12250,7 +12253,10 @@ describe('issue #356 probe 127.0.0.1:9224 when DevToolsActivePort is missing', (
         lastEndpoint: null,
         rememberEndpoint: () => {},
       })).resolves.toBe('ws://127.0.0.1:9224/devtools/browser/4C9C3AC5');
-      expect(fetched).toEqual(['http://127.0.0.1:9224/json/version']);
+      expect(fetched).toEqual([
+        'http://127.0.0.1:9222/json/version',
+        'http://127.0.0.1:9224/json/version',
+      ]);
     } finally {
       restoreIsolatedHome(fakeHome);
     }
@@ -12259,7 +12265,12 @@ describe('issue #356 probe 127.0.0.1:9224 when DevToolsActivePort is missing', (
   it('#356 falls back to ws://127.0.0.1:9224/devtools/browser when /json/version is 404', async () => {
     const fakeHome = isolateEmptyProfileHome();
     try {
-      const fetcher = async () => ({ ok: false, status: 404, json: async () => ({}) });
+      const fetcher = async (url) => {
+        if (String(url).includes(':9222/')) {
+          throw new Error('connect ECONNREFUSED 127.0.0.1:9222');
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      };
       await expect(T.getWsUrl({
         env: emptyDiscoveryEnv(fakeHome),
         fetcher,
@@ -12302,6 +12313,9 @@ describe('issue #356 probe 127.0.0.1:9224 when DevToolsActivePort is missing', (
     const fakeHome = isolateEmptyProfileHome();
     try {
       const fetcher = async (url) => {
+        if (String(url).includes(':9222/')) {
+          throw new Error('connect ECONNREFUSED 127.0.0.1:9222');
+        }
         expect(url).toBe('http://127.0.0.1:9224/json/version');
         return {
           ok: true,

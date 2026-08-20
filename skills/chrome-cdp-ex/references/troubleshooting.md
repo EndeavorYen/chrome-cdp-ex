@@ -25,7 +25,7 @@ Common recoveries:
 
 Dead CDP must fail fast with a same-profile relaunch receipt. Do not invent `DISPLAY`, a second `--user-data-dir`, or a fresh empty Chrome profile — that logs the user out of sites like X.
 
-`list` and `doctor` already probe `http://127.0.0.1:9224/json/version` when `CDP_PORT` and `DevToolsActivePort` are both missing. If that probe returns 200, the live tabs are listed — do not ask the user to toggle `chrome://inspect` or spawn a debug profile.
+`list` and `doctor` already probe `http://127.0.0.1:9222/json/version` (spawn default) then `http://127.0.0.1:9224/json/version` when `CDP_PORT` and `DevToolsActivePort` are both missing. If either probe returns 200, the live tabs are listed — do not ask the user to toggle `chrome://inspect` or spawn a debug profile.
 
 1. Read the printed `error=cdp_unreachable` receipt. If it includes a relaunch line, run that exact command (same port and `--user-data-dir`).
 2. Check live targets:
@@ -34,15 +34,16 @@ Dead CDP must fail fast with a same-profile relaunch receipt. Do not invent `DIS
 node skills/chrome-cdp-ex/scripts/cdp.mjs list
 ```
 
-3. In a normal desktop browser, open `chrome://inspect/#remote-debugging` or `edge://inspect` and enable remote debugging/Allow when prompted. This is the correct path when the profile is unknown.
-4. For an explicit port, set `CDP_PORT=<port>`:
+3. Unprefixed `doctor` probes `127.0.0.1:9222` before FAIL. If a live debug Chrome is already there, set `CDP_PORT=9222` and continue with `list`. Isolated `spawn-debug-browser` is fallback only and is not the daily profile.
+4. In a normal desktop browser, open `chrome://inspect/#remote-debugging` or `edge://inspect` and enable remote debugging/Allow when prompted. This is the correct path when the profile is unknown.
+5. For an explicit port, set `CDP_PORT=<port>`:
 
 ```bash
 CDP_PORT=9222 node skills/chrome-cdp-ex/scripts/cdp.mjs list
 ```
 
-5. If the browser writes `DevToolsActivePort` somewhere non-standard, set `CDP_PORT_FILE` to the full path.
-6. If no tab exists after CDP is reachable, open one:
+6. If the browser writes `DevToolsActivePort` somewhere non-standard, set `CDP_PORT_FILE` to the full path.
+7. If no tab exists after CDP is reachable, open one:
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com
@@ -63,10 +64,10 @@ Chrome must be started by the user on Windows, with remote debugging enabled via
 
 ## spawn-debug-browser
 
-Use this only when the normal browser permission path is unavailable and the user consents to an isolated debug profile:
+Use this only when daily-browser attach failed and the user consents to an isolated debug profile (not the daily profile). Follow doctor's preferred browser; on this Mac that is chrome, not hardcoded edge:
 
 ```bash
-node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 --url https://example.com
+node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser chrome --port 9222 --url https://example.com
 ```
 
 The helper launches a separate user-data-dir with `--remote-debugging-port`; it does not touch the user's main profile. In Linux CI, containers, or no-display shells, add existing flags shown by doctor such as `--headless`, `--no-sandbox`, or `--exe /path/to/browser` when needed.

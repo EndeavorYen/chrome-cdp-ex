@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### fix: stop first-step doctor/spawn loop when CDP is already up
+
+* Stop the first-step doctor/spawn loop when Chrome is already listening on
+  9222. Unprefixed `doctor`/`list`/`perceive` probe the spawn default port,
+  a live occupant is attach success (`CDP_PORT` + `cdp list`), isolated spawn
+  is fallback only and is not the daily profile, and doctor prints
+  `preferredBrowser` instead of hardcoded Edge (#358).
+
 ### fix(infra): probe 127.0.0.1:9224 when DevToolsActivePort is missing
 
 * `list` / `doctor` still try `CDP_PORT` then `DevToolsActivePort`. When both
