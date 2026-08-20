@@ -1217,6 +1217,103 @@ function isDisposableSpawnProfileDir(profileDir) {
   return /(?:^|\/)chrome-cdp-ex-[a-z0-9-]+-debug-profile-\d+$/i.test(normalized);
 }
 
+function isIsolatedChromeCdpExProfileDir(profileDir) {
+  const normalized = String(profileDir || '').replace(/\\/g, '/');
+  if (!normalized) return false;
+  if (isDisposableSpawnProfileDir(normalized)) return true;
+  const leafLooksIsolated = /(?:^|\/)chrome-cdp-ex-[^/]+$/i.test(normalized);
+  const inTemp = /(?:^|\/)tmp\//i.test(normalized)
+    || /(?:^|\/)var\/folders\//i.test(normalized)
+    || /(?:^|\/)Temp\//i.test(normalized);
+  return leafLooksIsolated && inTemp;
+}
+
+function isolatedOccupantAsk(environment, { port, profileDir } = {}, prefix = 'cdp') {
+  const browser = preferredDebugBrowserName(environment);
+  const resolvedPort = port || DEFAULT_DEBUG_PORT;
+  const dir = profileDir ? ` (${profileDir})` : '';
+  return `${resolvedPort} occupant${dir} is not the daily profile. Enable debug on daily ${browser} first (${defaultDailyProfileEnableCommand(environment, prefix)}; ask first). Do not kill the occupant without asking. Or set CDP_PORT=${resolvedPort} to use this isolated window.`;
+}
+
+function isolatedOccupantCdpCheck({ host, port, profileDir, environment } = {}) {
+  const resolvedHost = host || DEFAULT_CDP_HOST;
+  const resolvedPort = String(port || DEFAULT_DEBUG_PORT);
+  return {
+    status: 'FAIL',
+    label: 'CDP',
+    isolatedOccupant: true,
+    host: resolvedHost,
+    port: resolvedPort,
+    profileDir: profileDir || null,
+    detail: `${resolvedHost}:${resolvedPort} is an isolated chrome-cdp-ex profile (${profileDir}), not the daily Chrome`,
+    hint: isolatedOccupantAsk(environment, { port: resolvedPort, profileDir }),
+  };
+}
+
+function isolatedOccupantAttachError({ host, port, profileDir } = {}) {
+  const check = isolatedOccupantCdpCheck({ host, port, profileDir });
+  const err = new Error(check.hint);
+  err.code = 'cdp_isolated_occupant';
+  err.host = check.host;
+  err.port = check.port;
+  err.profileDir = check.profileDir;
+  err.isolatedOccupant = true;
+  return err;
+}
+
+async function inspectCdpOccupantProfileDirViaCdp({ host, port, connectWebSocket } = {}) {
+  try {
+    const wsUrl = `ws://${host || DEFAULT_CDP_HOST}:${port}/devtools/browser`;
+    const ws = typeof connectWebSocket === 'function'
+      ? await connectWebSocket(wsUrl)
+      : new WebSocket(wsUrl);
+    const argv = await new Promise((resolveWs, rejectWs) => {
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ id: 1, method: 'Browser.getBrowserCommandLine' }));
+      };
+      if (ws.readyState === 1) ws.onopen();
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.id === 1) {
+            resolveWs(data.result?.arguments || data.result?.Arguments || []);
+          }
+        } catch {}
+      };
+      ws.onerror = (err) => rejectWs(err);
+      setTimeout(() => { ws.close(); rejectWs(new Error('timeout')); }, 1000);
+    });
+    ws.close();
+    return profileDirFromCommandLine(argv);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveOccupantProfileDir({
+  host,
+  port,
+  remembered,
+  inspectOccupantProfileDir,
+  connectWebSocket,
+} = {}) {
+  if (typeof inspectOccupantProfileDir === 'function') {
+    return inspectOccupantProfileDir({ host, port, remembered });
+  }
+  if (process.env.NODE_ENV === 'test') {
+    if (remembered?.profileDir && String(remembered.port) === String(port)) {
+      return remembered.profileDir;
+    }
+    return null;
+  }
+  const live = await inspectCdpOccupantProfileDirViaCdp({ host, port, connectWebSocket });
+  if (live) return live;
+  if (remembered?.profileDir && String(remembered.port) === String(port)) {
+    return remembered.profileDir;
+  }
+  return null;
+}
+
 function formatCdpRelaunchCommand(lastEndpoint, { port } = {}) {
   const profileDir = lastEndpoint?.profileDir;
   if (!profileDir) return null;
@@ -2134,6 +2231,8 @@ async function getWsUrl({
   lastEndpoint,
   readLastEndpoint = readLastCdpEndpoint,
   rememberEndpoint = rememberLastCdpEndpoint,
+  inspectOccupantProfileDir,
+  connectWebSocket,
 } = {}) {
   const host = env.CDP_HOST || DEFAULT_CDP_HOST;
   const remembered = lastEndpoint !== undefined ? lastEndpoint : readLastEndpoint();
@@ -2155,14 +2254,27 @@ async function getWsUrl({
   // Probe spawn-default 9222 (and CDP_LAST_PORT) before DevToolsActivePort / FAIL.
   for (const candidate of defaultSpawnProbePorts(env)) {
     try {
-      return await wsUrlFromCdpHttp({
+      const url = await wsUrlFromCdpHttp({
         host,
         port: candidate,
         fetcher,
         remembered,
         rememberReachable,
       });
-    } catch {}
+      const profileDir = await resolveOccupantProfileDir({
+        host,
+        port: candidate,
+        remembered,
+        inspectOccupantProfileDir,
+        connectWebSocket,
+      });
+      if (isIsolatedChromeCdpExProfileDir(profileDir)) {
+        throw isolatedOccupantAttachError({ host, port: candidate, profileDir });
+      }
+      return url;
+    } catch (error) {
+      if (error?.code === 'cdp_isolated_occupant' || error?.isolatedOccupant) throw error;
+    }
   }
 
   // DevToolsActivePort file discovery (Chrome, Edge, Brave, etc.)
@@ -18761,6 +18873,7 @@ async function checkCdpReachability({
   readLastEndpoint = readLastCdpEndpoint,
   rememberEndpoint = rememberLastCdpEndpoint,
   connectWebSocket,
+  inspectOccupantProfileDir,
   home = homedir(),
   existsSync: pathExists = existsSync,
 } = {}) {
@@ -18830,15 +18943,33 @@ async function checkCdpReachability({
       return { unreachable: true, cause: e.message };
     }
   };
+  const classifyDefaultProbe = async (result) => {
+    if (!result || result.unreachable || result.status !== 'OK') return result;
+    const profileDir = await resolveOccupantProfileDir({
+      host: result.host || host,
+      port: result.port,
+      remembered,
+      inspectOccupantProfileDir,
+      connectWebSocket,
+    });
+    if (isIsolatedChromeCdpExProfileDir(profileDir)) {
+      return isolatedOccupantCdpCheck({
+        host: result.host || host,
+        port: result.port,
+        profileDir,
+      });
+    }
+    return result;
+  };
   const probeDefaultPorts = async () => {
     for (const candidate of defaultSpawnProbePorts(env)) {
       const result = await checkExplicitPort(candidate);
       if (result.unreachable) continue;
       if (result.status === 'OK') {
-        return {
+        return classifyDefaultProbe({
           ...result,
           detail: `${result.detail} (probed default spawn port)`,
-        };
+        });
       }
     }
     return null;
@@ -19262,11 +19393,13 @@ function doctorWizardModel(checks) {
     currentStep = node.hint || NODE22_MISSING_HINT;
   } else if (cdp?.status === 'FAIL') {
     status = 'blocked at browser CDP';
-    currentStep = cdp.relaunch
-      ? cdp.relaunch
-      : cdp.port
-        ? `enable browser remote debugging, then rerun: ${prefix} doctor`
-        : (environment?.recovery?.command || defaultDailyProfileEnableCommand(environment, prefix));
+    currentStep = cdp.isolatedOccupant
+      ? defaultDailyProfileEnableCommand(environment, prefix)
+      : cdp.relaunch
+        ? cdp.relaunch
+        : cdp.port
+          ? `enable browser remote debugging, then rerun: ${prefix} doctor`
+          : (environment?.recovery?.command || defaultDailyProfileEnableCommand(environment, prefix));
   } else if (cdp?.status === 'WARN') {
     status = 'waiting for stable browser CDP';
     currentStep = `re-toggle browser remote debugging, then rerun: ${prefix} doctor`;
@@ -19348,6 +19481,19 @@ function doctorRecommendationModel(checks) {
     };
   }
   if (cdp?.status === 'FAIL') {
+    if (cdp.isolatedOccupant) {
+      return {
+        ...base,
+        stage: 'browser-cdp',
+        strategy: 'enable-daily-profile',
+        run: defaultDailyProfileEnableCommand(environment, prefix),
+        ask: isolatedOccupantAsk(environment, { port: cdp.port, profileDir: cdp.profileDir }, prefix),
+        after: `${prefix} list`,
+        requiresUserAction: true,
+        consentRequired: true,
+        reason: cdp.detail || null,
+      };
+    }
     if (cdp.profileDir && cdp.relaunch) {
       return {
         ...base,
@@ -19483,7 +19629,12 @@ function doctorNextSteps(checks) {
     return lines;
   }
   if (cdp?.status === 'FAIL') {
-    if (cdp.relaunch && cdp.profileDir) {
+    if (cdp.isolatedOccupant) {
+      lines.push(`  1. Enable daily-profile debug (ask first): ${defaultDailyProfileEnableCommand(environment, prefix)}`);
+      lines.push('  2. Do not kill the isolated occupant without asking.');
+      lines.push(`  3. Or set CDP_PORT=${cdp.port || DEFAULT_DEBUG_PORT} to use this isolated window.`);
+      lines.push(`  4. Then run: ${prefix} list`);
+    } else if (cdp.relaunch && cdp.profileDir) {
       lines.push(`  1. ${cdp.relaunch}`);
       lines.push(`  2. Then run: ${prefix} list`);
     } else if (cdp.port) {
@@ -20166,6 +20317,21 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
     });
     if (!readiness.ok) {
       throw new Error(`spawn-debug-browser: port ${plan.port} is already in use on ${plan.host}. Choose another port with --port <N>.`);
+    }
+    if (opts.dailyProfile) {
+      const occupantProfileDir = await resolveOccupantProfileDir({
+        host: plan.host,
+        port: plan.port,
+        inspectOccupantProfileDir: deps.inspectOccupantProfileDir,
+        connectWebSocket: deps.connectWebSocket,
+      });
+      if (isIsolatedChromeCdpExProfileDir(occupantProfileDir)) {
+        throw isolatedOccupantAttachError({
+          host: plan.host,
+          port: plan.port,
+          profileDir: occupantProfileDir,
+        });
+      }
     }
     const pages = await listTargets({ port: plan.port, host: plan.host, fetcher });
     const target = pickSpawnedTarget(pages, plan.url);
@@ -25347,6 +25513,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
   readLastCdpEndpoint, writeLastCdpEndpoint, rememberLastCdpEndpoint, formatCdpRelaunchCommand,
   cdpUnreachableError, profileDirFromCommandLine, profileDirFromDevToolsActivePort,
+  inspectCdpOccupantProfileDirViaCdp,
+  isDisposableSpawnProfileDir, isIsolatedChromeCdpExProfileDir,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
   // Screenshot

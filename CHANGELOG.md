@@ -4,6 +4,11 @@
 
 ### Agent reliability
 
+* Leftover isolated `chrome-cdp-ex-*` debug Chrome on 9222 is not daily
+  attach success. Doctor/`list` recommend `--daily-profile` (ask first)
+  and do not kill the occupant. Explicit `CDP_PORT` still attaches.
+  Live daily debug on 9222 stays success (#362).
+
 * When 9222 is empty, doctor recommends enabling debug on the daily Chrome
   profile (`spawn-debug-browser --daily-profile`) before isolated spawn.
   Isolated spawn remains fallback only and is not the daily profile.

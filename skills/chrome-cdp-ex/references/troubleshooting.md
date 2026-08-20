@@ -34,7 +34,7 @@ Dead CDP must fail fast with a same-profile relaunch receipt. Do not invent `DIS
 node skills/chrome-cdp-ex/scripts/cdp.mjs list
 ```
 
-3. Unprefixed `doctor` probes `127.0.0.1:9222` before FAIL. If a live debug Chrome is already there, set `CDP_PORT=9222` and continue with `list`. If 9222 is empty, enable debug on the daily profile: `cdp spawn-debug-browser chrome --daily-profile --port 9222`. Isolated `spawn-debug-browser` is fallback only and is not the daily profile.
+3. Unprefixed `doctor` probes `127.0.0.1:9222` before FAIL. If the **daily** debug Chrome is already there, set `CDP_PORT=9222` and continue with `list`. A leftover isolated `chrome-cdp-ex-*` profile on 9222 is not daily attach success — next probe is `--daily-profile` (ask first); do not kill the occupant without asking. If 9222 is empty, enable debug on the daily profile: `cdp spawn-debug-browser chrome --daily-profile --port 9222`. Isolated `spawn-debug-browser` is fallback only and is not the daily profile.
 4. Prefer `--daily-profile` over `chrome://inspect/#remote-debugging` as the first human step. Use inspect only when the daily profile is unknown or `--daily-profile` cannot attach.
 5. For an explicit port, set `CDP_PORT=<port>`:
 

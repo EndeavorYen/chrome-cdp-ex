@@ -197,8 +197,16 @@ function directCdpInventory(text) {
               && argumentText === 'JSON.stringify(msg)'
             ) || (
               memberText === 'ws.send'
-              && ['checkBrowserTargets', 'listSpawnedDebugTargets'].includes(caller)
-              && argumentText === "JSON.stringify({ id: 1, method: 'Target.getTargets' })"
+              && (
+                (
+                  ['checkBrowserTargets', 'listSpawnedDebugTargets'].includes(caller)
+                  && argumentText === "JSON.stringify({ id: 1, method: 'Target.getTargets' })"
+                )
+                || (
+                  caller === 'inspectCdpOccupantProfileDirViaCdp'
+                  && argumentText === "JSON.stringify({ id: 1, method: 'Browser.getBrowserCommandLine' })"
+                )
+              )
             );
             if (!underlyingWebSocketSend) {
               context.report({ node, message: 'CDP transport sends must stay behind domain clients or the raw gateway' });
