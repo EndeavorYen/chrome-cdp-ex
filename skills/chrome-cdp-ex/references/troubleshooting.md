@@ -34,7 +34,7 @@ Dead CDP must fail fast with a same-profile relaunch receipt. Do not invent `DIS
 node skills/chrome-cdp-ex/scripts/cdp.mjs list
 ```
 
-3. Unprefixed `doctor` probes `127.0.0.1:9222` before FAIL. If the **daily** debug Chrome is already there, set `CDP_PORT=9222` and continue with `list`. A leftover isolated `chrome-cdp-ex-*` profile on 9222 is not daily attach success — next probe is `--daily-profile` (ask first); do not kill the occupant without asking. If 9222 is empty, enable debug on the daily profile: `cdp spawn-debug-browser chrome --daily-profile --port 9222`. Isolated `spawn-debug-browser` is fallback only and is not the daily profile.
+3. Unprefixed `doctor` probes `127.0.0.1:9222` before FAIL. If the **daily** debug browser is already there, set `CDP_PORT=9222` and continue with `list`. A leftover isolated `chrome-cdp-ex-*` profile on 9222 is not daily attach success — next probe is `--daily-profile` (ask first); do not kill the occupant without asking. If 9222 is empty, enable debug on the daily profile: `cdp spawn-debug-browser <preferredBrowser> --daily-profile --port 9222` (ask first). Isolated `spawn-debug-browser` is fallback only and is not the daily profile. `spawn-debug-browser --help` must not launch a browser.
 4. Prefer `--daily-profile` over `chrome://inspect/#remote-debugging` as the first human step. Use inspect only when the daily profile is unknown or `--daily-profile` cannot attach.
 5. For an explicit port, set `CDP_PORT=<port>`:
 
@@ -64,14 +64,15 @@ Chrome must be started by the user on Windows, with remote debugging enabled via
 
 ## spawn-debug-browser
 
-Primary empty-port path: enable debug on the daily Chrome profile (logged-in tabs). Isolated spawn is fallback only and is not the daily profile. Follow doctor's preferred browser; on this Mac that is chrome, not hardcoded edge:
+Primary empty-port path: enable debug on the daily browser profile (logged-in tabs). Isolated spawn is fallback only and is not the daily profile. Follow doctor's `preferredBrowser` (macOS default HTTP handler when Edge/Chrome/Brave; not hardcoded chrome or edge):
 
 ```bash
-node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser chrome --daily-profile --port 9222
-node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser chrome --port 9222 --url https://example.com
+node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser --help
+node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser <preferredBrowser> --daily-profile --port 9222
+node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser <preferredBrowser> --port 9222 --url https://example.com
 ```
 
-`--daily-profile` uses the browser's default user-data-dir and may quit/relaunch that Chrome if it is already running without debug. Isolated mode launches a separate user-data-dir and does not touch the user's main profile. In Linux CI, containers, or no-display shells, add existing flags shown by doctor such as `--headless`, `--no-sandbox`, or `--exe /path/to/browser` when needed.
+`--help` / unknown flags print help and must not launch a browser. `--daily-profile` uses the browser's default user-data-dir and may quit/relaunch that browser if it is already running without debug. Isolated mode launches a separate user-data-dir and does not touch the user's main profile. In Linux CI, containers, or no-display shells, add existing flags shown by doctor such as `--headless`, `--no-sandbox`, or `--exe /path/to/browser` when needed.
 
 ## Electron screenshot fallbacks
 
