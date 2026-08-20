@@ -19152,13 +19152,13 @@ function preferredDebugBrowserName(environment) {
     || 'edge';
 }
 
-function defaultIsolatedSpawnCommand(environment) {
-  return `cdp spawn-debug-browser ${preferredDebugBrowserName(environment)} --port ${DEFAULT_DEBUG_PORT} --url https://example.com`;
+function defaultIsolatedSpawnCommand(environment, prefix = 'cdp') {
+  return `${prefix} spawn-debug-browser ${preferredDebugBrowserName(environment)} --port ${DEFAULT_DEBUG_PORT} --url https://example.com`;
 }
 
-function isolatedSpawnFallbackAsk(environment) {
+function isolatedSpawnFallbackAsk(environment, prefix = 'cdp') {
   const browser = preferredDebugBrowserName(environment);
-  return `Attach to daily ${browser} first (CDP_PORT=${DEFAULT_DEBUG_PORT} cdp list). Isolated spawn is fallback only and is not the daily profile.`;
+  return `Attach to daily ${browser} first (CDP_PORT=${DEFAULT_DEBUG_PORT} ${prefix} list). Isolated spawn is fallback only and is not the daily profile.`;
 }
 
 function environmentRecoveryCommand(envInfo) {
@@ -19260,7 +19260,9 @@ function doctorWizardModel(checks) {
     status = 'blocked at browser CDP';
     currentStep = cdp.relaunch
       ? cdp.relaunch
-      : (environment?.recovery?.command || defaultIsolatedSpawnCommand(environment));
+      : cdp.port
+        ? `enable browser remote debugging, then rerun: ${prefix} doctor`
+        : (environment?.recovery?.command || defaultIsolatedSpawnCommand(environment, prefix));
   } else if (cdp?.status === 'WARN') {
     status = 'waiting for stable browser CDP';
     currentStep = `re-toggle browser remote debugging, then rerun: ${prefix} doctor`;
@@ -19373,7 +19375,7 @@ function doctorRecommendationModel(checks) {
         ...base,
         stage: 'browser-cdp',
         run: environment.recovery.command,
-        ask: isolatedSpawnFallbackAsk(environment),
+        ask: isolatedSpawnFallbackAsk(environment, prefix),
         after: `${prefix} list`,
         requiresUserAction: true,
         consentRequired: true,
@@ -19383,8 +19385,8 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-cdp',
-      run: defaultIsolatedSpawnCommand(environment),
-      ask: isolatedSpawnFallbackAsk(environment),
+      run: defaultIsolatedSpawnCommand(environment, prefix),
+      ask: isolatedSpawnFallbackAsk(environment, prefix),
       after: `${prefix} list`,
       requiresUserAction: true,
       consentRequired: true,
@@ -19490,7 +19492,7 @@ function doctorNextSteps(checks) {
       lines.push('  3. Isolated spawn is fallback only and is not the daily profile.');
     } else {
       lines.push(`  1. Attach daily browser first: CDP_PORT=${DEFAULT_DEBUG_PORT} ${prefix} list`);
-      lines.push(`  2. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment)}`);
+      lines.push(`  2. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment, prefix)}`);
       lines.push(`  3. Then run: ${prefix} list`);
     }
     return lines;
