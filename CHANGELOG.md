@@ -4,6 +4,14 @@
 
 ### Agent reliability
 
+* `--daily-profile` treats Chromium `Opening in existing browser session` /
+  `在現有的瀏覽器工作階段中開啟` as failure, not attach success. One
+  quit+relaunch of the same default user-data-dir is attempted after a
+  handoff. Chrome 136+ / Edge ignore `--remote-debugging-port` on the
+  default data directory, so that relaunch may still leave 9222 empty.
+  Isolated spawn remains fallback only and is not the daily profile;
+  logged-in cookies will not transfer (#366).
+
 * Empty 9222 recommends `--daily-profile` for doctor's `preferredBrowser`
   (macOS default HTTP handler when Edge/Chrome/Brave; not hardcoded
   chrome or edge), ask first. Isolated tmp spawn stays fallback and is

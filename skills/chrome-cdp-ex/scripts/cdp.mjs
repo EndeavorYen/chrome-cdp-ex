@@ -20216,6 +20216,42 @@ function captureSpawnOutput(child, maxBytes = 4096) {
   return output;
 }
 
+function isExistingBrowserSessionHandoff(text) {
+  const s = String(text || '');
+  return /Opening in existing browser session/i.test(s)
+    || s.includes('在現有的瀏覽器工作階段中開啟');
+}
+
+function spawnOutputHandoffText(output, readiness) {
+  return [output?.stdout, output?.stderr, readiness?.stdout, readiness?.stderr]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function isDefaultBrowserProfileDir(plan, extras = {}) {
+  if (!plan?.profileDir || !plan?.browser) return false;
+  const expected = defaultBrowserUserDataDir(plan.browser, extras);
+  return Boolean(expected && plan.profileDir === expected);
+}
+
+function formatDailyDefaultProfileCdpFailure(plan, text) {
+  const snippet = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const parts = [];
+  if (isExistingBrowserSessionHandoff(text)) {
+    parts.push(`spawn-debug-browser: daily ${plan.browser} was absorbed by an existing session without debug (${snippet || 'Opening in existing browser session'}).`);
+  } else {
+    parts.push(`spawn-debug-browser: CDP was not reachable on ${plan.host}:${plan.port} for the daily ${plan.browser} default user-data-dir.`);
+  }
+  parts.push('Chrome 136+ and Microsoft Edge ignore --remote-debugging-port on the default user-data-dir (DevTools remote debugging requires a non-default data directory).');
+  parts.push('Quit+relaunch of that same default profile does not enable CDP.');
+  parts.push('Isolated spawn is fallback only and is not the daily profile; logged-in cookies will not transfer.');
+  return parts.join(' ');
+}
+
+function formatExistingBrowserSessionHandoffError(plan, text) {
+  return formatDailyDefaultProfileCdpFailure(plan, text);
+}
+
 async function waitForSpawnedCdp({ port, host = DEFAULT_CDP_HOST, timeoutMs = DEFAULT_SPAWN_READY_TIMEOUT_MS, child = null, fetcher = fetch, output = null } = {}) {
   const timeout = Math.min(Math.max(Number(timeoutMs) || DEFAULT_SPAWN_READY_TIMEOUT_MS, 0), 120000);
   const started = Date.now();
@@ -20414,18 +20450,39 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
       await quitter(plan, { platform, fs });
     }
   }
-  try { fs.mkdirSync(plan.profileDir, { recursive: true }); } catch {}
-  const child = launcher(plan.exe, plan.args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  const output = captureSpawnOutput(child);
-  const readiness = await waitForCdp({
-    port: plan.port,
-    host: plan.host,
-    timeoutMs: plan.waitMs,
-    child,
-    output,
-    fetcher,
-  });
+  let child = null;
+  let output = null;
+  let readiness = null;
+  let retriedExistingSessionHandoff = false;
+  for (;;) {
+    try { fs.mkdirSync(plan.profileDir, { recursive: true }); } catch {}
+    child = launcher(plan.exe, plan.args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    output = captureSpawnOutput(child);
+    readiness = await waitForCdp({
+      port: plan.port,
+      host: plan.host,
+      timeoutMs: plan.waitMs,
+      child,
+      output,
+      fetcher,
+    });
+    const handoffText = spawnOutputHandoffText(output, readiness);
+    if (opts.dailyProfile && isExistingBrowserSessionHandoff(handoffText)) {
+      if (!retriedExistingSessionHandoff) {
+        retriedExistingSessionHandoff = true;
+        const quitter = deps.quitBrowser || defaultQuitBrowser;
+        await quitter(plan, { platform, fs });
+        continue;
+      }
+      throw new Error(formatDailyDefaultProfileCdpFailure(plan, handoffText));
+    }
+    break;
+  }
   if (!readiness.ok) {
+    const failText = spawnOutputHandoffText(output, readiness);
+    if (opts.dailyProfile && isDefaultBrowserProfileDir(plan, { platform, env })) {
+      throw new Error(formatDailyDefaultProfileCdpFailure(plan, failText));
+    }
     throw new Error(formatSpawnDebugBrowserReadinessFailure(plan, readiness));
   }
   child.stdout?.unref?.();
@@ -25576,6 +25633,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
   probeTcpPort,
   getWsUrl, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
+  isExistingBrowserSessionHandoff, formatExistingBrowserSessionHandoffError, formatDailyDefaultProfileCdpFailure,
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
   readLastCdpEndpoint, writeLastCdpEndpoint, rememberLastCdpEndpoint, formatCdpRelaunchCommand,
   cdpUnreachableError, profileDirFromCommandLine, profileDirFromDevToolsActivePort,
