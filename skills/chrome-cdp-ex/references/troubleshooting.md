@@ -72,7 +72,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser <preferredBrowser>
 node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser <preferredBrowser> --port 9222 --url https://example.com
 ```
 
-`--help` / unknown flags print help and must not launch a browser. `--daily-profile` uses the browser's default user-data-dir and may quit/relaunch that browser if it is already running without debug. `Opening in existing browser session` / `在現有的瀏覽器工作階段中開啟` is failure, not attach success. Chrome 136+ / Edge ignore `--remote-debugging-port` on the default user-data-dir, so quit+relaunch of that same default profile may still leave 9222 empty. Isolated mode launches a separate user-data-dir (fallback only, not the daily profile; cookies will not transfer). In Linux CI, containers, or no-display shells, add existing flags shown by doctor such as `--headless`, `--no-sandbox`, or `--exe /path/to/browser` when needed.
+`--help` / unknown flags print help and must not launch a browser. `--daily-profile` uses the browser's default user-data-dir. `Opening in existing browser session` / `在現有的瀏覽器工作階段中開啟` is failure, not attach success. Chrome 136+ / Edge ignore `--remote-debugging-port` on the default user-data-dir, so `--daily-profile` does not quit+relaunch that same default profile as if 9222 would come up. Isolated mode launches a separate user-data-dir (fallback only, not the daily profile; cookies will not transfer). In Linux CI, containers, or no-display shells, add existing flags shown by doctor such as `--headless`, `--no-sandbox`, or `--exe /path/to/browser` when needed.
 
 ## Electron screenshot fallbacks
 

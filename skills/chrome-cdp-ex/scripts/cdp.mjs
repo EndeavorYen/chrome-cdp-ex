@@ -19320,7 +19320,17 @@ function detectRuntimeEnvironment({
   const detectedDefault = defaultBrowser !== undefined
     ? defaultBrowser
     : detectDefaultBrowserName({ platform, env, spawnSyncFn });
-  const preferred = pickPreferredBrowser(browserCandidates, { env, defaultBrowser: detectedDefault });
+  const preferredRaw = pickPreferredBrowser(browserCandidates, { env, defaultBrowser: detectedDefault });
+  const preferred = preferredRaw?.executable
+    ? {
+      ...preferredRaw,
+      major: detectChromiumMajorVersion(preferredRaw.executable, {
+        fs,
+        platform,
+        spawnSyncFn: spawnSyncFn || spawnSync,
+      }),
+    }
+    : preferredRaw;
   return {
     platform,
     displayAvailable,
@@ -19344,6 +19354,30 @@ function defaultIsolatedSpawnCommand(environment, prefix = 'cdp') {
 
 function defaultDailyProfileEnableCommand(environment, prefix = 'cdp') {
   return `${prefix} spawn-debug-browser ${preferredDebugBrowserName(environment)} --daily-profile --port ${DEFAULT_DEBUG_PORT}`;
+}
+
+function preferredBrowserMajor(environment) {
+  const pb = environment?.environment?.preferredBrowser || environment?.preferredBrowser;
+  const n = Number(pb?.major ?? pb?.chromiumMajor);
+  return Number.isFinite(n) ? n : null;
+}
+
+function emptyCdpBlockedOnDefaultProfile(environment) {
+  return defaultProfileIgnoresRemoteDebugging(preferredBrowserMajor(environment));
+}
+
+function emptyCdpEnableCommand(environment, prefix = 'cdp') {
+  return emptyCdpBlockedOnDefaultProfile(environment)
+    ? defaultIsolatedSpawnCommand(environment, prefix)
+    : defaultDailyProfileEnableCommand(environment, prefix);
+}
+
+function emptyCdpEnableAsk(environment, prefix = 'cdp') {
+  const browser = preferredDebugBrowserName(environment);
+  if (emptyCdpBlockedOnDefaultProfile(environment)) {
+    return `Chrome 136+ and Microsoft Edge ignore --remote-debugging-port on the default user-data-dir. Quit+relaunch of daily ${browser} does not enable CDP. Isolated spawn is fallback only and is not the daily profile; cookies will not transfer.`;
+  }
+  return isolatedSpawnFallbackAsk(environment, prefix);
 }
 
 function isolatedSpawnFallbackAsk(environment, prefix = 'cdp') {
@@ -19454,7 +19488,7 @@ function doctorWizardModel(checks) {
         ? cdp.relaunch
         : cdp.port
           ? `enable browser remote debugging, then rerun: ${prefix} doctor`
-          : (environment?.recovery?.command || defaultDailyProfileEnableCommand(environment, prefix));
+          : (environment?.recovery?.command || emptyCdpEnableCommand(environment, prefix));
   } else if (cdp?.status === 'WARN') {
     status = 'waiting for stable browser CDP';
     currentStep = `re-toggle browser remote debugging, then rerun: ${prefix} doctor`;
@@ -19590,8 +19624,8 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-cdp',
-      run: defaultDailyProfileEnableCommand(environment, prefix),
-      ask: isolatedSpawnFallbackAsk(environment, prefix),
+      run: emptyCdpEnableCommand(environment, prefix),
+      ask: emptyCdpEnableAsk(environment, prefix),
       after: `${prefix} list`,
       requiresUserAction: true,
       consentRequired: true,
@@ -19700,6 +19734,11 @@ function doctorNextSteps(checks) {
       lines.push(`  1. ${environment.recovery.command}`);
       lines.push(`  2. Then run: ${prefix} list`);
       lines.push('  3. Isolated spawn is fallback only and is not the daily profile.');
+    } else if (emptyCdpBlockedOnDefaultProfile(environment)) {
+      lines.push(`  1. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment, prefix)}`);
+      lines.push('  2. Chrome 136+ / Edge ignore --remote-debugging-port on the default user-data-dir. Quit+relaunch of that same default profile does not enable CDP.');
+      lines.push('  3. Isolated spawn is fallback only and is not the daily profile; cookies will not transfer.');
+      lines.push(`  4. Then run: ${prefix} list`);
     } else {
       lines.push(`  1. Enable daily-profile debug: ${defaultDailyProfileEnableCommand(environment, prefix)}`);
       lines.push(`  2. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment, prefix)}`);
@@ -19964,6 +20003,51 @@ function defaultBrowserUserDataDir(browser, { platform = process.platform, env =
   };
   const table = dirs[platform] || dirs.linux;
   return table[browser] || table.chrome || null;
+}
+
+const DEFAULT_PROFILE_REMOTE_DEBUGGING_BLOCKED_MAJOR = 136;
+
+function parseChromiumMajor(text) {
+  const m = String(text || '').match(/(\d+)\.\d+/);
+  if (!m) return null;
+  const major = Number.parseInt(m[1], 10);
+  return Number.isFinite(major) ? major : null;
+}
+
+function detectChromiumMajorVersion(exe, extras = {}) {
+  if (!exe) return null;
+  const fs = extras.fs || { existsSync, readFileSync };
+  const spawnSyncFn = extras.spawnSyncFn || spawnSync;
+  const appMatch = String(exe).match(/^(.*\.app)\/Contents\/MacOS\//);
+  if (appMatch) {
+    const plist = `${appMatch[1]}/Contents/Info.plist`;
+    try {
+      if (fs.existsSync?.(plist) && typeof fs.readFileSync === 'function') {
+        const text = String(fs.readFileSync(plist, 'utf8'));
+        const short = text.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/i);
+        const major = parseChromiumMajor(short?.[1]);
+        if (major != null) return major;
+      }
+    } catch {}
+    try {
+      const r = spawnSyncFn('defaults', ['read', `${appMatch[1]}/Contents/Info`, 'CFBundleShortVersionString'], {
+        encoding: 'utf8',
+        timeout: 3000,
+      });
+      const major = parseChromiumMajor(`${r?.stdout || ''}`);
+      if (major != null) return major;
+    } catch {}
+  }
+  try {
+    const r = spawnSyncFn(exe, ['--version'], { encoding: 'utf8', timeout: 5000 });
+    return parseChromiumMajor(`${r?.stdout || ''} ${r?.stderr || ''}`);
+  } catch {
+    return null;
+  }
+}
+
+function defaultProfileIgnoresRemoteDebugging(major) {
+  return Number(major) >= DEFAULT_PROFILE_REMOTE_DEBUGGING_BLOCKED_MAJOR;
 }
 
 function defaultIsProfileLocked(profileDir, fs = { existsSync }) {
@@ -20440,6 +20524,24 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
       return text;
     }
     return formatSpawnDebugBrowserOutput(model, { format: 'json' });
+  }
+  // Tests inject chromiumMajorVersion when they need 136+ behavior. Do not
+  // probe the real browser binary (this machine is already Edge 136+).
+  const chromiumMajor = Object.hasOwn(deps, 'chromiumMajorVersion')
+    ? deps.chromiumMajorVersion
+    : (process.env.NODE_ENV === 'test' && !Object.hasOwn(deps, 'spawnSyncFn')
+      ? null
+      : detectChromiumMajorVersion(plan.exe, {
+        fs,
+        platform,
+        spawnSyncFn: deps.spawnSyncFn || spawnSync,
+      }));
+  if (
+    opts.dailyProfile
+    && isDefaultBrowserProfileDir(plan, { platform, env })
+    && defaultProfileIgnoresRemoteDebugging(chromiumMajor)
+  ) {
+    throw new Error(formatDailyDefaultProfileCdpFailure(plan, ''));
   }
   if (opts.dailyProfile) {
     const locked = typeof deps.isProfileLocked === 'function'
@@ -25634,6 +25736,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   probeTcpPort,
   getWsUrl, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   isExistingBrowserSessionHandoff, formatExistingBrowserSessionHandoffError, formatDailyDefaultProfileCdpFailure,
+  detectChromiumMajorVersion, defaultProfileIgnoresRemoteDebugging,
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
   readLastCdpEndpoint, writeLastCdpEndpoint, rememberLastCdpEndpoint, formatCdpRelaunchCommand,
   cdpUnreachableError, profileDirFromCommandLine, profileDirFromDevToolsActivePort,
