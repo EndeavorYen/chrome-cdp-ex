@@ -1262,39 +1262,28 @@ function isolatedOccupantAttachError({ host, port, profileDir } = {}) {
 }
 
 async function inspectCdpOccupantProfileDirViaCdp({ host, port, connectWebSocket } = {}) {
-  const wsUrl = `ws://${host || DEFAULT_CDP_HOST}:${port}/devtools/browser`;
   try {
-    const send = typeof connectWebSocket === 'function'
-      ? connectWebSocket
-      : async (url) => new WebSocket(url);
-    const ws = await send(wsUrl);
-    if (!ws || typeof ws.send !== 'function') return null;
+    const wsUrl = `ws://${host || DEFAULT_CDP_HOST}:${port}/devtools/browser`;
+    const ws = typeof connectWebSocket === 'function'
+      ? await connectWebSocket(wsUrl)
+      : new WebSocket(wsUrl);
     const argv = await new Promise((resolveWs, rejectWs) => {
-      const timer = setTimeout(() => {
-        try { ws.close(); } catch {}
-        rejectWs(new Error('timeout'));
-      }, 1000);
-      const finish = (fn, value) => {
-        clearTimeout(timer);
-        try { ws.close(); } catch {}
-        fn(value);
-      };
       ws.onopen = () => {
         ws.send(JSON.stringify({ id: 1, method: 'Browser.getBrowserCommandLine' }));
       };
-      if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ id: 1, method: 'Browser.getBrowserCommandLine' }));
-      }
+      if (ws.readyState === 1) ws.onopen();
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
           if (data.id === 1) {
-            finish(resolveWs, data.result?.arguments || data.result?.Arguments || []);
+            resolveWs(data.result?.arguments || data.result?.Arguments || []);
           }
         } catch {}
       };
-      ws.onerror = (err) => finish(rejectWs, err);
+      ws.onerror = (err) => rejectWs(err);
+      setTimeout(() => { ws.close(); rejectWs(new Error('timeout')); }, 1000);
     });
+    ws.close();
     return profileDirFromCommandLine(argv);
   } catch {
     return null;
@@ -25524,6 +25513,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
   readLastCdpEndpoint, writeLastCdpEndpoint, rememberLastCdpEndpoint, formatCdpRelaunchCommand,
   cdpUnreachableError, profileDirFromCommandLine, profileDirFromDevToolsActivePort,
+  inspectCdpOccupantProfileDirViaCdp,
   isDisposableSpawnProfileDir, isIsolatedChromeCdpExProfileDir,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,

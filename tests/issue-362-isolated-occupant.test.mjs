@@ -143,6 +143,38 @@ describe('#362 isolated 9222 occupant is not daily attach', () => {
     })).rejects.toThrow(/not the daily/i);
   });
 
+  it('reads occupant --user-data-dir from Browser.getBrowserCommandLine without attaching', async () => {
+    const profileDir = isolatedProfileDir();
+    const result = await T.inspectCdpOccupantProfileDirViaCdp({
+      host: '127.0.0.1',
+      port: '9222',
+      connectWebSocket: async () => {
+        const ws = {
+          readyState: 1,
+          send(raw) {
+            expect(JSON.parse(raw)).toEqual({ id: 1, method: 'Browser.getBrowserCommandLine' });
+            queueMicrotask(() => {
+              ws.onmessage?.({
+                data: JSON.stringify({
+                  id: 1,
+                  result: {
+                    arguments: [
+                      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+                      `--user-data-dir=${profileDir}`,
+                    ],
+                  },
+                }),
+              });
+            });
+          },
+          close() {},
+        };
+        return ws;
+      },
+    });
+    expect(result).toBe(profileDir);
+  });
+
   it('does not attach --daily-profile spawn to an isolated leftover or quit it', async () => {
     let spawnCalls = 0;
     let quitCalls = 0;
