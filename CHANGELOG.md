@@ -4,6 +4,13 @@
 
 ### Agent reliability
 
+* On Chrome 136+ / Edge, `--daily-profile` no longer pretends quit+relaunch
+  or isolated spawn will attach to the daily logged-in browser. It opens
+  `chrome://inspect/#remote-debugging` / `edge://inspect/#remote-debugging`
+  in the already-running daily session, waits for Allow remote debugging /
+  `DevToolsActivePort`, and refuses to quit that browser. Isolated spawn
+  stays fallback only and is not the daily profile (#368).
+
 * `--daily-profile` treats Chromium `Opening in existing browser session` /
   `在現有的瀏覽器工作階段中開啟` as failure, not attach success. Chrome 136+
   / Edge ignore `--remote-debugging-port` on the default user-data-dir, so

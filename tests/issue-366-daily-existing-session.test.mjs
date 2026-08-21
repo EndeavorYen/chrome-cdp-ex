@@ -93,7 +93,7 @@ describe('#366 daily --daily-profile must not fake CDP on Chromium 136+', () => 
     )).rejects.toThrow(/existing browser session|在現有的瀏覽器工作階段中開啟/i);
   });
 
-  it('refuses Chromium 136+ --daily-profile without quitting or relaunching the default dir', async () => {
+  it('opens inspect remote-debugging for Chromium 136+ --daily-profile without quitting or isolated spawn', async () => {
     const events = [];
     await expect(T.spawnDebugBrowserStr(
       ['edge', '--daily-profile', '--port', '9222'],
@@ -111,14 +111,20 @@ describe('#366 daily --daily-profile must not fake CDP on Chromium 136+', () => 
           events.push(`spawn:${args.join(' ')}`);
           return childWithStdout('');
         },
-        waitForSpawnedCdp: async () => {
-          throw new Error('should not wait for CDP on a doomed default-dir launch');
+        openInExistingBrowser: async (plan, url) => {
+          events.push(`open:${plan.browser}:${url}`);
         },
+        waitForDailyInspectCdp: async () => ({
+          ok: false,
+          timeout: true,
+          port: 9222,
+          host: '127.0.0.1',
+        }),
         listSpawnedDebugTargets: async () => [],
       },
-    )).rejects.toThrow(/Chrome 136[\s\S]*non-default data directory[\s\S]*not the daily profile/i);
+    )).rejects.toThrow(/edge:\/\/inspect\/#remote-debugging[\s\S]*not the daily profile|Allow remote debugging[\s\S]*not the daily profile/i);
 
-    expect(events).toEqual([]);
+    expect(events).toEqual(['open:edge:edge://inspect/#remote-debugging']);
   });
 
   it('does not claim success when quit+relaunch of the same default Edge dir still has empty 9222', async () => {
@@ -249,7 +255,7 @@ describe('#366 daily --daily-profile must not fake CDP on Chromium 136+', () => 
     expect(out).not.toMatch(/daily/i);
   });
 
-  it('doctor empty 9222 on Edge 136+ recommends isolated spawn, not doomed daily default-dir debug', () => {
+  it('doctor empty 9222 on Edge 136+ recommends inspect on the daily profile, not isolated spawn', () => {
     const checks = emptyCdpChecks({
       status: 'OK',
       label: 'Environment',
@@ -267,13 +273,13 @@ describe('#366 daily --daily-profile must not fake CDP on Chromium 136+', () => 
     const report = T.formatDoctorReport(checks);
     const steps = T.doctorNextSteps(checks).join('\n');
 
-    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser edge --port 9222 --url https:\/\/example\.com/);
-    expect(model.recommendation.run).not.toMatch(/--daily-profile/);
-    expect(model.recommendation.ask || '').toMatch(/Chrome 136|non-default|not the daily profile/i);
-    expect(wizard.currentStep).not.toMatch(/--daily-profile/);
-    expect(wizard.currentStep).toMatch(/spawn-debug-browser edge --port 9222/);
-    expect(report).not.toMatch(/Enable daily-profile debug/);
-    expect(steps).not.toMatch(/Enable daily-profile debug/);
-    expect(steps).toMatch(/Isolated spawn is fallback only and is not the daily profile/i);
+    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser edge --daily-profile --port 9222/);
+    expect(model.recommendation.run).not.toMatch(/spawn-debug-browser edge --port 9222 --url https:\/\/example\.com/);
+    expect(model.recommendation.ask || '').toMatch(/edge:\/\/inspect\/#remote-debugging/);
+    expect(model.recommendation.ask || '').toMatch(/Do not quit daily edge/i);
+    expect(wizard.currentStep).toMatch(/--daily-profile/);
+    expect(report).toMatch(/Enable daily-profile debug|spawn-debug-browser edge --daily-profile/);
+    expect(steps).toMatch(/edge:\/\/inspect\/#remote-debugging/);
+    expect(steps).not.toMatch(/Isolated fallback \(not the daily profile\): cdp spawn-debug-browser edge --port 9222 --url/);
   });
 });

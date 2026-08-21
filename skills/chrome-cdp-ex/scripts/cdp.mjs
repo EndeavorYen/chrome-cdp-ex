@@ -19366,16 +19366,21 @@ function emptyCdpBlockedOnDefaultProfile(environment) {
   return defaultProfileIgnoresRemoteDebugging(preferredBrowserMajor(environment));
 }
 
+function inspectRemoteDebuggingUrl(browser) {
+  const name = String(browser || 'chrome').toLowerCase();
+  if (name === 'edge' || name === 'msedge') return 'edge://inspect/#remote-debugging';
+  if (name === 'brave') return 'brave://inspect/#remote-debugging';
+  return 'chrome://inspect/#remote-debugging';
+}
+
 function emptyCdpEnableCommand(environment, prefix = 'cdp') {
-  return emptyCdpBlockedOnDefaultProfile(environment)
-    ? defaultIsolatedSpawnCommand(environment, prefix)
-    : defaultDailyProfileEnableCommand(environment, prefix);
+  return defaultDailyProfileEnableCommand(environment, prefix);
 }
 
 function emptyCdpEnableAsk(environment, prefix = 'cdp') {
   const browser = preferredDebugBrowserName(environment);
   if (emptyCdpBlockedOnDefaultProfile(environment)) {
-    return `Chrome 136+ and Microsoft Edge ignore --remote-debugging-port on the default user-data-dir. Quit+relaunch of daily ${browser} does not enable CDP. Isolated spawn is fallback only and is not the daily profile; cookies will not transfer.`;
+    return `Open ${inspectRemoteDebuggingUrl(browser)} in the already-running daily ${browser} and enable Allow remote debugging. Do not quit daily ${browser}. Isolated spawn is fallback only and is not the daily profile; cookies will not transfer.`;
   }
   return isolatedSpawnFallbackAsk(environment, prefix);
 }
@@ -19735,8 +19740,9 @@ function doctorNextSteps(checks) {
       lines.push(`  2. Then run: ${prefix} list`);
       lines.push('  3. Isolated spawn is fallback only and is not the daily profile.');
     } else if (emptyCdpBlockedOnDefaultProfile(environment)) {
-      lines.push(`  1. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment, prefix)}`);
-      lines.push('  2. Chrome 136+ / Edge ignore --remote-debugging-port on the default user-data-dir. Quit+relaunch of that same default profile does not enable CDP.');
+      const browser = preferredDebugBrowserName(environment);
+      lines.push(`  1. Enable daily-profile debug (ask first): ${defaultDailyProfileEnableCommand(environment, prefix)}`);
+      lines.push(`  2. Open ${inspectRemoteDebuggingUrl(browser)} in the already-running daily ${browser} and enable Allow remote debugging. Do not quit daily ${browser}.`);
       lines.push('  3. Isolated spawn is fallback only and is not the daily profile; cookies will not transfer.');
       lines.push(`  4. Then run: ${prefix} list`);
     } else {
@@ -20336,6 +20342,72 @@ function formatExistingBrowserSessionHandoffError(plan, text) {
   return formatDailyDefaultProfileCdpFailure(plan, text);
 }
 
+function formatDailyInspectCdpFailure(plan, url) {
+  const inspectUrl = url || inspectRemoteDebuggingUrl(plan.browser);
+  return [
+    `spawn-debug-browser: daily ${plan.browser} is running without CDP.`,
+    `Open ${inspectUrl} in the already-running daily ${plan.browser} and enable Allow remote debugging.`,
+    `Do not quit daily ${plan.browser}. Isolated spawn is fallback only and is not the daily profile; logged-in cookies will not transfer.`,
+  ].join(' ');
+}
+
+function defaultOpenInExistingBrowser(plan, url, extras = {}) {
+  const platform = extras.platform || process.platform;
+  const spawnSyncFn = extras.spawnSyncFn || spawnSync;
+  const launcher = extras.spawnFn || spawn;
+  if (platform === 'darwin') {
+    const app = DAILY_BROWSER_APP_NAMES.darwin?.[plan.browser];
+    if (app) {
+      spawnSyncFn('open', ['-a', app, url], { timeout: 15000 });
+      return;
+    }
+  }
+  if (!plan?.exe) {
+    throw new Error(`spawn-debug-browser: cannot open ${url} in daily ${plan?.browser || 'browser'} (no executable).`);
+  }
+  const child = launcher(plan.exe, [url], { detached: true, stdio: 'ignore' });
+  child?.unref?.();
+}
+
+async function waitForDailyInspectCdp({
+  profileDir,
+  host = DEFAULT_CDP_HOST,
+  port,
+  timeoutMs = DEFAULT_SPAWN_READY_TIMEOUT_MS,
+  fetcher = fetch,
+  fs = { existsSync, readFileSync },
+  waitForCdp = waitForSpawnedCdp,
+} = {}) {
+  const timeout = Math.min(Math.max(Number(timeoutMs) || DEFAULT_SPAWN_READY_TIMEOUT_MS, 0), 120000);
+  const deadline = Date.now() + timeout;
+  let last = { ok: false, timeout: true, host, port };
+  while (Date.now() <= deadline) {
+    let discoveredPort = port;
+    const portFile = profileDir ? resolve(profileDir, 'DevToolsActivePort') : null;
+    if (portFile && fs.existsSync?.(portFile) && typeof fs.readFileSync === 'function') {
+      try {
+        const lines = String(fs.readFileSync(portFile, 'utf8')).trim().split(/\r?\n/);
+        const n = Number.parseInt(lines[0], 10);
+        if (Number.isInteger(n) && n > 0) discoveredPort = n;
+      } catch {}
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const readiness = await waitForCdp({
+      port: discoveredPort,
+      host,
+      timeoutMs: Math.min(500, remaining),
+      fetcher,
+    });
+    if (readiness?.ok) return readiness;
+    last = readiness || last;
+    const sleepMs = deadline - Date.now();
+    if (sleepMs <= 0) break;
+    await sleep(Math.min(100, sleepMs));
+  }
+  return { ...last, ok: false, timeout: true, host, port };
+}
+
 async function waitForSpawnedCdp({ port, host = DEFAULT_CDP_HOST, timeoutMs = DEFAULT_SPAWN_READY_TIMEOUT_MS, child = null, fetcher = fetch, output = null } = {}) {
   const timeout = Math.min(Math.max(Number(timeoutMs) || DEFAULT_SPAWN_READY_TIMEOUT_MS, 0), 120000);
   const started = Date.now();
@@ -20541,7 +20613,49 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
     && isDefaultBrowserProfileDir(plan, { platform, env })
     && defaultProfileIgnoresRemoteDebugging(chromiumMajor)
   ) {
-    throw new Error(formatDailyDefaultProfileCdpFailure(plan, ''));
+    const inspectUrl = inspectRemoteDebuggingUrl(plan.browser);
+    const opener = deps.openInExistingBrowser || defaultOpenInExistingBrowser;
+    await opener(plan, inspectUrl, {
+      platform,
+      env,
+      spawnSyncFn: deps.spawnSyncFn || spawnSync,
+      spawnFn: launcher,
+    });
+    const waitInspect = deps.waitForDailyInspectCdp || waitForDailyInspectCdp;
+    const readiness = await waitInspect({
+      profileDir: plan.profileDir,
+      host: plan.host,
+      port: plan.port,
+      timeoutMs: plan.waitMs,
+      fetcher,
+      fs,
+      waitForCdp: waitForCdp,
+    });
+    if (!readiness?.ok) {
+      throw new Error(formatDailyInspectCdpFailure(plan, inspectUrl));
+    }
+    const attachedPort = readiness.port || plan.port;
+    const attachedHost = readiness.host || plan.host;
+    const attachedPlan = { ...plan, port: attachedPort, host: attachedHost };
+    const pages = await listTargets({ port: attachedPort, host: attachedHost, fetcher });
+    const target = pickSpawnedTarget(pages, attachedPlan.url);
+    const remember = deps.rememberLastCdpEndpoint || rememberLastCdpEndpoint;
+    try {
+      remember({
+        host: attachedHost,
+        port: attachedPort,
+        profileDir: attachedPlan.profileDir,
+        exe: attachedPlan.exe,
+        browser: attachedPlan.browser,
+      });
+    } catch {}
+    const model = buildSpawnDebugBrowserModel(attachedPlan, readiness, { attached: true, target });
+    if (opts.format !== 'json') {
+      const text = formatSpawnDebugBrowserOutput(model, { format: 'text' })
+        .replace('  Executable: (see profile)', `  Executable: ${attachedPlan.exe}`);
+      return text;
+    }
+    return formatSpawnDebugBrowserOutput(model, { format: 'json' });
   }
   if (opts.dailyProfile) {
     const locked = typeof deps.isProfileLocked === 'function'
@@ -25736,6 +25850,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   probeTcpPort,
   getWsUrl, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   isExistingBrowserSessionHandoff, formatExistingBrowserSessionHandoffError, formatDailyDefaultProfileCdpFailure,
+  formatDailyInspectCdpFailure, inspectRemoteDebuggingUrl, emptyCdpEnableCommand, emptyCdpEnableAsk,
+  waitForDailyInspectCdp, defaultOpenInExistingBrowser,
   detectChromiumMajorVersion, defaultProfileIgnoresRemoteDebugging,
   listSpawnedDebugTargets, pickSpawnedTarget, buildSpawnDebugBrowserModel, formatSpawnDebugBrowserOutput,
   readLastCdpEndpoint, writeLastCdpEndpoint, rememberLastCdpEndpoint, formatCdpRelaunchCommand,
