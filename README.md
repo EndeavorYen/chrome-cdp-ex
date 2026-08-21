@@ -146,6 +146,8 @@ Or:
 ./bin/chrome-cdp spawn-debug-browser edge --port 9222 --user-data-dir "$DIR"
 ```
 
+Empty 9222: `doctor` first step is that persistent dir (ask first), not `--daily-profile`, not `/tmp` isolated, not inspect Allow.
+
 `--daily-profile` still means the **browser default** dir. That path cannot enable CDP on 136+. Do not use `--daily-profile` as a substitute for the persistent dir above.
 
 ## License

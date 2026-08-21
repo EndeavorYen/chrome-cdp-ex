@@ -60,7 +60,8 @@ describe('#362 isolated 9222 occupant is not daily attach', () => {
     expect(result.isolatedOccupant).toBe(true);
     expect(result.profileDir).toBe(isolatedProfileDir());
     expect(result.detail).toMatch(/not the daily/i);
-    expect(result.hint).toMatch(/--daily-profile/);
+    expect(result.hint).toMatch(/--user-data-dir/);
+    expect(result.hint).toMatch(/persistent daily/);
     expect(result.hint).toMatch(/ask first|Do not kill/i);
     expect(result.hint).toMatch(/CDP_PORT=9222/);
   });
@@ -100,7 +101,7 @@ describe('#362 isolated 9222 occupant is not daily attach', () => {
     expect(result.port).toBe('9222');
   });
 
-  it('recommends daily-profile (ask first) and does not tell the agent to kill the occupant', () => {
+  it('recommends persistent daily dir (ask first) and does not tell the agent to kill the occupant', () => {
     const checks = [
       { status: 'OK', label: 'Node', detail: 'v22' },
       chromeEnvironmentCheck(),
@@ -118,13 +119,17 @@ describe('#362 isolated 9222 occupant is not daily attach', () => {
     const report = T.formatDoctorReport(checks);
     const wizard = T.doctorWizardModel(checks);
 
-    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser chrome --daily-profile --port 9222/);
+    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser chrome --port 9222 --user-data-dir/);
+    expect(model.recommendation.run).toMatch(/daily-chrome/);
+    expect(model.recommendation.run).not.toMatch(/--daily-profile/);
     expect(model.recommendation.consentRequired).toBe(true);
     expect(`${model.recommendation.ask || ''} ${model.recommendation.reason || ''}`).toMatch(/not the daily profile/i);
     expect(`${model.recommendation.ask || ''} ${model.recommendation.reason || ''}`).toMatch(/Do not kill/i);
     expect(model.recommendation.ask || '').not.toMatch(/chrome:\/\/inspect/);
-    expect(wizard.currentStep).toMatch(/--daily-profile/);
-    expect(report).toMatch(/--daily-profile/);
+    expect(wizard.currentStep).toMatch(/--user-data-dir/);
+    expect(wizard.currentStep).toMatch(/daily-chrome/);
+    expect(wizard.currentStep).not.toMatch(/--daily-profile/);
+    expect(report).toMatch(/--user-data-dir/);
     expect(report).toMatch(/ask user first|Do not kill/i);
     expect(report).not.toMatch(/\bpkill\b|\bkillall\b|kill -9/i);
   });

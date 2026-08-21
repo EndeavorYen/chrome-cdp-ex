@@ -217,8 +217,9 @@ describe('#366 daily --daily-profile must not fake CDP on Chromium 136+', () => 
 
   it('still allows isolated non-default user-data-dir spawn on Chromium 136+', async () => {
     const calls = [];
+    const isolatedDir = '/tmp/chrome-cdp-ex-edge-debug-profile-9222';
     const out = await T.spawnDebugBrowserStr(
-      ['edge', '--port', '9222', '--url', 'https://example.com'],
+      ['edge', '--port', '9222', '--user-data-dir', isolatedDir, '--url', 'https://example.com'],
       { HOME: '/Users/simon', TMPDIR: '/tmp' },
       {
         fs: edgeFs(),
@@ -249,7 +250,7 @@ describe('#366 daily --daily-profile must not fake CDP on Chromium 136+', () => 
     expect(out).not.toMatch(/daily/i);
   });
 
-  it('doctor empty 9222 on Edge 136+ recommends isolated spawn, not doomed daily default-dir debug', () => {
+  it('doctor empty 9222 on Edge 136+ recommends persistent daily dir, not doomed default-dir debug', () => {
     const checks = emptyCdpChecks({
       status: 'OK',
       label: 'Environment',
@@ -267,13 +268,15 @@ describe('#366 daily --daily-profile must not fake CDP on Chromium 136+', () => 
     const report = T.formatDoctorReport(checks);
     const steps = T.doctorNextSteps(checks).join('\n');
 
-    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser edge --port 9222 --url https:\/\/example\.com/);
+    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser edge --port 9222 --user-data-dir/);
+    expect(model.recommendation.run).toMatch(/daily-edge/);
     expect(model.recommendation.run).not.toMatch(/--daily-profile/);
+    expect(model.recommendation.run).not.toMatch(/\/tmp\/chrome-cdp-ex/);
     expect(model.recommendation.ask || '').toMatch(/Chrome 136|non-default|not the daily profile/i);
     expect(wizard.currentStep).not.toMatch(/--daily-profile/);
-    expect(wizard.currentStep).toMatch(/spawn-debug-browser edge --port 9222/);
+    expect(wizard.currentStep).toMatch(/spawn-debug-browser edge --port 9222 --user-data-dir/);
     expect(report).not.toMatch(/Enable daily-profile debug/);
     expect(steps).not.toMatch(/Enable daily-profile debug/);
-    expect(steps).toMatch(/Isolated spawn is fallback only and is not the daily profile/i);
+    expect(steps).toMatch(/Isolated spawn is fallback only and is not the daily profile|Isolated fallback \(not the daily profile\)/i);
   });
 });

@@ -286,7 +286,7 @@ describe('current open issue contracts', () => {
     }));
     expect(model.recommendation).toMatchObject({
       stage: 'browser-cdp',
-      run: 'cdp spawn-debug-browser chrome --headless --no-sandbox --port 9222 --exe /usr/bin/chromium --url https://example.com',
+      run: 'cdp spawn-debug-browser chrome --headless --no-sandbox --port 9222 --user-data-dir /tmp/chrome-cdp-ex-chrome-debug-profile-9222 --exe /usr/bin/chromium --url https://example.com',
       consentRequired: true,
     });
     expect(model.recommendation.reason).toContain('headless');
@@ -566,7 +566,8 @@ describe('issues #82-#87 contracts', () => {
 
   it('#83 returns spawn target handoff model with cleanup guidance', async () => {
     const out = await T.spawnDebugBrowserStr([
-      'chrome', '--port', '9444', '--url', 'https://example.com', '--exe', '/opt/chromium/chrome', '--format', 'json',
+      'chrome', '--port', '9444', '--url', 'https://example.com', '--exe', '/opt/chromium/chrome',
+      '--user-data-dir', '/tmp/chrome-cdp-ex-chrome-debug-profile-9444', '--format', 'json',
     ], { TMPDIR: '/tmp', PATH: '' }, {
       platform: 'linux',
       fs: { existsSync: path => path === '/opt/chromium/chrome', mkdirSync: () => {} },

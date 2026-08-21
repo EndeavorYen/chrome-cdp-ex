@@ -31,11 +31,14 @@ describe('#360 daily-profile debug first step', () => {
     const model = T.buildDoctorModel(checks);
     const report = T.formatDoctorReport(checks);
 
-    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser chrome --daily-profile --port 9222/);
+    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser chrome --port 9222 --user-data-dir/);
+    expect(model.recommendation.run).toMatch(/daily-chrome/);
+    expect(model.recommendation.run).not.toMatch(/--daily-profile/);
     expect(model.recommendation.run).not.toMatch(/--headless/);
     expect(model.recommendation.ask || '').not.toMatch(/chrome:\/\/inspect/);
     expect(`${model.recommendation.ask || ''} ${model.recommendation.reason || ''}`).toMatch(/not the daily profile/i);
-    expect(report).toMatch(/spawn-debug-browser chrome --daily-profile/);
+    expect(report).toMatch(/spawn-debug-browser chrome/);
+    expect(report).toMatch(/daily-chrome/);
     expect(report).toMatch(/not the daily profile/i);
     expect(report).toContain('cdp spawn-debug-browser chrome');
   });
