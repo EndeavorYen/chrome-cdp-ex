@@ -96,11 +96,57 @@ Then:
 ./bin/chrome-cdp list
 ```
 
-If `node -v` is <22, doctor prints a Node 22 path (`./bin/chrome-cdp` re-execs it when found). Turn on remote debugging at `chrome://inspect/#remote-debugging` (or `edge://inspect`) so it can attach to the browser you already have open.
+If `node -v` is <22, doctor prints a Node 22 path (`./bin/chrome-cdp` re-execs it when found). For the daily logged-in session, do **not** expect CDP on Dock/default Chrome or Edge — see [Daily browser CDP](#daily-browser-cdp-chromium-136) below.
 
 **Agent hosts:** [Codex](docs/integrations/codex.md) · [Claude Code](docs/integrations/claude.md) · [Cursor](docs/integrations/cursor.md) · [OpenClaw](docs/integrations/openclaw.md) · [Hermes](docs/integrations/hermes.md) · [Pi](docs/integrations/pi.md)
 
 Command map: [docs/reference.md](docs/reference.md). Skill: [SKILL.md](skills/chrome-cdp-ex/SKILL.md). Host wiring: [INTEGRATIONS.md](INTEGRATIONS.md).
+
+## Daily browser CDP (Chromium 136+)
+
+### Known limitation
+
+From Chrome 136, `--remote-debugging-port` / `--remote-debugging-pipe` are **ignored** on the browser's **default** user-data-dir ([Chrome security change](https://developer.chrome.com/blog/remote-debugging-port)). Edge inherits this. A process can show the flag in `edge://version` and still listen on nothing.
+
+chrome-cdp-ex **cannot** silently attach to an already-running Dock/default Chrome or Edge (no debug port, default profile) without quitting that browser or asking a human to click Allow. Isolated spawn is not that session. Closing a bug because we *detect* the failure is not a fix. See [#368](https://github.com/EndeavorYen/chrome-cdp-ex/issues/368).
+
+### Approaches and tradeoffs
+
+| Approach | Zero click? | Keeps Dock/default cookies? | Survives restart without re-login? | Cron / unattended? | Notes |
+|---|---|---|---|---|---|
+| 1. Silent CDP on already-open **default** profile | Yes | Yes | n/a | Would be ideal | **Impossible** on Chromium 136+. Not a chrome-cdp-ex bug. |
+| 2. **This project now:** persistent non-default dir **as the daily browser**, always launched with `--remote-debugging-port` | Yes after first launch | No — this dir **is** daily for the agent | Yes (same dir) | Yes | One-time sign-in in that profile. Dock default Edge/Chrome is no longer the attach target. Do not delete the dir. |
+| 3. Chrome 144+ `chrome://inspect/#remote-debugging` (Allow dialog) | No — click every connect | Yes if the UI exists | n/a | No | Unusable for cron. Edge 151 has no proven equivalent silent API. |
+| 4. Fresh isolated `--user-data-dir` under `/tmp` each run | Yes | No | No | Only after re-login every run | Fine for throwaway automation. Not daily. |
+| 5. Second always-on debug window, leave Dock Edge untouched | Yes after first launch | No (copy of login in the second profile) | Yes | Yes | Same mechanism as (2), but daily human browsing stays on default. Two browsers. |
+
+### What this project does now
+
+**Option 2 — zero click, replace daily.** The agent daily browser is a **fixed** user-data-dir, always started with remote debugging. First launch: sign in (X, etc.) once. Later launches of the **same** dir do not need a new login. Restarts do not. Re-login only if the dir is deleted, the path changes, or the site expires the session.
+
+Do not target Dock/default Edge. Do not kill it. Do not wait for an inspect Allow click.
+
+macOS Edge example (pick one machine-local path and keep it):
+
+```bash
+DIR="$HOME/Library/Application Support/chrome-cdp-ex/daily-edge"
+mkdir -p "$DIR"
+# First time and every later time — same DIR:
+"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" \
+  --user-data-dir="$DIR" \
+  --remote-debugging-port=9222 \
+  --no-first-run
+./bin/chrome-cdp doctor
+./bin/chrome-cdp list
+```
+
+Or:
+
+```bash
+./bin/chrome-cdp spawn-debug-browser edge --port 9222 --user-data-dir "$DIR"
+```
+
+`--daily-profile` still means the **browser default** dir. That path cannot enable CDP on 136+. Do not use `--daily-profile` as a substitute for the persistent dir above.
 
 ## License
 
