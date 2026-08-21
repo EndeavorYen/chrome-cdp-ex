@@ -13568,7 +13568,9 @@ describe('doctorWizardSummary', () => {
 
     expect(out).toContain('Wizard:');
     expect(out).toContain('Status: blocked at browser CDP');
-    expect(out).toContain('Current step: cdp spawn-debug-browser edge --daily-profile --port 9222');
+    expect(out).toContain('Current step: cdp spawn-debug-browser edge --port 9222 --user-data-dir');
+    expect(out).toMatch(/daily-edge/);
+    expect(out).not.toContain('--daily-profile');
   });
 
   it('points to open when CDP is ready but no debuggable page exists', () => {
@@ -13613,7 +13615,8 @@ describe('formatDoctorReport', () => {
     expect(out).toContain('hint: enable debugging');
     expect(out).toContain('Blocked');
     expect(out).toContain('Next steps:');
-    expect(out).toContain('cdp spawn-debug-browser edge --port 9222 --url https://example.com');
+    expect(out).toContain('cdp spawn-debug-browser edge --port 9222 --user-data-dir');
+    expect(out).toMatch(/daily-edge/);
   });
 
   it('reports "Ready." when all checks are OK', () => {
@@ -14386,11 +14389,12 @@ describe('waitForStr --selector-stable', () => {
 describe('parseSpawnDebugBrowserArgs', () => {
   const { parseSpawnDebugBrowserArgs } = T;
 
-  it('defaults to edge on port 9222 with a temp profile', () => {
-    const opts = parseSpawnDebugBrowserArgs([], { TMPDIR: '/tmp' });
+  it('defaults to edge on port 9222 with the persistent daily dir', () => {
+    const opts = parseSpawnDebugBrowserArgs([], { HOME: '/Users/simon', TMPDIR: '/tmp' }, { platform: 'darwin' });
     expect(opts.browser).toBe('edge');
     expect(opts.port).toBe(9222);
-    expect(opts.profileDir).toBe('/tmp/chrome-cdp-ex-edge-debug-profile-9222');
+    expect(opts.profileDir).toBe('/Users/simon/Library/Application Support/chrome-cdp-ex/daily-edge');
+    expect(opts.profileDir).not.toMatch(/\/tmp\/chrome-cdp-ex/);
   });
 
   it('parses browser, port, url, and profile-dir together', () => {

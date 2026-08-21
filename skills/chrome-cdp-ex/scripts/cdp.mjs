@@ -1232,7 +1232,7 @@ function isolatedOccupantAsk(environment, { port, profileDir } = {}, prefix = 'c
   const browser = preferredDebugBrowserName(environment);
   const resolvedPort = port || DEFAULT_DEBUG_PORT;
   const dir = profileDir ? ` (${profileDir})` : '';
-  return `${resolvedPort} occupant${dir} is not the daily profile. Enable debug on daily ${browser} first (${defaultDailyProfileEnableCommand(environment, prefix)}; ask first). Do not kill the occupant without asking. Or set CDP_PORT=${resolvedPort} to use this isolated window.`;
+  return `${resolvedPort} occupant${dir} is not the daily profile. Enable debug on the persistent daily ${browser} dir first (${defaultPersistentDailySpawnCommand(environment, prefix)}; ask first). Do not kill the occupant without asking. Or set CDP_PORT=${resolvedPort} to use this isolated window.`;
 }
 
 function isolatedOccupantCdpCheck({ host, port, profileDir, environment } = {}) {
@@ -19348,12 +19348,44 @@ function preferredDebugBrowserName(environment) {
     || 'edge';
 }
 
-function defaultIsolatedSpawnCommand(environment, prefix = 'cdp') {
-  return `${prefix} spawn-debug-browser ${preferredDebugBrowserName(environment)} --port ${DEFAULT_DEBUG_PORT} --url https://example.com`;
+function isolatedSpawnProfileDir(browser, port, env = process.env) {
+  const tmp = String((env && env.TMPDIR) || '/tmp').replace(/\/$/, '');
+  return `${tmp}/chrome-cdp-ex-${browser}-debug-profile-${port}`;
 }
 
-function defaultDailyProfileEnableCommand(environment, prefix = 'cdp') {
-  return `${prefix} spawn-debug-browser ${preferredDebugBrowserName(environment)} --daily-profile --port ${DEFAULT_DEBUG_PORT}`;
+function persistentDailyUserDataDir(browser, { platform = process.platform, env = process.env, home } = {}) {
+  const resolvedHome = home || env.HOME || env.USERPROFILE || homedir();
+  const name = browser === 'chrome' || browser === 'brave' ? browser : 'edge';
+  if (platform === 'win32') {
+    const local = env.LOCALAPPDATA || resolve(resolvedHome, 'AppData/Local');
+    return resolve(local, 'chrome-cdp-ex', `daily-${name}`);
+  }
+  if (platform === 'darwin') {
+    return resolve(resolvedHome, 'Library/Application Support/chrome-cdp-ex', `daily-${name}`);
+  }
+  const xdg = env.XDG_CONFIG_HOME || resolve(resolvedHome, '.config');
+  return resolve(xdg, 'chrome-cdp-ex', `daily-${name}`);
+}
+
+function persistentDailyDirOptions(environment) {
+  const info = environment?.environment || environment || {};
+  return {
+    platform: info.platform || process.platform,
+    env: info.env || process.env,
+    home: info.home,
+  };
+}
+
+function defaultIsolatedSpawnCommand(environment, prefix = 'cdp') {
+  const browser = preferredDebugBrowserName(environment);
+  const dir = isolatedSpawnProfileDir(browser, DEFAULT_DEBUG_PORT);
+  return `${prefix} spawn-debug-browser ${browser} --port ${DEFAULT_DEBUG_PORT} --user-data-dir ${shellQuoteCliArg(dir)} --url https://example.com`;
+}
+
+function defaultPersistentDailySpawnCommand(environment, prefix = 'cdp') {
+  const browser = preferredDebugBrowserName(environment);
+  const dir = persistentDailyUserDataDir(browser, persistentDailyDirOptions(environment));
+  return `${prefix} spawn-debug-browser ${browser} --port ${DEFAULT_DEBUG_PORT} --user-data-dir ${shellQuoteCliArg(dir)}`;
 }
 
 function preferredBrowserMajor(environment) {
@@ -19367,31 +19399,31 @@ function emptyCdpBlockedOnDefaultProfile(environment) {
 }
 
 function emptyCdpEnableCommand(environment, prefix = 'cdp') {
-  return emptyCdpBlockedOnDefaultProfile(environment)
-    ? defaultIsolatedSpawnCommand(environment, prefix)
-    : defaultDailyProfileEnableCommand(environment, prefix);
+  return defaultPersistentDailySpawnCommand(environment, prefix);
 }
 
 function emptyCdpEnableAsk(environment, prefix = 'cdp') {
   const browser = preferredDebugBrowserName(environment);
+  const cmd = defaultPersistentDailySpawnCommand(environment, prefix);
   if (emptyCdpBlockedOnDefaultProfile(environment)) {
-    return `Chrome 136+ and Microsoft Edge ignore --remote-debugging-port on the default user-data-dir. Quit+relaunch of daily ${browser} does not enable CDP. Isolated spawn is fallback only and is not the daily profile; cookies will not transfer.`;
+    return `Chrome 136+ and Microsoft Edge ignore --remote-debugging-port on the default user-data-dir. Quit+relaunch of daily ${browser} does not enable CDP. Launch the persistent daily dir (${cmd}); do not kill Dock/default ${browser}. Isolated spawn is fallback only and is not the daily profile; cookies will not transfer.`;
   }
   return isolatedSpawnFallbackAsk(environment, prefix);
 }
 
 function isolatedSpawnFallbackAsk(environment, prefix = 'cdp') {
   const browser = preferredDebugBrowserName(environment);
-  return `Enable debug on daily ${browser} first (${defaultDailyProfileEnableCommand(environment, prefix)}). Isolated spawn is fallback only and is not the daily profile.`;
+  return `Enable debug on the persistent daily ${browser} dir first (${defaultPersistentDailySpawnCommand(environment, prefix)}). Isolated spawn is fallback only and is not the daily profile.`;
 }
 
-function environmentRecoveryCommand(envInfo) {
+function environmentRecoveryCommand(envInfo, env = process.env) {
   const candidate = envInfo.preferredBrowser;
   if (!candidate) return null;
   const args = ['cdp spawn-debug-browser', candidate.browser];
   if (envInfo.headlessLikely) args.push('--headless');
   if (envInfo.sandboxMayNeedNoSandbox) args.push('--no-sandbox');
   args.push('--port', '9222');
+  args.push('--user-data-dir', shellQuoteCliArg(isolatedSpawnProfileDir(candidate.browser, 9222, env)));
   args.push('--exe', candidate.executable);
   args.push('--url', 'https://example.com');
   return args.join(' ');
@@ -19399,7 +19431,7 @@ function environmentRecoveryCommand(envInfo) {
 
 function checkRuntimeEnvironment(opts = {}) {
   const info = detectRuntimeEnvironment(opts);
-  const command = environmentRecoveryCommand(info);
+  const command = environmentRecoveryCommand(info, opts.env || process.env);
   if (info.headlessLikely || info.remoteLikely) {
     const traits = [
       info.platform,
@@ -19483,7 +19515,7 @@ function doctorWizardModel(checks) {
   } else if (cdp?.status === 'FAIL') {
     status = 'blocked at browser CDP';
     currentStep = cdp.isolatedOccupant
-      ? defaultDailyProfileEnableCommand(environment, prefix)
+      ? defaultPersistentDailySpawnCommand(environment, prefix)
       : cdp.relaunch
         ? cdp.relaunch
         : cdp.port
@@ -19574,8 +19606,8 @@ function doctorRecommendationModel(checks) {
       return {
         ...base,
         stage: 'browser-cdp',
-        strategy: 'enable-daily-profile',
-        run: defaultDailyProfileEnableCommand(environment, prefix),
+        strategy: 'enable-persistent-daily-dir',
+        run: defaultPersistentDailySpawnCommand(environment, prefix),
         ask: isolatedOccupantAsk(environment, { port: cdp.port, profileDir: cdp.profileDir }, prefix),
         after: `${prefix} list`,
         requiresUserAction: true,
@@ -19719,7 +19751,7 @@ function doctorNextSteps(checks) {
   }
   if (cdp?.status === 'FAIL') {
     if (cdp.isolatedOccupant) {
-      lines.push(`  1. Enable daily-profile debug (ask first): ${defaultDailyProfileEnableCommand(environment, prefix)}`);
+      lines.push(`  1. Enable persistent daily dir (ask first): ${defaultPersistentDailySpawnCommand(environment, prefix)}`);
       lines.push('  2. Do not kill the isolated occupant without asking.');
       lines.push(`  3. Or set CDP_PORT=${cdp.port || DEFAULT_DEBUG_PORT} to use this isolated window.`);
       lines.push(`  4. Then run: ${prefix} list`);
@@ -19734,15 +19766,16 @@ function doctorNextSteps(checks) {
       lines.push(`  1. ${environment.recovery.command}`);
       lines.push(`  2. Then run: ${prefix} list`);
       lines.push('  3. Isolated spawn is fallback only and is not the daily profile.');
-    } else if (emptyCdpBlockedOnDefaultProfile(environment)) {
-      lines.push(`  1. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment, prefix)}`);
-      lines.push('  2. Chrome 136+ / Edge ignore --remote-debugging-port on the default user-data-dir. Quit+relaunch of that same default profile does not enable CDP.');
-      lines.push('  3. Isolated spawn is fallback only and is not the daily profile; cookies will not transfer.');
-      lines.push(`  4. Then run: ${prefix} list`);
     } else {
-      lines.push(`  1. Enable daily-profile debug: ${defaultDailyProfileEnableCommand(environment, prefix)}`);
-      lines.push(`  2. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment, prefix)}`);
-      lines.push(`  3. Then run: ${prefix} list`);
+      lines.push(`  1. Enable persistent daily dir: ${defaultPersistentDailySpawnCommand(environment, prefix)}`);
+      if (emptyCdpBlockedOnDefaultProfile(environment)) {
+        lines.push('  2. Chrome 136+ / Edge ignore --remote-debugging-port on the default user-data-dir. Quit+relaunch of that same default profile does not enable CDP. Do not kill Dock/default browser.');
+        lines.push(`  3. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment, prefix)}`);
+        lines.push(`  4. Then run: ${prefix} list`);
+      } else {
+        lines.push(`  2. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment, prefix)}`);
+        lines.push(`  3. Then run: ${prefix} list`);
+      }
     }
     return lines;
   }
@@ -19947,11 +19980,10 @@ async function doctorStr(opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// spawn-debug-browser: launch a browser with --remote-debugging-port using a
-// disposable user-data-dir. macOS reviewer feedback: previous skill docs said
-// to never suggest --remote-debugging-port, but the only way to debug a
-// fresh-install Chrome/Edge without touching the user's main profile is to
-// spawn an isolated debug profile. This helper keeps that path predictable.
+// spawn-debug-browser: launch a browser with --remote-debugging-port using the
+// persistent chrome-cdp-ex/daily-* user-data-dir (option 2 / #368). Isolated
+// /tmp profiles stay available via explicit --user-data-dir. --daily-profile
+// still means the browser default dir and cannot enable CDP on Chromium 136+.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_BROWSER_PATHS = {
@@ -20121,8 +20153,10 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
       env,
     });
   } else if (!opts.profileDir) {
-    const tmp = String((env && env.TMPDIR) || '/tmp').replace(/\/$/, '');
-    opts.profileDir = `${tmp}/chrome-cdp-ex-${opts.browser}-debug-profile-${opts.port}`;
+    opts.profileDir = persistentDailyUserDataDir(opts.browser, {
+      platform: extras.platform || process.platform,
+      env,
+    });
   }
   return opts;
 }
@@ -25742,6 +25776,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   cdpUnreachableError, profileDirFromCommandLine, profileDirFromDevToolsActivePort,
   inspectCdpOccupantProfileDirViaCdp,
   isDisposableSpawnProfileDir, isIsolatedChromeCdpExProfileDir,
+  persistentDailyUserDataDir, isolatedSpawnProfileDir,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
   // Screenshot

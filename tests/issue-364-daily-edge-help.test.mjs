@@ -41,7 +41,7 @@ describe('#364 daily Edge first step; spawn --help must not launch', () => {
     expect(info.preferredBrowser.executable).toBe(EDGE_EXE);
   });
 
-  it('recommends daily-profile Edge (ask first) when CDP is empty, not isolated tmp 9311', () => {
+  it('recommends persistent daily Edge (ask first) when CDP is empty, not isolated tmp 9311', () => {
     const checks = [
       { status: 'OK', label: 'Node', detail: 'v22' },
       edgeEnvironmentCheck(),
@@ -51,13 +51,16 @@ describe('#364 daily Edge first step; spawn --help must not launch', () => {
     const report = T.formatDoctorReport(checks);
     const wizard = T.doctorWizardModel(checks);
 
-    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser edge --daily-profile --port 9222/);
+    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser edge --port 9222 --user-data-dir/);
+    expect(model.recommendation.run).toMatch(/daily-edge/);
     expect(model.recommendation.run).not.toMatch(/9311/);
-    expect(model.recommendation.run).not.toMatch(/user-data-dir|\/tmp\/chrome-cdp-ex/);
+    expect(model.recommendation.run).not.toMatch(/\/tmp\/chrome-cdp-ex/);
+    expect(model.recommendation.run).not.toMatch(/--daily-profile/);
     expect(model.recommendation.consentRequired).toBe(true);
     expect(`${model.recommendation.ask || ''} ${model.recommendation.reason || ''}`).toMatch(/not the daily profile/i);
-    expect(wizard.currentStep).toMatch(/edge --daily-profile --port 9222/);
-    expect(report).toMatch(/spawn-debug-browser edge --daily-profile/);
+    expect(wizard.currentStep).toMatch(/edge --port 9222 --user-data-dir/);
+    expect(wizard.currentStep).toMatch(/daily-edge/);
+    expect(report).toMatch(/spawn-debug-browser edge --port 9222 --user-data-dir/);
     expect(report).not.toMatch(/spawn-debug-browser edge --port 9311/);
   });
 
@@ -95,13 +98,16 @@ describe('#364 daily Edge first step; spawn --help must not launch', () => {
     const wizard = T.doctorWizardModel(checks);
 
     expect(cdp.status).toBe('FAIL');
-    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser edge --daily-profile --port 9222/);
+    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser edge --port 9222 --user-data-dir/);
+    expect(model.recommendation.run).toMatch(/daily-edge/);
     expect(model.recommendation.strategy).not.toBe('relaunch-same-profile');
     expect(model.recommendation.consentRequired).toBe(true);
-    expect(model.recommendation.run).not.toMatch(/Google Chrome|Google\/Chrome|--user-data-dir/);
+    expect(model.recommendation.run).not.toMatch(/Google Chrome|Google\/Chrome|--daily-profile/);
+    expect(model.recommendation.run).not.toMatch(/\/tmp\/chrome-cdp-ex/);
     expect(`${model.recommendation.ask || ''} ${model.recommendation.reason || ''}`).toMatch(/not the daily profile/i);
-    expect(wizard.currentStep).toMatch(/edge --daily-profile --port 9222/);
-    expect(report).toMatch(/spawn-debug-browser edge --daily-profile/);
+    expect(wizard.currentStep).toMatch(/edge --port 9222 --user-data-dir/);
+    expect(wizard.currentStep).toMatch(/daily-edge/);
+    expect(report).toMatch(/spawn-debug-browser edge --port 9222 --user-data-dir/);
     expect(report).not.toMatch(/relaunch the same debug browser profile/i);
   });
 

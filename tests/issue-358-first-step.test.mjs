@@ -86,12 +86,14 @@ describe('#358 first-step doctor/spawn loop', () => {
     ];
     const model = T.buildDoctorModel(checks);
 
-    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser chrome --daily-profile --port 9222/);
+    expect(model.recommendation.run).toMatch(/cdp spawn-debug-browser chrome --port 9222 --user-data-dir/);
+    expect(model.recommendation.run).toMatch(/daily-chrome/);
+    expect(model.recommendation.run).not.toMatch(/--daily-profile/);
     expect(model.recommendation.run).not.toMatch(/\bedge\b/);
     expect(model.recommendation.ask || '').not.toMatch(/chrome:\/\/inspect/);
     expect(`${model.recommendation.ask || ''} ${model.recommendation.reason || ''}`).toMatch(/not the daily profile/i);
-    expect(T.formatDoctorReport(checks)).toContain('cdp spawn-debug-browser chrome --daily-profile');
     expect(T.formatDoctorReport(checks)).toContain('cdp spawn-debug-browser chrome');
+    expect(T.formatDoctorReport(checks)).toMatch(/daily-chrome/);
     expect(T.formatDoctorReport(checks)).not.toContain('cdp spawn-debug-browser edge');
   });
 
