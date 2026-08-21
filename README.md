@@ -102,7 +102,7 @@ If `node -v` is <22, doctor prints a Node 22 path (`./bin/chrome-cdp` re-execs i
 
 Command map: [docs/reference.md](docs/reference.md). Skill: [SKILL.md](skills/chrome-cdp-ex/SKILL.md). Host wiring: [INTEGRATIONS.md](INTEGRATIONS.md).
 
-## Daily browser CDP (Chromium 136)
+## Daily browser CDP (Chromium 136+)
 
 ### Known limitation
 
