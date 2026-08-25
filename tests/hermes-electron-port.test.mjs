@@ -15,4 +15,13 @@ describe('Hermes host overlay keeps Electron off daily 9222', () => {
     expect(hermesHost).toMatch(/Electron/i);
     expect(hermesHost).not.toMatch(/spawn-debug-browser[^\n]*--port 9222/);
   });
+
+  it('does not tell Electron operators to set CDP_PORT=9222 in the skill example', () => {
+    const skill = readFileSync(
+      join(root, 'skills/chrome-cdp-ex/SKILL.md'),
+      'utf8',
+    );
+    expect(skill).toMatch(/CDP_PORT=9333 \.\/bin\/chrome-cdp list/);
+    expect(skill).not.toMatch(/# Electron[^\n]*\nCDP_PORT=9222/);
+  });
 });

@@ -55,8 +55,8 @@ Find `scripts/cdp.mjs` relative to the installed skill directory. Prefer `$SKILL
 "$HERMES_HOME/node/bin/node" /absolute/path/to/chrome-cdp-ex/bin/chrome-cdp doctor
 "$HERMES_HOME/node/bin/node" /absolute/path/to/chrome-cdp-ex/scripts/cdp.mjs doctor
 
-# Electron explicit port
-CDP_PORT=9222 ./bin/chrome-cdp list
+# Electron explicit port (not daily Chrome 9222)
+CDP_PORT=9333 ./bin/chrome-cdp list
 ```
 
 Useful target helpers: `target --url <substring>`, `target --title <text>`, `use <target> --name app`, `forget app`, and `open <url> --reuse-url`. `list` aliases are `tabs` and `ls`; `press` has alias `key`; `viewport` has alias `resize`.
