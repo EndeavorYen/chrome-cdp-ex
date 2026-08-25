@@ -4,6 +4,14 @@
 
 ### Agent reliability
 
+* Unprefixed `doctor` no longer treats an empty 9222 as the next step when a
+  live tab daemon is already attached (Electron on `CDP_PORT=9333` and
+  similar). Doctor acknowledges that session and recommends
+  `CDP_PORT=<port> cdp doctor` / `cdp perceive <prefix>` instead of
+  `spawn-debug-browser ... --port 9222`. Empty 9222 with no daemon still
+  recommends the persistent daily dir (#372).
+
+
 * `--daily-profile` treats Chromium `Opening in existing browser session` /
   `在現有的瀏覽器工作階段中開啟` as failure, not attach success. Chrome 136+
   / Edge ignore `--remote-debugging-port` on the default user-data-dir, so

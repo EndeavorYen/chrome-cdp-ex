@@ -19486,6 +19486,53 @@ function reconcileRuntimeEnvironmentCheck(environment, cdp) {
   return environment;
 }
 
+function liveDoctorDaemonPrefixes(checks = []) {
+  const daemons = Array.isArray(checks)
+    ? checks.find(c => c.label === 'Daemons')
+    : checks;
+  return (daemons?.targetPrefixes || []).filter(Boolean);
+}
+
+function liveTabSessionCdpHint(prefixes, prefix = 'cdp') {
+  const target = prefixes[0] || '<target>';
+  return `Live tab daemon already attached (${prefixes.join(', ')}). Do not occupy 9222. Set CDP_PORT=<port> and rerun: CDP_PORT=<port> ${prefix} doctor (or CDP_PORT=<port> ${prefix} list). Existing session: ${prefix} perceive ${target} -C -d 8`;
+}
+
+function reconcileCdpWithLiveDaemons(cdp, daemons, { prefix = 'cdp' } = {}) {
+  const prefixes = liveDoctorDaemonPrefixes(daemons?.label === 'Daemons' ? [daemons] : daemons);
+  if (!prefixes.length || !cdp) return cdp;
+  if (cdp.status === 'OK' || cdp.liveTabSession) return cdp;
+  // Explicit CDP_PORT / occupant / relaunch still describes that endpoint.
+  if (cdp.port || cdp.isolatedOccupant || cdp.relaunch) return cdp;
+  return {
+    ...cdp,
+    status: 'WARN',
+    severity: 'advisory',
+    liveTabSession: true,
+    detail: `${cdp.detail}; live tab daemon ${prefixes.join(', ')} already attached`,
+    hint: liveTabSessionCdpHint(prefixes, prefix),
+  };
+}
+
+function normalizeDoctorChecks(checks = []) {
+  const list = Array.isArray(checks) ? checks.slice() : [];
+  const daemons = list.find(c => c.label === 'Daemons');
+  const node = list.find(c => c.label === 'Node');
+  const idx = list.findIndex(c => c.label === 'CDP');
+  if (idx >= 0) {
+    list[idx] = reconcileCdpWithLiveDaemons(list[idx], daemons, {
+      prefix: doctorCliPrefix(node),
+    });
+  }
+  return list;
+}
+
+function doctorHasLiveTabSession(cdp, checks = []) {
+  if (cdp?.liveTabSession) return true;
+  if (cdp?.port || cdp?.isolatedOccupant || cdp?.relaunch) return false;
+  return liveDoctorDaemonPrefixes(checks).length > 0 && cdp?.status !== 'OK';
+}
+
 function doctorWizardSummary(checks) {
   const wizard = doctorWizardModel(checks);
   return [
@@ -19497,6 +19544,7 @@ function doctorWizardSummary(checks) {
 }
 
 function doctorWizardModel(checks) {
+  checks = normalizeDoctorChecks(checks);
   const node = checks.find(c => c.label === 'Node');
   const cdp = checks.find(c => c.label === 'CDP');
   const environment = checks.find(c => c.label === 'Environment');
@@ -19512,6 +19560,9 @@ function doctorWizardModel(checks) {
   if (node?.status === 'FAIL') {
     status = 'blocked at Node.js';
     currentStep = node.hint || NODE22_MISSING_HINT;
+  } else if (doctorHasLiveTabSession(cdp, checks)) {
+    status = 'usable via live tab daemon';
+    currentStep = probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`;
   } else if (cdp?.status === 'FAIL') {
     status = 'blocked at browser CDP';
     currentStep = cdp.isolatedOccupant
@@ -19566,6 +19617,7 @@ function doctorWarningCommands(checks) {
 }
 
 function doctorRecommendationModel(checks) {
+  checks = normalizeDoctorChecks(checks);
   const node = checks.find(c => c.label === 'Node');
   const cdp = checks.find(c => c.label === 'CDP');
   const environment = checks.find(c => c.label === 'Environment');
@@ -19599,6 +19651,20 @@ function doctorRecommendationModel(checks) {
       after: `${prefix} doctor`,
       requiresUserAction: true,
       reason: node.detail || null,
+    };
+  }
+  if (doctorHasLiveTabSession(cdp, checks)) {
+    const prefixes = liveDoctorDaemonPrefixes(checks);
+    return {
+      ...base,
+      stage: 'perceive',
+      strategy: 'use-live-tab-daemon',
+      run: probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`,
+      ask: `Unprefixed doctor did not find CDP on 9222. Re-run with CDP_PORT=<port> ${prefix} doctor (or CDP_PORT=<port> ${prefix} list). Do not occupy 9222.`,
+      after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
+      requiresUserAction: false,
+      consentRequired: false,
+      reason: `Live tab daemon already attached (${prefixes.join(', ')}).`,
     };
   }
   if (cdp?.status === 'FAIL') {
@@ -19734,6 +19800,7 @@ function doctorRecommendationLines(checks) {
 }
 
 function doctorNextSteps(checks) {
+  checks = normalizeDoctorChecks(checks);
   const failures = checks.filter(c => c.status === 'FAIL');
   const cdp = checks.find(c => c.label === 'CDP');
   const node = checks.find(c => c.label === 'Node');
@@ -19747,6 +19814,13 @@ function doctorNextSteps(checks) {
   const lines = ['', 'Next steps:'];
   if (node?.status === 'FAIL') {
     lines.push(`  1. ${NODE22_MISSING_HINT}`);
+    return lines;
+  }
+  if (doctorHasLiveTabSession(cdp, checks)) {
+    lines.push(`  1. ${prefix} perceive ${liveTarget} -C -d 8`);
+    lines.push(`  2. To inspect the browser CDP endpoint: CDP_PORT=<port> ${prefix} doctor`);
+    lines.push(`  3. Or: CDP_PORT=<port> ${prefix} list`);
+    lines.push('  4. Do not occupy 9222 while this tab daemon is live.');
     return lines;
   }
   if (cdp?.status === 'FAIL') {
@@ -19892,6 +19966,7 @@ function doctorNextStepCommands(checks) {
 }
 
 function buildDoctorModel(checks) {
+  checks = normalizeDoctorChecks(checks);
   const summary = doctorStatusSummary(checks);
   const annotatedChecks = checks.map(check => ({ ...check, severity: doctorCheckSeverity(check) }));
   const recommendation = doctorRecommendationModel(checks);
@@ -19965,10 +20040,16 @@ async function runDoctorChecks(opts = {}) {
   checks.push(cdp);
   const tabs = await checkBrowserTargets({ cdp, env: opts.env, fetcher: opts.fetcher, host: opts.host });
   checks.push(tabs);
+  const daemons = checks.find(c => c.label === 'Daemons');
+  const reconciled = reconcileCdpWithLiveDaemons(cdp, daemons, {
+    prefix: doctorCliPrefix(checks.find(c => c.label === 'Node')),
+  });
+  const cdpIndex = checks.findIndex(c => c.label === 'CDP');
+  if (cdpIndex >= 0) checks[cdpIndex] = reconciled;
   checks.push(checkBrowserPermission({
-    daemons: checks.find(c => c.label === 'Daemons'),
+    daemons,
     tabs,
-    cdp,
+    cdp: reconciled,
     environment: checks.find(c => c.label === 'Environment'),
   }));
   return checks;
