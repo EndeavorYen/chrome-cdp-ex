@@ -193,7 +193,7 @@ describe('validation lab registry contract', () => {
     expect(() => validateScenarioRegistry(registry(), { rootDir: '' })).toThrow('rootDir');
   });
 
-  it('rejects entrypoint symlinks and symlink escapes after filesystem resolution', () => {
+  it.skipIf(process.platform === 'win32')('rejects entrypoint symlinks and symlink escapes after filesystem resolution', () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'chrome-cdp-registry-root-'));
     const outsideRoot = mkdtempSync(join(tmpdir(), 'chrome-cdp-registry-outside-'));
     try {

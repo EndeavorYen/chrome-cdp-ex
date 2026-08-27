@@ -161,12 +161,12 @@ describe('#343 skinny document nav receipt', () => {
     ].join('\n');
     const result = exampleOrgNavResult({ observation: axDump, network: false });
     const text = T.formatActionResultOutput(result, { dispatchText: DISPATCH_TEXT });
-    expect(text).toMatch(/RootWebArea/);
-    expect(text).toMatch(/Outcome:/);
-    expect(text.length).toBeGreaterThan(BROWSER_USE_NAV_CHARS);
+    expect(text).toBe(`${DISPATCH_TEXT}. Next: cdp list`);
+    expect(text).not.toMatch(/RootWebArea/);
+    expect(text).not.toMatch(/^Outcome:/m);
   });
 
-  it('keeps Recovery hint on generic non-nav changed actions', () => {
+  it('prints one-line click stdout without Outcome/Receipt/Verdict', () => {
     const genericChanged = T.createActionResult({
       action: 'click',
       target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
@@ -174,9 +174,12 @@ describe('#343 skinny document nav receipt', () => {
       settle: { ok: true, durationMs: 40 },
       effects: { domDiff: '+   [StaticText] Saved', console: [], network: [], navigation: null },
     });
-    expect(T.formatActionText(genericChanged)).toContain('Recovery hint: Continue from the observed action evidence.');
-    expect(T.formatActionResultOutput(genericChanged, { compact: true }))
-      .toContain('Recovery hint: Continue from the observed action evidence.');
+    const text = T.formatActionResultOutput(genericChanged, { dispatchText: 'Clicked #save' });
+    expect(text).toBe('Clicked #save. Next: cdp list');
+    expect(text).not.toMatch(/^Outcome:/m);
+    expect(text).not.toMatch(/^Receipt:/m);
+    expect(text).not.toMatch(/^Verdict:/m);
+    expect(text).not.toMatch(/Recovery hint:/);
   });
 
   it('keeps the fat receipt when document nav needs attention', () => {
@@ -205,7 +208,8 @@ describe('#343 skinny document nav receipt', () => {
     });
     const text = T.formatActionResultOutput(result, { dispatchText: DISPATCH_TEXT });
     expect(result.outcome.status).toBe('attention');
-    expect(text).toMatch(/Diagnosis:/);
-    expect(text).toMatch(/Recovery hint:/);
+    expect(text).toBe(`${DISPATCH_TEXT}. Next: cdp console ${TARGET_ID} --errors`);
+    expect(text).not.toMatch(/^Diagnosis:/m);
+    expect(text).not.toMatch(/^Recovery hint:/m);
   });
 });

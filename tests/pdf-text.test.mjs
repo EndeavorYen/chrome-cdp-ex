@@ -105,7 +105,8 @@ describe('PDF plugin docs (#283)', () => {
     const skill = readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.meta.url), 'utf8');
     const commands = readFileSync(new URL('../skills/chrome-cdp-ex/references/commands.md', import.meta.url), 'utf8');
     const reference = readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
-    for (const text of [skill, commands, reference]) {
+    expect(skill).toMatch(/text --auto/);
+    for (const text of [commands, reference]) {
       expect(text).toMatch(/text --auto/);
       expect(text).toMatch(/page-1/i);
       expect(text).toContain('pdf-viewer.v1');

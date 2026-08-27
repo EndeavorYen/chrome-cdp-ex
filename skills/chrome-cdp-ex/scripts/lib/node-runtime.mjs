@@ -1,7 +1,18 @@
 import { spawnSync as defaultSpawnSync } from 'child_process';
 import { existsSync as defaultExistsSync, readdirSync as defaultReaddirSync, readFileSync as defaultReadFileSync } from 'fs';
 import { homedir as defaultHomedir } from 'os';
-import { join } from 'path';
+import { posix as posixPath, win32 as win32Path } from 'path';
+
+function pathApiForRoot(root, platform = process.platform) {
+  const text = String(root ?? '');
+  if (text.startsWith('/')) return posixPath;
+  if (/^[A-Za-z]:[\\/]/.test(text) || text.startsWith('\\\\')) return win32Path;
+  return platform === 'win32' ? win32Path : posixPath;
+}
+
+function joinRoot(root, ...parts) {
+  return pathApiForRoot(root).join(root, ...parts);
+}
 
 export const NODE_REEXEC_ENV = 'CHROME_CDP_NODE_REEXEC';
 export const NODE_PROBE_TIMEOUT_MS = 1500;
@@ -67,7 +78,7 @@ function nvmVersionNames(entries) {
 
 function nvmNodeBinary(nvmDir, versionName) {
   const dir = String(versionName || '').startsWith('v') ? versionName : `v${versionName}`;
-  return join(nvmDir, 'versions', 'node', dir, 'bin', 'node');
+  return joinRoot(nvmDir, 'versions', 'node', dir, 'bin', 'node');
 }
 
 function collectNode22Candidates({ home, env, execPath, execVersion, fs }) {
@@ -79,27 +90,27 @@ function collectNode22Candidates({ home, env, execPath, execVersion, fs }) {
   const execMajor = nodeMajor(execVersion);
   if (execPath && (execVersion == null || execMajor >= 22)) add(execPath);
 
-  add(join(home, '.hermes', 'node', 'bin', 'node'));
-  if (env.HERMES_HOME) add(join(env.HERMES_HOME, 'node', 'bin', 'node'));
+  add(joinRoot(home, '.hermes', 'node', 'bin', 'node'));
+  if (env.HERMES_HOME) add(joinRoot(env.HERMES_HOME, 'node', 'bin', 'node'));
 
-  add(join(home, '.local', 'share', 'fnm', 'aliases', 'default', 'bin', 'node'));
-  add(join(home, '.fnm', 'aliases', 'default', 'bin', 'node'));
-  if (env.FNM_DIR) add(join(env.FNM_DIR, 'aliases', 'default', 'bin', 'node'));
-  if (env.XDG_DATA_HOME) add(join(env.XDG_DATA_HOME, 'fnm', 'aliases', 'default', 'bin', 'node'));
-  if (env.FNM_MULTISHELL_PATH) add(join(env.FNM_MULTISHELL_PATH, 'node'));
+  add(joinRoot(home, '.local', 'share', 'fnm', 'aliases', 'default', 'bin', 'node'));
+  add(joinRoot(home, '.fnm', 'aliases', 'default', 'bin', 'node'));
+  if (env.FNM_DIR) add(joinRoot(env.FNM_DIR, 'aliases', 'default', 'bin', 'node'));
+  if (env.XDG_DATA_HOME) add(joinRoot(env.XDG_DATA_HOME, 'fnm', 'aliases', 'default', 'bin', 'node'));
+  if (env.FNM_MULTISHELL_PATH) add(joinRoot(env.FNM_MULTISHELL_PATH, 'node'));
 
   const nvmDirs = [];
   if (env.NVM_DIR) nvmDirs.push(env.NVM_DIR);
-  nvmDirs.push(join(home, '.nvm'));
+  nvmDirs.push(joinRoot(home, '.nvm'));
   const seenNvm = new Set();
   for (const nvmDir of nvmDirs) {
     if (!nvmDir || seenNvm.has(nvmDir)) continue;
     seenNvm.add(nvmDir);
-    const alias = readText(fs, join(nvmDir, 'alias', 'default'));
+    const alias = readText(fs, joinRoot(nvmDir, 'alias', 'default'));
     if (alias && !alias.includes('/') && !alias.includes('*') && /\d/.test(alias)) {
       add(nvmNodeBinary(nvmDir, alias));
     }
-    const names = nvmVersionNames(listDir(fs, join(nvmDir, 'versions', 'node')))
+    const names = nvmVersionNames(listDir(fs, joinRoot(nvmDir, 'versions', 'node')))
       .filter(name => nodeMajor(name) >= 22)
       .sort((a, b) => cmpVersion(b, a));
     for (const name of names) add(nvmNodeBinary(nvmDir, name));

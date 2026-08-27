@@ -625,7 +625,9 @@ function assertPrivatePngArtifact(path, artifactRoot) {
   const child = relative(root, absolute);
   if (!child || child.startsWith(`..${sep}`) || child === '..') throw new Error('screenshot artifact escaped task runtime');
   const stat = statSync(absolute);
-  if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error('screenshot artifact is not a private file');
+  if (!stat.isFile() || (process.platform !== 'win32' && (stat.mode & 0o777) !== 0o600)) {
+    throw new Error('screenshot artifact is not a private file');
+  }
   const signature = readFileSync(absolute).subarray(0, 8).toString('hex');
   if (signature !== '89504e470d0a1a0a') throw new Error('screenshot artifact is not PNG');
   return absolute;

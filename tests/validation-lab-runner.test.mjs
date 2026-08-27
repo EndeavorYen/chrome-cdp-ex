@@ -1,7 +1,7 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { spawnSync } from 'child_process';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
@@ -462,7 +462,7 @@ describe('validation evidence writer', () => {
 
     expect(first.duplicate).toBe(false);
     expect(second).toMatchObject({ duplicate: true, path: first.path });
-    expect(statSync(first.path).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(statSync(first.path).mode & 0o777).toBe(0o600);
     expect(JSON.parse(readFileSync(first.path, 'utf8'))).toEqual(bundle);
     expect(readFileSync(first.path, 'utf8')).toMatch(/\n$/);
   });
@@ -508,7 +508,7 @@ describe('validation evidence writer', () => {
     expect(findDuplicateEvidence(outDir, volatileVariant, { rootDir })).toMatchObject({ path: first.path });
     expect(writeEvidenceBundle(outDir, volatileVariant, { rootDir })).toMatchObject({
       duplicate: true,
-      duplicateOf: expect.stringContaining(first.path.split('/').at(-1)),
+      duplicateOf: expect.stringContaining(basename(first.path)),
     });
 
     const differentCheck = structuredClone(bundle);
@@ -763,8 +763,9 @@ describe('validation lab CLI boundaries', () => {
     const executed = run(['run', '--registry', registryPath, '--scenario', 'controlled-failure', '--out-dir', outDir]);
     expect(executed.status).toBe(1);
     expect(executed.stdout).toContain('controlled-failure');
-    const files = spawnSync('find', [outDir, '-maxdepth', '1', '-name', '*.json'], { encoding: 'utf8' })
-      .stdout.trim().split('\n').filter(Boolean);
+    const files = readdirSync(outDir)
+      .filter(name => name.endsWith('.json'))
+      .map(name => join(outDir, name));
     expect(files).toHaveLength(1);
     const evidence = readFileSync(files[0], 'utf8');
     expect(evidence).not.toContain('fixture-token-do-not-keep');
@@ -780,7 +781,7 @@ describe('validation lab CLI boundaries', () => {
     expect(replayed.status).toBe(1);
     const summary = JSON.parse(replayed.stdout.trim());
     expect(summary).toMatchObject({ scenario: 'controlled-failure', duplicate: true });
-    expect(summary.duplicateOf).toContain(bundlePath.split('/').at(-1));
+    expect(summary.duplicateOf).toContain(basename(bundlePath));
   });
 
   it('rejects a self-digested scenario that is not the registry scenario', async () => {

@@ -876,6 +876,33 @@ const COMMAND_SURFACE_INPUT = [
 export const COMMAND_SURFACE = defineCommandSurface(COMMAND_SURFACE_INPUT);
 export const COMMAND_SURFACE_RECORDS = COMMAND_SURFACE.commands;
 
+export const SURVIVOR_COMMANDS = Object.freeze([
+  'doctor',
+  'list',
+  'open',
+  'nav',
+  'perceive',
+  'text',
+  'click',
+  'fill',
+  'press',
+  'select',
+  'scroll',
+  'eval',
+  'inject',
+  'cascade',
+  'waitfor',
+  'dismiss-modal',
+  'elshot',
+  'shot',
+  'spawn-debug-browser',
+  'stop',
+]);
+
+for (const name of SURVIVOR_COMMANDS) {
+  if (!COMMAND_SURFACE.resolve(name)) fail('survivors', `unknown survivor ${name}`);
+}
+
 const VALIDATED_MCP_SURFACE = defineMcpSurface({
   tools: MCP_TOOL_DEFINITIONS,
   resources: MCP_RESOURCE_RECORDS_INPUT,

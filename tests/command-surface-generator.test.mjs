@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -61,8 +61,7 @@ describe('command-surface documentation generator', () => {
     try {
       for (const path of GENERATED_FILES) {
         const full = join(root, path);
-        const parent = full.slice(0, full.lastIndexOf('/'));
-        mkdirSync(parent, { recursive: true });
+        mkdirSync(dirname(full), { recursive: true });
         writeFileSync(full, `before\n${START}\nstale\n${END}\nafter\n`);
         chmodSync(full, 0o644);
       }
@@ -75,7 +74,9 @@ describe('command-surface documentation generator', () => {
       expect(second.written).toEqual([]);
       expect(GENERATED_FILES.map(path => readFileSync(join(root, path), 'utf8'))).toEqual(bytes);
       expect(generateCommandSurfaces({ rootDir: root }).stale).toEqual([]);
-      for (const path of GENERATED_FILES) expect(lstatSync(join(root, path)).mode & 0o777).toBe(0o644);
+      if (process.platform !== 'win32') {
+        for (const path of GENERATED_FILES) expect(lstatSync(join(root, path)).mode & 0o777).toBe(0o644);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -95,7 +96,7 @@ describe('command-surface documentation generator', () => {
     try {
       for (const path of GENERATED_FILES) {
         const full = join(root, path);
-        mkdirSync(full.slice(0, full.lastIndexOf('/')), { recursive: true });
+        mkdirSync(dirname(full), { recursive: true });
         writeFileSync(full, `before\n${START}\nstale\n${END}\nafter\n`);
         chmodSync(full, 0o666);
       }
@@ -105,7 +106,9 @@ describe('command-surface documentation generator', () => {
       } finally {
         process.umask(previous);
       }
-      for (const path of GENERATED_FILES) expect(lstatSync(join(root, path)).mode & 0o777).toBe(0o666);
+      if (process.platform !== 'win32') {
+        for (const path of GENERATED_FILES) expect(lstatSync(join(root, path)).mode & 0o777).toBe(0o666);
+      }
 
       writeFileSync(join(root, 'docs/reference.md'), `before\n${START}\nstale\n${END}\nafter\n`);
       expect(() => generateCommandSurfaces({
@@ -121,7 +124,7 @@ describe('command-surface documentation generator', () => {
     }
   });
 
-  it('rejects path escape and symlink traversal before writing', () => {
+  it.skipIf(process.platform === 'win32')('rejects path escape and symlink traversal before writing', () => {
     const root = mkdtempSync(join(tmpdir(), 'chrome-cdp-doc-generator-'));
     const outside = mkdtempSync(join(tmpdir(), 'chrome-cdp-doc-outside-'));
     try {

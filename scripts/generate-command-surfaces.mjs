@@ -113,7 +113,7 @@ export function generateCommandSurfaces({
     const { path, mode } = assertContained(rootDir, target);
     const source = readFileSync(path, 'utf8');
     const expected = replaceGeneratedRegion(source, target, renderGeneratedRegion(target, surface));
-    if (expected === source) continue;
+    if (expected.replace(/\r\n/g, '\n') === source.replace(/\r\n/g, '\n')) continue;
     stale.push(target);
     if (write) {
       writeAtomic(path, expected, mode, io);

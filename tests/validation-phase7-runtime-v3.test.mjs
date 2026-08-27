@@ -66,7 +66,7 @@ describe('Phase 7 Runtime v3 final evidence', () => {
   it('runs accepted live routes in a bounded isolated process instead of sharing runtime cache', async () => {
     await expect(runIsolatedValidationScript('scripts/check-docs-contract.mjs', {
       timeoutMs: 5_000,
-    })).resolves.toContain('Docs contract OK: 81 commands checked');
+    })).resolves.toContain('Docs contract OK: 20 survivor commands on the card (81 catalog)');
     await expect(runIsolatedValidationScript('validation/fixtures/controlled-failure.mjs', {
       timeoutMs: 5_000,
     })).rejects.toThrow(/exited 23/);

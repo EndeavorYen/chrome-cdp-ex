@@ -19,7 +19,7 @@
     "chrome-cdp": "bin/chrome-cdp"
   },
   "scripts": {
-    "test": "NODE_ENV=test vitest run",
+    "test": "node scripts/run-vitest.mjs",
     "lint": "eslint .",
     "check:docs": "node scripts/check-docs-contract.mjs",
     "check:command-surfaces": "node scripts/generate-command-surfaces.mjs",

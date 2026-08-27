@@ -79,6 +79,7 @@ beforeAll(() => {
   const packed = spawnSync('npm', ['pack', '--json', '--pack-destination', tempRoot], {
     cwd: rootDir,
     encoding: 'utf8',
+    shell: process.platform === 'win32',
   });
   expect(packed.status, packed.stderr).toBe(0);
   const packResult = JSON.parse(packed.stdout)[0];
@@ -94,6 +95,7 @@ beforeAll(() => {
   incompleteTarball = join(tempRoot, 'incomplete.tgz');
   const archived = spawnSync('tar', ['-czf', incompleteTarball, '-C', fixtureRoot, 'package'], {
     encoding: 'utf8',
+    shell: process.platform === 'win32',
   });
   expect(archived.status, archived.stderr).toBe(0);
   expect(readFileSync(incompleteTarball).length).toBeGreaterThan(0);

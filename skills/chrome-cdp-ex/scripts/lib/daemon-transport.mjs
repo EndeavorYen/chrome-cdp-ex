@@ -1,5 +1,5 @@
 import net from 'net';
-import { resolve } from 'path';
+import { posix as posixPath } from 'path';
 import { isTableCollectArgs } from './table-contract.mjs';
 
 const IPC_TIMEOUT = 120000;
@@ -68,7 +68,7 @@ export function daemonEndpointForPlatform(targetId, {
   runtimeDir,
 } = {}) {
   if (platform === 'win32') return `\\\\.\\pipe\\cdp-${targetId}`;
-  return resolve(runtimeDir, `cdp-${targetId}.sock`);
+  return posixPath.resolve(runtimeDir, `cdp-${targetId}.sock`);
 }
 
 export function connectToDaemon(endpoint, {

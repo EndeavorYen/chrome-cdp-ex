@@ -22,6 +22,7 @@ import {
   MCP_SURFACE,
   MCP_SURFACE_IDENTITY,
   MCP_TOOL_MAPPER_BY_NAME,
+  SURVIVOR_COMMANDS,
 } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
@@ -74,14 +75,12 @@ describe('Phase 6 command-surface characterization', () => {
         expect(cdpTest.commandMeta(spelling), spelling).toBe(command);
       }
     }
-    expect(Buffer.byteLength(cdpTest.helpStr())).toBe(24661);
-    expect(`sha256:${createHash('sha256').update(cdpTest.helpStr()).digest('hex')}`)
+    const catalogHelp = cdpTest.renderCliHelp(COMMAND_SURFACE);
+    expect(Buffer.byteLength(catalogHelp)).toBe(24661);
+    expect(`sha256:${createHash('sha256').update(catalogHelp).digest('hex')}`)
       .toBe('sha256:ad9a3bcccdd4db68df0296520f7bd612653192beafbc428f58a435ad3db94622');
-    expect(cdpTest.helpStr()).toMatch(/\.\n$/);
-    expect(cdpTest.helpStr().trim()).toBe(contract.cliCases.find(entry => entry.id === 'help').stdout);
-    expect(contract.cliCases.find(entry => entry.id === 'no-args-help').stdout)
-      .toBe(cdpTest.helpStr().trim());
-    const normalizedHelp = cdpTest.helpStr().replace(/[ \t]+/g, ' ');
+    expect(catalogHelp).toMatch(/\.\n$/);
+    const normalizedHelp = catalogHelp.replace(/[ \t]+/g, ' ');
     let lastHelpPosition = -1;
     for (const command of [...COMMAND_SURFACE.commands].sort((left, right) => left.help.order - right.help.order)) {
       const synopsisPosition = normalizedHelp.indexOf(command.help.synopsis);
@@ -89,9 +88,19 @@ describe('Phase 6 command-surface characterization', () => {
       expect(normalizedHelp, `${command.name} summary`).toContain(command.help.summary);
       lastHelpPosition = synopsisPosition;
     }
+    expect(cdpTest.helpStr()).toBe(cdpTest.renderCardHelp(COMMAND_SURFACE));
+    expect(cdpTest.helpStr().trim()).toBe(contract.cliCases.find(entry => entry.id === 'help').stdout);
+    expect(contract.cliCases.find(entry => entry.id === 'no-args-help').stdout)
+      .toBe(cdpTest.helpStr().trim());
+    for (const name of SURVIVOR_COMMANDS) {
+      expect(cdpTest.helpStr(), name).toContain(COMMAND_SURFACE.resolve(name).help.synopsis);
+    }
+    expect(cdpTest.helpStr()).not.toMatch(/\bjsclick\s+</);
+    expect(cdpTest.helpStr()).not.toMatch(/\beval64\s+</);
     expect(COMMAND_SURFACE.resolve('qa').domains).toContain('Emulation');
     const runtimeRoot = mkdtempSync(join(tmpdir(), 'chrome-cdp-p6-help-'));
     try {
+      const expectedStdout = Buffer.from(`${cdpTest.helpStr()}\n`);
       for (const args of [['help'], []]) {
         const result = spawnSync(process.execPath, [
           join(rootDir, 'skills/chrome-cdp-ex/scripts/cdp.mjs'),
@@ -101,10 +110,7 @@ describe('Phase 6 command-surface characterization', () => {
         });
         expect(result.status, args.join(' ') || '<no args>').toBe(0);
         expect(result.stderr).toHaveLength(0);
-        expect(result.stdout).toHaveLength(24662);
-        expect(result.stdout.subarray(-2)).toEqual(Buffer.from('\n\n'));
-        expect(`sha256:${createHash('sha256').update(result.stdout).digest('hex')}`)
-          .toBe('sha256:d704063f214abd18d90207852e52d657c159510c777d62b9f885713f707bbb57');
+        expect(result.stdout).toEqual(expectedStdout);
       }
     } finally {
       rmSync(runtimeRoot, { recursive: true, force: true });

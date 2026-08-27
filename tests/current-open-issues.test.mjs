@@ -711,7 +711,7 @@ describe('issues #82-#87 contracts', () => {
     expect(model.checks.find(c => c.label === 'Permission').severity).toBe('advisory');
     expect(model.wizard.status).toMatch(/usable with advisory/i);
     expect(model.recommendation).toMatchObject({
-      stage: 'perceive',
+      stage: 'list',
       requiresUserAction: false,
       ask: null,
     });
@@ -1705,8 +1705,8 @@ describe('v2.11.0 review regressions', () => {
       new Error(`SyntaxError: Failed to execute 'querySelector' on 'Document': ':has-text("north")' is not a valid selector.`),
       { action: 'click', target: { targetId: 'AAAABBBB', input: ':has-text("north")' } },
     );
-    expect(text).toContain('Action failure: invalid-selector');
-    expect(text).not.toContain('Action failure: unknown');
+    expect(text).toContain('Kind: invalid-selector');
+    expect(text).not.toContain('Kind: unknown');
   });
 
   it('omits overflow-scrollport-clipped controls from default interactive inventory (#128)', () => {
@@ -1768,7 +1768,7 @@ describe('v2.11.0 review regressions', () => {
     expect(model.total).toBe(0);
   });
 
-  it('keys daemon git identity off the script package root, not process.cwd (#130)', async () => {
+  it.skipIf(process.platform === 'win32')('keys daemon git identity off the script package root, not process.cwd (#130)', async () => {
     const fs = await import('fs');
     const os = await import('os');
     const path = await import('path');
@@ -2046,8 +2046,9 @@ describe('v2.11.0 review regressions', () => {
     expect(model.nextSteps[0]).toBe(relaunch);
 
     const text = T.formatDoctorOutput(checks);
-    expect(text).toContain(`hint: ${relaunch}`);
+    expect(text).toContain(`Next: ${relaunch}`);
     expect(text).not.toMatch(/spawn-debug-browser|rm -rf|Profile is disposable/);
+    expect(text).not.toMatch(/perceive .* -C -d 8/);
   });
 
   it('#155 doctor with CDP_PORT and unknown profile on Linux/no DISPLAY does not spawn a blank profile', async () => {
@@ -2310,7 +2311,7 @@ describe('v2.11.0 review regressions', () => {
       existsSync: path => path === hermesPath || path === `${hermesPath}/bin/chrome-cdp`,
       lstatSync: () => ({ isSymbolicLink: () => false }),
     };
-    const result = T.checkSkillSymlink({ home, fs });
+    const result = T.checkSkillSymlink({ home, fs, env: {} });
     expect(result.status).toBe('OK');
     expect(result.detail).toContain(hermesPath);
     expect(result.detail).not.toMatch(/not found/);
@@ -2319,6 +2320,7 @@ describe('v2.11.0 review regressions', () => {
   it('#154 hints ~/.hermes/skills when no host skill path exists', () => {
     const result = T.checkSkillSymlink({
       home: '/home/test',
+      env: {},
       fs: { existsSync: () => false },
     });
     expect(result.status).toBe('WARN');
@@ -2532,16 +2534,17 @@ describe('issue #157 Node 22 discovery', () => {
         status: 'WARN',
         label: 'Permission',
         detail: 'browser debugging approval not confirmed for AABBCCDD',
-        hint: 'Run: cdp perceive AABBCCDD -C -d 8; if Chrome asks "Allow debugging?", click Allow',
+        hint: 'Run: cdp list; if Chrome asks "Allow debugging?", click Allow',
         severity: 'advisory',
         provenCommand: 'cdp list',
-        nextProbe: 'cdp perceive AABBCCDD -C -d 8',
+        nextProbe: 'cdp list',
         targetPrefixes: ['AABBCCDD'],
       },
     ]);
     expect(model.provenCommand).toContain(hermesBinary);
     expect(model.provenCommand).toContain(cdpScriptPath);
-    expect(model.provenCommand).toContain('perceive AABBCCDD');
+    expect(model.provenCommand).toContain('list');
+    expect(model.provenCommand).not.toMatch(/perceive AABBCCDD/);
     expect(model.provenCommand).not.toMatch(/^cdp /);
   });
 
@@ -2721,24 +2724,14 @@ describe('issue #163 doctor next-probe and skip-link @refs', () => {
     expect(model.provenCommand).toBe('cdp list');
     expect(model.provenCommand).not.toContain('6669325B');
     expect(model.recommendation.run).toBe('cdp list');
-    expect(model.wizard.currentStep).toMatch(/\bcdp list\b/);
+    expect(model.wizard.currentStep).toBe('cdp list');
     expect(model.wizard.currentStep).not.toContain('6669325B');
     expect(permission.provenCommand).toBe('cdp list');
-    expect(text).toContain('Proven / next probe: cdp list');
-    expect(text).toMatch(/5 tabs — pick with cdp list \/ cdp target --url/);
-    expect(text).toMatch(/list is the source of truth for which tab/i);
-    expect(text).not.toMatch(/Proven \/ next probe: cdp perceive 6669325B/);
-
-    const perceiveStep = model.nextSteps.find(step => /\bperceive\b/.test(step) && !/--since-action/.test(step));
-    expect(perceiveStep).toBeTruthy();
-    expect(perceiveStep).toContain('<target-from-list>');
-    expect(perceiveStep).not.toContain('6669325B');
-    expect(perceiveStep).not.toContain('F8741D08');
-    expect(perceiveStep).not.toContain('0625E82A');
-    expect(model.recommendation.after).toContain('<target-from-list>');
-    expect(model.recommendation.after).not.toMatch(/click (6669325B|F8741D08|0625E82A)/);
+    expect(text).toBe('Node: v22\nCDP: reachable\nNext: cdp list');
+    expect(text).not.toMatch(/perceive 6669325B/);
+    expect(model.nextSteps).toEqual(['cdp list']);
+    expect(model.nextSteps.join('\n')).not.toMatch(/perceive/);
     expect(model.recommendedTargetPrefix).not.toBe('6669325B');
-    expect(text).toMatch(/sample after list — not a next-probe/);
     expect(T.rankPageTargets(checks.find(check => check.label === 'Tabs').pages)[0].url)
       .not.toMatch(/\/LICENSE(?:$|\.)/i);
   });
@@ -2755,7 +2748,7 @@ describe('issue #163 doctor next-probe and skip-link @refs', () => {
       { status: 'OK', label: 'Tabs', detail: '1', targetPrefixes: ['6669325B'], pages: [license] },
       { status: 'OK', label: 'Permission', detail: 'approved', targetPrefixes: ['6669325B'] },
     ]);
-    expect(single.provenCommand).toBe('cdp perceive 6669325B -C -d 8');
+    expect(single.provenCommand).toBe('cdp list');
   });
 
   it('ranks checkBrowserTargets prefixes by page score, not JSON/daemon order', async () => {
@@ -3030,6 +3023,7 @@ describe('issues #181-#191 open contracts', () => {
     const hermesPath = `${home}/.hermes/skills/chrome-cdp-ex`;
     const result = T.checkSkillSymlink({
       home,
+      env: {},
       fs: {
         existsSync: path => path === hermesPath,
         lstatSync: () => ({ isSymbolicLink: () => false }),
@@ -4560,10 +4554,9 @@ describe('issues #227-#231 open contracts', () => {
         },
       },
     );
-    expect(failure).toMatch(/Action failure: no-navigation/);
-    expect(failure).toContain('Example Domain');
-    expect(failure).toContain('https://example.com/');
-    expect(failure).not.toMatch(/Action failure: overlay/);
+    expect(failure).toMatch(/Kind: no-navigation/);
+    expect(failure).toMatch(/Next: /);
+    expect(failure).not.toMatch(/Kind: overlay/);
     expect(failure).not.toMatch(/Next:.*\boverlay\b/);
 
     let captured = null;
@@ -4590,7 +4583,7 @@ describe('issues #227-#231 open contracts', () => {
       },
       onActionResult: (result) => { captured = result; },
       format: { format: 'text', qa: true },
-    })).rejects.toThrow(/Example Domain/);
+    })).rejects.toThrow(/Kind: no-navigation\nNext: cdp jsclick 1D366978FULL a/);
 
     expect(captured.dispatch.ok).toBe(false);
     const qa = T.formatActionResultOutput(captured, { qa: true });
@@ -5137,7 +5130,7 @@ describe('issues #237-#239 open contracts', () => {
         page: PDF_PAGE,
       },
     });
-    expect(miss).toMatch(/Action failure: selector/);
+    expect(miss).toMatch(/Kind: selector/);
     expect(miss).toContain(`Next: cdp eval ${PDF_PREFIX} "document.contentType"`);
     expect(miss).not.toMatch(/cdp perceive /);
     expect(miss).not.toContain('<target>');
@@ -5634,7 +5627,7 @@ describe('issues #245-#248 open contracts', () => {
       target: { targetId: '77C5B4F8DEADBEEF', input: '#chat-assistant-textarea' },
     });
     expect(formatted).not.toMatch(/^Filled /m);
-    expect(formatted).toMatch(/Action failure: fill-no-change/);
+    expect(formatted).toMatch(/Kind: fill-no-change/);
     expect(formatted).not.toMatch(/Outcome: changed/);
 
     expect(T.fillLiveValueAccepted({ ok: true, value: '', textContent: '' }, 'picky11-no-submit')).toBe(false);
@@ -7744,7 +7737,7 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
     const store = { output: null, snapshotOpts: null, cards: null };
     const refMap = new Map();
     const refState = {};
-    const leftoverDump = await leftoverCards(cdp, store, refMap, refState, ['--cards']);
+    await leftoverCards(cdp, store, refMap, refState, ['--cards']);
     const axBeforeLeftover = cdp.calls.filter(call => call.method === 'Accessibility.getFullAXTree').length;
 
     const actionTarget = scrollTarget();
@@ -7783,9 +7776,10 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
     expect(text).toMatch(/Next: cdp perceive 2E94F948 --cards/);
     expect(text).not.toMatch(/cdp perceive 2E94F948 -C -d 8/);
     expect(text).not.toMatch(/cdp report 2E94F948 --format json/);
-    expect(receipt).toContain(leftoverDump.split('\n')[1]);
+    expect(receipt).toMatch(/^Scrolled by \(0, 80\)\. Position: \(0, 80\)\. Next: /);
     expect(receipt).not.toMatch(/\[RootWebArea\]/);
     expect(receipt).not.toMatch(/Text nodes updated/);
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(after).not.toMatch(/^Page: /m);
   });
 
@@ -7842,10 +7836,10 @@ describe('issue #293 leftover feed --cards scroll settle', () => {
     expect(result.verdict.status).toBe('continue');
     expect(text).toMatch(/Outcome: changed/);
     expect(text).not.toMatch(/Outcome: no-change/);
-    expect(receipt).toContain('third tweet body');
-    expect(receipt).toMatch(/chrome-cdp-ex\.cards\.v1\s+3 cards/);
-    expect(receipt).not.toMatch(/unchanged; still first cards/);
-    expect(receipt).not.toMatch(/\[RootWebArea\]/);
+    expect(receipt).toMatch(/^Scrolled by \(0, 80\)\. Position: \(0, 80\)\. Next: /);
+    expect(receipt).not.toMatch(/third tweet body/);
+    expect(receipt).not.toMatch(/chrome-cdp-ex\.cards\.v1/);
+    expect(receipt).not.toMatch(/^Outcome:/m);
   });
 
   it('#293 leftover feed --cards then scroll ignores relative time in article AX name (2m→3m)', async () => {
@@ -8852,7 +8846,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).not.toMatch(/^Recovery hint:/m);
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
-    expect(receipt).toMatch(/Outcome: changed/);
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(receipt).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
   });
@@ -8938,7 +8932,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).not.toMatch(/\+\+\+ Added/);
     expect(text).not.toMatch(/span\[title=/);
     expect(text).not.toMatch(/This commit is signed/);
-    expect(receipt).toMatch(/Outcome: changed/);
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(receipt).not.toMatch(/\+\+\+ Added/);
   });
@@ -9049,7 +9043,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
     expect(text).not.toMatch(/\+\+\+ Added/);
-    expect(receipt).toMatch(/Outcome: changed/);
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(receipt).not.toMatch(/^\+ 2 days ago$/m);
     expect(receipt).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
@@ -9180,7 +9174,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
     expect(text).not.toMatch(/\+\+\+ Added/);
-    expect(receipt).toMatch(/Outcome: changed/);
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(receipt).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
     expect(receipt).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
@@ -9304,7 +9298,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
     expect(text).not.toMatch(/\+\+\+ Added/);
-    expect(receipt).toMatch(/^Outcome: changed$/m);
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(receipt).not.toMatch(/^Receipt: changed$/m);
     expect(receipt).not.toMatch(/Observed page change after action/);
     expect(receipt).not.toMatch(/^Interactive:/m);
@@ -9709,7 +9703,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(receipt).not.toMatch(LIVE_AX_BODY);
     expect(receipt).not.toMatch(/no changes detected in AX tree/i);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
-    expect(receipt).toMatch(/Settle: ok in 1178ms/);
+    expect(receipt).not.toMatch(/^Settle:/m);
     expect(receipt.length).toBeLessThan(218);
     expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
   });
@@ -9803,14 +9797,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(text).not.toMatch(/no changes detected in AX tree/i);
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
-    expect(receipt).toBe([
-      'Scrolled by (0, 80). Position: (0, 547)',
-      '---',
-      'Outcome: no-change',
-      'Verdict: continue',
-      'Settle: ok in 763ms',
-      'Next: cdp perceive 561F7DA8 -C -d 8',
-    ].join('\n'));
+    expect(receipt).toBe('Scrolled by (0, 80). Position: (0, 547). Next: cdp perceive 561F7DA8 -C -d 8');
     expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
     expect(receipt).not.toMatch(/dispatched via scroll/);
     expect(receipt).not.toMatch(/^Target: down$/m);
@@ -9824,7 +9811,7 @@ describe('issue #295 leftover golden-path AX scroll rect chrome', () => {
     expect(receipt).not.toMatch(LIVE_AX_BODY);
     expect(receipt).not.toMatch(/no changes detected in AX tree/i);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
-    expect(receipt).toMatch(/Settle: ok in 763ms/);
+    expect(receipt).not.toMatch(/^Settle:/m);
     expect(receipt.length).toBeLessThan(180);
     expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
 

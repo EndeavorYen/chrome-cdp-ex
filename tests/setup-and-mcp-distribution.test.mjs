@@ -25,8 +25,8 @@ describe('setup.mjs distribution helpers', () => {
   it('detects absolute runtime paths and supported hosts', () => {
     const detect = detectEnvironment();
     expect(detect.schema).toBe('chrome-cdp-ex.setup-detect.v1');
-    expect(detect.cdpScript.endsWith('skills/chrome-cdp-ex/scripts/cdp.mjs')).toBe(true);
-    expect(detect.mcpServer.endsWith('skills/chrome-cdp-ex/scripts/mcp-server.mjs')).toBe(true);
+    expect(detect.cdpScript.replaceAll('\\', '/').endsWith('skills/chrome-cdp-ex/scripts/cdp.mjs')).toBe(true);
+    expect(detect.mcpServer.replaceAll('\\', '/').endsWith('skills/chrome-cdp-ex/scripts/mcp-server.mjs')).toBe(true);
     expect(detect.filesPresent.skillMd).toBe(true);
     expect(SUPPORTED_HOSTS).toEqual(expect.arrayContaining(['claude', 'codex', 'cursor', 'openclaw', 'hermes', 'pi']));
   });
@@ -36,10 +36,11 @@ describe('setup.mjs distribution helpers', () => {
     for (const host of SUPPORTED_HOSTS) {
       const snippet = hostSnippet(host, detect);
       expect(snippet.length).toBeGreaterThan(20);
+      const jsonPath = value => value.replaceAll('\\', '\\\\');
       if (host === 'cursor' || host === 'openclaw') {
-        expect(snippet).toContain(detect.mcpServer);
+        expect(snippet.includes(detect.mcpServer) || snippet.includes(jsonPath(detect.mcpServer))).toBe(true);
       } else {
-        expect(snippet).toContain(detect.cdpScript);
+        expect(snippet.includes(detect.cdpScript) || snippet.includes(jsonPath(detect.cdpScript))).toBe(true);
       }
     }
     expect(routeRecommendation().cursor).toBe('mcp');

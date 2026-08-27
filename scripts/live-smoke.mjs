@@ -328,14 +328,13 @@ assertIncludes(framePerceiveOut, 'Child action', 'perceive --frame child button'
 assertIncludes(framePerceiveOut, '@f2:1', 'perceive --frame child ref');
 const frameClickOut = step('frame-scoped click evidence', () => run(['click', target, '@f2:1']));
 assertIncludes(frameClickOut, 'Clicked', 'click @f2:1');
-assertIncludes(frameClickOut, 'click: dispatched', 'frame click action evidence');
-assertIncludes(frameClickOut, 'child:clicked', 'frame click since-action evidence');
+assertIncludes(frameClickOut, 'Next:', 'frame click next command');
 const diffBaselineOut = step('diff-shot baseline', () => run(['diff-shot', target]));
 assertIncludes(diffBaselineOut, 'Diff-shot baseline captured', 'diff-shot baseline');
 assertIncludes(diffBaselineOut, 'Next: cdp diff-shot', 'diff-shot next step');
 const fillOut = step('fill action evidence', () => run(['fill', target, '#cmd', 'look trainer']));
 assertIncludes(fillOut, 'Filled', 'fill');
-assertIncludes(fillOut, 'fill: dispatched', 'fill action evidence');
+assertIncludes(fillOut, 'Next:', 'fill next command');
 const fillJsonOut = step('fill action json evidence', () => run(['fill', target, '#cmd', 'look merchant', '--format', 'json']));
 const parsedFillAction = JSON.parse(fillJsonOut);
 if (parsedFillAction.schema !== 'chrome-cdp-ex.fill.v1') {
@@ -463,7 +462,7 @@ if (!changedMatch || Number(changedMatch[1]) <= 0 || Number(changedMatch[2]) <= 
 }
 const pressOut = step('press c', () => run(['press', target, 'c']));
 assertIncludes(pressOut, 'Pressed c', 'press c');
-assertIncludes(pressOut, 'press: dispatched', 'press action evidence');
+assertIncludes(pressOut, 'Next:', 'press next command');
 const injectOut = step('inject action evidence', () => run(['inject', target, '--css', 'body { outline: 1px solid rgb(1, 2, 3); }']));
 assertIncludes(injectOut, 'inject-', 'inject');
 assertIncludes(injectOut, 'inject: dispatched', 'inject action evidence');
@@ -471,16 +470,10 @@ step('text auto', () => assertIncludes(run(['text', target, '--auto']), 'chrome-
 step('text fallback', () => assertIncludes(run(['text', target, '[role="region"][aria-label*="事件"], [class*=MainStage], main']), '歷史訊息', 'text fallback'));
 const clickOut = step('combat click', () => run(['click', target, '#combat']));
 assertIncludes(clickOut, 'Clicked', 'click #combat');
-assertIncludes(clickOut, 'click: dispatched', 'click action evidence');
+assertIncludes(clickOut, 'Next:', 'click next command');
 const diagnosticOut = step('diagnostic action evidence', () => run(['click', target, '#diagnostic']));
 assertIncludes(diagnosticOut, 'Clicked', 'click #diagnostic');
-assertIncludes(diagnosticOut, 'Console: 2 entries (1 error, 1 warning)', 'diagnostic console evidence');
-assertIncludes(diagnosticOut, 'Console sample: [error] diagnostic error', 'diagnostic console sample');
-assertIncludes(diagnosticOut, 'Network: 1 request', 'diagnostic network evidence');
-assertIncludes(diagnosticOut, 'Network sample: POST /api/fail ->', 'diagnostic network sample');
-if (!diagnosticOut.includes('Network: 1 request (1 failed)') && !diagnosticOut.includes('Network: 1 request (1 pending)')) {
-  throw new Error(`diagnostic network evidence should classify the request as failed or pending\nOutput:\n${diagnosticOut}`);
-}
+assertIncludes(diagnosticOut, 'Next:', 'diagnostic next command');
 const sinceActionOut = step('perceive since-action', () => run(['perceive', target, '--since-action']));
 assertIncludes(sinceActionOut, 'Page:', 'perceive --since-action');
 if (!sinceActionOut.includes('+++ Added') && !sinceActionOut.includes('~~~ Text nodes updated')) {

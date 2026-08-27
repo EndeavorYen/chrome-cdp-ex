@@ -272,6 +272,7 @@ describe('Phase 5 current runtime characterization', () => {
         return { ok: true };
       },
       unlink,
+      platform: 'linux',
     });
     expect(sent).toEqual([{
       conn: { path: '/runtime/cdp-AABB1111FULL.sock' },
@@ -290,6 +291,7 @@ describe('Phase 5 current runtime characterization', () => {
       connect: async () => { throw new Error('stale socket'); },
       send: async () => { throw new Error('not reached'); },
       unlink,
+      platform: 'linux',
     });
     expect(unlink).toHaveBeenCalledWith('/runtime/cdp-AABB1111FULL.sock');
     expect(stale).toMatchObject({

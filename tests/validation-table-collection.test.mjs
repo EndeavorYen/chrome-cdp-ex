@@ -309,7 +309,7 @@ describe('evidence-first capture and cleanup contracts', () => {
       },
     });
     expect(order).toEqual(['capture', 'retain', 'assert', 'cleanup']);
-    expect(statSync(run.evidencePath).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(statSync(run.evidencePath).mode & 0o777).toBe(0o600);
     const stored = JSON.parse(readFileSync(run.evidencePath, 'utf8'));
     expect(stored).not.toHaveProperty('stdout');
     expect(JSON.stringify(stored)).not.toContain('ROW-0512');
@@ -565,7 +565,7 @@ describe('evidence-first capture and cleanup contracts', () => {
       async cleanup(truth) { return truth; },
     });
     const stored = JSON.parse(readFileSync(run.evidencePath, 'utf8'));
-    expect(statSync(run.evidencePath).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(statSync(run.evidencePath).mode & 0o777).toBe(0o600);
     expect(JSON.stringify(stored)).not.toContain('ROW-0512');
     expect(JSON.stringify(stored)).not.toMatch(/"rows"\s*:\s*\[/);
   });
@@ -713,7 +713,7 @@ describe('authorized live four-route trials', () => {
     expect(run.ok).toBe(true);
     expect(run.trials).toHaveLength(2);
     expect(run.routes).toHaveLength(8);
-    expect(statSync(run.evidencePath).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(statSync(run.evidencePath).mode & 0o777).toBe(0o600);
     const stored = JSON.parse(readFileSync(run.evidencePath, 'utf8'));
     expect(JSON.stringify(stored)).not.toContain('ROW-0512');
   });

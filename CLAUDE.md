@@ -1,6 +1,6 @@
 # CLAUDE.md — chrome-cdp-ex
 
-> **TL;DR** — The product runtime is `skills/chrome-cdp-ex/scripts/cdp.mjs`, supported by focused helpers in `scripts/lib/`, a stdio MCP adapter, and release-quality live benchmarks. Preserve the zero-runtime-dependency design, structured handoff contracts, privacy defaults, and evidence-first workflow.
+> **TL;DR** — The product runtime is `skills/chrome-cdp-ex/scripts/cdp.mjs`, supported by focused helpers in `scripts/lib/` and a stdio MCP adapter. Preserve the zero-runtime-dependency design, structured handoff contracts, privacy defaults, and evidence-first workflow.
 
 ## Problem-Solving Principles
 
@@ -56,12 +56,20 @@ Key design decisions:
 
 ## Verification
 
+Default local gate for ordinary and `musk/live-path` merges:
+
 ```bash
 npm test
 npm run lint
 npm run check:docs
-npm audit --audit-level=high
+```
+
+When attach, perceive, or act code changes and a supported browser exists, also run:
+
+```bash
 npm run smoke:live
 ```
 
-Changes to browser orchestration, benchmarks, MCP routing, token budgets, or release claims also require a focused live campaign. Release-facing work requires a passing 10+ round mixed campaign, package inspection, PR review, green CI, and a GitHub Release asset; this repository does not publish to npm.
+`npm run smoke:live` skips if no supported browser is installed. Do not treat `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) or validation-lab phases 4–7 as merge requirements. Those scripts may remain in `scripts/` and `validation/` as optional historical harnesses.
+
+This repository publishes via GitHub Releases, not the npm registry.

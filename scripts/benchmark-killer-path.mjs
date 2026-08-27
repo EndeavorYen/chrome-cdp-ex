@@ -84,6 +84,7 @@ function hasActionEvidence(step) {
     && ((model?.schema === 'chrome-cdp-ex.action.v1' && (model.dispatch || model.outcome || model.verdict))
       || /^[a-z-]+: dispatched/m.test(text)
       || /Action failure:/m.test(text)
+      || /^Kind: /m.test(text)
       || /success but observation timed out/i.test(text)));
 }
 

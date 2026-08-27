@@ -143,11 +143,14 @@ describe('#345 skinny document-scroll-edge receipt', () => {
     });
     expect(target.expectedOutcome).toBe('leftover-ax-scroll-no-change');
     expect(result.outcome.status).toBe('no-change');
-    expect(text).toMatch(/Next: cdp perceive HFHOME01 -C -d 8/);
-    expect(text.length).toBeGreaterThan(BROWSER_USE_SCROLL_CHARS);
+    expect(text).toBe('Scrolled by (0, 80). Position: (0, 5295). Next: cdp perceive HFHOME01 -C -d 8');
+    expect(text).not.toMatch(/^Outcome:/m);
+    expect(text).not.toMatch(/^Receipt:/m);
+    expect(text).not.toMatch(/^Verdict:/m);
+    expect(text).not.toMatch(/RootWebArea/);
   });
 
-  it('keeps Recovery hint on generic non-scroll changed actions', () => {
+  it('prints one-line click stdout without Recovery hint', () => {
     const genericChanged = T.createActionResult({
       action: 'click',
       target: { targetId: 'ABC123', input: '#save', resolvedBy: 'selector', label: 'Save' },
@@ -155,9 +158,10 @@ describe('#345 skinny document-scroll-edge receipt', () => {
       settle: { ok: true, durationMs: 40 },
       effects: { domDiff: '+   [StaticText] Saved', console: [], network: [], navigation: null },
     });
-    expect(T.formatActionText(genericChanged)).toContain('Recovery hint: Continue from the observed action evidence.');
-    expect(T.formatActionResultOutput(genericChanged, { compact: true }))
-      .toContain('Recovery hint: Continue from the observed action evidence.');
+    const text = T.formatActionResultOutput(genericChanged, { dispatchText: 'Clicked Save' });
+    expect(text).toBe('Clicked Save. Next: cdp list');
+    expect(text).not.toMatch(/Recovery hint:/);
+    expect(text).not.toMatch(/^Outcome:/m);
   });
 
   it('keeps the fat receipt when document-scroll-edge needs attention', () => {
@@ -182,10 +186,9 @@ describe('#345 skinny document-scroll-edge receipt', () => {
     });
     const text = T.formatActionResultOutput(result, { dispatchText: DISPATCH_TEXT });
     expect(result.outcome.status).toBe('attention');
-    expect(text).toMatch(/Diagnosis:/);
-    expect(text).toMatch(/Recovery hint:/);
-    expect(text).toContain(DISPATCH_TEXT);
-    expect(text.length).toBeGreaterThan(BROWSER_USE_SCROLL_CHARS);
+    expect(text).toBe(`${DISPATCH_TEXT}. Next: cdp console ${TARGET_ID} --errors`);
+    expect(text).not.toMatch(/^Diagnosis:/m);
+    expect(text).not.toMatch(/^Recovery hint:/m);
   });
 
   it('still reaches the document edge in one report-only step without leftover Next perceive', async () => {
@@ -213,10 +216,9 @@ describe('#345 skinny document-scroll-edge receipt', () => {
     const result = hfDocumentScrollEdgeResult({ dispatchText: '' });
     result.target.dispatchText = '';
     const text = T.formatActionResultOutput(result, { dispatchText: '' });
-    expect(text).not.toBe('');
-    expect(text).toMatch(/Outcome:/);
-    expect(text).toMatch(/Recovery hint:/);
-    expect(text.length).toBeGreaterThan(BROWSER_USE_SCROLL_CHARS);
+    expect(text).toMatch(/^dispatched\. Next: /);
+    expect(text).not.toMatch(/^Outcome:/m);
+    expect(text).not.toMatch(/Recovery hint:/);
   });
 
   it('keeps the fat receipt when document-scroll-edge dispatch fails', () => {
@@ -245,9 +247,9 @@ describe('#345 skinny document-scroll-edge receipt', () => {
       dispatchText: 'Did not reach document bottom. scrollY: 100 / 5295 max (at-bottom: no)',
     });
     expect(result.outcome.status).toBe('failed');
-    expect(text).toMatch(/Recovery hint:/);
+    expect(text).toBe(`Kind: timeout\nNext: cdp status ${TARGET_ID}`);
     expect(text).not.toBe(DISPATCH_TEXT);
-    expect(text.length).toBeGreaterThan(BROWSER_USE_SCROLL_CHARS);
+    expect(text).not.toMatch(/Recovery hint:/);
   });
 
   it('prints at-top metrics for successful scroll to top, including --compact', () => {

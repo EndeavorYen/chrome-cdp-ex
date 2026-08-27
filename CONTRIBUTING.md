@@ -1,6 +1,6 @@
 # Contributing
 
-> **TL;DR** — Start from `main`, write a failing test, update the current `skills/chrome-cdp-ex` runtime and docs, then run the full local gates. Browser orchestration changes also need a focused live benchmark.
+> **TL;DR** — Start from `main`, write a failing test, update the current `skills/chrome-cdp-ex` runtime and docs, then run the default local gates. When attach, perceive, or act code changes and a browser exists, also run focused live smoke.
 
 Thanks for contributing to `chrome-cdp-ex`.
 
@@ -22,7 +22,7 @@ Thanks for contributing to `chrome-cdp-ex`.
 2. Add a failing Vitest regression for the behavior you are changing.
 3. Make the smallest complete change in `skills/chrome-cdp-ex/scripts/cdp.mjs` or its focused helpers under `scripts/lib/`.
 4. Update help, skill, reference, MCP, and release-facing docs when their contracts change.
-5. Run the verification commands below and manually exercise the affected browser path.
+5. Run the default local gates below. When attach, perceive, or act code changed and a browser exists, also run focused live smoke.
 
 ## Adding a new command
 
@@ -45,17 +45,17 @@ New commands normally touch these surfaces:
 
 ## Testing
 
+Default local gate for ordinary and `musk/live-path` merges:
+
 ```bash
 npm test              # unit tests
 npm run lint          # ESLint (warnings allowed, errors fail)
 npm run check:docs    # command, release, and contributor documentation contracts
-npm audit --audit-level=high
-npm run smoke:live    # optional real-browser smoke; skips if no supported browser is installed
 ```
 
-Manual testing with a real Chrome/Edge instance is essential because many CDP behaviors cannot be unit tested. The live smoke starts an isolated profile, exercises long-session workflows, and cleans up its temporary state.
+When attach, perceive, or act code changes and a supported browser is installed, also run `npm run smoke:live`. It skips if no supported browser is available. Manual testing with a real Chrome/Edge instance still helps because many CDP behaviors cannot be unit tested; the live smoke starts an isolated profile, exercises long-session workflows, and cleans up its temporary state.
 
-Use `npm run benchmark:campaign` for MCP, token-budget, browser-isolation, or benchmark changes. A release candidate should pass matched MCP/CLI rounds plus Killer Path, large-app stress, and all five local real-app profiles; local fixtures are test-only and must not be presented as external production applications.
+Do not treat `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) or validation-lab phases 4–7 as merge requirements. Those scripts may remain in `scripts/` and `validation/` as optional historical harnesses; they are not contributor merge instructions.
 
 ## License
 

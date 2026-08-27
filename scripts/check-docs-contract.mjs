@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { generateCommandSurfaces } from './generate-command-surfaces.mjs';
+import { SURVIVOR_COMMANDS } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
 import {
   LOCKED_PK_BOARD,
   PK_324_CHART_FACES,
@@ -18,14 +19,29 @@ const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 process.env.NODE_ENV = 'test';
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 
+export { SURVIVOR_COMMANDS };
+
+const SURVIVOR_SET = new Set(SURVIVOR_COMMANDS);
+
+export function mentionsCommand(text, name) {
+  const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`).test(text || '');
+}
+
+function sameText(left, right) {
+  return String(left || '').replace(/\r\n/g, '\n') === String(right || '').replace(/\r\n/g, '\n');
+}
+
+export function isSurvivorCommand(name) {
+  return SURVIVOR_SET.has(name);
+}
+
 export const KILLER_PATH_ORDER = [
   ['doctor', 'doctor'],
   ['list', 'list'],
   ['open', 'open fallback'],
   ['perceive:page', 'perceive compact page read'],
   ['action', 'click/fill action'],
-  ['perceive:since-action', 'perceive --since-action after click/fill'],
-  ['report', 'report after perceive --since-action'],
 ];
 
 const CDP_COMMAND_RE = /^node\s+skills\/chrome-cdp-ex\/scripts\/cdp\.mjs\s+(.+)$/;
@@ -86,15 +102,6 @@ export function validateKillerPathContract(markdown) {
   }
   if (!kinds.includes('cascade')) {
     failures.push('Killer Path example is missing CSS tracing command');
-  }
-  if (!kinds.includes('record-actions')) {
-    failures.push('Killer Path example is missing record-actions handoff command');
-  }
-  if (!kinds.includes('replay')) {
-    failures.push('Killer Path example is missing replay handoff command');
-  }
-  if (!kinds.includes('export-playwright')) {
-    failures.push('Killer Path example is missing export-playwright handoff command');
   }
 
   return failures;
@@ -196,6 +203,7 @@ function checkSelfImprovementLoopContract(docs) {
     '## 3. Implement And Verify',
     '## 4. Review And Merge',
     '## 5. Next-Round Backlog',
+    'Not a merge gate',
     'npm run benchmark:campaign -- --rounds 10 --types mcp,cli,killer,large-app,real-app,real-app,real-app,real-app,real-app,cli',
     '--real-app-targets dashboard,docs-app,auth-flow,data-table,canvas-heavy',
     '--allow-failures',
@@ -203,6 +211,7 @@ function checkSelfImprovementLoopContract(docs) {
     'npm test',
     'npm run lint',
     'npm run check:docs',
+    'npm run smoke:live',
     'gh pr create --base main',
     'gh pr checks',
     'gh pr merge',
@@ -215,8 +224,33 @@ function checkSelfImprovementLoopContract(docs) {
       failures.push(`Self-improvement loop runbook is missing: ${item}`);
     }
   }
-  if (!docs.reference.includes('self-improvement-loop.md')) {
+  if (/10\+\s*round mixed campaign for release readiness/i.test(text)) {
+    failures.push('Self-improvement loop runbook must not treat 10-round mixed campaign as a merge instruction');
+  }
+  if (docs.reference && !docs.reference.includes('self-improvement-loop.md')) {
     failures.push('Reference docs must link to the self-improvement loop runbook');
+  }
+  return failures;
+}
+
+const BANNED_CAMPAIGN_MERGE_GATES = [
+  /requires a passing 10\+\s*round mixed campaign/i,
+  /10\+\s*round mixed campaign for release readiness/i,
+  /A release candidate should pass matched MCP\/CLI rounds/i,
+];
+
+function checkWorkstreamVerificationContract(docs) {
+  const failures = [];
+  for (const [label, text] of [['CLAUDE.md', docs.claude], ['CONTRIBUTING.md', docs.contributing]]) {
+    if (!text) continue;
+    for (const item of ['npm test', 'npm run lint', 'npm run check:docs', 'npm run smoke:live']) {
+      if (!text.includes(item)) {
+        failures.push(`${label} verification is missing: ${item}`);
+      }
+    }
+    if (BANNED_CAMPAIGN_MERGE_GATES.some(pattern => pattern.test(text))) {
+      failures.push(`${label} must not list 10-round mixed campaign as required`);
+    }
   }
   return failures;
 }
@@ -225,32 +259,20 @@ export { LOCKED_PK_BOARD };
 export const LOCKED_LIVE_SESSION_BOARD = LOCKED_PK_BOARD;
 
 export const README_FIRST_SCREEN_MARKERS = Object.freeze([
-  ['cool', 'codex-killer-path-demo-poster.png', 'Cool visual (poster / 60-second demo)'],
-  ['advantage', '## The tab you already have', 'project advantage'],
-  ['comparison', '## 10 jobs. Who finishes.', 'comparison PK table'],
-  ['scoreboard', 'experiment/pk-324-scoreboard.svg', 'PK scoreboard SVG'],
-  ['charts', 'experiment/pk-324-steps.svg', 'PK bar charts below the scoreboard'],
-  ['demo', '## Demo', 'demo links'],
+  ['advantage', 'browser you already have open', 'live-session hook'],
   ['quickstart', '## Quick start', 'Quick Start'],
 ]);
 
 function markerIndex(text, marker) {
-  return text.indexOf(marker);
+  return text.toLowerCase().indexOf(String(marker).toLowerCase());
 }
 
 export function checkReadmeFirstScreenOrder(readme) {
   const failures = [];
-  let cursor = -1;
   for (const [id, marker, label] of README_FIRST_SCREEN_MARKERS) {
-    const index = markerIndex(readme, marker);
-    if (index === -1) {
+    if (markerIndex(readme, marker) === -1) {
       failures.push(`README first screen is missing ${id}: ${label}`);
-      continue;
     }
-    if (index < cursor) {
-      failures.push(`README first screen is out of order: ${label} must follow the previous locked section`);
-    }
-    cursor = index;
   }
   return failures;
 }
@@ -313,7 +335,7 @@ export function checkPk324ChartContract(charts = {}) {
       failures.push(`Missing PK chart ${PK_324_CHART_FILES[face]}`);
       continue;
     }
-    if (actual !== expected) {
+    if (!sameText(actual, expected)) {
       failures.push(`${PK_324_CHART_FILES[face]} does not match the locked ${face} chart`);
     }
     for (const job of LOCKED_PK_BOARD.jobs) {
@@ -327,13 +349,6 @@ export function checkPk324ChartContract(charts = {}) {
     }
   }
   return failures;
-}
-
-function comparisonSection(readme) {
-  const start = readme.search(/^## 10 jobs\. Who finishes\./m);
-  const end = readme.search(/^## Demo\b/m);
-  if (start === -1) return '';
-  return end > start ? readme.slice(start, end) : readme.slice(start);
 }
 
 export function checkPk324ScoreboardContract(svg) {
@@ -377,7 +392,7 @@ export function checkPk324ScoreboardContract(svg) {
       }
     }
   }
-  if (actual && actual !== expected) {
+  if (actual && !sameText(actual, expected)) {
     failures.push(`${PK_324_SCOREBOARD_FILE} does not match the locked scoreboard`);
   }
   if (!actual) {
@@ -388,40 +403,66 @@ export function checkPk324ScoreboardContract(svg) {
 
 export function checkReadmePkTableContract(readme) {
   const failures = [];
-  const section = comparisonSection(readme);
-  if (!section) {
-    failures.push('README comparison heading must stay ## 10 jobs. Who finishes.');
-    return failures;
-  }
-  if (!section.includes(PK_324_SCOREBOARD_FILE)) {
-    failures.push('README comparison first glance must be the PK scoreboard SVG');
-  }
-  if (!/chrome-cdp-ex[\s\S]{0,120}Browser Use[\s\S]{0,120}Playwright/.test(section)) {
-    failures.push('README PK table columns must be chrome-cdp-ex | Browser Use | Playwright');
-  }
-
-  const scoreboardIdx = section.indexOf(PK_324_SCOREBOARD_FILE);
-  const chartIdx = section.indexOf('experiment/pk-324-steps.svg');
-  if (chartIdx !== -1 && scoreboardIdx !== -1 && chartIdx < scoreboardIdx) {
-    failures.push('README bar charts must sit below the PK scoreboard SVG, not first glance');
-  }
-
   if (/PASS\s*\/\s*\d+\s*\/\s*\d+\s*\/\s*\d+/.test(readme)
     || /FAIL\s*\/\s*\d+\s*\/\s*\d+\s*\/\s*\d+/.test(readme)) {
     failures.push('README must not keep engineer mashup cells (success / steps / time / token)');
   }
-
   if (/^\s*\|[^\n]*\b(?:PASS|FAIL)\b[^\n]*\|/m.test(readme)
     || /^\s*\|\s*\|?\s*chrome-cdp-ex\s*\|\s*Browser Use\s*\|\s*Playwright\s*\|/m.test(readme)
     || /^\s*\|\s*job\s*\|/m.test(readme)) {
     failures.push('README must not keep a markdown PK grid as the first-glance comparison');
   }
+  return failures;
+}
 
-  if (!/steps\s*\/\s*token\s*\/\s*wall\s*ms/i.test(section)) {
-    failures.push('README PK table must label job cells as steps / token / wall ms');
+export function checkSkillGoldenPathContract(skill) {
+  const failures = [];
+  const text = skill || '';
+  if (/models\?search/i.test(text)) {
+    failures.push('Always-loaded SKILL.md must not keep HuggingFace models?search liturgy');
   }
-  if (/\bcost\b|\bcp\b/i.test(section)) {
-    failures.push('README PK table must not add a cost/cp column');
+  if (/leftover-ax/i.test(text)) {
+    failures.push('Always-loaded SKILL.md must not keep leftover-ax tautology');
+  }
+  if (/cap-swap/i.test(text)) {
+    failures.push('Always-loaded SKILL.md must not keep cap-swap sampling');
+  }
+  if (/\bstdio MCP\b|\bconfirm:\s*true\b|setup\.mjs\s+--for/i.test(text)) {
+    failures.push('Always-loaded SKILL.md must not require MCP, setup.mjs --for, or confirm:true');
+  }
+  return failures;
+}
+
+export function checkDefaultHelpContract(help) {
+  const failures = [];
+  const text = help || '';
+  for (const name of SURVIVOR_COMMANDS) {
+    if (!mentionsCommand(text, name)) {
+      failures.push(`Default cdp help is missing survivor command: ${name}`);
+    }
+  }
+  if (/\bjsclick\s+</.test(text)) {
+    failures.push('Default cdp help must not advertise jsclick as a product name');
+  }
+  if (/\beval64\s+</.test(text)) {
+    failures.push('Default cdp help must not advertise eval64 as a product name');
+  }
+  if (text.includes('tab-group') && text.includes('broadcast') && text.includes('checkpoint')) {
+    failures.push('Default cdp help must list survivors, not the 81-command catalog');
+  }
+  return failures;
+}
+
+export function checkReadmeLivePathContract(readme) {
+  const failures = [];
+  const text = readme || '';
+  const quickStart = text.split(/## Quick start/i)[1]?.split(/^## /m)[0] || '';
+  if (/setup\.mjs\s+--for/i.test(quickStart) || /\bstdio MCP\b/i.test(quickStart) || /live-validated/i.test(quickStart)) {
+    failures.push('README Quick Start must not require MCP, setup.mjs --for, or six-host live-validated loops');
+  }
+  const fold = text.split(/## Daily browser CDP/i)[0] || text;
+  if (fold.includes('experiment/pk-324-scoreboard.svg') || /10\/10[\s\S]{0,80}8\/10[\s\S]{0,80}9\/10/.test(fold)) {
+    failures.push('README first screen must not use the 10/8/9 PK scoreboard SVG as the first claim');
   }
   return failures;
 }
@@ -430,31 +471,12 @@ export function checkReadmeFaceContract(readme, extras = {}) {
   const failures = [];
   failures.push(...checkReadmeFirstScreenOrder(readme));
   failures.push(...checkReadmePkTableContract(readme));
+  failures.push(...checkReadmeLivePathContract(readme));
   if (!/browser you already have open/i.test(readme)) {
     failures.push('README is missing the live-session hook');
   }
-  if (!/one step/i.test(readme) || !/short receipt|skinny/i.test(readme)) {
-    failures.push('README is missing the one-step receipt face');
-  }
-  if (!readme.includes(LOCKED_PK_BOARD.date) || !readme.includes(LOCKED_PK_BOARD.sha)) {
-    failures.push(`README is missing the locked live-session board identity (${LOCKED_PK_BOARD.date} / ${LOCKED_PK_BOARD.sha})`);
-  }
-  for (const face of PK_324_CHART_FACES) {
-    if (!readme.includes(PK_324_CHART_FILES[face])) {
-      failures.push(`README is missing the ${face} PK chart ${PK_324_CHART_FILES[face]}`);
-    }
-  }
   if (!readme.includes('docs/pk-324-board.md')) {
     failures.push('README must link the engineer grid at docs/pk-324-board.md');
-  }
-  if (!readme.includes('experiment/codex-killer-path-demo.mp4')
-    || !readme.includes('experiment/codex-killer-path-demo-poster.png')) {
-    failures.push('README Cool section must restore the clickable Codex poster / 60-second demo');
-  }
-  if (!readme.includes('experiment/showcase.html')
-    || !readme.includes('experiment/codex-killer-path-demo.html')
-    || !readme.includes('experiment/benchmark.html')) {
-    failures.push('README Demo section must link showcase, killer-path demo, and benchmark pages');
   }
   if (!readme.includes('./bin/chrome-cdp doctor') || !readme.includes('./bin/chrome-cdp list')) {
     failures.push('README Quick Start must stay doctor → list');
@@ -464,14 +486,6 @@ export function checkReadmeFaceContract(readme, extras = {}) {
   }
   if (!/\bMIT\b/.test(readme) || !readme.includes('LICENSE')) {
     failures.push('README is missing license');
-  }
-  for (const slower of LOCKED_PK_BOARD.slowerThanBrowserUse) {
-    if (!readme.includes(`${slower.cdp} vs ${slower.browserUse}`)) {
-      failures.push(`README must draw the slower wall-clock pair ${slower.job} (${slower.cdp} vs ${slower.browserUse}) honestly`);
-    }
-  }
-  if (!/playwright.{0,80}(faster|quicker)|(faster|quicker).{0,80}playwright/is.test(readme)) {
-    failures.push('README must admit Playwright is faster on wall-clock for some jobs');
   }
   if (/\bmean wall\b|\baveraged time\b|\bavg wall\b/i.test(readme) && !/not averaged/i.test(readme)) {
     failures.push('README must not average time across heterogeneous jobs');
@@ -499,18 +513,39 @@ export function checkReadmeFaceContract(readme, extras = {}) {
   return failures;
 }
 
+function commandCatalogText(docs) {
+  return [
+    docs.reference || '',
+    docs.skillCommands || '',
+    docs.commands || '',
+  ].join('\n');
+}
+
+export function checkCommandCardContract(docs, commands) {
+  const failures = [];
+  const skill = docs.skill || '';
+  const catalog = commandCatalogText(docs);
+  for (const command of commands) {
+    const names = [command.name, ...(command.aliases || [])];
+    if (isSurvivorCommand(command.name)) {
+      if (!names.some(name => mentionsCommand(skill, name))) {
+        failures.push(`Always-loaded SKILL.md is missing survivor command: ${command.name}`);
+      }
+      continue;
+    }
+    if (!names.some(name => catalog.includes(name))) {
+      failures.push(`Missing leftover command docs for ${command.name} (references/commands.md or docs/reference.md)`);
+    }
+  }
+  return failures;
+}
+
 export function checkDocsContract(docs, commands) {
   const failures = [];
 
-  const commandReference = `${docs.readme}\n${docs.reference || ''}`;
-  for (const command of commands) {
-    const names = [command.name, ...(command.aliases || [])];
-    const appearsInReference = names.some(name => commandReference.includes(name));
-    const appearsInSkill = names.some(name => docs.skill.includes(name));
-    if (!appearsInReference || !appearsInSkill) {
-      failures.push(`Missing command docs for ${command.name}`);
-    }
-  }
+  failures.push(...checkCommandCardContract(docs, commands));
+  failures.push(...checkSkillGoldenPathContract(docs.skill || ''));
+  failures.push(...checkDefaultHelpContract(T.helpStr()));
 
   failures.push(...checkReadmeFaceContract(docs.readme || '', {
     ...(Object.hasOwn(docs, 'pkBoard') ? { pkBoard: docs.pkBoard || '' } : {}),
@@ -526,8 +561,6 @@ export function checkDocsContract(docs, commands) {
     'perceive',
     'click',
     'fill',
-    '--since-action',
-    'report',
   ];
   for (const item of requiredKillerPathTerms) {
     if (!docs.killerPath.includes(item)) {
@@ -539,50 +572,33 @@ export function checkDocsContract(docs, commands) {
   failures.push(...checkReleaseMetadataContract(docs));
   failures.push(...checkContributorDocsContract(docs));
   failures.push(...checkSelfImprovementLoopContract(docs));
+  failures.push(...checkWorkstreamVerificationContract(docs));
   return failures;
 }
 
-function readSkillCorpus() {
-  const skillDir = 'skills/chrome-cdp-ex';
-  const parts = [readFileSync(resolve(ROOT_DIR, skillDir, 'SKILL.md'), 'utf8')];
-  for (const rel of [
-    'references/commands.md',
-    'references/recipes.md',
-    'references/troubleshooting.md',
-  ]) {
-    try {
-      parts.push(readFileSync(resolve(ROOT_DIR, skillDir, rel), 'utf8'));
-    } catch {
-      // Optional during partial checkouts; missing files fail command coverage naturally.
-    }
+function readOptional(path) {
+  try {
+    return readFileSync(resolve(ROOT_DIR, path), 'utf8');
+  } catch {
+    return '';
   }
-  return parts.join('\n');
 }
 
 function readDocs() {
   const read = path => readFileSync(resolve(ROOT_DIR, path), 'utf8');
   const pkCharts = {};
   for (const [face, rel] of Object.entries(PK_324_CHART_FILES)) {
-    try {
-      pkCharts[face] = read(rel);
-    } catch {
-      pkCharts[face] = '';
-    }
-  }
-  let pkScoreboard = '';
-  try {
-    pkScoreboard = read(PK_324_SCOREBOARD_FILE);
-  } catch {
-    pkScoreboard = '';
+    pkCharts[face] = readOptional(rel);
   }
   return {
     readme: read('README.md'),
     reference: read('docs/reference.md'),
     pkBoard: read('docs/pk-324-board.md'),
     pkCharts,
-    pkScoreboard,
+    pkScoreboard: readOptional(PK_324_SCOREBOARD_FILE),
     selfImprovementLoop: read('docs/self-improvement-loop.md'),
-    skill: readSkillCorpus(),
+    skill: read('skills/chrome-cdp-ex/SKILL.md'),
+    skillCommands: readOptional('skills/chrome-cdp-ex/references/commands.md'),
     killerPath: read('docs/examples/killer-path.md'),
     packageJson: read('package.json'),
     pluginManifest: read('.claude-plugin/plugin.json'),
@@ -607,5 +623,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const failures = runDocsContract();
   for (const failure of failures) console.error(failure);
   if (failures.length > 0) process.exit(1);
-  console.log(`Docs contract OK: ${T.COMMANDS.length} commands checked`);
+  console.log(`Docs contract OK: ${SURVIVOR_COMMANDS.length} survivor commands on the card (${T.COMMANDS.length} catalog)`);
 }

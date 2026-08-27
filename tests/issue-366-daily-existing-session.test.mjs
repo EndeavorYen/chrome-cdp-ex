@@ -276,7 +276,9 @@ describe('#366 daily --daily-profile must not fake CDP on Chromium 136+', () => 
     expect(wizard.currentStep).not.toMatch(/--daily-profile/);
     expect(wizard.currentStep).toMatch(/spawn-debug-browser edge --port 9222 --user-data-dir/);
     expect(report).not.toMatch(/Enable daily-profile debug/);
-    expect(steps).not.toMatch(/Enable daily-profile debug/);
-    expect(steps).toMatch(/Isolated spawn is fallback only and is not the daily profile|Isolated fallback \(not the daily profile\)/i);
+    expect(report).toMatch(/spawn-debug-browser edge --port 9222 --user-data-dir/);
+    expect(report).toMatch(/\(ask first\)/);
+    expect(steps).toMatch(/spawn-debug-browser edge --port 9222 --user-data-dir/);
+    expect(steps).not.toMatch(/perceive .* -C -d 8/);
   });
 });
