@@ -25,14 +25,14 @@ function validate(manifest) {
 }
 
 describe('host validation CLI', () => {
-  it('accepts checked-in historical v2.15.0 evidence under package v2.16.0', () => {
+  it('accepts checked-in historical v2.15.0 evidence under package v2.17.0', () => {
     const result = spawnSync(process.execPath, ['scripts/check-host-validation.mjs'], {
       cwd: new URL('..', import.meta.url),
       encoding: 'utf8',
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Host validation OK: 6 hosts, historical product v2.15.0 under package v2.16.0');
+    expect(result.stdout).toContain('Host validation OK: 6 hosts, historical product v2.15.0 under package v2.17.0');
     expect(result.stderr).toBe('');
   });
 
@@ -66,7 +66,7 @@ describe('host validation manifest', () => {
     manifest.productVersion = '2.13.1';
 
     expect(validate(manifest)).toContain(
-      'Host validation productVersion 2.13.1 matches neither package version 2.16.0 nor published historical version 2.15.0',
+      'Host validation productVersion 2.13.1 matches neither package version 2.17.0 nor published historical version 2.15.0',
     );
   });
 

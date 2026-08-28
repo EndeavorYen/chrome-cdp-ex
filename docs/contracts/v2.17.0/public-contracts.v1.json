@@ -1,0 +1,4009 @@
+{
+  "cliCases": [
+    {
+      "argv": [],
+      "exitCode": 0,
+      "id": "no-args-help",
+      "stderr": "",
+      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref>\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\n\ncdp help <command> prints leftover topic help."
+    },
+    {
+      "argv": [
+        "help"
+      ],
+      "exitCode": 0,
+      "id": "help",
+      "stderr": "",
+      "stdout": "cdp - attach to the Chrome/Electron tab you already have\n\nUsage: cdp <command> [args]\n\n  help [command]                    Survivor card; leftover verbs still have topic help\n\n  doctor / ready [--format json]\n  list|tabs|ls [--format json]\n  open [url] [--perceive] [--attach-timeout-ms N] [--ready-timeout-ms N] [--ready-selector sel] [--reuse-url] [--format json]\n  nav <target> <url> [--perceive] [--format json] [--qa|--summary] [--compact]\n  perceive <target> [flags] [--format json]\n  text <target> [selector|--auto]\n  click <target> <sel|@ref|name> [--js|-j] [--format json] [--qa|--summary]\n  fill <target> <sel|@ref> <txt> [--format json]\n  press|key <target> <key> [--format json]\n  select <target> <selector> <val> [--format json]\n  scroll <target> <dir|x,y|to top|to bottom> [px] [--scroll-container SELECTOR] [--format json] [--qa|--summary] [--compact]\n  eval <target> <expr>\n  inject <target> <flag> [content]\n  cascade <target> <sel|@ref> [prop] [--format json]\n  waitfor <target> <selector> [ms]\n  dismiss-modal <target>\n  elshot <target> <sel|@ref>\n  shot <target> [file|--annotate]\n  spawn-debug-browser [browser] [--port N] [--url URL] [--profile-dir DIR] [--exe PATH] [--format json]\n  stop [target] [--format json]\n\nFlags (not product names): click --js is JS click; eval --b64 is base64.\nUnique off-screen click names scrollIntoView if off-screen.\nperceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.\ntext --auto for what the page says.\n\nChrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.\nElectron: CDP_PORT=9333 (not 9222).\n\ncdp help <command> prints leftover topic help."
+    },
+    {
+      "argv": [
+        "perceev"
+      ],
+      "exitCode": 1,
+      "id": "unknown-command-suggestion",
+      "stderr": "Error: Unknown command: perceev\nDid you mean: perceive?\nRecovery:\n  Kind: usage\n  Strategy: suggest-command\n  Run: cdp perceive\n  Reason: Did you mean: perceive? Run `cdp help perceive` for usage.\nNext: cdp perceive",
+      "stdout": ""
+    },
+    {
+      "argv": [
+        "list",
+        "--bogus"
+      ],
+      "exitCode": 1,
+      "id": "invalid-list-argument",
+      "stderr": "Error: list: unknown argument --bogus\nRecovery:\n  Kind: usage\n  Strategy: show-help\n  Run: cdp help list\n  Reason: The command received an unknown flag or argument. Print usage instead of probing doctor/status.\nNext: cdp help list",
+      "stdout": ""
+    },
+    {
+      "argv": [
+        "list",
+        "--format",
+        "yaml"
+      ],
+      "exitCode": 1,
+      "id": "invalid-format",
+      "stderr": "Error: format must be text or json\nRecovery:\n  Kind: unknown\n  Strategy: run-doctor\n  Run: cdp doctor\n  Reason: The failure was not classified; check browser setup and available targets.\nNext: cdp doctor",
+      "stdout": ""
+    },
+    {
+      "argv": [
+        "perceive"
+      ],
+      "exitCode": 1,
+      "id": "missing-target",
+      "stderr": "Error: target ID required. Run \"cdp list\" first.\nRecovery:\n  Kind: target-resolution\n  Strategy: rediscover-target\n  Run: cdp list  # if empty: cdp open https://example.com\n  Then: cdp open https://example.com\n  Reason: The requested tab target could not be resolved from the current page list.\nNext: cdp list  # if empty: cdp open https://example.com",
+      "stdout": ""
+    }
+  ],
+  "commands": [
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "help",
+      "needsTarget": false,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "tabs",
+        "ls"
+      ],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "list",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "target",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "tabgroup"
+      ],
+      "authorization": "conditional",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "conditional-mutation",
+      "mutates": false,
+      "name": "tab-group",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "broadcast",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "open",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "ready"
+      ],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "doctor",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "spawn"
+      ],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "spawn-debug-browser",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "protected-mutation",
+      "mutates": false,
+      "name": "attach",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "protected-mutation",
+      "mutates": false,
+      "name": "use",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "protected-mutation",
+      "mutates": false,
+      "name": "forget",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "current",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "stop",
+      "needsTarget": false,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "perceive",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "snapshot"
+      ],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "snap",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "controls",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "raw-script",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "script",
+      "mutates": false,
+      "name": "eval",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "raw-script",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "script",
+      "mutates": false,
+      "name": "eval64",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "raw-script",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "script",
+      "mutates": false,
+      "name": "call",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "wait",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "protected-mutation",
+      "mutates": false,
+      "name": "keepalive",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "screenshot"
+      ],
+      "authorization": "conditional",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "conditional-mutation",
+      "mutates": false,
+      "name": "shot",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "diffshot"
+      ],
+      "authorization": "conditional",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "conditional-mutation",
+      "mutates": false,
+      "name": "diff-shot",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "html",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "navigate"
+      ],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "state-change",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "nav",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "network"
+      ],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "net",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "network-mock"
+      ],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "mock",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "time-travel"
+      ],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "clock",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "network-throttle"
+      ],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "throttle",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "status",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "conditional",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "conditional-mutation",
+      "mutates": false,
+      "name": "console",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "summary",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "frames"
+      ],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "frame",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "overlays"
+      ],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "overlay",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "session-report",
+      "feedbackPolicy": null,
+      "kind": "evidence",
+      "mutates": false,
+      "name": "report",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "sensitive-read",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "sensitive-read",
+      "mutates": false,
+      "name": "checkpoint",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "restore",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "recordactions"
+      ],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "record-actions",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "export-pw"
+      ],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "export-playwright",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "replay",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "elshot",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "qa-page"
+      ],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "qa",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "visual-check"
+      ],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "responsive-audit",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "verifyclick"
+      ],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "verify-click",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "click",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "jsclick",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "clickxy",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "type",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [
+        "key"
+      ],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "press",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "scroll",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "protected-mutation",
+      "mutates": false,
+      "name": "hover",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "waitfor",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "protected-mutation",
+      "mutates": false,
+      "name": "loadall",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "fill",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "select",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "conditional",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "conditional-mutation",
+      "mutates": false,
+      "name": "fullshot",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "scanshot",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "styles",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "sensitive-read",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "sensitive-read",
+      "mutates": false,
+      "name": "components",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "sensitive-read",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "sensitive-read",
+      "mutates": false,
+      "name": "cookies",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "cookieset",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "cookiedel",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "raw-cdp",
+      "evidencePolicy": "raw-audit",
+      "feedbackPolicy": null,
+      "kind": "raw-cdp",
+      "mutates": false,
+      "name": "evalraw",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "composite",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "composite",
+      "mutates": false,
+      "name": "batch",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "protected-mutation",
+      "mutates": false,
+      "name": "dialog",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "resize"
+      ],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "viewport",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "emulate",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "state-change",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "upload",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "text",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "conditional",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "conditional-mutation",
+      "mutates": false,
+      "name": "table",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "full-perceive",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "back",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "full-perceive",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "forward",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "state-change",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "reload",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "report-only",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "closetab",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "conditional",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "conditional-mutation",
+      "mutates": false,
+      "name": "netlog",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "state-change",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "inject",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "standard",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "read",
+      "mutates": false,
+      "name": "cascade",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "conditional",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "conditional-mutation",
+      "mutates": false,
+      "name": "record",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "composite",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "composite",
+      "mutates": false,
+      "name": "flow",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    },
+    {
+      "aliases": [],
+      "authorization": "composite",
+      "evidencePolicy": "none",
+      "feedbackPolicy": null,
+      "kind": "composite",
+      "mutates": false,
+      "name": "repeat",
+      "needsTarget": true,
+      "outputFormats": [
+        "text"
+      ]
+    },
+    {
+      "aliases": [
+        "dismissmodal"
+      ],
+      "authorization": "mutation",
+      "evidencePolicy": "action-receipt",
+      "feedbackPolicy": "settle-diff",
+      "kind": "mutation",
+      "mutates": true,
+      "name": "dismiss-modal",
+      "needsTarget": true,
+      "outputFormats": [
+        "text",
+        "json"
+      ]
+    }
+  ],
+  "mcp": {
+    "invalidCases": [
+      {
+        "args": {
+          "selector": "@1",
+          "target": "fixture"
+        },
+        "error": "click requires confirm: true",
+        "id": "mutation-without-confirm",
+        "kind": "tool",
+        "tool": "click"
+      },
+      {
+        "args": {
+          "selector": "#app",
+          "target": "fixture"
+        },
+        "error": "components requires confirm: true",
+        "id": "sensitive-read-without-confirm",
+        "kind": "tool",
+        "tool": "components"
+      },
+      {
+        "args": {
+          "target": "fixture"
+        },
+        "error": "session_checkpoint requires confirm: true",
+        "id": "checkpoint-without-confirm",
+        "kind": "tool",
+        "tool": "session_checkpoint"
+      },
+      {
+        "args": {
+          "target": "fixture"
+        },
+        "error": "qa_page requires confirm: true",
+        "id": "qa-page-without-confirm",
+        "kind": "tool",
+        "tool": "qa_page"
+      },
+      {
+        "args": {
+          "target": "fixture"
+        },
+        "error": "responsive_audit requires confirm: true",
+        "id": "responsive-audit-without-confirm",
+        "kind": "tool",
+        "tool": "responsive_audit"
+      },
+      {
+        "args": {},
+        "error": "target is required",
+        "id": "missing-required-argument",
+        "kind": "tool",
+        "tool": "perceive"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "--name",
+            "saved"
+          ],
+          "command": "use"
+        },
+        "error": "run_command use requires confirm: true",
+        "id": "run-command-use-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "saved"
+          ],
+          "command": "forget"
+        },
+        "error": "run_command forget requires confirm: true",
+        "id": "run-command-forget-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "create",
+            "saved"
+          ],
+          "command": "tab-group"
+        },
+        "error": "run_command tab-group requires confirm: true",
+        "id": "run-command-tab-group-mutation-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            ".more"
+          ],
+          "command": "loadall"
+        },
+        "error": "run_command loadall requires confirm: true",
+        "id": "run-command-loadall-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "--action",
+            "click",
+            "@1"
+          ],
+          "command": "record"
+        },
+        "error": "run_command record requires confirm: true",
+        "id": "run-command-record-action-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "60000"
+          ],
+          "command": "keepalive"
+        },
+        "error": "run_command keepalive requires confirm: true",
+        "id": "run-command-keepalive-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "--clear"
+          ],
+          "command": "console"
+        },
+        "error": "run_command console requires confirm: true",
+        "id": "run-command-console-clear-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "--clear"
+          ],
+          "command": "netlog"
+        },
+        "error": "run_command netlog requires confirm: true",
+        "id": "run-command-netlog-clear-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "--reset"
+          ],
+          "command": "diff-shot"
+        },
+        "error": "run_command diff-shot requires confirm: true",
+        "id": "run-command-diff-shot-reset-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "/tmp/explicit.png"
+          ],
+          "command": "shot"
+        },
+        "error": "run_command shot requires confirm: true",
+        "id": "run-command-shot-path-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "/tmp/explicit-full.png"
+          ],
+          "command": "fullshot"
+        },
+        "error": "run_command fullshot requires confirm: true",
+        "id": "run-command-fullshot-path-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "#grid",
+            "--collect",
+            "--scroll-container",
+            ".viewport"
+          ],
+          "command": "table"
+        },
+        "error": "run_command table requires confirm: true",
+        "id": "run-command-table-collect-without-confirm",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "#one",
+            "#two"
+          ],
+          "command": "table",
+          "confirm": true
+        },
+        "error": "table: at most one positional table selector is allowed",
+        "id": "run-command-table-malformed",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "collect": true,
+          "scrollContainer": ".viewport",
+          "selector": "#grid",
+          "target": "fixture"
+        },
+        "error": "table requires confirm: true",
+        "id": "table-collect-without-confirm",
+        "kind": "tool",
+        "tool": "table"
+      },
+      {
+        "args": {
+          "continue": "ct1.0123456789abcdef0123456789abcdef.0",
+          "selector": "#grid",
+          "target": "fixture"
+        },
+        "error": "table selector is mutually exclusive with continue",
+        "id": "table-selector-and-continue",
+        "kind": "tool",
+        "tool": "table"
+      },
+      {
+        "args": {
+          "path": "/tmp/explicit.png",
+          "target": "fixture"
+        },
+        "error": "screenshot path requires confirm: true",
+        "id": "screenshot-path-without-confirm",
+        "kind": "tool",
+        "tool": "screenshot"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture"
+          ],
+          "command": "rm"
+        },
+        "error": "run_command command not allowlisted: rm",
+        "id": "run-command-not-allowlisted",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "bad\narg"
+          ],
+          "command": "help"
+        },
+        "error": "run_command args cannot contain newlines",
+        "id": "run-command-newline",
+        "kind": "tool",
+        "tool": "run_command"
+      },
+      {
+        "args": {},
+        "error": "Unknown MCP tool: not_a_tool",
+        "id": "unknown-tool",
+        "kind": "tool",
+        "tool": "not_a_tool"
+      },
+      {
+        "error": "Unknown MCP resource URI: chrome-cdp-ex://unknown",
+        "id": "unknown-resource",
+        "kind": "resource",
+        "uri": "chrome-cdp-ex://unknown"
+      }
+    ],
+    "mappingCases": [
+      {
+        "args": {},
+        "command": [
+          "doctor",
+          "--format",
+          "json"
+        ],
+        "id": "doctor",
+        "tool": "doctor"
+      },
+      {
+        "args": {},
+        "command": [
+          "list",
+          "--format",
+          "json"
+        ],
+        "id": "list-tabs",
+        "tool": "list_tabs"
+      },
+      {
+        "args": {
+          "name": "fixture",
+          "target": "fixture-target"
+        },
+        "command": [
+          "use",
+          "--target",
+          "fixture-target",
+          "--name",
+          "fixture"
+        ],
+        "id": "open-attach-alias",
+        "tool": "open_or_attach"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "url": "https://example.test/"
+        },
+        "command": [
+          "open",
+          "https://example.test/",
+          "--format",
+          "json"
+        ],
+        "id": "open-new-tab",
+        "tool": "open_or_attach"
+      },
+      {
+        "args": {
+          "exact": true,
+          "url": "example.test"
+        },
+        "command": [
+          "target",
+          "--url",
+          "example.test",
+          "--exact",
+          "--format",
+          "json"
+        ],
+        "id": "select-target",
+        "tool": "select_target"
+      },
+      {
+        "args": {
+          "cursorInteractive": true,
+          "depth": 4,
+          "target": "fixture"
+        },
+        "command": [
+          "perceive",
+          "fixture",
+          "-d",
+          "4",
+          "-C",
+          "--adaptive",
+          "--format",
+          "json"
+        ],
+        "id": "perceive",
+        "tool": "perceive"
+      },
+      {
+        "args": {
+          "cards": true,
+          "target": "fixture"
+        },
+        "command": [
+          "perceive",
+          "fixture",
+          "--cards",
+          "--adaptive",
+          "--format",
+          "json"
+        ],
+        "id": "perceive-cards",
+        "tool": "perceive"
+      },
+      {
+        "args": {
+          "limit": 10,
+          "target": "fixture"
+        },
+        "command": [
+          "controls",
+          "fixture",
+          "--limit",
+          "10",
+          "--compact",
+          "--format",
+          "json"
+        ],
+        "id": "controls",
+        "tool": "controls"
+      },
+      {
+        "args": {
+          "selector": "@1",
+          "target": "fixture"
+        },
+        "command": [
+          "overlay",
+          "fixture",
+          "@1",
+          "--format",
+          "json"
+        ],
+        "id": "overlay",
+        "tool": "overlay"
+      },
+      {
+        "args": {
+          "annotate": true,
+          "target": "fixture"
+        },
+        "command": [
+          "shot",
+          "fixture",
+          "--annotate"
+        ],
+        "id": "screenshot",
+        "tool": "screenshot"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "selector": "@1",
+          "target": "fixture"
+        },
+        "command": [
+          "click",
+          "fixture",
+          "@1",
+          "--format",
+          "json"
+        ],
+        "id": "click",
+        "tool": "click"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "expectText": "Done",
+          "selector": "@1",
+          "target": "fixture"
+        },
+        "command": [
+          "verify-click",
+          "fixture",
+          "@1",
+          "--expect-text",
+          "Done",
+          "--format",
+          "json"
+        ],
+        "id": "verify-click",
+        "tool": "verify_click"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "target": "fixture"
+        },
+        "command": [
+          "dismiss-modal",
+          "fixture",
+          "--format",
+          "json"
+        ],
+        "id": "dismiss-modal",
+        "tool": "dismiss_modal"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "selector": "#name",
+          "target": "fixture",
+          "text": "Ada"
+        },
+        "command": [
+          "fill",
+          "fixture",
+          "#name",
+          "Ada",
+          "--format",
+          "json"
+        ],
+        "id": "fill",
+        "tool": "fill"
+      },
+      {
+        "args": {
+          "target": "fixture"
+        },
+        "command": [
+          "viewport",
+          "fixture"
+        ],
+        "id": "viewport-read",
+        "tool": "viewport"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "size": "1280x720",
+          "target": "fixture"
+        },
+        "command": [
+          "viewport",
+          "fixture",
+          "1280x720",
+          "--format",
+          "json"
+        ],
+        "id": "viewport-set",
+        "tool": "viewport"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "desktop": "1280x720",
+          "target": "fixture"
+        },
+        "command": [
+          "qa",
+          "fixture",
+          "--desktop",
+          "1280x720",
+          "--format",
+          "json"
+        ],
+        "id": "qa-page",
+        "tool": "qa_page"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "target": "fixture",
+          "viewports": [
+            "390x844",
+            "1280x720"
+          ]
+        },
+        "command": [
+          "responsive-audit",
+          "fixture",
+          "--viewport",
+          "390x844",
+          "--viewport",
+          "1280x720",
+          "--format",
+          "json"
+        ],
+        "id": "responsive-audit",
+        "tool": "responsive_audit"
+      },
+      {
+        "args": {
+          "last": 3,
+          "target": "fixture"
+        },
+        "command": [
+          "report",
+          "fixture",
+          "--last",
+          "3",
+          "--compact",
+          "--format",
+          "json"
+        ],
+        "id": "report",
+        "tool": "report"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "target": "fixture",
+          "url": "https://example.test/next"
+        },
+        "command": [
+          "nav",
+          "fixture",
+          "https://example.test/next",
+          "--format",
+          "json"
+        ],
+        "id": "navigate",
+        "tool": "navigate"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "key": "Enter",
+          "target": "fixture"
+        },
+        "command": [
+          "press",
+          "fixture",
+          "Enter",
+          "--format",
+          "json"
+        ],
+        "id": "press",
+        "tool": "press"
+      },
+      {
+        "args": {
+          "target": "fixture",
+          "text": "Ready",
+          "timeoutMs": 500
+        },
+        "command": [
+          "waitfor",
+          "fixture",
+          "--text",
+          "Ready",
+          "500"
+        ],
+        "id": "wait-for-text",
+        "tool": "wait_for"
+      },
+      {
+        "args": {
+          "anyOf": "Ready|Done",
+          "scope": "#app",
+          "target": "fixture",
+          "timeoutMs": 500
+        },
+        "command": [
+          "waitfor",
+          "fixture",
+          "--any-of",
+          "Ready|Done",
+          "--scope",
+          "#app",
+          "500"
+        ],
+        "id": "wait-for-any",
+        "tool": "wait_for"
+      },
+      {
+        "args": {
+          "selectorStable": "#app",
+          "stableMs": 250,
+          "target": "fixture",
+          "timeoutMs": 500
+        },
+        "command": [
+          "waitfor",
+          "fixture",
+          "--selector-stable",
+          "#app",
+          "250",
+          "500"
+        ],
+        "id": "wait-for-stable",
+        "tool": "wait_for"
+      },
+      {
+        "args": {
+          "property": "color",
+          "selector": "@1",
+          "target": "fixture"
+        },
+        "command": [
+          "cascade",
+          "fixture",
+          "@1",
+          "color",
+          "--format",
+          "json"
+        ],
+        "id": "cascade",
+        "tool": "cascade"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "selector": "#app",
+          "target": "fixture"
+        },
+        "command": [
+          "components",
+          "fixture",
+          "#app",
+          "--format",
+          "json"
+        ],
+        "id": "components",
+        "tool": "components"
+      },
+      {
+        "args": {
+          "browser": "edge",
+          "confirm": true,
+          "headless": true,
+          "port": 9222
+        },
+        "command": [
+          "spawn-debug-browser",
+          "edge",
+          "--port",
+          "9222",
+          "--headless"
+        ],
+        "id": "spawn-debug-browser",
+        "tool": "spawn_debug_browser"
+      },
+      {
+        "args": {
+          "durationMs": 250,
+          "target": "fixture"
+        },
+        "command": [
+          "record",
+          "fixture",
+          "250"
+        ],
+        "id": "record-snapshot",
+        "tool": "record_snapshot"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "target": "fixture"
+        },
+        "command": [
+          "checkpoint",
+          "fixture",
+          "--format",
+          "json"
+        ],
+        "id": "session-checkpoint",
+        "tool": "session_checkpoint"
+      },
+      {
+        "args": {
+          "confirm": true,
+          "target": "fixture",
+          "unsafeFull": true
+        },
+        "command": [
+          "checkpoint",
+          "fixture",
+          "--unsafe-full",
+          "--format",
+          "json"
+        ],
+        "id": "session-checkpoint-unsafe",
+        "tool": "session_checkpoint"
+      },
+      {
+        "args": {
+          "selector": "#grid",
+          "target": "fixture"
+        },
+        "command": [
+          "table",
+          "fixture",
+          "#grid",
+          "--format",
+          "json"
+        ],
+        "id": "table-observe",
+        "tool": "table"
+      },
+      {
+        "args": {
+          "collect": true,
+          "confirm": true,
+          "scrollContainer": ".viewport",
+          "selector": "#grid",
+          "target": "fixture"
+        },
+        "command": [
+          "table",
+          "fixture",
+          "#grid",
+          "--collect",
+          "--scroll-container",
+          ".viewport",
+          "--format",
+          "json"
+        ],
+        "id": "table-collect",
+        "tool": "table"
+      },
+      {
+        "args": {
+          "continue": "ct1.0123456789abcdef0123456789abcdef.0",
+          "target": "fixture"
+        },
+        "command": [
+          "table",
+          "fixture",
+          "--continue",
+          "ct1.0123456789abcdef0123456789abcdef.0",
+          "--format",
+          "json"
+        ],
+        "id": "table-continue",
+        "tool": "table"
+      },
+      {
+        "args": {
+          "args": [],
+          "command": "help"
+        },
+        "command": [
+          "help"
+        ],
+        "id": "run-command-read",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "@1"
+          ],
+          "command": "click",
+          "confirm": true
+        },
+        "command": [
+          "click",
+          "fixture",
+          "@1"
+        ],
+        "id": "run-command-mutation",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "#grid"
+          ],
+          "command": "table"
+        },
+        "command": [
+          "table",
+          "fixture",
+          "#grid"
+        ],
+        "id": "run-command-table-observe",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "#grid",
+            "--collect",
+            "--scroll-container",
+            ".viewport"
+          ],
+          "command": "table",
+          "confirm": true
+        },
+        "command": [
+          "table",
+          "fixture",
+          "#grid",
+          "--collect",
+          "--scroll-container",
+          ".viewport"
+        ],
+        "id": "run-command-table-collect",
+        "tool": "run_command"
+      },
+      {
+        "args": {
+          "args": [
+            "fixture",
+            "--continue",
+            "ct1.0123456789abcdef0123456789abcdef.0",
+            "--format",
+            "json"
+          ],
+          "command": "table"
+        },
+        "command": [
+          "table",
+          "fixture",
+          "--continue",
+          "ct1.0123456789abcdef0123456789abcdef.0",
+          "--format",
+          "json"
+        ],
+        "id": "run-command-table-continue",
+        "tool": "run_command"
+      }
+    ],
+    "protocolVersion": "2024-11-05",
+    "resourceMappings": [
+      {
+        "command": [
+          "doctor",
+          "--format",
+          "json"
+        ],
+        "uri": "chrome-cdp-ex://doctor/status"
+      },
+      {
+        "command": [
+          "report",
+          "fixture",
+          "--compact",
+          "--format",
+          "json"
+        ],
+        "uri": "chrome-cdp-ex://session/fixture/report"
+      },
+      {
+        "command": [
+          "shot",
+          "fixture"
+        ],
+        "uri": "chrome-cdp-ex://session/fixture/screenshot/latest"
+      }
+    ],
+    "resourceTemplates": [
+      {
+        "description": "Structured doctor readiness model (JSON).",
+        "mimeType": "application/json",
+        "name": "doctor-status",
+        "uriTemplate": "chrome-cdp-ex://doctor/status"
+      },
+      {
+        "description": "Compact session report for a target.",
+        "mimeType": "application/json",
+        "name": "session-report",
+        "uriTemplate": "chrome-cdp-ex://session/{target}/report"
+      },
+      {
+        "description": "Capture a fresh viewport screenshot path/result for a target.",
+        "mimeType": "text/plain",
+        "name": "session-screenshot-latest",
+        "uriTemplate": "chrome-cdp-ex://session/{target}/screenshot/latest"
+      }
+    ],
+    "resources": [
+      {
+        "description": "Structured doctor readiness model (JSON).",
+        "mimeType": "application/json",
+        "name": "doctor-status",
+        "uri": "chrome-cdp-ex://doctor/status"
+      }
+    ],
+    "runCommandAllowlist": [
+      "attach",
+      "back",
+      "broadcast",
+      "cascade",
+      "checkpoint",
+      "click",
+      "clickxy",
+      "clock",
+      "closetab",
+      "components",
+      "console",
+      "controls",
+      "cookies",
+      "current",
+      "dialog",
+      "diff-shot",
+      "diffshot",
+      "dismiss-modal",
+      "doctor",
+      "elshot",
+      "emulate",
+      "export-playwright",
+      "fill",
+      "forget",
+      "forward",
+      "frame",
+      "frames",
+      "fullshot",
+      "help",
+      "hover",
+      "html",
+      "inject",
+      "jsclick",
+      "keepalive",
+      "key",
+      "list",
+      "loadall",
+      "ls",
+      "mock",
+      "nav",
+      "navigate",
+      "net",
+      "netlog",
+      "open",
+      "overlay",
+      "perceive",
+      "press",
+      "qa",
+      "ready",
+      "record",
+      "record-actions",
+      "reload",
+      "report",
+      "resize",
+      "responsive-audit",
+      "restore",
+      "scanshot",
+      "screenshot",
+      "scroll",
+      "select",
+      "shot",
+      "snap",
+      "snapshot",
+      "spawn",
+      "spawn-debug-browser",
+      "status",
+      "stop",
+      "styles",
+      "summary",
+      "tab-group",
+      "table",
+      "tabs",
+      "target",
+      "text",
+      "throttle",
+      "type",
+      "upload",
+      "use",
+      "verify-click",
+      "viewport",
+      "visual-check",
+      "wait",
+      "waitfor"
+    ],
+    "runCommandMutating": [
+      "attach",
+      "back",
+      "broadcast",
+      "checkpoint",
+      "click",
+      "clickxy",
+      "clock",
+      "closetab",
+      "components",
+      "cookies",
+      "dialog",
+      "dismiss-modal",
+      "emulate",
+      "fill",
+      "forget",
+      "forward",
+      "hover",
+      "inject",
+      "jsclick",
+      "keepalive",
+      "key",
+      "loadall",
+      "mock",
+      "nav",
+      "navigate",
+      "open",
+      "press",
+      "qa",
+      "reload",
+      "resize",
+      "responsive-audit",
+      "restore",
+      "scroll",
+      "select",
+      "spawn",
+      "spawn-debug-browser",
+      "stop",
+      "throttle",
+      "type",
+      "upload",
+      "use",
+      "verify-click",
+      "viewport",
+      "visual-check"
+    ],
+    "serverVersion": "2.17.0",
+    "tools": [
+      {
+        "description": "Run chrome-cdp-ex readiness diagnostics and return structured setup guidance.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "name": "doctor"
+      },
+      {
+        "description": "List debuggable browser tabs and named target aliases.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "name": "list_tabs"
+      },
+      {
+        "description": "Open a URL in a debuggable tab, or register a named alias for an existing target.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "description": "Required when opening a new tab because this mutates browser state.",
+              "type": "boolean"
+            },
+            "name": {
+              "description": "Optional local alias name for later tool calls.",
+              "type": "string"
+            },
+            "port": {
+              "description": "CDP port for the target or browser session.",
+              "type": "string"
+            },
+            "reuseUrl": {
+              "description": "Reuse an existing tab matching the URL when unique.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Existing CDP target id or prefix to alias.",
+              "type": "string"
+            },
+            "url": {
+              "description": "HTTP(S) URL to open. Omit when only attaching an alias.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "name": "open_or_attach"
+      },
+      {
+        "description": "Select a debuggable page target by URL and/or title substring (or exact match).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "exact": {
+              "description": "Require exact URL/title match.",
+              "type": "boolean"
+            },
+            "title": {
+              "description": "Page title or title substring to match.",
+              "type": "string"
+            },
+            "url": {
+              "description": "URL or URL substring to match.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "name": "select_target"
+      },
+      {
+        "description": "Capture structured page perception with refs, layout, and console health.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "adaptive": {
+              "description": "Use density/error-aware text-row budgeting. Defaults to true.",
+              "type": "boolean"
+            },
+            "cards": {
+              "description": "Return compact feed cards (article/listitem) instead of the full accessibility tree.",
+              "type": "boolean"
+            },
+            "cursorInteractive": {
+              "description": "Include visible clickable controls and @c refs.",
+              "type": "boolean"
+            },
+            "depth": {
+              "description": "Tree depth limit.",
+              "maximum": 20,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "last": {
+              "description": "Explicit text-row budget; overrides adaptive mode.",
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "maxDiffLines": {
+              "description": "Truncate long text previews in QA mode.",
+              "maximum": 500,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "qa": {
+              "description": "Return a compact QA summary instead of full perception.",
+              "type": "boolean"
+            },
+            "selector": {
+              "description": "Optional CSS selector scope.",
+              "type": "string"
+            },
+            "sinceAction": {
+              "description": "Return the causal diff since the last mutating action.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "perceive"
+      },
+      {
+        "description": "Return a compact list of visible controls for low-token target discovery.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "compact": {
+              "description": "Return the bounded role/label/selector/rect model. Defaults to true.",
+              "type": "boolean"
+            },
+            "filter": {
+              "description": "Optional visible text/name filter.",
+              "type": "string"
+            },
+            "limit": {
+              "description": "Maximum controls to return.",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "selector": {
+              "description": "Optional CSS selector scope.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "controls"
+      },
+      {
+        "description": "Detect dialogs, overlays, and hit-test blockers for the page or a target point.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "selector": {
+              "description": "Optional CSS selector, @ref, or @c ref to test for coverage.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "overlay"
+      },
+      {
+        "description": "Capture a viewport screenshot for a target.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "annotate": {
+              "description": "Overlay @ref boxes on the screenshot.",
+              "type": "boolean"
+            },
+            "confirm": {
+              "description": "Required when path selects an explicit filesystem destination.",
+              "type": "boolean"
+            },
+            "path": {
+              "description": "Optional output path.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "screenshot"
+      },
+      {
+        "description": "Click a selector, @ref, or accessible name and return action evidence. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "js": {
+              "description": "Use HTMLElement.click() fallback instead of CDP mouse events.",
+              "type": "boolean"
+            },
+            "qa": {
+              "description": "Return a compact QA summary instead of full action evidence.",
+              "type": "boolean"
+            },
+            "selector": {
+              "description": "CSS selector, @ref, @c ref, or accessible name.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "selector",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "click"
+      },
+      {
+        "description": "Click once and assert expected text, network request/status, and console health. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "evidence": {
+              "description": "Text evidence detail level.",
+              "enum": [
+                "concise",
+                "full"
+              ],
+              "type": "string"
+            },
+            "expectRequest": {
+              "description": "Expected network request, e.g. POST /api/save.",
+              "type": "string"
+            },
+            "expectStatus": {
+              "description": "Expected HTTP status for the matched request.",
+              "maximum": 599,
+              "minimum": 100,
+              "type": "integer"
+            },
+            "expectText": {
+              "description": "Expected text after the click.",
+              "type": "string"
+            },
+            "noConsoleErrors": {
+              "description": "Fail if action console/exception errors appear.",
+              "type": "boolean"
+            },
+            "selector": {
+              "description": "CSS selector, @ref, or @c ref.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "selector",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "verify_click"
+      },
+      {
+        "description": "Close common dialogs/modals safely and return action evidence. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "dismiss_modal"
+      },
+      {
+        "description": "Fill a field by selector or @ref and return action evidence. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "react": {
+              "description": "Use native value setter plus input/change events.",
+              "type": "boolean"
+            },
+            "selector": {
+              "description": "CSS selector or @ref.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            },
+            "text": {
+              "description": "Text to enter. Sensitive values are redacted by cdp action artifacts.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "selector",
+            "target",
+            "text"
+          ],
+          "type": "object"
+        },
+        "name": "fill"
+      },
+      {
+        "description": "Read or set viewport size. Setting size requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "description": "Required when size is provided because this mutates viewport state.",
+              "type": "boolean"
+            },
+            "size": {
+              "description": "Optional viewport size, for example 1440x900.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "viewport"
+      },
+      {
+        "description": "Run page, console, screenshot, and optional semantic interaction QA.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "click": {
+              "description": "Optional selector/ref to click as part of QA. Requires confirm: true.",
+              "type": "string"
+            },
+            "confirm": {
+              "const": true,
+              "description": "Must be true because QA changes viewport state and captures artifacts.",
+              "type": "boolean"
+            },
+            "desktop": {
+              "description": "Desktop viewport size, for example 1440x900.",
+              "type": "string"
+            },
+            "expectRequest": {
+              "description": "Expected network request, e.g. POST /api/save.",
+              "type": "string"
+            },
+            "expectStatus": {
+              "description": "Expected HTTP status for the matched request.",
+              "maximum": 599,
+              "minimum": 100,
+              "type": "integer"
+            },
+            "expectText": {
+              "description": "Expected text after the optional action.",
+              "type": "string"
+            },
+            "mobile": {
+              "description": "Mobile viewport size, for example 390x844.",
+              "type": "string"
+            },
+            "noConsoleErrors": {
+              "description": "Fail the QA report if action console/exception errors appear.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "qa_page"
+      },
+      {
+        "description": "Run a bounded multi-viewport responsive visual audit with overflow/console/control signals.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true because the audit changes viewport state and captures artifacts.",
+              "type": "boolean"
+            },
+            "maxControls": {
+              "description": "Max visible controls sampled per viewport.",
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "outDir": {
+              "description": "Optional screenshot output directory outside the repo.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            },
+            "viewports": {
+              "description": "Optional list of WxH viewports. Defaults to desktop + mobile.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "confirm",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "responsive_audit"
+      },
+      {
+        "description": "Return session action timeline, artifacts, and recovery next steps.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "description": "Include the full action timeline. Can be expensive.",
+              "type": "boolean"
+            },
+            "compact": {
+              "description": "Return compact report JSON. Defaults to true unless all is requested.",
+              "type": "boolean"
+            },
+            "last": {
+              "description": "Latest action count to include.",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "qa": {
+              "description": "Return a compact QA summary instead of the full report.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "report"
+      },
+      {
+        "description": "Navigate a target to a URL and wait for load. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            },
+            "url": {
+              "description": "HTTP(S) URL to open.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "target",
+            "url"
+          ],
+          "type": "object"
+        },
+        "name": "navigate"
+      },
+      {
+        "description": "Send a key press to the page. Requires confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge browser-state mutation.",
+              "type": "boolean"
+            },
+            "key": {
+              "description": "Key name, for example Enter, Escape, Tab.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "key",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "press"
+      },
+      {
+        "description": "Wait for text, selector stability, or other waitfor conditions.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "anyOf": {
+              "description": "Pipe-delimited alternatives, e.g. win|lose|escape.",
+              "type": "string"
+            },
+            "scope": {
+              "description": "Optional CSS scope selector.",
+              "type": "string"
+            },
+            "selectorStable": {
+              "description": "CSS selector that must remain stable.",
+              "type": "string"
+            },
+            "stableMs": {
+              "description": "Stability window ms for selectorStable.",
+              "maximum": 120000,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            },
+            "text": {
+              "description": "Wait until this text appears.",
+              "type": "string"
+            },
+            "timeoutMs": {
+              "description": "Overall timeout ms.",
+              "maximum": 300000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "wait_for"
+      },
+      {
+        "description": "Trace a computed CSS property back to the winning selector and source.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "property": {
+              "description": "CSS property to trace. Defaults to color when omitted by CLI behavior; prefer an explicit property.",
+              "type": "string"
+            },
+            "selector": {
+              "description": "CSS selector, @ref, or @c ref.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "selector",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "cascade"
+      },
+      {
+        "description": "Inspect React/Vue component tree hooks when available for a selector/@ref. Requires confirm: true because props/state can contain sensitive data.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge sensitive props/state access.",
+              "type": "boolean"
+            },
+            "selector": {
+              "description": "Optional CSS selector, @ref, or component cursor.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "components"
+      },
+      {
+        "description": "Launch an isolated debug browser profile. Requires confirm: true and user consent.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "browser": {
+              "description": "Browser id: edge, chrome, chromium, brave, vivaldi.",
+              "type": "string"
+            },
+            "confirm": {
+              "const": true,
+              "description": "Must be true to acknowledge launching a browser.",
+              "type": "boolean"
+            },
+            "headless": {
+              "description": "Launch headless (CI/containers).",
+              "type": "boolean"
+            },
+            "noSandbox": {
+              "description": "Pass --no-sandbox (Linux CI).",
+              "type": "boolean"
+            },
+            "port": {
+              "description": "Remote debugging port.",
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "url": {
+              "description": "Optional initial URL.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "confirm"
+          ],
+          "type": "object"
+        },
+        "name": "spawn_debug_browser"
+      },
+      {
+        "description": "Record a short temporal timeline of DOM/network/console activity.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "durationMs": {
+              "description": "Recording window in ms.",
+              "maximum": 120000,
+              "minimum": 100,
+              "type": "integer"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "record_snapshot"
+      },
+      {
+        "description": "Capture a redacted session checkpoint for handoff/restore.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirm": {
+              "const": true,
+              "description": "Must be true because checkpoints read session storage and cookies.",
+              "type": "boolean"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            },
+            "unsafeFull": {
+              "description": "Include restorable secrets. Explicit opt-in only.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "confirm",
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "session_checkpoint"
+      },
+      {
+        "description": "Observe a bounded table snapshot, collect a virtualized table after confirm: true, or continue a private artifact. Selector and continue are mutually exclusive; collect requires a scroll container.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "collect": {
+              "description": "Scroll or click to collect virtualized rows. Requires confirm: true and scrollContainer.",
+              "type": "boolean"
+            },
+            "confirm": {
+              "const": true,
+              "description": "Must be true for collect because collection scrolls or clicks.",
+              "type": "boolean"
+            },
+            "continue": {
+              "description": "Immutable continuation token. Mutually exclusive with selector and collect.",
+              "type": "string"
+            },
+            "loadMore": {
+              "description": "Optional load-more control selector. Collect-only.",
+              "type": "string"
+            },
+            "rowKeyColumn": {
+              "description": "Zero-based stable row-key column. Collect-only.",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "scrollContainer": {
+              "description": "Virtualized scroll-container selector. Required when collect is true.",
+              "type": "string"
+            },
+            "selector": {
+              "description": "Optional table CSS selector. Mutually exclusive with continue.",
+              "type": "string"
+            },
+            "target": {
+              "description": "Target prefix or named alias.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "name": "table"
+      },
+      {
+        "description": "Escape hatch: run an allowlisted chrome-cdp-ex CLI command. Mutating commands require confirm: true.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "args": {
+              "description": "Positional/flag args after the command name.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "command": {
+              "description": "Allowlisted CLI command name. One of: help, doctor, ready, list, tabs, ls, target, open, use, current, forget, perceive, controls, overlay, snap, snapshot, summary, status, console, shot, screenshot, elshot, fullshot, scanshot, diff-shot, diffshot, click, verify-click, jsclick, clickxy, type, press, key, scroll, hover, fill, select, upload, dialog, dismiss-modal, nav, navigate, back, forward, reload, viewport, resize, emulate, wait, waitfor, loadall, cascade, components, frame, frames, text, table, html, styles, net, netlog, cookies, qa, responsive-audit, visual-check, report, record, checkpoint, restore, record-actions, export-playwright, tab-group, broadcast, spawn-debug-browser, spawn, attach, stop, closetab, keepalive, mock, clock, throttle, inject",
+              "type": "string"
+            },
+            "confirm": {
+              "description": "Required when the command mutates state, is sensitive, raw, composite, or writes to a caller-selected destination.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        },
+        "name": "run_command"
+      }
+    ]
+  },
+  "package": {
+    "bin": {
+      "chrome-cdp": "bin/chrome-cdp"
+    },
+    "engines": null,
+    "files": [
+      "CHANGELOG.md",
+      "README.md",
+      "INTEGRATIONS.md",
+      "bin/",
+      ".claude-plugin/",
+      "docs/integrations/",
+      "docs/schemas/",
+      "docs/architecture/runtime-v3.md",
+      "docs/adr/0001-runtime-v3-contract-first-strangler.md",
+      "docs/adr/0003-runtime-v3-application-dispatch.md",
+      "docs/contracts/",
+      "docs/examples/killer-path.md",
+      "docs/examples/codex-killer-path.md",
+      "docs/benchmarks/host-validation.v1.json",
+      "docs/benchmarks/measured-baselines.example.json",
+      "docs/pk-324-board.md",
+      "docs/reference.md",
+      "docs/browser-use-mapping.md",
+      "docs/self-improvement-loop.md",
+      "docs/strategy/agent-browser-vision.md",
+      "experiment/codex-killer-path-demo-poster.png",
+      "experiment/codex-killer-path-demo.html",
+      "experiment/codex-killer-path-demo.mp4",
+      "experiment/pk-324-scoreboard.svg",
+      "experiment/pk-324-steps.svg",
+      "experiment/pk-324-token.svg",
+      "experiment/pk-324-time.svg",
+      "scripts/setup.mjs",
+      "scripts/check-host-validation.mjs",
+      "scripts/check-release-package.mjs",
+      "scripts/check-public-contracts.mjs",
+      "skills/"
+    ],
+    "name": "pi-chrome-cdp",
+    "requiredReleaseEntries": [
+      "package/.claude-plugin/plugin.json",
+      "package/INTEGRATIONS.md",
+      "package/README.md",
+      "package/bin/chrome-cdp",
+      "package/docs/adr/0001-runtime-v3-contract-first-strangler.md",
+      "package/docs/adr/0003-runtime-v3-application-dispatch.md",
+      "package/docs/architecture/runtime-v3.md",
+      "package/docs/benchmarks/host-validation.v1.json",
+      "package/docs/contracts/README.md",
+      "package/docs/contracts/v2.15.0/package-entries.v1.json",
+      "package/docs/contracts/v2.15.0/public-contracts.v1.json",
+      "package/docs/contracts/v2.15.0/runtime-dispatch.v1.json",
+      "package/docs/contracts/v2.16.0/package-entries.v1.json",
+      "package/docs/contracts/v2.16.0/public-contracts.v1.json",
+      "package/docs/contracts/v2.16.0/runtime-dispatch.v1.json",
+      "package/docs/contracts/v2.17.0/package-entries.v1.json",
+      "package/docs/contracts/v2.17.0/public-contracts.v1.json",
+      "package/docs/contracts/v2.17.0/runtime-dispatch.v1.json",
+      "package/docs/examples/codex-killer-path.md",
+      "package/experiment/codex-killer-path-demo-poster.png",
+      "package/experiment/codex-killer-path-demo.html",
+      "package/experiment/codex-killer-path-demo.mp4",
+      "package/package.json",
+      "package/scripts/check-host-validation.mjs",
+      "package/scripts/check-public-contracts.mjs",
+      "package/scripts/check-release-package.mjs",
+      "package/scripts/setup.mjs",
+      "package/skills/chrome-cdp-ex/SKILL.md",
+      "package/skills/chrome-cdp-ex/scripts/cdp.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/action-evidence.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/action-receipt-surfaces.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/browser-resources.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/browser-supervisor.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/cdp-domains.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/command-application.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/command-dispatch.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/command-surface.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/daemon-action-handlers.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/daemon-read-handlers.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/page-health.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/pdf-text.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/perception-model.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/responsive-audit.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/screenshot-health.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/session-report.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/target-binding.mjs",
+      "package/skills/chrome-cdp-ex/scripts/mcp-server.mjs"
+    ],
+    "version": "2.17.0"
+  },
+  "productVersion": "2.17.0",
+  "schema": "chrome-cdp-ex.public-contracts.v1",
+  "schemas": [
+    {
+      "document": {
+        "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/action-receipt.v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "properties": {
+          "blockingSignals": {
+            "type": "array"
+          },
+          "delta": {
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "dispatch": {
+            "type": "object"
+          },
+          "nextSteps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "outcome": {
+            "type": [
+              "object",
+              "string"
+            ]
+          },
+          "recoveryHint": {
+            "type": [
+              "null",
+              "object",
+              "string"
+            ]
+          },
+          "schema": {
+            "const": "chrome-cdp-ex.action-receipt.v1"
+          },
+          "settlement": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "schema"
+        ],
+        "title": "chrome-cdp-ex.action-receipt.v1",
+        "type": "object"
+      },
+      "id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/action-receipt.v1.json",
+      "path": "docs/schemas/action-receipt.v1.json"
+    },
+    {
+      "document": {
+        "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/doctor.v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "properties": {
+          "checks": {
+            "type": "array"
+          },
+          "nextSteps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "operationalReady": {
+            "type": "boolean"
+          },
+          "provenCommand": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "readiness": {
+            "enum": [
+              "blocked",
+              "ready",
+              "usable-with-warnings"
+            ],
+            "type": "string"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "recommendation": {
+            "type": "object"
+          },
+          "routeRecommendation": {
+            "type": "object"
+          },
+          "schema": {
+            "const": "chrome-cdp-ex.doctor.v1"
+          },
+          "wizard": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "readiness",
+          "schema"
+        ],
+        "title": "chrome-cdp-ex.doctor.v1",
+        "type": "object"
+      },
+      "id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/doctor.v1.json",
+      "path": "docs/schemas/doctor.v1.json"
+    },
+    {
+      "document": {
+        "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/route-recommendation.v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "properties": {
+          "claude-code-skill": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "codex": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "cursor": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "hermes-shell": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "openclaw": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "pi": {
+            "enum": [
+              "cli",
+              "mcp"
+            ],
+            "type": "string"
+          },
+          "schema": {
+            "const": "chrome-cdp-ex.route-recommendation.v1"
+          }
+        },
+        "required": [
+          "schema"
+        ],
+        "title": "chrome-cdp-ex.route-recommendation.v1",
+        "type": "object"
+      },
+      "id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/route-recommendation.v1.json",
+      "path": "docs/schemas/route-recommendation.v1.json"
+    },
+    {
+      "document": {
+        "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/table-export-manifest.v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "completeness": {
+                  "properties": {
+                    "state": {
+                      "const": "complete"
+                    }
+                  },
+                  "required": [
+                    "state"
+                  ]
+                }
+              },
+              "required": [
+                "completeness"
+              ]
+            },
+            "then": {
+              "properties": {
+                "completeness": {
+                  "properties": {
+                    "evidenceConflict": {
+                      "const": false
+                    },
+                    "termination": {
+                      "const": "logical-count-reached"
+                    }
+                  },
+                  "type": "object"
+                },
+                "identitySource": {
+                  "const": "aria-rowindex"
+                },
+                "logicalCountSource": {
+                  "const": "aria-rowcount"
+                },
+                "logicalRows": {
+                  "maximum": 100000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "orderingSource": {
+                  "const": "aria-rowindex"
+                }
+              },
+              "required": [
+                "completeness",
+                "identitySource",
+                "logicalCountSource",
+                "logicalRows",
+                "orderingSource"
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 16777216,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "checksum": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "checksumScope": {
+                "const": "canonical-data-rows-tsv-utf8"
+              },
+              "rows": {
+                "maximum": 100000,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "bytes",
+              "checksum",
+              "checksumScope",
+              "rows"
+            ],
+            "type": "object"
+          },
+          "collectedRows": {
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "completeness": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceConflict": {
+                "type": "boolean"
+              },
+              "state": {
+                "enum": [
+                  "complete",
+                  "incomplete",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              "termination": {
+                "enum": [
+                  "byte-limit",
+                  "control-disappeared",
+                  "error",
+                  "interaction-limit",
+                  "logical-count-reached",
+                  "no-progress-limit",
+                  "observation",
+                  "row-limit",
+                  "row-too-large",
+                  "time-limit"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "evidenceConflict",
+              "state",
+              "termination"
+            ],
+            "type": "object"
+          },
+          "identitySource": {
+            "enum": [
+              "aria-rowindex",
+              "row-key-column",
+              "snapshot-order"
+            ],
+            "type": "string"
+          },
+          "inline": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 8192,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rowCount": {
+                "maximum": 20,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rows": {
+                "items": {
+                  "maxLength": 4096,
+                  "maxUtf8Bytes": 4096,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "bytes",
+              "rowCount",
+              "rows",
+              "truncated"
+            ],
+            "type": "object"
+          },
+          "logicalCountSource": {
+            "enum": [
+              "aria-rowcount",
+              "none"
+            ],
+            "type": "string"
+          },
+          "logicalRows": {
+            "maximum": 100000,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mountedRows": {
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "orderingSource": {
+            "enum": [
+              "aria-rowindex",
+              "dom-order",
+              "row-key-column"
+            ],
+            "type": "string"
+          },
+          "recycledMountedNodes": {
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema": {
+            "const": "chrome-cdp-ex.table-export.v1"
+          }
+        },
+        "required": [
+          "artifact",
+          "collectedRows",
+          "completeness",
+          "identitySource",
+          "inline",
+          "logicalCountSource",
+          "logicalRows",
+          "mountedRows",
+          "orderingSource",
+          "recycledMountedNodes",
+          "schema"
+        ],
+        "title": "chrome-cdp-ex.table-export.v1",
+        "type": "object"
+      },
+      "id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/table-export-manifest.v1.json",
+      "path": "docs/schemas/table-export-manifest.v1.json"
+    },
+    {
+      "document": {
+        "$id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/table-result.v1.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "completeness": {
+                  "properties": {
+                    "state": {
+                      "const": "complete"
+                    }
+                  },
+                  "required": [
+                    "state"
+                  ]
+                }
+              },
+              "required": [
+                "completeness"
+              ]
+            },
+            "then": {
+              "properties": {
+                "completeness": {
+                  "properties": {
+                    "evidenceConflict": {
+                      "const": false
+                    },
+                    "termination": {
+                      "const": "logical-count-reached"
+                    }
+                  },
+                  "type": "object"
+                },
+                "identitySource": {
+                  "const": "aria-rowindex"
+                },
+                "logicalCountSource": {
+                  "const": "aria-rowcount"
+                },
+                "logicalRows": {
+                  "maximum": 100000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "orderingSource": {
+                  "const": "aria-rowindex"
+                }
+              },
+              "required": [
+                "completeness",
+                "identitySource",
+                "logicalCountSource",
+                "logicalRows",
+                "orderingSource"
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "artifact": {
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "required": [
+                    "checksum"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "checksumScope"
+                  ]
+                }
+              }
+            ],
+            "properties": {
+              "bytes": {
+                "maximum": 16777216,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "checksum": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "checksumScope": {
+                "const": "canonical-data-rows-tsv-utf8"
+              },
+              "id": {
+                "pattern": "^[0-9a-f]{32}$",
+                "type": "string"
+              },
+              "rows": {
+                "maximum": 100000,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "caption": {
+            "maxLength": 4096,
+            "maxUtf8Bytes": 4096,
+            "type": "string"
+          },
+          "collectedRows": {
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "completeness": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceConflict": {
+                "type": "boolean"
+              },
+              "state": {
+                "enum": [
+                  "complete",
+                  "incomplete",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              "termination": {
+                "enum": [
+                  "byte-limit",
+                  "control-disappeared",
+                  "error",
+                  "interaction-limit",
+                  "logical-count-reached",
+                  "no-progress-limit",
+                  "observation",
+                  "row-limit",
+                  "row-too-large",
+                  "time-limit"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "evidenceConflict",
+              "state",
+              "termination"
+            ],
+            "type": "object"
+          },
+          "continuation": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 16384,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "nextToken": {
+                "maxLength": 42,
+                "pattern": "^ct1\\.[0-9a-f]{32}\\.(0|[1-9][0-9]{0,4})$",
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "offset": {
+                "maximum": 100000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rowCount": {
+                "maximum": 20,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rows": {
+                "items": {
+                  "maxLength": 4096,
+                  "maxUtf8Bytes": 4096,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              "token": {
+                "maxLength": 42,
+                "pattern": "^ct1\\.[0-9a-f]{32}\\.(0|[1-9][0-9]{0,4})$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "bytes",
+              "nextToken",
+              "offset",
+              "rowCount",
+              "rows",
+              "token"
+            ],
+            "type": "object"
+          },
+          "headers": {
+            "items": {
+              "items": {
+                "maxLength": 4096,
+                "maxUtf8Bytes": 4096,
+                "type": "string"
+              },
+              "maxItems": 256,
+              "type": "array"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "identitySource": {
+            "enum": [
+              "aria-rowindex",
+              "row-key-column",
+              "snapshot-order"
+            ],
+            "type": "string"
+          },
+          "inline": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "maximum": 8192,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rowCount": {
+                "maximum": 20,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rows": {
+                "items": {
+                  "maxLength": 4096,
+                  "maxUtf8Bytes": 4096,
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "bytes",
+              "rowCount",
+              "rows",
+              "truncated"
+            ],
+            "type": "object"
+          },
+          "logicalCountSource": {
+            "enum": [
+              "aria-rowcount",
+              "none"
+            ],
+            "type": "string"
+          },
+          "logicalRows": {
+            "maximum": 100000,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mountedRows": {
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "orderingSource": {
+            "enum": [
+              "aria-rowindex",
+              "dom-order",
+              "row-key-column"
+            ],
+            "type": "string"
+          },
+          "recycledMountedNodes": {
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema": {
+            "const": "chrome-cdp-ex.table.v1"
+          },
+          "snapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "dataRowsSeen": {
+                "maximum": 100000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "directRowsSeen": {
+                "maximum": 100000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "headerRowsSeen": {
+                "maximum": 256,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rowsAdmitted": {
+                "maximum": 100000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "truncated": {
+                "type": "boolean"
+              },
+              "truncationReason": {
+                "maxLength": 64,
+                "type": [
+                  "null",
+                  "string"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "schema"
+        ],
+        "title": "chrome-cdp-ex.table.v1",
+        "type": "object"
+      },
+      "id": "https://github.com/EndeavorYen/chrome-cdp-ex/docs/schemas/table-result.v1.json",
+      "path": "docs/schemas/table-result.v1.json"
+    }
+  ]
+}
