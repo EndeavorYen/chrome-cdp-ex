@@ -130,7 +130,7 @@ describe('explicit regression promotion gate', () => {
     const written = writeRegressionSeed(outPath, seed, { allowedRoot });
 
     expect(written).toBe(outPath);
-    expect(statSync(outPath).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(statSync(outPath).mode & 0o777).toBe(0o600);
     expect(JSON.parse(readFileSync(outPath, 'utf8'))).toEqual(seed);
     expect(() => writeRegressionSeed(outPath, seed, { allowedRoot })).toThrow(/exists|EEXIST/);
   });
@@ -146,7 +146,7 @@ describe('explicit regression promotion gate', () => {
     expect(readFileSync(existing, 'utf8')).toBe('keep');
   });
 
-  it('rejects a symlinked promotion parent that resolves outside the allowed root', async () => {
+  it.skipIf(process.platform === 'win32')('rejects a symlinked promotion parent that resolves outside the allowed root', async () => {
     const seed = buildRegressionSeed(await bundleFor(), { confirmed: true, rootDir });
     const allowedRoot = tempDir();
     const outsideRoot = tempDir();

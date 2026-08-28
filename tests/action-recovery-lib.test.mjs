@@ -162,9 +162,8 @@ describe('action recovery lib', () => {
       target: { targetId: 'ABC123', input: '#save' },
     });
 
-    expect(text).toContain('Action failure: selector');
-    expect(text).toContain('Next: cdp perceive ABC123 -C -d 8');
-    expect(text).toContain('Original: Element not found: #save');
+    expect(text).toBe('Kind: selector\nNext: cdp perceive ABC123 -C -d 8');
+    expect(text).not.toContain('Original:');
     expect(recoveryCommandsFromDiagnosis({
       recovery: { commands: [{ command: 'cdp console ABC123 --errors' }] },
     })).toEqual(['cdp console ABC123 --errors']);

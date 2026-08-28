@@ -76,22 +76,17 @@ describe('release notes CLI @token sanitizer (#354)', () => {
   });
 
   it('sanitizes extracted v2.16.0 changelog notes without rewriting CHANGELOG.md', () => {
-    const extracted = spawnSync(
-      'awk',
-      [
-        '-v',
-        'version=2.16.0',
-        `index($0, "## [" version "]") == 1 { capture = 1; next }
-         capture && /^## \\[/ { exit }
-         capture { print }`,
-        'CHANGELOG.md',
-      ],
-      { cwd: rootDir, encoding: 'utf8' },
-    );
-    expect(extracted.status, extracted.stderr).toBe(0);
-    expect(extracted.stdout).toContain('click @ref');
+    const extracted = [];
+    let capture = false;
+    for (const line of changelog.split(/\r?\n/)) {
+      if (line.startsWith('## [2.16.0]')) { capture = true; continue; }
+      if (capture && /^## \[/.test(line)) break;
+      if (capture) extracted.push(line);
+    }
+    const extractedText = extracted.join('\n');
+    expect(extractedText).toContain('click @ref');
 
-    const sanitized = sanitizeReleaseNotes(extracted.stdout);
+    const sanitized = sanitizeReleaseNotes(extractedText);
     const mentions = githubMentionUsernames(sanitized);
     expect(mentions).not.toContain('ref');
     expect(mentions).not.toContain('refs');

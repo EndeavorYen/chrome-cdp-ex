@@ -1,6 +1,18 @@
 # Self-Improvement Loop
 
-Use this runbook when improving `chrome-cdp-ex` through repeated live-test rounds. A round is complete only when the issue is closed by a merged PR to `origin/main` and the next gap has been identified from current evidence.
+> **Not a merge gate.** Ordinary and `musk/live-path` merges do not require `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) or validation-lab phases 4–7.
+
+Default local gate:
+
+```bash
+npm test
+npm run lint
+npm run check:docs
+```
+
+When attach, perceive, or act code changes and a supported browser exists, also run `npm run smoke:live`. Campaign and validation-lab commands below are a historical optional runbook; they must not be treated as contributor or agent merge instructions. Scripts may stay in `scripts/` and `validation/`.
+
+Use this runbook only when you intentionally want repeated live-test rounds. A round is complete only when the issue is closed by a merged PR to `origin/main` and the next gap has been identified from current evidence.
 
 ## Round Contract
 
@@ -18,7 +30,7 @@ When a round changes release readiness, install instructions, benchmark claims, 
 
 ## 1. Self-Assess
 
-Start from current state, not memory:
+Start from current state, not memory. The campaign commands are optional historical diagnostics, not merge gates:
 
 ```bash
 git status --short --branch
@@ -31,13 +43,13 @@ npm run benchmark:campaign -- --rounds 2 --types mcp,cli --compare-baseline ./ma
 
 Use `History trend` to compare against the previous campaign. Treat negative pass-rate deltas, rising average output tokens, rising max step tokens, or slower culprit steps as candidates for the next issue. If a campaign fails, inspect `issueDrafts` in the JSON output before writing a new issue by hand.
 
-Use `Regression comparison` before review when you have a saved `main` campaign summary or history record. Treat `warn` as review-required evidence and `fail` as a blocker unless the regression is intentional and documented with a stronger live result.
+Use `Regression comparison` as optional campaign evidence when you have a saved `main` campaign summary or history record. Treat `warn` as review-worthy campaign evidence and `fail` as a campaign diagnostic unless the regression is intentional and documented with a stronger live result. Campaign comparison is not a merge gate.
 
 Use `Route recommendation` to decide whether the next agent workflow should prefer MCP tools or direct CLI commands. Recommendations are valid only when both routes ran task `problem-finding-v1` with the same six checkpoints; treat low confidence or `inconclusive` as a signal to run more matched rounds.
 
 Use all five `real-app` target profiles when synthetic smoke pages are too easy. They are distinct local/test-only dashboard, docs, auth, table, and canvas fixtures; require `missingProbes: []` and exercised coverage before calling a profile successful. Any URL-backed target is allowed only for an owned staging/test tenant with no personal, customer, or production data.
 
-Treat failed `long-session-report-budget` gates as merge blockers. They mean the report handoff for many-action sessions either exceeded its byte budget, exposed an expensive full-history window, lost latest-action context, or dropped recovery-critical receipt fields.
+Failed `long-session-report-budget` campaign gates are historical diagnostics, not ordinary merge blockers. They mean the report handoff for many-action sessions either exceeded its byte budget, exposed an expensive full-history window, lost latest-action context, or dropped recovery-critical receipt fields.
 
 Use adversarial seeds when the fixed smoke fixture feels too easy. A seed can generate overlay, stale-ref, iframe, shadow DOM, SPA route, slow-network, auth-wall, large-table, hidden-template, and canvas traits, and failed rounds keep the seed in their reproduction command.
 
@@ -59,12 +71,16 @@ Create a feature branch from clean `main`, write a failing test for the selected
 npm test
 npm run lint
 npm run check:docs
-npm audit --audit-level=high
+```
+
+That is merge readiness. When attach, perceive, or act code changed and a browser exists, also run `npm run smoke:live`. Optional historical campaigns are not merge requirements:
+
+```bash
 npm run benchmark:campaign -- --rounds 2 --types mcp,cli --history /tmp/chrome-cdp-ex-loop-history.jsonl
 npm run benchmark:campaign -- --rounds 2 --types mcp,cli --compare-baseline /tmp/chrome-cdp-ex-main-campaign.json
 ```
 
-Use the full test suite for merge readiness. Campaign failures exit nonzero by default; use `--allow-failures` only when you intentionally want a diagnostic artifact from a known-failing run. Use a focused campaign for the changed path and the 10+ round mixed campaign for release readiness.
+Campaign failures exit nonzero by default; use `--allow-failures` only when you intentionally want a diagnostic artifact from a known-failing run.
 
 ## 4. Review And Merge
 
@@ -78,7 +94,7 @@ gh pr checks <number>
 gh pr merge <number> --merge --delete-branch
 ```
 
-Do not merge until local gates and GitHub CI are green. After merge, verify the local checkout is back on `main`, clean, and synchronized with `origin/main`.
+Do not merge until the default local gates (`npm test`, `npm run lint`, `npm run check:docs`) and GitHub CI are green. After merge, verify the local checkout is back on `main`, clean, and synchronized with `origin/main`.
 
 ## 5. Next-Round Backlog
 

@@ -185,7 +185,7 @@ function tracedHandle(handle, label, trace, overrides = {}) {
   };
 }
 
-describe('private table artifact publication', () => {
+describe.skipIf(process.platform === 'win32')('private table artifact publication', () => {
   it('creates an opaque frozen lazy store without touching the filesystem', () => {
     const runtimeDir = join(tmpdir(), `missing-table-root-${process.pid}-${Date.now()}`);
     const store = createTableArtifactStore({
@@ -597,7 +597,7 @@ describe('private table artifact publication', () => {
   });
 });
 
-describe('immutable row-aligned table continuation', () => {
+describe.skipIf(process.platform === 'win32')('immutable row-aligned table continuation', () => {
   it('rejects hostile tokens before every filesystem operation', async () => {
     const runtimeDir = privateRuntimeRoot();
     let fsCalls = 0;
@@ -828,7 +828,7 @@ describe('immutable row-aligned table continuation', () => {
   );
 });
 
-describe('artifact request and session ownership', () => {
+describe.skipIf(process.platform === 'win32')('artifact request and session ownership', () => {
   it('rolls back a request before flush but keeps a flushed artifact until session cleanup', async () => {
     const runtimeDir = privateRuntimeRoot();
     const store = artifactTest.createTableArtifactStoreWithDependencies({
@@ -1346,7 +1346,9 @@ describe('artifact request and session ownership', () => {
     expect(error).toMatchObject({ code: 'TABLE_ARTIFACT_CLEANUP_FAILED' });
     expect(planted.every(name => existsSync(join(targetDir, name)))).toBe(true);
   });
+});
 
+describe('artifact platform boundaries', () => {
   it('fails artifact-producing and continuation modes on Windows before filesystem effects', async () => {
     let fsCalls = 0;
     const failIfCalled = async () => { fsCalls += 1; throw new Error('filesystem must not be reached'); };

@@ -465,7 +465,9 @@ describe('issue #335 skip fill leftover settle before search-submit press', () =
       },
     });
     expect(observed).toBe(true);
-    expect(text).toMatch(/RootWebArea/);
+    expect(text).toMatch(/^Filled <INPUT> with "bert"\. Next: /);
+    expect(text).not.toMatch(/RootWebArea/);
+    expect(text).not.toMatch(/^Outcome:/m);
   });
 
   it('still fail-closes skip-settle fill when the listing never appears, without sending Enter', async () => {

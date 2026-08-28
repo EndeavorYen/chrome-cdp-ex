@@ -40,6 +40,7 @@ describe('host validation CLI', () => {
     const result = spawnSync('npm', ['pack', '--dry-run', '--json'], {
       cwd: new URL('..', import.meta.url),
       encoding: 'utf8',
+      shell: process.platform === 'win32',
     });
 
     expect(result.status).toBe(0);

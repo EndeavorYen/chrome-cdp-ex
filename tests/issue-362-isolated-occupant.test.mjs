@@ -130,8 +130,9 @@ describe('#362 isolated 9222 occupant is not daily attach', () => {
     expect(wizard.currentStep).toMatch(/daily-chrome/);
     expect(wizard.currentStep).not.toMatch(/--daily-profile/);
     expect(report).toMatch(/--user-data-dir/);
-    expect(report).toMatch(/ask user first|Do not kill/i);
+    expect(report).toMatch(/ask first/i);
     expect(report).not.toMatch(/\bpkill\b|\bkillall\b|kill -9/i);
+    expect(report).not.toMatch(/perceive .* -C -d 8/);
   });
 
   it('does not let unprefixed getWsUrl silently attach to an isolated leftover', async () => {

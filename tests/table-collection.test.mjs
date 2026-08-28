@@ -526,7 +526,7 @@ function pageMutatingCalls(cdp) {
   ));
 }
 
-describe('persistent isolated-world virtual collection', () => {
+describe.skipIf(process.platform === 'win32')('persistent isolated-world virtual collection', () => {
   it('collects every recycled row from the frozen 1024-row virtual table', async () => {
     const fixture = mountRecycledTableFixture();
     const cdp = createWorldCdp(fixture);
@@ -556,7 +556,7 @@ describe('persistent isolated-world virtual collection', () => {
   });
 });
 
-describe('collection context, abort, and deadline lifecycle', () => {
+describe.skipIf(process.platform === 'win32')('collection context, abort, and deadline lifecycle', () => {
   it('returns collector-busy when a second collect is already active on the session', async () => {
     const fixture = mountRecycledTableFixture();
     let release;
@@ -700,7 +700,7 @@ describe('collection context, abort, and deadline lifecycle', () => {
   });
 });
 
-describe('adversarial virtual collection', () => {
+describe.skipIf(process.platform === 'win32')('adversarial virtual collection', () => {
   it('fails a duplicate mounted aria-rowindex inside one sample', async () => {
     const fixture = mountRecycledTableFixture({
       logicalRows: 2,
@@ -909,7 +909,7 @@ describe('collection command semantics', () => {
     expect(pageMutatingCalls(cdp)).toEqual([]);
   });
 
-  it('keeps continuation on the private store without creating an isolated world', async () => {
+  it.skipIf(process.platform === 'win32')('keeps continuation on the private store without creating an isolated world', async () => {
     const fixture = mountRecycledTableFixture({
       logicalRows: 2, ariaRowCount: 3, mountedRows: 2, initialAvailable: 2,
     });
@@ -921,7 +921,7 @@ describe('collection command semantics', () => {
     expect(continued).toContain('ROW-0001');
   });
 
-  it('preserves collect JSON through CLI capture and confirmed MCP run_command', async () => {
+  it.skipIf(process.platform === 'win32')('preserves collect JSON through CLI capture and confirmed MCP run_command', async () => {
     const fixture = mountRecycledTableFixture({
       logicalRows: 2, ariaRowCount: 3, mountedRows: 2, initialAvailable: 2,
     });
@@ -979,7 +979,7 @@ describe('collection command semantics', () => {
     });
   });
 
-  it('preserves collect text through CLI capture and confirmed MCP run_command', async () => {
+  it.skipIf(process.platform === 'win32')('preserves collect text through CLI capture and confirmed MCP run_command', async () => {
     const fixture = mountRecycledTableFixture({
       logicalRows: 2, ariaRowCount: 3, mountedRows: 2, initialAvailable: 2,
     });

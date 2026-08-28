@@ -85,7 +85,7 @@ describe('#368 persistent daily-edge user-data-dir is the first step', () => {
     const run = model.recommendation.run;
 
     expect(run).toMatch(/cdp spawn-debug-browser edge --port 9222 --user-data-dir/);
-    expect(run).toMatch(/chrome-cdp-ex\/daily-edge/);
+    expect(run).toMatch(/chrome-cdp-ex[/\\]daily-edge/);
     expect(run).not.toMatch(/--daily-profile/);
     expect(run).not.toMatch(/\/tmp\/chrome-cdp-ex/);
     expect(run).not.toMatch(/--url https:\/\/example\.com/);
@@ -97,6 +97,7 @@ describe('#368 persistent daily-edge user-data-dir is the first step', () => {
     expect(report).not.toMatch(/Enable daily-profile debug/);
     expect(steps).toMatch(/daily-edge/);
     expect(steps).not.toMatch(/Isolated fallback \(not the daily profile\): cdp spawn-debug-browser edge --port 9222 --url/);
+    expect(report).not.toMatch(/perceive .* -C -d 8/);
   });
 
   it('spawns the persistent dir on Edge 136+ without quitting Dock default Edge', async () => {

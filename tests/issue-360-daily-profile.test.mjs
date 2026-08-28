@@ -39,8 +39,9 @@ describe('#360 daily-profile debug first step', () => {
     expect(`${model.recommendation.ask || ''} ${model.recommendation.reason || ''}`).toMatch(/not the daily profile/i);
     expect(report).toMatch(/spawn-debug-browser chrome/);
     expect(report).toMatch(/daily-chrome/);
-    expect(report).toMatch(/not the daily profile/i);
+    expect(report).toMatch(/\(ask first\)/);
     expect(report).toContain('cdp spawn-debug-browser chrome');
+    expect(report).not.toMatch(/perceive .* -C -d 8/);
   });
 
   it('parses --daily-profile to the browser default user-data-dir instead of an isolated tmp profile', () => {

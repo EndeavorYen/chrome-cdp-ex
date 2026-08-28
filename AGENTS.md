@@ -1,17 +1,20 @@
 # AGENTS.md - chrome-cdp-ex
 
-@/Users/simon/.codex/RTK.md
-@/Users/simon/.codex/CLAUDE_CODE_BOOST.md
-
 ## Pull Request Policy
 
 - Open PRs against this repository's own remote main branch: `origin/main` (`EndeavorYen/chrome-cdp-ex:main`).
 - Do not target an `upstream` remote for this project unless the user explicitly asks for an upstream contribution.
 
-## Release Policy
+## Merge gate
 
-- Do not publish this repository to the npm registry.
-- Treat GitHub Releases, release tags, GitHub Pages, and attached release assets as the official publish surface.
-- `npm pack`, `npm pack --dry-run`, and `npm publish --dry-run` are allowed for package validation only.
-- Do not treat npm registry ownership, npm login state, or npm `latest` drift as blockers for this project.
-- When releasing, verify tests/docs/lint/package contents, create the GitHub release, attach the package tarball if useful, and leave local/remote branches clean.
+Default local gate for ordinary and `musk/live-path` merges:
+
+```bash
+npm test
+npm run lint
+npm run check:docs
+```
+
+When attach, perceive, or act code changes and a supported browser exists, also run `npm run smoke:live`.
+
+Do not treat `npm run benchmark:campaign` (10+ mixed rounds, adversarial seeds) or validation-lab phases 4–7 as merge requirements. Do not police npm registry publish as an agent process for this repository.

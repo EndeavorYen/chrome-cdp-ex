@@ -16,11 +16,15 @@ import { listMcpResources, resolveMcpResource } from '../skills/chrome-cdp-ex/sc
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
 describe('generated CLI and MCP command surfaces', () => {
-  it('renders all 81 help rows from catalog data while preserving exact v2.15 bytes', () => {
+  it('renders all 81 help rows from catalog data while default help is the survivor card', () => {
     expect(typeof cdpTest.renderCliHelp).toBe('function');
-    expect(cdpTest.renderCliHelp(COMMAND_SURFACE)).toBe(cdpTest.helpStr());
+    expect(typeof cdpTest.renderCardHelp).toBe('function');
+    expect(cdpTest.renderCliHelp(COMMAND_SURFACE)).not.toBe(cdpTest.helpStr());
+    expect(cdpTest.renderCardHelp(COMMAND_SURFACE)).toBe(cdpTest.helpStr());
     expect(cdpTest.CLI_HELP_TEMPLATE.match(/\{\{command:[a-z0-9-]+}}/g)).toHaveLength(81);
     expect(cdpTest.CLI_HELP_LAYOUT).toHaveLength(81);
+    expect(cdpTest.helpStr()).not.toMatch(/\bjsclick\s+</);
+    expect(cdpTest.helpStr()).not.toMatch(/\beval64\s+</);
   });
 
   it('changes rendered command synopsis and summary only when catalog data changes', () => {

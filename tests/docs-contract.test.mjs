@@ -3,13 +3,14 @@ import { existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
-import { checkDocsContract, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
+import { checkDocsContract, SURVIVOR_COMMANDS, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
 import { PK_324_CHART_FILES, PK_324_SCOREBOARD_FILE } from '../scripts/lib/pk-324-board.mjs';
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const reference = readFileSync(new URL('../docs/reference.md', import.meta.url), 'utf8');
 const selfImprovementLoop = readFileSync(new URL('../docs/self-improvement-loop.md', import.meta.url), 'utf8');
 const skill = readFileSync(new URL('../skills/chrome-cdp-ex/SKILL.md', import.meta.url), 'utf8');
+const skillCommands = readFileSync(new URL('../skills/chrome-cdp-ex/references/commands.md', import.meta.url), 'utf8');
 const killerPath = readFileSync(new URL('../docs/examples/killer-path.md', import.meta.url), 'utf8');
 const packageJson = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
 const pluginManifest = readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8');
@@ -35,22 +36,19 @@ describe('Killer Path docs contract', () => {
     const script = fileURLToPath(new URL('../scripts/check-docs-contract.mjs', import.meta.url));
     const child = spawnSync(process.execPath, [script], { cwd: tmpdir(), encoding: 'utf8' });
     expect(child.status, child.stderr).toBe(0);
-    expect(child.stdout).toContain('Docs contract OK: 81 commands checked');
+    expect(child.stdout).toContain('Docs contract OK: 20 survivor commands on the card (81 catalog)');
   });
 
   it('accepts the documented first-run golden path', () => {
     expect(validateKillerPathContract(killerPath)).toEqual([]);
   });
 
-  it('requires since-action evidence before the session report', () => {
-    const reportTooEarly = killerPath.replace(
-      'node skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action\nnode skills/chrome-cdp-ex/scripts/cdp.mjs report <target>',
-      'node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>\nnode skills/chrome-cdp-ex/scripts/cdp.mjs perceive <target> --since-action',
-    );
+  it('allows leftover --since-action / report examples without treating them as liturgy', () => {
+    const withoutLeftoverHandoff = killerPath
+      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs perceive <target> --since-action\r?\n/, '')
+      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs report <target> --last 1 --format json --compact\r?\n/, '');
 
-    expect(validateKillerPathContract(reportTooEarly)).toContain(
-      'Killer Path command sequence is missing or out of order: report after perceive --since-action',
-    );
+    expect(validateKillerPathContract(withoutLeftoverHandoff)).toEqual([]);
   });
 
   it('requires an explicit form-fill action alternative', () => {
@@ -64,24 +62,25 @@ describe('Killer Path docs contract', () => {
     );
   });
 
-  it('requires recovery, CSS tracing, replay, and export handoff examples', () => {
+  it('requires recovery and CSS tracing, not leftover record/replay/export liturgy', () => {
     const withoutPromotionWorkflow = killerPath
-      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs click <target> "#missing" --format json\n/g, '')
-      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs cascade <target> @ref background-color --format json\n/g, '')
-      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs record-actions <target> --format json\n/g, '')
-      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs replay <target> --file record-actions\.json --format json\n/g, '')
-      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs export-playwright <target> --format json\n/g, '');
+      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs click <target> "#missing" --format json\r?\n/g, '')
+      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs cascade <target> @ref background-color --format json\r?\n/g, '')
+      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs record-actions <target> --format json\r?\n/g, '')
+      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs replay <target> --file record-actions\.json --format json\r?\n/g, '')
+      .replace(/node skills\/chrome-cdp-ex\/scripts\/cdp\.mjs export-playwright <target> --format json\r?\n/g, '');
 
-    expect(validateKillerPathContract(withoutPromotionWorkflow)).toEqual(expect.arrayContaining([
+    const promotionFailures = validateKillerPathContract(withoutPromotionWorkflow);
+    expect(promotionFailures).toEqual(expect.arrayContaining([
       'Killer Path example is missing failed-action recovery command',
       'Killer Path example is missing CSS tracing command',
-      'Killer Path example is missing record-actions handoff command',
-      'Killer Path example is missing replay handoff command',
-      'Killer Path example is missing export-playwright handoff command',
     ]));
+    expect(promotionFailures).not.toContain('Killer Path example is missing record-actions handoff command');
+    expect(promotionFailures).not.toContain('Killer Path example is missing replay handoff command');
+    expect(promotionFailures).not.toContain('Killer Path example is missing export-playwright handoff command');
   });
 
-  it('requires README to lead Cool → advantage → SVG scoreboard → demo → Quick Start', () => {
+  it('allows README to lead with live-session and doctor/list without the PK scoreboard SVG', () => {
     const docs = {
       readme,
       reference,
@@ -90,6 +89,7 @@ describe('Killer Path docs contract', () => {
       pkScoreboard,
       selfImprovementLoop,
       skill,
+      skillCommands,
       killerPath,
       packageJson,
       pluginManifest,
@@ -103,13 +103,39 @@ describe('Killer Path docs contract', () => {
     expect(checkDocsContract({
       ...docs,
       readme: readme.replace(/22c525d4/g, 'deadbeef'),
-    }, [])).toContain(
+    }, [])).not.toContain(
       'README is missing the locked live-session board identity (2026-08-17 / 22c525d4)',
     );
     expect(checkDocsContract({
       ...docs,
-      readme: readme.replace('experiment/pk-324-scoreboard.svg', 'experiment/pk-324-steps.svg'),
-    }, [])).toContain('README comparison first glance must be the PK scoreboard SVG');
+      readme: readme.replaceAll('experiment/pk-324-scoreboard.svg', ''),
+    }, [])).not.toContain('README comparison first glance must be the PK scoreboard SVG');
+    const liveSessionFrontDoor = [
+      '# chrome-cdp-ex',
+      '',
+      'Use the **browser you already have open**.',
+      '',
+      '## Quick start',
+      '',
+      '```bash',
+      './bin/chrome-cdp doctor',
+      './bin/chrome-cdp list',
+      '```',
+      '',
+      'Pinned release: [v2.16.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.16.0) (`pi-chrome-cdp-2.16.0.tgz`).',
+      'Measured jobs: [docs/pk-324-board.md](docs/pk-324-board.md).',
+      'Host wiring: [INTEGRATIONS.md](INTEGRATIONS.md). MIT [LICENSE](LICENSE).',
+      '',
+    ].join('\n');
+    expect(checkDocsContract({ ...docs, readme: liveSessionFrontDoor }, [])).toEqual([]);
+    expect(checkDocsContract({
+      ...docs,
+      readme: liveSessionFrontDoor.replace(/browser you already have open/gi, 'a browser'),
+    }, [])).toContain('README is missing the live-session hook');
+    expect(checkDocsContract({
+      ...docs,
+      readme: liveSessionFrontDoor.replace('./bin/chrome-cdp doctor', './bin/chrome-cdp help'),
+    }, [])).toContain('README Quick Start must stay doctor → list');
     expect(checkDocsContract({
       ...docs,
       pkScoreboard: pkScoreboard.replace('data-value="10/10"', 'data-value="9/10"'),
@@ -231,21 +257,74 @@ describe('Killer Path docs contract', () => {
     ]));
   });
 
-  it('allows command reference details outside the README', () => {
-    const skillCorpus = [
-      skill,
-      readFileSync(new URL('../skills/chrome-cdp-ex/references/commands.md', import.meta.url), 'utf8'),
-    ].join('\n');
+  it('allows leftover command docs in references/commands.md without README or SKILL.md', () => {
     const docs = {
       readme: readme.replaceAll('mock', ''),
       reference,
       selfImprovementLoop,
-      skill: skillCorpus,
+      skill: skill.replaceAll('mock', ''),
+      skillCommands,
       killerPath,
     };
 
     expect(checkDocsContract(docs, [{ name: 'mock', aliases: [] }])).not.toContain(
-      'Missing command docs for mock',
+      'Missing leftover command docs for mock (references/commands.md or docs/reference.md)',
+    );
+    expect(checkDocsContract({
+      ...docs,
+      readme: docs.readme.replaceAll('verify-click', ''),
+      skill: docs.skill.replaceAll('verify-click', ''),
+      skillCommands: '',
+      reference: '',
+    }, [{ name: 'verify-click', aliases: [] }])).toContain(
+      'Missing leftover command docs for verify-click (references/commands.md or docs/reference.md)',
+    );
+  });
+
+  it('requires always-loaded SKILL.md to name survivors only, not leftover liturgy', () => {
+    const docs = {
+      readme,
+      reference,
+      selfImprovementLoop,
+      skill,
+      skillCommands,
+      killerPath,
+    };
+    const leftover = [
+      { name: 'mock', aliases: [] },
+      { name: 'verify-click', aliases: [] },
+      { name: 'overlay', aliases: [] },
+      { name: 'scanshot', aliases: [] },
+      { name: 'record', aliases: [] },
+      { name: 'call', aliases: [] },
+    ];
+    const shrunkSkill = skill
+      .replaceAll('models?search=', '')
+      .replaceAll('leftover-ax', '')
+      .replaceAll('verify-click', '')
+      .replaceAll('scanshot', '')
+      .replaceAll('`call`', '')
+      .replaceAll('record-actions', '')
+      .replaceAll(/\boverlay\b/g, '')
+      .replaceAll(/\brecord\b/g, '');
+
+    expect(SURVIVOR_COMMANDS).toEqual([
+      'doctor', 'list', 'open', 'nav', 'perceive', 'text', 'click', 'fill',
+      'press', 'select', 'scroll', 'eval', 'inject', 'cascade', 'waitfor',
+      'dismiss-modal', 'elshot', 'shot', 'spawn-debug-browser', 'stop',
+    ]);
+    expect(skill).not.toMatch(/models\?search/i);
+    expect(skill).not.toMatch(/leftover-ax/i);
+    expect(skill).not.toMatch(/cap-swap/i);
+    expect(skill).not.toMatch(/\bstdio MCP\b|\bconfirm:\s*true\b|setup\.mjs\s+--for/i);
+    expect(checkDocsContract({ ...docs, skill: shrunkSkill }, leftover).filter(failure =>
+      /Missing leftover command docs|Always-loaded SKILL.md is missing/.test(failure),
+    )).toEqual([]);
+    expect(checkDocsContract({
+      ...docs,
+      skill: skill.replaceAll('perceive', ''),
+    }, [{ name: 'perceive', aliases: [] }])).toContain(
+      'Always-loaded SKILL.md is missing survivor command: perceive',
     );
   });
 
@@ -270,6 +349,48 @@ describe('Killer Path docs contract', () => {
     expect(checkDocsContract(docs, [])).toContain(
       'Self-improvement loop runbook is missing: gh issue create',
     );
+  });
+
+  it('does not make 10-round benchmark:campaign a CLAUDE.md / CONTRIBUTING.md merge-gate', () => {
+    for (const [label, text] of [['CLAUDE.md', claude], ['CONTRIBUTING.md', contributing]]) {
+      expect(text, label).toContain('npm test');
+      expect(text, label).toContain('npm run lint');
+      expect(text, label).toContain('npm run check:docs');
+      expect(text, label).toContain('npm run smoke:live');
+      expect(text, label).not.toMatch(/requires a passing 10\+\s*round mixed campaign/i);
+      expect(text, label).not.toMatch(/10\+\s*round mixed campaign for release readiness/i);
+      expect(text, label).not.toMatch(/A release candidate should pass matched MCP\/CLI rounds/i);
+    }
+    expect(selfImprovementLoop).toContain('Not a merge gate');
+    expect(selfImprovementLoop).not.toMatch(/10\+\s*round mixed campaign for release readiness/i);
+
+    const docs = {
+      readme,
+      reference,
+      pkBoard,
+      pkCharts,
+      pkScoreboard,
+      selfImprovementLoop,
+      skill,
+      skillCommands,
+      killerPath,
+      packageJson,
+      pluginManifest,
+      changelog,
+      claude,
+      contributing,
+      design,
+    };
+
+    expect(checkDocsContract(docs, [])).toEqual([]);
+    expect(checkDocsContract({
+      ...docs,
+      claude: claude.replace('npm run check:docs', 'npm run check:style'),
+    }, [])).toContain('CLAUDE.md verification is missing: npm run check:docs');
+    expect(checkDocsContract({
+      ...docs,
+      claude: `${claude}\nRelease-facing work requires a passing 10+ round mixed campaign.`,
+    }, [])).toContain('CLAUDE.md must not list 10-round mixed campaign as required');
   });
 });
 
@@ -383,20 +504,23 @@ describe('Read this page contract (#161)', () => {
     const usage = T.helpStr();
     expect(usage).toContain('--auto');
     expect(usage).toMatch(/-x <sel> \/ --exclude/);
+    expect(usage).not.toMatch(/\bjsclick\s+</);
+    expect(usage).not.toMatch(/\beval64\s+</);
+    expect(T.helpTopicStr('jsclick')).toMatch(/^cdp jsclick /);
   });
 
-  it('lists text --auto, eval, and call in SKILL.md and recipes.md', () => {
+  it('lists text --auto and eval on the always-loaded card; leftover call lives in commands.md', () => {
     const recipes = readFileSync(new URL('../skills/chrome-cdp-ex/references/recipes.md', import.meta.url), 'utf8');
     expect(skill).toContain('text --auto');
     expect(skill).toMatch(/`eval`/);
-    expect(skill).toMatch(/`call`/);
+    expect(skillCommands).toMatch(/`call`/);
     expect(recipes).toMatch(/## Read this page/i);
     expect(recipes).toContain('text <target> --auto');
     expect(recipes).toContain('raw/main/LICENSE');
     expect(recipes).toContain('perceive <target> -s main');
     expect(recipes).toContain('h1.title');
     const xSection = recipes.split(/### X \/ Twitter/)[1]?.split(/^## /m)[0] || '';
-    const xCode = [...xSection.matchAll(/```bash\n([\s\S]*?)```/g)].map(match => match[1]).join('\n');
+    const xCode = [...xSection.matchAll(/```bash\r?\n([\s\S]*?)```/g)].map(match => match[1]).join('\n');
     expect(xCode).toContain('text <target> --auto');
     expect(xCode).not.toContain('perceive');
   });

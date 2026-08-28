@@ -317,7 +317,7 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
     const client = createRuntimeClient();
     await expect(client.execute(['help'])).resolves.toMatchObject({
       code: 0,
-      stdout: expect.stringContaining('chrome-cdp-ex'),
+      stdout: expect.stringContaining('Chrome/Electron'),
       stderr: '',
     });
     const unknown = await client.execute(['definitely-not-a-command']);
@@ -366,7 +366,7 @@ describe('Phase 5 direct RuntimeClient MCP adapter', () => {
       id: 11,
       result: { isError: false },
     });
-    expect(sent[0].result.content[0].text).toContain('chrome-cdp-ex');
+    expect(sent[0].result.content[0].text).toContain('Chrome/Electron');
   });
 
   it('ships no MCP child-process or CLI fallback path', () => {

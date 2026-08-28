@@ -10,7 +10,7 @@
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, realpathSync, statSync } from 'fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { homedir } from 'os';
-import { dirname, resolve, delimiter } from 'path';
+import { dirname, posix as posixPath, resolve, win32 as win32Path } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
 import { format as formatValue } from 'util';
@@ -66,6 +66,7 @@ import {
   buildNoChangeOutcomeRecommendation,
   classifyActionFailure,
   formatActionFailure,
+  isClassifiedActionFailureText,
   actionFailurePage,
   isExpectedClipboardNoChange,
   isExpectedLeftoverAxScrollNoChange,
@@ -126,6 +127,7 @@ import { createBrowserSupervisor } from './lib/browser-supervisor.mjs';
 import { createLocatorPlan } from './lib/browser-resources.mjs';
 import {
   COMMAND_SURFACE,
+  SURVIVOR_COMMANDS,
   isCommandSurface,
   projectCliCommands,
 } from './lib/command-surface.mjs';
@@ -177,6 +179,17 @@ const MAX_ENVIRONMENT_LOG_ENTRIES = 100;
 const MAX_SCREENSHOT_ENTRIES = 100;
 const MAX_NETWORK_MOCK_HITS = 50;
 const IS_WINDOWS = process.platform === 'win32';
+
+function pathApiForPlatform(platform = process.platform) {
+  return platform === 'win32' ? win32Path : posixPath;
+}
+
+function pathApiForRoot(root, platform = process.platform) {
+  const text = String(root ?? '');
+  if (text.startsWith('/')) return posixPath;
+  if (/^[A-Za-z]:[\\/]/.test(text) || text.startsWith('\\\\')) return win32Path;
+  return pathApiForPlatform(platform);
+}
 const RUNTIME_DIR = IS_WINDOWS
   ? resolve(process.env.LOCALAPPDATA || resolve(homedir(), 'AppData', 'Local'), 'cdp')
   : process.env.XDG_RUNTIME_DIR
@@ -1145,7 +1158,7 @@ function writeTargetAliases(store, { path = ALIASES_CACHE, writer = writeFileSyn
 }
 
 function lastCdpEndpointPath(runtimeDir = RUNTIME_DIR) {
-  return resolve(runtimeDir, LAST_CDP_ENDPOINT_FILE);
+  return pathApiForRoot(runtimeDir).resolve(runtimeDir, LAST_CDP_ENDPOINT_FILE);
 }
 
 function normalizeLastCdpEndpoint(raw) {
@@ -6100,6 +6113,55 @@ function formatSuccessfulDocumentScrollEdgeText(result, { compact = false, dispa
   return match ? match[2] : text;
 }
 
+const DEFAULT_SKINNY_MUTATING_ACTIONS = new Set([
+  'click', 'jsclick', 'fill', 'press', 'select', 'scroll', 'nav', 'navigate',
+]);
+
+function isDefaultSkinnyMutatingAction(result = {}) {
+  return DEFAULT_SKINNY_MUTATING_ACTIONS.has(String(result.action || '').toLowerCase());
+}
+
+function isHandoffNextCommand(command) {
+  const text = String(command || '').trim();
+  if (!text) return true;
+  if (isGenericSinceActionHint(text)) return true;
+  if (/\bperceive\b[\s\S]*--since-action/.test(text)) return true;
+  if (/\breport\b[\s\S]*--format json/.test(text)) return true;
+  if (/\brecord-actions\b/.test(text)) return true;
+  return false;
+}
+
+function defaultMutatingNextCommand(result = {}) {
+  const candidates = [
+    result.effects?.failure?.nextCommand,
+    result.effects?.diagnosis?.nextCommand,
+    result.recommendation?.verifyCommand,
+    ...(Array.isArray(result.recommendation?.commands) ? result.recommendation.commands : []),
+    result.verdict?.primaryNextStep,
+  ].filter(Boolean);
+  const next = candidates.find(command => !isHandoffNextCommand(command));
+  return next || 'cdp list';
+}
+
+function formatFailedDispatchText(result = {}) {
+  const kind = result.effects?.failure?.kind
+    || result.effects?.diagnosis?.kind
+    || 'unknown';
+  return `Kind: ${kind}\nNext: ${defaultMutatingNextCommand(result)}`;
+}
+
+function formatDefaultMutatingActionText(result = {}, { dispatchText = '' } = {}) {
+  if (result.dispatch?.ok === false || result.effects?.failure?.kind) {
+    return formatFailedDispatchText(result);
+  }
+  const outcome = String(dispatchText || '').trim()
+    || (result.outcome?.status ? String(result.outcome.status) : `${result.action}: dispatched`);
+  const next = defaultMutatingNextCommand(result);
+  const one = outcome.replace(/\.+$/, '');
+  if (/(?:^|\n)Next:/m.test(one) || one.includes(`Next: ${next}`)) return one;
+  return `${one}. Next: ${next}`;
+}
+
 function formatActionText(result, { compact = false, full = false, dispatchText = '' } = {}) {
   if (!full && isSuccessfulBoundedDocumentNav(result)) {
     return formatSuccessfulDocumentNavText(result, { compact });
@@ -6435,6 +6497,12 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
   }
   if (!full && isSuccessfulBoundedDocumentScrollEdge(result, { dispatchText })) {
     let text = formatSuccessfulDocumentScrollEdgeText(result, { compact, dispatchText });
+    if (maxDiffLines != null) text = truncateTextLines(text, maxDiffLines);
+    if (!timeoutError) return text;
+    return `${text}\n(success but observation timed out after action dispatch: ${timeoutError.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
+  }
+  if (!full && isDefaultSkinnyMutatingAction(result)) {
+    let text = formatDefaultMutatingActionText(result, { dispatchText });
     if (maxDiffLines != null) text = truncateTextLines(text, maxDiffLines);
     if (!timeoutError) return text;
     return `${text}\n(success but observation timed out after action dispatch: ${timeoutError.message}. The action was already sent; run \`perceive --since-action\`, \`perceive --diff\`, or \`status\` to refresh.)`;
@@ -18741,12 +18809,13 @@ function checkNode(version = process.version, opts = {}) {
 }
 
 function hostSkillInstallPaths({ home = homedir(), env = process.env } = {}) {
-  const hermesHome = env.HERMES_HOME || resolve(home, '.hermes');
+  const p = pathApiForRoot(home);
+  const hermesHome = env.HERMES_HOME || p.join(home, '.hermes');
   return [...new Set([
-    resolve(hermesHome, 'skills', 'chrome-cdp-ex'),
-    resolve(home, '.hermes', 'skills', 'chrome-cdp-ex'),
-    resolve(home, '.claude', 'skills', 'chrome-cdp-ex'),
-    resolve(home, '.codex', 'skills', 'chrome-cdp-ex'),
+    pathApiForRoot(hermesHome).join(hermesHome, 'skills', 'chrome-cdp-ex'),
+    p.join(home, '.hermes', 'skills', 'chrome-cdp-ex'),
+    p.join(home, '.claude', 'skills', 'chrome-cdp-ex'),
+    p.join(home, '.codex', 'skills', 'chrome-cdp-ex'),
   ])];
 }
 
@@ -18771,7 +18840,7 @@ function checkSkillSymlink({ home = homedir(), env = process.env, fs = { existsS
     const lstat = fs.lstatSync ? fs.lstatSync(target) : null;
     if (lstat?.isSymbolicLink?.()) kind = 'symlink';
   } catch {}
-  const binPath = resolve(target, 'bin', 'chrome-cdp');
+  const binPath = pathApiForRoot(target).join(target, 'bin', 'chrome-cdp');
   if (!fs.existsSync(binPath)) {
     return {
       status: 'WARN',
@@ -19171,11 +19240,9 @@ function doctorProbeFromTargets({ tabs = {}, daemons = {}, permission = {}, pref
     targetPrefix,
     exampleTarget,
     multi,
-    provenCommand: multi
-      ? `${prefix} list`
-      : (targetPrefix ? `${prefix} perceive ${targetPrefix} -C -d 8` : `${prefix} list`),
+    provenCommand: `${prefix} list`,
     probeNote: multi ? `${tabCount} tabs — pick with ${prefix} list / ${prefix} target --url` : null,
-    listIsSourceOfTruth: tabCount > 0,
+    listIsSourceOfTruth: true,
   };
 }
 
@@ -19209,7 +19276,6 @@ function checkBrowserPermission({ daemons = null, tabs = null, cdp = null, envir
   const cdpReachable = cdp?.status === 'OK';
   if (tabPrefixes.length > 0) {
     const target = probe.targetPrefix || tabPrefixes[0];
-    const perceive = `cdp perceive ${target} -C -d 8`;
     const next = probe.provenCommand;
     // CDP + tabs are enough for agents to proceed; missing daemon approval is advisory.
     return {
@@ -19219,11 +19285,11 @@ function checkBrowserPermission({ daemons = null, tabs = null, cdp = null, envir
         ? `headless CDP is reachable; tab daemon not attached yet for ${target}`
         : `browser debugging approval not confirmed for ${target}`,
       hint: headless && cdpReachable
-        ? `Non-blocking. Run: ${next} (or cdp list). UI "Allow debugging?" is not required for headless sessions when CDP works.`
-        : `Run: ${probe.multi ? 'cdp list' : perceive}; if Chrome asks "Allow debugging?", click Allow`,
+        ? `Non-blocking. Run: ${next}. UI "Allow debugging?" is not required for headless sessions when CDP works.`
+        : `Run: ${next}; if Chrome asks "Allow debugging?", click Allow`,
       severity: 'advisory',
       provenCommand: cdpReachable ? next : null,
-      nextProbe: probe.multi ? 'cdp list' : perceive,
+      nextProbe: next,
       probeNote: probe.probeNote,
       targetPrefixes: tabPrefixes,
     };
@@ -19354,17 +19420,18 @@ function isolatedSpawnProfileDir(browser, port, env = process.env) {
 }
 
 function persistentDailyUserDataDir(browser, { platform = process.platform, env = process.env, home } = {}) {
+  const p = pathApiForPlatform(platform);
   const resolvedHome = home || env.HOME || env.USERPROFILE || homedir();
   const name = browser === 'chrome' || browser === 'brave' ? browser : 'edge';
   if (platform === 'win32') {
-    const local = env.LOCALAPPDATA || resolve(resolvedHome, 'AppData/Local');
-    return resolve(local, 'chrome-cdp-ex', `daily-${name}`);
+    const local = env.LOCALAPPDATA || p.resolve(resolvedHome, 'AppData', 'Local');
+    return p.resolve(local, 'chrome-cdp-ex', `daily-${name}`);
   }
   if (platform === 'darwin') {
-    return resolve(resolvedHome, 'Library/Application Support/chrome-cdp-ex', `daily-${name}`);
+    return p.resolve(resolvedHome, 'Library', 'Application Support', 'chrome-cdp-ex', `daily-${name}`);
   }
-  const xdg = env.XDG_CONFIG_HOME || resolve(resolvedHome, '.config');
-  return resolve(xdg, 'chrome-cdp-ex', `daily-${name}`);
+  const xdg = env.XDG_CONFIG_HOME || p.resolve(resolvedHome, '.config');
+  return p.resolve(xdg, 'chrome-cdp-ex', `daily-${name}`);
 }
 
 function persistentDailyDirOptions(environment) {
@@ -19413,7 +19480,7 @@ function emptyCdpEnableAsk(environment, prefix = 'cdp') {
 
 function isolatedSpawnFallbackAsk(environment, prefix = 'cdp') {
   const browser = preferredDebugBrowserName(environment);
-  return `Enable debug on the persistent daily ${browser} dir first (${defaultPersistentDailySpawnCommand(environment, prefix)}). Isolated spawn is fallback only and is not the daily profile.`;
+  return `Enable debug on the persistent daily ${browser} dir first (${defaultPersistentDailySpawnCommand(environment, prefix)}). Isolated spawn is fallback only and is not the daily profile (${defaultIsolatedSpawnCommand(environment, prefix)}).`;
 }
 
 function environmentRecoveryCommand(envInfo, env = process.env) {
@@ -19494,16 +19561,16 @@ function liveDoctorDaemonPrefixes(checks = []) {
 }
 
 function liveTabSessionCdpHint(prefixes, prefix = 'cdp') {
-  const target = prefixes[0] || '<target>';
-  return `Live tab daemon already attached (${prefixes.join(', ')}). Do not occupy 9222. Set CDP_PORT=<port> and rerun: CDP_PORT=<port> ${prefix} doctor (or CDP_PORT=<port> ${prefix} list). Existing session: ${prefix} perceive ${target} -C -d 8`;
+  return `Live tab daemon already attached (${prefixes.join(', ')}). Do not occupy 9222. Set CDP_PORT=<port> and rerun: CDP_PORT=<port> ${prefix} list.`;
 }
 
 function reconcileCdpWithLiveDaemons(cdp, daemons, { prefix = 'cdp' } = {}) {
   const prefixes = liveDoctorDaemonPrefixes(daemons?.label === 'Daemons' ? [daemons] : daemons);
   if (!prefixes.length || !cdp) return cdp;
   if (cdp.status === 'OK' || cdp.liveTabSession) return cdp;
-  // Explicit CDP_PORT / occupant / relaunch still describes that endpoint.
-  if (cdp.port || cdp.isolatedOccupant || cdp.relaunch) return cdp;
+  // Explicit CDP_PORT / remembered relaunch still describes that endpoint.
+  // Isolated leftover on 9222 is not daily attach; a live tab daemon wins.
+  if ((cdp.port || cdp.relaunch) && !cdp.isolatedOccupant) return cdp;
   return {
     ...cdp,
     status: 'WARN',
@@ -19529,8 +19596,12 @@ function normalizeDoctorChecks(checks = []) {
 
 function doctorHasLiveTabSession(cdp, checks = []) {
   if (cdp?.liveTabSession) return true;
-  if (cdp?.port || cdp?.isolatedOccupant || cdp?.relaunch) return false;
-  return liveDoctorDaemonPrefixes(checks).length > 0 && cdp?.status !== 'OK';
+  const prefixes = liveDoctorDaemonPrefixes(checks);
+  if (!prefixes.length || cdp?.status === 'OK') return false;
+  // Isolated leftover on 9222 must not hide a live tab daemon.
+  if (cdp?.isolatedOccupant) return true;
+  if (cdp?.port || cdp?.relaunch) return false;
+  return true;
 }
 
 function doctorWizardSummary(checks) {
@@ -19550,19 +19621,17 @@ function doctorWizardModel(checks) {
   const environment = checks.find(c => c.label === 'Environment');
   const tabs = checks.find(c => c.label === 'Tabs');
   const permission = checks.find(c => c.label === 'Permission');
-  const probe = doctorProbeFromChecks(checks);
-  const target = probe.exampleTarget || probe.targetPrefix || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
   const prefix = doctorCliPrefix(node);
 
   let status = 'ready for live browser perception';
-  let currentStep = probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`;
+  let currentStep = `${prefix} list`;
   if (node?.status === 'FAIL') {
     status = 'blocked at Node.js';
     currentStep = node.hint || NODE22_MISSING_HINT;
   } else if (doctorHasLiveTabSession(cdp, checks)) {
     status = 'usable via live tab daemon';
-    currentStep = probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`;
+    currentStep = `${prefix} list`;
   } else if (cdp?.status === 'FAIL') {
     status = 'blocked at browser CDP';
     currentStep = cdp.isolatedOccupant
@@ -19582,12 +19651,10 @@ function doctorWizardModel(checks) {
     const severity = doctorCheckSeverity(permission);
     if (severity === 'advisory') {
       status = 'usable with advisory notes (CDP reachable)';
-      currentStep = probe.multi ? `${prefix} list` : `${prefix} list; ${prefix} perceive ${target} -C -d 8`;
+      currentStep = `${prefix} list`;
     } else {
       status = 'waiting for browser debugging approval';
-      currentStep = probe.multi
-        ? `${prefix} list`
-        : `${prefix} perceive ${target} -C -d 8  # click Allow if Chrome asks`;
+      currentStep = `${prefix} list`;
     }
   }
 
@@ -19623,22 +19690,18 @@ function doctorRecommendationModel(checks) {
   const environment = checks.find(c => c.label === 'Environment');
   const tabs = checks.find(c => c.label === 'Tabs');
   const permission = checks.find(c => c.label === 'Permission');
-  const probe = doctorProbeFromChecks(checks);
-  const target = probe.exampleTarget || probe.targetPrefix || '<target>';
   const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
   const prefix = doctorCliPrefix(node);
   const base = {
     source: 'doctor-onboarding',
-    stage: 'perceive',
-    run: probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`,
+    stage: 'list',
+    run: `${prefix} list`,
     ask: null,
-    after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
+    after: null,
     requiresUserAction: false,
     consentRequired: false,
-    reason: probe.multi
-      ? `${probe.probeNote}. list is the source of truth for which tab.`
-      : 'ready for live browser perception. For "what does this page say", run cdp text ' + target + ' --auto',
-    commands: doctorNextStepCommands(checks),
+    reason: 'list is the source of truth for which tab.',
+    commands: [],
     warnings: doctorWarningCommands(checks),
   };
 
@@ -19657,11 +19720,11 @@ function doctorRecommendationModel(checks) {
     const prefixes = liveDoctorDaemonPrefixes(checks);
     return {
       ...base,
-      stage: 'perceive',
+      stage: 'list',
       strategy: 'use-live-tab-daemon',
-      run: probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`,
-      ask: `Unprefixed doctor did not find CDP on 9222. Re-run with CDP_PORT=<port> ${prefix} doctor (or CDP_PORT=<port> ${prefix} list). Do not occupy 9222.`,
-      after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
+      run: `${prefix} list`,
+      ask: `Unprefixed doctor did not find CDP on 9222. Re-run with CDP_PORT=<port> ${prefix} list. Do not occupy 9222.`,
+      after: null,
       requiresUserAction: false,
       consentRequired: false,
       reason: `Live tab daemon already attached (${prefixes.join(', ')}).`,
@@ -19747,7 +19810,7 @@ function doctorRecommendationModel(checks) {
       stage: 'open-page',
       run: `${prefix} open https://example.com`,
       ask: null,
-      after: `${prefix} perceive <target-from-open> -C -d 8`,
+      after: `${prefix} list`,
       reason: tabs?.detail || null,
     };
   }
@@ -19756,10 +19819,10 @@ function doctorRecommendationModel(checks) {
     if (severity === 'advisory') {
       return {
         ...base,
-        stage: 'perceive',
-        run: probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`,
+        stage: 'list',
+        run: `${prefix} list`,
         ask: null,
-        after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
+        after: null,
         requiresUserAction: false,
         reason: permission.detail || 'CDP is usable; permission approval is advisory until a tab daemon attaches.',
       };
@@ -19767,9 +19830,9 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-permission',
-      run: probe.multi ? `${prefix} list` : `${prefix} perceive ${target} -C -d 8`,
+      run: `${prefix} list`,
       ask: 'Click Allow if Chrome asks.',
-      after: `${prefix} click ${target} @ref  # or: ${prefix} fill ${target} <selector> <text>`,
+      after: `${prefix} list`,
       requiresUserAction: true,
       reason: permission.detail || null,
     };
@@ -19777,139 +19840,31 @@ function doctorRecommendationModel(checks) {
   return base;
 }
 
-function doctorRecommendationLines(checks) {
-  const recommendation = doctorRecommendationModel(checks);
-  const lines = ['Recommendation:'];
-  if (recommendation.run) {
-    const consent = recommendation.consentRequired ? '  (ask user first)' : '';
-    lines.push(`  Run: ${recommendation.run}${consent}`);
-  }
-  if (recommendation.ask) lines.push(`  Ask: ${recommendation.ask}`);
-  if (recommendation.after) lines.push(`  Then: ${recommendation.after}`);
-  for (const warning of recommendation.warnings || []) {
-    const commands = Array.isArray(warning.commands) && warning.commands.length
-      ? warning.commands
-      : [{ command: warning.command, reason: warning.reason, requiresAdmin: false }];
-    for (const command of commands) {
-      if (!command.command) continue;
-      const admin = command.requiresAdmin ? ' (requires admin)' : '';
-      lines.push(`  Long session note: ${command.command}${admin}  # ${command.reason || warning.reason}`);
-    }
-  }
-  return lines;
-}
-
 function doctorNextSteps(checks) {
   checks = normalizeDoctorChecks(checks);
-  const failures = checks.filter(c => c.status === 'FAIL');
-  const cdp = checks.find(c => c.label === 'CDP');
+  const recommendation = doctorRecommendationModel(checks);
   const node = checks.find(c => c.label === 'Node');
-  const environment = checks.find(c => c.label === 'Environment');
-  const fd = checks.find(c => c.label === 'FD limit');
-  const tabs = checks.find(c => c.label === 'Tabs');
-  const probe = doctorProbeFromChecks(checks);
-  const liveTarget = probe.exampleTarget || probe.targetPrefix || '<target>';
-  const noTargets = tabs?.noTargets || /no debuggable page targets/i.test(tabs?.detail || '');
   const prefix = doctorCliPrefix(node);
-  const lines = ['', 'Next steps:'];
-  if (node?.status === 'FAIL') {
-    lines.push(`  1. ${NODE22_MISSING_HINT}`);
-    return lines;
-  }
-  if (doctorHasLiveTabSession(cdp, checks)) {
-    lines.push(`  1. ${prefix} perceive ${liveTarget} -C -d 8`);
-    lines.push(`  2. To inspect the browser CDP endpoint: CDP_PORT=<port> ${prefix} doctor`);
-    lines.push(`  3. Or: CDP_PORT=<port> ${prefix} list`);
-    lines.push('  4. Do not occupy 9222 while this tab daemon is live.');
-    return lines;
-  }
-  if (cdp?.status === 'FAIL') {
-    if (cdp.isolatedOccupant) {
-      lines.push(`  1. Enable persistent daily dir (ask first): ${defaultPersistentDailySpawnCommand(environment, prefix)}`);
-      lines.push('  2. Do not kill the isolated occupant without asking.');
-      lines.push(`  3. Or set CDP_PORT=${cdp.port || DEFAULT_DEBUG_PORT} to use this isolated window.`);
-      lines.push(`  4. Then run: ${prefix} list`);
-    } else if (cdp.relaunch && cdp.profileDir) {
-      lines.push(`  1. ${cdp.relaunch}`);
-      lines.push(`  2. Then run: ${prefix} list`);
-    } else if (cdp.port) {
-      lines.push(`  1. Existing browser: open chrome://inspect/#remote-debugging, enable remote debugging, then rerun: ${prefix} doctor`);
-      lines.push('  2. Do not invent a new --user-data-dir or a second Chrome profile; relaunch the same browser/profile that last served this CDP port.');
-      lines.push(`  3. Then run: ${prefix} list`);
-    } else if (environment?.recovery?.command) {
-      lines.push(`  1. ${environment.recovery.command}`);
-      lines.push(`  2. Then run: ${prefix} list`);
-      lines.push('  3. Isolated spawn is fallback only and is not the daily profile.');
-    } else {
-      lines.push(`  1. Enable persistent daily dir: ${defaultPersistentDailySpawnCommand(environment, prefix)}`);
-      if (emptyCdpBlockedOnDefaultProfile(environment)) {
-        lines.push('  2. Chrome 136+ / Edge ignore --remote-debugging-port on the default user-data-dir. Quit+relaunch of that same default profile does not enable CDP. Do not kill Dock/default browser.');
-        lines.push(`  3. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment, prefix)}`);
-        lines.push(`  4. Then run: ${prefix} list`);
-      } else {
-        lines.push(`  2. Isolated fallback (not the daily profile): ${defaultIsolatedSpawnCommand(environment, prefix)}`);
-        lines.push(`  3. Then run: ${prefix} list`);
-      }
-    }
-    return lines;
-  }
-  if (cdp?.status === 'WARN') {
-    lines.push('  1. Re-toggle browser remote debugging, or restart the app with CDP_PORT set.');
-    lines.push(`  2. If Chrome asks "Allow debugging?", click Allow, then rerun: ${prefix} list`);
-  } else {
-    if (noTargets) {
-      lines.push(`  1. ${prefix} open https://example.com`);
-      lines.push('  2. If Chrome asks "Allow debugging?", click Allow; open waits up to 5s (use --attach-timeout-ms 60000 if needed).');
-      lines.push(`  3. Use the target id printed by open: ${prefix} perceive <target-from-open> -C -d 8`);
-      lines.push(`  Note: for "what does this page say", run: ${prefix} text <target-from-open> --auto`);
-      lines.push(`  4. ${prefix} click <target-from-open> @ref  # or: ${prefix} fill <target-from-open> <selector> <text>`);
-      lines.push(`  5. ${prefix} perceive <target-from-open> --since-action`);
-      lines.push(`  6. ${prefix} report <target-from-open>`);
-    } else {
-      lines.push(`  1. ${prefix} list`);
-      if (probe.multi) {
-        lines.push(`     ${probe.probeNote}`);
-        lines.push('     list is the source of truth for which tab');
-      }
-      if (!tabs?.targetPrefixes?.length) lines.push(`  2. If list is empty: ${prefix} open https://example.com`);
-      lines.push(`  ${tabs?.targetPrefixes?.length ? '2' : '3'}. ${prefix} perceive ${liveTarget} -C -d 8`);
-      if (probe.multi) lines.push('     (sample after list — not a next-probe)');
-      lines.push(`  Note: for "what does this page say", run: ${prefix} text ${liveTarget} --auto`);
-      lines.push(`  ${tabs?.targetPrefixes?.length ? '3' : '4'}. ${prefix} click ${liveTarget} @ref  # or: ${prefix} fill ${liveTarget} <selector> <text>`);
-      lines.push(`  ${tabs?.targetPrefixes?.length ? '4' : '5'}. ${prefix} perceive ${liveTarget} --since-action`);
-      lines.push(`  ${tabs?.targetPrefixes?.length ? '5' : '6'}. ${prefix} report ${liveTarget}`);
-    }
-  }
-  if (fd?.status === 'WARN') {
-    lines.push('  Note: for long sessions, use: ulimit -n 4096');
-  }
-  if (failures.length === 0) {
-    lines.push('  Goal: doctor -> list/open -> perceive -> click/fill -> since-action evidence -> report');
-  }
-  return lines;
+  if (node?.status === 'FAIL') return [node.hint || NODE22_MISSING_HINT];
+  const lines = [];
+  if (recommendation.run) lines.push(recommendation.run);
+  else if (recommendation.ask) lines.push(recommendation.ask);
+  if (recommendation.after && recommendation.after !== recommendation.run) lines.push(recommendation.after);
+  return lines.length ? lines : [`${prefix} list`];
 }
 
 function formatDoctorReport(checks) {
   const model = buildDoctorModel(checks);
-  const lines = ['chrome-cdp-ex doctor'];
-  lines.push(...doctorWizardSummary(checks), '', ...doctorRecommendationLines(checks), '', 'Checks:');
-  for (const c of model.checks) {
-    const tag = c.status.padEnd(4);
-    lines.push(`  [${tag}] ${c.label}: ${c.detail}`);
-    if (c.severity && c.severity !== 'ok') lines.push(`         severity: ${c.severity}`);
-    if (c.hint) lines.push(`         hint: ${c.hint}`);
-  }
-  if (model.readiness === 'ready') lines.push('Ready.');
-  else if (model.readiness === 'usable-with-warnings') {
-    lines.push(`Usable with warnings (${model.warnings} warning${model.warnings === 1 ? '' : 's'}, ${model.advisories} advisor${model.advisories === 1 ? 'y' : 'ies'}).`);
-  } else {
-    lines.push(`Blocked: ${model.failures} failure${model.failures === 1 ? '' : 's'}${model.warnings ? `, ${model.warnings} warning${model.warnings === 1 ? '' : 's'}` : ''}.`);
-  }
-  if (model.provenCommand) lines.push(`Proven / next probe: ${model.provenCommand}`);
-  if (model.probeNote) lines.push(`  ${model.probeNote}`);
-  if (model.listIsSourceOfTruth) lines.push('  list is the source of truth for which tab');
-  lines.push(...doctorNextSteps(checks));
-  return lines.join('\n');
+  const node = model.checks.find(c => c.label === 'Node');
+  const cdp = model.checks.find(c => c.label === 'CDP');
+  const recommendation = model.recommendation || {};
+  const next = recommendation.run || recommendation.ask || doctorCliPrefix(node) + ' list';
+  const ask = recommendation.consentRequired && recommendation.run ? ' (ask first)' : '';
+  return [
+    `Node: ${node?.detail || 'unknown'}`,
+    `CDP: ${cdp?.detail || 'unknown'}`,
+    `Next: ${next}${ask}`,
+  ].join('\n');
 }
 
 function doctorCheckSeverity(check = {}) {
@@ -19962,7 +19917,7 @@ function stripDoctorStepPrefix(line) {
 function doctorNextStepCommands(checks) {
   return doctorNextSteps(checks)
     .map(stripDoctorStepPrefix)
-    .filter(line => line.startsWith('cdp ') || /\bcdp\.mjs\b/.test(line) || /--remote-debugging-port=/.test(line));
+    .filter(line => line.startsWith('cdp ') || /\bcdp\.mjs\b/.test(line) || /--remote-debugging-port=/.test(line) || /node\b/.test(line));
 }
 
 function buildDoctorModel(checks) {
@@ -19970,6 +19925,7 @@ function buildDoctorModel(checks) {
   const summary = doctorStatusSummary(checks);
   const annotatedChecks = checks.map(check => ({ ...check, severity: doctorCheckSeverity(check) }));
   const recommendation = doctorRecommendationModel(checks);
+  recommendation.commands = doctorNextStepCommands(checks);
   const node = annotatedChecks.find(c => c.label === 'Node');
   const cdpOk = annotatedChecks.find(c => c.label === 'CDP')?.status === 'OK';
   const tabsOk = annotatedChecks.find(c => c.label === 'Tabs')?.status === 'OK';
@@ -20033,6 +19989,7 @@ async function runDoctorChecks(opts = {}) {
     lastEndpoint: opts.lastEndpoint,
     readLastEndpoint: opts.readLastEndpoint,
     connectWebSocket: opts.connectWebSocket,
+    inspectOccupantProfileDir: opts.inspectOccupantProfileDir,
     home: opts.home,
     existsSync: fs.existsSync,
   });
@@ -20095,23 +20052,24 @@ const DEFAULT_BROWSER_PATHS = {
 };
 
 function defaultBrowserUserDataDir(browser, { platform = process.platform, env = process.env, home } = {}) {
+  const p = pathApiForPlatform(platform);
   const resolvedHome = home || env.HOME || env.USERPROFILE || homedir();
   const localAppData = env.LOCALAPPDATA || '';
   const dirs = {
     darwin: {
-      chrome: resolve(resolvedHome, 'Library/Application Support/Google/Chrome'),
-      edge: resolve(resolvedHome, 'Library/Application Support/Microsoft Edge'),
-      brave: resolve(resolvedHome, 'Library/Application Support/BraveSoftware/Brave-Browser'),
+      chrome: p.resolve(resolvedHome, 'Library', 'Application Support', 'Google', 'Chrome'),
+      edge: p.resolve(resolvedHome, 'Library', 'Application Support', 'Microsoft Edge'),
+      brave: p.resolve(resolvedHome, 'Library', 'Application Support', 'BraveSoftware', 'Brave-Browser'),
     },
     linux: {
-      chrome: resolve(resolvedHome, '.config/google-chrome'),
-      edge: resolve(resolvedHome, '.config/microsoft-edge'),
-      brave: resolve(resolvedHome, '.config/BraveSoftware/Brave-Browser'),
+      chrome: p.resolve(resolvedHome, '.config', 'google-chrome'),
+      edge: p.resolve(resolvedHome, '.config', 'microsoft-edge'),
+      brave: p.resolve(resolvedHome, '.config', 'BraveSoftware', 'Brave-Browser'),
     },
     win32: {
-      chrome: resolve(localAppData, 'Google/Chrome/User Data'),
-      edge: resolve(localAppData, 'Microsoft/Edge/User Data'),
-      brave: resolve(localAppData, 'BraveSoftware/Brave-Browser/User Data'),
+      chrome: p.resolve(localAppData, 'Google', 'Chrome', 'User Data'),
+      edge: p.resolve(localAppData, 'Microsoft', 'Edge', 'User Data'),
+      brave: p.resolve(localAppData, 'BraveSoftware', 'Brave-Browser', 'User Data'),
     },
   };
   const table = dirs[platform] || dirs.linux;
@@ -20358,13 +20316,15 @@ const BROWSER_COMMANDS = {
   brave: ['brave-browser', 'brave'],
 };
 
-function findOnPath(commands, env = process.env, fs = { existsSync }) {
-  const dirs = String(env?.PATH || '').split(delimiter).filter(Boolean);
+function findOnPath(commands, env = process.env, fs = { existsSync }, platform = process.platform) {
+  const p = pathApiForPlatform(platform);
+  const sep = platform === 'win32' ? ';' : ':';
+  const dirs = String(env?.PATH || '').split(sep).filter(Boolean);
   for (const cmd of commands || []) {
     for (const dir of dirs) {
-      const candidate = resolve(dir, cmd);
+      const candidate = p.resolve(dir, cmd);
       if (fs.existsSync(candidate)) return candidate;
-      if (IS_WINDOWS && fs.existsSync(candidate + '.exe')) return candidate + '.exe';
+      if (platform === 'win32' && fs.existsSync(`${candidate}.exe`)) return `${candidate}.exe`;
     }
   }
   return null;
@@ -20375,7 +20335,7 @@ function detectBrowserPath(browser, platform = process.platform, fs = { existsSy
   for (const candidate of list) {
     if (fs.existsSync(candidate)) return candidate;
   }
-  return findOnPath(BROWSER_COMMANDS[browser] || [], env, fs);
+  return findOnPath(BROWSER_COMMANDS[browser] || [], env, fs, platform);
 }
 
 function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { existsSync }, env = process.env) {
@@ -22265,7 +22225,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       const rawError = actionFailureMessage(e);
       const commandMeta = COMMANDS.find(command => command.name === cmd || (command.aliases || []).includes(cmd));
       const isMutatingCommand = commandMeta?.mutates === true;
-      const alreadyClassified = rawError.startsWith('Action failure:');
+      const alreadyClassified = isClassifiedActionFailureText(rawError);
       const lastAction = session.lastAction || {};
       const context = {
         action: isMutatingCommand && lastAction.action ? lastAction.action : cmd,
@@ -22510,6 +22470,7 @@ async function stopDaemons(targetPrefix, deps = {}) {
   const connect = deps.connect || connectToSocket;
   const send = deps.send || sendCommand;
   const unlink = deps.unlink || unlinkSync;
+  const isWindows = (deps.platform || process.platform) === 'win32';
   const daemons = list();
   if (!daemons.length) return buildStopResult({ requestedTarget: targetPrefix || null });
 
@@ -22529,7 +22490,7 @@ async function stopDaemons(targetPrefix, deps = {}) {
       const conn = await connect(daemon.socketPath);
       response = await send(conn, { cmd: 'stop', args: [] });
     } catch {
-      if (!IS_WINDOWS) {
+      if (!isWindows) {
         try {
           unlink(daemon.socketPath);
           removedDaemons.push(daemon);
@@ -23344,7 +23305,38 @@ function renderCliHelp(surface = COMMAND_SURFACE, template = CLI_HELP_TEMPLATE) 
   return output;
 }
 
-const USAGE = renderCliHelp(COMMAND_SURFACE);
+function renderCardHelp(surface = COMMAND_SURFACE) {
+  if (!isCommandSurface(surface)) {
+    throw new Error('CLI card help: validated command surface required');
+  }
+  const rows = [];
+  for (const name of SURVIVOR_COMMANDS) {
+    const command = surface.resolve(name);
+    if (!command) throw new Error(`CLI card help: missing survivor ${name}`);
+    rows.push(`  ${command.help.synopsis}`);
+  }
+  return `cdp - attach to the Chrome/Electron tab you already have
+
+Usage: cdp <command> [args]
+
+  help [command]                    Survivor card; leftover verbs still have topic help
+
+${rows.join('\n')}
+
+Flags (not product names): click --js is JS click; eval --b64 is base64.
+Unique off-screen click names scrollIntoView if off-screen.
+perceive -C -d 8 for structure/@refs; -x <sel> / --exclude drops chrome.
+text --auto for what the page says.
+
+Chrome 136: default profile cannot enable CDP. Persistent non-default daily dir or isolated spawn; ask first.
+Electron: CDP_PORT=9333 (not 9222).
+
+cdp help <command> prints leftover topic help.
+`;
+}
+
+const CATALOG_USAGE = renderCliHelp(COMMAND_SURFACE);
+const USAGE = renderCardHelp(COMMAND_SURFACE);
 
 function helpStr() {
   return USAGE;
@@ -23358,7 +23350,7 @@ function helpTopicStr(topic) {
   if (!record) throw new Error(unknownCommandMessage(raw));
   const lines = [`cdp ${record.help.synopsis}`, record.help.summary];
   if (record.aliases?.length) lines.push(`Aliases: ${record.aliases.join(', ')}`);
-  lines.push('Run `cdp help` for the full command reference.');
+  lines.push('Run `cdp help` for the survivor card; leftover verbs: `cdp help <command>`.');
   return `${lines.join('\n')}\n`;
 }
 
@@ -24494,7 +24486,7 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
     const recovery = buildCliErrorRecovery('unknown failure', { cmd, targetPrefix, platform, args });
     return ['Error: unknown failure', ...formatCliErrorRecovery(recovery), `Next: ${recovery.run}`].join('\n');
   }
-  if (message.startsWith('Action failure:')) return message;
+  if (isClassifiedActionFailureText(message)) return message;
   const lines = [message.startsWith('Error:') ? message : `Error: ${message}`];
   if (/^Next:/m.test(message)) return lines.join('\n');
 
@@ -25874,7 +25866,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   formatBatchResults, runBatchCommands, parseBatchArgs, parseFlowSteps, settleFlow, flowStr,
   formatCliError, formatDaemonCommandError, buildCliErrorModel, parseOpenArgs, openNavigationScript, openReadyProbeScript, waitForOpenReady, waitForOpenTargetUrl, navigateOpenTarget, buildOpenModel, formatOpenReadyMessage, formatOpenNextPerceiveCommand, formatOpenAttachWaitMessage, shouldAnnounceOpenAttachWait, formatOpenTimeoutMessage, formatOpenAutoPerceiveFailure,
   DEFAULT_OPEN_ATTACH_TIMEOUT_MS,
-  CLI_HELP_LAYOUT, CLI_HELP_TEMPLATE, renderCliHelp, helpStr, helpTopicStr,
+  CLI_HELP_LAYOUT, CLI_HELP_TEMPLATE, CATALOG_USAGE, renderCliHelp, renderCardHelp,
+  SURVIVOR_COMMANDS, helpStr, helpTopicStr,
   checkNode, checkSkillSymlink, checkDaemonSockets, checkFdLimit, checkCdpReachability, checkBrowserTargets, checkBrowserPermission,
   detectRuntimeEnvironment, checkRuntimeEnvironment,
   discoverNode22, resolveChromeCdpNodeLaunch, formatNodeRerunCommand, nodeMajor,

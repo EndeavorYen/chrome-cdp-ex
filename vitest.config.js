@@ -1,7 +1,12 @@
 import { defineConfig } from 'vitest/config';
 
+process.env.NODE_ENV = 'test';
+
 export default defineConfig({
   test: {
+    env: {
+      NODE_ENV: 'test',
+    },
     testTimeout: 15_000,
     // Vitest 3.2 worker RPC can miss onTaskUpdate after heavy AST inventory
     // files even when every assertion passed; coverage then exits 1.

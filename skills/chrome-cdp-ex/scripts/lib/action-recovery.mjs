@@ -420,20 +420,16 @@ export function actionFailurePage(target = {}, extra = {}) {
   return { title, url };
 }
 
+export function isClassifiedActionFailureText(message) {
+  const text = String(message || '').trim();
+  return text.startsWith('Action failure:') || text.startsWith('Kind:');
+}
+
 export function formatActionFailure(err, context = {}) {
   const message = actionFailureMessage(err);
-  if (message.startsWith('Action failure:')) return message;
+  if (isClassifiedActionFailureText(message)) return message;
   const failure = classifyActionFailure(err, context);
-  const page = actionFailurePage(context.target, context);
-  const lines = [
-    `Action failure: ${failure.kind}`,
-    ...(page ? [`Page: ${page.title || '(untitled)'}`, `URL: ${page.url || '(unknown)'}`] : []),
-    `Reason: ${failure.reason}`,
-    `Next: ${failure.nextCommand}`,
-  ];
-  for (const hint of failure.hints || []) lines.push(`Hint: ${hint}`);
-  lines.push(`Original: ${failure.originalMessage}`);
-  return lines.join('\n');
+  return [`Kind: ${failure.kind}`, `Next: ${failure.nextCommand}`].join('\n');
 }
 
 export function recoveryCommandArg(value) {

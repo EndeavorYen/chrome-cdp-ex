@@ -616,10 +616,11 @@ describe('helpStr', () => {
     expect(out).toContain('doctor / ready');
     expect(out).toContain('list|tabs|ls [--format json]');
     expect(out).toContain('perceive <target>');
-    expect(out).toContain('report <target>');
     expect(out).toContain('--perceive');
-    expect(out).toMatch(/open\s+\[url\].*--perceive/);
-    expect(out).toContain('Default open returns the target prefix and a follow-up perceive command');
+    expect(out).toMatch(/open\s+\[url\].*--perceive/s);
+    expect(out).not.toContain('report <target>');
+    expect(out).not.toMatch(/\bjsclick\s+</);
+    expect(out).not.toMatch(/\beval64\s+</);
   });
 
   it('documents text --auto and perceive -x/--exclude', () => {
@@ -1697,9 +1698,12 @@ describe('ActionResult', () => {
       onActionResult: (result) => { captured = result; },
     });
 
-    expect(text).toMatch(/Clicked @4/);
-    expect(text).toMatch(/click: dispatched/);
-    expect(text).toMatch(/button disabled/);
+    expect(text).toBe('Clicked @4. Next: cdp list');
+    expect(text).not.toMatch(/click: dispatched/);
+    expect(text).not.toMatch(/Outcome:/);
+    expect(text).not.toMatch(/Receipt:/);
+    expect(text).not.toMatch(/Verdict:/);
+    expect(text).not.toMatch(/button disabled/);
     expect(captured.action).toBe('click');
     expect(captured.effects.domDiff).toBe('button disabled');
   });
@@ -2172,8 +2176,9 @@ describe('ActionResult', () => {
       onActionResult: (result) => { captured = result; },
     });
 
-    expect(text).toContain('Console: 1 entry (1 error)');
-    expect(text).toContain('Network sample: POST /api/checkout -> 503 in 44ms');
+    expect(text).toBe('Clicked #submit. Next: cdp netlog <target>');
+    expect(text).not.toMatch(/^Outcome:/m);
+    expect(text).not.toMatch(/Console:/);
     expect(captured.effects.consoleDelta.errors).toBe(1);
     expect(captured.effects.networkDelta.failures).toBe(1);
   });
@@ -2340,7 +2345,8 @@ describe('ActionResult', () => {
     });
 
     expect(text).toContain('success but observation timed out');
-    expect(text).toContain('Console: 1 entry (1 warning)');
+    expect(text).toMatch(/^Clicked #save\. Next: /);
+    expect(text).not.toMatch(/Console:/);
     expect(captured.settle.ok).toBe(false);
     expect(captured.outcome).toMatchObject({
       status: 'timeout',
@@ -2458,9 +2464,9 @@ describe('ActionResult', () => {
       new Error('Element not found: #save'),
       { action: 'click', target: { targetId: 'abc123', input: '#save' } }
     );
-    expect(text).toContain('Action failure: selector');
-    expect(text).toContain('Next: cdp perceive abc123 -C -d 8');
-    expect(text).toContain('Original: Element not found: #save');
+    expect(text).toBe('Kind: selector\nNext: cdp perceive abc123 -C -d 8');
+    expect(text).not.toContain('Original:');
+    expect(text).not.toContain('Reason:');
   });
 
   it('records failed dispatches as action evidence before returning a classified error', async () => {
@@ -2474,7 +2480,7 @@ describe('ActionResult', () => {
       feedbackPolicy: 'settle-diff',
       observe: async () => 'not reached',
       onActionResult: (result) => { captured = result; },
-    })).rejects.toThrow(/Action failure: overlay/);
+    })).rejects.toThrow(/Kind: overlay/);
 
     expect(captured.action).toBe('click');
     expect(captured.dispatch.ok).toBe(false);
@@ -3265,9 +3271,9 @@ describe('Session report', () => {
       screenshotDir: '/tmp/cdp-session-shots-ABC123',
     });
 
-    expect(T.nextSessionScreenshotPath(state, 'shot')).toBe('/tmp/cdp-session-shots-ABC123/shot-001.png');
+    expect(T.nextSessionScreenshotPath(state, 'shot')).toBe(resolve('/tmp/cdp-session-shots-ABC123', 'shot-001.png'));
     T.appendSessionScreenshot(state, { kind: 'shot', path: '/tmp/cdp-session-shots-ABC123/shot-001.png' });
-    expect(T.nextSessionScreenshotPath(state, 'shot')).toBe('/tmp/cdp-session-shots-ABC123/shot-002.png');
+    expect(T.nextSessionScreenshotPath(state, 'shot')).toBe(resolve('/tmp/cdp-session-shots-ABC123', 'shot-002.png'));
   });
 
   it('builds a record-actions JSON model from the session action log', () => {
@@ -4286,7 +4292,8 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/^Recovery hint:/m);
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(receipt).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
-    expect(receipt).toMatch(/Outcome: changed/);
+    expect(receipt).toBe('Scrolled by (0, 80). Position: (0, 240). Next: cdp perceive 561F7DA8 -C -d 8');
+    expect(receipt).not.toMatch(/^Outcome:/m);
 
     const genericChanged = T.createActionResult({
       action: 'click',
@@ -4297,7 +4304,8 @@ describe('Perceive diff baseline', () => {
     });
     expect(genericChanged.outcome.status).toBe('changed');
     expect(genericChanged.receipt.recoveryHint).toBe('Continue from the observed action evidence.');
-    expect(T.formatActionText(genericChanged)).toContain('Recovery hint: Continue from the observed action evidence.');
+    expect(T.formatActionResultOutput(genericChanged, { dispatchText: 'Clicked Save' }))
+      .toBe('Clicked Save. Next: cdp list');
   });
 
   it('#303 leftover-ax-scroll +++ Added does not reprint signed-commit / time GMT selector chrome', () => {
@@ -4596,8 +4604,8 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
     expect(text).not.toMatch(/\+\+\+ Added/);
     expect(text).not.toMatch(/span\[title=/);
-    expect(receipt).toMatch(/Outcome: changed/);
-    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(receipt).toBe('Scrolled by (0, 80). Position: (0, 400). Next: cdp perceive 561F7DA8 -C -d 8');
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(receipt).not.toMatch(/^\+ 2 days ago$/m);
     expect(receipt).not.toMatch(/^\+ Thu, 13 Aug 2026 15:18:27 GMT$/m);
   });
@@ -4776,8 +4784,8 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
     expect(text).not.toMatch(/\+\+\+ Added/);
     expect(text).not.toMatch(/span\[title=/);
-    expect(receipt).toMatch(/Outcome: changed/);
-    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
+    expect(receipt).toBe('Scrolled by (0, 80). Position: (0, 480). Next: cdp perceive 561F7DA8 -C -d 8');
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(receipt).not.toMatch(/^- Add diffusers weights \(modular pipeline\) \(#2\)$/m);
     expect(receipt).not.toMatch(/^\+ Add diffusers weights \(modular pipeline\) \(#2\)$/m);
   });
@@ -4980,13 +4988,13 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/Recovery hint: Continue from the observed action evidence/);
     expect(text).not.toMatch(/\+\+\+ Added/);
-    expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
-    expect(receipt).toMatch(/^Outcome: changed$/m);
-    expect(receipt).not.toMatch(/^Receipt: changed$/m);
+    expect(receipt).toBe('Scrolled by (0, 80). Position: (0, 547). Next: cdp perceive 561F7DA8 -C -d 8');
+    expect(receipt).not.toMatch(/^Outcome:/m);
+    expect(receipt).not.toMatch(/^Receipt:/m);
+    expect(receipt).not.toMatch(/^Verdict:/m);
     expect(receipt).not.toMatch(/Observed page change after action/);
     expect(receipt).not.toMatch(/^Interactive:/m);
     expect(receipt).not.toMatch(/use clickxy with these values/);
-    expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
 
     const genericChanged = T.createActionResult({
       action: 'click',
@@ -4996,9 +5004,11 @@ describe('Perceive diff baseline', () => {
       effects: { domDiff: '+   [StaticText] Saved', console: [], network: [], navigation: null },
     });
     expect(genericChanged.outcome.status).toBe('changed');
-    expect(T.formatActionText(genericChanged)).toContain('Outcome: changed — Observed page change after action.');
-    expect(T.formatActionText(genericChanged)).toContain('Receipt: changed');
-    expect(T.formatActionText(genericChanged)).toContain('Verdict: continue — Observed page change after action.');
+    const clickOut = T.formatActionResultOutput(genericChanged, { dispatchText: 'Clicked Save' });
+    expect(clickOut).toBe('Clicked Save. Next: cdp list');
+    expect(clickOut).not.toMatch(/^Outcome:/m);
+    expect(clickOut).not.toMatch(/^Receipt:/m);
+    expect(clickOut).not.toMatch(/^Verdict:/m);
   });
 
   it('#311 leftover-ax-scroll no-change receipt drops tautological Recovery hint when Next is already perceive', () => {
@@ -5079,7 +5089,7 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
     expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
-    expect(receipt).toMatch(/^Outcome: no-change$/m);
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(receipt).not.toMatch(/Settle shape was leftover golden-path AX; viewport rect chrome did not replace identities/);
     expect(receipt).not.toMatch(LIVE_RECOVERY_HINT);
     expect(receipt).not.toMatch(/^Recovery hint:/m);
@@ -5089,7 +5099,7 @@ describe('Perceive diff baseline', () => {
     expect(receipt).not.toMatch(/^Viewport:/m);
     expect(receipt).not.toMatch(/Focused:/);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
-    expect(receipt).toMatch(/Settle: ok in 826ms/);
+    expect(receipt).not.toMatch(/^Settle:/m);
     expect(receipt.length).toBeLessThan(558);
 
     const genericNoChange = T.createActionResult({
@@ -5184,7 +5194,7 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
     expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
-    expect(receipt).toMatch(/^Outcome: no-change$/m);
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(receipt).not.toMatch(LIVE_SETTLE_SHAPE_REASON);
     expect(receipt).not.toMatch(LIVE_RECOVERY_HINT);
     expect(receipt).not.toMatch(/^Recovery hint:/m);
@@ -5195,7 +5205,7 @@ describe('Perceive diff baseline', () => {
     expect(receipt).not.toMatch(/Focused:/);
     expect(receipt).not.toMatch(/\(no changes detected in AX tree\)/);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
-    expect(receipt).toMatch(/Settle: ok in 1527ms/);
+    expect(receipt).not.toMatch(/^Settle:/m);
     expect(receipt.length).toBeLessThan(476);
     expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
 
@@ -5340,7 +5350,7 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
     expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
-    expect(receipt).toMatch(/^Outcome: no-change$/m);
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(receipt).not.toMatch(LIVE_SETTLE_SHAPE_REASON);
     expect(receipt).not.toMatch(LIVE_RECOVERY_HINT);
     expect(receipt).not.toMatch(/^Recovery hint:/m);
@@ -5350,7 +5360,7 @@ describe('Perceive diff baseline', () => {
     expect(receipt).not.toMatch(/Focused:/);
     expect(receipt).not.toMatch(/\(no changes detected in AX tree\)/);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
-    expect(receipt).toMatch(/Settle: ok in 1061ms/);
+    expect(receipt).not.toMatch(/^Settle:/m);
     expect(receipt.length).toBeLessThan(381);
     expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
 
@@ -5565,7 +5575,7 @@ describe('Perceive diff baseline', () => {
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
     expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
-    expect(receipt).toMatch(/^Outcome: no-change$/m);
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(receipt).not.toMatch(LIVE_SETTLE_SHAPE_REASON);
     expect(receipt).not.toMatch(LIVE_RECOVERY_HINT);
     expect(receipt).not.toMatch(/^Recovery hint:/m);
@@ -5576,7 +5586,7 @@ describe('Perceive diff baseline', () => {
     expect(receipt).not.toMatch(LIVE_AX_BODY);
     expect(receipt).not.toMatch(/no changes detected in AX tree/i);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
-    expect(receipt).toMatch(/Settle: ok in 1178ms/);
+    expect(receipt).not.toMatch(/^Settle:/m);
     expect(receipt.length).toBeLessThan(218);
     expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
 
@@ -5783,18 +5793,11 @@ describe('Perceive diff baseline', () => {
     expect(text).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
     expect(text).not.toMatch(/Hint: Use perceive --since-action/);
     expect(text).not.toMatch(/cdp report 561F7DA8 --format json/);
-    expect(receipt).toBe([
-      'Scrolled by (0, 80). Position: (0, 547)',
-      '---',
-      'Outcome: no-change',
-      'Verdict: continue',
-      'Settle: ok in 763ms',
-      'Next: cdp perceive 561F7DA8 -C -d 8',
-    ].join('\n'));
+    expect(receipt).toBe('Scrolled by (0, 80). Position: (0, 547). Next: cdp perceive 561F7DA8 -C -d 8');
     expect(receipt).toMatch(/Scrolled by \(0, 80\)\. Position: \(0, 547\)/);
     expect(receipt).not.toMatch(/dispatched via scroll/);
     expect(receipt).not.toMatch(/^Target: down$/m);
-    expect(receipt).toMatch(/^Outcome: no-change$/m);
+    expect(receipt).not.toMatch(/^Outcome:/m);
     expect(receipt).not.toMatch(LIVE_SETTLE_SHAPE_REASON);
     expect(receipt).not.toMatch(LIVE_RECOVERY_HINT);
     expect(receipt).not.toMatch(/^Recovery hint:/m);
@@ -5805,7 +5808,7 @@ describe('Perceive diff baseline', () => {
     expect(receipt).not.toMatch(LIVE_AX_BODY);
     expect(receipt).not.toMatch(/no changes detected in AX tree/i);
     expect(receipt).toMatch(/Next: cdp perceive 561F7DA8 -C -d 8/);
-    expect(receipt).toMatch(/Settle: ok in 763ms/);
+    expect(receipt).not.toMatch(/^Settle:/m);
     expect(receipt.length).toBeLessThan(180);
     expect(T.HOVER_MOUSE_ACK_TIMEOUT_MS).toBe(250);
 
@@ -9477,9 +9480,9 @@ describe('formatCliError', () => {
   });
 
   it('preserves already-classified action failures', () => {
-    const out = formatCliError('Action failure: overlay\nNext: cdp dismiss-modal AABBCCDD');
+    const out = formatCliError('Kind: overlay\nNext: cdp dismiss-modal AABBCCDD');
 
-    expect(out).toBe('Action failure: overlay\nNext: cdp dismiss-modal AABBCCDD');
+    expect(out).toBe('Kind: overlay\nNext: cdp dismiss-modal AABBCCDD');
   });
 
   it('builds a structured JSON handoff for top-level CLI errors', () => {
@@ -13292,7 +13295,7 @@ describe('checkNode', () => {
 describe('checkSkillSymlink', () => {
   it('returns WARN when path does not exist', () => {
     const fs = { existsSync: () => false };
-    const r = checkSkillSymlink({ home: '/home/test', fs });
+    const r = checkSkillSymlink({ home: '/home/test', fs, env: {} });
     expect(r.status).toBe('WARN');
     expect(r.detail).toContain('/home/test/.claude/skills/chrome-cdp-ex');
     expect(r.detail).toContain('not found');
@@ -13503,7 +13506,7 @@ describe('checkBrowserPermission', () => {
 
     expect(r.status).toBe('WARN');
     expect(r.detail).toContain('not confirmed');
-    expect(r.hint).toContain('cdp perceive AABBCCDD -C -d 8');
+    expect(r.hint).toContain('cdp list');
     expect(r.hint).toContain('click Allow');
   });
 
@@ -13566,11 +13569,11 @@ describe('doctorWizardSummary', () => {
       { status: 'FAIL', label: 'CDP', detail: 'cannot reach 127.0.0.1:9222' },
     ]).join('\n');
 
-    expect(out).toContain('Wizard:');
     expect(out).toContain('Status: blocked at browser CDP');
     expect(out).toContain('Current step: cdp spawn-debug-browser edge --port 9222 --user-data-dir');
     expect(out).toMatch(/daily-edge/);
     expect(out).not.toContain('--daily-profile');
+    expect(out).not.toMatch(/perceive .* -C -d 8/);
   });
 
   it('points to open when CDP is ready but no debuggable page exists', () => {
@@ -13582,6 +13585,7 @@ describe('doctorWizardSummary', () => {
 
     expect(out).toContain('Status: waiting for a debuggable page');
     expect(out).toContain('Current step: cdp open https://example.com');
+    expect(out).not.toMatch(/perceive .* -C -d 8/);
   });
 
   it('treats unconfirmed permission as advisory when CDP/tabs are already usable', () => {
@@ -13593,57 +13597,52 @@ describe('doctorWizardSummary', () => {
     ]).join('\n');
 
     expect(out).toContain('Status: usable with advisory notes (CDP reachable)');
-    expect(out).toContain('Current step: cdp list; cdp perceive AABBCCDD -C -d 8');
+    expect(out).toContain('Current step: cdp list');
+    expect(out).not.toContain('cdp perceive AABBCCDD -C -d 8');
     expect(out).not.toContain('waiting for browser debugging approval');
   });
 });
 
 describe('formatDoctorReport', () => {
-  it('renders OK/WARN/FAIL labels and shows hints', () => {
+  it('prints Node, CDP, and spawn-with-ask when CDP is down', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22.10.0' },
       { status: 'WARN', label: 'Skill install', detail: '/h/.claude/skills/chrome-cdp-ex not found', hint: 'cp -r ...' },
       { status: 'FAIL', label: 'CDP', detail: 'cannot reach 127.0.0.1:9222', hint: 'enable debugging' },
     ]);
-    expect(out).toContain('chrome-cdp-ex doctor');
-    expect(out).toContain('Wizard:');
-    expect(out).toContain('Status: blocked at browser CDP');
-    expect(out).toContain('[OK  ] Node');
-    expect(out).toContain('[WARN] Skill install');
-    expect(out).toContain('[FAIL] CDP');
-    expect(out).toContain('hint: cp -r ...');
-    expect(out).toContain('hint: enable debugging');
-    expect(out).toContain('Blocked');
-    expect(out).toContain('Next steps:');
-    expect(out).toContain('cdp spawn-debug-browser edge --port 9222 --user-data-dir');
+    expect(out).toContain('Node: v22.10.0');
+    expect(out).toContain('CDP: cannot reach 127.0.0.1:9222');
+    expect(out).toContain('Next: cdp spawn-debug-browser edge --port 9222 --user-data-dir');
     expect(out).toMatch(/daily-edge/);
+    expect(out).toMatch(/\(ask first\)/);
+    expect(out).not.toContain('Wizard:');
+    expect(out).not.toContain('chrome-cdp-ex doctor');
+    expect(out).not.toMatch(/perceive .* -C -d 8/);
   });
 
-  it('reports "Ready." when all checks are OK', () => {
+  it('prints Node, CDP, and list when checks are OK', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22' },
       { status: 'OK', label: 'Tabs', detail: '1 debuggable page target: Example', targetPrefixes: ['AABBCCDD'] },
       { status: 'OK', label: 'Permission', detail: 'debugging approved for AABBCCDD', targetPrefixes: ['AABBCCDD'] },
       { status: 'OK', label: 'CDP', detail: 'reachable' },
     ]);
-    expect(out).toContain('Ready.');
-    expect(out).not.toContain('Blocked');
-    expect(out).toContain('Next steps:');
-    expect(out).toContain('cdp list');
-    expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
-    expect(out).toContain('cdp report AABBCCDD');
+    expect(out).toBe('Node: v22\nCDP: reachable\nNext: cdp list');
+    expect(out).not.toContain('cdp perceive AABBCCDD -C -d 8');
+    expect(out).not.toContain('Wizard:');
   });
 
-  it('reports "Usable with warnings" when only WARNs present', () => {
+  it('keeps short text when only WARNs are present', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22' },
       { status: 'WARN', label: 'Skill', detail: 'missing' },
     ]);
-    expect(out).toContain('Usable with warnings');
-    expect(out).toContain('1 warning');
+    expect(out).toContain('Node: v22');
+    expect(out).toContain('Next: cdp list');
+    expect(out).not.toContain('Usable with warnings');
   });
 
-  it('uses the actual tab prefix in the ready golden path, not a mismatched daemon id', () => {
+  it('uses list as the tab source of truth instead of a leftover perceive sample', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22' },
       { status: 'OK', label: 'Daemons', detail: '1 live: AABBCCDD', targetPrefixes: ['AABBCCDD'] },
@@ -13652,8 +13651,8 @@ describe('formatDoctorReport', () => {
       { status: 'OK', label: 'CDP', detail: 'reachable' },
     ]);
 
-    expect(out).toContain('cdp perceive ZZYYXXWW -C -d 8');
-    expect(out).toMatch(/list is the source of truth for which tab/i);
+    expect(out).toContain('Next: cdp list');
+    expect(out).not.toContain('cdp perceive ZZYYXXWW -C -d 8');
     expect(out).not.toContain('cdp perceive AABBCCDD -C -d 8');
   });
 
@@ -13669,10 +13668,10 @@ describe('formatDoctorReport', () => {
       },
     ]);
 
-    expect(out).toContain('Usable with warnings');
-    expect(out).toContain('cdp open https://example.com');
-    expect(out).toContain('Use the target id printed by open');
-    expect(out).toContain('cdp report <target-from-open>');
+    expect(out).toContain('Node: v22');
+    expect(out).toContain('CDP: reachable');
+    expect(out).toContain('Next: cdp open https://example.com');
+    expect(out).not.toMatch(/perceive .* -C -d 8/);
   });
 });
 
@@ -13706,7 +13705,7 @@ describe('runDoctorChecks', () => {
 });
 
 describe('doctorStr', () => {
-  it('returns formatted multi-line report including Ready./Blocked summary', async () => {
+  it('returns Node, CDP, and list when CDP is reachable', async () => {
     const fetcher = async (url) => url.endsWith('/json/list')
       ? { ok: true, json: async () => ([{ type: 'page', id: 'AABBCCDDEEFF', title: 'Example', url: 'https://example.com' }]) }
       : { ok: true, json: async () => ({ Browser: 'Chrome/123', webSocketDebuggerUrl: 'ws://x' }) };
@@ -13719,35 +13718,32 @@ describe('doctorStr', () => {
       env: { CDP_PORT: '9222' },
       fetcher,
     });
-    expect(out).toContain('chrome-cdp-ex doctor');
-    expect(out).toMatch(/\[OK\s*\] Node/);
-    expect(out).toMatch(/\[WARN\] Skill install/);
-    expect(out).toMatch(/\[OK\s*\] Daemons/);
-    expect(out).toMatch(/\[OK\s*\] FD limit/);
-    expect(out).toMatch(/\[OK\s*\] CDP/);
-    expect(out).toMatch(/\[OK\s*\] Tabs/);
-    expect(out).toMatch(/\[WARN\] Permission/);
-    expect(out).toContain('Usable with warnings');
-    expect(out).toContain('severity: advisory');
-    expect(out).toContain('Next steps:');
-    expect(out).toContain('cdp list');
-    expect(out).toContain('cdp perceive AABBCCDD -C -d 8');
-    expect(out).toContain('usable with advisory notes');
+    expect(out).toContain('Node: v22.10.0 (>= 22)');
+    expect(out).toMatch(/CDP: .*9222/);
+    expect(out).toContain('Next: cdp list');
+    expect(out).not.toContain('Wizard:');
+    expect(out).not.toContain('cdp perceive AABBCCDD -C -d 8');
+    expect(out.split('\n')).toHaveLength(3);
   });
 
-  it('marks report as Blocked when CDP fails', async () => {
+  it('prints spawn-with-ask when CDP fails', async () => {
     const fetcher = async () => { throw new Error('ECONNREFUSED'); };
     const out = await doctorStr({
       nodeVersion: 'v22.10.0',
       home: '/tmp/x',
+      platform: 'linux',
       fs: { existsSync: () => true, lstatSync: () => ({ isSymbolicLink: () => true }) },
       listDaemons: () => [],
       fdLimit: 4096,
       env: { CDP_PORT: '9999' },
       fetcher,
+      connectWebSocket: () => { throw new Error('no websocket'); },
     });
-    expect(out).toContain('Blocked');
-    expect(out).toMatch(/\[FAIL\] CDP/);
+    expect(out).toContain('Node: v22.10.0 (>= 22)');
+    expect(out).toMatch(/CDP: cannot reach .*9999/);
+    expect(out).toMatch(/^Next: /m);
+    expect(out).not.toContain('Wizard:');
+    expect(out).not.toContain('[FAIL] CDP');
   });
 
   it('returns a versioned JSON onboarding model for agents', async () => {
@@ -13778,33 +13774,23 @@ describe('doctorStr', () => {
     expect(model.checks.find(c => c.label === 'Permission')?.severity).toBe('advisory');
     expect(model.wizard).toMatchObject({
       status: 'usable with advisory notes (CDP reachable)',
-      currentStep: expect.stringContaining('cdp perceive AABBCCDD -C -d 8'),
+      currentStep: 'cdp list',
     });
-    expect(model.wizard.goldenPath).toEqual(['doctor', 'list/open', 'perceive', 'click/fill', 'since-action evidence', 'report']);
-    expect(model.wizard.commands).toEqual([
-      'cdp list',
-      'cdp perceive AABBCCDD -C -d 8',
-      'cdp click AABBCCDD @ref  # or: cdp fill AABBCCDD <selector> <text>',
-      'cdp perceive AABBCCDD --since-action',
-      'cdp report AABBCCDD',
-    ]);
+    expect(model.wizard.commands).toEqual(['cdp list']);
     expect(model.checks.map(check => check.label)).toEqual([
       'Node', 'Skill install', 'Daemons', 'FD limit', 'Environment', 'CDP', 'Tabs', 'Permission',
     ]);
-    expect(model.nextSteps).toEqual(expect.arrayContaining([
-      'cdp list',
-      'cdp perceive AABBCCDD -C -d 8',
-      'cdp report AABBCCDD',
-    ]));
+    expect(model.nextSteps).toEqual(['cdp list']);
+    expect(model.provenCommand).toBe('cdp list');
     expect(model.recommendation).toMatchObject({
       source: 'doctor-onboarding',
-      stage: 'perceive',
-      run: 'cdp perceive AABBCCDD -C -d 8',
+      stage: 'list',
+      run: 'cdp list',
       requiresUserAction: false,
       consentRequired: false,
-      after: 'cdp click AABBCCDD @ref  # or: cdp fill AABBCCDD <selector> <text>',
     });
     expect(model.recommendation.ask).toBeNull();
+    expect(JSON.stringify(model)).not.toMatch(/perceive AABBCCDD -C -d 8/);
   });
 
   it('returns a consent-aware recommendation when browser CDP is blocked', async () => {
@@ -13872,12 +13858,27 @@ describe('doctorStr', () => {
       lastEndpoint: null,
     });
 
-    expect(out).toContain('Long session note: ulimit -n 4096');
-    expect(out).toContain('Long session note: sudo launchctl limit maxfiles 65536 200000');
-    expect(out).toContain('requires admin');
+    const model = JSON.parse(await doctorStr({
+      format: 'json',
+      nodeVersion: 'v22.10.0',
+      home: '/tmp/x',
+      fs: { existsSync: () => true, lstatSync: () => ({ isSymbolicLink: () => true }) },
+      listDaemons: () => [],
+      fdLimit: 256,
+      platform: 'darwin',
+      env: { CDP_PORT: '9999' },
+      fetcher,
+      lastEndpoint: null,
+    }));
+    expect(model.recommendation.warnings.map(warning => warning.command)).toContain('ulimit -n 4096');
+    expect(out).toContain('Node:');
+    expect(out).toContain('CDP:');
+    expect(out).toMatch(/^Next: /m);
+    expect(out).not.toContain('Long session note:');
+    expect(out).not.toContain('Wizard:');
   });
 
-  it('prints the recommendation before detailed doctor checks', async () => {
+  it('prints list as the next command instead of a leftover perceive sample', async () => {
     const fetcher = async (url) => url.endsWith('/json/list')
       ? { ok: true, json: async () => ([{ type: 'page', id: 'AABBCCDDEEFF', title: 'Example', url: 'https://example.com' }]) }
       : { ok: true, json: async () => ({ Browser: 'Chrome/123', webSocketDebuggerUrl: 'ws://x' }) };
@@ -13891,11 +13892,11 @@ describe('doctorStr', () => {
       fetcher,
     });
 
-    expect(out).toContain('Recommendation:');
-    expect(out).toContain('Run: cdp perceive AABBCCDD -C -d 8');
-    expect(out).not.toContain('Ask: Click Allow if Chrome asks.');
-    expect(out).toContain('Then: cdp click AABBCCDD @ref');
-    expect(out.indexOf('Recommendation:')).toBeLessThan(out.indexOf('Checks:'));
+    expect(out).toContain('Next: cdp list');
+    expect(out).not.toContain('Recommendation:');
+    expect(out).not.toContain('cdp perceive AABBCCDD -C -d 8');
+    expect(out).not.toContain('Then: cdp click AABBCCDD @ref');
+    expect(out.split('\n')).toHaveLength(3);
   });
 });
 
@@ -14291,7 +14292,7 @@ describe('shotStr', () => {
       const path = resolve(dir, 'capture.png');
       const out = await shotStr(cdp, 'sid1', path, 'TARGETID', { quiet: false });
       expect(out.split('\n')[0]).toBe(path);
-      expect(statSync(path).mode & 0o777).toBe(0o600);
+      if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
