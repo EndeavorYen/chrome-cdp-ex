@@ -122,7 +122,7 @@ describe('Killer Path docs contract', () => {
       './bin/chrome-cdp list',
       '```',
       '',
-      'Pinned release: [v2.16.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.16.0) (`pi-chrome-cdp-2.16.0.tgz`).',
+      'Pinned release: [v2.17.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.17.0) (`pi-chrome-cdp-2.17.0.tgz`).',
       'Measured jobs: [docs/pk-324-board.md](docs/pk-324-board.md).',
       'Host wiring: [INTEGRATIONS.md](INTEGRATIONS.md). MIT [LICENSE](LICENSE).',
       '',
@@ -217,22 +217,22 @@ describe('Killer Path docs contract', () => {
     expect(checkDocsContract(docs, [])).toEqual([]);
     expect(checkDocsContract({
       ...docs,
-      readme: `> **Unreleased candidate:** repository metadata is v2.16.0; install links remain pinned to published v2.15.0.\n${readme}`,
+      readme: `> **Unreleased candidate:** repository metadata is v2.17.0; install links remain pinned to published v2.16.0.\n${readme}`,
     }, [])).toContain(
-      'README.md must not keep the unreleased-candidate banner after v2.16.0 is published',
+      'README.md must not keep the unreleased-candidate banner after v2.17.0 is published',
     );
     expect(checkDocsContract({
       ...docs,
       readme: docs.readme
-        .replaceAll('v2.16.0', 'v2.15.0')
-        .replaceAll('pi-chrome-cdp-2.16.0.tgz', 'pi-chrome-cdp-2.15.0.tgz'),
+        .replaceAll('v2.17.0', 'v2.16.0')
+        .replaceAll('pi-chrome-cdp-2.17.0.tgz', 'pi-chrome-cdp-2.16.0.tgz'),
     }, [])).toEqual(expect.arrayContaining([
-      'README.md is missing the published release tag v2.16.0',
-      'README.md is missing the published release tarball pi-chrome-cdp-2.16.0.tgz',
+      'README.md is missing the published release tag v2.17.0',
+      'README.md is missing the published release tarball pi-chrome-cdp-2.17.0.tgz',
     ]));
     expect(checkDocsContract({
       ...docs,
-      changelog: changelog.replace('## [2.16.0]', '## [9.8.7]'),
+      changelog: changelog.replace('## [2.17.0]', '## [9.8.7]'),
     }, [])).toContain('README.md is missing the published release tag v9.8.7');
   });
 

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [2.17.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.16.0...v2.17.0) (2026-08-28)
+
+v2.17.0 ships the live-path shrink (#375 / #389): the operator card is 20
+survivors; Board 2 ten jobs 0 FAIL. README front door is live-session
+attach, not the 10/8/9 PK scoreboard SVG. Daily Chrome 136 / Electron
+`CDP_PORT=9333` honesty stays. The competitor board remains in
+`docs/pk-324-board.md`.
+
 ### Agent reliability
 
 * Unprefixed `doctor` no longer treats an empty 9222 — or a leftover isolated

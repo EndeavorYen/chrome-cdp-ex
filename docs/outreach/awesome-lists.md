@@ -44,7 +44,7 @@ adoption or six-host live testing.
 
 1. Verify the list’s contribution guide immediately before acting.
 2. Use existing issue #1157; do not open a resource recommendation PR.
-3. Link the stable v2.16.0 release and current README.
+3. Link the stable v2.17.0 release and current README.
 4. Avoid over-claiming benchmarks; point at the explicit evidence boundary.
 5. Treat the Codex host manifest, 60-second safe demo, and fresh evidence baseline as prerequisites.
 

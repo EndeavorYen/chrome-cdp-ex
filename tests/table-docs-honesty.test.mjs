@@ -46,7 +46,7 @@ describe('claim-honest table documentation', () => {
     expect(docs).toMatch(/--scroll-container/);
     expect(docs).toMatch(/--continue/);
     expect(docs).toMatch(/confirm:\s*true/);
-    expect(docs).toMatch(/20 inline/i);
+    expect(docs).toMatch(/20 (?:inline|whole data) rows/i);
     expect(docs).toMatch(/8,192/);
     expect(docs).toMatch(/16,384/);
     expect(docs).toMatch(/100,000/);
