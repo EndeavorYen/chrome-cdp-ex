@@ -2,16 +2,16 @@
 
 Issue [#384](https://github.com/EndeavorYen/chrome-cdp-ex/issues/384). Parent [#375](https://github.com/EndeavorYen/chrome-cdp-ex/issues/375). Protocol: this branch vs un-deleted main, not vs Browser Use.
 
-Measured 2026-08-28 on this checkout. Same machine for both Board 1 sides. Viewport for Board 2 would have been 1042×632, n=3 median — **Board 2 was not run** (see below).
+Board 1 measured 2026-08-28 on the shrink tree that became `83b9bdd`. Board 2 measured 2026-08-28 on Mini (Edge 151, `CDP_PORT=9222`, 1042×632, n=3 median) and copied from [#384 comments](https://github.com/EndeavorYen/chrome-cdp-ex/issues/384) — not remeasured here.
 
 ## What was compared
 
 | Side | Identity |
 |---|---|
 | `c332afc` | `git show c332afca49296a55a16fc82008c98fc6506177f9` (v2.16.0 + unreleased daily-CDP docs). Un-deleted main when `musk/live-path` was cut. |
-| musk/live-path | Working tree on branch `musk/live-path`. `HEAD` is still `c332afca49296a55a16fc82008c98fc6506177f9`; the shrink is uncommitted in this checkout. |
+| musk/live-path | `83b9bdd67bef1581e9db70065deab952f0ed82c9` (`refactor: shrink live operator surface (#375)`). Board 1 numbers are from this tree. |
 
-No rebase onto later main. No isolated worktree. Baseline files for help/doctor were extracted with `git archive c332afc` into `%TEMP%\c332afc-chrome-cdp-ex` and executed there.
+No rebase onto later main. Board 1 help/doctor baseline files were extracted with `git archive c332afc` into `%TEMP%\c332afc-chrome-cdp-ex` and executed there. Board 2 used Mini worktrees `/tmp/chrome-cdp-ex-384-main` @ `c332afc` and `/tmp/chrome-cdp-ex-384-musk` @ `83b9bdd`.
 
 ## Board 1 — operator surface
 
@@ -73,26 +73,28 @@ Live `nav` / `click` / `scroll to bottom` stdout was not collected (no reachable
 
 ## Board 2 — #324 jobs vs itself
 
-**NOT MEASURED this run.**
+Measured 2026-08-28 on Mini. Daily Edge `CDP_PORT=9222` Edg/151.0.4129.107. Viewport **1042×632** (`viewport <target> 1042x632`; `innerWidth×innerHeight` confirmed 1042×632 both SHAs). n=3 median. Effect = majority of 3 (≥2 PASS). Steps = measured action only after `nav` / `viewport` / `scroll to top` setup. Chars = Unicode length of that action's stdout. Wall ms = `perf_counter` around that `node` process (search-submit musk = sum of fill+press).
 
-Reason: no live Chrome/Edge/Chromium process; `http://127.0.0.1:9222/json/version` and `:9333/json/version` timed out (2s); `CDP_PORT` unset; working-tree `cdp list` failed with `WebSocket error: Received network error or non-101 status code` / `Kind: browser-cdp`. Do not invent PASS/FAIL.
+Copied from [#384 batch 1](https://github.com/EndeavorYen/chrome-cdp-ex/issues/384#issuecomment-5447843583), [batch 2](https://github.com/EndeavorYen/chrome-cdp-ex/issues/384#issuecomment-5447910838), and [batch 3](https://github.com/EndeavorYen/chrome-cdp-ex/issues/384#issuecomment-5448015514). Not remeasured on this VM. 9333 not used. No isolated spawn. Dock browser not quit. `batch` was not added back.
 
-Locked jobs (same 10, 1042×632, n=3 median, effect then steps / agent-facing chars / wall). Columns reserved:
+Columns: `c332afc` | `83b9bdd`. Cells: effect / steps / chars / wall ms.
 
-| job | `c332afc` success / steps / time / token | musk/live-path |
+| job | `c332afc` | `83b9bdd` |
 |---|---|---|
-| scroll to bottom (HF home) | NOT MEASURED this run | NOT MEASURED this run |
-| nested overflow (Comfy `#content-container`) | NOT MEASURED this run | NOT MEASURED this run |
-| click Browse 2M+ models | NOT MEASURED this run | NOT MEASURED this run |
-| search submit bert | NOT MEASURED this run | NOT MEASURED this run |
-| nav example.org | NOT MEASURED this run | NOT MEASURED this run |
-| read HF home | NOT MEASURED this run | NOT MEASURED this run |
-| hover reveal | NOT MEASURED this run | NOT MEASURED this run |
-| PDF text one page | NOT MEASURED this run | NOT MEASURED this run |
-| overlay detect | NOT MEASURED this run | NOT MEASURED this run |
-| click Browse 1M+ applications | NOT MEASURED this run | NOT MEASURED this run |
+| scroll to bottom (HF home) | PASS / 1 / 62 / 133 | PASS / 1 / 62 / 131 |
+| nested overflow (Comfy `#content-container`) | PASS / 1 / 83 / 105 | PASS / 1 / 83 / 102 |
+| click Browse 2M+ models | PASS / 1 / 545 / 431 | PASS / 1 / 86 / 452 |
+| search submit bert | PASS / 1 / 114 / 403 | PASS / 2 / 160 / 1544 |
+| nav example.org | PASS / 1 / 69 / 146 | PASS / 1 / 69 / 144 |
+| read HF home | PASS / 1 / 3899 / 101 | PASS / 1 / 3899 / 100 |
+| hover reveal | PASS / 1 / 66 / 197 | PASS / 1 / 66 / 195 |
+| PDF text one page | PASS / 1 / 4321 / 148 | PASS / 1 / 4321 / 148 |
+| overlay detect | PASS / 1 / 252 / 107 | PASS / 1 / 252 / 108 |
+| click Browse 1M+ applications | PASS / 1 / 574 / 428 | PASS / 1 / 109 / 450 |
 
-Historical competitor board (`docs/pk-324-board.md`, measured 2026-08-17 on `22c525d4` vs Browser Use / Playwright) is **not** this comparison. Re-run Board 2 on a machine with a debuggable daily session before treating any #324 row as a PASS→FAIL flip.
+0 FAIL. Search 2 steps is the cost of no `batch` on the card — leave it. Click char drop (545→86, 574→109) is the thinner musk receipt, not a FAIL.
+
+Historical competitor board (`docs/pk-324-board.md`, measured 2026-08-17 on `22c525d4` vs Browser Use / Playwright) is **not** this comparison.
 
 ## Must-not-regress checklist
 
@@ -113,9 +115,9 @@ Leftover handlers remain in `cdp.mjs` / `command-surface.mjs` (81-command catalo
 
 ## Add-back log
 
-Empty this run.
+Empty this run. Board 2 did not flip any row PASS→FAIL, so nothing was put back.
 
-Empty may mean **under-deleted**. Do not silently restore HuggingFace `/models?search=`, leftover-AX tautology, cap-swap sampling, hover-recapture law, or the 24-command remember list onto `SKILL.md`. If a later #324 row flips PASS→FAIL, named-person add-back goes on [#375](https://github.com/EndeavorYen/chrome-cdp-ex/issues/375).
+Empty may mean **under-deleted** (the 10% bar: delete more than we should; some items may later need a named-person put-back). Do not silently restore HuggingFace `/models?search=`, leftover-AX tautology, cap-swap sampling, hover-recapture law, or the 24-command remember list onto `SKILL.md`. Do not add `batch` back because search took 2 steps. If a later #324 row flips PASS→FAIL, named-person add-back goes on [#375](https://github.com/EndeavorYen/chrome-cdp-ex/issues/375).
 
 Expected add-backs from the algorithm (not pre-kept, not applied here): thin MCP, PDF page-1 `text --auto` as SKILL law, overlay as click diagnosis, `@fN` refs, `click --js` already kept as a flag, `batch` if IPC hurts, `cascade` (already a survivor), doctor extra checks, JSON for MCP only.
 
@@ -127,13 +129,13 @@ GitHub issues remain open. This is working-tree status, not merge/close status.
 |---|---|---|
 | #385 | SKILL.md is the 5-step golden path | **Implemented.** 4174-byte card; no `models?search`, `leftover-ax`, `cap-swap`. |
 | #379 | Operator card names survivors only | **Implemented.** 20 Survivors; default help 21 rows; catalog still 81 in-tree. |
-| #386 | Mutating commands print one-line evidence | **Implemented in unit tests** (nav/click/scroll skinny default). **Live happy-path stdout blocked** (no browser). |
+| #386 | Mutating commands print one-line evidence | **Implemented in unit tests** (nav/click/scroll skinny default). **Live Board 2 click/nav/scroll receipts recorded** (skinny click; search is fill+press). |
 | #377 | README front door is live-session, not PK-324 | **Implemented.** First screen is attach → doctor/list → Chrome 136. No 10/8/9 SVG above the fold. |
 | #376 | docs-contract must not freeze the 81-command card | **Implemented.** `SURVIVOR_COMMANDS` is the card; leftover names may leave SKILL without failing `check:docs`. Frozen `docs/contracts/v2.16.0` left in tree. |
 | #383 | doctor stdout is Node / port / next command | **Mostly implemented** (123 chars). Next-command still `cdp doctor` when CDP is down. |
 | #387 | MCP and six-host matrix are not live-path | **Implemented on the card.** SKILL/README Quick start do not mention stdio MCP, `confirm: true`, or `setup.mjs --for`. Adapter files remain. |
 | #388 | Drop campaign/validation-lab as merge gates | **Implemented.** `AGENTS.md` / `CLAUDE.md` / `CONTRIBUTING.md` default gate is `npm test`, `lint`, `check:docs` (+ `smoke:live` when attach/perceive/act changes and a browser exists). |
-| #384 | PK vs main `c332afc` at PR | **Board 1 recorded here.** **Board 2 blocked** (no live CDP). |
+| #384 | PK vs main `c332afc` at PR | **Board 1 and Board 2 recorded here.** Board 2 copied from #384 comments; not remeasured. |
 
 ## How to re-measure
 
@@ -146,4 +148,4 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs help
 node skills/chrome-cdp-ex/scripts/cdp.mjs doctor
 ```
 
-Board 2 (needs a debuggable daily session at 1042×632, n=3): same 10 jobs as `docs/pk-324-board.md`, columns `c332afc` | musk/live-path. Effect first, then steps / agent-facing chars / wall.
+Board 2 is already recorded above from #384 comments (Mini Edge 151, CDP 9222, 1042×632, n=3 median). Do not remeasure for this PR.
