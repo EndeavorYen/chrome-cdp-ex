@@ -36,6 +36,7 @@ const requiredEntries = [
   'docs/contracts/v2.17.0/public-contracts.v1.json',
   'docs/contracts/v2.17.0/package-entries.v1.json',
   'docs/contracts/v2.17.0/runtime-dispatch.v1.json',
+  'docs/daily-browser-cdp.md',
   'docs/examples/codex-killer-path.md',
   'experiment/codex-killer-path-demo-poster.png',
   'experiment/codex-killer-path-demo.html',
