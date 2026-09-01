@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { generateCommandSurfaces } from './generate-command-surfaces.mjs';
@@ -463,6 +463,21 @@ export function checkReadmeLivePathContract(readme) {
   const fold = text.split(/## Daily browser CDP/i)[0] || text;
   if (fold.includes('experiment/pk-324-scoreboard.svg') || /10\/10[\s\S]{0,80}8\/10[\s\S]{0,80}9\/10/.test(fold)) {
     failures.push('README first screen must not use the 10/8/9 PK scoreboard SVG as the first claim');
+  }
+  if (/Keeps Dock\/default cookies\?/.test(text) || /Approaches and tradeoffs/i.test(text)) {
+    failures.push('README must not keep the Chromium 136 approach table; link docs/daily-browser-cdp.md');
+  }
+  if (!text.includes('docs/daily-browser-cdp.md')) {
+    failures.push('README must link docs/daily-browser-cdp.md for Chromium 136');
+  }
+  if (!existsSync(resolve(ROOT_DIR, 'docs/daily-browser-cdp.md'))) {
+    failures.push('docs/daily-browser-cdp.md is missing');
+  }
+  if (!/Chrome 136|Chromium 136/i.test(text)) {
+    failures.push('README must state the Chromium 136 default-profile CDP limit');
+  }
+  if (/^## Demo\b/m.test(text) || /experiment\/showcase\.html/.test(text)) {
+    failures.push('README must not keep the lab Demo list on the live path');
   }
   return failures;
 }

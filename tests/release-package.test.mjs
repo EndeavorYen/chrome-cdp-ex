@@ -36,6 +36,7 @@ const requiredEntries = [
   'docs/contracts/v2.17.0/public-contracts.v1.json',
   'docs/contracts/v2.17.0/package-entries.v1.json',
   'docs/contracts/v2.17.0/runtime-dispatch.v1.json',
+  'docs/daily-browser-cdp.md',
   'docs/examples/codex-killer-path.md',
   'experiment/codex-killer-path-demo-poster.png',
   'experiment/codex-killer-path-demo.html',
@@ -153,7 +154,7 @@ describe('release package checker', () => {
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Release package OK: 51 required entries');
+    expect(result.stdout).toContain('Release package OK: 52 required entries');
   });
 
   it('rejects an artifact that omits a release-critical entry', () => {
