@@ -19797,10 +19797,12 @@ function doctorRecommendationModel(checks) {
     return {
       ...base,
       stage: 'browser-cdp',
-      run: `${prefix} doctor`,
-      ask: 'Re-toggle browser remote debugging, or restart the app with CDP_PORT set.',
+      strategy: 'enable-persistent-daily-dir',
+      run: emptyCdpEnableCommand(environment, prefix),
+      ask: emptyCdpEnableAsk(environment, prefix),
       after: `${prefix} list`,
       requiresUserAction: true,
+      consentRequired: true,
       reason: cdp.detail || null,
     };
   }

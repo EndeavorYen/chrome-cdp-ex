@@ -13620,6 +13620,24 @@ describe('formatDoctorReport', () => {
     expect(out).not.toMatch(/perceive .* -C -d 8/);
   });
 
+  it('prints spawn-with-ask when DevToolsActivePort is unreachable, not cdp doctor', () => {
+    const out = formatDoctorReport([
+      { status: 'OK', label: 'Node', detail: 'v22.22.0 (>= 22)' },
+      {
+        status: 'WARN',
+        label: 'CDP',
+        detail: 'DevToolsActivePort points to 9222 but /json/version unreachable: fetch failed',
+        port: '9222',
+      },
+    ]);
+    expect(out).toContain('Node: v22.22.0 (>= 22)');
+    expect(out).toContain('CDP: DevToolsActivePort points to 9222 but /json/version unreachable: fetch failed');
+    expect(out).toContain('Next: cdp spawn-debug-browser edge --port 9222 --user-data-dir');
+    expect(out).toMatch(/daily-edge/);
+    expect(out).toMatch(/\(ask first\)/);
+    expect(out).not.toMatch(/^Next: cdp doctor$/m);
+  });
+
   it('prints Node, CDP, and list when checks are OK', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22' },
