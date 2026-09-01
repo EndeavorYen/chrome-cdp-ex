@@ -123,6 +123,7 @@ describe('Killer Path docs contract', () => {
       '```',
       '',
       'Pinned release: [v2.17.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.17.0) (`pi-chrome-cdp-2.17.0.tgz`).',
+      'From Chrome 136, the default profile cannot enable CDP. See [Daily browser CDP](docs/daily-browser-cdp.md).',
       'Measured jobs: [docs/pk-324-board.md](docs/pk-324-board.md).',
       'Host wiring: [INTEGRATIONS.md](INTEGRATIONS.md). MIT [LICENSE](LICENSE).',
       '',
@@ -136,6 +137,14 @@ describe('Killer Path docs contract', () => {
       ...docs,
       readme: liveSessionFrontDoor.replace('./bin/chrome-cdp doctor', './bin/chrome-cdp help'),
     }, [])).toContain('README Quick Start must stay doctor → list');
+    expect(checkDocsContract({
+      ...docs,
+      readme: `${liveSessionFrontDoor}\n### Approaches and tradeoffs\n| Approach | Keeps Dock/default cookies? |\n`,
+    }, [])).toContain('README must not keep the Chromium 136 approach table; link docs/daily-browser-cdp.md');
+    expect(checkDocsContract({
+      ...docs,
+      readme: liveSessionFrontDoor.replace('docs/daily-browser-cdp.md', 'docs/reference.md'),
+    }, [])).toContain('README must link docs/daily-browser-cdp.md for Chromium 136');
     expect(checkDocsContract({
       ...docs,
       pkScoreboard: pkScoreboard.replace('data-value="10/10"', 'data-value="9/10"'),
