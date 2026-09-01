@@ -13638,6 +13638,21 @@ describe('formatDoctorReport', () => {
     expect(out).not.toMatch(/^Next: cdp doctor$/m);
   });
 
+  it('does not spawn on 9222 when /json/version is up but has no webSocketDebuggerUrl', () => {
+    const out = formatDoctorReport([
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      {
+        status: 'WARN',
+        label: 'CDP',
+        detail: 'port 9222: no webSocketDebuggerUrl',
+        port: '9222',
+      },
+    ]);
+    expect(out).toContain('CDP: port 9222: no webSocketDebuggerUrl');
+    expect(out).not.toContain('spawn-debug-browser');
+    expect(out).not.toMatch(/^Next: cdp doctor$/m);
+  });
+
   it('prints Node, CDP, and list when checks are OK', () => {
     const out = formatDoctorReport([
       { status: 'OK', label: 'Node', detail: 'v22' },

@@ -147,6 +147,14 @@ describe('Killer Path docs contract', () => {
     }, [])).toContain('README must link docs/daily-browser-cdp.md for Chromium 136');
     expect(checkDocsContract({
       ...docs,
+      readme: `${liveSessionFrontDoor}\n## Demo\n`,
+    }, [])).toContain('README must not keep the lab Demo list on the live path');
+    expect(checkDocsContract({
+      ...docs,
+      readme: `${liveSessionFrontDoor}\nSee [showcase](experiment/showcase.html).\n`,
+    }, [])).toContain('README must not keep the lab Demo list on the live path');
+    expect(checkDocsContract({
+      ...docs,
       pkScoreboard: pkScoreboard.replace('data-value="10/10"', 'data-value="9/10"'),
     }, [])).toContain('PK scoreboard SVG must bold chrome-cdp-ex total success 10/10');
     expect(checkDocsContract({

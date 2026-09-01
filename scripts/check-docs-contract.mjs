@@ -476,7 +476,7 @@ export function checkReadmeLivePathContract(readme) {
   if (!/Chrome 136|Chromium 136/i.test(text)) {
     failures.push('README must state the Chromium 136 default-profile CDP limit');
   }
-  if (/## Demo\b/i.test(text) && /experiment\/showcase\.html/.test(text)) {
+  if (/^## Demo\b/m.test(text) || /experiment\/showcase\.html/.test(text)) {
     failures.push('README must not keep the lab Demo list on the live path');
   }
   return failures;

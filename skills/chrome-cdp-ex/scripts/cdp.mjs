@@ -19642,8 +19642,9 @@ function doctorWizardModel(checks) {
           ? `enable browser remote debugging, then rerun: ${prefix} doctor`
           : (environment?.recovery?.command || emptyCdpEnableCommand(environment, prefix));
   } else if (cdp?.status === 'WARN') {
+    const rec = doctorRecommendationModel(checks);
     status = 'waiting for stable browser CDP';
-    currentStep = `re-toggle browser remote debugging, then rerun: ${prefix} doctor`;
+    currentStep = rec.run || rec.ask || `${prefix} list`;
   } else if (noTargets) {
     status = 'waiting for a debuggable page';
     currentStep = `${prefix} open https://example.com`;
@@ -19794,12 +19795,24 @@ function doctorRecommendationModel(checks) {
     };
   }
   if (cdp?.status === 'WARN') {
+    if (/DevToolsActivePort/i.test(cdp.detail || '')) {
+      return {
+        ...base,
+        stage: 'browser-cdp',
+        strategy: 'enable-persistent-daily-dir',
+        run: emptyCdpEnableCommand(environment, prefix),
+        ask: emptyCdpEnableAsk(environment, prefix),
+        after: `${prefix} list`,
+        requiresUserAction: true,
+        consentRequired: true,
+        reason: cdp.detail || null,
+      };
+    }
     return {
       ...base,
       stage: 'browser-cdp',
-      strategy: 'enable-persistent-daily-dir',
-      run: emptyCdpEnableCommand(environment, prefix),
-      ask: emptyCdpEnableAsk(environment, prefix),
+      run: null,
+      ask: 'Re-toggle browser remote debugging, or restart the app with CDP_PORT set.',
       after: `${prefix} list`,
       requiresUserAction: true,
       consentRequired: true,
