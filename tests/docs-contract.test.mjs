@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
-import { checkDocsContract, SURVIVOR_COMMANDS, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
+import { checkDocsContract, checkGrokBotSetupContract, SURVIVOR_COMMANDS, validateKillerPathContract } from '../scripts/check-docs-contract.mjs';
 import { PK_324_CHART_FILES, PK_324_SCOREBOARD_FILE } from '../scripts/lib/pk-324-board.mjs';
 
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
@@ -124,6 +124,7 @@ describe('Killer Path docs contract', () => {
       '',
       'Pinned release: [v2.17.0](https://github.com/EndeavorYen/chrome-cdp-ex/releases/tag/v2.17.0) (`pi-chrome-cdp-2.17.0.tgz`).',
       'From Chrome 136, the default profile cannot enable CDP. See [Daily browser CDP](docs/daily-browser-cdp.md).',
+      'Grok Bot: [from-zero setup](docs/integrations/grok-bot.md).',
       'Measured jobs: [docs/pk-324-board.md](docs/pk-324-board.md).',
       'Host wiring: [INTEGRATIONS.md](INTEGRATIONS.md). MIT [LICENSE](LICENSE).',
       '',
@@ -189,6 +190,42 @@ describe('Killer Path docs contract', () => {
       ...docs,
       pkScoreboard: `${pkScoreboard}\n<text>cost / cp</text>\n`,
     }, [])).toContain('PK scoreboard SVG must not add a cost/cp column');
+  });
+
+  it('requires a followable Grok Bot from-zero setup with Node 22, user-data-dir, CDP_PORT, doctor, and list', () => {
+    const docs = {
+      readme,
+      reference,
+      pkBoard,
+      pkCharts,
+      pkScoreboard,
+      selfImprovementLoop,
+      skill,
+      skillCommands,
+      killerPath,
+      packageJson,
+      pluginManifest,
+      changelog,
+      claude,
+      contributing,
+      design,
+    };
+
+    expect(checkGrokBotSetupContract({
+      ...docs,
+      grokBot: '',
+    })).toEqual(expect.arrayContaining([
+      'Grok Bot setup guide must make Node 22 unmistakable',
+      'Grok Bot setup guide must make a non-default user-data-dir unmistakable',
+      'Grok Bot setup guide must make CDP_PORT unmistakable',
+      'Grok Bot setup guide must make doctor and list unmistakable',
+      'Grok Bot setup guide must cite https://developer.chrome.com/blog/remote-debugging-port',
+    ]));
+    expect(checkDocsContract({
+      ...docs,
+      readme: readme.replaceAll('docs/integrations/grok-bot.md', 'docs/integrations/cursor.md'),
+    }, [])).toContain('README must link docs/integrations/grok-bot.md for Grok Bot from-zero setup');
+    expect(checkDocsContract(docs, [])).toEqual([]);
   });
 
   it('documents a checked-in measured baseline artifact for comparison reruns', () => {

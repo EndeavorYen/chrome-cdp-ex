@@ -45,6 +45,10 @@ claim the current Runtime v3 tree completed the full Codex host campaign.
 
 Details: [docs/integrations/](docs/integrations/) · Host overlays: [skills/chrome-cdp-ex/hosts/](skills/chrome-cdp-ex/hosts/) · Schemas: [docs/schemas/](docs/schemas/) · [Validation manifest](docs/benchmarks/host-validation.v1.json)
 
+## Grok Bot
+
+Replace Grok Bot computer use / browser use with chrome-cdp-ex. From-zero setup: [docs/integrations/grok-bot.md](docs/integrations/grok-bot.md). Cursor IDE vs Grok Bot are two surfaces; do not mix them.
+
 ## Golden path
 
 ```bash

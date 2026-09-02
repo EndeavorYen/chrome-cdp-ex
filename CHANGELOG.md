@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Docs
+
+* Add Grok Bot from-zero setup so a user can replace Grok Bot computer use /
+  browser use with chrome-cdp-ex
+  ([docs/integrations/grok-bot.md](docs/integrations/grok-bot.md)). Chrome 136+
+  ignores remote debugging on the default profile
+  ([Chrome for Developers](https://developer.chrome.com/blog/remote-debugging-port)).
+  Does not close #322 or #324.
+
 ## [2.17.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.16.0...v2.17.0) (2026-08-28)
 
 v2.17.0 ships the live-path shrink (#375 / #389): the operator card is 20

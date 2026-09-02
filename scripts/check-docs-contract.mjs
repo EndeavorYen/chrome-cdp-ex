@@ -482,6 +482,38 @@ export function checkReadmeLivePathContract(readme) {
   return failures;
 }
 
+const GROK_BOT_GUIDE = 'docs/integrations/grok-bot.md';
+const CHROME_136_REMOTE_DEBUGGING_URL = 'https://developer.chrome.com/blog/remote-debugging-port';
+
+export function checkGrokBotSetupContract(docs = {}) {
+  const failures = [];
+  const guidePath = resolve(ROOT_DIR, GROK_BOT_GUIDE);
+  if (!existsSync(guidePath)) {
+    failures.push(`${GROK_BOT_GUIDE} is missing`);
+    return failures;
+  }
+  if (docs.readme != null && !docs.readme.includes(GROK_BOT_GUIDE)) {
+    failures.push(`README must link ${GROK_BOT_GUIDE} for Grok Bot from-zero setup`);
+  }
+  const guide = Object.hasOwn(docs, 'grokBot') ? String(docs.grokBot || '') : readFileSync(guidePath, 'utf8');
+  if (!/Node(?:\.js)?\s*22/i.test(guide)) {
+    failures.push('Grok Bot setup guide must make Node 22 unmistakable');
+  }
+  if (!/non-default/i.test(guide) || !/user-data[- ]dir/i.test(guide)) {
+    failures.push('Grok Bot setup guide must make a non-default user-data-dir unmistakable');
+  }
+  if (!guide.includes('CDP_PORT')) {
+    failures.push('Grok Bot setup guide must make CDP_PORT unmistakable');
+  }
+  if (!/\bdoctor\b/.test(guide) || !/\blist\b/.test(guide)) {
+    failures.push('Grok Bot setup guide must make doctor and list unmistakable');
+  }
+  if (!guide.includes(CHROME_136_REMOTE_DEBUGGING_URL)) {
+    failures.push(`Grok Bot setup guide must cite ${CHROME_136_REMOTE_DEBUGGING_URL}`);
+  }
+  return failures;
+}
+
 export function checkReadmeFaceContract(readme, extras = {}) {
   const failures = [];
   failures.push(...checkReadmeFirstScreenOrder(readme));
@@ -567,6 +599,7 @@ export function checkDocsContract(docs, commands) {
     ...(Object.hasOwn(docs, 'pkCharts') ? { pkCharts: docs.pkCharts || {} } : {}),
     ...(Object.hasOwn(docs, 'pkScoreboard') ? { pkScoreboard: docs.pkScoreboard || '' } : {}),
   }));
+  failures.push(...checkGrokBotSetupContract(docs));
 
   const requiredKillerPathTerms = [
     'TL;DR',
