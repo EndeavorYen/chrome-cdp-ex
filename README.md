@@ -70,11 +70,13 @@ cd chrome-cdp-ex
 
 </details>
 
-[SKILL.md](skills/chrome-cdp-ex/SKILL.md) · [docs/reference.md](docs/reference.md) · [docs/pk-324-board.md](docs/pk-324-board.md) · [INTEGRATIONS.md](INTEGRATIONS.md)
+[SKILL.md](skills/chrome-cdp-ex/SKILL.md) · [docs/reference.md](docs/reference.md) · [docs/pk-324-board.md](docs/pk-324-board.md) · [INTEGRATIONS.md](INTEGRATIONS.md) · [Grok Bot from-zero](docs/integrations/grok-bot.md)
 
 ## Daily browser CDP
 
 From Chrome 136, `--remote-debugging-port` is ignored on the default profile. chrome-cdp-ex cannot silently attach to an already-running default Chrome or Edge. Use a persistent non-default user-data-dir that you always launch with remote debugging, then sign in once. See [Daily browser CDP](docs/daily-browser-cdp.md).
+
+Grok Bot from-zero setup (replace computer use / browser use): [docs/integrations/grok-bot.md](docs/integrations/grok-bot.md).
 
 For Electron, launch with a remote debugging port. Set `CDP_PORT` to that port. Use `9333` as the example, not daily Chrome `9222`.
 

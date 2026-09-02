@@ -28,6 +28,7 @@
     "package/docs/integrations/claude.md",
     "package/docs/integrations/codex.md",
     "package/docs/integrations/cursor.md",
+    "package/docs/integrations/grok-bot.md",
     "package/docs/integrations/hermes.md",
     "package/docs/integrations/openclaw.md",
     "package/docs/integrations/pi.md",
