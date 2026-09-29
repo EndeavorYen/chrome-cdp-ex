@@ -1400,6 +1400,19 @@ async function openCdpWebSocket(url, { timeoutMs = 2000, connectWebSocket } = {}
   });
 }
 
+// Chrome 136+ toggle mode has no /json/*; only the guid path from DevToolsActivePort accepts the socket.
+const BROWSER_WS_PATH = /^\/devtools\/browser\/[\w-]+$/;
+
+async function browserWebSocketOpens(error, { host, port, wsPath, connectWebSocket } = {}) {
+  if (!isCdpHttp404(error)) return false;
+  const path = BROWSER_WS_PATH.test(wsPath || '') ? wsPath : '/devtools/browser';
+  try {
+    return Boolean(await openCdpWebSocket(`ws://${host}:${port}${path}`, { connectWebSocket }));
+  } catch {
+    return false;
+  }
+}
+
 async function rememberLiveCdpEndpointFromSession(cdp, { host, port, env = process.env } = {}) {
   const resolvedHost = host || env.CDP_HOST || DEFAULT_CDP_HOST;
   const resolvedPort = port || env.CDP_PORT || null;
@@ -18969,6 +18982,25 @@ async function checkCdpReachability({
       browser: remembered?.browser || null,
     };
   };
+  const localAppData = env.LOCALAPPDATA || process.env.LOCALAPPDATA || '';
+  const tryPaths = [
+    env.CDP_PORT_FILE,
+    resolve(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
+    resolve(home, 'Library/Application Support/Google/Chrome/Default/DevToolsActivePort'),
+    resolve(home, '.config/google-chrome/DevToolsActivePort'),
+    resolve(home, '.config/chromium/DevToolsActivePort'),
+    resolve(localAppData, 'Google\\Chrome\\User Data\\DevToolsActivePort'),
+  ].filter(Boolean);
+  const activeWsPath = (p) => {
+    try {
+      const file = tryPaths.find(pathExists);
+      if (!file) return null;
+      const [filePort, wsPath] = readFileSync(file, 'utf8').trim().split('\n');
+      return String(filePort) === String(p) ? wsPath : null;
+    } catch {
+      return null;
+    }
+  };
   const tryFetch = async (p) => {
     const res = await fetcher(`http://${host}:${p}/json/version`, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) {
@@ -19000,14 +19032,9 @@ async function checkCdpReachability({
     } catch (e) {
       // Chrome 136+ / websocket-only: HTTP 404 still has a live /devtools/browser socket.
       // Connection refused, timeout, and other HTTP failures must fail fast.
-      if (isCdpHttp404(e)) {
-        try {
-          const wsOpen = await openCdpWebSocket(`ws://${host}:${p}/devtools/browser`, { connectWebSocket });
-          if (wsOpen) {
-            rememberReachable({ host, port: p });
-            return { status: 'OK', label: 'CDP', detail: `${host}:${p} → connected via WebSocket fallback`, host, port: String(p) };
-          }
-        } catch {}
+      if (await browserWebSocketOpens(e, { host, port: p, wsPath: activeWsPath(p), connectWebSocket })) {
+        rememberReachable({ host, port: p });
+        return { status: 'OK', label: 'CDP', detail: `${host}:${p} → connected via WebSocket fallback`, host, port: String(p) };
       }
       return { unreachable: true, cause: e.message };
     }
@@ -19052,15 +19079,6 @@ async function checkCdpReachability({
   if (probed) return probed;
 
   // Auto-discover via DevToolsActivePort (light reuse — avoids full ws connect)
-  const localAppData = env.LOCALAPPDATA || process.env.LOCALAPPDATA || '';
-  const tryPaths = [
-    env.CDP_PORT_FILE,
-    resolve(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
-    resolve(home, 'Library/Application Support/Google/Chrome/Default/DevToolsActivePort'),
-    resolve(home, '.config/google-chrome/DevToolsActivePort'),
-    resolve(home, '.config/chromium/DevToolsActivePort'),
-    resolve(localAppData, 'Google\\Chrome\\User Data\\DevToolsActivePort'),
-  ].filter(Boolean);
   const found = tryPaths.find(p => pathExists(p));
   if (!found) {
     const probed = await checkExplicitPort(DEFAULT_CDP_PROBE_PORT);
@@ -19088,6 +19106,10 @@ async function checkCdpReachability({
     rememberReachable({ host, port: discoveredPort, profileDir: discoveredProfile });
     return { status: 'OK', label: 'CDP', detail: `${host}:${discoveredPort} → ${describe(info)} (auto-discovered)`, host, port: String(discoveredPort) };
   } catch (e) {
+    if (await browserWebSocketOpens(e, { host, port: discoveredPort, wsPath: lines[1], connectWebSocket })) {
+      rememberReachable({ host, port: discoveredPort, profileDir: discoveredProfile });
+      return { status: 'OK', label: 'CDP', detail: `${host}:${discoveredPort} → connected via WebSocket (auto-discovered)`, host, port: String(discoveredPort) };
+    }
     return {
       status: 'WARN', label: 'CDP',
       detail: `DevToolsActivePort points to ${discoveredPort} but /json/version unreachable: ${e.message}`,
