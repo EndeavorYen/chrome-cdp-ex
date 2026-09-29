@@ -10,7 +10,7 @@
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, realpathSync, statSync } from 'fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { homedir } from 'os';
-import { dirname, posix as posixPath, resolve, win32 as win32Path } from 'path';
+import { basename, dirname, posix as posixPath, resolve, win32 as win32Path } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
 import { format as formatValue } from 'util';
@@ -16107,8 +16107,66 @@ async function uploadStr(cdp, sid, selector, filePaths) {
   const typeIdx = attrs.indexOf('type');
   if (node.nodeName !== 'INPUT' || typeIdx === -1 || attrs[typeIdx + 1] !== 'file')
     throw new Error('Element is not an <input type="file">');
+  // #403: a selector such as input[type=file] can match a template card's input as well as the
+  // composer's, and DOM.querySelector silently takes the first. These probes are best-effort: when the
+  // page cannot be evaluated the command behaves as before.
+  const matches = await scanUploadMatches(cdp, sid, selector);
+  if (matches && matches.length > 1) throw new Error(uploadAmbiguousMessage(selector, matches));
+  if (matches && matches.length === 1 && matches[0].multiple === false && files.length > 1) {
+    throw new Error(`upload: ${selector} does not accept several files (no \`multiple\`); pass one file`);
+  }
   await cdpDomains(cdp).DOM.setFileInputFiles( { files, nodeId }, sid);
+  const seen = await readUploadedFiles(cdp, sid, selector);
+  if (seen) {
+    const sent = files.map(file => `${basename(file)}:${statSync(file).size}`);
+    const got = seen.map(file => `${file.name}:${file.size}`);
+    if (sent.length !== got.length || sent.some((entry, i) => entry !== got[i])) {
+      throw new Error(`upload: the page reports [${got.join(', ')}] but [${sent.join(', ')}] was sent to ${selector}`);
+    }
+  }
   return `Uploaded ${files.length} file(s) to ${selector}: ${files.join(', ')}`;
+}
+
+async function evalUploadProbe(cdp, sid, expression) {
+  try {
+    const raw = await evalStr(cdp, sid, expression, false, { timeoutMs: 3000, raw: true });
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function scanUploadMatches(cdp, sid, selector) {
+  return evalUploadProbe(cdp, sid, `(()=>{ /* __uploadScan */
+    const label = (el) => {
+      const own = el.getAttribute('aria-label') || (el.labels && el.labels[0] && el.labels[0].innerText) || '';
+      if (own.trim()) return own.trim().slice(0, 40);
+      for (let p = el.parentElement, i = 0; p && i < 4; p = p.parentElement, i++) {
+        const text = (p.innerText || '').replace(/\\s+/g, ' ').trim();
+        if (text) return text.slice(0, 40);
+      }
+      return '';
+    };
+    return JSON.stringify([...document.querySelectorAll(${JSON.stringify(selector)})].map((el, index) => (
+      { index, id: el.id || '', name: el.name || '', accept: el.accept || '', multiple: !!el.multiple, label: label(el) })));
+  })()`);
+}
+
+function readUploadedFiles(cdp, sid, selector) {
+  return evalUploadProbe(cdp, sid, `(()=>{ /* __uploadRead */
+    const el = document.querySelector(${JSON.stringify(selector)});
+    return JSON.stringify(el && el.files ? [...el.files].map(f => ({ name: f.name, size: f.size })) : []);
+  })()`);
+}
+
+function uploadAmbiguousMessage(selector, matches) {
+  const lines = matches.map(m => `  #${m.index}${m.id ? ` id="${m.id}"` : ''}${m.name ? ` name="${m.name}"` : ''} label="${m.label || ''}" accept="${m.accept || ''}"${m.multiple ? ' multiple' : ''}`);
+  return [
+    `upload: selector ${JSON.stringify(selector)} matches ${matches.length} elements, refusing to guess which one to fill:`,
+    ...lines,
+    'Make the selector match exactly one input (an id, a container such as "form input[type=file]", or :nth-of-type(N)).',
+  ].join('\n');
 }
 
 // --- Clean text extraction ---
@@ -24272,13 +24330,15 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       lower.includes('file not found')
       || lower.includes('not a readable file')
       || lower.includes('is not an <input type="file">')
+      || lower.includes('refusing to guess')
+      || lower.includes('does not accept several files')
     )
   ) {
     return {
       kind: 'usage',
       strategy: 'show-help',
       run: 'cdp help upload',
-      reason: 'upload requires an existing readable file and a file input. Do not plant a ghost file.',
+      reason: 'upload requires an existing readable file and exactly one matching file input. Do not plant a ghost file or guess between inputs.',
     };
   }
   if (

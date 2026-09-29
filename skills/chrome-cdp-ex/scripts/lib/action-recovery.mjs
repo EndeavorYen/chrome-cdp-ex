@@ -342,16 +342,19 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
       || lower.includes('not a readable file')
       || lower.includes('is not an <input type="file">')
       || lower.includes('css selector for <input type="file"> required')
+      || lower.includes('refusing to guess')
+      || lower.includes('does not accept several files')
     )
   ) {
     return {
       ...base,
       kind: 'usage',
-      reason: 'upload requires a file input and a path to an existing readable file.',
+      reason: 'upload requires exactly one matching file input and a path to an existing readable file.',
       nextCommand: 'cdp help upload',
       hints: [
         'Pass a real filesystem path; missing paths are not uploaded as empty ghost files.',
         'Target an <input type="file">, not another control.',
+        'If the selector matches several inputs, make it match one (an id, a container, or :nth-of-type(N)); several files need an input with `multiple`.',
       ],
     };
   }

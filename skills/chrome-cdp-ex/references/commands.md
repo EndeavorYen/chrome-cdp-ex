@@ -709,6 +709,12 @@ scripts/cdp.mjs upload <target> "#file-input" /path/a.jpg,/path/b.jpg   # multip
 
 `upload` returns ActionResult evidence after setting files, so form previews, validation messages, or upload queues can appear in `perceive --since-action` and `report`.
 
+Guards (best-effort; skipped when the page cannot be evaluated):
+
+- A selector that matches **several** elements is refused, with each match's index, nearby label and `accept` listed, instead of silently using the first (pages often have a template card's `input[type=file]` as well as the composer's). Make the selector match one input: an id, a container such as `form input[type=file]`, or `:nth-of-type(N)`.
+- Several files for an input without `multiple` are refused before anything is set.
+- After the files are set, the input's `files` list is read back and a name or size mismatch fails the command.
+
 ### Text extraction
 
 ```bash
