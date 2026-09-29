@@ -8928,6 +8928,22 @@ describe('evalStr', () => {
       .toBe('(async()=>{const value = await Promise.resolve(42); return (/* return */ value);})()');
   });
 
+  it('returns the value of an async IIFE whose nested function has its own return (#396)', async () => {
+    const run = (src) => new Function(`return ${T.wrapAwaitExpression(src, true)}`)();
+    await expect(run('(async()=>{const r=await Promise.resolve(7);return r})()')).resolves.toBe(7);
+    await expect(run('Promise.resolve("abc").then(async s=>{const t=await Promise.resolve(s.length);return t})'))
+      .resolves.toBe(3);
+    await expect(run('await (async()=>{await Promise.resolve();return "x"})()')).resolves.toBe('x');
+    await expect(run('const f = async()=>{await Promise.resolve(); return 2}; f()')).resolves.toBe(2);
+  });
+
+  it('still treats a top-level return as the explicit result and keeps ambiguous input an error (#396)', async () => {
+    expect(T.wrapAwaitExpression('const r = await Promise.resolve(1); return r', true))
+      .toBe('(async()=>{const r = await Promise.resolve(1); return r})()');
+    expect(() => T.wrapAwaitExpression('const value = await Promise.resolve(42); if (value) {}', true))
+      .toThrow(/add an explicit return/i);
+  });
+
   it('should pass awaitPromise and returnByValue to CDP', async () => {
     const cdp = createMockCDP({
       'Runtime.evaluate': (params) => {
