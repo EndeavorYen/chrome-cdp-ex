@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Bug fixes
+
+* `doctor` no longer reports CDP unreachable in Chrome's `chrome://inspect`
+  toggle mode (HTTP 404 on `/json/*`, WebSocket only). The 404 fallback now
+  uses the `/devtools/browser/<guid>` path from `DevToolsActivePort` on both the
+  default-port probe and auto-discovery ([#395](https://github.com/EndeavorYen/chrome-cdp-ex/issues/395)).
+
 ### Docs
 
 * Add Grok Bot from-zero setup so a user can replace Grok Bot computer use /
