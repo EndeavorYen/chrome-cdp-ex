@@ -626,7 +626,7 @@ scripts/cdp.mjs upload  <target> <selector> <paths> [--format json] # upload fil
 scripts/cdp.mjs back    <target>                       # navigate back in browser history
 scripts/cdp.mjs forward <target>                       # navigate forward in browser history
 scripts/cdp.mjs reload  <target>                       # reload current page
-scripts/cdp.mjs closetab <target>                      # close a browser tab
+scripts/cdp.mjs closetab <target> [--force]            # close a browser tab (refuses the last open tab unless --force)
 scripts/cdp.mjs netlog  <target> [--clear]             # network request log (XHR/Fetch with status + timing)
 scripts/cdp.mjs mock    <target> [add|clear]           # mock matching network requests in the live tab
 scripts/cdp.mjs clock   <target> [freeze|offset|reset] # override Date/time in the live tab
@@ -762,7 +762,10 @@ scripts/cdp.mjs reload  <target>              # reload current page and clear ob
 
 ```bash
 scripts/cdp.mjs closetab <target>             # close a tab (daemon auto-shuts down)
+scripts/cdp.mjs closetab <target> --force     # also allow closing the only open tab
 ```
+
+`closetab` refuses to close the **only** open tab (closing it can quit the browser) and points to `--force`. The check reads the tab list first and is best-effort: when the list cannot be read the tab is closed as before. The success text `Closed tab: <8 chars>` is unchanged. `--force` is not shown in `cdp help closetab` yet because the command catalog identity is pinned and needs a reviewed update.
 
 ### Network request log
 

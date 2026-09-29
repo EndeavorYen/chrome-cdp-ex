@@ -23,6 +23,10 @@
   refuses several files for an input without `multiple`, and reads `input.files` back after setting
   them, failing on a mismatch. The probes are best-effort, so a page that cannot be evaluated behaves
   as before ([#403](https://github.com/EndeavorYen/chrome-cdp-ex/issues/403)).
+* `closetab` now refuses to close the only open tab (closing it can quit the browser) and points to
+  `--force`. The tab-list check is best-effort and the success text is unchanged; `--force` is not yet in
+  `cdp help closetab` because the command catalog identity is pinned
+  ([#404](https://github.com/EndeavorYen/chrome-cdp-ex/issues/404)).
 * `doctor` no longer reports CDP unreachable in Chrome's `chrome://inspect`
   toggle mode (HTTP 404 on `/json/*`, WebSocket only). The 404 fallback now
   uses the `/devtools/browser/<guid>` path from `DevToolsActivePort` on both the

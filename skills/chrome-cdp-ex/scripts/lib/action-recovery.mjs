@@ -334,6 +334,19 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     };
   }
 
+  if (lower.includes('closetab: refusing to close the last open tab') || lower.includes('closetab: unknown argument')) {
+    return {
+      ...base,
+      kind: 'usage',
+      reason: 'closetab refuses to close the only open tab because closing it can quit the browser.',
+      nextCommand: 'cdp help closetab',
+      hints: [
+        'Open or keep another tab first, then close this one.',
+        'Pass --force only when quitting the browser is intended.',
+      ],
+    };
+  }
+
   if (
     action === 'upload'
     && (
