@@ -14436,6 +14436,54 @@ describe('waitForStr --selector-stable', () => {
 // spawn-debug-browser arg parsing + plan
 // =========================================================================
 
+describe('spawn-debug-browser topic help (#398)', () => {
+  const { parseSpawnDebugBrowserArgs, helpTopicStr, SPAWN_DEBUG_BROWSER_FLAGS } = T;
+  const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+  const parserBody = source.slice(
+    source.indexOf('function parseSpawnDebugBrowserArgs'),
+    source.indexOf('async function listSpawnedDebugTargets'),
+  );
+  const parserFlags = [...new Set([...parserBody.matchAll(/['"](-{1,2}[a-z][a-z-]*)=?['"]/g)].map(m => m[1]))];
+
+  it('finds the flags the parser accepts (guards this test itself)', () => {
+    expect(parserFlags).toEqual(expect.arrayContaining(['--port', '--daily-profile', '--profile-dir', '--exe']));
+  });
+
+  it('lists every flag the parser accepts in `help spawn-debug-browser`', () => {
+    const help = helpTopicStr('spawn-debug-browser');
+    for (const flag of [...parserFlags, '--format']) expect(help, flag).toContain(flag);
+  });
+
+  it('documents only flags the parser accepts', () => {
+    const noValue = new Set(['--daily-profile', '--headless', '--no-sandbox', '--disable-gpu']);
+    for (const entry of SPAWN_DEBUG_BROWSER_FLAGS) {
+      for (const flag of entry.flags) {
+        if (flag === '--help' || flag === '-h' || flag === '--format') continue;
+        const args = noValue.has(flag) ? [flag] : [flag, entry.arg === 'N' ? '1' : 'x'];
+        expect(parseSpawnDebugBrowserArgs(args, { TMPDIR: '/tmp' }).helpRequested, flag).toBeUndefined();
+      }
+    }
+  });
+
+  it('says what happens when the port is occupied and what to set afterwards', () => {
+    const help = helpTopicStr('spawn-debug-browser');
+    expect(help).toMatch(/already in use/i);
+    expect(help).toContain('--port N');
+    expect(help).toContain('CDP_PORT=N');
+    expect(help).toContain('CDP_DEBUG_BROWSER');
+  });
+
+  it('keeps `help spawn-debug-browser` and the `spawn` alias identical', () => {
+    expect(helpTopicStr('spawn')).toBe(helpTopicStr('spawn-debug-browser'));
+  });
+
+  it('leaves other topic help unchanged', () => {
+    const stop = helpTopicStr('stop');
+    expect(stop).not.toContain('CDP_DEBUG_BROWSER');
+    expect(stop.trimEnd().split('\n')).toHaveLength(3);
+  });
+});
+
 describe('parseSpawnDebugBrowserArgs', () => {
   const { parseSpawnDebugBrowserArgs } = T;
 

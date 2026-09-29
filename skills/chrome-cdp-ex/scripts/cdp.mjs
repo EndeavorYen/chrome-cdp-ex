@@ -20207,6 +20207,37 @@ async function defaultQuitBrowser(plan, { platform = process.platform, spawnSync
   throw new Error(`Daily ${plan.browser} is running without debug. Isolated spawn is fallback only and is not the daily profile.`);
 }
 
+// Documentation for `help spawn-debug-browser` (#398). tests/cdp.test.mjs keeps this table and the
+// parser below in step: every parser flag must be listed and every listed flag must parse.
+const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
+  { flags: ['--port', '-p'], arg: 'N', text: 'CDP port (default 9222).' },
+  { flags: ['--host'], arg: 'HOST', text: 'CDP host (default 127.0.0.1).' },
+  { flags: ['--url', '-u'], arg: 'URL', text: 'Open this URL in the launched browser.' },
+  { flags: ['--profile-dir', '--user-data-dir'], arg: 'DIR', text: 'Profile directory (default: a persistent non-default dir per browser, so logins survive).' },
+  { flags: ['--daily-profile'], arg: null, text: "Use the browser's default user-data-dir instead; Chrome/Edge 136+ ignore remote debugging there." },
+  { flags: ['--browser'], arg: 'edge|chrome|brave', text: 'Browser to launch (a bare word such as `chrome` works too).' },
+  { flags: ['--exe', '--executable'], arg: 'PATH', text: 'Browser executable.' },
+  { flags: ['--headless'], arg: null, text: 'Run headless; `--headless=MODE` passes MODE (default new).' },
+  { flags: ['--no-sandbox'], arg: null, text: 'Pass --no-sandbox to the browser (containers, CI).' },
+  { flags: ['--disable-gpu'], arg: null, text: 'Pass --disable-gpu to the browser.' },
+  { flags: ['--wait-ms'], arg: 'N', text: `Wait up to N ms for CDP to answer (default ${DEFAULT_SPAWN_READY_TIMEOUT_MS}).` },
+  { flags: ['--format'], arg: 'text|json', text: 'Output format.' },
+  { flags: ['--help', '-h'], arg: null, text: 'Print this help without launching anything.' },
+]);
+
+const SPAWN_DEBUG_BROWSER_NOTES = Object.freeze([
+  'Default browser is edge, or $CDP_DEBUG_BROWSER when set.',
+  'Port already in use: if the occupant does not answer /json/version (for example Chrome\'s chrome://inspect toggle on 9222), the command fails. Pick another port with --port N, then set CDP_PORT=N for list/perceive/stop.',
+  'Unknown flags print this help and launch nothing.',
+]);
+
+function spawnDebugBrowserHelpDetails() {
+  const labels = SPAWN_DEBUG_BROWSER_FLAGS.map(({ flags, arg }) => flags.map(flag => (arg ? `${flag} ${arg}` : flag)).join(', '));
+  const width = Math.max(...labels.map(label => label.length)) + 2;
+  const flagLines = SPAWN_DEBUG_BROWSER_FLAGS.map(({ text }, index) => `  ${labels[index].padEnd(width)}${text}`);
+  return ['Flags:', ...flagLines, 'Notes:', ...SPAWN_DEBUG_BROWSER_NOTES.map(note => `  ${note}`)];
+}
+
 function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
   const fopts = parseFormatArgs(args || [], ['text', 'json']);
   const opts = {
@@ -23411,6 +23442,7 @@ function helpTopicStr(topic) {
   if (!record) throw new Error(unknownCommandMessage(raw));
   const lines = [`cdp ${record.help.synopsis}`, record.help.summary];
   if (record.aliases?.length) lines.push(`Aliases: ${record.aliases.join(', ')}`);
+  if (record.name === 'spawn-debug-browser') lines.push(...spawnDebugBrowserHelpDetails());
   lines.push('Run `cdp help` for the survivor card; leftover verbs: `cdp help <command>`.');
   return `${lines.join('\n')}\n`;
 }
@@ -25900,7 +25932,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseFormControlStateSnapshot, snapshotFormControlState,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
-  parseSpawnDebugBrowserArgs, detectBrowserPath, buildSpawnDebugBrowserPlan,
+  parseSpawnDebugBrowserArgs, SPAWN_DEBUG_BROWSER_FLAGS, detectBrowserPath, buildSpawnDebugBrowserPlan,
   probeTcpPort,
   getWsUrl, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   isExistingBrowserSessionHandoff, formatExistingBrowserSessionHandoffError, formatDailyDefaultProfileCdpFailure,
