@@ -11,6 +11,11 @@
 
 ### Bug fixes
 
+* `upload` no longer silently uses the first element when its selector matches several (for example a
+  template card's `input[type=file]` before the composer's): it refuses and lists the matches. It also
+  refuses several files for an input without `multiple`, and reads `input.files` back after setting
+  them, failing on a mismatch. The probes are best-effort, so a page that cannot be evaluated behaves
+  as before ([#403](https://github.com/EndeavorYen/chrome-cdp-ex/issues/403)).
 * `doctor` no longer reports CDP unreachable in Chrome's `chrome://inspect`
   toggle mode (HTTP 404 on `/json/*`, WebSocket only). The 404 fallback now
   uses the `/devtools/browser/<guid>` path from `DevToolsActivePort` on both the
