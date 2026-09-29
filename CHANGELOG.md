@@ -8,6 +8,9 @@
   toggle mode (HTTP 404 on `/json/*`, WebSocket only). The 404 fallback now
   uses the `/devtools/browser/<guid>` path from `DevToolsActivePort` on both the
   default-port probe and auto-discovery ([#395](https://github.com/EndeavorYen/chrome-cdp-ex/issues/395)).
+* `eval` no longer prints nothing (exit 0) for async source that has a nested
+  `return`, such as `(async()=>{await x; return y})()`; only a top-level `return`
+  counts as the wrapper's explicit result (#396).
 
 ### Docs
 
