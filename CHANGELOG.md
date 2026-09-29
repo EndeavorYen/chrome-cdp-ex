@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Features
+
+* `skills/chrome-cdp-ex/scripts/download.mjs <target> <url> <out-file>` saves a URL fetched with the
+  tab's login session (chunked, `.part` then rename, sha256 receipt, `--max-mb`, `--force`, `data:`
+  URLs). It is a helper script, not a catalog command, so the frozen 81-command surface is unchanged
+  ([#397](https://github.com/EndeavorYen/chrome-cdp-ex/issues/397)).
+
 ### Bug fixes
 
 * `doctor` no longer reports CDP unreachable in Chrome's `chrome://inspect`
