@@ -11,6 +11,9 @@
 * `eval` no longer prints nothing (exit 0) for async source that has a nested
   `return`, such as `(async()=>{await x; return y})()`; only a top-level `return`
   counts as the wrapper's explicit result (#396).
+* `cdp help spawn-debug-browser` now lists every accepted flag (including `--daily-profile`,
+  `--host`, `--wait-ms`), the default browser and profile, and what to do when the port is
+  already in use; a test keeps the flag table and the parser in step (#398).
 
 ### Docs
 

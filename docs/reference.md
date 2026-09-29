@@ -411,6 +411,8 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser edge --port 9222 -
 node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser chrome --headless --no-sandbox --port 9222 --url https://example.com
 ```
 
+`cdp help spawn-debug-browser` lists every flag (`--profile-dir`, `--daily-profile`, `--wait-ms`, ...). If port 9222 is already held by something that does not answer `/json/version` (for example Chrome's `chrome://inspect` toggle), spawn fails: pick another port such as `--port 9224` and set `CDP_PORT=9224` for later commands.
+
 Configuration:
 
 | Variable | Purpose |
