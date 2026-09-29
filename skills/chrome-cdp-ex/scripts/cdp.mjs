@@ -17862,7 +17862,26 @@ async function cascadeStr(cdp, sid, selector, property, refMap, refState, opts =
 }
 
 // --- Tab close ---
-async function closetabStr(cdp, targetId) {
+function parseClosetabArgs(args = []) {
+  const opts = { force: false };
+  for (const arg of args.filter(a => a !== undefined && a !== null)) {
+    if (arg === '--force') opts.force = true;
+    else throw new Error(`closetab: unknown argument ${arg}`);
+  }
+  return opts;
+}
+
+// #404: closing the only open tab can quit the browser. The page list is best-effort evidence; when it
+// cannot be read the tab is closed exactly as before. The success text is unchanged on purpose: validation
+// scripts and contract tests compare it byte for byte.
+async function closetabStr(cdp, targetId, { force = false } = {}) {
+  if (!force) {
+    let pages = null;
+    try { pages = await getPages(cdp); } catch { pages = null; }
+    if (pages && pages.length <= 1 && pages.some(p => p.targetId === targetId)) {
+      throw new Error('closetab: refusing to close the last open tab (closing it can quit the browser); pass --force to close it anyway');
+    }
+  }
   await cdpDomains(cdp).Target.closeTarget( { targetId });
   return `Closed tab: ${targetId.slice(0, 8)}`;
 }
@@ -21823,8 +21842,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       await clockStr(cdp, sessionId, session, args),
       { kind: 'action-receipt' },
     ),
-    closetab: async () => commandResult(
-      await closetabStr(cdp, targetId),
+    closetab: async args => commandResult(
+      await closetabStr(cdp, targetId, parseClosetabArgs(args)),
       { kind: 'action-receipt' },
     ),
     cookiedel: async args => commandResult(
@@ -24244,6 +24263,14 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       reason: 'select requires a <select> control and an existing option value.',
     };
   }
+  if (lower.includes('closetab: refusing to close the last open tab') || lower.includes('closetab: unknown argument')) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help closetab',
+      reason: 'closetab refuses to close the only open tab (the browser may quit). Open another tab first, or pass --force.',
+    };
+  }
   if (
     (cmd === 'upload' || lower.includes('upload:'))
     && (
@@ -25893,7 +25920,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseFormatArgs, formatJson, parseConsoleArgs, clearConsoleBaseline, buildConsoleModel, buildStatusModel, summaryModel, formatSummaryText, summaryStr,
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
-  cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles,
+  cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles, parseClosetabArgs,
   navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
