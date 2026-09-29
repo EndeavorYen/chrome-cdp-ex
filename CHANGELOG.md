@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Bug fixes
+
+* `eval` no longer prints nothing (exit 0) for async source that has a nested
+  `return`, such as `(async()=>{await x; return y})()`; only a top-level `return`
+  counts as the wrapper's explicit result (#396).
+
 ### Docs
 
 * Add Grok Bot from-zero setup so a user can replace Grok Bot computer use /
