@@ -3222,8 +3222,25 @@ function codeWithoutStringsAndComments(source) {
   return output;
 }
 
+// Blank everything nested inside (), [] or {} so a `return` inside an inner function is not
+// mistaken for the wrapper's own top-level return (#396).
+function topLevelCodeOnly(source) {
+  let output = '';
+  let depth = 0;
+  for (const char of codeWithoutStringsAndComments(source)) {
+    if (char === '(' || char === '[' || char === '{') {
+      output += depth === 0 ? char : ' ';
+      depth++;
+    } else if (char === ')' || char === ']' || char === '}') {
+      depth = Math.max(0, depth - 1);
+      output += depth === 0 ? char : ' ';
+    } else output += depth === 0 || char === '\n' ? char : ' ';
+  }
+  return output;
+}
+
 function hasExplicitReturnStatement(source) {
-  return /(?:^|[;{}:])\s*return\b/.test(codeWithoutStringsAndComments(source));
+  return /(?:^|[;{}:])\s*return\b/.test(topLevelCodeOnly(source));
 }
 
 function wrapAwaitExpression(expression, autoWrap = false) {
@@ -3235,7 +3252,14 @@ function wrapAwaitExpression(expression, autoWrap = false) {
   const trimmed = source.replace(/;\s*$/, '').trimEnd();
   const separator = lastTopLevelSemicolon(trimmed);
   if (separator < 0) {
-    throw new Error('eval: multi-statement async input is ambiguous; add an explicit return for the desired result.');
+    // One expression that only spans lines or holds `;` inside nested blocks, e.g. an async IIFE.
+    const single = `(async()=>(${trimmed}))()`;
+    try {
+      new Function(`return ${single}`);
+      return single;
+    } catch {
+      throw new Error('eval: multi-statement async input is ambiguous; add an explicit return for the desired result.');
+    }
   }
   const prefix = trimmed.slice(0, separator + 1);
   const finalExpression = trimmed.slice(separator + 1).trim();
