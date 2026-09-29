@@ -11,6 +11,13 @@
 
 ### Bug fixes
 
+* A click that reaches the page as zero events now says why when the tab is hidden (its window
+  covered or minimised: Chrome drops `Input.*` events there): the error and the failure receipt carry
+  `visibility: "hidden"` and point to `jsclick`. Failure receipts also carry `dispatched`
+  (`false` for `no-input-events`, `"unknown"` for `timeout`, with a warning not to resend
+  non-idempotent actions). `spawn-debug-browser` now passes
+  `--disable-features=CalculateNativeWinOcclusion` so its own window does not turn hidden when covered;
+  `--allow-occlusion` opts out ([#402](https://github.com/EndeavorYen/chrome-cdp-ex/issues/402)).
 * `doctor` no longer reports CDP unreachable in Chrome's `chrome://inspect`
   toggle mode (HTTP 404 on `/json/*`, WebSocket only). The 404 fallback now
   uses the `/devtools/browser/<guid>` path from `DevToolsActivePort` on both the

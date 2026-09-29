@@ -12450,11 +12450,28 @@ function clickProbeSawPageEvent(seen) {
   ));
 }
 
-function clickNoPageEventsError(x, y, selector = '') {
+// A hidden tab (its window covered by another window or minimised) drops Input.* events
+// silently, which looks exactly like "dispatch.ok, zero page events" (#402). Ask the page
+// once so the failure can say why instead of only "no events".
+async function probePageVisibility(cdp, sid) {
+  try {
+    const value = await evalStr(cdp, sid, 'document.visibilityState', false, { timeoutMs: 1500, raw: true });
+    return value === 'hidden' || value === 'visible' ? value : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function clickNoPageEventsError(x, y, selector = '', visibility = 'unknown') {
   const target = selector ? ` for ${selector}` : '';
-  return new Error(
-    `click: Input.dispatchMouseEvent completed but the page received no mousedown/click events at (${x}, ${y})${target}. The mouse path failed closed. Try jsclick or click --js.`
+  const hidden = visibility === 'hidden'
+    ? " The tab's document.visibilityState is hidden (window covered or minimised): Input.* events are dropped while hidden, so retrying the mouse path will not help."
+    : '';
+  const err = new Error(
+    `click: Input.dispatchMouseEvent completed but the page received no mousedown/click events at (${x}, ${y})${target}. The mouse path failed closed. Try jsclick or click --js.${hidden}`
   );
+  err.visibility = visibility;
+  return err;
 }
 
 async function installClickEventProbe(cdp, sid, { objectId = null, x = 0, y = 0 } = {}) {
@@ -12537,12 +12554,12 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
   if (probe.opaqueFrame && framed) return;
   if (!probe.installed) {
     if (framed) return;
-    throw clickNoPageEventsError(x, y, probeTarget.selector);
+    throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
   }
   if (probe.scope === 'top' && framed) return;
   const readout = await readClickEventProbe(cdp, sid, probe);
   if (readout?.ok && clickProbeSawPageEvent(readout.seen)) return;
-  throw clickNoPageEventsError(x, y, probeTarget.selector);
+  throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
 }
 
 function isNavigatingHref(href, pageHref = '') {
@@ -20220,6 +20237,7 @@ const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
   { flags: ['--headless'], arg: null, text: 'Run headless; `--headless=MODE` passes MODE (default new).' },
   { flags: ['--no-sandbox'], arg: null, text: 'Pass --no-sandbox to the browser (containers, CI).' },
   { flags: ['--disable-gpu'], arg: null, text: 'Pass --disable-gpu to the browser.' },
+  { flags: ['--allow-occlusion'], arg: null, text: 'Do not pass --disable-features=CalculateNativeWinOcclusion (see Notes).' },
   { flags: ['--wait-ms'], arg: 'N', text: `Wait up to N ms for CDP to answer (default ${DEFAULT_SPAWN_READY_TIMEOUT_MS}).` },
   { flags: ['--format'], arg: 'text|json', text: 'Output format.' },
   { flags: ['--help', '-h'], arg: null, text: 'Print this help without launching anything.' },
@@ -20228,6 +20246,7 @@ const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
 const SPAWN_DEBUG_BROWSER_NOTES = Object.freeze([
   'Default browser is edge, or $CDP_DEBUG_BROWSER when set.',
   'Port already in use: if the occupant does not answer /json/version (for example Chrome\'s chrome://inspect toggle on 9222), the command fails. Pick another port with --port N, then set CDP_PORT=N for list/perceive/stop.',
+  'By default the launched browser gets --disable-features=CalculateNativeWinOcclusion. Without it, Windows marks a debug window that another window fully covers as hidden (document.visibilityState=hidden) and Chrome drops Input.* events, so click/press fail with no-input-events. Use --allow-occlusion to keep the browser default.',
   'Unknown flags print this help and launch nothing.',
 ]);
 
@@ -20251,6 +20270,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
     headless: false,
     noSandbox: false,
     disableGpu: false,
+    allowOcclusion: false,
     waitMs: DEFAULT_SPAWN_READY_TIMEOUT_MS,
     format: fopts.format,
   };
@@ -20268,6 +20288,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
     else if (String(a).startsWith('--headless=')) opts.headless = String(a).slice('--headless='.length) || 'new';
     else if (a === '--no-sandbox') opts.noSandbox = true;
     else if (a === '--disable-gpu') opts.disableGpu = true;
+    else if (a === '--allow-occlusion') opts.allowOcclusion = true;
     else if (a === '--wait-ms') opts.waitMs = parseNonNegativeInteger(tokens[++i], 'spawn-debug-browser: --wait-ms');
     else if (String(a).startsWith('--wait-ms=')) opts.waitMs = parseNonNegativeInteger(String(a).slice('--wait-ms='.length), 'spawn-debug-browser: --wait-ms');
     else if (a === '--help' || a === '-h' || String(a).startsWith('--')) opts.helpRequested = true;
@@ -20450,6 +20471,7 @@ function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { ex
   if (opts.headless) args.push(`--headless=${opts.headless === true ? 'new' : opts.headless}`);
   if (opts.noSandbox) args.push('--no-sandbox');
   if (opts.disableGpu) args.push('--disable-gpu');
+  if (!opts.allowOcclusion) args.push('--disable-features=CalculateNativeWinOcclusion');
   if (opts.url) args.push(opts.url);
   return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile) };
 }
@@ -24461,7 +24483,9 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       run: (targetPrefix && selector)
         ? `cdp jsclick ${targetPrefix} ${selector}`
         : 'cdp help click',
-      reason: 'The realistic mouse click did not deliver page events. Retry with jsclick instead of treating dispatch.ok as success.',
+      reason: lower.includes('visibilitystate is hidden')
+        ? 'The tab is hidden (window covered or minimised): Input.* events are dropped. Use jsclick, or bring the window to the front. Do not treat dispatch.ok as success.'
+        : 'The realistic mouse click did not deliver page events. Retry with jsclick instead of treating dispatch.ok as success.',
     };
   }
   if (lower.includes('did not navigate') || (lower.includes('try jsclick') && lower.includes('<a href'))) {
