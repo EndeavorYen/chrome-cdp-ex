@@ -1,0 +1,17 @@
+# Pin LF for everything git detects as text. Shebang scripts, JSON, Markdown and checked-in SVGs are
+# executed, hashed, or compared byte for byte; a CRLF checkout (Windows core.autocrlf=true) breaks
+# vitest ("#!/usr/bin/env node\r" -> SyntaxError) and byte-compare tests. See #399.
+* text=auto eol=lf
+
+# Binary assets stay untouched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.mp4 binary
+*.webm binary
+*.pdf binary
+*.zip binary
+*.tgz binary
