@@ -10,7 +10,7 @@
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, realpathSync, statSync } from 'fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { homedir } from 'os';
-import { dirname, posix as posixPath, resolve, win32 as win32Path } from 'path';
+import { basename, dirname, posix as posixPath, resolve, win32 as win32Path } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
 import { format as formatValue } from 'util';
@@ -12450,11 +12450,28 @@ function clickProbeSawPageEvent(seen) {
   ));
 }
 
-function clickNoPageEventsError(x, y, selector = '') {
+// A hidden tab (its window covered by another window or minimised) drops Input.* events
+// silently, which looks exactly like "dispatch.ok, zero page events" (#402). Ask the page
+// once so the failure can say why instead of only "no events".
+async function probePageVisibility(cdp, sid) {
+  try {
+    const value = await evalStr(cdp, sid, 'document.visibilityState', false, { timeoutMs: 1500, raw: true });
+    return value === 'hidden' || value === 'visible' ? value : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function clickNoPageEventsError(x, y, selector = '', visibility = 'unknown') {
   const target = selector ? ` for ${selector}` : '';
-  return new Error(
-    `click: Input.dispatchMouseEvent completed but the page received no mousedown/click events at (${x}, ${y})${target}. The mouse path failed closed. Try jsclick or click --js.`
+  const hidden = visibility === 'hidden'
+    ? " The tab's document.visibilityState is hidden (window covered or minimised): Input.* events are dropped while hidden, so retrying the mouse path will not help."
+    : '';
+  const err = new Error(
+    `click: Input.dispatchMouseEvent completed but the page received no mousedown/click events at (${x}, ${y})${target}. The mouse path failed closed. Try jsclick or click --js.${hidden}`
   );
+  err.visibility = visibility;
+  return err;
 }
 
 async function installClickEventProbe(cdp, sid, { objectId = null, x = 0, y = 0 } = {}) {
@@ -12537,12 +12554,12 @@ async function dispatchClick(cdp, sid, x, y, probeTarget = {}) {
   if (probe.opaqueFrame && framed) return;
   if (!probe.installed) {
     if (framed) return;
-    throw clickNoPageEventsError(x, y, probeTarget.selector);
+    throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
   }
   if (probe.scope === 'top' && framed) return;
   const readout = await readClickEventProbe(cdp, sid, probe);
   if (readout?.ok && clickProbeSawPageEvent(readout.seen)) return;
-  throw clickNoPageEventsError(x, y, probeTarget.selector);
+  throw clickNoPageEventsError(x, y, probeTarget.selector, await probePageVisibility(cdp, sid));
 }
 
 function isNavigatingHref(href, pageHref = '') {
@@ -16090,8 +16107,66 @@ async function uploadStr(cdp, sid, selector, filePaths) {
   const typeIdx = attrs.indexOf('type');
   if (node.nodeName !== 'INPUT' || typeIdx === -1 || attrs[typeIdx + 1] !== 'file')
     throw new Error('Element is not an <input type="file">');
+  // #403: a selector such as input[type=file] can match a template card's input as well as the
+  // composer's, and DOM.querySelector silently takes the first. These probes are best-effort: when the
+  // page cannot be evaluated the command behaves as before.
+  const matches = await scanUploadMatches(cdp, sid, selector);
+  if (matches && matches.length > 1) throw new Error(uploadAmbiguousMessage(selector, matches));
+  if (matches && matches.length === 1 && matches[0].multiple === false && files.length > 1) {
+    throw new Error(`upload: ${selector} does not accept several files (no \`multiple\`); pass one file`);
+  }
   await cdpDomains(cdp).DOM.setFileInputFiles( { files, nodeId }, sid);
+  const seen = await readUploadedFiles(cdp, sid, selector);
+  if (seen) {
+    const sent = files.map(file => `${basename(file)}:${statSync(file).size}`);
+    const got = seen.map(file => `${file.name}:${file.size}`);
+    if (sent.length !== got.length || sent.some((entry, i) => entry !== got[i])) {
+      throw new Error(`upload: the page reports [${got.join(', ')}] but [${sent.join(', ')}] was sent to ${selector}`);
+    }
+  }
   return `Uploaded ${files.length} file(s) to ${selector}: ${files.join(', ')}`;
+}
+
+async function evalUploadProbe(cdp, sid, expression) {
+  try {
+    const raw = await evalStr(cdp, sid, expression, false, { timeoutMs: 3000, raw: true });
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function scanUploadMatches(cdp, sid, selector) {
+  return evalUploadProbe(cdp, sid, `(()=>{ /* __uploadScan */
+    const label = (el) => {
+      const own = el.getAttribute('aria-label') || (el.labels && el.labels[0] && el.labels[0].innerText) || '';
+      if (own.trim()) return own.trim().slice(0, 40);
+      for (let p = el.parentElement, i = 0; p && i < 4; p = p.parentElement, i++) {
+        const text = (p.innerText || '').replace(/\\s+/g, ' ').trim();
+        if (text) return text.slice(0, 40);
+      }
+      return '';
+    };
+    return JSON.stringify([...document.querySelectorAll(${JSON.stringify(selector)})].map((el, index) => (
+      { index, id: el.id || '', name: el.name || '', accept: el.accept || '', multiple: !!el.multiple, label: label(el) })));
+  })()`);
+}
+
+function readUploadedFiles(cdp, sid, selector) {
+  return evalUploadProbe(cdp, sid, `(()=>{ /* __uploadRead */
+    const el = document.querySelector(${JSON.stringify(selector)});
+    return JSON.stringify(el && el.files ? [...el.files].map(f => ({ name: f.name, size: f.size })) : []);
+  })()`);
+}
+
+function uploadAmbiguousMessage(selector, matches) {
+  const lines = matches.map(m => `  #${m.index}${m.id ? ` id="${m.id}"` : ''}${m.name ? ` name="${m.name}"` : ''} label="${m.label || ''}" accept="${m.accept || ''}"${m.multiple ? ' multiple' : ''}`);
+  return [
+    `upload: selector ${JSON.stringify(selector)} matches ${matches.length} elements, refusing to guess which one to fill:`,
+    ...lines,
+    'Make the selector match exactly one input (an id, a container such as "form input[type=file]", or :nth-of-type(N)).',
+  ].join('\n');
 }
 
 // --- Clean text extraction ---
@@ -20239,6 +20314,7 @@ const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
   { flags: ['--headless'], arg: null, text: 'Run headless; `--headless=MODE` passes MODE (default new).' },
   { flags: ['--no-sandbox'], arg: null, text: 'Pass --no-sandbox to the browser (containers, CI).' },
   { flags: ['--disable-gpu'], arg: null, text: 'Pass --disable-gpu to the browser.' },
+  { flags: ['--allow-occlusion'], arg: null, text: 'Do not pass --disable-features=CalculateNativeWinOcclusion (see Notes).' },
   { flags: ['--wait-ms'], arg: 'N', text: `Wait up to N ms for CDP to answer (default ${DEFAULT_SPAWN_READY_TIMEOUT_MS}).` },
   { flags: ['--format'], arg: 'text|json', text: 'Output format.' },
   { flags: ['--help', '-h'], arg: null, text: 'Print this help without launching anything.' },
@@ -20247,6 +20323,7 @@ const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
 const SPAWN_DEBUG_BROWSER_NOTES = Object.freeze([
   'Default browser is edge, or $CDP_DEBUG_BROWSER when set.',
   'Port already in use: if the occupant does not answer /json/version (for example Chrome\'s chrome://inspect toggle on 9222), the command fails. Pick another port with --port N, then set CDP_PORT=N for list/perceive/stop.',
+  'By default the launched browser gets --disable-features=CalculateNativeWinOcclusion. Without it, Windows marks a debug window that another window fully covers as hidden (document.visibilityState=hidden) and Chrome drops Input.* events, so click/press fail with no-input-events. Use --allow-occlusion to keep the browser default.',
   'Unknown flags print this help and launch nothing.',
 ]);
 
@@ -20270,6 +20347,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
     headless: false,
     noSandbox: false,
     disableGpu: false,
+    allowOcclusion: false,
     waitMs: DEFAULT_SPAWN_READY_TIMEOUT_MS,
     format: fopts.format,
   };
@@ -20287,6 +20365,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
     else if (String(a).startsWith('--headless=')) opts.headless = String(a).slice('--headless='.length) || 'new';
     else if (a === '--no-sandbox') opts.noSandbox = true;
     else if (a === '--disable-gpu') opts.disableGpu = true;
+    else if (a === '--allow-occlusion') opts.allowOcclusion = true;
     else if (a === '--wait-ms') opts.waitMs = parseNonNegativeInteger(tokens[++i], 'spawn-debug-browser: --wait-ms');
     else if (String(a).startsWith('--wait-ms=')) opts.waitMs = parseNonNegativeInteger(String(a).slice('--wait-ms='.length), 'spawn-debug-browser: --wait-ms');
     else if (a === '--help' || a === '-h' || String(a).startsWith('--')) opts.helpRequested = true;
@@ -20469,6 +20548,7 @@ function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { ex
   if (opts.headless) args.push(`--headless=${opts.headless === true ? 'new' : opts.headless}`);
   if (opts.noSandbox) args.push('--no-sandbox');
   if (opts.disableGpu) args.push('--disable-gpu');
+  if (!opts.allowOcclusion) args.push('--disable-features=CalculateNativeWinOcclusion');
   if (opts.url) args.push(opts.url);
   return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile) };
 }
@@ -24277,13 +24357,15 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       lower.includes('file not found')
       || lower.includes('not a readable file')
       || lower.includes('is not an <input type="file">')
+      || lower.includes('refusing to guess')
+      || lower.includes('does not accept several files')
     )
   ) {
     return {
       kind: 'usage',
       strategy: 'show-help',
       run: 'cdp help upload',
-      reason: 'upload requires an existing readable file and a file input. Do not plant a ghost file.',
+      reason: 'upload requires an existing readable file and exactly one matching file input. Do not plant a ghost file or guess between inputs.',
     };
   }
   if (
@@ -24488,7 +24570,9 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       run: (targetPrefix && selector)
         ? `cdp jsclick ${targetPrefix} ${selector}`
         : 'cdp help click',
-      reason: 'The realistic mouse click did not deliver page events. Retry with jsclick instead of treating dispatch.ok as success.',
+      reason: lower.includes('visibilitystate is hidden')
+        ? 'The tab is hidden (window covered or minimised): Input.* events are dropped. Use jsclick, or bring the window to the front. Do not treat dispatch.ok as success.'
+        : 'The realistic mouse click did not deliver page events. Retry with jsclick instead of treating dispatch.ok as success.',
     };
   }
   if (lower.includes('did not navigate') || (lower.includes('try jsclick') && lower.includes('<a href'))) {

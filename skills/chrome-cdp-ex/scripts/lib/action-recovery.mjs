@@ -166,12 +166,20 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     || (lower.includes('mouse path failed closed') && lower.includes('jsclick'))
   ) {
     const jsClick = input ? `cdp jsclick ${targetId} ${input}` : 'cdp help click';
+    // #402: a hidden tab (window covered or minimised) drops Input.* events; the page saw nothing,
+    // so a JS click is safe to try and the mouse path will keep failing until the window is visible.
+    const hidden = lower.includes('visibilitystate is hidden');
     return {
       ...base,
       kind: 'no-input-events',
-      reason: 'The realistic mouse click completed without delivering page mouse or click events.',
+      visibility: hidden ? 'hidden' : 'unknown',
+      dispatched: false,
+      reason: hidden
+        ? 'The tab is hidden (window covered or minimised), so Input.* events are dropped and the page received no mouse or click events.'
+        : 'The realistic mouse click completed without delivering page mouse or click events.',
       nextCommand: jsClick,
       hints: [
+        ...(hidden ? ['The tab is hidden: Input.* events are dropped while hidden. Bring the browser window to the front, or use a JS click instead of retrying the mouse path.'] : []),
         `Retry with \`${jsClick}\` or \`cdp click ${targetId} ${input || '<selector>'} --js\`.`,
         'Do not treat dispatch.ok as success when the live handler or form control did not change.',
       ],
@@ -182,11 +190,14 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     return {
       ...base,
       kind: 'timeout',
-      reason: 'The action or its CDP acknowledgement exceeded the timeout window.',
+      // #402: on a busy or hidden tab the input can run even though the acknowledgement times out.
+      dispatched: 'unknown',
+      reason: 'The action or its CDP acknowledgement exceeded the timeout window. The action may still have run.',
       nextCommand: statusCommand,
       hints: [
         `Check whether the tab is still responsive with \`${statusCommand}\`.`,
         `If the action may have dispatched, run \`cdp perceive ${targetId} --since-action\` before retrying.`,
+        'Do not resend a non-idempotent action (submit, purchase, send) until you have confirmed it did not run.',
       ],
     };
   }
@@ -344,16 +355,19 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
       || lower.includes('not a readable file')
       || lower.includes('is not an <input type="file">')
       || lower.includes('css selector for <input type="file"> required')
+      || lower.includes('refusing to guess')
+      || lower.includes('does not accept several files')
     )
   ) {
     return {
       ...base,
       kind: 'usage',
-      reason: 'upload requires a file input and a path to an existing readable file.',
+      reason: 'upload requires exactly one matching file input and a path to an existing readable file.',
       nextCommand: 'cdp help upload',
       hints: [
         'Pass a real filesystem path; missing paths are not uploaded as empty ghost files.',
         'Target an <input type="file">, not another control.',
+        'If the selector matches several inputs, make it match one (an id, a container, or :nth-of-type(N)); several files need an input with `multiple`.',
       ],
     };
   }

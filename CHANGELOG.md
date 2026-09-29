@@ -11,6 +11,18 @@
 
 ### Bug fixes
 
+* A click that reaches the page as zero events now says why when the tab is hidden (its window
+  covered or minimised: Chrome drops `Input.*` events there): the error and the failure receipt carry
+  `visibility: "hidden"` and point to `jsclick`. Failure receipts also carry `dispatched`
+  (`false` for `no-input-events`, `"unknown"` for `timeout`, with a warning not to resend
+  non-idempotent actions). `spawn-debug-browser` now passes
+  `--disable-features=CalculateNativeWinOcclusion` so its own window does not turn hidden when covered;
+  `--allow-occlusion` opts out ([#402](https://github.com/EndeavorYen/chrome-cdp-ex/issues/402)).
+* `upload` no longer silently uses the first element when its selector matches several (for example a
+  template card's `input[type=file]` before the composer's): it refuses and lists the matches. It also
+  refuses several files for an input without `multiple`, and reads `input.files` back after setting
+  them, failing on a mismatch. The probes are best-effort, so a page that cannot be evaluated behaves
+  as before ([#403](https://github.com/EndeavorYen/chrome-cdp-ex/issues/403)).
 * `closetab` now refuses to close the only open tab (closing it can quit the browser) and points to
   `--force`. The tab-list check is best-effort and the success text is unchanged; `--force` is not yet in
   `cdp help closetab` because the command catalog identity is pinned

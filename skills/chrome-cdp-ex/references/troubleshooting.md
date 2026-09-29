@@ -74,6 +74,18 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser <preferredBrowser>
 
 `--help` / unknown flags print help and must not launch a browser. `--daily-profile` uses the browser's default user-data-dir. `Opening in existing browser session` / `在現有的瀏覽器工作階段中開啟` is failure, not attach success. Chrome 136+ / Edge ignore `--remote-debugging-port` on the default user-data-dir, so `--daily-profile` does not quit+relaunch that same default profile as if 9222 would come up. Isolated mode launches a separate user-data-dir (fallback only, not the daily profile; cookies will not transfer). In Linux CI, containers, or no-display shells, add existing flags shown by doctor such as `--headless`, `--no-sandbox`, or `--exe /path/to/browser` when needed.
 
+## Clicks and keys do nothing (hidden tab)
+
+If `click`/`clickxy` fails with `Kind: no-input-events`, or `press Enter` silently does nothing, check `document.visibilityState`:
+
+```bash
+cdp eval <target> "document.visibilityState"
+```
+
+`hidden` means the browser window is covered by another window or minimised (Windows occlusion tracking); Chrome then drops `Input.*` events. `Page.bringToFront` does not change this. Options: bring the window to the front, use `cdp jsclick` (page-side `element.click()`), or relaunch the debug browser with `spawn-debug-browser`, which passes `--disable-features=CalculateNativeWinOcclusion` by default (`--allow-occlusion` opts out).
+
+The failure receipt says `dispatched: false` for `no-input-events` (the page saw nothing) and `dispatched: "unknown"` for `timeout`. After a timeout, run `cdp perceive <target> --since-action` before resending a non-idempotent action.
+
 ## Electron screenshot fallbacks
 
 For Electron apps, launch with a remote debugging port and run commands with `CDP_PORT=<port>`:

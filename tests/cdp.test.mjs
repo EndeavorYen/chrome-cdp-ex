@@ -14455,7 +14455,7 @@ describe('spawn-debug-browser topic help (#398)', () => {
   });
 
   it('documents only flags the parser accepts', () => {
-    const noValue = new Set(['--daily-profile', '--headless', '--no-sandbox', '--disable-gpu']);
+    const noValue = new Set(['--daily-profile', '--headless', '--no-sandbox', '--disable-gpu', '--allow-occlusion']);
     for (const entry of SPAWN_DEBUG_BROWSER_FLAGS) {
       for (const flag of entry.flags) {
         if (flag === '--help' || flag === '-h' || flag === '--format') continue;
@@ -14523,7 +14523,7 @@ describe('parseSpawnDebugBrowserArgs', () => {
 });
 
 describe('detectBrowserPath / buildSpawnDebugBrowserPlan', () => {
-  const { detectBrowserPath, buildSpawnDebugBrowserPlan } = T;
+  const { detectBrowserPath, buildSpawnDebugBrowserPlan, parseSpawnDebugBrowserArgs } = T;
 
   it('returns the first existing candidate path', () => {
     const fs = { existsSync: (p) => p === '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge' };
@@ -14547,6 +14547,28 @@ describe('detectBrowserPath / buildSpawnDebugBrowserPlan', () => {
     expect(plan.args).toContain('--remote-debugging-port=9222');
     expect(plan.args).toContain('--user-data-dir=/tmp/p');
     expect(plan.args).toContain('--no-first-run');
+  });
+
+  it('keeps a covered debug window from turning hidden by default (#402)', () => {
+    const fs = { existsSync: () => true };
+    const opts = parseSpawnDebugBrowserArgs(['chrome', '--exe', '/opt/browser'], { TMPDIR: '/tmp' });
+    const plan = buildSpawnDebugBrowserPlan(opts, 'linux', fs);
+    expect(opts.allowOcclusion).toBe(false);
+    expect(plan.args).toContain('--disable-features=CalculateNativeWinOcclusion');
+  });
+
+  it('--allow-occlusion opts out of the occlusion default (#402)', () => {
+    const fs = { existsSync: () => true };
+    const opts = parseSpawnDebugBrowserArgs(['chrome', '--exe', '/opt/browser', '--allow-occlusion'], { TMPDIR: '/tmp' });
+    const plan = buildSpawnDebugBrowserPlan(opts, 'linux', fs);
+    expect(opts.allowOcclusion).toBe(true);
+    expect(plan.args.some(arg => arg.startsWith('--disable-features='))).toBe(false);
+  });
+
+  it('documents the occlusion default and its opt-out in help (#402)', () => {
+    const help = T.helpTopicStr('spawn-debug-browser');
+    expect(help).toContain('--allow-occlusion');
+    expect(help).toMatch(/CalculateNativeWinOcclusion/);
   });
 
   it('throws an actionable error when the executable is missing', () => {
