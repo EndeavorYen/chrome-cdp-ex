@@ -1,0 +1,60 @@
+{
+  "first_tab_target": "A8E28B85",
+  "runs": [
+    {
+      "run": 1,
+      "first_tab_visibility": "hidden",
+      "second_tab_visibility": "visible",
+      "became_hidden": true,
+      "session_receipt": {
+        "schema": "chrome-cdp-ex.session.v1",
+        "ok": true,
+        "ms": 51,
+        "target": "A8E28B850F9D3F3C31AA602A1F360551",
+        "result": {
+          "visibility_before_pointer": "hidden",
+          "menu_open_before": false,
+          "menu_open_after": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "run": 2,
+      "first_tab_visibility": "hidden",
+      "second_tab_visibility": "visible",
+      "became_hidden": true,
+      "session_receipt": {
+        "schema": "chrome-cdp-ex.session.v1",
+        "ok": true,
+        "ms": 51,
+        "target": "A8E28B850F9D3F3C31AA602A1F360551",
+        "result": {
+          "visibility_before_pointer": "hidden",
+          "menu_open_before": false,
+          "menu_open_after": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "run": 3,
+      "first_tab_visibility": "hidden",
+      "second_tab_visibility": "visible",
+      "became_hidden": true,
+      "session_receipt": {
+        "schema": "chrome-cdp-ex.session.v1",
+        "ok": true,
+        "ms": 52,
+        "target": "A8E28B850F9D3F3C31AA602A1F360551",
+        "result": {
+          "visibility_before_pointer": "hidden",
+          "menu_open_before": false,
+          "menu_open_after": true
+        }
+      },
+      "pass": true
+    }
+  ],
+  "pass_all_runs_hidden_and_pointer_worked": true
+}

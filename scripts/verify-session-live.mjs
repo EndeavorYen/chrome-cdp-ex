@@ -14,6 +14,10 @@ import { summarize } from './benchmark-cli-overhead.mjs';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CDP = join(ROOT, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
 const SESSION = join(ROOT, 'skills/chrome-cdp-ex/scripts/session.mjs');
+if (['9222', '9224'].includes(String(process.env.CDP_PORT ?? '').trim())) {
+  console.error('refusing to run: CDP_PORT is your own Chrome, not a test browser; start your own headless Chrome on another port');
+  process.exit(2);
+}
 const target = process.argv[2];
 if (!target) { console.error('usage: node scripts/verify-session-live.mjs <target>'); process.exit(2); }
 
@@ -54,8 +58,14 @@ const run = (args) => new Promise((resolve) => {
 });
 await run([CDP, 'nav', target, `http://127.0.0.1:${port}/`]);
 
-const sessionMs = [];
-for (let i = 0; i < 8; i++) sessionMs.push(JSON.parse((await run([SESSION, target, '--script', jobPath])).stdout).ms);
+const sessionMs = []; // receipt ms: measured inside session.mjs, excludes Node startup (the pass threshold uses this)
+const sessionWallMs = []; // wall-clock around the whole `node session.mjs` process, includes Node startup
+for (let i = 0; i < 8; i++) {
+  const t0 = Date.now();
+  const r = await run([SESSION, target, '--script', jobPath]);
+  sessionWallMs.push(Date.now() - t0);
+  sessionMs.push(JSON.parse(r.stdout).ms);
+}
 const cliMs = [];
 for (let r = 0; r < 3; r++) {
   const t0 = Date.now();
@@ -67,10 +77,14 @@ const menu = JSON.parse((await run([SESSION, target, '--script', menuPath])).std
 server.close();
 
 const session = summarize(sessionMs);
+const sessionWall = summarize(sessionWallMs);
 const cli = summarize(cliMs);
 console.log(JSON.stringify({
-  twelve_steps_via_session_ms: session,
-  twelve_steps_via_12_cli_calls_ms: cli,
+  twelve_steps_via_session_receipt_ms_in_process: session,
+  twelve_steps_via_session_wall_clock_ms_per_process: sessionWall,
+  twelve_steps_via_12_cli_calls_wall_clock_ms: cli,
+  ratio_cli12_wall_over_session_receipt: Number((cli.median / session.median).toFixed(1)),
+  ratio_cli12_wall_over_session_wall: Number((cli.median / sessionWall.median).toFixed(1)),
   pass_twelve_steps_under_300ms: session.median <= 300,
   waitResponse: wait,
   pass_wait_within_100ms_of_response: wait.ok && wait.result.after_ms <= 400,

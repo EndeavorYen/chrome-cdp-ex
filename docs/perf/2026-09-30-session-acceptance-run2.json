@@ -1,45 +1,45 @@
 {
   "twelve_steps_via_session_receipt_ms_in_process": {
     "n": 8,
-    "min": 62,
-    "median": 63,
-    "p90": 283,
-    "max": 283,
-    "mean": 90
+    "min": 63,
+    "median": 65,
+    "p90": 69,
+    "max": 69,
+    "mean": 65
   },
   "twelve_steps_via_session_wall_clock_ms_per_process": {
     "n": 8,
-    "min": 101,
-    "median": 103,
-    "p90": 329,
-    "max": 329,
-    "mean": 131
+    "min": 104,
+    "median": 106,
+    "p90": 109,
+    "max": 109,
+    "mean": 106
   },
   "twelve_steps_via_12_cli_calls_wall_clock_ms": {
     "n": 3,
-    "min": 2906,
-    "median": 3340,
-    "p90": 4012,
-    "max": 4012,
-    "mean": 3419
+    "min": 2841,
+    "median": 2862,
+    "p90": 2950,
+    "max": 2950,
+    "mean": 2884
   },
-  "ratio_cli12_wall_over_session_receipt": 53,
-  "ratio_cli12_wall_over_session_wall": 32.4,
+  "ratio_cli12_wall_over_session_receipt": 44,
+  "ratio_cli12_wall_over_session_wall": 27,
   "pass_twelve_steps_under_300ms": true,
   "waitResponse": {
     "schema": "chrome-cdp-ex.session.v1",
     "ok": true,
-    "ms": 354,
+    "ms": 355,
     "target": "A8E28B850F9D3F3C31AA602A1F360551",
     "result": {
-      "after_ms": 312
+      "after_ms": 314
     }
   },
   "pass_wait_within_100ms_of_response": true,
   "pointer_opened_pointerdown_menu": {
     "schema": "chrome-cdp-ex.session.v1",
     "ok": true,
-    "ms": 46,
+    "ms": 47,
     "target": "A8E28B850F9D3F3C31AA602A1F360551",
     "result": true
   }
