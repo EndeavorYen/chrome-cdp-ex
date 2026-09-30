@@ -4,6 +4,14 @@
 
 ### Features
 
+* Background mode: `CDP_BACKGROUND=1`, or `--background` on `open` and `spawn-debug-browser`, drives the
+  agent browser without stealing focus. Tab daemons and the `open` navigate fallback no longer send
+  `Target.activateTarget`, `open` creates the tab in a new unfocused window (`newWindow: true, background:
+  true`; a background tab in an existing window is `hidden` and its screenshots stall), and `spawn-debug-browser
+  --background` adds `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding
+  --disable-background-timer-throttling` and minimizes the launched window (unless headless). Opt-in; with it
+  off the CDP calls are unchanged. Flags only, so the frozen 81-command surface is unchanged
+  ([#415](https://github.com/EndeavorYen/chrome-cdp-ex/issues/415)).
 * `skills/chrome-cdp-ex/scripts/session.mjs <target> --script job.mjs` runs a script over one CDP
   connection with `ev`, `waitFor`, `pointer`, `waitResponse`, `upload`, `download` and `shot`, and prints one
   `chrome-cdp-ex.session.v1` receipt. It needs Node >= 22 and an explicit `--port` (or `CDP_PORT`); there is

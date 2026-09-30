@@ -31,6 +31,10 @@ CDP_PORT=9333 ./bin/chrome-cdp list
 
 If a tab daemon is already live, unprefixed `doctor` must use that session.
 
+## Background mode
+
+To work without raising the browser over the user's screen, set `CDP_BACKGROUND=1` (or pass `--background` to `open` / `spawn-debug-browser`). Off by default. Details: `references/commands.md`.
+
 ## When invoked directly (`/chrome-cdp-ex`)
 
 Take action immediately; do not just read this file.

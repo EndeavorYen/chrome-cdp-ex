@@ -3,6 +3,8 @@ import { inspectRawCdpAuthorization } from './command-application.mjs';
 export const CDP_METHODS = Object.freeze([
   'Accessibility.getFullAXTree',
   'Browser.getBrowserCommandLine',
+  'Browser.getWindowForTarget',
+  'Browser.setWindowBounds',
   'CSS.enable',
   'CSS.getComputedStyleForNode',
   'CSS.getMatchedStylesForNode',

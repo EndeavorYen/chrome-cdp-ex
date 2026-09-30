@@ -9659,6 +9659,7 @@ describe('open onboarding guidance', () => {
       readySelector: null,
       reuseUrl: false,
       perceive: false,
+      background: false,
     });
   });
 
@@ -9671,6 +9672,7 @@ describe('open onboarding guidance', () => {
       readySelector: null,
       reuseUrl: false,
       perceive: true,
+      background: false,
     });
   });
 
@@ -9683,6 +9685,7 @@ describe('open onboarding guidance', () => {
       readySelector: null,
       reuseUrl: false,
       perceive: false,
+      background: false,
     });
     expect(T.parseOpenArgs(['--attach-timeout-ms=1200', '--ready-timeout-ms', '2500', '--ready-selector', '#app'])).toEqual({
       url: 'about:blank',
@@ -9692,6 +9695,7 @@ describe('open onboarding guidance', () => {
       readySelector: '#app',
       reuseUrl: false,
       perceive: false,
+      background: false,
     });
     expect(() => T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', 'nope'])).toThrow('open: --attach-timeout-ms must be a non-negative integer');
     expect(() => T.parseOpenArgs(['https://example.com', '--ready-timeout-ms', 'nope'])).toThrow('open: --ready-timeout-ms must be a non-negative integer');
@@ -14455,7 +14459,7 @@ describe('spawn-debug-browser topic help (#398)', () => {
   });
 
   it('documents only flags the parser accepts', () => {
-    const noValue = new Set(['--daily-profile', '--headless', '--no-sandbox', '--disable-gpu', '--allow-occlusion']);
+    const noValue = new Set(['--daily-profile', '--headless', '--no-sandbox', '--disable-gpu', '--allow-occlusion', '--background']);
     for (const entry of SPAWN_DEBUG_BROWSER_FLAGS) {
       for (const flag of entry.flags) {
         if (flag === '--help' || flag === '-h' || flag === '--format') continue;

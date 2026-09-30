@@ -205,6 +205,17 @@ const DEFAULT_CDP_HOST = '127.0.0.1';
 const DEFAULT_CDP_PROBE_PORT = '9224';
 const DEFAULT_DEBUG_PORT = 9222;
 const DEFAULT_SPAWN_READY_TIMEOUT_MS = 20000;
+// #415 background mode: opt-in via CDP_BACKGROUND=1 (or --background on open / spawn-debug-browser).
+// When on, no command sends Target.activateTarget or Page.bringToFront, and new tabs open in the background.
+const BACKGROUND_THROTTLE_FLAGS = Object.freeze([
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--disable-background-timer-throttling',
+]);
+
+function isBackgroundMode(env = process.env) {
+  return /^(1|true|yes|on)$/i.test(String(env?.CDP_BACKGROUND ?? '').trim());
+}
 const SPAWN_ALIVE_WAIT_CAP_MS = 60000;
 const TABLE_COLLECTION_DEADLINES = Object.freeze({
   pageMs: 295000,
@@ -20400,6 +20411,7 @@ const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
   { flags: ['--no-sandbox'], arg: null, text: 'Pass --no-sandbox to the browser (containers, CI).' },
   { flags: ['--disable-gpu'], arg: null, text: 'Pass --disable-gpu to the browser.' },
   { flags: ['--allow-occlusion'], arg: null, text: 'Do not pass --disable-features=CalculateNativeWinOcclusion (see Notes).' },
+  { flags: ['--background'], arg: null, text: 'Background mode (also CDP_BACKGROUND=1): add anti-throttling flags and minimize the new window once CDP answers (see Notes).' },
   { flags: ['--wait-ms'], arg: 'N', text: `Wait up to N ms for CDP to answer (default ${DEFAULT_SPAWN_READY_TIMEOUT_MS}).` },
   { flags: ['--format'], arg: 'text|json', text: 'Output format.' },
   { flags: ['--help', '-h'], arg: null, text: 'Print this help without launching anything.' },
@@ -20409,6 +20421,7 @@ const SPAWN_DEBUG_BROWSER_NOTES = Object.freeze([
   'Default browser is edge, or $CDP_DEBUG_BROWSER when set.',
   'Port already in use: if the occupant does not answer /json/version (for example Chrome\'s chrome://inspect toggle on 9222), the command fails. Pick another port with --port N, then set CDP_PORT=N for list/perceive/stop.',
   'By default the launched browser gets --disable-features=CalculateNativeWinOcclusion. Without it, Windows marks a debug window that another window fully covers as hidden (document.visibilityState=hidden) and Chrome drops Input.* events, so click/press fail with no-input-events. Use --allow-occlusion to keep the browser default.',
+  'Background mode (--background or CDP_BACKGROUND=1) adds --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling and, unless headless, minimizes the launched window through Browser.setWindowBounds. The window can still appear briefly at launch. Run later commands with CDP_BACKGROUND=1 so they do not activate the tab.',
   'Unknown flags print this help and launch nothing.',
 ]);
 
@@ -20433,6 +20446,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
     noSandbox: false,
     disableGpu: false,
     allowOcclusion: false,
+    background: isBackgroundMode(env),
     waitMs: DEFAULT_SPAWN_READY_TIMEOUT_MS,
     format: fopts.format,
   };
@@ -20451,6 +20465,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
     else if (a === '--no-sandbox') opts.noSandbox = true;
     else if (a === '--disable-gpu') opts.disableGpu = true;
     else if (a === '--allow-occlusion') opts.allowOcclusion = true;
+    else if (a === '--background') opts.background = true;
     else if (a === '--wait-ms') opts.waitMs = parseNonNegativeInteger(tokens[++i], 'spawn-debug-browser: --wait-ms');
     else if (String(a).startsWith('--wait-ms=')) opts.waitMs = parseNonNegativeInteger(String(a).slice('--wait-ms='.length), 'spawn-debug-browser: --wait-ms');
     else if (a === '--help' || a === '-h' || String(a).startsWith('--')) opts.helpRequested = true;
@@ -20509,6 +20524,40 @@ async function listSpawnedDebugTargets({ port, host = DEFAULT_CDP_HOST, fetcher 
       : [];
   } catch {
     return [];
+  }
+}
+
+// Minimize (never focus) each window that holds one of these targets; one call per window.
+async function minimizeWindowsForTargets(cdp, targetIds = []) {
+  const windowIds = new Set();
+  const errors = [];
+  for (const targetId of targetIds) {
+    try {
+      const { windowId } = await cdpDomains(cdp).Browser.getWindowForTarget( { targetId }, undefined, 2000);
+      if (windowId != null) windowIds.add(windowId);
+    } catch (e) {
+      errors.push(e.message || String(e));
+    }
+  }
+  let minimized = 0;
+  for (const windowId of windowIds) {
+    try {
+      await cdpDomains(cdp).Browser.setWindowBounds( { windowId, bounds: { windowState: 'minimized' } }, undefined, 2000);
+      minimized += 1;
+    } catch (e) {
+      errors.push(e.message || String(e));
+    }
+  }
+  return { minimized, errors };
+}
+
+async function minimizeBrowserWindows({ host = DEFAULT_CDP_HOST, port, targetIds = [], fetcher = fetch } = {}) {
+  const cdp = new CDP();
+  try {
+    await cdp.connect(await wsUrlFromCdpHttp({ host, port, fetcher, remembered: null, rememberReachable: () => {} }));
+    return await minimizeWindowsForTargets(cdp, targetIds);
+  } finally {
+    try { cdp.close(); } catch {}
   }
 }
 
@@ -20634,8 +20683,9 @@ function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { ex
   if (opts.noSandbox) args.push('--no-sandbox');
   if (opts.disableGpu) args.push('--disable-gpu');
   if (!opts.allowOcclusion) args.push('--disable-features=CalculateNativeWinOcclusion');
+  if (opts.background) args.push(...BACKGROUND_THROTTLE_FLAGS);
   if (opts.url) args.push(opts.url);
-  return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile) };
+  return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile), background: Boolean(opts.background), headless: Boolean(opts.headless) };
 }
 
 function captureSpawnOutput(child, maxBytes = 4096) {
@@ -20943,6 +20993,12 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   child.unref?.();
   const pages = await listTargets({ port: plan.port, host: plan.host, fetcher });
   const target = pickSpawnedTarget(pages, plan.url);
+  if (plan.background && !plan.headless && pages.length) {
+    const minimize = deps.minimizeBrowserWindows || minimizeBrowserWindows;
+    try {
+      await minimize({ host: plan.host, port: plan.port, targetIds: pages.map(page => page.targetId) });
+    } catch {}
+  }
   const remember = deps.rememberLastCdpEndpoint || rememberLastCdpEndpoint;
   try {
     remember({
@@ -21364,6 +21420,14 @@ async function enableDaemonDomains(cdp, sessionId) {
   try { await cdpDomains(cdp).Network.enable( {}, sessionId); } catch {}
 }
 
+async function attachDaemonTarget(cdp, targetId, { background = false } = {}) {
+  // Wake up the tab first (avoids timeouts on suspended/inactive background tabs).
+  // Background mode (#415) skips it: activating the tab raises the window over the user's work.
+  if (!background) await cdpDomains(cdp).Target.activateTarget( { targetId }).catch(() => {});
+  const res = await cdpDomains(cdp).Target.attachToTarget( { targetId, flatten: true });
+  return res.sessionId;
+}
+
 async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {
   resetScreenshotTier();
   const sp = sockPath(targetId);
@@ -21384,10 +21448,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   let sessionId;
   try {
-    // Wake up the tab first (avoids timeouts on suspended/inactive background tabs)
-    await cdpDomains(cdp).Target.activateTarget( { targetId }).catch(() => {});
-    const res = await cdpDomains(cdp).Target.attachToTarget( { targetId, flatten: true });
-    sessionId = res.sessionId;
+    sessionId = await attachDaemonTarget(cdp, targetId, { background: isBackgroundMode() });
   } catch (e) {
     process.stderr.write(`Daemon: attach failed: ${e.message}\n`);
     cdp.close();
@@ -23462,6 +23523,7 @@ Usage: cdp <command> [args]
                                     Default open returns the target prefix and a follow-up perceive command.
                                     --perceive dumps the full page after attach (opt-in).
                                     --reuse-url reuses an existing tab matching the URL when unique.
+                                    --background (or CDP_BACKGROUND=1) opens the tab without focusing it.
                                     Default attach wait is fail-fast (5s). Use --attach-timeout-ms 60000
                                     when Chrome may still prompt "Allow debugging?".
                                     --attach-timeout-ms 0 returns the target handoff without waiting.
@@ -23473,6 +23535,7 @@ Usage: cdp <command> [args]
                                     --host HOST binds remote debugging address (default 127.0.0.1).
                                     --headless [new|old], --no-sandbox, --disable-gpu help CI/container/headless runs.
                                     --wait-ms N bounds the readiness probe before success.
+                                    --background adds anti-throttling flags and minimizes the new window.
                                     Returns ready target prefix + next perceive command when a page is available.
                                     JSON includes pid/profileDir/port/url/targetId/targetPrefix/readiness/cleanup.
                                     Uses --remote-debugging-port + --user-data-dir; does not touch your main profile.
@@ -24826,7 +24889,7 @@ function parseNonNegativeInteger(value, label) {
   return parsed;
 }
 
-function parseOpenArgs(args = []) {
+function parseOpenArgs(args = [], env = process.env) {
   const fopts = parseFormatArgs(args, ['text', 'json']);
   const positional = [];
   let attachTimeoutMs = DEFAULT_OPEN_ATTACH_TIMEOUT_MS;
@@ -24834,9 +24897,12 @@ function parseOpenArgs(args = []) {
   let readySelector = null;
   let reuseUrl = false;
   let perceive = false;
+  let background = isBackgroundMode(env);
   for (let i = 0; i < fopts.args.length; i++) {
     const token = fopts.args[i];
-    if (token === '--attach-timeout-ms') {
+    if (token === '--background') {
+      background = true;
+    } else if (token === '--attach-timeout-ms') {
       attachTimeoutMs = parseNonNegativeInteger(fopts.args[++i], 'open: --attach-timeout-ms');
     } else if (String(token).startsWith('--attach-timeout-ms=')) {
       attachTimeoutMs = parseNonNegativeInteger(String(token).slice('--attach-timeout-ms='.length), 'open: --attach-timeout-ms');
@@ -24869,7 +24935,21 @@ function parseOpenArgs(args = []) {
     readySelector,
     reuseUrl,
     perceive,
+    background,
   };
+}
+
+// `open --background` must reach the tab daemon it spawns, or the daemon's first attach activates the tab.
+function backgroundDaemonEnv(background, env = process.env) {
+  return background ? { ...env, CDP_BACKGROUND: '1' } : env;
+}
+
+// Background mode opens the tab in its own new window, created without focus: a background tab in an
+// existing window is document.visibilityState=hidden and Page.captureScreenshot stalls there (#415).
+async function createOpenTarget(cdp, { background = false } = {}) {
+  const params = background ? { url: 'about:blank', newWindow: true, background: true } : { url: 'about:blank' };
+  const { targetId } = await cdpDomains(cdp).Target.createTarget( params);
+  return targetId;
 }
 
 function openReadyProbeScript(selector = null) {
@@ -24971,6 +25051,7 @@ async function navigateOpenTarget(targetId, sp, url, {
   waitForOpenTargetUrlFn = waitForOpenTargetUrl,
   connectToSocketFn = connectToSocket,
   sendCommandFn = sendCommand,
+  background = isBackgroundMode(),
 } = {}) {
   if (!url || url === 'about:blank') return { attempted: false, ok: true, reason: 'about:blank' };
   const attempts = [];
@@ -24981,7 +25062,7 @@ async function navigateOpenTarget(targetId, sp, url, {
   const cdp = createCdp();
   try {
     await cdp.connect(await getWsUrlFn());
-    await cdpDomains(cdp).Target.activateTarget( { targetId }, undefined, 5000).catch(() => {});
+    if (!background) await cdpDomains(cdp).Target.activateTarget( { targetId }, undefined, 5000).catch(() => {});
     const attached = await cdpDomains(cdp).Target.attachToTarget( { targetId, flatten: true }, undefined, 5000);
     const sid = attached.sessionId;
     await cdpDomains(cdp).Page.enable( {}, sid, 2000).catch(() => {});
@@ -25509,7 +25590,7 @@ async function main(options = {}) {
 
     const cdp = new CDP();
     await cdp.connect(await getWsUrl());
-    const { targetId } = await cdpDomains(cdp).Target.createTarget( { url: 'about:blank' });
+    const targetId = await createOpenTarget(cdp, { background: opts.background });
     // Refresh cache; new tab may not appear in getTargets immediately, so add it manually
     const pages = await getPages(cdp);
     if (!pages.some(p => p.targetId === targetId)) {
@@ -25527,6 +25608,7 @@ async function main(options = {}) {
     const child = spawn(runtimeIdentity.execPath, [runtimeIdentity.scriptPath, '_daemon', targetId], {
       detached: true,
       stdio: 'ignore',
+      env: backgroundDaemonEnv(opts.background),
     });
     child.unref();
     let attached = false;
@@ -25554,7 +25636,7 @@ async function main(options = {}) {
       await sleep(Math.min(DAEMON_ALLOW_DELAY, remainingMs));
     }
     const navigation = attached
-      ? await navigateOpenTarget(targetId, sp, url)
+      ? await navigateOpenTarget(targetId, sp, url, { background: opts.background })
       : { attempted: false, ok: false, reason: 'not-attached' };
     const ready = attached
       ? await waitForOpenReady(targetId, { timeoutMs: opts.readyTimeoutMs, url, selector: opts.readySelector })
@@ -26140,6 +26222,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, SPAWN_DEBUG_BROWSER_FLAGS, detectBrowserPath, buildSpawnDebugBrowserPlan,
+  isBackgroundMode, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
   getWsUrl, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   isExistingBrowserSessionHandoff, formatExistingBrowserSessionHandoffError, formatDailyDefaultProfileCdpFailure,
