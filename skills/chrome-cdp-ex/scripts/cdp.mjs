@@ -9,7 +9,7 @@
 
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, realpathSync, statSync } from 'fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { basename, dirname, posix as posixPath, resolve, win32 as win32Path } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
@@ -205,6 +205,17 @@ const DEFAULT_CDP_HOST = '127.0.0.1';
 const DEFAULT_CDP_PROBE_PORT = '9224';
 const DEFAULT_DEBUG_PORT = 9222;
 const DEFAULT_SPAWN_READY_TIMEOUT_MS = 20000;
+// #415 background mode: opt-in via CDP_BACKGROUND=1 (or --background on open / spawn-debug-browser).
+// When on, no command sends Target.activateTarget or Page.bringToFront, and new tabs open in the background.
+const BACKGROUND_THROTTLE_FLAGS = Object.freeze([
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--disable-background-timer-throttling',
+]);
+
+function isBackgroundMode(env = process.env) {
+  return /^(1|true|yes|on)$/i.test(String(env?.CDP_BACKGROUND ?? '').trim());
+}
 const SPAWN_ALIVE_WAIT_CAP_MS = 60000;
 const TABLE_COLLECTION_DEADLINES = Object.freeze({
   pageMs: 295000,
@@ -1227,6 +1238,65 @@ function lastCdpEndpointPath(runtimeDir = RUNTIME_DIR) {
   return pathApiForRoot(runtimeDir).resolve(runtimeDir, LAST_CDP_ENDPOINT_FILE);
 }
 
+const LAST_CDP_ENDPOINT_HISTORY_MAX = 24;
+const LAST_CDP_ENDPOINT_HISTORY_PER_PORT_MAX = 4;
+const SPAWN_DEBUG_BROWSER_VIA = 'spawn-debug-browser';
+
+// One profile seen on one port. `via` is only ever the spawn-debug-browser marker (#416).
+function normalizeCdpEndpointHistoryEntry(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const port = raw.port == null || raw.port === '' ? null : String(raw.port);
+  const profileDir = raw.profileDir ? String(raw.profileDir) : null;
+  if (!port || !profileDir) return null;
+  const entry = {
+    port,
+    profileDir,
+    exe: raw.exe ? String(raw.exe) : null,
+    browser: raw.browser ? String(raw.browser).toLowerCase() : null,
+    lastSeenAt: raw.lastSeenAt ? String(raw.lastSeenAt) : null,
+  };
+  if (raw.via === SPAWN_DEBUG_BROWSER_VIA) entry.via = SPAWN_DEBUG_BROWSER_VIA;
+  return entry;
+}
+
+// Same directory spelled `C:\x\y`, `c:/x/y/` or `C:/x/y` is one profile (Windows paths are case-insensitive).
+function cdpProfileKey(profileDir) {
+  const text = String(profileDir || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return /^[a-z]:\//i.test(text) ? text.toLowerCase() : text;
+}
+
+function mergeCdpEndpointHistoryEntry(a, b) {
+  const [older, newer] = String(a.lastSeenAt || '') <= String(b.lastSeenAt || '') ? [a, b] : [b, a];
+  return {
+    ...older,
+    ...newer,
+    exe: newer.exe || older.exe,
+    browser: newer.browser || older.browser,
+    lastSeenAt: newer.lastSeenAt || older.lastSeenAt,
+    ...((a.via || b.via) ? { via: SPAWN_DEBUG_BROWSER_VIA } : {}),
+  };
+}
+
+function mergeCdpEndpointHistory(history, raw) {
+  const list = (Array.isArray(history) ? history : []).map(normalizeCdpEndpointHistoryEntry).filter(Boolean);
+  const entry = normalizeCdpEndpointHistoryEntry(raw);
+  if (entry) {
+    const at = list.findIndex(item => item.port === entry.port && cdpProfileKey(item.profileDir) === cdpProfileKey(entry.profileDir));
+    if (at === -1) list.push(entry);
+    else list[at] = mergeCdpEndpointHistoryEntry(list[at], entry);
+  }
+  // Keep persistent profiles over temp ones, so churn of test spawns cannot evict the real profile.
+  list.sort((a, b) => (isTempCdpProfileDir(a.profileDir) - isTempCdpProfileDir(b.profileDir))
+    || String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')));
+  // Bounded per port as well as overall, so one busy port cannot push out another port's profile.
+  const perPort = new Map();
+  return list.filter(item => {
+    const n = (perPort.get(item.port) || 0) + 1;
+    perPort.set(item.port, n);
+    return n <= LAST_CDP_ENDPOINT_HISTORY_PER_PORT_MAX;
+  }).slice(0, LAST_CDP_ENDPOINT_HISTORY_MAX);
+}
+
 function normalizeLastCdpEndpoint(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const port = raw.port == null || raw.port === '' ? null : String(raw.port);
@@ -1236,7 +1306,7 @@ function normalizeLastCdpEndpoint(raw) {
   const browser = raw.browser ? String(raw.browser).toLowerCase() : null;
   const launchedAt = raw.launchedAt ? String(raw.launchedAt) : null;
   if (!port && !host && !profileDir) return null;
-  return {
+  const record = {
     schema: LAST_CDP_ENDPOINT_SCHEMA,
     host,
     port,
@@ -1245,6 +1315,10 @@ function normalizeLastCdpEndpoint(raw) {
     browser,
     launchedAt,
   };
+  if (profileDir && raw.via === SPAWN_DEBUG_BROWSER_VIA) record.via = SPAWN_DEBUG_BROWSER_VIA;
+  const history = mergeCdpEndpointHistory(raw.history, null);
+  if (history.length) record.history = history;
+  return record;
 }
 
 function readLastCdpEndpoint({ runtimeDir = RUNTIME_DIR, reader = readFileSync } = {}) {
@@ -1269,11 +1343,94 @@ function rememberLastCdpEndpoint(record, opts = {}) {
   const previous = opts.previous !== undefined ? opts.previous : readLastCdpEndpoint(opts);
   const next = { ...(previous || {}) };
   for (const [key, value] of Object.entries(record || {})) {
-    if (value != null && value !== '') next[key] = value;
+    if (value != null && value !== '' && key !== 'history') next[key] = value;
   }
   const portChanged = previous?.port && record?.port != null && String(previous.port) !== String(record.port);
   if (portChanged && !record.profileDir) next.profileDir = null;
+  // Per-port profile history (#416): a later spawn on the same port must not erase the
+  // persistent profile an earlier one used. An old flat record seeds the history once.
+  let history = mergeCdpEndpointHistory(previous?.history, previous?.profileDir ? {
+    port: previous.port,
+    profileDir: previous.profileDir,
+    exe: previous.exe,
+    browser: previous.browser,
+    via: previous.via,
+    lastSeenAt: previous.launchedAt,
+  } : null);
+  const seenPort = record?.port ?? previous?.port;
+  if (record?.profileDir && seenPort != null && seenPort !== '') {
+    const at = new Date(typeof opts.now === 'function' ? opts.now() : (opts.now || Date.now())).toISOString();
+    history = mergeCdpEndpointHistory(history, {
+      port: seenPort,
+      profileDir: record.profileDir,
+      exe: record.exe,
+      browser: record.browser,
+      via: record.via,
+      lastSeenAt: at,
+    });
+  }
+  if (history.length) next.history = history;
+  const current = next.profileDir
+    ? history.find(item => item.port === String(next.port) && item.profileDir === next.profileDir)
+    : null;
+  if (current?.via) next.via = current.via;
+  else delete next.via;
   return writeLastCdpEndpoint(next, opts);
+}
+
+// A profile under a temp dir (or a disposable chrome-cdp-ex-* spawn dir) is a leftover of a test
+// or one-off spawn, never the profile to recover a logged-in session into (#416).
+function isTempCdpProfileDir(profileDir) {
+  const normalized = String(profileDir || '').replace(/\\/g, '/');
+  if (!normalized) return false;
+  if (isIsolatedChromeCdpExProfileDir(normalized)) return true;
+  if (/^\/(?:private\/)?tmp\//i.test(normalized) || /(?:^|\/)var\/folders\//i.test(normalized)) return true;
+  if (/^[a-z]:\/(?:windows\/)?temp\//i.test(normalized) || /\/appdata\/local\/temp\//i.test(normalized)) return true;
+  try {
+    const root = String(tmpdir() || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (root && normalized.toLowerCase().startsWith(`${root}/`)) return true;
+  } catch {}
+  return false;
+}
+
+// Profiles plausibly behind `port`, best first: spawn-debug-browser-recorded persistent, other
+// persistent, spawn-recorded temp, other temp; newest first inside a tier. Other ports never match.
+function rankCdpRelaunchCandidates(record, port) {
+  if (!record || typeof record !== 'object') return [];
+  const want = port != null && port !== '' ? String(port) : null;
+  const byDir = new Map();
+  const add = raw => {
+    // A record without a port keeps the old default of 9222 when the caller has no port either.
+    const entryPort = raw?.port == null || raw.port === '' ? (want || '9222') : String(raw.port);
+    const entry = normalizeCdpEndpointHistoryEntry({ ...raw, port: entryPort });
+    if (!entry || (want && entry.port !== want)) return;
+    const key = cdpProfileKey(entry.profileDir);
+    const known = byDir.get(key);
+    byDir.set(key, known ? mergeCdpEndpointHistoryEntry(known, entry) : entry);
+  };
+  for (const item of Array.isArray(record.history) ? record.history : []) add(item);
+  if (record.profileDir) {
+    add({
+      port: record.port,
+      profileDir: record.profileDir,
+      exe: record.exe,
+      browser: record.browser,
+      via: record.via,
+      lastSeenAt: record.launchedAt,
+    });
+  }
+  const tier = entry => (isTempCdpProfileDir(entry.profileDir) ? 2 : 0) + (entry.via ? 0 : 1);
+  return [...byDir.values()]
+    .map(entry => ({ ...entry, temp: isTempCdpProfileDir(entry.profileDir) }))
+    .sort((a, b) => tier(a) - tier(b) || String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')))
+    .map(entry => ({ ...entry, relaunch: formatCdpRelaunchCommand(entry, { port: want || entry.port }) }));
+}
+
+// One line naming the profiles that were not chosen; null when there is nothing to choose between.
+function formatCdpCandidateList(candidates) {
+  if (!Array.isArray(candidates) || candidates.length < 2) return null;
+  const label = c => `${c.profileDir} (${c.temp ? 'temp' : 'persistent'}${c.via ? ', spawn-debug-browser' : ''})`;
+  return `Other profiles seen on this port: ${candidates.slice(1).map(label).join('; ')}. Use one only if the first is wrong.`;
 }
 
 function shellQuoteCliArg(value) {
@@ -1397,6 +1554,17 @@ function formatCdpRelaunchCommand(lastEndpoint, { port } = {}) {
   const profileDir = lastEndpoint?.profileDir;
   if (!profileDir) return null;
   const resolvedPort = String(port || lastEndpoint.port || '9222');
+  if (lastEndpoint.via === SPAWN_DEBUG_BROWSER_VIA) {
+    const browser = lastEndpoint.browser || inferBrowserFromExe(lastEndpoint.exe) || 'chrome';
+    const parts = [
+      'cdp spawn-debug-browser',
+      browser,
+      '--port', resolvedPort,
+      '--profile-dir', shellQuoteCliArg(profileDir),
+    ];
+    if (lastEndpoint.exe) parts.push('--exe', shellQuoteCliArg(lastEndpoint.exe));
+    return parts.join(' ');
+  }
   if (isDisposableSpawnProfileDir(profileDir)) {
     const browser = lastEndpoint.browser || inferBrowserFromExe(lastEndpoint.exe) || 'chrome';
     const parts = [
@@ -1436,12 +1604,14 @@ function profileDirFromDevToolsActivePort(portFile) {
 function cdpUnreachableError({ host, port, cause, lastEndpoint } = {}) {
   const resolvedHost = host || lastEndpoint?.host || DEFAULT_CDP_HOST;
   const resolvedPort = port != null && port !== '' ? String(port) : (lastEndpoint?.port || null);
-  const profileDir = lastEndpoint?.profileDir || null;
-  const relaunch = formatCdpRelaunchCommand(lastEndpoint, { port: resolvedPort });
+  const candidates = rankCdpRelaunchCandidates(lastEndpoint, resolvedPort);
+  const profileDir = candidates[0]?.profileDir || null;
+  const relaunch = candidates[0]?.relaunch || null;
   const where = resolvedPort ? `${resolvedHost}:${resolvedPort}` : resolvedHost;
   const causeText = String(cause || 'unreachable').replace(/^Error:\s*/i, '');
+  const others = formatCdpCandidateList(candidates);
   const message = profileDir
-    ? `Cannot reach CDP on ${where} (${causeText}). Relaunch the same profile: ${relaunch}`
+    ? `Cannot reach CDP on ${where} (${causeText}). Relaunch the same profile: ${relaunch}${others ? `\n${others}` : ''}`
     : `Cannot reach CDP on ${where} (${causeText}). Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.`;
   const err = new Error(message);
   err.code = 'cdp_unreachable';
@@ -1449,6 +1619,7 @@ function cdpUnreachableError({ host, port, cause, lastEndpoint } = {}) {
   err.port = resolvedPort;
   err.profileDir = profileDir;
   err.relaunch = relaunch;
+  err.candidates = candidates;
   return err;
 }
 
@@ -19234,9 +19405,12 @@ async function checkCdpReachability({
     try { rememberEndpoint(record); } catch {}
   };
   const unreachable = (p, cause) => {
-    const profileDir = remembered?.profileDir || null;
-    const relaunch = formatCdpRelaunchCommand(remembered, { port: p });
-    const hint = relaunch || 'Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.';
+    const candidates = rankCdpRelaunchCandidates(remembered, p);
+    const top = candidates[0] || null;
+    const profileDir = top?.profileDir || null;
+    const relaunch = top?.relaunch || null;
+    const hint = relaunch
+      || 'Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.';
     return {
       status: 'FAIL',
       label: 'CDP',
@@ -19247,8 +19421,9 @@ async function checkCdpReachability({
       port: String(p),
       profileDir,
       relaunch,
-      exe: remembered?.exe || null,
-      browser: remembered?.browser || null,
+      candidates,
+      exe: top?.exe || null,
+      browser: top?.browser || null,
     };
   };
   const localAppData = env.LOCALAPPDATA || process.env.LOCALAPPDATA || '';
@@ -20042,7 +20217,8 @@ function doctorRecommendationModel(checks) {
         stage: 'browser-cdp',
         strategy: 'relaunch-same-profile',
         run: cdp.relaunch,
-        ask: 'Relaunch the same debug browser profile. Do not invent DISPLAY, a new user-data-dir, or a second Chrome profile.',
+        ask: ['Relaunch the same debug browser profile. Do not invent DISPLAY, a new user-data-dir, or a second Chrome profile.', formatCdpCandidateList(cdp.candidates)].filter(Boolean).join(' '),
+        ...(Array.isArray(cdp.candidates) && cdp.candidates.length > 1 ? { candidates: cdp.candidates } : {}),
         after: `${prefix} list`,
         requiresUserAction: true,
         consentRequired: false,
@@ -20466,6 +20642,7 @@ const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
   { flags: ['--no-sandbox'], arg: null, text: 'Pass --no-sandbox to the browser (containers, CI).' },
   { flags: ['--disable-gpu'], arg: null, text: 'Pass --disable-gpu to the browser.' },
   { flags: ['--allow-occlusion'], arg: null, text: 'Do not pass --disable-features=CalculateNativeWinOcclusion (see Notes).' },
+  { flags: ['--background'], arg: null, text: 'Background mode (also CDP_BACKGROUND=1): add anti-throttling flags and minimize the new window once CDP answers (see Notes).' },
   { flags: ['--wait-ms'], arg: 'N', text: `Wait up to N ms for CDP to answer (default ${DEFAULT_SPAWN_READY_TIMEOUT_MS}).` },
   { flags: ['--format'], arg: 'text|json', text: 'Output format.' },
   { flags: ['--help', '-h'], arg: null, text: 'Print this help without launching anything.' },
@@ -20475,6 +20652,7 @@ const SPAWN_DEBUG_BROWSER_NOTES = Object.freeze([
   'Default browser is edge, or $CDP_DEBUG_BROWSER when set.',
   'Port already in use: if the occupant does not answer /json/version (for example Chrome\'s chrome://inspect toggle on 9222), the command fails. Pick another port with --port N, then set CDP_PORT=N for list/perceive/stop.',
   'By default the launched browser gets --disable-features=CalculateNativeWinOcclusion. Without it, Windows marks a debug window that another window fully covers as hidden (document.visibilityState=hidden) and Chrome drops Input.* events, so click/press fail with no-input-events. Use --allow-occlusion to keep the browser default.',
+  'Background mode (--background or CDP_BACKGROUND=1) adds --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling and, unless headless, minimizes the launched window through Browser.setWindowBounds. The window can still appear briefly at launch. Run later commands with CDP_BACKGROUND=1 so they do not activate the tab.',
   'Unknown flags print this help and launch nothing.',
 ]);
 
@@ -20499,6 +20677,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
     noSandbox: false,
     disableGpu: false,
     allowOcclusion: false,
+    background: isBackgroundMode(env),
     waitMs: DEFAULT_SPAWN_READY_TIMEOUT_MS,
     format: fopts.format,
   };
@@ -20517,6 +20696,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
     else if (a === '--no-sandbox') opts.noSandbox = true;
     else if (a === '--disable-gpu') opts.disableGpu = true;
     else if (a === '--allow-occlusion') opts.allowOcclusion = true;
+    else if (a === '--background') opts.background = true;
     else if (a === '--wait-ms') opts.waitMs = parseNonNegativeInteger(tokens[++i], 'spawn-debug-browser: --wait-ms');
     else if (String(a).startsWith('--wait-ms=')) opts.waitMs = parseNonNegativeInteger(String(a).slice('--wait-ms='.length), 'spawn-debug-browser: --wait-ms');
     else if (a === '--help' || a === '-h' || String(a).startsWith('--')) opts.helpRequested = true;
@@ -20578,6 +20758,40 @@ async function listSpawnedDebugTargets({ port, host = DEFAULT_CDP_HOST, fetcher 
   }
 }
 
+// Minimize (never focus) each window that holds one of these targets; one call per window.
+async function minimizeWindowsForTargets(cdp, targetIds = []) {
+  const windowIds = new Set();
+  const errors = [];
+  for (const targetId of targetIds) {
+    try {
+      const { windowId } = await cdpDomains(cdp).Browser.getWindowForTarget( { targetId }, undefined, 2000);
+      if (windowId != null) windowIds.add(windowId);
+    } catch (e) {
+      errors.push(e.message || String(e));
+    }
+  }
+  let minimized = 0;
+  for (const windowId of windowIds) {
+    try {
+      await cdpDomains(cdp).Browser.setWindowBounds( { windowId, bounds: { windowState: 'minimized' } }, undefined, 2000);
+      minimized += 1;
+    } catch (e) {
+      errors.push(e.message || String(e));
+    }
+  }
+  return { minimized, errors };
+}
+
+async function minimizeBrowserWindows({ host = DEFAULT_CDP_HOST, port, targetIds = [], fetcher = fetch } = {}) {
+  const cdp = new CDP();
+  try {
+    await cdp.connect(await wsUrlFromCdpHttp({ host, port, fetcher, remembered: null, rememberReachable: () => {} }));
+    return await minimizeWindowsForTargets(cdp, targetIds);
+  } finally {
+    try { cdp.close(); } catch {}
+  }
+}
+
 function pickSpawnedTarget(pages = [], url = null) {
   if (!pages.length) return null;
   if (url) {
@@ -20593,9 +20807,12 @@ function pickSpawnedTarget(pages = [], url = null) {
 function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = null, attached = false } = {}) {
   const targetId = target?.targetId || null;
   const targetPrefix = targetId ? String(targetId).slice(0, getDisplayPrefixLength([targetId])) : null;
-  const nextCommand = attached || !targetPrefix
-    ? `CDP_PORT=${plan.port} cdp list`
-    : `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`;
+  // A background spawn minimizes its first window, whose tabs are hidden: send agents to a fresh `open` tab.
+  const nextCommand = plan.background && !plan.headless && !attached
+    ? `CDP_PORT=${plan.port} CDP_BACKGROUND=1 cdp open <url>`
+    : attached || !targetPrefix
+      ? `CDP_PORT=${plan.port} cdp list`
+      : `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`;
   const disposable = isDisposableSpawnProfileDir(plan.profileDir);
   return {
     schema: 'chrome-cdp-ex.spawn-debug-browser.v1',
@@ -20700,8 +20917,9 @@ function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { ex
   if (opts.noSandbox) args.push('--no-sandbox');
   if (opts.disableGpu) args.push('--disable-gpu');
   if (!opts.allowOcclusion) args.push('--disable-features=CalculateNativeWinOcclusion');
+  if (opts.background) args.push(...BACKGROUND_THROTTLE_FLAGS);
   if (opts.url) args.push(opts.url);
-  return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile) };
+  return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile), background: Boolean(opts.background), headless: Boolean(opts.headless) };
 }
 
 function captureSpawnOutput(child, maxBytes = 4096) {
@@ -21009,6 +21227,12 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   child.unref?.();
   const pages = await listTargets({ port: plan.port, host: plan.host, fetcher });
   const target = pickSpawnedTarget(pages, plan.url);
+  if (plan.background && !plan.headless && pages.length) {
+    const minimize = deps.minimizeBrowserWindows || minimizeBrowserWindows;
+    try {
+      await minimize({ host: plan.host, port: plan.port, targetIds: pages.map(page => page.targetId) });
+    } catch {}
+  }
   const remember = deps.rememberLastCdpEndpoint || rememberLastCdpEndpoint;
   try {
     remember({
@@ -21017,6 +21241,10 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
       profileDir: plan.profileDir,
       exe: plan.exe,
       browser: plan.browser,
+      // #416: recovery suggests the spawn command only for profiles this command created.
+      // A --daily-profile spawn is not reproducible through --profile-dir, so it stays untagged
+      // and recovery keeps the raw browser line for it.
+      ...(plan.dailyProfile ? {} : { via: SPAWN_DEBUG_BROWSER_VIA }),
     });
   } catch {}
   const model = buildSpawnDebugBrowserModel(plan, readiness, { child, target });
@@ -21430,6 +21658,14 @@ async function enableDaemonDomains(cdp, sessionId) {
   try { await cdpDomains(cdp).Network.enable( {}, sessionId); } catch {}
 }
 
+async function attachDaemonTarget(cdp, targetId, { background = false } = {}) {
+  // Wake up the tab first (avoids timeouts on suspended/inactive background tabs).
+  // Background mode (#415) skips it: activating the tab raises the window over the user's work.
+  if (!background) await cdpDomains(cdp).Target.activateTarget( { targetId }).catch(() => {});
+  const res = await cdpDomains(cdp).Target.attachToTarget( { targetId, flatten: true });
+  return res.sessionId;
+}
+
 async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {
   resetScreenshotTier();
   const sp = sockPath(targetId);
@@ -21450,10 +21686,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   let sessionId;
   try {
-    // Wake up the tab first (avoids timeouts on suspended/inactive background tabs)
-    await cdpDomains(cdp).Target.activateTarget( { targetId }).catch(() => {});
-    const res = await cdpDomains(cdp).Target.attachToTarget( { targetId, flatten: true });
-    sessionId = res.sessionId;
+    sessionId = await attachDaemonTarget(cdp, targetId, { background: isBackgroundMode() });
   } catch (e) {
     process.stderr.write(`Daemon: attach failed: ${e.message}\n`);
     cdp.close();
@@ -23719,6 +23952,7 @@ Usage: cdp <command> [args]
                                     Default open returns the target prefix and a follow-up perceive command.
                                     --perceive dumps the full page after attach (opt-in).
                                     --reuse-url reuses an existing tab matching the URL when unique.
+                                    --background (or CDP_BACKGROUND=1) opens the tab without focusing it.
                                     Default attach wait is fail-fast (5s). Use --attach-timeout-ms 60000
                                     when Chrome may still prompt "Allow debugging?".
                                     --attach-timeout-ms 0 returns the target handoff without waiting.
@@ -23730,6 +23964,7 @@ Usage: cdp <command> [args]
                                     --host HOST binds remote debugging address (default 127.0.0.1).
                                     --headless [new|old], --no-sandbox, --disable-gpu help CI/container/headless runs.
                                     --wait-ms N bounds the readiness probe before success.
+                                    --background adds anti-throttling flags and minimizes the new window.
                                     Returns ready target prefix + next perceive command when a page is available.
                                     JSON includes pid/profileDir/port/url/targetId/targetPrefix/readiness/cleanup.
                                     Uses --remote-debugging-port + --user-data-dir; does not touch your main profile.
@@ -24503,6 +24738,7 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
         strategy: 'relaunch-same-profile',
         run: err.relaunch,
         reason: 'Chrome debugging endpoint is down. Relaunch the same user-data-dir; do not invent a new profile.',
+        ...(Array.isArray(err.candidates) && err.candidates.length > 1 ? { candidates: err.candidates } : {}),
       };
     }
     if (err?.code === 'cdp_unreachable' || lower.includes('cannot reach cdp')) {
@@ -25083,7 +25319,7 @@ function parseNonNegativeInteger(value, label) {
   return parsed;
 }
 
-function parseOpenArgs(args = []) {
+function parseOpenArgs(args = [], env = process.env) {
   const fopts = parseFormatArgs(args, ['text', 'json']);
   const positional = [];
   let attachTimeoutMs = DEFAULT_OPEN_ATTACH_TIMEOUT_MS;
@@ -25091,9 +25327,12 @@ function parseOpenArgs(args = []) {
   let readySelector = null;
   let reuseUrl = false;
   let perceive = false;
+  let background = isBackgroundMode(env);
   for (let i = 0; i < fopts.args.length; i++) {
     const token = fopts.args[i];
-    if (token === '--attach-timeout-ms') {
+    if (token === '--background') {
+      background = true;
+    } else if (token === '--attach-timeout-ms') {
       attachTimeoutMs = parseNonNegativeInteger(fopts.args[++i], 'open: --attach-timeout-ms');
     } else if (String(token).startsWith('--attach-timeout-ms=')) {
       attachTimeoutMs = parseNonNegativeInteger(String(token).slice('--attach-timeout-ms='.length), 'open: --attach-timeout-ms');
@@ -25126,7 +25365,21 @@ function parseOpenArgs(args = []) {
     readySelector,
     reuseUrl,
     perceive,
+    background,
   };
+}
+
+// `open --background` must reach the tab daemon it spawns, or the daemon's first attach activates the tab.
+function backgroundDaemonEnv(background, env = process.env) {
+  return background ? { ...env, CDP_BACKGROUND: '1' } : env;
+}
+
+// Background mode opens the tab in its own new window, created without focus: a background tab in an
+// existing window is document.visibilityState=hidden and Page.captureScreenshot stalls there (#415).
+async function createOpenTarget(cdp, { background = false } = {}) {
+  const params = background ? { url: 'about:blank', newWindow: true, background: true } : { url: 'about:blank' };
+  const { targetId } = await cdpDomains(cdp).Target.createTarget( params);
+  return targetId;
 }
 
 function openReadyProbeScript(selector = null) {
@@ -25228,6 +25481,7 @@ async function navigateOpenTarget(targetId, sp, url, {
   waitForOpenTargetUrlFn = waitForOpenTargetUrl,
   connectToSocketFn = connectToSocket,
   sendCommandFn = sendCommand,
+  background = isBackgroundMode(),
 } = {}) {
   if (!url || url === 'about:blank') return { attempted: false, ok: true, reason: 'about:blank' };
   const attempts = [];
@@ -25238,7 +25492,7 @@ async function navigateOpenTarget(targetId, sp, url, {
   const cdp = createCdp();
   try {
     await cdp.connect(await getWsUrlFn());
-    await cdpDomains(cdp).Target.activateTarget( { targetId }, undefined, 5000).catch(() => {});
+    if (!background) await cdpDomains(cdp).Target.activateTarget( { targetId }, undefined, 5000).catch(() => {});
     const attached = await cdpDomains(cdp).Target.attachToTarget( { targetId, flatten: true }, undefined, 5000);
     const sid = attached.sessionId;
     await cdpDomains(cdp).Page.enable( {}, sid, 2000).catch(() => {});
@@ -25766,7 +26020,7 @@ async function main(options = {}) {
 
     const cdp = new CDP();
     await cdp.connect(await getWsUrl());
-    const { targetId } = await cdpDomains(cdp).Target.createTarget( { url: 'about:blank' });
+    const targetId = await createOpenTarget(cdp, { background: opts.background });
     // Refresh cache; new tab may not appear in getTargets immediately, so add it manually
     const pages = await getPages(cdp);
     if (!pages.some(p => p.targetId === targetId)) {
@@ -25784,6 +26038,7 @@ async function main(options = {}) {
     const child = spawn(runtimeIdentity.execPath, [runtimeIdentity.scriptPath, '_daemon', targetId], {
       detached: true,
       stdio: 'ignore',
+      env: backgroundDaemonEnv(opts.background),
     });
     child.unref();
     let attached = false;
@@ -25811,7 +26066,7 @@ async function main(options = {}) {
       await sleep(Math.min(DAEMON_ALLOW_DELAY, remainingMs));
     }
     const navigation = attached
-      ? await navigateOpenTarget(targetId, sp, url)
+      ? await navigateOpenTarget(targetId, sp, url, { background: opts.background })
       : { attempted: false, ok: false, reason: 'not-attached' };
     const ready = attached
       ? await waitForOpenReady(targetId, { timeoutMs: opts.readyTimeoutMs, url, selector: opts.readySelector })
@@ -25917,6 +26172,7 @@ async function main(options = {}) {
               profileDir: check.profileDir,
               exe: check.exe,
               browser: check.browser,
+              history: check.candidates,
             },
           });
         }
@@ -26401,6 +26657,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, SPAWN_DEBUG_BROWSER_FLAGS, detectBrowserPath, buildSpawnDebugBrowserPlan,
+  isBackgroundMode, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
   getWsUrl, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   isExistingBrowserSessionHandoff, formatExistingBrowserSessionHandoffError, formatDailyDefaultProfileCdpFailure,
@@ -26410,6 +26667,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   cdpUnreachableError, profileDirFromCommandLine, profileDirFromDevToolsActivePort,
   inspectCdpOccupantProfileDirViaCdp,
   isDisposableSpawnProfileDir, isIsolatedChromeCdpExProfileDir,
+  isTempCdpProfileDir, rankCdpRelaunchCandidates,
   persistentDailyUserDataDir, isolatedSpawnProfileDir,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
