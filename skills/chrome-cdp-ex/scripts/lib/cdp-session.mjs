@@ -26,7 +26,7 @@ export class CdpSession {
   constructor(transport, sessionId) {
     this.transport = transport;
     this.sessionId = sessionId;
-    this.networkEnabled = false;
+    this.networkEnabling = null;
   }
 
   send(method, params = {}) {
@@ -68,29 +68,43 @@ export class CdpSession {
     return downloadViaPage({ evaluate: (expression) => this.ev(expression), url, outFile, ...options });
   }
 
+  // One shared Network.enable per session; a failure is not cached, so the next caller retries.
+  ensureNetwork() {
+    if (!this.networkEnabling) {
+      this.networkEnabling = (async () => this.send('Network.enable'))().catch((error) => {
+        this.networkEnabling = null;
+        throw error;
+      });
+    }
+    return this.networkEnabling;
+  }
+
   waitResponse(urlPattern, { timeoutMs = 60000 } = {}) {
-    const matches = urlPattern instanceof RegExp ? (u) => urlPattern.test(u) : (u) => u.includes(String(urlPattern));
+    // A copy without g/y so .test() keeps no lastIndex state between events or calls.
+    const re = urlPattern instanceof RegExp ? new RegExp(urlPattern.source, urlPattern.flags.replace(/[gy]/g, '')) : null;
+    const matches = re ? (u) => re.test(u) : (u) => u.includes(String(urlPattern));
     let off = () => {};
     let timer = null;
     let rejectOuter;
     const promise = new Promise((resolve, reject) => {
       rejectOuter = reject;
       off = this.transport.on('Network.responseReceived', (params, sessionId) => {
-        if (sessionId !== this.sessionId || !matches(params.response.url)) return;
+        const url = params?.response?.url;
+        if (sessionId !== this.sessionId || typeof url !== 'string' || !matches(url)) return;
         clearTimeout(timer);
         off();
-        resolve({ url: params.response.url, status: params.response.status, mimeType: params.response.mimeType, requestId: params.requestId });
+        resolve({ url, status: params.response.status, mimeType: params.response.mimeType, requestId: params.requestId });
       });
       timer = setTimeout(() => {
         off();
         reject(new Error(`timeout after ${timeoutMs} ms waiting for a response matching ${urlPattern}`));
       }, timeoutMs);
     });
+    // Side branch marks the promise handled: a caller that never awaits (cleanup path) causes no
+    // unhandledRejection, while one that does await still sees the rejection.
+    promise.catch(() => {});
     // Enable after subscribing so no event between the two can be lost.
-    if (!this.networkEnabled) {
-      this.networkEnabled = true;
-      this.send('Network.enable').catch((error) => { clearTimeout(timer); off(); rejectOuter(error); });
-    }
+    this.ensureNetwork().catch((error) => { clearTimeout(timer); off(); rejectOuter(error); });
     return {
       promise,
       cancel: () => { clearTimeout(timer); off(); rejectOuter(new Error('waitResponse cancelled')); },
