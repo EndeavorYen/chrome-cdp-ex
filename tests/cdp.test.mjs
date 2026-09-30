@@ -9651,7 +9651,7 @@ describe('formatDaemonCommandError', () => {
 describe('open onboarding guidance', () => {
   it('defaults open attach timeout to fail-fast and skips auto-perceive', () => {
     expect(T.DEFAULT_OPEN_ATTACH_TIMEOUT_MS).toBe(5000);
-    expect(T.parseOpenArgs(['https://example.com'])).toEqual({
+    expect(T.parseOpenArgs(['https://example.com'], {})).toEqual({
       url: 'https://example.com',
       format: 'text',
       attachTimeoutMs: 5000,
@@ -9664,7 +9664,7 @@ describe('open onboarding guidance', () => {
   });
 
   it('parses --perceive as opt-in auto-perceive without changing fail-fast attach', () => {
-    expect(T.parseOpenArgs(['https://example.com', '--perceive'])).toEqual({
+    expect(T.parseOpenArgs(['https://example.com', '--perceive'], {})).toEqual({
       url: 'https://example.com',
       format: 'text',
       attachTimeoutMs: 5000,
@@ -9677,7 +9677,7 @@ describe('open onboarding guidance', () => {
   });
 
   it('parses bounded attach waiting for JSON/open automation', () => {
-    expect(T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', '0', '--format', 'json'])).toEqual({
+    expect(T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', '0', '--format', 'json'], {})).toEqual({
       url: 'https://example.com',
       format: 'json',
       attachTimeoutMs: 0,
@@ -9687,7 +9687,7 @@ describe('open onboarding guidance', () => {
       perceive: false,
       background: false,
     });
-    expect(T.parseOpenArgs(['--attach-timeout-ms=1200', '--ready-timeout-ms', '2500', '--ready-selector', '#app'])).toEqual({
+    expect(T.parseOpenArgs(['--attach-timeout-ms=1200', '--ready-timeout-ms', '2500', '--ready-selector', '#app'], {})).toEqual({
       url: 'about:blank',
       format: 'text',
       attachTimeoutMs: 1200,

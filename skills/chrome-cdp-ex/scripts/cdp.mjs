@@ -20576,9 +20576,12 @@ function pickSpawnedTarget(pages = [], url = null) {
 function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = null, attached = false } = {}) {
   const targetId = target?.targetId || null;
   const targetPrefix = targetId ? String(targetId).slice(0, getDisplayPrefixLength([targetId])) : null;
-  const nextCommand = attached || !targetPrefix
-    ? `CDP_PORT=${plan.port} cdp list`
-    : `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`;
+  // A background spawn minimizes its first window, whose tabs are hidden: send agents to a fresh `open` tab.
+  const nextCommand = plan.background && !plan.headless && !attached
+    ? `CDP_PORT=${plan.port} CDP_BACKGROUND=1 cdp open <url>`
+    : attached || !targetPrefix
+      ? `CDP_PORT=${plan.port} cdp list`
+      : `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`;
   const disposable = isDisposableSpawnProfileDir(plan.profileDir);
   return {
     schema: 'chrome-cdp-ex.spawn-debug-browser.v1',

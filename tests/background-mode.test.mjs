@@ -81,8 +81,8 @@ describe('open target creation (createOpenTarget)', () => {
   });
 
   it('parses open --background and falls back to the env', () => {
-    expect(T.parseOpenArgs(['https://example.test/']).background).toBe(false);
-    expect(T.parseOpenArgs(['https://example.test/', '--background']).background).toBe(true);
+    expect(T.parseOpenArgs(['https://example.test/'], {}).background).toBe(false);
+    expect(T.parseOpenArgs(['https://example.test/', '--background'], {}).background).toBe(true);
     expect(T.parseOpenArgs(['https://example.test/'], { CDP_BACKGROUND: '1' }).background).toBe(true);
   });
 });
@@ -129,6 +129,15 @@ describe('spawn-debug-browser --background', () => {
     const minimize = await spawnWith(['--background']);
     expect(minimize).toHaveBeenCalledTimes(1);
     expect(minimize.mock.calls[0][0]).toMatchObject({ port: 9341, targetIds: ['PAGE1'] });
+  });
+
+  it('points the next command at a fresh background tab, not the minimized window', () => {
+    const base = { port: 9341, profileDir: '/tmp/p', browser: 'chrome', host: '127.0.0.1' };
+    const target = { targetId: 'PAGE1ABCDEF', url: 'about:blank' };
+    expect(T.buildSpawnDebugBrowserModel({ ...base, background: true, headless: false }, { ok: true }, { target }).nextCommand)
+      .toBe('CDP_PORT=9341 CDP_BACKGROUND=1 cdp open <url>');
+    expect(T.buildSpawnDebugBrowserModel({ ...base, background: false }, { ok: true }, { target }).nextCommand)
+      .toMatch(/^CDP_PORT=9341 cdp perceive PAGE1ABC/);
   });
 
   it('minimizes each page window through Browser.setWindowBounds without a focus call', async () => {
