@@ -47,6 +47,32 @@ describe('CdpSession.waitFor', () => {
     const t = fakeTransport(() => ({ result: { value: false } }));
     await expect(new CdpSession(t, 'S1').waitFor('window.never', { timeoutMs: 30, intervalMs: 5 })).rejects.toThrow(/timeout after 30 ms.*window\.never/);
   });
+
+  it('bounds each evaluate by the remaining time, so a hung evaluate cannot outlive the deadline', async () => {
+    const perSend = [];
+    // Like the real transport: an unanswered request rejects after its own per-send timeout.
+    const hanging = {
+      send: (method, params, sessionId, timeoutMs) => {
+        perSend.push(timeoutMs);
+        return new Promise((_, reject) => setTimeout(() => reject(new Error(`${method} timed out after ${timeoutMs} ms`)), timeoutMs ?? 30000));
+      },
+      on: () => () => {},
+    };
+    const t0 = Date.now();
+    await expect(new CdpSession(hanging, 'S1').waitFor('window.hangs', { timeoutMs: 100, intervalMs: 5 })).rejects.toThrow(/timeout after 100 ms.*window\.hangs/);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(perSend.length).toBeGreaterThan(0);
+    for (const ms of perSend) expect(ms).toBeGreaterThan(0), expect(ms).toBeLessThanOrEqual(100);
+  });
+
+  it('caps the per-evaluate timeout at 30 s for long waits', async () => {
+    const t = fakeTransport(() => ({ result: { value: true } }));
+    const seen = [];
+    const send = t.send;
+    t.send = (method, params, sessionId, timeoutMs) => { seen.push(timeoutMs); return send(method, params, sessionId); };
+    await new CdpSession(t, 'S1').waitFor('window.ok', { timeoutMs: 120000 });
+    expect(seen).toEqual([30000]);
+  });
 });
 
 describe('pointer', () => {

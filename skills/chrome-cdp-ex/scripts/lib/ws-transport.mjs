@@ -69,23 +69,29 @@ function defaultPortFile(env, platform) {
 }
 
 export async function resolveWsUrl({ host = '127.0.0.1', port, fetchImpl = fetch, readFile = (p) => readFileSync(p, 'utf8'), env = process.env, platform = process.platform, timeoutMs = 3000 }) {
+  let httpStatus = null;
   try {
     const res = await fetchImpl(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(timeoutMs) });
+    httpStatus = res.status;
     if (res.ok) {
       const info = await res.json();
-      if (info.webSocketDebuggerUrl) return info.webSocketDebuggerUrl;
+      // Keep only the path: the reported host may be "localhost" while `host` points elsewhere (as cdp.mjs does).
+      if (info.webSocketDebuggerUrl) return `ws://${host}:${port}${new URL(info.webSocketDebuggerUrl).pathname}`;
     }
   } catch {
     // fall through to DevToolsActivePort
   }
   try {
-    const [filePort, path] = readFile(defaultPortFile(env, platform)).trim().split('\n');
-    // The default profile file may name another browser (e.g. the main one on 9222 while 9224 is down).
-    // Follow it only when it names the requested port, or when the caller pointed CDP_PORT_FILE at it explicitly.
-    if (filePort && path && (env.CDP_PORT_FILE || filePort === String(port))) return `ws://${host}:${filePort}${path}`;
+    const [filePort, path] = readFile(defaultPortFile(env, platform)).trim().split(/\r?\n/);
+    // The file may name another browser (e.g. the main one on 9222 while 9224 is down). CDP_PORT_FILE only
+    // chooses which file to read; its port must still equal the requested one.
+    if (filePort && path && filePort === String(port)) return `ws://${host}:${filePort}${path}`;
   } catch {
-    // fall through to the error below
+    // fall through below
   }
+  // Websocket-only mode (Chrome 136+ toggle, SSH tunnel): /json/version is 404 but /devtools/browser answers.
+  // Other HTTP failures usually mean a non-CDP service holds the port, so they do not fall back.
+  if (httpStatus === 404) return `ws://${host}:${port}/devtools/browser`;
   throw new Error(`cannot reach CDP on ${host}:${port} (no /json/version and no readable DevToolsActivePort)`);
 }
 

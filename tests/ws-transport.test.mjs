@@ -131,9 +131,37 @@ describe('resolveWsUrl', () => {
       .rejects.toThrow(/cannot reach CDP on 127.0.0.1:9224/);
   });
 
-  it('trusts a differing port when CDP_PORT_FILE was set explicitly', async () => {
-    expect(await resolveWsUrl({ host: '127.0.0.1', port: 9224, fetchImpl: refused, readFile: mainBrowserFile, env: { CDP_PORT_FILE: 'C:/x/DevToolsActivePort' } }))
-      .toBe('ws://127.0.0.1:9222/devtools/browser/main-guid');
+  it('refuses a differing port even when CDP_PORT_FILE was set explicitly (the file picks a location, not a port)', async () => {
+    await expect(resolveWsUrl({ host: '127.0.0.1', port: 9224, fetchImpl: refused, readFile: mainBrowserFile, env: { CDP_PORT_FILE: 'C:/x/DevToolsActivePort' } }))
+      .rejects.toThrow(/cannot reach CDP on 127.0.0.1:9224/);
+  });
+
+  it('reads a CRLF DevToolsActivePort file', async () => {
+    const crlf = () => '9336\r\n/devtools/browser/crlf-guid\r\n';
+    expect(await resolveWsUrl({ host: '127.0.0.1', port: 9336, fetchImpl: refused, readFile: crlf, env: {}, platform: 'win32' }))
+      .toBe('ws://127.0.0.1:9336/devtools/browser/crlf-guid');
+  });
+
+  it('rebuilds the URL from the requested host and port, keeping only the path from /json/version', async () => {
+    const fetchImpl = async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://localhost:9336/devtools/browser/abc' }) });
+    expect(await resolveWsUrl({ host: '10.0.0.2', port: 9336, fetchImpl }))
+      .toBe('ws://10.0.0.2:9336/devtools/browser/abc');
+  });
+
+  it('on HTTP 404 with no matching file, uses the bare /devtools/browser socket (websocket-only mode)', async () => {
+    const fetchImpl = async () => ({ ok: false, status: 404 });
+    const noFile = () => { throw new Error('ENOENT'); };
+    expect(await resolveWsUrl({ host: '127.0.0.1', port: 9336, fetchImpl, readFile: noFile, env: {} }))
+      .toBe('ws://127.0.0.1:9336/devtools/browser');
+    expect(await resolveWsUrl({ host: '127.0.0.1', port: 9336, fetchImpl, readFile: mainBrowserFile, env: {}, platform: 'win32' }))
+      .toBe('ws://127.0.0.1:9336/devtools/browser');
+  });
+
+  it('does not use the bare socket fallback on other HTTP failures', async () => {
+    const fetchImpl = async () => ({ ok: false, status: 500 });
+    const noFile = () => { throw new Error('ENOENT'); };
+    await expect(resolveWsUrl({ host: '127.0.0.1', port: 9336, fetchImpl, readFile: noFile, env: {} }))
+      .rejects.toThrow(/cannot reach CDP on 127.0.0.1:9336/);
   });
 
   it('uses the default file when its port equals the requested port', async () => {

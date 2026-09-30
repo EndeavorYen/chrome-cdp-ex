@@ -29,12 +29,13 @@ export class CdpSession {
     this.networkEnabling = null;
   }
 
-  send(method, params = {}) {
-    return this.transport.send(method, params, this.sessionId);
+  // timeoutMs undefined keeps the transport default (30 s).
+  send(method, params = {}, timeoutMs) {
+    return this.transport.send(method, params, this.sessionId, timeoutMs);
   }
 
-  async ev(expression) {
-    const res = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+  async ev(expression, { timeoutMs } = {}) {
+    const res = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, timeoutMs);
     if (res.exceptionDetails) {
       const d = res.exceptionDetails;
       throw new Error(d.exception?.description || d.text || 'page evaluation failed');
@@ -44,9 +45,20 @@ export class CdpSession {
 
   async waitFor(expression, { timeoutMs = 10000, intervalMs = 50 } = {}) {
     const deadline = Date.now() + timeoutMs;
+    const timedOut = () => new Error(`timeout after ${timeoutMs} ms waiting for ${expression}`);
     for (;;) {
-      if (await this.ev(expression)) return;
-      if (Date.now() + intervalMs > deadline) throw new Error(`timeout after ${timeoutMs} ms waiting for ${expression}`);
+      // Each evaluate gets only the time left (at most the transport's 30 s), so one hung evaluate cannot
+      // push the wait past its deadline.
+      const remaining = Math.max(1, Math.min(deadline - Date.now(), 30000));
+      let value;
+      try {
+        value = await this.ev(expression, { timeoutMs: remaining });
+      } catch (error) {
+        if (Date.now() + intervalMs >= deadline) throw timedOut(); // the bounded evaluate ran out the clock
+        throw error;
+      }
+      if (value) return;
+      if (Date.now() + intervalMs > deadline) throw timedOut();
       await new Promise((r) => setTimeout(r, intervalMs));
     }
   }

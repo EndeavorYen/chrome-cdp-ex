@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// session.mjs <target> --script <file.mjs> [--args <json>] [--port N] [--host H]
+// session.mjs <target> --script <file.mjs> --port N [--args <json>] [--host H]   (Node >= 22; CDP_PORT may replace --port)
 // One CDP connection, one script. The script's default export receives { page, args } and may await many
 // page.* calls; the connection cost is paid once. Not a catalog command (like download.mjs).
 import { existsSync } from 'node:fs';
@@ -11,22 +11,29 @@ import { connect as realConnect } from './lib/ws-transport.mjs';
 
 const messageOf = (error) => (error instanceof Error ? error.message : String(error));
 
-const USAGE = 'usage: session.mjs <target> --script <file.mjs> [--args <json>] [--port N] [--host H]';
+const USAGE = 'usage: session.mjs <target> --script <file.mjs> --port N [--args <json>] [--host H]   (or set CDP_PORT instead of --port)';
 
-export function parseSessionArgs(argv) {
-  const out = { target: null, script: null, args: {}, port: Number(process.env.CDP_PORT || 9222), host: process.env.CDP_HOST || '127.0.0.1' };
+// No default port on purpose: a default would silently attach to whatever browser owns it (e.g. the daily one).
+export function parseSessionArgs(argv, env = process.env) {
+  let portText = env.CDP_PORT;
+  const out = { target: null, script: null, args: {}, port: null, host: env.CDP_HOST || '127.0.0.1' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--script') out.script = argv[++i];
     else if (a === '--args') {
       try { out.args = JSON.parse(argv[++i]); } catch { throw new Error('--args must be JSON'); }
-    } else if (a === '--port') out.port = Number(argv[++i]);
+    } else if (a === '--port') portText = argv[++i];
     else if (a === '--host') out.host = argv[++i];
     else if (a.startsWith('--')) throw new Error(`unknown flag ${a}`);
     else if (!out.target) out.target = a;
     else throw new Error(`unexpected argument ${a}`);
   }
   if (!out.target || !out.script) throw new Error(USAGE);
+  const trimmed = String(portText ?? '').trim();
+  if (trimmed === '') throw new Error(`port is required: pass --port N or set CDP_PORT\n${USAGE}`);
+  const port = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`port must be an integer from 1 to 65535, got "${portText}"\n${USAGE}`);
+  out.port = port;
   return out;
 }
 
@@ -64,6 +71,10 @@ export function serializeReceipt(receipt) {
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  if (typeof globalThis.WebSocket !== 'function') {
+    console.error(`session.mjs needs Node >= 22 (global WebSocket); this is Node ${process.versions.node}`);
+    process.exit(2);
+  }
   let parsed;
   try {
     parsed = parseSessionArgs(process.argv.slice(2));
@@ -71,9 +82,18 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     console.error(error.message);
     process.exit(2);
   }
-  runSession(parsed).then((receipt) => {
+  const t0 = Date.now();
+  let printed = false;
+  const finish = (receipt) => {
+    if (printed) return;
+    printed = true;
     const { line, ok } = serializeReceipt(receipt);
     console.log(line);
     process.exit(ok ? 0 : 1);
-  });
+  };
+  // A job may leave a promise unawaited or throw from a timer; that still ends in exactly one receipt.
+  const crash = (kind) => (error) => finish({ schema: 'chrome-cdp-ex.session.v1', ok: false, ms: Date.now() - t0, target: parsed.target, error: `${kind}: ${messageOf(error)}` });
+  process.on('unhandledRejection', crash('unhandled rejection'));
+  process.on('uncaughtException', crash('uncaught exception'));
+  runSession(parsed).then(finish);
 }
