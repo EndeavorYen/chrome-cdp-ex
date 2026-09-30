@@ -288,7 +288,7 @@ describe('Phase 5 current runtime characterization', () => {
 
     const stale = await cdpTest.stopDaemons('AABB1111', {
       list: () => daemons,
-      connect: async () => { throw new Error('stale socket'); },
+      connect: async () => { throw Object.assign(new Error('stale socket'), { code: 'ECONNREFUSED' }); },
       send: async () => { throw new Error('not reached'); },
       unlink,
       platform: 'linux',
