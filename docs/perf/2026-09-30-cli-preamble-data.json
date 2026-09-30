@@ -473,7 +473,7 @@
     }
   },
   "scratch_with_package_json_interleaved_n12": {
-    "note": "package.json placed above each scratch copy so git is spawned (it fails fast, not a repo) like the real tree; v0 control, vC no git, vAB list_raw args + destroy-after-reply, vAll = A+B+C. r1 ran quiet, r2 ran while the machine was loaded (v0 461 ms).",
+    "note": "package.json placed above each scratch copy so git is spawned (it fails fast, not a repo) like the real tree; v0 control, vC no git, vAB list_raw args + destroy-after-reply, vAll = A+B+C. Edits: docs/perf/2026-09-30-cli-preamble-ablations.diff. r1 ran quiet. r2 is load-contaminated (some variants loaded, others not: v0 461.6 vs vAB 131.6), so its within-round deltas are not trustworthy either.",
     "r1": {
       "v0": {
         "wall_ms": 281.1,
@@ -573,7 +573,8 @@
         "cpu_ms": 124,
         "discovery_count_median": 3
       }
-    }
+    },
+    "r2_label": "load-contaminated"
   },
   "scratch_interleaved_loaded_n15_NO_PACKAGE_JSON": {
     "r1": {
@@ -653,7 +654,8 @@
         "cpu_ms": 171,
         "discovery_count_median": 3
       }
-    }
+    },
+    "note": "v0 vs vAll (A+B+C) without package.json above the copies, so C is inert (git never spawned): the effect is A+B. Ran while the machine was loaded."
   },
   "load_contaminated": {
     "note": "python/llama-server/game were using the CPU during these; excluded from percentages",
@@ -970,5 +972,36 @@
         ]
       }
     ]
+  },
+  "repro_from_committed_files": {
+    "note": "re-run with scripts/probe-cli-preamble.mjs and the committed ablations.diff sections A+B, target 0B827238, n=12, quiet",
+    "committed_tree": {
+      "wall_ms": 269.8,
+      "boot_to_preload": 20.8,
+      "module_load": 56.8,
+      "discoveries_total": 88.6,
+      "git_gap": 20.2,
+      "eval_rtt": 2.9,
+      "tail_after_eval": 50.5,
+      "exit_at": 245.1,
+      "cpu_ms": 171,
+      "discovery_count_median": 3
+    },
+    "scratch_A_plus_B": {
+      "wall_ms": 139.9,
+      "boot_to_preload": 21.3,
+      "module_load": 57.4,
+      "discoveries_total": 13.8,
+      "git_gap": 18.6,
+      "eval_rtt": 3.2,
+      "tail_after_eval": 0.4,
+      "exit_at": 117.2,
+      "cpu_ms": 124,
+      "discovery_count_median": 3
+    }
+  },
+  "tools": {
+    "probe": "scripts/probe-cli-preamble.mjs",
+    "ablations": "docs/perf/2026-09-30-cli-preamble-ablations.diff"
   }
 }

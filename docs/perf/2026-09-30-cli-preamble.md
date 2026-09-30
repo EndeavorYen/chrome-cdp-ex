@@ -10,8 +10,35 @@ Evidence labels: `local result` = measured here, `inference` = my reading of it,
 - Command under test: `cdp eval <target> document.title`, per-tab daemon already running (warm).
 - Two instruments, because `--cpu-prof` only sees the CLI process's main thread and this call mostly waits:
   1. `scripts/profile-cli-call.mjs` (CPU profile, `topSelfTime`).
-  2. A wall-clock probe preloaded with `node --import` from a scratch directory (wraps `net.Socket.connect/write`, `fetch`, `WebSocket`, `setTimeout`, logs `performance.now()`). It does not modify the repo. The probe itself costs a few ms.
-- Ablations: scratch copies of `skills/chrome-cdp-ex` under `$TEMP` with one line changed each, run against their own daemon. The committed tree was never edited.
+  2. `scripts/probe-cli-preamble.mjs`, a wall-clock probe preloaded with `node --import`. It wraps `net.Socket.connect/write`, `fetch`, `WebSocket` and `setTimeout`, and logs `performance.now()`. It does not modify the repo and costs a few ms per call.
+- Ablations: [`2026-09-30-cli-preamble-ablations.diff`](2026-09-30-cli-preamble-ablations.diff) holds the exact one-line edits (A `list_raw` args, B destroy after reply, C skip git, D memoize discovery) as unified diffs against `skills/chrome-cdp-ex` at `eda9f31`. They are not applied to the tree; each was applied only to a scratch copy under `$TEMP`, run against its own daemon.
+
+### Reproduce
+
+```bash
+# own headless Chrome; never 9222/9224
+node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser chrome --headless --port 9336 --profile-dir "$TEMP/cdp-prof-profile" --url about:blank
+export CDP_PORT=9336; T=<target id printed above>
+
+# CPU profile (top self time), 3 runs after one warm-up call
+node scripts/profile-cli-call.mjs $T
+
+# wall-clock segments of the committed tree: median of 12 warm runs
+node scripts/probe-cli-preamble.mjs "$PWD/skills/chrome-cdp-ex/scripts/cdp.mjs" $T 12
+
+# one raw trace, to see the event order
+TRACE_OUT=$TEMP/trace.txt node --import ./scripts/probe-cli-preamble.mjs skills/chrome-cdp-ex/scripts/cdp.mjs eval $T document.title
+
+# an ablation: scratch copy, package.json above it (so git is spawned as in a real checkout),
+# apply section A and B of the diff, stop the old daemon (its script path differs), probe the copy
+W=$TEMP/vAB; mkdir -p $W; cp -r skills $W/skills; cp package.json $W/package.json
+for X in A B; do awk -v x="$X" '$0 ~ "^### "x":"{p=1;next} /^### /{p=0} p' docs/perf/2026-09-30-cli-preamble-ablations.diff | (cd $W && git apply -p1 -); done
+node skills/chrome-cdp-ex/scripts/cdp.mjs stop
+node scripts/probe-cli-preamble.mjs "$W/skills/chrome-cdp-ex/scripts/cdp.mjs" $T 12
+node "$W/skills/chrome-cdp-ex/scripts/cdp.mjs" stop
+```
+
+Check of these commands from the committed files (`local result`, quiet machine, target 0B827238): the committed tree gave `exit_at` 245.1 ms, 3 discoveries (88.6 ms), git gap 20.2 ms, tail 50.5 ms; the A+B scratch copy gave `exit_at` 117.2 ms, 3 discoveries (13.8 ms), git gap 18.6 ms, tail 0.4 ms. `cdp stop` stops the daemon, not Chrome; kill the Chrome pid listening on 9336 when done. Timings move with machine load (quiet control 228-259 ms, up to 460+ ms when busy), so compare variants only within one interleaved, quiet session.
 
 ## Headline (`local result`)
 
@@ -56,7 +83,7 @@ Three further warm runs taken while the machine was busy (380-413 ms total): `(i
 Denominator 228 ms.
 
 1. **Discovery falls back to a fresh Chrome connection three times per call, because the daemon fast path is rejected (34%, 78.5 ms; about 66 ms of it avoidable, 29%).**
-   - `discoverLivePagesForTargetResolution` (`cdp.mjs:22648`) first asks an existing daemon for the page list with `request(conn, { cmd: 'list_raw' })` at `cdp.mjs:22664`. The request has no `args`. The daemon validates with `snapshotApplicationArray(request.args, 'daemon request args')` at `cdp.mjs:672`, which rejects `undefined`. The probe shows the reply `{"ok":false,"error":"daemon request args is required"}` on every call, and the `catch {}` at `cdp.mjs:22668` swallows it. Same pattern at `cdp.mjs:25280` (`list`), `25437` (`target`), `25471` (`open --reuse`).
+   - `discoverLivePagesForTargetResolution` (`cdp.mjs:22648`) first asks an existing daemon for the page list with `request(conn, { cmd: 'list_raw' })` at `cdp.mjs:22664`. The request has no `args`. The daemon's `validateDaemonProtocolRequest` (`cdp.mjs:657`) requires `id`, `cmd` and `args` all to be present and throws `daemon request args is required` at `cdp.mjs:664`. The daemon's `dispatch` (validation at `cdp.mjs:862`) turns that into an ordinary failure reply via `writeFailure` (`cdp.mjs:865`), so the probe sees `{"ok":false,"error":"daemon request args is required","id":1}` on every call. This is not an exception: `requestDaemon` resolves with that reply (`lib/daemon-transport.mjs:222-225`), `if (response.ok)` at `cdp.mjs:22665` is false, and control falls out of the `try` (the `catch {}` at `22668` is not reached) into the fresh-connection fallback. Same pattern at `cdp.mjs:25280` (`list`), `25437` (`target`), `25471` (`open --reuse`).
    - The fallback then runs `fetch /json/version` (`cdp.mjs:2217` `wsUrlFromCdpHttp`, `2254` `getWsUrl`), a browser WebSocket, `Browser.getBrowserCommandLine` (`rememberLiveCdpEndpointFromSession`, `cdp.mjs:1416`) and `Target.getTargets`. Measured spans, median: 35 / 23 / 19 ms.
    - It runs three times per call: `livePagesForTargetCommand` (`cdp.mjs:25774`), `supervisor.resolve` (`lib/browser-supervisor.mjs:261`) and `supervisor.refreshRecord` via `resolveDetail` (`lib/browser-supervisor.mjs:179`), both through `discover` at `cdp.mjs:25795`. With an alias that carries a port, the last two reuse `livePages` and skip it.
 2. **Pipe close is delayed by about 51 ms after every daemon reply (22%, 50.8 ms).**
@@ -68,7 +95,7 @@ Below 10%: the `git rev-parse` spawn in `currentGitCommit` (`cdp.mjs:2504`, call
 
 ## Ablations (`local result`; each is one scratch line, not the committed tree)
 
-Interleaved on the same daemon setup, n=12, package.json placed above each copy so git is spawned as in the real tree. `exit_at` is process-internal ms. r1 ran quiet; r2 ran under load, so only within-round comparisons mean anything.
+Interleaved on the same daemon setup, n=12, package.json placed above each copy so git is spawned as in the real tree. `exit_at` is process-internal ms. r1 ran quiet. r2 is `load-contaminated`: some variants ran while the machine was busy and others did not (v0 461.6 ms against vAB 131.6 ms), so neither its absolute values nor its within-round deltas are trustworthy; it is kept only as the raw record.
 
 | Variant | Change | r1 exit_at | r2 exit_at |
 |---|---|---|---|
@@ -77,7 +104,7 @@ Interleaved on the same daemon setup, n=12, package.json placed above each copy 
 | vAB | A: `list_raw` sent with `args: []`; B: `conn.destroy()` after the reply | 126.4 | 131.6 |
 | vAll | A + B + no git | 122.0 | 105.8 |
 
-Earlier quiet single-change set (no package.json, so git was not spawned in any variant and vC is a null comparison there): control 218-226, A only 152, B only 168, A+B+C 117. A alone removes about 68 ms of discovery (83.5 to 12.3 ms) and B alone removes the 50 ms tail. Under load the same A+B saved about 195 ms of 400 in three interleaved rounds. Discovery cost scales with machine load; the 50 ms tail does not. Deduplicating discovery to one call (memo in a scratch copy) gave 46 ms against 80 ms on its first run; two repeats ran under load (53 and 69 ms) and are `load-contaminated`, so treat that figure as weak.
+Earlier quiet single-change set (no package.json, so git was not spawned in any variant and vC is a null comparison there): control 218-226, A only 152, B only 168, A+B+C 117. A alone removes about 68 ms of discovery (83.5 to 12.3 ms) and B alone removes the 50 ms tail. Separately, three interleaved rounds under load compared v0 with vAll (A+B+C, scratch copies without a package.json, so C is inert there because git was never spawned; the effect is A+B): about 195 ms saved of about 400 ms. Discovery cost scales with machine load; the 50 ms tail does not. Deduplicating discovery to one call (memo in a scratch copy) gave 46 ms against 80 ms on its first run; two repeats ran under load (53 and 69 ms) and are `load-contaminated`, so treat that figure as weak.
 
 ## Q3: can each item shrink without changing public behavior or contract fixtures?
 
@@ -94,7 +121,7 @@ Rule: only "synchronous CPU or unnecessary wait, at least 10% of the call" becom
 
 Qualifying follow-ups, in order of measured saving:
 
-1. Daemon page-list request is rejected and discovery runs three times: `cdp.mjs:22664` (also `25280`, `25437`, `25471`; cause `cdp.mjs:672`; repeats at `lib/browser-supervisor.mjs:179` and `261`, `cdp.mjs:25774`). About 66 ms, 29%.
+1. Daemon page-list request is rejected and discovery runs three times: `cdp.mjs:22664` (also `25280`, `25437`, `25471`; cause `cdp.mjs:664`, reply written at `cdp.mjs:865`, not swallowed by a `catch`; repeats at `lib/browser-supervisor.mjs:179` and `261`, `cdp.mjs:25774`). About 66 ms, 29%.
 2. Unnecessary wait for pipe shutdown after the reply: `lib/daemon-transport.mjs:224` (`197`, `207`, `217`). About 50 ms, 22%, Windows only as measured.
 3. Module load and compile, 23% synchronous, qualifies by size but has no identified change; measure a launcher-set compile cache in a plan before assuming it.
 
