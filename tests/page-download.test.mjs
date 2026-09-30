@@ -125,6 +125,25 @@ describe('downloadViaPage (#397)', () => {
     expect(readFileSync(outFile, 'utf8')).toBe('new');
   });
 
+  it('creates a missing nested parent folder and writes the file into it (#418)', async () => {
+    const bytes = Buffer.from('nested');
+    const page = fakePage({ bytes });
+    const outFile = join(dir, 'clips', 'final', 's1.mp4');
+    const receipt = await downloadViaPage({ evaluate: page.evaluate, url: 'https://a.example/n', outFile });
+    expect(readFileSync(outFile).equals(bytes)).toBe(true);
+    expect(receipt.path).toBe(outFile);
+  });
+
+  it('fails before any page work when the parent folder cannot be created (#418)', async () => {
+    const blocker = join(dir, 'blocker');
+    writeFileSync(blocker, 'a file, not a folder');
+    const page = fakePage({ bytes: Buffer.from('x') });
+    const outFile = join(blocker, 'sub', 'x.bin');
+    await expect(downloadViaPage({ evaluate: page.evaluate, url: 'https://a.example/x', outFile }))
+      .rejects.toMatchObject({ code: 'mkdir', message: expect.stringContaining('cannot create folder') });
+    expect(page.calls).toHaveLength(0);
+  });
+
   it('fails cleanly when the page returns a short chunk', async () => {
     const page = fakePage({ bytes: Buffer.alloc(100, 7) });
     const shortEvaluate = async (expression) => (expression.includes('slice(') ? '' : page.evaluate(expression));

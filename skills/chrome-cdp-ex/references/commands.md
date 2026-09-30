@@ -779,6 +779,16 @@ scripts/cdp.mjs closetab <target> --force     # also allow closing the only open
 
 `closetab` refuses to close the **only** open tab (closing it can quit the browser) and points to `--force`. The check reads the tab list first and is best-effort: when the list cannot be read the tab is closed as before. The success text `Closed tab: <8 chars>` is unchanged. `--force` is not shown in `cdp help closetab` yet because the command catalog identity is pinned and needs a reviewed update.
 
+### Background mode (do not steal focus)
+
+```bash
+CDP_BACKGROUND=1 scripts/cdp.mjs open https://example.com        # or: open <url> --background
+CDP_BACKGROUND=1 scripts/cdp.mjs nav <target> https://example.com
+scripts/cdp.mjs spawn-debug-browser chrome --background --port 9224   # anti-throttling flags + minimized window
+```
+
+Opt-in. With `CDP_BACKGROUND=1` (accepts `1`, `true`, `yes`, `on`) no command sends `Target.activateTarget` or `Page.bringToFront`, and `open` creates the tab in a new unfocused window (`newWindow: true, background: true`), because a background tab in an existing window is `hidden` and its screenshots stall. `spawn-debug-browser --background` adds `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling` and minimizes the new window unless headless. Tabs in a minimized window are `hidden` too, so work in tabs from `open`. Without the variable or flag, behaviour is unchanged. A hidden tab can drop `Input.*`; use `click --pointer` there. `--background` is not in the `open` synopsis because the command catalog identity is pinned.
+
 ### Network request log
 
 ```bash

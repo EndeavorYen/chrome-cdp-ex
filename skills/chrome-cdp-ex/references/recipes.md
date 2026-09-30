@@ -229,6 +229,6 @@ node skills/chrome-cdp-ex/scripts/download.mjs <target> <url> <out-file> [--max-
 ```
 
 - Runs `fetch(url, {credentials:'include'})` in the page and reads the body back in ~2 MB chunks over `evalraw Runtime.evaluate`; honours `CDP_PORT` / `CDP_HOST` like `cdp.mjs`.
-- Writes `<out-file>.part`, then renames; refuses to overwrite without `--force`; default cap 512 MB.
+- Creates the out-file's parent folder first (`mkdir -p`); if it cannot, exits 1 with `cannot create folder <dir>` before any page or network work. Writes `<out-file>.part`, then renames; refuses to overwrite without `--force`; default cap 512 MB.
 - Prints one receipt line: `downloaded url=... status=... type=... bytes=... sha256=... path=...`. The URL query string is dropped from the receipt. Exit 1 on a non-2xx response or a body over the cap, exit 2 on bad arguments.
 - Works for `data:` URLs. It is a helper script, not a `cdp` command (the 81-command catalog is frozen).
