@@ -1,6 +1,6 @@
 # session.mjs live acceptance (2026-09-30)
 
-Evidence level: `local result`. Browser: headless Chrome started by this task (`cdp spawn-debug-browser chrome --headless --port 9336`). Never connected to 9222 or 9224 (both scripts exit 2 if `CDP_PORT` is one of them). Head under test: b1b3ea4. Scripts: `scripts/verify-session-live.mjs`, `scripts/verify-session-hidden.mjs`. Raw output: `2026-09-30-session-acceptance.json` (run 1), `2026-09-30-session-acceptance-run2.json` (run 2), `2026-09-30-session-hidden.json`.
+Evidence level: `local result`. Browser: headless Chrome started by this task (`cdp spawn-debug-browser chrome --headless --port 9336`). Never connected to 9222 or 9224 (both scripts exit 2 if `CDP_PORT` is unset, empty, 9222 or 9224). Commits under test: run 1 was taken on b1b3ea4; run 2 and the hidden-tab runs came from the 8692841 work (the fix round on top of b1b3ea4), which is the branch head. Scripts: `scripts/verify-session-live.mjs`, `scripts/verify-session-hidden.mjs`. Raw output: `2026-09-30-session-acceptance.json` (run 1), `2026-09-30-session-acceptance-run2.json` (run 2), `2026-09-30-session-hidden.json`.
 
 ## What each number measures
 

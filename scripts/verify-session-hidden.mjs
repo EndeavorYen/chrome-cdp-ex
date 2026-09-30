@@ -10,8 +10,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-if (['9222', '9224'].includes(String(process.env.CDP_PORT ?? '').trim())) {
-  console.error('refusing to run: CDP_PORT is your own Chrome, not a test browser; start your own headless Chrome on another port');
+const cdpPort = String(process.env.CDP_PORT ?? '').trim();
+// Unset would fall back to cdp.mjs's default 9222 (the user's daily Chrome), so it is refused too.
+if (cdpPort === '' || ['9222', '9224'].includes(cdpPort)) {
+  console.error('refusing to run: CDP_PORT must be set to a test browser you started, not empty and not 9222/9224 (your own Chrome)');
   process.exit(2);
 }
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
