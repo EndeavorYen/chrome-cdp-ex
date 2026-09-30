@@ -10,16 +10,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { summarize } from './benchmark-cli-overhead.mjs';
+import { requireTestPort } from './lib/port-guard.mjs';
+import { readReceipt, twelveStepsPass } from './lib/session-acceptance.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CDP = join(ROOT, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
 const SESSION = join(ROOT, 'skills/chrome-cdp-ex/scripts/session.mjs');
-const cdpPort = String(process.env.CDP_PORT ?? '').trim();
-// Unset would fall back to cdp.mjs's default 9222 (the user's daily Chrome), so it is refused too.
-if (cdpPort === '' || ['9222', '9224'].includes(cdpPort)) {
-  console.error('refusing to run: CDP_PORT must be set to a test browser you started, not empty and not 9222/9224 (your own Chrome)');
-  process.exit(2);
-}
+requireTestPort(); // exits 2 on unset, empty, invalid, 9222 or 9224, before any spawn or connect
 const target = process.argv[2];
 if (!target) { console.error('usage: node scripts/verify-session-live.mjs <target>'); process.exit(2); }
 
@@ -58,27 +55,35 @@ const run = (args) => new Promise((resolve) => {
   child.stdout.on('data', (d) => { stdout += d; });
   child.on('close', (status) => resolve({ status, stdout }));
 });
-await run([CDP, 'nav', target, `http://127.0.0.1:${port}/`]);
+const nav = await run([CDP, 'nav', target, `http://127.0.0.1:${port}/`]);
+if (nav.status !== 0) {
+  server.close();
+  console.error(`cdp nav failed (exit ${nav.status}); nothing measured`);
+  process.exit(1);
+}
 
-const sessionMs = []; // receipt ms: measured inside session.mjs, excludes Node startup (the pass threshold uses this)
+const sessionRuns = []; // { status, ok, ms, result, error } per `node session.mjs` child
 const sessionWallMs = []; // wall-clock around the whole `node session.mjs` process, includes Node startup
 for (let i = 0; i < 8; i++) {
   const t0 = Date.now();
   const r = await run([SESSION, target, '--script', jobPath]);
   sessionWallMs.push(Date.now() - t0);
-  sessionMs.push(JSON.parse(r.stdout).ms);
+  sessionRuns.push(readReceipt(r));
 }
+// receipt ms: measured inside session.mjs, excludes Node startup (the pass threshold uses this)
+const sessionMs = sessionRuns.filter((r) => typeof r.ms === 'number').map((r) => r.ms);
 const cliMs = [];
+let cliFailedCalls = 0;
 for (let r = 0; r < 3; r++) {
   const t0 = Date.now();
-  for (let i = 0; i < 12; i++) await run([CDP, 'eval', target, 'document.title']);
+  for (let i = 0; i < 12; i++) if ((await run([CDP, 'eval', target, 'document.title'])).status !== 0) cliFailedCalls++;
   cliMs.push(Date.now() - t0);
 }
-const wait = JSON.parse((await run([SESSION, target, '--script', waitPath])).stdout);
-const menu = JSON.parse((await run([SESSION, target, '--script', menuPath])).stdout);
+const wait = readReceipt(await run([SESSION, target, '--script', waitPath]));
+const menu = readReceipt(await run([SESSION, target, '--script', menuPath]));
 server.close();
 
-const session = summarize(sessionMs);
+const session = sessionMs.length ? summarize(sessionMs) : { n: 0, median: Infinity };
 const sessionWall = summarize(sessionWallMs);
 const cli = summarize(cliMs);
 console.log(JSON.stringify({
@@ -87,8 +92,11 @@ console.log(JSON.stringify({
   twelve_steps_via_12_cli_calls_wall_clock_ms: cli,
   ratio_cli12_wall_over_session_receipt: Number((cli.median / session.median).toFixed(1)),
   ratio_cli12_wall_over_session_wall: Number((cli.median / sessionWall.median).toFixed(1)),
-  pass_twelve_steps_under_300ms: session.median <= 300,
+  twelve_steps_session_runs: sessionRuns,
+  cli_failed_calls: cliFailedCalls,
+  pass_twelve_steps_under_300ms: twelveStepsPass(sessionRuns, session),
   waitResponse: wait,
-  pass_wait_within_100ms_of_response: wait.ok && wait.result.after_ms <= 400,
+  pass_wait_within_100ms_of_response: wait.ok && typeof wait.result?.after_ms === 'number' && wait.result.after_ms <= 400,
   pointer_opened_pointerdown_menu: menu,
+  pass_pointer_opened_menu: menu.ok && menu.result === true,
 }, null, 2));

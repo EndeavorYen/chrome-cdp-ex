@@ -10,12 +10,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const cdpPort = String(process.env.CDP_PORT ?? '').trim();
-// Unset would fall back to cdp.mjs's default 9222 (the user's daily Chrome), so it is refused too.
-if (cdpPort === '' || ['9222', '9224'].includes(cdpPort)) {
-  console.error('refusing to run: CDP_PORT must be set to a test browser you started, not empty and not 9222/9224 (your own Chrome)');
-  process.exit(2);
-}
+import { requireTestPort } from './lib/port-guard.mjs';
+
+requireTestPort(); // exits 2 on unset, empty, invalid, 9222 or 9224, before any spawn or connect
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CDP = join(ROOT, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
 const SESSION = join(ROOT, 'skills/chrome-cdp-ex/scripts/session.mjs');
@@ -53,14 +50,16 @@ for (let i = 0; i < runs; i++) {
   const second = /Opened new tab:\s+(\S+)/.exec(opened.stdout)?.[1] ?? null;
   const firstState = (await run([CDP, 'eval', target, stateJs])).stdout;
   const secondState = second ? (await run([CDP, 'eval', second, stateJs])).stdout : null;
-  const receipt = JSON.parse((await run([SESSION, target, '--script', menuPath])).stdout);
+  const child = await run([SESSION, target, '--script', menuPath]);
+  let receipt;
+  try { receipt = JSON.parse(child.stdout); } catch { receipt = { ok: false, error: `no JSON receipt (exit ${child.status})` }; }
   results.push({
     run: i + 1,
     first_tab_visibility: firstState,
     second_tab_visibility: secondState,
     became_hidden: firstState === 'hidden',
     session_receipt: receipt,
-    pass: firstState === 'hidden' && receipt.ok === true && receipt.result?.menu_open_before === false && receipt.result?.menu_open_after === true,
+    pass: firstState === 'hidden' && child.status === 0 && receipt.ok === true && receipt.result?.menu_open_before === false && receipt.result?.menu_open_after === true,
   });
   if (second) await run([CDP, 'closetab', second]); // give focus back so the next run starts clean
 }

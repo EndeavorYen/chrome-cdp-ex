@@ -16,6 +16,8 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 
+import { requireTestPort } from './lib/port-guard.mjs';
+
 const SELF_URL = import.meta.url;
 const isRunner = Boolean(process.argv[1]) && pathToFileURL(process.argv[1]).href === SELF_URL;
 
@@ -136,6 +138,7 @@ function median(rows, key) {
 }
 
 function runProbe([script, target, runsArg, outJson]) {
+  requireTestPort(); // runner only (the preload child inherits the checked env); exits 2 before any spawn
   const runs = Number(runsArg || 10);
   if (!script || !target || !Number.isInteger(runs) || runs < 1) {
     console.error('usage: CDP_PORT=<port> node scripts/probe-cli-preamble.mjs <cdp.mjs> <target> [runs] [out.json]');

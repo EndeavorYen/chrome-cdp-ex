@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { requireTestPort } from './lib/port-guard.mjs';
+
 const CDP = fileURLToPath(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url));
 
 export function topSelfTime(profile, n = 15) {
@@ -29,6 +31,7 @@ export function topSelfTime(profile, n = 15) {
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  requireTestPort(); // exits 2 before any spawn: never 9222/9224 or an unset port
   const [target, expression = 'document.title'] = process.argv.slice(2);
   if (!target) {
     console.error('usage: node scripts/profile-cli-call.mjs <target> [expression]');

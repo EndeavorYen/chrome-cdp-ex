@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Measure per-call overhead of the CLI against one tab.
-// Usage: CDP_PORT=9224 node scripts/benchmark-cli-overhead.mjs <target> [--runs N]
+// Usage: CDP_PORT=<port of a test browser you started> node scripts/benchmark-cli-overhead.mjs <target> [--runs N]
 // Prints one JSON object. It only runs `eval document.title`, `help` and `batch` of evals: read-only.
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { requireTestPort } from './lib/port-guard.mjs';
 
 const CDP = fileURLToPath(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url));
 
@@ -40,6 +42,7 @@ export function runBenchmark({ target, runs }) {
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  requireTestPort(); // exits 2 before any spawn: never 9222/9224 or an unset port
   const args = process.argv.slice(2);
   const runsAt = args.indexOf('--runs');
   const runs = runsAt >= 0 ? Number(args[runsAt + 1]) : 8;
