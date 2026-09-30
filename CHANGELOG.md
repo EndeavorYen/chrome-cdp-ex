@@ -28,6 +28,19 @@
 
 ### Bug fixes
 
+* `stop` no longer reports a daemon whose browser is gone as a failure, and no longer leaves one behind.
+  Each daemon now writes a `cdp-<target>.daemon.json` registry record (pid) next to its pipe or socket and
+  removes it on exit. When the pipe or socket is unreachable, `stop` kills the recorded pid only if its
+  command line is still that target's `_daemon` process, then removes the stale socket and record, and
+  prints one line per daemon: `stopped`, `already gone`, or `failed: <reason>`. On Windows, cached pages
+  that never had a daemon are no longer counted as failed or remaining sessions, and one daemon answering
+  `ok:false` no longer aborts `stop` for the others (it is now a per-daemon `failed` line, and `stop` still
+  exits 0 as it does for other failed cleanups; the internal stale-daemon restart still throws on it). The
+  `chrome-cdp-ex.stop.v1` receipt gains `goneTargets` and `results`; existing fields are unchanged, but
+  `noop` is now false when a stale entry was removed. A daemon that is alive but not answering `stop` (wedged, or busy with a long command) is killed after a
+  10 s stop timeout. A live pid that cannot be verified as the daemon is never killed. `stop` without a
+  target still covers every daemon in the shared runtime directory, whatever its port
+  ([#417](https://github.com/EndeavorYen/chrome-cdp-ex/issues/417)).
 * A click that reaches the page as zero events now says why when the tab is hidden (its window
   covered or minimised: Chrome drops `Input.*` events there): the error and the failure receipt carry
   `visibility: "hidden"` and point to `jsclick`. Failure receipts also carry `dispatched`

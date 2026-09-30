@@ -1060,6 +1060,7 @@ function createDaemonShutdown({
   closeCdp,
   exitProcess = code => process.exit(code),
   unlinkSocket = unlinkSync,
+  removeRecord = () => {},
   isWindows = IS_WINDOWS,
 }) {
   if (!(requestConnections instanceof Set)) throw new Error('daemon request connection registry must be a Set');
@@ -1085,6 +1086,7 @@ function createDaemonShutdown({
     try { getServer()?.close(); } catch {}
     if (!isWindows) try { unlinkSocket(socketPath); } catch {}
     try { closeCdp(); } catch {}
+    try { removeRecord(); } catch {}
     exitProcess(finalExitCode);
   };
 }
@@ -1104,6 +1106,70 @@ function sockPath(targetId) {
 
 function ensureRuntimeDir() {
   try { mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 }); } catch {}
+}
+
+// Per-daemon registry record. `stop` needs the daemon pid even when the pipe or
+// socket is unreachable, and the pid otherwise only exists behind the `meta` IPC.
+const DAEMON_RECORD_SCHEMA = 'chrome-cdp-ex.daemon-record.v1';
+const DAEMON_RECORD_SUFFIX = '.daemon.json';
+
+function daemonRecordPath(targetId, runtimeDir = RUNTIME_DIR) {
+  const safeTarget = String(targetId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
+  return resolve(runtimeDir, `cdp-${safeTarget}${DAEMON_RECORD_SUFFIX}`);
+}
+
+function writeDaemonRecord(targetId, { pid = process.pid, startedAt = new Date().toISOString() } = {}, { runtimeDir = RUNTIME_DIR, writer = writeFileSync } = {}) {
+  try {
+    writer(daemonRecordPath(targetId, runtimeDir), JSON.stringify({
+      schema: DAEMON_RECORD_SCHEMA,
+      targetId: String(targetId),
+      pid,
+      startedAt,
+    }), { mode: 0o600 });
+  } catch {}
+}
+
+function parseDaemonRecord(text) {
+  try {
+    const record = JSON.parse(text);
+    if (record?.schema !== DAEMON_RECORD_SCHEMA || !/^[A-Za-z0-9_.-]+$/.test(String(record.targetId || '')) || String(record.targetId).includes('..')) return null;
+    if (!Number.isInteger(record.pid) || record.pid <= 0) return null;
+    return record;
+  } catch {
+    return null;
+  }
+}
+
+function readDaemonRecord(targetId, { runtimeDir = RUNTIME_DIR, reader = readFileSync } = {}) {
+  try {
+    const record = parseDaemonRecord(reader(daemonRecordPath(targetId, runtimeDir), 'utf8'));
+    return record && record.targetId === String(targetId) ? record : null;
+  } catch {
+    return null;
+  }
+}
+
+function removeDaemonRecord(targetId, { runtimeDir = RUNTIME_DIR, remover = unlinkSync } = {}) {
+  try { remover(daemonRecordPath(targetId, runtimeDir)); } catch {}
+}
+
+function listDaemonRecords({ runtimeDir = RUNTIME_DIR, readdir = readdirSync, reader = readFileSync } = {}) {
+  try {
+    return readdir(runtimeDir)
+      .filter(name => name.startsWith('cdp-') && name.endsWith(DAEMON_RECORD_SUFFIX))
+      .map(name => {
+        // One unreadable file (a daemon removing its own record mid-scan) must not hide the rest.
+        try {
+          const record = parseDaemonRecord(reader(resolve(runtimeDir, name), 'utf8'));
+          return record && name === `cdp-${record.targetId}${DAEMON_RECORD_SUFFIX}` ? record : null;
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 function emptyAliasStore() {
@@ -21558,6 +21624,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     socketPath: sp,
     cleanupSession: () => tableArtifactStore.cleanupSession(),
     closeCdp: () => cdp.close(),
+    removeRecord: () => {
+      // A daemon that lost the listen race must not delete the winner's record.
+      if (readDaemonRecord(targetId)?.pid === process.pid) removeDaemonRecord(targetId);
+    },
   });
 
   // Exit if target goes away or Chrome disconnects
@@ -22545,6 +22615,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   });
 
   if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
+  ensureRuntimeDir();
+  // Only the daemon that won the listen race owns the record.
+  server.once('listening', () => {
+    writeDaemonRecord(targetId, { pid: daemonMetadata.pid, startedAt: daemonMetadata.startedAt });
+  });
   server.listen(sp);
 }
 
@@ -22700,29 +22775,68 @@ async function readDaemonBinding(targetId) {
 // Stop daemons
 // ---------------------------------------------------------------------------
 
-function buildStopResult({ requestedTarget = null, daemons = [], stoppedDaemons = [], removedDaemons = stoppedDaemons, failedDaemons = [] } = {}) {
+function buildStopResult({
+  requestedTarget = null,
+  daemons = [],
+  stoppedDaemons = [],
+  goneDaemons = [],
+  removedDaemons = [...stoppedDaemons, ...goneDaemons],
+  failedDaemons = [],
+  reasons = {},
+} = {}) {
   const targetIds = daemons.map(daemon => daemon.targetId).filter(Boolean);
   const prefixLength = targetIds.length ? getDisplayPrefixLength(targetIds) : MIN_TARGET_PREFIX_LEN;
   const removedIds = new Set(removedDaemons.map(daemon => daemon.targetId));
-  const stoppedTargets = stoppedDaemons.map(daemon => daemon.targetId.slice(0, prefixLength));
-  const failedTargets = failedDaemons.map(daemon => daemon.targetId.slice(0, prefixLength));
+  const prefixOf = daemon => daemon.targetId.slice(0, prefixLength);
+  const stoppedTargets = stoppedDaemons.map(prefixOf);
+  const goneTargets = goneDaemons.map(prefixOf);
+  const failedTargets = failedDaemons.map(prefixOf);
   const remainingTargets = daemons
     .filter(daemon => !removedIds.has(daemon.targetId))
-    .map(daemon => daemon.targetId.slice(0, prefixLength));
+    .map(prefixOf);
+  const statusOf = new Map([
+    ...stoppedDaemons.map(daemon => [daemon.targetId, 'stopped']),
+    ...goneDaemons.map(daemon => [daemon.targetId, 'gone']),
+    ...failedDaemons.map(daemon => [daemon.targetId, 'failed']),
+  ]);
+  const results = daemons
+    .filter(daemon => statusOf.has(daemon.targetId))
+    .map(daemon => {
+      const entry = { target: prefixOf(daemon), status: statusOf.get(daemon.targetId) };
+      if (reasons[daemon.targetId]) entry.reason = reasons[daemon.targetId];
+      return entry;
+    });
   return {
     schema: 'chrome-cdp-ex.stop.v1',
     requestedTarget,
     stopped: stoppedTargets.length > 0,
     stoppedTargets,
+    goneTargets,
     failedTargets,
+    results,
     remainingSessions: remainingTargets.length,
     remainingTargets,
-    noop: stoppedTargets.length === 0 && failedTargets.length === 0,
+    noop: stoppedTargets.length === 0 && failedTargets.length === 0 && goneTargets.length === 0,
   };
 }
 
 function formatStopResult(model, { format = 'text' } = {}) {
   if (format === 'json') return formatJson(model);
+  const results = model.results || [];
+  const lines = [];
+  // One line per daemon whenever the outcome is more than a plain stop.
+  if (results.some(entry => entry.status !== 'stopped' || entry.reason)) {
+    for (const entry of results) {
+      if (entry.status === 'failed') lines.push(`${entry.target}: failed: ${entry.reason || 'unknown reason'}`);
+      else if (entry.status === 'gone') lines.push(`${entry.target}: already gone${entry.reason ? ` (${entry.reason})` : ''}`);
+      else lines.push(`${entry.target}: stopped${entry.reason ? ` (${entry.reason})` : ''}`);
+    }
+  }
+  lines.push(formatStopSummary(model));
+  return lines.join('\n');
+}
+
+function formatStopSummary(model) {
   if (model.failedTargets?.length) {
     if (model.requestedTarget) {
       return `Failed to stop daemon ${model.failedTargets.join(', ')}; ${model.remainingSessions} remaining session(s).`;
@@ -22733,6 +22847,9 @@ function formatStopResult(model, { format = 'text' } = {}) {
     return `${stopped}Failed to stop daemon(s): ${model.failedTargets.join(', ')}; ${model.remainingSessions} remaining session(s).`;
   }
   if (!model.stopped) {
+    if (model.goneTargets?.length) {
+      return `Removed ${model.goneTargets.length} stale daemon entr${model.goneTargets.length === 1 ? 'y' : 'ies'} (already gone): ${model.goneTargets.join(', ')}; ${model.remainingSessions} remaining session(s).`;
+    }
     const scope = model.requestedTarget ? ` for ${model.requestedTarget}` : 's';
     return `No active daemon${scope}; ${model.remainingSessions} remaining session(s).`;
   }
@@ -22742,13 +22859,72 @@ function formatStopResult(model, { format = 'text' } = {}) {
   return `Stopped ${model.stoppedTargets.length} daemon(s): ${model.stoppedTargets.join(', ')}; ${model.remainingSessions} remaining session(s).`;
 }
 
+const STOP_REQUEST_TIMEOUT_MS = 10_000;
+const STOP_KILL_POLLS = 20;
+const STOP_KILL_POLL_MS = 100;
+
+function isProcessAlive(pid, { kill = process.kill.bind(process) } = {}) {
+  try {
+    kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+// Guards against pid reuse: a recorded pid is only killed when its command line
+// is this target's `cdp.mjs _daemon <targetId>`. Returns true (it is), false (it is
+// not, or no such process) or null (could not be checked), and only true allows a kill.
+function processIsTargetDaemon(pid, targetId, { platform = process.platform, spawnSyncFn = spawnSync } = {}) {
+  try {
+    const numericPid = Number(pid);
+    const result = platform === 'win32'
+      ? spawnSyncFn('powershell', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${numericPid}").CommandLine`], { encoding: 'utf8', timeout: 10000, windowsHide: true })
+      : spawnSyncFn('ps', ['-o', 'args=', '-p', String(numericPid)], { encoding: 'utf8', timeout: 5000 });
+    if (result.error || result.signal) return null;
+    const commandLine = String(result.stdout || '').trim();
+    if (result.status !== 0) return commandLine || String(result.stderr || '').trim() ? null : false;
+    // A live pid with an unreadable (empty) command line cannot be told apart from access denied.
+    if (!commandLine) return platform === 'win32' ? null : false;
+    return commandLine.includes('_daemon') && commandLine.includes(String(targetId));
+  } catch {
+    return null;
+  }
+}
+
 async function stopDaemons(targetPrefix, deps = {}) {
+  const platform = deps.platform || process.platform;
+  const isWindows = platform === 'win32';
   const list = deps.list || listDaemonSockets;
+  // Injecting `list` without `registry` is a fake run: never read the real runtime dir.
+  const registry = deps.registry || (deps.list
+    ? { list: () => [], read: () => null, remove: () => {} }
+    : { list: listDaemonRecords, read: readDaemonRecord, remove: removeDaemonRecord });
   const connect = deps.connect || connectToSocket;
-  const send = deps.send || sendCommand;
+  // `stop` has side effects but must not wait the 120 s default on a wedged daemon.
+  const send = deps.send || ((conn, request, options) => requestDaemon(conn, request, {
+    runtimeDir: RUNTIME_DIR,
+    mayHaveSideEffects: true,
+    ...options,
+  }));
   const unlink = deps.unlink || unlinkSync;
-  const isWindows = (deps.platform || process.platform) === 'win32';
-  const daemons = list();
+  const isAlive = deps.isAlive || (pid => isProcessAlive(pid));
+  const isDaemonProcess = deps.isDaemonProcess || ((pid, targetId) => processIsTargetDaemon(pid, targetId, { platform }));
+  const kill = deps.kill || ((pid, signal) => process.kill(pid, signal));
+  const wait = deps.sleep || sleep;
+
+  // On win32 `list` enumerates the pages cache, not daemons, and a daemon whose
+  // page cache entry is gone is only reachable through its registry record.
+  const daemons = [...(list() || [])];
+  const known = new Set(daemons.map(daemon => daemon.targetId));
+  for (const record of registry.list() || []) {
+    if (known.has(record.targetId)) continue;
+    known.add(record.targetId);
+    daemons.push({
+      targetId: record.targetId,
+      socketPath: daemonEndpointForPlatform(record.targetId, { platform, runtimeDir: RUNTIME_DIR }),
+    });
+  }
   if (!daemons.length) return buildStopResult({ requestedTarget: targetPrefix || null });
 
   let selected = daemons;
@@ -22758,32 +22934,113 @@ async function stopDaemons(targetPrefix, deps = {}) {
     const targetId = resolvePrefix(targetPrefix, daemons.map(daemon => daemon.targetId), 'daemon');
     selected = [daemons.find(daemon => daemon.targetId === targetId)];
   }
-  const stoppedDaemons = [];
-  const removedDaemons = [];
-  const failedDaemons = [];
-  for (const daemon of selected) {
-    let response;
+
+  async function terminate(pid) {
+    try { kill(pid, 'SIGTERM'); } catch {}
+    for (let i = 0; i < STOP_KILL_POLLS && isAlive(pid); i++) await wait(STOP_KILL_POLL_MS);
+    if (isAlive(pid) && !isWindows) {
+      try { kill(pid, 'SIGKILL'); } catch {}
+      for (let i = 0; i < STOP_KILL_POLLS && isAlive(pid); i++) await wait(STOP_KILL_POLL_MS);
+    }
+    return !isAlive(pid);
+  }
+
+  // Remove what a dead daemon leaves behind: its registry record and, off win32, its socket file.
+  function removeLeftovers(daemon) {
+    registry.remove(daemon.targetId);
+    if (isWindows) return null;
+    try {
+      unlink(daemon.socketPath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return `could not remove stale socket: ${error?.message || error}`;
+    }
+    return null;
+  }
+
+  async function endpointIsGone(daemon) {
     try {
       const conn = await connect(daemon.socketPath);
-      response = await send(conn, { cmd: 'stop', args: [] });
-    } catch {
-      if (!isWindows) {
-        try {
-          unlink(daemon.socketPath);
-          removedDaemons.push(daemon);
-        } catch {
-          failedDaemons.push(daemon);
-        }
-      } else {
-        failedDaemons.push(daemon);
-      }
-      continue;
+      try { conn?.destroy?.(); } catch {}
+      return false;
+    } catch (error) {
+      return error?.code === 'ENOENT' || error?.code === 'ECONNREFUSED';
     }
-    if (response?.ok === false) throw new Error(response.error || 'daemon rejected stop');
-    stoppedDaemons.push(daemon);
-    removedDaemons.push(daemon);
   }
-  return buildStopResult({ requestedTarget: targetPrefix || null, daemons, stoppedDaemons, removedDaemons, failedDaemons });
+
+  async function stopOne(daemon) {
+    const record = registry.read(daemon.targetId);
+    let connected = false;
+    let error = null;
+    try {
+      const conn = await connect(daemon.socketPath);
+      connected = true;
+      const response = await send(conn, { cmd: 'stop', args: [] }, { timeoutMs: STOP_REQUEST_TIMEOUT_MS });
+      if (response?.ok === false) return { status: 'failed', reason: response.error || 'daemon rejected stop' };
+      return { status: 'stopped' };
+    } catch (caught) {
+      error = caught;
+    }
+    const reason = error?.message || String(error);
+
+    // The graceful stop did not happen. A recorded daemon that is alive but
+    // unreachable is killed, after proving the pid is still this daemon.
+    const pid = record?.pid;
+    const pidAlive = pid ? isAlive(pid) : false;
+    let reused = false;
+    if (pidAlive) {
+      const verdict = isDaemonProcess(pid, daemon.targetId);
+      if (verdict === true) {
+        if (!(await terminate(pid))) return { status: 'failed', reason: `pid ${pid} is still running after kill (${reason})` };
+        const leftover = removeLeftovers(daemon);
+        if (leftover) return { status: 'failed', reason: leftover };
+        return { status: 'stopped', reason: `unresponsive, killed pid ${pid}` };
+      }
+      if (verdict == null) return { status: 'failed', reason: `pid ${pid} is alive but could not be verified as the daemon, so it was not killed (${reason})` };
+      reused = true;
+    }
+    if (connected) {
+      // A listener answered but the reply never arrived. If the daemon is gone now, the stop worked.
+      const exited = pid && !reused ? !pidAlive : await endpointIsGone(daemon);
+      if (exited) {
+        const leftover = removeLeftovers(daemon);
+        return leftover ? { status: 'failed', reason: leftover } : { status: 'stopped', reason: 'exited before replying' };
+      }
+      return { status: 'failed', reason: `${reason}; no daemon pid record to kill` };
+    }
+
+    const missing = error?.code === 'ENOENT';
+    if (missing && !record) return { status: 'none' };
+    // Only these errors prove nothing is listening; a timeout or EACCES could be a wedged daemon.
+    const proofOfAbsence = missing || error?.code === 'ECONNREFUSED' || error?.code === 'ENOTSOCK';
+    if (!proofOfAbsence && !record) return { status: 'failed', reason };
+    const leftover = removeLeftovers(daemon);
+    if (leftover) return { status: 'failed', reason: leftover };
+    return { status: 'gone', reason: 'no daemon process or endpoint left; stale entry removed' };
+  }
+
+  const stoppedDaemons = [];
+  const goneDaemons = [];
+  const failedDaemons = [];
+  const notDaemons = new Set();
+  const reasons = {};
+  for (const daemon of selected) {
+    const outcome = await stopOne(daemon);
+    if (outcome.reason) reasons[daemon.targetId] = outcome.reason;
+    if (outcome.status === 'stopped') stoppedDaemons.push(daemon);
+    else if (outcome.status === 'gone') goneDaemons.push(daemon);
+    else if (outcome.status === 'failed') failedDaemons.push(daemon);
+    else notDaemons.add(daemon.targetId);
+  }
+  // A cached page that never had a daemon is not a session, so it is neither failed nor remaining.
+  const sessions = daemons.filter(daemon => !notDaemons.has(daemon.targetId));
+  return buildStopResult({
+    requestedTarget: targetPrefix || null,
+    daemons: sessions,
+    stoppedDaemons,
+    goneDaemons,
+    failedDaemons,
+    reasons,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -25826,7 +26083,11 @@ async function main(options = {}) {
       return sendCommand(await connectToSocket(runtime.endpoint), request);
     },
     stop: async resolvedTargetId => {
-      await stopDaemons(resolvedTargetId);
+      const stopResult = await stopDaemons(resolvedTargetId);
+      if (stopResult.failedTargets?.length) {
+        const why = stopResult.results?.find(entry => entry.status === 'failed')?.reason || 'unknown reason';
+        throw new Error(`daemon ${stopResult.failedTargets.join(', ')} did not stop: ${why}`);
+      }
       await sleep(100);
       rebound = true;
     },
@@ -26176,6 +26437,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   formatDoctorReport, runDoctorChecks, doctorStr,
   doctorProbeFromTargets, doctorProbeFromChecks,
   buildStopResult, formatStopResult, stopDaemons,
+  daemonRecordPath, writeDaemonRecord, readDaemonRecord, removeDaemonRecord, listDaemonRecords, processIsTargetDaemon, isProcessAlive,
   // Issues #82-#87 helpers
   isBlankPageUrl, pageTargetScore, rankPageTargets, matchPageTargets, selectPageTarget,
   parseTargetSelectArgs, buildTargetSelectModel, formatTargetSelect,
