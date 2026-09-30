@@ -134,13 +134,26 @@ describe('#419 daemon page list for target discovery', () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
-  it('a meta probe does not reset the daemon idle timer', () => {
-    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
-    const start = source.indexOf('async function handleCommand({ cmd, args }');
-    expect(start).toBeGreaterThan(0);
-    const head = source.slice(start, start + 400);
-    expect(head).toMatch(/if \(cmd !== 'meta'\) resetIdle\(\);/);
-    expect(head).not.toMatch(/^\s*resetIdle\(\);/m);
+  it('discovery probes do not reset the daemon idle timer; real commands do', () => {
+    expect(T.daemonCommandResetsIdle('meta')).toBe(false);
+    expect(T.daemonCommandResetsIdle('list_raw')).toBe(false);
+    expect(T.daemonCommandResetsIdle('eval')).toBe(true);
+    expect(T.daemonCommandResetsIdle('list')).toBe(true);
+  });
+
+  it('stops at the first endpoint match even when its list_raw fails', async () => {
+    const daemons = fakeDaemons({
+      first: { meta: meta('127.0.0.1:9345'), pages: 'not an array' },
+      second: { meta: meta('127.0.0.1:9345'), pages: PAGES_9345 },
+    });
+    const pages = await T.listPagesFromMatchingDaemon({
+      env: { CDP_PORT: '9345' },
+      listSockets: daemons.listSockets,
+      connect: daemons.connect,
+      request: daemons.request,
+    });
+    expect(pages).toBeNull();
+    expect(daemons.sent.filter(entry => entry.path === 'second')).toEqual([]);
   });
 
   it('every client list_raw request in cdp.mjs carries args', () => {

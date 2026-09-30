@@ -22463,8 +22463,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   // Handle a command
   async function handleCommand({ cmd, args }, execution = undefined) {
-  // A `meta` probe (e.g. endpoint matching, #419) is not use: it must not keep an idle daemon alive.
-  if (cmd !== 'meta') resetIdle();
+  if (daemonCommandResetsIdle(cmd)) resetIdle();
   if (daemonRequestStorage.getStore() === undefined) {
     return daemonRequestStorage.run(execution || null, () => handleCommand({ cmd, args }, execution));
   }
@@ -22672,6 +22671,12 @@ function requestedCdpEndpoint(env = process.env) {
 // Daemon sockets come from the shared pages cache and may belong to another browser, so a
 // daemon must prove its endpoint through `meta` first. Without CDP_PORT the endpoint is not
 // known before discovery, and an old daemon has no `cdpEndpoint`: both return null (fallback).
+// `meta` and `list_raw` are discovery probes, often sent to another tab's daemon on the same
+// endpoint (#419). They are not use of that tab, so they must not keep an idle daemon alive.
+function daemonCommandResetsIdle(cmd) {
+  return cmd !== 'meta' && cmd !== 'list_raw';
+}
+
 // Each probe is bounded so a wedged daemon on any endpoint costs at most this, then the fallback.
 const DAEMON_PAGE_LIST_PROBE_TIMEOUT_MS = 1500;
 
@@ -22689,10 +22694,11 @@ async function listPagesFromMatchingDaemon({
       const metaResponse = await request(await connect(socketPath), { cmd: 'meta', args: [] });
       const metadata = metaResponse?.ok ? parseDaemonMetadataResult(metaResponse.result) : null;
       if (!metadata || metadata.cdpEndpoint !== wanted) continue;
+      // First endpoint match decides: at most one list_raw per discovery, then the fallback.
       const response = await request(await connect(socketPath), { cmd: 'list_raw', args: [] });
-      if (!response?.ok) continue;
+      if (!response?.ok) return null;
       const pages = JSON.parse(response.result);
-      if (Array.isArray(pages)) return pages;
+      return Array.isArray(pages) ? pages : null;
     } catch {}
   }
   return null;
@@ -26048,7 +26054,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   removeTargetAlias, forgetTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
   aliasEnv, discoverOptionsForTargetAlias, selectLivePagesForAliasResolution, bindAliasTargetFromPages,
   bindAndSaveTargetAlias, livePagesForTargetCommand, discoverLivePagesForTargetResolution,
-  listPagesFromMatchingDaemon, cdpEndpointFromWsUrl, requestedCdpEndpoint, validateDaemonProtocolRequest,
+  listPagesFromMatchingDaemon, daemonCommandResetsIdle, cdpEndpointFromWsUrl, requestedCdpEndpoint, validateDaemonProtocolRequest,
   formatDaemonStartFailure,
   aliasLookupKey, looksLikeAliasToken, looksLikeHexTargetPrefix, unknownAliasError, formatCurrentAlias,
   // AX tree helpers
