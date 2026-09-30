@@ -528,6 +528,8 @@ describe('daemon NDJSON request transport', () => {
 });
 
 describe('#419 close after the reply frame over a real pipe', () => {
+  // Non-regression guard for closeAfterFrame (it also passes with end()): no truncation, and the
+  // daemon's write callback wins over the client's reset, so it releases rather than rolls back.
   it('delivers a multi-MB frame byte-equal and lets the daemon release, not roll back, the request', async () => {
     const endpoint = process.platform === 'win32'
       ? daemonEndpointForPlatform(`419-test-${process.pid}-${Date.now()}`, { platform: 'win32' })
@@ -535,8 +537,9 @@ describe('#419 close after the reply frame over a real pipe', () => {
     const big = 'x'.repeat(3 * 1024 * 1024) + 'éend';
     const onFlushed = vi.fn();
     const cleanup = vi.fn();
+    let server;
     const disconnected = new Promise(resolveDisconnect => {
-      const server = net.createServer(conn => {
+      server = net.createServer(conn => {
         cdpTest.createDaemonRequestConnection(conn, {
           handleRequest: async () => ({ ok: true, result: big }),
           cleanup,
@@ -546,15 +549,19 @@ describe('#419 close after the reply frame over a real pipe', () => {
       });
       server.listen(endpoint);
     });
-    await new Promise(resolveTick => setTimeout(resolveTick, 20));
-    const conn = await connectToDaemon(endpoint, { timeoutMs: 2000 });
-    const closed = new Promise(resolveClose => conn.once('close', resolveClose));
-    const response = await requestDaemon(conn, { cmd: 'report', args: [] });
-    expect(response.result.length).toBe(big.length);
-    expect(response.result === big).toBe(true);
-    await closed;
-    await disconnected;
-    expect(onFlushed).toHaveBeenCalledOnce();
-    expect(cleanup).not.toHaveBeenCalled();
+    try {
+      await new Promise(resolveTick => setTimeout(resolveTick, 20));
+      const conn = await connectToDaemon(endpoint, { timeoutMs: 2000 });
+      const closed = new Promise(resolveClose => conn.once('close', resolveClose));
+      const response = await requestDaemon(conn, { cmd: 'report', args: [] });
+      expect(response.result.length).toBe(big.length);
+      expect(response.result === big).toBe(true);
+      await closed;
+      await disconnected;
+      expect(onFlushed).toHaveBeenCalledOnce();
+      expect(cleanup).not.toHaveBeenCalled();
+    } finally {
+      server.close();
+    }
   });
 });

@@ -22463,7 +22463,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   // Handle a command
   async function handleCommand({ cmd, args }, execution = undefined) {
-  resetIdle();
+  // A `meta` probe (e.g. endpoint matching, #419) is not use: it must not keep an idle daemon alive.
+  if (cmd !== 'meta') resetIdle();
   if (daemonRequestStorage.getStore() === undefined) {
     return daemonRequestStorage.run(execution || null, () => handleCommand({ cmd, args }, execution));
   }
@@ -22671,11 +22672,15 @@ function requestedCdpEndpoint(env = process.env) {
 // Daemon sockets come from the shared pages cache and may belong to another browser, so a
 // daemon must prove its endpoint through `meta` first. Without CDP_PORT the endpoint is not
 // known before discovery, and an old daemon has no `cdpEndpoint`: both return null (fallback).
+// Each probe is bounded so a wedged daemon on any endpoint costs at most this, then the fallback.
+const DAEMON_PAGE_LIST_PROBE_TIMEOUT_MS = 1500;
+
 async function listPagesFromMatchingDaemon({
   env = process.env,
   listSockets = listDaemonSockets,
-  connect = connectToSocket,
-  request = sendCommand,
+  timeoutMs = DAEMON_PAGE_LIST_PROBE_TIMEOUT_MS,
+  connect = socketPath => connectToSocket(socketPath, { timeoutMs }),
+  request = (conn, req) => requestDaemon(conn, req, { runtimeDir: RUNTIME_DIR, mayHaveSideEffects: false, timeoutMs }),
 } = {}) {
   const wanted = requestedCdpEndpoint(env);
   if (!wanted) return null;
@@ -22697,15 +22702,20 @@ async function discoverLivePagesForTargetResolution({
   env = process.env,
   pinCdpPort = false,
   listSockets = listDaemonSockets,
-  connect = connectToSocket,
-  request = sendCommand,
+  connect,
+  request,
   resolveWsUrl = getWsUrl,
   connectCdp,
   listPages = getPages,
   rememberEndpoint = rememberLiveCdpEndpointFromSession,
 } = {}) {
   if (!pinCdpPort) {
-    const pages = await listPagesFromMatchingDaemon({ env, listSockets, connect, request });
+    const pages = await listPagesFromMatchingDaemon({
+      env,
+      listSockets,
+      ...(connect ? { connect } : {}),
+      ...(request ? { request } : {}),
+    });
     if (pages) return pages;
   }
   const openCdp = connectCdp || (async (wsUrl) => {

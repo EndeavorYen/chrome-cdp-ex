@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -112,6 +113,34 @@ describe('#419 daemon page list for target discovery', () => {
     expect(T.requestedCdpEndpoint({ CDP_PORT: '9345', CDP_HOST: 'LOCALHOST' })).toBe('localhost:9345');
     expect(T.requestedCdpEndpoint({})).toBeNull();
     expect(T.cdpEndpointFromWsUrl('not a url')).toBeNull();
+  });
+
+  it('bounds each probe with the real transport timeout, so a wedged daemon costs little before the fallback', async () => {
+    const hung = () => {
+      const conn = new EventEmitter();
+      conn.write = vi.fn();
+      conn.end = vi.fn();
+      conn.destroy = vi.fn();
+      return conn;
+    };
+    const started = Date.now();
+    const pages = await T.listPagesFromMatchingDaemon({
+      env: { CDP_PORT: '9345' },
+      listSockets: () => [{ targetId: 'a', socketPath: 'a' }, { targetId: 'b', socketPath: 'b' }],
+      timeoutMs: 100,
+      connect: async () => hung(),
+    });
+    expect(pages).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('a meta probe does not reset the daemon idle timer', () => {
+    const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
+    const start = source.indexOf('async function handleCommand({ cmd, args }');
+    expect(start).toBeGreaterThan(0);
+    const head = source.slice(start, start + 400);
+    expect(head).toMatch(/if \(cmd !== 'meta'\) resetIdle\(\);/);
+    expect(head).not.toMatch(/^\s*resetIdle\(\);/m);
   });
 
   it('every client list_raw request in cdp.mjs carries args', () => {
