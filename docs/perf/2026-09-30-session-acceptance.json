@@ -1,0 +1,36 @@
+{
+  "twelve_steps_via_session_ms": {
+    "n": 8,
+    "min": 62,
+    "median": 66,
+    "p90": 71,
+    "max": 71,
+    "mean": 66
+  },
+  "twelve_steps_via_12_cli_calls_ms": {
+    "n": 3,
+    "min": 2837,
+    "median": 2848,
+    "p90": 2987,
+    "max": 2987,
+    "mean": 2891
+  },
+  "pass_twelve_steps_under_300ms": true,
+  "waitResponse": {
+    "schema": "chrome-cdp-ex.session.v1",
+    "ok": true,
+    "ms": 366,
+    "target": "7A5547074564419592DB92F03763736C",
+    "result": {
+      "after_ms": 323
+    }
+  },
+  "pass_wait_within_100ms_of_response": true,
+  "pointer_opened_pointerdown_menu": {
+    "schema": "chrome-cdp-ex.session.v1",
+    "ok": true,
+    "ms": 50,
+    "target": "7A5547074564419592DB92F03763736C",
+    "result": true
+  }
+}
