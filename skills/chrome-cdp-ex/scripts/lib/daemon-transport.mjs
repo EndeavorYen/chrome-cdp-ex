@@ -138,6 +138,21 @@ export function ipcTimeoutForRequest(request) {
   return waitMs == null ? IPC_TIMEOUT : Math.max(IPC_TIMEOUT, waitMs + 5000);
 }
 
+// Close the client side of a one-shot daemon connection after its reply frame.
+// Why destroy() and not end(): the protocol is one request, one newline-terminated
+// response frame per connection. This runs only after that whole frame (up to and
+// including its terminating newline) has been received and parsed, and the daemon has already
+// consumed the request (it replied). Nothing the client needs can still be in
+// flight, so no response is ever truncated; any later bytes (a duplicate frame)
+// were ignored before too. end() waits for a graceful half-close, which on a
+// Windows named pipe held the process ~51 ms after every reply
+// (docs/perf/2026-09-30-cli-preamble.md, local result). The daemon treats the
+// client's reset exactly like a FIN: createDaemonRequestConnection routes 'end',
+// 'close' and 'error' to the same disconnect path, after the reply write flushed.
+function closeAfterFrame(conn) {
+  try { conn.destroy(); } catch {}
+}
+
 export function requestDaemon(conn, request, options = {}) {
   const {
     runtimeDir = '',
@@ -194,7 +209,7 @@ export function requestDaemon(conn, request, options = {}) {
         response = JSON.parse(UTF8_DECODER.decode(frame));
       } catch (error) {
         settle(() => {
-          try { conn.end(); } catch {}
+          closeAfterFrame(conn);
           reject(responseFailure(error, { mayHaveSideEffects, kind: 'invalid-response' }));
         });
         return;
@@ -204,7 +219,7 @@ export function requestDaemon(conn, request, options = {}) {
         && Object.hasOwn(response, 'id');
       if (hasResponseId && response.id !== requestId) {
         settle(() => {
-          try { conn.end(); } catch {}
+          closeAfterFrame(conn);
           const error = new Error(`Daemon response id ${response.id} did not match request id ${requestId}`);
           reject(responseFailure(error, { mayHaveSideEffects, kind: 'invalid-response' }));
         });
@@ -214,14 +229,14 @@ export function requestDaemon(conn, request, options = {}) {
         response = validateDaemonResponse(response, request);
       } catch (error) {
         settle(() => {
-          try { conn.end(); } catch {}
+          closeAfterFrame(conn);
           reject(responseFailure(error, { mayHaveSideEffects, kind: 'invalid-response' }));
         });
         return;
       }
       settle(() => {
         resolveResponse(response);
-        try { conn.end(); } catch {}
+        closeAfterFrame(conn);
       });
     };
     const onError = error => settle(() => reject(responseFailure(error, {

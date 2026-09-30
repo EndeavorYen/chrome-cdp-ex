@@ -1,4 +1,8 @@
 import { EventEmitter } from 'events';
+import net from 'net';
+import { mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -73,7 +77,8 @@ describe('daemon NDJSON request transport', () => {
       .resolves.toEqual({ ok: true, id: 1, result: 'first' });
     expect(request).toEqual({ cmd: 'report', args: ['--format', 'json'], id: 1 });
     expect(conn.write).toHaveBeenCalledWith('{"cmd":"report","args":["--format","json"],"id":1}\n');
-    expect(conn.end).toHaveBeenCalledOnce();
+    expect(conn.destroy).toHaveBeenCalledOnce();
+    expect(conn.end).not.toHaveBeenCalled();
   });
 
   it('accumulates highly fragmented frames with one final buffer copy', async () => {
@@ -105,7 +110,8 @@ describe('daemon NDJSON request transport', () => {
     const mismatch = connection({ onWrite: socket => queueMicrotask(() => socket.emit('data', '{"ok":true,"id":7,"result":"wrong"}\n')) });
     await expect(requestDaemon(mismatch, { cmd: 'summary', args: [] }))
       .rejects.toThrow('Daemon response id 7 did not match request id 1');
-    expect(mismatch.end).toHaveBeenCalledOnce();
+    expect(mismatch.destroy).toHaveBeenCalledOnce();
+    expect(mismatch.end).not.toHaveBeenCalled();
 
     const explicitNull = connection({ onWrite: socket => queueMicrotask(() => socket.emit('data', '{"ok":true,"id":null}\n')) });
     await expect(requestDaemon(explicitNull, { cmd: 'summary', args: [] }))
@@ -183,7 +189,8 @@ describe('daemon NDJSON request transport', () => {
   it('rejects invalid JSON and oversized responses without waiting for peer close', async () => {
     const invalid = connection({ onWrite: socket => queueMicrotask(() => socket.emit('data', '{bad json}\n')) });
     await expect(requestDaemon(invalid, { cmd: 'status', args: [] })).rejects.toBeInstanceOf(SyntaxError);
-    expect(invalid.end).toHaveBeenCalledOnce();
+    expect(invalid.destroy).toHaveBeenCalledOnce();
+    expect(invalid.end).not.toHaveBeenCalled();
 
     const oversized = connection({ onWrite: socket => queueMicrotask(() => socket.emit('data', 'x'.repeat(65))) });
     await expect(requestDaemon(oversized, { cmd: 'status', args: [] }, { maxResponseBytes: 64 }))
@@ -365,7 +372,8 @@ describe('daemon NDJSON request transport', () => {
     const stopped = connection({ onWrite: socket => queueMicrotask(() => socket.emit('data', '{"ok":true,"id":1,"stopAfter":true}\n')) });
     await expect(requestDaemon(stopped, { cmd: 'stop', args: [] }))
       .resolves.toEqual({ ok: true, id: 1, stopAfter: true });
-    expect(stopped.end).toHaveBeenCalledOnce();
+    expect(stopped.destroy).toHaveBeenCalledOnce();
+    expect(stopped.end).not.toHaveBeenCalled();
   });
 
   it('preserves command and wait timeout rules plus exact timeout cleanup', async () => {
@@ -515,6 +523,45 @@ describe('daemon NDJSON request transport', () => {
       }
     } finally {
       timerSpy.mockRestore();
+    }
+  });
+});
+
+describe('#419 close after the reply frame over a real pipe', () => {
+  // Non-regression guard for closeAfterFrame (it also passes with end()): no truncation, and the
+  // daemon's write callback wins over the client's reset, so it releases rather than rolls back.
+  it('delivers a multi-MB frame byte-equal and lets the daemon release, not roll back, the request', async () => {
+    const endpoint = process.platform === 'win32'
+      ? daemonEndpointForPlatform(`419-test-${process.pid}-${Date.now()}`, { platform: 'win32' })
+      : join(mkdtempSync(join(tmpdir(), 'cdp-419-')), 'd.sock');
+    const big = 'x'.repeat(3 * 1024 * 1024) + 'éend';
+    const onFlushed = vi.fn();
+    const cleanup = vi.fn();
+    let server;
+    const disconnected = new Promise(resolveDisconnect => {
+      server = net.createServer(conn => {
+        cdpTest.createDaemonRequestConnection(conn, {
+          handleRequest: async () => ({ ok: true, result: big }),
+          cleanup,
+          onFlushed,
+          onDisconnect: () => { server.close(); resolveDisconnect(); },
+        });
+      });
+      server.listen(endpoint);
+    });
+    try {
+      await new Promise(resolveTick => setTimeout(resolveTick, 20));
+      const conn = await connectToDaemon(endpoint, { timeoutMs: 2000 });
+      const closed = new Promise(resolveClose => conn.once('close', resolveClose));
+      const response = await requestDaemon(conn, { cmd: 'report', args: [] });
+      expect(response.result.length).toBe(big.length);
+      expect(response.result === big).toBe(true);
+      await closed;
+      await disconnected;
+      expect(onFlushed).toHaveBeenCalledOnce();
+      expect(cleanup).not.toHaveBeenCalled();
+    } finally {
+      server.close();
     }
   });
 });

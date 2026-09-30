@@ -21677,7 +21677,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   const cdp = new CDP();
   try {
-    await cdp.connect(await getWsUrl());
+    const wsUrl = await getWsUrl();
+    await cdp.connect(wsUrl);
+    // Lets a CLI call reuse this daemon's page list only for the same endpoint (#419).
+    daemonMetadata.cdpEndpoint = cdpEndpointFromWsUrl(wsUrl);
     try { await rememberLiveCdpEndpointFromSession(cdp); } catch {}
   } catch (e) {
     process.stderr.write(`Daemon: cannot connect to Chrome: ${e.message}\n`);
@@ -22763,7 +22766,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   // Handle a command
   async function handleCommand({ cmd, args }, execution = undefined) {
-  resetIdle();
+  if (daemonCommandResetsIdle(cmd)) resetIdle();
   if (daemonRequestStorage.getStore() === undefined) {
     return daemonRequestStorage.run(execution || null, () => handleCommand({ cmd, args }, execution));
   }
@@ -22948,34 +22951,95 @@ async function assertFreshDaemonConnection(conn, { targetPrefix, expectedTargetI
   return assessment;
 }
 
-// Find any running daemon socket to reuse for list
-function findAnyDaemonSocket() {
-  return listDaemonSockets()[0]?.socketPath || null;
+// host:port of a CDP endpoint, normalized by URL so both sides compare equal.
+function normalizeCdpEndpoint(host, port) {
+  try {
+    const url = new URL(`ws://${host}:${port}/`);
+    return url.port ? url.host : null;
+  } catch {
+    return null;
+  }
+}
+
+function cdpEndpointFromWsUrl(wsUrl) {
+  try {
+    const url = new URL(String(wsUrl));
+    return normalizeCdpEndpoint(url.hostname, url.port);
+  } catch {
+    return null;
+  }
+}
+
+function requestedCdpEndpoint(env = process.env) {
+  if (!env.CDP_PORT) return null;
+  return normalizeCdpEndpoint(env.CDP_HOST || DEFAULT_CDP_HOST, env.CDP_PORT);
+}
+
+// Page list from a running daemon, but only one attached to the endpoint this call targets.
+// Daemon sockets come from the shared pages cache and may belong to another browser, so a
+// daemon must prove its endpoint through `meta` first. Without CDP_PORT the endpoint is not
+// known before discovery, and an old daemon has no `cdpEndpoint`: both return null (fallback).
+// `meta` and `list_raw` are discovery probes, often sent to another tab's daemon on the same
+// endpoint (#419). They are not use of that tab, so they must not keep an idle daemon alive.
+function daemonCommandResetsIdle(cmd) {
+  return cmd !== 'meta' && cmd !== 'list_raw';
+}
+
+// Each probe is bounded so a wedged daemon on any endpoint costs at most this, then the fallback.
+const DAEMON_PAGE_LIST_PROBE_TIMEOUT_MS = 1500;
+
+async function listPagesFromMatchingDaemon({
+  env = process.env,
+  listSockets = listDaemonSockets,
+  timeoutMs = DAEMON_PAGE_LIST_PROBE_TIMEOUT_MS,
+  now = Date.now,
+  connect = socketPath => connectToSocket(socketPath, { timeoutMs }),
+  request = (conn, req) => requestDaemon(conn, req, { runtimeDir: RUNTIME_DIR, mayHaveSideEffects: false, timeoutMs }),
+} = {}) {
+  const wanted = requestedCdpEndpoint(env);
+  if (!wanted) return null;
+  // One overall budget for the whole probe loop, so many wedged daemons cannot stack up.
+  const deadline = now() + timeoutMs * 2;
+  for (const { socketPath } of listSockets()) {
+    if (now() >= deadline) return null;
+    let metadata = null;
+    try {
+      const metaResponse = await request(await connect(socketPath), { cmd: 'meta', args: [] });
+      metadata = metaResponse?.ok ? parseDaemonMetadataResult(metaResponse.result) : null;
+    } catch {}
+    if (!metadata || metadata.cdpEndpoint !== wanted) continue;
+    // First endpoint match decides: at most one list_raw per discovery, then the fallback.
+    try {
+      const response = await request(await connect(socketPath), { cmd: 'list_raw', args: [] });
+      if (!response?.ok) return null;
+      const pages = JSON.parse(response.result);
+      return Array.isArray(pages) ? pages : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 async function discoverLivePagesForTargetResolution({
   env = process.env,
   pinCdpPort = false,
-  findSocket = findAnyDaemonSocket,
-  connect = connectToSocket,
-  request = sendCommand,
+  listSockets = listDaemonSockets,
+  connect,
+  request,
   resolveWsUrl = getWsUrl,
   connectCdp,
   listPages = getPages,
   rememberEndpoint = rememberLiveCdpEndpointFromSession,
 } = {}) {
   if (!pinCdpPort) {
-    const existingSocket = findSocket();
-    if (existingSocket) {
-      try {
-        const conn = await connect(existingSocket);
-        const response = await request(conn, { cmd: 'list_raw' });
-        if (response.ok) {
-          const pages = JSON.parse(response.result);
-          if (Array.isArray(pages)) return pages;
-        }
-      } catch {}
-    }
+    const pages = await listPagesFromMatchingDaemon({
+      env,
+      listSockets,
+      ...(connect ? { connect } : {}),
+      ...(request ? { request } : {}),
+    });
+    if (pages) return pages;
   }
   const openCdp = connectCdp || (async (wsUrl) => {
     const cdp = new CDP();
@@ -25783,15 +25847,7 @@ async function main(options = {}) {
       console.error(formatCliError(`list: unknown argument ${fopts.args[0]}`, { cmd, format: fopts.format }));
       return finish(1);
     }
-    let pages;
-    const existingSock = findAnyDaemonSocket();
-    if (existingSock) {
-      try {
-        const conn = await connectToSocket(existingSock);
-        const resp = await sendCommand(conn, { cmd: 'list_raw' });
-        if (resp.ok) pages = JSON.parse(resp.result);
-      } catch {}
-    }
+    let pages = await listPagesFromMatchingDaemon();
     if (!pages) {
       // No daemon running — connect directly (will trigger one Allow)
       const cdp = new CDP();
@@ -25940,15 +25996,7 @@ async function main(options = {}) {
   if (cmd === 'target') {
     try {
       const opts = parseTargetSelectArgs(args);
-      let pages;
-      const existingSock = findAnyDaemonSocket();
-      if (existingSock) {
-        try {
-          const conn = await connectToSocket(existingSock);
-          const resp = await sendCommand(conn, { cmd: 'list_raw' });
-          if (resp.ok) pages = JSON.parse(resp.result);
-        } catch {}
-      }
+      let pages = await listPagesFromMatchingDaemon();
       if (!pages) {
         const cdp = new CDP();
         await cdp.connect(await getWsUrl());
@@ -25974,15 +26022,7 @@ async function main(options = {}) {
 
     // Reuse an existing tab with the same/similar URL when requested.
     if (opts.reuseUrl && url !== 'about:blank') {
-      let pages;
-      const existingSock = findAnyDaemonSocket();
-      if (existingSock) {
-        try {
-          const conn = await connectToSocket(existingSock);
-          const resp = await sendCommand(conn, { cmd: 'list_raw' });
-          if (resp.ok) pages = JSON.parse(resp.result);
-        } catch {}
-      }
+      let pages = await listPagesFromMatchingDaemon();
       if (!pages) {
         const cdp = new CDP();
         await cdp.connect(await getWsUrl());
@@ -26540,6 +26580,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   removeTargetAlias, forgetTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
   aliasEnv, discoverOptionsForTargetAlias, selectLivePagesForAliasResolution, bindAliasTargetFromPages,
   bindAndSaveTargetAlias, livePagesForTargetCommand, discoverLivePagesForTargetResolution,
+  listPagesFromMatchingDaemon, daemonCommandResetsIdle, cdpEndpointFromWsUrl, requestedCdpEndpoint, validateDaemonProtocolRequest,
   formatDaemonStartFailure,
   aliasLookupKey, looksLikeAliasToken, looksLikeHexTargetPrefix, unknownAliasError, formatCurrentAlias,
   // AX tree helpers

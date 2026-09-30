@@ -36,6 +36,15 @@
 
 ### Bug fixes
 
+* A target command with `CDP_PORT` set now takes its page list from a running daemon on that same
+  endpoint instead of opening a new browser connection three times: `list_raw` requests now carry `args`,
+  which the daemon had rejected. A daemon now reports its `cdpEndpoint` in `meta`; a daemon on another
+  endpoint, a daemon from an older version, or an unset `CDP_PORT` keeps the fresh-connection path. Each
+  probe step (connect, request) is bounded to 1.5 s and no new probe starts after 3 s, only the first matching daemon is asked for its list, and `meta` / `list_raw`
+  requests no longer reset a daemon's idle timer. The CLI
+  also closes the daemon pipe with `destroy()` after the full reply frame, which removes a ~51 ms wait on
+  Windows. Local result on one Windows machine: `cdp eval` median 252-255 ms before, 114-126 ms after
+  (`docs/perf/2026-10-01-issue-419.md`) ([#419](https://github.com/EndeavorYen/chrome-cdp-ex/issues/419)).
 * `stop` no longer reports a daemon whose browser is gone as a failure, and no longer leaves one behind.
   Each daemon now writes a `cdp-<target>.daemon.json` registry record (pid) next to its pipe or socket and
   removes it on exit. When the pipe or socket is unreachable, `stop` kills the recorded pid only if its
