@@ -38,12 +38,14 @@ export const REQUIRED_RELEASE_ENTRIES = [
   'package/skills/chrome-cdp-ex/scripts/cdp.mjs',
   'package/skills/chrome-cdp-ex/scripts/download.mjs',
   'package/skills/chrome-cdp-ex/scripts/mcp-server.mjs',
+  'package/skills/chrome-cdp-ex/scripts/session.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/action-evidence.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/action-receipt-surfaces.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/browser-resources.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/browser-supervisor.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/cdp-domains.mjs',
+  'package/skills/chrome-cdp-ex/scripts/lib/cdp-session.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/command-application.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/command-dispatch.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/command-surface.mjs',
@@ -60,6 +62,7 @@ export const REQUIRED_RELEASE_ENTRIES = [
   'package/skills/chrome-cdp-ex/scripts/lib/screenshot-health.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/session-report.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/target-binding.mjs',
+  'package/skills/chrome-cdp-ex/scripts/lib/ws-transport.mjs',
 ];
 
 export function validateReleaseEntries(entries) {
