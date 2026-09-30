@@ -91,3 +91,57 @@ describe('CdpSession.upload and shot and download', () => {
     expect(readFileSync(out, 'utf8')).toBe('PNGDATA');
   });
 });
+
+function eventTransport() {
+  const handlers = new Map();
+  const calls = [];
+  return {
+    calls,
+    send: async (method) => { calls.push(method); return {}; },
+    on: (event, handler) => {
+      if (!handlers.has(event)) handlers.set(event, new Set());
+      handlers.get(event).add(handler);
+      return () => handlers.get(event).delete(handler);
+    },
+    emit: (event, params, sessionId) => { for (const h of [...(handlers.get(event) || [])]) h(params, sessionId); },
+    listenerCount: (event) => (handlers.get(event) || new Set()).size,
+  };
+}
+
+describe('CdpSession.waitResponse', () => {
+  it('enables the Network domain once and resolves on the first matching response of this session', async () => {
+    const t = eventTransport();
+    const page = new CdpSession(t, 'S1');
+    const w = page.waitResponse(/generated_video\.mp4/, { timeoutMs: 500 });
+    t.emit('Network.responseReceived', { requestId: '1', response: { url: 'https://x/other.js', status: 200, mimeType: 'text/javascript' } }, 'S1');
+    t.emit('Network.responseReceived', { requestId: '2', response: { url: 'https://x/generated_video.mp4?c=1', status: 200, mimeType: 'video/mp4' } }, 'OTHER');
+    t.emit('Network.responseReceived', { requestId: '3', response: { url: 'https://x/a/generated_video.mp4', status: 200, mimeType: 'video/mp4' } }, 'S1');
+    expect(await w.promise).toEqual({ url: 'https://x/a/generated_video.mp4', status: 200, mimeType: 'video/mp4', requestId: '3' });
+    expect(t.calls.filter((m) => m === 'Network.enable')).toHaveLength(1);
+    expect(t.listenerCount('Network.responseReceived')).toBe(0);
+  });
+
+  it('does not miss a response that arrives before the caller awaits (subscribe-first)', async () => {
+    const t = eventTransport();
+    const page = new CdpSession(t, 'S1');
+    const w = page.waitResponse('/late.bin', { timeoutMs: 500 });
+    t.emit('Network.responseReceived', { requestId: '9', response: { url: 'https://x/late.bin', status: 200, mimeType: 'application/octet-stream' } }, 'S1');
+    await new Promise((r) => setTimeout(r, 20));
+    expect((await w.promise).requestId).toBe('9');
+  });
+
+  it('times out with the pattern in the message and unsubscribes', async () => {
+    const t = eventTransport();
+    const w = new CdpSession(t, 'S1').waitResponse(/never/, { timeoutMs: 30 });
+    await expect(w.promise).rejects.toThrow(/timeout after 30 ms waiting for a response matching .*never/);
+    expect(t.listenerCount('Network.responseReceived')).toBe(0);
+  });
+
+  it('cancel() unsubscribes and rejects', async () => {
+    const t = eventTransport();
+    const w = new CdpSession(t, 'S1').waitResponse(/x/, { timeoutMs: 500 });
+    w.cancel();
+    await expect(w.promise).rejects.toThrow(/cancelled/);
+    expect(t.listenerCount('Network.responseReceived')).toBe(0);
+  });
+});

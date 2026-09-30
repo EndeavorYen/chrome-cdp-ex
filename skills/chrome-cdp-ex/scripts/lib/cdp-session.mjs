@@ -26,6 +26,7 @@ export class CdpSession {
   constructor(transport, sessionId) {
     this.transport = transport;
     this.sessionId = sessionId;
+    this.networkEnabled = false;
   }
 
   send(method, params = {}) {
@@ -65,6 +66,35 @@ export class CdpSession {
 
   download(url, outFile, options = {}) {
     return downloadViaPage({ evaluate: (expression) => this.ev(expression), url, outFile, ...options });
+  }
+
+  waitResponse(urlPattern, { timeoutMs = 60000 } = {}) {
+    const matches = urlPattern instanceof RegExp ? (u) => urlPattern.test(u) : (u) => u.includes(String(urlPattern));
+    let off = () => {};
+    let timer = null;
+    let rejectOuter;
+    const promise = new Promise((resolve, reject) => {
+      rejectOuter = reject;
+      off = this.transport.on('Network.responseReceived', (params, sessionId) => {
+        if (sessionId !== this.sessionId || !matches(params.response.url)) return;
+        clearTimeout(timer);
+        off();
+        resolve({ url: params.response.url, status: params.response.status, mimeType: params.response.mimeType, requestId: params.requestId });
+      });
+      timer = setTimeout(() => {
+        off();
+        reject(new Error(`timeout after ${timeoutMs} ms waiting for a response matching ${urlPattern}`));
+      }, timeoutMs);
+    });
+    // Enable after subscribing so no event between the two can be lost.
+    if (!this.networkEnabled) {
+      this.networkEnabled = true;
+      this.send('Network.enable').catch((error) => { clearTimeout(timer); off(); rejectOuter(error); });
+    }
+    return {
+      promise,
+      cancel: () => { clearTimeout(timer); off(); rejectOuter(new Error('waitResponse cancelled')); },
+    };
   }
 
   async shot(file) {
