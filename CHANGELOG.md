@@ -4,6 +4,14 @@
 
 ### Features
 
+* `skills/chrome-cdp-ex/scripts/session.mjs <target> --script job.mjs` runs a script over one CDP
+  connection with `ev`, `waitFor`, `pointer`, `waitResponse`, `upload`, `download` and `shot`, and prints one
+  `chrome-cdp-ex.session.v1` receipt. `waitResponse` is event-driven (no polling). On one Windows machine
+  against a self-started headless Chrome, 12 page evaluations took about 103-106 ms wall-clock in one
+  session process against about 2.9-3.3 s as 12 separate `cdp eval` calls
+  (`docs/perf/2026-09-30-session-acceptance.md`). The read-only `scripts/benchmark-cli-overhead.mjs` and
+  `scripts/profile-cli-call.mjs` measure the per-call overhead. It is a helper script, not a catalog
+  command, so the frozen 81-command surface is unchanged.
 * `click <target> <selector|@ref> --pointer` dispatches `pointerdown`, `mousedown`, `pointerup`, `mouseup`,
   `click` in the page at the element centre, so menus that open on `pointerdown` (Radix, Headless UI)
   open even on a hidden tab, where `Input.*` events are dropped and `click --js` (`HTMLElement.click()`)
