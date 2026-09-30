@@ -216,7 +216,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 
 ## Multi-step jobs: batch, flow or session
 
-- 2-10 read/act steps, one page: `cdp batch <target> 'step | step | ...'`. One `cdp batch` of 12 evals had a median of 383 ms in `docs/perf/2026-09-30-baseline.json`, while 12 separate `cdp eval` calls took about 2.9-3.3 s in `docs/perf/2026-09-30-session-acceptance*.json`. These are different runs on one machine, not a paired test, so no speed-up factor is claimed.
+- 2-10 read/act steps, one page (a rule of thumb, not a measured cut-off): `cdp batch <target> 'step | step | ...'`. One `cdp batch` of 12 evals had a median of 383 ms in `docs/perf/2026-09-30-baseline.json`, while 12 separate `cdp eval` calls took about 2.9-3.3 s in `docs/perf/2026-09-30-session-acceptance*.json`. These are different runs, not a paired test, and the batch figure came from a busier machine, so no speed-up factor is claimed.
 - Steps that must halt on failure: `cdp flow`.
 - Many steps, waits on network events, or menus that need pointer events: `session.mjs` with a script (see `commands.md`, "Session script").
 

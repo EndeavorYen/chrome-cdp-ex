@@ -19,7 +19,7 @@ export function summarize(samplesMs) {
 
 function timeMs(args) {
   const t0 = process.hrtime.bigint();
-  const r = spawnSync(process.execPath, args, { encoding: 'utf8', env: process.env });
+  const r = spawnSync(process.execPath, args, { encoding: 'utf8', env: process.env, timeout: 120000 }); // a hung call fails, not hangs
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   if (r.status !== 0) throw new Error(`command failed: ${args.join(' ')}\n${r.stdout}${r.stderr}`);
   return Math.round(ms);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { attachToTarget, connect, createTransport, resolveWsUrl } from '../skills/chrome-cdp-ex/scripts/lib/ws-transport.mjs';
 
@@ -59,6 +59,28 @@ describe('createTransport', () => {
     const ws = new FakeWs();
     const t = createTransport(ws);
     await expect(t.send('Runtime.evaluate', {}, undefined, 20)).rejects.toThrow(/timed out after 20 ms/);
+  });
+
+  it('ignores a frame that is not JSON and keeps routing later replies', async () => {
+    const ws = new FakeWs();
+    const t = createTransport(ws);
+    const p = t.send('Runtime.evaluate', {});
+    expect(() => ws.emit('message', { data: 'not json' })).not.toThrow();
+    ws.reply(ws.sent[0].id, { ok: 1 });
+    expect(await p).toEqual({ ok: 1 });
+  });
+
+  it('drops the pending entry and its timer when ws.send throws', async () => {
+    vi.useFakeTimers();
+    try {
+      const ws = new FakeWs();
+      ws.send = () => { throw new Error('socket not open'); };
+      const t = createTransport(ws);
+      await expect(t.send('Runtime.evaluate', {})).rejects.toThrow(/socket not open/);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

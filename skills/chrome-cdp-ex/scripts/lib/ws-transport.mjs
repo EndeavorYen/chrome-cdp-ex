@@ -19,7 +19,8 @@ export function createTransport(ws) {
   }
 
   ws.addEventListener('message', (event) => {
-    const msg = JSON.parse(event.data);
+    let msg;
+    try { msg = JSON.parse(event.data); } catch { return; } // a malformed frame must not crash the listener
     if (msg.id !== undefined && pending.has(msg.id)) {
       const { resolve, reject, timer } = pending.get(msg.id);
       pending.delete(msg.id);
@@ -47,7 +48,13 @@ export function createTransport(ws) {
         pending.set(id, { resolve, reject, timer });
         const message = { id, method, params };
         if (sessionId) message.sessionId = sessionId;
-        ws.send(JSON.stringify(message));
+        try {
+          ws.send(JSON.stringify(message));
+        } catch (error) {
+          clearTimeout(timer);
+          pending.delete(id);
+          reject(error);
+        }
       });
     },
     on(event, handler) {

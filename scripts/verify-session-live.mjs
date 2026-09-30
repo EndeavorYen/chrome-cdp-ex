@@ -35,7 +35,7 @@ const dir = mkdtempSync(join(tmpdir(), 'session-live-'));
 const jobPath = join(dir, 'twelve.mjs');
 writeFileSync(jobPath, `export default async ({ page }) => { for (let i = 0; i < 12; i++) await page.ev('document.title'); return 12; };`);
 const waitPath = join(dir, 'wait.mjs');
-writeFileSync(waitPath, `export default async ({ page, args }) => {
+writeFileSync(waitPath, `export default async ({ page }) => {
   const w = page.waitResponse('/late.bin', { timeoutMs: 5000 });
   const t0 = Date.now();
   await page.ev('window.later()');
