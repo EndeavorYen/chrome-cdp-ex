@@ -477,6 +477,18 @@ Executes multiple commands in a single IPC call. Default output is a JSON array 
 - **`--plain`**: human-readable per-step output. Each step gets a `[i/N] cmd args` header followed by indented result text. Use when an agent doesn't need to parse the result programmatically.
 - **`--compact`**: one line per step (`[i] cmd: <first line of result>`). Useful for quick visual scans.
 
+### Session script (`session.mjs`, one connection for a whole job)
+
+```bash
+node skills/chrome-cdp-ex/scripts/session.mjs <target> --script job.mjs --port N [--host H] [--args '{"k":1}']
+```
+
+Needs Node >= 22 (it uses the global `WebSocket`). The port is required: pass `--port N` or set `CDP_PORT`; with neither it exits 2 and connects nowhere (there is no default port). `--host` (or `CDP_HOST`) defaults to `127.0.0.1`; the socket URL is always built from this host and port. A `DevToolsActivePort` file (or `CDP_PORT_FILE`) is used only when its port equals the requested one.
+
+`job.mjs` exports `default async ({ page, args }) => result`. `page` has `ev(expr)`, `waitFor(expr, {timeoutMs, intervalMs})` (each evaluate is bounded by the time left), `pointer(selector)` (full pointer-event sequence in the page, opens menus that need `pointerdown`; works on hidden tabs, local result on headless Chrome), `waitResponse(urlPattern, {timeoutMs})` (event-driven; call it before the action, `await w.promise` after), `upload(selector, files)` (`files` must be absolute paths), `download(url, outFile, opts)` and `shot(file)`. Prints one `chrome-cdp-ex.session.v1` receipt and exits 1 on failure, including an unhandled rejection or uncaught exception in the job. Not a catalog command.
+
+Measured on one Windows machine against a self-started headless Chrome (local result, not a guarantee): 12 page evaluations in one `node session.mjs` process took about 103-106 ms wall-clock (median of 8, two runs), against about 2.9-3.3 s wall-clock for the same 12 evaluations as 12 separate `cdp eval` processes (median of 3). Data: `docs/perf/2026-09-30-session-acceptance.md` and the two `*-session-acceptance*.json` files beside it.
+
 ### Flow (sequential pipeline with halt-on-error)
 
 ```bash

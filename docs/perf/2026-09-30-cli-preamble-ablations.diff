@@ -1,0 +1,88 @@
+# Ablation edits used for docs/perf/2026-09-30-cli-preamble.md (local result).
+# NOT applied to the tree. Made against skills/chrome-cdp-ex at eda9f31 (unchanged since).
+# Each variant was applied on its own scratch copy of skills/chrome-cdp-ex, never on this repo. See the doc's Setup.
+# Variants: v0 = none, vA = A, vB = B, vC = C, vAB = A+B, vAll = A+B+C, vD = D. Section headers are not part of any patch.
+
+### A: list_raw requests carry args: [] (4 sites)
+--- a/skills/chrome-cdp-ex/scripts/cdp.mjs
++++ b/skills/chrome-cdp-ex/scripts/cdp.mjs
+@@ -22661,7 +22661,7 @@
+     if (existingSocket) {
+       try {
+         const conn = await connect(existingSocket);
+-        const response = await request(conn, { cmd: 'list_raw' });
++        const response = await request(conn, { cmd: 'list_raw', args: [] });
+         if (response.ok) {
+           const pages = JSON.parse(response.result);
+           if (Array.isArray(pages)) return pages;
+@@ -25277,7 +25277,7 @@
+     if (existingSock) {
+       try {
+         const conn = await connectToSocket(existingSock);
+-        const resp = await sendCommand(conn, { cmd: 'list_raw' });
++        const resp = await sendCommand(conn, { cmd: 'list_raw', args: [] });
+         if (resp.ok) pages = JSON.parse(resp.result);
+       } catch {}
+     }
+@@ -25434,7 +25434,7 @@
+       if (existingSock) {
+         try {
+           const conn = await connectToSocket(existingSock);
+-          const resp = await sendCommand(conn, { cmd: 'list_raw' });
++          const resp = await sendCommand(conn, { cmd: 'list_raw', args: [] });
+           if (resp.ok) pages = JSON.parse(resp.result);
+         } catch {}
+       }
+@@ -25468,7 +25468,7 @@
+       if (existingSock) {
+         try {
+           const conn = await connectToSocket(existingSock);
+-          const resp = await sendCommand(conn, { cmd: 'list_raw' });
++          const resp = await sendCommand(conn, { cmd: 'list_raw', args: [] });
+           if (resp.ok) pages = JSON.parse(resp.result);
+         } catch {}
+       }
+
+### B: destroy the pipe after the reply instead of end()
+--- a/skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs
++++ b/skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs
+@@ -221,7 +221,7 @@
+       }
+       settle(() => {
+         resolveResponse(response);
+-        try { conn.end(); } catch {}
++        try { conn.destroy(); } catch {}
+       });
+     };
+     const onError = error => settle(() => reject(responseFailure(error, {
+
+### C: skip the git rev-parse spawn (probe: cost set to zero)
+--- a/skills/chrome-cdp-ex/scripts/cdp.mjs
++++ b/skills/chrome-cdp-ex/scripts/cdp.mjs
+@@ -2502,6 +2502,7 @@
+ }
+ 
+ function currentGitCommit(cwd) {
++  if (true) return null;
+   try {
+     const res = spawnSync('git', ['-C', cwd || process.cwd(), 'rev-parse', '--short=12', 'HEAD'], {
+       encoding: 'utf8',
+
+### D: memoize plain discovery calls per process (3 -> 1)
+--- a/skills/chrome-cdp-ex/scripts/cdp.mjs
++++ b/skills/chrome-cdp-ex/scripts/cdp.mjs
+@@ -22645,7 +22645,13 @@
+   return listDaemonSockets()[0]?.socketPath || null;
+ }
+ 
+-async function discoverLivePagesForTargetResolution({
++let __discoverMemo = null;
++async function discoverLivePagesForTargetResolution(o) {
++  const plain = o === undefined || (o && o.pinCdpPort === false && o.env === process.env && Object.keys(o).length === 2);
++  if (!plain) return __discoverLive(o);
++  return (__discoverMemo ??= __discoverLive(o));
++}
++async function __discoverLive({
+   env = process.env,
+   pinCdpPort = false,
+   findSocket = findAnyDaemonSocket,

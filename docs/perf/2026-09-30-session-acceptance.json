@@ -1,0 +1,46 @@
+{
+  "twelve_steps_via_session_receipt_ms_in_process": {
+    "n": 8,
+    "min": 62,
+    "median": 63,
+    "p90": 283,
+    "max": 283,
+    "mean": 90
+  },
+  "twelve_steps_via_session_wall_clock_ms_per_process": {
+    "n": 8,
+    "min": 101,
+    "median": 103,
+    "p90": 329,
+    "max": 329,
+    "mean": 131
+  },
+  "twelve_steps_via_12_cli_calls_wall_clock_ms": {
+    "n": 3,
+    "min": 2906,
+    "median": 3340,
+    "p90": 4012,
+    "max": 4012,
+    "mean": 3419
+  },
+  "ratio_cli12_wall_over_session_receipt": 53,
+  "ratio_cli12_wall_over_session_wall": 32.4,
+  "pass_twelve_steps_under_300ms": true,
+  "waitResponse": {
+    "schema": "chrome-cdp-ex.session.v1",
+    "ok": true,
+    "ms": 354,
+    "target": "A8E28B850F9D3F3C31AA602A1F360551",
+    "result": {
+      "after_ms": 312
+    }
+  },
+  "pass_wait_within_100ms_of_response": true,
+  "pointer_opened_pointerdown_menu": {
+    "schema": "chrome-cdp-ex.session.v1",
+    "ok": true,
+    "ms": 46,
+    "target": "A8E28B850F9D3F3C31AA602A1F360551",
+    "result": true
+  }
+}

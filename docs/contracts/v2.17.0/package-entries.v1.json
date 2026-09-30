@@ -73,6 +73,7 @@
     "package/skills/chrome-cdp-ex/scripts/lib/browser-supervisor.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/cards-model.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/cdp-domains.mjs",
+    "package/skills/chrome-cdp-ex/scripts/lib/cdp-session.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/command-application.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/command-dispatch.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/command-surface.mjs",
@@ -94,7 +95,9 @@
     "package/skills/chrome-cdp-ex/scripts/lib/table-extraction.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/table-sampler.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/target-binding.mjs",
-    "package/skills/chrome-cdp-ex/scripts/mcp-server.mjs"
+    "package/skills/chrome-cdp-ex/scripts/lib/ws-transport.mjs",
+    "package/skills/chrome-cdp-ex/scripts/mcp-server.mjs",
+    "package/skills/chrome-cdp-ex/scripts/session.mjs"
   ],
   "productVersion": "2.17.0",
   "schema": "chrome-cdp-ex.package-entries.v1"
