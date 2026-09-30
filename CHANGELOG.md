@@ -4,6 +4,14 @@
 
 ### Features
 
+* Background mode: `CDP_BACKGROUND=1`, or `--background` on `open` and `spawn-debug-browser`, drives the
+  agent browser without stealing focus. Tab daemons and the `open` navigate fallback no longer send
+  `Target.activateTarget`, `open` creates the tab in a new unfocused window (`newWindow: true, background:
+  true`; a background tab in an existing window is `hidden` and its screenshots stall), and `spawn-debug-browser
+  --background` adds `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding
+  --disable-background-timer-throttling` and minimizes the launched window (unless headless). Opt-in; with it
+  off the CDP calls are unchanged. Flags only, so the frozen 81-command surface is unchanged
+  ([#415](https://github.com/EndeavorYen/chrome-cdp-ex/issues/415)).
 * `skills/chrome-cdp-ex/scripts/session.mjs <target> --script job.mjs` runs a script over one CDP
   connection with `ev`, `waitFor`, `pointer`, `waitResponse`, `upload`, `download` and `shot`, and prints one
   `chrome-cdp-ex.session.v1` receipt. It needs Node >= 22 and an explicit `--port` (or `CDP_PORT`); there is
@@ -37,7 +45,31 @@
   also closes the daemon pipe with `destroy()` after the full reply frame, which removes a ~51 ms wait on
   Windows. Local result on one Windows machine: `cdp eval` median 252-255 ms before, 114-126 ms after
   (`docs/perf/2026-10-01-issue-419.md`) ([#419](https://github.com/EndeavorYen/chrome-cdp-ex/issues/419)).
-
+* `stop` no longer reports a daemon whose browser is gone as a failure, and no longer leaves one behind.
+  Each daemon now writes a `cdp-<target>.daemon.json` registry record (pid) next to its pipe or socket and
+  removes it on exit. When the pipe or socket is unreachable, `stop` kills the recorded pid only if its
+  command line is still that target's `_daemon` process, then removes the stale socket and record, and
+  prints one line per daemon: `stopped`, `already gone`, or `failed: <reason>`. On Windows, cached pages
+  that never had a daemon are no longer counted as failed or remaining sessions, and one daemon answering
+  `ok:false` no longer aborts `stop` for the others (it is now a per-daemon `failed` line, and `stop` still
+  exits 0 as it does for other failed cleanups; the internal stale-daemon restart still throws on it). The
+  `chrome-cdp-ex.stop.v1` receipt gains `goneTargets` and `results`; existing fields are unchanged, but
+  `noop` is now false when a stale entry was removed. A daemon that is alive but not answering `stop` (wedged, or busy with a long command) is killed after a
+  10 s stop timeout. A live pid that cannot be verified as the daemon is never killed. `stop` without a
+  target still covers every daemon in the shared runtime directory, whatever its port
+  ([#417](https://github.com/EndeavorYen/chrome-cdp-ex/issues/417)).
+* The `relaunch-same-profile` recovery no longer names a stale temp profile. `cdp-last-endpoint.json`
+  now keeps a short per-port history of the profiles seen on each port, so a later temp spawn on the
+  same port cannot erase the persistent `--profile-dir`. Recovery picks, for the requested port only:
+  a profile `spawn-debug-browser` recorded, then any other persistent profile, then temp profiles last;
+  when more than one is plausible it lists the others; and when `spawn-debug-browser` created the
+  port it suggests `cdp spawn-debug-browser <browser> --port N --profile-dir <dir>` instead of a raw
+  browser line. A remembered profile for a different port is no longer offered for this one
+  ([#416](https://github.com/EndeavorYen/chrome-cdp-ex/issues/416)).
+* `download.mjs` (and `session.mjs` `download`) now creates the out-file's parent folder (`mkdir -p`)
+  before any page or network work, and fails at once with `cannot create folder <dir>` when it cannot, so a
+  new folder such as `clips/final/s1.mp4` no longer fails only after a paid fetch
+  ([#418](https://github.com/EndeavorYen/chrome-cdp-ex/issues/418)).
 * A click that reaches the page as zero events now says why when the tab is hidden (its window
   covered or minimised: Chrome drops `Input.*` events there): the error and the failure receipt carry
   `visibility: "hidden"` and point to `jsclick`. Failure receipts also carry `dispatched`

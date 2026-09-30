@@ -677,7 +677,7 @@ scripts/cdp.mjs stop    [target] [--format json] # stop daemon(s) with confirmat
 
 Add `--allow-stale-daemon` to a target command only when preserving an intentional old daemon session matters more than running the current checkout. Normal recovery is `scripts/cdp.mjs stop <target>`, then rerun the original command.
 
-`stop` reports which daemon target prefixes were stopped or failed and how many sessions remain. JSON mode returns `chrome-cdp-ex.stop.v1`; repeating cleanup is a successful explicit no-op with `noop: true`, while failed cleanup keeps the target in `remainingTargets` and lists it in `failedTargets`.
+`stop` reports which daemon target prefixes were stopped or failed and how many sessions remain. JSON mode returns `chrome-cdp-ex.stop.v1`; repeating cleanup is a successful explicit no-op with `noop: true`, while failed cleanup keeps the target in `remainingTargets` and lists it in `failedTargets`. A daemon whose browser is gone is reported as `already gone` (`goneTargets`; its stale socket and `cdp-<target>.daemon.json` record are removed), and an unreachable daemon that is still running is killed by its recorded pid after a check that the pid is still that daemon. `results` has one `{target, status, reason}` entry per daemon, and text mode prints one line per daemon when any was not a plain stop.
 
 ### Dialog handling
 
@@ -778,6 +778,16 @@ scripts/cdp.mjs closetab <target> --force     # also allow closing the only open
 ```
 
 `closetab` refuses to close the **only** open tab (closing it can quit the browser) and points to `--force`. The check reads the tab list first and is best-effort: when the list cannot be read the tab is closed as before. The success text `Closed tab: <8 chars>` is unchanged. `--force` is not shown in `cdp help closetab` yet because the command catalog identity is pinned and needs a reviewed update.
+
+### Background mode (do not steal focus)
+
+```bash
+CDP_BACKGROUND=1 scripts/cdp.mjs open https://example.com        # or: open <url> --background
+CDP_BACKGROUND=1 scripts/cdp.mjs nav <target> https://example.com
+scripts/cdp.mjs spawn-debug-browser chrome --background --port 9224   # anti-throttling flags + minimized window
+```
+
+Opt-in. With `CDP_BACKGROUND=1` (accepts `1`, `true`, `yes`, `on`) no command sends `Target.activateTarget` or `Page.bringToFront`, and `open` creates the tab in a new unfocused window (`newWindow: true, background: true`), because a background tab in an existing window is `hidden` and its screenshots stall. `spawn-debug-browser --background` adds `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling` and minimizes the new window unless headless. Tabs in a minimized window are `hidden` too, so work in tabs from `open`. Without the variable or flag, behaviour is unchanged. A hidden tab can drop `Input.*`; use `click --pointer` there. `--background` is not in the `open` synopsis because the command catalog identity is pinned.
 
 ### Network request log
 

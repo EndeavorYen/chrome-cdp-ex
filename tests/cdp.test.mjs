@@ -9651,7 +9651,7 @@ describe('formatDaemonCommandError', () => {
 describe('open onboarding guidance', () => {
   it('defaults open attach timeout to fail-fast and skips auto-perceive', () => {
     expect(T.DEFAULT_OPEN_ATTACH_TIMEOUT_MS).toBe(5000);
-    expect(T.parseOpenArgs(['https://example.com'])).toEqual({
+    expect(T.parseOpenArgs(['https://example.com'], {})).toEqual({
       url: 'https://example.com',
       format: 'text',
       attachTimeoutMs: 5000,
@@ -9659,11 +9659,12 @@ describe('open onboarding guidance', () => {
       readySelector: null,
       reuseUrl: false,
       perceive: false,
+      background: false,
     });
   });
 
   it('parses --perceive as opt-in auto-perceive without changing fail-fast attach', () => {
-    expect(T.parseOpenArgs(['https://example.com', '--perceive'])).toEqual({
+    expect(T.parseOpenArgs(['https://example.com', '--perceive'], {})).toEqual({
       url: 'https://example.com',
       format: 'text',
       attachTimeoutMs: 5000,
@@ -9671,11 +9672,12 @@ describe('open onboarding guidance', () => {
       readySelector: null,
       reuseUrl: false,
       perceive: true,
+      background: false,
     });
   });
 
   it('parses bounded attach waiting for JSON/open automation', () => {
-    expect(T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', '0', '--format', 'json'])).toEqual({
+    expect(T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', '0', '--format', 'json'], {})).toEqual({
       url: 'https://example.com',
       format: 'json',
       attachTimeoutMs: 0,
@@ -9683,8 +9685,9 @@ describe('open onboarding guidance', () => {
       readySelector: null,
       reuseUrl: false,
       perceive: false,
+      background: false,
     });
-    expect(T.parseOpenArgs(['--attach-timeout-ms=1200', '--ready-timeout-ms', '2500', '--ready-selector', '#app'])).toEqual({
+    expect(T.parseOpenArgs(['--attach-timeout-ms=1200', '--ready-timeout-ms', '2500', '--ready-selector', '#app'], {})).toEqual({
       url: 'about:blank',
       format: 'text',
       attachTimeoutMs: 1200,
@@ -9692,6 +9695,7 @@ describe('open onboarding guidance', () => {
       readySelector: '#app',
       reuseUrl: false,
       perceive: false,
+      background: false,
     });
     expect(() => T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', 'nope'])).toThrow('open: --attach-timeout-ms must be a non-negative integer');
     expect(() => T.parseOpenArgs(['https://example.com', '--ready-timeout-ms', 'nope'])).toThrow('open: --ready-timeout-ms must be a non-negative integer');
@@ -14455,7 +14459,7 @@ describe('spawn-debug-browser topic help (#398)', () => {
   });
 
   it('documents only flags the parser accepts', () => {
-    const noValue = new Set(['--daily-profile', '--headless', '--no-sandbox', '--disable-gpu', '--allow-occlusion']);
+    const noValue = new Set(['--daily-profile', '--headless', '--no-sandbox', '--disable-gpu', '--allow-occlusion', '--background']);
     for (const entry of SPAWN_DEBUG_BROWSER_FLAGS) {
       for (const flag of entry.flags) {
         if (flag === '--help' || flag === '-h' || flag === '--format') continue;

@@ -370,7 +370,7 @@ If dispatch succeeds but post-action observation fails internally, the action st
 
 Target commands check per-tab daemon metadata before dispatching work. If an existing daemon was started from an older checkout, or cannot report metadata, the CLI returns a `stale-daemon` recovery model with `cdp stop <target>` and `rerun the original command` in `nextSteps`. Use `--allow-stale-daemon` only for intentional long-running daemon sessions.
 
-`stop [target]` now confirms cleanup instead of succeeding silently. Use `stop <target> --format json` for the versioned `chrome-cdp-ex.stop.v1` receipt, including the requested target, stopped or failed target prefixes, remaining sessions, and an explicit `noop` flag only when no daemon was active.
+`stop [target]` now confirms cleanup instead of succeeding silently. Use `stop <target> --format json` for the versioned `chrome-cdp-ex.stop.v1` receipt, including the requested target, stopped or failed target prefixes, remaining sessions, and an explicit `noop` flag only when no daemon was active. A daemon whose browser is gone is reported as `already gone` (`goneTargets`, plus one `results` entry per daemon with `status` `stopped`, `gone` or `failed` and a `reason`); an unreachable daemon that is still running is killed by its recorded pid (`cdp-<target>.daemon.json` in the runtime dir) after a check that the pid is still that daemon.
 
 ## CSS Source Tracing
 
@@ -420,6 +420,29 @@ Configuration:
 | `CDP_PORT` | Connect to a specific debugging port. |
 | `CDP_HOST` | Override the CDP host, default `127.0.0.1`. |
 | `CDP_PORT_FILE` | Override the `DevToolsActivePort` file path. |
+| `CDP_BACKGROUND` | `1` turns on background mode: no command focuses a tab or raises the window. Off by default. |
+
+### Background mode
+
+Background mode drives the agent browser without stealing focus from the user. It is opt-in: set `CDP_BACKGROUND=1`, or pass `--background` to `open` or `spawn-debug-browser`. When it is off, nothing changes.
+
+When it is on:
+
+- Tab daemons attach without `Target.activateTarget`, and the `open` navigate fallback skips it too. No command sends `Page.bringToFront`.
+- `open` creates the tab in a new window without focus (`Target.createTarget {newWindow: true, background: true}`) and passes `CDP_BACKGROUND=1` to the tab daemon it starts. A tab created with `background: true` alone sits behind the active tab of an existing window, reports `document.visibilityState: hidden`, and `Page.captureScreenshot` stalls there, so `shot` falls back after about 30 s.
+- `spawn-debug-browser --background` adds `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling`, and, unless `--headless`, minimizes the launched window with `Browser.setWindowBounds` once CDP answers. The window can still appear briefly at launch.
+
+```bash
+node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser chrome --background --port 9224 --user-data-dir <dir>
+CDP_PORT=9224 CDP_BACKGROUND=1 node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com
+```
+
+Limits:
+
+- A minimized window's tabs report `hidden`, and screenshots there take the slow fallback. The window that `spawn-debug-browser --background` minimizes is best left idle; do the work in tabs from `open`.
+- A hidden tab can drop `Input.*` events (known in headed Chrome); use `click --pointer` or page-side JavaScript there.
+- In headed Chrome, the new window from `open` is created without focus, but whether it appears above other apps has not been checked here. The checks so far ran on headless Chrome.
+- A daemon started earlier without the mode keeps its behaviour; `stop` it first.
 
 When neither `CDP_PORT` nor a `DevToolsActivePort` file is present, discovery probes spawn-default `http://127.0.0.1:9222/json/version` first, then `http://127.0.0.1:9224/json/version` using the same path as `CDP_PORT` (including the HTTP 404 → `/devtools/browser` fallback). Chrome 136+ often does not write that file. A live occupant is attach success; a closed 9222/9224 is still an environment miss — do not spawn a new debug profile.
 

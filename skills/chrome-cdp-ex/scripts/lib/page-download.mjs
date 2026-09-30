@@ -4,7 +4,8 @@
 // reply carries the whole file.
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { open, rename, rm } from 'node:fs/promises';
+import { mkdir, open, rename, rm } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 export const DEFAULT_MAX_BYTES = 512 * 1024 * 1024;
 export const DEFAULT_CHUNK_BYTES = 2 * 1024 * 1024;
@@ -85,6 +86,13 @@ export async function downloadViaPage({
   if (typeof evaluate !== 'function') throw downloadError('usage', 'evaluate function required');
   if (!force && existsSync(outFile)) {
     throw downloadError('exists', `${outFile} already exists (use --force to overwrite)`);
+  }
+  // Create the parent folder before any page work, so a bad path fails before a paid fetch (#418).
+  const folder = dirname(outFile);
+  try {
+    await mkdir(folder, { recursive: true });
+  } catch (error) {
+    throw downloadError('mkdir', `cannot create folder ${folder}: ${error.code || error.message}`);
   }
   const partFile = `${outFile}.part`;
   let handle = null;

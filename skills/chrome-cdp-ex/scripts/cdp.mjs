@@ -9,7 +9,7 @@
 
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, realpathSync, statSync } from 'fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { basename, dirname, posix as posixPath, resolve, win32 as win32Path } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
@@ -205,6 +205,17 @@ const DEFAULT_CDP_HOST = '127.0.0.1';
 const DEFAULT_CDP_PROBE_PORT = '9224';
 const DEFAULT_DEBUG_PORT = 9222;
 const DEFAULT_SPAWN_READY_TIMEOUT_MS = 20000;
+// #415 background mode: opt-in via CDP_BACKGROUND=1 (or --background on open / spawn-debug-browser).
+// When on, no command sends Target.activateTarget or Page.bringToFront, and new tabs open in the background.
+const BACKGROUND_THROTTLE_FLAGS = Object.freeze([
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--disable-background-timer-throttling',
+]);
+
+function isBackgroundMode(env = process.env) {
+  return /^(1|true|yes|on)$/i.test(String(env?.CDP_BACKGROUND ?? '').trim());
+}
 const SPAWN_ALIVE_WAIT_CAP_MS = 60000;
 const TABLE_COLLECTION_DEADLINES = Object.freeze({
   pageMs: 295000,
@@ -1060,6 +1071,7 @@ function createDaemonShutdown({
   closeCdp,
   exitProcess = code => process.exit(code),
   unlinkSocket = unlinkSync,
+  removeRecord = () => {},
   isWindows = IS_WINDOWS,
 }) {
   if (!(requestConnections instanceof Set)) throw new Error('daemon request connection registry must be a Set');
@@ -1085,6 +1097,7 @@ function createDaemonShutdown({
     try { getServer()?.close(); } catch {}
     if (!isWindows) try { unlinkSocket(socketPath); } catch {}
     try { closeCdp(); } catch {}
+    try { removeRecord(); } catch {}
     exitProcess(finalExitCode);
   };
 }
@@ -1104,6 +1117,70 @@ function sockPath(targetId) {
 
 function ensureRuntimeDir() {
   try { mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 }); } catch {}
+}
+
+// Per-daemon registry record. `stop` needs the daemon pid even when the pipe or
+// socket is unreachable, and the pid otherwise only exists behind the `meta` IPC.
+const DAEMON_RECORD_SCHEMA = 'chrome-cdp-ex.daemon-record.v1';
+const DAEMON_RECORD_SUFFIX = '.daemon.json';
+
+function daemonRecordPath(targetId, runtimeDir = RUNTIME_DIR) {
+  const safeTarget = String(targetId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
+  return resolve(runtimeDir, `cdp-${safeTarget}${DAEMON_RECORD_SUFFIX}`);
+}
+
+function writeDaemonRecord(targetId, { pid = process.pid, startedAt = new Date().toISOString() } = {}, { runtimeDir = RUNTIME_DIR, writer = writeFileSync } = {}) {
+  try {
+    writer(daemonRecordPath(targetId, runtimeDir), JSON.stringify({
+      schema: DAEMON_RECORD_SCHEMA,
+      targetId: String(targetId),
+      pid,
+      startedAt,
+    }), { mode: 0o600 });
+  } catch {}
+}
+
+function parseDaemonRecord(text) {
+  try {
+    const record = JSON.parse(text);
+    if (record?.schema !== DAEMON_RECORD_SCHEMA || !/^[A-Za-z0-9_.-]+$/.test(String(record.targetId || '')) || String(record.targetId).includes('..')) return null;
+    if (!Number.isInteger(record.pid) || record.pid <= 0) return null;
+    return record;
+  } catch {
+    return null;
+  }
+}
+
+function readDaemonRecord(targetId, { runtimeDir = RUNTIME_DIR, reader = readFileSync } = {}) {
+  try {
+    const record = parseDaemonRecord(reader(daemonRecordPath(targetId, runtimeDir), 'utf8'));
+    return record && record.targetId === String(targetId) ? record : null;
+  } catch {
+    return null;
+  }
+}
+
+function removeDaemonRecord(targetId, { runtimeDir = RUNTIME_DIR, remover = unlinkSync } = {}) {
+  try { remover(daemonRecordPath(targetId, runtimeDir)); } catch {}
+}
+
+function listDaemonRecords({ runtimeDir = RUNTIME_DIR, readdir = readdirSync, reader = readFileSync } = {}) {
+  try {
+    return readdir(runtimeDir)
+      .filter(name => name.startsWith('cdp-') && name.endsWith(DAEMON_RECORD_SUFFIX))
+      .map(name => {
+        // One unreadable file (a daemon removing its own record mid-scan) must not hide the rest.
+        try {
+          const record = parseDaemonRecord(reader(resolve(runtimeDir, name), 'utf8'));
+          return record && name === `cdp-${record.targetId}${DAEMON_RECORD_SUFFIX}` ? record : null;
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 function emptyAliasStore() {
@@ -1161,6 +1238,65 @@ function lastCdpEndpointPath(runtimeDir = RUNTIME_DIR) {
   return pathApiForRoot(runtimeDir).resolve(runtimeDir, LAST_CDP_ENDPOINT_FILE);
 }
 
+const LAST_CDP_ENDPOINT_HISTORY_MAX = 24;
+const LAST_CDP_ENDPOINT_HISTORY_PER_PORT_MAX = 4;
+const SPAWN_DEBUG_BROWSER_VIA = 'spawn-debug-browser';
+
+// One profile seen on one port. `via` is only ever the spawn-debug-browser marker (#416).
+function normalizeCdpEndpointHistoryEntry(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const port = raw.port == null || raw.port === '' ? null : String(raw.port);
+  const profileDir = raw.profileDir ? String(raw.profileDir) : null;
+  if (!port || !profileDir) return null;
+  const entry = {
+    port,
+    profileDir,
+    exe: raw.exe ? String(raw.exe) : null,
+    browser: raw.browser ? String(raw.browser).toLowerCase() : null,
+    lastSeenAt: raw.lastSeenAt ? String(raw.lastSeenAt) : null,
+  };
+  if (raw.via === SPAWN_DEBUG_BROWSER_VIA) entry.via = SPAWN_DEBUG_BROWSER_VIA;
+  return entry;
+}
+
+// Same directory spelled `C:\x\y`, `c:/x/y/` or `C:/x/y` is one profile (Windows paths are case-insensitive).
+function cdpProfileKey(profileDir) {
+  const text = String(profileDir || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return /^[a-z]:\//i.test(text) ? text.toLowerCase() : text;
+}
+
+function mergeCdpEndpointHistoryEntry(a, b) {
+  const [older, newer] = String(a.lastSeenAt || '') <= String(b.lastSeenAt || '') ? [a, b] : [b, a];
+  return {
+    ...older,
+    ...newer,
+    exe: newer.exe || older.exe,
+    browser: newer.browser || older.browser,
+    lastSeenAt: newer.lastSeenAt || older.lastSeenAt,
+    ...((a.via || b.via) ? { via: SPAWN_DEBUG_BROWSER_VIA } : {}),
+  };
+}
+
+function mergeCdpEndpointHistory(history, raw) {
+  const list = (Array.isArray(history) ? history : []).map(normalizeCdpEndpointHistoryEntry).filter(Boolean);
+  const entry = normalizeCdpEndpointHistoryEntry(raw);
+  if (entry) {
+    const at = list.findIndex(item => item.port === entry.port && cdpProfileKey(item.profileDir) === cdpProfileKey(entry.profileDir));
+    if (at === -1) list.push(entry);
+    else list[at] = mergeCdpEndpointHistoryEntry(list[at], entry);
+  }
+  // Keep persistent profiles over temp ones, so churn of test spawns cannot evict the real profile.
+  list.sort((a, b) => (isTempCdpProfileDir(a.profileDir) - isTempCdpProfileDir(b.profileDir))
+    || String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')));
+  // Bounded per port as well as overall, so one busy port cannot push out another port's profile.
+  const perPort = new Map();
+  return list.filter(item => {
+    const n = (perPort.get(item.port) || 0) + 1;
+    perPort.set(item.port, n);
+    return n <= LAST_CDP_ENDPOINT_HISTORY_PER_PORT_MAX;
+  }).slice(0, LAST_CDP_ENDPOINT_HISTORY_MAX);
+}
+
 function normalizeLastCdpEndpoint(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const port = raw.port == null || raw.port === '' ? null : String(raw.port);
@@ -1170,7 +1306,7 @@ function normalizeLastCdpEndpoint(raw) {
   const browser = raw.browser ? String(raw.browser).toLowerCase() : null;
   const launchedAt = raw.launchedAt ? String(raw.launchedAt) : null;
   if (!port && !host && !profileDir) return null;
-  return {
+  const record = {
     schema: LAST_CDP_ENDPOINT_SCHEMA,
     host,
     port,
@@ -1179,6 +1315,10 @@ function normalizeLastCdpEndpoint(raw) {
     browser,
     launchedAt,
   };
+  if (profileDir && raw.via === SPAWN_DEBUG_BROWSER_VIA) record.via = SPAWN_DEBUG_BROWSER_VIA;
+  const history = mergeCdpEndpointHistory(raw.history, null);
+  if (history.length) record.history = history;
+  return record;
 }
 
 function readLastCdpEndpoint({ runtimeDir = RUNTIME_DIR, reader = readFileSync } = {}) {
@@ -1203,11 +1343,94 @@ function rememberLastCdpEndpoint(record, opts = {}) {
   const previous = opts.previous !== undefined ? opts.previous : readLastCdpEndpoint(opts);
   const next = { ...(previous || {}) };
   for (const [key, value] of Object.entries(record || {})) {
-    if (value != null && value !== '') next[key] = value;
+    if (value != null && value !== '' && key !== 'history') next[key] = value;
   }
   const portChanged = previous?.port && record?.port != null && String(previous.port) !== String(record.port);
   if (portChanged && !record.profileDir) next.profileDir = null;
+  // Per-port profile history (#416): a later spawn on the same port must not erase the
+  // persistent profile an earlier one used. An old flat record seeds the history once.
+  let history = mergeCdpEndpointHistory(previous?.history, previous?.profileDir ? {
+    port: previous.port,
+    profileDir: previous.profileDir,
+    exe: previous.exe,
+    browser: previous.browser,
+    via: previous.via,
+    lastSeenAt: previous.launchedAt,
+  } : null);
+  const seenPort = record?.port ?? previous?.port;
+  if (record?.profileDir && seenPort != null && seenPort !== '') {
+    const at = new Date(typeof opts.now === 'function' ? opts.now() : (opts.now || Date.now())).toISOString();
+    history = mergeCdpEndpointHistory(history, {
+      port: seenPort,
+      profileDir: record.profileDir,
+      exe: record.exe,
+      browser: record.browser,
+      via: record.via,
+      lastSeenAt: at,
+    });
+  }
+  if (history.length) next.history = history;
+  const current = next.profileDir
+    ? history.find(item => item.port === String(next.port) && item.profileDir === next.profileDir)
+    : null;
+  if (current?.via) next.via = current.via;
+  else delete next.via;
   return writeLastCdpEndpoint(next, opts);
+}
+
+// A profile under a temp dir (or a disposable chrome-cdp-ex-* spawn dir) is a leftover of a test
+// or one-off spawn, never the profile to recover a logged-in session into (#416).
+function isTempCdpProfileDir(profileDir) {
+  const normalized = String(profileDir || '').replace(/\\/g, '/');
+  if (!normalized) return false;
+  if (isIsolatedChromeCdpExProfileDir(normalized)) return true;
+  if (/^\/(?:private\/)?tmp\//i.test(normalized) || /(?:^|\/)var\/folders\//i.test(normalized)) return true;
+  if (/^[a-z]:\/(?:windows\/)?temp\//i.test(normalized) || /\/appdata\/local\/temp\//i.test(normalized)) return true;
+  try {
+    const root = String(tmpdir() || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (root && normalized.toLowerCase().startsWith(`${root}/`)) return true;
+  } catch {}
+  return false;
+}
+
+// Profiles plausibly behind `port`, best first: spawn-debug-browser-recorded persistent, other
+// persistent, spawn-recorded temp, other temp; newest first inside a tier. Other ports never match.
+function rankCdpRelaunchCandidates(record, port) {
+  if (!record || typeof record !== 'object') return [];
+  const want = port != null && port !== '' ? String(port) : null;
+  const byDir = new Map();
+  const add = raw => {
+    // A record without a port keeps the old default of 9222 when the caller has no port either.
+    const entryPort = raw?.port == null || raw.port === '' ? (want || '9222') : String(raw.port);
+    const entry = normalizeCdpEndpointHistoryEntry({ ...raw, port: entryPort });
+    if (!entry || (want && entry.port !== want)) return;
+    const key = cdpProfileKey(entry.profileDir);
+    const known = byDir.get(key);
+    byDir.set(key, known ? mergeCdpEndpointHistoryEntry(known, entry) : entry);
+  };
+  for (const item of Array.isArray(record.history) ? record.history : []) add(item);
+  if (record.profileDir) {
+    add({
+      port: record.port,
+      profileDir: record.profileDir,
+      exe: record.exe,
+      browser: record.browser,
+      via: record.via,
+      lastSeenAt: record.launchedAt,
+    });
+  }
+  const tier = entry => (isTempCdpProfileDir(entry.profileDir) ? 2 : 0) + (entry.via ? 0 : 1);
+  return [...byDir.values()]
+    .map(entry => ({ ...entry, temp: isTempCdpProfileDir(entry.profileDir) }))
+    .sort((a, b) => tier(a) - tier(b) || String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')))
+    .map(entry => ({ ...entry, relaunch: formatCdpRelaunchCommand(entry, { port: want || entry.port }) }));
+}
+
+// One line naming the profiles that were not chosen; null when there is nothing to choose between.
+function formatCdpCandidateList(candidates) {
+  if (!Array.isArray(candidates) || candidates.length < 2) return null;
+  const label = c => `${c.profileDir} (${c.temp ? 'temp' : 'persistent'}${c.via ? ', spawn-debug-browser' : ''})`;
+  return `Other profiles seen on this port: ${candidates.slice(1).map(label).join('; ')}. Use one only if the first is wrong.`;
 }
 
 function shellQuoteCliArg(value) {
@@ -1331,6 +1554,17 @@ function formatCdpRelaunchCommand(lastEndpoint, { port } = {}) {
   const profileDir = lastEndpoint?.profileDir;
   if (!profileDir) return null;
   const resolvedPort = String(port || lastEndpoint.port || '9222');
+  if (lastEndpoint.via === SPAWN_DEBUG_BROWSER_VIA) {
+    const browser = lastEndpoint.browser || inferBrowserFromExe(lastEndpoint.exe) || 'chrome';
+    const parts = [
+      'cdp spawn-debug-browser',
+      browser,
+      '--port', resolvedPort,
+      '--profile-dir', shellQuoteCliArg(profileDir),
+    ];
+    if (lastEndpoint.exe) parts.push('--exe', shellQuoteCliArg(lastEndpoint.exe));
+    return parts.join(' ');
+  }
   if (isDisposableSpawnProfileDir(profileDir)) {
     const browser = lastEndpoint.browser || inferBrowserFromExe(lastEndpoint.exe) || 'chrome';
     const parts = [
@@ -1370,12 +1604,14 @@ function profileDirFromDevToolsActivePort(portFile) {
 function cdpUnreachableError({ host, port, cause, lastEndpoint } = {}) {
   const resolvedHost = host || lastEndpoint?.host || DEFAULT_CDP_HOST;
   const resolvedPort = port != null && port !== '' ? String(port) : (lastEndpoint?.port || null);
-  const profileDir = lastEndpoint?.profileDir || null;
-  const relaunch = formatCdpRelaunchCommand(lastEndpoint, { port: resolvedPort });
+  const candidates = rankCdpRelaunchCandidates(lastEndpoint, resolvedPort);
+  const profileDir = candidates[0]?.profileDir || null;
+  const relaunch = candidates[0]?.relaunch || null;
   const where = resolvedPort ? `${resolvedHost}:${resolvedPort}` : resolvedHost;
   const causeText = String(cause || 'unreachable').replace(/^Error:\s*/i, '');
+  const others = formatCdpCandidateList(candidates);
   const message = profileDir
-    ? `Cannot reach CDP on ${where} (${causeText}). Relaunch the same profile: ${relaunch}`
+    ? `Cannot reach CDP on ${where} (${causeText}). Relaunch the same profile: ${relaunch}${others ? `\n${others}` : ''}`
     : `Cannot reach CDP on ${where} (${causeText}). Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.`;
   const err = new Error(message);
   err.code = 'cdp_unreachable';
@@ -1383,6 +1619,7 @@ function cdpUnreachableError({ host, port, cause, lastEndpoint } = {}) {
   err.port = resolvedPort;
   err.profileDir = profileDir;
   err.relaunch = relaunch;
+  err.candidates = candidates;
   return err;
 }
 
@@ -19168,9 +19405,12 @@ async function checkCdpReachability({
     try { rememberEndpoint(record); } catch {}
   };
   const unreachable = (p, cause) => {
-    const profileDir = remembered?.profileDir || null;
-    const relaunch = formatCdpRelaunchCommand(remembered, { port: p });
-    const hint = relaunch || 'Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.';
+    const candidates = rankCdpRelaunchCandidates(remembered, p);
+    const top = candidates[0] || null;
+    const profileDir = top?.profileDir || null;
+    const relaunch = top?.relaunch || null;
+    const hint = relaunch
+      || 'Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.';
     return {
       status: 'FAIL',
       label: 'CDP',
@@ -19181,8 +19421,9 @@ async function checkCdpReachability({
       port: String(p),
       profileDir,
       relaunch,
-      exe: remembered?.exe || null,
-      browser: remembered?.browser || null,
+      candidates,
+      exe: top?.exe || null,
+      browser: top?.browser || null,
     };
   };
   const localAppData = env.LOCALAPPDATA || process.env.LOCALAPPDATA || '';
@@ -19976,7 +20217,8 @@ function doctorRecommendationModel(checks) {
         stage: 'browser-cdp',
         strategy: 'relaunch-same-profile',
         run: cdp.relaunch,
-        ask: 'Relaunch the same debug browser profile. Do not invent DISPLAY, a new user-data-dir, or a second Chrome profile.',
+        ask: ['Relaunch the same debug browser profile. Do not invent DISPLAY, a new user-data-dir, or a second Chrome profile.', formatCdpCandidateList(cdp.candidates)].filter(Boolean).join(' '),
+        ...(Array.isArray(cdp.candidates) && cdp.candidates.length > 1 ? { candidates: cdp.candidates } : {}),
         after: `${prefix} list`,
         requiresUserAction: true,
         consentRequired: false,
@@ -20400,6 +20642,7 @@ const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
   { flags: ['--no-sandbox'], arg: null, text: 'Pass --no-sandbox to the browser (containers, CI).' },
   { flags: ['--disable-gpu'], arg: null, text: 'Pass --disable-gpu to the browser.' },
   { flags: ['--allow-occlusion'], arg: null, text: 'Do not pass --disable-features=CalculateNativeWinOcclusion (see Notes).' },
+  { flags: ['--background'], arg: null, text: 'Background mode (also CDP_BACKGROUND=1): add anti-throttling flags and minimize the new window once CDP answers (see Notes).' },
   { flags: ['--wait-ms'], arg: 'N', text: `Wait up to N ms for CDP to answer (default ${DEFAULT_SPAWN_READY_TIMEOUT_MS}).` },
   { flags: ['--format'], arg: 'text|json', text: 'Output format.' },
   { flags: ['--help', '-h'], arg: null, text: 'Print this help without launching anything.' },
@@ -20409,6 +20652,7 @@ const SPAWN_DEBUG_BROWSER_NOTES = Object.freeze([
   'Default browser is edge, or $CDP_DEBUG_BROWSER when set.',
   'Port already in use: if the occupant does not answer /json/version (for example Chrome\'s chrome://inspect toggle on 9222), the command fails. Pick another port with --port N, then set CDP_PORT=N for list/perceive/stop.',
   'By default the launched browser gets --disable-features=CalculateNativeWinOcclusion. Without it, Windows marks a debug window that another window fully covers as hidden (document.visibilityState=hidden) and Chrome drops Input.* events, so click/press fail with no-input-events. Use --allow-occlusion to keep the browser default.',
+  'Background mode (--background or CDP_BACKGROUND=1) adds --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling and, unless headless, minimizes the launched window through Browser.setWindowBounds. The window can still appear briefly at launch. Run later commands with CDP_BACKGROUND=1 so they do not activate the tab.',
   'Unknown flags print this help and launch nothing.',
 ]);
 
@@ -20433,6 +20677,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
     noSandbox: false,
     disableGpu: false,
     allowOcclusion: false,
+    background: isBackgroundMode(env),
     waitMs: DEFAULT_SPAWN_READY_TIMEOUT_MS,
     format: fopts.format,
   };
@@ -20451,6 +20696,7 @@ function parseSpawnDebugBrowserArgs(args, env = process.env, extras = {}) {
     else if (a === '--no-sandbox') opts.noSandbox = true;
     else if (a === '--disable-gpu') opts.disableGpu = true;
     else if (a === '--allow-occlusion') opts.allowOcclusion = true;
+    else if (a === '--background') opts.background = true;
     else if (a === '--wait-ms') opts.waitMs = parseNonNegativeInteger(tokens[++i], 'spawn-debug-browser: --wait-ms');
     else if (String(a).startsWith('--wait-ms=')) opts.waitMs = parseNonNegativeInteger(String(a).slice('--wait-ms='.length), 'spawn-debug-browser: --wait-ms');
     else if (a === '--help' || a === '-h' || String(a).startsWith('--')) opts.helpRequested = true;
@@ -20512,6 +20758,40 @@ async function listSpawnedDebugTargets({ port, host = DEFAULT_CDP_HOST, fetcher 
   }
 }
 
+// Minimize (never focus) each window that holds one of these targets; one call per window.
+async function minimizeWindowsForTargets(cdp, targetIds = []) {
+  const windowIds = new Set();
+  const errors = [];
+  for (const targetId of targetIds) {
+    try {
+      const { windowId } = await cdpDomains(cdp).Browser.getWindowForTarget( { targetId }, undefined, 2000);
+      if (windowId != null) windowIds.add(windowId);
+    } catch (e) {
+      errors.push(e.message || String(e));
+    }
+  }
+  let minimized = 0;
+  for (const windowId of windowIds) {
+    try {
+      await cdpDomains(cdp).Browser.setWindowBounds( { windowId, bounds: { windowState: 'minimized' } }, undefined, 2000);
+      minimized += 1;
+    } catch (e) {
+      errors.push(e.message || String(e));
+    }
+  }
+  return { minimized, errors };
+}
+
+async function minimizeBrowserWindows({ host = DEFAULT_CDP_HOST, port, targetIds = [], fetcher = fetch } = {}) {
+  const cdp = new CDP();
+  try {
+    await cdp.connect(await wsUrlFromCdpHttp({ host, port, fetcher, remembered: null, rememberReachable: () => {} }));
+    return await minimizeWindowsForTargets(cdp, targetIds);
+  } finally {
+    try { cdp.close(); } catch {}
+  }
+}
+
 function pickSpawnedTarget(pages = [], url = null) {
   if (!pages.length) return null;
   if (url) {
@@ -20527,9 +20807,12 @@ function pickSpawnedTarget(pages = [], url = null) {
 function buildSpawnDebugBrowserModel(plan, readiness, { child = null, target = null, attached = false } = {}) {
   const targetId = target?.targetId || null;
   const targetPrefix = targetId ? String(targetId).slice(0, getDisplayPrefixLength([targetId])) : null;
-  const nextCommand = attached || !targetPrefix
-    ? `CDP_PORT=${plan.port} cdp list`
-    : `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`;
+  // A background spawn minimizes its first window, whose tabs are hidden: send agents to a fresh `open` tab.
+  const nextCommand = plan.background && !plan.headless && !attached
+    ? `CDP_PORT=${plan.port} CDP_BACKGROUND=1 cdp open <url>`
+    : attached || !targetPrefix
+      ? `CDP_PORT=${plan.port} cdp list`
+      : `CDP_PORT=${plan.port} cdp perceive ${targetPrefix} -C -d 8`;
   const disposable = isDisposableSpawnProfileDir(plan.profileDir);
   return {
     schema: 'chrome-cdp-ex.spawn-debug-browser.v1',
@@ -20634,8 +20917,9 @@ function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { ex
   if (opts.noSandbox) args.push('--no-sandbox');
   if (opts.disableGpu) args.push('--disable-gpu');
   if (!opts.allowOcclusion) args.push('--disable-features=CalculateNativeWinOcclusion');
+  if (opts.background) args.push(...BACKGROUND_THROTTLE_FLAGS);
   if (opts.url) args.push(opts.url);
-  return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile) };
+  return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile), background: Boolean(opts.background), headless: Boolean(opts.headless) };
 }
 
 function captureSpawnOutput(child, maxBytes = 4096) {
@@ -20943,6 +21227,12 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   child.unref?.();
   const pages = await listTargets({ port: plan.port, host: plan.host, fetcher });
   const target = pickSpawnedTarget(pages, plan.url);
+  if (plan.background && !plan.headless && pages.length) {
+    const minimize = deps.minimizeBrowserWindows || minimizeBrowserWindows;
+    try {
+      await minimize({ host: plan.host, port: plan.port, targetIds: pages.map(page => page.targetId) });
+    } catch {}
+  }
   const remember = deps.rememberLastCdpEndpoint || rememberLastCdpEndpoint;
   try {
     remember({
@@ -20951,6 +21241,10 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
       profileDir: plan.profileDir,
       exe: plan.exe,
       browser: plan.browser,
+      // #416: recovery suggests the spawn command only for profiles this command created.
+      // A --daily-profile spawn is not reproducible through --profile-dir, so it stays untagged
+      // and recovery keeps the raw browser line for it.
+      ...(plan.dailyProfile ? {} : { via: SPAWN_DEBUG_BROWSER_VIA }),
     });
   } catch {}
   const model = buildSpawnDebugBrowserModel(plan, readiness, { child, target });
@@ -21364,6 +21658,14 @@ async function enableDaemonDomains(cdp, sessionId) {
   try { await cdpDomains(cdp).Network.enable( {}, sessionId); } catch {}
 }
 
+async function attachDaemonTarget(cdp, targetId, { background = false } = {}) {
+  // Wake up the tab first (avoids timeouts on suspended/inactive background tabs).
+  // Background mode (#415) skips it: activating the tab raises the window over the user's work.
+  if (!background) await cdpDomains(cdp).Target.activateTarget( { targetId }).catch(() => {});
+  const res = await cdpDomains(cdp).Target.attachToTarget( { targetId, flatten: true });
+  return res.sessionId;
+}
+
 async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {
   resetScreenshotTier();
   const sp = sockPath(targetId);
@@ -21387,10 +21689,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   let sessionId;
   try {
-    // Wake up the tab first (avoids timeouts on suspended/inactive background tabs)
-    await cdpDomains(cdp).Target.activateTarget( { targetId }).catch(() => {});
-    const res = await cdpDomains(cdp).Target.attachToTarget( { targetId, flatten: true });
-    sessionId = res.sessionId;
+    sessionId = await attachDaemonTarget(cdp, targetId, { background: isBackgroundMode() });
   } catch (e) {
     process.stderr.write(`Daemon: attach failed: ${e.message}\n`);
     cdp.close();
@@ -21561,6 +21860,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     socketPath: sp,
     cleanupSession: () => tableArtifactStore.cleanupSession(),
     closeCdp: () => cdp.close(),
+    removeRecord: () => {
+      // A daemon that lost the listen race must not delete the winner's record.
+      if (readDaemonRecord(targetId)?.pid === process.pid) removeDaemonRecord(targetId);
+    },
   });
 
   // Exit if target goes away or Chrome disconnects
@@ -22548,6 +22851,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   });
 
   if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
+  ensureRuntimeDir();
+  // Only the daemon that won the listen race owns the record.
+  server.once('listening', () => {
+    writeDaemonRecord(targetId, { pid: daemonMetadata.pid, startedAt: daemonMetadata.startedAt });
+  });
   server.listen(sp);
 }
 
@@ -22764,29 +23072,68 @@ async function readDaemonBinding(targetId) {
 // Stop daemons
 // ---------------------------------------------------------------------------
 
-function buildStopResult({ requestedTarget = null, daemons = [], stoppedDaemons = [], removedDaemons = stoppedDaemons, failedDaemons = [] } = {}) {
+function buildStopResult({
+  requestedTarget = null,
+  daemons = [],
+  stoppedDaemons = [],
+  goneDaemons = [],
+  removedDaemons = [...stoppedDaemons, ...goneDaemons],
+  failedDaemons = [],
+  reasons = {},
+} = {}) {
   const targetIds = daemons.map(daemon => daemon.targetId).filter(Boolean);
   const prefixLength = targetIds.length ? getDisplayPrefixLength(targetIds) : MIN_TARGET_PREFIX_LEN;
   const removedIds = new Set(removedDaemons.map(daemon => daemon.targetId));
-  const stoppedTargets = stoppedDaemons.map(daemon => daemon.targetId.slice(0, prefixLength));
-  const failedTargets = failedDaemons.map(daemon => daemon.targetId.slice(0, prefixLength));
+  const prefixOf = daemon => daemon.targetId.slice(0, prefixLength);
+  const stoppedTargets = stoppedDaemons.map(prefixOf);
+  const goneTargets = goneDaemons.map(prefixOf);
+  const failedTargets = failedDaemons.map(prefixOf);
   const remainingTargets = daemons
     .filter(daemon => !removedIds.has(daemon.targetId))
-    .map(daemon => daemon.targetId.slice(0, prefixLength));
+    .map(prefixOf);
+  const statusOf = new Map([
+    ...stoppedDaemons.map(daemon => [daemon.targetId, 'stopped']),
+    ...goneDaemons.map(daemon => [daemon.targetId, 'gone']),
+    ...failedDaemons.map(daemon => [daemon.targetId, 'failed']),
+  ]);
+  const results = daemons
+    .filter(daemon => statusOf.has(daemon.targetId))
+    .map(daemon => {
+      const entry = { target: prefixOf(daemon), status: statusOf.get(daemon.targetId) };
+      if (reasons[daemon.targetId]) entry.reason = reasons[daemon.targetId];
+      return entry;
+    });
   return {
     schema: 'chrome-cdp-ex.stop.v1',
     requestedTarget,
     stopped: stoppedTargets.length > 0,
     stoppedTargets,
+    goneTargets,
     failedTargets,
+    results,
     remainingSessions: remainingTargets.length,
     remainingTargets,
-    noop: stoppedTargets.length === 0 && failedTargets.length === 0,
+    noop: stoppedTargets.length === 0 && failedTargets.length === 0 && goneTargets.length === 0,
   };
 }
 
 function formatStopResult(model, { format = 'text' } = {}) {
   if (format === 'json') return formatJson(model);
+  const results = model.results || [];
+  const lines = [];
+  // One line per daemon whenever the outcome is more than a plain stop.
+  if (results.some(entry => entry.status !== 'stopped' || entry.reason)) {
+    for (const entry of results) {
+      if (entry.status === 'failed') lines.push(`${entry.target}: failed: ${entry.reason || 'unknown reason'}`);
+      else if (entry.status === 'gone') lines.push(`${entry.target}: already gone${entry.reason ? ` (${entry.reason})` : ''}`);
+      else lines.push(`${entry.target}: stopped${entry.reason ? ` (${entry.reason})` : ''}`);
+    }
+  }
+  lines.push(formatStopSummary(model));
+  return lines.join('\n');
+}
+
+function formatStopSummary(model) {
   if (model.failedTargets?.length) {
     if (model.requestedTarget) {
       return `Failed to stop daemon ${model.failedTargets.join(', ')}; ${model.remainingSessions} remaining session(s).`;
@@ -22797,6 +23144,9 @@ function formatStopResult(model, { format = 'text' } = {}) {
     return `${stopped}Failed to stop daemon(s): ${model.failedTargets.join(', ')}; ${model.remainingSessions} remaining session(s).`;
   }
   if (!model.stopped) {
+    if (model.goneTargets?.length) {
+      return `Removed ${model.goneTargets.length} stale daemon entr${model.goneTargets.length === 1 ? 'y' : 'ies'} (already gone): ${model.goneTargets.join(', ')}; ${model.remainingSessions} remaining session(s).`;
+    }
     const scope = model.requestedTarget ? ` for ${model.requestedTarget}` : 's';
     return `No active daemon${scope}; ${model.remainingSessions} remaining session(s).`;
   }
@@ -22806,13 +23156,72 @@ function formatStopResult(model, { format = 'text' } = {}) {
   return `Stopped ${model.stoppedTargets.length} daemon(s): ${model.stoppedTargets.join(', ')}; ${model.remainingSessions} remaining session(s).`;
 }
 
+const STOP_REQUEST_TIMEOUT_MS = 10_000;
+const STOP_KILL_POLLS = 20;
+const STOP_KILL_POLL_MS = 100;
+
+function isProcessAlive(pid, { kill = process.kill.bind(process) } = {}) {
+  try {
+    kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+// Guards against pid reuse: a recorded pid is only killed when its command line
+// is this target's `cdp.mjs _daemon <targetId>`. Returns true (it is), false (it is
+// not, or no such process) or null (could not be checked), and only true allows a kill.
+function processIsTargetDaemon(pid, targetId, { platform = process.platform, spawnSyncFn = spawnSync } = {}) {
+  try {
+    const numericPid = Number(pid);
+    const result = platform === 'win32'
+      ? spawnSyncFn('powershell', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${numericPid}").CommandLine`], { encoding: 'utf8', timeout: 10000, windowsHide: true })
+      : spawnSyncFn('ps', ['-o', 'args=', '-p', String(numericPid)], { encoding: 'utf8', timeout: 5000 });
+    if (result.error || result.signal) return null;
+    const commandLine = String(result.stdout || '').trim();
+    if (result.status !== 0) return commandLine || String(result.stderr || '').trim() ? null : false;
+    // A live pid with an unreadable (empty) command line cannot be told apart from access denied.
+    if (!commandLine) return platform === 'win32' ? null : false;
+    return commandLine.includes('_daemon') && commandLine.includes(String(targetId));
+  } catch {
+    return null;
+  }
+}
+
 async function stopDaemons(targetPrefix, deps = {}) {
+  const platform = deps.platform || process.platform;
+  const isWindows = platform === 'win32';
   const list = deps.list || listDaemonSockets;
+  // Injecting `list` without `registry` is a fake run: never read the real runtime dir.
+  const registry = deps.registry || (deps.list
+    ? { list: () => [], read: () => null, remove: () => {} }
+    : { list: listDaemonRecords, read: readDaemonRecord, remove: removeDaemonRecord });
   const connect = deps.connect || connectToSocket;
-  const send = deps.send || sendCommand;
+  // `stop` has side effects but must not wait the 120 s default on a wedged daemon.
+  const send = deps.send || ((conn, request, options) => requestDaemon(conn, request, {
+    runtimeDir: RUNTIME_DIR,
+    mayHaveSideEffects: true,
+    ...options,
+  }));
   const unlink = deps.unlink || unlinkSync;
-  const isWindows = (deps.platform || process.platform) === 'win32';
-  const daemons = list();
+  const isAlive = deps.isAlive || (pid => isProcessAlive(pid));
+  const isDaemonProcess = deps.isDaemonProcess || ((pid, targetId) => processIsTargetDaemon(pid, targetId, { platform }));
+  const kill = deps.kill || ((pid, signal) => process.kill(pid, signal));
+  const wait = deps.sleep || sleep;
+
+  // On win32 `list` enumerates the pages cache, not daemons, and a daemon whose
+  // page cache entry is gone is only reachable through its registry record.
+  const daemons = [...(list() || [])];
+  const known = new Set(daemons.map(daemon => daemon.targetId));
+  for (const record of registry.list() || []) {
+    if (known.has(record.targetId)) continue;
+    known.add(record.targetId);
+    daemons.push({
+      targetId: record.targetId,
+      socketPath: daemonEndpointForPlatform(record.targetId, { platform, runtimeDir: RUNTIME_DIR }),
+    });
+  }
   if (!daemons.length) return buildStopResult({ requestedTarget: targetPrefix || null });
 
   let selected = daemons;
@@ -22822,32 +23231,113 @@ async function stopDaemons(targetPrefix, deps = {}) {
     const targetId = resolvePrefix(targetPrefix, daemons.map(daemon => daemon.targetId), 'daemon');
     selected = [daemons.find(daemon => daemon.targetId === targetId)];
   }
-  const stoppedDaemons = [];
-  const removedDaemons = [];
-  const failedDaemons = [];
-  for (const daemon of selected) {
-    let response;
+
+  async function terminate(pid) {
+    try { kill(pid, 'SIGTERM'); } catch {}
+    for (let i = 0; i < STOP_KILL_POLLS && isAlive(pid); i++) await wait(STOP_KILL_POLL_MS);
+    if (isAlive(pid) && !isWindows) {
+      try { kill(pid, 'SIGKILL'); } catch {}
+      for (let i = 0; i < STOP_KILL_POLLS && isAlive(pid); i++) await wait(STOP_KILL_POLL_MS);
+    }
+    return !isAlive(pid);
+  }
+
+  // Remove what a dead daemon leaves behind: its registry record and, off win32, its socket file.
+  function removeLeftovers(daemon) {
+    registry.remove(daemon.targetId);
+    if (isWindows) return null;
+    try {
+      unlink(daemon.socketPath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return `could not remove stale socket: ${error?.message || error}`;
+    }
+    return null;
+  }
+
+  async function endpointIsGone(daemon) {
     try {
       const conn = await connect(daemon.socketPath);
-      response = await send(conn, { cmd: 'stop', args: [] });
-    } catch {
-      if (!isWindows) {
-        try {
-          unlink(daemon.socketPath);
-          removedDaemons.push(daemon);
-        } catch {
-          failedDaemons.push(daemon);
-        }
-      } else {
-        failedDaemons.push(daemon);
-      }
-      continue;
+      try { conn?.destroy?.(); } catch {}
+      return false;
+    } catch (error) {
+      return error?.code === 'ENOENT' || error?.code === 'ECONNREFUSED';
     }
-    if (response?.ok === false) throw new Error(response.error || 'daemon rejected stop');
-    stoppedDaemons.push(daemon);
-    removedDaemons.push(daemon);
   }
-  return buildStopResult({ requestedTarget: targetPrefix || null, daemons, stoppedDaemons, removedDaemons, failedDaemons });
+
+  async function stopOne(daemon) {
+    const record = registry.read(daemon.targetId);
+    let connected = false;
+    let error = null;
+    try {
+      const conn = await connect(daemon.socketPath);
+      connected = true;
+      const response = await send(conn, { cmd: 'stop', args: [] }, { timeoutMs: STOP_REQUEST_TIMEOUT_MS });
+      if (response?.ok === false) return { status: 'failed', reason: response.error || 'daemon rejected stop' };
+      return { status: 'stopped' };
+    } catch (caught) {
+      error = caught;
+    }
+    const reason = error?.message || String(error);
+
+    // The graceful stop did not happen. A recorded daemon that is alive but
+    // unreachable is killed, after proving the pid is still this daemon.
+    const pid = record?.pid;
+    const pidAlive = pid ? isAlive(pid) : false;
+    let reused = false;
+    if (pidAlive) {
+      const verdict = isDaemonProcess(pid, daemon.targetId);
+      if (verdict === true) {
+        if (!(await terminate(pid))) return { status: 'failed', reason: `pid ${pid} is still running after kill (${reason})` };
+        const leftover = removeLeftovers(daemon);
+        if (leftover) return { status: 'failed', reason: leftover };
+        return { status: 'stopped', reason: `unresponsive, killed pid ${pid}` };
+      }
+      if (verdict == null) return { status: 'failed', reason: `pid ${pid} is alive but could not be verified as the daemon, so it was not killed (${reason})` };
+      reused = true;
+    }
+    if (connected) {
+      // A listener answered but the reply never arrived. If the daemon is gone now, the stop worked.
+      const exited = pid && !reused ? !pidAlive : await endpointIsGone(daemon);
+      if (exited) {
+        const leftover = removeLeftovers(daemon);
+        return leftover ? { status: 'failed', reason: leftover } : { status: 'stopped', reason: 'exited before replying' };
+      }
+      return { status: 'failed', reason: `${reason}; no daemon pid record to kill` };
+    }
+
+    const missing = error?.code === 'ENOENT';
+    if (missing && !record) return { status: 'none' };
+    // Only these errors prove nothing is listening; a timeout or EACCES could be a wedged daemon.
+    const proofOfAbsence = missing || error?.code === 'ECONNREFUSED' || error?.code === 'ENOTSOCK';
+    if (!proofOfAbsence && !record) return { status: 'failed', reason };
+    const leftover = removeLeftovers(daemon);
+    if (leftover) return { status: 'failed', reason: leftover };
+    return { status: 'gone', reason: 'no daemon process or endpoint left; stale entry removed' };
+  }
+
+  const stoppedDaemons = [];
+  const goneDaemons = [];
+  const failedDaemons = [];
+  const notDaemons = new Set();
+  const reasons = {};
+  for (const daemon of selected) {
+    const outcome = await stopOne(daemon);
+    if (outcome.reason) reasons[daemon.targetId] = outcome.reason;
+    if (outcome.status === 'stopped') stoppedDaemons.push(daemon);
+    else if (outcome.status === 'gone') goneDaemons.push(daemon);
+    else if (outcome.status === 'failed') failedDaemons.push(daemon);
+    else notDaemons.add(daemon.targetId);
+  }
+  // A cached page that never had a daemon is not a session, so it is neither failed nor remaining.
+  const sessions = daemons.filter(daemon => !notDaemons.has(daemon.targetId));
+  return buildStopResult({
+    requestedTarget: targetPrefix || null,
+    daemons: sessions,
+    stoppedDaemons,
+    goneDaemons,
+    failedDaemons,
+    reasons,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -23526,6 +24016,7 @@ Usage: cdp <command> [args]
                                     Default open returns the target prefix and a follow-up perceive command.
                                     --perceive dumps the full page after attach (opt-in).
                                     --reuse-url reuses an existing tab matching the URL when unique.
+                                    --background (or CDP_BACKGROUND=1) opens the tab without focusing it.
                                     Default attach wait is fail-fast (5s). Use --attach-timeout-ms 60000
                                     when Chrome may still prompt "Allow debugging?".
                                     --attach-timeout-ms 0 returns the target handoff without waiting.
@@ -23537,6 +24028,7 @@ Usage: cdp <command> [args]
                                     --host HOST binds remote debugging address (default 127.0.0.1).
                                     --headless [new|old], --no-sandbox, --disable-gpu help CI/container/headless runs.
                                     --wait-ms N bounds the readiness probe before success.
+                                    --background adds anti-throttling flags and minimizes the new window.
                                     Returns ready target prefix + next perceive command when a page is available.
                                     JSON includes pid/profileDir/port/url/targetId/targetPrefix/readiness/cleanup.
                                     Uses --remote-debugging-port + --user-data-dir; does not touch your main profile.
@@ -24310,6 +24802,7 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
         strategy: 'relaunch-same-profile',
         run: err.relaunch,
         reason: 'Chrome debugging endpoint is down. Relaunch the same user-data-dir; do not invent a new profile.',
+        ...(Array.isArray(err.candidates) && err.candidates.length > 1 ? { candidates: err.candidates } : {}),
       };
     }
     if (err?.code === 'cdp_unreachable' || lower.includes('cannot reach cdp')) {
@@ -24890,7 +25383,7 @@ function parseNonNegativeInteger(value, label) {
   return parsed;
 }
 
-function parseOpenArgs(args = []) {
+function parseOpenArgs(args = [], env = process.env) {
   const fopts = parseFormatArgs(args, ['text', 'json']);
   const positional = [];
   let attachTimeoutMs = DEFAULT_OPEN_ATTACH_TIMEOUT_MS;
@@ -24898,9 +25391,12 @@ function parseOpenArgs(args = []) {
   let readySelector = null;
   let reuseUrl = false;
   let perceive = false;
+  let background = isBackgroundMode(env);
   for (let i = 0; i < fopts.args.length; i++) {
     const token = fopts.args[i];
-    if (token === '--attach-timeout-ms') {
+    if (token === '--background') {
+      background = true;
+    } else if (token === '--attach-timeout-ms') {
       attachTimeoutMs = parseNonNegativeInteger(fopts.args[++i], 'open: --attach-timeout-ms');
     } else if (String(token).startsWith('--attach-timeout-ms=')) {
       attachTimeoutMs = parseNonNegativeInteger(String(token).slice('--attach-timeout-ms='.length), 'open: --attach-timeout-ms');
@@ -24933,7 +25429,21 @@ function parseOpenArgs(args = []) {
     readySelector,
     reuseUrl,
     perceive,
+    background,
   };
+}
+
+// `open --background` must reach the tab daemon it spawns, or the daemon's first attach activates the tab.
+function backgroundDaemonEnv(background, env = process.env) {
+  return background ? { ...env, CDP_BACKGROUND: '1' } : env;
+}
+
+// Background mode opens the tab in its own new window, created without focus: a background tab in an
+// existing window is document.visibilityState=hidden and Page.captureScreenshot stalls there (#415).
+async function createOpenTarget(cdp, { background = false } = {}) {
+  const params = background ? { url: 'about:blank', newWindow: true, background: true } : { url: 'about:blank' };
+  const { targetId } = await cdpDomains(cdp).Target.createTarget( params);
+  return targetId;
 }
 
 function openReadyProbeScript(selector = null) {
@@ -25035,6 +25545,7 @@ async function navigateOpenTarget(targetId, sp, url, {
   waitForOpenTargetUrlFn = waitForOpenTargetUrl,
   connectToSocketFn = connectToSocket,
   sendCommandFn = sendCommand,
+  background = isBackgroundMode(),
 } = {}) {
   if (!url || url === 'about:blank') return { attempted: false, ok: true, reason: 'about:blank' };
   const attempts = [];
@@ -25045,7 +25556,7 @@ async function navigateOpenTarget(targetId, sp, url, {
   const cdp = createCdp();
   try {
     await cdp.connect(await getWsUrlFn());
-    await cdpDomains(cdp).Target.activateTarget( { targetId }, undefined, 5000).catch(() => {});
+    if (!background) await cdpDomains(cdp).Target.activateTarget( { targetId }, undefined, 5000).catch(() => {});
     const attached = await cdpDomains(cdp).Target.attachToTarget( { targetId, flatten: true }, undefined, 5000);
     const sid = attached.sessionId;
     await cdpDomains(cdp).Page.enable( {}, sid, 2000).catch(() => {});
@@ -25549,7 +26060,7 @@ async function main(options = {}) {
 
     const cdp = new CDP();
     await cdp.connect(await getWsUrl());
-    const { targetId } = await cdpDomains(cdp).Target.createTarget( { url: 'about:blank' });
+    const targetId = await createOpenTarget(cdp, { background: opts.background });
     // Refresh cache; new tab may not appear in getTargets immediately, so add it manually
     const pages = await getPages(cdp);
     if (!pages.some(p => p.targetId === targetId)) {
@@ -25567,6 +26078,7 @@ async function main(options = {}) {
     const child = spawn(runtimeIdentity.execPath, [runtimeIdentity.scriptPath, '_daemon', targetId], {
       detached: true,
       stdio: 'ignore',
+      env: backgroundDaemonEnv(opts.background),
     });
     child.unref();
     let attached = false;
@@ -25594,7 +26106,7 @@ async function main(options = {}) {
       await sleep(Math.min(DAEMON_ALLOW_DELAY, remainingMs));
     }
     const navigation = attached
-      ? await navigateOpenTarget(targetId, sp, url)
+      ? await navigateOpenTarget(targetId, sp, url, { background: opts.background })
       : { attempted: false, ok: false, reason: 'not-attached' };
     const ready = attached
       ? await waitForOpenReady(targetId, { timeoutMs: opts.readyTimeoutMs, url, selector: opts.readySelector })
@@ -25700,6 +26212,7 @@ async function main(options = {}) {
               profileDir: check.profileDir,
               exe: check.exe,
               browser: check.browser,
+              history: check.candidates,
             },
           });
         }
@@ -25866,7 +26379,11 @@ async function main(options = {}) {
       return sendCommand(await connectToSocket(runtime.endpoint), request);
     },
     stop: async resolvedTargetId => {
-      await stopDaemons(resolvedTargetId);
+      const stopResult = await stopDaemons(resolvedTargetId);
+      if (stopResult.failedTargets?.length) {
+        const why = stopResult.results?.find(entry => entry.status === 'failed')?.reason || 'unknown reason';
+        throw new Error(`daemon ${stopResult.failedTargets.join(', ')} did not stop: ${why}`);
+      }
       await sleep(100);
       rebound = true;
     },
@@ -26181,6 +26698,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, SPAWN_DEBUG_BROWSER_FLAGS, detectBrowserPath, buildSpawnDebugBrowserPlan,
+  isBackgroundMode, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
   getWsUrl, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   isExistingBrowserSessionHandoff, formatExistingBrowserSessionHandoffError, formatDailyDefaultProfileCdpFailure,
@@ -26190,6 +26708,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   cdpUnreachableError, profileDirFromCommandLine, profileDirFromDevToolsActivePort,
   inspectCdpOccupantProfileDirViaCdp,
   isDisposableSpawnProfileDir, isIsolatedChromeCdpExProfileDir,
+  isTempCdpProfileDir, rankCdpRelaunchCandidates,
   persistentDailyUserDataDir, isolatedSpawnProfileDir,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
@@ -26217,6 +26736,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   formatDoctorReport, runDoctorChecks, doctorStr,
   doctorProbeFromTargets, doctorProbeFromChecks,
   buildStopResult, formatStopResult, stopDaemons,
+  daemonRecordPath, writeDaemonRecord, readDaemonRecord, removeDaemonRecord, listDaemonRecords, processIsTargetDaemon, isProcessAlive,
   // Issues #82-#87 helpers
   isBlankPageUrl, pageTargetScore, rankPageTargets, matchPageTargets, selectPageTarget,
   parseTargetSelectArgs, buildTargetSelectModel, formatTargetSelect,
