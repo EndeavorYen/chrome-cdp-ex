@@ -22684,22 +22684,31 @@ async function listPagesFromMatchingDaemon({
   env = process.env,
   listSockets = listDaemonSockets,
   timeoutMs = DAEMON_PAGE_LIST_PROBE_TIMEOUT_MS,
+  now = Date.now,
   connect = socketPath => connectToSocket(socketPath, { timeoutMs }),
   request = (conn, req) => requestDaemon(conn, req, { runtimeDir: RUNTIME_DIR, mayHaveSideEffects: false, timeoutMs }),
 } = {}) {
   const wanted = requestedCdpEndpoint(env);
   if (!wanted) return null;
+  // One overall budget for the whole probe loop, so many wedged daemons cannot stack up.
+  const deadline = now() + timeoutMs * 2;
   for (const { socketPath } of listSockets()) {
+    if (now() >= deadline) return null;
+    let metadata = null;
     try {
       const metaResponse = await request(await connect(socketPath), { cmd: 'meta', args: [] });
-      const metadata = metaResponse?.ok ? parseDaemonMetadataResult(metaResponse.result) : null;
-      if (!metadata || metadata.cdpEndpoint !== wanted) continue;
-      // First endpoint match decides: at most one list_raw per discovery, then the fallback.
+      metadata = metaResponse?.ok ? parseDaemonMetadataResult(metaResponse.result) : null;
+    } catch {}
+    if (!metadata || metadata.cdpEndpoint !== wanted) continue;
+    // First endpoint match decides: at most one list_raw per discovery, then the fallback.
+    try {
       const response = await request(await connect(socketPath), { cmd: 'list_raw', args: [] });
       if (!response?.ok) return null;
       const pages = JSON.parse(response.result);
       return Array.isArray(pages) ? pages : null;
-    } catch {}
+    } catch {
+      return null;
+    }
   }
   return null;
 }

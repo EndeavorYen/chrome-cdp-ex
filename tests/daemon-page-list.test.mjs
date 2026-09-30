@@ -156,6 +156,48 @@ describe('#419 daemon page list for target discovery', () => {
     expect(daemons.sent.filter(entry => entry.path === 'second')).toEqual([]);
   });
 
+  it('stops at the first endpoint match when its list_raw throws', async () => {
+    const daemons = fakeDaemons({
+      first: { meta: meta('127.0.0.1:9345'), pages: PAGES_9345 },
+      second: { meta: meta('127.0.0.1:9345'), pages: PAGES_9345 },
+    });
+    const request = vi.fn(async (conn, req) => {
+      if (req.cmd === 'list_raw') throw new Error('IPC timeout');
+      return daemons.request(conn, req);
+    });
+    const pages = await T.listPagesFromMatchingDaemon({
+      env: { CDP_PORT: '9345' },
+      listSockets: daemons.listSockets,
+      connect: daemons.connect,
+      request,
+    });
+    expect(pages).toBeNull();
+    expect(daemons.sent.filter(entry => entry.path === 'second')).toEqual([]);
+  });
+
+  it('stops probing once the overall budget is spent', async () => {
+    const daemons = fakeDaemons({
+      a: { meta: meta('127.0.0.1:9224'), pages: PAGES_9224 },
+      b: { meta: meta('127.0.0.1:9224'), pages: PAGES_9224 },
+      c: { meta: meta('127.0.0.1:9345'), pages: PAGES_9345 },
+    });
+    let clock = 0;
+    const request = vi.fn(async (conn, req) => {
+      clock += 150;
+      return daemons.request(conn, req);
+    });
+    const pages = await T.listPagesFromMatchingDaemon({
+      env: { CDP_PORT: '9345' },
+      listSockets: daemons.listSockets,
+      connect: daemons.connect,
+      request,
+      timeoutMs: 100,
+      now: () => clock,
+    });
+    expect(pages).toBeNull();
+    expect(daemons.sent.map(entry => entry.path)).toEqual(['a', 'b']);
+  });
+
   it('every client list_raw request in cdp.mjs carries args', () => {
     const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
     const requests = source.match(/\{\s*cmd:\s*'list_raw'[^}]*\}/g) || [];
