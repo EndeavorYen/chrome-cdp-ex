@@ -23623,8 +23623,7 @@ Usage: cdp <command> [args]
                                     Checks expose severity: blocking | warning | advisory | ok.
                                     Headless CDP sessions treat unconfirmed permission as advisory, not a blocker.
                                     When CDP is unreachable, FAIL hint is one same-profile relaunch line from the
-                                    profile last used on that port (a persistent --profile-dir beats a temp
-                                    one; other candidates are listed); do not invent a new profile or DISPLAY.
+                                    last known --user-data-dir; do not invent a new profile or DISPLAY.
                                     No target required. Exits 1 if any check FAILs.
 {{command:keepalive}}
 {{command:open}}
