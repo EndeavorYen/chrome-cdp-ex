@@ -1,0 +1,83 @@
+{
+  "schema": "chrome-cdp-ex.benchmark-cli-overhead.rounds.v1",
+  "evidence": "local result, one Windows 11 machine, not repeated elsewhere",
+  "issue": 419,
+  "tree": "fix/419-list-raw-args-pipe-close (working tree on 2a6d67b)",
+  "target_prefix": "365EF276",
+  "cdp_port": 9345,
+  "order": "interleaved: before-r1, after-r1, before-r2, after-r2",
+  "rounds": [
+    {
+      "schema": "chrome-cdp-ex.benchmark-cli-overhead.v1",
+      "runs": 12,
+      "node_startup": {
+        "n": 12,
+        "min": 31,
+        "median": 39,
+        "p90": 43,
+        "max": 76,
+        "mean": 41
+      },
+      "cli_help": {
+        "n": 12,
+        "min": 78,
+        "median": 80,
+        "p90": 90,
+        "max": 92,
+        "mean": 82
+      },
+      "cli_eval": {
+        "n": 12,
+        "min": 117,
+        "median": 126,
+        "p90": 129,
+        "max": 132,
+        "mean": 125
+      },
+      "cli_batch_12_evals": {
+        "n": 12,
+        "min": 131,
+        "median": 135,
+        "p90": 159,
+        "max": 165,
+        "mean": 139
+      }
+    },
+    {
+      "schema": "chrome-cdp-ex.benchmark-cli-overhead.v1",
+      "runs": 12,
+      "node_startup": {
+        "n": 12,
+        "min": 31,
+        "median": 34,
+        "p90": 37,
+        "max": 38,
+        "mean": 34
+      },
+      "cli_help": {
+        "n": 12,
+        "min": 74,
+        "median": 77,
+        "p90": 81,
+        "max": 86,
+        "mean": 78
+      },
+      "cli_eval": {
+        "n": 12,
+        "min": 106,
+        "median": 114,
+        "p90": 117,
+        "max": 128,
+        "mean": 113
+      },
+      "cli_batch_12_evals": {
+        "n": 12,
+        "min": 122,
+        "median": 128,
+        "p90": 131,
+        "max": 134,
+        "mean": 128
+      }
+    }
+  ]
+}

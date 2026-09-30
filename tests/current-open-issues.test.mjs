@@ -11791,7 +11791,7 @@ describe('issue #274 port-bound alias eval vs fake Allow', () => {
   });
 
   it('#274 pinCdpPort discovery uses the alias CDP port and never a synthesized prefix page', async () => {
-    const findSocket = vi.fn(() => '/tmp/other-port.sock');
+    const listSockets = vi.fn(() => [{ targetId: 'OTHER', socketPath: '/tmp/other-port.sock' }]);
     const connect = vi.fn(async () => ({ end() {} }));
     const request = vi.fn(async () => ({
       ok: true,
@@ -11812,7 +11812,7 @@ describe('issue #274 port-bound alias eval vs fake Allow', () => {
     const pages = await T.discoverLivePagesForTargetResolution({
       env: { CDP_PORT: '9224', CDP_HOST: '127.0.0.1' },
       pinCdpPort: true,
-      findSocket,
+      listSockets,
       connect,
       request,
       resolveWsUrl,
@@ -11823,7 +11823,7 @@ describe('issue #274 port-bound alias eval vs fake Allow', () => {
     expect(pages).toEqual(LIVE_PAGES);
     expect(pages[0].targetId).toBe(LIVE_TARGET_ID);
     expect(pages[0].targetId).not.toBe('62E1DF19');
-    expect(findSocket).not.toHaveBeenCalled();
+    expect(listSockets).not.toHaveBeenCalled();
     expect(connect).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
     expect(resolveWsUrl).toHaveBeenCalledOnce();
@@ -11833,7 +11833,7 @@ describe('issue #274 port-bound alias eval vs fake Allow', () => {
     await expect(T.discoverLivePagesForTargetResolution({
       env: { CDP_PORT: '9224', CDP_HOST: '127.0.0.1' },
       pinCdpPort: true,
-      findSocket,
+      listSockets,
       connect,
       request,
       resolveWsUrl: async () => {
@@ -11842,16 +11842,17 @@ describe('issue #274 port-bound alias eval vs fake Allow', () => {
       connectCdp,
       listPages,
     })).rejects.toThrow(/cannot reach cdp on 127\.0\.0\.1:9224/i);
-    expect(findSocket).not.toHaveBeenCalled();
+    expect(listSockets).not.toHaveBeenCalled();
 
+    // #419: the daemon must prove it is attached to the requested endpoint before its list is used.
     const unpinned = await T.discoverLivePagesForTargetResolution({
+      env: { CDP_PORT: '9345' },
       pinCdpPort: false,
-      findSocket: () => '/tmp/daemon.sock',
-      connect: async () => ({ end() {} }),
-      request: async () => ({
-        ok: true,
-        result: JSON.stringify([{ targetId: 'DAEMONONLYFULLID' }]),
-      }),
+      listSockets: () => [{ targetId: 'DAEMON', socketPath: '/tmp/daemon.sock' }],
+      connect: async () => ({ end() {}, destroy() {} }),
+      request: async (_conn, req) => (req.cmd === 'meta'
+        ? { ok: true, result: JSON.stringify({ cdpEndpoint: '127.0.0.1:9345' }) }
+        : { ok: true, result: JSON.stringify([{ targetId: 'DAEMONONLYFULLID' }]) }),
       connectCdp: async () => {
         throw new Error('unpinned discovery must not open a second CDP');
       },

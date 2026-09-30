@@ -21375,7 +21375,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   const cdp = new CDP();
   try {
-    await cdp.connect(await getWsUrl());
+    const wsUrl = await getWsUrl();
+    await cdp.connect(wsUrl);
+    // Lets a CLI call reuse this daemon's page list only for the same endpoint (#419).
+    daemonMetadata.cdpEndpoint = cdpEndpointFromWsUrl(wsUrl);
     try { await rememberLiveCdpEndpointFromSession(cdp); } catch {}
   } catch (e) {
     process.stderr.write(`Daemon: cannot connect to Chrome: ${e.message}\n`);
@@ -22640,15 +22643,60 @@ async function assertFreshDaemonConnection(conn, { targetPrefix, expectedTargetI
   return assessment;
 }
 
-// Find any running daemon socket to reuse for list
-function findAnyDaemonSocket() {
-  return listDaemonSockets()[0]?.socketPath || null;
+// host:port of a CDP endpoint, normalized by URL so both sides compare equal.
+function normalizeCdpEndpoint(host, port) {
+  try {
+    const url = new URL(`ws://${host}:${port}/`);
+    return url.port ? url.host : null;
+  } catch {
+    return null;
+  }
+}
+
+function cdpEndpointFromWsUrl(wsUrl) {
+  try {
+    const url = new URL(String(wsUrl));
+    return normalizeCdpEndpoint(url.hostname, url.port);
+  } catch {
+    return null;
+  }
+}
+
+function requestedCdpEndpoint(env = process.env) {
+  if (!env.CDP_PORT) return null;
+  return normalizeCdpEndpoint(env.CDP_HOST || DEFAULT_CDP_HOST, env.CDP_PORT);
+}
+
+// Page list from a running daemon, but only one attached to the endpoint this call targets.
+// Daemon sockets come from the shared pages cache and may belong to another browser, so a
+// daemon must prove its endpoint through `meta` first. Without CDP_PORT the endpoint is not
+// known before discovery, and an old daemon has no `cdpEndpoint`: both return null (fallback).
+async function listPagesFromMatchingDaemon({
+  env = process.env,
+  listSockets = listDaemonSockets,
+  connect = connectToSocket,
+  request = sendCommand,
+} = {}) {
+  const wanted = requestedCdpEndpoint(env);
+  if (!wanted) return null;
+  for (const { socketPath } of listSockets()) {
+    try {
+      const metaResponse = await request(await connect(socketPath), { cmd: 'meta', args: [] });
+      const metadata = metaResponse?.ok ? parseDaemonMetadataResult(metaResponse.result) : null;
+      if (!metadata || metadata.cdpEndpoint !== wanted) continue;
+      const response = await request(await connect(socketPath), { cmd: 'list_raw', args: [] });
+      if (!response?.ok) continue;
+      const pages = JSON.parse(response.result);
+      if (Array.isArray(pages)) return pages;
+    } catch {}
+  }
+  return null;
 }
 
 async function discoverLivePagesForTargetResolution({
   env = process.env,
   pinCdpPort = false,
-  findSocket = findAnyDaemonSocket,
+  listSockets = listDaemonSockets,
   connect = connectToSocket,
   request = sendCommand,
   resolveWsUrl = getWsUrl,
@@ -22657,17 +22705,8 @@ async function discoverLivePagesForTargetResolution({
   rememberEndpoint = rememberLiveCdpEndpointFromSession,
 } = {}) {
   if (!pinCdpPort) {
-    const existingSocket = findSocket();
-    if (existingSocket) {
-      try {
-        const conn = await connect(existingSocket);
-        const response = await request(conn, { cmd: 'list_raw' });
-        if (response.ok) {
-          const pages = JSON.parse(response.result);
-          if (Array.isArray(pages)) return pages;
-        }
-      } catch {}
-    }
+    const pages = await listPagesFromMatchingDaemon({ env, listSockets, connect, request });
+    if (pages) return pages;
   }
   const openCdp = connectCdp || (async (wsUrl) => {
     const cdp = new CDP();
@@ -25272,15 +25311,7 @@ async function main(options = {}) {
       console.error(formatCliError(`list: unknown argument ${fopts.args[0]}`, { cmd, format: fopts.format }));
       return finish(1);
     }
-    let pages;
-    const existingSock = findAnyDaemonSocket();
-    if (existingSock) {
-      try {
-        const conn = await connectToSocket(existingSock);
-        const resp = await sendCommand(conn, { cmd: 'list_raw' });
-        if (resp.ok) pages = JSON.parse(resp.result);
-      } catch {}
-    }
+    let pages = await listPagesFromMatchingDaemon();
     if (!pages) {
       // No daemon running — connect directly (will trigger one Allow)
       const cdp = new CDP();
@@ -25429,15 +25460,7 @@ async function main(options = {}) {
   if (cmd === 'target') {
     try {
       const opts = parseTargetSelectArgs(args);
-      let pages;
-      const existingSock = findAnyDaemonSocket();
-      if (existingSock) {
-        try {
-          const conn = await connectToSocket(existingSock);
-          const resp = await sendCommand(conn, { cmd: 'list_raw' });
-          if (resp.ok) pages = JSON.parse(resp.result);
-        } catch {}
-      }
+      let pages = await listPagesFromMatchingDaemon();
       if (!pages) {
         const cdp = new CDP();
         await cdp.connect(await getWsUrl());
@@ -25463,15 +25486,7 @@ async function main(options = {}) {
 
     // Reuse an existing tab with the same/similar URL when requested.
     if (opts.reuseUrl && url !== 'about:blank') {
-      let pages;
-      const existingSock = findAnyDaemonSocket();
-      if (existingSock) {
-        try {
-          const conn = await connectToSocket(existingSock);
-          const resp = await sendCommand(conn, { cmd: 'list_raw' });
-          if (resp.ok) pages = JSON.parse(resp.result);
-        } catch {}
-      }
+      let pages = await listPagesFromMatchingDaemon();
       if (!pages) {
         const cdp = new CDP();
         await cdp.connect(await getWsUrl());
@@ -26023,6 +26038,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   removeTargetAlias, forgetTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
   aliasEnv, discoverOptionsForTargetAlias, selectLivePagesForAliasResolution, bindAliasTargetFromPages,
   bindAndSaveTargetAlias, livePagesForTargetCommand, discoverLivePagesForTargetResolution,
+  listPagesFromMatchingDaemon, cdpEndpointFromWsUrl, requestedCdpEndpoint, validateDaemonProtocolRequest,
   formatDaemonStartFailure,
   aliasLookupKey, looksLikeAliasToken, looksLikeHexTargetPrefix, unknownAliasError, formatCurrentAlias,
   // AX tree helpers

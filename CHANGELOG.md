@@ -28,6 +28,14 @@
 
 ### Bug fixes
 
+* A target command with `CDP_PORT` set now takes its page list from a running daemon on that same
+  endpoint instead of opening a new browser connection three times: `list_raw` requests now carry `args`,
+  which the daemon had rejected. A daemon now reports its `cdpEndpoint` in `meta`; a daemon on another
+  endpoint, a daemon from an older version, or an unset `CDP_PORT` keeps the fresh-connection path. The CLI
+  also closes the daemon pipe with `destroy()` after the full reply frame, which removes a ~51 ms wait on
+  Windows. Local result on one Windows machine: `cdp eval` median 252-255 ms before, 114-126 ms after
+  (`docs/perf/2026-10-01-issue-419.md`) ([#419](https://github.com/EndeavorYen/chrome-cdp-ex/issues/419)).
+
 * A click that reaches the page as zero events now says why when the tab is hidden (its window
   covered or minimised: Chrome drops `Input.*` events there): the error and the failure receipt carry
   `visibility: "hidden"` and point to `jsclick`. Failure receipts also carry `dispatched`

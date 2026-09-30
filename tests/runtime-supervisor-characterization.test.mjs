@@ -254,7 +254,9 @@ describe('Phase 5 current runtime characterization', () => {
       '{"cmd":"report","args":["--format","json"],"id":1}\n',
     );
     expect(request.id).toBe(1);
-    expect(conn.end).toHaveBeenCalledOnce();
+    // #419: close after the complete first frame with destroy(), not a graceful end().
+    expect(conn.destroy).toHaveBeenCalledOnce();
+    expect(conn.end).not.toHaveBeenCalled();
   });
 
   it('freezes stop behavior for one selected daemon and stale-socket removal', async () => {
