@@ -28,6 +28,10 @@
 
 ### Bug fixes
 
+* `download.mjs` (and `session.mjs` `download`) now creates the out-file's parent folder (`mkdir -p`)
+  before any page or network work, and fails at once with `cannot create folder <dir>` when it cannot, so a
+  new folder such as `clips/final/s1.mp4` no longer fails only after a paid fetch
+  ([#418](https://github.com/EndeavorYen/chrome-cdp-ex/issues/418)).
 * A click that reaches the page as zero events now says why when the tab is hidden (its window
   covered or minimised: Chrome drops `Input.*` events there): the error and the failure receipt carry
   `visibility: "hidden"` and point to `jsclick`. Failure receipts also carry `dispatched`
