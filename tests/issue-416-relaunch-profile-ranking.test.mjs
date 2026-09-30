@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 process.env.NODE_ENV = 'test';
 
@@ -8,7 +11,7 @@ const DAILY = 'C:\\Users\\endea\\AppData\\Local\\chrome-cdp-ex\\daily-chrome';
 const TEMP = 'C:\\Users\\endea\\AppData\\Local\\Temp/cdp-accept-profile2';
 const EXE = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
-function memoryIo(runtimeDir = '/tmp/cdp-runtime-416') {
+function memoryIo(runtimeDir = mkdtempSync(join(tmpdir(), 'cdp-runtime-416-'))) {
   const files = new Map();
   let tick = 0;
   return {
@@ -43,9 +46,8 @@ describe('#416 relaunch recovery picks the persistent profile last used on the p
 
   it('seeds the history from an old flat record, and a session sighting keeps the spawn marker', () => {
     const io = memoryIo();
-    io.writer(`${io.runtimeDir}/cdp-last-endpoint.json`, JSON.stringify({
-      schema: 'chrome-cdp-ex.cdp-last-endpoint.v1', host: '127.0.0.1', port: '9342', profileDir: DAILY, exe: EXE, browser: 'chrome', launchedAt: '2026-09-30T00:00:00.000Z',
-    }));
+    // An old flat record (no history, no via), as written before this fix.
+    T.writeLastCdpEndpoint({ host: '127.0.0.1', port: '9342', profileDir: DAILY, exe: EXE, browser: 'chrome', launchedAt: '2026-09-30T00:00:00.000Z' }, io);
     T.rememberLastCdpEndpoint({ host: '127.0.0.1', port: 9342, profileDir: TEMP, exe: EXE, browser: 'chrome', via: SPAWN }, io);
     T.rememberLastCdpEndpoint({ host: '127.0.0.1', port: 9342, profileDir: TEMP, exe: EXE, browser: 'chrome' }, io);
     const stored = T.readLastCdpEndpoint(io);
@@ -119,6 +121,8 @@ describe('#416 relaunch recovery picks the persistent profile last used on the p
     expect(T.isTempCdpProfileDir('/tmp/cdp-accept-profile2')).toBe(true);
     expect(T.isTempCdpProfileDir('/var/folders/ab/xyz/T/chrome-cdp-ex-chrome-debug-profile-9342')).toBe(true);
     expect(T.isTempCdpProfileDir(DAILY)).toBe(false);
+    expect(T.isTempCdpProfileDir('D:/work/tmp/chrome-profile')).toBe(false);
+    expect(T.isTempCdpProfileDir('/home/me/temp/prof')).toBe(false);
     expect(T.isTempCdpProfileDir('/home/me/.config/chrome-cdp-ex/daily-chrome')).toBe(false);
   });
 
@@ -148,9 +152,63 @@ describe('#416 relaunch recovery picks the persistent profile last used on the p
     });
     const relaunch = `cdp spawn-debug-browser chrome --port 9342 --profile-dir '${DAILY}' --exe '${EXE}'`;
     expect(check).toMatchObject({ status: 'FAIL', error: 'cdp_unreachable', profileDir: DAILY, relaunch });
-    expect(check.hint).toContain(relaunch);
-    expect(check.hint).toContain(TEMP);
+    expect(check.hint).toBe(relaunch);
     expect(check.candidates.map(c => c.profileDir)).toEqual([DAILY, TEMP]);
+
+    const model = T.buildDoctorModel([check]);
+    expect(model.recommendation).toMatchObject({ strategy: 'relaunch-same-profile', run: relaunch });
+    expect(model.recommendation.ask).toContain(TEMP);
+    expect(model.recommendation.candidates.map(c => c.profileDir)).toEqual([DAILY, TEMP]);
+  });
+
+  it('separates the candidate list from the command in the error message', () => {
+    const err = T.cdpUnreachableError({
+      host: '127.0.0.1', port: '9342', cause: 'ECONNREFUSED',
+      lastEndpoint: {
+        port: '9342',
+        history: [
+          { port: '9342', profileDir: '/home/me/a', via: SPAWN, lastSeenAt: '2026-10-01T02:00:00.000Z' },
+          { port: '9342', profileDir: '/home/me/b', via: SPAWN, lastSeenAt: '2026-10-01T01:00:00.000Z' },
+        ],
+      },
+    });
+    const [first, second] = err.message.split('\n');
+    expect(first.endsWith(err.relaunch)).toBe(true);
+    expect(second).toMatch(/^Other profiles seen on this port: \/home\/me\/b/);
+  });
+
+  it('temp spawn churn cannot evict the persistent profile from the bounded history', () => {
+    const io = memoryIo();
+    T.rememberLastCdpEndpoint({ host: '127.0.0.1', port: 9342, profileDir: DAILY, browser: 'chrome', via: SPAWN }, io);
+    for (let i = 0; i < 30; i++) {
+      T.rememberLastCdpEndpoint({ host: '127.0.0.1', port: 9400 + i, profileDir: `/tmp/cdp-accept-${i}`, browser: 'chrome', via: SPAWN }, io);
+    }
+    const stored = T.readLastCdpEndpoint(io);
+    expect(stored.history.length).toBeLessThanOrEqual(24);
+    expect(stored.history.some(entry => entry.profileDir === DAILY)).toBe(true);
+    expect(T.rankCdpRelaunchCandidates(stored, '9342').map(c => c.profileDir)).toEqual([DAILY]);
+  });
+
+  it('one busy port cannot push another port out of the history, and the same dir spelled two ways is one candidate', () => {
+    const io = memoryIo();
+    T.rememberLastCdpEndpoint({ host: '127.0.0.1', port: 9342, profileDir: DAILY, browser: 'chrome', via: SPAWN }, io);
+    for (let i = 0; i < 10; i++) {
+      T.rememberLastCdpEndpoint({ host: '127.0.0.1', port: 9500, profileDir: `/home/me/busy-${i}`, browser: 'chrome', via: SPAWN }, io);
+    }
+    T.rememberLastCdpEndpoint({ host: '127.0.0.1', port: 9342, profileDir: DAILY.replace(/\\/g, '/').toLowerCase() + '/' }, io);
+    const stored = T.readLastCdpEndpoint(io);
+    expect(stored.history.filter(entry => entry.port === '9500')).toHaveLength(4);
+    const ranked = T.rankCdpRelaunchCandidates(stored, '9342');
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0].via).toBe(SPAWN);
+  });
+
+  it('a record with a profile but no port still relaunches on the old default port', () => {
+    const err = T.cdpUnreachableError({
+      host: '127.0.0.1', cause: 'ECONNREFUSED',
+      lastEndpoint: { host: '127.0.0.1', profileDir: '/home/me/only', exe: '/opt/chrome', browser: 'chrome' },
+    });
+    expect(err.relaunch).toBe('/opt/chrome --remote-debugging-port=9222 --user-data-dir /home/me/only');
   });
 
   it('spawn-debug-browser records via=spawn-debug-browser for the profile it launched', async () => {

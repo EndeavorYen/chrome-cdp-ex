@@ -1161,7 +1161,8 @@ function lastCdpEndpointPath(runtimeDir = RUNTIME_DIR) {
   return pathApiForRoot(runtimeDir).resolve(runtimeDir, LAST_CDP_ENDPOINT_FILE);
 }
 
-const LAST_CDP_ENDPOINT_HISTORY_MAX = 12;
+const LAST_CDP_ENDPOINT_HISTORY_MAX = 24;
+const LAST_CDP_ENDPOINT_HISTORY_PER_PORT_MAX = 4;
 const SPAWN_DEBUG_BROWSER_VIA = 'spawn-debug-browser';
 
 // One profile seen on one port. `via` is only ever the spawn-debug-browser marker (#416).
@@ -1181,6 +1182,12 @@ function normalizeCdpEndpointHistoryEntry(raw) {
   return entry;
 }
 
+// Same directory spelled `C:\x\y`, `c:/x/y/` or `C:/x/y` is one profile (Windows paths are case-insensitive).
+function cdpProfileKey(profileDir) {
+  const text = String(profileDir || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return /^[a-z]:\//i.test(text) ? text.toLowerCase() : text;
+}
+
 function mergeCdpEndpointHistoryEntry(a, b) {
   const [older, newer] = String(a.lastSeenAt || '') <= String(b.lastSeenAt || '') ? [a, b] : [b, a];
   return {
@@ -1197,12 +1204,20 @@ function mergeCdpEndpointHistory(history, raw) {
   const list = (Array.isArray(history) ? history : []).map(normalizeCdpEndpointHistoryEntry).filter(Boolean);
   const entry = normalizeCdpEndpointHistoryEntry(raw);
   if (entry) {
-    const at = list.findIndex(item => item.port === entry.port && item.profileDir === entry.profileDir);
+    const at = list.findIndex(item => item.port === entry.port && cdpProfileKey(item.profileDir) === cdpProfileKey(entry.profileDir));
     if (at === -1) list.push(entry);
     else list[at] = mergeCdpEndpointHistoryEntry(list[at], entry);
   }
-  list.sort((a, b) => String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')));
-  return list.slice(0, LAST_CDP_ENDPOINT_HISTORY_MAX);
+  // Keep persistent profiles over temp ones, so churn of test spawns cannot evict the real profile.
+  list.sort((a, b) => (isTempCdpProfileDir(a.profileDir) - isTempCdpProfileDir(b.profileDir))
+    || String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')));
+  // Bounded per port as well as overall, so one busy port cannot push out another port's profile.
+  const perPort = new Map();
+  return list.filter(item => {
+    const n = (perPort.get(item.port) || 0) + 1;
+    perPort.set(item.port, n);
+    return n <= LAST_CDP_ENDPOINT_HISTORY_PER_PORT_MAX;
+  }).slice(0, LAST_CDP_ENDPOINT_HISTORY_MAX);
 }
 
 function normalizeLastCdpEndpoint(raw) {
@@ -1292,7 +1307,8 @@ function isTempCdpProfileDir(profileDir) {
   const normalized = String(profileDir || '').replace(/\\/g, '/');
   if (!normalized) return false;
   if (isIsolatedChromeCdpExProfileDir(normalized)) return true;
-  if (/(?:^|\/)(?:tmp|temp)\//i.test(normalized) || /(?:^|\/)var\/folders\//i.test(normalized)) return true;
+  if (/^\/(?:private\/)?tmp\//i.test(normalized) || /(?:^|\/)var\/folders\//i.test(normalized)) return true;
+  if (/^[a-z]:\/(?:windows\/)?temp\//i.test(normalized) || /\/appdata\/local\/temp\//i.test(normalized)) return true;
   try {
     const root = String(tmpdir() || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
     if (root && normalized.toLowerCase().startsWith(`${root}/`)) return true;
@@ -1307,11 +1323,13 @@ function rankCdpRelaunchCandidates(record, port) {
   const want = port != null && port !== '' ? String(port) : null;
   const byDir = new Map();
   const add = raw => {
-    const entryPort = raw?.port == null || raw.port === '' ? want : String(raw.port);
+    // A record without a port keeps the old default of 9222 when the caller has no port either.
+    const entryPort = raw?.port == null || raw.port === '' ? (want || '9222') : String(raw.port);
     const entry = normalizeCdpEndpointHistoryEntry({ ...raw, port: entryPort });
     if (!entry || (want && entry.port !== want)) return;
-    const known = byDir.get(entry.profileDir);
-    byDir.set(entry.profileDir, known ? mergeCdpEndpointHistoryEntry(known, entry) : entry);
+    const key = cdpProfileKey(entry.profileDir);
+    const known = byDir.get(key);
+    byDir.set(key, known ? mergeCdpEndpointHistoryEntry(known, entry) : entry);
   };
   for (const item of Array.isArray(record.history) ? record.history : []) add(item);
   if (record.profileDir) {
@@ -1516,7 +1534,7 @@ function cdpUnreachableError({ host, port, cause, lastEndpoint } = {}) {
   const causeText = String(cause || 'unreachable').replace(/^Error:\s*/i, '');
   const others = formatCdpCandidateList(candidates);
   const message = profileDir
-    ? `Cannot reach CDP on ${where} (${causeText}). Relaunch the same profile: ${relaunch}${others ? ` ${others}` : ''}`
+    ? `Cannot reach CDP on ${where} (${causeText}). Relaunch the same profile: ${relaunch}${others ? `\n${others}` : ''}`
     : `Cannot reach CDP on ${where} (${causeText}). Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.`;
   const err = new Error(message);
   err.code = 'cdp_unreachable';
@@ -19314,10 +19332,8 @@ async function checkCdpReachability({
     const top = candidates[0] || null;
     const profileDir = top?.profileDir || null;
     const relaunch = top?.relaunch || null;
-    const others = formatCdpCandidateList(candidates);
     const hint = relaunch
-      ? (others ? `${relaunch}  # ${others}` : relaunch)
-      : 'Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.';
+      || 'Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.';
     return {
       status: 'FAIL',
       label: 'CDP',
@@ -21101,6 +21117,8 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
       exe: plan.exe,
       browser: plan.browser,
       // #416: recovery suggests the spawn command only for profiles this command created.
+      // A --daily-profile spawn is not reproducible through --profile-dir, so it stays untagged
+      // and recovery keeps the raw browser line for it.
       ...(plan.dailyProfile ? {} : { via: SPAWN_DEBUG_BROWSER_VIA }),
     });
   } catch {}
@@ -23605,7 +23623,8 @@ Usage: cdp <command> [args]
                                     Checks expose severity: blocking | warning | advisory | ok.
                                     Headless CDP sessions treat unconfirmed permission as advisory, not a blocker.
                                     When CDP is unreachable, FAIL hint is one same-profile relaunch line from the
-                                    last known --user-data-dir; do not invent a new profile or DISPLAY.
+                                    profile last used on that port (a persistent --profile-dir beats a temp
+                                    one; other candidates are listed); do not invent a new profile or DISPLAY.
                                     No target required. Exits 1 if any check FAILs.
 {{command:keepalive}}
 {{command:open}}

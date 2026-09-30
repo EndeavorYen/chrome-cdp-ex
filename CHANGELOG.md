@@ -34,7 +34,8 @@
   a profile `spawn-debug-browser` recorded, then any other persistent profile, then temp profiles last;
   when more than one is plausible it lists the others; and when `spawn-debug-browser` created the
   port it suggests `cdp spawn-debug-browser <browser> --port N --profile-dir <dir>` instead of a raw
-  browser line ([#416](https://github.com/EndeavorYen/chrome-cdp-ex/issues/416)).
+  browser line. A remembered profile for a different port is no longer offered for this one
+  ([#416](https://github.com/EndeavorYen/chrome-cdp-ex/issues/416)).
 * A click that reaches the page as zero events now says why when the tab is hidden (its window
   covered or minimised: Chrome drops `Input.*` events there): the error and the failure receipt carry
   `visibility: "hidden"` and point to `jsclick`. Failure receipts also carry `dispatched`

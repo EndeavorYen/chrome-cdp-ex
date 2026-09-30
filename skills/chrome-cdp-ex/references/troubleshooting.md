@@ -27,7 +27,7 @@ Dead CDP must fail fast with a same-profile relaunch receipt. Do not invent `DIS
 
 `list` and `doctor` already probe `http://127.0.0.1:9222/json/version` (spawn default) then `http://127.0.0.1:9224/json/version` when `CDP_PORT` and `DevToolsActivePort` are both missing. If either probe returns 200, the live tabs are listed — do not ask the user to toggle `chrome://inspect` or spawn a debug profile.
 
-1. Read the printed `error=cdp_unreachable` receipt. If it includes a relaunch line, run that exact command (same port and `--user-data-dir`).
+1. Read the printed `error=cdp_unreachable` receipt. If it includes a relaunch line, run that exact command (same port and profile). The receipt names the persistent profile last used on that port, never a temp one when a persistent one was seen, and lists any other candidates; when `cdp spawn-debug-browser ... --profile-dir` created the port it is that command, not a raw browser line.
 2. Check live targets:
 
 ```bash
