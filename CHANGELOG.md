@@ -36,6 +36,14 @@
 
 ### Bug fixes
 
+* The `relaunch-same-profile` recovery no longer names a stale temp profile. `cdp-last-endpoint.json`
+  now keeps a short per-port history of the profiles seen on each port, so a later temp spawn on the
+  same port cannot erase the persistent `--profile-dir`. Recovery picks, for the requested port only:
+  a profile `spawn-debug-browser` recorded, then any other persistent profile, then temp profiles last;
+  when more than one is plausible it lists the others; and when `spawn-debug-browser` created the
+  port it suggests `cdp spawn-debug-browser <browser> --port N --profile-dir <dir>` instead of a raw
+  browser line. A remembered profile for a different port is no longer offered for this one
+  ([#416](https://github.com/EndeavorYen/chrome-cdp-ex/issues/416)).
 * `download.mjs` (and `session.mjs` `download`) now creates the out-file's parent folder (`mkdir -p`)
   before any page or network work, and fails at once with `cannot create folder <dir>` when it cannot, so a
   new folder such as `clips/final/s1.mp4` no longer fails only after a paid fetch

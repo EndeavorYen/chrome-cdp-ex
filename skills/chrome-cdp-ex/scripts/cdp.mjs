@@ -9,7 +9,7 @@
 
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, realpathSync, statSync } from 'fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { basename, dirname, posix as posixPath, resolve, win32 as win32Path } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
@@ -1172,6 +1172,65 @@ function lastCdpEndpointPath(runtimeDir = RUNTIME_DIR) {
   return pathApiForRoot(runtimeDir).resolve(runtimeDir, LAST_CDP_ENDPOINT_FILE);
 }
 
+const LAST_CDP_ENDPOINT_HISTORY_MAX = 24;
+const LAST_CDP_ENDPOINT_HISTORY_PER_PORT_MAX = 4;
+const SPAWN_DEBUG_BROWSER_VIA = 'spawn-debug-browser';
+
+// One profile seen on one port. `via` is only ever the spawn-debug-browser marker (#416).
+function normalizeCdpEndpointHistoryEntry(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const port = raw.port == null || raw.port === '' ? null : String(raw.port);
+  const profileDir = raw.profileDir ? String(raw.profileDir) : null;
+  if (!port || !profileDir) return null;
+  const entry = {
+    port,
+    profileDir,
+    exe: raw.exe ? String(raw.exe) : null,
+    browser: raw.browser ? String(raw.browser).toLowerCase() : null,
+    lastSeenAt: raw.lastSeenAt ? String(raw.lastSeenAt) : null,
+  };
+  if (raw.via === SPAWN_DEBUG_BROWSER_VIA) entry.via = SPAWN_DEBUG_BROWSER_VIA;
+  return entry;
+}
+
+// Same directory spelled `C:\x\y`, `c:/x/y/` or `C:/x/y` is one profile (Windows paths are case-insensitive).
+function cdpProfileKey(profileDir) {
+  const text = String(profileDir || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return /^[a-z]:\//i.test(text) ? text.toLowerCase() : text;
+}
+
+function mergeCdpEndpointHistoryEntry(a, b) {
+  const [older, newer] = String(a.lastSeenAt || '') <= String(b.lastSeenAt || '') ? [a, b] : [b, a];
+  return {
+    ...older,
+    ...newer,
+    exe: newer.exe || older.exe,
+    browser: newer.browser || older.browser,
+    lastSeenAt: newer.lastSeenAt || older.lastSeenAt,
+    ...((a.via || b.via) ? { via: SPAWN_DEBUG_BROWSER_VIA } : {}),
+  };
+}
+
+function mergeCdpEndpointHistory(history, raw) {
+  const list = (Array.isArray(history) ? history : []).map(normalizeCdpEndpointHistoryEntry).filter(Boolean);
+  const entry = normalizeCdpEndpointHistoryEntry(raw);
+  if (entry) {
+    const at = list.findIndex(item => item.port === entry.port && cdpProfileKey(item.profileDir) === cdpProfileKey(entry.profileDir));
+    if (at === -1) list.push(entry);
+    else list[at] = mergeCdpEndpointHistoryEntry(list[at], entry);
+  }
+  // Keep persistent profiles over temp ones, so churn of test spawns cannot evict the real profile.
+  list.sort((a, b) => (isTempCdpProfileDir(a.profileDir) - isTempCdpProfileDir(b.profileDir))
+    || String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')));
+  // Bounded per port as well as overall, so one busy port cannot push out another port's profile.
+  const perPort = new Map();
+  return list.filter(item => {
+    const n = (perPort.get(item.port) || 0) + 1;
+    perPort.set(item.port, n);
+    return n <= LAST_CDP_ENDPOINT_HISTORY_PER_PORT_MAX;
+  }).slice(0, LAST_CDP_ENDPOINT_HISTORY_MAX);
+}
+
 function normalizeLastCdpEndpoint(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const port = raw.port == null || raw.port === '' ? null : String(raw.port);
@@ -1181,7 +1240,7 @@ function normalizeLastCdpEndpoint(raw) {
   const browser = raw.browser ? String(raw.browser).toLowerCase() : null;
   const launchedAt = raw.launchedAt ? String(raw.launchedAt) : null;
   if (!port && !host && !profileDir) return null;
-  return {
+  const record = {
     schema: LAST_CDP_ENDPOINT_SCHEMA,
     host,
     port,
@@ -1190,6 +1249,10 @@ function normalizeLastCdpEndpoint(raw) {
     browser,
     launchedAt,
   };
+  if (profileDir && raw.via === SPAWN_DEBUG_BROWSER_VIA) record.via = SPAWN_DEBUG_BROWSER_VIA;
+  const history = mergeCdpEndpointHistory(raw.history, null);
+  if (history.length) record.history = history;
+  return record;
 }
 
 function readLastCdpEndpoint({ runtimeDir = RUNTIME_DIR, reader = readFileSync } = {}) {
@@ -1214,11 +1277,94 @@ function rememberLastCdpEndpoint(record, opts = {}) {
   const previous = opts.previous !== undefined ? opts.previous : readLastCdpEndpoint(opts);
   const next = { ...(previous || {}) };
   for (const [key, value] of Object.entries(record || {})) {
-    if (value != null && value !== '') next[key] = value;
+    if (value != null && value !== '' && key !== 'history') next[key] = value;
   }
   const portChanged = previous?.port && record?.port != null && String(previous.port) !== String(record.port);
   if (portChanged && !record.profileDir) next.profileDir = null;
+  // Per-port profile history (#416): a later spawn on the same port must not erase the
+  // persistent profile an earlier one used. An old flat record seeds the history once.
+  let history = mergeCdpEndpointHistory(previous?.history, previous?.profileDir ? {
+    port: previous.port,
+    profileDir: previous.profileDir,
+    exe: previous.exe,
+    browser: previous.browser,
+    via: previous.via,
+    lastSeenAt: previous.launchedAt,
+  } : null);
+  const seenPort = record?.port ?? previous?.port;
+  if (record?.profileDir && seenPort != null && seenPort !== '') {
+    const at = new Date(typeof opts.now === 'function' ? opts.now() : (opts.now || Date.now())).toISOString();
+    history = mergeCdpEndpointHistory(history, {
+      port: seenPort,
+      profileDir: record.profileDir,
+      exe: record.exe,
+      browser: record.browser,
+      via: record.via,
+      lastSeenAt: at,
+    });
+  }
+  if (history.length) next.history = history;
+  const current = next.profileDir
+    ? history.find(item => item.port === String(next.port) && item.profileDir === next.profileDir)
+    : null;
+  if (current?.via) next.via = current.via;
+  else delete next.via;
   return writeLastCdpEndpoint(next, opts);
+}
+
+// A profile under a temp dir (or a disposable chrome-cdp-ex-* spawn dir) is a leftover of a test
+// or one-off spawn, never the profile to recover a logged-in session into (#416).
+function isTempCdpProfileDir(profileDir) {
+  const normalized = String(profileDir || '').replace(/\\/g, '/');
+  if (!normalized) return false;
+  if (isIsolatedChromeCdpExProfileDir(normalized)) return true;
+  if (/^\/(?:private\/)?tmp\//i.test(normalized) || /(?:^|\/)var\/folders\//i.test(normalized)) return true;
+  if (/^[a-z]:\/(?:windows\/)?temp\//i.test(normalized) || /\/appdata\/local\/temp\//i.test(normalized)) return true;
+  try {
+    const root = String(tmpdir() || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (root && normalized.toLowerCase().startsWith(`${root}/`)) return true;
+  } catch {}
+  return false;
+}
+
+// Profiles plausibly behind `port`, best first: spawn-debug-browser-recorded persistent, other
+// persistent, spawn-recorded temp, other temp; newest first inside a tier. Other ports never match.
+function rankCdpRelaunchCandidates(record, port) {
+  if (!record || typeof record !== 'object') return [];
+  const want = port != null && port !== '' ? String(port) : null;
+  const byDir = new Map();
+  const add = raw => {
+    // A record without a port keeps the old default of 9222 when the caller has no port either.
+    const entryPort = raw?.port == null || raw.port === '' ? (want || '9222') : String(raw.port);
+    const entry = normalizeCdpEndpointHistoryEntry({ ...raw, port: entryPort });
+    if (!entry || (want && entry.port !== want)) return;
+    const key = cdpProfileKey(entry.profileDir);
+    const known = byDir.get(key);
+    byDir.set(key, known ? mergeCdpEndpointHistoryEntry(known, entry) : entry);
+  };
+  for (const item of Array.isArray(record.history) ? record.history : []) add(item);
+  if (record.profileDir) {
+    add({
+      port: record.port,
+      profileDir: record.profileDir,
+      exe: record.exe,
+      browser: record.browser,
+      via: record.via,
+      lastSeenAt: record.launchedAt,
+    });
+  }
+  const tier = entry => (isTempCdpProfileDir(entry.profileDir) ? 2 : 0) + (entry.via ? 0 : 1);
+  return [...byDir.values()]
+    .map(entry => ({ ...entry, temp: isTempCdpProfileDir(entry.profileDir) }))
+    .sort((a, b) => tier(a) - tier(b) || String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')))
+    .map(entry => ({ ...entry, relaunch: formatCdpRelaunchCommand(entry, { port: want || entry.port }) }));
+}
+
+// One line naming the profiles that were not chosen; null when there is nothing to choose between.
+function formatCdpCandidateList(candidates) {
+  if (!Array.isArray(candidates) || candidates.length < 2) return null;
+  const label = c => `${c.profileDir} (${c.temp ? 'temp' : 'persistent'}${c.via ? ', spawn-debug-browser' : ''})`;
+  return `Other profiles seen on this port: ${candidates.slice(1).map(label).join('; ')}. Use one only if the first is wrong.`;
 }
 
 function shellQuoteCliArg(value) {
@@ -1342,6 +1488,17 @@ function formatCdpRelaunchCommand(lastEndpoint, { port } = {}) {
   const profileDir = lastEndpoint?.profileDir;
   if (!profileDir) return null;
   const resolvedPort = String(port || lastEndpoint.port || '9222');
+  if (lastEndpoint.via === SPAWN_DEBUG_BROWSER_VIA) {
+    const browser = lastEndpoint.browser || inferBrowserFromExe(lastEndpoint.exe) || 'chrome';
+    const parts = [
+      'cdp spawn-debug-browser',
+      browser,
+      '--port', resolvedPort,
+      '--profile-dir', shellQuoteCliArg(profileDir),
+    ];
+    if (lastEndpoint.exe) parts.push('--exe', shellQuoteCliArg(lastEndpoint.exe));
+    return parts.join(' ');
+  }
   if (isDisposableSpawnProfileDir(profileDir)) {
     const browser = lastEndpoint.browser || inferBrowserFromExe(lastEndpoint.exe) || 'chrome';
     const parts = [
@@ -1381,12 +1538,14 @@ function profileDirFromDevToolsActivePort(portFile) {
 function cdpUnreachableError({ host, port, cause, lastEndpoint } = {}) {
   const resolvedHost = host || lastEndpoint?.host || DEFAULT_CDP_HOST;
   const resolvedPort = port != null && port !== '' ? String(port) : (lastEndpoint?.port || null);
-  const profileDir = lastEndpoint?.profileDir || null;
-  const relaunch = formatCdpRelaunchCommand(lastEndpoint, { port: resolvedPort });
+  const candidates = rankCdpRelaunchCandidates(lastEndpoint, resolvedPort);
+  const profileDir = candidates[0]?.profileDir || null;
+  const relaunch = candidates[0]?.relaunch || null;
   const where = resolvedPort ? `${resolvedHost}:${resolvedPort}` : resolvedHost;
   const causeText = String(cause || 'unreachable').replace(/^Error:\s*/i, '');
+  const others = formatCdpCandidateList(candidates);
   const message = profileDir
-    ? `Cannot reach CDP on ${where} (${causeText}). Relaunch the same profile: ${relaunch}`
+    ? `Cannot reach CDP on ${where} (${causeText}). Relaunch the same profile: ${relaunch}${others ? `\n${others}` : ''}`
     : `Cannot reach CDP on ${where} (${causeText}). Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.`;
   const err = new Error(message);
   err.code = 'cdp_unreachable';
@@ -1394,6 +1553,7 @@ function cdpUnreachableError({ host, port, cause, lastEndpoint } = {}) {
   err.port = resolvedPort;
   err.profileDir = profileDir;
   err.relaunch = relaunch;
+  err.candidates = candidates;
   return err;
 }
 
@@ -19179,9 +19339,12 @@ async function checkCdpReachability({
     try { rememberEndpoint(record); } catch {}
   };
   const unreachable = (p, cause) => {
-    const profileDir = remembered?.profileDir || null;
-    const relaunch = formatCdpRelaunchCommand(remembered, { port: p });
-    const hint = relaunch || 'Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.';
+    const candidates = rankCdpRelaunchCandidates(remembered, p);
+    const top = candidates[0] || null;
+    const profileDir = top?.profileDir || null;
+    const relaunch = top?.relaunch || null;
+    const hint = relaunch
+      || 'Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.';
     return {
       status: 'FAIL',
       label: 'CDP',
@@ -19192,8 +19355,9 @@ async function checkCdpReachability({
       port: String(p),
       profileDir,
       relaunch,
-      exe: remembered?.exe || null,
-      browser: remembered?.browser || null,
+      candidates,
+      exe: top?.exe || null,
+      browser: top?.browser || null,
     };
   };
   const localAppData = env.LOCALAPPDATA || process.env.LOCALAPPDATA || '';
@@ -19987,7 +20151,8 @@ function doctorRecommendationModel(checks) {
         stage: 'browser-cdp',
         strategy: 'relaunch-same-profile',
         run: cdp.relaunch,
-        ask: 'Relaunch the same debug browser profile. Do not invent DISPLAY, a new user-data-dir, or a second Chrome profile.',
+        ask: ['Relaunch the same debug browser profile. Do not invent DISPLAY, a new user-data-dir, or a second Chrome profile.', formatCdpCandidateList(cdp.candidates)].filter(Boolean).join(' '),
+        ...(Array.isArray(cdp.candidates) && cdp.candidates.length > 1 ? { candidates: cdp.candidates } : {}),
         after: `${prefix} list`,
         requiresUserAction: true,
         consentRequired: false,
@@ -21010,6 +21175,10 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
       profileDir: plan.profileDir,
       exe: plan.exe,
       browser: plan.browser,
+      // #416: recovery suggests the spawn command only for profiles this command created.
+      // A --daily-profile spawn is not reproducible through --profile-dir, so it stays untagged
+      // and recovery keeps the raw browser line for it.
+      ...(plan.dailyProfile ? {} : { via: SPAWN_DEBUG_BROWSER_VIA }),
     });
   } catch {}
   const model = buildSpawnDebugBrowserModel(plan, readiness, { child, target });
@@ -24312,6 +24481,7 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
         strategy: 'relaunch-same-profile',
         run: err.relaunch,
         reason: 'Chrome debugging endpoint is down. Relaunch the same user-data-dir; do not invent a new profile.',
+        ...(Array.isArray(err.candidates) && err.candidates.length > 1 ? { candidates: err.candidates } : {}),
       };
     }
     if (err?.code === 'cdp_unreachable' || lower.includes('cannot reach cdp')) {
@@ -25745,6 +25915,7 @@ async function main(options = {}) {
               profileDir: check.profileDir,
               exe: check.exe,
               browser: check.browser,
+              history: check.candidates,
             },
           });
         }
@@ -26235,6 +26406,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   cdpUnreachableError, profileDirFromCommandLine, profileDirFromDevToolsActivePort,
   inspectCdpOccupantProfileDirViaCdp,
   isDisposableSpawnProfileDir, isIsolatedChromeCdpExProfileDir,
+  isTempCdpProfileDir, rankCdpRelaunchCandidates,
   persistentDailyUserDataDir, isolatedSpawnProfileDir,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
