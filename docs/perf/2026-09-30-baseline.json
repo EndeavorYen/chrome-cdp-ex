@@ -1,0 +1,36 @@
+{
+  "schema": "chrome-cdp-ex.benchmark-cli-overhead.v1",
+  "runs": 10,
+  "node_startup": {
+    "n": 10,
+    "min": 36,
+    "median": 39,
+    "p90": 43,
+    "max": 43,
+    "mean": 39
+  },
+  "cli_help": {
+    "n": 10,
+    "min": 86,
+    "median": 92,
+    "p90": 110,
+    "max": 110,
+    "mean": 93
+  },
+  "cli_eval": {
+    "n": 10,
+    "min": 289,
+    "median": 331,
+    "p90": 1252,
+    "max": 1252,
+    "mean": 415
+  },
+  "cli_batch_12_evals": {
+    "n": 10,
+    "min": 325,
+    "median": 383,
+    "p90": 1762,
+    "max": 1762,
+    "mean": 538
+  }
+}
