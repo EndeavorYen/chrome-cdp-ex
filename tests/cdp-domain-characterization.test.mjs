@@ -15,6 +15,8 @@ const METHOD_CLASSIFICATION = Object.freeze({
   '<dynamic>': 'raw-gateway',
   'Accessibility.getFullAXTree': 'observation',
   'Browser.getBrowserCommandLine': 'observation',
+  'Browser.getWindowForTarget': 'observation',
+  'Browser.setWindowBounds': 'browser-mutation',
   'CSS.enable': 'session-control',
   'CSS.getComputedStyleForNode': 'observation',
   'CSS.getMatchedStylesForNode': 'observation',
@@ -405,8 +407,8 @@ describe('Phase 6 direct CDP characterization', () => {
   it('freezes every direct method, caller, session, and timeout boundary', () => {
     const inventory = directCdpInventory(source);
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
-    expect(inventory).toHaveLength(145);
-    expect(digest).toBe('sha256:1df9691f9ee5537c5f342eca937c3e2584b43f0a29f0e9de31d1a4828793b290');
+    expect(inventory).toHaveLength(147);
+    expect(digest).toBe('sha256:4399783de7bfd25c069d4faaebe2109a75b4ff5058081c6fcda5b9af14799010');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',
