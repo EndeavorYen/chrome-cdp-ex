@@ -1138,6 +1138,26 @@ jsclick path: no `perceive -C -d 8`, unique off-screen names `scrollIntoView`
 then click, skinny URL receipt (Scroll before/after when it scrolled).
 Short of the navigating href is FAIL.
 
+### Pointer-sequence click — `click --pointer`
+
+```bash
+cdp click <t> --pointer "button[aria-haspopup='menu']"    # CSS form
+cdp click <t> --pointer @17                                # @ref form
+```
+
+Some menus (Radix, Headless UI) open on `pointerdown`, not on `click`. `click --js` only calls
+`HTMLElement.click()`, and the real mouse path is dropped on a hidden tab (`Kind: no-input-events`), so
+neither opens them. `--pointer` dispatches `pointerdown`, `mousedown`, `pointerup`, `mouseup`, `click` inside
+the page at the element centre (`pointerType: mouse`, `pointerId: 1`, `buttons: 1` on the down events and
+`0` on the up events). It does not use `Input.*`, so it works while the window is covered. It takes a CSS
+selector or an `@ref`, not an accessible name.
+
+The receipt says `mode: pointer-sequence`, names the element, waits about 1.5 s for the menu to mount, then
+reports the trigger's `aria-expanded` / `data-state` (`open` / `closed`). `Still closed` means nothing
+opened: pick another element or take a `shot`. A disabled, hidden, zero-size or `pointer-events: none`
+target fails instead of reporting success. `--pointer` and `--js` are alternatives. This is a `click` flag,
+so the 81-command surface and the public synopsis are unchanged.
+
 ### React-controlled inputs — `fill --react`
 
 ```bash

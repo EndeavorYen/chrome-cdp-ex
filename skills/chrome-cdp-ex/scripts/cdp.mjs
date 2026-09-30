@@ -12762,23 +12762,31 @@ async function namedInViewportJsClickStr(cdp, sid, name) {
 // `jsclick` or `click --js` so the default behaviour stays a realistic mouse
 // dispatch. Named queries use this path in one step (no mouse fail-close).
 // Off-screen unique names reuse the CSS jsclick scrollIntoView, then el.click().
-async function jsClickStr(cdp, sid, selector, refMap, refState) {
+async function jsClickStr(cdp, sid, selector, refMap, refState, options = {}) {
+  const pointer = options.pointer === true;
   if (!selector) throw new Error('CSS selector, @ref, or accessible name required');
-  if (isNamedClickQuery(selector)) return namedInViewportJsClickStr(cdp, sid, selector);
+  if (isNamedClickQuery(selector)) {
+    if (pointer) {
+      throw new Error('click --pointer needs a CSS selector or @ref, not an accessible name. Run `perceive` to get an @ref.');
+    }
+    return namedInViewportJsClickStr(cdp, sid, selector);
+  }
   const objectId = isRef(selector)
     ? await resolveRefNode(cdp, sid, refMap, selector, refState)
     : await resolveSelectorNode(cdp, sid, selector);
   try {
     const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
       objectId,
-      functionDeclaration: `function() {
+      functionDeclaration: pointer ? pointerClickFunctionDeclaration() : `function() {
         this.scrollIntoView({ block: 'center', inline: 'center' });
         if (typeof this.click === 'function') this.click();
         else this.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
         return { tag: this.tagName, text: (this.textContent || '').trim().substring(0, 80) };
       }`,
+      awaitPromise: pointer,
       returnByValue: true,
     }, sid);
+    if (pointer) return formatPointerClickReceipt(res.result.value || {}, selector);
     const r = res.result.value || {};
     return `JS-clicked <${r.tag || '?'}> "${r.text || ''}"${isRef(selector) ? ` (${selector})` : ''}`;
   } catch (e) {
@@ -12787,6 +12795,83 @@ async function jsClickStr(cdp, sid, selector, refMap, refState) {
     }
     throw e;
   }
+}
+
+// Pointer-sequence click (#412): menus built on Radix / Headless UI open on pointerdown, so neither the mouse path
+// (dropped on a hidden tab, "no-input-events") nor HTMLElement.click() opens them. This dispatches
+// pointerdown, mousedown, pointerup, mouseup, click in the page at the element centre. It does not use Input.*
+// events, so it also works while the window is covered. After a settle wait it reports the trigger's
+// aria-expanded / data-state so the agent can tell whether a menu actually opened.
+const POINTER_CLICK_SETTLE_MS = 1500;
+
+function formatPointerClickReceipt(r, selector) {
+  if (!r.ok) throw new Error(r.error || 'click --pointer failed');
+  const state = [
+    r.ariaExpanded != null ? `aria-expanded=${r.ariaExpanded}` : null,
+    r.dataState != null ? `data-state=${r.dataState}` : null,
+  ].filter(Boolean);
+  const opened = r.ariaExpanded === 'true' || r.dataState === 'open';
+  const closed = r.ariaExpanded === 'false' || r.dataState === 'closed';
+  const verdict = state.length === 0
+    ? 'No aria-expanded or data-state on the target; check the page (perceive / shot) to see what changed.'
+    : opened
+      ? 'A menu or popover is open.'
+      : closed
+        ? 'Still closed: no menu opened. The page may need a different element or more time.'
+        : '';
+  return `Pointer-clicked <${r.tag || '?'}> "${r.text || ''}"${isRef(selector) ? ` (${selector})` : ''}
+mode: pointer-sequence (pointerdown, mousedown, pointerup, mouseup, click; no Input.* events)
+${state.join(' ')}${verdict ? `
+${verdict}` : ''}`;
+}
+
+function pointerClickFunctionDeclaration(settleMs = POINTER_CLICK_SETTLE_MS) {
+  return `async function() {
+    const el = this;
+    const label = (el.getAttribute('aria-label') || el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().substring(0, 80);
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') {
+      return { ok: false, error: 'click --pointer: element is disabled (' + el.tagName + ' "' + label + '")' };
+    }
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    const rect = el.getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0)) {
+      return { ok: false, error: 'click --pointer: element is not visible (zero size) (' + el.tagName + ' "' + label + '")' };
+    }
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden') {
+      return { ok: false, error: 'click --pointer: element is not visible (' + style.display + '/' + style.visibility + ')' };
+    }
+    if (style.pointerEvents === 'none') {
+      return { ok: false, error: 'click --pointer: element has pointer-events: none' };
+    }
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const base = {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: x, clientY: y, screenX: x, screenY: y,
+      button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true,
+    };
+    el.dispatchEvent(new PointerEvent('pointerdown', { ...base, buttons: 1 }));
+    el.dispatchEvent(new MouseEvent('mousedown', { ...base, buttons: 1 }));
+    el.dispatchEvent(new PointerEvent('pointerup', { ...base, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent('click', { ...base, buttons: 0 }));
+    await new Promise(resolve => setTimeout(resolve, ${Number(settleMs) || 0}));
+    const trigger = el.closest('[aria-expanded],[data-state]') || el;
+    return {
+      ok: true,
+      tag: el.tagName,
+      text: label,
+      ariaExpanded: trigger.getAttribute('aria-expanded'),
+      dataState: trigger.getAttribute('data-state'),
+    };
+  }`;
+}
+
+// `click --pointer` shares jsClickStr's single Runtime.callFunctionOn call site (the direct-CDP inventory is frozen),
+// so this is only a named entry point for tests and the handler.
+function pointerClickStr(cdp, sid, selector, refMap, refState) {
+  return jsClickStr(cdp, sid, selector, refMap, refState, { pointer: true });
 }
 
 // Click element by CSS selector, @ref, or accessible name.
@@ -22283,6 +22368,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       actionFeedback,
       click: selector => clickStr(cdp, sessionId, selector, refMap, refState),
       jsClick: selector => jsClickStr(cdp, sessionId, selector, refMap, refState),
+      pointerClick: selector => pointerClickStr(cdp, sessionId, selector, refMap, refState),
     }),
     evalraw: applicationPreflight.handlerBuilders.evalraw({
       evalRaw: (method, params, authorization) => evalRawStr(cdp, sessionId, method, params, authorization),
@@ -23808,10 +23894,15 @@ function parseFillArgs(args = []) {
 function parseClickArgs(args = []) {
   const fopts = parseCompactFormatArgs(args, ['text', 'json']);
   let js = false;
+  let pointer = false;
   const positional = [];
   for (const token of fopts.args) {
     if (token === '--js' || token === '-j') {
       js = true;
+      continue;
+    }
+    if (token === '--pointer') {
+      pointer = true;
       continue;
     }
     if (token === '--help' || token === '-h') {
@@ -23825,6 +23916,7 @@ function parseClickArgs(args = []) {
     }
     positional.push(token);
   }
+  if (js && pointer) throw new Error('click: --pointer and --js are alternatives; use one');
   return {
     format: fopts.format,
     compact: fopts.compact,
@@ -23832,24 +23924,28 @@ function parseClickArgs(args = []) {
     full: fopts.full,
     maxDiffLines: fopts.maxDiffLines,
     js,
+    pointer,
     selector: positional[0] || '',
     args: positional,
     fopts: { ...fopts, args: positional },
   };
 }
 
-function createClickCommandHandler({ actionFeedback, click, jsClick }) {
+function createClickCommandHandler({ actionFeedback, click, jsClick, pointerClick }) {
   return async ({ args }) => {
     const parsed = parseClickArgs(args);
     const selector = parsed.selector;
     const named = isNamedClickQuery(selector);
-    const useJs = parsed.js || named;
+    const useJs = parsed.js || (named && !parsed.pointer);
     const target = namedClickActionTarget(selector, {
-      commandArgs: parsed.js ? ['--js', selector] : [selector],
+      commandArgs: parsed.pointer ? ['--pointer', selector] : parsed.js ? ['--js', selector] : [selector],
     });
+    const dispatch = parsed.pointer
+      ? () => pointerClick(selector)
+      : () => (useJs ? jsClick(selector) : click(selector));
     const value = await actionFeedback(
       'click',
-      () => (useJs ? jsClick(selector) : click(selector)),
+      dispatch,
       target,
       clickFeedbackPolicy(selector),
       null,
@@ -26005,7 +26101,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles, parseClosetabArgs,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,

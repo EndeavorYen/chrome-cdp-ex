@@ -4,6 +4,14 @@
 
 ### Features
 
+* `click <target> <selector|@ref> --pointer` dispatches `pointerdown`, `mousedown`, `pointerup`, `mouseup`,
+  `click` in the page at the element centre, so menus that open on `pointerdown` (Radix, Headless UI)
+  open even on a hidden tab, where `Input.*` events are dropped and `click --js` (`HTMLElement.click()`)
+  does not open them. The receipt says `mode: pointer-sequence` and, after a 1.5 s settle wait, reports
+  the trigger's `aria-expanded` / `data-state` so an agent can tell whether a menu opened; a disabled,
+  hidden, zero-size or `pointer-events: none` target fails instead of reporting success. It is a flag on
+  `click`, so the frozen 81-command surface and the public synopsis are unchanged
+  ([#412](https://github.com/EndeavorYen/chrome-cdp-ex/issues/412)).
 * `skills/chrome-cdp-ex/scripts/download.mjs <target> <url> <out-file>` saves a URL fetched with the
   tab's login session (chunked, `.part` then rename, sha256 receipt, `--max-mb`, `--force`, `data:`
   URLs). It is a helper script, not a catalog command, so the frozen 81-command surface is unchanged
