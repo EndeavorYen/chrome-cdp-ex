@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { parseSessionArgs, runSession } from '../skills/chrome-cdp-ex/scripts/session.mjs';
+import { parseSessionArgs, runSession, serializeReceipt } from '../skills/chrome-cdp-ex/scripts/session.mjs';
 
 describe('parseSessionArgs', () => {
   it('reads target, script, args and port', () => {
@@ -62,5 +62,36 @@ describe('runSession', () => {
     const receipt = await runSession({ target: 'ABCD', script, args: {}, port: 9224, host: '127.0.0.1' }, { connect: fakeConnect([]) });
     expect(receipt.ok).toBe(false);
     expect(receipt.error).toMatch(/default export/);
+  });
+
+  it('returns a readable error when the script throws a non-Error value', async () => {
+    const script = join(dir, 'str.mjs');
+    writeFileSync(script, 'export default async () => { throw "plain string"; };');
+    const log = [];
+    const receipt = await runSession({ target: 'ABCD', script, args: {}, port: 9224, host: '127.0.0.1' }, { connect: fakeConnect(log) });
+    expect(receipt).toMatchObject({ ok: false, error: 'plain string' });
+    expect(log).toEqual(['closed']);
+  });
+});
+
+describe('serializeReceipt', () => {
+  const ok = { schema: 'chrome-cdp-ex.session.v1', ok: true, ms: 5, target: 'ABCD1234', result: { n: 1 } };
+
+  it('prints a normal receipt unchanged and reports its ok flag', () => {
+    expect(serializeReceipt(ok)).toEqual({ line: JSON.stringify(ok), ok: true });
+  });
+
+  it('turns an unserialisable result (BigInt) into an ok:false receipt', () => {
+    const { line, ok: good } = serializeReceipt({ ...ok, result: { big: 10n } });
+    expect(good).toBe(false);
+    expect(JSON.parse(line)).toMatchObject({ schema: 'chrome-cdp-ex.session.v1', ok: false, target: 'ABCD1234', error: expect.stringMatching(/result is not JSON-serialisable.*BigInt/) });
+  });
+
+  it('turns a circular result into an ok:false receipt', () => {
+    const loop = {};
+    loop.self = loop;
+    const { line, ok: good } = serializeReceipt({ ...ok, result: loop });
+    expect(good).toBe(false);
+    expect(JSON.parse(line).error).toMatch(/result is not JSON-serialisable.*circular/i);
   });
 });

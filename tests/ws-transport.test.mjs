@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { attachToTarget, createTransport, resolveWsUrl } from '../skills/chrome-cdp-ex/scripts/lib/ws-transport.mjs';
+import { attachToTarget, connect, createTransport, resolveWsUrl } from '../skills/chrome-cdp-ex/scripts/lib/ws-transport.mjs';
 
 class FakeWs {
   constructor() { this.sent = []; this.handlers = { message: [], close: [] }; }
@@ -121,5 +121,66 @@ describe('resolveWsUrl', () => {
     const fetchImpl = async () => { throw new Error('ECONNREFUSED'); };
     const readFile = () => { throw new Error('ENOENT'); };
     await expect(resolveWsUrl({ host: '127.0.0.1', port: 9999, fetchImpl, readFile, env: {} })).rejects.toThrow(/cannot reach CDP on 127.0.0.1:9999/);
+  });
+
+  const refused = async () => { throw new Error('ECONNREFUSED'); };
+  const mainBrowserFile = () => '9222\n/devtools/browser/main-guid\n';
+
+  it('does not follow a default DevToolsActivePort that names a different port (would attach to the wrong browser)', async () => {
+    await expect(resolveWsUrl({ host: '127.0.0.1', port: 9224, fetchImpl: refused, readFile: mainBrowserFile, env: {}, platform: 'win32' }))
+      .rejects.toThrow(/cannot reach CDP on 127.0.0.1:9224/);
+  });
+
+  it('trusts a differing port when CDP_PORT_FILE was set explicitly', async () => {
+    expect(await resolveWsUrl({ host: '127.0.0.1', port: 9224, fetchImpl: refused, readFile: mainBrowserFile, env: { CDP_PORT_FILE: 'C:/x/DevToolsActivePort' } }))
+      .toBe('ws://127.0.0.1:9222/devtools/browser/main-guid');
+  });
+
+  it('uses the default file when its port equals the requested port', async () => {
+    expect(await resolveWsUrl({ host: '127.0.0.1', port: 9222, fetchImpl: refused, readFile: mainBrowserFile, env: {}, platform: 'win32' }))
+      .toBe('ws://127.0.0.1:9222/devtools/browser/main-guid');
+  });
+
+  it('gives up on a /json/version that never answers and falls through to the file logic', async () => {
+    const hangs = (url, { signal }) => new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('aborted')));
+    });
+    expect(await resolveWsUrl({ host: '127.0.0.1', port: 9222, fetchImpl: hangs, readFile: mainBrowserFile, env: {}, platform: 'win32', timeoutMs: 20 }))
+      .toBe('ws://127.0.0.1:9222/devtools/browser/main-guid');
+    await expect(resolveWsUrl({ host: '127.0.0.1', port: 9224, fetchImpl: hangs, readFile: mainBrowserFile, env: {}, platform: 'win32', timeoutMs: 20 }))
+      .rejects.toThrow(/cannot reach CDP on 127.0.0.1:9224/);
+  });
+});
+
+describe('connect', () => {
+  class OpenableWs {
+    constructor(url, { opens = true } = {}) {
+      this.url = url;
+      this.closed = false;
+      this.handlers = { open: [], error: [], message: [], close: [] };
+      if (opens) queueMicrotask(() => this.emit('open', {}));
+    }
+    addEventListener(type, fn) { this.handlers[type]?.push(fn); }
+    emit(type, event) { for (const fn of this.handlers[type] || []) fn(event); }
+    send(text) {
+      const msg = JSON.parse(text);
+      queueMicrotask(() => this.emit('message', { data: JSON.stringify({ id: msg.id, result: { targetInfos: [] } }) }));
+    }
+    close() { this.closed = true; this.emit('close', {}); }
+  }
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ webSocketDebuggerUrl: 'ws://127.0.0.1:9333/devtools/browser/x' }) });
+
+  it('closes the socket when attaching fails (no leaked connection)', async () => {
+    let ws;
+    const WebSocketImpl = class extends OpenableWs { constructor(url) { super(url); ws = this; } };
+    await expect(connect({ port: 9333, target: 'NOPE', WebSocketImpl, fetchImpl })).rejects.toThrow(/no page matches/);
+    expect(ws.closed).toBe(true);
+  });
+
+  it('rejects and closes when the socket never opens', async () => {
+    let ws;
+    const WebSocketImpl = class extends OpenableWs { constructor(url) { super(url, { opens: false }); ws = this; } };
+    await expect(connect({ port: 9333, target: 'X', WebSocketImpl, fetchImpl, openTimeoutMs: 20 })).rejects.toThrow(/timed out after 20 ms/);
+    expect(ws.closed).toBe(true);
   });
 });

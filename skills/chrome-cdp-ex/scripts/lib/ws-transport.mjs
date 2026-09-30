@@ -68,9 +68,9 @@ function defaultPortFile(env, platform) {
   return `${env.HOME || ''}/.config/google-chrome/DevToolsActivePort`;
 }
 
-export async function resolveWsUrl({ host = '127.0.0.1', port, fetchImpl = fetch, readFile = (p) => readFileSync(p, 'utf8'), env = process.env, platform = process.platform }) {
+export async function resolveWsUrl({ host = '127.0.0.1', port, fetchImpl = fetch, readFile = (p) => readFileSync(p, 'utf8'), env = process.env, platform = process.platform, timeoutMs = 3000 }) {
   try {
-    const res = await fetchImpl(`http://${host}:${port}/json/version`);
+    const res = await fetchImpl(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(timeoutMs) });
     if (res.ok) {
       const info = await res.json();
       if (info.webSocketDebuggerUrl) return info.webSocketDebuggerUrl;
@@ -80,7 +80,9 @@ export async function resolveWsUrl({ host = '127.0.0.1', port, fetchImpl = fetch
   }
   try {
     const [filePort, path] = readFile(defaultPortFile(env, platform)).trim().split('\n');
-    if (filePort && path) return `ws://${host}:${filePort}${path}`;
+    // The default profile file may name another browser (e.g. the main one on 9222 while 9224 is down).
+    // Follow it only when it names the requested port, or when the caller pointed CDP_PORT_FILE at it explicitly.
+    if (filePort && path && (env.CDP_PORT_FILE || filePort === String(port))) return `ws://${host}:${filePort}${path}`;
   } catch {
     // fall through to the error below
   }
@@ -100,14 +102,23 @@ export async function attachToTarget(transport, prefix) {
   return { sessionId, targetId: matches[0].targetId };
 }
 
-export async function connect({ host = '127.0.0.1', port, target, WebSocketImpl = WebSocket, fetchImpl = fetch, readFile, env, platform } = {}) {
+export async function connect({ host = '127.0.0.1', port, target, WebSocketImpl = WebSocket, fetchImpl = fetch, readFile, env, platform, openTimeoutMs = 10000 } = {}) {
   const url = await resolveWsUrl({ host, port, fetchImpl, readFile, env, platform });
   const ws = new WebSocketImpl(url);
   await new Promise((resolve, reject) => {
-    ws.addEventListener('open', resolve, { once: true });
-    ws.addEventListener('error', () => reject(new Error(`WebSocket connection to ${url} failed`)), { once: true });
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch { /* already closed */ }
+      reject(new Error(`WebSocket connection to ${url} timed out after ${openTimeoutMs} ms`));
+    }, openTimeoutMs);
+    ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
+    ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error(`WebSocket connection to ${url} failed`)); }, { once: true });
   });
   const transport = createTransport(ws);
-  const { sessionId, targetId } = await attachToTarget(transport, target);
-  return { transport, sessionId, targetId, close: () => transport.close() };
+  try {
+    const { sessionId, targetId } = await attachToTarget(transport, target);
+    return { transport, sessionId, targetId, close: () => transport.close() };
+  } catch (error) {
+    transport.close();
+    throw error;
+  }
 }

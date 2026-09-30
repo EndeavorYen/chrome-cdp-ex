@@ -9,6 +9,8 @@ import { pathToFileURL } from 'node:url';
 import { CdpSession } from './lib/cdp-session.mjs';
 import { connect as realConnect } from './lib/ws-transport.mjs';
 
+const messageOf = (error) => (error instanceof Error ? error.message : String(error));
+
 const USAGE = 'usage: session.mjs <target> --script <file.mjs> [--args <json>] [--port N] [--host H]';
 
 export function parseSessionArgs(argv) {
@@ -37,7 +39,7 @@ export async function runSession({ target, script, args, port, host }, { connect
       if (!existsSync(script)) throw new Error('file not found');
       fn = (await import(/* @vite-ignore */ pathToFileURL(resolve(script)).href)).default;
     } catch (error) {
-      throw new Error(`cannot load script ${script}: ${error.message}`);
+      throw new Error(`cannot load script ${script}: ${messageOf(error)}`);
     }
     if (typeof fn !== 'function') throw new Error(`script ${script} needs a default export function`);
     conn = await connect({ host, port, target });
@@ -45,9 +47,19 @@ export async function runSession({ target, script, args, port, host }, { connect
     const result = await fn({ page, args });
     return { schema: 'chrome-cdp-ex.session.v1', ok: true, ms: Date.now() - t0, target: conn.targetId, result: result ?? null };
   } catch (error) {
-    return { schema: 'chrome-cdp-ex.session.v1', ok: false, ms: Date.now() - t0, target, error: error.message };
+    return { schema: 'chrome-cdp-ex.session.v1', ok: false, ms: Date.now() - t0, target, error: messageOf(error) };
   } finally {
     conn?.close();
+  }
+}
+
+// A result that JSON cannot hold (BigInt, circular) must not crash the printer: degrade to an ok:false receipt.
+export function serializeReceipt(receipt) {
+  try {
+    return { line: JSON.stringify(receipt), ok: receipt.ok === true };
+  } catch (error) {
+    const failed = { schema: receipt.schema, ok: false, ms: receipt.ms, target: receipt.target, error: `result is not JSON-serialisable: ${messageOf(error)}` };
+    return { line: JSON.stringify(failed), ok: false };
   }
 }
 
@@ -60,7 +72,8 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     process.exit(2);
   }
   runSession(parsed).then((receipt) => {
-    console.log(JSON.stringify(receipt));
-    process.exit(receipt.ok ? 0 : 1);
+    const { line, ok } = serializeReceipt(receipt);
+    console.log(line);
+    process.exit(ok ? 0 : 1);
   });
 }
