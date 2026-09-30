@@ -1,0 +1,974 @@
+{
+  "schema": "chrome-cdp-ex.cli-preamble-profile.v1",
+  "evidence": "local result",
+  "date": "2026-09-30",
+  "host": "Windows 11, Node v24.21.0, headless Chrome 154 on 127.0.0.1:9336 (own profile), CLI target = about:blank tab, command = eval document.title",
+  "method": "wall-clock probe preloaded with node --import (scratch, outside the repo); first run of each series discarded as warm-up; medians of n runs",
+  "control_real_tree_quiet": {
+    "n": 12,
+    "wall_ms": 247.6,
+    "boot_to_preload": 19.5,
+    "module_load": 52.5,
+    "discoveries_total": 78.5,
+    "git_gap": 17.5,
+    "eval_rtt": 2.8,
+    "tail_after_eval": 50.8,
+    "exit_at": 227.9,
+    "cpu_ms": 202,
+    "discovery_count_median": 3,
+    "per_run": [
+      {
+        "wall_ms": 242.3,
+        "boot_to_preload": 18.3,
+        "module_load": 51,
+        "discoveries_ms": [
+          35.4,
+          21.6,
+          21.1
+        ],
+        "discoveries_total": 78.1,
+        "git_gap": 17.8,
+        "eval_rtt": 2.6,
+        "tail_after_eval": 50.6,
+        "exit_at": 221,
+        "cpu_ms": 187
+      },
+      {
+        "wall_ms": 241.3,
+        "boot_to_preload": 19.6,
+        "module_load": 52.7,
+        "discoveries_ms": [
+          35.3,
+          23,
+          18.7
+        ],
+        "discoveries_total": 77,
+        "git_gap": 17.1,
+        "eval_rtt": 2.5,
+        "tail_after_eval": 50,
+        "exit_at": 221.5,
+        "cpu_ms": 140
+      },
+      {
+        "wall_ms": 248.3,
+        "boot_to_preload": 20.9,
+        "module_load": 52.4,
+        "discoveries_ms": [
+          34.7,
+          25.5,
+          20.4
+        ],
+        "discoveries_total": 80.6,
+        "git_gap": 18.8,
+        "eval_rtt": 2.5,
+        "tail_after_eval": 51.3,
+        "exit_at": 229,
+        "cpu_ms": 234
+      },
+      {
+        "wall_ms": 259.8,
+        "boot_to_preload": 19.5,
+        "module_load": 52.8,
+        "discoveries_ms": [
+          35.7,
+          22,
+          21.5
+        ],
+        "discoveries_total": 79.2,
+        "git_gap": 32.3,
+        "eval_rtt": 2.8,
+        "tail_after_eval": 50.8,
+        "exit_at": 240,
+        "cpu_ms": 202
+      },
+      {
+        "wall_ms": 243.7,
+        "boot_to_preload": 19,
+        "module_load": 52.1,
+        "discoveries_ms": [
+          36.7,
+          23.2,
+          18.6
+        ],
+        "discoveries_total": 78.5,
+        "git_gap": 17.3,
+        "eval_rtt": 2.5,
+        "tail_after_eval": 52.5,
+        "exit_at": 224.3,
+        "cpu_ms": 218
+      },
+      {
+        "wall_ms": 247,
+        "boot_to_preload": 19.5,
+        "module_load": 51.5,
+        "discoveries_ms": [
+          37.1,
+          23.6,
+          21.2
+        ],
+        "discoveries_total": 81.9,
+        "git_gap": 17.5,
+        "eval_rtt": 2.8,
+        "tail_after_eval": 51.9,
+        "exit_at": 227.9,
+        "cpu_ms": 124
+      },
+      {
+        "wall_ms": 249,
+        "boot_to_preload": 19.7,
+        "module_load": 52.5,
+        "discoveries_ms": [
+          35.3,
+          24.7,
+          20.3
+        ],
+        "discoveries_total": 80.3,
+        "git_gap": 18.5,
+        "eval_rtt": 3.2,
+        "tail_after_eval": 52,
+        "exit_at": 229,
+        "cpu_ms": 202
+      },
+      {
+        "wall_ms": 247.6,
+        "boot_to_preload": 18.7,
+        "module_load": 53.9,
+        "discoveries_ms": [
+          35.9,
+          20.1,
+          18.6
+        ],
+        "discoveries_total": 74.6,
+        "git_gap": 17.1,
+        "eval_rtt": 2.9,
+        "tail_after_eval": 50.6,
+        "exit_at": 220.1,
+        "cpu_ms": 171
+      },
+      {
+        "wall_ms": 232.1,
+        "boot_to_preload": 17.7,
+        "module_load": 48.5,
+        "discoveries_ms": [
+          32.2,
+          22.3,
+          18.6
+        ],
+        "discoveries_total": 73.1,
+        "git_gap": 17.3,
+        "eval_rtt": 2.9,
+        "tail_after_eval": 50,
+        "exit_at": 212.3,
+        "cpu_ms": 171
+      },
+      {
+        "wall_ms": 249.5,
+        "boot_to_preload": 18.3,
+        "module_load": 63.9,
+        "discoveries_ms": [
+          36.9,
+          21.4,
+          17.3
+        ],
+        "discoveries_total": 75.6,
+        "git_gap": 16.9,
+        "eval_rtt": 3,
+        "tail_after_eval": 50,
+        "exit_at": 230.2,
+        "cpu_ms": 250
+      },
+      {
+        "wall_ms": 253.4,
+        "boot_to_preload": 20.6,
+        "module_load": 64.8,
+        "discoveries_ms": [
+          33.5,
+          21.9,
+          17.8
+        ],
+        "discoveries_total": 73.2,
+        "git_gap": 16.9,
+        "eval_rtt": 2.7,
+        "tail_after_eval": 50.8,
+        "exit_at": 231.6,
+        "cpu_ms": 250
+      },
+      {
+        "wall_ms": 242.6,
+        "boot_to_preload": 17.8,
+        "module_load": 48.5,
+        "discoveries_ms": [
+          37.2,
+          25.4,
+          20.1
+        ],
+        "discoveries_total": 82.7,
+        "git_gap": 18.1,
+        "eval_rtt": 2.6,
+        "tail_after_eval": 50.4,
+        "exit_at": 223,
+        "cpu_ms": 155
+      }
+    ]
+  },
+  "cpu_profile_warm_runs": [
+    {
+      "run": 1,
+      "top10": [
+        {
+          "fn": "(idle)",
+          "where": ":0",
+          "ms": 128.2,
+          "pct": 33.5
+        },
+        {
+          "fn": "spawnSync",
+          "where": "child_process:1145",
+          "ms": 37,
+          "pct": 9.7
+        },
+        {
+          "fn": "(program)",
+          "where": ":0",
+          "ms": 15.6,
+          "pct": 4.1
+        },
+        {
+          "fn": "compileSourceTextModule",
+          "where": "utils:317",
+          "ms": 15.1,
+          "pct": 3.9
+        },
+        {
+          "fn": "internalConnect",
+          "where": "node:net:1342",
+          "ms": 4.9,
+          "pct": 1.3
+        },
+        {
+          "fn": "(garbage collector)",
+          "where": ":0",
+          "ms": 4.6,
+          "pct": 1.2
+        },
+        {
+          "fn": "lstat",
+          "where": ":0",
+          "ms": 4.6,
+          "pct": 1.2
+        },
+        {
+          "fn": "(anonymous)",
+          "where": "cdp.mjs:1",
+          "ms": 4.6,
+          "pct": 1.2
+        },
+        {
+          "fn": "readFileUtf8",
+          "where": ":0",
+          "ms": 4.6,
+          "pct": 1.2
+        },
+        {
+          "fn": "readFileUtf8",
+          "where": ":0",
+          "ms": 4.6,
+          "pct": 1.2
+        }
+      ]
+    },
+    {
+      "run": 2,
+      "top10": [
+        {
+          "fn": "(idle)",
+          "where": ":0",
+          "ms": 132.3,
+          "pct": 34.8
+        },
+        {
+          "fn": "spawnSync",
+          "where": "child_process:1145",
+          "ms": 27.4,
+          "pct": 7.2
+        },
+        {
+          "fn": "compileSourceTextModule",
+          "where": "utils:317",
+          "ms": 17.2,
+          "pct": 4.5
+        },
+        {
+          "fn": "(program)",
+          "where": ":0",
+          "ms": 13.2,
+          "pct": 3.5
+        },
+        {
+          "fn": "(garbage collector)",
+          "where": ":0",
+          "ms": 7.6,
+          "pct": 2
+        },
+        {
+          "fn": "internalConnect",
+          "where": "node:net:1342",
+          "ms": 5,
+          "pct": 1.3
+        },
+        {
+          "fn": "internalModuleStat",
+          "where": ":0",
+          "ms": 4.7,
+          "pct": 1.2
+        },
+        {
+          "fn": "readFileUtf8",
+          "where": ":0",
+          "ms": 4.4,
+          "pct": 1.1
+        },
+        {
+          "fn": "readFileUtf8",
+          "where": ":0",
+          "ms": 3.6,
+          "pct": 1
+        },
+        {
+          "fn": "compileSourceTextModule",
+          "where": "utils:317",
+          "ms": 3.2,
+          "pct": 0.8
+        }
+      ]
+    },
+    {
+      "run": 3,
+      "top10": [
+        {
+          "fn": "(idle)",
+          "where": ":0",
+          "ms": 129.2,
+          "pct": 31.3
+        },
+        {
+          "fn": "spawnSync",
+          "where": "child_process:1145",
+          "ms": 24.8,
+          "pct": 6
+        },
+        {
+          "fn": "(program)",
+          "where": ":0",
+          "ms": 17.7,
+          "pct": 4.3
+        },
+        {
+          "fn": "compileSourceTextModule",
+          "where": "utils:317",
+          "ms": 17.3,
+          "pct": 4.2
+        },
+        {
+          "fn": "compileSourceTextModule",
+          "where": "utils:317",
+          "ms": 12.1,
+          "pct": 2.9
+        },
+        {
+          "fn": "(garbage collector)",
+          "where": ":0",
+          "ms": 9.8,
+          "pct": 2.4
+        },
+        {
+          "fn": "readFileUtf8",
+          "where": ":0",
+          "ms": 4.7,
+          "pct": 1.1
+        },
+        {
+          "fn": "internalConnect",
+          "where": "node:net:1342",
+          "ms": 4.6,
+          "pct": 1.1
+        },
+        {
+          "fn": "readFileUtf8",
+          "where": ":0",
+          "ms": 4.6,
+          "pct": 1.1
+        },
+        {
+          "fn": "validateHelp",
+          "where": "command-surface.mjs:105",
+          "ms": 4.3,
+          "pct": 1
+        }
+      ]
+    }
+  ],
+  "note": "segments are ms since process time origin; discoveries_total sums the 3 target-discovery spans; git_gap = connect-to-meta-write gap that contains collectDaemonMetadata; tail_after_eval = eval reply to process exit",
+  "scratch_variants_quiet_n15_NO_PACKAGE_JSON": {
+    "note": "scratch copies had no package.json above them, so collectDaemonMetadata never spawned git in any variant here; vC is a null comparison in this set",
+    "v0_control": {
+      "wall_ms": 248.9,
+      "boot_to_preload": 20,
+      "module_load": 63.5,
+      "discoveries_total": 83.5,
+      "git_gap": 1.5,
+      "eval_rtt": 2.5,
+      "tail_after_eval": 50.6,
+      "exit_at": 226.3,
+      "cpu_ms": 187,
+      "discovery_count_median": 3
+    },
+    "vA_list_raw_args": {
+      "wall_ms": 172.2,
+      "boot_to_preload": 19.9,
+      "module_load": 63,
+      "discoveries_total": 12.3,
+      "git_gap": 1.5,
+      "eval_rtt": 2.6,
+      "tail_after_eval": 50.1,
+      "exit_at": 151.6,
+      "cpu_ms": 124,
+      "discovery_count_median": 3
+    },
+    "vB_destroy_after_reply": {
+      "wall_ms": 193.7,
+      "boot_to_preload": 19.1,
+      "module_load": 62.7,
+      "discoveries_total": 80.6,
+      "git_gap": 1.5,
+      "eval_rtt": 2.3,
+      "tail_after_eval": 0.3,
+      "exit_at": 167.7,
+      "cpu_ms": 171,
+      "discovery_count_median": 3
+    },
+    "vC_no_git_spawn_probe": {
+      "wall_ms": 245.9,
+      "boot_to_preload": 20.6,
+      "module_load": 63.3,
+      "discoveries_total": 82,
+      "git_gap": 1.5,
+      "eval_rtt": 2.7,
+      "tail_after_eval": 50.3,
+      "exit_at": 223,
+      "cpu_ms": 202,
+      "discovery_count_median": 3
+    },
+    "vAll_A_B_C": {
+      "wall_ms": 149.5,
+      "boot_to_preload": 21.5,
+      "module_load": 74.8,
+      "discoveries_total": 15.2,
+      "git_gap": 1.7,
+      "eval_rtt": 3.2,
+      "tail_after_eval": 0.4,
+      "exit_at": 117.3,
+      "cpu_ms": 108,
+      "discovery_count_median": 3
+    }
+  },
+  "scratch_with_package_json_interleaved_n12": {
+    "note": "package.json placed above each scratch copy so git is spawned (it fails fast, not a repo) like the real tree; v0 control, vC no git, vAB list_raw args + destroy-after-reply, vAll = A+B+C. r1 ran quiet, r2 ran while the machine was loaded (v0 461 ms).",
+    "r1": {
+      "v0": {
+        "wall_ms": 281.1,
+        "boot_to_preload": 20.5,
+        "module_load": 63.7,
+        "discoveries_total": 87.7,
+        "git_gap": 19.1,
+        "eval_rtt": 3,
+        "tail_after_eval": 50.6,
+        "exit_at": 258.9,
+        "cpu_ms": 171,
+        "discovery_count_median": 3
+      },
+      "vC": {
+        "wall_ms": 264.8,
+        "boot_to_preload": 21.5,
+        "module_load": 64.3,
+        "discoveries_total": 93.7,
+        "git_gap": 1.5,
+        "eval_rtt": 2.5,
+        "tail_after_eval": 50.3,
+        "exit_at": 238.8,
+        "cpu_ms": 171,
+        "discovery_count_median": 3
+      },
+      "vAB": {
+        "wall_ms": 152.6,
+        "boot_to_preload": 20.6,
+        "module_load": 63.9,
+        "discoveries_total": 12.9,
+        "git_gap": 19.3,
+        "eval_rtt": 3.2,
+        "tail_after_eval": 0.3,
+        "exit_at": 126.4,
+        "cpu_ms": 109,
+        "discovery_count_median": 3
+      },
+      "vAll": {
+        "wall_ms": 182.2,
+        "boot_to_preload": 22.4,
+        "module_load": 74.2,
+        "discoveries_total": 17.1,
+        "git_gap": 1.7,
+        "eval_rtt": 3.2,
+        "tail_after_eval": 0.4,
+        "exit_at": 122,
+        "cpu_ms": 108,
+        "discovery_count_median": 3
+      }
+    },
+    "r2": {
+      "v0": {
+        "wall_ms": 493.5,
+        "boot_to_preload": 25.7,
+        "module_load": 82.2,
+        "discoveries_total": 104.8,
+        "git_gap": 25.7,
+        "eval_rtt": 4.2,
+        "tail_after_eval": 50.5,
+        "exit_at": 461.6,
+        "cpu_ms": 249,
+        "discovery_count_median": 3
+      },
+      "vC": {
+        "wall_ms": 329,
+        "boot_to_preload": 24,
+        "module_load": 91.5,
+        "discoveries_total": 117.1,
+        "git_gap": 2.1,
+        "eval_rtt": 4.1,
+        "tail_after_eval": 50.2,
+        "exit_at": 293.6,
+        "cpu_ms": 265,
+        "discovery_count_median": 3
+      },
+      "vAB": {
+        "wall_ms": 155.7,
+        "boot_to_preload": 21.8,
+        "module_load": 66.6,
+        "discoveries_total": 14.4,
+        "git_gap": 19.1,
+        "eval_rtt": 3.2,
+        "tail_after_eval": 0.4,
+        "exit_at": 131.6,
+        "cpu_ms": 109,
+        "discovery_count_median": 3
+      },
+      "vAll": {
+        "wall_ms": 132.7,
+        "boot_to_preload": 20.1,
+        "module_load": 64.4,
+        "discoveries_total": 14.8,
+        "git_gap": 1.5,
+        "eval_rtt": 2.7,
+        "tail_after_eval": 0.3,
+        "exit_at": 105.8,
+        "cpu_ms": 124,
+        "discovery_count_median": 3
+      }
+    }
+  },
+  "scratch_interleaved_loaded_n15_NO_PACKAGE_JSON": {
+    "r1": {
+      "v0": {
+        "wall_ms": 404.9,
+        "boot_to_preload": 30.8,
+        "module_load": 114.9,
+        "discoveries_total": 129.8,
+        "git_gap": 2.7,
+        "eval_rtt": 3.8,
+        "tail_after_eval": 50.5,
+        "exit_at": 349.4,
+        "cpu_ms": 281,
+        "discovery_count_median": 3
+      },
+      "vAll": {
+        "wall_ms": 205.2,
+        "boot_to_preload": 34.1,
+        "module_load": 97.4,
+        "discoveries_total": 19.2,
+        "git_gap": 2,
+        "eval_rtt": 3.7,
+        "tail_after_eval": 0.4,
+        "exit_at": 170.3,
+        "cpu_ms": 171,
+        "discovery_count_median": 3
+      }
+    },
+    "r2": {
+      "v0": {
+        "wall_ms": 394.3,
+        "boot_to_preload": 27.8,
+        "module_load": 116.7,
+        "discoveries_total": 127.8,
+        "git_gap": 2.7,
+        "eval_rtt": 4.1,
+        "tail_after_eval": 50.3,
+        "exit_at": 351,
+        "cpu_ms": 281,
+        "discovery_count_median": 3
+      },
+      "vAll": {
+        "wall_ms": 199.6,
+        "boot_to_preload": 30.8,
+        "module_load": 101.4,
+        "discoveries_total": 21.7,
+        "git_gap": 2.7,
+        "eval_rtt": 4.2,
+        "tail_after_eval": 0.6,
+        "exit_at": 163.7,
+        "cpu_ms": 171,
+        "discovery_count_median": 3
+      }
+    },
+    "r3": {
+      "v0": {
+        "wall_ms": 391.2,
+        "boot_to_preload": 29.4,
+        "module_load": 120.2,
+        "discoveries_total": 147.8,
+        "git_gap": 2.4,
+        "eval_rtt": 3.8,
+        "tail_after_eval": 50.8,
+        "exit_at": 350.9,
+        "cpu_ms": 312,
+        "discovery_count_median": 3
+      },
+      "vAll": {
+        "wall_ms": 192.5,
+        "boot_to_preload": 27,
+        "module_load": 103.4,
+        "discoveries_total": 18.8,
+        "git_gap": 2.4,
+        "eval_rtt": 3.8,
+        "tail_after_eval": 0.5,
+        "exit_at": 162.5,
+        "cpu_ms": 171,
+        "discovery_count_median": 3
+      }
+    }
+  },
+  "load_contaminated": {
+    "note": "python/llama-server/game were using the CPU during these; excluded from percentages",
+    "scratch_vD_dedupe_discovery": {
+      "wall_ms": 316.5,
+      "boot_to_preload": 29.5,
+      "module_load": 104.7,
+      "discoveries_total": 68.7,
+      "git_gap": 2.5,
+      "eval_rtt": 5.5,
+      "tail_after_eval": 50.6,
+      "exit_at": 275,
+      "cpu_ms": 218,
+      "discovery_count_median": 1
+    },
+    "real_tree_under_heavy_load": {
+      "c1": {
+        "wall_ms": 711.8,
+        "boot_to_preload": 35.1,
+        "module_load": 103.8,
+        "discoveries_total": 293.9,
+        "git_gap": 36.2,
+        "eval_rtt": 4.6,
+        "tail_after_eval": 50.7,
+        "exit_at": 661.3,
+        "cpu_ms": 358,
+        "discovery_count_median": 3
+      },
+      "c2": {
+        "wall_ms": 874,
+        "boot_to_preload": 37.1,
+        "module_load": 106.3,
+        "discoveries_total": 540,
+        "git_gap": 44.4,
+        "eval_rtt": 5.9,
+        "tail_after_eval": 50.7,
+        "exit_at": 814.1,
+        "cpu_ms": 374,
+        "discovery_count_median": 3
+      }
+    },
+    "compile_cache_probe": {
+      "no_cache": {
+        "wall_ms": 525.6,
+        "boot_to_preload": 29.1,
+        "module_load": 87.5,
+        "discoveries_total": 208.2,
+        "git_gap": 38.8,
+        "eval_rtt": 5,
+        "tail_after_eval": 51,
+        "exit_at": 434.2,
+        "cpu_ms": 327,
+        "discovery_count_median": 3
+      },
+      "NODE_COMPILE_CACHE": {
+        "wall_ms": 487.1,
+        "boot_to_preload": 37.2,
+        "module_load": 112.1,
+        "discoveries_total": 189,
+        "git_gap": 35.1,
+        "eval_rtt": 5.4,
+        "tail_after_eval": 50.8,
+        "exit_at": 445.8,
+        "cpu_ms": 312,
+        "discovery_count_median": 3
+      },
+      "no_cache_again": {
+        "wall_ms": 440.3,
+        "boot_to_preload": 34.4,
+        "module_load": 91.9,
+        "discoveries_total": 172.3,
+        "git_gap": 36.6,
+        "eval_rtt": 5,
+        "tail_after_eval": 50.8,
+        "exit_at": 384,
+        "cpu_ms": 312,
+        "discovery_count_median": 3
+      },
+      "verdict": "inconclusive"
+    }
+  },
+  "benchmark_cli_overhead_same_hour": {
+    "schema": "chrome-cdp-ex.benchmark-cli-overhead.v1",
+    "runs": 10,
+    "node_startup": {
+      "n": 10,
+      "min": 39,
+      "median": 44,
+      "p90": 48,
+      "max": 48,
+      "mean": 43
+    },
+    "cli_help": {
+      "n": 10,
+      "min": 83,
+      "median": 104,
+      "p90": 310,
+      "max": 310,
+      "mean": 127
+    },
+    "cli_eval": {
+      "n": 10,
+      "min": 246,
+      "median": 293,
+      "p90": 526,
+      "max": 526,
+      "mean": 357
+    },
+    "cli_batch_12_evals": {
+      "n": 10,
+      "min": 263,
+      "median": 284,
+      "p90": 491,
+      "max": 491,
+      "mean": 316
+    }
+  },
+  "cpu_profile_first_batch": {
+    "note": "run 1 was a cold daemon (spawn + connect retry wait, idle 717 ms of 892), runs 2-3 warm and quiet (total ~285 ms)",
+    "runs": [
+      {
+        "run": 1,
+        "top10": [
+          {
+            "fn": "(idle)",
+            "where": ":0",
+            "ms": 716.9,
+            "pct": 80.4
+          },
+          {
+            "fn": "spawn",
+            "where": "child_process:356",
+            "ms": 21.5,
+            "pct": 2.4
+          },
+          {
+            "fn": "spawnSync",
+            "where": "child_process:1145",
+            "ms": 18.5,
+            "pct": 2.1
+          },
+          {
+            "fn": "(program)",
+            "where": ":0",
+            "ms": 14.3,
+            "pct": 1.6
+          },
+          {
+            "fn": "compileSourceTextModule",
+            "where": "utils:317",
+            "ms": 10.6,
+            "pct": 1.2
+          },
+          {
+            "fn": "open",
+            "where": ":0",
+            "ms": 6.1,
+            "pct": 0.7
+          },
+          {
+            "fn": "internalConnect",
+            "where": "node:net:1342",
+            "ms": 3.3,
+            "pct": 0.4
+          },
+          {
+            "fn": "__require",
+            "where": "undici:5",
+            "ms": 3.2,
+            "pct": 0.4
+          },
+          {
+            "fn": "defaultLoadSync",
+            "where": "load:136",
+            "ms": 3,
+            "pct": 0.3
+          },
+          {
+            "fn": "compileSourceTextModule",
+            "where": "utils:317",
+            "ms": 3,
+            "pct": 0.3
+          }
+        ]
+      },
+      {
+        "run": 2,
+        "top10": [
+          {
+            "fn": "(idle)",
+            "where": ":0",
+            "ms": 124.5,
+            "pct": 45.3
+          },
+          {
+            "fn": "spawnSync",
+            "where": "child_process:1145",
+            "ms": 17.9,
+            "pct": 6.5
+          },
+          {
+            "fn": "(program)",
+            "where": ":0",
+            "ms": 12.3,
+            "pct": 4.5
+          },
+          {
+            "fn": "compileSourceTextModule",
+            "where": "utils:317",
+            "ms": 11,
+            "pct": 4
+          },
+          {
+            "fn": "open",
+            "where": ":0",
+            "ms": 7.5,
+            "pct": 2.7
+          },
+          {
+            "fn": "internalConnect",
+            "where": "node:net:1342",
+            "ms": 4.6,
+            "pct": 1.7
+          },
+          {
+            "fn": "readFileUtf8",
+            "where": ":0",
+            "ms": 3.1,
+            "pct": 1.1
+          },
+          {
+            "fn": "(garbage collector)",
+            "where": ":0",
+            "ms": 3,
+            "pct": 1.1
+          },
+          {
+            "fn": "(anonymous)",
+            "where": "cdp.mjs:1",
+            "ms": 3,
+            "pct": 1.1
+          },
+          {
+            "fn": "readFileUtf8",
+            "where": ":0",
+            "ms": 3,
+            "pct": 1.1
+          }
+        ]
+      },
+      {
+        "run": 3,
+        "top10": [
+          {
+            "fn": "(idle)",
+            "where": ":0",
+            "ms": 123.8,
+            "pct": 43.4
+          },
+          {
+            "fn": "spawnSync",
+            "where": "child_process:1145",
+            "ms": 21.5,
+            "pct": 7.5
+          },
+          {
+            "fn": "(program)",
+            "where": ":0",
+            "ms": 14.8,
+            "pct": 5.2
+          },
+          {
+            "fn": "compileSourceTextModule",
+            "where": "utils:317",
+            "ms": 10.7,
+            "pct": 3.7
+          },
+          {
+            "fn": "open",
+            "where": ":0",
+            "ms": 7.6,
+            "pct": 2.7
+          },
+          {
+            "fn": "compileSourceTextModule",
+            "where": "utils:317",
+            "ms": 6,
+            "pct": 2.1
+          },
+          {
+            "fn": "(garbage collector)",
+            "where": ":0",
+            "ms": 4.5,
+            "pct": 1.6
+          },
+          {
+            "fn": "readFileUtf8",
+            "where": ":0",
+            "ms": 3.1,
+            "pct": 1.1
+          },
+          {
+            "fn": "readFileUtf8",
+            "where": ":0",
+            "ms": 3,
+            "pct": 1.1
+          },
+          {
+            "fn": "(anonymous)",
+            "where": "command-surface.mjs:1",
+            "ms": 2.4,
+            "pct": 0.8
+          }
+        ]
+      }
+    ]
+  }
+}
