@@ -142,19 +142,25 @@ export async function probeDaemonEndpoint(endpoint, {
   }
 }
 
-// dev+ino of the socket file now at `endpoint`. A daemon records it once bound, so it can
-// later tell its own socket from one a newer daemon bound at the same path (#458).
+// dev+ino (+ change time) of the socket file now at `endpoint`. A daemon records it once
+// bound, so it can later tell its own socket from one a newer daemon bound at the same path
+// (#458). ext4 hands a just-freed inode number straight back to the next bind, so dev+ino
+// alone cannot tell a stale file from its replacement; the nanosecond ctime can.
 export function daemonSocketIdentity(endpoint, { stat = statSync } = {}) {
   try {
-    const stats = stat(endpoint);
-    return { dev: stats.dev, ino: stats.ino };
+    const stats = stat(endpoint, { bigint: true });
+    const identity = { dev: stats.dev, ino: stats.ino };
+    const ctime = stats.ctimeNs ?? stats.ctimeMs;
+    if (ctime !== undefined) identity.ctime = ctime;
+    return identity;
   } catch {
     return null;
   }
 }
 
 export function sameDaemonSocket(a, b) {
-  return Boolean(a && b && a.dev === b.dev && a.ino === b.ino);
+  if (!a || !b || a.dev !== b.dev || a.ino !== b.ino) return false;
+  return a.ctime === undefined || b.ctime === undefined || a.ctime === b.ctime;
 }
 
 // Binds a daemon endpoint without taking it from a live daemon (#458). A POSIX socket path

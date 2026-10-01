@@ -9,6 +9,7 @@ const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
 const {
   claimDaemonEndpoint,
   daemonSocketIdentity,
+  sameDaemonSocket,
   probeDaemonEndpoint,
   watchDaemonSocket,
 } = await import('../skills/chrome-cdp-ex/scripts/lib/daemon-transport.mjs');
@@ -334,6 +335,17 @@ describe('#458 socket probe and ownership watch', () => {
   it('reads a socket identity as dev and ino, or null when the path is gone', () => {
     expect(daemonSocketIdentity(ENDPOINT, { stat: () => ({ dev: 7, ino: 9, size: 0 }) })).toEqual({ dev: 7, ino: 9 });
     expect(daemonSocketIdentity(ENDPOINT, { stat: () => { throw codeError('ENOENT'); } })).toBeNull();
+    // ext4 reuses a freed inode number for the next bind: the change time tells them apart.
+    const stale = { dev: 7, ino: 9, ctimeNs: 100n };
+    const replacement = { dev: 7, ino: 9, ctimeNs: 200n };
+    expect(sameDaemonSocket(
+      daemonSocketIdentity(ENDPOINT, { stat: () => stale }),
+      daemonSocketIdentity(ENDPOINT, { stat: () => replacement }),
+    )).toBe(false);
+    expect(sameDaemonSocket(
+      daemonSocketIdentity(ENDPOINT, { stat: () => stale }),
+      daemonSocketIdentity(ENDPOINT, { stat: () => ({ ...stale }) }),
+    )).toBe(true);
   });
 
   it('reports a daemon whose socket another process replaced or removed, once', () => {
