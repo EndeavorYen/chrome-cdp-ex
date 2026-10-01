@@ -463,6 +463,8 @@ For agent-native workflows, run the stdio MCP adapter:
 node skills/chrome-cdp-ex/scripts/mcp-server.mjs
 ```
 
+It speaks MCP stdio framing: one JSON-RPC message per line in each direction. A client that sends LSP-style `Content-Length` headers gets header-framed replies; the first message sets the framing. A line that is not valid JSON gets a `-32700` parse error with `id: null` and the server keeps running. `ping` returns `{}`, and notifications (messages without `id`) never get a reply. Requests are answered one at a time, in arrival order.
+
 It exposes curated tools for the killer path plus Tier-1 workflow coverage: `doctor`, `list_tabs`, `open_or_attach`, `select_target`, `perceive`, `controls`, `overlay`, `screenshot`, `click`, `verify_click`, `dismiss_modal`, `fill`, `viewport`, `qa_page`, `responsive_audit`, `report`, `navigate`, `press`, `wait_for`, `cascade`, `components`, `spawn_debug_browser`, `record_snapshot`, `session_checkpoint`, and allowlisted `run_command`. Mutating tools require `confirm: true`. MCP also advertises resources such as `chrome-cdp-ex://doctor/status` and session report/screenshot templates so large handoffs need not ride only on tool results.
 
 Agent-facing defaults are intentionally compact: MCP `perceive` adds `--adaptive`, `controls` adds `--compact`, and bounded `report` calls add `--compact`. Set the matching tool argument to `false` only when the full response is worth the extra context.

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Bug fixes
+
+* The stdio MCP server speaks MCP stdio framing. It used to wrap every reply in LSP-style
+  `Content-Length` headers, which a line-reading MCP client (the official SDKs) cannot parse. Replies
+  are now one JSON line each. A client that sends `Content-Length` headers still gets header-framed
+  replies, because the first message sets the framing. A malformed message gets a `-32700` parse error
+  with `id: null` instead of killing the server, `ping` returns `{}`, and a notification (no `id`) never
+  gets a reply, even for an unknown method. `setup --verify` and `benchmark:mcp` now send and read
+  newline-delimited JSON, so they catch a framing regression
+  ([#454](https://github.com/EndeavorYen/chrome-cdp-ex/issues/454)).
+
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 
 v2.18.0 adds opt-in background mode (`CDP_BACKGROUND=1` / `--background`), the one-connection

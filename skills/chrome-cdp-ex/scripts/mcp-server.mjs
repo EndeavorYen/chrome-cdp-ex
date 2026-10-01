@@ -13,13 +13,94 @@ import {
 } from './lib/mcp-adapter.mjs';
 import { createRuntimeClient, isRuntimeClient } from './lib/runtime-client.mjs';
 
-function encodeMessage(payload) {
+// MCP stdio is newline-delimited JSON-RPC: one message per line, no embedded newlines (#454).
+// LSP-style `Content-Length` framing is still accepted for a client that sends it. The first
+// frame fixes the framing for the whole connection, and every reply uses that framing.
+const CONTENT_LENGTH = 'content-length';
+const HEADER_END = Buffer.from('\r\n\r\n');
+const MAX_HEADER_BYTES = 1024;
+
+export function encodeMcpMessage(payload, framing = 'newline') {
   const body = JSON.stringify(payload);
-  return `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n${body}`;
+  if (framing === 'header') return `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n${body}`;
+  return `${body}\n`;
 }
 
+function parseError(detail) {
+  return { jsonrpc: '2.0', id: null, error: { code: -32700, message: `Parse error: ${detail}` } };
+}
+
+function decodeJson(bytes) {
+  try {
+    return { message: JSON.parse(bytes.toString('utf8')) };
+  } catch {
+    return { error: parseError('message is not valid JSON') };
+  }
+}
+
+function isFrameWhitespace(byte) {
+  return byte === 0x0a || byte === 0x0d || byte === 0x20 || byte === 0x09;
+}
+
+// Splits stdin bytes into frames. `push` never throws: each entry is `{ message }` for a parsed
+// JSON value, or `{ error }` holding the -32700 reply for a frame that could not be parsed.
+export function createMcpStdioDecoder() {
+  let buffer = Buffer.alloc(0);
+  let framing = null;
+  return {
+    get framing() { return framing || 'newline'; },
+    push(chunk) {
+      buffer = buffer.length ? Buffer.concat([buffer, chunk]) : Buffer.from(chunk);
+      const entries = [];
+      while (buffer.length) {
+        let start = 0;
+        while (start < buffer.length && isFrameWhitespace(buffer[start])) start += 1;
+        buffer = buffer.subarray(start);
+        if (!buffer.length) break;
+
+        // Wait while the buffer could still turn out to be a `Content-Length` header.
+        const head = buffer.subarray(0, CONTENT_LENGTH.length).toString('latin1').toLowerCase();
+        if (head.length < CONTENT_LENGTH.length && CONTENT_LENGTH.startsWith(head)) break;
+        if (head !== CONTENT_LENGTH) {
+          const newline = buffer.indexOf(0x0a);
+          if (newline === -1) break;
+          framing ??= 'newline';
+          entries.push(decodeJson(buffer.subarray(0, newline)));
+          buffer = buffer.subarray(newline + 1);
+          continue;
+        }
+
+        framing ??= 'header';
+        const headerEnd = buffer.indexOf(HEADER_END);
+        if (headerEnd === -1) {
+          if (buffer.length <= MAX_HEADER_BYTES) break;
+          entries.push({ error: parseError('Content-Length header is not terminated') });
+          const newline = buffer.indexOf(0x0a);
+          buffer = newline === -1 ? Buffer.alloc(0) : buffer.subarray(newline + 1);
+          continue;
+        }
+        const header = buffer.subarray(0, headerEnd).toString('latin1');
+        const match = header.match(/^content-length[ \t]*:[ \t]*(\d+)[ \t]*$/im);
+        if (!match) {
+          entries.push({ error: parseError('Content-Length header is missing or invalid') });
+          buffer = buffer.subarray(headerEnd + HEADER_END.length);
+          continue;
+        }
+        const bodyStart = headerEnd + HEADER_END.length;
+        const bodyEnd = bodyStart + Number(match[1]);
+        if (buffer.length < bodyEnd) break;
+        entries.push(decodeJson(buffer.subarray(bodyStart, bodyEnd)));
+        buffer = buffer.subarray(bodyEnd);
+      }
+      return entries;
+    },
+  };
+}
+
+const stdioDecoder = createMcpStdioDecoder();
+
 function send(payload) {
-  process.stdout.write(encodeMessage(payload));
+  process.stdout.write(encodeMcpMessage(payload, stdioDecoder.framing));
 }
 
 const defaultRuntimeClient = createRuntimeClient();
@@ -30,7 +111,10 @@ export function createMcpRequestHandler({
 } = {}) {
   if (!isRuntimeClient(runtimeClient)) throw new Error('mcp.runtimeClient: must be a branded RuntimeClient');
   return async function handleRequest(message) {
-    if (!message || typeof message !== 'object') return;
+    if (!message || typeof message !== 'object') {
+      sendMessage({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'mcp.request: must be a JSON-RPC request object' } });
+      return;
+    }
     try {
       message = snapshotMcpData(message, 'mcp.request');
     } catch (error) {
@@ -41,9 +125,15 @@ export function createMcpRequestHandler({
       sendMessage({ jsonrpc: '2.0', id: message.id ?? null, error: { code: -32600, message: 'mcp.request.method: must be a non-empty string' } });
       return;
     }
-    if (message.method.startsWith('notifications/')) return;
+    // A message without `id` is a notification: JSON-RPC forbids any reply, even for an
+    // unknown method or a failure (e.g. `notifications/initialized`, `notifications/cancelled`).
+    if (!Object.hasOwn(message, 'id')) return;
     const id = message.id;
     try {
+      if (message.method === 'ping') {
+        sendMessage({ jsonrpc: '2.0', id, result: {} });
+        return;
+      }
       if (message.method === 'initialize') {
         sendMessage({ jsonrpc: '2.0', id, result: createMcpInitializeResult() });
         return;
@@ -124,58 +214,37 @@ export function createMcpRequestHandler({
 
 const handleRequest = createMcpRequestHandler();
 
-let buffer = Buffer.alloc(0);
+// Requests are answered one at a time, in arrival order. Tool calls drive one shared browser
+// session, so running them concurrently could interleave actions on the same tab.
 let requestQueue = Promise.resolve();
 
-function enqueueRequest(message) {
+function enqueue(task, replyId) {
   requestQueue = requestQueue
-    .then(() => handleRequest(message))
+    .then(task)
     .catch(error => {
+      if (replyId === undefined) return;
       send({
         jsonrpc: '2.0',
-        id: message?.id ?? null,
+        id: replyId,
         error: { code: -32000, message: error.message || String(error) },
       });
     });
 }
 
-function parseBufferedMessages() {
-  const messages = [];
-  while (buffer.length) {
-    const text = buffer.toString('utf8');
-    const headerEnd = text.indexOf('\r\n\r\n');
-    if (headerEnd !== -1) {
-      const header = text.slice(0, headerEnd);
-      const match = header.match(/Content-Length:\s*(\d+)/i);
-      if (!match) {
-        buffer = Buffer.alloc(0);
-        break;
-      }
-      const length = Number(match[1]);
-      const bodyStart = Buffer.byteLength(text.slice(0, headerEnd + 4), 'utf8');
-      if (buffer.length < bodyStart + length) break;
-      const body = buffer.slice(bodyStart, bodyStart + length).toString('utf8');
-      buffer = buffer.slice(bodyStart + length);
-      messages.push(JSON.parse(body));
-      continue;
-    }
-
-    const newline = text.indexOf('\n');
-    if (newline === -1) break;
-    const line = text.slice(0, newline).trim();
-    buffer = buffer.slice(Buffer.byteLength(text.slice(0, newline + 1), 'utf8'));
-    if (line) messages.push(JSON.parse(line));
-  }
-  return messages;
+// The id a failure reply should carry, or undefined for a notification (never answered).
+function replyIdFor(message) {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return null;
+  if (!Object.hasOwn(message, 'id')) return undefined;
+  return message.id ?? null;
 }
 
 const isDirectRun = process.argv[1]
   && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 if (isDirectRun) {
   process.stdin.on('data', chunk => {
-    buffer = Buffer.concat([buffer, chunk]);
-    for (const message of parseBufferedMessages()) {
-      enqueueRequest(message);
+    for (const entry of stdioDecoder.push(chunk)) {
+      if (entry.error) enqueue(() => send(entry.error), null);
+      else enqueue(() => handleRequest(entry.message), replyIdFor(entry.message));
     }
   });
 }
