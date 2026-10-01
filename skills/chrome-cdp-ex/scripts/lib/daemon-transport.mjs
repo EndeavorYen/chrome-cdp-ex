@@ -1,3 +1,4 @@
+import { lstatSync, statSync } from 'fs';
 import net from 'net';
 import { posix as posixPath } from 'path';
 import { isTableCollectArgs } from './table-contract.mjs';
@@ -119,6 +120,120 @@ export function connectToDaemon(endpoint, {
     conn.on('connect', onConnect);
     conn.on('error', onError);
   });
+}
+
+// A connect that fails with one of these proves no daemon listens at the endpoint.
+export const DAEMON_ENDPOINT_ABSENT_CODES = new Set(['ENOENT', 'ECONNREFUSED', 'ENOTSOCK']);
+const DAEMON_PROBE_TIMEOUT_MS = 1000;
+const DAEMON_SOCKET_WATCH_MS = 5000;
+
+// 'answers' (a daemon accepted), 'absent' (proved empty or stale) or 'unknown' (a timeout or
+// EACCES could be a slow but live daemon, so the path must not be taken over).
+export async function probeDaemonEndpoint(endpoint, {
+  connect = (path, options) => connectToDaemon(path, options),
+  timeoutMs = DAEMON_PROBE_TIMEOUT_MS,
+} = {}) {
+  try {
+    const conn = await connect(endpoint, { timeoutMs });
+    try { conn?.destroy?.(); } catch {}
+    return 'answers';
+  } catch (error) {
+    return DAEMON_ENDPOINT_ABSENT_CODES.has(error?.code) ? 'absent' : 'unknown';
+  }
+}
+
+// dev+ino of the socket file now at `endpoint`. A daemon records it once bound, so it can
+// later tell its own socket from one a newer daemon bound at the same path (#458).
+export function daemonSocketIdentity(endpoint, { stat = statSync } = {}) {
+  try {
+    const stats = stat(endpoint);
+    return { dev: stats.dev, ino: stats.ino };
+  } catch {
+    return null;
+  }
+}
+
+export function sameDaemonSocket(a, b) {
+  return Boolean(a && b && a.dev === b.dev && a.ino === b.ino);
+}
+
+// Binds a daemon endpoint without taking it from a live daemon (#458). A POSIX socket path
+// outlives its process, so `listen` fails with EADDRINUSE on a stale file as well as on a
+// live daemon's socket; only a probe that proves the path absent lets the stale file go.
+// A live (or unprovable) holder is reported, never unlinked, and the caller exits.
+// The stale file is unlinked only if it is still the file that was probed (same dev/ino
+// before the probe and right before the unlink): when another daemon replaced it meanwhile,
+// listening again fails and the next probe finds that daemon. That leaves only the gap
+// between two back-to-back syscalls for a takeover.
+// Windows named pipes vanish with their process and a second listen fails by itself, so
+// win32 keeps its plain listen. `listen(endpoint)` resolves once listening, rejects on error.
+const MAX_DAEMON_CLAIM_ATTEMPTS = 3;
+
+export async function claimDaemonEndpoint(endpoint, {
+  platform = process.platform,
+  listen,
+  probe = path => probeDaemonEndpoint(path),
+  unlink,
+  stat = statSync,
+  lstat = lstatSync,
+} = {}) {
+  if (platform === 'win32') {
+    await listen(endpoint);
+    return { claimed: true, identity: null };
+  }
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await listen(endpoint);
+      return { claimed: true, identity: daemonSocketIdentity(endpoint, { stat }) };
+    } catch (error) {
+      if (error?.code !== 'EADDRINUSE') throw error;
+      const probed = daemonSocketIdentity(endpoint, { stat: lstat });
+      const holder = await probe(endpoint);
+      if (holder !== 'absent') return { claimed: false, holder, identity: null };
+      // Still stale after repeated cleanups: something other than a daemon keeps re-creating the path.
+      if (attempt >= MAX_DAEMON_CLAIM_ATTEMPTS) throw error;
+      if (probed && sameDaemonSocket(probed, daemonSocketIdentity(endpoint, { stat: lstat }))) {
+        try { unlink(endpoint); } catch (unlinkError) {
+          if (unlinkError?.code !== 'ENOENT') throw unlinkError;
+        }
+      }
+    }
+  }
+}
+
+// Calls `onLost` once when the socket at `endpoint` is no longer the one this daemon bound
+// (replaced or removed). Such a daemon is unreachable, and staying up would leave an attached
+// orphan that only the idle timer ends. A stat error other than ENOENT is not proof.
+export function watchDaemonSocket(endpoint, {
+  identity,
+  onLost,
+  stat = statSync,
+  intervalMs = DAEMON_SOCKET_WATCH_MS,
+  setTimer = setInterval,
+  clearTimer = clearInterval,
+} = {}) {
+  if (!identity) return () => {};
+  let timer = null;
+  const stop = () => {
+    if (timer === null) return;
+    clearTimer(timer);
+    timer = null;
+  };
+  timer = setTimer(() => {
+    if (timer === null) return;
+    let current;
+    try {
+      current = stat(endpoint);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return;
+      current = null;
+    }
+    if (sameDaemonSocket(identity, current)) return;
+    stop();
+    onLost();
+  }, intervalMs);
+  timer?.unref?.();
+  return stop;
 }
 
 function parseLoadAllTimeoutMilliseconds(args = []) {
