@@ -111,10 +111,11 @@ export function validatePackageInventory(entries, fixture, packageVersion) {
 // Give tar a bare file name and run it in the archive's directory. GNU tar (first
 // on PATH under Git for Windows) reads `C:\dir\x.tgz` as `host:path` and tries a
 // remote host named `C`. `--force-local` fixes that only for GNU tar; bsdtar
-// (macOS, Windows System32) rejects the flag. A relative name works for both.
+// (macOS, Windows System32) rejects the flag. A relative name works for both. The `./` prefix keeps
+// a name that starts with `-` from reading as an option, and one with `:` from reading as host:path.
 function tarArchive(tarballPath) {
   const absolute = resolve(tarballPath);
-  return { file: basename(absolute), cwd: dirname(absolute) };
+  return { file: `./${basename(absolute)}`, cwd: dirname(absolute) };
 }
 
 export function listTarEntries(tarballPath) {

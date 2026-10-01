@@ -33,6 +33,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Record which tar the tests will spawn (GNU from Git for Windows vs System32 bsdtar).
+      - run: command -v tar && tar --version
       - run: npm test -- --maxWorkers=2
 
   lint:

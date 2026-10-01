@@ -17,11 +17,12 @@ const POSIX_BROWSER_PATHS = {
 };
 
 // Windows installs land under Program Files, Program Files (x86), or, for a per-user install
-// (Chrome and Brave offer one without admin rights), under %LOCALAPPDATA%.
+// (Chrome and Brave offer one without admin rights), under %LOCALAPPDATA%. A 32-bit Node on 64-bit
+// Windows sees %ProgramFiles% as the (x86) folder; %ProgramW6432% still names the 64-bit one.
 const WINDOWS_INSTALLS = {
-  edge:   { roots: ['x86', 'programFiles', 'localAppData'], path: ['Microsoft', 'Edge', 'Application', 'msedge.exe'] },
-  chrome: { roots: ['programFiles', 'x86', 'localAppData'], path: ['Google', 'Chrome', 'Application', 'chrome.exe'] },
-  brave:  { roots: ['programFiles', 'x86', 'localAppData'], path: ['BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'] },
+  edge:   { roots: ['x86', 'w6432', 'programFiles', 'localAppData'], path: ['Microsoft', 'Edge', 'Application', 'msedge.exe'] },
+  chrome: { roots: ['w6432', 'programFiles', 'x86', 'localAppData'], path: ['Google', 'Chrome', 'Application', 'chrome.exe'] },
+  brave:  { roots: ['w6432', 'programFiles', 'x86', 'localAppData'], path: ['BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'] },
 };
 
 export const BROWSER_COMMANDS = {
@@ -35,6 +36,8 @@ export function defaultBrowserPaths(browser, platform = process.platform, env = 
   const install = WINDOWS_INSTALLS[browser];
   if (!install) return [];
   const roots = {
+    // Set only on 64-bit Windows; equal to %ProgramFiles% for 64-bit Node (deduplicated below).
+    w6432: env?.ProgramW6432 || '',
     programFiles: env?.ProgramFiles || 'C:\\Program Files',
     x86: env?.['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
     // No fallback: an unset %LOCALAPPDATA% must not turn into a path relative to the cwd.

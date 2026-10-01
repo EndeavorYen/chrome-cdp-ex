@@ -1,5 +1,6 @@
 import { spawnSync } from 'child_process';
 import {
+  copyFileSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -12,6 +13,7 @@ import { fileURLToPath } from 'url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
+  listTarEntries,
   validatePackageInventory,
   validateReadmeLinks,
 } from '../scripts/check-release-package.mjs';
@@ -163,7 +165,7 @@ describe('release package checker', () => {
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Release package OK: 62 required entries');
+    expect(result.stdout).toContain('Release package OK: 63 required entries');
   });
 
   it('rejects an artifact that omits a release-critical entry', () => {
@@ -176,5 +178,17 @@ describe('release package checker', () => {
     expect(result.stderr).toContain(
       'Release package is missing required entry: package/skills/chrome-cdp-ex/scripts/cdp.mjs',
     );
+  });
+
+  // tar must never read the archive name as an option (`-x.tgz`) or a remote `host:path` (#463).
+  it.each([
+    ['-leading-dash.tgz'],
+    ...(process.platform === 'win32' ? [] : [['host:colon.tgz']]),
+  ])('lists an archive named %s by its local path', name => {
+    const archive = join(tempRoot, name);
+    copyFileSync(incompleteTarball, archive);
+    const listed = listTarEntries(archive);
+    expect(listed.error).toBeNull();
+    expect(listed.entries).toContain('package/README.md');
   });
 });

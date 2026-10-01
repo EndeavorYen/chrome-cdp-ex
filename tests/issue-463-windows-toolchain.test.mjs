@@ -55,6 +55,29 @@ describe('#463 Windows browser discovery', () => {
     ]);
   });
 
+  it('finds a 64-bit install from a 32-bit Node through %ProgramW6432%', () => {
+    // WOW64 gives a 32-bit process ProgramFiles=(x86); only ProgramW6432 names the 64-bit folder.
+    const wow64 = {
+      ProgramFiles: 'C:\\Program Files (x86)',
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+      ProgramW6432: 'C:\\Program Files',
+      PATH: '',
+    };
+    const chrome = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+    expect(detectBrowserPath('chrome', 'win32', { existsSync: p => p === chrome }, wow64)).toBe(chrome);
+    expect(defaultBrowserPaths('chrome', 'win32', wow64)).toEqual([
+      chrome,
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    ]);
+    expect(defaultBrowserPaths('edge', 'win32', wow64)).toEqual([
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    ]);
+    // 64-bit Node: ProgramW6432 equals ProgramFiles, so the list has no duplicate.
+    expect(defaultBrowserPaths('chrome', 'win32', { ...env, ProgramW6432: 'C:\\Program Files' }))
+      .toEqual(defaultBrowserPaths('chrome', 'win32', env));
+  });
+
   it('keeps the macOS and Linux candidates', () => {
     expect(defaultBrowserPaths('edge', 'darwin', {})).toEqual(['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge']);
     expect(defaultBrowserPaths('chrome', 'linux', {})).toContain('/usr/bin/google-chrome');
