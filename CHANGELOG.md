@@ -2,25 +2,30 @@
 
 ## [Unreleased]
 
-### Bug Fixes
 ### Features
 
 * The MCP server now uses more of the MCP protocol
   ([#465](https://github.com/EndeavorYen/chrome-cdp-ex/issues/465)):
   * `screenshot`, and `run_command` with `shot`/`elshot`/`fullshot`, return an `image` block
-    (`image/png`, base64) after the path text. The image is read only from a fresh PNG directly inside the
-    CLI runtime directory and is capped at 1 MiB of base64. A larger image, or an explicit `path` outside
-    that directory, gets a text note instead.
+    (`image/png`, base64) after the path text. The image is read only from a fresh PNG the CLI wrote into its runtime
+    directory, or into a tab's `cdp-<targetId>-screenshots/` directory there. Links are refused, and the
+    read goes through one descriptor. The image is capped at 1 MiB of base64. A larger image, or a
+    relative or outside `path`, gets a text note instead.
   * A command that prints versioned JSON (an object with a `schema`) also returns it as `structuredContent`.
   * `tools/list` gives each tool `annotations` (`title`, `readOnlyHint`, `destructiveHint`,
-    `idempotentHint`, `openWorldHint`), derived from the command authorization catalog.
-  * `initialize` echoes the client's `protocolVersion` when it is `2025-06-18`, `2025-03-26`, or
-    `2024-11-05`, and otherwise answers with `2025-06-18`. It used to always answer `2024-11-05`.
+    `idempotentHint`, `openWorldHint`), derived from the command catalog. The first three come from
+    the command's authorization. `openWorldHint` is true for every command that talks to the browser,
+    page readers included.
+  * `initialize` echoes the client's `protocolVersion` when it is `2025-06-18` or `2024-11-05`, and
+    otherwise answers with `2025-06-18`. It used to always answer `2024-11-05`. `2025-03-26` is not
+    echoed, because it requires JSON-RPC batch support.
+  * `benchmark:mcp` checks the version echo, the annotations and the `structuredContent` parity. It
+    reports image and `structuredContent` sizes next to its text-only token budgets.
 
   The runtime directory is now resolved in one place, `scripts/lib/runtime-dir.mjs`, which the CLI and
   the MCP server share.
 
-### Bug fixes
+### Bug Fixes
 
 * `fill` no longer echoes a value typed into a field named like a secret. The typed-value check used
   a `\b` regex, and `_` is a word character, so `#api_token`, `[name=client_secret]` and `#accessToken`

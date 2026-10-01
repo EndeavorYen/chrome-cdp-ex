@@ -2319,7 +2319,6 @@
     "serverVersion": "2.18.0",
     "supportedProtocolVersions": [
       "2025-06-18",
-      "2025-03-26",
       "2024-11-05"
     ],
     "tools": [
@@ -2327,7 +2326,7 @@
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
-          "openWorldHint": false,
+          "openWorldHint": true,
           "readOnlyHint": true,
           "title": "Doctor"
         },
@@ -2343,7 +2342,7 @@
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
-          "openWorldHint": false,
+          "openWorldHint": true,
           "readOnlyHint": true,
           "title": "List tabs"
         },
@@ -2400,7 +2399,7 @@
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
-          "openWorldHint": false,
+          "openWorldHint": true,
           "readOnlyHint": true,
           "title": "Select target"
         },
@@ -2429,7 +2428,7 @@
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
-          "openWorldHint": false,
+          "openWorldHint": true,
           "readOnlyHint": true,
           "title": "Perceive"
         },
@@ -2495,7 +2494,7 @@
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
-          "openWorldHint": false,
+          "openWorldHint": true,
           "readOnlyHint": true,
           "title": "Controls"
         },
@@ -2537,7 +2536,7 @@
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
-          "openWorldHint": false,
+          "openWorldHint": true,
           "readOnlyHint": true,
           "title": "Overlay"
         },
@@ -3030,7 +3029,7 @@
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
-          "openWorldHint": false,
+          "openWorldHint": true,
           "readOnlyHint": true,
           "title": "Wait for"
         },
@@ -3082,7 +3081,7 @@
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
-          "openWorldHint": false,
+          "openWorldHint": true,
           "readOnlyHint": true,
           "title": "Cascade"
         },
@@ -3115,7 +3114,7 @@
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
-          "openWorldHint": false,
+          "openWorldHint": true,
           "readOnlyHint": false,
           "title": "Components"
         },
@@ -3226,7 +3225,7 @@
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
-          "openWorldHint": false,
+          "openWorldHint": true,
           "readOnlyHint": false,
           "title": "Session checkpoint"
         },

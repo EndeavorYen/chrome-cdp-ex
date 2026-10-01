@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync } from 'fs';
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readFileSync, readSync } from 'fs';
 import { isAbsolute, relative, resolve } from 'path';
 import { isProxy } from 'node:util/types';
 import {
@@ -17,8 +17,12 @@ export {
   MCP_TOOL_DEFINITIONS,
 };
 
-/** Newest first; `initialize` echoes a listed client version, else answers with the newest. */
-export const MCP_SUPPORTED_PROTOCOL_VERSIONS = Object.freeze(['2025-06-18', '2025-03-26', '2024-11-05']);
+/**
+ * Newest first; `initialize` echoes a listed client version, else answers with the newest.
+ * 2025-03-26 is left out on purpose: it requires accepting JSON-RPC batches, which this server
+ * rejects (2025-06-18 removed batching again), so a 2025-03-26 client is offered 2025-06-18.
+ */
+export const MCP_SUPPORTED_PROTOCOL_VERSIONS = Object.freeze(['2025-06-18', '2024-11-05']);
 export const MCP_PROTOCOL_VERSION = MCP_SUPPORTED_PROTOCOL_VERSIONS[0];
 export const MCP_SERVER_VERSION = JSON.parse(
   readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8'),
@@ -114,24 +118,26 @@ export const MCP_RUN_COMMAND_MUTATING = Object.freeze(new Set(
   }),
 ));
 
-// Tool annotations are hints a host may use to auto-approve calls, so they are derived from the
-// command authorization catalog instead of being written per tool. Only `standard` commands (never
-// gated by confirm) are advertised as read-only. `sensitive-read` commands do not change the page,
-// but they are gated by confirm, so they are not read-only either. Every other authorization can
-// act on the page, and a page action can reach any origin, so it is destructive and open-world.
-const NON_MUTATING_ANNOTATIONS = Object.freeze({
-  standard: Object.freeze({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }),
-  'sensitive-read': Object.freeze({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }),
+// Tool annotations are hints a host may use to auto-approve calls or to flag untrusted output, so
+// they are derived from the command catalog instead of being written per tool.
+// - readOnly / destructive / idempotent come from `authorization`. Only `standard` commands (never
+//   gated by confirm) are read-only. `sensitive-read` commands do not change the page, but confirm
+//   gates them, so they are not read-only either. Every other authorization can act on the page.
+// - openWorld comes from `domains`: a command that talks to the live browser over any CDP domain
+//   returns or acts on content from the open web. Only a command with no CDP domain (`report`,
+//   which reads the CLI's own session log) is closed-world.
+const AUTHORIZATION_HINTS = Object.freeze({
+  standard: Object.freeze({ readOnlyHint: true, destructiveHint: false, idempotentHint: true }),
+  'sensitive-read': Object.freeze({ readOnlyHint: false, destructiveHint: false, idempotentHint: true }),
 });
-const MUTATING_ANNOTATIONS = Object.freeze({
-  readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true,
-});
+const MUTATING_HINTS = Object.freeze({ readOnlyHint: false, destructiveHint: true, idempotentHint: false });
 const TITLE_ACRONYMS = Object.freeze({ qa: 'QA' });
 
 function annotationHintsFor(command) {
-  return Object.hasOwn(NON_MUTATING_ANNOTATIONS, command.authorization)
-    ? NON_MUTATING_ANNOTATIONS[command.authorization]
-    : MUTATING_ANNOTATIONS;
+  const hints = Object.hasOwn(AUTHORIZATION_HINTS, command.authorization)
+    ? AUTHORIZATION_HINTS[command.authorization]
+    : MUTATING_HINTS;
+  return { ...hints, openWorldHint: command.domains.length > 0 };
 }
 
 function toolTitle(name) {
@@ -493,65 +499,110 @@ function imageNote(reason, path) {
   return { type: 'text', text: `Image not attached: ${reason}. Open ${path} to view it.` };
 }
 
-// True for a file directly in the runtime directory (elshot, fullshot, daemon-less shot) or
-// directly in a real (not linked) `cdp-<target>-screenshots` directory inside it (daemon shot).
-function isRuntimeOutputPath(runtimeDir, path, fs) {
+// The session directory an output path lives in ('' for the runtime directory itself), or null
+// when the path is not directly in the runtime directory or in a `cdp-<target>-screenshots`
+// directory inside it.
+function runtimeOutputDir(runtimeDir, path) {
   const root = resolve(runtimeDir);
-  const rel = relative(root, resolve(path));
-  if (!rel || isAbsolute(rel)) return false;
+  const rel = relative(root, path);
+  if (!rel || isAbsolute(rel)) return null;
   const parts = rel.split(/[\\/]/);
-  if (parts.some(part => !part || part === '..')) return false;
-  if (parts.length === 1) return true;
-  if (parts.length !== 2 || !SESSION_SCREENSHOT_DIR.test(parts[0])) return false;
+  if (parts.some(part => !part || part === '..')) return null;
+  if (parts.length === 1) return '';
+  if (parts.length !== 2 || !SESSION_SCREENSHOT_DIR.test(parts[0])) return null;
+  return resolve(root, parts[0]);
+}
+
+// A session directory must be a real directory, never a symlink or junction to elsewhere.
+function isRealDirectory(dir) {
   try {
-    return fs.lstatSync(resolve(root, parts[0])).isDirectory();
+    return lstatSync(dir).isDirectory();
   } catch {
     return false;
+  }
+}
+
+// O_NOFOLLOW is POSIX-only; on Windows the lstat check plus the dev/ino match below stand in.
+const OPEN_IMAGE_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+
+// Reads at most `maxBytes + 1` bytes of the file through one descriptor, so the size cap holds
+// for the bytes actually read and the file checked is the file read.
+function readCappedRegularFile(path, maxBytes, notBeforeMs) {
+  let linkStat;
+  try {
+    linkStat = lstatSync(path, { bigint: true });
+  } catch {
+    return { reason: 'the file could not be read' };
+  }
+  if (!linkStat.isFile()) return { reason: 'the path is not a regular file' };
+  let fd;
+  try {
+    fd = openSync(path, OPEN_IMAGE_FLAGS);
+  } catch {
+    return { reason: 'the file could not be opened (it may be a link)' };
+  }
+  try {
+    const stat = fstatSync(fd, { bigint: true });
+    if (!stat.isFile() || stat.dev !== linkStat.dev || stat.ino !== linkStat.ino) {
+      return { reason: 'the file changed while it was being read' };
+    }
+    if (Number(stat.mtimeMs) < notBeforeMs) return { reason: 'the file was not written by this call' };
+    const size = Number(stat.size);
+    if (size > maxBytes) return { reason: `the PNG is ${size} bytes`, overCap: true };
+    const buffer = Buffer.alloc(size + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = readSync(fd, buffer, length, buffer.length - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    if (length > maxBytes) return { reason: `the PNG is more than ${maxBytes} bytes`, overCap: true };
+    if (length !== size) return { reason: 'the file changed while it was being read' };
+    return { bytes: buffer.subarray(0, length) };
+  } catch {
+    return { reason: 'the file could not be read' };
+  } finally {
+    closeSync(fd);
   }
 }
 
 /**
  * The image block for a screenshot command's output file, a text note saying why it was left
  * out, or null when the command is not a screenshot command that succeeded. Only a fresh PNG
- * the CLI wrote into its runtime directory is ever read.
+ * the CLI wrote into its runtime directory, or into a tab's screenshot directory there, is read.
  */
 export function mcpImageContent(command, result, {
   runtimeDir,
   startedAtMs,
   maxBase64Bytes = MCP_IMAGE_MAX_BASE64_BYTES,
-  fs = { lstatSync, readFileSync },
 } = {}) {
   const owner = COMMAND_SURFACE.resolve(command?.[0]);
   if (!owner || !MCP_IMAGE_COMMANDS.has(owner.name) || result.code !== 0) return null;
   const path = result.stdout.split(/\r?\n/, 1)[0].trim();
-  if (!path || !isAbsolute(path) || !path.toLowerCase().endsWith('.png')) return null;
-  if (!isRuntimeOutputPath(runtimeDir, path, fs)) {
-    return imageNote('the file is outside the chrome-cdp-ex runtime directory', path);
+  if (!path) return null;
+  if (!isAbsolute(path)) {
+    // A caller `path` such as `out.png` is printed as given; other first lines are not paths.
+    return /\.[A-Za-z0-9]+$/.test(path) ? imageNote('the command reported a relative path', path) : null;
   }
-  let stat;
-  try {
-    stat = fs.lstatSync(path);
-  } catch {
-    return imageNote('the file could not be read', path);
+  const sessionDir = runtimeOutputDir(runtimeDir, resolve(path));
+  if (sessionDir === null) return imageNote('the file is outside the chrome-cdp-ex runtime directory', path);
+  if (!path.toLowerCase().endsWith('.png')) return imageNote('the file is not a .png file', path);
+  if (sessionDir && !isRealDirectory(sessionDir)) {
+    return imageNote('the screenshot directory is a link, not a directory', path);
   }
-  if (!stat.isFile()) return imageNote('the path is not a regular file', path);
-  if (!Number.isFinite(startedAtMs) || stat.mtimeMs < startedAtMs - IMAGE_MTIME_SLACK_MS) {
-    return imageNote('the file was not written by this call', path);
+  if (!Number.isFinite(startedAtMs)) return imageNote('the call start time is unknown', path);
+  const maxBytes = Math.floor(maxBase64Bytes / 4) * 3;
+  const read = readCappedRegularFile(path, maxBytes, startedAtMs - IMAGE_MTIME_SLACK_MS);
+  if (read.overCap) return imageNote(`${read.reason}, over the ${maxBase64Bytes}-byte base64 inline cap`, path);
+  if (read.reason) return imageNote(read.reason, path);
+  // Re-check after the read, so a session directory swapped for a link mid-read is still refused.
+  if (sessionDir && !isRealDirectory(sessionDir)) {
+    return imageNote('the screenshot directory is a link, not a directory', path);
   }
-  const encodedBytes = Math.ceil(stat.size / 3) * 4;
-  if (encodedBytes > maxBase64Bytes) {
-    return imageNote(`the PNG is ${stat.size} bytes, over the ${maxBase64Bytes}-byte base64 inline cap`, path);
-  }
-  let bytes;
-  try {
-    bytes = fs.readFileSync(path);
-  } catch {
-    return imageNote('the file could not be read', path);
-  }
-  if (bytes.length !== stat.size || !bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+  if (!read.bytes.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
     return imageNote('the file is not the PNG the command reported', path);
   }
-  return { type: 'image', data: bytes.toString('base64'), mimeType: 'image/png' };
+  return { type: 'image', data: read.bytes.toString('base64'), mimeType: 'image/png' };
 }
 
 // A command's versioned JSON output (an object with a string `schema`) becomes structuredContent.

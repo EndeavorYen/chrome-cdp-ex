@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -28,10 +28,10 @@ const TINY_PNG = Buffer.from(
 const PNG_SIGNATURE = TINY_PNG.subarray(0, 8);
 
 function withRuntimeDir(fn) {
-  return async () => {
+  return async context => {
     const runtimeDir = mkdtempSync(join(tmpdir(), 'chrome-cdp-465-'));
     try {
-      await fn(runtimeDir);
+      await fn(runtimeDir, context);
     } finally {
       rmSync(runtimeDir, { recursive: true, force: true });
     }
@@ -62,14 +62,15 @@ const shotOutput = path => async () => ({ code: 0, stdout: `${path}\nScreenshot 
 
 describe('#465 initialize negotiates protocolVersion', () => {
   it('echoes a supported client version and otherwise answers with the latest supported one', async () => {
-    expect(MCP_SUPPORTED_PROTOCOL_VERSIONS).toEqual(['2025-06-18', '2025-03-26', '2024-11-05']);
+    expect(MCP_SUPPORTED_PROTOCOL_VERSIONS).toEqual(['2025-06-18', '2024-11-05']);
     expect(MCP_PROTOCOL_VERSION).toBe('2025-06-18');
     const server = harness(async () => ({ code: 0, stdout: '', stderr: '' }));
     for (const version of MCP_SUPPORTED_PROTOCOL_VERSIONS) {
       const reply = await server.request('initialize', { protocolVersion: version, capabilities: {} });
       expect(reply.result.protocolVersion).toBe(version);
     }
-    for (const params of [{ protocolVersion: '2099-01-01' }, { protocolVersion: 7 }, {}, undefined]) {
+    // 2025-03-26 requires JSON-RPC batch support, which this server does not have.
+    for (const params of [{ protocolVersion: '2025-03-26' }, { protocolVersion: '2099-01-01' }, { protocolVersion: 7 }, {}, undefined]) {
       const reply = await server.request('initialize', params);
       expect(reply.result.protocolVersion).toBe('2025-06-18');
       expect(reply.result.serverInfo.name).toBe('chrome-cdp-ex');
@@ -79,10 +80,10 @@ describe('#465 initialize negotiates protocolVersion', () => {
 
 describe('#465 tool annotations come from the command authorization catalog', () => {
   const EXPECTED_BY_AUTHORIZATION = {
-    standard: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    'sensitive-read': { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    conditional: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-    mutation: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    standard: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    'sensitive-read': { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+    conditional: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+    mutation: { readOnlyHint: false, destructiveHint: true, idempotentHint: false },
   };
 
   it('lists every tool with annotations that match its owning command authorization', async () => {
@@ -96,13 +97,22 @@ describe('#465 tool annotations come from the command authorization catalog', ()
       if (tool.name === 'run_command') continue;
       const command = COMMAND_SURFACE.commands.find(candidate => candidate.mcp.toolName === tool.name);
       const { title: _title, ...hints } = tool.annotations;
-      expect(hints, tool.name).toEqual(EXPECTED_BY_AUTHORIZATION[command.authorization]);
+      expect(hints, tool.name).toEqual({
+        ...EXPECTED_BY_AUTHORIZATION[command.authorization],
+        // Any command that talks to the browser over a CDP domain returns or acts on web content.
+        openWorldHint: command.domains.length > 0,
+      });
     }
     const byName = Object.fromEntries(tools.map(tool => [tool.name, tool.annotations]));
     expect(byName.perceive.readOnlyHint).toBe(true);
     expect(byName.click.destructiveHint).toBe(true);
     expect(byName.screenshot.readOnlyHint).toBe(false);
     expect(byName.list_tabs.title).toBe('List tabs');
+    // Page-reading tools return untrusted web content, so they are open-world.
+    for (const name of ['perceive', 'controls', 'overlay', 'cascade', 'wait_for', 'list_tabs', 'select_target']) {
+      expect(byName[name].openWorldHint, name).toBe(true);
+    }
+    expect(byName.report.openWorldHint).toBe(false);
   });
 
   it('gives run_command the widest hints of its allowlist', async () => {
@@ -236,6 +246,52 @@ describe('#465 screenshot tools return an image content block', () => {
     }
   }));
 
+  it('notes a relative screenshot path instead of silently dropping the image', withRuntimeDir(async runtimeDir => {
+    const reply = await harness(shotOutput('out.png'), { runtimeDir })
+      .call('screenshot', { target: 'ABCDEF12', path: 'out.png', confirm: true });
+    expect(reply.result.content).toEqual([
+      { type: 'text', text: 'out.png\nScreenshot saved. DPR=1' },
+      { type: 'text', text: 'Image not attached: the command reported a relative path. Open out.png to view it.' },
+    ]);
+  }));
+
+  it('refuses a symlinked PNG in the runtime directory', withRuntimeDir(async (runtimeDir, context) => {
+    const outside = mkdtempSync(join(tmpdir(), 'chrome-cdp-465-link-'));
+    try {
+      const real = join(outside, 'real.png');
+      writeFileSync(real, TINY_PNG);
+      const link = join(runtimeDir, 'screenshot-LINK0000.png');
+      try {
+        symlinkSync(real, link, 'file');
+      } catch (error) {
+        // Windows without Developer Mode or elevation cannot create file symlinks.
+        if (error.code === 'EPERM' || error.code === 'EACCES') context.skip();
+        throw error;
+      }
+      const reply = await harness(shotOutput(link), { runtimeDir }).call('screenshot', { target: 'LINK0000' });
+      expect(reply.result.content.map(block => block.type)).toEqual(['text', 'text']);
+      expect(reply.result.content[1].text).toMatch(/not a regular file/);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  }));
+
+  it('refuses a screenshot directory that is a junction or symlink to elsewhere', withRuntimeDir(async runtimeDir => {
+    const outside = mkdtempSync(join(tmpdir(), 'chrome-cdp-465-junction-'));
+    try {
+      writeFileSync(join(outside, 'shot-001.png'), TINY_PNG);
+      const linkedDir = join(runtimeDir, 'cdp-ABCDEF1234567890ABCDEF1234567890-screenshots');
+      // A junction needs no privilege on Windows; elsewhere the type is ignored and a dir symlink is made.
+      symlinkSync(outside, linkedDir, 'junction');
+      const path = join(linkedDir, 'shot-001.png');
+      const reply = await harness(shotOutput(path), { runtimeDir }).call('screenshot', { target: 'ABCDEF12' });
+      expect(reply.result.content.map(block => block.type)).toEqual(['text', 'text']);
+      expect(reply.result.content[1].text).toMatch(/screenshot directory is a link/);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  }));
+
   it('does not attach stale files, non-PNG bytes, or images for failed or non-screenshot commands', withRuntimeDir(async runtimeDir => {
     const stale = join(runtimeDir, 'screenshot-STALE000.png');
     writeFileSync(stale, TINY_PNG);
@@ -291,10 +347,10 @@ describe('#465 screenshot tools return an image content block', () => {
           }
         });
         child.on('exit', code => reject(new Error(`exited ${code}; stdout=${stdout}; stderr=${stderr}`)));
-        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } })}\n`);
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } })}\n`);
         child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'screenshot', arguments: { target: 'ABCDEF12' } } })}\n`);
       });
-      expect(replies[0].result.protocolVersion).toBe('2025-03-26');
+      expect(replies[0].result.protocolVersion).toBe('2024-11-05');
       expect(replies[1].id).toBe(2);
       expect(replies[1].result.content).toEqual([
         { type: 'text', text: `${path}\nScreenshot saved. DPR=1` },
@@ -304,4 +360,25 @@ describe('#465 screenshot tools return an image content block', () => {
       child.kill();
     }
   }));
+});
+
+describe('#465 benchmark:mcp reports payload beyond text blocks', () => {
+  it('counts image base64 and structuredContent separately from the text token estimate', async () => {
+    const { contentExtras, formatMcpBenchmarkReport, summarizeMcpBenchmarkRun } = await import('../scripts/benchmark-mcp-path.mjs');
+    const structuredContent = { schema: 'fixture.v1', ok: true };
+    const extras = contentExtras({
+      content: [{ type: 'text', text: 'x' }, { type: 'image', data: 'QUJD', mimeType: 'image/png' }],
+      structuredContent,
+    });
+    expect(extras).toEqual({ imageBase64Chars: 4, structuredContentChars: JSON.stringify(structuredContent).length });
+
+    const summary = summarizeMcpBenchmarkRun({
+      startedAt: 0,
+      endedAt: 10,
+      steps: [{ name: 'shot', mcpTool: 'screenshot', status: 0, startedAt: 0, endedAt: 10, stdout: 'x', stderr: '', ...extras }],
+    });
+    expect(summary.metrics).toMatchObject({ imageBase64Chars: 4, structuredContentChars: extras.structuredContentChars });
+    expect(summary.metrics.perToolOutputTokens[0]).toMatchObject({ imageBase64Chars: 4 });
+    expect(formatMcpBenchmarkReport(summary)).toContain('Non-text payload (not in token budgets): 4 image base64 chars');
+  });
 });
