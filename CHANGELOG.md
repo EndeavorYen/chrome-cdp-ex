@@ -75,6 +75,14 @@
   `"access_token":"…"` text. `netlog` used to print raw URLs; it now redacts by default and
   `netlog --unsafe-full` prints them verbatim (MCP `run_command` asks for confirmation)
   ([#455](https://github.com/EndeavorYen/chrome-cdp-ex/issues/455)).
+* The tab daemon no longer corrupts non-ASCII request text. Its request reader decoded every socket
+  chunk on its own (`buffer += chunk.toString()`), so a UTF-8 character split across a read boundary
+  (about every 64 KB) became U+FFFD and a long CJK `fill`/`type`, or a large `eval`, `batch`, `flow` or
+  `mock --body`, silently sent damaged text to the page. The daemon now buffers raw bytes and decodes
+  only complete newline-terminated frames, as the client already did; a frame that is not valid UTF-8 is
+  rejected instead of rewritten. A request line is capped at 16 MiB: an over-cap line gets a
+  `{ ok: false, error, id: null }` reply and its connection is closed, while the daemon keeps serving
+  ([#457](https://github.com/EndeavorYen/chrome-cdp-ex/issues/457)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 

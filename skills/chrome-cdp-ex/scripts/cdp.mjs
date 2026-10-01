@@ -707,6 +707,13 @@ function validateDaemonProtocolRequest(input) {
   return Object.freeze({ request: frozenRequest, tableCollect });
 }
 
+// One NDJSON request line may hold at most this many bytes (newline excluded).
+// CLI argv limits keep real requests far below it; the cap only stops a runaway
+// or foreign client from growing the daemon's buffer without bound. An over-cap
+// line gets `{ ok: false, error, id: null }` and the connection is closed.
+const MAX_DAEMON_REQUEST_LINE_BYTES = 16 * 1024 * 1024;
+const DAEMON_REQUEST_DECODER = new TextDecoder('utf-8', { fatal: true });
+
 function createDaemonRequestConnection(conn, {
   handleRequest,
   cleanup = () => {},
@@ -734,7 +741,11 @@ function createDaemonRequestConnection(conn, {
     throw new Error('daemon request timer functions are required');
   }
   const active = new Map();
-  let buffer = '';
+  // Raw bytes of the incomplete request line. Decoding happens only once a whole
+  // newline-terminated frame is present, so a multibyte UTF-8 character split
+  // across socket reads is never decoded half at a time (#457).
+  const pending = [];
+  let pendingBytes = 0;
   let disconnected = false;
   let poisoned = false;
   let disconnectNotified = false;
@@ -855,8 +866,12 @@ function createDaemonRequestConnection(conn, {
     try { onFatal(error); } catch {}
   };
 
-  const terminateForDuplicate = (id) => {
-    const error = new Error(`Duplicate active request id: ${id}`);
+  // Reply once with a protocol error, retire this connection's requests and
+  // close it. The daemon keeps serving other connections, unless an unproven
+  // table collect forces the same fatal retirement as any other abort would.
+  const terminateConnection = (error, id) => {
+    pending.length = 0;
+    pendingBytes = 0;
     const unsafeCollect = [...active.values()].some(entry => (
       entry.execution.deadline
       && (!entry.handlerSettled || daemonRequestHasUnsettledInvocations(entry.execution))
@@ -875,9 +890,15 @@ function createDaemonRequestConnection(conn, {
       } catch {}
     }
     disconnected = true;
+    disconnectNotified = true;
     removeConnectionListeners();
     try { onDisconnect(error); } catch {}
   };
+  const terminateForDuplicate = id => terminateConnection(new Error(`Duplicate active request id: ${id}`), id);
+  const terminateForOversizedLine = () => terminateConnection(
+    new Error(`daemon request line exceeded ${MAX_DAEMON_REQUEST_LINE_BYTES} bytes; connection closed`),
+    null,
+  );
 
   const dispatch = input => {
     let validated;
@@ -1040,22 +1061,45 @@ function createDaemonRequestConnection(conn, {
       });
   };
 
+  const dispatchFrame = frameBytes => {
+    let line;
+    try {
+      line = DAEMON_REQUEST_DECODER.decode(frameBytes);
+    } catch {
+      writeFailure(null, new Error('Invalid request: not valid UTF-8'));
+      return;
+    }
+    if (!line.trim()) return;
+    let req;
+    try {
+      req = JSON.parse(line);
+    } catch {
+      writeFailure(null, new Error('Invalid JSON request'));
+      return;
+    }
+    dispatch(req);
+  };
   const onData = chunk => {
     if (disconnected) return;
-    buffer += chunk.toString();
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-    for (const line of lines) {
-      if (disconnected) break;
-      if (!line.trim()) continue;
-      let req;
-      try {
-        req = JSON.parse(line);
-      } catch {
-        writeFailure(null, new Error('Invalid JSON request'));
-        continue;
+    let incoming = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+    while (!disconnected) {
+      const newline = incoming.indexOf(10);
+      const lineBytes = pendingBytes + (newline === -1 ? incoming.length : newline);
+      if (lineBytes > MAX_DAEMON_REQUEST_LINE_BYTES) {
+        terminateForOversizedLine();
+        return;
       }
-      dispatch(req);
+      if (newline === -1) {
+        if (incoming.length > 0) pending.push(incoming);
+        pendingBytes = lineBytes;
+        return;
+      }
+      pending.push(incoming.subarray(0, newline));
+      const frameBytes = Buffer.concat(pending, lineBytes);
+      pending.length = 0;
+      pendingBytes = 0;
+      incoming = incoming.subarray(newline + 1);
+      dispatchFrame(frameBytes);
     }
   };
   function removeConnectionListeners() {
@@ -24061,6 +24105,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   // Request:  { "id": <number>, "cmd": "<command>", "args": ["arg1", "arg2", ...] }
   // Response: { "id": <number>, "ok": <boolean>, "result": "<string>" }
   //           or { "id": <number>, "ok": false, "error": "<message>" }
+  // A request line is UTF-8, decoded only once complete, and capped at
+  // MAX_DAEMON_REQUEST_LINE_BYTES (16 MiB); see createDaemonRequestConnection.
   server = net.createServer((conn) => {
     let requestConnection;
     requestConnection = createDaemonRequestConnection(conn, {
@@ -28186,6 +28232,6 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   looksLikeClipboardControl, isExpectedClipboardNoChange,
   TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,
   createDaemonRequestExecutionContext, createTableCollectionRuntime,
-  runTableCollectionLifecycle, createDaemonRequestConnection,
+  runTableCollectionLifecycle, createDaemonRequestConnection, MAX_DAEMON_REQUEST_LINE_BYTES,
   createDaemonShutdown, enforceDaemonTableCollectionGate,
 } : undefined;
