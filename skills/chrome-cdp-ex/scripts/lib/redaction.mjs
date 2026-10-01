@@ -42,9 +42,9 @@ export function sensitiveKeyTokens(key = '') {
     .filter(Boolean);
 }
 
-function isSensitiveToken(token, { prev, next, urlQuery }) {
+function isSensitiveToken(token, { prev, next, urlQuery, tokenSet = SENSITIVE_KEY_TOKENS }) {
   if (token === 'token' && (TOKEN_QUANTITY_BEFORE.has(prev) || TOKEN_QUANTITY_AFTER.has(next))) return false;
-  if (SENSITIVE_KEY_TOKENS.has(token)) return true;
+  if (tokenSet.has(token)) return true;
   if (urlQuery && URL_QUERY_KEY_TOKENS.has(token)) return true;
   return SENSITIVE_KEY_SUFFIXES.some((suffix) => {
     if (token.length <= suffix.length || !token.endsWith(suffix)) return false;
@@ -58,15 +58,28 @@ export function isSensitiveKey(key = '', { urlQuery = false } = {}) {
   const tokens = sensitiveKeyTokens(key);
   if (tokens.length === 0) return false;
   if (urlQuery && tokens.length === 1 && URL_QUERY_WHOLE_KEYS.has(tokens[0])) return true;
+  return hasSensitiveToken(tokens, { urlQuery, tokenSet: SENSITIVE_KEY_TOKENS });
+}
+
+function hasSensitiveToken(tokens, { urlQuery = false, tokenSet }) {
   for (let i = 0; i < tokens.length; i++) {
     const prev = tokens[i - 1];
     const next = tokens[i + 1];
-    if (isSensitiveToken(tokens[i], { prev, next, urlQuery })) return true;
+    if (isSensitiveToken(tokens[i], { prev, next, urlQuery, tokenSet })) return true;
     // `api_key` / `apiKey` / `private-key` split into two tokens.
-    if (next && isSensitiveToken(tokens[i] + next, { prev, next: tokens[i + 2], urlQuery })) return true;
+    if (next && isSensitiveToken(tokens[i] + next, { prev, next: tokens[i + 2], urlQuery, tokenSet })) return true;
   }
   return false;
 }
+
+// Form fields are named in prose ("Session name", "Access level", "Refresh interval"). The bare
+// words that make a URL key secret (`?session=…`) do not make a field secret; their compounds
+// still do (`session_id`, `access_token`, `refresh_token`, `card_number`, `access code`).
+const FIELD_NON_SECRET_WORDS = new Set(['session', 'access', 'refresh', 'sid', 'cookie', 'card']);
+const SENSITIVE_FIELD_TOKENS = new Set([
+  ...[...SENSITIVE_KEY_TOKENS].filter(token => !FIELD_NON_SECRET_WORDS.has(token)),
+  'sessionid', 'cardnumber', 'creditcard', 'accesscode', 'csc',
+]);
 
 // Field names whose words are not secret one by one: autocomplete values for card and
 // one-time codes, and one-time/verification code labels. Matched on the token list joined
@@ -79,7 +92,8 @@ const SENSITIVE_FIELD_PHRASE_RE = /(?:^|-)(?:one-time-(?:code|password|passcode|
 export function isSensitiveFieldText(text = '') {
   const tokens = sensitiveKeyTokens(text);
   if (tokens.length === 0) return false;
-  return isSensitiveKey(text) || SENSITIVE_FIELD_PHRASE_RE.test(tokens.join('-'));
+  return hasSensitiveToken(tokens, { tokenSet: SENSITIVE_FIELD_TOKENS })
+    || SENSITIVE_FIELD_PHRASE_RE.test(tokens.join('-'));
 }
 
 function decodeKey(rawKey) {
@@ -192,4 +206,68 @@ export function redactSensitiveString(value, { truncated = false } = {}) {
     .replace(BEARER_VALUE_RE, `$1${REDACTED_VALUE}`)
     .replace(URL_USERINFO_RE, `$1${REDACTED_VALUE}$3`);
   return redactSecretAssignments(truncated ? redacted.replace(URL_USERINFO_CUT_RE, `$1${REDACTED_VALUE}`) : redacted, { truncated });
+}
+
+const MIN_SUBSTRING_SECRET_CHARS = 4;
+const MIN_PREVIEW_PREFIX_CHARS = 8;
+
+// Literal secret values (a value typed into a sensitive field, the value it replaced) scrubbed
+// from a string, array or object (#485). A value of 4+ characters is replaced wherever it
+// appears, also JSON-escaped and as a truncated `prefix…` preview of 8+ characters. A shorter
+// value is replaced only as a whole string or a quoted `"x"`, so a one-digit PIN cannot garble
+// counts, ids or durations.
+export function scrubSecretValues(value, secrets = []) {
+  const list = [...new Set((Array.isArray(secrets) ? secrets : [secrets])
+    .filter(secret => typeof secret === 'string' && secret !== '' && secret !== REDACTED_VALUE))]
+    .sort((a, b) => b.length - a.length);
+  if (list.length === 0 || value == null) return value;
+  return scrubSecretsDeep(value, list);
+}
+
+function scrubSecretsDeep(value, list) {
+  if (typeof value === 'string') return list.reduce((text, secret) => scrubSecretInString(text, secret), value);
+  if (Array.isArray(value)) return value.map(item => scrubSecretsDeep(item, list));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, scrubSecretsDeep(entry, list)]));
+  }
+  return value;
+}
+
+function scrubSecretInString(text, secret) {
+  if (text === secret) return REDACTED_VALUE;
+  let out = text;
+  const escaped = JSON.stringify(secret).slice(1, -1);
+  for (const form of escaped === secret ? [secret] : [secret, escaped]) {
+    if (secret.length >= MIN_SUBSTRING_SECRET_CHARS) {
+      out = out.split(form).join(REDACTED_VALUE);
+    } else {
+      out = out.split(`"${form}"`).join(`"${REDACTED_VALUE}"`)
+        .split(`\\"${form}\\"`).join(`\\"${REDACTED_VALUE}\\"`);
+    }
+    if (form.length > MIN_PREVIEW_PREFIX_CHARS) out = scrubTruncatedPreviews(out, form);
+  }
+  return out;
+}
+
+// `sk-live-abcdef…` / `sk-live-abcdef...`: a receipt cut the secret short.
+function scrubTruncatedPreviews(text, secret) {
+  const head = secret.slice(0, MIN_PREVIEW_PREFIX_CHARS);
+  let out = '';
+  let from = 0;
+  let scan = 0;
+  let at;
+  while ((at = text.indexOf(head, scan)) !== -1) {
+    let length = MIN_PREVIEW_PREFIX_CHARS;
+    while (length < secret.length && text[at + length] === secret[length]) length++;
+    const rest = text.slice(at + length, at + length + 3);
+    const ellipsis = rest.startsWith('…') ? 1 : rest === '...' ? 3 : 0;
+    if (ellipsis) {
+      out += `${text.slice(from, at)}${REDACTED_VALUE}`;
+      from = at + length + ellipsis;
+      scan = from;
+    } else {
+      scan = at + 1;
+    }
+  }
+  return from === 0 ? text : `${out}${text.slice(from)}`;
 }

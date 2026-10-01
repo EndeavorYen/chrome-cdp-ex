@@ -57,7 +57,7 @@ function fakeFillPage({ value = '', type = 'text', field = {}, accept = text => 
 
 // Runs one fill the way the daemon does: fillStr records the value state, and the dispatch
 // wrapper turns it into receipt state on the action target (success) or marks the target (failure).
-async function runFill(selector, text, { format = 'text', page = {}, session = null } = {}) {
+async function runFill(selector, text, { format = 'text', page = {}, session = null, observe = null } = {}) {
   const { cdp } = fakeFillPage(page);
   const fillValueState = {};
   const target = {
@@ -83,10 +83,10 @@ async function runFill(selector, text, { format = 'text', page = {}, session = n
       }
     },
     feedbackPolicy: 'settle-diff',
-    observe: async () => '(no changes detected in AX tree)',
+    observe: observe || (async () => '(no changes detected in AX tree)'),
     onActionResult: (actionResult) => { result = actionResult; },
     format,
-  });
+  }).catch(error => error);
   if (session) T.appendSessionActionLog(session, result);
   return { out, result };
 }
@@ -123,14 +123,16 @@ describe('#485 key classifier for typed-value sensitivity', () => {
   it('treats secret autocomplete values and one-time codes as sensitive', () => {
     for (const text of ['one-time-code', 'cc-number', 'cc-csc', 'cc-exp', 'cc-exp-month', 'current-password',
       'new-password', 'input[autocomplete="one-time-code"]', '#cc-number', '#oneTimeCode', 'Verification code',
-      'section-pay billing cc-csc']) {
+      'section-pay billing cc-csc', 'session_id', '#sessionId', 'card_number', 'Card number', 'Credit card',
+      'Access code', '#refresh_token', '#access-token']) {
       expect(isSensitiveFieldText(text), text).toBe(true);
     }
   });
 
-  it('keeps ordinary fields readable', () => {
+  it('keeps ordinary fields readable, including bare words that only mark URL keys secret', () => {
     for (const text of ['#search', '#pinned-note', '[name=q]', 'input[type=text]', '#author', '#max_tokens',
-      'cc-name', 'email', 'username', 'Search', '#sidebar-filter', '']) {
+      'cc-name', 'email', 'username', 'Search', '#sidebar-filter', '', 'Session name', '#session-name',
+      'Access level', 'Refresh interval (s)', '#cookie-banner-text', '#card-title', '#sid']) {
       expect(isSensitiveFieldText(text), text).toBe(false);
     }
   });
@@ -218,4 +220,111 @@ describe('#485 fill redacts values typed into secret-named fields', () => {
       expect(s.recordJson.actions[0].command).toEqual(['fill', selector, text]);
     });
   }
+});
+
+// An AX diff the way perceive prints it: a non-password textbox exposes its value.
+function axDiff(field, before, after) {
+  return [
+    '+++ Added (1):',
+    `+   [textbox] ${field} = ${JSON.stringify(after)}`,
+    '--- Removed (1):',
+    `-   [textbox] ${field} = ${JSON.stringify(before)}`,
+  ].join('\n');
+}
+
+describe('#485 every receipt mode scrubs a sensitive field value', () => {
+  const OLD = 'sk-old-485-previous-secret';
+  const page = { value: OLD, field: { name: 'api_token' } };
+  const observe = async () => axDiff('tok', OLD, SECRET);
+  const modes = [
+    ['text', 'text'],
+    ['--full text', { format: 'text', full: true }],
+    ['--compact text', { format: 'text', compact: true }],
+    ['json', 'json'],
+    ['--compact json', { format: 'json', compact: true }],
+    ['--full json', { format: 'json', full: true }],
+    ['--qa json', { format: 'json', qa: true }],
+  ];
+  for (const [label, format] of modes) {
+    it(`${label}: neither the typed nor the previous value appears in the AX diff, samples or delta`, async () => {
+      await withSession(async (session, logPath) => {
+        const { out } = await runFill('#f1', SECRET, { page, format, observe, session });
+        expect(out).not.toContain('sk-live-485');
+        expect(out).not.toContain('sk-old-485');
+        const log = readFileSync(logPath, 'utf8');
+        expect(log).not.toContain('sk-live-485');
+        expect(log).not.toContain('sk-old-485');
+      });
+    });
+  }
+
+  it('the AX diff really carried both values before scrubbing (the test is not vacuous)', async () => {
+    const { result } = await runFill('#f1', SECRET, { page, format: { format: 'json', full: true }, observe });
+    expect(result.effects.domDiff).toContain(SECRET);
+    expect(result.effects.domDiff).toContain(OLD);
+  });
+
+  it('a truncated preview of the secret is scrubbed too', async () => {
+    const long = `sk-live-485-${'x'.repeat(300)}`;
+    for (const format of [{ format: 'json', full: true }, { format: 'json', compact: true }, 'text']) {
+      const { out } = await runFill('#f1', long, {
+        page: { field: { name: 'api_token' } },
+        format,
+        observe: async () => axDiff('tok', '', long),
+      });
+      expect(out).not.toContain('sk-live-485');
+    }
+  });
+
+  it('a short PIN is scrubbed where it is quoted without garbling numbers', async () => {
+    const { out } = await runFill('#f1', '7', {
+      page: { field: { autocomplete: 'one-time-code' } },
+      format: { format: 'json', full: true },
+      observe: async () => axDiff('code', '', '7'),
+    });
+    expect(out).not.toContain('= \\"7\\"');
+    const parsed = JSON.parse(out);
+    expect(parsed.target.commandArgs).toEqual(['#f1', '<redacted>']);
+    expect(parsed.effects.domDiff).toContain('[textbox] code = "<redacted>"');
+  });
+
+  it('a failed fill --format json redacts effects.failure.target and every other field', async () => {
+    const { out } = await runFill('#f3', SECRET, {
+      page: { value: OLD, field: { name: 'api_token' }, accept: () => 'x' },
+      format: 'json',
+    });
+    const parsed = JSON.parse(out);
+    expect(parsed.dispatch.ok).toBe(false);
+    expect(parsed.effects.failure.kind).toBe('fill-value-mismatch');
+    expect(parsed.effects.failure.target.commandArgs).toEqual(['#f3', '<redacted>']);
+    expect(out).not.toContain(SECRET);
+    expect(out).not.toContain(OLD);
+  });
+
+  it('the failure Next reads .value.length for a sensitive field, .value otherwise', async () => {
+    const secret = await runFill('#f3', SECRET, { page: { field: { name: 'api_token' }, accept: () => 'x' } });
+    expect(secret.out).toBeInstanceOf(Error);
+    expect(secret.out.message).toContain(`"document.querySelector('#f3')?.value.length"`);
+    expect(secret.out.message).not.toContain(SECRET);
+    const plain = await runFill('#f4', 'hello', { page: { accept: () => 'x' } });
+    expect(plain.out.message).toContain(`"document.querySelector('#f4')?.value"`);
+  });
+
+  it('a normal field keeps its value in the AX diff', async () => {
+    const { out } = await runFill('#search', 'chrome cdp', {
+      format: { format: 'text', full: true },
+      observe: async () => axDiff('Search', '', 'chrome cdp'),
+    });
+    expect(out).toContain('[textbox] Search = "chrome cdp"');
+  });
+});
+
+describe('#485 type prose is not a field name', () => {
+  it('only classifies commandArgs[0] for fill', () => {
+    const typeTarget = { input: 'current focus', label: 'current focus', commandArgs: ['my session access card notes'] };
+    expect(T.isSensitiveActionTarget('type', typeTarget)).toBe(false);
+    expect(T.isSensitiveActionTarget('type', { ...typeTarget, commandArgs: ['my password'] })).toBe(false);
+    expect(T.isSensitiveActionTarget('fill', { input: '#api_token', label: '#api_token', commandArgs: ['#api_token', 'x'] })).toBe(true);
+    expect(T.isSensitiveActionTarget('fill', { input: '#note', label: '#note', commandArgs: ['#note', 'x'] })).toBe(false);
+  });
 });

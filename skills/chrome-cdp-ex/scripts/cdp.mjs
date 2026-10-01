@@ -138,6 +138,7 @@ import {
   isSensitiveKey,
   redactSensitiveString,
   redactUrl,
+  scrubSecretValues,
 } from './lib/redaction.mjs';
 import {
   COMMAND_SURFACE,
@@ -7908,13 +7909,16 @@ function actionSettleObserveOpts(targetId, actionTarget = {}, baselineOutput = n
 // Every action receipt leaves through here. JSON models are redacted field by
 // field; text receipts are redacted as a whole because outcome reasons, page
 // URLs and dispatch text all embed raw URLs (#455).
+// A sensitive fill's typed and previous values are scrubbed from the whole output in every mode:
+// AX diffs, diagnosis samples and failure targets all quote the field's live value (#485).
 function formatActionResultOutput(result, opts = {}) {
+  const secrets = sensitiveActionValues(result?.action, result?.target);
   const output = formatActionResultOutputUnredacted(result, opts);
-  if (opts.format === 'json') return output;
+  if (opts.format === 'json') return scrubSecretValues(output, secrets);
   // #460: every text receipt names the dialogs the daemon answered on the user's behalf.
   const dialogLines = actionDialogLines(result?.effects || {});
   const text = dialogLines.length ? [output, ...dialogLines].filter(Boolean).join('\n') : output;
-  return redactSensitiveString(text);
+  return scrubSecretValues(redactSensitiveString(text), secrets);
 }
 
 function formatActionResultOutputUnredacted(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false } = {}) {
@@ -8808,7 +8812,10 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
     });
     await finalizeActionResult(result, { enrichActionResult, onActionResult });
     if (output.format === 'json') return formatActionResultOutput(result, output);
-    throw new Error([formatActionFailure(e, { action, target }), ...actionDialogLines(result.effects)].join('\n'));
+    throw new Error(scrubSecretValues(
+      [formatActionFailure(e, { action, target }), ...actionDialogLines(result.effects)].join('\n'),
+      sensitiveActionValues(action, target),
+    ));
   }
   // #437: a click on a link that opened another tab says so in its dispatch text.
   const openedTab = CLICK_OUTCOME_WORD_ACTIONS.has(String(action || '').toLowerCase())
@@ -9070,7 +9077,10 @@ function compactActionHandoffForJson(result = {}) {
 
 function compactActionResultForJson(result, { compact: compactMode = false } = {}) {
   const compact = JSON.parse(JSON.stringify(result));
-  compact.target = sanitizeActionTargetForLog(compact.action, compact.target || null);
+  compact.target = sanitizeActionTargetForLog(compact.action, result.target || null);
+  if (compact.effects?.failure?.target) {
+    compact.effects.failure.target = sanitizeActionTargetForLog(compact.action, result.target || null);
+  }
   compact.receipt = receiptForActionJson(compact.receipt);
   const effects = compact.effects || {};
   if (typeof effects.domDiff !== 'string') {
@@ -9095,15 +9105,28 @@ function compactActionResultForJson(result, { compact: compactMode = false } = {
 // Whether a fill/type value must stay out of receipts and logs. The key classifier splits each
 // string on `_`, `-` and camelCase (#485), so `#api_token` and `[name=client_secret]` count.
 // `sensitiveValue` is set when fill read the control itself: a password input, or a name, id,
-// autocomplete or label that marks it secret.
+// autocomplete or label that marks it secret. Only fill names a field: `type`'s first arg is the
+// typed prose itself, not a field name.
 function isSensitiveActionTarget(action, target = {}) {
   if (action !== 'fill' && action !== 'type') return false;
   if (target.sensitiveValue === true) return true;
+  if (action !== 'fill') return false;
   return [
     target.input,
     target.label,
     ...(Array.isArray(target.commandArgs) ? target.commandArgs.slice(0, 1) : []),
   ].some(text => text && isSensitiveFieldText(text));
+}
+
+// Raw values of a sensitive fill (the typed text, the value it replaced, the live value) keyed by
+// its fill value state and action target. A WeakMap keeps them out of every serialized object;
+// receipts and logs read them only to scrub them (#485).
+const SENSITIVE_FILL_RAW_VALUES = new WeakMap();
+
+// Every literal a sensitive action's output must not contain.
+function sensitiveActionValues(action, target = {}) {
+  if (!target || !isSensitiveActionTarget(action, target)) return [];
+  return [sensitiveActionSecret(action, target), ...(SENSITIVE_FILL_RAW_VALUES.get(target) || [])];
 }
 
 function sensitiveActionSecret(action, target = {}) {
@@ -9114,17 +9137,9 @@ function sensitiveActionSecret(action, target = {}) {
   return args[1] == null ? '' : String(args[1]);
 }
 
+// `secret` is one literal or a list (a sensitive fill's typed and previous values).
 function replaceSecretLiteral(value, secret) {
-  if (!secret || secret === REDACTED_VALUE || value == null) return value;
-  if (typeof value === 'string') return value.includes(secret) ? value.split(secret).join(REDACTED_VALUE) : value;
-  if (Array.isArray(value)) return value.map(item => replaceSecretLiteral(item, secret));
-  if (typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, entryValue]) => [
-      key,
-      replaceSecretLiteral(entryValue, secret),
-    ]));
-  }
-  return value;
+  return scrubSecretValues(value, secret);
 }
 
 function redactSensitiveDispatchText(text) {
@@ -9146,10 +9161,9 @@ function sanitizeActionTargetForLog(action, target = null) {
     commandArgs: Array.isArray(target.commandArgs) ? [...target.commandArgs] : target.commandArgs,
   };
   if (!isSensitiveActionTarget(action, sanitized)) return sanitized;
-  const secret = sensitiveActionSecret(action, sanitized);
-  let next = secret && secret !== REDACTED_VALUE
-    ? replaceSecretLiteral(sanitized, secret)
-    : sanitized;
+  // The original target: a fill's raw values are keyed by it, not by this copy.
+  const secret = sensitiveActionValues(action, target);
+  let next = replaceSecretLiteral(sanitized, secret);
   const redacted = new Set(next.redacted || []);
   if (Array.isArray(next.commandArgs) && next.commandArgs.length) {
     next = { ...next, commandArgs: redactSensitiveCommandArgs(action, next.commandArgs) };
@@ -9556,7 +9570,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
   const domDiff = actionResult.effects?.domDiff || '';
   const { summary, sample } = summarizeActionDomDiff(domDiff);
   const diagnostics = summarizeActionObservationEffects(actionResult.effects || {});
-  const secret = sensitiveActionSecret(actionResult.action, actionResult.target || {});
+  const secret = sensitiveActionValues(actionResult.action, actionResult.target || {});
   const target = sanitizeActionTargetForLog(actionResult.action, actionResult.target || null);
   const entry = replaceSecretLiteral(redactSensitiveArtifactValue({
     sequence,
@@ -16456,7 +16470,10 @@ function formatFillDispatchText({ label, text, clearing, react, state }) {
 
 // fill found the control sensitive in the page (#485): receipts, logs and records redact its value.
 function markSensitiveFillTarget(target, state) {
-  if (target && state?.redacted === true) target.sensitiveValue = true;
+  if (!target || state?.redacted !== true) return target;
+  target.sensitiveValue = true;
+  const raw = SENSITIVE_FILL_RAW_VALUES.get(state);
+  if (raw) SENSITIVE_FILL_RAW_VALUES.set(target, raw);
   return target;
 }
 
@@ -16532,7 +16549,10 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
     inputType: inputType || after?.type || '',
     sensitive,
   });
-  if (opts.valueState && typeof opts.valueState === 'object') Object.assign(opts.valueState, state);
+  if (opts.valueState && typeof opts.valueState === 'object') {
+    Object.assign(opts.valueState, state);
+    if (sensitive) SENSITIVE_FILL_RAW_VALUES.set(opts.valueState, [wanted, before, after?.value]);
+  }
   if (!fillLiveValueAccepted(after, wanted)) {
     if (ref) {
       const unique = await fillRefUniqueSelector(cdp, sid, selector, refMap, refState);
@@ -28925,7 +28945,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   daemonRequestMayHaveSideEffects,
   fillableControlProbeDeclaration, notFillableControlError,
   fillLiveValueAccepted, fillValueRejectedError, fillLiveValuePageScript,
-  applyFillValueState, markSensitiveFillTarget, buildFillValueState, fillCliArgError, buildActionOutcome, compactFillReceiptForJson,
+  applyFillValueState, markSensitiveFillTarget, isSensitiveActionTarget, buildFillValueState, fillCliArgError, buildActionOutcome, compactFillReceiptForJson,
   looksLikeClipboardControl, isExpectedClipboardNoChange,
   TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,
   createDaemonRequestExecutionContext, createTableCollectionRuntime,
