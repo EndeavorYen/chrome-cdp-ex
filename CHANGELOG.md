@@ -36,6 +36,10 @@
 
 ### Bug fixes
 
+* The test suite now runs with a throwaway `XDG_RUNTIME_DIR` (`LOCALAPPDATA` on Windows) that is removed
+  when the run exits. Before, tests wrote fixture endpoint records (macOS profiles, Edge on 9222) into the
+  developer's real `cdp-last-endpoint.json`, and later real `doctor` / `list` runs trusted them. That is how
+  `doctor` came to suggest Edge on 9222 in [#425](https://github.com/EndeavorYen/chrome-cdp-ex/issues/425).
 * With `CDP_PORT` unset and no `DevToolsActivePort`, discovery now also probes the port of the last
   endpoint chrome-cdp-ex reached (`cdp-last-endpoint.json`), after 9222 and 9224, and attaches when it
   answers `/json/version`; a leftover isolated `chrome-cdp-ex-*` profile there is named with
