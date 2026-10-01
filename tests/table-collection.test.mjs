@@ -975,6 +975,7 @@ describe('collection command semantics', () => {
     expect(direct.stdout).not.toContain('targetResolution');
     expect(sent[0].result).toEqual({
       content: [{ type: 'text', text: output }],
+      structuredContent: JSON.parse(output),
       isError: false,
     });
   });

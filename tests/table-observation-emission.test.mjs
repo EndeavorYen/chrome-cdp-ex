@@ -243,6 +243,7 @@ describe('bounded table observation public emission', () => {
     expect(Buffer.byteLength(direct.stdout, 'utf8')).toBeLessThanOrEqual(16_384);
     expect(sent[0].result).toEqual({
       content: [{ type: 'text', text: direct.stdout }],
+      structuredContent: JSON.parse(direct.stdout),
       isError: false,
     });
   });

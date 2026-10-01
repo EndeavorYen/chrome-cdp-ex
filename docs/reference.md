@@ -478,7 +478,23 @@ For agent-native workflows, run the stdio MCP adapter:
 node skills/chrome-cdp-ex/scripts/mcp-server.mjs
 ```
 
-It speaks MCP stdio framing: one JSON-RPC message per line in each direction. A client that sends LSP-style `Content-Length` headers gets header-framed replies; the first message sets the framing. A line that is not valid JSON gets a `-32700` parse error with `id: null` and the server keeps running. `ping` returns `{}`, and notifications (messages without `id`) never get a reply. Requests are answered one at a time, in arrival order.
+It speaks MCP stdio framing: one JSON-RPC message per line in each direction. A client that sends LSP-style `Content-Length` headers gets header-framed replies; the first message sets the framing. A line that is not valid JSON gets a `-32700` parse error with `id: null` and the server keeps running. `ping` returns `{}`, and notifications (messages without `id`) never get a reply. Requests are answered one at a time, in arrival order. `initialize` echoes the client's `protocolVersion` when it is `2025-06-18` or `2024-11-05`. For any other dated version it answers with the newest supported version that is not newer than the request, and the oldest one if the request is older than both. A client accepts only versions it knows, so `2025-03-26` gets `2024-11-05`, which 2025-03-26-era SDKs accept. `2025-03-26` itself is not echoed: that revision requires accepting JSON-RPC batches, which this server rejects (`2025-06-18` removed batching again). A newer, unknown or missing version gets `2025-06-18`.
+
+Every `tools/call` result starts with one text block holding the command output (stderr first, then stdout, on failure). Two extra views ride along:
+
+- **Images.** `screenshot`, and `run_command` with `shot`/`screenshot`/`elshot`/`fullshot`, add an `image` block (`image/png`, base64) of the PNG the command wrote. The server reads only a fresh `.png` the CLI wrote into its runtime directory (`%LOCALAPPDATA%\cdp`, `$XDG_RUNTIME_DIR/cdp`, or `~/.cache/cdp`). The file must sit directly in that directory (`elshot`, `fullshot`, a `shot` without a tab daemon) or directly in a tab's `cdp-<targetId>-screenshots/` directory inside it (a daemon `shot`). Links are refused: the file must be a regular file, read through one descriptor, and the screenshot directory must be a real directory. The block is capped at 1 MiB of base64, about 768 KB of PNG, and the cap applies to the bytes actually read. A larger PNG, a relative or outside `screenshot` `path`, or a stale or non-PNG file gets a second text block saying why the image was not attached and where the file is. Images are not resized.
+- **Structured content.** When stdout is versioned JSON (an object with a string `schema`, as `--format json` prints), the parsed object is also returned as `structuredContent`, including on failed calls. Tools do not declare an `outputSchema`.
+
+`tools/list` gives each tool MCP `annotations` (`title`, `readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`). They are derived from the owning command's catalog record, not written per tool:
+
+- **readOnly, destructive and idempotent** come from `authorization`.
+  - Only `standard` commands are read-only.
+  - `sensitive-read` commands are neither read-only nor destructive, because `confirm` gates them.
+  - `mutation` and `conditional` commands are destructive and non-idempotent.
+- **openWorld** comes from `domains`. A command that talks to the live browser over any CDP domain returns or acts on untrusted web content, so it is open-world. This covers page readers such as `perceive`, `controls` and `list_tabs`. Only `report`, which reads the CLI's own session log, is closed-world.
+- **`run_command`** takes the widest hints of its allowlist.
+
+`benchmark:mcp` token budgets count text blocks only. Image base64 and `structuredContent` sizes are reported separately as `imageBase64Chars` and `structuredContentChars`.
 
 It exposes curated tools for the killer path plus Tier-1 workflow coverage: `doctor`, `list_tabs`, `open_or_attach`, `select_target`, `perceive`, `controls`, `overlay`, `screenshot`, `click`, `verify_click`, `dismiss_modal`, `fill`, `viewport`, `qa_page`, `responsive_audit`, `report`, `navigate`, `press`, `wait_for`, `cascade`, `components`, `spawn_debug_browser`, `record_snapshot`, `session_checkpoint`, and allowlisted `run_command`. Mutating tools require `confirm: true`. MCP also advertises resources such as `chrome-cdp-ex://doctor/status` and session report/screenshot templates so large handoffs need not ride only on tool results.
 

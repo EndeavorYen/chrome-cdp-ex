@@ -12,7 +12,7 @@ import {
   MCP_TOOL_DEFINITIONS,
   defineCommandSurface,
 } from '../skills/chrome-cdp-ex/scripts/lib/command-surface.mjs';
-import { listMcpResources, resolveMcpResource } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
+import { MCP_TOOLS, listMcpResources, resolveMcpResource } from '../skills/chrome-cdp-ex/scripts/lib/mcp-adapter.mjs';
 import { createRuntimeClient } from '../skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs';
 
 describe('generated CLI and MCP command surfaces', () => {
@@ -90,13 +90,14 @@ describe('generated CLI and MCP command surfaces', () => {
     await handle({ jsonrpc: '2.0', id: 3, method: 'resources/templates/list' });
 
     expect(sent).toEqual([
-      { jsonrpc: '2.0', id: 1, result: { tools: MCP_TOOL_DEFINITIONS } },
+      { jsonrpc: '2.0', id: 1, result: { tools: MCP_TOOLS } },
       { jsonrpc: '2.0', id: 2, result: { resources: listMcpResources() } },
       {
         jsonrpc: '2.0', id: 3,
         result: { resourceTemplates: MCP_RESOURCE_TEMPLATES.filter(record => record.uriTemplate.includes('{')) },
       },
     ]);
+    expect(MCP_TOOLS.map(({ annotations: _annotations, ...tool }) => tool)).toEqual(MCP_TOOL_DEFINITIONS);
     expect(executeCli).not.toHaveBeenCalled();
   });
 
