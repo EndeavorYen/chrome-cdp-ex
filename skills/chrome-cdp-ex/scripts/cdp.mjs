@@ -134,6 +134,7 @@ import { createLocatorPlan } from './lib/browser-resources.mjs';
 import { BROWSER_COMMANDS, defaultBrowserPaths, detectBrowserPath } from './lib/browser-paths.mjs';
 import {
   REDACTED_VALUE,
+  isSensitiveFieldText,
   isSensitiveKey,
   redactSensitiveString,
   redactUrl,
@@ -9091,16 +9092,18 @@ function compactActionResultForJson(result, { compact: compactMode = false } = {
   return compactMode ? compactActionHandoffForJson(redacted) : redacted;
 }
 
-const SENSITIVE_ACTION_TARGET_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn)\b/i;
-
+// Whether a fill/type value must stay out of receipts and logs. The key classifier splits each
+// string on `_`, `-` and camelCase (#485), so `#api_token` and `[name=client_secret]` count.
+// `sensitiveValue` is set when fill read the control itself: a password input, or a name, id,
+// autocomplete or label that marks it secret.
 function isSensitiveActionTarget(action, target = {}) {
   if (action !== 'fill' && action !== 'type') return false;
-  const probe = [
+  if (target.sensitiveValue === true) return true;
+  return [
     target.input,
     target.label,
     ...(Array.isArray(target.commandArgs) ? target.commandArgs.slice(0, 1) : []),
-  ].filter(Boolean).join(' ');
-  return SENSITIVE_ACTION_TARGET_RE.test(probe);
+  ].some(text => text && isSensitiveFieldText(text));
 }
 
 function sensitiveActionSecret(action, target = {}) {
@@ -16265,8 +16268,26 @@ function fillLiveValueDeclaration() {
       type: String(el && el.type || '').toLowerCase(),
       value,
       textContent: String(el && el.textContent || ''),
+      field: ${fillFieldDescriptorExpression('el')},
     };
   }`;
+}
+
+// The strings that name a control (#485): fill decides from them whether the typed value is secret.
+function fillFieldDescriptorExpression(name) {
+  return `(function(el) {
+      const attr = (key) => String(el && el.getAttribute && el.getAttribute(key) || '').slice(0, 200);
+      const labels = Array.from(el && el.labels || []).slice(0, 3)
+        .map(label => String(label.textContent || '').trim().slice(0, 200));
+      return {
+        id: attr('id'),
+        name: attr('name'),
+        autocomplete: attr('autocomplete'),
+        ariaLabel: attr('aria-label'),
+        placeholder: attr('placeholder'),
+        labels,
+      };
+    })(${name})`;
 }
 
 function fillLiveValuePageScript(selector) {
@@ -16334,7 +16355,16 @@ function parseFillLiveSnapshot(raw) {
     type: parsed.type ? String(parsed.type) : '',
     value: String(parsed.value ?? ''),
     textContent: String(parsed.textContent ?? ''),
+    field: parsed.field && typeof parsed.field === 'object' ? parsed.field : null,
   };
+}
+
+// True when the control's own name, id, autocomplete, aria-label, placeholder or label marks it secret.
+function fillFieldLooksSensitive(field) {
+  if (!field || typeof field !== 'object') return false;
+  const texts = [field.id, field.name, field.autocomplete, field.ariaLabel, field.placeholder,
+    ...(Array.isArray(field.labels) ? field.labels : [])];
+  return texts.some(text => typeof text === 'string' && text && isSensitiveFieldText(text));
 }
 
 function fillLiveValueAccepted(snapshot, wanted) {
@@ -16424,9 +16454,16 @@ function formatFillDispatchText({ label, text, clearing, react, state }) {
   return `${head} (was ${fillValueDisplay(before)})`;
 }
 
+// fill found the control sensitive in the page (#485): receipts, logs and records redact its value.
+function markSensitiveFillTarget(target, state) {
+  if (target && state?.redacted === true) target.sensitiveValue = true;
+  return target;
+}
+
 // Turn a successful fill's value transition into receipt state on the action target.
 function applyFillValueState(target, state) {
   if (!target || !state || typeof state !== 'object' || !Object.hasOwn(state, 'after')) return target;
+  markSensitiveFillTarget(target, state);
   target.fillValue = { before: state.before ?? null, after: state.after ?? null };
   if (state.changed === true) {
     target.controlStateChanged = true;
@@ -16486,7 +16523,8 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
   }
   const after = await readFillLiveValue(cdp, sid, selector, refMap, refState).catch(() => null);
   const sensitive = String(inputType || after?.type || '').toLowerCase() === 'password'
-    || isSensitiveActionTarget('fill', { input: selector });
+    || isSensitiveActionTarget('fill', { input: selector })
+    || fillFieldLooksSensitive(after?.field);
   const state = buildFillValueState({
     before,
     after: after?.ok ? after.value : null,
@@ -16503,7 +16541,7 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
     throw fillValueRejectedError(selector, wanted, state);
   }
   const label = ref ? selector : `<${tag}>`;
-  return formatFillDispatchText({ label, text: wanted, clearing, react: opts.react === true, state });
+  return formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : wanted, clearing, react: opts.react === true, state });
 }
 
 async function selectStr(cdp, sid, selector, value) {
@@ -23967,6 +24005,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         }
         return text;
       } catch (error) {
+        if (action === 'fill') markSensitiveFillTarget(actionTarget, fillValueState);
         await jsDialogs.waitForPending(1500).catch(() => {});
         if (shouldSkipActionPageEvaluate(jsDialogs)) {
           actionTarget.dialogBlocked = true;
@@ -28886,7 +28925,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   daemonRequestMayHaveSideEffects,
   fillableControlProbeDeclaration, notFillableControlError,
   fillLiveValueAccepted, fillValueRejectedError, fillLiveValuePageScript,
-  applyFillValueState, buildFillValueState, fillCliArgError, buildActionOutcome, compactFillReceiptForJson,
+  applyFillValueState, markSensitiveFillTarget, buildFillValueState, fillCliArgError, buildActionOutcome, compactFillReceiptForJson,
   looksLikeClipboardControl, isExpectedClipboardNoChange,
   TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,
   createDaemonRequestExecutionContext, createTableCollectionRuntime,

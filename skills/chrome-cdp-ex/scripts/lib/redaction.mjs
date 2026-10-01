@@ -68,6 +68,20 @@ export function isSensitiveKey(key = '', { urlQuery = false } = {}) {
   return false;
 }
 
+// Field names whose words are not secret one by one: autocomplete values for card and
+// one-time codes, and one-time/verification code labels. Matched on the token list joined
+// with `-`, so `cc_number`, `ccNumber`, `autocomplete="cc-number"` and `One-time code` all hit.
+const SENSITIVE_FIELD_PHRASE_RE = /(?:^|-)(?:one-time-(?:code|password|passcode|pin)|verification-code|security-code|cc-number|cc-csc|cc-exp)(?:-|$)/;
+
+// A form field whose typed value must stay out of receipts and logs (#485). `text` is one
+// string that describes the field: a CSS selector, or its name, id, autocomplete, aria-label,
+// placeholder or label text.
+export function isSensitiveFieldText(text = '') {
+  const tokens = sensitiveKeyTokens(text);
+  if (tokens.length === 0) return false;
+  return isSensitiveKey(text) || SENSITIVE_FIELD_PHRASE_RE.test(tokens.join('-'));
+}
+
 function decodeKey(rawKey) {
   try {
     return decodeURIComponent(String(rawKey).replace(/\+/g, ' '));
