@@ -150,8 +150,49 @@ const AUTH_HEADER_VALUE_RE = /\b(Authorization\s*[:=]\s*(?:Bearer|Basic)\s+)([A-
 const BEARER_VALUE_RE = /\b(Bearer\s+)([A-Za-z0-9._~+/=-]+)/gi;
 // prefix, optional key quote (`"access_token":`), key (may be %-encoded), separator.
 const ASSIGNMENT_KEY_RE = /(^|[\s{[,;?&#])(["']?)([A-Za-z0-9_.%-]+)\2(\s*[:=]\s*)/g;
-// Whole quoted value, an unterminated quoted value, or a bare value.
-const ASSIGNMENT_VALUE_RE = /"[^"\n]*"|'[^'\n]*'|(["']?)[^"'\s,;&}\])]+/y;
+// A bare (unquoted) value. Quoted values are read by scanQuotedValue.
+const BARE_VALUE_RE = /[^"'\s,;&}\])]+/y;
+// A quoted secret is read up to its real closing quote (#503): `\"` and line
+// breaks are part of the value. With no closing quote within this many
+// characters, everything up to the bound is redacted.
+//
+// Quotes in prose are ambiguous and are not guessed at: in
+// `password: 'it's QZ7'` the apostrophe closes the value, and in
+// `password: it's "QZ7"` the value is the bare word `it`. Both leak.
+export const MAX_QUOTED_VALUE_CHARS = 4096;
+
+function isHighSurrogate(code) {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+// One left-to-right pass from the opening quote at `start`; a backslash
+// escapes the next character. Returns the index just past the value.
+function scanQuotedValue(text, start) {
+  const quote = text.charCodeAt(start);
+  const limit = Math.min(text.length, start + 1 + MAX_QUOTED_VALUE_CHARS);
+  for (let i = start + 1; i < limit; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 0x5c) i++;
+    else if (code === quote) return { end: i + 1, closed: true };
+  }
+  // Unterminated within the bound: stop at the bound, never inside a surrogate pair.
+  const end = limit < text.length && isHighSurrogate(text.charCodeAt(limit - 1)) ? limit + 1 : limit;
+  return { end, closed: false };
+}
+
+// The secret value starting at `valueStart` as `{ end, quote, closed }`, or null.
+function secretValueSpan(text, valueStart) {
+  const first = text[valueStart];
+  if (first !== '"' && first !== '\'') {
+    BARE_VALUE_RE.lastIndex = valueStart;
+    const bare = BARE_VALUE_RE.exec(text);
+    return bare ? { end: valueStart + bare[0].length, quote: '', closed: true } : null;
+  }
+  // A lone quote at the very end has no value to hide.
+  if (valueStart + 1 >= text.length) return null;
+  return { ...scanQuotedValue(text, valueStart), quote: first };
+}
+
 // `#pin:checked`, `.token:hover`, `input.password:focus` are CSS selectors, not
 // `key: value` pairs; recorded selectors must replay unchanged.
 const CSS_PSEUDO_AFTER_COLON_RE = /:(?:hover|focus(?:-visible|-within)?|active|checked|disabled|enabled|visited|link|empty|required|optional|invalid|valid|in-range|out-of-range|first-child|last-child|only-child|first-of-type|last-of-type|only-of-type|nth-child|nth-last-child|nth-of-type|nth-last-of-type|not|has|is|where|placeholder-shown|read-only|read-write|before|after|root|target|indeterminate|default|autofill)(?![A-Za-z0-9_-])/y;
@@ -165,11 +206,17 @@ function isCssSelectorColon(text, separator, keyEnd) {
 // `key=value` / `key: value` pairs in free text (console lines, DOM diffs,
 // URLs inside messages). A non-secret pair is skipped past its separator only,
 // so a secret hiding in its value (`?a=b#access_token=…`) is still examined.
-// `truncated`: the text was cut off, so a quoted value left open at the end
-// ran past the cut and is redacted to the end, not only up to its first space.
-function redactSecretAssignments(text, { truncated = false } = {}) {
-  let out = '';
-  let last = 0;
+// A quoted value left open (by the page, or by a cut) is redacted to the end
+// of the text or MAX_QUOTED_VALUE_CHARS, whichever comes first.
+//
+// Keys are also looked for inside a quoted secret value. A stray quote
+// (`token: "x`) closes on whatever quote comes next, which may open the
+// next secret's key or value (`{"password":"QZ7"}`, `password: 'QZ7 "X'`) or
+// lie past the bound; that next secret is still found and its span merged.
+// Key scanning only moves forward and resumes after a bare value, and two
+// scans for the same quote never overlap, so this stays linear.
+function redactSecretAssignments(text) {
+  const spans = [];
   ASSIGNMENT_KEY_RE.lastIndex = 0;
   let match;
   while ((match = ASSIGNMENT_KEY_RE.exec(text)) !== null) {
@@ -180,18 +227,31 @@ function redactSecretAssignments(text, { truncated = false } = {}) {
     if (prefix === '#' && !isEquals) continue;
     if (isCssSelectorColon(text, separator, match.index + prefix.length + keyQuote.length * 2 + rawKey.length)) continue;
     const urlQuery = isEquals && !keyQuote && (prefix === '?' || prefix === '&' || prefix === '#');
-    if (!isSensitiveKey(decodeKey(rawKey), { urlQuery })) continue;
-    ASSIGNMENT_VALUE_RE.lastIndex = valueStart;
-    const value = ASSIGNMENT_VALUE_RE.exec(text);
-    if (!value) continue;
-    const quote = /^["']/.test(value[0]) ? value[0][0] : '';
-    const openToCut = truncated && quote && !(value[0].length > 1 && value[0].endsWith(quote))
-      && text.indexOf(quote, valueStart + 1) < 0 && text.indexOf('\n', valueStart + 1) < 0;
-    out += `${text.slice(last, valueStart)}${quote}${REDACTED_VALUE}${openToCut ? '' : quote}`;
-    last = openToCut ? text.length : valueStart + value[0].length;
-    ASSIGNMENT_KEY_RE.lastIndex = last;
+    if (!isSensitiveKey(decodeKey(rawKey), { urlQuery })) {
+      // Give back the whitespace after a non-secret key's separator: it is the prefix
+      // the next key needs (`user: token=…`, `msg: password: "…"`).
+      ASSIGNMENT_KEY_RE.lastIndex = match.index + whole.trimEnd().length;
+      continue;
+    }
+    const span = secretValueSpan(text, valueStart);
+    if (!span) continue;
+    const close = span.closed ? span.quote : '';
+    const prev = spans[spans.length - 1];
+    if (prev && valueStart < prev.end) {
+      if (span.end > prev.end) Object.assign(prev, { end: span.end, close });
+    } else {
+      spans.push({ start: valueStart, end: span.end, open: span.quote, close });
+    }
+    ASSIGNMENT_KEY_RE.lastIndex = span.quote ? valueStart + 1 : span.end;
   }
-  return last === 0 ? text : `${out}${text.slice(last)}`;
+  if (spans.length === 0) return text;
+  let out = '';
+  let last = 0;
+  for (const span of spans) {
+    out += `${text.slice(last, span.start)}${span.open}${REDACTED_VALUE}${span.close}`;
+    last = span.end;
+  }
+  return `${out}${text.slice(last)}`;
 }
 
 // `scheme://user:pa` at the very end of a cut-off text: the `@` that would mark
@@ -205,7 +265,7 @@ export function redactSensitiveString(value, { truncated = false } = {}) {
     .replace(AUTH_HEADER_VALUE_RE, `$1${REDACTED_VALUE}`)
     .replace(BEARER_VALUE_RE, `$1${REDACTED_VALUE}`)
     .replace(URL_USERINFO_RE, `$1${REDACTED_VALUE}$3`);
-  return redactSecretAssignments(truncated ? redacted.replace(URL_USERINFO_CUT_RE, `$1${REDACTED_VALUE}`) : redacted, { truncated });
+  return redactSecretAssignments(truncated ? redacted.replace(URL_USERINFO_CUT_RE, `$1${REDACTED_VALUE}`) : redacted);
 }
 
 const MIN_SUBSTRING_SECRET_CHARS = 4;
