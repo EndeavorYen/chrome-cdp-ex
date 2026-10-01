@@ -118,6 +118,12 @@ import {
   pageHealthScript,
 } from './lib/page-health.mjs';
 import {
+  buildWebVitalsModel,
+  buildWebVitalsUnavailable,
+  formatWebVitalsText,
+  webVitalsPageScript,
+} from './lib/web-vitals.mjs';
+import {
   claimDaemonEndpoint,
   connectToDaemon,
   DAEMON_ENDPOINT_ABSENT_CODES,
@@ -175,6 +181,8 @@ const RELOAD_READY_TIMEOUT = 1000;
 const RELOAD_READY_PROBE_TIMEOUT = 500;
 const RELOAD_OBSERVE_TIMEOUT = 2000;
 const STATUS_PAGE_INFO_TIMEOUT = 500;
+// status --vitals waits ~120 ms in the page; a hidden tab can clamp that timer to 1 s.
+const STATUS_VITALS_TIMEOUT = 3000;
 const REF_RESOLVE_TIMEOUT = 2000;
 // Page-side scroll settle budget inside REF_RESOLVE_TIMEOUT, leaving room for the round trip.
 const REF_SETTLE_BUDGET_MS = 1400;
@@ -5607,6 +5615,22 @@ async function runtimeMetricsStr(cdp, sid) {
   return lines.join('\n');
 }
 
+async function webVitalsModel(cdp, sid) {
+  const result = await cdpDomains(cdp).Runtime.evaluate({
+    expression: webVitalsPageScript(), returnByValue: true, awaitPromise: true,
+  }, sid, STATUS_VITALS_TIMEOUT);
+  if (result.exceptionDetails) throw new Error(runtimeExceptionMessage(result.exceptionDetails));
+  return buildWebVitalsModel(result.result?.value);
+}
+
+async function webVitalsModelOrUnavailable(cdp, sid) {
+  try {
+    return await webVitalsModel(cdp, sid);
+  } catch (e) {
+    return buildWebVitalsUnavailable(e.message);
+  }
+}
+
 function buildTargetStatusDiagnostic(err, { cmd = 'status', targetPrefix = '' } = {}) {
   const model = buildCliErrorModel(err, { cmd, targetPrefix });
   const state = model.recovery.kind === 'target-closed'
@@ -5886,7 +5910,7 @@ function buildConsoleModel(consoleBuf, exceptionBuf, lastReadSeq, flag, located 
   };
 }
 
-function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, lastReadSeq, runtime = null, diagnostic = null, located = null }) {
+function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, lastReadSeq, runtime = null, vitals = null, diagnostic = null, located = null }) {
   return {
     schema: 'chrome-cdp-ex.status.v1',
     targetId,
@@ -5899,6 +5923,7 @@ function buildStatusModel({ targetId, page, consoleBuf, exceptionBuf, navBuf, la
     exceptions: exceptionBuf.since(lastReadSeq.exception).map(entry => observedJsonEntry(entry, located)),
     navigation: navBuf.since(lastReadSeq.nav || 0),
     runtime,
+    vitals,
   };
 }
 
@@ -5922,6 +5947,19 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
     lines.push(`Navigations: ${navs.length} (last ${ago}s ago)`);
   }
 
+  // Collect the slow probes before reading the buffers (as the JSON path does), so console
+  // entries and exceptions logged during the vitals window are printed in this call.
+  let runtimeLine = null;
+  if (opts.runtime) {
+    try {
+      runtimeLine = await runtimeMetricsStr(cdp, sid);
+    } catch (e) {
+      runtimeLine = `Runtime metrics (Performance.getMetrics): unavailable (${e.message})`;
+    }
+  }
+  const vitalsText = opts.vitals ? formatWebVitalsText(await webVitalsModelOrUnavailable(cdp, sid)) : null;
+
+  // Read the buffers and snapshot how far they were read in the same synchronous step.
   const newConsole = consoleBuf.since(lastReadSeq.console);
   const newExceptions = exceptionBuf.since(lastReadSeq.exception);
   // Entries logged while source maps load are not printed here, so they stay unread.
@@ -5947,13 +5985,8 @@ async function statusStr(cdp, sid, consoleBuf, exceptionBuf, navBuf, lastReadSeq
     }
   }
 
-  if (opts.runtime) {
-    try {
-      lines.push(await runtimeMetricsStr(cdp, sid));
-    } catch (e) {
-      lines.push(`Runtime metrics (Performance.getMetrics): unavailable (${e.message})`);
-    }
-  }
+  if (runtimeLine) lines.push(runtimeLine);
+  if (vitalsText) lines.push(vitalsText);
 
   lastReadSeq.console = readThrough.console;
   lastReadSeq.exception = readThrough.exception;
@@ -24952,6 +24985,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         const runtime = fopts.args.includes('--runtime')
           ? await runtimeMetricsStr(cdp, sessionId).catch(e => ({ unavailable: e.message }))
           : null;
+        const vitals = fopts.args.includes('--vitals') ? await webVitalsModelOrUnavailable(cdp, sessionId) : null;
         const page = await pageInfoModel(cdp, sessionId, { targetPrefix: targetPrefixForDisplay(targetId) });
         const located = await locateObservedEntries(
           locateSourceFrames,
@@ -24966,6 +25000,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           navBuf,
           lastReadSeq,
           runtime,
+          vitals,
           diagnostic: page.diagnostic || null,
           located,
         }));
@@ -24975,6 +25010,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       }
       return statusStr(cdp, sessionId, consoleBuf, exceptionBuf, navBuf, lastReadSeq, {
         runtime: fopts.args.includes('--runtime'),
+        vitals: fopts.args.includes('--vitals'),
         targetPrefix: targetPrefixForDisplay(targetId),
         locate: locateSourceFrames,
       });
@@ -26847,6 +26883,7 @@ Usage: cdp <command> [args]
                                     custom --latency ms --download kbps --upload kbps
 {{command:status}}
                                     --runtime: include Performance.getMetrics counters
+                                    --vitals: LCP, CLS, INP, long tasks, nav timing (buffered)
 {{command:console}}
 {{command:summary}}
 {{command:report}}
@@ -29725,7 +29762,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles, parseClosetabArgs,
   navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, navActionDispatch, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,
-  statusStr, runtimeMetricsStr, clearObservationBuffers,
+  statusStr, runtimeMetricsStr, webVitalsModel, clearObservationBuffers,
   selectConsoleEntries, locateObservedEntries,
   buildLocatedActionObservationDelta, loadSourceMapText,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,
