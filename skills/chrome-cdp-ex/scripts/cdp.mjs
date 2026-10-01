@@ -1946,26 +1946,132 @@ function safeInspectCdpProfileProcess(inspect, profileDir) {
 
 // #426: when the browser answering on `record.port` runs a profile remembered for that port, add the
 // flags from its live command line, so a later relaunch replays them. Never throws.
-function withLiveLaunchFlags(record, { remembered, inspectProfileProcess } = {}) {
+// Unit tests must not read the host's real /proc (a developer's own browser on a test port would leak
+// into their records), so the default scan is off under NODE_ENV=test; #478 tests inject a fake one.
+const defaultFindListeningBrowser = port => (process.env.NODE_ENV === 'test' ? null : findListeningBrowserProcess(port));
+
+function withLiveLaunchFlags(record, { remembered, inspectProfileProcess, findListeningBrowser = defaultFindListeningBrowser } = {}) {
   try {
     if (!record?.port || record.launchFlags) return record;
     const port = String(record.port);
     const dirs = record.profileDir
       ? [record.profileDir]
       : rankCdpRelaunchCandidates(remembered, port).map(candidate => candidate.profileDir);
+    const recorded = (profileDir, argv) => ({
+      ...record,
+      port,
+      profileDir,
+      exe: record.exe || String(argv[0] || '') || null,
+      ...(record.browser || inferBrowserFromExe(argv[0]) ? { browser: record.browser || inferBrowserFromExe(argv[0]) } : {}),
+      launchFlags: replayableLaunchFlags(argv.slice(1)),
+    });
     for (const profileDir of dirs.slice(0, LAST_CDP_ENDPOINT_HISTORY_PER_PORT_MAX)) {
       const live = safeInspectCdpProfileProcess(inspectProfileProcess, profileDir);
       if (live?.alive !== true || !live.argv || String(live.port) !== port) continue;
-      return {
-        ...record,
-        port,
-        profileDir,
-        exe: record.exe || String(live.argv[0] || '') || null,
-        launchFlags: replayableLaunchFlags(live.argv.slice(1)),
-      };
+      return recorded(profileDir, live.argv);
+    }
+    // #478: no remembered profile is behind this port (a browser chrome-cdp-ex did not spawn, or a
+    // deleted record). Find the local process that listens on it, so a relaunch can replay it.
+    if (!record.profileDir && isLocalCdpHost(record.host)) {
+      const found = findListeningBrowser(port);
+      if (found?.profileDir && Array.isArray(found.argv)) return recorded(found.profileDir, found.argv);
     }
   } catch {}
   return record;
+}
+
+function isLocalCdpHost(host) {
+  const text = String(host || DEFAULT_CDP_HOST).replace(/^\[|\]$/g, '').toLowerCase();
+  return text === '127.0.0.1' || text === 'localhost' || text === '::1';
+}
+
+// Inodes of LISTEN sockets on `port` from /proc/net/tcp and tcp6 (columns: local_address
+// "HEXADDR:HEXPORT", st "0A" = LISTEN, inode at index 9). null when neither table can be read.
+function listeningSocketInodes(port, readFile = readFileSync) {
+  const hexPort = Number(port).toString(16).toUpperCase().padStart(4, '0');
+  const inodes = new Set();
+  let readAny = false;
+  for (const table of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    let text;
+    try { text = String(readFile(table, 'utf8')); } catch { continue; }
+    if (!text.trim()) continue;
+    readAny = true;
+    for (const line of text.split('\n').slice(1)) {
+      const cols = line.trim().split(/\s+/);
+      if (cols.length < 10 || cols[3] !== '0A') continue;
+      if (String(cols[1]).split(':').pop().toUpperCase() !== hexPort) continue;
+      if (cols[9] && cols[9] !== '0') inodes.add(cols[9]);
+    }
+  }
+  return readAny ? inodes : null;
+}
+
+function listProcPids() {
+  return readdirSync('/proc').filter(name => /^\d+$/.test(name));
+}
+
+function listProcFdTargets(pid) {
+  const dir = `/proc/${Number(pid)}/fd`;
+  return readdirSync(dir).map(fd => {
+    try { return readlinkSync(`${dir}/${fd}`); } catch { return ''; }
+  });
+}
+
+// A title-joined command line can leave the start URL on the --user-data-dir word
+// (`--user-data-dir=/p http://x`); keep the full value when it is a folder, else its first word.
+function profileDirFromLiveArgv(argv, exists = existsSync) {
+  const raw = profileDirFromCommandLine(argv);
+  if (!raw) return null;
+  if (!/\s/.test(raw) || exists(raw)) return raw;
+  const first = raw.split(/\s/)[0];
+  return first && exists(first) ? first : raw;
+}
+
+// #478: the main browser process (no --type=) whose command line asks for `port` and that owns the
+// LISTEN socket on it. Linux only, best effort: null when unsure (two candidates and no socket
+// table, or a candidate that does not hold the socket). Bounded to PROC_SCAN_MAX processes.
+const PROC_SCAN_MAX = 4096;
+function findListeningBrowserProcess(port, {
+  platform = process.platform,
+  listPids = listProcPids,
+  readArgv = pid => readProcessArgv(pid, { platform }),
+  readFile = readFileSync,
+  listFdTargets = listProcFdTargets,
+  exists = existsSync,
+} = {}) {
+  if (platform !== 'linux') return null;
+  try {
+    const wanted = String(port);
+    const candidates = [];
+    for (const pid of listPids().slice(0, PROC_SCAN_MAX)) {
+      const argv = readArgv(pid);
+      if (!Array.isArray(argv) || argvDebugPort(argv) !== wanted) continue;
+      if (argv.some(arg => String(arg).startsWith('--type='))) continue;
+      candidates.push({ pid: Number(pid), argv });
+    }
+    if (!candidates.length) return null;
+    const inodes = listeningSocketInodes(wanted, readFile);
+    let owner = null;
+    if (inodes && inodes.size) {
+      owner = candidates.find(candidate => {
+        try {
+          return listFdTargets(candidate.pid).some(target => {
+            const m = String(target).match(/^socket:\[(\d+)\]$/);
+            return Boolean(m) && inodes.has(m[1]);
+          });
+        } catch {
+          return false;
+        }
+      }) || null;
+    } else if (candidates.length === 1) {
+      owner = candidates[0];
+    }
+    if (!owner) return null;
+    const profileDir = profileDirFromLiveArgv(owner.argv, exists);
+    return profileDir ? { pid: owner.pid, argv: owner.argv, profileDir } : null;
+  } catch {
+    return null;
+  }
 }
 
 function profileDirFromCommandLine(args) {
@@ -28294,6 +28400,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   isDisposableSpawnProfileDir, isIsolatedChromeCdpExProfileDir,
   isTempCdpProfileDir, rankCdpRelaunchCandidates,
   replayableLaunchFlags, inspectCdpProfileProcess, isBrowserDefaultUserDataDir, cdpDiscoveryMiss, withLiveLaunchFlags, readProcessArgv,
+  findListeningBrowserProcess, listeningSocketInodes,
   persistentDailyUserDataDir, isolatedSpawnProfileDir,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
