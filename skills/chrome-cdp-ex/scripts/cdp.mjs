@@ -19756,8 +19756,46 @@ async function observePageState(cdp, sid, heading = 'Page observation') {
   ].filter(Boolean).join('\n');
 }
 
-async function reloadActionDispatch({ cdp, sessionId, session, consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq }) {
+// #490: a beforeunload prompt that the daemon dismissed cancels the reload / nav. Chrome reports
+// that only as `Page.reload` → {} with no main-frame commit, or `Page.navigate` → net::ERR_ABORTED,
+// and the old document still reads `complete`. The evidence is a dismissed beforeunload dialog
+// answered during this dispatch plus no main-frame Page.frameNavigated (pageGeneration unchanged).
+function createNavigationCancelWatch({ dialogBuf = null, jsDialogs = null, session = null } = {}) {
+  const dialogSeq = typeof dialogBuf?.latest === 'function' ? dialogBuf.latest() : 0;
+  const generation = session?.pageGeneration;
+  return async function dismissedBeforeunload() {
+    if (jsDialogs && typeof jsDialogs.hasPending === 'function' && jsDialogs.hasPending()) {
+      await jsDialogs.waitForPending(1500);
+    }
+    if (session && session.pageGeneration !== generation) return null;
+    const entries = typeof dialogBuf?.since === 'function' ? dialogBuf.since(dialogSeq) : [];
+    return entries.find(entry => entry.type === 'beforeunload' && entry.accepted === false && entry.handled !== false) || null;
+  };
+}
+
+function navigationCancelledError(action, dialog = {}, cause = null) {
+  const what = action === 'reload' ? 'reload' : 'navigation';
+  const detail = cause?.message ? ` (${actionFailureMessage(cause)})` : '';
+  const err = new Error(`the page's beforeunload prompt was dismissed, so the ${what} was cancelled${detail}; the page did not change`);
+  err.navigationCancelled = { action, url: dialog.url || '' };
+  return err;
+}
+
+async function dispatchGuardingCancelledNavigation(action, dispatch, navigationCancelWatch = null) {
+  try {
+    return await dispatch();
+  } catch (error) {
+    const dialog = navigationCancelWatch ? await navigationCancelWatch() : null;
+    if (dialog) throw navigationCancelledError(action, dialog, error);
+    throw error;
+  }
+}
+
+async function reloadActionDispatch({ cdp, sessionId, session, consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq, navigationCancelWatch = null }) {
   const reloadResult = await reloadStr(cdp, sessionId);
+  // Checked before clearing buffers or refs: a cancelled reload left the page as it was.
+  const cancelledBy = navigationCancelWatch ? await navigationCancelWatch() : null;
+  if (cancelledBy) throw navigationCancelledError('reload', cancelledBy);
   clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq });
   invalidateSessionRefs(session, 'navigation');
   return `${reloadResult} (console/exception/navigation buffers cleared)`;
@@ -24571,10 +24609,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         else positional.push(arg);
       }
       const url = positional[0];
-      const value = await actionFeedback('nav', () => navStr(cdp, sessionId, url, {
+      const value = await actionFeedback('nav', () => dispatchGuardingCancelledNavigation('nav', () => navStr(cdp, sessionId, url, {
         targetId,
         onSessionId(nextSid) { sessionId = nextSid; },
-      }), { input: url, resolvedBy: 'url', label: url || '', commandArgs: [url] }, perceive ? 'full-perceive' : 'state-change', perceive ? observeFullPerceive : () => observeNavPage(cdp, sessionId), fopts);
+      }), createNavigationCancelWatch({ dialogBuf, jsDialogs, session })), { input: url, resolvedBy: 'url', label: url || '', commandArgs: [url] }, perceive ? 'full-perceive' : 'state-change', perceive ? observeFullPerceive : () => observeNavPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
     netlog: async args => {
@@ -24646,6 +24684,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         pendingReqs,
         networkStatusByRequest,
         lastReadSeq,
+        navigationCancelWatch: createNavigationCancelWatch({ dialogBuf, jsDialogs, session }),
       }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
@@ -29033,7 +29072,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles, parseClosetabArgs,
-  navStr, reloadStr, reloadActionDispatch, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,

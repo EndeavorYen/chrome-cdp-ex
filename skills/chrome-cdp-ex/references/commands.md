@@ -700,6 +700,18 @@ Dialog: beforeunload → dismissed (navigation was cancelled; the page stayed)
 Dialog: confirm "Leave?" → accept failed; the dialog may still be open
 ```
 
+In dismiss mode a page's `beforeunload` prompt cancels `reload` and `nav`: the page stays as it was, with its unsaved changes. The command then fails (exit 1, `dispatch.ok=false`) instead of reporting `Page reloaded` or `Navigated to`. The evidence is a `beforeunload` dismissed during the command with no new main-frame document:
+
+```text
+Error: the page's beforeunload prompt was dismissed, so the reload was cancelled; the page did not change
+Kind: navigation-cancelled
+Accepting discards the page's unsaved changes; then retry `cdp reload <target>`.
+Next: cdp dialog <target> accept
+Dialog: beforeunload → dismissed (navigation was cancelled; the page stayed)
+```
+
+Refs and console/network buffers are kept, because the document did not change. Run `dialog <target> accept` only if those unsaved changes may be discarded.
+
 Action JSON (`chrome-cdp-ex.action.v1`, including `--compact`) adds the optional `effects.dialogs[]`, present only when a dialog opened during the action: `{ type, message, accepted, url?, handled? }`. `message` is redacted and capped at 200 characters, `url` is the page that raised the dialog with sensitive query values redacted, and `handled: false` appears only when the answer could not be delivered. At most 5 entries are listed; `effects.dialogsOmitted` counts the rest. `fill --format json` (`chrome-cdp-ex.fill.v1`) and the `verify-click` model carry the same optional `dialogs` / `dialogsOmitted` fields, and `report` shows the same `Dialog:` lines under each action (JSON: `evidence.dialogs`).
 
 ### Viewport emulation

@@ -208,6 +208,27 @@ function classifyCoveredClickFailure(err, { base, targetId, input }) {
   };
 }
 
+// #490: dialog handling is set to dismiss and the page's beforeunload prompt cancelled reload / nav.
+function classifyNavigationCancelledFailure(err, { base, targetId, input }) {
+  const action = err.navigationCancelled.action === 'reload' ? 'reload' : 'nav';
+  const arg = recoveryCommandArg(input);
+  const retry = action === 'reload' ? `cdp reload ${targetId}` : `cdp nav ${targetId}${arg ? ` ${arg}` : ''}`;
+  const accept = `cdp dialog ${targetId} accept`;
+  const retryLine = `Accepting discards the page's unsaved changes; then retry \`${retry}\`.`;
+  return {
+    ...base,
+    kind: 'navigation-cancelled',
+    reason: `Dialog handling is set to dismiss, so the page's beforeunload prompt cancelled the ${action === 'reload' ? 'reload' : 'navigation'}. The page did not change and keeps its unsaved changes.`,
+    nextCommand: accept,
+    detailLines: [retryLine],
+    hints: [
+      `Switch dialog handling back to accept with \`${accept}\` only if the page's unsaved changes may be discarded.`,
+      retryLine,
+      'Do not retry while dialog handling is dismiss: the prompt cancels it again.',
+    ],
+  };
+}
+
 export function classifyActionFailure(err, context = {}) {
   return applyPdfViewerActionRecovery(classifyActionFailureKind(err, context), context.target || {});
 }
@@ -236,6 +257,10 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
   if (action === 'fill' && err?.fillValue && typeof err.fillValue === 'object') {
     // Structured fill state wins over message matching: the requested text is part of the message.
     return classifyFillValueFailure(err, { base, target, input, perceiveCommand });
+  }
+
+  if (err?.navigationCancelled && typeof err.navigationCancelled === 'object') {
+    return classifyNavigationCancelledFailure(err, { base, targetId, input });
   }
 
   // #436: checked before message matching because the message quotes page text.
@@ -648,7 +673,7 @@ export function formatActionFailure(err, context = {}) {
     message: failure.originalMessage,
     reason: failure.reason,
     kind: failure.kind,
-    detailLines: [formatFillValueLine(failure)],
+    detailLines: [formatFillValueLine(failure), ...(Array.isArray(failure.detailLines) ? failure.detailLines : [])],
     nextCommand: failure.nextCommand,
   });
 }
@@ -1026,6 +1051,16 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
       { key: 'since-action', reason: 'Confirm the target handler ran.' },
     ],
     avoid: ['retrying the same mouse click while another element covers the click point'],
+  },
+  'navigation-cancelled': {
+    strategy: 'accept-beforeunload-then-retry',
+    priority: 'high',
+    verify: 'status',
+    intents: [
+      { key: 'next-or-status', reason: 'Switch dialog handling to accept (discards the page\'s unsaved changes), then retry.' },
+      { key: 'status', reason: 'Confirm which page the tab is on.' },
+    ],
+    avoid: ['retrying reload / nav while dialog handling is dismiss: the beforeunload prompt cancels it again'],
   },
   'no-input-events': {
     strategy: 'use-jsclick',
