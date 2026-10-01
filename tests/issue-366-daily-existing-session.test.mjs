@@ -61,6 +61,7 @@ describe('#366 daily --daily-profile must not fake CDP on Chromium 136+', () => 
 </dict></plist>`;
     expect(T.detectChromiumMajorVersion(EDGE_EXE, {
       fs: edgeFs(xml),
+      platform: 'darwin',
       spawnSyncFn: () => { throw new Error('should not spawn --version'); },
     })).toBe(139);
     expect(T.defaultProfileIgnoresRemoteDebugging(135)).toBe(false);

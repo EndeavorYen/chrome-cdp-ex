@@ -12285,12 +12285,23 @@ describe('issue #356 probe 127.0.0.1:9224 when DevToolsActivePort is missing', (
       const fetcher = async () => {
         throw new Error('connect ECONNREFUSED 127.0.0.1:9224');
       };
+      // The attach miss runs the environment check; it must never execute a
+      // browser binary here (#456: `chrome.exe --version` launches Chrome).
+      const spawned = [];
       await expect(T.getWsUrl({
         env: emptyDiscoveryEnv(fakeHome),
         fetcher,
         lastEndpoint: null,
         rememberEndpoint: () => {},
+        environmentCheck: () => T.checkRuntimeEnvironment({
+          env: emptyDiscoveryEnv(fakeHome),
+          spawnSyncFn: (cmd, args) => {
+            spawned.push([cmd, ...(args || [])]);
+            return { status: 1, stdout: '', stderr: '' };
+          },
+        }),
       })).rejects.toThrow(/No DevToolsActivePort and no CDP_PORT set/);
+      if (process.platform === 'win32') expect(spawned).toEqual([]);
 
       const doctor = await T.checkCdpReachability({
         env: emptyDiscoveryEnv(fakeHome),
