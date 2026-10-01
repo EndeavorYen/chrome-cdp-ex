@@ -164,6 +164,13 @@ import { resolveRuntimeDir } from './lib/runtime-dir.mjs';
 import { createLocatorPlan } from './lib/browser-resources.mjs';
 import { BROWSER_COMMANDS, defaultBrowserPaths, detectBrowserPath } from './lib/browser-paths.mjs';
 import {
+  absolutizeExpectDownloadOut,
+  captureClickDownload,
+  downloadOutcomeReason,
+  downloadReceiptLines,
+  parseExpectDownloadArgs,
+} from './lib/click-download.mjs';
+import {
   REDACTED_VALUE,
   isSensitiveFieldText,
   isSensitiveKey,
@@ -6939,6 +6946,17 @@ function buildActionOutcome(actionResult = {}) {
     };
   }
 
+  // #472: a file the click downloaded is the click's result, even when the page itself did not change.
+  if (effects.download?.state === 'completed') {
+    return {
+      ...base,
+      status: 'changed',
+      changed: true,
+      evidence: 'download',
+      reason: downloadOutcomeReason(effects.download),
+    };
+  }
+
   if (navigation.navigated) {
     return {
       ...base,
@@ -7096,6 +7114,12 @@ function actionDeltaDetails(actionResult = {}) {
       type: 'tab',
       status: effects.openedTab.existing ? 'reused' : 'opened',
       summary: `${effects.openedTab.existing ? 'Opened in tab' : 'Opened new tab'} ${effects.openedTab.targetPrefix}: ${effects.openedTab.url}`,
+    });
+  } else if (outcome.evidence === 'download' && effects.download) {
+    details.push({
+      type: 'download',
+      status: 'completed',
+      summary: downloadOutcomeReason(effects.download),
     });
   } else if (outcome.status === 'changed') {
     const sample = summarizeActionDomDiff(effects.domDiff).sample;
@@ -7912,6 +7936,8 @@ function clickOutcomeWord(result = {}) {
   if (!CLICK_OUTCOME_WORD_ACTIONS.has(String(result.action || '').toLowerCase())) return '';
   // #437: "→ opened new tab …" already states the outcome; `changed` would read as this tab.
   if (result.outcome?.evidence === 'new-tab') return '';
+  // #472: the `Downloaded "…"` line states the outcome.
+  if (result.outcome?.evidence === 'download') return '';
   const status = result.outcome?.status;
   return status === 'changed' || status === 'no-change' ? status : '';
 }
@@ -8229,8 +8255,12 @@ function formatActionResultOutput(result, opts = {}) {
   const output = formatActionResultOutputUnredacted(result, { ...opts, scrubModel });
   if (opts.format === 'json') return output;
   // #460: every text receipt names the dialogs the daemon answered on the user's behalf.
-  const dialogLines = actionDialogLines(result?.effects || {});
-  const text = dialogLines.length ? [output, ...dialogLines].filter(Boolean).join('\n') : output;
+  // #472: and the file a click --expect-download saved.
+  const extraLines = [
+    ...downloadReceiptLines(result?.effects?.download),
+    ...actionDialogLines(result?.effects || {}),
+  ];
+  const text = extraLines.length ? [output, ...extraLines].filter(Boolean).join('\n') : output;
   return scrubSecretValues(redactSensitiveString(text), secrets);
 }
 
@@ -9344,6 +9374,7 @@ function compactActionEffectsModel(effects = {}) {
   compact.exceptionDelta = compactActionDeltaModel(normalizeExceptionDelta(effects.exceptionDelta || {}));
   compact.networkDelta = compactActionDeltaModel(normalizeNetworkDelta(effects.networkDelta || {}), ['failures', 'pending']);
   Object.assign(compact, actionDialogFields(effects));
+  if (effects.download) compact.download = effects.download;
   const pageHealthIsActionable = effects.pageHealth && (
     effects.pageHealth.status !== 'populated'
     || effects.pageHealth.isBlank === true
@@ -9504,20 +9535,39 @@ function sessionScreenshotDir(targetId, runtimeDir = RUNTIME_DIR) {
   return resolve(runtimeDir, `cdp-${safeTarget}-screenshots`);
 }
 
+// Default folder for `click --expect-download` (#472); pruned with the tab's other runtime artifacts.
+function sessionDownloadDir(targetId, runtimeDir = RUNTIME_DIR) {
+  const safeTarget = String(targetId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
+  return resolve(runtimeDir, `cdp-${safeTarget}-downloads`);
+}
+
+// Browser.* download calls go on the root (browser) session, and their events arrive there too.
+function clickDownloadBrowser(cdp, targetId) {
+  return {
+    setDownloadBehavior: params => cdpDomains(cdp).Browser.setDownloadBehavior(params),
+    cancelDownload: params => cdpDomains(cdp).Browser.cancelDownload(params),
+    browserContextId: async () => {
+      const { targetInfos = [] } = await cdpDomains(cdp).Target.getTargets();
+      return targetInfos.find(info => info.targetId === targetId)?.browserContextId || null;
+    },
+    onEvent: (method, handler) => cdp.onEvent(method, handler),
+  };
+}
+
 // The per-target JSONL log is rotated once it passes this: the log is renamed to `<log>.1`
 // (replacing an older one) and a new log is started, so a tab keeps about twice this on disk
 // (#462). A rename that fails (a file locked on Windows) is retried after another full period,
 // and the log keeps being written meanwhile.
 const SESSION_LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 
-// Per-tab runtime artifacts: `cdp-<target>.log` (and its rotated `.1`), `cdp-<target>-screenshots/`
-// and `cdp-<target>.crash.json`. Neither `closetab`, `stop` nor daemon exit removes them, so each
+// Per-tab runtime artifacts: `cdp-<target>.log` (and its rotated `.1`), `cdp-<target>-screenshots/`,
+// `cdp-<target>-downloads/` (#472) and `cdp-<target>.crash.json`. Neither `closetab`, `stop` nor daemon exit removes them, so each
 // daemon prunes them when it starts (#462). A tab's set goes once its newest file is older than
 // RUNTIME_ARTIFACT_MAX_AGE_MS and it is not one of the RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS newest
 // sets. The set of a live daemon or of the current target is never touched.
 const RUNTIME_ARTIFACT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS = 20;
-const RUNTIME_ARTIFACT_PATTERN = /^cdp-(.+?)(\.log|\.log\.1|\.crash\.json|-screenshots)$/;
+const RUNTIME_ARTIFACT_PATTERN = /^cdp-(.+?)(\.log|\.log\.1|\.crash\.json|-screenshots|-downloads)$/;
 
 // Async with fs/promises by default, so a large prune (many screenshot folders, a virus
 // scanner on Windows) runs on the libuv pool instead of blocking the daemon's event loop.
@@ -9540,7 +9590,7 @@ async function runtimeArtifactSets(runtimeDir, { readdir = fsPromises.readdir, l
       continue;
     }
     // A symlink or an entry of the wrong kind is not an artifact this runtime wrote.
-    if (match[2] === '-screenshots' ? !stats.isDirectory() : !stats.isFile()) continue;
+    if (match[2].startsWith('-') ? !stats.isDirectory() : !stats.isFile()) continue;
     const set = sets.get(match[1]) || { targetId: match[1], paths: [], mtimeMs: 0 };
     set.paths.push(path);
     set.mtimeMs = Math.max(set.mtimeMs, stats.mtimeMs);
@@ -25398,6 +25448,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     delete actionTarget.fillValueState;
     const dragState = actionTarget.dragState || null;
     delete actionTarget.dragState;
+    // Effects the dispatch itself observed (click --expect-download, #472), merged into the result.
+    const dispatchEffects = actionTarget.actionEffects || null;
+    delete actionTarget.actionEffects;
     const wrappedDispatch = async () => {
       try {
         const snapshotControls = shouldSnapshotFormControlState(action, actionTarget);
@@ -25513,6 +25566,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           observationBaseline,
           locateSourceFrames,
         ));
+        if (dispatchEffects) Object.assign(actionResult.effects, dispatchEffects);
         if (postActionPageHealth) actionResult.effects.pageHealth = postActionPageHealth;
         else if (actionTarget.page && (actionTarget.page.title || actionTarget.page.url)) {
           actionResult.effects.pageHealth = actionResult.effects.pageHealth || {
@@ -26112,6 +26166,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       click: (selector, opts) => clickStr(cdp, sessionId, selector, refMap, refState, opts),
       jsClick: selector => jsClickStr(cdp, sessionId, selector, refMap, refState),
       pointerClick: selector => pointerClickStr(cdp, sessionId, selector, refMap, refState),
+      expectDownload: (options, run, effects) => captureClickDownload({
+        browser: clickDownloadBrowser(cdp, targetId),
+        dir: options.dir || sessionDownloadDir(targetId),
+        timeoutMs: options.timeoutMs,
+        run,
+        effects,
+      }),
     }),
     evalraw: applicationPreflight.handlerBuilders.evalraw({
       evalRaw: (method, params, authorization) => evalRawStr(cdp, sessionId, method, params, authorization),
@@ -28178,10 +28239,11 @@ function parseFillArgs(args = []) {
 function parseClickArgs(args = []) {
   const wait = parseActionabilityWaitArgs(args, 'click');
   const fopts = parseCompactFormatArgs(wait.args, ['text', 'json']);
+  const { args: clickTokens, download } = parseExpectDownloadArgs(fopts.args);
   let js = false;
   let pointer = false;
   const positional = [];
-  for (const token of fopts.args) {
+  for (const token of clickTokens) {
     if (token === '--js' || token === '-j') {
       js = true;
       continue;
@@ -28211,24 +28273,34 @@ function parseClickArgs(args = []) {
     js,
     pointer,
     waitMs: wait.waitMs,
+    download,
     selector: positional[0] || '',
     args: positional,
     fopts: { ...fopts, args: positional },
   };
 }
 
-function createClickCommandHandler({ actionFeedback, click, jsClick, pointerClick }) {
+function createClickCommandHandler({ actionFeedback, click, jsClick, pointerClick, expectDownload }) {
   return async ({ args }) => {
     const parsed = parseClickArgs(args);
     const selector = parsed.selector;
     const named = isNamedClickQuery(selector);
     const useJs = parsed.js || (named && !parsed.pointer);
+    const baseArgs = parsed.pointer ? ['--pointer', selector] : parsed.js ? ['--js', selector] : [selector];
     const target = namedClickActionTarget(selector, {
-      commandArgs: parsed.pointer ? ['--pointer', selector] : parsed.js ? ['--js', selector] : [selector],
+      commandArgs: parsed.download ? [...baseArgs, '--expect-download'] : baseArgs,
     });
-    const dispatch = parsed.pointer
+    const clickOnce = parsed.pointer
       ? () => pointerClick(selector)
       : () => (useJs ? jsClick(selector) : click(selector, { waitMs: parsed.waitMs }));
+    let dispatch = clickOnce;
+    if (parsed.download) {
+      if (typeof expectDownload !== 'function') throw new Error('click: --expect-download is not available on this path');
+      // #472: effects.download reaches the receipt through this holder (see actionFeedback).
+      const effects = {};
+      target.actionEffects = effects;
+      dispatch = () => expectDownload(parsed.download, clickOnce, effects);
+    }
     const value = await actionFeedback(
       'click',
       dispatch,
@@ -30279,6 +30351,9 @@ async function main(options = {}) {
     const expr = cmdArgs.join(' ');
     if (!expr) exitCliError('expression required', { cmd, targetPrefix, format: cliErrorFormat });
     cmdArgs.splice(0, cmdArgs.length, expr);
+  } else if (cmd === 'click') {
+    // The daemon keeps the working directory of the CLI that started it; send --out absolute (#472).
+    cmdArgs = absolutizeExpectDownloadOut(cmdArgs);
   } else if (cmd === 'elshot') {
     const checkArgs = argsWithoutFormat(cmdArgs);
     if (!checkArgs[0]) exitCliError('CSS selector required', { cmd, targetPrefix, format: cliErrorFormat });
@@ -30518,7 +30593,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   summarizeActionObservationEffects, shouldTrackActionNetworkRequest, isNetworkFailure,
   appendSessionActionLog, appendSessionEventLog, appendSessionScreenshot,
   appendSessionEnvironmentLog, buildRecordEnvironmentModel,
-  initializeSessionLog, parseReportArgs, buildSessionReportModel, formatSessionReport, sessionScreenshotDir,
+  initializeSessionLog, parseReportArgs, buildSessionReportModel, formatSessionReport, sessionScreenshotDir, sessionDownloadDir,
   ensureSessionScreenshotDir, nextSessionScreenshotPath,
   buildRecordActionsModel, formatRecordActions,
   playwrightStepFromCommand, formatPlaywrightSpecFromRecordActions, formatExportPlaywright,

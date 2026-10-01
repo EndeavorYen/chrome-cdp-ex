@@ -1375,6 +1375,64 @@ grows on focus, `display: contents`) waits the full 2 s for visibility before it
 pass `--wait-ms 0` to skip that. `--wait-ms` is a flag on these commands, so the 81-command surface, the
 public synopsis and the MCP tool schemas are unchanged; MCP `click` and `fill` use the 2 s default.
 
+### Download capture — `click --expect-download`
+
+```bash
+cdp click <t> "#export-csv" --expect-download                       # default folder
+cdp click <t> @12 --expect-download --out ./exports --timeout 60000  # own folder, longer wait
+```
+
+For a file the page builds or the server sends as an attachment: a blob-URL "Export" button, or a
+POST answered with `Content-Disposition: attachment`. To fetch a URL you already know, use the
+`download.mjs` helper instead.
+
+- Before the click, `Browser.setDownloadBehavior { behavior: 'allowAndName', downloadPath, eventsEnabled: true }`
+  is set for the tab's browser context. A tab in the default profile reports a context id Chrome then
+  refuses, so the call is repeated without an id, which means that default context. After the wait the
+  behaviour is set back to `default`, on success, failure, timeout and a click that throws. CDP cannot
+  read the previous behaviour, so `default` (the browser's own download handling) is what you get back.
+  If that restore call fails, the receipt says so in a `Warning:` line.
+- The first download that begins after the click is the one captured. Chrome saves it as
+  `<folder>/<guid>`; it is renamed to the suggested name with `/`, `\`, `..`, control characters,
+  Windows-reserved characters and device names removed. An existing file is never overwritten: the
+  next free name is `report (1).csv`.
+- `--out DIR` is resolved against your working directory and created if missing. Without it the file
+  goes to `cdp-<target>-downloads/` in the runtime directory (mode 0700), which is pruned with the tab's
+  other runtime artifacts after 7 days; use `--out` for files you want to keep.
+- `--timeout ms` (default 30000, at most 600000) covers the wait from the end of the click until the
+  download completes.
+- A link whose response is an attachment never navigates, which a plain `click` reports as
+  `Kind: no-navigation`. With `--expect-download` that download is the result: the receipt reads
+  `Clicked <A href="…">; it started a download instead of navigating`. If no download begins either, the
+  original `no-navigation` failure is reported after the wait.
+
+Receipt:
+
+```text
+Clicked <BUTTON> "Export CSV" (#export-csv). Next: cdp perceive 9DE1D904 --since-action
+Downloaded "report.csv" 12.4 KB sha256=9f86d0… → /run/user/1000/cdp/cdp-9DE1D904…-downloads/report.csv
+```
+
+The outcome is `changed` with evidence `download`, also when the page itself did not change. JSON
+(`--format json`, also `--compact`) adds `effects.download`:
+`{ state: "completed", filename, suggestedFilename?, bytes, sha256, path, url, dir, behavior: { scope, restored } }`.
+`url` is redacted (secret query values, userinfo) and a `data:` URL is shortened to its media type and
+length. `scope` is `target-context` or `default-context`.
+
+Failures exit 1 with `Error:` / `Kind:` / `Next:` and keep `effects.download` in JSON:
+
+- `Kind: timeout`: no download began within `--timeout`, or one began but did not finish. An unfinished
+  download is cancelled so it does not complete later as a stray `<guid>` file. Next is
+  `perceive <target> --since-action` (a menu or dialog may sit between the click and the file).
+- `Kind: download-canceled`: the browser canceled the download (network error, blocked file type).
+- `Kind: download-unsupported`: the endpoint does not accept `Browser.setDownloadBehavior` (some
+  Electron builds). Nothing was clicked.
+
+While the click waits, every download in that browser context goes to the capture folder without a
+prompt, including one from another tab. Two `--expect-download` clicks in the same context at once
+overwrite each other's setting. This is a `click` flag, so the command surface and public synopsis are
+unchanged; MCP clients pass it through `run_command` with `command: "click"` and `confirm: true`.
+
 ### Clearing a field — `fill ""`
 
 ```bash

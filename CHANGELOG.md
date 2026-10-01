@@ -141,6 +141,17 @@
     unknown name is a startup usage error.
   * Refusals print `Kind: policy`; the recovery registry has a `policy` kind (`respect-policy`, or
     `navigate-back` after a disallowed navigation).
+* `click <target> <sel|@ref> --expect-download [--out DIR] [--timeout ms]` captures the file a click
+  downloads, such as a blob-URL "Export CSV" button or a response with `Content-Disposition: attachment`.
+  It sets `Browser.setDownloadBehavior` to `allowAndName` for the tab's browser context before the
+  click, waits for `Browser.downloadWillBegin` and a `completed` or `canceled` `Browser.downloadProgress`,
+  and always sets the behaviour back to `default` afterwards, also on failure and timeout. The file is
+  renamed from Chrome's `<guid>` to a sanitised suggested name that never overwrites another file. The
+  receipt adds `Downloaded "report.csv" 12.4 KB sha256=… → <path>` and JSON adds `effects.download` with a
+  redacted URL. No download within the timeout is `Kind: timeout` (an unfinished one is cancelled), and a
+  canceled download is `Kind: download-canceled`. The default folder `cdp-<target>-downloads/` lives in the
+  runtime directory and is pruned with the tab's other artifacts. The flag is CLI-only; MCP clients use
+  `run_command` ([#472](https://github.com/EndeavorYen/chrome-cdp-ex/issues/472)).
 
 ### Bug Fixes
 
