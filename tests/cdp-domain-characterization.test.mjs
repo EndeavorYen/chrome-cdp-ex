@@ -414,8 +414,9 @@ describe('Phase 6 direct CDP characterization', () => {
     const inventory = directCdpInventory(source);
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
     // #471 added dispatchDrag → Input.setInterceptDrags (on, off) and dispatchDragEventStep → Input.dispatchDragEvent.
-    expect(inventory).toHaveLength(159);
-    expect(digest).toBe('sha256:6dbd5b03a9f3cfcb9330274222a25cf4a81fbbfbd450e5eb13ddcf4e888dac51');
+    // #466 added readTargetUrl → Target.getTargets.
+    expect(inventory).toHaveLength(160);
+    expect(digest).toBe('sha256:3482ef70dbdc7455a1c29a209f0c20a44064c69b2e11d9b65364569a273d14fc');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',

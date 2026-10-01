@@ -168,7 +168,7 @@ describe('release package checker', () => {
     });
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Release package OK: 66 required entries');
+    expect(result.stdout).toContain('Release package OK: 67 required entries');
   });
 
   it('rejects an artifact that omits a release-critical entry', () => {

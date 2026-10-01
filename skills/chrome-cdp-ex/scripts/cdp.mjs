@@ -26204,11 +26204,17 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   // Handle a command
   async function readTargetUrl() {
+    let timer;
     try {
-      const info = await cdp.send('Target.getTargetInfo', { targetId }, undefined, STATUS_PAGE_INFO_TIMEOUT);
-      return info?.targetInfo?.url || '';
+      const { targetInfos } = await Promise.race([
+        cdpDomains(cdp).Target.getTargets(),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Target.getTargets timed out')), 2000); }),
+      ]);
+      return (targetInfos || []).find(info => info.targetId === targetId)?.url || '';
     } catch {
       return '';
+    } finally {
+      clearTimeout(timer);
     }
   }
 
