@@ -7,7 +7,7 @@
 // the CDP session open. Chrome's "Allow debugging" modal fires once per
 // daemon (= once per tab). Daemons auto-exit after 20min idle.
 
-import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, readlinkSync, realpathSync, statSync } from 'fs';
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, readlinkSync, realpathSync, renameSync, rmSync, statSync } from 'fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { homedir, hostname as osHostname, tmpdir } from 'os';
 import { basename, dirname, posix as posixPath, resolve, win32 as win32Path } from 'path';
@@ -1182,6 +1182,8 @@ function createDaemonShutdown({
 
 // The daemon's idle shutdown timer. `remainingMs` lets `meta` report how long the daemon
 // has left, so a client can avoid a daemon that would exit before its command arrives (#440).
+// A running command pauses the countdown, so a long `wait` or `loadall` is never cut off and
+// leaves a full idle period behind it: the countdown restarts when the last one ends (#462).
 function createDaemonIdleTimer({
   timeoutMs = IDLE_TIMEOUT,
   onIdle,
@@ -1191,11 +1193,15 @@ function createDaemonIdleTimer({
 } = {}) {
   if (typeof onIdle !== 'function') throw new Error('daemon idle handler must be a function');
   let keepaliveUntil = 0;
+  let inFlight = 0;
   let deadline = now() + timeoutMs;
   let timer = setTimer(onIdle, timeoutMs);
+  const nextDelay = () => Math.max(timeoutMs, keepaliveUntil - now(), 1000);
   function schedule() {
     clearTimer(timer);
-    const delay = Math.max(timeoutMs, keepaliveUntil - now(), 1000);
+    timer = null;
+    if (inFlight > 0) return;
+    const delay = nextDelay();
     deadline = now() + delay;
     timer = setTimer(onIdle, delay);
   }
@@ -1206,8 +1212,163 @@ function createDaemonIdleTimer({
       schedule();
       return keepaliveUntil;
     },
-    remainingMs: () => Math.max(0, deadline - now()),
+    // Returns the matching end call; calling it twice ends the request once.
+    beginRequest() {
+      inFlight += 1;
+      clearTimer(timer);
+      timer = null;
+      let ended = false;
+      return () => {
+        if (ended) return;
+        ended = true;
+        inFlight -= 1;
+        if (inFlight === 0) schedule();
+      };
+    },
+    // While paused the daemon has at least a full idle period left.
+    remainingMs: () => (inFlight > 0 ? nextDelay() : Math.max(0, deadline - now())),
   });
+}
+
+// Wraps the daemon request handler so a command in flight pauses the idle timer. `meta` and
+// `list_raw` are probes that must not keep a daemon alive (#419): pausing for them would
+// restart the full countdown when they end.
+function idleTrackedDaemonRequestHandler(idleTimer, handle) {
+  return (request, execution) => {
+    if (!daemonCommandResetsIdle(request?.cmd)) return handle(request, execution);
+    const end = idleTimer.beginRequest();
+    let pending;
+    try {
+      pending = handle(request, execution);
+    } catch (error) {
+      end();
+      throw error;
+    }
+    return Promise.resolve(pending).finally(end);
+  };
+}
+
+// Network.responseReceivedExtraInfo can arrive before Network.requestWillBeSent for the same
+// request; its status is held here until the request is announced. Only those early statuses
+// are held: the ExtraInfo of a request already announced (an untracked image, script or font,
+// or a tracked request that already settled) is dropped. The announced ids and the early
+// statuses are each capped, and an early status older than the age limit is dropped (#462).
+const EARLY_RESPONSE_STATUS_MAX = 500;
+const EARLY_RESPONSE_STATUS_MAX_AGE_MS = 30_000;
+
+function createEarlyResponseStatusStore({
+  maxEntries = EARLY_RESPONSE_STATUS_MAX,
+  maxAgeMs = EARLY_RESPONSE_STATUS_MAX_AGE_MS,
+  now = Date.now,
+} = {}) {
+  const early = new Map(); // requestId → { status, ts }, oldest first
+  const announced = new Set(); // requestIds seen in requestWillBeSent, oldest first
+  const bound = collection => {
+    while (collection.size > maxEntries) collection.delete(collection.keys().next().value);
+  };
+  const dropExpired = () => {
+    const cutoff = now() - maxAgeMs;
+    for (const [requestId, entry] of early) {
+      if (entry.ts >= cutoff) break;
+      early.delete(requestId);
+    }
+  };
+  return {
+    // The request is announced; returns the status that arrived before it, if any.
+    announce(requestId) {
+      announced.delete(requestId);
+      announced.add(requestId);
+      bound(announced);
+      dropExpired();
+      const entry = early.get(requestId);
+      if (!entry) return undefined;
+      early.delete(requestId);
+      return entry.status;
+    },
+    remember(requestId, status) {
+      if (announced.has(requestId)) return false;
+      dropExpired();
+      early.delete(requestId);
+      early.set(requestId, { status, ts: now() });
+      bound(early);
+      return true;
+    },
+    clear() {
+      early.clear();
+      announced.clear();
+    },
+    get size() { return early.size; },
+  };
+}
+
+// CDP Network event handlers for the daemon's request/response buffer. Only action-relevant
+// requests are tracked; static assets are skipped as noise.
+function createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRequest, now = Date.now }) {
+  function appendNetworkResponse(requestId, req, { status = null, type = req.type, size = 0, failed = false, errorText = null } = {}) {
+    pendingReqs.delete(requestId);
+    netReqBuf.push({
+      method: req.method,
+      url: req.url,
+      status,
+      type,
+      duration: now() - req.ts,
+      size,
+      ...(failed ? { failed: true } : {}),
+      ...(errorText ? { errorText } : {}),
+      ts: req.ts,
+    });
+  }
+  return {
+    'Network.requestWillBeSent': (params) => {
+      const earlyStatus = networkStatusByRequest.announce(params.requestId);
+      if (!shouldTrackActionNetworkRequest(params.type)) return;
+      const req = {
+        method: params.request.method,
+        url: params.request.url.substring(0, 200),
+        type: params.type,
+        ts: now(),
+      };
+      if (earlyStatus !== undefined) appendNetworkResponse(params.requestId, req, { status: earlyStatus });
+      else pendingReqs.set(params.requestId, req);
+    },
+    'Network.responseReceived': (params) => {
+      const req = pendingReqs.get(params.requestId);
+      if (!req) return;
+      appendNetworkResponse(params.requestId, req, {
+        status: params.response.status,
+        type: params.type,
+        size: params.response.encodedDataLength || 0,
+      });
+    },
+    'Network.responseReceivedExtraInfo': (params) => {
+      const req = pendingReqs.get(params.requestId);
+      if (!Number.isFinite(Number(params.statusCode))) return;
+      const status = Number(params.statusCode);
+      if (!req) {
+        networkStatusByRequest.remember(params.requestId, status);
+        return;
+      }
+      appendNetworkResponse(params.requestId, req, { status });
+    },
+    'Network.loadingFinished': (params) => {
+      const req = pendingReqs.get(params.requestId);
+      if (!req) return;
+      appendNetworkResponse(params.requestId, req, {
+        status: null,
+        size: params.encodedDataLength || 0,
+      });
+    },
+    'Network.loadingFailed': (params) => {
+      const req = pendingReqs.get(params.requestId);
+      if (!req) return;
+      appendNetworkResponse(params.requestId, req, {
+        status: null,
+        type: params.type,
+        failed: true,
+        errorText: params.errorText || 'loadingFailed',
+      });
+    },
+  };
 }
 
 class RingBuffer {
@@ -8847,6 +9008,114 @@ function sessionScreenshotDir(targetId, runtimeDir = RUNTIME_DIR) {
   return resolve(runtimeDir, `cdp-${safeTarget}-screenshots`);
 }
 
+// The per-target JSONL log is rotated once it passes this: the log is renamed to `<log>.1`
+// (replacing an older one) and a new log is started, so a tab keeps about twice this on disk
+// (#462). A rename that fails (a file locked on Windows) is retried after another full period,
+// and the log keeps being written meanwhile.
+const SESSION_LOG_ROTATE_BYTES = 5 * 1024 * 1024;
+
+// Per-tab runtime artifacts: `cdp-<target>.log` (and its rotated `.1`), `cdp-<target>-screenshots/`
+// and `cdp-<target>.crash.json`. Neither `closetab`, `stop` nor daemon exit removes them, so each
+// daemon prunes them when it starts (#462). A tab's set goes once its newest file is older than
+// RUNTIME_ARTIFACT_MAX_AGE_MS and it is not one of the RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS newest
+// sets. The set of a live daemon or of the current target is never touched.
+const RUNTIME_ARTIFACT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS = 20;
+const RUNTIME_ARTIFACT_PATTERN = /^cdp-(.+?)(\.log|\.log\.1|\.crash\.json|-screenshots)$/;
+
+function runtimeArtifactSets(runtimeDir, { readdir = readdirSync, lstat = lstatSync } = {}) {
+  const sets = new Map();
+  let names;
+  try {
+    names = readdir(runtimeDir);
+  } catch {
+    return sets;
+  }
+  for (const name of names) {
+    const match = RUNTIME_ARTIFACT_PATTERN.exec(name);
+    if (!match) continue;
+    const path = resolve(runtimeDir, name);
+    let stats;
+    try {
+      stats = lstat(path);
+    } catch {
+      continue;
+    }
+    // A symlink or an entry of the wrong kind is not an artifact this runtime wrote.
+    if (match[2] === '-screenshots' ? !stats.isDirectory() : !stats.isFile()) continue;
+    const set = sets.get(match[1]) || { targetId: match[1], paths: [], mtimeMs: 0 };
+    set.paths.push(path);
+    set.mtimeMs = Math.max(set.mtimeMs, stats.mtimeMs);
+    sets.set(match[1], set);
+  }
+  return sets;
+}
+
+function pruneRuntimeArtifacts({
+  runtimeDir = RUNTIME_DIR,
+  protectedTargetIds = [],
+  now = Date.now(),
+  maxAgeMs = RUNTIME_ARTIFACT_MAX_AGE_MS,
+  keepNewest = RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS,
+  fs = {},
+} = {}) {
+  const { readdir = readdirSync, lstat = lstatSync, rm = rmSync } = fs;
+  const kept = new Set([...protectedTargetIds].map(id => String(id).replace(/[^A-Za-z0-9_.-]/g, '_')));
+  const sets = [...runtimeArtifactSets(runtimeDir, { readdir, lstat }).values()]
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  let removedTargets = 0;
+  let failedPaths = 0;
+  sets.forEach((set, index) => {
+    if (index < keepNewest || kept.has(set.targetId) || now - set.mtimeMs <= maxAgeMs) return;
+    let removedAll = true;
+    for (const path of set.paths) {
+      // A file still open elsewhere (EPERM/EBUSY on Windows) is left for a later daemon start.
+      try {
+        rm(path, { recursive: true, force: true });
+      } catch {
+        failedPaths += 1;
+        removedAll = false;
+      }
+    }
+    if (removedAll) removedTargets += 1;
+  });
+  return { removedTargets, failedPaths };
+}
+
+// Targets whose artifacts must survive a prune: a recorded daemon whose pid still runs, or a
+// Unix socket file (an old daemon without a record, or one still starting).
+function liveRuntimeArtifactTargetIds({
+  runtimeDir = RUNTIME_DIR,
+  readdir = readdirSync,
+  reader = readFileSync,
+  isAlive = isProcessAlive,
+} = {}) {
+  const live = new Set();
+  for (const record of listDaemonRecords({ runtimeDir, readdir, reader })) {
+    if (isAlive(record.pid)) live.add(record.targetId);
+  }
+  try {
+    for (const name of readdir(runtimeDir)) {
+      if (name.startsWith('cdp-') && name.endsWith('.sock')) live.add(name.slice(4, -5));
+    }
+  } catch {}
+  return live;
+}
+
+function pruneDaemonRuntimeArtifacts(session, targetId) {
+  try {
+    const protectedTargetIds = liveRuntimeArtifactTargetIds();
+    protectedTargetIds.add(targetId);
+    const result = pruneRuntimeArtifacts({ protectedTargetIds });
+    if (result.removedTargets || result.failedPaths) {
+      appendSessionEventLog(session, { kind: 'runtime-artifacts-pruned', ts: Date.now(), ...result });
+    }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
 function directoryArtifactStats(dir) {
   let sizeBytes = 0;
   let fileCount = 0;
@@ -8984,7 +9253,25 @@ function ensureSessionScreenshotDir(session) {
   }
 }
 
-function appendSessionEventLog(session, event, { writer = appendFileSync } = {}) {
+function rotateSessionLog(session, lineBytes, { rename, size, rotateBytes }) {
+  if (!Number.isFinite(session.logBytes)) {
+    try {
+      session.logBytes = size(session.logPath);
+    } catch {
+      session.logBytes = 0;
+    }
+  }
+  if (session.logBytes === 0 || session.logBytes + lineBytes <= rotateBytes) return;
+  try { rename(session.logPath, `${session.logPath}.1`); } catch {}
+  session.logBytes = 0;
+}
+
+function appendSessionEventLog(session, event, {
+  writer = appendFileSync,
+  rename = renameSync,
+  size = path => statSync(path).size,
+  rotateBytes = SESSION_LOG_ROTATE_BYTES,
+} = {}) {
   if (!session.logPath) return null;
   const payload = {
     schema: 'chrome-cdp-ex.session-event.v1',
@@ -8993,7 +9280,11 @@ function appendSessionEventLog(session, event, { writer = appendFileSync } = {})
     ...event,
   };
   try {
-    writer(session.logPath, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
+    const line = `${JSON.stringify(payload)}\n`;
+    const lineBytes = Buffer.byteLength(line);
+    rotateSessionLog(session, lineBytes, { rename, size, rotateBytes });
+    writer(session.logPath, line, { mode: 0o600 });
+    session.logBytes += lineBytes;
     return payload;
   } catch (e) {
     if (!session.logErrors) session.logErrors = [];
@@ -9023,7 +9314,9 @@ function initializeSessionLog(session, { ts = session.createdAt || Date.now(), w
     sessionId: session.sessionId,
   };
   try {
-    writer(session.logPath, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
+    const line = `${JSON.stringify(payload)}\n`;
+    writer(session.logPath, line, { mode: 0o600 });
+    session.logBytes = Buffer.byteLength(line);
     return payload;
   } catch (e) {
     if (!session.logErrors) session.logErrors = [];
@@ -17724,12 +18017,13 @@ async function throttleStr(cdp, sid, session, args = []) {
   return parsed.format === 'json' ? formatJson(model) : formatThrottleText(model);
 }
 
-function clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq }) {
+function clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq }) {
   consoleBuf?.clear();
   exceptionBuf?.clear();
   navBuf?.clear();
   netReqBuf?.clear();
   pendingReqs?.clear();
+  networkStatusByRequest?.clear();
   if (lastReadSeq) {
     lastReadSeq.console = consoleBuf?.latest?.() || 0;
     lastReadSeq.exception = exceptionBuf?.latest?.() || 0;
@@ -19032,9 +19326,9 @@ async function observePageState(cdp, sid, heading = 'Page observation') {
   ].filter(Boolean).join('\n');
 }
 
-async function reloadActionDispatch({ cdp, sessionId, session, consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq }) {
+async function reloadActionDispatch({ cdp, sessionId, session, consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq }) {
   const reloadResult = await reloadStr(cdp, sessionId);
-  clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
+  clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq });
   invalidateSessionRefs(session, 'navigation');
   return `${reloadResult} (console/exception/navigation buffers cleared)`;
 }
@@ -23207,7 +23501,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   const navBuf = new RingBuffer(10);
   const netReqBuf = new RingBuffer(100); // network request/response pairs
   const pendingReqs = session.pendingRequests; // requestId → {method, url, ts}
-  const networkStatusByRequest = new Map(); // requestId → statusCode from ExtraInfo that arrived first
+  const networkStatusByRequest = createEarlyResponseStatusStore(); // ExtraInfo statuses that arrived before their request
   let lastReadSeq = { console: 0, exception: 0 };
 
   // --- Ref system & perceive diff state ---
@@ -23253,79 +23547,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   });
 
   // --- Network request/response tracking ---
-  function appendNetworkResponse(requestId, req, { status = null, type = req.type, size = 0, failed = false, errorText = null } = {}) {
-    pendingReqs.delete(requestId);
-    netReqBuf.push({
-      method: req.method,
-      url: req.url,
-      status,
-      type,
-      duration: Date.now() - req.ts,
-      size,
-      ...(failed ? { failed: true } : {}),
-      ...(errorText ? { errorText } : {}),
-      ts: req.ts,
-    });
-  }
-
-  cdp.onEvent('Network.requestWillBeSent', (params) => {
-    // Track action-relevant traffic while skipping static asset noise.
-    if (shouldTrackActionNetworkRequest(params.type)) {
-      const req = {
-        method: params.request.method,
-        url: params.request.url.substring(0, 200),
-        type: params.type,
-        ts: Date.now(),
-      };
-      if (networkStatusByRequest.has(params.requestId)) {
-        const status = networkStatusByRequest.get(params.requestId);
-        networkStatusByRequest.delete(params.requestId);
-        appendNetworkResponse(params.requestId, req, { status });
-      } else {
-        pendingReqs.set(params.requestId, req);
-      }
-    }
-  });
-  cdp.onEvent('Network.responseReceived', (params) => {
-    const req = pendingReqs.get(params.requestId);
-    if (!req) return;
-    appendNetworkResponse(params.requestId, req, {
-      status: params.response.status,
-      type: params.type,
-      size: params.response.encodedDataLength || 0,
-    });
-  });
-
-  cdp.onEvent('Network.responseReceivedExtraInfo', (params) => {
-    const req = pendingReqs.get(params.requestId);
-    if (!Number.isFinite(Number(params.statusCode))) return;
-    const status = Number(params.statusCode);
-    if (!req) {
-      networkStatusByRequest.set(params.requestId, status);
-      return;
-    }
-    appendNetworkResponse(params.requestId, req, { status });
-  });
-
-  cdp.onEvent('Network.loadingFinished', (params) => {
-    const req = pendingReqs.get(params.requestId);
-    if (!req) return;
-    appendNetworkResponse(params.requestId, req, {
-      status: null,
-      size: params.encodedDataLength || 0,
-    });
-  });
-
-  cdp.onEvent('Network.loadingFailed', (params) => {
-    const req = pendingReqs.get(params.requestId);
-    if (!req) return;
-    appendNetworkResponse(params.requestId, req, {
-      status: null,
-      type: params.type,
-      failed: true,
-      errorText: params.errorText || 'loadingFailed',
-    });
-  });
+  const networkObserver = createDaemonNetworkObserver({ pendingReqs, netReqBuf, networkStatusByRequest });
+  for (const [event, handler] of Object.entries(networkObserver)) cdp.onEvent(event, handler);
 
   cdp.onEvent('Fetch.requestPaused', (params) => {
     handleMockRequestPaused(cdp, sessionId, session, params).catch(() => {
@@ -24004,6 +24227,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         navBuf,
         netReqBuf,
         pendingReqs,
+        networkStatusByRequest,
         lastReadSeq,
       }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
@@ -24024,7 +24248,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           } catch (error) {
             throw redactRestoreActionError(error, fopts.args);
           }
-          clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, lastReadSeq });
+          clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq });
           session.pageGeneration += 1;
           invalidateSessionRefs(session, 'navigation');
           return restoreResult;
@@ -24335,7 +24559,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   server = net.createServer((conn) => {
     let requestConnection;
     requestConnection = createDaemonRequestConnection(conn, {
-      handleRequest: handleCommand,
+      handleRequest: idleTrackedDaemonRequestHandler(idleTimer, handleCommand),
       cleanup: (_request, execution) => tableArtifactStore.rollbackRequest(execution),
       onFlushed: (_request, execution) => tableArtifactStore.releaseRequest(execution),
       onDispose: () => {
@@ -24366,6 +24590,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   // Only the daemon that won the listen race owns the record.
   server.once('listening', () => {
     writeDaemonRecord(targetId, { pid: daemonMetadata.pid, startedAt: daemonMetadata.startedAt });
+    // Off the listen path, so the first command is not held up by the scan.
+    setImmediate(() => pruneDaemonRuntimeArtifacts(session, targetId));
   });
   server.listen(sp);
 }
@@ -28266,7 +28492,9 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   removeTargetAlias, forgetTargetAlias, resolveTargetAlias, aliasesForTarget, parseAliasCommandArgs,
   aliasEnv, discoverOptionsForTargetAlias, selectLivePagesForAliasResolution, bindAliasTargetFromPages,
   bindAndSaveTargetAlias, livePagesForTargetCommand, discoverLivePagesForTargetResolution,
-  listPagesFromMatchingDaemon, daemonCommandResetsIdle, daemonIdleExitsSoon, assertFreshDaemonForCommand, createDaemonIdleTimer, cdpEndpointFromWsUrl, requestedCdpEndpoint, validateDaemonProtocolRequest,
+  listPagesFromMatchingDaemon, daemonCommandResetsIdle, daemonIdleExitsSoon, assertFreshDaemonForCommand, createDaemonIdleTimer, idleTrackedDaemonRequestHandler,
+  pruneRuntimeArtifacts, liveRuntimeArtifactTargetIds, RUNTIME_ARTIFACT_MAX_AGE_MS, RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS, SESSION_LOG_ROTATE_BYTES,
+  createEarlyResponseStatusStore, createDaemonNetworkObserver, EARLY_RESPONSE_STATUS_MAX, EARLY_RESPONSE_STATUS_MAX_AGE_MS, cdpEndpointFromWsUrl, requestedCdpEndpoint, validateDaemonProtocolRequest,
   formatDaemonStartFailure,
   aliasLookupKey, looksLikeAliasToken, looksLikeHexTargetPrefix, unknownAliasError, formatCurrentAlias,
   // AX tree helpers

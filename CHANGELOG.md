@@ -96,6 +96,19 @@
   action too. Only dialogs answered while an action runs are listed; the rest stay in `dialog`
   history. The accept/dismiss behaviour itself is unchanged
   ([#460](https://github.com/EndeavorYen/chrome-cdp-ex/issues/460)).
+* Tab daemon hygiene ([#462](https://github.com/EndeavorYen/chrome-cdp-ex/issues/462)):
+  * The map that holds a `responseReceivedExtraInfo` status until its `requestWillBeSent` arrives no
+    longer grows for the daemon's whole life. It kept the late ExtraInfo of every image, script, font
+    and already-settled request. It now keeps only statuses for requests not yet announced, caps them
+    at 500 and 30 s, and `reload` / `restore` clear it with the other observation buffers.
+  * A running command pauses the 20 min idle countdown, so a long `wait` (up to 1 h) is no longer cut
+    off with "Connection closed before response", and the countdown restarts in full when the last
+    command ends. `meta` reports a full idle period while other work is in flight; `meta` and
+    `list_raw` probes still do not keep a daemon alive.
+  * `cdp-<target>.log`, `cdp-<target>-screenshots/` and `cdp-<target>.crash.json` are pruned when a
+    daemon starts: a tab's set goes once it is older than 7 days and not among the 20 newest. Tabs with
+    a running daemon and the daemon's own tab are kept, and files Windows holds open are skipped. A log
+    past 5 MB is rotated to `.log.1`.
 
 * Attaching to a running browser on Linux now records its profile, exe and launch flags even when no
   remembered profile is behind that port, e.g. a browser chrome-cdp-ex did not spawn, or one attached
