@@ -65,6 +65,18 @@
   skips instead of driving a browser that already listens on its port. `CDP_SMOKE_BROWSER`,
   `CDP_SMOKE_NO_SANDBOX` and `CDP_SMOKE_START_TIMEOUT_MS` let it run on hosts with only a Playwright
   Chromium build.
+* `click` on a link that opens another tab (`target="_blank"`, a named target that is not this frame's
+  own name, or a `<base target>` default) no longer reports `did not navigate` / `Kind: no-navigation` and
+  exits 1 while the tab it opened sits there. The followed-href check only watched this tab's URL. It now
+  snapshots the browser's page targets before such a click (other clicks make no extra round trip) and,
+  within the same 500 ms navigation wait, accepts a new page target whose `openerId` is this tab or whose URL
+  is the link's. The receipt is `Clicked <A> "Docs" → opened new tab 9DE1D904 https://…`, exit 0, Next
+  `perceive 9DE1D904 -C -d 8`; JSON adds `effects.openedTab` and `outcome.evidence: "new-tab"`. A named
+  target that reuses an open tab prints `→ opened in tab <prefix> <url>`. CSS, `@ref` and named (`text=`)
+  clicks are covered. The new tab is not activated (#415). When neither this tab navigated nor a tab opened,
+  the failure is still `Kind: no-navigation`, now naming the link's target. A named target whose tab already
+  shows the link URL reloads it in place, which the target list cannot show; that failure names the tab
+  instead of claiming success ([#437](https://github.com/EndeavorYen/chrome-cdp-ex/issues/437)).
 * The test suite now runs with a throwaway `XDG_RUNTIME_DIR` (`LOCALAPPDATA` on Windows) that is removed
   when the run exits. Before, tests wrote fixture endpoint records (macOS profiles, Edge on 9222) into the
   developer's real `cdp-last-endpoint.json`, and later real `doctor` / `list` runs trusted them. That is how
