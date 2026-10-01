@@ -23,6 +23,32 @@
   still yields `null`. On one Windows machine `collectDaemonMetadata()` went from about 28-36 ms to
   about 2-4 ms for the first call in a process and under 1 ms after that
   ([#461](https://github.com/EndeavorYen/chrome-cdp-ex/issues/461)).
+### Bug Fixes
+
+* `shot`, `elshot`, `responsive-audit` and `annotshot` capture an Electron page with a live WebGL
+  canvas whenever a plain `Page.captureScreenshot` works
+  ([#452](https://github.com/EndeavorYen/chrome-cdp-ex/issues/452)). Three causes:
+  * One tier-1 timeout made the tab daemon skip the plain call for its whole life, so every later capture
+    went to `fromSurface:false`, which Electron on Windows refuses (`Unable to capture screenshot`;
+    the app logs `Failed to print window`). Each command now starts at the plain call. Only `scanshot`
+    skips a tier that timed out, and only within that one command.
+  * A refused `fromSurface:false` threw the raw CDP error instead of trying the screencast frame. It now
+    moves on to the next tier. When every tier fails, the error names each tier and its CDP error,
+    and the recovery is `Kind: screenshot-capture` instead of `Kind: unknown`.
+  * The black-frame check compared the whole frame with the body colour, so a dark canvas on a light
+    page failed as `near-black-frame-on-light-page`. It now walks the paint stack (`elementsFromPoint`,
+    into open shadow roots) at each point of a grid, looking through transparent layers such as a
+    full-window UI overlay, and judges only points where something paints a predictable opaque
+    colour. Canvas, video, image, iframe and background-image regions are left out. `responsive-audit`
+    shares one tier state across its viewports.
+* `elshot` captures the element on a scrolled page. `Page.captureScreenshot` reads `clip` in document
+  coordinates, but the clip was built from `getBoundingClientRect` (viewport coordinates), so after a
+  scroll it captured blank space above the element. A clipped capture also never falls back to a
+  whole-viewport screencast frame, and `diff-shot` / `fullshot` name the failed tier instead of
+  claiming a timeout ([#452](https://github.com/EndeavorYen/chrome-cdp-ex/issues/452)).
+* `responsive-audit` keeps the requested viewport as each entry's label. A mobile size without
+  `<meta viewport>` used to be reported as its 980px layout viewport (`980x2120` for `390x844`); the
+  layout size now appears as `layout=980x2120` / `layoutViewport`.
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 

@@ -244,7 +244,7 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs visual-check <target> --viewport 1440x
 
 It walks a bounded set of viewports (default desktop + mobile), captures screenshots outside the repo by default (session screenshot dir or explicit `--out-dir`), and reports overflow-x, shared page-health evidence, internally clipped controls, material fixed/sticky overlaps, console health, control counts, and a pass/warn/fail summary. After the last audited size it restores the tab's previous viewport, including when a screenshot times out. Mark an intentional scroll list with `data-cdp-audit-scroll="intentional"` (or use `role="listbox"` / `role="feed"`) to suppress expected off-viewport items.
 
-Screenshot JSON records the winning capture method and retry count. A near-black frame is retried once with the alternate surface only when computed page appearance is light; legitimate dark pages are not retried.
+Screenshot JSON records the winning capture method, retry count, and each capture tier that failed before it. Each viewport is labelled with the requested size; a page without `<meta viewport>` reports its wider layout size as `layoutViewport` (text: `layout=980x2120`). A near-black frame is retried once with the alternate surface only where the paint stack predicts a light background; canvas, video, image, iframe, and background-image regions and legitimate dark pages are not retried. A capture that no tier can serve fails with `Kind: screenshot-capture` (JSON `error.message` names each tier and its CDP error) and Next `perceive`.
 
 Compact QA handoffs are also available on common commands:
 
