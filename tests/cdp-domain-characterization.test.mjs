@@ -411,16 +411,14 @@ describe('Phase 6 direct CDP characterization', () => {
   it('freezes every direct method, caller, session, and timeout boundary', () => {
     const inventory = directCdpInventory(source);
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
-    // #488 added captureHiddenTabFrame → Page.captureScreenshot and revealHiddenTab → Target.activateTarget;
-    // #470 added the source-map loaders (Page.getResourceContent, Network.loadNetworkResource, IO.read/close).
-    expect(inventory).toHaveLength(154);
-    expect(digest).toBe('sha256:54d32ad7ea165fb2afdf0431143f4a7b9ab40ddde3261a34113b9b81f39d9b33');
+    expect(inventory).toHaveLength(155);
+    expect(digest).toBe('sha256:5524a808bc69945502ff1081020ef300b318bf1ba71027b26bb66657b3a7132b');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',
       'HOVER_MOUSE_ACK_TIMEOUT_MS',
       'Math.min(1000, Math.max(100, deadline - now() + 100))',
-      'REF_RESOLVE_TIMEOUT', 'RELOAD_DISPATCH_TIMEOUT', 'RELOAD_OBSERVE_TIMEOUT',
+      'REF_RESOLVE_TIMEOUT', 'RELOAD_DISPATCH_TIMEOUT', 'RELOAD_OBSERVE_TIMEOUT', 'SOURCE_MAP_LATE_REPLY_TIMEOUT_MS',
       'options.timeoutMs', 'probeTimeoutMs', 'timeoutMs',
     ]);
     expect([...new Set(inventory.map(entry => entry.session))].sort())

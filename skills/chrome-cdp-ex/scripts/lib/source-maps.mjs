@@ -1,6 +1,6 @@
 // Maps console and exception stack frames from a production bundle back to source files (#470).
-// Zero-dependency Source Map v3 support: base64 VLQ decoding, a lazy `mappings` scan for one
-// generated (line, column), and `sources`/`sourceRoot` resolution. `sourcesContent` is ignored.
+// Zero-dependency Source Map v3 support: base64 VLQ decoding, lazy per-line `mappings` decoding
+// with binary search, and `sources`/`sourceRoot` resolution. `sourcesContent` is ignored.
 // The resolver never throws to its caller: a missing, oversized, slow or malformed map leaves the
 // generated frame unchanged. Network access is injected (`loadText`) so this module stays pure.
 
@@ -16,8 +16,14 @@ export const SOURCE_MAP_LIMITS = Object.freeze({
   // Per-load cap. Longer than the output budget so a slow map can finish in the background and
   // serve the next output instead of timing out on every attempt.
   loadTimeoutMs: 10_000,
+  // After a transient load failure (timeout, network error) a script waits this long before it is
+  // tried again, doubling per consecutive failure up to maxRetryBackoffMs.
+  retryBackoffMs: 5_000,
+  maxRetryBackoffMs: 60_000,
   maxCachedScripts: 32,
-  maxLookupMemo: 256,
+  // Parsed maps (mappings text, line index, decoded lines) kept per daemon; least recently used
+  // maps are evicted past this and re-read on demand. Without it, 32 maps could hold ~160 MB.
+  maxCacheBytes: 32 * 1024 * 1024,
   maxDisplayPath: 100,
   maxDisplayFile: 60,
   maxFrameUrl: 2048,
@@ -115,7 +121,7 @@ export function displayScriptFile(scriptUrl, max = SOURCE_MAP_LIMITS.maxDisplayF
 /**
  * Parses a Source Map v3 document. `baseUrl` is the URL relative sources resolve against (the map
  * URL, or the script URL for an inline data: map). Index maps (`sections`) and invalid JSON return
- * null so the caller keeps the generated frame.
+ * null so the caller keeps the generated frame. `mappings` is decoded lazily, one line at a time.
  */
 export function parseSourceMap(text, baseUrl = '') {
   let json;
@@ -126,82 +132,172 @@ export function parseSourceMap(text, baseUrl = '') {
   }
   if (!json || typeof json !== 'object' || json.version !== 3) return null;
   if (typeof json.mappings !== 'string' || !Array.isArray(json.sources)) return null;
+  const sources = json.sources.map(source => (source == null ? null : resolveSourceUrl(source, json.sourceRoot, baseUrl)));
+  const names = Array.isArray(json.names) ? json.names : [];
+  let metaBytes = 0;
+  for (const value of [...sources, ...names]) metaBytes += typeof value === 'string' ? value.length * 2 : 0;
   return {
-    sources: json.sources.map(source => (source == null ? null : resolveSourceUrl(source, json.sourceRoot, baseUrl))),
-    names: Array.isArray(json.names) ? json.names : [],
+    sources,
+    names,
     mappings: json.mappings,
-    memo: new Map(),
+    metaBytes,
+    // Built on first lookup: per generated line, its offset in `mappings` and the source
+    // index/line/column/name state at its start (those fields are relative across lines).
+    lineIndex: null,
+    // Decoded lines: generated line -> Int32Array of SEGMENT_FIELDS-wide segments, sorted by column.
+    lines: new Map(),
+    decodedBytes: 0,
   };
 }
 
-function scanOriginalPosition(map, line, column) {
+// genColumn, hasSource, sourceIndex, sourceLine, sourceColumn, nameIndex (-1 when absent)
+const SEGMENT_FIELDS = 6;
+
+// Reads one segment's fields starting at state.pos; returns null on malformed VLQ.
+function readSegment(text, state, values) {
+  values.length = 0;
+  while (state.pos < text.length) {
+    const code = text.charCodeAt(state.pos);
+    if (code === COMMA || code === SEMICOLON) break;
+    const value = readVlq(text, state);
+    if (value === null) return null;
+    values.push(value);
+  }
+  return values;
+}
+
+// One pass over `mappings` that records where each generated line starts and the relative state
+// at that point, so any line can then be decoded on its own. Marks the map broken on bad VLQ.
+function indexLines(map) {
+  if (map.lineIndex) return map.lineIndex;
   const text = map.mappings;
+  const offsets = [0];
+  const states = [0, 0, 0, 0];
   const state = { pos: 0 };
-  let genLine = 0;
-  let genColumn = 0;
+  const values = [];
   let sourceIndex = 0;
   let sourceLine = 0;
   let sourceColumn = 0;
   let nameIndex = 0;
-  let best = null;
-  while (state.pos < text.length && genLine <= line) {
+  let broken = false;
+  while (state.pos < text.length) {
     const code = text.charCodeAt(state.pos);
     if (code === SEMICOLON) {
-      if (genLine === line) break;
-      genLine += 1;
-      genColumn = 0; // the generated column resets per line; other fields are relative map-wide
       state.pos += 1;
+      offsets.push(state.pos);
+      states.push(sourceIndex, sourceLine, sourceColumn, nameIndex);
       continue;
     }
     if (code === COMMA) {
       state.pos += 1;
       continue;
     }
-    const values = [];
-    while (state.pos < text.length) {
-      const next = text.charCodeAt(state.pos);
-      if (next === COMMA || next === SEMICOLON) break;
-      const value = readVlq(text, state);
-      if (value === null) return null;
-      values.push(value);
+    if (!readSegment(text, state, values)) {
+      broken = true;
+      break;
     }
-    if (values.length === 0) continue;
-    genColumn += values[0];
     if (values.length >= 4) {
       sourceIndex += values[1];
       sourceLine += values[2];
       sourceColumn += values[3];
       if (values.length >= 5) nameIndex += values[4];
     }
-    if (genLine !== line) continue;
-    if (genColumn > column) break;
-    best = values.length >= 4
-      ? { sourceIndex, sourceLine, sourceColumn, nameIndex: values.length >= 5 ? nameIndex : -1 }
-      : null; // a 1-field segment marks generated code with no original
   }
-  if (!best) return null;
-  const source = map.sources[best.sourceIndex];
-  if (typeof source !== 'string' || !source) return null;
-  return {
-    source,
-    line: best.sourceLine + 1,
-    column: best.sourceColumn + 1,
-    name: best.nameIndex >= 0 && typeof map.names[best.nameIndex] === 'string' ? map.names[best.nameIndex] : null,
-  };
+  map.lineIndex = { broken, offsets: Int32Array.from(offsets), states: Int32Array.from(states) };
+  return map.lineIndex;
+}
+
+function decodeLine(map, line) {
+  if (map.lines.has(line)) return map.lines.get(line);
+  const index = indexLines(map);
+  if (index.broken || line >= index.offsets.length) return null;
+  const text = map.mappings;
+  const state = { pos: index.offsets[line] };
+  let [sourceIndex, sourceLine, sourceColumn, nameIndex] = index.states.subarray(line * 4, line * 4 + 4);
+  let genColumn = 0;
+  const fields = [];
+  const values = [];
+  while (state.pos < text.length) {
+    const code = text.charCodeAt(state.pos);
+    if (code === SEMICOLON) break;
+    if (code === COMMA) {
+      state.pos += 1;
+      continue;
+    }
+    if (!readSegment(text, state, values)) return null;
+    if (values.length === 0) continue;
+    genColumn += values[0];
+    const hasSource = values.length >= 4;
+    if (hasSource) {
+      sourceIndex += values[1];
+      sourceLine += values[2];
+      sourceColumn += values[3];
+      if (values.length >= 5) nameIndex += values[4];
+    }
+    fields.push(genColumn, hasSource ? 1 : 0, sourceIndex, sourceLine, sourceColumn, values.length >= 5 ? nameIndex : -1);
+  }
+  let segments = Int32Array.from(fields);
+  // The spec orders segments by generated column; sort defensively so binary search holds.
+  let sorted = true;
+  for (let i = SEGMENT_FIELDS; i < segments.length; i += SEGMENT_FIELDS) {
+    if (segments[i] < segments[i - SEGMENT_FIELDS]) {
+      sorted = false;
+      break;
+    }
+  }
+  if (!sorted) {
+    const order = [];
+    for (let i = 0; i < segments.length; i += SEGMENT_FIELDS) order.push(i);
+    order.sort((a, b) => segments[a] - segments[b] || a - b);
+    const copy = new Int32Array(segments.length);
+    order.forEach((from, to) => copy.set(segments.subarray(from, from + SEGMENT_FIELDS), to * SEGMENT_FIELDS));
+    segments = copy;
+  }
+  map.lines.set(line, segments);
+  map.decodedBytes += segments.byteLength;
+  return segments;
+}
+
+/** Approximate memory a parsed map holds (mappings text, line index, decoded lines). */
+export function sourceMapBytes(map) {
+  if (!map) return 0;
+  return map.mappings.length + map.metaBytes + map.decodedBytes
+    + (map.lineIndex ? map.lineIndex.offsets.byteLength + map.lineIndex.states.byteLength : 0);
 }
 
 /**
- * Original position for a 0-based generated (line, column), using the greatest mapped segment at
- * or before `column` on that line. Returns 1-based line/column, or null when unmapped.
+ * Original position for a 0-based generated (line, column), using the greatest segment at or
+ * before `column` on that line (binary search over the line, decoded once and kept). Returns
+ * 1-based line/column, or null when unmapped (including a 1-field generated-only segment).
  */
-export function lookupOriginalPosition(map, line, column, limits = SOURCE_MAP_LIMITS) {
+export function lookupOriginalPosition(map, line, column) {
   if (!map || !Number.isInteger(line) || !Number.isInteger(column) || line < 0 || column < 0) return null;
-  const key = `${line}:${column}`;
-  if (map.memo.has(key)) return map.memo.get(key);
-  const result = scanOriginalPosition(map, line, column);
-  if (map.memo.size >= limits.maxLookupMemo) map.memo.delete(map.memo.keys().next().value);
-  map.memo.set(key, result);
-  return result;
+  const segments = decodeLine(map, line);
+  if (!segments || segments.length === 0) return null;
+  let low = 0;
+  let high = segments.length / SEGMENT_FIELDS - 1;
+  let found = -1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (segments[mid * SEGMENT_FIELDS] <= column) {
+      found = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  if (found < 0) return null;
+  const at = found * SEGMENT_FIELDS;
+  if (segments[at + 1] !== 1) return null;
+  const source = map.sources[segments[at + 2]];
+  if (typeof source !== 'string' || !source) return null;
+  const nameIndex = segments[at + 5];
+  return {
+    source,
+    line: segments[at + 3] + 1,
+    column: segments[at + 4] + 1,
+    name: nameIndex >= 0 && typeof map.names[nameIndex] === 'string' ? map.names[nameIndex] : null,
+  };
 }
 
 /**
@@ -297,11 +393,19 @@ function byteLength(text) {
  * Per-daemon resolver. `loadText(url, { kind: 'script' | 'map', maxBytes, timeoutMs })` returns
  * the resource text, null when the resource is definitively unavailable (HTTP error, too large),
  * or throws on a transient failure (CDP timeout, frame mid-navigation). It is only called for
- * http(s)/file URLs. Maps and definitive misses are cached per script URL until `clear()`; a
- * transient failure is dropped from the cache so the next output tries again.
+ * http(s)/file URLs.
+ *
+ * - Maps and definitive misses are cached per script URL (LRU, `maxCachedScripts` entries and
+ *   `maxCacheBytes` of parsed maps) until `clear()`.
+ * - A transient failure is not cached as a miss; the script backs off (`retryBackoffMs`, doubling
+ *   to `maxRetryBackoffMs`) before it is loaded again, so a hung or unreachable map host costs one
+ *   output's budget per back-off window instead of every output.
+ * - While a load is in flight, only the first output waits for it; later outputs print the
+ *   generated frame at once until the load settles.
  */
 export function createSourceMapResolver({ loadText, now = Date.now, limits = SOURCE_MAP_LIMITS } = {}) {
-  const cache = new Map();
+  const cache = new Map(); // key -> { promise, settled, value, waited }
+  const failures = new Map(); // key -> { count, retryAt }
 
   async function loadMap(scriptUrl) {
     const script = await loadText(scriptUrl, {
@@ -328,36 +432,75 @@ export function createSourceMapResolver({ loadText, now = Date.now, limits = SOU
     return parseSourceMap(text, mapUrl.href);
   }
 
-  function mapFor(scriptUrl) {
+  function noteTransientFailure(key) {
+    const count = (failures.get(key)?.count || 0) + 1;
+    const backoff = Math.min(limits.maxRetryBackoffMs, limits.retryBackoffMs * 2 ** (count - 1));
+    failures.delete(key);
+    failures.set(key, { count, retryAt: now() + backoff });
+    while (failures.size > limits.maxCachedScripts) failures.delete(failures.keys().next().value);
+  }
+
+  function recordFor(scriptUrl) {
     const key = cacheKey(scriptUrl);
-    if (!key) return Promise.resolve(null);
-    if (cache.has(key)) {
-      const hit = cache.get(key);
+    if (!key) return null;
+    const hit = cache.get(key);
+    if (hit) {
       cache.delete(key);
       cache.set(key, hit);
       return hit;
     }
-    const pending = Promise.resolve()
+    const failure = failures.get(key);
+    if (failure && now() < failure.retryAt) return null;
+    const record = { promise: null, settled: false, value: null, waited: false };
+    record.promise = Promise.resolve()
       .then(() => loadMap(key))
-      .catch(() => {
-        if (cache.get(key) === pending) cache.delete(key);
+      .then((value) => {
+        failures.delete(key);
+        record.value = value;
+        record.settled = true;
+        return value;
+      }, () => {
+        record.settled = true;
+        if (cache.get(key) === record) cache.delete(key);
+        noteTransientFailure(key);
         return null;
       });
-    cache.set(key, pending);
+    cache.set(key, record);
     while (cache.size > limits.maxCachedScripts) cache.delete(cache.keys().next().value);
-    return pending;
+    return record;
   }
 
-  async function withinDeadline(promise, deadline) {
+  // Keeps the most recently used parsed maps within maxCacheBytes; `keep` is never evicted.
+  function enforceMemory(keep) {
+    let total = 0;
+    for (const [key, record] of [...cache.entries()].reverse()) {
+      const bytes = record.settled ? sourceMapBytes(record.value) : 0;
+      if (key !== keep && total + bytes > limits.maxCacheBytes) {
+        cache.delete(key);
+        continue;
+      }
+      total += bytes;
+    }
+  }
+
+  async function mapWithin(record, deadline) {
+    if (!record) return null;
+    if (record.settled) return record.value;
+    // An earlier output already spent its budget on this load; don't charge another one.
+    if (record.waited) return null;
     const remaining = deadline - now();
-    if (remaining <= 0) return { timedOut: true, value: null };
+    if (remaining <= 0) return null;
     let timer;
+    const timedOut = Symbol('timed-out');
     const timeout = new Promise((resolve) => {
-      timer = setTimeout(() => resolve({ timedOut: true, value: null }), remaining);
+      timer = setTimeout(() => resolve(timedOut), remaining);
       timer.unref?.();
     });
     try {
-      return await Promise.race([promise.then(value => ({ timedOut: false, value })), timeout]);
+      const value = await Promise.race([record.promise, timeout]);
+      if (value !== timedOut) return value;
+      record.waited = true;
+      return null;
     } finally {
       clearTimeout(timer);
     }
@@ -368,8 +511,11 @@ export function createSourceMapResolver({ loadText, now = Date.now, limits = SOU
     const list = (Array.isArray(frames) ? frames : []).slice(0, limits.maxFrames);
     return Promise.all(list.map(async (frame) => {
       try {
-        const { value: map } = await withinDeadline(mapFor(frame.url), deadline);
-        return formatMappedFrame(frame, map ? lookupOriginalPosition(map, frame.line, frame.column, limits) : null);
+        const map = await mapWithin(recordFor(frame.url), deadline);
+        if (!map) return formatGeneratedFrame(frame);
+        const original = lookupOriginalPosition(map, frame.line, frame.column);
+        enforceMemory(cacheKey(frame.url));
+        return formatMappedFrame(frame, original);
       } catch {
         return formatGeneratedFrame(frame);
       }
@@ -394,9 +540,17 @@ export function createSourceMapResolver({ loadText, now = Date.now, limits = SOU
   return {
     resolveFrames,
     locateEntries,
-    clear: () => cache.clear(),
+    clear: () => {
+      cache.clear();
+      failures.clear();
+    },
     get size() {
       return cache.size;
+    },
+    get bytes() {
+      let total = 0;
+      for (const record of cache.values()) total += record.settled ? sourceMapBytes(record.value) : 0;
+      return total;
     },
   };
 }

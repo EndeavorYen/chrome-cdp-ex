@@ -23979,6 +23979,9 @@ async function enableDaemonDomains(cdp, sessionId) {
   try { await cdpDomains(cdp).Network.enable( {}, sessionId); } catch {}
 }
 
+// How long a map request may still answer after loadSourceMapText gave up on it (see below).
+const SOURCE_MAP_LATE_REPLY_TIMEOUT_MS = 60_000;
+
 // Reads a script or a source map for the daemon's source-map resolver (#470). A script comes
 // from the frame's resource cache; a map loads through the frame's network stack with the
 // page's credentials, the way DevTools loads maps. Network.loadNetworkResource runs no page
@@ -24000,11 +24003,31 @@ async function loadSourceMapText(cdp, sid, url, { kind = 'map', maxBytes, timeou
       // Not in this frame's resource tree (child frame, evicted); load it like a map.
     }
   }
-  const { resource } = await cdpDomains(cdp).Network.loadNetworkResource( {
+  // The CDP request may outlive our own `timeoutMs`, so a reply that lands after we gave up is
+  // still seen and its browser-side stream closed instead of leaking until detach.
+  const request = cdpDomains(cdp).Network.loadNetworkResource( {
     frameId,
     url,
     options: { disableCache: false, includeCredentials: true },
-  }, sid, timeoutMs);
+  }, sid, SOURCE_MAP_LATE_REPLY_TIMEOUT_MS);
+  let timer;
+  const gaveUp = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Timeout: Network.loadNetworkResource')), timeoutMs);
+    timer.unref?.();
+  });
+  let reply;
+  try {
+    reply = await Promise.race([request, gaveUp]);
+  } catch (error) {
+    request.then((late) => {
+      const lateHandle = late?.resource?.stream;
+      if (lateHandle) cdpDomains(cdp).IO.close( { handle: lateHandle }, sid).catch(() => {});
+    }, () => {});
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  const resource = reply?.resource;
   if (!resource?.success || !resource.stream) {
     // An HTTP error is a definitive miss; a network error (aborted by a navigation, server not
     // up yet) is transient, so the resolver retries on the next output instead of caching it.

@@ -13,6 +13,7 @@ const {
   extractSourceMappingUrl,
   formatGeneratedFrame,
   lookupOriginalPosition,
+  sourceMapBytes,
   parseSourceMap,
   resolveSourceUrl,
 } = await import('../skills/chrome-cdp-ex/scripts/lib/source-maps.mjs');
@@ -238,9 +239,117 @@ describe('#470 resolver: rewrite, fallback, bounds', () => {
         return BUNDLE_MAP;
       },
     });
-    const retrying = createSourceMapResolver({ loadText: flaky });
+    let clock = 1_000;
+    const retrying = createSourceMapResolver({ loadText: flaky, now: () => clock });
     await expect(retrying.resolveFrames([frame])).resolves.toEqual(['index-3fa9c2.js:1:48213']);
+    // inside the back-off window the script is not loaded again
+    clock += 4_000;
+    await expect(retrying.resolveFrames([frame])).resolves.toEqual(['index-3fa9c2.js:1:48213']);
+    expect(flaky).toHaveBeenCalledTimes(2);
+    clock += 1_001;
     await expect(retrying.resolveFrames([frame])).resolves.toEqual(['src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)']);
+  });
+
+  it('backs off a map host that keeps failing, doubling up to 60 s', async () => {
+    let clock = 0;
+    const loadText = fakeLoader({
+      [BUNDLE_URL]: BUNDLE_SOURCE,
+      [`${BUNDLE_URL}.map`]: () => { throw new Error('net::ERR_CONNECTION_TIMED_OUT'); },
+    });
+    const resolver = createSourceMapResolver({ loadText, now: () => clock });
+    const mapLoads = () => loadText.mock.calls.filter(([, opts]) => opts.kind === 'map').length;
+    const retryTimes = [];
+    for (let t = 0; t <= 200_000; t += 1_000) {
+      clock = t;
+      const before = mapLoads();
+      await resolver.resolveFrames([frame]);
+      if (mapLoads() > before) retryTimes.push(t);
+    }
+    // 5 s, 10 s, 20 s, 40 s, then 60 s apart
+    expect(retryTimes.slice(0, 7)).toEqual([0, 5_000, 15_000, 35_000, 75_000, 135_000, 195_000]);
+  });
+
+  it('charges only the first output while a load hangs', async () => {
+    const hung = new Promise(() => {});
+    const loadText = fakeLoader({ [BUNDLE_URL]: BUNDLE_SOURCE, [`${BUNDLE_URL}.map`]: () => hung });
+    const resolver = createSourceMapResolver({ loadText, limits: { ...SOURCE_MAP_LIMITS, budgetMs: 60 } });
+    let started = Date.now();
+    await expect(resolver.resolveFrames([frame])).resolves.toEqual(['index-3fa9c2.js:1:48213']);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(50);
+    started = Date.now();
+    for (let i = 0; i < 5; i += 1) {
+      await expect(resolver.resolveFrames([frame])).resolves.toEqual(['index-3fa9c2.js:1:48213']);
+    }
+    expect(Date.now() - started).toBeLessThan(50);
+    expect(loadText.mock.calls.filter(([, opts]) => opts.kind === 'map')).toHaveLength(1);
+  });
+
+  it('decodes each generated line once and binary-searches it', () => {
+    const map = parseSourceMap(BUNDLE_MAP, `${BUNDLE_URL}.map`);
+    expect(map.lines.size).toBe(0);
+    expect(lookupOriginalPosition(map, 0, 48212)).toMatchObject({ line: 42, column: 7 });
+    const afterFirst = sourceMapBytes(map);
+    for (const column of [0, 99, 100, 150, 48199, 48200, 48299, 48300, 48399, 48400, 900_000]) {
+      lookupOriginalPosition(map, 0, column);
+    }
+    expect(map.lines.size).toBe(1);
+    expect(sourceMapBytes(map)).toBe(afterFirst);
+    expect(lookupOriginalPosition(map, 0, 99)).toMatchObject({ source: 'https://app.example/node_modules/react/index.js', line: 1, column: 1 });
+    expect(lookupOriginalPosition(map, 0, 48299)).toMatchObject({ line: 42 });
+    expect(lookupOriginalPosition(map, 0, 48300)).toBeNull();
+    expect(lookupOriginalPosition(map, 1, 0)).toMatchObject({ line: 21, column: 5 });
+    expect(map.lines.size).toBe(2);
+
+    // segments out of column order still resolve by greatest column at or before the target
+    const unsorted = parseSourceMap(JSON.stringify({
+      version: 3, sources: ['a.ts'], names: [],
+      mappings: [encodeVlq(50), encodeVlq(0), encodeVlq(4), encodeVlq(0)].join('')
+        + ',' + [encodeVlq(-40), encodeVlq(0), encodeVlq(-4), encodeVlq(0)].join(''),
+    }), 'https://x.example/a.js.map');
+    expect(lookupOriginalPosition(unsorted, 0, 20)).toMatchObject({ line: 1 });
+    expect(lookupOriginalPosition(unsorted, 0, 60)).toMatchObject({ line: 5 });
+
+    // a 600k-segment one-line map: one decode, then fast lookups
+    const big = [];
+    let prevCol = 0;
+    let prevSrcCol = 0;
+    for (let i = 0; i < 600_000; i += 1) {
+      big.push(encodeVlq(i * 5 - prevCol) + 'A' + 'A' + encodeVlq(i - prevSrcCol));
+      prevCol = i * 5;
+      prevSrcCol = i;
+    }
+    const bigMap = parseSourceMap(JSON.stringify({ version: 3, sources: ['big.ts'], names: [], mappings: big.join(',') }), 'https://x.example/big.js.map');
+    lookupOriginalPosition(bigMap, 0, 0);
+    const started = Date.now();
+    for (let i = 0; i < 1000; i += 1) {
+      const target = (i * 2_999) % 600_000;
+      expect(lookupOriginalPosition(bigMap, 0, target * 5 + 2).column).toBe(target + 1);
+    }
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it('evicts least recently used maps past the memory cap', async () => {
+    const urls = ['https://app.example/a.js', 'https://app.example/b.js', 'https://app.example/c.js'];
+    const resources = {};
+    for (const url of urls) {
+      resources[url] = `x();\n//# sourceMappingURL=${url.split('/').pop()}.map`;
+      resources[`${url}.map`] = BUNDLE_MAP;
+    }
+    const loadText = fakeLoader(resources);
+    const oneMap = sourceMapBytes(parseSourceMap(BUNDLE_MAP, 'https://app.example/a.js.map'));
+    const resolver = createSourceMapResolver({
+      loadText,
+      limits: { ...SOURCE_MAP_LIMITS, maxCacheBytes: oneMap * 2 + 400 },
+    });
+    for (const url of urls) {
+      await expect(resolver.resolveFrames([{ url, line: 0, column: 48212 }]))
+        .resolves.toEqual([`src/components/Foo.tsx:42:7 (${url.split('/').pop()}:1:48213)`]);
+    }
+    expect(resolver.bytes).toBeLessThanOrEqual(oneMap * 2 + 400);
+    expect(resolver.size).toBe(2);
+    // the evicted (oldest) map is simply read again on demand
+    await resolver.resolveFrames([{ url: urls[0], line: 0, column: 48212 }]);
+    expect(loadText.mock.calls.filter(([url]) => url === `${urls[0]}.map`)).toHaveLength(2);
   });
 
   it('never waits past the time budget, and a late map still serves the next output', async () => {
@@ -252,7 +361,7 @@ describe('#470 resolver: rewrite, fallback, bounds', () => {
     await expect(resolver.resolveFrames([frame])).resolves.toEqual(['index-3fa9c2.js:1:48213']);
     expect(Date.now() - started).toBeLessThan(1000);
     release(BUNDLE_MAP);
-    await slowMap;
+    await new Promise(resolve => setTimeout(resolve, 0)); // the next output comes on a later turn
     await expect(resolver.resolveFrames([frame])).resolves.toEqual(['src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)']);
     expect(loadText).toHaveBeenCalledTimes(2);
   });
@@ -403,7 +512,7 @@ describe('#470 daemon integration', () => {
       'Network.loadNetworkResource',
       { frameId: 'MAIN', url: `${BUNDLE_URL}.map`, options: { disableCache: false, includeCredentials: true } },
       'SID',
-      1500,
+      60_000,
     ]);
     expect(send.mock.calls.filter(([method]) => method === 'IO.close')).toHaveLength(1);
     expect(send.mock.calls.some(([method]) => method.startsWith('Debugger.') || method === 'Runtime.evaluate')).toBe(false);
@@ -424,5 +533,83 @@ describe('#470 daemon integration', () => {
       : { resource: { success: false, netError: -3, netErrorName: 'net::ERR_ABORTED' } })) };
     await expect(T.loadSourceMapText(aborted, 'SID', `${BUNDLE_URL}.map`, { kind: 'map', maxBytes: 1000, timeoutMs: 1500 }))
       .rejects.toThrow('net::ERR_ABORTED');
+  });
+
+  it('closes the stream of a loadNetworkResource reply that lands after the timeout', async () => {
+    let answer;
+    const send = vi.fn((method) => {
+      if (method === 'Page.getFrameTree') return Promise.resolve({ frameTree: { frame: { id: 'MAIN' } } });
+      if (method === 'Network.loadNetworkResource') return new Promise((resolve) => { answer = resolve; });
+      return Promise.resolve({});
+    });
+    await expect(T.loadSourceMapText({ send }, 'SID', `${BUNDLE_URL}.map`, { kind: 'map', maxBytes: 1000, timeoutMs: 20 }))
+      .rejects.toThrow('Timeout: Network.loadNetworkResource');
+    expect(send.mock.calls.some(([method]) => method === 'IO.close')).toBe(false);
+    answer({ resource: { success: true, httpStatusCode: 200, stream: 'LATE' } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(send.mock.calls.filter(([method]) => method === 'IO.close')).toEqual([['IO.close', { handle: 'LATE' }, 'SID']]);
+  });
+
+  describe('status', () => {
+    const pageCdp = () => ({
+      send: vi.fn(async method => (method === 'Runtime.evaluate'
+        ? { result: { value: JSON.stringify({ title: 'Shop', url: 'https://app.example/' }) } }
+        : {})),
+    });
+
+    it('prints source-mapped console and exception frames in status text and JSON', async () => {
+      const consoleBuf = new T.RingBuffer(10);
+      const exceptionBuf = new T.RingBuffer(10);
+      consoleBuf.push(T.consoleEntryFromEvent({ type: 'error', args: [{ value: 'save failed' }], stackTrace: minifiedTrace }, 2));
+      exceptionBuf.push(T.exceptionEntryFromEvent({ exceptionDetails: { exception: { description: 'Error: boom' }, stackTrace: minifiedTrace } }, 3));
+      const resolver = resolverFor();
+      const locate = entries => resolver.locateEntries(entries);
+      const lastReadSeq = { console: 0, exception: 0 };
+      const text = await T.statusStr(pageCdp(), 'SID', consoleBuf, exceptionBuf, new T.RingBuffer(2), lastReadSeq, { locate });
+      expect(text).toContain('  [error] save failed (src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213))');
+      expect(text).toContain('  Error: boom at src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)');
+      expect(lastReadSeq).toEqual({ console: 1, exception: 1 });
+
+      const located = await T.locateObservedEntries(locate, consoleBuf.all(), exceptionBuf.all());
+      const model = T.buildStatusModel({
+        targetId: 'T1', page: {}, consoleBuf, exceptionBuf, navBuf: new T.RingBuffer(2),
+        lastReadSeq: { console: 0, exception: 0 }, located,
+      });
+      expect(model.console[0]).toMatchObject({
+        loc: 'src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)',
+        stack: [
+          'src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)',
+          'src/main.ts:10:3 (index-3fa9c2.js:1:121)',
+          'src/main.ts:21:5 (index-3fa9c2.js:2:4)',
+        ],
+      });
+      expect(model.exceptions[0].loc).toBe('src/components/Foo.tsx:42:7 (index-3fa9c2.js:1:48213)');
+      expect(JSON.stringify(model)).not.toContain('"frames"');
+    });
+
+    it('leaves entries logged while source maps load unread for the next status', async () => {
+      const consoleBuf = new T.RingBuffer(10);
+      const exceptionBuf = new T.RingBuffer(10);
+      consoleBuf.push(T.consoleEntryFromEvent({ type: 'error', args: [{ value: 'first' }], stackTrace: minifiedTrace }, 1));
+      const locate = async (entries) => {
+        // the page logs again while this status waits on map loads
+        consoleBuf.push(T.consoleEntryFromEvent({ type: 'error', args: [{ value: 'during locate' }] }, 2));
+        exceptionBuf.push(T.exceptionEntryFromEvent({ exceptionDetails: { exception: { description: 'Error: late' } } }, 3));
+        return new Map(entries.map(entry => [entry, { loc: 'src/a.ts:1:1 (a.js:1:1)', stack: ['src/a.ts:1:1 (a.js:1:1)'] }]));
+      };
+      const lastReadSeq = { console: 0, exception: 0 };
+      const first = await T.statusStr(pageCdp(), 'SID', consoleBuf, exceptionBuf, new T.RingBuffer(2), lastReadSeq, { locate });
+      expect(first).toContain('[error] first (src/a.ts:1:1 (a.js:1:1))');
+      expect(first).not.toContain('during locate');
+      expect(first).not.toContain('Error: late');
+      expect(lastReadSeq).toEqual({ console: 1, exception: 0 });
+
+      const second = await T.statusStr(pageCdp(), 'SID', consoleBuf, exceptionBuf, new T.RingBuffer(2), lastReadSeq);
+      expect(second).toContain('Console (1 new):');
+      expect(second).toContain('[error] during locate');
+      expect(second).toContain('Exceptions (1 new):');
+      expect(second).toContain('Error: late');
+      expect(lastReadSeq).toEqual({ console: 2, exception: 1 });
+    });
   });
 });

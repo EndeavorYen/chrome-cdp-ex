@@ -63,8 +63,11 @@
   carry them as `stack`. A new zero-dependency `scripts/lib/source-maps.mjs` decodes Source Map v3
   (VLQ, `sources`/`sourceRoot`). Maps are found through the script's `//# sourceMappingURL=` comment
   (inline `data:`, or loaded with `Network.loadNetworkResource` and the page's cookies; the Debugger
-  domain is never enabled), resolved only when output is printed, capped at 5 MB and 1.5 s, and cached
-  per tab daemon until the next top-level navigation. Any failure prints the generated frame unchanged
+  domain is never enabled). They are resolved only when output is printed, capped at 5 MB and 1.5 s of
+  waiting per output, and cached per tab daemon (32 MB, least recently used out) until the next
+  top-level navigation. Each generated line is decoded once and binary-searched. An unreachable or
+  hanging map host backs off from 5 s to 60 s between attempts, and a load reply that arrives after its
+  timeout has its stream closed. Any failure prints the generated frame unchanged
   ([#470](https://github.com/EndeavorYen/chrome-cdp-ex/issues/470)).
 
 ### Bug Fixes
