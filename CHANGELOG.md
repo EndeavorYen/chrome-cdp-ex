@@ -119,7 +119,9 @@
   Test fixes: the fill-receipt shell test feeds its script on stdin, because MSYS `sh -c` dropped
   backslashes. The AST-inventory tests yield to the event loop between builds. A file of back-to-back
   synchronous builds had starved the vitest worker past its 60 s RPC timeout (`Timeout calling
-  "onTaskUpdate"`). Those tests also get explicit budgets sized for a 2-worker hosted runner. CI gains
+  "onTaskUpdate"`). Those tests also get explicit budgets sized for a 2-worker hosted runner. The
+  table-policy files build their unmutated baseline once, not once per mutation. Session-log tests
+  write under `os.tmpdir()`, not a hard-coded `/tmp` (on Windows that means `<drive>:\tmp`). CI gains
   a `test-windows` job on `windows-latest`.
 
 * Attaching to a running browser on Linux now records its profile, exe and launch flags even when no
