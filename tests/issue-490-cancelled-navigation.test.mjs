@@ -9,15 +9,27 @@ const TARGET_ID = 'ABCDEF12';
 const PREFIX = TARGET_ID;
 const PAGE_URL = 'http://127.0.0.1:8490/form';
 const NEXT_URL = 'http://127.0.0.1:8490/next';
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // Chrome 154, measured live: with beforeunload dismissed, Page.reload returns {} and no main-frame
 // Page.frameNavigated follows; Page.navigate returns errorText net::ERR_ABORTED. The old document
-// is still `complete`, so a readiness probe passes at once.
-function fakeChrome({ dialogBuf, session, beforeunload = 'dismiss' } = {}) {
+// is still `complete`, so a readiness probe passes at once. With a slow handler (#500 review):
+// Target.getTargets reports the pending URL before the dialog opens, and the dialog for a reload
+// opens long after Page.reload has returned {}.
+function fakeChrome({
+  dialogBuf,
+  session,
+  beforeunload = 'dismiss',
+  handlerMs = 0, // how long the page's beforeunload handler runs before the dialog opens
+  pendingUrlVisible = false, // Target.getTargets shows the requested URL while beforeunload runs
+} = {}) {
   const calls = [];
   const dialogCdp = { send: () => Promise.resolve({}) };
+  let currentUrl = PAGE_URL;
+  let pendingUrl = null;
   async function runBeforeunload() {
     if (!beforeunload) return true;
+    if (handlerMs) await sleep(handlerMs);
     // What the daemon's Page.javascriptDialogOpening handler does.
     await T.handleOpeningJavaScriptDialog(dialogCdp, 'sid', { type: 'beforeunload', message: '', url: PAGE_URL }, { sessionId: 'sid' }, {
       accept: beforeunload === 'accept',
@@ -27,9 +39,9 @@ function fakeChrome({ dialogBuf, session, beforeunload = 'dismiss' } = {}) {
     });
     return beforeunload === 'accept';
   }
-  let currentUrl = PAGE_URL;
   function commit(url) {
     currentUrl = url;
+    pendingUrl = null;
     // The daemon's main-frame Page.frameNavigated handler.
     session.pageGeneration += 1;
   }
@@ -38,13 +50,21 @@ function fakeChrome({ dialogBuf, session, beforeunload = 'dismiss' } = {}) {
     async send(method, params = {}) {
       calls.push(method);
       if (method === 'Page.reload') {
-        if (await runBeforeunload()) commit(currentUrl);
+        // Page.reload returns before the beforeunload handler has finished.
+        runBeforeunload().then(accepted => { if (accepted) commit(currentUrl); });
         return {};
       }
       if (method === 'Page.navigate') {
-        if (!(await runBeforeunload())) return { frameId: 'MAIN', errorText: 'net::ERR_ABORTED' };
+        if (pendingUrlVisible) pendingUrl = params.url;
+        if (!(await runBeforeunload())) {
+          pendingUrl = null;
+          return { frameId: 'MAIN', errorText: 'net::ERR_ABORTED' };
+        }
         commit(params.url);
         return { frameId: 'MAIN', loaderId: 'L2' };
+      }
+      if (method === 'Target.getTargets') {
+        return { targetInfos: [{ targetId: TARGET_ID, type: 'page', url: pendingUrl || currentUrl }] };
       }
       if (method === 'Runtime.evaluate') {
         const value = params.expression === 'document.readyState'
@@ -75,14 +95,27 @@ function daemonState() {
 }
 
 // Mirrors the daemon's reload / nav handlers: baseline, dispatch, observe, delta.
-async function runCommand(action, state, cdp, { format = 'text' } = {}) {
+async function runCommand(action, state, cdp, { format = 'text', mode = 'dismiss', targetId = null } = {}) {
   const jsDialogs = T.createJavaScriptDialogSession();
   const baseline = T.createActionObservationBaseline(state);
-  const cancelWatch = () => T.createNavigationCancelWatch({ dialogBuf: state.dialogBuf, jsDialogs, session: state.session });
+  const cancelWatch = () => T.createNavigationCancelWatch({
+    dialogBuf: state.dialogBuf,
+    jsDialogs,
+    session: state.session,
+    dismissMode: () => mode === 'dismiss',
+  });
   const dispatch = action === 'reload'
     ? () => T.reloadActionDispatch({ cdp, sessionId: 'sid', ...state, navigationCancelWatch: cancelWatch() })
-    : () => T.dispatchGuardingCancelledNavigation('nav', () => T.navStr(cdp, 'sid', NEXT_URL, { readyTimeoutMs: 50, probeTimeoutMs: 20 }), cancelWatch());
+    : () => T.navActionDispatch({
+        cdp,
+        sessionId: 'sid',
+        url: NEXT_URL,
+        targetId,
+        navigationCancelWatch: cancelWatch(),
+        navOpts: { observeDelayMs: 0, readyTimeoutMs: 50, probeTimeoutMs: 20 },
+      });
   let captured = null;
+  const started = Date.now();
   const run = T.runActionWithFeedback({
     action,
     target: action === 'reload'
@@ -96,7 +129,7 @@ async function runCommand(action, state, cdp, { format = 'text' } = {}) {
     format,
   });
   const output = await run.catch(error => error);
-  return { output, result: captured };
+  return { output, result: captured, elapsedMs: Date.now() - started };
 }
 
 describe('#490 a dismissed beforeunload that cancels reload / nav is not reported as success', () => {
@@ -117,6 +150,15 @@ describe('#490 a dismissed beforeunload that cancels reload / nav is not reporte
     expect(state.consoleBuf.all()).toHaveLength(1);
   });
 
+  it('the receipt also names a non-destructive next step (#500 review)', async () => {
+    const state = daemonState();
+    const { output } = await runCommand('reload', state, fakeChrome(state));
+    expect(output.message).toContain(`To keep the unsaved changes, leave dialog handling at dismiss and check the page with \`cdp status ${PREFIX}\`.`);
+    const jsonState = daemonState();
+    const json = JSON.parse((await runCommand('reload', jsonState, fakeChrome(jsonState), { format: 'json' })).output);
+    expect(json.nextSteps).toEqual(expect.arrayContaining([`cdp dialog ${PREFIX} accept`, `cdp status ${PREFIX}`]));
+  });
+
   it('reload JSON: dispatch.ok=false with effects.failure.kind navigation-cancelled', async () => {
     const state = daemonState();
     const { output } = await runCommand('reload', state, fakeChrome(state), { format: 'json' });
@@ -126,6 +168,35 @@ describe('#490 a dismissed beforeunload that cancels reload / nav is not reporte
     expect(json.effects.failure).toMatchObject({ kind: 'navigation-cancelled', nextCommand: `cdp dialog ${PREFIX} accept` });
     expect(json.effects.dialogs).toEqual([{ type: 'beforeunload', message: '', accepted: false, url: PAGE_URL }]);
     expect(json.effects.diagnosis.recovery.avoid.join(' ')).toMatch(/dismiss/);
+  });
+
+  it('reload: a slow beforeunload whose dialog opens after reloadStr returned is still caught in dismiss mode', async () => {
+    const state = daemonState();
+    const { output, elapsedMs } = await runCommand('reload', state, fakeChrome({ ...state, handlerMs: 1200 }));
+    expect(output).toBeInstanceOf(Error);
+    expect(output.message).toContain('Kind: navigation-cancelled');
+    expect(state.session.refs.map.size).toBe(1);
+    expect(elapsedMs).toBeGreaterThanOrEqual(1100);
+    expect(elapsedMs).toBeLessThan(3500);
+  });
+
+  it('reload in dismiss mode does not wait once the new document commits', async () => {
+    const state = daemonState();
+    const { output, elapsedMs } = await runCommand('reload', state, fakeChrome({ ...state, beforeunload: null }));
+    expect(output).not.toBeInstanceOf(Error);
+    expect(output).toContain('Page reloaded');
+    expect(elapsedMs).toBeLessThan(1000);
+  });
+
+  it('reload in accept mode never waits for a dialog', async () => {
+    const state = daemonState();
+    // A target that never reports the commit: accept mode must not add the bounded wait.
+    const noCommit = { ...fakeChrome({ ...state, beforeunload: null }) };
+    const send = noCommit.send;
+    noCommit.send = async (method, params) => (method === 'Page.reload' ? {} : send(method, params));
+    const { output, elapsedMs } = await runCommand('reload', state, noCommit, { mode: 'accept' });
+    expect(output).toContain('Page reloaded');
+    expect(elapsedMs).toBeLessThan(1000);
   });
 
   it('nav: net::ERR_ABORTED after a dismissed beforeunload is navigation-cancelled with a nav retry', async () => {
@@ -140,10 +211,37 @@ describe('#490 a dismissed beforeunload that cancels reload / nav is not reporte
     expect(text).toContain(`Next: cdp dialog ${PREFIX} accept`);
   });
 
+  it('nav: the pending URL is observed before Page.navigate resolves with ERR_ABORTED (slow handler, #500 review)', async () => {
+    const state = daemonState();
+    const cdp = fakeChrome({ ...state, handlerMs: 300, pendingUrlVisible: true });
+    const { output } = await runCommand('nav', state, cdp, { targetId: TARGET_ID });
+    expect(cdp.calls).toContain('Target.getTargets');
+    expect(output).toBeInstanceOf(Error);
+    expect(output.message).toContain('Kind: navigation-cancelled');
+    expect(output.message).not.toContain('Navigated to');
+  });
+
+  it('nav: a dismissed beforeunload found after navStr returned success is still a cancellation', async () => {
+    const state = daemonState();
+    // Page.navigate never answers, the pending URL is visible, and the dialog was already dismissed.
+    const cdp = fakeChrome({ ...state, pendingUrlVisible: true });
+    const send = cdp.send;
+    cdp.send = async (method, params) => {
+      if (method === 'Page.navigate') {
+        send(method, params);
+        return new Promise(() => {});
+      }
+      return send(method, params);
+    };
+    const { output } = await runCommand('nav', state, cdp, { targetId: TARGET_ID, mode: 'accept' });
+    expect(output).toBeInstanceOf(Error);
+    expect(output.message).toContain('Kind: navigation-cancelled');
+  });
+
   it('accepted beforeunload still reloads and navigates normally', async () => {
     for (const action of ['reload', 'nav']) {
       const state = daemonState();
-      const { output, result } = await runCommand(action, state, fakeChrome({ ...state, beforeunload: 'accept' }));
+      const { output, result } = await runCommand(action, state, fakeChrome({ ...state, beforeunload: 'accept' }), { mode: 'accept' });
       expect(output).not.toBeInstanceOf(Error);
       expect(result.dispatch.ok).toBe(true);
       expect(output).toContain('Dialog: beforeunload → accepted');
@@ -179,5 +277,17 @@ describe('#490 a dismissed beforeunload that cancels reload / nav is not reporte
     // A dialog answered before the dispatch started is not evidence either.
     const later = T.createNavigationCancelWatch({ dialogBuf, session });
     expect(await later()).toBeNull();
+  });
+
+  it('the bounded wait stops at the deadline when nothing happens', async () => {
+    const watch = T.createNavigationCancelWatch({
+      dialogBuf: new T.RingBuffer(5),
+      session: { pageGeneration: 0 },
+      dismissMode: () => true,
+    });
+    const started = Date.now();
+    expect(await watch({ awaitMs: 200 })).toBeNull();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(150);
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 });

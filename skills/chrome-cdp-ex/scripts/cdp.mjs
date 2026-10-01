@@ -5521,6 +5521,15 @@ async function navStr(cdp, sid, url, opts = {}) {
   if (outcome.kind === 'observed') {
     cancelNavWaiters();
     navigatePromise.catch(() => {});
+    // Target.getTargets shows the pending URL while beforeunload still runs, so the URL alone does not
+    // prove the navigation happened. When asked, wait (bounded) for Page.navigate's own answer (#490).
+    if (opts.confirmNavigateMs > 0) {
+      const answer = await Promise.race([
+        navigatePromise.catch(() => null),
+        sleep(opts.confirmNavigateMs).then(() => null),
+      ]);
+      if (answer?.result?.errorText) throw new Error(answer.result.errorText);
+    }
     await settleObservedNavigation(cdp, sid, {
       targetId,
       onSessionId: opts.onSessionId,
@@ -19760,17 +19769,31 @@ async function observePageState(cdp, sid, heading = 'Page observation') {
 // that only as `Page.reload` → {} with no main-frame commit, or `Page.navigate` → net::ERR_ABORTED,
 // and the old document still reads `complete`. The evidence is a dismissed beforeunload dialog
 // answered during this dispatch plus no main-frame Page.frameNavigated (pageGeneration unchanged).
-function createNavigationCancelWatch({ dialogBuf = null, jsDialogs = null, session = null } = {}) {
+// A slow handler opens the dialog long after Page.reload returned (#500 review), so in dismiss mode
+// `awaitMs` keeps looking until the document commits or the dialog shows up. Accept mode never
+// waits: an accepted prompt cannot cancel anything.
+const NAVIGATION_CANCEL_EVIDENCE_WAIT_MS = 3000;
+const NAVIGATION_CANCEL_POLL_MS = 50;
+
+function createNavigationCancelWatch({ dialogBuf = null, jsDialogs = null, session = null, dismissMode = () => false } = {}) {
   const dialogSeq = typeof dialogBuf?.latest === 'function' ? dialogBuf.latest() : 0;
   const generation = session?.pageGeneration;
-  return async function dismissedBeforeunload() {
-    if (jsDialogs && typeof jsDialogs.hasPending === 'function' && jsDialogs.hasPending()) {
-      await jsDialogs.waitForPending(1500);
+  async function dismissedBeforeunload({ awaitMs = 0 } = {}) {
+    const deadline = Date.now() + (dismissMode() ? Math.max(0, Number(awaitMs) || 0) : 0);
+    for (;;) {
+      if (jsDialogs && typeof jsDialogs.hasPending === 'function' && jsDialogs.hasPending()) {
+        await jsDialogs.waitForPending(1500);
+      }
+      if (session && session.pageGeneration !== generation) return null;
+      const entries = typeof dialogBuf?.since === 'function' ? dialogBuf.since(dialogSeq) : [];
+      const dismissed = entries.find(entry => entry.type === 'beforeunload' && entry.accepted === false && entry.handled !== false);
+      if (dismissed) return dismissed;
+      if (Date.now() >= deadline) return null;
+      await sleep(Math.min(NAVIGATION_CANCEL_POLL_MS, Math.max(1, deadline - Date.now())));
     }
-    if (session && session.pageGeneration !== generation) return null;
-    const entries = typeof dialogBuf?.since === 'function' ? dialogBuf.since(dialogSeq) : [];
-    return entries.find(entry => entry.type === 'beforeunload' && entry.accepted === false && entry.handled !== false) || null;
-  };
+  }
+  dismissedBeforeunload.dismissMode = dismissMode;
+  return dismissedBeforeunload;
 }
 
 function navigationCancelledError(action, dialog = {}, cause = null) {
@@ -19782,19 +19805,38 @@ function navigationCancelledError(action, dialog = {}, cause = null) {
 }
 
 async function dispatchGuardingCancelledNavigation(action, dispatch, navigationCancelWatch = null) {
+  let result;
   try {
-    return await dispatch();
+    result = await dispatch();
   } catch (error) {
     const dialog = navigationCancelWatch ? await navigationCancelWatch() : null;
     if (dialog) throw navigationCancelledError(action, dialog, error);
     throw error;
   }
+  // A dispatch can also "succeed" on a cancelled navigation: navStr's target-URL poll sees the
+  // pending URL while a slow beforeunload handler runs, then the dialog is dismissed (#500 review).
+  const dialog = navigationCancelWatch ? await navigationCancelWatch() : null;
+  if (dialog) throw navigationCancelledError(action, dialog);
+  return result;
+}
+
+async function navActionDispatch({ cdp, sessionId, url, targetId = null, onSessionId, navigationCancelWatch = null, navOpts = {} }) {
+  const dismissMode = typeof navigationCancelWatch?.dismissMode === 'function' && navigationCancelWatch.dismissMode();
+  return dispatchGuardingCancelledNavigation('nav', () => navStr(cdp, sessionId, url, {
+    ...navOpts,
+    targetId,
+    onSessionId,
+    // In dismiss mode, an observed pending URL is not proof: wait (bounded) for Page.navigate's own answer.
+    confirmNavigateMs: dismissMode ? NAVIGATION_CANCEL_EVIDENCE_WAIT_MS : 0,
+  }), navigationCancelWatch);
 }
 
 async function reloadActionDispatch({ cdp, sessionId, session, consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq, navigationCancelWatch = null }) {
   const reloadResult = await reloadStr(cdp, sessionId);
   // Checked before clearing buffers or refs: a cancelled reload left the page as it was.
-  const cancelledBy = navigationCancelWatch ? await navigationCancelWatch() : null;
+  const cancelledBy = navigationCancelWatch
+    ? await navigationCancelWatch({ awaitMs: NAVIGATION_CANCEL_EVIDENCE_WAIT_MS })
+    : null;
   if (cancelledBy) throw navigationCancelledError('reload', cancelledBy);
   clearObservationBuffers({ consoleBuf, exceptionBuf, navBuf, netReqBuf, pendingReqs, networkStatusByRequest, lastReadSeq });
   invalidateSessionRefs(session, 'navigation');
@@ -24609,10 +24651,14 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         else positional.push(arg);
       }
       const url = positional[0];
-      const value = await actionFeedback('nav', () => dispatchGuardingCancelledNavigation('nav', () => navStr(cdp, sessionId, url, {
+      const value = await actionFeedback('nav', () => navActionDispatch({
+        cdp,
+        sessionId,
+        url,
         targetId,
         onSessionId(nextSid) { sessionId = nextSid; },
-      }), createNavigationCancelWatch({ dialogBuf, jsDialogs, session })), { input: url, resolvedBy: 'url', label: url || '', commandArgs: [url] }, perceive ? 'full-perceive' : 'state-change', perceive ? observeFullPerceive : () => observeNavPage(cdp, sessionId), fopts);
+        navigationCancelWatch: createNavigationCancelWatch({ dialogBuf, jsDialogs, session, dismissMode: () => !dialogAutoAcceptRef.value }),
+      }), { input: url, resolvedBy: 'url', label: url || '', commandArgs: [url] }, perceive ? 'full-perceive' : 'state-change', perceive ? observeFullPerceive : () => observeNavPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
     netlog: async args => {
@@ -24684,7 +24730,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         pendingReqs,
         networkStatusByRequest,
         lastReadSeq,
-        navigationCancelWatch: createNavigationCancelWatch({ dialogBuf, jsDialogs, session }),
+        navigationCancelWatch: createNavigationCancelWatch({ dialogBuf, jsDialogs, session, dismissMode: () => !dialogAutoAcceptRef.value }),
       }), { input: 'reload', resolvedBy: 'page', label: 'reload', commandArgs: [] }, 'state-change', () => observeReloadPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
@@ -29072,7 +29118,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   evalStr, evalFireAndForgetStr, parseEvalArgs, normalizeEvalCliArgs, formatEvalValue, wrapAwaitExpression, callStr, formatCallResult, evalBase64Decode,
   parseEmulateArgs, buildEmulateFeatures, buildEmulateModel, formatEmulateText, emulateStr, emptyEmulateState, viewportStr,
   cookieDelStr, cookieDeleteParams, uploadStr, assertReadableUploadFiles, parseClosetabArgs,
-  navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
+  navStr, reloadStr, reloadActionDispatch, createNavigationCancelWatch, navigationCancelledError, dispatchGuardingCancelledNavigation, navActionDispatch, NAVIGATION_CANCEL_EVIDENCE_WAIT_MS, observeReloadPage, observeNavPage, observePageState, clickStr, clickXyStr, jsClickStr, pointerClickStr, pointerClickFunctionDeclaration, fillStr, fillReactStr, waitForStr, hoverStr, dispatchHoverMove, rememberHoverSettleBaseline, parseScrollEdge, parseScrollContainerArg, scrollFeedbackPolicy, scrollActionTarget, documentScrollEdgeExpression, scrollEdgeExpression, documentScrollReachedEdge, formatDocumentScrollEdgeText, formatDocumentScrollEdgeFailure, DOCUMENT_SCROLL_EDGE_TOLERANCE_PX, DOCUMENT_SCROLL_EDGE_OUTCOME, scrollStr, selectStr, loadAllStr, parseLoadAllArgs, closetabStr, snapshotStr,
   waitForCommittedDocumentReady, parseNavigationDocumentProbe, actionNetworkQuietOptions, waitForActionNetworkQuiet,
   statusStr, runtimeMetricsStr, clearObservationBuffers,
   parsePageConditionArgs, pageConditionDescription, probePageCondition, parseRepeatArgs, repeatStr, autoActionJsonArgs,

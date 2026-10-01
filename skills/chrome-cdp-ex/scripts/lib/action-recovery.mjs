@@ -215,15 +215,18 @@ function classifyNavigationCancelledFailure(err, { base, targetId, input }) {
   const retry = action === 'reload' ? `cdp reload ${targetId}` : `cdp nav ${targetId}${arg ? ` ${arg}` : ''}`;
   const accept = `cdp dialog ${targetId} accept`;
   const retryLine = `Accepting discards the page's unsaved changes; then retry \`${retry}\`.`;
+  // The non-destructive branch: dismiss mode was set on purpose, the draft may matter (#500 review).
+  const keepLine = `To keep the unsaved changes, leave dialog handling at dismiss and check the page with \`cdp status ${targetId}\`.`;
   return {
     ...base,
     kind: 'navigation-cancelled',
     reason: `Dialog handling is set to dismiss, so the page's beforeunload prompt cancelled the ${action === 'reload' ? 'reload' : 'navigation'}. The page did not change and keeps its unsaved changes.`,
     nextCommand: accept,
-    detailLines: [retryLine],
+    detailLines: [retryLine, keepLine],
     hints: [
       `Switch dialog handling back to accept with \`${accept}\` only if the page's unsaved changes may be discarded.`,
       retryLine,
+      keepLine,
       'Do not retry while dialog handling is dismiss: the prompt cancels it again.',
     ],
   };
