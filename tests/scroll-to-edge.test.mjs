@@ -41,13 +41,15 @@ function createDocumentScrollPage({
     get innerHeight() { return state.innerHeight; },
     get scrollY() { return state.scrollY; },
     get scrollX() { return 0; },
-    scrollTo(_x, y) {
+    scrollTo(xOrOptions, y) {
+      const top = xOrOptions && typeof xOrOptions === 'object' ? xOrOptions.top : y;
       const max = Math.max(0, state.scrollHeight - state.innerHeight);
-      const requested = clampTo == null ? y : clampTo;
+      const requested = clampTo == null ? top : clampTo;
       state.scrollY = Math.max(0, Math.min(max, Math.round(Number(requested) || 0)));
     },
-    scrollBy(_x, y) {
-      windowObj.scrollTo(0, state.scrollY + (Number(y) || 0));
+    scrollBy(xOrOptions, y) {
+      const dy = xOrOptions && typeof xOrOptions === 'object' ? xOrOptions.top : y;
+      windowObj.scrollTo(0, state.scrollY + (Number(dy) || 0));
     },
   };
   const documentObj = {
@@ -191,7 +193,7 @@ describe('issue #323 scroll to top/bottom', () => {
       action: 'scroll',
       command: ['scroll', 'to', 'top'],
       replayable: true,
-    }).lines[0]).toMatch(/window\.scrollTo\(0, 0\)/);
+    }).lines[0]).toMatch(/window\.scrollTo\(\{ left: 0, top: 0, behavior: 'instant' \}\)/);
     expect(T.playwrightStepFromCommand({
       action: 'scroll',
       command: ['scroll', 'down', '80'],
@@ -344,6 +346,7 @@ function createOverflowElement({
     get scrollHeight() { return state.scrollHeight; },
     get clientHeight() { return state.clientHeight; },
     get clientWidth() { return state.clientWidth; },
+    scrollTo(options) { el.scrollTop = options.top; },
     dispatchEvent() { return true; },
     _state: state,
   };
@@ -569,13 +572,13 @@ describe('issue #326 scroll nested overflow to top/bottom', () => {
       action: 'scroll',
       command: ['scroll', 'to', 'bottom'],
       replayable: true,
-    }).lines[0]).toMatch(/scrollTop/);
+    }).lines[0]).toMatch(/best\.scrollTo\(\{ top: Math\.max/);
     expect(T.playwrightStepFromCommand({
       action: 'scroll',
       command: ['scroll', 'to', 'bottom', '--scroll-container', '#content-container'],
       replayable: true,
     }).lines[0]).toBe(
-      'await page.locator("#content-container").evaluate((el) => { el.scrollTop = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)); });',
+      "await page.locator(\"#content-container\").evaluate((el) => { el.scrollTo({ top: Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)), behavior: 'instant' }); });",
     );
   });
 });

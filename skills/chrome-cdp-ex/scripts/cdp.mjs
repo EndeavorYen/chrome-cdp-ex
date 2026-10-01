@@ -10508,15 +10508,15 @@ function playwrightStepFromCommand(action = {}) {
         }
         if (container) {
           const topExpr = edge === 'top'
-            ? 'el.scrollTop = 0'
-            : 'el.scrollTop = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0))';
+            ? "el.scrollTo({ top: 0, behavior: 'instant' })"
+            : "el.scrollTo({ top: Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)), behavior: 'instant' })";
           return finish([
             `await page.locator(${JSON.stringify(container)}).evaluate((el) => { ${topExpr}; });`,
           ]);
         }
         const dest = edge === 'top' ? '0' : 'edge';
         return finish([
-          `await page.evaluate(() => { const tolerance = 2; const scrolling = document.scrollingElement || document.documentElement; const docMax = Math.max(0, Math.round((Number(scrolling && scrolling.scrollHeight) || 0) - window.innerHeight)); if (docMax > tolerance) { window.scrollTo(0, ${edge === 'top' ? '0' : 'docMax'}); return; } let best = null; let bestScore = 0; const nodes = document.querySelectorAll ? document.querySelectorAll('*') : []; for (let i = 0; i < nodes.length; i++) { const el = nodes[i]; if (el === document.documentElement || el === document.body || el === document.scrollingElement) continue; const max = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)); if (max <= tolerance) continue; const style = window.getComputedStyle ? window.getComputedStyle(el) : null; if (!/(auto|scroll|overlay|hidden)/.test(String((style && (style.overflowY || style.overflow)) || ''))) continue; const score = max * Math.max(1, (el.clientWidth || 0) * (el.clientHeight || 0)); if (score > bestScore) { best = el; bestScore = score; } } if (best) best.scrollTop = ${dest === '0' ? '0' : 'Math.max(0, (best.scrollHeight || 0) - (best.clientHeight || 0))'}; });`,
+          `await page.evaluate(() => { const tolerance = 2; const scrolling = document.scrollingElement || document.documentElement; const docMax = Math.max(0, Math.round((Number(scrolling && scrolling.scrollHeight) || 0) - window.innerHeight)); if (docMax > tolerance) { window.scrollTo({ left: 0, top: ${edge === 'top' ? '0' : 'docMax'}, behavior: 'instant' }); return; } let best = null; let bestScore = 0; const nodes = document.querySelectorAll ? document.querySelectorAll('*') : []; for (let i = 0; i < nodes.length; i++) { const el = nodes[i]; if (el === document.documentElement || el === document.body || el === document.scrollingElement) continue; const max = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0)); if (max <= tolerance) continue; const style = window.getComputedStyle ? window.getComputedStyle(el) : null; if (!/(auto|scroll|overlay|hidden)/.test(String((style && (style.overflowY || style.overflow)) || ''))) continue; const score = max * Math.max(1, (el.clientWidth || 0) * (el.clientHeight || 0)); if (score > bestScore) { best = el; bestScore = score; } } if (best) best.scrollTo({ top: ${dest === '0' ? '0' : 'Math.max(0, (best.scrollHeight || 0) - (best.clientHeight || 0))'}, behavior: 'instant' }); });`,
         ]);
       }
       const direction = args[0] || '';
@@ -15568,7 +15568,7 @@ function scrollEdgeLogicSource() {
     };
     const applyEdge = function(el, dest) {
       const max = Math.max(0, (Number(el.scrollHeight) || 0) - (Number(el.clientHeight) || 0));
-      el.scrollTop = dest === 'top' ? 0 : max;
+      el.scrollTo({ top: dest === 'top' ? 0 : max, behavior: 'instant' });
       if (typeof Event === 'function' && typeof el.dispatchEvent === 'function') {
         try { el.dispatchEvent(new Event('scroll')); } catch {}
       }
@@ -15612,7 +15612,7 @@ function scrollEdgeLogicSource() {
       }
       const doc = measureDocument();
       if (doc.scrollMax > tolerance) {
-        window.scrollTo(0, dest === 'top' ? 0 : doc.scrollMax);
+        window.scrollTo({ left: 0, top: dest === 'top' ? 0 : doc.scrollMax, behavior: 'instant' });
         return Object.assign({ ok: true }, measureDocument());
       }
       const overflow = primaryOverflow();
@@ -15699,7 +15699,7 @@ async function scrollStr(cdp, sid, direction, amount, extraArgs = []) {
   } else {
     throw new Error('Direction required: down, up, left, right, x,y, or to top/to bottom');
   }
-  const result = await evalStr(cdp, sid, `(window.scrollBy(${dx}, ${dy}), JSON.stringify({ x: Math.round(window.scrollX), y: Math.round(window.scrollY) }))`);
+  const result = await evalStr(cdp, sid, `(window.scrollBy({ left: ${dx}, top: ${dy}, behavior: 'instant' }), JSON.stringify({ x: Math.round(window.scrollX), y: Math.round(window.scrollY) }))`);
   const pos = JSON.parse(result);
   return `Scrolled by (${dx}, ${dy}). Position: (${pos.x}, ${pos.y})`;
 }
@@ -16765,7 +16765,7 @@ async function scanshotStr(cdp, sid, targetId) {
   for (let i = 0; i < segments.length; i++) {
     const y = segments[i];
     // Scroll to segment
-    await evalStr(cdp, sid, `window.scrollTo(0, ${y})`);
+    await evalStr(cdp, sid, `window.scrollTo({ left: 0, top: ${y}, behavior: 'instant' })`);
     await sleep(150); // let rendering settle
 
     const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png' }, { tierState });
@@ -16776,7 +16776,7 @@ async function scanshotStr(cdp, sid, targetId) {
   }
 
   // Restore original scroll position
-  await evalStr(cdp, sid, `window.scrollTo(0, ${originalY})`);
+  await evalStr(cdp, sid, `window.scrollTo({ left: 0, top: ${originalY}, behavior: 'instant' })`);
 
   const lines = [`Captured ${files.length} segment(s) of ${vw}x${vh} viewport (page height: ${scrollH}px)`];
   if (usedFallback) lines.push('(screenshot fallback — Page.captureScreenshot timed out)');
@@ -19097,6 +19097,7 @@ function buildTableCollectorBootstrapExpression() {
     const getBoundingClientRect = getOwnPropertyDescriptor(elementProto, 'getBoundingClientRect').value;
     const queryDocument = getOwnPropertyDescriptor(documentProto, 'querySelector').value;
     const queryAllDocument = getOwnPropertyDescriptor(documentProto, 'querySelectorAll').value;
+    const elementScrollTo = getOwnPropertyDescriptor(elementProto, 'scrollTo').value;
     const apply = (fn, receiver, args) => reflectApply(fn, receiver, args);
     const nodeIds = new WM();
     let nextId = 1;
@@ -19170,6 +19171,9 @@ function buildTableCollectorBootstrapExpression() {
       }
       return rows;
     };
+    // Instant, so the sample read right after lands on the final offset even when the
+    // container has CSS scroll-behavior: smooth (a raw scrollTop write would animate).
+    const scrollContainerTo = (container, top) => apply(elementScrollTo, container, [{ top: top, behavior: 'instant' }]);
     const rememberScroll = container => {
       if (savedScroll) return;
       savedScroll = { container: container, top: container.scrollTop };
@@ -19238,7 +19242,7 @@ function buildTableCollectorBootstrapExpression() {
         const container = query(scrollSelector);
         if (!container) return J.stringify({ ok: false, error: 'scroll-container not found' });
         rememberScroll(container);
-        container.scrollTop = top;
+        scrollContainerTo(container, top);
         if (typeof EventCtor === 'function') {
           const dispatch = container.dispatchEvent;
           if (typeof dispatch === 'function') apply(dispatch, container, [new EventCtor('scroll')]);
@@ -19247,7 +19251,7 @@ function buildTableCollectorBootstrapExpression() {
       },
       restore() {
         if (savedScroll) {
-          savedScroll.container.scrollTop = savedScroll.top;
+          scrollContainerTo(savedScroll.container, savedScroll.top);
           if (typeof EventCtor === 'function') {
             const dispatch = savedScroll.container.dispatchEvent;
             if (typeof dispatch === 'function') apply(dispatch, savedScroll.container, [new EventCtor('scroll')]);
@@ -28955,7 +28959,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   captureViewportSize, restoreViewportSize,
   qaScreenshotCaptureOptions, QA_SCREENSHOT_TIMEOUT_MS,
   diffShotScreenshotCaptureOptions,
-  FULLSHOT_TIMEOUT_MS, screenshotCaptureUsesSessionTier, fullshotFitsViewport, fullshotStr,
+  FULLSHOT_TIMEOUT_MS, screenshotCaptureUsesSessionTier, fullshotFitsViewport, fullshotStr, scanshotStr,
   VERIFY_CLICK_SETTLE_MS, VERIFY_CLICK_REQUEST_WAIT_MS,
   HOVER_MOUSE_ACK_TIMEOUT_MS, HOVER_MUTATION_TIMEOUT_MS, HOVER_MUTATION_MARKER, HOVER_REVEAL_MARKER, CLICK_MOUSE_ACK_TIMEOUT_MS,
   LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
@@ -29034,7 +29038,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   actionDomDiffShowsChange, noBaselineActionDiffText,
   formControlStateChanged, formatFormControlStateDiff, shouldSnapshotFormControlState,
   parseFormControlStateSnapshot, snapshotFormControlState,
-  sampleRootFrameTables, tableObservationStr, tableCollectionStr,
+  sampleRootFrameTables, tableObservationStr, tableCollectionStr, buildTableCollectorBootstrapExpression,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics, elementScreenshotClip,
   parseSpawnDebugBrowserArgs, SPAWN_DEBUG_BROWSER_FLAGS, detectBrowserPath, buildSpawnDebugBrowserPlan,
   isBackgroundMode, explicitBackgroundChoice, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv,
