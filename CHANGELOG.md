@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
+
+v2.18.0 adds opt-in background mode (`CDP_BACKGROUND=1` / `--background`), the one-connection
+`session.mjs` and logged-in `download.mjs` helper scripts, and `click --pointer`. It also makes action
+receipts tell the truth. A failed action always prints `Error:`. A click that a covering element would
+swallow fails as `covered` instead of reporting `Clicked`. A `target=_blank` link reports the tab it
+opened, and a fast same-tab link no longer reads as `no-input-events`. `fill` shows the real
+before/after value and `fill ""` clears a field. Discovery finds a live browser on the remembered port,
+and `doctor` and `list` give one diagnosis. Relaunch hints replay the headless, sandbox and background
+flags and never relaunch a profile that is still open. Daemon sockets refuse a path the OS would
+truncate. The frozen 81-command surface is unchanged.
+
 ### Features
 
 * `fill <target> <sel|@ref> ""` clears a field. It uses the native value setter `fill --react` already
