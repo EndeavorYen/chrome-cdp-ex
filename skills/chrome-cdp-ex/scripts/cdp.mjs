@@ -161,6 +161,15 @@ import {
 import { createBrowserSupervisor } from './lib/browser-supervisor.mjs';
 import { resolveGitHead } from './lib/git-head.mjs';
 import { resolveRuntimeDir } from './lib/runtime-dir.mjs';
+import {
+  MIN_SCRUB_SECRET_CHARS,
+  assertSecretName,
+  loadSecrets,
+  secretMarker,
+  unknownSecretError,
+  validateRequestSecrets,
+  withoutSecretEnv,
+} from './lib/secrets.mjs';
 import { createLocatorPlan } from './lib/browser-resources.mjs';
 import { BROWSER_COMMANDS, defaultBrowserPaths, detectBrowserPath } from './lib/browser-paths.mjs';
 import {
@@ -176,6 +185,7 @@ import {
   isSensitiveKey,
   redactSensitiveString,
   redactUrl,
+  scrubSecretText,
   scrubSecretValues,
 } from './lib/redaction.mjs';
 import {
@@ -252,6 +262,8 @@ const daemonRequestStorage = new AsyncLocalStorage();
 // #466: the session policy of the daemon request being served (null without one), shared by its
 // batch/flow/repeat/replay steps.
 const daemonPolicyStorage = new AsyncLocalStorage();
+// The --secret values a daemon request carries (#469), visible to that request's nested steps.
+const daemonSecretStorage = new AsyncLocalStorage();
 const FIRE_AND_FORGET_KEEPALIVE = 60 * 60 * 1000;
 const DAEMON_CONNECT_RETRIES = 20;
 const DAEMON_CONNECT_DELAY = 300;
@@ -765,8 +777,8 @@ function validateDaemonProtocolRequest(input) {
   const request = snapshotApplicationDataObject(input, 'daemon request');
   const expectedKeys = new Set(['id', 'cmd', 'args']);
   for (const key of Object.keys(request)) {
-    // #466: `policy` is optional and present only when a session policy variable is set.
-    if (!expectedKeys.has(key) && key !== 'policy') throw new Error(`daemon request.${key}: is not allowed`);
+    // `policy` (#466) and `secrets` (#469) are optional request fields.
+    if (!expectedKeys.has(key) && key !== 'policy' && key !== 'secrets') throw new Error(`daemon request.${key}: is not allowed`);
   }
   for (const key of expectedKeys) {
     if (!Object.hasOwn(request, key)) throw new Error(`daemon request ${key === 'cmd' ? 'command' : key} is required`);
@@ -781,11 +793,13 @@ function validateDaemonProtocolRequest(input) {
   for (let index = 0; index < args.length; index += 1) {
     if (typeof args[index] !== 'string') throw new Error(`daemon request args[${index}] must be a string`);
   }
+  const secrets = validateRequestSecrets(request.secrets);
   const frozenRequest = Object.freeze({
     id: request.id,
     cmd: request.cmd,
     args: Object.freeze(args),
     ...(Object.hasOwn(request, 'policy') ? { policy: snapshotPolicyWire(request.policy) } : {}),
+    ...(secrets ? { secrets } : {}),
   });
   const tableCollect = frozenRequest.cmd === 'table'
     ? parseTableArgs(frozenRequest.args).mode === 'collect'
@@ -8153,8 +8167,9 @@ function extractFillTypeahead(effects = {}) {
 
 function fillTypedValue(result = {}) {
   const target = result.target || {};
-  if (isSensitiveActionTarget(result.action, target)) return REDACTED_VALUE;
   const args = Array.isArray(target.commandArgs) ? target.commandArgs : [];
+  if (commandArgsNameSecret(result.action, args)) return secretMarker(args[args.indexOf('--secret') + 1]);
+  if (isSensitiveActionTarget(result.action, target)) return REDACTED_VALUE;
   const text = args[0] === '--react' ? args[2] : args[1];
   return text == null ? '' : String(text);
 }
@@ -8180,6 +8195,7 @@ function fillNavigationUrl(effects = {}) {
 
 function compactFillReceiptForJson(result = {}) {
   const typeahead = isSensitiveActionTarget(result.action, result.target || {})
+    || commandArgsNameSecret(result.action, result.target?.commandArgs)
     ? []
     : extractFillTypeahead(result.effects || {});
   const targetId = result.target?.targetId || '';
@@ -9490,9 +9506,15 @@ function sensitiveActionValues(action, target = {}) {
   return [sensitiveActionSecret(action, target), ...(SENSITIVE_FILL_RAW_VALUES.get(target) || [])];
 }
 
+// `fill --secret NAME` (#469) records the name, never the value: its argv is already safe to keep.
+function commandArgsNameSecret(action, args) {
+  return action === 'fill' && Array.isArray(args) && args.includes('--secret');
+}
+
 function sensitiveActionSecret(action, target = {}) {
   if (!isSensitiveActionTarget(action, target)) return '';
   const args = Array.isArray(target.commandArgs) ? target.commandArgs : [];
+  if (commandArgsNameSecret(action, args)) return '';
   if (action === 'type') return args[0] == null ? '' : String(args[0]);
   if (args[0] === '--react') return args[2] == null ? '' : String(args[2]);
   return args[1] == null ? '' : String(args[1]);
@@ -9525,12 +9547,16 @@ function sanitizeActionTargetForLog(action, target = null) {
   // The original target: a fill's raw values are keyed by it, not by this copy.
   const secret = sensitiveActionValues(action, target);
   let next = replaceSecretLiteral(sanitized, secret);
+  // `fill <sel> --secret NAME` (#469) carries the name, never the value: its argv stays
+  // replayable and its dispatch text already shows <secret:NAME>.
+  const namedSecret = commandArgsNameSecret(action, sanitized.commandArgs);
+  if (namedSecret) next = { ...next, commandArgs: sanitized.commandArgs };
   const redacted = new Set(next.redacted || []);
-  if (Array.isArray(next.commandArgs) && next.commandArgs.length) {
+  if (!namedSecret && Array.isArray(next.commandArgs) && next.commandArgs.length) {
     next = { ...next, commandArgs: redactSensitiveCommandArgs(action, next.commandArgs) };
     redacted.add('commandArgs');
   }
-  if (typeof next.dispatchText === 'string') {
+  if (!namedSecret && typeof next.dispatchText === 'string') {
     next = { ...next, dispatchText: redactSensitiveDispatchText(next.dispatchText) };
     redacted.add('dispatchText');
   }
@@ -9860,6 +9886,90 @@ function ensureSessionScreenshotDir(session) {
   }
 }
 
+// Values typed through `fill --secret NAME` (#469), kept for the daemon's lifetime as value -> name
+// so later output and log lines of this session show <secret:NAME> instead (best effort, see
+// scrubSecretText). A value shorter than MIN_SCRUB_SECRET_CHARS is not kept: scrubbing it would
+// rewrite unrelated text, so only the fill's own receipt and records mask it.
+function rememberSessionSecret(session, name, value) {
+  if (!session || typeof value !== 'string' || value.length < MIN_SCRUB_SECRET_CHARS) return;
+  if (!(session.secretValues instanceof Map)) session.secretValues = new Map();
+  session.secretValues.set(value, secretMarker(name));
+}
+
+// session.secretValues maps value -> <secret:NAME>, the shape lib/redaction.mjs scrubs with.
+const SESSION_SECRET_SCRUB = Object.freeze({ keepKeys: null, minLength: MIN_SCRUB_SECRET_CHARS });
+
+function scrubSessionSecrets(session, value) {
+  return session?.secretValues?.size
+    ? scrubSecretValues(value, session.secretValues, { ...SESSION_SECRET_SCRUB, keepKeys: ACTION_JSON_IDENTIFIER_KEYS })
+    : value;
+}
+
+// Daemon protocol replies the CLI parses itself; they carry no page content.
+const UNSCRUBBED_DAEMON_COMMANDS = new Set(['meta', 'list_raw', 'stop']);
+
+function scrubDaemonResponse(session, response, cmd = '') {
+  if (!response || typeof response !== 'object' || !session?.secretValues?.size) return response;
+  if (UNSCRUBBED_DAEMON_COMMANDS.has(cmd)) return response;
+  const scrubbed = { ...response };
+  const opts = { ...SESSION_SECRET_SCRUB, keepKeys: ACTION_JSON_IDENTIFIER_KEYS };
+  if (typeof scrubbed.result === 'string') scrubbed.result = scrubSecretText(scrubbed.result, session.secretValues, opts);
+  if (typeof scrubbed.error === 'string') scrubbed.error = scrubSecretText(scrubbed.error, session.secretValues, opts);
+  return scrubbed;
+}
+
+// Outermost entry of one daemon request: nested steps (batch, flow, replay) share its secrets,
+// and the reply leaves through the session's secret scrub (#469).
+async function runDaemonRequestScope({ cmd, secrets = null, execution = null, session }, run) {
+  const response = await daemonRequestStorage.run(
+    execution || null,
+    () => daemonSecretStorage.run({ secrets, session }, run),
+  );
+  return scrubDaemonResponse(session, response, cmd);
+}
+
+// The daemon's fill capability. `fill(selector, text, opts)` is fillStr bound to the tab.
+// --secret NAME (#469) types the request's secret value; receipts and records keep only the name.
+function createDaemonFillCapability({ session, actionFeedback, fill }) {
+  return async args => {
+    const parsed = parseFillArgs(args);
+    const { secretName } = parsed;
+    const text = secretName != null ? resolveRequestSecret(secretName) : parsed.text;
+    const textArgs = secretName != null ? ['--secret', secretName] : [parsed.text];
+    const feedbackPolicy = fillFeedbackPolicy(session.batchNextCommand);
+    // fillStr records the before/after value here; actionFeedback turns it into receipt state.
+    const fillValueState = {};
+    const fillOpts = {
+      ...(parsed.react ? { react: true } : {}),
+      valueState: fillValueState,
+      waitMs: parsed.waitMs,
+      ...(secretName != null ? { secretName } : {}),
+    };
+    const commandArgs = parsed.react ? ['--react', parsed.selector, ...textArgs] : [parsed.selector, ...textArgs];
+    const value = await actionFeedback('fill', () => fill(parsed.selector, text, fillOpts), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs, fillValueState }, feedbackPolicy, null, parsed.fopts);
+    if (feedbackPolicy === 'report-only') {
+      session.awaitSearchSubmitListing = true;
+      session.searchSubmitQuery = parsed.text ?? '';
+    }
+    return commandResult(value, { kind: 'action-receipt' });
+  };
+}
+
+// The value of `--secret NAME` for the current daemon request. The CLI resolved it at call time
+// and sent it beside, never inside, the args. Using it registers it for the session scrub.
+function resolveRequestSecret(name, { command = 'fill', store = daemonSecretStorage.getStore() } = {}) {
+  const secrets = store?.secrets || null;
+  if (!secrets || !Object.hasOwn(secrets, name)) {
+    const error = new Error(`${command}: secret ${name} was not provided with this request; the CLI resolves --secret names from CDP_SECRET_<NAME> or CDP_SECRETS_FILE`);
+    error.code = 'unknown_secret';
+    throw error;
+  }
+  const value = secrets[name];
+  if (value === '') throw new Error(`${command}: secret ${name} is empty`);
+  rememberSessionSecret(store.session, name, value);
+  return value;
+}
+
 function rotateSessionLog(session, lineBytes, { rename, size, rotateBytes }) {
   if (!Number.isFinite(session.logBytes)) {
     try {
@@ -9880,12 +9990,12 @@ function appendSessionEventLog(session, event, {
   rotateBytes = SESSION_LOG_ROTATE_BYTES,
 } = {}) {
   if (!session.logPath) return null;
-  const payload = {
+  const payload = scrubSessionSecrets(session, {
     schema: 'chrome-cdp-ex.session-event.v1',
     targetId: session.targetId,
     sessionId: session.sessionId,
     ...event,
-  };
+  });
   try {
     const line = `${JSON.stringify(payload)}\n`;
     const lineBytes = Buffer.byteLength(line);
@@ -10021,7 +10131,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
   const diagnostics = summarizeActionObservationEffects(actionResult.effects || {});
   const secret = sensitiveActionValues(actionResult.action, actionResult.target || {});
   const target = sanitizeActionTargetForLog(actionResult.action, actionResult.target || null);
-  const entry = replaceSecretLiteral(redactSensitiveArtifactValue({
+  const entry = scrubSessionSecrets(session, replaceSecretLiteral(redactSensitiveArtifactValue({
     sequence,
     eventId,
     ts,
@@ -10044,7 +10154,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
     verdict: actionResult.verdict || buildActionVerdict(actionResult),
     receipt,
     nextHint: actionResult.nextHint || null,
-  }), secret);
+  }), secret));
   session.actionLog.push(entry);
   if (session.actionLog.length > MAX_ACTION_LOG_ENTRIES) {
     session.actionLog.splice(0, session.actionLog.length - MAX_ACTION_LOG_ENTRIES);
@@ -10851,6 +10961,12 @@ function playwrightStepFromCommand(action = {}) {
       const selector = usesReactFill ? args[1] : args[0];
       const text = usesReactFill ? args[2] : args[1];
       if (!isPlaywrightPortableSelector(selector)) return skip('needs stable selector; chrome-cdp-ex @refs are session-local');
+      // A named secret stays a name: the spec reads the same environment variable at run time.
+      const secretName = text === '--secret' ? String(args[args.indexOf('--secret') + 1] ?? '') : null;
+      if (secretName != null) {
+        if (!/^[A-Z0-9_]+$/.test(secretName)) return skip('invalid secret name');
+        return finish([`await page.locator(${JSON.stringify(selector)}).fill(process.env.CDP_SECRET_${secretName} ?? '');`]);
+      }
       if (text == null || text === '<redacted>') return skip('missing fill text');
       return finish([`await page.locator(${JSON.stringify(selector)}).fill(${JSON.stringify(text)});`]);
     }
@@ -11135,6 +11251,7 @@ function createSessionState({ targetId, sessionId, logPath = sessionLogPath(targ
     buffers: {},
     pendingRequests: new Map(),
     networkThrottle: null,
+    secretValues: new Map(),
     networkMocks: [],
     networkMockHits: [],
     clock: null,
@@ -17453,11 +17570,14 @@ function fillValuePreview(value) {
 }
 
 // Before/after/requested values for a fill receipt. `changed` compares the raw live values;
-// password fields (and selectors that look sensitive) never echo a non-empty value.
-function buildFillValueState({ before = null, after = null, requested = '', inputType = '', sensitive = false } = {}) {
+// password fields (and selectors that look sensitive) never echo a non-empty value. A named
+// secret (`fill --secret NAME`, #469) shows as <secret:NAME> wherever the value would be.
+function buildFillValueState({ before = null, after = null, requested = '', inputType = '', sensitive = false, secretName = null } = {}) {
+  const marker = secretName ? secretMarker(secretName) : null;
   const shown = (value) => {
     if (value == null) return null;
-    if (sensitive && value !== '') return REDACTED_VALUE;
+    if (marker && value !== '' && String(value) === String(requested)) return marker;
+    if ((sensitive || marker) && value !== '') return REDACTED_VALUE;
     return fillValuePreview(value);
   };
   return {
@@ -17470,10 +17590,10 @@ function buildFillValueState({ before = null, after = null, requested = '', inpu
   };
 }
 
-// A receipt value: quoted text, or the bare <redacted> marker so it never reads as a literal.
+// A receipt value: quoted text, or a bare <redacted>/<secret:NAME> marker so it never reads as a literal.
 function fillValueDisplay(value) {
   if (value == null) return '(unknown)';
-  return value === REDACTED_VALUE ? REDACTED_VALUE : JSON.stringify(value);
+  return value === REDACTED_VALUE || /^<secret:[A-Z0-9_]+>$/.test(value) ? value : JSON.stringify(value);
 }
 
 function fillValueRejectedError(selector, text, state = null) {
@@ -17683,13 +17803,14 @@ async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
   return `React-filled ${isRef(selector) ? selector : `<${tag}>`} with "${formatInputTextPreview(text)}"`;
 }
 
-function formatFillDispatchText({ label, text, clearing, react, state }) {
+function formatFillDispatchText({ label, text, clearing, react, state, secretName = null }) {
   const before = state?.before;
   if (clearing) {
     if (before == null) return `Cleared ${label}`;
     return before === '' ? `Cleared ${label} (value unchanged: already empty)` : `Cleared ${label} (was ${fillValueDisplay(before)})`;
   }
-  const head = `${react ? 'React-filled' : 'Filled'} ${label} with "${formatInputTextPreview(text)}"`;
+  const shownText = secretName ? secretMarker(secretName) : formatInputTextPreview(text);
+  const head = `${react ? 'React-filled' : 'Filled'} ${label} with "${shownText}"`;
   if (before == null || before === '') return head;
   if (state.changed === false) return `${head} (value unchanged: already ${fillValueDisplay(before)})`;
   return `${head} (was ${fillValueDisplay(before)})`;
@@ -17786,7 +17907,10 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
     }
   }
   const after = await readFillLiveValue(cdp, sid, selector, refMap, refState).catch(() => null);
-  const sensitive = String(inputType || after?.type || '').toLowerCase() === 'password'
+  const secretName = opts.secretName || null;
+  // One display rule: a named secret (#469) shows <secret:NAME>; any other sensitive field <redacted>.
+  const sensitive = Boolean(secretName)
+    || String(inputType || after?.type || '').toLowerCase() === 'password'
     || isSensitiveActionTarget('fill', { input: selector })
     || fillFieldLooksSensitive(after?.field);
   const state = buildFillValueState({
@@ -17795,20 +17919,24 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
     requested: wanted,
     inputType: inputType || after?.type || '',
     sensitive,
+    secretName,
   });
   if (opts.valueState && typeof opts.valueState === 'object') {
     Object.assign(opts.valueState, state);
-    if (sensitive) SENSITIVE_FILL_RAW_VALUES.set(opts.valueState, [wanted, before, after?.value]);
+    if (sensitive) {
+      const typed = secretName ? { value: wanted, replacement: secretMarker(secretName) } : wanted;
+      SENSITIVE_FILL_RAW_VALUES.set(opts.valueState, [typed, before, after?.value]);
+    }
   }
   if (!fillLiveValueAccepted(after, wanted)) {
     if (ref) {
       const unique = await fillRefUniqueSelector(cdp, sid, selector, refMap, refState);
       if (unique) state.selector = unique;
     }
-    throw fillValueRejectedError(selector, wanted, state);
+    throw fillValueRejectedError(selector, secretName ? secretMarker(secretName) : wanted, state);
   }
   const label = ref ? selector : `<${tag}>`;
-  return `${formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : wanted, clearing, react: opts.react === true, state })}${waitNote}`;
+  return `${formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : wanted, clearing, react: opts.react === true, state, secretName })}${waitNote}`;
 }
 
 // The selector first waits up to `opts.waitMs` for an attached, enabled element (#468). Visibility is
@@ -21249,7 +21377,15 @@ async function recordStr(cdp, sid, args, refs) {
     if (opts.action) {
       if (opts.action === 'click') actionText = await clickStr(cdp, sid, opts.actionArgs[0], refs);
       else if (opts.action === 'press') actionText = await pressStr(cdp, sid, opts.actionArgs[0]);
-      else if (opts.action === 'fill') actionText = await fillStr(cdp, sid, opts.actionArgs[0], opts.actionArgs.length > 1 ? opts.actionArgs.slice(1).join(' ') : null, refs);
+      else if (opts.action === 'fill') {
+        const secretAt = opts.actionArgs.indexOf('--secret');
+        if (secretAt !== -1) {
+          const secretName = assertSecretName(opts.actionArgs[secretAt + 1], 'record --action fill');
+          actionText = await fillStr(cdp, sid, opts.actionArgs[0], resolveRequestSecret(secretName, { command: 'record --action fill' }), refs, undefined, { secretName });
+        } else {
+          actionText = await fillStr(cdp, sid, opts.actionArgs[0], opts.actionArgs.length > 1 ? opts.actionArgs.slice(1).join(' ') : null, refs);
+        }
+      }
       else if (opts.action === 'select') actionText = await selectStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1]);
       else if (opts.action === 'type') actionText = await typeStr(cdp, sid, opts.actionArgs.join(' '));
       else if (opts.action === 'scroll') actionText = await scrollStr(cdp, sid, opts.actionArgs[0], opts.actionArgs[1], opts.actionArgs.slice(2));
@@ -22517,7 +22653,7 @@ function replayCommandMissingFields(action = {}, command = []) {
       const parsed = parseFillArgs(command.slice(1));
       const textTokens = parsed.args.slice(1);
       if (!parsed.selector) inferred.push('target');
-      if (textTokens.length === 0) inferred.push('text');
+      if (textTokens.length === 0 && parsed.secretName == null) inferred.push('text');
     } catch {
       inferred.push('text');
     }
@@ -25877,20 +26013,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       await emulateStr(cdp, sessionId, session, args, { targetPrefix: targetPrefixForDisplay(targetId) }),
       { kind: 'action-receipt' },
     ),
-    fill: async args => {
-      const parsed = parseFillArgs(args);
-      const feedbackPolicy = fillFeedbackPolicy(session.batchNextCommand);
-      // fillStr records the before/after value here; actionFeedback turns it into receipt state.
-      const fillValueState = {};
-      const value = parsed.react
-        ? await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { react: true, valueState: fillValueState, waitMs: parsed.waitMs }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: ['--react', parsed.selector, parsed.text], fillValueState }, feedbackPolicy, null, parsed.fopts)
-        : await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { valueState: fillValueState, waitMs: parsed.waitMs }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: [parsed.selector, parsed.text], fillValueState }, feedbackPolicy, null, parsed.fopts);
-      if (feedbackPolicy === 'report-only') {
-        session.awaitSearchSubmitListing = true;
-        session.searchSubmitQuery = parsed.text;
-      }
-      return commandResult(value, { kind: 'action-receipt' });
-    },
+    fill: createDaemonFillCapability({
+      session,
+      actionFeedback,
+      fill: (selector, text, opts) => fillStr(cdp, sessionId, selector, text, refMap, refState, opts),
+    }),
     hover: async args => {
       const text = await dispatchHoverWithLeftoverPolicy({
         cdp,
@@ -26122,6 +26249,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     ),
     type: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+      if (typeTextNamesSecret(fopts.args[0])) throw new Error(TYPE_SECRET_UNSUPPORTED);
       const value = await actionFeedback('type', () => typeStr(cdp, sessionId, fopts.args[0]), { input: 'current focus', resolvedBy: 'focus', label: 'current focus', commandArgs: [fopts.args[0]] }, 'settle-diff', null, fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
@@ -26351,11 +26479,11 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     return { nonce: contentBoundaryNonce, origin: originLabel(await readTargetUrl()) };
   }
 
-  async function handleCommand({ cmd, args, policy }, execution = undefined, { outermost = false, guarded = false } = {}) {
+  async function handleCommand({ cmd, args, policy, secrets = null }, execution = undefined, { outermost = false, guarded = false } = {}) {
   if (daemonCommandResetsIdle(cmd)) resetIdle();
   if (daemonRequestStorage.getStore() === undefined) {
     const policyState = createRequestPolicyState(policy);
-    return daemonRequestStorage.run(execution || null, () => daemonPolicyStorage.run(
+    return runDaemonRequestScope({ cmd, secrets, execution, session }, () => daemonPolicyStorage.run(
       policyState,
       () => handleCommand({ cmd, args }, execution, { outermost: true }),
     ));
@@ -26608,7 +26736,7 @@ async function getOrStartTabDaemon(targetId, opts = {}) {
   const child = spawnProcess(execPath, [scriptPath, '_daemon', targetId], {
     detached: true,
     stdio: 'ignore',
-    env: opts.env || process.env,
+    env: withoutSecretEnv(opts.env || process.env),
   });
   child.unref();
 
@@ -27783,6 +27911,8 @@ Usage: cdp <command> [args]
 {{command:fill}}
                                     --react: native value setter + input/change events
                                     "" clears the field (native setter + input/change events)
+                                    --secret NAME: type $CDP_SECRET_NAME or NAME from CDP_SECRETS_FILE;
+                                      receipts, logs and records show <secret:NAME>, never the value
                                     Receipt shows the previous value; a rejected value is fill-value-mismatch
                                     JSON defaults to chrome-cdp-ex.fill.v1; --full restores action.v1
 {{command:select}}
@@ -28269,10 +28399,18 @@ function parseFillArgs(args = []) {
   const wait = parseActionabilityWaitArgs(args, 'fill');
   const fopts = parseCompactFormatArgs(wait.args, ['text', 'json']);
   let react = false;
+  let secretName = null;
   const positional = [];
-  for (const token of fopts.args) {
+  for (let index = 0; index < fopts.args.length; index += 1) {
+    const token = fopts.args[index];
     if (token === '--react') {
       react = true;
+      continue;
+    }
+    if (token === '--secret') {
+      if (secretName != null) throw new Error('fill: --secret may be given only once');
+      secretName = assertSecretName(fopts.args[index + 1]);
+      index += 1;
       continue;
     }
     if (token === '--help' || token === '-h') {
@@ -28287,7 +28425,11 @@ function parseFillArgs(args = []) {
     positional.push(token);
   }
   const selector = positional[0] || '';
+  if (secretName != null && positional.length > 1) {
+    throw new Error('fill: --secret NAME replaces <text>; pass one or the other');
+  }
   // null = no text argument (an error); '' = an explicit empty string, which clears the field.
+  // With --secret the text is the secret's value, resolved in the daemon request (#469).
   const text = positional.length > 1 ? positional.slice(1).join(' ') : null;
   return {
     format: fopts.format,
@@ -28299,6 +28441,7 @@ function parseFillArgs(args = []) {
     waitMs: wait.waitMs,
     selector,
     text,
+    secretName,
     args: positional,
     fopts: { ...fopts, args: positional },
   };
@@ -28550,12 +28693,85 @@ function normalizeTargetCommandArgs(cmd, cmdArgs = []) {
   if (cmd === 'fill') {
     const parsed = parseFillArgs(args);
     const suffix = formatArgSuffix(parsed.format, parsed);
-    const text = parsed.text == null ? [] : [parsed.text];
+    const text = parsed.secretName != null ? ['--secret', parsed.secretName] : (parsed.text == null ? [] : [parsed.text]);
     const wait = parsed.waitMs == null ? [] : ['--wait-ms', String(parsed.waitMs)];
     if (parsed.react) return ['--react', parsed.selector, ...text, ...suffix, ...wait];
     return [parsed.selector, ...text, ...suffix, ...wait];
   }
   return args;
+}
+
+// Commands that can run `fill --secret NAME`, directly or as a step.
+const SECRET_FILL_COMMANDS = new Set(['fill', 'batch', 'flow', 'repeat', 'record', 'replay']);
+// `type --secret NAME` would type the flag itself; only a text that starts with it is refused.
+function typeTextNamesSecret(text) {
+  return /^--secret(?:\s|$)/.test(String(text ?? ''));
+}
+const TYPE_SECRET_UNSUPPORTED = 'type: --secret is supported by fill only; use fill <target> <selector|@ref> --secret NAME';
+
+// The --secret names a command will use, found with the same parsers the daemon runs, so only a
+// `--secret` in flag position counts (a fill text such as "see --secret docs" is just text).
+// Parse errors yield no names: the daemon reports them. Depth bounds batch/repeat nesting.
+function collectSecretNames(cmd, args = [], { readFile, cwd, depth = 0 } = {}) {
+  if (depth > 4 || !SECRET_FILL_COMMANDS.has(cmd)) return [];
+  const steps = command => collectSecretNames(command?.cmd, Array.isArray(command?.args) ? command.args.map(String) : [], { readFile, cwd, depth: depth + 1 });
+  try {
+    switch (cmd) {
+      case 'fill': {
+        const { secretName } = parseFillArgs(args);
+        return secretName ? [secretName] : [];
+      }
+      case 'batch':
+        return parseBatchArgs(args).commands.flatMap(steps);
+      case 'flow':
+        return parseFlowSteps(parseFormatArgs(args, ['text', 'json']).args.join(' '))
+          .filter(step => step.kind === 'command')
+          .flatMap(steps);
+      case 'repeat':
+        return steps(parseRepeatArgs(args));
+      case 'record': {
+        const opts = parseRecordArgs(args);
+        if (opts.action !== 'fill') return [];
+        const at = opts.actionArgs.indexOf('--secret');
+        return at === -1 ? [] : [String(opts.actionArgs[at + 1] ?? '')];
+      }
+      case 'replay': {
+        const { artifact } = parseReplayArgs(args, { reader: (path, encoding) => readFile(resolve(cwd, path), encoding) });
+        return [...(artifact.environment || []), ...artifact.actions]
+          .map(action => (Array.isArray(action?.command) ? action.command.map(String) : []))
+          .flatMap(command => steps({ cmd: command[0], args: command.slice(1) }));
+      }
+      default:
+        return [];
+    }
+  } catch (error) {
+    // A malformed --secret NAME is reported here; other parse errors belong to the daemon.
+    if (/--secret|secret name/.test(String(error?.message))) throw error;
+    return [];
+  }
+}
+
+// The --secret values a target command needs (#469), or null when it names none. Each name is
+// resolved now, in this process, so an unset name fails before anything is typed.
+function cliRequestSecrets(cmd, args = [], {
+  env = process.env,
+  platform = process.platform,
+  cwd = process.cwd(),
+  fs = undefined,
+  readFile = readFileSync,
+} = {}) {
+  if (cmd === 'type' && typeTextNamesSecret(argsWithoutFormat(args).join(' '))) throw new Error(TYPE_SECRET_UNSUPPORTED);
+  const names = [...new Set(collectSecretNames(cmd, args, { readFile, cwd }))];
+  if (!names.length) return null;
+  for (const name of names) assertSecretName(name, cmd);
+  const available = loadSecrets({ env, platform, cwd, ...(fs ? { fs } : {}) });
+  const secrets = {};
+  for (const name of names) {
+    if (!available.has(name)) throw unknownSecretError(name, available.keys(), cmd);
+    if (available.get(name) === '') throw new Error(`${cmd}: secret ${name} is empty`);
+    secrets[name] = available.get(name);
+  }
+  return secrets;
 }
 
 // CLI validation for fill: a missing text argument is an error, an explicit "" is a clear.
@@ -28567,7 +28783,7 @@ function fillCliArgError(cmdArgs = []) {
     return null; // parseFillArgs errors (unknown flag, --help) surface from the command itself
   }
   if (!parsed.selector) return 'selector required';
-  if (parsed.text == null) return 'text required';
+  if (parsed.text == null && parsed.secretName == null) return 'text required';
   return null;
 }
 
@@ -28718,6 +28934,21 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       strategy: 'perceive-instead',
       run: `cdp perceive ${target} -C -d 8`,
       reason: 'Chrome returned no usable frame from the capture pipelines named in the error; the page structure is still readable.',
+    };
+  }
+  // #469: a --secret name that is unset, empty, malformed, or a secrets file that is refused.
+  if (
+    err?.code === 'unknown_secret'
+    || lower.includes('unknown secret')
+    || lower.includes('cdp_secrets_file')
+    || lower.includes('--secret')
+    || /\bsecret name\b|\bsecret [a-z0-9_]+ (?:is empty|was not provided)/.test(lower)
+  ) {
+    return {
+      kind: 'usage',
+      strategy: 'show-help',
+      run: 'cdp help fill',
+      reason: 'fill --secret NAME reads CDP_SECRET_<NAME> or the NAME entry of CDP_SECRETS_FILE at call time. Set it, then rerun; only names are ever listed.',
     };
   }
   // Discovery already asked doctor's recommendation for this same CDP check (#425): use it as is.
@@ -30095,7 +30326,7 @@ async function main(options = {}) {
     const child = spawn(runtimeIdentity.execPath, [runtimeIdentity.scriptPath, '_daemon', targetId], {
       detached: true,
       stdio: 'ignore',
-      env: backgroundDaemonEnv(opts.background),
+      env: withoutSecretEnv(backgroundDaemonEnv(opts.background)),
     });
     child.unref();
     let attached = false;
@@ -30341,6 +30572,14 @@ async function main(options = {}) {
     console.error(formatCliError('target ID required. Run "cdp list" first.', { cmd, format: cliErrorFormat }));
     return finish(1);
   }
+  // #469: resolve --secret names here, before any daemon starts; values never join cmdArgs.
+  let requestSecrets = null;
+  try {
+    requestSecrets = cliRequestSecrets(cmd, cmdArgs);
+  } catch (error) {
+    console.error(formatCliError(error, { cmd, targetPrefix, format: cliErrorFormat }));
+    return finish(1);
+  }
   // #466: a disallowed `nav` URL or a denied step fails here, before a daemon attaches; the
   // daemon checks again for the steps it runs.
   const policyBlocked = policyPreflightMessage(sessionPolicy, cmd, cmdArgs, { compositeSteps: policyCompositeSteps });
@@ -30511,7 +30750,12 @@ async function main(options = {}) {
 
   let response;
   try {
-    response = await runtimeSupervisor.execute(runtimeHandle, { cmd, args: cmdArgs, ...policyRequestFields(sessionPolicy, cmd, { args: cmdArgs }) });
+    response = await runtimeSupervisor.execute(runtimeHandle, {
+      cmd,
+      args: cmdArgs,
+      ...policyRequestFields(sessionPolicy, cmd, { args: cmdArgs }),
+      ...(requestSecrets ? { secrets: requestSecrets } : {}),
+    });
   } catch (error) {
     console.error(formatCliError(error, { cmd, targetPrefix: targetPrefixForDisplay(targetId), format: cliErrorFormat, args: cmdArgs }));
     return finish(1);
@@ -30821,6 +31065,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   fillableControlProbeDeclaration, notFillableControlError,
   fillLiveValueAccepted, fillValueRejectedError, fillLiveValuePageScript,
   applyFillValueState, markSensitiveFillTarget, isSensitiveActionTarget, buildFillValueState, fillCliArgError, buildActionOutcome, compactFillReceiptForJson,
+  cliRequestSecrets, resolveRequestSecret, rememberSessionSecret, scrubSessionSecrets, scrubDaemonResponse,
+  TYPE_SECRET_UNSUPPORTED, runDaemonRequestScope, createDaemonFillCapability, collectSecretNames,
   looksLikeClipboardControl, isExpectedClipboardNoChange,
   TABLE_COLLECTION_DEADLINES, TableCollectionDeadlineError,
   createDaemonRequestExecutionContext, createTableCollectionRuntime,

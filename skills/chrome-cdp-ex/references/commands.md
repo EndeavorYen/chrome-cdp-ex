@@ -230,7 +230,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `waitfor` | `waitfor <target> <selector> [ms]` | `read / standard` |
 | `loadall` | `loadall <target> <selector> [interval-ms] [--timeout-ms N]` | `protected-mutation / mutation` |
 | `wait` | `wait <target> <ms>` | `read / standard` |
-| `fill` | `fill <target> <sel\|@ref> <txt> [--format json]` | `mutation / mutation` |
+| `fill` | `fill <target> <sel\|@ref> <txt\|--secret NAME> [--format json]` | `mutation / mutation` |
 | `select` | `select <target> <selector> <val> [--format json]` | `mutation / mutation` |
 | `fullshot` | `fullshot <target> [file]` | `conditional-mutation / conditional` |
 | `scanshot` | `scanshot <target>` | `read / standard` |
@@ -629,6 +629,7 @@ scripts/cdp.mjs waitfor <target> --text "str" --scope ".reply" 120000  # scoped 
 scripts/cdp.mjs wait    <target> 30000                 # agent-safe delay; use instead of shell sleep
 scripts/cdp.mjs fill    <target> <sel|@ref> <text> [--format json] # clear field + type text
 scripts/cdp.mjs fill    <target> --react <sel|@ref> <text> [--format json] # React-controlled input value setter + input/change events
+scripts/cdp.mjs fill    <target> <sel|@ref> --secret NAME [--format json] # type $CDP_SECRET_NAME; output shows <secret:NAME>
 scripts/cdp.mjs select  <target> <selector> <value> [--format json] # select option (auto-returns perceive diff)
 scripts/cdp.mjs styles  <target> <selector>            # computed styles (meaningful props only)
 scripts/cdp.mjs components <target> [--depth N]     # bounded/redacted React/Vue tree
@@ -1078,6 +1079,7 @@ scripts/cdp.mjs record <target> 5000
    ```bash
    batch <target> 'fill @3 user@example.com | fill @5 password123 | click @7'
    ```
+   For a real password use `fill @5 --secret PW` (reads `CDP_SECRET_PW`) so the value stays out of the transcript.
 3. The final `click` auto-returns perceive diff showing the result
 4. Keep form fills sequential. They update focus, refs, action evidence, and the last-action baseline:
    ```bash
@@ -1462,6 +1464,58 @@ first one's next download to the user's Downloads folder, so both can end in `ti
 `download-missing`. Nothing serialises them. This is a `click` flag, so the command surface and public
 synopsis are unchanged; MCP clients pass it through `run_command` with `command: "click"` and
 `confirm: true`.
+
+### Typing a secret — `fill --secret NAME`
+
+```bash
+export CDP_SECRET_PW='…'            # or CDP_SECRETS_FILE=~/.cdp-secrets (NAME=VALUE lines)
+cdp fill <t> "#password" --secret PW
+cdp batch <t> 'fill @3 --secret USER | fill @5 --secret PW | click @7'
+```
+
+`--secret NAME` replaces `<text>` (passing both is a usage error). NAME is
+`[A-Z0-9_]+`. `--secret` is a flag only as its own argument: a quoted text such
+as `fill <t> "#q" "see --secret docs"` is typed as written. The CLI reads the
+value at call time from `CDP_SECRET_<NAME>`, or from the file named by
+`CDP_SECRETS_FILE`; the environment wins over the file. On macOS/Linux a
+secrets file that group or other can read or write is refused (`chmod 600`);
+Windows has no POSIX mode bits, so that check is skipped there. An unknown name
+fails with `Kind: usage` and lists the available names, never values.
+
+Secrets file grammar, one `NAME=VALUE` per line:
+
+- blank lines and lines starting with `#` are ignored; `export NAME=VALUE` is accepted;
+- `"double quoted"` values take the escapes `\n`, `\r`, `\t`, `\"` and `\\` (any other backslash is kept);
+- `'single quoted'` values are literal;
+- after a closing quote only whitespace and a `# comment` may follow;
+- an unquoted value ends at a `#` that starts it or follows whitespace (`a#b` stays `a#b`), and is trimmed;
+- a value spans one line; an unterminated quote is an error naming the line number only.
+
+Only the referenced names are sent to the tab daemon, beside the command
+arguments (`fill`, and `fill` steps inside `batch`, `flow`, `repeat`,
+`record --action` and `replay`). `broadcast` does not forward secrets, so
+`broadcast <group> fill <sel> --secret NAME` fails on each tab; run `fill` per
+tab instead. The daemon is started without any `CDP_SECRET_*` variables.
+
+The receipt, `fill.v1` `value`, `report`, `record-actions`, the session log and
+errors show `<secret:NAME>` for every value, also on a password or
+secret-named field, which a plain `fill` would show as `<redacted>`. For the rest of that daemon's life
+(up to 20 min idle), later output is also scrubbed of values that are at least
+4 characters long: a `perceive` of a plain text field or an `eval` of `.value`
+shows `<secret:NAME>`. The scrub matches the value as typed, JSON-escaped once
+and twice, and previews cut to 8+ characters that end in `...`/`…`. JSON results
+are scrubbed inside their string values only (never keys or identifiers such
+as `schema`), and the daemon's own `meta`/`list_raw` replies are never touched.
+It is the same scrubber that redacts sensitive fields (`lib/redaction.mjs`). It is best effort for accidental echoes: URL-encoded
+or HTML-entity copies (a GET form submit in `netlog`), shorter values such as a
+PIN, and any deliberate transform in `eval` are not caught. Screenshots are pixels and
+are not scrubbed; password inputs are masked by the browser.
+
+`record-actions` keeps `fill <sel> --secret NAME`, so `replay` re-reads the
+secret by name at replay time and `export-playwright` emits
+`process.env.CDP_SECRET_NAME`. MCP `fill` takes `secret: "NAME"` instead of
+`text`, read from the MCP server's environment. `type` does not take
+`--secret`; use `fill`.
 
 ### Clearing a field — `fill ""`
 
