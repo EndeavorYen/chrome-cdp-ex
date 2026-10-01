@@ -127,6 +127,8 @@ node skills/chrome-cdp-ex/scripts/cdp.mjs report <target>
 
 The mouse `click` path for a CSS selector or `@ref` hit-tests its click point before dispatch. When another element is on top (a fixed sidebar, sticky header, toast, or dialog), it sends nothing and exits 1 with `Error: click point (x, y) of <BUTTON> "…" is covered by <…>`, `Kind: covered`, and Next `click <target> <sel> --js` (or `dismiss-modal` when the cover is a dialog). A fully visible but covered target is scrolled to the viewport centre once and re-tested before failing.
 
+`click`, `fill` and `select` on a CSS selector wait up to 2 s for the element to be attached, visible (not required for `select`) and enabled, inside the same page evaluation that finds it. `--wait-ms N` sets the limit (at most 30000) and `--wait-ms 0` turns it off. A receipt that waited says so: `Clicked <BUTTON> "Save" (waited 640ms for attach)`. A disabled target (`disabled` or a disabled `<fieldset>`; for `click` also `aria-disabled="true"`) is not acted on: it exits 1 with `Kind: disabled` and Next `waitfor <target> '<sel>:not(:disabled):not([aria-disabled="true"])'`, or `perceive` when the selector matches several elements. `aria-disabled` is not enforced by browsers; `click <target> <sel> --js` clicks such a control on purpose. An `@ref` is checked for disabled without waiting. `--wait-ms 0` skips the wait for a zero-size target. A selector that still matches nothing after the wait fails as `Kind: selector`.
+
 Use `--format json` when another agent or script needs structured handoff data instead of human text.
 Default `open` returns the target prefix and a follow-up `perceive` command; pass `--perceive` only when you want the full dump in the same call.
 
