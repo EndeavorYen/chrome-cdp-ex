@@ -31,10 +31,12 @@ const SENSITIVE_KEY_SUFFIXES = ['token', 'secret', 'password', 'passwd', 'apikey
 const TOKEN_QUANTITY_BEFORE = new Set(['max', 'min', 'num', 'total']);
 const TOKEN_QUANTITY_AFTER = new Set(['count', 'counts', 'limit', 'limits', 'length', 'size', 'usage', 'budget', 'total']);
 
+// The acronym split uses a lookahead, not `([A-Z]+)([A-Z][a-z])`: that form
+// rescans an upper-case run from every position, quadratic on a long key (#459).
 export function sensitiveKeyTokens(key = '') {
   return String(key ?? '')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([A-Z])(?=[A-Z][a-z])/g, '$1 ')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(Boolean);
@@ -83,7 +85,11 @@ function redactQueryString(query) {
   }).join('&');
 }
 
-const URL_USERINFO_RE = /\b([a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)([^\s/?#@]+)(@)/gi;
+// A scheme may only start where a run of scheme characters starts. With `\b`,
+// the unbounded `[a-z0-9+.-]*` rescanned a long dotted or hyphenated token
+// from every word boundary (quadratic, #459); the lookbehind scans each run
+// once, so a scheme of any length is still matched in linear time.
+const URL_USERINFO_RE = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)([^\s/?#@]+)(@)/gi;
 const PATH_PARAM_RE = /;([^;=/?#]+)=([^;/?#]*)/g;
 
 // Redact secret values in one URL without re-encoding the rest. Non-secret
@@ -131,7 +137,9 @@ function isCssSelectorColon(text, separator, keyEnd) {
 // `key=value` / `key: value` pairs in free text (console lines, DOM diffs,
 // URLs inside messages). A non-secret pair is skipped past its separator only,
 // so a secret hiding in its value (`?a=b#access_token=…`) is still examined.
-function redactSecretAssignments(text) {
+// `truncated`: the text was cut off, so a quoted value left open at the end
+// ran past the cut and is redacted to the end, not only up to its first space.
+function redactSecretAssignments(text, { truncated = false } = {}) {
   let out = '';
   let last = 0;
   ASSIGNMENT_KEY_RE.lastIndex = 0;
@@ -149,17 +157,25 @@ function redactSecretAssignments(text) {
     const value = ASSIGNMENT_VALUE_RE.exec(text);
     if (!value) continue;
     const quote = /^["']/.test(value[0]) ? value[0][0] : '';
-    out += `${text.slice(last, valueStart)}${quote}${REDACTED_VALUE}${quote}`;
-    last = valueStart + value[0].length;
+    const openToCut = truncated && quote && !(value[0].length > 1 && value[0].endsWith(quote))
+      && text.indexOf(quote, valueStart + 1) < 0 && text.indexOf('\n', valueStart + 1) < 0;
+    out += `${text.slice(last, valueStart)}${quote}${REDACTED_VALUE}${openToCut ? '' : quote}`;
+    last = openToCut ? text.length : valueStart + value[0].length;
     ASSIGNMENT_KEY_RE.lastIndex = last;
   }
   return last === 0 ? text : `${out}${text.slice(last)}`;
 }
 
-export function redactSensitiveString(value) {
+// `scheme://user:pa` at the very end of a cut-off text: the `@` that would mark
+// it as a password was cut away (it may also be a port; the tail is hidden anyway).
+const URL_USERINFO_CUT_RE = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)([^\s/?#@]+)$/i;
+
+// Pass `{ truncated: true }` when `value` is a cut-off prefix of a longer text.
+export function redactSensitiveString(value, { truncated = false } = {}) {
   const text = String(value ?? '');
-  return redactSecretAssignments(text
+  const redacted = text
     .replace(AUTH_HEADER_VALUE_RE, `$1${REDACTED_VALUE}`)
     .replace(BEARER_VALUE_RE, `$1${REDACTED_VALUE}`)
-    .replace(URL_USERINFO_RE, `$1${REDACTED_VALUE}$3`));
+    .replace(URL_USERINFO_RE, `$1${REDACTED_VALUE}$3`);
+  return redactSecretAssignments(truncated ? redacted.replace(URL_USERINFO_CUT_RE, `$1${REDACTED_VALUE}`) : redacted, { truncated });
 }
