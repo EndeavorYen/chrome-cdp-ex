@@ -49,6 +49,13 @@
 * `responsive-audit` keeps the requested viewport as each entry's label. A mobile size without
   `<meta viewport>` used to be reported as its 980px layout viewport (`980x2120` for `390x844`); the
   layout size now appears as `layout=980x2120` / `layoutViewport`.
+* Windows: a CDP attach miss, `doctor` and `spawn-debug-browser --daily-profile` no longer run
+  `chrome.exe --version` to learn the browser's major version. Chrome on Windows is a GUI program, so that
+  call opened a real browser window (or handed the command line to the open browser) and blocked for the
+  full 5 s timeout. On win32, and for a Windows `.exe` reached from WSL, the major now comes from the
+  highest `<x.y.z.w>` folder next to the executable (Chrome, Edge and Brave all ship this layout), or is
+  unknown when no such folder exists. macOS keeps `Info.plist`; Linux keeps `--version`
+  ([#456](https://github.com/EndeavorYen/chrome-cdp-ex/issues/456)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 

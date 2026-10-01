@@ -20984,7 +20984,7 @@ function detectDefaultBrowserName({
 function detectRuntimeEnvironment({
   platform = process.platform,
   env = process.env,
-  fs = { existsSync },
+  fs = { existsSync, readdirSync },
   defaultBrowser,
   spawnSyncFn,
 } = {}) {
@@ -21617,7 +21617,7 @@ function formatDoctorOutput(checks, { format = 'text' } = {}) {
 
 async function runDoctorChecks(opts = {}) {
   const safeLstat = (p) => { try { return lstatSync(p); } catch { return null; } };
-  const fs = opts.fs || { existsSync, lstatSync: safeLstat };
+  const fs = opts.fs || { existsSync, lstatSync: safeLstat, readdirSync };
   const checks = [];
   checks.push(checkNode(opts.nodeVersion, {
     home: opts.home,
@@ -21737,10 +21737,40 @@ function parseChromiumMajor(text) {
   return Number.isFinite(major) ? major : null;
 }
 
+const CHROMIUM_VERSION_DIR_RE = /^\d+\.\d+\.\d+\.\d+$/;
+
+// Windows Chromium installs (Chrome, Edge, Brave) keep the version-named
+// folder next to the exe: ...\Application\154.0.8037.92\. An update keeps the
+// old folder until restart, so the highest one is the installed version.
+function windowsChromiumMajorFromVersionDir(exe, fs) {
+  if (typeof fs?.readdirSync !== 'function') return null;
+  try {
+    const best = fs.readdirSync(win32Path.dirname(String(exe)))
+      .map(entry => (typeof entry === 'string' ? entry : entry?.name))
+      .filter(name => CHROMIUM_VERSION_DIR_RE.test(String(name || '')))
+      .map(name => name.split('.').map(Number))
+      .sort((a, b) => {
+        for (let i = 0; i < 4; i += 1) if (a[i] !== b[i]) return b[i] - a[i];
+        return 0;
+      })[0];
+    return best ? best[0] : null;
+  } catch {
+    return null;
+  }
+}
+
 function detectChromiumMajorVersion(exe, extras = {}) {
   if (!exe) return null;
-  const fs = extras.fs || { existsSync, readFileSync };
+  const fs = extras.fs || { existsSync, readFileSync, readdirSync };
   const spawnSyncFn = extras.spawnSyncFn || spawnSync;
+  const platform = extras.platform || process.platform;
+  // Never execute a Windows browser to learn its version: `chrome.exe --version`
+  // is a GUI launch that opens a window (or hands off to the running browser)
+  // and blocks until the timeout (#456). That holds for a Windows .exe reached
+  // from WSL through interop too.
+  if (platform === 'win32' || /\.exe$/i.test(String(exe))) {
+    return windowsChromiumMajorFromVersionDir(exe, fs);
+  }
   const appMatch = String(exe).match(/^(.*\.app)\/Contents\/MacOS\//);
   if (appMatch) {
     const plist = `${appMatch[1]}/Contents/Info.plist`;
@@ -22280,7 +22310,7 @@ async function probeTcpPort({ host = DEFAULT_CDP_HOST, port, timeoutMs = 500, co
 
 async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
   const platform = deps.platform || process.platform;
-  const fs = deps.fs || { existsSync, mkdirSync };
+  const fs = deps.fs || { existsSync, mkdirSync, readdirSync };
   const launcher = deps.spawn || spawn;
   const probePort = deps.probeTcpPort || probeTcpPort;
   const waitForCdp = deps.waitForSpawnedCdp || waitForSpawnedCdp;
