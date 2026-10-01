@@ -370,12 +370,15 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
   if (
     lower.includes('element not found') ||
     lower.includes('could not resolve selector') ||
-    lower.includes('failed to find element')
+    lower.includes('failed to find element') ||
+    // #427: a named / text= click miss is a selector miss, not an unclassified browser rejection.
+    lower.includes('named control not found') ||
+    lower.includes('named control is not unique')
   ) {
     return {
       ...base,
       kind: 'selector',
-      reason: 'No current element matched the requested selector/ref.',
+      reason: 'No current element matched the requested selector, @ref, or visible name.',
       nextCommand: perceiveCommand,
       hints: [
         `Refresh available controls with \`${perceiveCommand}\`.`,
@@ -560,17 +563,51 @@ export function actionFailurePage(target = {}, extra = {}) {
   return { title, url };
 }
 
+const CLASSIFIED_ERROR_LINE_RE = /^Error: [^\n]*\nKind: /;
+
 export function isClassifiedActionFailureText(message) {
   const text = String(message || '').trim();
-  return text.startsWith('Action failure:') || text.startsWith('Kind:');
+  return text.startsWith('Action failure:')
+    || text.startsWith('Kind:')
+    || CLASSIFIED_ERROR_LINE_RE.test(text);
+}
+
+const ACTION_FAILURE_ERROR_MAX_CHARS = 600;
+
+// #427: a failed action must always say what went wrong. `Kind: unknown` plus a Next
+// command reads like a receipt, so agents took it for success. The Error line is the
+// original message on one bounded line, without a doubled `Error:` prefix.
+export function actionFailureErrorLine(message, fallback = '') {
+  const oneLine = String(message || '').replace(/\s+/g, ' ').trim().replace(/^Error:\s*/i, '')
+    || String(fallback || '').replace(/\s+/g, ' ').trim()
+    || 'action failed';
+  const bounded = oneLine.length > ACTION_FAILURE_ERROR_MAX_CHARS
+    ? `${oneLine.slice(0, ACTION_FAILURE_ERROR_MAX_CHARS - 1)}…`
+    : oneLine;
+  return `Error: ${bounded}`;
+}
+
+// `detailLines` sit between Kind and Next (e.g. fill's `Value: "0.5" → ""`); empty entries are dropped.
+export function formatActionFailureLines({ message = '', reason = '', kind = 'unknown', detailLines = [], nextCommand = '' } = {}) {
+  return [
+    actionFailureErrorLine(message, reason),
+    `Kind: ${kind || 'unknown'}`,
+    ...detailLines.filter(Boolean),
+    ...(nextCommand ? [`Next: ${nextCommand}`] : []),
+  ].join('\n');
 }
 
 export function formatActionFailure(err, context = {}) {
   const message = actionFailureMessage(err);
   if (isClassifiedActionFailureText(message)) return message;
   const failure = classifyActionFailure(err, context);
-  const valueLine = formatFillValueLine(failure);
-  return [`Kind: ${failure.kind}`, ...(valueLine ? [valueLine] : []), `Next: ${failure.nextCommand}`].join('\n');
+  return formatActionFailureLines({
+    message: failure.originalMessage,
+    reason: failure.reason,
+    kind: failure.kind,
+    detailLines: [formatFillValueLine(failure)],
+    nextCommand: failure.nextCommand,
+  });
 }
 
 export function recoveryCommandArg(value) {
