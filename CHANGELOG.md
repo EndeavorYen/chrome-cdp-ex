@@ -81,6 +81,21 @@
   3 s budget is now a hard limit: each connect and request step gets min(1.5 s, time left), where a step
   started near the end used to run its full 1.5 s (worst case about 9 s)
   ([#440](https://github.com/EndeavorYen/chrome-cdp-ex/issues/440)).
+* Background mode turned on by `open --background` now survives a restart of that tab's daemon (20 min
+  idle exit, crash). `open --background` records the mode for its tab (`cdp-<targetId>.mode.json` in the
+  runtime dir; `closetab` removes it and only the newest 64 are kept), and a starting daemon reads it, so it attaches
+  without `Target.activateTarget` even when `CDP_BACKGROUND` is unset. Before, the restarted daemon
+  activated the tab and stole focus. With the mode off nothing is recorded and the CDP calls are unchanged
+  ([#441](https://github.com/EndeavorYen/chrome-cdp-ex/issues/441)).
+* The relaunch-same-profile hint for a `spawn-debug-browser --background` profile now repeats
+  `--background`. The anti-throttling flags it adds are recorded with the other launch flags; the
+  `spawn-debug-browser` form maps the full set back to `--background` (which also minimizes the window
+  again), and the raw browser line replays the flags themselves. `--headless` and the browser name were
+  already repeated since #431. Profile folders are now compared as resolved paths (`.`, `..`, doubled and
+  trailing separators folded, one slash style, case-insensitive for Windows drive and UNC paths), so a
+  differently spelled folder no longer shows up as a second candidate or drops the record's
+  spawn-debug-browser tag. The temp-folder check reads the system temp path once per process
+  ([#438](https://github.com/EndeavorYen/chrome-cdp-ex/issues/438)).
 * `npm run smoke:live` runs again end to end (96 steps). Its assertions had drifted from the compact
   `doctor`, compact `report` and exit-1-on-failed-action receipts. It now pins `--window-size=1280,900`:
   in headless Chromium's default 800 px window, the page's fixed sidebar covered the buttons. It adds

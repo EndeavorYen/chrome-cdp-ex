@@ -1218,6 +1218,89 @@ function listDaemonRecords({ runtimeDir = RUNTIME_DIR, readdir = readdirSync, re
   }
 }
 
+// Per-tab mode record (#441). `open --background` turns background mode on for the tab it creates.
+// The daemon record goes away when its daemon exits, so the mode lives in its own small file: a daemon
+// restarted later for that tab (idle exit, crash) reads it and skips Target.activateTarget without
+// CDP_BACKGROUND. `closetab` removes it; only the newest TAB_MODE_RECORDS_MAX are kept, so records of
+// tabs closed another way do not pile up.
+const TAB_MODE_SCHEMA = 'chrome-cdp-ex.tab-mode.v1';
+const TAB_MODE_SUFFIX = '.mode.json';
+const TAB_MODE_RECORDS_MAX = 64;
+
+function tabModePath(targetId, runtimeDir = RUNTIME_DIR) {
+  const safeTarget = String(targetId || 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_');
+  return resolve(runtimeDir, `cdp-${safeTarget}${TAB_MODE_SUFFIX}`);
+}
+
+function parseTabModeRecord(text) {
+  try {
+    const record = JSON.parse(text);
+    if (record?.schema !== TAB_MODE_SCHEMA || typeof record.targetId !== 'string' || !record.targetId) return null;
+    return { targetId: record.targetId, background: record.background === true, setAt: String(record.setAt || '') };
+  } catch {
+    return null;
+  }
+}
+
+function listTabModeRecords({ runtimeDir = RUNTIME_DIR, readdir = readdirSync, reader = readFileSync } = {}) {
+  try {
+    return readdir(runtimeDir)
+      .filter(name => name.startsWith('cdp-') && name.endsWith(TAB_MODE_SUFFIX))
+      .map(name => {
+        try {
+          const record = parseTabModeRecord(reader(resolve(runtimeDir, name), 'utf8'));
+          return record ? { ...record, path: resolve(runtimeDir, name) } : null;
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function writeTabBackgroundMode(targetId, { runtimeDir = RUNTIME_DIR, writer = writeFileSync, remover = unlinkSync, now = Date.now } = {}) {
+  try {
+    mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+    writer(tabModePath(targetId, runtimeDir), JSON.stringify({
+      schema: TAB_MODE_SCHEMA,
+      targetId: String(targetId),
+      background: true,
+      setAt: new Date(now()).toISOString(),
+    }), { mode: 0o600 });
+  } catch {
+    return false;
+  }
+  const records = listTabModeRecords({ runtimeDir });
+  if (records.length > TAB_MODE_RECORDS_MAX) {
+    records.sort((a, b) => a.setAt.localeCompare(b.setAt));
+    for (const record of records.slice(0, records.length - TAB_MODE_RECORDS_MAX)) {
+      try { remover(record.path); } catch {}
+    }
+  }
+  return true;
+}
+
+function readTabBackgroundMode(targetId, { runtimeDir = RUNTIME_DIR, reader = readFileSync } = {}) {
+  try {
+    const record = parseTabModeRecord(reader(tabModePath(targetId, runtimeDir), 'utf8'));
+    return Boolean(record && record.targetId === String(targetId) && record.background);
+  } catch {
+    return false;
+  }
+}
+
+function removeTabMode(targetId, { runtimeDir = RUNTIME_DIR, remover = unlinkSync } = {}) {
+  try { remover(tabModePath(targetId, runtimeDir)); } catch {}
+}
+
+// Background mode for a starting tab daemon: CDP_BACKGROUND, or the mode `open --background` recorded
+// for this tab (#441).
+function daemonBackgroundMode(targetId, { env = process.env, runtimeDir = RUNTIME_DIR, reader } = {}) {
+  return isBackgroundMode(env) || readTabBackgroundMode(targetId, { runtimeDir, ...(reader ? { reader } : {}) });
+}
+
 function emptyAliasStore() {
   return {
     schema: 'chrome-cdp-ex.aliases.v1',
@@ -1297,10 +1380,17 @@ function normalizeCdpEndpointHistoryEntry(raw) {
   return entry;
 }
 
-// Same directory spelled `C:\x\y`, `c:/x/y/` or `C:/x/y` is one profile (Windows paths are case-insensitive).
-function cdpProfileKey(profileDir) {
-  const text = String(profileDir || '').replace(/\\/g, '/').replace(/\/+$/, '');
-  return /^[a-z]:\//i.test(text) ? text.toLowerCase() : text;
+// One key per profile folder (#438): the resolved path (`.`, `..`, doubled and trailing separators
+// folded), one slash style, and lower case for Windows paths (drive letter or UNC, or any path on
+// win32), which are case-insensitive. `C:\x\y`, `c:/x/./y/` and `C:/x/y` are one profile.
+function cdpProfileKey(profileDir, platform = process.platform) {
+  const text = String(profileDir || '');
+  if (!text) return '';
+  const api = pathApiForRoot(text, platform);
+  let resolved = text;
+  try { resolved = api.resolve(text); } catch {}
+  const key = resolved.replace(/\\/g, '/');
+  return api === win32Path || platform === 'win32' ? key.toLowerCase() : key;
 }
 
 function mergeCdpEndpointHistoryEntry(a, b) {
@@ -1412,26 +1502,40 @@ function rememberLastCdpEndpoint(record, opts = {}) {
   }
   if (history.length) next.history = history;
   const current = next.profileDir
-    ? history.find(item => item.port === String(next.port) && item.profileDir === next.profileDir)
+    ? history.find(item => item.port === String(next.port) && cdpProfileKey(item.profileDir) === cdpProfileKey(next.profileDir))
     : null;
   if (current?.via) next.via = current.via;
   else delete next.via;
   return writeLastCdpEndpoint(next, opts);
 }
 
+// The system temp folder as a lower-case profile key, read once per process (#438): ranking calls the
+// temp check inside sort comparators.
+function createSystemTempRootReader(read = tmpdir) {
+  let key;
+  return () => {
+    if (key === undefined) {
+      try { key = cdpProfileKey(read() || '').toLowerCase(); } catch { key = ''; }
+    }
+    return key;
+  };
+}
+const systemTempRootKey = createSystemTempRootReader();
+
 // A profile under a temp dir (or a disposable chrome-cdp-ex-* spawn dir) is a leftover of a test
 // or one-off spawn, never the profile to recover a logged-in session into (#416).
-function isTempCdpProfileDir(profileDir) {
+// `tempRoot` overrides the system temp folder (tests).
+function isTempCdpProfileDir(profileDir, { tempRoot } = {}) {
   const normalized = String(profileDir || '').replace(/\\/g, '/');
   if (!normalized) return false;
   if (isIsolatedChromeCdpExProfileDir(normalized)) return true;
   if (/^\/(?:private\/)?tmp\//i.test(normalized) || /(?:^|\/)var\/folders\//i.test(normalized)) return true;
   if (/^[a-z]:\/(?:windows\/)?temp\//i.test(normalized) || /\/appdata\/local\/temp\//i.test(normalized)) return true;
-  try {
-    const root = String(tmpdir() || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-    if (root && normalized.toLowerCase().startsWith(`${root}/`)) return true;
-  } catch {}
-  return false;
+  // Fallback: anything under the system temp folder (TMPDIR / TEMP pointing elsewhere).
+  const root = tempRoot === undefined ? systemTempRootKey() : cdpProfileKey(tempRoot).toLowerCase();
+  // A temp folder at a filesystem root (`/`, `c:/`) would make every profile temp: ignore it.
+  if (!root || /^(?:[a-z]:)?\/$/.test(root)) return false;
+  return cdpProfileKey(profileDir).toLowerCase().startsWith(root.endsWith('/') ? root : `${root}/`);
 }
 
 // Profiles plausibly behind `port`, best first: spawn-debug-browser-recorded persistent, other
@@ -1592,10 +1696,11 @@ async function resolveOccupantProfileDir({
 }
 
 // Browser flags worth replaying when a profile is relaunched (#426): the ones a launch can depend on
-// (headless, sandbox, GPU, shared memory) and the bind address. The URL, port, profile and the flags
-// Chromium adds on its own in headless mode (--ozone-*, --use-angle, ...) are left out.
-const CDP_REPLAY_FLAG = /^--(?:headless(?:=[a-z]+)?|no-sandbox|disable-gpu|disable-dev-shm-usage|remote-debugging-address=[\w.:[\]-]+)$/i;
-const CDP_REPLAY_FLAGS_MAX = 8;
+// (headless, sandbox, GPU, shared memory), the bind address, and the background-mode anti-throttling
+// flags (#438). The URL, port, profile and the flags Chromium adds on its own in headless mode
+// (--ozone-*, --use-angle, ...) are left out.
+const CDP_REPLAY_FLAG = /^--(?:headless(?:=[a-z]+)?|no-sandbox|disable-gpu|disable-dev-shm-usage|remote-debugging-address=[\w.:[\]-]+|disable-backgrounding-occluded-windows|disable-renderer-backgrounding|disable-background-timer-throttling)$/i;
+const CDP_REPLAY_FLAGS_MAX = 10;
 
 function replayableLaunchFlags(argv) {
   const flags = [];
@@ -1624,8 +1729,11 @@ function relaunchFlagsFor(entry, display) {
 }
 
 // The same flags as spawn-debug-browser options, or null when one of them has no option there.
+// The full anti-throttling set is what `--background` adds, so it maps back to `--background`, which
+// also minimizes the window again (#438); a partial set has no option and keeps the raw line.
 function spawnOptionsForLaunchFlags(flags) {
   const options = [];
+  const throttle = new Set();
   for (const flag of flags) {
     const address = flag.match(/^--remote-debugging-address=(.+)$/i);
     if (address) {
@@ -1633,8 +1741,11 @@ function spawnOptionsForLaunchFlags(flags) {
     } else if (/^--headless(?:=new)?$/i.test(flag)) options.push('--headless');
     else if (/^--headless=/i.test(flag)) options.push(flag);
     else if (/^--(?:no-sandbox|disable-gpu)$/i.test(flag)) options.push(flag);
+    else if (BACKGROUND_THROTTLE_FLAGS.includes(flag.toLowerCase())) throttle.add(flag.toLowerCase());
     else return null;
   }
+  if (throttle.size === BACKGROUND_THROTTLE_FLAGS.length) options.push('--background');
+  else if (throttle.size) return null;
   return options;
 }
 
@@ -19211,7 +19322,7 @@ function parseClosetabArgs(args = []) {
 // #404: closing the only open tab can quit the browser. The page list is best-effort evidence; when it
 // cannot be read the tab is closed exactly as before. The success text is unchanged on purpose: validation
 // scripts and contract tests compare it byte for byte.
-async function closetabStr(cdp, targetId, { force = false } = {}) {
+async function closetabStr(cdp, targetId, { force = false, runtimeDir = RUNTIME_DIR } = {}) {
   if (!force) {
     let pages = null;
     try { pages = await getPages(cdp); } catch { pages = null; }
@@ -19220,6 +19331,8 @@ async function closetabStr(cdp, targetId, { force = false } = {}) {
     }
   }
   await cdpDomains(cdp).Target.closeTarget( { targetId });
+  // The tab is gone: its background-mode record (#441) has nothing left to apply to.
+  removeTabMode(targetId, { runtimeDir });
   return `Closed tab: ${targetId.slice(0, 8)}`;
 }
 
@@ -21598,7 +21711,7 @@ const SPAWN_DEBUG_BROWSER_NOTES = Object.freeze([
   'Default browser is edge, or $CDP_DEBUG_BROWSER when set.',
   'Port already in use: if the occupant does not answer /json/version (for example Chrome\'s chrome://inspect toggle on 9222), the command fails. Pick another port with --port N, then set CDP_PORT=N for list/perceive/stop.',
   'By default the launched browser gets --disable-features=CalculateNativeWinOcclusion. Without it, Windows marks a debug window that another window fully covers as hidden (document.visibilityState=hidden) and Chrome drops Input.* events, so click/press fail with no-input-events. Use --allow-occlusion to keep the browser default.',
-  'Background mode (--background or CDP_BACKGROUND=1) adds --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling and, unless headless, minimizes the launched window through Browser.setWindowBounds. The window can still appear briefly at launch. Run later commands with CDP_BACKGROUND=1 so they do not activate the tab.',
+  'Background mode (--background or CDP_BACKGROUND=1) adds --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling and, unless headless, minimizes the launched window through Browser.setWindowBounds. The window can still appear briefly at launch. Run later commands with CDP_BACKGROUND=1 so they do not activate the tab (tabs from `open --background` keep the mode on their own).',
   'Unknown flags print this help and launch nothing.',
 ]);
 
@@ -22637,7 +22750,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
 
   let sessionId;
   try {
-    sessionId = await attachDaemonTarget(cdp, targetId, { background: isBackgroundMode() });
+    sessionId = await attachDaemonTarget(cdp, targetId, { background: daemonBackgroundMode(targetId) });
     rememberSessionTarget(sessionId, targetId);
   } catch (e) {
     process.stderr.write(`Daemon: attach failed: ${e.message}\n`);
@@ -27200,6 +27313,8 @@ async function main(options = {}) {
     // Auto-attach: start daemon and wait for user to click "Allow debugging?"
     const sp = sockPath(targetId);
     if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
+    // The mode belongs to this tab, so a daemon restarted later without CDP_BACKGROUND keeps it (#441).
+    if (opts.background) writeTabBackgroundMode(targetId);
     const child = spawn(runtimeIdentity.execPath, [runtimeIdentity.scriptPath, '_daemon', targetId], {
       detached: true,
       stdio: 'ignore',
@@ -27820,7 +27935,9 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
   parseSpawnDebugBrowserArgs, SPAWN_DEBUG_BROWSER_FLAGS, detectBrowserPath, buildSpawnDebugBrowserPlan,
-  isBackgroundMode, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv, minimizeWindowsForTargets, minimizeBrowserWindows,
+  isBackgroundMode, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv,
+  tabModePath, writeTabBackgroundMode, readTabBackgroundMode, removeTabMode, listTabModeRecords, TAB_MODE_RECORDS_MAX,
+  daemonBackgroundMode, cdpProfileKey, lastCdpEndpointPath, createSystemTempRootReader, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,
   getWsUrl, waitForSpawnedCdp, formatSpawnDebugBrowserReadinessFailure, spawnDebugBrowserStr,
   isExistingBrowserSessionHandoff, formatExistingBrowserSessionHandoffError, formatDailyDefaultProfileCdpFailure,
