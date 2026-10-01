@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
@@ -14,7 +15,8 @@ const HTML5_COUNTS = { pointerdown: 1, mousedown: 1, pointermove: 1, mousemove: 
 
 // A fake CDP connection: Runtime.evaluate answers by marker, Input.* is recorded, and
 // `interceptOnMove` emits Input.dragIntercepted on that pressed mouseMoved (1-based) like
-// Chrome does once a draggable source starts an HTML5 drag.
+// Chrome does once a draggable source starts an HTML5 drag. `interceptOnSync` emits it on the
+// post-release renderer round trip instead: a dragstart handler that outlasted the gesture.
 function fakeCdp({
   source = SOURCE,
   dest = DEST,
@@ -23,6 +25,10 @@ function fakeCdp({
   interceptSupported = true,
   failOn = null,
   visibility = 'visible',
+  interceptOnSync = false,
+  moved = null,
+  scroll = [0, 0],
+  pointScroll = [0, 0],
 } = {}) {
   const calls = [];
   const handlers = new Map();
@@ -35,11 +41,16 @@ function fakeCdp({
     if (expression.includes('chrome-cdp-ex.drag-destination')) return dest;
     if (expression.includes('chrome-cdp-ex.drag-point')) {
       const [, x, y] = expression.match(/elementFromPoint\((-?[\d.]+), (-?[\d.]+)\)/);
-      return { ok: true, x: Number(x), y: Number(y), vw: 800, vh: 600, tag: 'UL', text: 'list' };
+      return { ok: true, x: Number(x), y: Number(y), vw: 800, vh: 600, tag: 'UL', text: 'list', scrollX: pointScroll[0], scrollY: pointScroll[1] };
     }
     if (expression.includes('__chromeCdpExDragProbe') && expression.includes('addEventListener')) return true;
-    if (expression.includes('__chromeCdpExDragProbe')) return counts == null ? null : { counts };
+    if (expression.includes('__chromeCdpExDragProbe')) return counts == null ? null : { counts, moved };
     if (expression.includes('visibilityState')) return visibility;
+    if (expression.includes('JSON.stringify([Math.round(window.scrollX)')) return JSON.stringify(scroll);
+    if (expression === '0') {
+      if (interceptOnSync) emit('Input.dragIntercepted', { data: DRAG_DATA });
+      return 0;
+    }
     throw new Error(`unexpected evaluate: ${expression.slice(0, 80)}`);
   };
   const cdp = {
@@ -68,7 +79,7 @@ function fakeCdp({
 function describeInput(call) {
   const { method, params } = call;
   if (method === 'Input.setInterceptDrags') return `setInterceptDrags ${params.enabled}`;
-  if (method === 'Input.dispatchDragEvent') return `${params.type} ${params.x},${params.y}`;
+  if (method === 'Input.dispatchDragEvent') return `${params.type} ${Math.round(params.x)},${Math.round(params.y)}`;
   return `${params.type} ${Math.round(params.x)},${Math.round(params.y)} buttons=${params.buttons}`;
 }
 
@@ -312,3 +323,130 @@ describe('#471 drag command surface', () => {
     expect(T.playwrightStepFromCommand({ command: ['drag', '@3', '#b'], replayable: true }).exported).toBe(false);
   });
 });
+
+describe('#471 review: a started drag is always dropped or cancelled', () => {
+  it('cancels a drag the page starts only after the release and fails as drag-incomplete', async () => {
+    const fake = fakeCdp({ interceptOnSync: true, counts: { pointerdown: 1, pointermove: 2, dragstart: 1, dragend: 1 } });
+    const error = await T.dragStr(fake.cdp, SID, ['#alpha', '#gamma', '--steps', '1'], new Map(), {}).catch(err => err);
+    expect(error.message).toMatch(/only after the mouse was released/);
+    expect(fake.inputCalls().map(describeInput)).toEqual([
+      'setInterceptDrags true',
+      'mouseMoved 100,50 buttons=0',
+      'mousePressed 100,50 buttons=1',
+      'mouseMoved 100,150 buttons=1',
+      'mouseReleased 100,150 buttons=0',
+      'dragCancel 100,150',
+      'setInterceptDrags false',
+    ]);
+    expect(fake.inputCalls().find(call => call.params.type === 'dragCancel').params.data).toEqual(DRAG_DATA);
+    expect(classifyActionFailure(error, { action: 'drag', target: { input: '#alpha', targetId: 'ABCDEF12' } }))
+      .toMatchObject({ kind: 'drag-incomplete', dispatched: true, nextCommand: 'cdp perceive ABCDEF12 --since-action' });
+    expect(fake.listening()).toBe(0);
+  });
+
+  it('cancels an intercepted drag when a drag event fails, then releases the button', async () => {
+    const fake = fakeCdp({
+      interceptOnMove: 1,
+      counts: HTML5_COUNTS,
+      failOn: (method, params) => method === 'Input.dispatchDragEvent' && params.type === 'dragOver',
+    });
+    await expect(T.dragStr(fake.cdp, SID, ['#alpha', '#gamma'], new Map(), {}))
+      .rejects.toThrow('Input.dispatchDragEvent exploded');
+    expect(fake.inputCalls().map(describeInput).slice(3)).toEqual([
+      'mouseMoved 100,60 buttons=1',
+      'dragEnter 100,150',
+      'dragOver 100,150',
+      'dragCancel 100,150',
+      'mouseReleased 100,60 buttons=0',
+      'setInterceptDrags false',
+    ]);
+  });
+
+  it('fails a drag whose dragstart got no drop or dragend, and cancels it', async () => {
+    const fake = fakeCdp({ counts: { pointerdown: 1, pointermove: 3, dragstart: 1 } });
+    const error = await T.dragStr(fake.cdp, SID, ['#alpha', '#gamma', '--pointer', '--steps', '3'], new Map(), {})
+      .catch(err => err);
+    expect(error.message).toMatch(/fired dragstart but no drop or dragend/);
+    expect(fake.inputCalls().map(describeInput).slice(-1)).toEqual(['dragCancel 100,150']);
+    expect(classifyActionFailure(error, { action: 'drag', target: { input: '#alpha', targetId: 'ABCDEF12' } }))
+      .toMatchObject({ kind: 'drag-incomplete' });
+  });
+
+  it('does not cancel a completed HTML5 drop', async () => {
+    const fake = fakeCdp({ interceptOnMove: 1, counts: HTML5_COUNTS });
+    await T.dragStr(fake.cdp, SID, ['#alpha', '#gamma'], new Map(), {});
+    expect(fake.inputCalls().some(call => call.params.type === 'dragCancel')).toBe(false);
+  });
+});
+
+describe('#471 review: reorders count as a change', () => {
+  it('reports the source moving among its siblings and hands it to the receipt state', async () => {
+    const fake = fakeCdp({ moved: '<LI> "Alpha" index 0 → 2 in <UL#sortable>' });
+    const state = {};
+    const text = await T.dragStr(fake.cdp, SID, ['#alpha', '#gamma'], new Map(), {}, state);
+    expect(text).toContain('order: <LI> "Alpha" index 0 → 2 in <UL#sortable>');
+    expect(state.orderChange).toBe('<LI> "Alpha" index 0 → 2 in <UL#sortable>');
+  });
+
+  it('records the element under the press point and its ancestors, then finds the moved one', () => {
+    const { window, list, items } = sortableWindow();
+    const context = { window, document: window.document, Array, String, JSON };
+    expect(runInNewContext(T.dragEventProbeInstallScript(10, 15), context)).toBe(true);
+    list.children = [items[1], items[2], items[0]];
+    const read = runInNewContext(T.dragEventProbeReadScript(), context);
+    expect(read.moved).toBe('<LI> "Alpha" index 0 → 2 in <UL#sortable>');
+    expect(runInNewContext(T.dragEventProbeInstallScript(10, 15), context)).toBe(true);
+    expect(runInNewContext(T.dragEventProbeReadScript(), context).moved).toBeNull();
+  });
+});
+
+describe('#471 review: @c destinations and off-viewport points', () => {
+  const cursorRefs = () => new Map([['c1', { x: 80, y: 130, w: 40, h: 40, sel: 'div.zone', text: 'Zone' }]]);
+
+  it('re-measures an @c drop point and names what is under it now', async () => {
+    const fake = fakeCdp();
+    const text = await T.dragStr(fake.cdp, SID, ['#alpha', '@c1', '--pointer', '--steps', '1'], cursorRefs(), {});
+    expect(fake.inputCalls().map(describeInput).slice(-1)).toEqual(['mouseReleased 100,150 buttons=0']);
+    expect(text).toContain('→ <UL> "list" (@c1)');
+  });
+
+  it('rejects an @c drop point the source scroll made stale', async () => {
+    const fake = fakeCdp({ scroll: [0, 0], pointScroll: [0, 400] });
+    const error = await T.dragStr(fake.cdp, SID, ['#alpha', '@c1'], cursorRefs(), {}).catch(err => err);
+    expect(error.message).toMatch(/drop point is stale/);
+    expect(fake.inputCalls()).toEqual([]);
+    expect(classifyActionFailure(error, { action: 'drag', target: { input: '#alpha', targetId: 'ABCDEF12' } }))
+      .toMatchObject({ kind: 'stale-ref', nextCommand: 'cdp perceive ABCDEF12 -C -d 8' });
+  });
+
+  it('classifies a drop point outside the viewport as not-in-viewport', async () => {
+    const fake = fakeCdp({ dest: { ...DEST, y: 900, hit: null } });
+    const error = await T.dragStr(fake.cdp, SID, ['#alpha', '#gamma'], new Map(), {}).catch(err => err);
+    expect(classifyActionFailure(error, { action: 'drag', target: { input: '#alpha', targetId: 'ABCDEF12' } }))
+      .toMatchObject({ kind: 'not-in-viewport', dispatched: false });
+  });
+});
+
+// A window with one <ul id="sortable"> of three <li>s; elementFromPoint always hits the first.
+function sortableWindow() {
+  const listeners = new Map();
+  const node = (tag, props = {}) => ({
+    tagName: tag,
+    id: '',
+    textContent: '',
+    isConnected: true,
+    getAttribute: () => null,
+    ...props,
+  });
+  const body = node('BODY');
+  const list = node('UL', { id: 'sortable', parentElement: body, children: [] });
+  body.children = [list];
+  const items = ['Alpha', 'Beta', 'Gamma'].map(text => node('LI', { textContent: text, parentElement: list }));
+  list.children = [...items];
+  const window = {
+    document: { elementFromPoint: () => items[0] },
+    addEventListener: (type, handler) => listeners.set(type, handler),
+    removeEventListener: type => listeners.delete(type),
+  };
+  return { window, list, items };
+}

@@ -707,6 +707,23 @@ that fires no `drop` event says the destination did not accept it (its `dragover
 A drag the page saw no events for fails closed with `Kind: no-input-events`; on a hidden background tab, Next is
 `CDP_BACKGROUND=0 cdp drag …`.
 
+A started HTML5 drag always ends with a `drop` or a `dragCancel`. If the page starts the drag only after the
+release (a slow `dragstart` handler), or fires `dragstart` with no `drop`/`dragend`, the drag is cancelled and the
+command fails with `Kind: drag-incomplete`; otherwise the tab would ignore mouse input until it reloads. A sortable
+reorder does not change the accessibility tree, so the receipt also compares the source's place among its siblings
+and reports `order: <LI> "A" index 0 → 2 in <UL#list>` as a change.
+
+Where the item lands depends on the library: the drop goes to the destination's centre with a single `dragOver`, so a
+list that inserts by the hovered item's midpoint may place it before the destination (another library may place it
+after). Drop at an `x,y` a little past the midpoint to choose a side. `--steps` adds moves (about 16 ms each) but does
+not hold the press longer, so libraries that start a drag only after a press delay (SortableJS `delay`, touch-style
+long press) may not activate. An `@c` destination is re-checked against the viewport and fails as `Kind: stale-ref`
+when scrolling the source moved the page; a destination outside the viewport fails as `Kind: not-in-viewport`.
+
+`--pointer` (and the fallback when `Input.setInterceptDrags` is unavailable) does not intercept: on a headed browser a
+draggable source can start a native OS drag there, which the physical mouse then drives. Prefer the default mode for
+draggable sources.
+
 ```bash
 cdp drag <target> '#list [data-id="a"]' '#list [data-id="c"]'   # reorder a pointer-based sortable list
 cdp drag <target> '#card' '#drop-zone' --html5 --format json     # HTML5 drag-and-drop, fail if it never starts

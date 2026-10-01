@@ -198,6 +198,9 @@ const DRAG_MAX_STEPS = 100;
 const DRAG_PRESS_HOLD_MS = 50;
 const DRAG_STEP_DELAY_MS = 16;
 const DRAG_INTERCEPT_WAIT_MS = 250;
+// After the release: how long to wait for a page whose dragstart handler is still running.
+const DRAG_LATE_START_SYNC_MS = 3000;
+const DRAG_LATE_START_GRACE_MS = 100;
 const LOADALL_DEFAULT_INTERVAL_MS = 1500;
 const LOADALL_DEFAULT_TIMEOUT_MS = 30_000;
 const LOADALL_MAX_TIMEOUT_MS = 5 * 60 * 1000;
@@ -16476,6 +16479,8 @@ function dragPointExpression(x, y) {
       vh: window.innerHeight,
       tag: el ? el.tagName : null,
       text: el ? (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim().substring(0, 80) : '',
+      scrollX: Math.round(window.scrollX),
+      scrollY: Math.round(window.scrollY),
     };
   })()`;
 }
@@ -16486,10 +16491,12 @@ function assertDragPointInViewport(point, role, label) {
   if (x >= 0 && y >= 0 && x < vw && y < vh) return;
   const where = role === 'start' ? 'source' : 'drop target';
   const after = role === 'start' ? '' : ' after the source was scrolled into view';
-  throw new Error(
+  const err = new Error(
     `drag: ${where} ${label} is outside the viewport${after} (point (${Math.round(x)}, ${Math.round(y)}), viewport ${Math.round(vw)}x${Math.round(vh)}). `
     + 'Scroll so both points are visible, or drop at x,y CSS pixels.'
   );
+  err.dragOffViewport = { point: role, x: Math.round(x), y: Math.round(y), vw: Math.round(vw), vh: Math.round(vh) };
+  throw err;
 }
 
 async function resolveDragSource(cdp, sid, input, refMap, refState) {
@@ -16514,8 +16521,12 @@ async function resolveDragDestination(cdp, sid, input, refMap, refState) {
     return { ...point, point: true };
   }
   if (isCursorRef(input)) {
+    // A cursor ref is a perceive-time point: check it is still in the viewport and report what
+    // is under it now. dragStr rejects it when scrolling the source moved the page.
     const r = resolveCursorRef(refMap, input, refState);
-    return { x: r.x + r.w / 2, y: r.y + r.h / 2, w: r.w, h: r.h, tag: r.sel, text: r.text, hit: null };
+    const point = JSON.parse(await evalStr(cdp, sid, dragPointExpression(r.x + r.w / 2, r.y + r.h / 2)));
+    assertDragPointInViewport(point, 'drop', `${input} (${Math.round(point.x)}, ${Math.round(point.y)})`);
+    return { ...point, w: r.w, h: r.h, cursorRef: true, label: r.text || r.sel };
   }
   if (isRef(input)) {
     const r = await resolveRefRectNoScroll(cdp, sid, refMap, input, refState, {
@@ -16540,9 +16551,18 @@ async function resolveDragDestination(cdp, sid, input, refMap, refState) {
   return r;
 }
 
-function dragEventProbeInstallScript() {
+function dragEventProbeInstallScript(x = null, y = null) {
   return `(function() {
     const key = ${JSON.stringify(DRAG_EVENT_PROBE_KEY)};
+    const px = ${JSON.stringify(x == null ? null : Number(x))};
+    const py = ${JSON.stringify(y == null ? null : Number(y))};
+    // The element under the press point and up to four ancestors, with each one's index among
+    // its parent's element children: a sortable reorder moves one of them, which the AX diff misses.
+    const placement = [];
+    let node = px == null ? null : document.elementFromPoint(px, py);
+    for (let depth = 0; node && node.parentElement && depth < 5; depth++, node = node.parentElement) {
+      placement.push({ node: node, parent: node.parentElement, index: Array.prototype.indexOf.call(node.parentElement.children, node) });
+    }
     const types = ['pointerdown', 'mousedown', 'pointermove', 'mousemove', 'pointerup', 'mouseup',
       'dragstart', 'dragenter', 'dragover', 'drop', 'dragend'];
     const existing = window[key];
@@ -16552,7 +16572,7 @@ function dragEventProbeInstallScript() {
     const counts = {};
     const handler = function(event) { counts[event.type] = (counts[event.type] || 0) + 1; };
     for (const type of types) window.addEventListener(type, handler, true);
-    window[key] = { types: types, handler: handler, counts: counts };
+    window[key] = { types: types, handler: handler, counts: counts, placement: placement };
     return true;
   })()`;
 }
@@ -16564,13 +16584,36 @@ function dragEventProbeReadScript() {
     if (!probe) return null;
     for (const type of probe.types || []) window.removeEventListener(type, probe.handler, true);
     try { delete window[key]; } catch (err) { window[key] = undefined; }
-    return { counts: probe.counts || {} };
+    const describe = function(el) {
+      if (!el || !el.tagName) return '<?>';
+      const id = el.id ? '#' + el.id : '';
+      const text = !id ? String(el.getAttribute('aria-label') || el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40) : '';
+      return '<' + el.tagName + id + '>' + (text ? ' "' + text + '"' : '');
+    };
+    let moved = null;
+    for (const entry of probe.placement || []) {
+      const parent = entry.node.parentElement;
+      if (!entry.node.isConnected) {
+        moved = describe(entry.node) + ' was replaced in ' + describe(entry.parent);
+        break;
+      }
+      if (parent !== entry.parent) {
+        moved = describe(entry.node) + ' moved from ' + describe(entry.parent) + ' to ' + describe(parent);
+        break;
+      }
+      const index = Array.prototype.indexOf.call(parent.children, entry.node);
+      if (index !== entry.index) {
+        moved = describe(entry.node) + ' index ' + entry.index + ' → ' + index + ' in ' + describe(parent);
+        break;
+      }
+    }
+    return { counts: probe.counts || {}, moved: moved };
   })()`;
 }
 
-async function installDragEventProbe(cdp, sid) {
+async function installDragEventProbe(cdp, sid, point = {}) {
   try {
-    return (await evalStr(cdp, sid, dragEventProbeInstallScript())) === 'true';
+    return (await evalStr(cdp, sid, dragEventProbeInstallScript(point.x, point.y))) === 'true';
   } catch {
     return false;
   }
@@ -16579,7 +16622,8 @@ async function installDragEventProbe(cdp, sid) {
 async function readDragEventProbe(cdp, sid) {
   try {
     const parsed = JSON.parse(await evalStr(cdp, sid, dragEventProbeReadScript()));
-    return parsed && typeof parsed.counts === 'object' && parsed.counts ? parsed.counts : null;
+    if (!parsed || typeof parsed.counts !== 'object' || !parsed.counts) return null;
+    return { counts: parsed.counts, moved: typeof parsed.moved === 'string' ? parsed.moved : null };
   } catch {
     return null;
   }
@@ -16611,6 +16655,28 @@ function dragNoPageEventsError(from, to, visibility = 'unknown') {
   return err;
 }
 
+// #471 review: a drag the page started but that never got a drop or a cancel leaves the
+// renderer in drag mode, and the tab then ignores CDP mouse input until it reloads.
+function dragIncompleteError(from, fromInput, reason) {
+  const why = reason === 'late'
+    ? 'the page started an HTML5 drag only after the mouse was released (its dragstart handler ran longer than the gesture), so nothing was dropped. The drag was cancelled with Input.dispatchDragEvent dragCancel so the tab keeps taking input.'
+    : 'the page fired dragstart but no drop or dragend, so the drag never finished. A dragCancel was sent so the tab keeps taking input.';
+  const err = new Error(`drag: ${why} Source: ${dragElementLabel(from, fromInput)}.`);
+  err.dragIncomplete = { reason };
+  return err;
+}
+
+function dragStaleCursorRefError(input) {
+  return new Error(
+    `drag: the ${input} drop point is stale: perceive measured it before the source was scrolled into view, and the page has scrolled since. `
+    + 'Run perceive -C again, or drop at x,y CSS pixels.'
+  );
+}
+
+async function dispatchDragEventStep(cdp, sid, params) {
+  return cdpDomains(cdp).Input.dispatchDragEvent(params, sid);
+}
+
 function dragNotStartedError(from, fromInput) {
   return new Error(
     `drag --html5: Chrome did not start an HTML5 drag from ${dragElementLabel(from, fromInput)} (it is not draggable, or its dragstart handler cancelled the drag). `
@@ -16638,6 +16704,8 @@ async function dispatchDrag(cdp, sid, from, to, { steps = DRAG_DEFAULT_STEPS, mo
   let interceptUnavailable = null;
   let pressedAt = null;
   let moves = 0;
+  let dropSent = false;
+  let cancelSent = false;
   try {
     if (mode !== 'pointer') {
       try {
@@ -16671,14 +16739,37 @@ async function dispatchDrag(cdp, sid, from, to, { steps = DRAG_DEFAULT_STEPS, mo
     const html5 = Boolean(data);
     if (html5) {
       for (const type of ['dragEnter', 'dragOver', 'drop']) {
-        await cdpDomains(cdp).Input.dispatchDragEvent({ type, x: to.x, y: to.y, data, modifiers: 0 }, sid);
+        await dispatchDragEventStep(cdp, sid, { type, x: to.x, y: to.y, data, modifiers: 0 });
       }
+      dropSent = true;
     }
     await dispatchClickMouseEvent(cdp, sid, { ...base, x: to.x, y: to.y, type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1 });
     pressedAt = null;
+    if (!html5 && intercepting) {
+      // A dragstart handler still running at the release can start the drag afterwards. Wait for
+      // the renderer to finish that task (one round trip), then give the intercept a moment to land.
+      await evalStr(cdp, sid, '0', false, { timeoutMs: DRAG_LATE_START_SYNC_MS }).catch(() => {});
+      if (!data) {
+        let timer;
+        await Promise.race([
+          intercepted,
+          new Promise(resolve => { timer = setTimeout(resolve, DRAG_LATE_START_GRACE_MS); }),
+        ]);
+        clearTimeout(timer);
+      }
+      if (data) {
+        cancelSent = true;
+        await dispatchDragEventStep(cdp, sid, { type: 'dragCancel', x: to.x, y: to.y, data, modifiers: 0 }).catch(() => {});
+        return { mode: 'pointer', moves, lateStart: true };
+      }
+    }
     if (!html5 && mode === 'html5') return { mode: 'pointer', moves, notStarted: true };
     return { mode: html5 ? 'html5' : 'pointer', moves, interceptUnavailable };
   } finally {
+    // A started drag that got no drop keeps the renderer in drag mode: cancel it first.
+    if (data && !dropSent && !cancelSent) {
+      await dispatchDragEventStep(cdp, sid, { type: 'dragCancel', x: to.x, y: to.y, data, modifiers: 0 }).catch(() => {});
+    }
     // Never leave the left button held down in the page after a failed dispatch.
     if (pressedAt) {
       await dispatchClickMouseEvent(cdp, sid, { ...base, ...pressedAt, type: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1 })
@@ -16700,6 +16791,7 @@ function formatDragReceipt({ from, to, fromInput, toInput, sent, counts }) {
     : `mode: pointer — mousePressed, ${sent.moves} mouseMoved, mouseReleased ${path}`;
   const lines = [`Dragged ${fromLabel} → ${toLabel}`, mode];
   if (sent.interceptUnavailable) lines.push('Input.setInterceptDrags is unavailable here, so HTML5 drag-and-drop was not intercepted.');
+  if (sent.moved) lines.push(`order: ${sent.moved}`);
   if (counts) {
     const events = formatDragEventCounts(counts);
     lines.push(`page events: ${events || 'none'}`);
@@ -16710,27 +16802,51 @@ function formatDragReceipt({ from, to, fromInput, toInput, sent, counts }) {
   return lines.join('\n');
 }
 
-async function dragStr(cdp, sid, options, refMap, refState) {
+async function readDragScroll(cdp, sid) {
+  try {
+    return JSON.parse(await evalStr(cdp, sid, 'JSON.stringify([Math.round(window.scrollX), Math.round(window.scrollY)])'));
+  } catch {
+    return null;
+  }
+}
+
+// `state` is the action-receipt channel: `state.orderChange` makes a reorder count as a change.
+async function dragStr(cdp, sid, options, refMap, refState, state = null) {
   const opts = Array.isArray(options) ? parseDragArgs(options) : options;
+  const scrollBefore = isCursorRef(opts.to) ? await readDragScroll(cdp, sid) : null;
   const from = await resolveDragSource(cdp, sid, opts.from, refMap, refState);
   if (!(from.w > 0 && from.h > 0)) throw new Error(`drag: source ${dragElementLabel(from, opts.from)} has no size (hidden or not rendered)`);
   assertDragPointNotCovered(from, 'start', opts.from);
   const to = await resolveDragDestination(cdp, sid, opts.to, refMap, refState);
   assertDragPointNotCovered(to, 'drop', opts.to);
+  if (scrollBefore && to.cursorRef && (scrollBefore[0] !== to.scrollX || scrollBefore[1] !== to.scrollY)) {
+    throw dragStaleCursorRefError(opts.to);
+  }
   // Window capture listeners in the top document cannot see events inside an iframe.
   const framed = Boolean(parseFrameRef(opts.from) || parseFrameRef(opts.to));
-  const probe = framed ? false : await installDragEventProbe(cdp, sid);
+  const probe = framed ? false : await installDragEventProbe(cdp, sid, from);
   let sent;
-  let counts = null;
+  let readout = null;
   try {
     sent = await dispatchDrag(cdp, sid, from, to, opts);
   } finally {
-    if (probe) counts = await readDragEventProbe(cdp, sid);
+    if (probe) readout = await readDragEventProbe(cdp, sid);
   }
+  const counts = readout ? readout.counts : null;
   if (counts && !Object.values(counts).some(count => count > 0)) {
     throw dragNoPageEventsError(from, to, await probePageVisibility(cdp, sid));
   }
   if (sent.notStarted) throw dragNotStartedError(from, opts.from);
+  if (sent.lateStart) throw dragIncompleteError(from, opts.from, 'late');
+  if (counts && counts.dragstart > 0 && !(counts.drop > 0) && !(counts.dragend > 0)) {
+    // Covers --pointer and the no-interception fallback, where nothing else ends the drag.
+    await dispatchDragEventStep(cdp, sid, { type: 'dragCancel', x: to.x, y: to.y, data: { items: [], dragOperationsMask: 1 }, modifiers: 0 }).catch(() => {});
+    throw dragIncompleteError(from, opts.from, 'no-end');
+  }
+  if (readout?.moved) {
+    sent.moved = readout.moved;
+    if (state && typeof state === 'object') state.orderChange = readout.moved;
+  }
   return formatDragReceipt({ from, to, fromInput: opts.from, toInput: opts.to, sent, counts });
 }
 
@@ -25159,6 +25275,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     // Live fill state is a dispatch channel, not target metadata: keep it out of logs/receipts.
     const fillValueState = actionTarget.fillValueState || null;
     delete actionTarget.fillValueState;
+    const dragState = actionTarget.dragState || null;
+    delete actionTarget.dragState;
     const wrappedDispatch = async () => {
       try {
         const snapshotControls = shouldSnapshotFormControlState(action, actionTarget);
@@ -25183,6 +25301,12 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         }
         actionTarget.dispatchText = String(text || '');
         if (action === 'fill') applyFillValueState(actionTarget, fillValueState);
+        // #471: a sortable reorder changes sibling order, which the AX diff does not show.
+        if (action === 'drag' && dragState?.orderChange) {
+          actionTarget.controlStateChanged = true;
+          actionTarget.controlStateDiff = dragState.orderChange;
+          actionTarget.stateChangeLabel = 'Order changed';
+        }
         if (looksLikeClipboardControl(text) || isExpectedClipboardNoChange(actionTarget, text)) {
           actionTarget.expectedOutcome = 'clipboard-no-change';
         }
@@ -25242,7 +25366,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         return text;
       }
       if (actionTarget.controlStateChanged) {
-        const note = `Control state changed: ${actionTarget.controlStateDiff}`;
+        const note = `${actionTarget.stateChangeLabel || 'Control state changed'}: ${actionTarget.controlStateDiff}`;
         text = actionDomDiffShowsChange(text) ? `${note}\n${text}` : note;
       }
       const quietOpts = actionNetworkQuietOptions(action);
@@ -25508,7 +25632,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     drag: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const opts = parseDragArgs(fopts.args);
-      const value = await actionFeedback('drag', () => dragStr(cdp, sessionId, opts, refMap, refState), { input: opts.from, resolvedBy: 'selector-or-ref', label: `${opts.from} → ${opts.to}`, commandArgs: [...fopts.args] }, 'settle-diff', null, fopts);
+      // dragStr records a sibling-order change here; actionFeedback turns it into receipt state.
+      const dragState = {};
+      const value = await actionFeedback('drag', () => dragStr(cdp, sessionId, opts, refMap, refState, dragState), { input: opts.from, resolvedBy: 'selector-or-ref', label: `${opts.from} → ${opts.to}`, commandArgs: [...fopts.args], dragState }, 'settle-diff', null, fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
     emulate: async args => commandResult(

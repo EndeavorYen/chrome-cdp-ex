@@ -489,6 +489,52 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
     };
   }
 
+  if (action === 'drag' && ((err?.dragIncomplete && typeof err.dragIncomplete === 'object')
+    || lower.includes('the drag never finished') || lower.includes('only after the mouse was released'))) {
+    const sinceAction = `cdp perceive ${targetId} --since-action`;
+    const late = err?.dragIncomplete?.reason === 'late' || lower.includes('only after the mouse was released');
+    return {
+      ...base,
+      kind: 'drag-incomplete',
+      dispatched: true,
+      reason: late
+        ? 'The page started an HTML5 drag only after the mouse was released, so nothing was dropped; the drag was cancelled.'
+        : 'The page started an HTML5 drag that never got a drop or dragend; it was cancelled.',
+      nextCommand: sinceAction,
+      hints: [
+        `See what the gesture changed with \`${sinceAction}\` before retrying.`,
+        ...(late ? ['The dragstart handler is slow: retry with a longer gesture, for example `--steps 60` (about one second of moves).'] : []),
+        'Do not report the item as moved: no drop reached the destination.',
+      ],
+    };
+  }
+
+  if (action === 'drag' && ((err?.dragOffViewport && typeof err.dragOffViewport === 'object') || lower.includes('is outside the viewport'))) {
+    return {
+      ...base,
+      kind: 'not-in-viewport',
+      dispatched: false,
+      reason: 'A drag point is outside the viewport, so a real mouse drag cannot reach it. Nothing was sent.',
+      nextCommand: perceiveCommand,
+      hints: [
+        'Scroll so the source and the destination are both visible (the source is scrolled into view; the destination is not), then drag again with fresh refs.',
+        'Or drop at x,y CSS pixels inside the viewport.',
+      ],
+    };
+  }
+
+  if (action === 'drag' && lower.includes('drop point is stale')) {
+    const perceiveCursor = `cdp perceive ${targetId} -C -d 8`;
+    return {
+      ...base,
+      kind: 'stale-ref',
+      dispatched: false,
+      reason: 'The @c drop point was measured before the source was scrolled into view, so it no longer points at the same element.',
+      nextCommand: perceiveCursor,
+      hints: [`Refresh cursor refs with \`${perceiveCursor}\`, or drop at x,y CSS pixels.`],
+    };
+  }
+
   if (action === 'drag' && lower.includes('did not start an html5 drag')) {
     const sinceAction = `cdp perceive ${targetId} --since-action`;
     return {
@@ -1230,6 +1276,25 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
       { key: 'since-action', reason: 'Confirm the live handler or form control changed.' },
     ],
     avoid: ['treating mouse dispatch.ok as a successful click when the page received no events'],
+  },
+  'drag-incomplete': {
+    strategy: 'inspect-cancelled-drag',
+    priority: 'high',
+    verify: 'since-action',
+    intents: [
+      { key: 'since-action', reason: 'See what the cancelled drag changed before retrying.' },
+      { key: 'next-or-perceive', reason: 'Retry with a longer gesture or a different source.' },
+    ],
+    avoid: ['reporting a drag as done when the page never received a drop'],
+  },
+  'not-in-viewport': {
+    strategy: 'bring-into-view',
+    priority: 'high',
+    verify: 'perceive',
+    intents: [
+      { key: 'perceive', reason: 'Refresh refs after scrolling both drag points into view.' },
+    ],
+    avoid: ['retrying a drag whose destination is outside the viewport'],
   },
   'drag-not-started': {
     strategy: 'inspect-pointer-drag',

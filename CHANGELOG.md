@@ -8,8 +8,9 @@
   ([#471](https://github.com/EndeavorYen/chrome-cdp-ex/issues/471)). It presses at the source centre, moves in N
   steps with the button held, and releases at the destination. The gesture runs with `Input.setInterceptDrags`, so when
   the page starts an HTML5 drag the CLI finishes it with `dragEnter`/`dragOver`/`drop` and the intercepted data;
-  otherwise it stays a pointer drag. Both points are hit-tested (`Kind: covered`), the receipt lists the page events
-  it saw, and a drag the page saw nothing of fails closed. The live smoke reorders a sortable list and drops onto an
+  otherwise it stays a pointer drag. A started drag always ends in `drop` or `dragCancel` (`Kind: drag-incomplete`
+  otherwise), so the tab never stays stuck in drag mode. Both points are hit-tested (`Kind: covered`), the receipt lists
+  the page events it saw and reports a sibling reorder as a change, and a drag the page saw nothing of fails closed. The live smoke reorders a sortable list and drops onto an
   HTML5 drop zone.
 * The MCP server now uses more of the MCP protocol
   ([#465](https://github.com/EndeavorYen/chrome-cdp-ex/issues/465)):

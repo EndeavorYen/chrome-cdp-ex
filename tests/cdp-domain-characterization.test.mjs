@@ -413,8 +413,9 @@ describe('Phase 6 direct CDP characterization', () => {
   it('freezes every direct method, caller, session, and timeout boundary', () => {
     const inventory = directCdpInventory(source);
     const digest = `sha256:${createHash('sha256').update(JSON.stringify(inventory)).digest('hex')}`;
-    expect(inventory).toHaveLength(156);
-    expect(digest).toBe('sha256:18ac41f1f80b5338d144db042837148bf85ea3fc930b8f9050bcd7fccb42e452');
+    // #471 added dispatchDrag → Input.setInterceptDrags (on, off) and dispatchDragEventStep → Input.dispatchDragEvent.
+    expect(inventory).toHaveLength(159);
+    expect(digest).toBe('sha256:6dbd5b03a9f3cfcb9330274222a25cf4a81fbbfbd450e5eb13ddcf4e888dac51');
     expect([...new Set(inventory.map(entry => entry.timeout))].sort()).toEqual([
       '1000', '2000', '5000', '<default>',
       'CLICK_MOUSE_ACK_TIMEOUT_MS',
