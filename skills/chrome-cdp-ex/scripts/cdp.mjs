@@ -5581,6 +5581,9 @@ async function summaryStr(cdp, sid, consoleBuf, exceptionBuf, extra = {}) {
 }
 
 const MAX_ACTION_DELTA_ENTRIES = 5;
+const MAX_ACTION_DIALOG_ENTRIES = 5;
+const MAX_ACTION_DIALOG_TEXT_LINES = 3;
+const MAX_ACTION_DIALOG_MESSAGE_CHARS = 200;
 const MAX_ACTION_JSON_DOM_DIFF_CHARS = 800;
 const FILL_TYPEAHEAD_LIMIT = 10;
 const FILL_TYPEAHEAD_MAX_CHARS = 80;
@@ -5653,11 +5656,12 @@ function createActionResult({ action, target, dispatch, settle, effects, nextHin
   })))));
 }
 
-function createActionObservationBaseline({ consoleBuf = null, exceptionBuf = null, netReqBuf = null } = {}) {
+function createActionObservationBaseline({ consoleBuf = null, exceptionBuf = null, netReqBuf = null, dialogBuf = null } = {}) {
   return {
     console: typeof consoleBuf?.latest === 'function' ? consoleBuf.latest() : 0,
     exception: typeof exceptionBuf?.latest === 'function' ? exceptionBuf.latest() : 0,
     network: typeof netReqBuf?.latest === 'function' ? netReqBuf.latest() : 0,
+    dialog: typeof dialogBuf?.latest === 'function' ? dialogBuf.latest() : 0,
   };
 }
 
@@ -5751,10 +5755,71 @@ function compactNetworkDeltaEntry(entry = {}) {
   };
 }
 
-function buildActionObservationDelta({ consoleBuf = null, exceptionBuf = null, netReqBuf = null } = {}, baseline = {}) {
+function compactDialogUrl(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    if (/^https?:$/.test(url.protocol)) return compactActionText(`${url.origin}${compactActionUrl(raw)}`, 240);
+  } catch {}
+  return compactActionText(redactSensitiveString(raw), 240);
+}
+
+// A JavaScript dialog the daemon answered on the user's behalf during the action (#460).
+function compactDialogDeltaEntry(entry = {}) {
+  const url = compactDialogUrl(entry.url);
+  return {
+    type: compactActionText(entry.type || 'alert', 30),
+    message: compactActionText(redactSensitiveString(entry.message || ''), MAX_ACTION_DIALOG_MESSAGE_CHARS),
+    accepted: entry.accepted !== false,
+    ...(url ? { url } : {}),
+    ...(entry.handled === false ? { handled: false } : {}),
+  };
+}
+
+function normalizeDialogDelta(delta = {}) {
+  const entries = (Array.isArray(delta.entries) ? delta.entries : [])
+    .slice(0, MAX_ACTION_DIALOG_ENTRIES)
+    .map(compactDialogDeltaEntry);
+  return {
+    count: Math.max(numericDeltaCount(delta.count, entries.length), entries.length),
+    entries,
+  };
+}
+
+function actionDialogLine(dialog = {}) {
+  const message = dialog.message ? ` "${dialog.message}"` : '';
+  const answer = dialog.accepted === false ? 'dismiss' : 'accept';
+  if (dialog.handled === false) {
+    return `Dialog: ${dialog.type}${message} → ${answer} failed; the dialog may still be open`;
+  }
+  let note = '';
+  if (dialog.type === 'beforeunload') {
+    note = dialog.accepted === false
+      ? ' (navigation was cancelled; the page stayed)'
+      : ' (unsaved changes on the page being left were discarded)';
+  }
+  return `Dialog: ${dialog.type}${message} → ${answer}ed${note}`;
+}
+
+function actionDialogLines(effects = {}) {
+  const dialogs = Array.isArray(effects.dialogs) ? effects.dialogs : [];
+  if (!dialogs.length) return [];
+  const lines = dialogs.slice(0, MAX_ACTION_DIALOG_TEXT_LINES).map(actionDialogLine);
+  const more = dialogs.length - lines.length + numericDeltaCount(effects.dialogsOmitted, 0);
+  if (more > 0) lines.push(`Dialog: and ${more} more`);
+  return lines;
+}
+
+function buildActionObservationDelta({ consoleBuf = null, exceptionBuf = null, netReqBuf = null, dialogBuf = null } = {}, baseline = {}) {
   const consoleEntries = typeof consoleBuf?.since === 'function' ? consoleBuf.since(baseline.console || 0) : [];
   const exceptionEntries = typeof exceptionBuf?.since === 'function' ? exceptionBuf.since(baseline.exception || 0) : [];
   const networkEntries = typeof netReqBuf?.since === 'function' ? netReqBuf.since(baseline.network || 0) : [];
+  const dialogEntries = typeof dialogBuf?.since === 'function' ? dialogBuf.since(baseline.dialog || 0) : [];
+  // The ring buffer may have rotated out early dialogs; the sequence counter still counts them.
+  const dialogCount = typeof dialogBuf?.latest === 'function'
+    ? Math.max(dialogEntries.length, dialogBuf.latest() - (baseline.dialog || 0))
+    : dialogEntries.length;
   const consoleCompact = consoleEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(compactConsoleDeltaEntry);
   const exceptionCompact = exceptionEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(compactExceptionDeltaEntry);
   const networkCompact = networkEntries.slice(-MAX_ACTION_DELTA_ENTRIES).map(compactNetworkDeltaEntry);
@@ -5775,6 +5840,7 @@ function buildActionObservationDelta({ consoleBuf = null, exceptionBuf = null, n
       pending: networkEntries.filter(entry => entry.pending === true).length,
       entries: networkCompact,
     },
+    dialogs: normalizeDialogDelta({ count: dialogCount, entries: dialogEntries }),
   };
 }
 
@@ -6468,6 +6534,14 @@ function applyActionObservationDelta(actionResult, delta = {}) {
   actionResult.effects.console = consoleDelta.entries || [];
   actionResult.effects.exceptions = exceptionDelta.entries || [];
   actionResult.effects.network = networkDelta.entries || [];
+  // Optional (#460): present only when a dialog was answered during the action window.
+  const dialogDelta = normalizeDialogDelta(delta.dialogs || {});
+  if (dialogDelta.count > 0) {
+    actionResult.effects.dialogs = dialogDelta.entries;
+    if (dialogDelta.count > dialogDelta.entries.length) {
+      actionResult.effects.dialogsOmitted = dialogDelta.count - dialogDelta.entries.length;
+    }
+  }
   return applyActionReceipt(applyActionVerdict(applyActionRecommendation(applyActionOutcome(applyActionDiagnosis(actionResult)))));
 }
 
@@ -7334,6 +7408,8 @@ function compactFillReceiptForJson(result = {}) {
     typeahead,
   };
   if (targetId) receipt.targetPrefix = targetPrefixForDisplay(targetId);
+  const dialogs = result.effects?.dialogs;
+  if (Array.isArray(dialogs) && dialogs.length) receipt.dialogs = dialogs;
   return receipt;
 }
 
@@ -7402,7 +7478,11 @@ function actionSettleObserveOpts(targetId, actionTarget = {}, baselineOutput = n
 // URLs and dispatch text all embed raw URLs (#455).
 function formatActionResultOutput(result, opts = {}) {
   const output = formatActionResultOutputUnredacted(result, opts);
-  return opts.format === 'json' ? output : redactSensitiveString(output);
+  if (opts.format === 'json') return output;
+  // #460: every text receipt names the dialogs the daemon answered on the user's behalf.
+  const dialogLines = actionDialogLines(result?.effects || {});
+  const text = dialogLines.length ? [output, ...dialogLines].filter(Boolean).join('\n') : output;
+  return redactSensitiveString(text);
 }
 
 function formatActionResultOutputUnredacted(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false } = {}) {
@@ -7617,6 +7697,9 @@ function buildSemanticInteractionModel(actionResult = {}, opts = {}, observed = 
     verdict,
     assertions,
     matchedRequest,
+    ...(Array.isArray(actionResult.effects?.dialogs) && actionResult.effects.dialogs.length
+      ? { dialogs: actionResult.effects.dialogs }
+      : {}),
     actionEvidence: opts.evidence === 'full' ? actionResult : null,
   };
 }
@@ -7637,6 +7720,7 @@ function formatSemanticInteractionResult(model) {
       lines.push(`${assertion.kind}: ${assertion.message || assertion.status}`);
     }
   }
+  lines.push(...actionDialogLines(model));
   lines.push(`Verdict: ${model.verdict}`);
   if (model.verdict === 'fail') {
     lines.push('Kind: assertion');
@@ -8294,7 +8378,7 @@ async function runActionWithFeedback({ action, target = null, dispatch, feedback
     });
     await finalizeActionResult(result, { enrichActionResult, onActionResult });
     if (output.format === 'json') return formatActionResultOutput(result, output);
-    throw new Error(formatActionFailure(e, { action, target }));
+    throw new Error([formatActionFailure(e, { action, target }), ...actionDialogLines(result.effects)].join('\n'));
   }
   // #437: a click on a link that opened another tab says so in its dispatch text.
   const openedTab = CLICK_OUTCOME_WORD_ACTIONS.has(String(action || '').toLowerCase())
@@ -8505,6 +8589,10 @@ function compactActionEffectsModel(effects = {}) {
   compact.consoleDelta = compactActionDeltaModel(normalizeConsoleDelta(effects.consoleDelta || {}), ['errors', 'warnings']);
   compact.exceptionDelta = compactActionDeltaModel(normalizeExceptionDelta(effects.exceptionDelta || {}));
   compact.networkDelta = compactActionDeltaModel(normalizeNetworkDelta(effects.networkDelta || {}), ['failures', 'pending']);
+  if (Array.isArray(effects.dialogs) && effects.dialogs.length) {
+    compact.dialogs = effects.dialogs;
+    if (effects.dialogsOmitted > 0) compact.dialogsOmitted = effects.dialogsOmitted;
+  }
   const pageHealthIsActionable = effects.pageHealth && (
     effects.pageHealth.status !== 'populated'
     || effects.pageHealth.isBlank === true
@@ -16990,14 +17078,22 @@ async function handleOpeningJavaScriptDialog(cdp, fallbackSessionId, params, msg
   retries = 8,
   delayMs = 25,
 } = {}) {
-  if (dialogBuf && typeof dialogBuf.push === 'function') {
-    dialogBuf.push({
-      type: params?.type || 'alert',
-      message: params?.message || '',
-      defaultPrompt: params?.defaultPrompt || '',
-      ts: Date.now(),
-    });
-  }
+  // `accepted` is the answer sent on the user's behalf; action receipts report it (#460).
+  const entry = {
+    type: params?.type || 'alert',
+    message: params?.message || '',
+    defaultPrompt: params?.defaultPrompt || '',
+    url: params?.url || '',
+    accepted: Boolean(accept),
+    ts: Date.now(),
+  };
+  if (dialogBuf && typeof dialogBuf.push === 'function') dialogBuf.push(entry);
+  const result = await answerJavaScriptDialog(cdp, fallbackSessionId, params, msg, { accept, retries, delayMs });
+  entry.handled = result.ok === true;
+  return result;
+}
+
+async function answerJavaScriptDialog(cdp, fallbackSessionId, params, msg, { accept, retries, delayMs }) {
   const payload = javascriptDialogHandleParams(params, accept);
   const sessions = [];
   if (msg?.sessionId) sessions.push(msg.sessionId);
@@ -23135,7 +23231,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   // --- Dialog handling (alert/confirm/prompt/beforeunload) ---
   const dialogBuf = new RingBuffer(20);
   session.buffers.dialog = dialogBuf;
-  const dialogAutoAcceptRef = { value: true }; // auto-dismiss by default to prevent page lockups
+  // Auto-ACCEPT by default (confirm → OK, beforeunload → leave) so a dialog cannot lock the
+  // page; `dialog <target> dismiss` flips it. Action receipts report each answer (#460).
+  const dialogAutoAcceptRef = { value: true };
   const jsDialogs = createJavaScriptDialogSession();
   cdp.onEvent('Page.javascriptDialogOpening', (params, msg) => {
     jsDialogs.track(handleOpeningJavaScriptDialog(cdp, sessionId, params, msg, {
@@ -23275,7 +23373,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     }
     const baselineOutput = settleBaseline.output;
     const baselineOpts = settleBaseline.opts;
-    const observationBaseline = createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf });
+    const observationBaseline = createActionObservationBaseline({ consoleBuf, exceptionBuf, netReqBuf, dialogBuf });
     const actionStartedAt = Date.now();
     const observeAfterAction = observe || (() => observeActionDiffForTarget(actionTarget, baselineOutput, baselineOpts));
     let postActionPageHealth = null;
@@ -23399,7 +23497,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       enrichActionResult: async (actionResult) => {
         await pageInfoPromise;
         applyActionObservationDelta(actionResult, buildActionObservationDelta(
-          { consoleBuf, exceptionBuf, netReqBuf },
+          { consoleBuf, exceptionBuf, netReqBuf, dialogBuf },
           observationBaseline
         ));
         if (postActionPageHealth) actionResult.effects.pageHealth = postActionPageHealth;

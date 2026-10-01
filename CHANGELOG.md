@@ -85,6 +85,16 @@
   A socket error that arrives after the daemon has let go of a connection (an EPIPE on that reply when
   the client already closed) is now ignored instead of crashing the daemon
   ([#457](https://github.com/EndeavorYen/chrome-cdp-ex/issues/457)).
+* Action receipts now show the JavaScript dialogs the daemon answered on the user's behalf. The daemon
+  auto-accepts dialogs (the code comment said "auto-dismiss"), but receipts only diffed console,
+  exceptions and network, so a `confirm("Delete project?")` that a click accepted, or a `beforeunload`
+  prompt that `nav` / `reload` accepted (discarding unsaved edits), was invisible. The text receipt adds
+  `Dialog: confirm "Delete project?" → accepted` (at most three lines, then `Dialog: and N more`;
+  `beforeunload` says the unsaved changes were discarded, or that navigation was cancelled when
+  dismissed), and action JSON adds the optional `effects.dialogs[]` `{ type, message, accepted, url?,
+  handled? }` with a redacted message capped at 200 characters. Only dialogs opened during the action
+  are listed. The accept/dismiss behaviour itself is unchanged
+  ([#460](https://github.com/EndeavorYen/chrome-cdp-ex/issues/460)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 
