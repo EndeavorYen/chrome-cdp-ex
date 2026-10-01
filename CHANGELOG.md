@@ -119,6 +119,19 @@
   (`/proc/net/tcp{,6}` → `/proc/<pid>/fd`). The scan runs only when nothing else identified the
   profile and took 8–17 ms over about 850 processes; it records nothing when unsure and stays off for
   remote hosts and non-Linux platforms ([#478](https://github.com/EndeavorYen/chrome-cdp-ex/issues/478)).
+* An action after `perceive -i` no longer says `Outcome: no-change` when its only effect was text in a
+  non-interactive node, such as a status `<p>` going from `smooth:not-clicked` to `smooth:clicked`.
+  The settle diff reuses the last perceive's shape, and the `-i` shape drops that text, so both sides
+  of the diff were blind to it. The `-i` tree still prints controls only, but each `-i` perceive now
+  keeps the visible StaticText it hid as diff-only lines, and the action settle, `perceive
+  --since-action` and `perceive -i --diff` compare them. Refs and the printed tree are unchanged, and a
+  click that changes nothing is still `no-change`. Text that changes on its own (clocks, tickers, media
+  timers) now also counts after `-i`, as it already did for the default shape: check the text sample
+  before crediting the action, or `clock freeze` Date-driven clocks. The diff-only text is capped at
+  2000 lines / 64K characters in document order, with a `[note]` line marking the cut, because `-d`
+  does not bound it. Priority text such as `saved` or `error` is listed under `+++ Added`, as in the
+  default shape
+  ([#487](https://github.com/EndeavorYen/chrome-cdp-ex/issues/487)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 
