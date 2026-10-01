@@ -17095,24 +17095,20 @@ async function handleOpeningJavaScriptDialog(cdp, fallbackSessionId, params, msg
     ts: Date.now(),
   };
   if (dialogBuf && typeof dialogBuf.push === 'function') dialogBuf.push(entry);
-  const result = await answerJavaScriptDialog(cdp, fallbackSessionId, params, msg, { accept, retries, delayMs });
-  entry.handled = result.ok === true;
-  return result;
-}
-
-async function answerJavaScriptDialog(cdp, fallbackSessionId, params, msg, { accept, retries, delayMs }) {
   const payload = javascriptDialogHandleParams(params, accept);
   const sessions = [];
   if (msg?.sessionId) sessions.push(msg.sessionId);
   if (fallbackSessionId && fallbackSessionId !== msg?.sessionId) sessions.push(fallbackSessionId);
   let lastError = null;
   if (sessions.length === 0) {
+    entry.handled = false;
     return { ok: false, error: new Error('No page session available for JavaScript dialog handling') };
   }
   for (let attempt = 0; attempt < retries; attempt++) {
     for (const sid of sessions) {
       try {
         await cdpDomains(cdp).Page.handleJavaScriptDialog(payload, sid);
+        entry.handled = true;
         return { ok: true, sessionId: sid, attempt };
       } catch (error) {
         lastError = error;
@@ -17120,6 +17116,7 @@ async function answerJavaScriptDialog(cdp, fallbackSessionId, params, msg, { acc
     }
     if (attempt + 1 < retries) await sleep(delayMs);
   }
+  entry.handled = false;
   return { ok: false, error: lastError };
 }
 
