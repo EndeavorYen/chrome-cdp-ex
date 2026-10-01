@@ -5797,9 +5797,17 @@ function actionDialogLine(dialog = {}) {
   if (dialog.type === 'beforeunload') {
     note = dialog.accepted === false
       ? ' (navigation was cancelled; the page stayed)'
-      : ' (unsaved changes on the page being left were discarded)';
+      : ' (any unsaved changes on the page being left were discarded)';
   }
   return `Dialog: ${dialog.type}${message} → ${answer}ed${note}`;
+}
+
+// Optional `dialogs` / `dialogsOmitted` fields for models derived from an action result.
+function actionDialogFields(effects = {}) {
+  const dialogs = Array.isArray(effects?.dialogs) ? effects.dialogs : [];
+  if (!dialogs.length) return {};
+  const omitted = numericDeltaCount(effects.dialogsOmitted, 0);
+  return { dialogs, ...(omitted > 0 ? { dialogsOmitted: omitted } : {}) };
 }
 
 function actionDialogLines(effects = {}) {
@@ -7408,8 +7416,7 @@ function compactFillReceiptForJson(result = {}) {
     typeahead,
   };
   if (targetId) receipt.targetPrefix = targetPrefixForDisplay(targetId);
-  const dialogs = result.effects?.dialogs;
-  if (Array.isArray(dialogs) && dialogs.length) receipt.dialogs = dialogs;
+  Object.assign(receipt, actionDialogFields(result.effects));
   return receipt;
 }
 
@@ -7697,9 +7704,7 @@ function buildSemanticInteractionModel(actionResult = {}, opts = {}, observed = 
     verdict,
     assertions,
     matchedRequest,
-    ...(Array.isArray(actionResult.effects?.dialogs) && actionResult.effects.dialogs.length
-      ? { dialogs: actionResult.effects.dialogs }
-      : {}),
+    ...actionDialogFields(actionResult.effects),
     actionEvidence: opts.evidence === 'full' ? actionResult : null,
   };
 }
@@ -8589,10 +8594,7 @@ function compactActionEffectsModel(effects = {}) {
   compact.consoleDelta = compactActionDeltaModel(normalizeConsoleDelta(effects.consoleDelta || {}), ['errors', 'warnings']);
   compact.exceptionDelta = compactActionDeltaModel(normalizeExceptionDelta(effects.exceptionDelta || {}));
   compact.networkDelta = compactActionDeltaModel(normalizeNetworkDelta(effects.networkDelta || {}), ['failures', 'pending']);
-  if (Array.isArray(effects.dialogs) && effects.dialogs.length) {
-    compact.dialogs = effects.dialogs;
-    if (effects.dialogsOmitted > 0) compact.dialogsOmitted = effects.dialogsOmitted;
-  }
+  Object.assign(compact, actionDialogFields(effects));
   const pageHealthIsActionable = effects.pageHealth && (
     effects.pageHealth.status !== 'populated'
     || effects.pageHealth.isBlank === true
@@ -8976,6 +8978,7 @@ function appendSessionActionLog(session, actionResult, { ts = Date.now() } = {})
     exceptionSample: diagnostics.exceptionSample,
     networkSummary: diagnostics.networkSummary,
     networkSample: diagnostics.networkSample,
+    ...actionDialogFields(actionResult.effects),
     failure: actionResult.effects?.failure || null,
     diagnosis: actionResult.effects?.diagnosis || null,
     outcome: actionResult.outcome || buildActionOutcome(actionResult),
@@ -9054,6 +9057,7 @@ function compactReportActionEvidence(entry = {}) {
     consoleSummary: entry.consoleSummary || null,
     exceptionSummary: entry.exceptionSummary || null,
     networkSummary: entry.networkSummary || null,
+    ...actionDialogFields(entry),
     failure: entry.failure?.kind || entry.failure || null,
     diagnosis: entry.diagnosis?.kind || entry.diagnosis || null,
   };
@@ -9099,6 +9103,7 @@ function reportActionModel(entry = {}, index = 1, { compact = false } = {}) {
       exceptionSample: entry.exceptionSample || null,
       networkSummary: entry.networkSummary || null,
       networkSample: entry.networkSample || null,
+      ...actionDialogFields(entry),
       failure: entry.failure || null,
       diagnosis: entry.diagnosis || null,
     },
@@ -9363,6 +9368,7 @@ function formatSessionReport(session, { now = Date.now(), format = 'text', lastA
       if (entry.outcome?.status) lines.push(`   Outcome: ${entry.outcome.status}${entry.outcome.reason ? ` — ${entry.outcome.reason}` : ''}`);
       if (entry.verdict?.status) lines.push(`   Verdict: ${entry.verdict.status}${entry.verdict.reason ? ` — ${entry.verdict.reason}` : ''}`);
       if (effectiveCompact) {
+        for (const line of actionDialogLines(entry)) lines.push(`   ${line}`);
         if (entry.nextHint) lines.push(`   Next: ${normalizeReportTargetCommand(entry.nextHint, sourceTarget, model.targetPrefix)}`);
         continue;
       }
@@ -9381,6 +9387,7 @@ function formatSessionReport(session, { now = Date.now(), format = 'text', lastA
       if (entry.exceptionSample) lines.push(`   Exception sample: ${entry.exceptionSample}`);
       if (entry.networkSummary) lines.push(`   ${entry.networkSummary}`);
       if (entry.networkSample) lines.push(`   Network sample: ${entry.networkSample}`);
+      for (const line of actionDialogLines(entry)) lines.push(`   ${line}`);
       if (entry.diagnosis?.nextCommand && entry.diagnosis.status !== 'ok') {
         lines.push(`   Diagnostic next: ${normalizeReportTargetCommand(entry.diagnosis.nextCommand, sourceTarget, model.targetPrefix)}`);
       }

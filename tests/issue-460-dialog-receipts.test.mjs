@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 process.env.NODE_ENV = 'test';
 
@@ -107,7 +110,7 @@ describe('#460 auto-handled JavaScript dialogs appear in action receipts', () =>
 
     const { output: text } = await run('text');
     expect(text).toContain(`URL: ${NEXT_URL}`);
-    expect(text).toContain('Dialog: beforeunload → accepted (unsaved changes on the page being left were discarded)');
+    expect(text).toContain('Dialog: beforeunload → accepted (any unsaved changes on the page being left were discarded)');
 
     const json = JSON.parse((await run('json')).output);
     expect(json.effects.dialogs).toEqual([
@@ -190,6 +193,57 @@ describe('#460 auto-handled JavaScript dialogs appear in action receipts', () =>
     }).catch(error => error);
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toContain('Dialog: confirm "Discard draft?" → accepted');
+  });
+
+  it('carries dialogsOmitted into fill.v1 and the verify-click model', async () => {
+    const dialogBuf = new T.RingBuffer(20);
+    const { result } = await runAction({
+      action: 'fill',
+      dialogBuf,
+      duringDispatch: async () => {
+        for (let i = 1; i <= 7; i++) await openDialog(dialogBuf, { type: 'alert', message: `step ${i}` });
+      },
+    });
+    expect(result.effects.dialogs).toHaveLength(5);
+    expect(result.effects.dialogsOmitted).toBe(2);
+    const fill = JSON.parse(T.formatActionResultOutput(result, { format: 'json' }));
+    expect(fill.schema).toBe('chrome-cdp-ex.fill.v1');
+    expect(fill.dialogs).toHaveLength(5);
+    expect(fill.dialogsOmitted).toBe(2);
+    const model = T.buildSemanticInteractionModel(result, { selector: '#delete' });
+    expect(model.dialogsOmitted).toBe(2);
+    expect(T.formatSemanticInteractionResult(model)).toContain('Dialog: and 4 more');
+  });
+
+  it('report lists the dialogs answered during each action (text and JSON)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cdp-460-'));
+    try {
+      const dialogBuf = new T.RingBuffer(20);
+      const { result } = await runAction({
+        dialogBuf,
+        duringDispatch: () => openDialog(dialogBuf, { type: 'confirm', message: 'Delete project? token=abc123secret' }),
+      });
+      const state = T.createSessionState({
+        targetId: 'ABCDEF123456',
+        sessionId: 'sid',
+        logPath: join(dir, 'session.jsonl'),
+        screenshotDir: join(dir, 'shots'),
+      });
+      T.appendSessionActionLog(state, result);
+      expect(state.actionLog[0].dialogs).toEqual([
+        { type: 'confirm', message: 'Delete project? token=<redacted>', accepted: true },
+      ]);
+      for (const compact of [false, true]) {
+        const text = T.formatSessionReport(state, { compact });
+        expect(text).toContain('Dialog: confirm "Delete project? token=<redacted>" → accepted');
+        expect(text).not.toContain('abc123secret');
+        const json = JSON.parse(T.formatSessionReport(state, { format: 'json', compact }));
+        expect(JSON.stringify(json)).toContain('"type":"confirm"');
+        expect(JSON.stringify(json)).not.toContain('abc123secret');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('says so when the dialog could not be answered', async () => {

@@ -690,16 +690,16 @@ scripts/cdp.mjs dialog <target> accept       # set auto-accept mode (default)
 scripts/cdp.mjs dialog <target> dismiss      # set auto-dismiss mode
 ```
 
-Every action receipt lists the dialogs answered while that action ran (not the ones before it). The text receipt adds one line per dialog, at most three, then `Dialog: and N more`:
+Receipts report a dialog only when it was answered while an action command was running (from dispatch until the receipt is built). A dialog answered at any other time, for example by a timer between commands or during a read-only command, is not in any receipt; it appears only in `dialog <target>` history. The text receipt adds one line per dialog, at most three, then `Dialog: and N more`:
 
 ```text
 Dialog: confirm "Delete project?" → accepted
-Dialog: beforeunload → accepted (unsaved changes on the page being left were discarded)
+Dialog: beforeunload → accepted (any unsaved changes on the page being left were discarded)
 Dialog: beforeunload → dismissed (navigation was cancelled; the page stayed)
 Dialog: confirm "Leave?" → accept failed; the dialog may still be open
 ```
 
-Action JSON (`chrome-cdp-ex.action.v1`, including `--compact`) adds the optional `effects.dialogs[]`, present only when a dialog opened during the action: `{ type, message, accepted, url?, handled? }`. `message` is redacted and capped at 200 characters, `url` is the page that raised the dialog with sensitive query values redacted, and `handled: false` appears only when the answer could not be delivered. At most 5 entries are listed; `effects.dialogsOmitted` counts the rest. `fill --format json` (`chrome-cdp-ex.fill.v1`) and the `verify-click` model carry the same optional `dialogs` field.
+Action JSON (`chrome-cdp-ex.action.v1`, including `--compact`) adds the optional `effects.dialogs[]`, present only when a dialog opened during the action: `{ type, message, accepted, url?, handled? }`. `message` is redacted and capped at 200 characters, `url` is the page that raised the dialog with sensitive query values redacted, and `handled: false` appears only when the answer could not be delivered. At most 5 entries are listed; `effects.dialogsOmitted` counts the rest. `fill --format json` (`chrome-cdp-ex.fill.v1`) and the `verify-click` model carry the same optional `dialogs` / `dialogsOmitted` fields, and `report` shows the same `Dialog:` lines under each action (JSON: `evidence.dialogs`).
 
 ### Viewport emulation
 

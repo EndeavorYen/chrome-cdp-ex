@@ -90,10 +90,12 @@
   exceptions and network, so a `confirm("Delete project?")` that a click accepted, or a `beforeunload`
   prompt that `nav` / `reload` accepted (discarding unsaved edits), was invisible. The text receipt adds
   `Dialog: confirm "Delete project?" → accepted` (at most three lines, then `Dialog: and N more`;
-  `beforeunload` says the unsaved changes were discarded, or that navigation was cancelled when
-  dismissed), and action JSON adds the optional `effects.dialogs[]` `{ type, message, accepted, url?,
-  handled? }` with a redacted message capped at 200 characters. Only dialogs opened during the action
-  are listed. The accept/dismiss behaviour itself is unchanged
+  an accepted `beforeunload` says any unsaved changes on the page being left were discarded, a
+  dismissed one that navigation was cancelled), and action JSON adds the optional `effects.dialogs[]`
+  `{ type, message, accepted, url?, handled? }` with a redacted message capped at 200 characters
+  (plus `dialogsOmitted` past 5 entries; also in `fill.v1` and `verify-click`). `report` lists them per
+  action too. Only dialogs answered while an action runs are listed; the rest stay in `dialog`
+  history. The accept/dismiss behaviour itself is unchanged
   ([#460](https://github.com/EndeavorYen/chrome-cdp-ex/issues/460)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
