@@ -43,6 +43,8 @@ const EXPECTED_METHODS = Object.freeze([
   'Fetch.disable',
   'Fetch.enable',
   'Fetch.fulfillRequest',
+  'IO.close',
+  'IO.read',
   'Input.dispatchKeyEvent',
   'Input.dispatchMouseEvent',
   'Input.insertText',
@@ -50,6 +52,7 @@ const EXPECTED_METHODS = Object.freeze([
   'Network.emulateNetworkConditions',
   'Network.enable',
   'Network.getCookies',
+  'Network.loadNetworkResource',
   'Network.setCookie',
   'Page.addScriptToEvaluateOnNewDocument',
   'Page.captureScreenshot',
@@ -58,6 +61,7 @@ const EXPECTED_METHODS = Object.freeze([
   'Page.getFrameTree',
   'Page.getLayoutMetrics',
   'Page.getNavigationHistory',
+  'Page.getResourceContent',
   'Page.handleJavaScriptDialog',
   'Page.navigate',
   'Page.navigateToHistoryEntry',
@@ -104,7 +108,7 @@ describe('CDP domain clients', () => {
 
     const clients = createCdpDomains(adapter());
     expect(Object.keys(clients)).toEqual([
-      'Accessibility', 'Browser', 'CSS', 'DOM', 'Emulation', 'Fetch', 'Input',
+      'Accessibility', 'Browser', 'CSS', 'DOM', 'Emulation', 'Fetch', 'IO', 'Input',
       'Network', 'Page', 'Performance', 'Runtime', 'Target',
     ]);
     for (const method of EXPECTED_METHODS) {
