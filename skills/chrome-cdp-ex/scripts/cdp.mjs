@@ -13401,16 +13401,18 @@ function linkOpensNewBrowsingContext(target = {}) {
   return name !== String(target.frameName || '');
 }
 
+// Page targets via the existing browser-level getPages call (the direct-CDP call-site
+// inventory is frozen), bounded by a timer instead of the default CDP timeout.
 async function boundedPageTargets(cdp, timeoutMs) {
   const budget = Math.max(1, Number(timeoutMs) || 1);
   let timer;
   try {
-    const result = await Promise.race([
-      cdpDomains(cdp).Target.getTargets({}, undefined, budget),
+    const pages = await Promise.race([
+      getPages(cdp),
       new Promise(resolve => { timer = setTimeout(() => resolve(null), budget); }),
     ]);
-    if (!result) return null;
-    return (result.targetInfos || []).filter(info => info?.type === 'page' && info.targetId);
+    if (!pages) return null;
+    return pages.filter(info => info?.targetId);
   } catch {
     return null;
   } finally {
