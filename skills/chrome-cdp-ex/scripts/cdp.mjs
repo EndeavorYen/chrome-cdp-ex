@@ -21091,7 +21091,9 @@ function emptyCdpEnableAsk(environment, prefix = 'cdp') {
   const browser = preferredDebugBrowserName(environment);
   const cmd = defaultPersistentDailySpawnCommand(environment, prefix);
   if (emptyCdpBlockedOnDefaultProfile(environment)) {
-    return `Chrome 136+ and Microsoft Edge ignore --remote-debugging-port on the default user-data-dir. Quit+relaunch of daily ${browser} does not enable CDP. Launch the persistent daily dir (${cmd}); do not kill Dock/default ${browser}. Isolated spawn is fallback only and is not the daily profile; cookies will not transfer.`;
+    const platform = environment?.environment?.platform || environment?.platform;
+    const running = platform === 'darwin' ? `Dock/default ${browser}` : `the running default ${browser}`;
+    return `Chrome 136+ and Microsoft Edge ignore --remote-debugging-port on the default user-data-dir. Quit+relaunch of daily ${browser} does not enable CDP. Launch the persistent daily dir (${cmd}); do not kill ${running}. Isolated spawn is fallback only and is not the daily profile; cookies will not transfer.`;
   }
   return isolatedSpawnFallbackAsk(environment, prefix);
 }
@@ -22153,10 +22155,12 @@ function isDefaultBrowserProfileDir(plan, extras = {}) {
   return Boolean(expected && plan.profileDir === expected);
 }
 
-function formatDailyDefaultProfileCdpFailure(plan, text) {
+function formatDailyDefaultProfileCdpFailure(plan, text, { refusedMajor = null } = {}) {
   const snippet = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
   const parts = [];
-  if (isExistingBrowserSessionHandoff(text)) {
+  if (refusedMajor != null) {
+    parts.push(`spawn-debug-browser: did not launch daily ${plan.browser} (major ${refusedMajor}) on its default user-data-dir; nothing was quit or started and no CDP connection was attempted.`);
+  } else if (isExistingBrowserSessionHandoff(text)) {
     parts.push(`spawn-debug-browser: daily ${plan.browser} was absorbed by an existing session without debug (${snippet || 'Opening in existing browser session'}).`);
   } else {
     parts.push(`spawn-debug-browser: CDP was not reachable on ${plan.host}:${plan.port} for the daily ${plan.browser} default user-data-dir.`);
@@ -22376,7 +22380,7 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
     && isDefaultBrowserProfileDir(plan, { platform, env })
     && defaultProfileIgnoresRemoteDebugging(chromiumMajor)
   ) {
-    throw new Error(formatDailyDefaultProfileCdpFailure(plan, ''));
+    throw new Error(formatDailyDefaultProfileCdpFailure(plan, '', { refusedMajor: chromiumMajor }));
   }
   if (opts.dailyProfile) {
     const locked = typeof deps.isProfileLocked === 'function'

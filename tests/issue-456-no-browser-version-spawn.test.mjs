@@ -94,6 +94,57 @@ describe('#456 never run a Windows browser binary to learn its version', () => {
     expect(spawn.calls).toEqual([['/usr/bin/google-chrome', '--version']]);
   });
 
+  it('refuses win32 spawn-debug-browser --daily-profile on Chrome 136+ from the version folder: one readdir, no quit, no spawn, no CDP probe', async () => {
+    const events = [];
+    const spawn = spawnRecorder('Google Chrome 999.0.0.0');
+    const fs = applicationDirFs(CHROME_WIN_DIR, ['153.0.7900.10', '154.0.8037.92']);
+    fs.mkdirSync = (p) => { events.push(`mkdir:${p}`); };
+    const error = await T.spawnDebugBrowserStr(
+      ['chrome', '--daily-profile', '--port', '9222'],
+      { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local', USERPROFILE: 'C:\\Users\\u', TEMP: 'C:\\Users\\u\\AppData\\Local\\Temp', PATH: '' },
+      {
+        fs,
+        platform: 'win32',
+        // No chromiumMajorVersion injection: the major must come from the folder.
+        spawnSyncFn: spawn.fn,
+        probeTcpPort: async () => ({ occupied: false }),
+        isProfileLocked: () => true,
+        quitBrowser: async (plan) => { events.push(`quit:${plan.profileDir}`); },
+        spawn: (exe, args) => { events.push(`spawn:${exe} ${args.join(' ')}`); return {}; },
+        waitForSpawnedCdp: async () => { events.push('wait'); return { ok: false }; },
+        listSpawnedDebugTargets: async () => { events.push('list'); return []; },
+      },
+    ).then(() => null, err => err);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(/did not launch daily chrome \(major 154\) on its default user-data-dir/);
+    expect(error.message).toMatch(/no CDP connection was attempted/);
+    expect(error.message).not.toMatch(/CDP was not reachable/);
+    expect(error.message).toMatch(/Chrome 136\+[\s\S]*non-default data directory[\s\S]*not the daily profile/);
+    expect(fs.reads).toEqual([CHROME_WIN_DIR]);
+    expect(events).toEqual([]);
+    expect(spawn.calls).toEqual([]);
+  });
+
+  it('doctor/attach 136+ hint names the running default browser per platform (no macOS "Dock" on Windows)', () => {
+    const checks = (platform, executable) => [
+      { status: 'OK', label: 'Node', detail: 'v22' },
+      {
+        status: 'OK',
+        label: 'Environment',
+        detail: platform,
+        environment: { platform, preferredBrowser: { browser: 'chrome', executable, major: 154 } },
+      },
+      { status: 'FAIL', label: 'CDP', detail: 'no DevToolsActivePort and no CDP_PORT set' },
+    ];
+    const winAsk = T.buildDoctorModel(checks('win32', CHROME_WIN)).recommendation.ask;
+    expect(winAsk).toMatch(/Chrome 136\+ and Microsoft Edge ignore --remote-debugging-port/);
+    expect(winAsk).toMatch(/do not kill the running default chrome/);
+    expect(winAsk).not.toMatch(/Dock/);
+    const macAsk = T.buildDoctorModel(checks('darwin', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')).recommendation.ask;
+    expect(macAsk).toMatch(/do not kill Dock\/default chrome/);
+  });
+
   it('runtime environment detection on win32 (attach miss / doctor) reports the major without spawning', () => {
     const spawn = spawnRecorder('Google Chrome 999.0.0.0');
     const fs = applicationDirFs(CHROME_WIN_DIR, ['154.0.8037.92']);

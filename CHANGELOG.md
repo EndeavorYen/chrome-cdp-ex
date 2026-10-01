@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-### Bug fixes
+### Bug Fixes
 
 * The stdio MCP server speaks MCP stdio framing. It used to wrap every reply in LSP-style
   `Content-Length` headers, which a line-reading MCP client (the official SDKs) cannot parse. Replies
@@ -12,8 +12,6 @@
   gets a reply, even for an unknown method. `setup --verify` and `benchmark:mcp` now send and read
   newline-delimited JSON, so they catch a framing regression
   ([#454](https://github.com/EndeavorYen/chrome-cdp-ex/issues/454)).
-### Bug Fixes
-
 * Target commands no longer spawn `git rev-parse` for the daemon freshness check. A new
   `scripts/lib/git-head.mjs` reads `.git` directly (`HEAD`, symbolic refs, loose refs, `packed-refs`,
   worktree/submodule `gitdir:` files and `commondir`), so the MCP server's event loop no longer stalls
@@ -56,6 +54,14 @@
   highest `<x.y.z.w>` folder next to the executable (Chrome, Edge and Brave all ship this layout), or is
   unknown when no such folder exists. macOS keeps `Info.plist`; Linux keeps `--version`
   ([#456](https://github.com/EndeavorYen/chrome-cdp-ex/issues/456)).
+* Windows now applies the Chrome 136+ default-profile rules that macOS and Linux already had. Before,
+  the major version was never known on Windows, so those rules never fired. With Chrome or Edge 136+,
+  `spawn-debug-browser --daily-profile` is refused before anything happens. It no longer quits and
+  relaunches the user's browser on a default profile that ignores `--remote-debugging-port`. The `doctor`
+  and attach-miss hints give the 136+ explanation and point to the persistent daily dir. The refusal
+  message now says that nothing was quit or started and no CDP connection was attempted, instead of
+  "CDP was not reachable". The hint names "the running default" browser instead of the macOS-only
+  "Dock" outside macOS ([#456](https://github.com/EndeavorYen/chrome-cdp-ex/issues/456)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 
