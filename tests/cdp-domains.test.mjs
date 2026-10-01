@@ -21,8 +21,10 @@ const domainSource = readFileSync(fileURLToPath(new URL(
 
 const EXPECTED_METHODS = Object.freeze([
   'Accessibility.getFullAXTree',
+  'Browser.cancelDownload',
   'Browser.getBrowserCommandLine',
   'Browser.getWindowForTarget',
+  'Browser.setDownloadBehavior',
   'Browser.setWindowBounds',
   'CSS.enable',
   'CSS.getComputedStyleForNode',
