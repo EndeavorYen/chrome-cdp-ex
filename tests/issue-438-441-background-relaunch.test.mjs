@@ -99,7 +99,8 @@ describe('#438 relaunch hint repeats background mode', () => {
 
   it('a spawn without --background does not gain it (mode off: unchanged hint)', async () => {
     const record = await spawnRecord(['--headless']);
-    expect(record.launchFlags).toEqual(['--remote-debugging-address=127.0.0.1', '--headless=new']);
+    // #488: the occluded-windows flag alone is a spawn default and maps back to no option.
+    expect(record.launchFlags).toEqual(['--remote-debugging-address=127.0.0.1', '--headless=new', THROTTLE_FLAGS[0]]);
     expect(T.formatCdpRelaunchCommand({ ...record, port: '9342' }, { display: WITH_DISPLAY })).toBe(
       `cdp spawn-debug-browser chrome --port 9342 --profile-dir /home/me/persistent --exe ${EXE} --headless`,
     );

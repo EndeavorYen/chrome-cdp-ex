@@ -232,6 +232,8 @@ const BACKGROUND_THROTTLE_FLAGS = Object.freeze([
   '--disable-renderer-backgrounding',
   '--disable-background-timer-throttling',
 ]);
+// Keeps a window that other windows cover rendering. spawn-debug-browser passes it by default (#488).
+const OCCLUDED_WINDOWS_FLAG = BACKGROUND_THROTTLE_FLAGS[0];
 const TRUTHY_ENV_WORD = /^(1|true|yes|on)$/i;
 const FALSY_ENV_WORD = /^(0|false|no|off)$/i;
 
@@ -2107,7 +2109,8 @@ function relaunchFlagsFor(entry, display) {
 
 // The same flags as spawn-debug-browser options, or null when one of them has no option there.
 // The full anti-throttling set is what `--background` adds, so it maps back to `--background`, which
-// also minimizes the window again (#438); a partial set has no option and keeps the raw line.
+// also minimizes the window again (#438). --disable-backgrounding-occluded-windows alone is a spawn default
+// (#488) and needs no option; any other partial set has no option and keeps the raw line.
 function spawnOptionsForLaunchFlags(flags) {
   const options = [];
   const throttle = new Set();
@@ -2122,7 +2125,8 @@ function spawnOptionsForLaunchFlags(flags) {
     else return null;
   }
   if (throttle.size === BACKGROUND_THROTTLE_FLAGS.length) options.push('--background');
-  else if (throttle.size) return null;
+  // --disable-backgrounding-occluded-windows alone is what spawn-debug-browser passes by default (#488).
+  else if (throttle.size && !(throttle.size === 1 && throttle.has(OCCLUDED_WINDOWS_FLAG))) return null;
   return options;
 }
 
@@ -4812,13 +4816,15 @@ async function waitForScreenshotPaint(cdp, sid) {
 // this on when it runs in background mode; in foreground mode it attached with Target.activateTarget.
 const HIDDEN_TAB_CAPTURE_TIMEOUT_MS = 3000;
 const HIDDEN_TAB_ERROR_CODE = 'hidden_tab';
+// Commands whose hidden-tab failure can be rerun whole: they only capture.
+const HIDDEN_TAB_RERUN_COMMANDS = new Set(['shot', 'elshot', 'scanshot', 'fullshot', 'diff-shot']);
 let _backgroundCaptureGuard = false;
 function setBackgroundCaptureGuard(on) { _backgroundCaptureGuard = on === true; }
 
 function hiddenTabCaptureError(cause = null) {
   const error = new Error(
     `Tab is hidden (document.visibilityState=hidden): Chrome rendered no frame for it within ${HIDDEN_TAB_CAPTURE_TIMEOUT_MS} ms. `
-    + 'A background tab or a tab in a minimized window gets no frames, and background mode (the default) does not bring tabs to the front; CDP_BACKGROUND=0 does.',
+    + 'Chrome may render no frames for a background tab or a tab in a minimized window, and background mode (the default) does not bring tabs to the front; CDP_BACKGROUND=0 does.',
   );
   error.code = HIDDEN_TAB_ERROR_CODE;
   if (cause) error.cause = cause;
@@ -20792,7 +20798,10 @@ const REPEAT_CAP = 50;
 // same daemon dispatcher and cannot recurse back into repeat. `batch` stays
 // blocked because its parallel/JSON modes are awkward to compose linearly,
 // and `repeat`/`stop` are blocked to avoid recursion and IPC corruption.
-const REPEAT_BLOCKED = new Set(['repeat', 'batch', 'stop']);
+// `_activate` is the daemon's internal foreground request (#488): only the CLI sends it, never a
+// composite step, because it switches the user's active tab.
+const REPEAT_BLOCKED = new Set(['repeat', 'batch', 'stop', '_activate']);
+const BATCH_BLOCKED = new Set(['batch', 'stop', 'repeat', 'flow', '_activate']);
 
 function parsePageConditionArgs(args = []) {
   const flags = new Map([
@@ -20939,6 +20948,7 @@ function parseFlowSteps(input) {
       }
       return { kind: 'assert', condition: { kind: kinds[assertionKind], value } };
     }
+    if (head === FOREGROUND_ACTIVATE_COMMAND) throw new Error(`flow: "${head}" is internal and not allowed as a step`);
     return { kind: 'command', cmd: head, args: parts.slice(1) };
   });
 }
@@ -21130,7 +21140,7 @@ async function flowStr({ run, settle, assertCondition }, input, { format = 'text
 }
 
 // --- Replay: execute record-actions artifacts ---
-const REPLAY_BLOCKED = new Set(['replay', 'record-actions', 'recordactions', 'batch', 'flow', 'repeat', 'stop']);
+const REPLAY_BLOCKED = new Set(['replay', 'record-actions', 'recordactions', 'batch', 'flow', 'repeat', 'stop', '_activate']);
 
 function parseReplayArgs(args, { reader = readFileSync } = {}) {
   const fopts = parseFormatArgs((args || []).filter(a => a !== undefined && a !== null), ['text', 'json']);
@@ -22785,7 +22795,7 @@ const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
   { flags: ['--headless'], arg: null, text: 'Run headless; `--headless=MODE` passes MODE (default new).' },
   { flags: ['--no-sandbox'], arg: null, text: 'Pass --no-sandbox to the browser (containers, CI).' },
   { flags: ['--disable-gpu'], arg: null, text: 'Pass --disable-gpu to the browser.' },
-  { flags: ['--allow-occlusion'], arg: null, text: 'Do not pass --disable-features=CalculateNativeWinOcclusion (see Notes).' },
+  { flags: ['--allow-occlusion'], arg: null, text: 'Do not pass --disable-features=CalculateNativeWinOcclusion or --disable-backgrounding-occluded-windows (see Notes).' },
   { flags: ['--background'], arg: null, text: 'Also CDP_BACKGROUND=1: add anti-throttling flags and minimize the new window once CDP answers (see Notes).' },
   { flags: ['--wait-ms'], arg: 'N', text: `Wait up to N ms for CDP to answer (default ${DEFAULT_SPAWN_READY_TIMEOUT_MS}).` },
   { flags: ['--format'], arg: 'text|json', text: 'Output format.' },
@@ -22795,7 +22805,7 @@ const SPAWN_DEBUG_BROWSER_FLAGS = Object.freeze([
 const SPAWN_DEBUG_BROWSER_NOTES = Object.freeze([
   'Default browser is edge, or $CDP_DEBUG_BROWSER when set.',
   'Port already in use: if the occupant does not answer /json/version (for example Chrome\'s chrome://inspect toggle on 9222), the command fails. Pick another port with --port N, then set CDP_PORT=N for list/perceive/stop.',
-  'By default the launched browser gets --disable-features=CalculateNativeWinOcclusion. Without it, Windows marks a debug window that another window fully covers as hidden (document.visibilityState=hidden) and Chrome drops Input.* events, so click/press fail with no-input-events. Use --allow-occlusion to keep the browser default.',
+  'By default the launched browser gets --disable-features=CalculateNativeWinOcclusion and --disable-backgrounding-occluded-windows. Without them, a debug window that another window fully covers can turn hidden (document.visibilityState=hidden): Chrome then drops Input.* events, so click/press fail with no-input-events, and captures may get no frame. Covered windows keep rendering instead. Use --allow-occlusion to keep the browser default.',
   'Later commands run in background mode by default: they do not activate tabs. --background (or CDP_BACKGROUND=1) also adds --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling and, unless headless, minimizes the launched window through Browser.setWindowBounds. The window can still appear briefly at launch. Without it the launched window is left as it is.',
   'Unknown flags print this help and launch nothing.',
 ]);
@@ -23036,7 +23046,10 @@ function buildSpawnDebugBrowserPlan(opts, platform = process.platform, fs = { ex
   if (opts.noSandbox) args.push('--no-sandbox');
   if (opts.disableGpu) args.push('--disable-gpu');
   if (!opts.allowOcclusion) args.push('--disable-features=CalculateNativeWinOcclusion');
+  // #488: nothing raises the window in background mode, so a covered window keeps rendering (macOS and
+  // other occlusion trackers too). Background tabs stay throttled; --background adds the rest.
   if (opts.background) args.push(...BACKGROUND_THROTTLE_FLAGS);
+  else if (!opts.allowOcclusion) args.push(OCCLUDED_WINDOWS_FLAG);
   if (opts.url) args.push(opts.url);
   return { exe, args, profileDir: opts.profileDir, port: opts.port, host: opts.host || DEFAULT_CDP_HOST, url: opts.url, browser: opts.browser, waitMs: opts.waitMs, dailyProfile: Boolean(opts.dailyProfile), background: Boolean(opts.background), headless: Boolean(opts.headless) };
 }
@@ -23791,25 +23804,39 @@ async function attachDaemonTarget(cdp, targetId, { background = false } = {}) {
 
 // A call that opts out of background mode (CDP_BACKGROUND=0 / CDP_FOREGROUND=1) may reach a daemon that
 // is already running in background mode, which never sees that call's environment. The CLI then sends
-// this request first: a hidden tab is activated once and given up to `timeoutMs` to report visible; a
-// visible tab is left alone, so the window is not raised again on every command (#488).
+// this request first: a hidden tab is activated and given up to REVEAL_POLL_TIMEOUT_MS to report visible;
+// a visible tab is left alone, so the window is not raised again on every command (#488).
 const FOREGROUND_ACTIVATE_COMMAND = '_activate';
+const REVEAL_POLL_TIMEOUT_MS = 300;
 
 function foregroundActivationRequest(env = process.env) {
   return explicitBackgroundChoice(env) === false ? { cmd: FOREGROUND_ACTIVATE_COMMAND, args: [] } : null;
 }
 
-async function revealHiddenTab(cdp, sid, targetId, { timeoutMs = 1000, pollMs = 50, sleep: wait = sleep, now = Date.now } = {}) {
+async function revealHiddenTab(cdp, sid, targetId, {
+  state = null,
+  timeoutMs = REVEAL_POLL_TIMEOUT_MS,
+  pollMs = 50,
+  sleep: wait = sleep,
+  now = Date.now,
+} = {}) {
   const before = await probePageVisibility(cdp, sid);
-  if (before === 'visible') return { activated: false, visibility: before };
+  if (before === 'visible') {
+    if (state) state.activationIneffective = false;
+    return { activated: false, visibility: before };
+  }
   await cdpDomains(cdp).Target.activateTarget( { targetId }, undefined, 5000);
+  // An activation that did not make the tab visible (a window covered by other windows: Windows does
+  // not let Chrome raise itself) will not do better on the next call, so later calls skip the wait.
+  if (state?.activationIneffective) return { activated: true, visibility: before, polled: false };
   const deadline = now() + timeoutMs;
   let visibility = await probePageVisibility(cdp, sid);
   while (visibility !== 'visible' && now() < deadline) {
     await wait(pollMs);
     visibility = await probePageVisibility(cdp, sid);
   }
-  return { activated: true, visibility };
+  if (state) state.activationIneffective = visibility !== 'visible';
+  return { activated: true, visibility, polled: true };
 }
 
 async function runDaemon(targetId, applicationPreflight = preflightDaemonApplication()) {
@@ -23847,6 +23874,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   }
 
   const session = createSessionState({ targetId, sessionId });
+  // Whether the last `_activate` left the tab hidden (#488).
+  const revealState = { activationIneffective: false };
   const tableArtifactStore = createTableArtifactStore({
     runtimeDir: RUNTIME_DIR,
     targetId,
@@ -23960,7 +23989,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   }
 
   // Action feedback: wait for DOM to settle, then return structured evidence.
-  const BATCH_BLOCKED = new Set(['batch', 'stop', 'repeat', 'flow']);
   async function observeActionDiffForTarget(target = {}, baselineOutput = null, baselineOpts = null) {
     const targetFrameRef = frameRefFromActionTarget(target);
     await waitForSettle(cdp, sessionId);
@@ -24882,7 +24910,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
           break;
         }
         case '_activate': { // FOREGROUND_ACTIVATE_COMMAND (#488)
-          result = JSON.stringify(await revealHiddenTab(cdp, sessionId, targetId));
+          result = JSON.stringify(await revealHiddenTab(cdp, sessionId, targetId, { state: revealState }));
           break;
         }
         case 'stop': return { ok: true, result: '', stopAfter: true };
@@ -27032,13 +27060,20 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
     };
   }
   if (isHiddenTabCaptureError(err) || isHiddenTabCaptureError({ message })) {
-    // #488: CDP_BACKGROUND=0 on this one call activates the tab before the command runs.
-    const rerun = ['cdp', cmd || 'shot', target, ...(args || []).map(recoveryCommandArg).filter(Boolean)];
+    // #488: CDP_BACKGROUND=0 on this one call activates the tab before the command runs. Only a capture
+    // command is rerun whole: a flow/repeat/replay/batch may already have clicked or typed, so its
+    // recovery names the capture alone and never replays the earlier steps.
+    const captureCommand = HIDDEN_TAB_RERUN_COMMANDS.has(COMMAND_SURFACE.resolve(cmd)?.name || cmd);
+    const rerun = captureCommand
+      ? ['cdp', cmd, target, ...(args || []).map(recoveryCommandArg).filter(Boolean)]
+      : ['cdp', 'shot', target];
     return {
       kind: 'hidden-tab',
       strategy: 'activate-tab',
       run: `CDP_BACKGROUND=0 ${rerun.join(' ')}`,
-      reason: 'The tab is not visible, so Chrome renders no frames for it. CDP_BACKGROUND=0 on this call brings the tab to the front once (this raises the browser window); or bring the tab to the front yourself and retry. A minimized window must be restored.',
+      reason: captureCommand
+        ? 'The tab is hidden and Chrome rendered no frame for it in time. CDP_BACKGROUND=0 on this call activates the tab first (a background tab, or a minimized window); a window covered by other windows is not raised by Chrome, so uncover it yourself.'
+        : 'A capture step met a hidden tab. Earlier steps already ran: do not rerun the whole command. Take the capture alone with this command (it activates the tab first), then run only the steps that did not run.',
     };
   }
   // #452: say which capture pipeline failed instead of `Kind: unknown`.
@@ -27492,7 +27527,7 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
         ? `cdp jsclick ${targetPrefix} ${recoveryCommandArg(selector)}`
         : 'cdp help click',
       reason: lower.includes('visibilitystate is hidden')
-        ? 'The tab is hidden (window covered or minimised): Input.* events are dropped. Use jsclick, or bring the window to the front (CDP_BACKGROUND=0 on the command activates the tab first). Do not treat dispatch.ok as success.'
+        ? 'The tab is hidden (window covered or minimised): Input.* events are dropped. Use jsclick, or bring the window to the front. For a background tab, CDP_BACKGROUND=0 on the command activates it first; that does not raise a window other windows cover. Do not treat dispatch.ok as success.'
         : 'The realistic mouse click did not deliver page events. Retry with jsclick instead of treating dispatch.ok as success.',
     };
   }
@@ -29003,8 +29038,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics, elementScreenshotClip,
   parseSpawnDebugBrowserArgs, SPAWN_DEBUG_BROWSER_FLAGS, detectBrowserPath, buildSpawnDebugBrowserPlan,
   isBackgroundMode, explicitBackgroundChoice, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv,
-  foregroundActivationRequest, revealHiddenTab, setBackgroundCaptureGuard, hiddenTabCaptureError,
-  isHiddenTabCaptureError, HIDDEN_TAB_CAPTURE_TIMEOUT_MS,
+  foregroundActivationRequest, revealHiddenTab, REVEAL_POLL_TIMEOUT_MS, setBackgroundCaptureGuard, hiddenTabCaptureError,
+  isHiddenTabCaptureError, HIDDEN_TAB_CAPTURE_TIMEOUT_MS, BATCH_BLOCKED, REPEAT_BLOCKED, REPLAY_BLOCKED,
   tabModePath, writeTabBackgroundMode, readTabBackgroundMode, readTabMode, removeTabMode, listTabModeRecords, TAB_MODE_RECORDS_MAX,
   daemonBackgroundMode, cdpProfileKey, lastCdpEndpointPath, createSystemTempRootReader, minimizeWindowsForTargets, minimizeBrowserWindows,
   probeTcpPort,

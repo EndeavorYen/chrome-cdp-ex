@@ -271,7 +271,8 @@ describe('spawn-debug-browser keeps --background explicit', () => {
   it('the default does not add anti-throttling flags or minimize the window', () => {
     const off = plan([]);
     expect(off.background).toBe(false);
-    for (const flag of THROTTLE_FLAGS) expect(off.args).not.toContain(flag);
+    // The occluded-windows flag is a spawn default of its own (see below); the throttling ones are not.
+    for (const flag of THROTTLE_FLAGS.slice(1)) expect(off.args).not.toContain(flag);
     expect(plan([], { TMPDIR: '/tmp', CDP_BACKGROUND: '1' }).background).toBe(true);
     expect(plan(['--background']).background).toBe(true);
   });
@@ -280,5 +281,101 @@ describe('spawn-debug-browser keeps --background explicit', () => {
     const base = { port: 9341, profileDir: '/tmp/p', browser: 'chrome', host: '127.0.0.1' };
     expect(T.buildSpawnDebugBrowserModel({ ...base, background: true, headless: false }, { ok: true }, { target: { targetId: 'PAGE1ABCDEF' } }).nextCommand)
       .toBe('CDP_PORT=9341 cdp open <url>');
+  });
+});
+
+// Review of #499.
+describe('hidden-tab recovery never replays steps that already ran', () => {
+  const message = () => T.hiddenTabCaptureError().message;
+
+  it('a composite command names the capture alone', () => {
+    for (const [cmd, args] of [
+      ['flow', ['click #buy; shot']],
+      ['repeat', ['2', 'shot']],
+      ['replay', ['--file', '/tmp/actions.json']],
+      ['batch', ['click #buy | shot']],
+    ]) {
+      const recovery = T.buildCliErrorRecovery(message(), { cmd, targetPrefix: 'ABCD1234', args });
+      expect(recovery.kind, cmd).toBe('hidden-tab');
+      expect(recovery.run, cmd).toBe('CDP_BACKGROUND=0 cdp shot ABCD1234');
+      expect(recovery.reason, cmd).toMatch(/do not rerun the whole command/i);
+    }
+    const text = T.formatCliError(new Error(`Flow halted at step 2/2: ${message()}`), { cmd: 'flow', targetPrefix: 'ABCD1234', args: ['click #buy; shot'] });
+    expect(text).toMatch(/^Next: CDP_BACKGROUND=0 cdp shot ABCD1234$/m);
+    expect(text).not.toMatch(/Next: .*click #buy/);
+  });
+
+  it('a capture command (or its alias) is rerun whole', () => {
+    expect(T.buildCliErrorRecovery(message(), { cmd: 'screenshot', targetPrefix: 'ABCD1234', args: ['/tmp/a.png'] }).run)
+      .toBe('CDP_BACKGROUND=0 cdp screenshot ABCD1234 /tmp/a.png');
+    expect(T.buildCliErrorRecovery(message(), { cmd: 'diff-shot', targetPrefix: 'ABCD1234', args: ['--reset'] }).run)
+      .toBe('CDP_BACKGROUND=0 cdp diff-shot ABCD1234 --reset');
+  });
+
+  it('says a hidden tab may get no frames', () => {
+    expect(message()).toMatch(/may render no frames/);
+  });
+});
+
+describe('_activate is internal: no composite step can reach it', () => {
+  it('is blocked in batch, repeat, replay and flow', () => {
+    expect(T.BATCH_BLOCKED.has('_activate')).toBe(true);
+    expect(T.REPEAT_BLOCKED.has('_activate')).toBe(true);
+    expect(T.REPLAY_BLOCKED.has('_activate')).toBe(true);
+    expect(() => T.parseRepeatArgs(['2', '_activate'])).toThrow(/cannot wrap "_activate"/);
+    expect(() => T.parseFlowSteps('click #a; _activate')).toThrow(/internal/);
+    expect(T.replayStepFromAction({ replayable: true, command: ['_activate'] }))
+      .toMatchObject({ skip: true, reason: 'blocked command: _activate' });
+  });
+});
+
+describe('_activate does not wait again where activation cannot help', () => {
+  const sequenceCdp = (states) => {
+    const queue = [...states];
+    return fakeCdp({ 'Runtime.evaluate': () => ({ result: { value: queue.length > 1 ? queue.shift() : queue[0] } }) });
+  };
+
+  it('polls at most REVEAL_POLL_TIMEOUT_MS, and skips the wait after an activation left the tab hidden', async () => {
+    const state = { activationIneffective: false };
+    let clock = 0;
+    const timing = { now: () => clock, sleep: async ms => { clock += ms; } };
+    await expect(T.revealHiddenTab(sequenceCdp(['hidden']), 'S1', 'TAB', { state, ...timing }))
+      .resolves.toMatchObject({ activated: true, visibility: 'hidden', polled: true });
+    expect(T.REVEAL_POLL_TIMEOUT_MS).toBeLessThanOrEqual(300);
+    expect(clock).toBeLessThanOrEqual(T.REVEAL_POLL_TIMEOUT_MS + 50);
+    expect(state.activationIneffective).toBe(true);
+    clock = 0;
+    const second = sequenceCdp(['hidden']);
+    await expect(T.revealHiddenTab(second, 'S1', 'TAB', { state, ...timing }))
+      .resolves.toMatchObject({ activated: true, polled: false });
+    expect(clock).toBe(0);
+    // Once the tab reports visible again, the next activation waits as usual.
+    await T.revealHiddenTab(sequenceCdp(['visible']), 'S1', 'TAB', { state, ...timing });
+    expect(state.activationIneffective).toBe(false);
+  });
+});
+
+describe('covered windows keep rendering: --disable-backgrounding-occluded-windows', () => {
+  const OCCLUDED = '--disable-backgrounding-occluded-windows';
+  const fs = { existsSync: () => true, mkdirSync: () => {} };
+  const plan = args => T.buildSpawnDebugBrowserPlan(
+    T.parseSpawnDebugBrowserArgs(['chrome', '--exe', '/x/chrome', ...args], { TMPDIR: '/tmp' }), 'linux', fs, { TMPDIR: '/tmp' });
+
+  it('spawn-debug-browser passes it by default, without the throttling flags; --allow-occlusion drops it', () => {
+    const args = plan([]).args;
+    expect(args).toContain(OCCLUDED);
+    expect(args).not.toContain('--disable-renderer-backgrounding');
+    expect(args).not.toContain('--disable-background-timer-throttling');
+    expect(plan(['--allow-occlusion']).args).not.toContain(OCCLUDED);
+    expect(plan(['--background']).args.filter(flag => flag === OCCLUDED)).toHaveLength(1);
+  });
+
+  it('the flag alone maps to the spawn default in relaunch hints, never to --background', () => {
+    const entry = { port: '9342', profileDir: '/home/me/p', exe: '/opt/chrome', browser: 'chrome', via: 'spawn-debug-browser' };
+    expect(T.formatCdpRelaunchCommand({ ...entry, launchFlags: [OCCLUDED] }))
+      .toBe('cdp spawn-debug-browser chrome --port 9342 --profile-dir /home/me/p --exe /opt/chrome');
+    // A hand-launched daily browser keeps the flag on its raw relaunch line.
+    expect(T.formatCdpRelaunchCommand({ port: '9222', profileDir: '/home/me/daily', exe: '/opt/chrome', launchFlags: [OCCLUDED] }))
+      .toBe(`/opt/chrome --remote-debugging-port=9222 --user-data-dir=/home/me/daily ${OCCLUDED}`);
   });
 });

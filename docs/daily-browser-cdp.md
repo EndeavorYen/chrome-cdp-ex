@@ -24,10 +24,13 @@ mkdir -p "$DIR"
 "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" \
   --user-data-dir="$DIR" \
   --remote-debugging-port=9222 \
+  --disable-backgrounding-occluded-windows \
   --no-first-run
 ./bin/chrome-cdp doctor
 ./bin/chrome-cdp list
 ```
+
+`--disable-backgrounding-occluded-windows` keeps a window that other windows cover rendering. Commands run in background mode and never raise the browser, so the agent's window often sits behind your other apps; without the flag Chrome can mark it hidden, and clicks there become slow or are dropped. The cost: covered windows keep painting (some CPU). Background tabs are still throttled. `spawn-debug-browser` passes this flag by default (`--allow-occlusion` turns it off).
 
 Or:
 

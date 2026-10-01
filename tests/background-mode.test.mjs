@@ -100,7 +100,8 @@ describe('spawn-debug-browser --background', () => {
 
   it('adds the anti-throttling flags only in background mode', () => {
     const off = plan([]);
-    for (const flag of THROTTLE_FLAGS) expect(off.args).not.toContain(flag);
+    // #488: the occluded-windows flag alone is a spawn default; the throttling flags are not.
+    for (const flag of THROTTLE_FLAGS.slice(1)) expect(off.args).not.toContain(flag);
     expect(off.background).toBe(false);
     const on = plan(['--background']);
     for (const flag of THROTTLE_FLAGS) expect(on.args).toContain(flag);
