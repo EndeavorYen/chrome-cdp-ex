@@ -36,6 +36,29 @@
 
 ### Bug fixes
 
+* With `CDP_PORT` unset and no `DevToolsActivePort`, discovery now also probes the port of the last
+  endpoint chrome-cdp-ex reached (`cdp-last-endpoint.json`), after 9222 and 9224, and attaches when it
+  answers `/json/version`; a leftover isolated `chrome-cdp-ex-*` profile there is named with
+  `CDP_PORT=<port>` instead. `list` used to name that port as unreachable without probing it, while
+  `doctor` blamed the missing `DevToolsActivePort` and pointed at a different browser. `doctor` and every
+  attaching command now share the probe order, the `DevToolsActivePort` path list, the miss diagnosis and
+  the `Next:` line: a remembered profile on a closed port gets `relaunch-same-profile` in both, otherwise
+  both give doctor's daily-dir step (a browser's own default user-data-dir is still never relaunched,
+  since Chrome 136+ and Edge ignore remote debugging there). A profile whose browser is still running
+  (Chromium's `SingletonLock` names a live pid on this host) is never offered for relaunch: the receipt
+  is `profile-in-use` (`cdp_profile_in_use`, with `pid`) and `Next:` is `CDP_PORT=<its port> cdp list`
+  when that browser has a debugging port. This also applies with `CDP_PORT` set
+  ([#425](https://github.com/EndeavorYen/chrome-cdp-ex/issues/425)).
+* The `relaunch-same-profile` command now replays the launch flags the profile last ran with
+  (`--headless=new`, `--no-sandbox`, `--disable-gpu`, `--disable-dev-shm-usage`,
+  `--remote-debugging-address`), recorded by `spawn-debug-browser` or read from the live browser's
+  command line (`/proc/<pid>/cmdline` on Linux) when chrome-cdp-ex attaches to it, and adds
+  `--headless=new` on Linux without `DISPLAY`/`WAYLAND_DISPLAY`; the `spawn-debug-browser` form carries
+  `--headless`, `--no-sandbox`, `--disable-gpu` and `--host`. The raw browser line now passes
+  `--user-data-dir=<dir>`: Chromium reads `--user-data-dir <dir>` as an empty switch plus a URL, so the
+  old line started a different profile. Records written before this fix have no flags, so the first
+  relaunch from one gets only the `--headless=new` fallback
+  ([#426](https://github.com/EndeavorYen/chrome-cdp-ex/issues/426)).
 * A target command with `CDP_PORT` set now takes its page list from a running daemon on that same
   endpoint instead of opening a new browser connection three times: `list_raw` requests now carry `args`,
   which the daemon had rejected. A daemon now reports its `cdpEndpoint` in `meta`; a daemon on another

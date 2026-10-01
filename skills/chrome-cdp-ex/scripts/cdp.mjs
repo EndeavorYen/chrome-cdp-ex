@@ -7,9 +7,9 @@
 // the CDP session open. Chrome's "Allow debugging" modal fires once per
 // daemon (= once per tab). Daemons auto-exit after 20min idle.
 
-import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, realpathSync, statSync } from 'fs';
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, mkdirSync, lstatSync, readlinkSync, realpathSync, statSync } from 'fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { homedir, tmpdir } from 'os';
+import { homedir, hostname as osHostname, tmpdir } from 'os';
 import { basename, dirname, posix as posixPath, resolve, win32 as win32Path } from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
@@ -1256,6 +1256,9 @@ function normalizeCdpEndpointHistoryEntry(raw) {
     lastSeenAt: raw.lastSeenAt ? String(raw.lastSeenAt) : null,
   };
   if (raw.via === SPAWN_DEBUG_BROWSER_VIA) entry.via = SPAWN_DEBUG_BROWSER_VIA;
+  // #426: the browser flags this profile was launched with, replayed by relaunch-same-profile.
+  const launchFlags = replayableLaunchFlags(raw.launchFlags);
+  if (launchFlags.length) entry.launchFlags = launchFlags;
   return entry;
 }
 
@@ -1274,6 +1277,8 @@ function mergeCdpEndpointHistoryEntry(a, b) {
     browser: newer.browser || older.browser,
     lastSeenAt: newer.lastSeenAt || older.lastSeenAt,
     ...((a.via || b.via) ? { via: SPAWN_DEBUG_BROWSER_VIA } : {}),
+    // A sighting that could not read the command line must not erase flags recorded earlier.
+    ...((newer.launchFlags || older.launchFlags) ? { launchFlags: newer.launchFlags || older.launchFlags } : {}),
   };
 }
 
@@ -1343,7 +1348,7 @@ function rememberLastCdpEndpoint(record, opts = {}) {
   const previous = opts.previous !== undefined ? opts.previous : readLastCdpEndpoint(opts);
   const next = { ...(previous || {}) };
   for (const [key, value] of Object.entries(record || {})) {
-    if (value != null && value !== '' && key !== 'history') next[key] = value;
+    if (value != null && value !== '' && key !== 'history' && key !== 'launchFlags') next[key] = value;
   }
   const portChanged = previous?.port && record?.port != null && String(previous.port) !== String(record.port);
   if (portChanged && !record.profileDir) next.profileDir = null;
@@ -1366,6 +1371,7 @@ function rememberLastCdpEndpoint(record, opts = {}) {
       exe: record.exe,
       browser: record.browser,
       via: record.via,
+      launchFlags: record.launchFlags,
       lastSeenAt: at,
     });
   }
@@ -1395,7 +1401,7 @@ function isTempCdpProfileDir(profileDir) {
 
 // Profiles plausibly behind `port`, best first: spawn-debug-browser-recorded persistent, other
 // persistent, spawn-recorded temp, other temp; newest first inside a tier. Other ports never match.
-function rankCdpRelaunchCandidates(record, port) {
+function rankCdpRelaunchCandidates(record, port, { display } = {}) {
   if (!record || typeof record !== 'object') return [];
   const want = port != null && port !== '' ? String(port) : null;
   const byDir = new Map();
@@ -1423,7 +1429,7 @@ function rankCdpRelaunchCandidates(record, port) {
   return [...byDir.values()]
     .map(entry => ({ ...entry, temp: isTempCdpProfileDir(entry.profileDir) }))
     .sort((a, b) => tier(a) - tier(b) || String(b.lastSeenAt || '').localeCompare(String(a.lastSeenAt || '')))
-    .map(entry => ({ ...entry, relaunch: formatCdpRelaunchCommand(entry, { port: want || entry.port }) }));
+    .map(entry => ({ ...entry, relaunch: formatCdpRelaunchCommand(entry, { port: want || entry.port, display }) }));
 }
 
 // One line naming the profiles that were not chosen; null when there is nothing to choose between.
@@ -1550,39 +1556,197 @@ async function resolveOccupantProfileDir({
   return null;
 }
 
-function formatCdpRelaunchCommand(lastEndpoint, { port } = {}) {
+// Browser flags worth replaying when a profile is relaunched (#426): the ones a launch can depend on
+// (headless, sandbox, GPU, shared memory) and the bind address. The URL, port, profile and the flags
+// Chromium adds on its own in headless mode (--ozone-*, --use-angle, ...) are left out.
+const CDP_REPLAY_FLAG = /^--(?:headless(?:=[a-z]+)?|no-sandbox|disable-gpu|disable-dev-shm-usage|remote-debugging-address=[\w.:[\]-]+)$/i;
+const CDP_REPLAY_FLAGS_MAX = 8;
+
+function replayableLaunchFlags(argv) {
+  const flags = [];
+  for (const raw of Array.isArray(argv) ? argv : []) {
+    // First word only: a word of a title-joined command line can carry a trailing positional argument.
+    const flag = String(raw ?? '').trim().split(/\s/)[0];
+    if (CDP_REPLAY_FLAG.test(flag) && !flags.includes(flag)) flags.push(flag);
+    if (flags.length >= CDP_REPLAY_FLAGS_MAX) break;
+  }
+  return flags;
+}
+
+function cdpDisplayContext({ platform = process.platform, env = process.env } = {}) {
+  return { platform, env };
+}
+
+// Linux with neither DISPLAY nor WAYLAND_DISPLAY: a headed browser aborts at once (#426).
+function displayNeedsHeadless(display) {
+  return Boolean(display) && display.platform === 'linux' && !display.env?.DISPLAY && !display.env?.WAYLAND_DISPLAY;
+}
+
+function relaunchFlagsFor(entry, display) {
+  const flags = replayableLaunchFlags(entry?.launchFlags);
+  if (displayNeedsHeadless(display) && !flags.some(flag => /^--headless(?:=|$)/i.test(flag))) flags.push('--headless=new');
+  return flags;
+}
+
+// The same flags as spawn-debug-browser options, or null when one of them has no option there.
+function spawnOptionsForLaunchFlags(flags) {
+  const options = [];
+  for (const flag of flags) {
+    const address = flag.match(/^--remote-debugging-address=(.+)$/i);
+    if (address) {
+      if (address[1] !== DEFAULT_CDP_HOST) options.unshift('--host', shellQuoteCliArg(address[1]));
+    } else if (/^--headless(?:=new)?$/i.test(flag)) options.push('--headless');
+    else if (/^--headless=/i.test(flag)) options.push(flag);
+    else if (/^--(?:no-sandbox|disable-gpu)$/i.test(flag)) options.push(flag);
+    else return null;
+  }
+  return options;
+}
+
+// `display` ({ platform, env }) adds --headless=new where a headed browser cannot start; without it
+// the command is built from the record alone.
+function formatCdpRelaunchCommand(lastEndpoint, { port, display } = {}) {
   const profileDir = lastEndpoint?.profileDir;
   if (!profileDir) return null;
   const resolvedPort = String(port || lastEndpoint.port || '9222');
-  if (lastEndpoint.via === SPAWN_DEBUG_BROWSER_VIA) {
+  const flags = relaunchFlagsFor(lastEndpoint, display);
+  const spawnOptions = spawnOptionsForLaunchFlags(flags);
+  const viaSpawn = lastEndpoint.via === SPAWN_DEBUG_BROWSER_VIA;
+  // A flag spawn-debug-browser cannot pass falls back to the raw browser line, so nothing is dropped.
+  if (spawnOptions && (viaSpawn || isDisposableSpawnProfileDir(profileDir))) {
     const browser = lastEndpoint.browser || inferBrowserFromExe(lastEndpoint.exe) || 'chrome';
     const parts = [
       'cdp spawn-debug-browser',
       browser,
       '--port', resolvedPort,
-      '--profile-dir', shellQuoteCliArg(profileDir),
+      viaSpawn ? '--profile-dir' : '--user-data-dir', shellQuoteCliArg(profileDir),
     ];
     if (lastEndpoint.exe) parts.push('--exe', shellQuoteCliArg(lastEndpoint.exe));
-    return parts.join(' ');
-  }
-  if (isDisposableSpawnProfileDir(profileDir)) {
-    const browser = lastEndpoint.browser || inferBrowserFromExe(lastEndpoint.exe) || 'chrome';
-    const parts = [
-      'cdp spawn-debug-browser',
-      browser,
-      '--port', resolvedPort,
-      '--user-data-dir', shellQuoteCliArg(profileDir),
-    ];
-    if (lastEndpoint.exe) parts.push('--exe', shellQuoteCliArg(lastEndpoint.exe));
+    parts.push(...spawnOptions);
     return parts.join(' ');
   }
   const exe = lastEndpoint.exe || lastEndpoint.browser || 'chrome';
   return [
     shellQuoteCliArg(exe),
     `--remote-debugging-port=${resolvedPort}`,
-    '--user-data-dir',
-    shellQuoteCliArg(profileDir),
+    // Chromium reads `--user-data-dir DIR` as an empty switch plus a URL to open, and starts on another
+    // profile; only the `=` form relaunches the same one (#426).
+    shellQuoteCliArg(`--user-data-dir=${profileDir}`),
+    ...flags.map(shellQuoteCliArg),
   ].join(' ');
+}
+
+// A browser's own default user-data-dir. Chrome 136+ and Edge ignore --remote-debugging-port there,
+// so relaunching it with the flag cannot bring CDP back (5c41ea5).
+function isBrowserDefaultUserDataDir(profileDir) {
+  const dir = String(profileDir || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!dir) return false;
+  return /\/Library\/Application Support\/(?:Google\/Chrome(?: Beta| Canary| Dev)?|Chromium|Microsoft Edge(?: Beta| Dev| Canary)?|BraveSoftware\/Brave-Browser)$/i.test(dir)
+    || /\/(?:\.config|config)\/(?:google-chrome(?:-beta|-unstable)?|chromium|microsoft-edge(?:-beta|-dev)?|BraveSoftware\/Brave-Browser|vivaldi)$/.test(dir)
+    || /\/AppData\/Local\/(?:Google\/Chrome(?: Beta| SxS| Dev)?|Chromium|Microsoft\/Edge(?: Beta| Dev| SxS)?|BraveSoftware\/Brave-Browser)\/User Data$/i.test(dir);
+}
+
+// Chromium rewrites its process title, so /proc/<pid>/cmdline of a running browser is usually one
+// space-joined string, not NUL-separated words. Split that string before each `--flag`.
+function readProcessArgv(pid, { platform = process.platform, readFile = readFileSync } = {}) {
+  if (platform !== 'linux') return null;
+  try {
+    let argv = String(readFile(`/proc/${Number(pid)}/cmdline`, 'utf8')).split('\0').filter(Boolean);
+    if (argv.length === 1 && /\s--/.test(argv[0])) argv = argv[0].split(/\s+(?=--)/);
+    return argv.length ? argv : null;
+  } catch {
+    return null;
+  }
+}
+
+function argvDebugPort(argv) {
+  for (const arg of Array.isArray(argv) ? argv : []) {
+    const m = String(arg).match(/^--remote-debugging-port=(\d+)(?:\s|$)/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+// Whether a command line runs this profile. A word of a title-joined command line can carry a trailing
+// positional argument (`--user-data-dir=/p http://x`), so a value followed by a space also matches.
+function commandLineUsesProfile(argv, profileDir) {
+  const want = cdpProfileKey(profileDir);
+  const list = Array.isArray(argv) ? argv.map(String) : [];
+  return list.some((arg, i) => {
+    const value = arg.startsWith('--user-data-dir=')
+      ? arg.slice('--user-data-dir='.length)
+      : (arg === '--user-data-dir' ? String(list[i + 1] || '') : null);
+    if (value == null) return false;
+    const key = cdpProfileKey(value);
+    return key === want || key.startsWith(`${want} `);
+  });
+}
+
+// Is a browser still running on this profile (#425/#426)? Chromium keeps `SingletonLock` -> "<host>-<pid>"
+// in the user-data-dir while it runs (Linux, macOS). alive: true (running), false (not running) or null
+// (cannot tell: another host's lock, or Windows). Only `true` may suppress a relaunch.
+function inspectCdpProfileProcess(profileDir, {
+  platform = process.platform,
+  readLink = readlinkSync,
+  exists = existsSync,
+  host = osHostname(),
+  isAlive = pid => isProcessAlive(pid),
+  readArgv = pid => readProcessArgv(pid, { platform }),
+} = {}) {
+  const none = { alive: false, pid: null, argv: null, port: null };
+  if (!profileDir) return none;
+  let lock;
+  try {
+    lock = String(readLink(resolve(String(profileDir), 'SingletonLock')));
+  } catch {
+    if (platform !== 'win32') return none;
+    try {
+      return exists(resolve(String(profileDir), 'lockfile')) ? { ...none, alive: null } : none;
+    } catch {
+      return { ...none, alive: null };
+    }
+  }
+  const m = lock.match(/^(.*)-(\d+)$/);
+  if (!m) return { ...none, alive: null };
+  const pid = Number(m[2]);
+  if (m[1] !== host) return { ...none, alive: null, pid };
+  if (!isAlive(pid)) return { ...none, pid };
+  const argv = readArgv(pid);
+  // The pid now belongs to an unrelated process.
+  if (argv && !commandLineUsesProfile(argv, profileDir)) return { ...none, pid };
+  return { alive: true, pid, argv: argv || null, port: argvDebugPort(argv) };
+}
+
+function safeInspectCdpProfileProcess(inspect, profileDir) {
+  try {
+    return (typeof inspect === 'function' ? inspect : inspectCdpProfileProcess)(profileDir) || null;
+  } catch {
+    return null;
+  }
+}
+
+// #426: when the browser answering on `record.port` runs a profile remembered for that port, add the
+// flags from its live command line, so a later relaunch replays them. Never throws.
+function withLiveLaunchFlags(record, { remembered, inspectProfileProcess } = {}) {
+  try {
+    if (!record?.port || record.launchFlags) return record;
+    const port = String(record.port);
+    const dirs = record.profileDir
+      ? [record.profileDir]
+      : rankCdpRelaunchCandidates(remembered, port).map(candidate => candidate.profileDir);
+    for (const profileDir of dirs.slice(0, LAST_CDP_ENDPOINT_HISTORY_PER_PORT_MAX)) {
+      const live = safeInspectCdpProfileProcess(inspectProfileProcess, profileDir);
+      if (live?.alive !== true || !live.argv || String(live.port) !== port) continue;
+      return {
+        ...record,
+        port,
+        profileDir,
+        exe: record.exe || String(live.argv[0] || '') || null,
+        launchFlags: replayableLaunchFlags(live.argv.slice(1)),
+      };
+    }
+  } catch {}
+  return record;
 }
 
 function profileDirFromCommandLine(args) {
@@ -1601,26 +1765,168 @@ function profileDirFromDevToolsActivePort(portFile) {
   return /(^|[\\/])Default$/.test(dir) ? dirname(dir) : dir;
 }
 
-function cdpUnreachableError({ host, port, cause, lastEndpoint } = {}) {
+const CDP_PROFILE_UNKNOWN_HINT = 'Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.';
+const CDP_NOT_FOUND_HINT = 'Daily Chrome attach failed on 9222. Isolated spawn is fallback only and is not the daily profile. Or set CDP_PORT=<port> for an Electron app';
+
+// One diagnosis of a CDP port that does not answer, with what to do next. `doctor` turns it into its
+// CDP check and every attach (`list`, ...) into its error, so both say the same thing (#425).
+function cdpUnreachableDiagnosis({
+  host,
+  port,
+  cause,
+  lastEndpoint,
+  display = cdpDisplayContext(),
+  inspectProfileProcess,
+} = {}) {
   const resolvedHost = host || lastEndpoint?.host || DEFAULT_CDP_HOST;
   const resolvedPort = port != null && port !== '' ? String(port) : (lastEndpoint?.port || null);
-  const candidates = rankCdpRelaunchCandidates(lastEndpoint, resolvedPort);
-  const profileDir = candidates[0]?.profileDir || null;
-  const relaunch = candidates[0]?.relaunch || null;
+  const candidates = rankCdpRelaunchCandidates(lastEndpoint, resolvedPort, { display });
+  const top = candidates[0] || null;
   const where = resolvedPort ? `${resolvedHost}:${resolvedPort}` : resolvedHost;
   const causeText = String(cause || 'unreachable').replace(/^Error:\s*/i, '');
+  const base = {
+    host: resolvedHost,
+    port: resolvedPort,
+    profileDir: top?.profileDir || null,
+    candidates,
+    exe: top?.exe || null,
+    browser: top?.browser || null,
+  };
+  // Never suggest relaunching a profile whose browser still runs: a second launch only hands the
+  // command line to the running browser, and the CDP port does not come back (#425/#426).
+  const live = top ? safeInspectCdpProfileProcess(inspectProfileProcess, top.profileDir) : null;
+  if (live?.alive === true) {
+    const livePort = live.port ? String(live.port) : null;
+    const otherPort = livePort && livePort !== resolvedPort ? livePort : null;
+    const run = otherPort ? `CDP_PORT=${otherPort} cdp list` : null;
+    const state = !live.argv
+      ? '(its command line could not be read)'
+      : livePort ? `with --remote-debugging-port=${livePort}` : 'without a CDP port';
+    const open = `Profile ${top.profileDir} is still open in pid ${live.pid} ${state}`;
+    const dont = 'do not relaunch it (a second launch hands off to the running browser)';
+    const ask = otherPort
+      ? `${open}; do not relaunch it. Use its port: ${run}`
+      : livePort
+        ? `${open}, but that port does not answer; ${dont}. Wait for it to finish starting, or ask the user to quit it, then rerun: cdp doctor`
+        : `${open}; ${dont}. ${live.argv ? '' : 'If it has a debugging port, set CDP_PORT to it. '}Otherwise enable remote debugging in that browser via chrome://inspect/#remote-debugging, or ask the user to quit it, then rerun: cdp doctor`;
+    return {
+      ...base,
+      code: 'cdp_profile_in_use',
+      relaunch: null,
+      profileInUse: true,
+      pid: live.pid,
+      livePort,
+      run,
+      ask,
+      detail: `cannot reach ${where} (${causeText}); profile ${top.profileDir} is still open in pid ${live.pid} ${state}`,
+      hint: ask,
+      message: `Cannot reach CDP on ${where} (${causeText}). ${ask}`,
+    };
+  }
+  const relaunch = top?.relaunch || null;
   const others = formatCdpCandidateList(candidates);
-  const message = profileDir
-    ? `Cannot reach CDP on ${where} (${causeText}). Relaunch the same profile: ${relaunch}${others ? `\n${others}` : ''}`
-    : `Cannot reach CDP on ${where} (${causeText}). Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.`;
-  const err = new Error(message);
-  err.code = 'cdp_unreachable';
-  err.host = resolvedHost;
-  err.port = resolvedPort;
-  err.profileDir = profileDir;
-  err.relaunch = relaunch;
-  err.candidates = candidates;
+  return {
+    ...base,
+    code: 'cdp_unreachable',
+    relaunch,
+    detail: `cannot reach ${where} (${causeText})`,
+    hint: relaunch || CDP_PROFILE_UNKNOWN_HINT,
+    message: top
+      ? `Cannot reach CDP on ${where} (${causeText}). Relaunch the same profile: ${relaunch}${others ? `\n${others}` : ''}`
+      : `Cannot reach CDP on ${where} (${causeText}). ${CDP_PROFILE_UNKNOWN_HINT}`,
+  };
+}
+
+function cdpCheckFromDiagnosis(diagnosis) {
+  const check = { status: 'FAIL', label: 'CDP', detail: diagnosis.detail, hint: diagnosis.hint };
+  if (diagnosis.code === 'cdp_not_found') return check;
+  Object.assign(check, {
+    error: diagnosis.code,
+    host: diagnosis.host,
+    port: diagnosis.port == null ? null : String(diagnosis.port),
+    profileDir: diagnosis.profileDir,
+    relaunch: diagnosis.relaunch,
+    candidates: diagnosis.candidates,
+    exe: diagnosis.exe,
+    browser: diagnosis.browser,
+  });
+  if (diagnosis.profileInUse) {
+    Object.assign(check, { profileInUse: true, pid: diagnosis.pid, livePort: diagnosis.livePort, run: diagnosis.run });
+  }
+  return check;
+}
+
+function cdpErrorFromDiagnosis(diagnosis, { recovery } = {}) {
+  const err = new Error(diagnosis.message);
+  err.code = diagnosis.code;
+  for (const key of ['host', 'port', 'profileDir', 'relaunch', 'candidates', 'pid', 'livePort']) {
+    if (diagnosis[key] !== undefined) err[key] = diagnosis[key];
+  }
+  if (recovery) err.cdpRecovery = recovery;
   return err;
+}
+
+// doctor's recommendation for a CDP check, in the CLI error recovery shape: list and doctor share it.
+function cdpRecoveryFromDoctor(checks) {
+  const rec = doctorRecommendationModel(checks);
+  return {
+    kind: 'browser-cdp',
+    strategy: rec.strategy || 'enable-persistent-daily-dir',
+    run: rec.run || null,
+    ask: rec.ask || null,
+    consentRequired: Boolean(rec.consentRequired && rec.run),
+    reason: rec.reason || null,
+  };
+}
+
+function cdpUnreachableError(options = {}) {
+  const diagnosis = cdpUnreachableDiagnosis(options);
+  const check = cdpCheckFromDiagnosis(diagnosis);
+  return cdpErrorFromDiagnosis(diagnosis, {
+    recovery: diagnosis.profileInUse ? cdpRecoveryFromDoctor([check]) : null,
+  });
+}
+
+// The port the remembered endpoint stands for on this host: its port, or the old default 9222 for a
+// record that has a profile but no port. null when the record is for another host.
+function rememberedCdpPort(remembered, host) {
+  if (!remembered) return null;
+  if (remembered.host && host && remembered.host !== host) return null;
+  if (remembered.port) return String(remembered.port);
+  return remembered.profileDir ? String(DEFAULT_DEBUG_PORT) : null;
+}
+
+// What unprefixed discovery reports when nothing answered (no CDP_PORT, no DevToolsActivePort, nothing
+// on 9222/9224 or the remembered port). `doctor` returns it as its check and every attach throws it (#425).
+// `probed` maps each probed port to why it failed.
+function cdpDiscoveryMiss({ host = DEFAULT_CDP_HOST, remembered, probed = {}, display, inspectProfileProcess } = {}) {
+  const port = rememberedCdpPort(remembered, host);
+  const top = port ? rankCdpRelaunchCandidates(remembered, port)[0] : null;
+  // A browser's default user-data-dir cannot be relaunched with CDP (Chrome 136+, Edge), so a stale record
+  // of it must not beat the daily-dir recommendation (5c41ea5).
+  if (top && !isBrowserDefaultUserDataDir(top.profileDir)) {
+    const why = probed[port] ? String(probed[port]).replace(/^Error:\s*/i, '') : 'not probed';
+    return cdpUnreachableDiagnosis({
+      host,
+      port,
+      cause: `remembered last endpoint: ${why}; no DevToolsActivePort and no CDP_PORT set`,
+      lastEndpoint: remembered,
+      display,
+      inspectProfileProcess,
+    });
+  }
+  const ports = Object.keys(probed);
+  const detail = `no DevToolsActivePort and no CDP_PORT set${ports.length ? `; nothing answered on ${host}:${ports.join(', ')}` : ''}`;
+  return {
+    code: 'cdp_not_found',
+    host,
+    port: null,
+    profileDir: null,
+    relaunch: null,
+    detail,
+    hint: CDP_NOT_FOUND_HINT,
+    message: `${detail[0].toUpperCase()}${detail.slice(1)}.\n  Chrome: enable at chrome://inspect/#remote-debugging\n  Electron: set CDP_PORT=<port> (app must use --remote-debugging-port)`,
+  };
 }
 
 function isCdpHttp404(error) {
@@ -2451,18 +2757,32 @@ function truncateTextLines(text = '', maxLines = null) {
 // Browser metadata from /json/version — set when connecting via CDP_PORT
 let _browserInfo = null;
 
+// Node's fetch says only "fetch failed"; the reason (ECONNREFUSED, ...) is on `cause`.
+function fetchFailureText(error) {
+  const message = String(error?.message || error || 'unreachable');
+  const code = error?.cause?.code;
+  return code && !message.includes(code) ? `${message} (${code})` : message;
+}
+
 async function wsUrlFromCdpHttp({
   host,
   port,
   fetcher,
   remembered,
   rememberReachable,
+  display,
+  inspectProfileProcess,
 }) {
+  const unreachable = (cause) => {
+    const err = cdpUnreachableError({ host, port, cause, lastEndpoint: remembered, display, inspectProfileProcess });
+    err.probeCause = String(cause || 'unreachable');
+    return err;
+  };
   let res;
   try {
     res = await fetcher(`http://${host}:${port}/json/version`, { signal: AbortSignal.timeout(3000) });
   } catch (e) {
-    throw cdpUnreachableError({ host, port, cause: e?.message || e, lastEndpoint: remembered });
+    throw unreachable(fetchFailureText(e));
   }
   if (res.ok) {
     const info = await res.json();
@@ -2481,67 +2801,12 @@ async function wsUrlFromCdpHttp({
     rememberReachable({ host, port });
     return `ws://${host}:${port}/devtools/browser`;
   }
-  throw cdpUnreachableError({ host, port, cause: `HTTP ${res.status}`, lastEndpoint: remembered });
+  throw unreachable(`HTTP ${res.status}`);
 }
 
-function missingCdpDiscoveryError() {
-  return new Error('No DevToolsActivePort found and no CDP_PORT set.\n  Chrome: enable at chrome://inspect/#remote-debugging\n  Electron: set CDP_PORT=<port> (app must use --remote-debugging-port)');
-}
-
-async function getWsUrl({
-  env = process.env,
-  fetcher = fetch,
-  lastEndpoint,
-  readLastEndpoint = readLastCdpEndpoint,
-  rememberEndpoint = rememberLastCdpEndpoint,
-  inspectOccupantProfileDir,
-  connectWebSocket,
-} = {}) {
-  const host = env.CDP_HOST || DEFAULT_CDP_HOST;
-  const remembered = lastEndpoint !== undefined ? lastEndpoint : readLastEndpoint();
-  const rememberReachable = (record) => {
-    try { rememberEndpoint(record); } catch {}
-  };
-
-  // CDP_PORT: explicit port (e.g. Electron with --remote-debugging-port=9222)
-  if (env.CDP_PORT) {
-    return wsUrlFromCdpHttp({
-      host,
-      port: env.CDP_PORT,
-      fetcher,
-      remembered,
-      rememberReachable,
-    });
-  }
-
-  // Probe spawn-default 9222 (and CDP_LAST_PORT) before DevToolsActivePort / FAIL.
-  for (const candidate of defaultSpawnProbePorts(env)) {
-    try {
-      const url = await wsUrlFromCdpHttp({
-        host,
-        port: candidate,
-        fetcher,
-        remembered,
-        rememberReachable,
-      });
-      const profileDir = await resolveOccupantProfileDir({
-        host,
-        port: candidate,
-        remembered,
-        inspectOccupantProfileDir,
-        connectWebSocket,
-      });
-      if (isIsolatedChromeCdpExProfileDir(profileDir)) {
-        throw isolatedOccupantAttachError({ host, port: candidate, profileDir });
-      }
-      return url;
-    } catch (error) {
-      if (error?.code === 'cdp_isolated_occupant' || error?.isolatedOccupant) throw error;
-    }
-  }
-
-  // DevToolsActivePort file discovery (Chrome, Edge, Brave, etc.)
-  const home = homedir();
+// Where Chromium-family browsers write DevToolsActivePort. `doctor` and every attach search the same
+// list, so they cannot disagree about whether the file exists (#425).
+function devToolsActivePortCandidates({ home = homedir(), localAppData = '', portFile } = {}) {
   // macOS: ~/Library/Application Support/<name>/DevToolsActivePort
   const macBrowsers = [
     'Google/Chrome', 'Google/Chrome Beta', 'Google/Chrome for Testing',
@@ -2558,9 +2823,8 @@ async function getWsUrl({
     'Google\\Chrome', 'Google\\Chrome Beta', 'Google\\Chrome for Testing',
     'Chromium', 'BraveSoftware\\Brave-Browser', 'Microsoft\\Edge',
   ];
-  const localAppData = env.LOCALAPPDATA || process.env.LOCALAPPDATA || '';
-  const candidates = [
-    env.CDP_PORT_FILE || process.env.CDP_PORT_FILE,
+  return [
+    portFile,
     ...winBrowsers.flatMap(b => [
       resolve(localAppData, b, 'User Data', 'DevToolsActivePort'),
       resolve(localAppData, b, 'User Data', 'Default', 'DevToolsActivePort'),
@@ -2585,7 +2849,88 @@ async function getWsUrl({
       resolve(home, '.var/app', appId, 'config', name, 'Default/DevToolsActivePort'),
     ]),
   ].filter(Boolean);
-  const portFile = candidates.find(p => existsSync(p));
+}
+
+// The remembered endpoint's port, when unprefixed discovery has not probed it yet.
+function rememberedCdpProbePort(remembered, host, probed = {}) {
+  const port = remembered?.port ? rememberedCdpPort(remembered, host) : null;
+  return port && !Object.hasOwn(probed, port) ? port : null;
+}
+
+function defaultCdpEnvironmentCheck(env, cdpCheck) {
+  try {
+    return reconcileRuntimeEnvironmentCheck(checkRuntimeEnvironment({ env }), cdpCheck);
+  } catch {
+    return null;
+  }
+}
+
+async function getWsUrl({
+  env = process.env,
+  fetcher = fetch,
+  lastEndpoint,
+  readLastEndpoint = readLastCdpEndpoint,
+  rememberEndpoint = rememberLastCdpEndpoint,
+  inspectOccupantProfileDir,
+  connectWebSocket,
+  inspectProfileProcess,
+  display = cdpDisplayContext(),
+  environmentCheck = cdpCheck => defaultCdpEnvironmentCheck(env, cdpCheck),
+} = {}) {
+  const host = env.CDP_HOST || DEFAULT_CDP_HOST;
+  const remembered = lastEndpoint !== undefined ? lastEndpoint : readLastEndpoint();
+  const rememberReachable = (record) => {
+    try { rememberEndpoint(withLiveLaunchFlags(record, { remembered, inspectProfileProcess })); } catch {}
+  };
+  const httpProbe = port => wsUrlFromCdpHttp({
+    host,
+    port,
+    fetcher,
+    remembered,
+    rememberReachable,
+    display,
+    inspectProfileProcess,
+  });
+
+  // CDP_PORT: explicit port (e.g. Electron with --remote-debugging-port=9222)
+  if (env.CDP_PORT) return httpProbe(env.CDP_PORT);
+
+  // Why each probed port failed, for the one miss diagnosis below.
+  const probed = {};
+  // A live port is attach success unless it is a leftover isolated chrome-cdp-ex profile.
+  const attachProbe = async (port) => {
+    try {
+      const url = await httpProbe(port);
+      const profileDir = await resolveOccupantProfileDir({
+        host,
+        port,
+        remembered,
+        inspectOccupantProfileDir,
+        connectWebSocket,
+      });
+      if (isIsolatedChromeCdpExProfileDir(profileDir)) {
+        throw isolatedOccupantAttachError({ host, port, profileDir });
+      }
+      return url;
+    } catch (error) {
+      if (error?.code === 'cdp_isolated_occupant' || error?.isolatedOccupant) throw error;
+      probed[String(port)] = error?.probeCause || error?.message || 'unreachable';
+      return null;
+    }
+  };
+
+  // Probe spawn-default 9222 (and CDP_LAST_PORT) before DevToolsActivePort / FAIL.
+  for (const candidate of defaultSpawnProbePorts(env)) {
+    const url = await attachProbe(candidate);
+    if (url) return url;
+  }
+
+  // DevToolsActivePort file discovery (Chrome, Edge, Brave, etc.)
+  const portFile = devToolsActivePortCandidates({
+    home: homedir(),
+    localAppData: env.LOCALAPPDATA || process.env.LOCALAPPDATA || '',
+    portFile: env.CDP_PORT_FILE || process.env.CDP_PORT_FILE,
+  }).find(p => existsSync(p));
   if (portFile) {
     const lines = readFileSync(portFile, 'utf8').trim().split('\n');
     if (lines.length < 2 || !lines[0] || !lines[1]) throw new Error(`Invalid DevToolsActivePort file: ${portFile}`);
@@ -2600,24 +2945,26 @@ async function getWsUrl({
   // Chrome 136+ often does not write DevToolsActivePort. Probe the same HTTP
   // path as CDP_PORT=9224, including the 404 → /devtools/browser fallback.
   try {
-    return await wsUrlFromCdpHttp({
-      host,
-      port: DEFAULT_CDP_PROBE_PORT,
-      fetcher,
-      remembered,
-      rememberReachable,
-    });
-  } catch {
-    if (remembered?.profileDir) {
-      throw cdpUnreachableError({
-        host,
-        port: remembered.port,
-        cause: 'No DevToolsActivePort found and no CDP_PORT set',
-        lastEndpoint: remembered,
-      });
-    }
-    throw missingCdpDiscoveryError();
+    return await httpProbe(DEFAULT_CDP_PROBE_PORT);
+  } catch (error) {
+    probed[DEFAULT_CDP_PROBE_PORT] = error?.probeCause || error?.message || 'unreachable';
   }
+
+  // Last, the endpoint this tool last reached (#425): a live browser there is attach success.
+  const rememberedPort = rememberedCdpProbePort(remembered, host, probed);
+  if (rememberedPort) {
+    const url = await attachProbe(rememberedPort);
+    if (url) return url;
+  }
+
+  const diagnosis = cdpDiscoveryMiss({ host, remembered, probed, display, inspectProfileProcess });
+  const check = cdpCheckFromDiagnosis(diagnosis);
+  // Not a relaunch: the Next is whatever doctor recommends for this same check.
+  const needsDoctorRecovery = diagnosis.code === 'cdp_not_found' || diagnosis.profileInUse;
+  const recovery = needsDoctorRecovery
+    ? cdpRecoveryFromDoctor([diagnosis.profileInUse ? null : environmentCheck(check), check].filter(Boolean))
+    : null;
+  throw cdpErrorFromDiagnosis(diagnosis, { recovery });
 }
 
 const sleep = (ms, signal = daemonRequestAbortSignal()) => {
@@ -19396,45 +19743,29 @@ async function checkCdpReachability({
   rememberEndpoint = rememberLastCdpEndpoint,
   connectWebSocket,
   inspectOccupantProfileDir,
+  inspectProfileProcess,
+  display = cdpDisplayContext(),
   home = homedir(),
   existsSync: pathExists = existsSync,
 } = {}) {
   const port = env.CDP_PORT;
   const remembered = lastEndpoint !== undefined ? lastEndpoint : readLastEndpoint();
   const rememberReachable = (record) => {
-    try { rememberEndpoint(record); } catch {}
+    try { rememberEndpoint(withLiveLaunchFlags(record, { remembered, inspectProfileProcess })); } catch {}
   };
-  const unreachable = (p, cause) => {
-    const candidates = rankCdpRelaunchCandidates(remembered, p);
-    const top = candidates[0] || null;
-    const profileDir = top?.profileDir || null;
-    const relaunch = top?.relaunch || null;
-    const hint = relaunch
-      || 'Profile is unknown — do not invent a new --user-data-dir. Enable remote debugging on the existing Chrome via chrome://inspect/#remote-debugging.';
-    return {
-      status: 'FAIL',
-      label: 'CDP',
-      detail: `cannot reach ${host}:${p} (${cause})`,
-      hint,
-      error: 'cdp_unreachable',
-      host,
-      port: String(p),
-      profileDir,
-      relaunch,
-      candidates,
-      exe: top?.exe || null,
-      browser: top?.browser || null,
-    };
-  };
-  const localAppData = env.LOCALAPPDATA || process.env.LOCALAPPDATA || '';
-  const tryPaths = [
-    env.CDP_PORT_FILE,
-    resolve(home, 'Library/Application Support/Google/Chrome/DevToolsActivePort'),
-    resolve(home, 'Library/Application Support/Google/Chrome/Default/DevToolsActivePort'),
-    resolve(home, '.config/google-chrome/DevToolsActivePort'),
-    resolve(home, '.config/chromium/DevToolsActivePort'),
-    resolve(localAppData, 'Google\\Chrome\\User Data\\DevToolsActivePort'),
-  ].filter(Boolean);
+  const unreachable = (p, cause) => cdpCheckFromDiagnosis(cdpUnreachableDiagnosis({
+    host,
+    port: p,
+    cause,
+    lastEndpoint: remembered,
+    display,
+    inspectProfileProcess,
+  }));
+  const tryPaths = devToolsActivePortCandidates({
+    home,
+    localAppData: env.LOCALAPPDATA || process.env.LOCALAPPDATA || '',
+    portFile: env.CDP_PORT_FILE,
+  });
   const activeWsPath = (p) => {
     try {
       const file = tryPaths.find(pathExists);
@@ -19480,7 +19811,7 @@ async function checkCdpReachability({
         rememberReachable({ host, port: p });
         return { status: 'OK', label: 'CDP', detail: `${host}:${p} → connected via WebSocket fallback`, host, port: String(p) };
       }
-      return { unreachable: true, cause: e.message };
+      return { unreachable: true, cause: fetchFailureText(e) };
     }
   };
   const classifyDefaultProbe = async (result) => {
@@ -19501,38 +19832,42 @@ async function checkCdpReachability({
     }
     return result;
   };
-  const probeDefaultPorts = async () => {
-    for (const candidate of defaultSpawnProbePorts(env)) {
-      const result = await checkExplicitPort(candidate);
-      if (result.unreachable) continue;
-      if (result.status === 'OK') {
-        return classifyDefaultProbe({
-          ...result,
-          detail: `${result.detail} (probed default spawn port)`,
-        });
-      }
+  // Why each probed port failed, for the one miss diagnosis below (shared with every attach).
+  const probed = {};
+  const probeAttach = async (candidate, note) => {
+    const result = await checkExplicitPort(candidate);
+    if (result.unreachable) {
+      probed[String(candidate)] = result.cause;
+      return null;
     }
-    return null;
+    if (result.status !== 'OK') return null;
+    return classifyDefaultProbe({ ...result, detail: `${result.detail} (${note})` });
   };
   if (port) {
     const result = await checkExplicitPort(port);
     if (result.unreachable) return unreachable(port, result.cause);
     return result;
   }
-  const probed = await probeDefaultPorts();
-  if (probed) return probed;
+  for (const candidate of defaultSpawnProbePorts(env)) {
+    const result = await probeAttach(candidate, 'probed default spawn port');
+    if (result) return result;
+  }
 
   // Auto-discover via DevToolsActivePort (light reuse — avoids full ws connect)
   const found = tryPaths.find(p => pathExists(p));
   if (!found) {
-    const probed = await checkExplicitPort(DEFAULT_CDP_PROBE_PORT);
-    if (!probed.unreachable) return probed;
-    // Unset CDP_PORT: empty 9222 is daily-profile (ask first), not a stale
-    // last-endpoint relaunch (Chrome leftover must not beat preferred Edge).
-    return {
-      status: 'FAIL', label: 'CDP', detail: 'no DevToolsActivePort and no CDP_PORT set',
-      hint: 'Daily Chrome attach failed on 9222. Isolated spawn is fallback only and is not the daily profile. Or set CDP_PORT=<port> for an Electron app',
-    };
+    const probedDefault = await checkExplicitPort(DEFAULT_CDP_PROBE_PORT);
+    if (!probedDefault.unreachable) return probedDefault;
+    probed[DEFAULT_CDP_PROBE_PORT] = probedDefault.cause;
+    // Last, the endpoint this tool last reached (#425): a live browser there is attach success.
+    const rememberedPort = rememberedCdpProbePort(remembered, host, probed);
+    if (rememberedPort) {
+      const result = await probeAttach(rememberedPort, 'remembered last endpoint');
+      if (result) return result;
+    }
+    // Unset CDP_PORT: empty 9222 is daily-profile (ask first), not a stale default-profile relaunch
+    // (Chrome leftover must not beat preferred Edge). Same diagnosis as every attach (#425).
+    return cdpCheckFromDiagnosis(cdpDiscoveryMiss({ host, remembered, probed, display, inspectProfileProcess }));
   }
   let lines;
   try {
@@ -20102,6 +20437,8 @@ function doctorWizardModel(checks) {
     status = 'blocked at browser CDP';
     currentStep = cdp.isolatedOccupant
       ? defaultPersistentDailySpawnCommand(environment, prefix)
+      : cdp.profileInUse
+        ? (cdp.run || cdp.hint)
       : cdp.relaunch
         ? cdp.relaunch
         : cdp.port
@@ -20208,6 +20545,20 @@ function doctorRecommendationModel(checks) {
         after: `${prefix} list`,
         requiresUserAction: true,
         consentRequired: true,
+        reason: cdp.detail || null,
+      };
+    }
+    if (cdp.profileInUse) {
+      // The profile's browser still runs: point at its CDP port, never at a relaunch (#425/#426).
+      return {
+        ...base,
+        stage: 'browser-cdp',
+        strategy: 'profile-in-use',
+        run: cdp.run || null,
+        ask: cdp.hint || null,
+        after: cdp.run ? null : `${prefix} doctor`,
+        requiresUserAction: !cdp.run,
+        consentRequired: false,
         reason: cdp.detail || null,
       };
     }
@@ -20472,6 +20823,8 @@ async function runDoctorChecks(opts = {}) {
     readLastEndpoint: opts.readLastEndpoint,
     connectWebSocket: opts.connectWebSocket,
     inspectOccupantProfileDir: opts.inspectOccupantProfileDir,
+    inspectProfileProcess: opts.inspectProfileProcess,
+    display: opts.display || cdpDisplayContext({ platform: opts.platform, env: opts.env }),
     home: opts.home,
     existsSync: fs.existsSync,
   });
@@ -21241,6 +21594,8 @@ async function spawnDebugBrowserStr(args, env = process.env, deps = {}) {
       profileDir: plan.profileDir,
       exe: plan.exe,
       browser: plan.browser,
+      // #426: relaunch-same-profile replays these (headless, no-sandbox, ...).
+      launchFlags: replayableLaunchFlags(plan.args),
       // #416: recovery suggests the spawn command only for profiles this command created.
       // A --daily-profile spawn is not reproducible through --profile-dir, so it stays untagged
       // and recovery keeps the raw browser line for it.
@@ -24789,6 +25144,8 @@ function buildCliErrorRecovery(message, { cmd = '', targetPrefix = '', platform 
       commands,
     };
   }
+  // Discovery already asked doctor's recommendation for this same CDP check (#425): use it as is.
+  if (err?.cdpRecovery?.kind) return { ...err.cdpRecovery };
   if (
     err?.code === 'cdp_unreachable'
     || lower.includes('cannot reach cdp')
@@ -25256,8 +25613,10 @@ function formatCliErrorRecovery(recovery) {
     'Recovery:',
     `  Kind: ${recovery.kind}`,
     `  Strategy: ${recovery.strategy}`,
-    `  Run: ${recovery.run}`,
   ];
+  if (recovery.run) lines.push(`  Run: ${recovery.run}${recovery.consentRequired ? ' (ask first)' : ''}`);
+  if (recovery.ask && recovery.ask !== recovery.run) lines.push(`  Ask: ${recovery.ask}`);
+  if (!recovery.run && !recovery.ask) lines.push(`  Run: ${recovery.run}`);
   if (recovery.then) lines.push(`  Then: ${recovery.then}`);
   if (recovery.reason) lines.push(`  Reason: ${recovery.reason}`);
   return lines;
@@ -25308,6 +25667,17 @@ function buildCliErrorModel(err, { cmd = '', targetPrefix = '', platform = proce
       model.relaunch = err?.relaunch ?? null;
     }
   }
+  if (err?.code === 'cdp_profile_in_use' || err?.code === 'cdp_not_found') {
+    model.error.code = err.code;
+    model.host = err.host || null;
+    model.port = err.port || null;
+    model.profileDir = err.profileDir ?? null;
+    model.relaunch = null;
+    if (err.code === 'cdp_profile_in_use') {
+      model.pid = err.pid ?? null;
+      model.livePort = err.livePort ?? null;
+    }
+  }
   if (completionUnknown) {
     model.completion = 'unknown';
     model.sideEffectMayHaveOccurred = true;
@@ -25349,7 +25719,10 @@ function formatCliError(err, { cmd = '', targetPrefix = '', format = 'text', pla
 
   const recovery = buildCliErrorRecovery(message, { cmd, targetPrefix, platform, err, args });
   lines.push(...formatCliErrorRecovery(recovery));
-  lines.push(`Next: ${recovery.run}`);
+  // Same Next line as doctor: the command (marked when consent is needed), else what to ask the user.
+  lines.push(`Next: ${recovery.run
+    ? `${recovery.run}${recovery.consentRequired ? ' (ask first)' : ''}`
+    : (recovery.ask || recovery.run)}`);
   return lines.join('\n');
 }
 
@@ -26709,6 +27082,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   inspectCdpOccupantProfileDirViaCdp,
   isDisposableSpawnProfileDir, isIsolatedChromeCdpExProfileDir,
   isTempCdpProfileDir, rankCdpRelaunchCandidates,
+  replayableLaunchFlags, inspectCdpProfileProcess, isBrowserDefaultUserDataDir, cdpDiscoveryMiss, withLiveLaunchFlags, readProcessArgv,
   persistentDailyUserDataDir, isolatedSpawnProfileDir,
   overlayDetectorScript, formatOverlayReport, resolveOverlayTargetPoint, overlayStr,
   dismissModalStr, dismissModalScript,
