@@ -19,6 +19,24 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  # Portability gate (#463): GNU tar from Git for Windows, MSYS argv quoting, slower file I/O.
+  test-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        # Git Bash: the shell the issue was reported from, with GNU tar ahead of System32's bsdtar.
+        shell: bash
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Record which tar the tests will spawn (GNU from Git for Windows vs System32 bsdtar).
+      - run: command -v tar && tar --version
+      - run: npm test -- --maxWorkers=2
+
   lint:
     runs-on: ubuntu-latest
     steps:

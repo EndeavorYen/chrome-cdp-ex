@@ -72,6 +72,7 @@
     "package/skills/chrome-cdp-ex/scripts/lib/action-evidence.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/action-receipt-surfaces.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/action-recovery.mjs",
+    "package/skills/chrome-cdp-ex/scripts/lib/browser-paths.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/browser-resources.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/browser-supervisor.mjs",
     "package/skills/chrome-cdp-ex/scripts/lib/cards-model.mjs",

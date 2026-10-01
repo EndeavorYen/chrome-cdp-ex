@@ -289,7 +289,9 @@ describe('#441 background mode set by open --background survives a daemon restar
     expect(T.readTabBackgroundMode(`TAB${String(T.TAB_MODE_RECORDS_MAX + 4).padStart(4, '0')}`, { runtimeDir })).toBe(true);
     expect(T.listTabModeRecords({ runtimeDir })).toHaveLength(T.TAB_MODE_RECORDS_MAX);
     rmSync(runtimeDir, { recursive: true, force: true });
-  });
+    // ~70 writes, each re-listing and re-reading every record: a few thousand small file reads,
+    // which Windows (antivirus scanning each open) serves far slower than Linux under load.
+  }, 60_000);
 
   it('writes mode records into the isolated test runtime dir by default', () => {
     if (process.platform === 'win32') return;

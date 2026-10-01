@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   commandApplicationSource,
@@ -13,9 +13,13 @@ import {
   tableContractSource,
   tableExtractionSource,
   tableSamplerSource,
+  yieldToEventLoop,
 } from './runtime-v3-table-policy-authority-helpers.mjs';
 
 describe('Runtime v3 table policy authority owners', { timeout: 60_000 }, () => {
+  // Every test runs synchronous inventory builds; let the worker's event loop turn between them.
+  beforeEach(yieldToEventLoop);
+
   it.each([
     () => daemonReadHandlersSource.replace(
       'export function createDaemonReadHandlers(input) {',

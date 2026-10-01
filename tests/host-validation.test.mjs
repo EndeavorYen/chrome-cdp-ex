@@ -53,7 +53,8 @@ describe('host validation CLI', () => {
       'experiment/codex-killer-path-demo.mp4',
       'scripts/check-host-validation.mjs',
     ]));
-  });
+    // npm pack walks the whole package; npm startup alone takes seconds on a loaded Windows runner.
+  }, 120_000);
 });
 
 describe('host validation manifest', () => {

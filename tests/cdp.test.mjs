@@ -3204,7 +3204,7 @@ describe('Session report', () => {
   });
 
   it('writes compact action events to the per-target session log', () => {
-    const logPath = `/tmp/cdp-session-log-${Date.now()}-${Math.random().toString(16).slice(2)}.log`;
+    const logPath = resolve(tmpdir(), `cdp-session-log-${Date.now()}-${Math.random().toString(16).slice(2)}.log`);
     const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1', logPath });
 
     try {
@@ -3225,7 +3225,7 @@ describe('Session report', () => {
   });
 
   it('initializes the per-target session log with a session-start event', () => {
-    const logPath = `/tmp/cdp-session-start-${Date.now()}-${Math.random().toString(16).slice(2)}.log`;
+    const logPath = resolve(tmpdir(), `cdp-session-start-${Date.now()}-${Math.random().toString(16).slice(2)}.log`);
     const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1', logPath });
 
     try {
@@ -3849,7 +3849,7 @@ describe('Session report', () => {
   });
 
   it('redacts sensitive fill values before recording action artifacts', () => {
-    const logPath = `/tmp/cdp-sensitive-action-${Date.now()}-${Math.random().toString(16).slice(2)}.log`;
+    const logPath = resolve(tmpdir(), `cdp-sensitive-action-${Date.now()}-${Math.random().toString(16).slice(2)}.log`);
     const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1', logPath });
 
     try {
@@ -3881,7 +3881,7 @@ describe('Session report', () => {
   });
 
   it('redacts sentinel secrets from report, record, export, and JSONL artifacts', () => {
-    const logPath = `/tmp/cdp-sensitive-artifacts-${Date.now()}-${Math.random().toString(16).slice(2)}.log`;
+    const logPath = resolve(tmpdir(), `cdp-sensitive-artifacts-${Date.now()}-${Math.random().toString(16).slice(2)}.log`);
     const state = T.createSessionState({ targetId: 'ABC123', sessionId: 'sid-1', logPath });
     const sentinels = [
       'pw-sentinel-123',

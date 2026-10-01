@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { spawn, spawnSync } from 'child_process';
+import { detectBrowserPath } from '../skills/chrome-cdp-ex/scripts/lib/browser-paths.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..');
@@ -14,16 +15,13 @@ const port = Number(process.env.CDP_SMOKE_PORT || 9333);
 const serverPort = Number(process.env.CDP_SMOKE_HTTP_PORT || 41737);
 
 // CDP_SMOKE_BROWSER=<path> runs the smoke on any Chromium build (e.g. a Playwright download)
-// when none of the system browsers below is installed.
+// when no system browser is installed. Otherwise the smoke looks where spawn-debug-browser looks
+// (standard install folders on macOS, Linux and Windows, then PATH).
+const browserOrder = process.platform === 'darwin' ? ['edge', 'chrome', 'brave'] : ['chrome', 'edge', 'brave'];
 const browserCandidates = [
   ...(process.env.CDP_SMOKE_BROWSER ? [[process.env.CDP_SMOKE_BROWSER, 'chromium']] : []),
-  ['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge', 'edge'],
-  ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', 'chrome'],
-  ['/Applications/Brave Browser.app/Contents/MacOS/Brave Browser', 'brave'],
-  ['/usr/bin/google-chrome', 'chrome'],
-  ['/usr/bin/chromium', 'chromium'],
-  ['/usr/bin/microsoft-edge', 'edge'],
-].filter(([p]) => existsSync(p));
+  ...browserOrder.map(name => [detectBrowserPath(name), name]),
+].filter(([p]) => p && existsSync(p));
 
 function skip(reason) {
   console.log(`SKIP live smoke: ${reason}`);

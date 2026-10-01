@@ -2,6 +2,7 @@ import { describe, it } from 'vitest';
 
 import {
   expectInventoryDrift,
+  INVENTORY_BUILD_TIMEOUT,
   source,
 } from './runtime-v3-dispatch-test-helpers.mjs';
 
@@ -35,5 +36,5 @@ describe('Runtime v3 handler wiring characterization B', () => {
       'eval: applicationPreflight.handlerBuilders.eval(scriptCapabilities),',
       'eval: applicationPreflight.handlerBuilders.call(scriptCapabilities),',
     ),
-  ])('detects handler and capability wiring mutation %#', expectInventoryDrift, 15_000);
+  ])('detects handler and capability wiring mutation %#', expectInventoryDrift, INVENTORY_BUILD_TIMEOUT);
 });

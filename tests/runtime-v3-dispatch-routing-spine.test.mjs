@@ -2,6 +2,7 @@ import { describe, it } from 'vitest';
 
 import {
   expectInventoryDrift,
+  INVENTORY_BUILD_TIMEOUT,
   source,
 } from './runtime-v3-dispatch-test-helpers.mjs';
 
@@ -20,5 +21,5 @@ describe('Runtime v3 CLI and daemon routing spine characterization', () => {
       "return { ok: false, error: e.message || String(e) };\n    }\n  }",
       "return { ok: false, error: e.message || String(e) };\n    }\n    // default: return { ok: false, error: `Unknown command: ${cmd}` };\n  }",
     ).replace("return { ok: true, result: result ?? '' };", "return { ok: true, result: 'planted' };"),
-  ])('detects routing spine mutation %#', expectInventoryDrift, 15_000);
+  ])('detects routing spine mutation %#', expectInventoryDrift, INVENTORY_BUILD_TIMEOUT);
 });

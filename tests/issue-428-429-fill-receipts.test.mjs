@@ -82,10 +82,12 @@ async function rejection(promise) {
 }
 
 // Runs a recovery command through a real POSIX shell with `cdp` stubbed to print its argv, then
-// returns the expression argument the CLI would have received.
+// returns the expression argument the CLI would have received. The script goes in on stdin: on
+// Windows, Node quotes an argv script for CreateProcess and MSYS sh re-splits it, which drops
+// backslashes before the shell ever parses the command.
 function shellEvalArg(command) {
-  const res = spawnSync('sh', ['-c', `cdp() { printf '%s' "$3"; }; ${command}`], { encoding: 'utf8' });
-  expect(res.status).toBe(0);
+  const res = spawnSync('sh', ['-s'], { input: `cdp() { printf '%s' "$3"; }; ${command}\n`, encoding: 'utf8' });
+  expect(res.status, res.stderr).toBe(0);
   return res.stdout;
 }
 
