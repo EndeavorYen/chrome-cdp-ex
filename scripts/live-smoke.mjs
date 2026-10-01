@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createServer } from 'http';
-import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -13,7 +13,10 @@ const page = resolve(__dirname, 'smoke-page.html');
 const port = Number(process.env.CDP_SMOKE_PORT || 9333);
 const serverPort = Number(process.env.CDP_SMOKE_HTTP_PORT || 41737);
 
+// CDP_SMOKE_BROWSER=<path> runs the smoke on any Chromium build (e.g. a Playwright download)
+// when none of the system browsers below is installed.
 const browserCandidates = [
+  ...(process.env.CDP_SMOKE_BROWSER ? [[process.env.CDP_SMOKE_BROWSER, 'chromium']] : []),
   ['/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge', 'edge'],
   ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', 'chrome'],
   ['/Applications/Brave Browser.app/Contents/MacOS/Brave Browser', 'brave'],
@@ -32,7 +35,16 @@ if (!existsSync(page)) skip(`smoke page not found: ${page}`);
 if (browserCandidates.length === 0) skip('no supported Chrome/Edge/Brave browser binary found');
 
 const [browserPath, browserName] = browserCandidates[0];
+// Never drive a browser the user already has on this port: the smoke clicks, fills and navigates.
+try {
+  await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1000) });
+  skip(`port ${port} already has a CDP endpoint; set CDP_SMOKE_PORT to a free port`);
+} catch {}
 const profileDir = mkdtempSync(resolve(tmpdir(), `chrome-cdp-ex-smoke-${browserName}-`));
+// Endpoint records, page caches and daemon sockets stay in the throwaway profile dir, not the
+// user's real runtime dir, where later doctor/list runs would trust the smoke's records.
+const runtimeDir = resolve(profileDir, 'runtime');
+mkdirSync(runtimeDir, { recursive: true });
 const uploadFixturePath = resolve(profileDir, 'upload-fixture.txt');
 const uploadJsonFixturePath = resolve(profileDir, 'upload-json-fixture.txt');
 writeFileSync(uploadFixturePath, 'chrome-cdp-ex upload smoke fixture\n');
@@ -74,11 +86,22 @@ browser = spawn(browserPath, [
   `--user-data-dir=${profileDir}`,
   '--no-first-run',
   '--no-default-browser-check',
+  // The page's fixed .sidebar covers the main column's buttons below about 1100 px (headless
+  // defaults to 800x600), so real mouse clicks would land on the sidebar.
+  '--window-size=1280,900',
+  // A headed browser aborts at once on Linux without a display.
+  ...(process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY ? ['--headless=new'] : []),
+  // Opt-in for hosts whose kernel blocks Chromium's sandbox (Ubuntu AppArmor userns rules).
+  ...(/^(1|true|yes|on)$/i.test(process.env.CDP_SMOKE_NO_SANDBOX || '') ? ['--no-sandbox'] : []),
   url,
 ], { stdio: 'ignore' });
 browser.unref();
 
-const env = { ...process.env, CDP_PORT: String(port) };
+const env = {
+  ...process.env,
+  CDP_PORT: String(port),
+  ...(process.platform === 'win32' ? { LOCALAPPDATA: runtimeDir } : { XDG_RUNTIME_DIR: runtimeDir }),
+};
 function run(args, opts = {}) {
   const res = spawnSync(process.execPath, [cdp, ...args], { cwd: repoRoot, env, encoding: 'utf8', timeout: opts.timeout || 20000 });
   if (res.status !== 0) {
@@ -93,13 +116,23 @@ function runFailure(args, opts = {}) {
   }
   return `${res.stdout || ''}${res.stderr || ''}`.trim();
 }
+// A failed action exits 1 but still prints its JSON evidence on stdout.
+function runFailureStdout(args, opts = {}) {
+  const res = spawnSync(process.execPath, [cdp, ...args], { cwd: repoRoot, env, encoding: 'utf8', timeout: opts.timeout || 20000 });
+  if (res.status === 0) {
+    throw new Error(`cdp ${args.join(' ')} should have failed\nSTDOUT:\n${res.stdout}\nSTDERR:\n${res.stderr}`);
+  }
+  return (res.stdout || '').trim();
+}
 function assertIncludes(text, needle, label) {
   if (!text.includes(needle)) throw new Error(`${label} missing ${JSON.stringify(needle)}\nOutput:\n${text}`);
 }
 
-// Wait for /json/version to become reachable via cdp list.
+// Wait for /json/version to become reachable via cdp list. A fresh profile on a busy host can take
+// well over 15 s to commit the first page, so wait on a deadline rather than a fixed retry count.
 let list = '';
-for (let i = 0; i < 30; i++) {
+const reachDeadline = Date.now() + Number(process.env.CDP_SMOKE_START_TIMEOUT_MS || 60000);
+while (Date.now() < reachDeadline) {
   const res = spawnSync(process.execPath, [cdp, 'list'], { cwd: repoRoot, env, encoding: 'utf8', timeout: 5000 });
   if (res.status === 0 && res.stdout.includes('chrome-cdp-ex long-session smoke')) {
     list = res.stdout.trim();
@@ -107,7 +140,10 @@ for (let i = 0; i < 30; i++) {
   }
   await new Promise(r => setTimeout(r, 300));
 }
-if (!list) throw new Error('Browser did not become reachable via cdp list');
+if (!list) {
+  const last = spawnSync(process.execPath, [cdp, 'list'], { cwd: repoRoot, env, encoding: 'utf8', timeout: 5000 });
+  throw new Error(`Browser did not become reachable via cdp list\nexit=${last.status}\n${last.stdout}${last.stderr}`);
+}
 const target = list.split(/\s+/)[0];
 
 const results = [];
@@ -129,10 +165,9 @@ if (parsedList.recommendation?.source !== 'golden-path' || parsedList.recommenda
   throw new Error(`list json should include golden-path list recommendation\nOutput:\n${listJson}`);
 }
 const doctorOut = step('doctor onboarding', () => run(['doctor']));
-assertIncludes(doctorOut, 'chrome-cdp-ex doctor', 'doctor');
-assertIncludes(doctorOut, 'FD limit', 'doctor fd limit');
-assertIncludes(doctorOut, 'Next steps:', 'doctor next steps');
-assertIncludes(doctorOut, 'cdp list', 'doctor golden path');
+// Compact doctor (#375): one line per check, then a single Next.
+assertIncludes(doctorOut, `CDP: 127.0.0.1:${port}`, 'doctor cdp check');
+assertIncludes(doctorOut, 'Next: cdp list', 'doctor golden path');
 const doctorJson = step('doctor onboarding json', () => run(['doctor', '--format', 'json']));
 const parsedDoctor = JSON.parse(doctorJson);
 if (parsedDoctor.schema !== 'chrome-cdp-ex.doctor.v1' || !Array.isArray(parsedDoctor.checks) || !Array.isArray(parsedDoctor.nextSteps)) {
@@ -141,8 +176,9 @@ if (parsedDoctor.schema !== 'chrome-cdp-ex.doctor.v1' || !Array.isArray(parsedDo
 if (!parsedDoctor.recommendation?.source || !parsedDoctor.recommendation?.run) {
   throw new Error(`doctor json should include a runnable onboarding recommendation:\n${doctorJson}`);
 }
-if (!parsedDoctor.wizard?.goldenPath?.includes('perceive') || !parsedDoctor.nextSteps.some(step => step.startsWith('cdp perceive'))) {
-  throw new Error(`doctor json should include golden path and executable perceive next step:\n${doctorJson}`);
+// With CDP up, doctor's one next step is `cdp list` (pick a target); perceive follows on the golden path.
+if (!JSON.stringify(parsedDoctor.wizard?.goldenPath || '').includes('perceive') || !parsedDoctor.nextSteps.includes('cdp list')) {
+  throw new Error(`doctor json should include the perceive golden path and a cdp list next step:\n${doctorJson}`);
 }
 const fdWarning = parsedDoctor.recommendation?.warnings?.find(warning => warning.label === 'FD limit');
 if (fdWarning) {
@@ -397,7 +433,7 @@ for (const [cmd, ...cmdArgs] of parallelMutatingGuards) {
   assertIncludes(out, cmd, `parallel ${cmd} blocked command name`);
   assertIncludes(out, 'mutate shared state', `parallel ${cmd} blocked reason`);
 }
-const failedClickJsonOut = step('failed action json evidence', () => run(['click', target, '#missing-action-json-smoke', '--format', 'json']));
+const failedClickJsonOut = step('failed action json evidence', () => runFailureStdout(['click', target, '#missing-action-json-smoke', '--format', 'json']));
 const parsedFailedClickAction = JSON.parse(failedClickJsonOut);
 if (parsedFailedClickAction.schema !== 'chrome-cdp-ex.action.v1' || parsedFailedClickAction.action !== 'click') {
   throw new Error(`failed click --format json should return action evidence JSON:\n${failedClickJsonOut}`);
@@ -531,7 +567,7 @@ if (!diagnosticRecoveryCommands.some(command => command.includes('perceive') && 
 if (!diagnosticRecoveryCommands.some(command => command.includes('report') && command.includes('--format json'))) {
   throw new Error(`diagnostic action json should include a recovery report handoff command:\n${diagnosticJsonOut}`);
 }
-const batchJsonOut = step('batch json failure handoff', () => run(['batch', target, '--format', 'json', 'summary | click #missing-batch-json-smoke']));
+const batchJsonOut = step('batch json failure handoff', () => runFailureStdout(['batch', target, '--format', 'json', 'summary | click #missing-batch-json-smoke']));
 const parsedBatch = JSON.parse(batchJsonOut);
 if (parsedBatch.schema !== 'chrome-cdp-ex.batch.v1' || parsedBatch.counts?.failed !== 1) {
   throw new Error(`batch --format json should return structured failure handoff:\n${batchJsonOut}`);
@@ -596,10 +632,12 @@ if (parsedReport.counts?.actions < 1 || parsedReport.counts?.screenshots < 1) {
 if (!parsedReport.actions?.some(action => action.action === 'click' && action.evidence?.effectSummary)) {
   throw new Error(`report json should include action evidence timeline:\n${reportJson}`);
 }
-if (!parsedReport.actions?.some(action => action.outcome?.status && ['changed', 'attention'].includes(action.outcome.status))) {
+// The compact report carries the outcome on the action receipt (receipt.outcome).
+if (!parsedReport.actions?.some(action => ['changed', 'attention'].includes(action.outcome?.status || action.receipt?.outcome))) {
   throw new Error(`report json should include action outcomes:\n${reportJson}`);
 }
-if (!parsedReport.actions?.some(action => action.verdict?.status && ['continue', 'recover', 'investigate'].includes(action.verdict.status))) {
+// The compact report puts the verdict on latestAction (verdictStatus / canContinue).
+if (!parsedReport.latestAction?.verdictStatus || typeof parsedReport.latestAction?.canContinue !== 'boolean') {
   throw new Error(`report json should include action verdicts:\n${reportJson}`);
 }
 if (!parsedReport.screenshots?.some(shot => shot.path === sessionShotPath)) {
