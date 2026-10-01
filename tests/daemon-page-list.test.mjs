@@ -198,10 +198,178 @@ describe('#419 daemon page list for target discovery', () => {
     expect(daemons.sent.map(entry => entry.path)).toEqual(['a', 'b']);
   });
 
+  it('#440 skips an endpoint match that is about to idle out and uses the next match', async () => {
+    const daemons = fakeDaemons({
+      dying: { meta: { ...meta('127.0.0.1:9345'), idleRemainingMs: 1200 }, pages: PAGES_9224 },
+      healthy: { meta: { ...meta('127.0.0.1:9345'), idleRemainingMs: 19 * 60 * 1000 }, pages: PAGES_9345 },
+    });
+    const pages = await T.listPagesFromMatchingDaemon({
+      env: { CDP_PORT: '9345' },
+      listSockets: daemons.listSockets,
+      connect: daemons.connect,
+      request: daemons.request,
+    });
+    expect(pages).toEqual(PAGES_9345);
+    expect(daemons.sent.filter(entry => entry.path === 'dying').map(entry => entry.cmd)).toEqual(['meta']);
+  });
+
+  it('#440 still uses a matching daemon that does not report its idle time', async () => {
+    const daemons = fakeDaemons({ d1: { meta: meta('127.0.0.1:9345'), pages: PAGES_9345 } });
+    const pages = await T.listPagesFromMatchingDaemon({
+      env: { CDP_PORT: '9345' },
+      listSockets: daemons.listSockets,
+      connect: daemons.connect,
+      request: daemons.request,
+    });
+    expect(pages).toEqual(PAGES_9345);
+  });
+
+  it('#440 gives each probe step min(step timeout, remaining budget), so the budget is a hard limit', async () => {
+    let clock = 0;
+    const steps = [];
+    const connect = vi.fn(async (path, options) => {
+      steps.push(['connect', path, options.timeoutMs]);
+      clock += 10;
+      return { path, destroy() {} };
+    });
+    // Every daemon is wedged: each request uses its whole timeout, then fails.
+    const request = vi.fn(async (conn, req, options) => {
+      steps.push([req.cmd, conn.path, options.timeoutMs]);
+      clock += options.timeoutMs;
+      throw new Error('IPC timeout');
+    });
+    const pages = await T.listPagesFromMatchingDaemon({
+      env: { CDP_PORT: '9345' },
+      listSockets: () => ['a', 'b', 'c'].map(path => ({ targetId: path, socketPath: path })),
+      connect,
+      request,
+      now: () => clock,
+    });
+    expect(pages).toBeNull();
+    expect(steps).toEqual([
+      ['connect', 'a', 1500],
+      ['meta', 'a', 1500],
+      ['connect', 'b', 1490],
+      ['meta', 'b', 1480],
+    ]);
+    expect(clock).toBeLessThanOrEqual(3000);
+  });
+
+  it('#440 the list_raw step after a late match only gets what is left of the budget', async () => {
+    let clock = 0;
+    const steps = [];
+    const connect = vi.fn(async (path, options) => {
+      steps.push(['connect', options.timeoutMs]);
+      return { path, destroy() {} };
+    });
+    const request = vi.fn(async (conn, req, options) => {
+      steps.push([req.cmd, options.timeoutMs]);
+      if (req.cmd === 'meta') {
+        clock += 1400;
+        return { ok: true, id: 1, result: JSON.stringify(conn.path === 'm' ? meta('127.0.0.1:9345') : meta('127.0.0.1:9224')) };
+      }
+      clock += options.timeoutMs;
+      throw new Error('IPC timeout');
+    });
+    const pages = await T.listPagesFromMatchingDaemon({
+      env: { CDP_PORT: '9345' },
+      listSockets: () => ['x', 'm'].map(path => ({ targetId: path, socketPath: path })),
+      connect,
+      request,
+      now: () => clock,
+    });
+    expect(pages).toBeNull();
+    expect(steps).toEqual([
+      ['connect', 1500], ['meta', 1500],
+      ['connect', 1500], ['meta', 1500],
+      ['connect', 200], ['list_raw', 200],
+    ]);
+    expect(clock).toBe(3000);
+  });
+
   it('every client list_raw request in cdp.mjs carries args', () => {
     const source = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
     const requests = source.match(/\{\s*cmd:\s*'list_raw'[^}]*\}/g) || [];
     expect(requests.length).toBeGreaterThan(0);
     for (const literal of requests) expect(literal).toMatch(/args:/);
+  });
+});
+
+describe('#440 a daemon about to idle out is not used for a command', () => {
+  function fakeTimers() {
+    let next = 0;
+    const pending = new Map();
+    return {
+      pending,
+      setTimer: vi.fn((fn, ms) => { next += 1; pending.set(next, { fn, ms }); return next; }),
+      clearTimer: vi.fn(id => { pending.delete(id); }),
+    };
+  }
+
+  it('the idle timer reports the time left; use and keepalive reset it', () => {
+    let clock = 1_000;
+    const timers = fakeTimers();
+    const onIdle = vi.fn();
+    const idle = T.createDaemonIdleTimer({
+      timeoutMs: 20_000,
+      onIdle,
+      now: () => clock,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+    expect(idle.remainingMs()).toBe(20_000);
+    clock += 19_000;
+    expect(idle.remainingMs()).toBe(1_000);
+    idle.reset();
+    expect(idle.remainingMs()).toBe(20_000);
+    expect(timers.pending.size).toBe(1);
+    expect([...timers.pending.values()][0].ms).toBe(20_000);
+    idle.extendKeepalive(60_000);
+    expect(idle.remainingMs()).toBe(60_000);
+    clock += 70_000;
+    expect(idle.remainingMs()).toBe(0);
+    [...timers.pending.values()][0].fn();
+    expect(onIdle).toHaveBeenCalledOnce();
+  });
+
+  it('daemonIdleExitsSoon only trusts a reported number', () => {
+    expect(T.daemonIdleExitsSoon({ idleRemainingMs: 1200 })).toBe(true);
+    expect(T.daemonIdleExitsSoon({ idleRemainingMs: 0 })).toBe(true);
+    expect(T.daemonIdleExitsSoon({ idleRemainingMs: 60_000 })).toBe(false);
+    expect(T.daemonIdleExitsSoon({})).toBe(false);
+    expect(T.daemonIdleExitsSoon(null)).toBe(false);
+    expect(T.daemonIdleExitsSoon({ idleRemainingMs: '5' })).toBe(false);
+  });
+
+  const assessment = idleRemainingMs => ({
+    stale: false,
+    status: 'current',
+    daemon: { boundTargetId: 'T1', ...(idleRemainingMs == null ? {} : { idleRemainingMs }) },
+  });
+
+  it('waits a target daemon with seconds left out, then checks a fresh one before the command', async () => {
+    const assess = vi.fn()
+      .mockResolvedValueOnce(assessment(1200))
+      .mockResolvedValueOnce(assessment(20 * 60 * 1000));
+    const wait = vi.fn(async () => {});
+    const reopen = vi.fn(async () => 'fresh-conn');
+    const result = await T.assertFreshDaemonForCommand('old-conn', { expectedTargetId: 'T1' }, { assess, wait, reopen });
+    expect(wait).toHaveBeenCalledOnce();
+    expect(wait.mock.calls[0][0]).toBeGreaterThanOrEqual(1200);
+    expect(reopen).toHaveBeenCalledOnce();
+    expect(assess.mock.calls.map(call => call[0])).toEqual(['old-conn', 'fresh-conn']);
+    expect(result.daemon.idleRemainingMs).toBe(20 * 60 * 1000);
+  });
+
+  it('uses the daemon directly when it has time left or does not report idle time', async () => {
+    for (const remaining of [10 * 60 * 1000, null]) {
+      const assess = vi.fn().mockResolvedValueOnce(assessment(remaining));
+      const wait = vi.fn();
+      const reopen = vi.fn();
+      const result = await T.assertFreshDaemonForCommand('conn', {}, { assess, wait, reopen });
+      expect(result).toEqual(assessment(remaining));
+      expect(wait).not.toHaveBeenCalled();
+      expect(reopen).not.toHaveBeenCalled();
+    }
   });
 });
