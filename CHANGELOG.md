@@ -36,9 +36,16 @@
     moves on to the next tier. When every tier fails, the error names each tier and its CDP error,
     and the recovery is `Kind: screenshot-capture` instead of `Kind: unknown`.
   * The black-frame check compared the whole frame with the body colour, so a dark canvas on a light
-    page failed as `near-black-frame-on-light-page`. It now hit-tests a grid and judges only points
-    whose topmost element paints a predictable opaque colour. Canvas, video, image, iframe and
-    background-image regions are left out.
+    page failed as `near-black-frame-on-light-page`. It now walks the paint stack (`elementsFromPoint`,
+    into open shadow roots) at each point of a grid, looking through transparent layers such as a
+    full-window UI overlay, and judges only points where something paints a predictable opaque
+    colour. Canvas, video, image, iframe and background-image regions are left out. `responsive-audit`
+    shares one tier state across its viewports.
+* `elshot` captures the element on a scrolled page. `Page.captureScreenshot` reads `clip` in document
+  coordinates, but the clip was built from `getBoundingClientRect` (viewport coordinates), so after a
+  scroll it captured blank space above the element. A clipped capture also never falls back to a
+  whole-viewport screencast frame, and `diff-shot` / `fullshot` name the failed tier instead of
+  claiming a timeout ([#452](https://github.com/EndeavorYen/chrome-cdp-ex/issues/452)).
 * `responsive-audit` keeps the requested viewport as each entry's label. A mobile size without
   `<meta viewport>` used to be reported as its 980px layout viewport (`980x2120` for `390x844`); the
   layout size now appears as `layout=980x2120` / `layoutViewport`.

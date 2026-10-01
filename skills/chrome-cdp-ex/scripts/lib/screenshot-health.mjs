@@ -1,13 +1,14 @@
 // A frame is contradictory only where the DOM predicts a light pixel and the capture
-// shows near-black. Each grid point asks the topmost element what it should look like:
-// an opaque background colour predicts a tone, while canvas / video / img / iframe /
-// background-image content cannot be predicted from CSS and is left out (#452: a dark
-// WebGL canvas on a light page is a real frame, not a compositor failure).
+// shows near-black. Each grid point walks the paint stack at that point (topmost first,
+// into open shadow roots) until something paints: an opaque background colour predicts a
+// tone, while canvas / video / img / iframe / background-image content cannot be predicted
+// from CSS and is left out. Transparent layers (a full-window UI overlay) are looked
+// through (#452: a dark WebGL canvas under a light page's UI is a real frame).
 //
-// `clip` is the capture's CSS-px rectangle: viewport coordinates (elshot), or document
-// coordinates with `documentCoords` (captureBeyondViewport). Without it the frame is the
-// viewport. Points outside the viewport cannot be hit-tested and are left out.
-export function screenshotHealthScript(pngBase64, { clip = null, documentCoords = false } = {}) {
+// `clip` is the capture's CSS-px rectangle in document coordinates, as
+// Page.captureScreenshot reads it. Without it the frame is the viewport. Points outside
+// the viewport cannot be hit-tested and are left out.
+export function screenshotHealthScript(pngBase64, { clip = null } = {}) {
   const clipJson = JSON.stringify(clip && Number.isFinite(clip.width) && Number.isFinite(clip.height)
     ? { x: Number(clip.x) || 0, y: Number(clip.y) || 0, width: clip.width, height: clip.height }
     : null);
@@ -36,10 +37,27 @@ export function screenshotHealthScript(pngBase64, { clip = null, documentCoords 
     const rootStyle = document.documentElement ? getComputedStyle(document.documentElement) : null;
     const pageTone = opaqueTone(bodyStyle) || opaqueTone(rootStyle) || 'unknown';
     const MEDIA = /^(canvas|video|img|picture|iframe|frame|embed|object|svg)$/i;
+    // Paint stack at a point, topmost first; an open shadow root's stack replaces its host.
+    const stackAt = (root, x, y, depth) => {
+      const list = typeof root.elementsFromPoint === 'function'
+        ? root.elementsFromPoint(x, y)
+        : [root.elementFromPoint?.(x, y)].filter(Boolean);
+      const out = [];
+      for (const node of list) {
+        if (depth < 4 && node.shadowRoot && node.shadowRoot !== root) {
+          for (const inner of stackAt(node.shadowRoot, x, y, depth + 1)) {
+            if (inner !== node && !out.includes(inner)) out.push(inner);
+          }
+        }
+        if (!out.includes(node)) out.push(node);
+      }
+      return out;
+    };
     const expectedTone = (x, y) => {
-      const hit = document.elementFromPoint(x, y);
-      if (!hit) return 'unknown';
-      for (let node = hit; node && node.nodeType === 1; node = node.parentElement) {
+      const stack = stackAt(document, x, y, 0);
+      if (!stack.length) return 'unknown';
+      for (const node of stack) {
+        if (!node || node.nodeType !== 1) continue;
         if (MEDIA.test(node.tagName)) return 'media';
         const style = getComputedStyle(node);
         if (style.backgroundImage && style.backgroundImage !== 'none') return 'media';
@@ -74,7 +92,7 @@ export function screenshotHealthScript(pngBase64, { clip = null, documentCoords 
     const nearBlackRatio = visible ? nearBlack / visible : 0;
     const clip = ${clipJson};
     const frame = clip
-      ? { ...clip, x: clip.x - (${documentCoords ? 'scrollX' : '0'}), y: clip.y - (${documentCoords ? 'scrollY' : '0'}) }
+      ? { ...clip, x: clip.x - scrollX, y: clip.y - scrollY }
       : { x: 0, y: 0, width: innerWidth, height: innerHeight };
     const GRID = 12;
     let points = 0;

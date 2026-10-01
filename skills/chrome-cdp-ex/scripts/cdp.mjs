@@ -4272,6 +4272,13 @@ const SCREENSHOT_TIER_LABELS = Object.freeze({
   3: 'Page.startScreencast frame',
 });
 
+// Why a capture is a fallback frame: the tiers that failed before it (#452), or a timeout.
+function screenshotFallbackReason(capture = {}) {
+  const attempts = Array.isArray(capture.attempts) ? capture.attempts : [];
+  if (!attempts.length || attempts.every(a => a.timedOut)) return 'timed out';
+  return `fell back to ${capture.method} (${attempts.map(a => `tier ${a.tier}: ${a.message}`).join('; ')})`;
+}
+
 function screenshotFailureError(attempts) {
   const allTimedOut = attempts.length > 0 && attempts.every(a => a.timedOut);
   const detail = attempts
@@ -4299,9 +4306,9 @@ async function screencastFallback(cdp, sid, timeoutMs = SCREENSHOT_TIMEOUT) {
   }
 }
 
-async function inspectScreenshotFrame(cdp, sid, data, { clip = null, documentCoords = false } = {}) {
+async function inspectScreenshotFrame(cdp, sid, data, { clip = null } = {}) {
   try {
-    return JSON.parse(await evalStr(cdp, sid, screenshotHealthScript(data, { clip, documentCoords }), false, { timeoutMs: 2000 }));
+    return JSON.parse(await evalStr(cdp, sid, screenshotHealthScript(data, { clip }), false, { timeoutMs: 2000 }));
   } catch (error) {
     return unavailableScreenshotSanity(error?.message || 'inspection-unavailable');
   }
@@ -4319,10 +4326,7 @@ async function waitForScreenshotPaint(cdp, sid) {
 // `params` is passed to Page.captureScreenshot (format, clip, etc.).
 async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {}) {
   const inspectFrame = hooks.inspectFrame
-    || (frame => inspectScreenshotFrame(cdp, sid, frame.data, {
-      clip: params.clip || null,
-      documentCoords: params.captureBeyondViewport === true,
-    }));
+    || (frame => inspectScreenshotFrame(cdp, sid, frame.data, { clip: params.clip || null }));
   const waitForPaint = hooks.waitForPaint || (() => waitForScreenshotPaint(cdp, sid));
   const timeoutMs = Number.isFinite(hooks.timeoutMs) && hooks.timeoutMs > 0
     ? hooks.timeoutMs
@@ -4364,13 +4368,24 @@ async function captureScreenshot(cdp, sid, params = { format: 'png' }, hooks = {
     }
   }
 
-  // Tier 3: screencast single-frame grab
+  // Tier 3: screencast single-frame grab. A screencast frame is always the whole
+  // viewport, so a clipped capture (elshot, fullshot) never falls back to it.
   if (!captured) {
+    if (params.clip != null) throw screenshotFailureError(attempts);
+    if (startTier > 3) {
+      attempts.push({ tier: 3, timedOut: true, message: 'skipped: timed out earlier in this command' });
+      throw screenshotFailureError(attempts);
+    }
     try {
       const data = await screencastFallback(cdp, sid, timeoutMs);
       captured = { data, fallback: true, method: 'screencast', tier: 3 };
     } catch (err) {
-      attempts.push({ tier: 3, timedOut: /timeout|timed out/i.test(String(err?.message || '')), message: String(err?.message || err).slice(0, 200) });
+      const message = String(err?.message || err);
+      const timedOut = /timeout|timed out/i.test(message);
+      // A protocol failure (target closed, detached) is not a capture-pipeline verdict.
+      if (!timedOut && !isScreenshotCaptureFailure(err)) throw err;
+      attempts.push({ tier: 3, timedOut, message: message.slice(0, 200) });
+      if (timedOut && tierState) tierState.tier = 4;
       noteTier(3);
       throw screenshotFailureError(attempts);
     }
@@ -4436,7 +4451,7 @@ function formatScreenshotCaptureDiagnostics(capture = {}) {
 
 async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
   let filePath = null;
-  let opts = { quiet: false, verbose: false, onCapture: null, timeoutMs: null, skipSanityRetry: false };
+  let opts = { quiet: false, verbose: false, onCapture: null, timeoutMs: null, skipSanityRetry: false, tierState: null };
   if (filePathOrOpts && typeof filePathOrOpts === 'object' && !Array.isArray(filePathOrOpts)) {
     filePath = filePathOrOpts.filePath || null;
     opts = {
@@ -4445,6 +4460,7 @@ async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
       onCapture: filePathOrOpts.onCapture || null,
       timeoutMs: filePathOrOpts.timeoutMs,
       skipSanityRetry: filePathOrOpts.skipSanityRetry === true,
+      tierState: filePathOrOpts.tierState || null,
     };
   } else {
     filePath = filePathOrOpts || null;
@@ -4455,11 +4471,12 @@ async function shotStr(cdp, sid, filePathOrOpts, targetId, maybeOpts) {
         onCapture: maybeOpts.onCapture || null,
         timeoutMs: maybeOpts.timeoutMs,
         skipSanityRetry: maybeOpts.skipSanityRetry === true,
+        tierState: maybeOpts.tierState || null,
       };
     }
   }
   const dpr = await getDpr(cdp, sid);
-  const captureHooks = { skipSanityRetry: opts.skipSanityRetry };
+  const captureHooks = { skipSanityRetry: opts.skipSanityRetry, tierState: opts.tierState };
   if (Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0) captureHooks.timeoutMs = opts.timeoutMs;
   const capture = await captureScreenshot(cdp, sid, { format: 'png' }, captureHooks);
   const { data } = capture;
@@ -4635,7 +4652,7 @@ async function diffShotStr(cdp, sid, session, opts = {}) {
     throw error;
   }
   if (shot.fallback === true) {
-    throw new Error('diff-shot: screenshot capture timed out; comparison is untrusted');
+    throw new Error(`diff-shot: screenshot capture ${screenshotFallbackReason(shot)}; comparison is untrusted`);
   }
   const targetId = session.targetId;
   const reset = opts.reset || !session.diffShot?.baselineData;
@@ -7903,6 +7920,8 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
   };
   const viewports = [];
   const errors = [];
+  // One tier state for every viewport: a capture tier that timed out is not retried per size.
+  const tierState = createScreenshotTierState();
   try {
     let screenshotTimedOut = false;
     for (const size of opts.viewports) {
@@ -7931,7 +7950,7 @@ async function responsiveAuditStr(cdp, sid, session, targetId, consoleBuf, excep
           ? resolve(opts.outDir, `responsive-${size.replace(/[^0-9x]/gi, 'x')}-${Date.now()}.png`)
           : nextSessionScreenshotPath(session, `responsive-${size}`);
         let screenshotCapture = null;
-        const shot = await shotStr(cdp, sid, path, targetId, { quiet: true, onCapture: capture => { screenshotCapture = capture; } });
+        const shot = await shotStr(cdp, sid, path, targetId, { quiet: true, tierState, onCapture: capture => { screenshotCapture = capture; } });
         entry.screenshot = shot.split('\n')[0];
         if (screenshotCapture) {
           entry.screenshotCapture = {
@@ -13180,17 +13199,28 @@ async function perceiveDiffModel(cdp, sid, consoleBuf, exceptionBuf, refMap, las
 }
 
 // Element screenshot: targeted capture of a specific element by CSS selector or @ref
+// Page.captureScreenshot reads `clip` in document coordinates, while element boxes come
+// from getBoundingClientRect (viewport coordinates): add the scroll offset, or a scrolled
+// page captures the wrong region (#452). `pad` CSS px of context is kept around the box.
+function elementScreenshotClip(rect, scroll = {}, pad = 8) {
+  const scrollX = Number(scroll.x) || 0;
+  const scrollY = Number(scroll.y) || 0;
+  return {
+    x: Math.max(0, rect.x - pad + scrollX),
+    y: Math.max(0, rect.y - pad + scrollY),
+    width: rect.w + pad * 2,
+    height: rect.h + pad * 2,
+    scale: 1,
+  };
+}
+
 async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
   if (!selector) throw new Error('CSS selector or @ref required');
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState);
-    const pad = 8;
-    const clipX = Math.max(0, r.x - pad);
-    const clipY = Math.max(0, r.y - pad);
-    const clipW = r.w + pad * 2;
-    const clipH = r.h + pad * 2;
     await sleep(100);
-    const clip = { x: clipX, y: clipY, width: clipW, height: clipH, scale: 1 };
+    const scroll = JSON.parse(await evalStr(cdp, sid, 'JSON.stringify({ x: window.scrollX, y: window.scrollY })'));
+    const clip = elementScreenshotClip(r, scroll);
     const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png', clip });
     const prefix = (targetId || 'unknown').slice(0, 8);
     const out = resolve(RUNTIME_DIR, `elshot-${prefix}-ref${selector.slice(1)}.png`);
@@ -13208,6 +13238,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
       return {
         ok: true,
         x: rect.x, y: rect.y, w: rect.width, h: rect.height,
+        scrollX: window.scrollX, scrollY: window.scrollY,
         tag: el.tagName, id: el.id,
         text: el.textContent.trim().substring(0, 60)
       };
@@ -13217,16 +13248,12 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
   const r = JSON.parse(result);
   if (!r.ok) throw new Error(r.error);
 
-  // Small padding around the element (clamped to viewport)
-  const pad = 8;
-  const clipX = Math.max(0, r.x - pad);
-  const clipY = Math.max(0, r.y - pad);
-  const clipW = r.w + pad * 2;
-  const clipH = r.h + pad * 2;
+  // The rect and scroll offset come from the same instant, so their sum is the element's
+  // document position even if a smooth scroll is still running.
+  const clip = elementScreenshotClip(r, { x: r.scrollX, y: r.scrollY });
 
   await sleep(100); // let scroll settle
 
-  const clip = { x: clipX, y: clipY, width: clipW, height: clipH, scale: 1 };
   const { data, fallback } = await captureScreenshot(cdp, sid, { format: 'png', clip });
 
   const prefix = (targetId || 'unknown').slice(0, 8);
@@ -13236,7 +13263,7 @@ async function elshotStr(cdp, sid, selector, targetId, refMap, refState) {
 
   const desc = `<${r.tag}>${r.id ? '#' + r.id : ''} "${r.text}"`;
   const fb = fallback ? ' (fallback)' : '';
-  return `${out}\nElement screenshot of ${desc} — ${Math.round(r.w)}×${Math.round(r.h)} CSS px (clip: ${Math.round(clipW)}×${Math.round(clipH)} with padding)${fb}`;
+  return `${out}\nElement screenshot of ${desc} — ${Math.round(r.w)}×${Math.round(r.h)} CSS px (clip: ${Math.round(clip.width)}×${Math.round(clip.height)} with padding)${fb}`;
 }
 
 async function dispatchMouseEventAllowingAckTimeout(cdp, sid, params) {
@@ -15725,7 +15752,7 @@ async function fullshotStr(cdp, sid, filePath, targetId) {
     throw error;
   }
   if (!fitsViewport && capture.fallback === true) {
-    throw new Error('fullshot: full-page capture timed out; screenshot is untrusted');
+    throw new Error(`fullshot: full-page capture ${screenshotFallbackReason(capture)}; screenshot is untrusted`);
   }
 
   const out = filePath || resolve(RUNTIME_DIR, `fullshot-${(targetId || 'unknown').slice(0, 8)}.png`);
@@ -28031,7 +28058,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   formControlStateChanged, formatFormControlStateDiff, shouldSnapshotFormControlState,
   parseFormControlStateSnapshot, snapshotFormControlState,
   sampleRootFrameTables, tableObservationStr, tableCollectionStr,
-  parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics,
+  parseShotArgs, shotStr, formatScreenshotCaptureDiagnostics, elementScreenshotClip,
   parseSpawnDebugBrowserArgs, SPAWN_DEBUG_BROWSER_FLAGS, detectBrowserPath, buildSpawnDebugBrowserPlan,
   isBackgroundMode, attachDaemonTarget, createOpenTarget, backgroundDaemonEnv,
   tabModePath, writeTabBackgroundMode, readTabBackgroundMode, removeTabMode, listTabModeRecords, TAB_MODE_RECORDS_MAX,
@@ -28052,7 +28079,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   dismissModalStr, dismissModalScript,
   // Screenshot
   captureScreenshot, screencastFallback,
-  resetScreenshotTier, getScreenshotTier, createScreenshotTierState, SCREENSHOT_TIMEOUT,
+  resetScreenshotTier, getScreenshotTier, createScreenshotTierState, screenshotFallbackReason, SCREENSHOT_TIMEOUT,
   // Constants
   ENRICHED_ROLES, INTERACTIVE_ROLES, CONTENT_REF_ROLES,
   isSkipLinkAxNode, isSkipLinkName, isLicenseBlobUrl,
