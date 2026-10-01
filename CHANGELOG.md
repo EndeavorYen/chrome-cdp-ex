@@ -21,6 +21,18 @@
   still yields `null`. On one Windows machine `collectDaemonMetadata()` went from about 28-36 ms to
   about 2-4 ms for the first call in a process and under 1 ms after that
   ([#461](https://github.com/EndeavorYen/chrome-cdp-ex/issues/461)).
+* Console and exception capture is bounded, and action receipts no longer redact whole log entries.
+  The daemon keeps at most 8 KB of each console entry and exception message (and `record` does the
+  same); a cut entry carries `truncated: true` and `originalLength`, and `console`, `status` and
+  `record` text lines end with `… [truncated, N chars]` when they do not show the whole entry. Receipts
+  cut each entry to a 4 KB prefix before redacting it, and a quoted value cut open at that edge is
+  redacted to the end, so no part of a secret shows. Two redaction regexes were quadratic on long
+  tokens: the URL-userinfo scheme part (`a.a.a…` or `a-a-a…` text) and the upper-case acronym split in
+  the key classifier (a long upper-case key). A 32 KB entry of either took about 0.25-0.35 s to
+  redact, quadrupling with each doubling; both are now linear, and a 2 MB entry compacts in a few
+  milliseconds
+  ([#459](https://github.com/EndeavorYen/chrome-cdp-ex/issues/459)).
+### Bug Fixes
 
 * `shot`, `elshot`, `responsive-audit` and `annotshot` capture an Electron page with a live WebGL
   canvas whenever a plain `Page.captureScreenshot` works
