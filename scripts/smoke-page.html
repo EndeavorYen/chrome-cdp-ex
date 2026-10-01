@@ -85,6 +85,9 @@
       <div id="drop-zone" aria-label="drop zone">Drop here</div>
       <p id="drop-status">drop:none</p>
     </section>
+    <section aria-label="download fixture">
+      <button id="export-csv">Export CSV</button>
+    </section>
     <div style="height: 780px" aria-hidden="true"></div>
     <button id="smooth-target">Smooth target</button>
     <p id="smooth-status">smooth:not-clicked</p>
@@ -209,6 +212,15 @@
     });
     document.addEventListener('keydown', (e) => {
       if (e.key.toLowerCase() === 'c') document.getElementById('shortcut-status').textContent = 'shortcut:c';
+    });
+    // #472 click --expect-download: a page-built file, like an "Export CSV" button.
+    document.getElementById('export-csv').addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob(['id,name\n1,smoke\n'], { type: 'text/csv' }));
+      link.download = 'smoke-report.csv';
+      document.body.append(link);
+      link.click();
+      link.remove();
     });
   </script>
 </body>

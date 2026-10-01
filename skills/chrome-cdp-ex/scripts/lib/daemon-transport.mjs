@@ -2,6 +2,7 @@ import { lstatSync, statSync } from 'fs';
 import net from 'net';
 import { posix as posixPath } from 'path';
 import { isTableCollectArgs } from './table-contract.mjs';
+import { expectDownloadIpcTimeoutMs } from './click-download.mjs';
 
 const IPC_TIMEOUT = 120000;
 const TABLE_COLLECTION_IPC_TIMEOUT = 315000;
@@ -275,6 +276,11 @@ export function ipcTimeoutForRequest(request) {
   if (request?.cmd === 'loadall') {
     const loadallMs = parseLoadAllTimeoutMilliseconds(request.args || []);
     return Math.max(IPC_TIMEOUT, Math.min(loadallMs + 5000, 5 * 60 * 1000 + 5000));
+  }
+  if (request?.cmd === 'click') {
+    // click --expect-download waits up to its --timeout for the file (#472).
+    const downloadMs = expectDownloadIpcTimeoutMs(request.args || []);
+    return downloadMs == null ? IPC_TIMEOUT : Math.max(IPC_TIMEOUT, downloadMs);
   }
   if (request?.cmd !== 'wait') return IPC_TIMEOUT;
   const waitMs = parseWaitMilliseconds(request.args?.[0]);

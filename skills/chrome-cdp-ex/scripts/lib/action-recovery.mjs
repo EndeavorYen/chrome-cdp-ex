@@ -330,6 +330,79 @@ function classifyDisabledFailure(err, { base, targetId, input, action, perceiveC
   };
 }
 
+// #472: `click --expect-download` clicked (except `unsupported`), then the download did not arrive.
+function classifyDownloadFailure(err, { base, targetId, input }) {
+  const info = err.download;
+  const sinceAction = `cdp perceive ${targetId} --since-action`;
+  const retry = input ? `cdp click ${targetId} ${recoveryCommandArg(input)} --expect-download --timeout <ms>` : 'cdp help click';
+  if (info.kind === 'usage') {
+    return { ...base, kind: 'usage', reason: 'click --expect-download could not use the download folder.', nextCommand: 'cdp help click', hints: ['Pass --out with a folder you can write to.'] };
+  }
+  if (info.kind === 'unsupported') {
+    return {
+      ...base,
+      kind: 'download-unsupported',
+      dispatched: false,
+      reason: 'This browser endpoint does not accept Browser.setDownloadBehavior, so the download cannot be captured. Nothing was clicked.',
+      nextCommand: input ? `cdp click ${targetId} ${recoveryCommandArg(input)}` : 'cdp help click',
+      hints: ['Click without --expect-download and fetch a known URL with the download.mjs helper instead.'],
+    };
+  }
+  if (info.kind === 'canceled') {
+    return {
+      ...base,
+      kind: 'download-canceled',
+      dispatched: true,
+      reason: 'The click started a download, but the browser canceled it (a network error, a blocked file type, a full disk, or a server that ended the response).',
+      nextCommand: sinceAction,
+      hints: [
+        `See what the click changed with \`${sinceAction}\`.`,
+        `Check the request with \`cdp netlog ${targetId}\` before clicking again.`,
+        'The default folder sits in the runtime directory, which on Linux is a small RAM-backed tmpfs: for a large file pass --out <folder on disk>.',
+      ],
+    };
+  }
+  if (info.kind === 'save-failed') {
+    return {
+      ...base,
+      kind: 'download-save-failed',
+      dispatched: true,
+      reason: 'The download completed, but the file could not be renamed or written in the download folder, so its data was removed.',
+      nextCommand: 'cdp help click',
+      hints: [
+        'Pass --out with a writable folder on a disk with free space, then click again.',
+        `See what the click changed with \`${sinceAction}\`.`,
+      ],
+    };
+  }
+  if (info.kind === 'timeout') {
+    const started = info.phase === 'progress';
+    return {
+      ...base,
+      kind: 'timeout',
+      dispatched: true,
+      reason: started
+        ? 'The click started a download, but it did not finish in time; the unfinished download was cancelled.'
+        : 'The click was sent, but no download started in time.',
+      nextCommand: sinceAction,
+      hints: [
+        `See what the click did instead with \`${sinceAction}\` (a menu or dialog may stand between the click and the file).`,
+        started
+          ? `A large file needs a longer wait: \`${retry}\`.`
+          : `If the server builds the file slowly, raise --timeout: \`${retry}\`.`,
+      ],
+    };
+  }
+  return {
+    ...base,
+    kind: 'download-missing',
+    dispatched: true,
+    reason: 'The browser reported the download complete, but the file was not in the download folder.',
+    nextCommand: sinceAction,
+    hints: ['Check that nothing else (an antivirus scanner, a sync client) moved the file out of the folder.'],
+  };
+}
+
 export function classifyActionFailure(err, context = {}) {
   return applyPdfViewerActionRecovery(classifyActionFailureKind(err, context), context.target || {});
 }
@@ -393,6 +466,11 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
   // #436: checked before message matching because the message quotes page text.
   if ((err?.clickCovered && typeof err.clickCovered === 'object') || COVERED_CLICK_MESSAGE_RE.test(originalMessage)) {
     return classifyCoveredClickFailure(err, { base, targetId, input });
+  }
+
+  // #472: click --expect-download; the message quotes the page's file name.
+  if (err?.download && typeof err.download === 'object') {
+    return classifyDownloadFailure(err, { base, targetId, input });
   }
 
   if (lower.includes('unknown ref') || lower.includes('refs were cleared') || lower.includes('refs were invalidated')) {

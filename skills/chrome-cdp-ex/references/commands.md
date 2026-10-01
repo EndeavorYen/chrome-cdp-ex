@@ -975,7 +975,7 @@ CSS px = screenshot image px / DPR
 - Prefer `elshot` over `shot` when verifying a specific element — it's more reliable and avoids scroll/DPR issues.
 - Use `type` (not eval) to enter text in cross-origin iframes — `click`/`clickxy` to focus first, then `type`.
 - Daemons keep CDP sessions alive per tab (auto-exit after 20min idle), so only the first command per tab triggers Chrome's "Allow debugging" dialog. The idle countdown pauses while a command runs (a long `wait` or `loadall` is not cut off) and restarts in full when the last one ends; one request holds the pause for at most 65 min (`DAEMON_REQUEST_IDLE_PAUSE_MAX_MS`).
-- Runtime dir retention: each daemon writes `cdp-<target>.log` and `cdp-<target>-screenshots/` there. After a new daemon answers its first request, it removes another tab's log, rotated `.log.1`, screenshot folder and `cdp-<target>.crash.json` once the newest of them is older than 7 days (`RUNTIME_ARTIFACT_MAX_AGE_MS`), keeping the 20 newest tabs' sets (`RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS`). Tabs with a running daemon and the daemon's own tab are never pruned; files Windows still holds open are skipped. A log past 5 MB (`SESSION_LOG_ROTATE_BYTES`) is renamed to `.log.1` (one kept) and restarted. Copy screenshots you need to keep out of the runtime dir.
+- Runtime dir retention: each daemon writes `cdp-<target>.log` and `cdp-<target>-screenshots/` there (and `cdp-<target>-downloads/` for `click --expect-download` without `--out`). After a new daemon answers its first request, it removes another tab's log, rotated `.log.1`, screenshot and download folders and `cdp-<target>.crash.json` once the newest of them is older than 7 days (`RUNTIME_ARTIFACT_MAX_AGE_MS`), keeping the 20 newest tabs' sets (`RUNTIME_ARTIFACT_KEEP_NEWEST_TARGETS`). Tabs with a running daemon and the daemon's own tab are never pruned; files Windows still holds open are skipped. A log past 5 MB (`SESSION_LOG_ROTATE_BYTES`) is renamed to `.log.1` (one kept) and restarted. Copy screenshots you need to keep out of the runtime dir.
 - **Shell quoting**: CSS selectors like `input[type=text]` contain shell metacharacters. Always wrap in quotes: `click <t> 'input[type="text"]'`.
 - **WSL2 gotcha**: Never improvise WSL2→Windows connectivity (localhost, gateway IP, port forwarding, launching Chrome from WSL). The only proven pattern: user starts Chrome on Windows, agent uses Windows-side Node.js to run the CDP script.
 
@@ -1374,6 +1374,82 @@ as `Kind: selector`, with `(waited 2000ms for attach)` in the error. Named / `te
 grows on focus, `display: contents`) waits the full 2 s for visibility before it is acted on as before;
 pass `--wait-ms 0` to skip that. `--wait-ms` is a flag on these commands, so the 81-command surface, the
 public synopsis and the MCP tool schemas are unchanged; MCP `click` and `fill` use the 2 s default.
+
+### Download capture — `click --expect-download`
+
+```bash
+cdp click <t> "#export-csv" --expect-download                       # default folder
+cdp click <t> @12 --expect-download --out ./exports --timeout 60000  # own folder, longer wait
+```
+
+For a file the page builds or the server sends as an attachment: a blob-URL "Export" button, or a
+POST answered with `Content-Disposition: attachment`. To fetch a URL you already know, use the
+`download.mjs` helper instead.
+
+- Before the click, `Browser.setDownloadBehavior { behavior: 'allowAndName', downloadPath, eventsEnabled: true }`
+  is set for the tab's browser context (its `browserContextId` from `Target.getTargets`; if Chrome
+  refuses that id, the call is repeated without one, which sets the default context). After the wait the
+  behaviour is set back to `default`, on success, failure, timeout and a click that throws. CDP cannot
+  read the previous behaviour, so `default` (the browser's own download handling) is what you get back.
+  If that restore call fails, the receipt says so in a `Warning:` line, on failures too. Chrome also
+  drops the override when the connection that set it closes, so a daemon that exits, crashes or is
+  stopped mid-wait does not leave it behind (`cdp stop <target>` clears a stuck one). Only a daemon that
+  hangs while still connected keeps it.
+- Chrome reports every download in the browser, from any tab or context. The first download that begins
+  after the click in one of this tab's frames (`downloadWillBegin.frameId` in the tab's frame tree) is
+  the one captured; downloads from other tabs are ignored and counted in a timeout message. A download
+  started in a cross-origin iframe or a popup the click opened is not matched.
+- Chrome saves the file as `<folder>/<guid>`. It is renamed to the suggested name with `/`, `\`, `..`,
+  control and bidi characters, Windows-reserved characters and device names (`CON`, `CON .txt`, `COM¹`,
+  `CONIN$`) removed, cut to 200 UTF-8 bytes on a character boundary (extension kept). An existing file is
+  never overwritten: the next free name is `report (1).csv`. A name the file system still refuses
+  becomes `download<ext>`. The saved file is made owner-only (0600).
+- `--out DIR` is resolved against your working directory and created if missing. Without it the file
+  goes to `cdp-<target>-downloads/` in the runtime directory (mode 0700), which is pruned with the tab's
+  other runtime artifacts after 7 days. On Linux the runtime directory is `$XDG_RUNTIME_DIR/cdp`, a
+  RAM-backed tmpfs capped at a fraction of memory: pass `--out` for large files and for files you want
+  to keep.
+- `--timeout ms` (default 30000, at most 600000) covers the wait from the end of the click until the
+  download completes.
+- A link whose response is an attachment never navigates, which a plain `click` reports as
+  `Kind: no-navigation`. With `--expect-download` a download from this tab is the result: the receipt
+  reads `Clicked <A href="…">; it started a download instead of navigating`. If no download begins
+  either, the original `no-navigation` failure is reported after the wait. Other click failures
+  (selector miss, covered, disabled) are reported as they are: nothing was clicked.
+
+Receipt:
+
+```text
+Clicked <BUTTON> "Export CSV" (#export-csv). Next: cdp perceive 9DE1D904 --since-action
+Downloaded "report.csv" 12.4 KB sha256=9f86d0… → /run/user/1000/cdp/cdp-9DE1D904…-downloads/report.csv
+```
+
+The outcome is `changed` with evidence `download`, also when the page itself did not change. JSON
+(`--format json`, also `--compact`) adds `effects.download`:
+`{ state: "completed", filename, suggestedFilename?, bytes, sha256, path, url, dir, behavior: { scope, restored } }`.
+`url` is redacted (secret query values, userinfo) and a `data:` URL is shortened to its media type and
+length. `scope` is `target-context` or `default-context`.
+
+Failures exit 1 with `Error:` / `Kind:` / `Next:` and keep `effects.download` in JSON:
+
+- `Kind: timeout`: no download began within `--timeout`, or one began but did not finish. An unfinished
+  download is cancelled so it does not complete later as a stray `<guid>` file. Next is
+  `perceive <target> --since-action` (a menu or dialog may sit between the click and the file).
+- `Kind: download-canceled`: the browser canceled the download (network error, blocked file type, or a
+  full disk, such as a tmpfs runtime directory).
+- `Kind: download-save-failed`: the download completed but could not be renamed into the folder; the raw
+  `<guid>` file is removed. Pass `--out` with a writable folder.
+- `Kind: download-unsupported`: the endpoint does not accept `Browser.setDownloadBehavior` (some
+  Electron builds). Nothing was clicked.
+
+The setting belongs to the browser context, not to the click. While a click waits, every download in
+that context goes to the capture folder without a prompt, including one from another tab (it is ignored
+but not returned to the user's Downloads folder). Run one `--expect-download` at a time per browser: a
+second one in another tab moves the first one's download into its own folder, and its restore sends the
+first one's next download to the user's Downloads folder, so both can end in `timeout` or
+`download-missing`. Nothing serialises them. This is a `click` flag, so the command surface and public
+synopsis are unchanged; MCP clients pass it through `run_command` with `command: "click"` and
+`confirm: true`.
 
 ### Clearing a field — `fill ""`
 
