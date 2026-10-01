@@ -10565,6 +10565,13 @@ function invalidateSessionRefs(session, reason) {
 }
 
 // Roles that get visual layout annotations in perceive output
+// Bound on the diff-only page text a `perceive -i` keeps (#487). It lives only
+// in daemon memory, but `-d` does not bound it, so a long page would otherwise
+// keep every text node. Text past the cap is not compared.
+const HIDDEN_TEXT_MAX_LINES = 2000;
+const HIDDEN_TEXT_MAX_CHARS = 64 * 1024;
+const HIDDEN_TEXT_CAP_NOTE = `  [note] diff-only -i text capped at ${HIDDEN_TEXT_MAX_LINES} lines / 64K chars; later page text is not compared`;
+
 const ENRICHED_ROLES = new Set([
   'banner', 'navigation', 'main', 'contentinfo', 'complementary',
   'heading', 'img', 'image', 'video', 'form', 'table', 'dialog',
@@ -12884,6 +12891,8 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
 
   const treeLines = [];
   const hiddenTextLines = [];
+  let hiddenTextChars = 0;
+  let hiddenTextCapped = false;
   const contentBodyLines = new Set();
   const visited = new Set();
   let chromeLinesEmitted = 0;
@@ -12992,9 +13001,22 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     if (interactiveOnly && !isInteractive && !ENRICHED_ROLES.has(role)) {
       // Keep the page text this filter hides as diff-only lines (#487), so a
       // settle / --since-action / --diff in this shape still sees a status <p>
-      // change. Same visibility rule the default shape prints text with.
-      if (role === 'StaticText' && shouldShowAxNode(node, true, parentNode)) {
-        hiddenTextLines.push(formatAxNode(node, depth));
+      // change. Shared with the default shape: shouldShowAxNode's filters
+      // (InlineTextBox, text that repeats the parent's name, empty text).
+      // Not shared: -i does not advance depth through filtered nodes, so -d does
+      // not reach this text, and the default chrome/table-row caps do not apply.
+      // HIDDEN_TEXT_MAX_LINES / _CHARS bound it instead, in document order.
+      if (role === 'StaticText' && !hiddenTextCapped && shouldShowAxNode(node, true, parentNode)) {
+        const line = formatAxNode(node, depth);
+        if (
+          hiddenTextLines.length >= HIDDEN_TEXT_MAX_LINES
+          || hiddenTextChars + line.length + 1 > HIDDEN_TEXT_MAX_CHARS
+        ) {
+          hiddenTextCapped = true;
+        } else {
+          hiddenTextLines.push(line);
+          hiddenTextChars += line.length + 1;
+        }
       }
       for (const child of orderedAxChildren(node, nodesById, childrenByParent)) {
         visit(child, depth, node, tableAncestorId, region);
@@ -13135,6 +13157,9 @@ function buildPerceiveTree(nodes, meta, refMap, opts = {}) {
     outLines.push(`Body truncated. Next: cdp text ${target} --auto`);
   }
 
+  // A fixed note (no count) so a capped baseline and a capped settle do not
+  // differ on the note alone; crossing the cap is a real text change.
+  if (hiddenTextCapped) hiddenTextLines.push(HIDDEN_TEXT_CAP_NOTE);
   return { treeLines: outLines, refNodeIds, hiddenTextLines: interactiveOnly ? hiddenTextLines : [] };
 }
 

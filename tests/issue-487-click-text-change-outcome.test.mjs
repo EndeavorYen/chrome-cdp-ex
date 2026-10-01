@@ -188,3 +188,79 @@ describe('#487 click receipt after perceive -i sees a text-only change', () => {
     expect(T.perceiveStoreDiffSource(store)).toBe(store.output);
   });
 });
+
+// Fixed-output guards that use only exports which existed before #487, so they
+// fail on the old behaviour itself, not on a missing helper.
+describe('#487 fixed-output snapshots', () => {
+  it('the printed -i tree is unchanged: same bytes, same refs', async () => {
+    const { cdp } = createSmokePage();
+    const refMap = new Map();
+    const out = await perceive(cdp, { output: null }, T.parsePerceiveArgs(['-i', '-d', '8']), refMap);
+    expect(out).toBe([
+      'Page: smoke — http://127.0.0.1/smoke-page.html',
+      'Viewport: 1252×799 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 2 button',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '[heading] smoke',
+      '[button] Smooth target  @1  (36,671 137×40)',
+      '[button] No visible change  @2  (36,671 137×40)',
+    ].join('\n'));
+    expect([...refMap.entries()]).toEqual([[1, 30], [2, 70]]);
+  });
+
+  it('perceive -i --diff and the click receipt built from it say changed (old: "no changes" / no-change)', async () => {
+    const { cdp, state } = createSmokePage();
+    const store = { output: null };
+    await perceive(cdp, store, T.parsePerceiveArgs(['-i', '-d', '8']));
+    state.status = 'smooth:clicked';
+    const diff = await perceive(cdp, store, T.parsePerceiveArgs(['-i', '-d', '8', '--diff']));
+    expect(diff).toBe([
+      'Page: smoke — http://127.0.0.1/smoke-page.html',
+      'Viewport: 1252×799 | Scroll: 0/0 (0%) | Focused: none',
+      'Interactive: 2 button',
+      'Console: clean',
+      'Coords: top-level viewport CSS px (use clickxy with these values; fixed/sticky elements are tagged)',
+      '',
+      '~~~ Text nodes updated (1 removed, 1 added)',
+      '+ [StaticText] smooth:clicked',
+    ].join('\n'));
+
+    const dispatchText = 'Clicked <BUTTON> "Smooth target" (@1)';
+    const result = T.applyActionObservationDelta(T.createActionResult({
+      action: 'click',
+      target: { targetId: TARGET_ID, ...clickTarget(), dispatchText },
+      dispatch: { ok: true, method: 'click' },
+      settle: { ok: true, durationMs: 80 },
+      effects: { domDiff: diff, console: [], network: [], navigation: null },
+    }), emptyDelta);
+    expect(T.formatActionResultOutput(result, { dispatchText }))
+      .toBe('Clicked <BUTTON> "Smooth target" (@1). Outcome: changed. Next: cdp perceive 48515122 --since-action');
+  });
+
+  it('bounds the diff-only -i text and marks the cut with a fixed note', () => {
+    const nodes = [
+      { nodeId: 'root', role: { value: 'RootWebArea' }, name: { value: 'long' } },
+      { nodeId: 'b', parentId: 'root', role: { value: 'button' }, name: { value: 'Go' }, backendDOMNodeId: 9 },
+    ];
+    for (let i = 0; i < 2500; i++) {
+      nodes.push({ nodeId: `t${i}`, parentId: 'root', role: { value: 'StaticText' }, name: { value: `row ${i}` } });
+    }
+    const built = T.buildPerceiveTree(nodes, { layoutMap: {} }, new Map(), { interactiveOnly: true });
+    expect(built.treeLines.join('\n')).not.toContain('row 0');
+    expect(built.hiddenTextLines).toHaveLength(2001);
+    expect(built.hiddenTextLines[0]).toBe('[StaticText] row 0');
+    expect(built.hiddenTextLines[1999]).toBe('[StaticText] row 1999');
+    expect(built.hiddenTextLines[2000]).toMatch(/^ {2}\[note\] diff-only -i text capped at 2000 lines \/ 64K chars/);
+
+    const wide = nodes.slice(0, 2).concat(Array.from({ length: 200 }, (_, i) => ({
+      nodeId: `w${i}`, parentId: 'root', role: { value: 'StaticText' }, name: { value: `${i} ${'x'.repeat(1000)}` },
+    })));
+    const capped = T.buildPerceiveTree(wide, { layoutMap: {} }, new Map(), { interactiveOnly: true }).hiddenTextLines;
+    expect(capped.length).toBeGreaterThan(1);
+    expect(capped.slice(0, -1).join('\n').length).toBeLessThanOrEqual(64 * 1024);
+    expect(capped.at(-1)).toMatch(/\[note\] diff-only -i text capped/);
+    expect(T.buildPerceiveTree(nodes, { layoutMap: {} }, new Map(), {}).hiddenTextLines).toEqual([]);
+  });
+});
