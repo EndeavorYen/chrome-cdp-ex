@@ -393,7 +393,8 @@ describe('#462 runtime artifacts are pruned and the session log rotates', () => 
     expect(body).toMatch(/const idleTimer = createDaemonIdleTimer\(/);
     expect(body).toMatch(/const runtimePrune = createRuntimePruneScheduler\(\{ run: \(\) => pruneDaemonRuntimeArtifacts\(session, targetId\) \}\)/);
     expect(body).toMatch(/createDaemonRequestConnection\(conn, \{\s*handleRequest: idleTrackedDaemonRequestHandler\(idleTimer, handleCommand, \{ onSettled: runtimePrune\.requestSettled \}\),/);
-    expect(body).toMatch(/server\.once\('listening', \(\) => \{[^}]*writeDaemonRecord\([^)]*\{[^}]*\}\);\s*runtimePrune\.arm\(\);/);
+    // The prune is armed once this daemon owns its endpoint (#458: `serve` runs onServing only for the winner).
+    expect(body).toMatch(/endpointLifecycle\.serve\(\{[\s\S]*?onServing: \(\) => \{[^}]*runtimePrune\.arm\(\);/);
     // The prune must not run on the listen path itself.
     expect(body).not.toMatch(/setImmediate\(\(\) => pruneDaemonRuntimeArtifacts/);
     expect(body).toMatch(/networkStatusByRequest = createEarlyResponseStatusStore\(\)/);

@@ -122,6 +122,18 @@
   surrogate pair
   ([#459](https://github.com/EndeavorYen/chrome-cdp-ex/issues/459)).
 ### Bug Fixes
+* On Linux and macOS, a second daemon for the same tab no longer takes over the first one's live
+  socket. Two parallel commands for a tab with no daemon used to spawn two daemons; the second unlinked
+  the first's socket and bound the path, leaving an attached orphan that `stop` could not see, and when
+  the orphan idled out its shutdown unlinked the survivor's socket too. A daemon now exits before
+  attaching when a daemon already answers on its socket, and otherwise listens without unlinking: on
+  `EADDRINUSE` it probes the path, removes it only when nothing listens (a stale file) and the file is
+  still the one it probed (same dev/inode), and exits 0 when a live daemon holds it, leaving that
+  daemon's socket, record and session log alone. On exit a daemon closes its server (libuv then
+  removes the path) only while the path still holds the socket it bound, and a daemon whose socket was
+  replaced or removed exits within 5 s instead of lingering.
+  Clients (`getOrStartTabDaemon`, `open`) no longer unlink the path before spawning. Windows named pipes
+  are unchanged ([#458](https://github.com/EndeavorYen/chrome-cdp-ex/issues/458)).
 
 * `shot`, `elshot`, `responsive-audit` and `annotshot` capture an Electron page with a live WebGL
   canvas whenever a plain `Page.captureScreenshot` works

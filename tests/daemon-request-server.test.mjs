@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { describe, expect, it, vi } from 'vitest';
 
 const { __test__: T } = await import('../skills/chrome-cdp-ex/scripts/cdp.mjs');
+const OWN_SOCKET = { dev: 1, ino: 42 };
 const cdpSource = readFileSync(new URL('../skills/chrome-cdp-ex/scripts/cdp.mjs', import.meta.url), 'utf8');
 
 function connection({ holdWrite = false } = {}) {
@@ -50,15 +51,16 @@ describe('daemon request server lifecycle', () => {
     const second = { abortAll: vi.fn(() => order.push('abort:second')) };
     const server = { close: vi.fn(() => order.push('server:close')) };
     const closeCdp = vi.fn(() => order.push('cdp:close'));
-    const unlinkSocket = vi.fn(() => order.push('socket:unlink'));
     const exitProcess = vi.fn(code => order.push(`exit:${code}`));
     const shutdown = T.createDaemonShutdown({
       requestConnections: new Set([first, second]),
       getServer: () => server,
       socketPath: '/run/cdp/table.sock',
+      // This daemon still owns its socket (#458), so shutdown closes it (libuv unlinks the path).
+      getSocketIdentity: () => OWN_SOCKET,
+      statSocket: () => OWN_SOCKET,
       closeCdp,
       exitProcess,
-      unlinkSocket,
       isWindows: false,
     });
 
@@ -75,7 +77,6 @@ describe('daemon request server lifecycle', () => {
       'abort:first',
       'abort:second',
       'server:close',
-      'socket:unlink',
       'cdp:close',
       `exit:${exitCode}`,
     ]);
@@ -90,9 +91,11 @@ describe('daemon request server lifecycle', () => {
       requestConnections: new Set([connectionLifecycle]),
       getServer: () => server,
       socketPath: '/run/cdp/table.sock',
+      // This daemon still owns its socket (#458), so shutdown closes it (libuv unlinks the path).
+      getSocketIdentity: () => OWN_SOCKET,
+      statSocket: () => OWN_SOCKET,
       cleanupSession,
       closeCdp: () => order.push('cdp:close'),
-      unlinkSocket: () => order.push('socket:unlink'),
       exitProcess: code => order.push(`exit:${code}`),
       isWindows: false,
     });
@@ -104,7 +107,6 @@ describe('daemon request server lifecycle', () => {
       'requests:abort',
       'artifacts:cleanup',
       'server:close',
-      'socket:unlink',
       'cdp:close',
       'exit:0',
     ]);
@@ -116,9 +118,11 @@ describe('daemon request server lifecycle', () => {
       requestConnections: new Set(),
       getServer: () => ({ close: () => order.push('server:close') }),
       socketPath: '/run/cdp/table.sock',
+      // This daemon still owns its socket (#458), so shutdown closes it (libuv unlinks the path).
+      getSocketIdentity: () => OWN_SOCKET,
+      statSocket: () => OWN_SOCKET,
       cleanupSession: () => { order.push('artifacts:cleanup'); throw new Error('cleanup failed'); },
       closeCdp: () => order.push('cdp:close'),
-      unlinkSocket: () => order.push('socket:unlink'),
       exitProcess: code => order.push(`exit:${code}`),
       isWindows: false,
     });
@@ -128,7 +132,6 @@ describe('daemon request server lifecycle', () => {
     expect(order).toEqual([
       'artifacts:cleanup',
       'server:close',
-      'socket:unlink',
       'cdp:close',
       'exit:1',
     ]);
