@@ -62,6 +62,19 @@
   message now says that nothing was quit or started and no CDP connection was attempted, instead of
   "CDP was not reachable". The hint names "the running default" browser instead of the macOS-only
   "Dock" outside macOS ([#456](https://github.com/EndeavorYen/chrome-cdp-ex/issues/456)).
+* Redaction no longer misses `access_token`, `refresh_token`, `id_token`, `client_secret`, `session_id`,
+  `accessToken`, `api_key` or `X-Amz-Signature`. The URL query check wrapped its keywords in `\b`, which
+  never fires between `_` and a letter, and the free-text check matched substrings, so it also hid
+  `pinned=1`, `cardinality=3` and `sidebar=open`. One classifier in `scripts/lib/redaction.mjs` now splits
+  keys on `_`, `-`, `.` and camelCase and matches whole tokens. `token` as a quantity (`maxTokens`,
+  `tokenCount`) stays readable, and `key`, `sig` and `*Signature` count only as URL query parameters.
+  CSS selectors such as `#pin:checked` are never rewritten, so recorded workflows replay unchanged. The
+  classifier covers URLs in action JSON and text receipts (including the navigation outcome line), `net`,
+  `netlog`, `mock` hits, `record` timelines, `report` and the session log. It also covers fragment tokens
+  (`#access_token=`), `;jsessionid=`, userinfo passwords, %-encoded keys and JSON-shaped
+  `"access_token":"…"` text. `netlog` used to print raw URLs; it now redacts by default and
+  `netlog --unsafe-full` prints them verbatim (MCP `run_command` asks for confirmation)
+  ([#455](https://github.com/EndeavorYen/chrome-cdp-ex/issues/455)).
 
 ## [2.18.0](https://github.com/EndeavorYen/chrome-cdp-ex/compare/v2.17.0...v2.18.0) (2026-10-01)
 

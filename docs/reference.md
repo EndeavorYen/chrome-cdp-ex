@@ -92,7 +92,7 @@ _Generated from the immutable command catalog; edit command metadata at its sour
 | `forward` | `forward <target>` | `mutation / mutation` |
 | `reload` | `reload <target>` | `mutation / mutation` |
 | `closetab` | `closetab <target>` | `mutation / mutation` |
-| `netlog` | `netlog <target> [--clear]` | `conditional-mutation / conditional` |
+| `netlog` | `netlog <target> [--clear] [--unsafe-full]` | `conditional-mutation / conditional` |
 | `inject` | `inject <target> <flag> [content]` | `mutation / mutation` |
 | `cascade` | `cascade <target> <sel\|@ref> [prop] [--format json]` | `read / standard` |
 | `record` | `record <target> [ms]` | `conditional-mutation / conditional` |
@@ -402,7 +402,7 @@ Use these when exploration should become reusable evidence:
 
 Missing restore/replay files are usage errors (`cdp help restore` / `cdp help replay`), not page failures. `diff-shot` fails closed if screenshot capture times out instead of reporting a fake 0% match.
 
-Report, record-actions, export-playwright, and session JSONL artifacts redact common password, token, API key, authorization, cookie, and session patterns by default while preserving command names, keys, counts, domains, and paths for debugging. Password-like fill/type values are redacted in every `record-actions` field, including `commandArgs`, `dispatchText`, and effect samples. Replay does not guess empty fill text for incomplete commands; missing `text` is skipped or failed closed. Checkpoint JSON also redacts cookie values and sensitive storage keys by default. Use `checkpoint --unsafe-full --format json` only when you need a fully restorable artifact; that output intentionally includes raw cookies and storage values, so treat it like a secret.
+Report, record-actions, export-playwright, and session JSONL artifacts redact common password, token, API key, authorization, cookie, signature, and session patterns by default while preserving command names, keys, counts, domains, and paths for debugging. One key classifier (`scripts/lib/redaction.mjs`) splits keys on `_`, `-`, `.` and camelCase and matches whole tokens, so `access_token`, `client_secret`, `session_id`, `accessToken` and `api_key` are redacted while `pinned`, `cardinality` or `sidebar` are not. `token` used as a quantity (`tokens`, `maxTokens`, `tokenCount`) stays readable, and `key`, `sig` and `*Signature` (`X-Amz-Signature`) count as secrets only as URL query or fragment parameters, so `Sort key: name` is left alone. CSS selectors such as `#pin:checked` or `.token:hover` are never rewritten, so recorded workflows replay unchanged. The same rule redacts request URLs in action receipts (text and JSON), `net`, `netlog`, `mock` hits, `record` timelines, `report`, and the session log; among these, `netlog --unsafe-full` is the only way to print them raw. Commands that print the current page URL (`perceive`, `status`, `list`) are not covered yet. Password-like fill/type values are redacted in every `record-actions` field, including `commandArgs`, `dispatchText`, and effect samples. Replay does not guess empty fill text for incomplete commands; missing `text` is skipped or failed closed. Checkpoint JSON also redacts cookie values and sensitive storage keys by default. Use `checkpoint --unsafe-full --format json` only when you need a fully restorable artifact; that output intentionally includes raw cookies and storage values, so treat it like a secret.
 
 ## Browser Setup
 
