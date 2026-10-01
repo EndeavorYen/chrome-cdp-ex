@@ -58,6 +58,15 @@
   viewport centre once and re-tested before failing, which clears a sticky header over the top of the
   viewport. Named clicks were already JS clicks and are unchanged
   ([#436](https://github.com/EndeavorYen/chrome-cdp-ex/issues/436)).
+* A daemon socket path over the Unix limit (107 bytes on Linux, 103 on macOS) now fails at once with
+  `daemon_socket_path_too_long` and asks for a shorter `XDG_RUNTIME_DIR`. Before, libuv truncated the
+  path on both listen and connect, so tabs could share one socket and a command reached the wrong tab's
+  daemon (stopped only by the target-binding check)
+  ([#444](https://github.com/EndeavorYen/chrome-cdp-ex/issues/444)).
+* Recovery `Next:` lines quote selectors for the shell: `no-input-events` printed
+  `cdp jsclick <t> #id`, which `sh` reads as a comment, and `recoveryCommandArg` used double quotes, so
+  `$`, backticks and `!` in a selector still expanded. Now a word that needs quoting gets "…" when that is
+  safe, otherwise '…' ([#445](https://github.com/EndeavorYen/chrome-cdp-ex/issues/445)).
 * `npm run smoke:live` runs again end to end (96 steps). Its assertions had drifted from the compact
   `doctor`, compact `report` and exit-1-on-failed-action receipts. It now pins `--window-size=1280,900`:
   in headless Chromium's default 800 px window, the page's fixed sidebar covered the buttons. It adds

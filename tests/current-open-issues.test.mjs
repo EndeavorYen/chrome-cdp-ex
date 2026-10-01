@@ -11222,8 +11222,8 @@ describe('issue #266 click mouse events must land or fail closed', () => {
     expect(receipt.effects.failure.kind).toBe('no-input-events');
     expect(receipt.outcome.status).not.toBe('changed');
     expect(receipt.outcome).toMatchObject({ status: 'failed', changed: false });
-    expect(receipt.effects.failure.nextCommand).toBe(`cdp jsclick ${TARGET_ID} #p17cb`);
-    expect(receipt.effects.diagnosis.nextCommand).toBe(`cdp jsclick ${TARGET_ID} #p17cb`);
+    expect(receipt.effects.failure.nextCommand).toBe(`cdp jsclick ${TARGET_ID} "#p17cb"`);
+    expect(receipt.effects.diagnosis.nextCommand).toBe(`cdp jsclick ${TARGET_ID} "#p17cb"`);
     expect(state.mouseTypes).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
 
     const jsReceipt = await clickJsonCommand(cdp, ['--js', '#p17cb'], {
@@ -11296,7 +11296,7 @@ describe('issue #266 click mouse events must land or fail closed', () => {
       args: ['#p17cb'],
     });
     expect(cli).toMatch(/Kind: no-input-events/);
-    expect(cli).toMatch(new RegExp(`Next: cdp jsclick ${TARGET_ID} #p17cb`));
+    expect(cli).toMatch(new RegExp(`Next: cdp jsclick ${TARGET_ID} "#p17cb"`));
     expect(cli).not.toMatch(new RegExp(`Next: cdp jsclick ${TARGET_ID}$`, 'm'));
   });
 
