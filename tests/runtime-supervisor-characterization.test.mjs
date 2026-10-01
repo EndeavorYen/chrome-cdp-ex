@@ -172,7 +172,8 @@ describe('Phase 5 current runtime characterization', () => {
     })).resolves.toBe(connection);
     expect(connect).toHaveBeenCalledTimes(3);
     expect(connect).toHaveBeenCalledWith('/runtime/cdp/cdp-AABB1111FULL.sock');
-    expect(unlink).toHaveBeenCalledOnce();
+    // #458: the spawned daemon, not the client, removes a stale socket after probing it.
+    expect(unlink).not.toHaveBeenCalled();
     expect(spawnProcess).toHaveBeenCalledWith('/fixture/node', [
       '/fixture/cdp.mjs', '_daemon', 'AABB1111FULL',
     ], {

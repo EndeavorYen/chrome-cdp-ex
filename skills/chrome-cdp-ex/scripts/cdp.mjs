@@ -117,11 +117,17 @@ import {
   pageHealthScript,
 } from './lib/page-health.mjs';
 import {
+  claimDaemonEndpoint,
   connectToDaemon,
+  DAEMON_ENDPOINT_ABSENT_CODES,
   daemonEndpointForPlatform,
   daemonEndpointTooLongError,
+  daemonSocketIdentity,
   ipcTimeoutForRequest,
+  probeDaemonEndpoint,
   requestDaemon,
+  sameDaemonSocket,
+  watchDaemonSocket,
 } from './lib/daemon-transport.mjs';
 import {
   attachTargetResolutionDiagnostics,
@@ -1170,7 +1176,9 @@ function createDaemonShutdown({
   cleanupSession = () => {},
   closeCdp,
   exitProcess = code => process.exit(code),
-  unlinkSocket = unlinkSync,
+  // dev+ino this daemon recorded once it bound `socketPath`; null if it never bound it.
+  getSocketIdentity = () => null,
+  statSocket = statSync,
   removeRecord = () => {},
   isWindows = IS_WINDOWS,
 }) {
@@ -1179,7 +1187,6 @@ function createDaemonShutdown({
   if (typeof closeCdp !== 'function') throw new Error('daemon CDP closer must be a function');
   if (typeof cleanupSession !== 'function') throw new Error('daemon session cleanup must be a function');
   if (typeof exitProcess !== 'function') throw new Error('daemon process exit must be a function');
-  if (typeof unlinkSocket !== 'function') throw new Error('daemon socket unlink must be a function');
   let alive = true;
   return (exitCode = 0) => {
     if (!alive) return;
@@ -1194,8 +1201,16 @@ function createDaemonShutdown({
     } catch {
       finalExitCode = 1;
     }
-    try { getServer()?.close(); } catch {}
-    if (!isWindows) try { unlinkSocket(socketPath); } catch {}
+    // On POSIX the path may now hold a newer daemon's socket (#458). libuv unlinks a bound
+    // pipe's path when its server closes, so closing is the cleanup, and a daemon that no
+    // longer owns the path must not close; the exit below releases its listener.
+    let ownsSocket = isWindows;
+    if (!isWindows) {
+      try {
+        ownsSocket = sameDaemonSocket(getSocketIdentity(), daemonSocketIdentity(socketPath, { stat: statSocket }));
+      } catch {}
+    }
+    if (ownsSocket) try { getServer()?.close(); } catch {}
     try { closeCdp(); } catch {}
     try { removeRecord(); } catch {}
     exitProcess(finalExitCode);
@@ -1569,6 +1584,11 @@ function readDaemonRecord(targetId, { runtimeDir = RUNTIME_DIR, reader = readFil
 
 function removeDaemonRecord(targetId, { runtimeDir = RUNTIME_DIR, remover = unlinkSync } = {}) {
   try { remover(daemonRecordPath(targetId, runtimeDir)); } catch {}
+}
+
+// A daemon that lost the endpoint must not delete the record of the daemon that won it.
+function removeOwnDaemonRecord(targetId, { pid = process.pid, runtimeDir = RUNTIME_DIR, reader = readFileSync, remover = unlinkSync } = {}) {
+  if (readDaemonRecord(targetId, { runtimeDir, reader })?.pid === pid) removeDaemonRecord(targetId, { runtimeDir, remover });
 }
 
 function listDaemonRecords({ runtimeDir = RUNTIME_DIR, readdir = readdirSync, reader = readFileSync } = {}) {
@@ -23963,6 +23983,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     requestedTargetId: targetId,
     boundTargetId: targetId,
   };
+  if (await daemonAlreadyServes(sp)) process.exit(0);
 
   const cdp = new CDP();
   try {
@@ -23998,7 +24019,6 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     platform: process.platform,
   });
   const tableCollectorSession = { collector: null };
-  initializeSessionLog(session);
   ensureSessionScreenshotDir(session);
 
   // --- Background observation ---
@@ -24068,17 +24088,15 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
   // Shutdown helpers
   let server = null;
   const requestConnections = new Set();
-  const shutdown = createDaemonShutdown({
+  const endpointLifecycle = createDaemonEndpointLifecycle({
+    targetId,
+    socketPath: sp,
     requestConnections,
     getServer: () => server,
-    socketPath: sp,
     cleanupSession: () => tableArtifactStore.cleanupSession(),
     closeCdp: () => cdp.close(),
-    removeRecord: () => {
-      // A daemon that lost the listen race must not delete the winner's record.
-      if (readDaemonRecord(targetId)?.pid === process.pid) removeDaemonRecord(targetId);
-    },
   });
+  const shutdown = endpointLifecycle.shutdown;
 
   // Exit if target goes away or Chrome disconnects
   cdp.onEvent('Target.targetDestroyed', (params) => {
@@ -25080,25 +25098,119 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     requestConnections.add(requestConnection);
   });
 
-  server.on('error', (e) => {
-    process.stderr.write(`Daemon server listen failed: ${e.message}\n`);
-    shutdown(1);
-  });
-
   const tooLong = daemonEndpointTooLongError(sp);
   if (tooLong) {
     process.stderr.write(`Daemon server listen failed: ${tooLong.message}\n`);
     shutdown(1);
     return;
   }
-  if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
   ensureRuntimeDir();
-  // Only the daemon that won the listen race owns the record.
-  server.once('listening', () => {
-    writeDaemonRecord(targetId, { pid: daemonMetadata.pid, startedAt: daemonMetadata.startedAt });
-    runtimePrune.arm();
+  const serving = await endpointLifecycle.serve({
+    listen: endpoint => listenDaemonServer(server, endpoint),
+    record: { pid: daemonMetadata.pid, startedAt: daemonMetadata.startedAt },
+    // Only the daemon that owns the endpoint starts the tab's session log (the loser would truncate it).
+    onServing: () => {
+      initializeSessionLog(session);
+      runtimePrune.arm();
+    },
   });
-  server.listen(sp);
+  if (!serving) return;
+  server.on('error', (e) => {
+    process.stderr.write(`Daemon server failed: ${e.message}\n`);
+    shutdown(1);
+  });
+}
+
+function listenDaemonServer(server, endpoint) {
+  return new Promise((resolveListen, rejectListen) => {
+    const onError = error => {
+      server.off('listening', onListening);
+      rejectListen(error);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      resolveListen();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(endpoint);
+  });
+}
+
+// A daemon spawned while another already serves the tab (a parallel client spawned it first)
+// exits before it attaches (#458). `serve` settles the races this check misses.
+async function daemonAlreadyServes(endpoint, { platform = process.platform, probe = path => probeDaemonEndpoint(path) } = {}) {
+  return platform !== 'win32' && await probe(endpoint) === 'answers';
+}
+
+// A daemon's ownership of its endpoint (#458), shared by runDaemon and its tests. `serve`
+// claims the socket path; only a winner records the socket's dev/ino, writes the record
+// `stop` uses, runs `onServing` and watches the path. A loser shuts down and leaves the
+// socket, the record and the session log to the daemon that holds the path: exit 0 when that
+// daemon answers (what the spawning client wanted), 1 when the holder could not be probed.
+// `shutdown` closes the server (libuv then unlinks the path) only while the path still holds
+// this daemon's socket, and removes the record only while it names this daemon.
+function createDaemonEndpointLifecycle({
+  targetId,
+  socketPath,
+  requestConnections,
+  getServer,
+  cleanupSession,
+  closeCdp,
+  exitProcess,
+  platform = process.platform,
+  probe = path => probeDaemonEndpoint(path),
+  unlink = unlinkSync,
+  stat = statSync,
+  lstat = lstatSync,
+  runtimeDir = RUNTIME_DIR,
+  pid = process.pid,
+  watch = watchDaemonSocket,
+  log = message => process.stderr.write(message),
+}) {
+  let identity = null;
+  const shutdown = createDaemonShutdown({
+    requestConnections,
+    getServer,
+    socketPath,
+    cleanupSession,
+    closeCdp,
+    exitProcess,
+    getSocketIdentity: () => identity,
+    statSocket: stat,
+    removeRecord: () => removeOwnDaemonRecord(targetId, { pid, runtimeDir }),
+    isWindows: platform === 'win32',
+  });
+  async function serve({ listen, record, onServing = () => {} }) {
+    let claim;
+    try {
+      claim = await claimDaemonEndpoint(socketPath, { platform, listen, probe, unlink, stat, lstat });
+    } catch (error) {
+      log(`Daemon server listen failed: ${error.message}\n`);
+      shutdown(1);
+      return false;
+    }
+    if (!claim.claimed) {
+      log(claim.holder === 'answers'
+        ? `Daemon: another daemon already serves ${socketPath}; exiting\n`
+        : `Daemon: ${socketPath} is in use and its holder did not answer; leaving it in place\n`);
+      shutdown(claim.holder === 'answers' ? 0 : 1);
+      return false;
+    }
+    identity = claim.identity;
+    writeDaemonRecord(targetId, record, { runtimeDir });
+    onServing();
+    watch(socketPath, {
+      identity,
+      stat,
+      onLost: () => {
+        log(`Daemon: ${socketPath} no longer belongs to this daemon; exiting\n`);
+        shutdown(0);
+      },
+    });
+    return true;
+  }
+  return Object.freeze({ shutdown, serve, socketIdentity: () => identity });
 }
 
 // ---------------------------------------------------------------------------
@@ -25119,7 +25231,6 @@ async function getOrStartTabDaemon(targetId, opts = {}) {
   const tooLong = daemonEndpointTooLongError(sp, { platform });
   if (tooLong) throw tooLong;
   const connect = opts.connect || connectToSocket;
-  const unlink = opts.unlink || unlinkSync;
   const spawnProcess = opts.spawnProcess || spawn;
   const delay = opts.delay || sleep;
   const retries = opts.retries ?? DAEMON_CONNECT_RETRIES;
@@ -25130,8 +25241,8 @@ async function getOrStartTabDaemon(targetId, opts = {}) {
   let lastError = null;
   try { return await connect(sp); } catch (error) { lastError = error; }
 
-  // Clean stale socket
-  if (platform !== 'win32') try { unlink(sp); } catch {}
+  // No stale-socket cleanup here: a parallel client's daemon may have bound the path since
+  // the connect above failed. The spawned daemon removes a stale socket only after a probe (#458).
 
   // Spawn daemon
   const child = spawnProcess(execPath, [scriptPath, '_daemon', targetId], {
@@ -25458,7 +25569,7 @@ const STOP_KILL_POLL_MS = 100;
 // A liveness probe only has to tell "nothing listens" (an immediate error) from "something
 // may": a timeout is never proof of absence, so a short one costs nothing in correctness.
 const STOP_PROBE_TIMEOUT_MS = 1000;
-const ENDPOINT_ABSENT_CODES = new Set(['ENOENT', 'ECONNREFUSED', 'ENOTSOCK']);
+const ENDPOINT_ABSENT_CODES = DAEMON_ENDPOINT_ABSENT_CODES;
 
 // The same daemon wrote both records: same pid and same start time. A daemon started
 // later for the same target writes a new start time, even if its pid was reused.
@@ -28520,8 +28631,8 @@ async function main(options = {}) {
     }
 
     // Auto-attach: start daemon and wait for user to click "Allow debugging?"
+    // The daemon itself removes a stale socket, and only after a probe (#458).
     const sp = sockPath(targetId);
-    if (!IS_WINDOWS) try { unlinkSync(sp); } catch {}
     // An explicit mode belongs to this tab, so a daemon restarted later by a call that does not choose
     // one keeps it (#441, #488). The default needs no record.
     if (opts.backgroundExplicit) writeTabBackgroundMode(targetId, { background: opts.background });
@@ -29202,6 +29313,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   doctorProbeFromTargets, doctorProbeFromChecks,
   buildStopResult, formatStopResult, stopDaemons,
   daemonRecordPath, writeDaemonRecord, readDaemonRecord, removeDaemonRecord, listDaemonRecords, processIsTargetDaemon, isProcessAlive,
+  removeOwnDaemonRecord, createDaemonEndpointLifecycle, daemonAlreadyServes,
   // Issues #82-#87 helpers
   isBlankPageUrl, pageTargetScore, rankPageTargets, matchPageTargets, selectPageTarget,
   parseTargetSelectArgs, buildTargetSelectModel, formatTargetSelect,

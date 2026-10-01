@@ -122,12 +122,10 @@ describe('Runtime v3 table policy authority owners', { timeout: 60_000 }, () => 
     } catch {
       finalExitCode = 1;
     }
-    try { getServer()?.close(); } catch {}
-    if (!isWindows) try { unlinkSocket(socketPath); } catch {}
-    try { closeCdp(); } catch {}`,
+    // On POSIX the path may now hold a newer daemon's socket (#458). libuv unlinks a bound
+    // pipe's path when its server closes, so closing is the cleanup, and a daemon that no
+    // longer owns the path must not close; the exit below releases its listener.`,
       `    try { getServer()?.close(); } catch {}
-    if (!isWindows) try { unlinkSocket(socketPath); } catch {}
-    try { closeCdp(); } catch {}
     try {
       if (cleanupSession() !== undefined) finalExitCode = 1;
     } catch {
