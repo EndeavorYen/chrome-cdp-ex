@@ -3,15 +3,17 @@ import { resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 import {
-  MCP_TOOL_DEFINITIONS,
+  MCP_TOOLS,
   MCP_RESOURCE_TEMPLATES,
   buildMcpToolCommand,
   createMcpInitializeResult,
+  createMcpToolResult,
   listMcpResources,
   resolveMcpResource,
   snapshotMcpData,
 } from './lib/mcp-adapter.mjs';
 import { createRuntimeClient, isRuntimeClient } from './lib/runtime-client.mjs';
+import { resolveRuntimeDir } from './lib/runtime-dir.mjs';
 
 // MCP stdio is newline-delimited JSON-RPC: one message per line, no embedded newlines (#454).
 // LSP-style `Content-Length` framing is still accepted for a client that sends it. The first
@@ -97,17 +99,17 @@ export function createMcpStdioDecoder() {
   };
 }
 
-const stdioDecoder = createMcpStdioDecoder();
-
-function send(payload) {
-  process.stdout.write(encodeMcpMessage(payload, stdioDecoder.framing));
-}
-
 const defaultRuntimeClient = createRuntimeClient();
 
+function writeStdout(payload) {
+  process.stdout.write(encodeMcpMessage(payload));
+}
+
+// `runtimeDir` is the CLI output directory; a screenshot is inlined only from there (#465).
 export function createMcpRequestHandler({
   runtimeClient = defaultRuntimeClient,
-  sendMessage = send,
+  sendMessage = writeStdout,
+  runtimeDir = resolveRuntimeDir(),
 } = {}) {
   if (!isRuntimeClient(runtimeClient)) throw new Error('mcp.runtimeClient: must be a branded RuntimeClient');
   return async function handleRequest(message) {
@@ -135,28 +137,23 @@ export function createMcpRequestHandler({
         return;
       }
       if (message.method === 'initialize') {
-        sendMessage({ jsonrpc: '2.0', id, result: createMcpInitializeResult() });
+        sendMessage({ jsonrpc: '2.0', id, result: createMcpInitializeResult(message.params) });
         return;
       }
       if (message.method === 'tools/list') {
-        sendMessage({ jsonrpc: '2.0', id, result: { tools: MCP_TOOL_DEFINITIONS } });
+        sendMessage({ jsonrpc: '2.0', id, result: { tools: MCP_TOOLS } });
         return;
       }
       if (message.method === 'tools/call') {
         const name = message.params?.name;
         const args = message.params?.arguments || {};
         const command = buildMcpToolCommand(name, args);
+        const startedAtMs = Date.now();
         const result = await runtimeClient.execute(command);
-        const text = result.code === 0
-          ? result.stdout
-          : [result.stderr, result.stdout].filter(Boolean).join('\n');
         sendMessage({
           jsonrpc: '2.0',
           id,
-          result: {
-            content: [{ type: 'text', text }],
-            isError: result.code !== 0,
-          },
+          result: createMcpToolResult(command, result, { runtimeDir, startedAtMs }),
         });
         return;
       }
@@ -212,25 +209,6 @@ export function createMcpRequestHandler({
   };
 }
 
-const handleRequest = createMcpRequestHandler();
-
-// Requests are answered one at a time, in arrival order. Tool calls drive one shared browser
-// session, so running them concurrently could interleave actions on the same tab.
-let requestQueue = Promise.resolve();
-
-function enqueue(task, replyId) {
-  requestQueue = requestQueue
-    .then(task)
-    .catch(error => {
-      if (replyId === undefined) return;
-      send({
-        jsonrpc: '2.0',
-        id: replyId,
-        error: { code: -32000, message: error.message || String(error) },
-      });
-    });
-}
-
 // The id a failure reply should carry, or undefined for a notification (never answered).
 function replyIdFor(message) {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return null;
@@ -238,13 +216,37 @@ function replyIdFor(message) {
   return message.id ?? null;
 }
 
-const isDirectRun = process.argv[1]
-  && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
-if (isDirectRun) {
-  process.stdin.on('data', chunk => {
-    for (const entry of stdioDecoder.push(chunk)) {
+// Serves MCP over stdio. Handler options (runtimeClient, runtimeDir) pass through, so a test
+// can drive the real framing and dispatch against an injected runtime.
+export function startMcpStdioServer({ input = process.stdin, output = process.stdout, ...handlerOptions } = {}) {
+  const decoder = createMcpStdioDecoder();
+  const send = payload => output.write(encodeMcpMessage(payload, decoder.framing));
+  const handleRequest = createMcpRequestHandler({ sendMessage: send, ...handlerOptions });
+
+  // Requests are answered one at a time, in arrival order. Tool calls drive one shared browser
+  // session, so running them concurrently could interleave actions on the same tab.
+  let requestQueue = Promise.resolve();
+  const enqueue = (task, replyId) => {
+    requestQueue = requestQueue
+      .then(task)
+      .catch(error => {
+        if (replyId === undefined) return;
+        send({
+          jsonrpc: '2.0',
+          id: replyId,
+          error: { code: -32000, message: error.message || String(error) },
+        });
+      });
+  };
+
+  input.on('data', chunk => {
+    for (const entry of decoder.push(chunk)) {
       if (entry.error) enqueue(() => send(entry.error), null);
       else enqueue(() => handleRequest(entry.message), replyIdFor(entry.message));
     }
   });
 }
+
+const isDirectRun = process.argv[1]
+  && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (isDirectRun) startMcpStdioServer();

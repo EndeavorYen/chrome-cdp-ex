@@ -2129,7 +2129,7 @@
         "tool": "run_command"
       }
     ],
-    "protocolVersion": "2024-11-05",
+    "protocolVersion": "2025-06-18",
     "resourceMappings": [
       {
         "command": [
@@ -2317,8 +2317,19 @@
       "visual-check"
     ],
     "serverVersion": "2.18.0",
+    "supportedProtocolVersions": [
+      "2025-06-18",
+      "2024-11-05"
+    ],
     "tools": [
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Doctor"
+        },
         "description": "Run chrome-cdp-ex readiness diagnostics and return structured setup guidance.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2328,6 +2339,13 @@
         "name": "doctor"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "List tabs"
+        },
         "description": "List debuggable browser tabs and named target aliases.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2337,6 +2355,13 @@
         "name": "list_tabs"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Open or attach"
+        },
         "description": "Open a URL in a debuggable tab, or register a named alias for an existing target.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2371,6 +2396,13 @@
         "name": "open_or_attach"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Select target"
+        },
         "description": "Select a debuggable page target by URL and/or title substring (or exact match).",
         "inputSchema": {
           "additionalProperties": false,
@@ -2393,6 +2425,13 @@
         "name": "select_target"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Perceive"
+        },
         "description": "Capture structured page perception with refs, layout, and console health.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2452,6 +2491,13 @@
         "name": "perceive"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Controls"
+        },
         "description": "Return a compact list of visible controls for low-token target discovery.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2487,6 +2533,13 @@
         "name": "controls"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Overlay"
+        },
         "description": "Detect dialogs, overlays, and hit-test blockers for the page or a target point.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2508,6 +2561,13 @@
         "name": "overlay"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Screenshot"
+        },
         "description": "Capture a viewport screenshot for a target.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2537,6 +2597,13 @@
         "name": "screenshot"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Click"
+        },
         "description": "Click a selector, @ref, or accessible name and return action evidence. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2573,6 +2640,13 @@
         "name": "click"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Verify click"
+        },
         "description": "Click once and assert expected text, network request/status, and console health. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2627,6 +2701,13 @@
         "name": "verify_click"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Dismiss modal"
+        },
         "description": "Close common dialogs/modals safely and return action evidence. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2650,6 +2731,13 @@
         "name": "dismiss_modal"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Fill"
+        },
         "description": "Fill a field by selector or @ref and return action evidence. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2687,6 +2775,13 @@
         "name": "fill"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Viewport"
+        },
         "description": "Read or set viewport size. Setting size requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2712,6 +2807,13 @@
         "name": "viewport"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "QA page"
+        },
         "description": "Run page, console, screenshot, and optional semantic interaction QA.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2765,6 +2867,13 @@
         "name": "qa_page"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Responsive audit"
+        },
         "description": "Run a bounded multi-viewport responsive visual audit with overflow/console/control signals.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2805,6 +2914,13 @@
         "name": "responsive_audit"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true,
+          "title": "Report"
+        },
         "description": "Return session action timeline, artifacts, and recovery next steps.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2840,6 +2956,13 @@
         "name": "report"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Navigate"
+        },
         "description": "Navigate a target to a URL and wait for load. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2868,6 +2991,13 @@
         "name": "navigate"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Press"
+        },
         "description": "Send a key press to the page. Requires confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2896,6 +3026,13 @@
         "name": "press"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Wait for"
+        },
         "description": "Wait for text, selector stability, or other waitfor conditions.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2941,6 +3078,13 @@
         "name": "wait_for"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true,
+          "title": "Cascade"
+        },
         "description": "Trace a computed CSS property back to the winning selector and source.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2967,6 +3111,13 @@
         "name": "cascade"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Components"
+        },
         "description": "Inspect React/Vue component tree hooks when available for a selector/@ref. Requires confirm: true because props/state can contain sensitive data.",
         "inputSchema": {
           "additionalProperties": false,
@@ -2994,6 +3145,13 @@
         "name": "components"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Spawn debug browser"
+        },
         "description": "Launch an isolated debug browser profile. Requires confirm: true and user consent.",
         "inputSchema": {
           "additionalProperties": false,
@@ -3034,6 +3192,13 @@
         "name": "spawn_debug_browser"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Record snapshot"
+        },
         "description": "Record a short temporal timeline of DOM/network/console activity.",
         "inputSchema": {
           "additionalProperties": false,
@@ -3057,6 +3222,13 @@
         "name": "record_snapshot"
       },
       {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Session checkpoint"
+        },
         "description": "Capture a redacted session checkpoint for handoff/restore.",
         "inputSchema": {
           "additionalProperties": false,
@@ -3084,6 +3256,13 @@
         "name": "session_checkpoint"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Table"
+        },
         "description": "Observe a bounded table snapshot, collect a virtualized table after confirm: true, or continue a private artifact. Selector and continue are mutually exclusive; collect requires a scroll container.",
         "inputSchema": {
           "additionalProperties": false,
@@ -3132,6 +3311,13 @@
         "name": "table"
       },
       {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false,
+          "title": "Run command"
+        },
         "description": "Escape hatch: run an allowlisted chrome-cdp-ex CLI command. Mutating commands require confirm: true.",
         "inputSchema": {
           "additionalProperties": false,
@@ -3260,6 +3446,7 @@
       "package/skills/chrome-cdp-ex/scripts/lib/redaction.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/responsive-audit.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs",
+      "package/skills/chrome-cdp-ex/scripts/lib/runtime-dir.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/screenshot-health.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/session-report.mjs",
       "package/skills/chrome-cdp-ex/scripts/lib/target-binding.mjs",

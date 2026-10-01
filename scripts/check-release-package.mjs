@@ -65,6 +65,7 @@ export const REQUIRED_RELEASE_ENTRIES = [
   'package/skills/chrome-cdp-ex/scripts/lib/redaction.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/responsive-audit.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs',
+  'package/skills/chrome-cdp-ex/scripts/lib/runtime-dir.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/screenshot-health.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/session-report.mjs',
   'package/skills/chrome-cdp-ex/scripts/lib/target-binding.mjs',

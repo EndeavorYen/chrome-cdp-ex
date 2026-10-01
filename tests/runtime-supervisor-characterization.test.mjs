@@ -838,8 +838,12 @@ describe('Phase 5 current MCP process boundary characterization', () => {
       if (entry.mcpDenied) {
         expect(sent[0].error).toMatchObject({ code: -32000, message: entry.mcpDenied });
       } else {
+        // Versioned JSON output (an object with a `schema`) is also returned as structuredContent (#465).
+        const output = outputs.get(key);
+        const schemaJson = output.startsWith('{"schema"') ? { structuredContent: JSON.parse(output) } : {};
         expect(sent[0].result).toEqual({
-          content: [{ type: 'text', text: outputs.get(key) }],
+          content: [{ type: 'text', text: output }],
+          ...schemaJson,
           isError: false,
         });
       }

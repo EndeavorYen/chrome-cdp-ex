@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { dirname, resolve } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { spawn, spawnSync } from 'child_process';
+import { isDeepStrictEqual } from 'util';
 
 import { estimateTokenCount } from './benchmark-killer-path.mjs';
 import { withLiveBenchmarkLock } from './benchmark-run-lock.mjs';
@@ -65,6 +66,18 @@ function contentText(result = {}) {
     .map(entry => String(entry.text || ''))
     .join('\n')
     .trim();
+}
+
+// Bytes a tools/call result carries beyond its text blocks (#465). Token budgets estimate the text
+// blocks only; these are reported next to them so image and structuredContent growth stays visible.
+export function contentExtras(result = {}) {
+  const content = Array.isArray(result.content) ? result.content : [];
+  return {
+    imageBase64Chars: content
+      .filter(entry => entry?.type === 'image')
+      .reduce((sum, entry) => sum + String(entry.data || '').length, 0),
+    structuredContentChars: result.structuredContent ? JSON.stringify(result.structuredContent).length : 0,
+  };
 }
 
 function createMcpClient(env) {
@@ -133,13 +146,15 @@ function createMcpClient(env) {
   };
 }
 
-async function protocolStep({ client, steps, method, params = {}, name = method, timeout = 20000 }) {
+async function protocolStep({ client, steps, method, params = {}, name = method, timeout = 20000, check = null }) {
   const startedAt = Date.now();
   let stdout = '';
   let stderr = '';
   let status = 0;
   try {
-    stdout = JSON.stringify(await client.request(method, params, timeout));
+    const response = await client.request(method, params, timeout);
+    stdout = JSON.stringify(response);
+    check?.(response);
   } catch (error) {
     status = 1;
     stderr = error.message || String(error);
@@ -165,10 +180,17 @@ async function toolStep({ client, steps, tool, args = {}, command, name = tool, 
   let stdout = '';
   let stderr = '';
   let status = 0;
+  let extras = { imageBase64Chars: 0, structuredContentChars: 0 };
   try {
     const result = await client.request('tools/call', { name: tool, arguments: args }, timeout);
     stdout = contentText(result);
+    extras = contentExtras(result);
     status = result.isError ? 1 : 0;
+    // Versioned JSON output must also arrive as the same structuredContent object (#465).
+    const model = status === 0 ? parseJsonOutput(stdout) : null;
+    if (typeof model?.schema === 'string' && !isDeepStrictEqual(result.structuredContent, model)) {
+      throw new Error(`${tool} returned ${model.schema} JSON without matching structuredContent`);
+    }
   } catch (error) {
     status = 1;
     stderr = error.message || String(error);
@@ -182,6 +204,7 @@ async function toolStep({ client, steps, tool, args = {}, command, name = tool, 
     status,
     stdout,
     stderr,
+    ...extras,
     expectedFailure,
     benchmarkProbe,
   };
@@ -359,11 +382,15 @@ export function summarizeMcpBenchmarkRun({ startedAt, endedAt, target = '', step
       durationMs: stepDuration(step),
       outputChars: text.length,
       estimatedTokens: estimateTokenCount(text.length),
+      imageBase64Chars: step.imageBase64Chars || 0,
+      structuredContentChars: step.structuredContentChars || 0,
       hasUsefulObservation: isUsefulObservation(step),
       hasActionEvidence: isActionEvidence(step),
     };
   });
   const toolSteps = normalizedSteps.filter(step => step.mcpTool && !step.benchmarkProbe);
+  const imageBase64Chars = normalizedSteps.reduce((sum, step) => sum + step.imageBase64Chars, 0);
+  const structuredContentChars = normalizedSteps.reduce((sum, step) => sum + step.structuredContentChars, 0);
   const protocolSteps = normalizedSteps.filter(step => step.mcpMethod);
   const failed = normalizedSteps.find(step => !step.ok);
   const firstObservation = toolSteps.find(step => step.ok && step.hasUsefulObservation) || null;
@@ -385,6 +412,8 @@ export function summarizeMcpBenchmarkRun({ startedAt, endedAt, target = '', step
     commandText: step.commandText,
     outputChars: step.outputChars,
     estimatedTokens: step.estimatedTokens,
+    imageBase64Chars: step.imageBase64Chars,
+    structuredContentChars: step.structuredContentChars,
   }));
   const biggestToolOutputStep = perToolOutputTokens.reduce((biggest, step) => (
     !biggest || step.estimatedTokens > biggest.estimatedTokens ? step : biggest
@@ -428,6 +457,9 @@ export function summarizeMcpBenchmarkRun({ startedAt, endedAt, target = '', step
         : null,
       outputChars,
       estimatedOutputTokens: estimateTokenCount(outputChars),
+      // Not in the token budgets above, which count text blocks only.
+      imageBase64Chars,
+      structuredContentChars,
       usefulObservationTokens,
       actionEvidenceToolCalls: toolSteps.filter(step => step.hasActionEvidence).length,
       maxStepEstimatedTokens: biggestOutputStep?.estimatedTokens ?? 0,
@@ -567,6 +599,7 @@ export function formatMcpBenchmarkReport(summary) {
     `First action evidence: ${summary.metrics.firstActionEvidenceMs ?? 'n/a'} ms`,
     `Golden path complete: ${summary.metrics.goldenPathMs ?? 'n/a'} ms`,
     `Estimated output tokens: ${summary.metrics.estimatedOutputTokens}`,
+    `Non-text payload (not in token budgets): ${summary.metrics.imageBase64Chars ?? 0} image base64 chars, ${summary.metrics.structuredContentChars ?? 0} structuredContent chars`,
     `Useful observation tokens: ${summary.metrics.usefulObservationTokens}`,
     `Biggest tool output: ${summary.metrics.biggestToolOutputStep?.tool || 'n/a'} (${summary.metrics.biggestToolOutputStep?.estimatedTokens ?? 'n/a'} tokens)`,
     `Action evidence tool calls: ${summary.metrics.actionEvidenceToolCalls}`,
@@ -696,8 +729,29 @@ export async function runMcpBenchmark(opts = {}) {
 
     startedAt = Date.now();
     client = createMcpClient(env);
-    await protocolStep({ client, steps, method: 'initialize', params: {}, name: 'initialize' });
-    await protocolStep({ client, steps, method: 'tools/list', params: {}, name: 'tools-list' });
+    await protocolStep({
+      client,
+      steps,
+      method: 'initialize',
+      params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'benchmark-mcp', version: '0.0.0' } },
+      name: 'initialize',
+      check: result => {
+        if (result?.protocolVersion !== '2025-06-18') throw new Error(`initialize did not echo 2025-06-18: ${result?.protocolVersion}`);
+      },
+    });
+    await protocolStep({
+      client,
+      steps,
+      method: 'tools/list',
+      params: {},
+      name: 'tools-list',
+      check: result => {
+        const missing = (result?.tools || []).filter(tool => typeof tool.annotations?.readOnlyHint !== 'boolean');
+        if (!result?.tools?.length || missing.length) {
+          throw new Error(`tools/list is missing annotations: ${missing.map(tool => tool.name).join(', ') || 'no tools'}`);
+        }
+      },
+    });
 
     const open = await toolStep({
       client,
