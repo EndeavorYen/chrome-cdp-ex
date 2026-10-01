@@ -69,6 +69,20 @@
   hanging map host backs off from 5 s to 60 s between attempts, and a load reply that arrives after its
   timeout has its stream closed. Any failure prints the generated frame unchanged
   ([#470](https://github.com/EndeavorYen/chrome-cdp-ex/issues/470)).
+* `click`, `fill` and `select` on a CSS selector wait up to 2 s for the element to be attached,
+  visible and enabled before they act, so a control a single-page app renders a moment later no longer
+  needs a separate `waitfor`. The wait runs inside the page evaluation that already finds the element
+  (no extra round trip when it is ready at once) and re-checks on every DOM change and every 50 ms.
+  `--wait-ms N` sets the limit (at most 30000) and `--wait-ms 0` keeps the old fail-fast behaviour. A
+  receipt that waited says so: `Clicked <BUTTON> "Save" (waited 640ms for attach)`. `select` does not
+  require the `<select>` to be visible, since custom dropdowns often hide it. A disabled target
+  (`disabled`, a disabled `<fieldset>`, or `aria-disabled="true"`) used to be dispatched anyway: a
+  plain `click` on a disabled button reported `no-change`, and `fill` / `select` wrote the value of a
+  disabled control. It now exits 1 with `Error: <BUTTON> "Submit" is disabled (disabled attribute)…`,
+  the new `Kind: disabled` (`dispatched: false`, recovery strategy `wait-or-inspect`) and Next
+  `waitfor <target> "#submit:not(:disabled)"`; nothing is sent. An `@ref` is checked for disabled
+  without waiting. A selector that still matches nothing fails as `Kind: selector`, as before
+  ([#468](https://github.com/EndeavorYen/chrome-cdp-ex/issues/468)).
 
 ### Bug Fixes
 

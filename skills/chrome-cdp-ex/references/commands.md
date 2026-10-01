@@ -1259,6 +1259,37 @@ opened: pick another element or take a `shot`. A disabled, hidden, zero-size or 
 target fails instead of reporting success. `--pointer` and `--js` are alternatives. This is a `click` flag,
 so the 81-command surface and the public synopsis are unchanged.
 
+### Actionability wait and disabled targets — `--wait-ms`
+
+```bash
+cdp click  <t> "#save"                    # waits up to 2 s for #save to be attached, visible and enabled
+cdp fill   <t> "#email" a@b.c --wait-ms 5000
+cdp select <t> "#country" fr --wait-ms 0  # no wait: fail at once, as before
+```
+
+`click`, `fill` (including `--react`) and `select` on a CSS selector wait up to 2 s for the element
+before they act. The check runs in the same page evaluation that finds the element, so an element that
+is ready at once costs no extra round trip. Otherwise it is re-checked on every DOM change and every
+50 ms until the element is attached, visible (a non-zero box, not `visibility: hidden` or
+`display: none`) and enabled. `select` does not need the `<select>` to be visible: it sets the value in
+the page, and custom dropdowns often hide the native control. `--wait-ms N` sets the limit (at most
+30000); `--wait-ms 0` turns the wait off. When a wait happened, the receipt says so:
+`Clicked <BUTTON> "Save" (waited 640ms for attach)`, or `for attach, visible` when it waited for both.
+An element that is still hidden after the wait is acted on as before.
+
+A disabled target is not clicked, filled or selected. Disabled means the `disabled` attribute, a
+disabled `<fieldset>` around the control (`:disabled`), or `aria-disabled="true"` on the element itself.
+It exits 1 with `Error: <BUTTON> "Submit" is disabled (disabled attribute) after waiting 2000ms; the click
+was not sent.`, `Kind: disabled` (`dispatched: false`), and Next
+`cdp waitfor <target> "#submit:not(:disabled)"` (`:not([aria-disabled="true"])` for ARIA), which waits
+for that control to become enabled. A disabled control usually waits on something else (an empty
+required field, an unchecked box), so the hints point at `perceive -C -d 8` too. An `@ref` is checked for
+disabled without waiting; its Next is `perceive`. A selector that matches nothing after the wait still
+fails as `Kind: selector`, with `(waited 2000ms for attach)` in the error. Named / `text=` clicks,
+`click --js` and `click --pointer` do not wait. `--wait-ms` is a flag on these commands, so the
+81-command surface, the public synopsis and the MCP tool schemas are unchanged; MCP `click` and `fill`
+use the 2 s default.
+
 ### Clearing a field — `fill ""`
 
 ```bash

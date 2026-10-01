@@ -3764,7 +3764,8 @@ describe('issues #210-#217 open contracts', () => {
           },
           Event: class Event {},
         });
-        return Promise.resolve({ result: { value: result } });
+        // Runtime.evaluate runs with awaitPromise: true; the select expression is async since #468.
+        return Promise.resolve(result).then(value => ({ result: { value } }));
       },
     };
 

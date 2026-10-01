@@ -95,6 +95,15 @@ fixed/sticky container. If it is a dialog, close it (`cdp dismiss-modal <target>
 such as a fixed sidebar or sticky header (common in narrow headless windows), use `cdp click <target> <sel> --js`, or
 widen the window with `cdp viewport`. `cdp overlay <target> <sel>` shows what covers the target.
 
+## Action fails with `Kind: disabled`
+
+`click`, `fill` and `select` do not act on a disabled control (`disabled`, a disabled `<fieldset>`, or
+`aria-disabled="true"`); nothing was sent (`dispatched: false`). A CSS selector already waited up to 2 s
+(`--wait-ms`) for it to become enabled. If the page enables it later (a pending request), Next waits for that:
+`cdp waitfor <target> "<sel>:not(:disabled)"`. More often it waits on input you have not given (an empty
+required field, an unchecked box): `cdp perceive <target> -C -d 8` shows the form. Do not retry the same
+action or a JS click while the control is disabled; the page ignores it.
+
 ## Electron screenshot fallbacks
 
 For Electron apps, launch with a remote debugging port and run commands with `CDP_PORT=<port>`:

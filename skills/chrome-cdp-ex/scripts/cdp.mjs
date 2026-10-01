@@ -11363,6 +11363,7 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
     const maxSamples = fullyVisible ? 2 : 60;
     let previous = await settle(maxSamples);${hitTest ? `
     ${clickPointHitFunctionSource()}
+    ${actionabilityFunctionSource()}
     let hit = clickPointHit(this, previous);
     if (hit && hit.covered && fullyVisible) {
       this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
@@ -11379,7 +11380,8 @@ function scrollSettledRectFunctionDeclaration({ hitTest = false } = {}) {
       frameName: ${linkFrameNamePageExpression('this')},
       pageHref: location.href,
       text: (this.getAttribute('aria-label') || this.getAttribute('title') || this.textContent || '').trim().substring(0, 80),${hitTest ? `
-      hit,` : ''}
+      hit,
+      disabled: actionDisabledReason(this),` : ''}
     };
   }`;
 }
@@ -15200,11 +15202,190 @@ function pointerClickStr(cdp, sid, selector, refMap, refState) {
   return jsClickStr(cdp, sid, selector, refMap, refState, { pointer: true });
 }
 
+// #468: bounded actionability wait for click, fill and select on a CSS selector. It runs inside the
+// page evaluation that already resolves the selector, so an element that is actionable at once costs
+// no extra round trip. Otherwise it re-checks on every DOM mutation and every 50 ms until the element
+// is attached, visible (non-zero box, not visibility:hidden / display:none; click and fill only) and
+// enabled, or until the wait runs out. One deadline timer bounds it even where a hidden tab throttles
+// the 50 ms poll. A target still disabled after the wait fails before any input is dispatched.
+const ACTIONABILITY_WAIT_DEFAULT_MS = 2000;
+const ACTIONABILITY_WAIT_MAX_MS = 30000;
+const ACTIONABILITY_POLL_MS = 50;
+
+// Page-side source: actionDisabledReason(el), actionLabel(el), actionBlockedBy(el, needVisible)
+// and waitForActionable(query, waitMs, needVisible). Interpolated into an async page function.
+function actionabilityFunctionSource() {
+  return `
+    const actionDisabledReason = (el) => {
+      if (!el || el.nodeType !== 1) return '';
+      let native = false;
+      try { native = typeof el.matches === 'function' && el.matches(':disabled'); } catch (e) { native = false; }
+      if (native) {
+        if (typeof el.hasAttribute === 'function' && el.hasAttribute('disabled')) return 'disabled attribute';
+        const fieldset = typeof el.closest === 'function' ? el.closest('fieldset[disabled]') : null;
+        return fieldset && fieldset !== el ? 'inside a disabled <fieldset>' : 'disabled';
+      }
+      if (typeof el.getAttribute === 'function' && el.getAttribute('aria-disabled') === 'true') return 'aria-disabled="true"';
+      return '';
+    };
+    const actionLabel = (el) => {
+      if (!el) return '';
+      const attr = (name) => (typeof el.getAttribute === 'function' ? el.getAttribute(name) : null);
+      const tag = String(el.tagName || '').toUpperCase();
+      const type = String(el.type || '').toLowerCase();
+      const field = tag === 'SELECT' || tag === 'TEXTAREA'
+        || (tag === 'INPUT' && ['button', 'submit', 'reset'].indexOf(type) === -1);
+      const raw = attr('aria-label')
+        || (field ? (attr('name') || el.id || attr('placeholder')) : (el.innerText || el.textContent || el.value))
+        || '';
+      return String(raw).replace(/\\s+/g, ' ').trim().substring(0, 80);
+    };
+    const actionBlockedBy = (el, needVisible) => {
+      if (!el) return 'attach';
+      if (needVisible) {
+        let box = null;
+        try { box = el.getBoundingClientRect(); } catch (e) { box = null; }
+        if (!box || !(box.width > 0 && box.height > 0)) return 'visible';
+        let style = null;
+        try { style = getComputedStyle(el); } catch (e) { style = null; }
+        if (style && (style.visibility === 'hidden' || style.display === 'none')) return 'visible';
+      }
+      return actionDisabledReason(el) ? 'enabled' : '';
+    };
+    const waitForActionable = (query, waitMs, needVisible) => new Promise((resolve) => {
+      const started = Date.now();
+      const waitedFor = [];
+      let waited = false;
+      let done = false;
+      let observer = null;
+      let poll = null;
+      let deadline = null;
+      const finish = (el, blocked) => {
+        done = true;
+        if (observer) observer.disconnect();
+        if (poll != null) clearInterval(poll);
+        if (deadline != null) clearTimeout(deadline);
+        resolve({ el, blocked, waited, waitedMs: waited ? Date.now() - started : 0, waitedFor });
+      };
+      const check = (final) => {
+        if (done) return;
+        let el = null;
+        try { el = query(); } catch (e) { el = null; }
+        const blocked = actionBlockedBy(el, needVisible);
+        if (!blocked) return finish(el, '');
+        if (!(waitMs > 0)) return finish(el, blocked);
+        waited = true;
+        if (waitedFor.indexOf(blocked) === -1) waitedFor.push(blocked);
+        if (final || Date.now() - started >= waitMs) finish(el, blocked);
+      };
+      check(false);
+      if (done) return;
+      if (typeof MutationObserver === 'function' && typeof document !== 'undefined') {
+        try {
+          observer = new MutationObserver(() => check(false));
+          observer.observe(document, { subtree: true, childList: true, attributes: true });
+        } catch (e) { observer = null; }
+      }
+      poll = setInterval(() => check(false), ${ACTIONABILITY_POLL_MS});
+      deadline = setTimeout(() => check(true), waitMs);
+    });
+  `;
+}
+
+function normalizeActionabilityWaitMs(value) {
+  if (value == null) return ACTIONABILITY_WAIT_DEFAULT_MS;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.min(Math.trunc(parsed), ACTIONABILITY_WAIT_MAX_MS);
+}
+
+// `--wait-ms N` / `--wait-ms=N` on click, fill and select. Returns the remaining args and
+// waitMs (null when the flag is absent, so the default applies).
+function parseActionabilityWaitArgs(args = [], command = 'click') {
+  const rest = [];
+  let waitMs = null;
+  const parse = (raw) => {
+    const value = parseNonNegativeInteger(raw, `${command}: --wait-ms`);
+    if (value > ACTIONABILITY_WAIT_MAX_MS) {
+      throw new Error(`${command}: --wait-ms must be at most ${ACTIONABILITY_WAIT_MAX_MS}`);
+    }
+    return value;
+  };
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === '--wait-ms') waitMs = parse(args[++i]);
+    else if (String(token).startsWith('--wait-ms=')) waitMs = parse(String(token).slice('--wait-ms='.length));
+    else rest.push(token);
+  }
+  return { waitMs, args: rest };
+}
+
+// ` (waited 640ms for attach)` when the page-side wait actually waited, else ''.
+function formatActionabilityWaitNote(result = {}) {
+  if (!result || result.waited !== true) return '';
+  const what = Array.isArray(result.waitedFor) && result.waitedFor.length ? result.waitedFor.join(', ') : 'actionability';
+  return ` (waited ${Math.max(0, Math.round(Number(result.waitedMs) || 0))}ms for ${what})`;
+}
+
+// `Element not found: <sel>` keeps its prefix (selector classification) and says how long it waited.
+function actionabilityMissMessage(error, result = {}) {
+  const text = String(error || '');
+  if (!result || result.waited !== true) return text;
+  return `${text} (waited ${Math.max(0, Math.round(Number(result.waitedMs) || 0))}ms for attach)`;
+}
+
+const ACTION_DISABLED_NOT_SENT = {
+  click: 'the click was not sent',
+  fill: 'nothing was typed',
+  select: 'no option was selected',
+};
+
+// A disabled target: nothing is dispatched. `err.actionDisabled` drives `Kind: disabled`.
+function actionDisabledError(action, info = {}, selector = '') {
+  const tag = String(info.tag || '?').toUpperCase();
+  const label = String(info.text || '').replace(/\s+/g, ' ').trim();
+  const reason = String(info.reason || 'disabled');
+  const ref = isRef(selector) ? ` (${selector})` : '';
+  const waited = info.waited === true ? ` after waiting ${Math.max(0, Math.round(Number(info.waitedMs) || 0))}ms` : '';
+  const err = new Error(
+    `<${tag}>${label ? ` "${label}"` : ''}${ref} is disabled (${reason})${waited}; ${ACTION_DISABLED_NOT_SENT[action] || 'nothing was dispatched'}.`
+  );
+  err.actionDisabled = { tag, text: label, reason, selector: String(selector || '') };
+  return err;
+}
+
+// Separate wait for paths that resolve the node through DOM.querySelector (fill --react).
+async function waitForActionableSelector(cdp, sid, selector, { waitMs = ACTIONABILITY_WAIT_DEFAULT_MS, visible = true } = {}) {
+  const wait = normalizeActionabilityWaitMs(waitMs);
+  const raw = await evalStr(cdp, sid, `(async function() {
+    ${actionabilityFunctionSource()}
+    try { document.querySelector(${JSON.stringify(selector)}); }
+    catch (err) { return { cdpActionability: true, ok: false, invalid: true }; }
+    const r = await waitForActionable(() => document.querySelector(${JSON.stringify(selector)}), ${wait}, ${visible ? 'true' : 'false'});
+    const disabled = r.el ? actionDisabledReason(r.el) : '';
+    return {
+      cdpActionability: true,
+      ok: true,
+      found: !!r.el,
+      waited: r.waited,
+      waitedMs: r.waitedMs,
+      waitedFor: r.waitedFor,
+      disabled: disabled ? { tag: r.el.tagName, text: actionLabel(r.el), reason: disabled } : null,
+    };
+  })()`, false, { timeoutMs: TIMEOUT + wait });
+  let parsed = null;
+  try { parsed = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { parsed = null; }
+  return parsed && parsed.cdpActionability === true ? parsed : null;
+}
+
 // Click element by CSS selector, @ref, or accessible name.
 // Named queries take the jsclick path in one step: headed CDP mouse often
 // completes dispatch.ok with zero page events (no-input-events). A unique
 // off-screen name reuses scrollIntoView({block,inline:center}) then el.click().
-async function clickStr(cdp, sid, selector, refMap, refState) {
+// A CSS selector waits up to `opts.waitMs` (default ACTIONABILITY_WAIT_DEFAULT_MS, 0 disables)
+// for the element to be attached, visible and enabled (#468); an @ref is checked for disabled
+// without waiting.
+async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
   if (!selector) throw new Error('CSS selector, @ref, or accessible name required');
   if (isNamedClickQuery(selector)) return jsClickStr(cdp, sid, selector, refMap, refState);
   if (isCursorRef(selector)) {
@@ -15215,6 +15396,7 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
   }
   if (isRef(selector)) {
     const r = await resolveRef(cdp, sid, refMap, selector, refState, { hitTest: true });
+    if (r.disabled) throw actionDisabledError('click', { tag: r.tag, text: r.text, reason: r.disabled }, selector);
     assertClickPointNotCovered(r.hit, { x: r.x + r.w / 2, y: r.y + r.h / 2, tag: r.tag, text: r.text, ref: selector });
     let objectId = null;
     try {
@@ -15231,6 +15413,7 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
     const followed = await confirmClickFollowedHref(cdp, sid, r, newTabWatch);
     return `Clicked <${r.tag}> "${r.text}" (${selector})${formatClickOpenedTab(followed?.openedTab)}`;
   }
+  const waitMs = normalizeActionabilityWaitMs(opts.waitMs);
   const expr = `
     (async function() {
       let el;
@@ -15239,7 +15422,13 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
       } catch (err) {
         return { ok: false, error: 'Invalid selector: ' + (err && err.message ? err.message : String(err)) };
       }
-      if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+      ${actionabilityFunctionSource()}
+      const wait = await waitForActionable(() => document.querySelector(${JSON.stringify(selector)}), ${waitMs}, true);
+      const waitInfo = { waited: wait.waited, waitedMs: wait.waitedMs, waitedFor: wait.waitedFor };
+      el = wait.el;
+      if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)}, ...waitInfo };
+      const disabled = actionDisabledReason(el);
+      if (disabled) return { ok: false, disabled: { tag: el.tagName, text: actionLabel(el), reason: disabled }, ...waitInfo };
       const rect = await (${scrollSettledRectFunctionDeclaration({ hitTest: true })}).call(el);
       return {
         ok: true,
@@ -15252,17 +15441,19 @@ async function clickStr(cdp, sid, selector, refMap, refState) {
         frameName: rect.frameName,
         pageHref: rect.pageHref || location.href,
         hit: rect.hit,
+        ...waitInfo,
       };
     })()
   `;
-  const result = await evalStr(cdp, sid, expr);
+  const result = await evalStr(cdp, sid, expr, false, waitMs > 0 ? { timeoutMs: TIMEOUT + waitMs } : {});
   const r = JSON.parse(result);
-  if (!r.ok) throw new Error(cssClickMissMessage(selector, r.error));
+  if (!r.ok && r.disabled) throw actionDisabledError('click', { ...r.disabled, waited: r.waited, waitedMs: r.waitedMs }, selector);
+  if (!r.ok) throw new Error(cssClickMissMessage(selector, actionabilityMissMessage(r.error, r)));
   assertClickPointNotCovered(r.hit, { x: r.x, y: r.y, tag: r.tag, text: r.text });
   const newTabWatch = await prepareClickFollowedHref(cdp, sid, r);
   await dispatchClick(cdp, sid, r.x, r.y, { selector, x: r.x, y: r.y });
   const followed = await confirmClickFollowedHref(cdp, sid, r, newTabWatch);
-  return `Clicked <${r.tag}> "${r.text}"${formatClickOpenedTab(followed?.openedTab)}`;
+  return `Clicked <${r.tag}> "${r.text}"${formatActionabilityWaitNote(r)}${formatClickOpenedTab(followed?.openedTab)}`;
 }
 
 // Click at CSS pixel coordinates using Input.dispatchMouseEvent
@@ -16450,11 +16641,16 @@ function fillControlValueExpression(name) {
 // Probe + optional pre-clear. `before` is the value the control held before fill touched it.
 // A clear (`fill ""`) skips the pre-clear: assigning el.value = '' through the instance setter
 // updates React's value tracker, so the later native-setter clear would look like no change.
-function fillableControlPageProbe(selector, { clear = true } = {}) {
-  return `(function() {
+// #468: the selector first waits up to waitMs for an attached, visible, enabled element.
+function fillableControlPageProbe(selector, { clear = true, waitMs = 0 } = {}) {
+  return `(async function() {
     const probe = ${fillableControlProbeDeclaration()};
-    const el = document.querySelector(${JSON.stringify(selector)});
-    if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+    ${actionabilityFunctionSource()}
+    document.querySelector(${JSON.stringify(selector)}); // an invalid selector throws here, before any wait
+    const wait = await waitForActionable(() => document.querySelector(${JSON.stringify(selector)}), ${normalizeActionabilityWaitMs(waitMs)}, true);
+    const waitInfo = { waited: wait.waited, waitedMs: wait.waitedMs, waitedFor: wait.waitedFor };
+    const el = wait.el;
+    if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)}, ...waitInfo };
     const info = probe.call(el);
     if (!info.fillable) {
       return {
@@ -16463,13 +16659,15 @@ function fillableControlPageProbe(selector, { clear = true } = {}) {
         tag: info.tag,
       };
     }
+    const disabled = actionDisabledReason(el);
+    if (disabled) return { ok: false, disabled: { tag: info.tag, text: actionLabel(el), reason: disabled }, ...waitInfo };
     const before = ${fillControlValueExpression('el')};
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     el.focus();
     ${clear ? `if (el.isContentEditable) el.textContent = '';
     else el.value = '';
     el.dispatchEvent(new Event('input', { bubbles: true }));` : '// clear: native setter path follows'}
-    return { ok: true, tag: info.tag, type: info.type, before: before };
+    return { ok: true, tag: info.tag, type: info.type, before: before, ...waitInfo };
   })()`;
 }
 
@@ -16478,6 +16676,9 @@ function fillableRefProbeDeclaration({ clear = true } = {}) {
     const info = (${fillableControlProbeDeclaration()}).call(this);
     if (!info.fillable) return info;
     const el = this;
+    ${actionabilityFunctionSource()}
+    const disabled = actionDisabledReason(el);
+    if (disabled) return { ...info, disabled: { tag: info.tag, text: actionLabel(el), reason: disabled } };
     info.before = ${fillControlValueExpression('el')};
     this.scrollIntoView({ block: 'center', behavior: 'instant' });
     this.focus();
@@ -16687,11 +16888,18 @@ async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
     : await resolveSelectorNode(cdp, sid, selector);
   const probe = await cdpDomains(cdp).Runtime.callFunctionOn({
     objectId,
-    functionDeclaration: fillableControlProbeDeclaration(),
+    functionDeclaration: `function() {
+      const info = (${fillableControlProbeDeclaration()}).call(this);
+      ${actionabilityFunctionSource()}
+      const disabled = info.fillable ? actionDisabledReason(this) : '';
+      if (disabled) info.disabled = { tag: info.tag, text: actionLabel(this), reason: disabled };
+      return info;
+    }`,
     returnByValue: true,
   }, sid);
   const probed = probe.result?.value || {};
   if (probed.fillable !== true) throw notFillableControlError(selector, probed.tag);
+  if (probed.disabled) throw actionDisabledError('fill', probed.disabled, selector);
   const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
     objectId,
     functionDeclaration: `function(value) {
@@ -16763,16 +16971,25 @@ function applyFillValueState(target, state) {
 // fill <selector|@ref> <text>: clear the control, enter text, then verify the live value.
 // `text === ''` clears the field through the native value setter (input + change events), the
 // path React/Vue controlled inputs observe. The receipt compares the real before/after values.
+// A CSS selector first waits up to `opts.waitMs` for an attached, visible, enabled control (#468).
 async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
   if (!selector) throw new Error('CSS selector or @ref required');
   if (text == null) throw new Error('Text required');
   const wanted = String(text);
   const clearing = wanted === '';
   const ref = isRef(selector);
+  const waitMs = normalizeActionabilityWaitMs(opts.waitMs);
+  let waitNote = '';
   let before = null;
   let inputType = '';
   let tag = '?';
   if (opts.react) {
+    if (!ref) {
+      const wait = await waitForActionableSelector(cdp, sid, selector, { waitMs, visible: true });
+      if (wait?.ok && !wait.found) throw new Error(actionabilityMissMessage(`Element not found: ${selector}`, wait));
+      if (wait?.disabled) throw actionDisabledError('fill', { ...wait.disabled, waited: wait.waited, waitedMs: wait.waitedMs }, selector);
+      waitNote = formatActionabilityWaitNote(wait);
+    }
     const snapshot = await readFillLiveValue(cdp, sid, selector, refMap, refState).catch(() => null);
     if (snapshot?.ok) {
       before = snapshot.value;
@@ -16791,9 +17008,20 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
       }, sid);
       probed = probe.result?.value || {};
       if (probed.fillable !== true) throw notFillableControlError(selector, probed.tag);
+      if (probed.disabled) throw actionDisabledError('fill', probed.disabled, selector);
     } else {
-      probed = JSON.parse(await evalStr(cdp, sid, fillableControlPageProbe(selector, { clear: !clearing })));
-      if (!probed.ok) throw new Error(probed.error);
+      probed = JSON.parse(await evalStr(
+        cdp,
+        sid,
+        fillableControlPageProbe(selector, { clear: !clearing, waitMs }),
+        false,
+        waitMs > 0 ? { timeoutMs: TIMEOUT + waitMs } : {},
+      ));
+      if (!probed.ok && probed.disabled) {
+        throw actionDisabledError('fill', { ...probed.disabled, waited: probed.waited, waitedMs: probed.waitedMs }, selector);
+      }
+      if (!probed.ok) throw new Error(actionabilityMissMessage(probed.error, probed));
+      waitNote = formatActionabilityWaitNote(probed);
     }
     if (typeof probed.before === 'string') before = probed.before;
     inputType = probed.type || '';
@@ -16830,18 +17058,27 @@ async function fillStr(cdp, sid, selector, text, refMap, refState, opts = {}) {
     throw fillValueRejectedError(selector, wanted, state);
   }
   const label = ref ? selector : `<${tag}>`;
-  return formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : wanted, clearing, react: opts.react === true, state });
+  return `${formatFillDispatchText({ label, text: sensitive ? REDACTED_VALUE : wanted, clearing, react: opts.react === true, state })}${waitNote}`;
 }
 
-async function selectStr(cdp, sid, selector, value) {
+// The selector first waits up to `opts.waitMs` for an attached, enabled element (#468). Visibility is
+// not required: select sets the value in the page, and custom dropdowns often hide the native <select>.
+async function selectStr(cdp, sid, selector, value, opts = {}) {
   if (!selector) throw new Error('CSS selector required');
   if (value == null || String(value) === '') throw new Error('Value required');
   const wanted = String(value);
+  const waitMs = normalizeActionabilityWaitMs(opts.waitMs);
   const expr = `
-    (function() {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)} };
+    (async function() {
+      ${actionabilityFunctionSource()}
+      document.querySelector(${JSON.stringify(selector)}); // an invalid selector throws here, before any wait
+      const wait = await waitForActionable(() => document.querySelector(${JSON.stringify(selector)}), ${waitMs}, false);
+      const waitInfo = { waited: wait.waited, waitedMs: wait.waitedMs, waitedFor: wait.waitedFor };
+      const el = wait.el;
+      if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)}, ...waitInfo };
       if (el.tagName !== 'SELECT') return { ok: false, error: 'Not a <select>: ' + el.tagName };
+      const disabled = actionDisabledReason(el);
+      if (disabled) return { ok: false, disabled: { tag: el.tagName, text: actionLabel(el), reason: disabled }, ...waitInfo };
       const wanted = ${JSON.stringify(wanted)};
       const match = Array.from(el.options).find(opt => opt.value === wanted || String(opt.textContent || '').trim() === wanted);
       if (!match) return { ok: false, error: 'No option value=' + wanted };
@@ -16849,13 +17086,14 @@ async function selectStr(cdp, sid, selector, value) {
       el.value = match.value;
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
-      return { ok: true, text: String(match.textContent || '').trim() || match.value || wanted };
+      return { ok: true, text: String(match.textContent || '').trim() || match.value || wanted, ...waitInfo };
     })()
   `;
-  const result = await evalStr(cdp, sid, expr);
+  const result = await evalStr(cdp, sid, expr, false, waitMs > 0 ? { timeoutMs: TIMEOUT + waitMs } : {});
   const r = JSON.parse(result);
-  if (!r.ok) throw new Error(r.error);
-  return `Selected "${r.text}"`;
+  if (!r.ok && r.disabled) throw actionDisabledError('select', { ...r.disabled, waited: r.waited, waitedMs: r.waitedMs }, selector);
+  if (!r.ok) throw new Error(actionabilityMissMessage(r.error, r));
+  return `Selected "${r.text}"${formatActionabilityWaitNote(r)}`;
 }
 
 async function fullshotStr(cdp, sid, filePath, targetId) {
@@ -24794,8 +25032,8 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       // fillStr records the before/after value here; actionFeedback turns it into receipt state.
       const fillValueState = {};
       const value = parsed.react
-        ? await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { react: true, valueState: fillValueState }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: ['--react', parsed.selector, parsed.text], fillValueState }, feedbackPolicy, null, parsed.fopts)
-        : await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { valueState: fillValueState }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: [parsed.selector, parsed.text], fillValueState }, feedbackPolicy, null, parsed.fopts);
+        ? await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { react: true, valueState: fillValueState, waitMs: parsed.waitMs }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: ['--react', parsed.selector, parsed.text], fillValueState }, feedbackPolicy, null, parsed.fopts)
+        : await actionFeedback('fill', () => fillStr(cdp, sessionId, parsed.selector, parsed.text, refMap, refState, { valueState: fillValueState, waitMs: parsed.waitMs }), { input: parsed.selector, resolvedBy: 'selector-or-ref', label: parsed.selector || '', commandArgs: [parsed.selector, parsed.text], fillValueState }, feedbackPolicy, null, parsed.fopts);
       if (feedbackPolicy === 'report-only') {
         session.awaitSearchSubmitListing = true;
         session.searchSubmitQuery = parsed.text;
@@ -25015,8 +25253,9 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       return commandResult(value, { kind: 'action-receipt' });
     },
     select: async args => {
-      const fopts = parseCompactFormatArgs(args, ['text', 'json']);
-      const value = await actionFeedback('select', () => selectStr(cdp, sessionId, fopts.args[0], fopts.args[1]), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
+      const wait = parseActionabilityWaitArgs(args, 'select');
+      const fopts = parseCompactFormatArgs(wait.args, ['text', 'json']);
+      const value = await actionFeedback('select', () => selectStr(cdp, sessionId, fopts.args[0], fopts.args[1], { waitMs: wait.waitMs }), { input: fopts.args[0], resolvedBy: 'selector', label: fopts.args[0] || '', commandArgs: [fopts.args[0], fopts.args[1]] }, 'settle-diff', null, fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
     throttle: async args => commandResult(
@@ -25134,7 +25373,7 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
     report: applicationPreflight.handlerBuilders.report({ session, cdp, sessionId }),
     click: applicationPreflight.handlerBuilders.click({
       actionFeedback,
-      click: selector => clickStr(cdp, sessionId, selector, refMap, refState),
+      click: (selector, opts) => clickStr(cdp, sessionId, selector, refMap, refState, opts),
       jsClick: selector => jsClickStr(cdp, sessionId, selector, refMap, refState),
       pointerClick: selector => pointerClickStr(cdp, sessionId, selector, refMap, refState),
     }),
@@ -26736,7 +26975,10 @@ ACTION FEEDBACK
   names scrollIntoView first. Mouse click @ref still
   fail-closes with no-input-events. Mouse click @ref / CSS hit-tests the
   click point first: when another element is on top it fails with
-  Kind: covered, names that element, and sends nothing. scroll to top/to bottom is also
+  Kind: covered, names that element, and sends nothing. click, fill and select
+  on a CSS selector wait up to 2s (--wait-ms N; 0 = no wait) for the element to be
+  attached, visible and enabled; a disabled target (or @ref) fails with
+  Kind: disabled and sends nothing. scroll to top/to bottom is also
   report-only (window document or nested overflow).
   Sequential batch fill then press Enter is report-only on the fill:
   leftover typeahead AX / quicksearch is not the success signal.
@@ -27104,7 +27346,8 @@ function createPerceiveCommandHandler({
 }
 
 function parseFillArgs(args = []) {
-  const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+  const wait = parseActionabilityWaitArgs(args, 'fill');
+  const fopts = parseCompactFormatArgs(wait.args, ['text', 'json']);
   let react = false;
   const positional = [];
   for (const token of fopts.args) {
@@ -27133,6 +27376,7 @@ function parseFillArgs(args = []) {
     full: fopts.full,
     maxDiffLines: fopts.maxDiffLines,
     react,
+    waitMs: wait.waitMs,
     selector,
     text,
     args: positional,
@@ -27141,7 +27385,8 @@ function parseFillArgs(args = []) {
 }
 
 function parseClickArgs(args = []) {
-  const fopts = parseCompactFormatArgs(args, ['text', 'json']);
+  const wait = parseActionabilityWaitArgs(args, 'click');
+  const fopts = parseCompactFormatArgs(wait.args, ['text', 'json']);
   let js = false;
   let pointer = false;
   const positional = [];
@@ -27174,6 +27419,7 @@ function parseClickArgs(args = []) {
     maxDiffLines: fopts.maxDiffLines,
     js,
     pointer,
+    waitMs: wait.waitMs,
     selector: positional[0] || '',
     args: positional,
     fopts: { ...fopts, args: positional },
@@ -27191,7 +27437,7 @@ function createClickCommandHandler({ actionFeedback, click, jsClick, pointerClic
     });
     const dispatch = parsed.pointer
       ? () => pointerClick(selector)
-      : () => (useJs ? jsClick(selector) : click(selector));
+      : () => (useJs ? jsClick(selector) : click(selector, { waitMs: parsed.waitMs }));
     const value = await actionFeedback(
       'click',
       dispatch,
@@ -27374,8 +27620,9 @@ function normalizeTargetCommandArgs(cmd, cmdArgs = []) {
     const parsed = parseFillArgs(args);
     const suffix = formatArgSuffix(parsed.format, parsed);
     const text = parsed.text == null ? [] : [parsed.text];
-    if (parsed.react) return ['--react', parsed.selector, ...text, ...suffix];
-    return [parsed.selector, ...text, ...suffix];
+    const wait = parsed.waitMs == null ? [] : ['--wait-ms', String(parsed.waitMs)];
+    if (parsed.react) return ['--react', parsed.selector, ...text, ...suffix, ...wait];
+    return [parsed.selector, ...text, ...suffix, ...wait];
   }
   return args;
 }
@@ -29408,6 +29655,8 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   LOADALL_DEFAULT_INTERVAL_MS, LOADALL_DEFAULT_TIMEOUT_MS, LOADALL_MAX_TIMEOUT_MS,
   CLICK_NAVIGATION_WAIT_MS, CLICK_HREF_PROBE_TIMEOUT_MS,
   daemonRequestStorage, sleep,
+  actionabilityFunctionSource, parseActionabilityWaitArgs, normalizeActionabilityWaitMs, formatActionabilityWaitNote,
+  actionDisabledError, ACTIONABILITY_WAIT_DEFAULT_MS, ACTIONABILITY_WAIT_MAX_MS,
   dispatchClick, dispatchMouseEventAllowingAckTimeout, dispatchClickMouseEvent, handledLater, resolveRef,
   daemonCrashReportPath, recordDaemonCrash, readDaemonCrashReport, installDaemonCrashRecorder, REF_SETTLE_BUDGET_MS, REF_RESOLVE_TIMEOUT,
   parseClickEventProbeOutput, clickProbeSawPageEvent,

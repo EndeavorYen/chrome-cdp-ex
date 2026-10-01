@@ -232,6 +232,44 @@ function classifyNavigationCancelledFailure(err, { base, targetId, input }) {
   };
 }
 
+// `<BUTTON> "Save" is disabled (disabled attribute)…` from click/fill/select, and the older
+// `click --pointer: element is disabled (BUTTON "Save")`.
+const DISABLED_ACTION_MESSAGE_RE = /^(?:<[^>]*>.* is disabled \((?:disabled attribute|aria-disabled="true"|inside a disabled <fieldset>|disabled)\)|click --pointer: element is disabled \()/;
+
+// `:not(:disabled)` / `:not([aria-disabled="true"])` appended to a single CSS selector, so
+// `waitfor` waits for the control to become enabled. null for @refs and selector lists.
+function enabledSelector(selector, reason) {
+  const sel = String(selector || '').trim();
+  if (!sel || isActionRef(sel) || sel.includes(',')) return null;
+  return reason === 'aria-disabled="true"' ? `${sel}:not([aria-disabled="true"])` : `${sel}:not(:disabled)`;
+}
+
+// #468: the target is disabled, so nothing was dispatched. Next waits for that control to be
+// enabled (CSS) or refreshes perception (@ref); a disabled control usually waits on input.
+function classifyDisabledFailure(err, { base, targetId, input, action, perceiveCommand }) {
+  const raw = err?.actionDisabled && typeof err.actionDisabled === 'object' ? err.actionDisabled : {};
+  const disabled = {
+    tag: raw.tag ? String(raw.tag) : null,
+    text: raw.text ? String(raw.text) : null,
+    reason: raw.reason ? String(raw.reason) : null,
+  };
+  const enabled = enabledSelector(raw.selector || input, disabled.reason);
+  const waitfor = enabled ? `cdp waitfor ${targetId} ${recoveryCommandArg(enabled)}` : null;
+  return {
+    ...base,
+    kind: 'disabled',
+    dispatched: false,
+    disabled,
+    reason: `The target is disabled, so ${action || 'the action'} was not dispatched.`,
+    nextCommand: waitfor || perceiveCommand,
+    hints: [
+      ...(waitfor ? [`Wait for the control to become enabled with \`${waitfor}\`.`] : []),
+      `A disabled control usually waits on something else (an empty required field, an unchecked box, a pending request): check the form with \`${perceiveCommand}\`.`,
+      'Do not retry the same action, or a JS click, while the control is disabled: the page ignores it.',
+    ],
+  };
+}
+
 export function classifyActionFailure(err, context = {}) {
   return applyPdfViewerActionRecovery(classifyActionFailureKind(err, context), context.target || {});
 }
@@ -264,6 +302,11 @@ function classifyActionFailureKind(err, { action = 'action', target = {} } = {})
 
   if (err?.navigationCancelled && typeof err.navigationCancelled === 'object') {
     return classifyNavigationCancelledFailure(err, { base, targetId, input });
+  }
+
+  // #468: checked before message matching because the message quotes page text.
+  if ((err?.actionDisabled && typeof err.actionDisabled === 'object') || DISABLED_ACTION_MESSAGE_RE.test(originalMessage)) {
+    return classifyDisabledFailure(err, { base, targetId, input, action, perceiveCommand });
   }
 
   // #436: checked before message matching because the message quotes page text.
@@ -1064,6 +1107,16 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
       { key: 'status', reason: 'Confirm which page the tab is on.' },
     ],
     avoid: ['retrying reload / nav while dialog handling is dismiss: the beforeunload prompt cancels it again'],
+  },
+  disabled: {
+    strategy: 'wait-or-inspect',
+    priority: 'medium',
+    verify: 'perceive',
+    intents: [
+      { key: 'next-or-perceive', reason: 'Wait for the control to become enabled.' },
+      { key: 'perceive', reason: 'See which input or state the control is waiting on.' },
+    ],
+    avoid: ['retrying the same action, or a JS click, while the control is disabled'],
   },
   'no-input-events': {
     strategy: 'use-jsclick',
