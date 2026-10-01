@@ -15,26 +15,24 @@ const cdp = resolve(repoRoot, 'skills/chrome-cdp-ex/scripts/cdp.mjs');
 const mcpServer = resolve(repoRoot, 'skills/chrome-cdp-ex/scripts/mcp-server.mjs');
 const page = resolve(__dirname, 'smoke-page.html');
 
+// MCP stdio framing: one JSON-RPC message per line, as MCP hosts send and read it (#454).
 export function encodeMcpFrame(payload) {
-  const body = JSON.stringify(payload);
-  return `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n${body}`;
+  return `${JSON.stringify(payload)}\n`;
 }
 
 export function parseMcpFrames(buffer) {
   const messages = [];
   let rest = buffer;
-  while (rest.length) {
-    const text = rest.toString('utf8');
-    const headerEnd = text.indexOf('\r\n\r\n');
-    if (headerEnd === -1) break;
-    const header = text.slice(0, headerEnd);
-    const match = header.match(/Content-Length:\s*(\d+)/i);
-    if (!match) throw new Error(`Invalid MCP frame header: ${header}`);
-    const length = Number(match[1]);
-    const bodyStart = Buffer.byteLength(text.slice(0, headerEnd + 4), 'utf8');
-    if (rest.length < bodyStart + length) break;
-    messages.push(JSON.parse(rest.slice(bodyStart, bodyStart + length).toString('utf8')));
-    rest = rest.slice(bodyStart + length);
+  let newline;
+  while ((newline = rest.indexOf(0x0a)) !== -1) {
+    const line = rest.subarray(0, newline).toString('utf8').trim();
+    rest = rest.subarray(newline + 1);
+    if (!line) continue;
+    try {
+      messages.push(JSON.parse(line));
+    } catch {
+      throw new Error(`Invalid MCP stdio line (expected newline-delimited JSON): ${line.slice(0, 120)}`);
+    }
   }
   return { messages, rest };
 }

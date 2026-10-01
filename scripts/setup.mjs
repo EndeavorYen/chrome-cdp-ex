@@ -254,9 +254,10 @@ function runNodeScript(scriptPath, args = [], { timeoutMs = 15000 } = {}) {
   });
 }
 
+// MCP stdio framing: one JSON-RPC message per line (#454). Verify exactly what an MCP host sends
+// and reads, so a server that answers in any other framing fails here.
 function encodeMcpMessage(payload) {
-  const body = JSON.stringify(payload);
-  return `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n${body}`;
+  return `${JSON.stringify(payload)}\n`;
 }
 
 export function verifyMcpInitialize({ mcpServer = MCP_SERVER, timeoutMs = 5000 } = {}) {
@@ -267,19 +268,43 @@ export function verifyMcpInitialize({ mcpServer = MCP_SERVER, timeoutMs = 5000 }
     });
     let stdout = Buffer.alloc(0);
     let stderr = '';
-    const timer = setTimeout(() => {
+    let settled = false;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       child.kill('SIGTERM');
-      reject(new Error(`MCP initialize timeout: ${stderr}`));
+      fn(value);
+    };
+    const timer = setTimeout(() => {
+      settle(reject, new Error(`MCP initialize timeout: ${stderr}`));
     }, timeoutMs);
     child.stderr.on('data', chunk => { stderr += chunk.toString(); });
     child.stdout.on('data', chunk => {
       stdout = Buffer.concat([stdout, chunk]);
-      const text = stdout.toString('utf8');
-      if (text.includes('"serverInfo"') && text.includes('chrome-cdp-ex')) {
-        clearTimeout(timer);
-        child.kill('SIGTERM');
-        resolvePromise({ ok: true, stderr });
+      const newline = stdout.indexOf(0x0a);
+      if (newline === -1) return;
+      const line = stdout.subarray(0, newline).toString('utf8');
+      let reply = null;
+      try {
+        reply = JSON.parse(line);
+      } catch {
+        settle(reject, new Error(`MCP initialize reply is not newline-delimited JSON: ${line.slice(0, 120)}`));
+        return;
       }
+      const serverName = reply?.result?.serverInfo?.name;
+      if (reply?.id !== 1 || serverName !== 'chrome-cdp-ex') {
+        settle(reject, new Error(`MCP initialize reply is not a chrome-cdp-ex initialize result: ${line.slice(0, 120)}`));
+        return;
+      }
+      settle(resolvePromise, {
+        ok: true,
+        framing: 'newline',
+        serverName,
+        serverVersion: reply.result.serverInfo.version ?? null,
+        protocolVersion: reply.result.protocolVersion ?? null,
+        stderr,
+      });
     });
     child.stdin.write(encodeMcpMessage({
       jsonrpc: '2.0',
@@ -291,9 +316,9 @@ export function verifyMcpInitialize({ mcpServer = MCP_SERVER, timeoutMs = 5000 }
         clientInfo: { name: 'chrome-cdp-ex-setup', version: '0.0.0' },
       },
     }));
-    child.on('error', error => {
-      clearTimeout(timer);
-      reject(error);
+    child.on('error', error => settle(reject, error));
+    child.on('close', code => {
+      settle(reject, new Error(`MCP server exited (${code}) before answering initialize: ${stderr}`));
     });
   });
 }

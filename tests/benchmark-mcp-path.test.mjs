@@ -39,7 +39,7 @@ describe('benchmark MCP path helpers', () => {
     }
   });
 
-  it('encodes and parses content-length framed MCP messages', () => {
+  it('encodes and parses newline-delimited MCP messages', () => {
     const frame = Buffer.from(
       encodeMcpFrame({ jsonrpc: '2.0', id: 1, result: { ok: true, text: '戰鬥勝利' } }),
       'utf8',
