@@ -59,8 +59,8 @@ describe('#464 a slow scroll settle no longer turns into a NaN click point', () 
     });
     const send = cdp.send.bind(cdp);
     cdp.send = (method, params = {}) => (method === 'Runtime.callFunctionOn'
-      && String(params.functionDeclaration || '').includes('return clickPointHit(this, { x: box.x')
-      ? Promise.resolve({ result: { value: hit } })
+      && String(params.functionDeclaration || '').includes('hit: clickPointHit(this, { x: box.x')
+      ? Promise.resolve({ result: { value: { hit, disabled: '' } } })
       : send(method, params));
     const rect = await T.resolveRef(cdp, 'sid', new Map([[15, 99]]), '@15', {}, { hitTest: true });
     expect(rect.hit).toEqual(hit);

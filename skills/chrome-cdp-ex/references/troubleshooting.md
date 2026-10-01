@@ -95,6 +95,29 @@ fixed/sticky container. If it is a dialog, close it (`cdp dismiss-modal <target>
 such as a fixed sidebar or sticky header (common in narrow headless windows), use `cdp click <target> <sel> --js`, or
 widen the window with `cdp viewport`. `cdp overlay <target> <sel>` shows what covers the target.
 
+## Action fails with `Kind: disabled`
+
+`click`, `fill` and `select` do not act on a disabled control; nothing was sent (`dispatched: false`). A
+natively disabled control (`disabled`, or inside a disabled `<fieldset>`) is refused by all three; `click`
+also refuses `aria-disabled="true"`. A CSS selector already waited up to 2 s (`--wait-ms`) for it to become
+enabled. If the page enables it later (a pending request), Next waits for that:
+`cdp waitfor <target> '<sel>:not(:disabled):not([aria-disabled="true"])'`. Next is `perceive` instead when the
+selector matches several elements, since a sibling could satisfy that wait. More often the control waits on
+input you have not given (an empty required field, an unchecked box): `cdp perceive <target> -C -d 8` shows
+the form. Do not retry a natively disabled control, by mouse or by JS click; the browser does not deliver
+the click.
+
+`aria-disabled="true"` is different: the browser does not enforce it, and some design systems keep such
+buttons clickable to show validation or a tooltip. If you mean to trigger it, `cdp click <target> <sel> --js`
+clicks without the disabled check.
+
+## Click or fill waits 2 s on a target that is already there
+
+`click` and `fill` wait for a visible box (non-zero size, not `visibility: hidden` / `display: none`). A
+target with a zero-size box, such as a collapsed search input that expands on focus or a `display: contents`
+wrapper, waits the full 2 s and is then acted on as before. Pass `--wait-ms 0` to skip the wait for such a
+target.
+
 ## Electron screenshot fallbacks
 
 For Electron apps, launch with a remote debugging port and run commands with `CDP_PORT=<port>`:
