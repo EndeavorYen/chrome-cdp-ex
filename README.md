@@ -76,6 +76,8 @@ cd chrome-cdp-ex
 
 From Chrome 136, `--remote-debugging-port` is ignored on the default profile. chrome-cdp-ex cannot silently attach to an already-running default Chrome or Edge. Use a persistent non-default user-data-dir that you always launch with remote debugging, then sign in once. See [Daily browser CDP](docs/daily-browser-cdp.md).
 
+Commands do not focus tabs or raise the browser window (background mode, the default); set `CDP_BACKGROUND=0` to let them. See [Background mode](docs/reference.md#background-mode).
+
 Grok Bot from-zero setup (replace computer use / browser use): [docs/integrations/grok-bot.md](docs/integrations/grok-bot.md).
 
 For Electron, launch with a remote debugging port. Set `CDP_PORT` to that port. Use `9333` as the example, not daily Chrome `9222`.

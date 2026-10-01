@@ -795,12 +795,19 @@ scripts/cdp.mjs closetab <target> --force     # also allow closing the only open
 ### Background mode (do not steal focus)
 
 ```bash
-CDP_BACKGROUND=1 scripts/cdp.mjs open https://example.com        # or: open <url> --background
-CDP_BACKGROUND=1 scripts/cdp.mjs nav <target> https://example.com
+scripts/cdp.mjs open https://example.com                  # new unfocused window (the default)
+scripts/cdp.mjs open https://example.com --foreground     # focused tab, old behaviour, for this tab only
+CDP_BACKGROUND=0 scripts/cdp.mjs shot <target>            # this call may bring the tab forward
 scripts/cdp.mjs spawn-debug-browser chrome --background --port 9224   # anti-throttling flags + minimized window
 ```
 
-Opt-in. With `CDP_BACKGROUND=1` (accepts `1`, `true`, `yes`, `on`) no command sends `Target.activateTarget` or `Page.bringToFront`, and `open` creates the tab in a new unfocused window (`newWindow: true, background: true`), because a background tab in an existing window is `hidden` and its screenshots stall. `spawn-debug-browser --background` adds `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling` and minimizes the new window unless headless. Tabs in a minimized window are `hidden` too, so work in tabs from `open`. `open --background` also records the mode for its tab, so a tab daemon restarted later (idle exit, crash) does not activate that tab even without `CDP_BACKGROUND=1`; other tabs still need the variable. Without the variable or flag, behaviour is unchanged. A hidden tab can drop `Input.*`; use `click --pointer` there. `--background` is not in the `open` synopsis because the command catalog identity is pinned.
+The default since #488. No command sends `Target.activateTarget` or `Page.bringToFront`, and `open` creates the tab in a new unfocused window (`newWindow: true, background: true`), because a background tab in an existing window is `hidden` and its screenshots can stall.
+
+Opt out with `CDP_BACKGROUND=0` (also `false`, `no`, `off`) or `CDP_FOREGROUND=1`. Tab daemons then attach with `Target.activateTarget` and `open` focuses its tab, as before. Such a call also brings a hidden tab forward once before its command runs, even when that tab's daemon already runs in background mode; a visible tab is left alone. `open --foreground` / `open --background` choose for one tab. That choice, and one made with the variables on `open`, is recorded for the tab (`cdp-<targetId>.mode.json`), so a daemon restarted later (idle exit, crash) by a call that does not choose keeps it. A choice in the environment of the restarting call wins over the record.
+
+Captures (`shot`, `elshot`, `scanshot`, `fullshot`, `annotshot`, `diff-shot`, and the screenshots of `responsive-audit` / `qa`) first read `document.visibilityState` in background mode. On a `hidden` tab they make one plain `Page.captureScreenshot` with a 3 s limit; Chrome renders some hidden tabs and never renders others. If no frame arrives, the command fails with `Kind: hidden-tab` and `Next: CDP_BACKGROUND=0 cdp <command> <target> ...`. The other capture paths are skipped there: `fromSurface:false` copies what the window shows, which is another tab. Visible tabs and foreground mode take the unchanged path. Headless Chrome behaves the same: a tab from `open` is `visible`, a background tab in an existing window is `hidden`.
+
+`spawn-debug-browser --background` (or `CDP_BACKGROUND=1`) adds `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling` and minimizes the new window unless headless; without it the browser is launched as before, so a spawned window is never minimized unasked. Tabs in a minimized window are `hidden` too, so work in tabs from `open`. A hidden tab can drop `Input.*`; use `click --pointer`, page-side JavaScript, or `CDP_BACKGROUND=0` there. On Windows a window that other windows cover counts as hidden too, unless the browser was started with `--disable-features=CalculateNativeWinOcclusion` (`spawn-debug-browser` does this by default); background mode no longer raises it. `--background` and `--foreground` are not in the `open` synopsis because the command catalog identity is pinned.
 
 ### Network request log
 

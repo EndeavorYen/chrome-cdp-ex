@@ -9659,7 +9659,8 @@ describe('open onboarding guidance', () => {
       readySelector: null,
       reuseUrl: false,
       perceive: false,
-      background: false,
+      background: true,
+      backgroundExplicit: false,
     });
   });
 
@@ -9672,7 +9673,8 @@ describe('open onboarding guidance', () => {
       readySelector: null,
       reuseUrl: false,
       perceive: true,
-      background: false,
+      background: true,
+      backgroundExplicit: false,
     });
   });
 
@@ -9685,7 +9687,8 @@ describe('open onboarding guidance', () => {
       readySelector: null,
       reuseUrl: false,
       perceive: false,
-      background: false,
+      background: true,
+      backgroundExplicit: false,
     });
     expect(T.parseOpenArgs(['--attach-timeout-ms=1200', '--ready-timeout-ms', '2500', '--ready-selector', '#app'], {})).toEqual({
       url: 'about:blank',
@@ -9695,7 +9698,8 @@ describe('open onboarding guidance', () => {
       readySelector: '#app',
       reuseUrl: false,
       perceive: false,
-      background: false,
+      background: true,
+      backgroundExplicit: false,
     });
     expect(() => T.parseOpenArgs(['https://example.com', '--attach-timeout-ms', 'nope'])).toThrow('open: --attach-timeout-ms must be a non-negative integer');
     expect(() => T.parseOpenArgs(['https://example.com', '--ready-timeout-ms', 'nope'])).toThrow('open: --ready-timeout-ms must be a non-negative integer');

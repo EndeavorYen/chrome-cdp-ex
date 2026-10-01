@@ -27,6 +27,29 @@
 
   The runtime directory is now resolved in one place, `scripts/lib/runtime-dir.mjs`, which the CLI and
   the MCP server share.
+* **Behaviour change: background mode is the default**
+  ([#488](https://github.com/EndeavorYen/chrome-cdp-ex/issues/488)). Tab daemons no longer send
+  `Target.activateTarget` when they attach, and `open` creates its tab in a new unfocused window, so the
+  agent stops raising the browser over the user's work. `CDP_BACKGROUND=0` (also `false`, `no`, `off`)
+  or `CDP_FOREGROUND=1` restores the old behaviour, and `open --foreground` does it for one tab. A call
+  with the opt-out also activates a hidden tab once before its command, even when the tab's daemon
+  already runs in background mode; an explicit choice on `open` is kept for that tab across daemon
+  restarts (#441).
+  * A capture on a hidden tab (a background tab, or a minimized window) no longer waits out the 30 s
+    screenshot timeout and then falls back to `fromSurface:false`, which copies what the window shows,
+    which is another tab. In background mode `shot`, `elshot`, `scanshot`, `fullshot`, `annotshot`,
+    `diff-shot` and the `responsive-audit` / `qa` screenshots read `document.visibilityState` first. A
+    hidden tab gets one plain capture limited to 3 s, because Chrome renders frames for some hidden tabs
+    and never for others. Without a frame the command fails with `Kind: hidden-tab` and
+    `Next: CDP_BACKGROUND=0 cdp <command> <target>`. Visible tabs are unchanged.
+  * The `no-input-events` hint for a hidden tab names `CDP_BACKGROUND=0` as a way to bring it forward.
+    On Windows a window that other windows cover is hidden too (native occlusion). The old attach raised
+    it; now clicks in a covered daily-browser window can fail with `no-input-events`.
+    `spawn-debug-browser` already turns occlusion off, and `npm run smoke:live` now launches its browser
+    the same way.
+  * `spawn-debug-browser` adds the anti-throttling flags and minimizes its window only on an explicit
+    `--background` or `CDP_BACKGROUND=1`, as before. Its next-command hint no longer prepends
+    `CDP_BACKGROUND=1`.
 
 ### Bug Fixes
 

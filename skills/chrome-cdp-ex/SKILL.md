@@ -33,7 +33,7 @@ If a tab daemon is already live, unprefixed `doctor` must use that session.
 
 ## Background mode
 
-To work without raising the browser over the user's screen, set `CDP_BACKGROUND=1` (or pass `--background` to `open` / `spawn-debug-browser`). Off by default. Details: `references/commands.md`.
+On by default: no command focuses a tab or raises the browser, and `open` makes its tab in a new unfocused window. A screenshot of a hidden tab (a background tab, or a minimized window) fails within about 3 s with `Kind: hidden-tab`; rerun it as `CDP_BACKGROUND=0 cdp <command> <target>`, which brings that tab forward once. Opt out with `CDP_BACKGROUND=0` or `CDP_FOREGROUND=1` (`open --foreground` for one tab). Details: `references/commands.md`.
 
 ## When invoked directly (`/chrome-cdp-ex`)
 

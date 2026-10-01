@@ -28,7 +28,7 @@ describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUIL
         targetlessCommands: 13,
         applicationCommands: 68,
         legacyDaemonCommands: 0,
-        daemonGroups: 5,
+        daemonGroups: 6,
       },
       applicationCommands: [
         'back', 'batch', 'call', 'cascade', 'checkpoint', 'click', 'clickxy', 'clock', 'closetab', 'components', 'console', 'controls', 'cookiedel', 'cookies', 'cookieset', 'dialog', 'diff-shot', 'dismiss-modal', 'elshot', 'emulate', 'eval', 'eval64', 'evalraw', 'export-playwright', 'fill', 'flow', 'forward', 'frame', 'fullshot', 'hover', 'html', 'inject', 'jsclick', 'keepalive', 'loadall', 'mock', 'nav', 'net', 'netlog',
@@ -51,10 +51,10 @@ describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUIL
       ]),
     );
     expect(fixture.daemonGroups.filter(group => group.owner === 'daemon-protocol').map(group => group.labels))
-      .toEqual([['meta'], ['list'], ['list_raw'], ['stop']]);
+      .toEqual([['meta'], ['list'], ['list_raw'], ['_activate'], ['stop']]);
     expect(fixture.daemonGroups.filter(group => group.owner === 'unknown-command')).toHaveLength(1);
     expect(fixture.daemonGroups.map(group => group.labels)).toEqual([
-      ['meta'], ['list'], ['list_raw'], ['stop'], ['<default>'],
+      ['meta'], ['list'], ['list_raw'], ['_activate'], ['stop'], ['<default>'],
     ]);
     expect(fixture.recursiveEdges.map(edge => edge.from).sort()).toEqual([
       'batch', 'flow', 'repeat', 'replay',
@@ -151,7 +151,7 @@ describe('Runtime v3 final dispatch characterization', { timeout: INVENTORY_BUIL
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 5 daemon groups');
+    expect(result.stdout).toContain('Runtime dispatch OK: 81 commands, 6 daemon groups');
   });
 
   it('keeps the complete policy-class distribution visible before deletion', () => {

@@ -231,15 +231,15 @@ describe('#441 background mode set by open --background survives a daemon restar
     await expect(T.attachDaemonTarget(cdp, 'TARGET441', { background })).resolves.toBe('S1');
     expect(methodsOf(cdp)).toEqual(['Target.attachToTarget']);
     expect(methodsOf(cdp)).not.toContain('Target.activateTarget');
-    // Only the tab it was turned on for.
-    expect(T.daemonBackgroundMode('OTHERTAB', { env: {}, runtimeDir })).toBe(false);
+    // A tab without a record follows the default, background since #488.
+    expect(T.daemonBackgroundMode('OTHERTAB', { env: {}, runtimeDir })).toBe(true);
     rmSync(runtimeDir, { recursive: true, force: true });
   });
 
   it('with the mode off nothing is recorded and the daemon still activates the tab', async () => {
     const runtimeDir = scratch();
     expect(existsSync(T.tabModePath('TARGET441', runtimeDir))).toBe(false);
-    const background = T.daemonBackgroundMode('TARGET441', { env: {}, runtimeDir });
+    const background = T.daemonBackgroundMode('TARGET441', { env: { CDP_BACKGROUND: '0' }, runtimeDir });
     expect(background).toBe(false);
     const cdp = fakeCdp();
     await T.attachDaemonTarget(cdp, 'TARGET441', { background });

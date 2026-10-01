@@ -439,30 +439,36 @@ Configuration:
 | `CDP_PORT` | Connect to a specific debugging port. |
 | `CDP_HOST` | Override the CDP host, default `127.0.0.1`. |
 | `CDP_PORT_FILE` | Override the `DevToolsActivePort` file path. |
-| `CDP_BACKGROUND` | `1` turns on background mode: no command focuses a tab or raises the window. Off by default. |
+| `CDP_BACKGROUND` | Background mode is on by default: no command focuses a tab or raises the window. `0` (also `false`, `no`, `off`) turns it off. |
+| `CDP_FOREGROUND` | `1` turns background mode off, like `CDP_BACKGROUND=0`. |
 
 ### Background mode
 
-Background mode drives the agent browser without stealing focus from the user. It is opt-in: set `CDP_BACKGROUND=1`, or pass `--background` to `open` or `spawn-debug-browser`. When it is off, nothing changes.
-
-When it is on:
+Background mode drives the browser without stealing focus from the user. **It is the default since #488**; before, it was opt-in with `CDP_BACKGROUND=1`.
 
 - Tab daemons attach without `Target.activateTarget`, and the `open` navigate fallback skips it too. No command sends `Page.bringToFront`.
-- `open` creates the tab in a new window without focus (`Target.createTarget {newWindow: true, background: true}`) and passes `CDP_BACKGROUND=1` to the tab daemon it starts. It also records the mode for that tab (`cdp-<targetId>.mode.json` in the runtime dir), so a daemon restarted later for the tab (20 min idle exit, crash) attaches without `Target.activateTarget` even when `CDP_BACKGROUND` is unset. `closetab` removes the record; only the newest 64 are kept. A tab created with `background: true` alone sits behind the active tab of an existing window, reports `document.visibilityState: hidden`, and `Page.captureScreenshot` stalls there, so `shot` falls back after about 30 s.
-- `spawn-debug-browser --background` adds `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling`, and, unless `--headless`, minimizes the launched window with `Browser.setWindowBounds` once CDP answers. The window can still appear briefly at launch.
+- `open` creates the tab in a new window without focus (`Target.createTarget {newWindow: true, background: true}`). A tab created with `background: true` alone would sit behind the active tab of an existing window and report `document.visibilityState: hidden`.
+- Captures (`shot`, `elshot`, `scanshot`, `fullshot`, `annotshot`, `diff-shot`, and the screenshots of `responsive-audit` / `qa`) read `document.visibilityState` first. On a `hidden` tab (a background tab, or any tab of a minimized window) they make one plain `Page.captureScreenshot` limited to 3 s: Chrome renders a frame for some hidden tabs (0.2–2.8 s in live checks) and never for others, where the capture used to wait out its 30 s timeout. Without a frame the command fails with `Kind: hidden-tab` and `Next: CDP_BACKGROUND=0 cdp <command> <target> ...`. The `fromSurface:false` and screencast fallbacks are skipped on a hidden tab, because `fromSurface:false` copies what the window shows, which is another tab. Visible tabs take the unchanged path. Headless Chrome (`--headless=new`) behaves the same in live checks: a tab from `open` is `visible`, a background tab in an existing window is `hidden` and stalls.
+
+Opting out:
+
+- `CDP_BACKGROUND=0` or `CDP_FOREGROUND=1` restores the old behaviour: tab daemons the call starts attach with `Target.activateTarget`, and `open` creates a focused tab and activates it in the navigate fallback. The call also sends its tab daemon an internal `_activate` request before the command, which activates the tab once if it is hidden (and waits up to 1 s for it to report `visible`). This is what makes `CDP_BACKGROUND=0 cdp shot <target>` work on a tab whose daemon already runs in background mode. A visible tab is not activated again.
+- `open --foreground` / `open --background` choose the mode for the tab `open` creates and pass it to its tab daemon. An explicit choice on `open` (flag or variable) is recorded for that tab (`cdp-<targetId>.mode.json` in the runtime dir), so a daemon restarted later for the tab (20 min idle exit, crash) keeps it when the restarting call does not choose; a choice in that call's environment wins. `closetab` removes the record; only the newest 64 are kept.
+- `spawn-debug-browser --background` (or `CDP_BACKGROUND=1`) adds `--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-background-timer-throttling`, and, unless `--headless`, minimizes the launched window with `Browser.setWindowBounds` once CDP answers. The window can still appear briefly at launch. Without an explicit request, `spawn-debug-browser` launches as before: the default mode does not minimize a window or change how the browser schedules its other tabs.
 
 ```bash
 node skills/chrome-cdp-ex/scripts/cdp.mjs spawn-debug-browser chrome --background --port 9224 --user-data-dir <dir>
-CDP_PORT=9224 CDP_BACKGROUND=1 node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com
+CDP_PORT=9224 node skills/chrome-cdp-ex/scripts/cdp.mjs open https://example.com
 ```
 
 Limits:
 
-- A minimized window's tabs report `hidden`, and screenshots there take the slow fallback. The window that `spawn-debug-browser --background` minimizes is best left idle; do the work in tabs from `open`.
-- A hidden tab can drop `Input.*` events (known in headed Chrome); use `click --pointer` or page-side JavaScript there.
-- In headed Chrome, the new window from `open` is created without focus, but whether it appears above other apps has not been checked here. The checks so far ran on headless Chrome.
-- A daemon started earlier without the mode keeps its behaviour; `stop` it first.
-- Only tabs created by `open --background` keep the mode across daemon restarts. For other tabs (for example the first tab of a `spawn-debug-browser --background` window), keep `CDP_BACKGROUND=1` set.
+- A minimized window's tabs report `hidden`, so captures there usually fail with `hidden-tab`. The window that `spawn-debug-browser --background` minimizes is best left idle; do the work in tabs from `open`. `CDP_BACKGROUND=0` activates the tab; on Windows that also restored the minimized window in a live check.
+- A hidden tab can drop `Input.*` events (known in headed Chrome); use `click --pointer`, page-side JavaScript, or `CDP_BACKGROUND=0` there.
+- On Windows a window that other windows fully cover is `hidden` too (native occlusion), unless the browser runs with `--disable-features=CalculateNativeWinOcclusion`, which `spawn-debug-browser` passes by default. The old attach raised such a window; background mode leaves it covered, so in a covered daily-browser window clicks can fail with `no-input-events`. Captures there still worked in live checks (0.1–2.8 s).
+- Whether the unfocused window from `open` appears above other apps depends on the window manager; Chrome creates it without focus.
+- The old attach also woke a sleeping (discarded) background tab with `Target.activateTarget` (#125); background mode does not. If a tab daemon fails to start on such a tab, rerun with `CDP_BACKGROUND=0`. This case has not been reproduced live.
+- A daemon keeps the mode it attached with. A later call with no variable does not change it; a call with `CDP_BACKGROUND=0` only activates a hidden tab before its command.
 
 When neither `CDP_PORT` nor a `DevToolsActivePort` file is present, discovery probes spawn-default `http://127.0.0.1:9222/json/version` first, then `http://127.0.0.1:9224/json/version` using the same path as `CDP_PORT` (including the HTTP 404 → `/devtools/browser` fallback), then the port of the last endpoint chrome-cdp-ex reached (`cdp-last-endpoint.json` in the runtime dir). Chrome 136+ often does not write that file. A live occupant is attach success (a leftover isolated `chrome-cdp-ex-*` profile is named instead, with `CDP_PORT=<port>` to use it); a closed 9222/9224 is still an environment miss — do not spawn a new debug profile. `doctor` and every attaching command (`list`, ...) run the same discovery and print the same diagnosis and `Next:` line.
 
