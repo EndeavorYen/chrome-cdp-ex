@@ -70,6 +70,7 @@ const requiredEntries = [
   'skills/chrome-cdp-ex/scripts/lib/page-health.mjs',
   'skills/chrome-cdp-ex/scripts/lib/pdf-text.mjs',
   'skills/chrome-cdp-ex/scripts/lib/perception-model.mjs',
+  'skills/chrome-cdp-ex/scripts/lib/redaction.mjs',
   'skills/chrome-cdp-ex/scripts/lib/responsive-audit.mjs',
   'skills/chrome-cdp-ex/scripts/lib/runtime-client.mjs',
   'skills/chrome-cdp-ex/scripts/lib/screenshot-health.mjs',

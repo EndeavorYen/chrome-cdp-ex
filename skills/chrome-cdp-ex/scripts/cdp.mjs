@@ -132,6 +132,12 @@ import { createBrowserSupervisor } from './lib/browser-supervisor.mjs';
 import { resolveGitHead } from './lib/git-head.mjs';
 import { createLocatorPlan } from './lib/browser-resources.mjs';
 import {
+  REDACTED_VALUE,
+  isSensitiveKey,
+  redactSensitiveString,
+  redactUrl,
+} from './lib/redaction.mjs';
+import {
   COMMAND_SURFACE,
   SURVIVOR_COMMANDS,
   isCommandSurface,
@@ -5514,8 +5520,6 @@ const FILL_TYPEAHEAD_MAX_CHARS = 80;
 const DEFAULT_REPORT_ACTION_LIMIT = 20;
 const DEFAULT_REPORT_JSON_BYTES_MAX = 64 * 1024;
 const DEFAULT_STALE_ARTIFACT_HOURS = 24;
-const REDACTED_VALUE = '<redacted>';
-const SENSITIVE_QUERY_KEY_RE = /\b(pass(word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(orization)?|pin|cvv|card|ssn|session|sid|cookie|jwt|csrf|xsrf|refresh|access)\b/i;
 const SENSITIVE_METADATA_KEY_ALLOWLIST = new Set([
   'schema',
   'source',
@@ -5548,26 +5552,12 @@ const SENSITIVE_METADATA_KEY_ALLOWLIST = new Set([
   'redaction',
   'redacted',
 ]);
-const SECRET_ASSIGNMENT_RE = /(^|[\s{[,;?&])([A-Za-z0-9_.-]*(?:pass(?:word)?|secret|token|api[-_]?key|credential|otp|2fa|mfa|auth(?:orization)?|pin|cvv|card|ssn|session|sid|cookie|jwt|csrf|xsrf|refresh|access)[A-Za-z0-9_.-]*\s*[:=]\s*)(["']?)([^"'\s,;&}\])]+)/gi;
-const AUTH_HEADER_VALUE_RE = /\b(Authorization\s*[:=]\s*(?:Bearer|Basic)\s+)([A-Za-z0-9._~+/=-]+)/gi;
-const BEARER_VALUE_RE = /\b(Bearer\s+)([A-Za-z0-9._~+/=-]+)/gi;
 const NOISY_ACTION_NETWORK_TYPES = new Set(['Image', 'Stylesheet', 'Script', 'Font', 'Media', 'WebSocket']);
 
 function isSensitiveDataKey(key = '') {
   const name = String(key || '');
   if (!name || SENSITIVE_METADATA_KEY_ALLOWLIST.has(name)) return false;
-  const normalized = name
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/[-_.]+/g, ' ');
-  return SENSITIVE_QUERY_KEY_RE.test(name) || SENSITIVE_QUERY_KEY_RE.test(normalized);
-}
-
-function redactSensitiveString(value) {
-  const text = String(value ?? '');
-  return text
-    .replace(AUTH_HEADER_VALUE_RE, `$1${REDACTED_VALUE}`)
-    .replace(BEARER_VALUE_RE, `$1${REDACTED_VALUE}`)
-    .replace(SECRET_ASSIGNMENT_RE, (_match, prefix, key, quote) => `${prefix}${key}${quote}${REDACTED_VALUE}${quote}`);
+  return isSensitiveKey(name);
 }
 
 function redactSensitiveArtifactValue(value, key = '') {
@@ -5610,17 +5600,16 @@ function compactActionText(value, max = 220) {
   return `${text.slice(0, Math.max(0, max - 1))}…`;
 }
 
+// Redact the whole URL first, then drop scheme://authority and bound it, so a
+// secret never survives truncation or re-encoding (#455).
 function compactActionUrl(value) {
-  const raw = compactActionText(value, 240);
+  const raw = redactUrl(String(value ?? '').replace(/\s+/g, ' ').trim());
   if (!raw) return '';
+  const authority = raw.match(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i);
+  if (authority) return compactActionText(raw.slice(authority[0].length) || '/', 180);
   try {
     const url = new URL(raw);
-    const params = new URLSearchParams(url.search);
-    for (const key of [...params.keys()]) {
-      if (SENSITIVE_QUERY_KEY_RE.test(key)) params.set(key, '<redacted>');
-    }
-    const query = params.toString();
-    return compactActionText(`${url.pathname}${query ? `?${query}` : ''}${url.hash || ''}`, 180);
+    return compactActionText(`${url.pathname}${url.search}${url.hash}`, 180);
   } catch {
     return compactActionText(raw, 180);
   }
@@ -6779,7 +6768,7 @@ function formatNetworkDeltaSample(entry) {
   if (!entry) return null;
   const status = entry.errorText || entry.status || 'pending';
   const duration = Number.isFinite(entry.duration) ? ` in ${entry.duration}ms` : '';
-  return `${entry.method || 'GET'} ${redactSensitiveString(entry.url || '(unknown URL)')} -> ${status}${duration}`;
+  return `${entry.method || 'GET'} ${redactUrl(entry.url || '(unknown URL)')} -> ${status}${duration}`;
 }
 
 function summarizeActionConsoleDelta(delta = {}) {
@@ -7256,10 +7245,10 @@ function fillPreviousValue(result = {}) {
 function fillNavigationUrl(effects = {}) {
   const nav = effects.navigation;
   if (nav == null || nav === false) return null;
-  if (typeof nav === 'string') return compactActionText(nav, 180) || null;
+  if (typeof nav === 'string') return compactActionText(redactUrl(nav), 180) || null;
   if (typeof nav === 'object') {
     const url = nav.url || nav.href || nav.to || '';
-    return url ? compactActionText(String(url), 180) : null;
+    return url ? compactActionText(redactUrl(String(url)), 180) : null;
   }
   return null;
 }
@@ -7341,7 +7330,15 @@ function actionSettleObserveOpts(targetId, actionTarget = {}, baselineOutput = n
   return opts;
 }
 
-function formatActionResultOutput(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false } = {}) {
+// Every action receipt leaves through here. JSON models are redacted field by
+// field; text receipts are redacted as a whole because outcome reasons, page
+// URLs and dispatch text all embed raw URLs (#455).
+function formatActionResultOutput(result, opts = {}) {
+  const output = formatActionResultOutputUnredacted(result, opts);
+  return opts.format === 'json' ? output : redactSensitiveString(output);
+}
+
+function formatActionResultOutputUnredacted(result, { format = 'text', compact = false, qa = false, maxDiffLines = null, dispatchText = '', timeoutError = null, full = false } = {}) {
   if (qa) {
     const pdf = actionResultPdfViewerMeta(result, dispatchText);
     if (pdf) {
@@ -7349,7 +7346,7 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
         ? targetPrefixForDisplay(result.target.targetId)
         : '<target>';
       return format === 'json'
-        ? formatJson(pdfViewerHandoffModel(pdf, { targetPrefix }))
+        ? formatJson(pdfViewerHandoffModel({ ...pdf, url: redactUrl(pdf.url) }, { targetPrefix }))
         : formatPdfViewerOutput(pdf, { targetPrefix });
     }
     const summary = buildQaSummaryModel({
@@ -7377,7 +7374,7 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
     });
     if (format === 'json') {
       return formatJson({
-        summary,
+        summary: redactSensitiveArtifactValue(summary),
         action: compactActionResultForJson(result, { compact: true }),
       });
     }
@@ -7385,7 +7382,7 @@ function formatActionResultOutput(result, { format = 'text', compact = false, qa
   }
   if (format === 'json') {
     if (shouldUseCompactFillReceipt(result, { compact, qa, full })) {
-      return JSON.stringify(compactFillReceiptForJson(result));
+      return JSON.stringify(redactSensitiveArtifactValue(compactFillReceiptForJson(result)));
     }
     const model = compactActionResultForJson(result, { compact });
     return compact ? JSON.stringify(model) : formatJson(model);
@@ -9113,7 +9110,9 @@ function buildSessionReportModel(session, { now = Date.now(), lastActions = DEFA
   return model;
 }
 
-function formatSessionReport(session, { now = Date.now(), format = 'text', lastActions = DEFAULT_REPORT_ACTION_LIMIT, compact = false, qa = false, page = null } = {}) {
+function formatSessionReport(session, { now = Date.now(), format = 'text', lastActions = DEFAULT_REPORT_ACTION_LIMIT, compact = false, qa = false, page: livePage = null } = {}) {
+  // Action entries are redacted when logged; the live page URL is not (#455).
+  const page = livePage?.url ? { ...livePage, url: redactUrl(livePage.url) } : livePage;
   const jsonDefaultCompact = format === 'json' && lastActions != null;
   const effectiveCompact = compact || jsonDefaultCompact;
   const targetPrefix = targetPrefixForDisplay(session.targetId);
@@ -16954,15 +16953,27 @@ function filterNetlogEntries(entries = [], { lastNavigationTs = null, lookbackMs
   return list.filter(entry => Number(entry?.ts) >= since);
 }
 
+function parseNetlogArgs(args = []) {
+  const opts = { clear: false, unsafeFull: false };
+  for (const arg of args) {
+    if (arg === '--clear') opts.clear = true;
+    else if (arg === '--unsafe-full') opts.unsafeFull = true;
+    else throw new Error(`netlog: unknown argument ${arg}. Use --clear or --unsafe-full.`);
+  }
+  return opts;
+}
+
+// URLs are redacted by default (#455); --unsafe-full prints them verbatim.
 function netlogStr(netReqBuf, flag, options = {}) {
   if (flag === '--clear') { netReqBuf.clear(); return 'Network log cleared'; }
+  const unsafeFull = options.unsafeFull === true;
   const entries = filterNetlogEntries(netReqBuf.all(), options);
   if (entries.length === 0) return 'No network requests captured (tracking action-relevant requests; static assets are skipped)';
-  const lines = [`Network requests (${entries.length}):`];
+  const lines = [`Network requests (${entries.length})${unsafeFull ? ' [unsafe-full: URLs not redacted]' : ''}:`];
   for (const e of entries) {
     const ago = Math.round((Date.now() - e.ts) / 1000);
     const size = e.size > 1024 ? `${(e.size / 1024).toFixed(1)}KB` : `${e.size}B`;
-    lines.push(`  ${e.method} ${e.url} → ${e.status} (${e.duration}ms, ${size}) ${ago}s ago`);
+    lines.push(`  ${e.method} ${unsafeFull ? e.url : redactUrl(e.url)} → ${e.status} (${e.duration}ms, ${size}) ${ago}s ago`);
   }
   return lines.join('\n');
 }
@@ -18818,8 +18829,8 @@ function formatRecordEvent(e, startTs) {
   if (e.kind === 'dom') return `  +${rel}ms DOM ${e.summary}`;
   if (e.kind === 'console') return `  +${rel}ms console.${e.level}: ${e.text}${e.loc ? ' (' + e.loc + ')' : ''}`;
   if (e.kind === 'exception') return `  +${rel}ms exception: ${e.msg}${e.loc ? ' (' + e.loc + ')' : ''}`;
-  if (e.kind === 'network') return `  +${rel}ms ${e.method} ${e.url} → ${e.status} (${e.duration}ms)`;
-  if (e.kind === 'navigation') return `  +${rel}ms navigation ${e.url}`;
+  if (e.kind === 'network') return `  +${rel}ms ${e.method} ${redactUrl(e.url)} → ${e.status} (${e.duration}ms)`;
+  if (e.kind === 'navigation') return `  +${rel}ms navigation ${redactUrl(e.url)}`;
   if (e.kind === 'action') return `  +${rel}ms action ${e.summary}`;
   return `  +${rel}ms ${e.kind || 'event'} ${e.summary || ''}`.trimEnd();
 }
@@ -23372,9 +23383,10 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
         format: fopts.format,
         unsafeFullCapture: copts.unsafeFullCapture,
       });
+      const checkpointUrl = output.includes('URL: ') ? output.split('URL: ')[1]?.split('\n')[0] : undefined;
       appendSessionEventLog(session, {
         kind: 'checkpoint',
-        url: output.includes('URL: ') ? output.split('URL: ')[1]?.split('\n')[0] : undefined,
+        url: checkpointUrl == null ? undefined : redactUrl(checkpointUrl),
       });
       return output;
     },
@@ -23651,9 +23663,13 @@ async function runDaemon(targetId, applicationPreflight = preflightDaemonApplica
       }), { input: url, resolvedBy: 'url', label: url || '', commandArgs: [url] }, perceive ? 'full-perceive' : 'state-change', perceive ? observeFullPerceive : () => observeNavPage(cdp, sessionId), fopts);
       return commandResult(value, { kind: 'action-receipt' });
     },
-    netlog: async args => commandResult(netlogStr(netReqBuf, args[0], {
-      lastNavigationTs: navBuf.all().at(-1)?.ts ?? null,
-    }), null),
+    netlog: async args => {
+      const opts = parseNetlogArgs(args);
+      return commandResult(netlogStr(netReqBuf, opts.clear ? '--clear' : null, {
+        lastNavigationTs: navBuf.all().at(-1)?.ts ?? null,
+        unsafeFull: opts.unsafeFull,
+      }), null);
+    },
     press: async args => {
       const fopts = parseCompactFormatArgs(args, ['text', 'json']);
       const usage = pressUsageError(fopts.args[0]);
@@ -28043,7 +28059,7 @@ export const __test__ = process.env.NODE_ENV === 'test' ? {
   checkpointCookieToSetCookieParams, isRestorableCheckpointCookie, cookiesForRestore,
   restoreStorageScript, restoreCheckpointStr,
   // Command implementations
-  getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr, filterNetlogEntries,
+  getPages, formatPageList, buildPageListModel, formatPageListOutput, dialogStr, netlogStr, parseNetlogArgs, filterNetlogEntries,
   javascriptDialogHandleParams, createJavaScriptDialogSession, handleOpeningJavaScriptDialog,
   shouldSkipActionPageEvaluate, formatDialogBlockedObserveText, observeAfterActionGuardingDialogs,
   parseMockArgs, formatNetworkMocksSummary, buildMockModel, formatMockText, mockStr, handleMockRequestPaused,
