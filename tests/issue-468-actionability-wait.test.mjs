@@ -28,6 +28,12 @@ function fakePage() {
   const doc = {
     nodeType: 9,
     querySelector(selector) { return nodes.get(selector) || null; },
+    // `extraMatches` simulates siblings that match the same selector after the first one.
+    extraMatches: new Map(),
+    querySelectorAll(selector) {
+      const first = nodes.get(selector);
+      return first ? [first, ...(this.extraMatches.get(selector) || [])] : [];
+    },
     elementFromPoint(x, y) {
       for (const node of nodes.values()) {
         const r = node._rect;
@@ -184,13 +190,30 @@ describe('#468 click waits for the target to be attached, visible and enabled', 
     const target = { input: '#submit', targetId: TARGET_ID };
     const failure = classifyActionFailure(err, { action: 'click', target });
     expect(failure).toMatchObject({ kind: 'disabled', dispatched: false });
-    expect(failure.nextCommand).toBe(`cdp waitfor ${TARGET_ID} "#submit:not(:disabled)"`);
+    // `:not(:disabled)` alone would also match an aria-disabled control, so Next requires both.
+    const enabled = `cdp waitfor ${TARGET_ID} '#submit:not(:disabled):not([aria-disabled="true"])'`;
+    expect(failure.nextCommand).toBe(enabled);
+    expect(failure.disabled).toMatchObject({ reason: 'disabled attribute', matches: 1 });
+    expect(failure.hints.join('\n')).toMatch(/browser does not deliver it to a disabled form control/);
     const text = formatActionFailure(err, { action: 'click', target });
     expect(text.split('\n')).toEqual([
       expect.stringMatching(/^Error: <BUTTON> "Submit" is disabled/),
       'Kind: disabled',
-      `Next: cdp waitfor ${TARGET_ID} "#submit:not(:disabled)"`,
+      `Next: ${enabled}`,
     ]);
+  });
+
+  it('points Next at perceive when the selector matches several elements, so a sibling cannot satisfy waitfor', async () => {
+    const page = fakePage();
+    page.nodes.set('form button', page.el('button', { text: 'Save', attrs: { disabled: '' } }));
+    page.context.document.extraMatches.set('form button', [page.el('button', { text: 'Cancel' })]);
+    const cdp = fakeCdp(page);
+    const err = await T.clickStr(cdp, 'sid', 'form button', new Map(), {}, { waitMs: 0 }).catch(e => e);
+    expect(err.actionDisabled.matches).toBe(2);
+    const failure = classifyActionFailure(err, { action: 'click', target: { input: 'form button', targetId: TARGET_ID } });
+    expect(failure.nextCommand).toBe(`cdp perceive ${TARGET_ID} -C -d 8`);
+    expect(failure.hints.join('\n')).toMatch(/matches 2 elements and click uses the first/);
+    expect(failure.hints.join('\n')).not.toMatch(/waitfor/);
   });
 
   it('clicks a button that becomes enabled during the wait', async () => {
@@ -211,8 +234,15 @@ describe('#468 click waits for the target to be attached, visible and enabled', 
     const cdp = fakeCdp(page);
     const aria = await T.clickStr(cdp, 'sid', '[role=button]', new Map(), {}, { waitMs: 0 }).catch(e => e);
     expect(aria.message).toBe('<DIV> "Archive" is disabled (aria-disabled="true"); the click was not sent.');
-    expect(classifyActionFailure(aria, { action: 'click', target: { input: '[role=button]', targetId: TARGET_ID } }).nextCommand)
-      .toBe(`cdp waitfor ${TARGET_ID} '[role=button]:not([aria-disabled="true"])'`);
+    const ariaFailure = classifyActionFailure(aria, { action: 'click', target: { input: '[role=button]', targetId: TARGET_ID } });
+    expect(ariaFailure.nextCommand)
+      .toBe(`cdp waitfor ${TARGET_ID} '[role=button]:not(:disabled):not([aria-disabled="true"])'`);
+    // aria-disabled is not enforced by browsers: the hints name the deliberate escape and do not
+    // claim that a JS click would be ignored.
+    const ariaHints = ariaFailure.hints.join('\n');
+    expect(ariaHints).toContain(`cdp click ${TARGET_ID} "[role=button]" --js`);
+    expect(ariaHints).toMatch(/not enforced by the browser/);
+    expect(ariaHints).not.toMatch(/ignores it|does not deliver/);
     const inner = await T.clickStr(cdp, 'sid', '#inner', new Map(), {}, { waitMs: 0 }).catch(e => e);
     expect(inner.message).toBe('<BUTTON> "Send" is disabled (inside a disabled <fieldset>); the click was not sent.');
     expect(cdp.inputEvents()).toEqual([]);
@@ -281,6 +311,81 @@ describe('#468 @ref click checks disabled without waiting', () => {
     expect(failure.kind).toBe('disabled');
     expect(failure.nextCommand).toBe(`cdp perceive ${TARGET_ID} -C -d 8`);
   });
+
+  it('still refuses a disabled @ref when the scroll settle timed out (#464 fallback)', async () => {
+    const calls = [];
+    const cdp = {
+      onEvent() { return () => {}; },
+      send(method, params = {}) {
+        calls.push({ method, params });
+        if (method === 'Runtime.evaluate') return Promise.resolve({ result: { value: null } });
+        if (method === 'Page.getFrameTree') return Promise.resolve({ frameTree: { frame: { id: 'root-frame' } } });
+        if (method === 'Page.createIsolatedWorld') return Promise.resolve({ executionContextId: 7 });
+        if (method === 'DOM.resolveNode') return Promise.resolve({ object: { objectId: 'button-object' } });
+        if (method === 'Runtime.callFunctionOn') {
+          const fn = String(params.functionDeclaration || '');
+          if (fn.includes('scrollIntoView')) return Promise.reject(new Error('Timeout: Runtime.callFunctionOn'));
+          if (fn.includes('hit: clickPointHit(this')) {
+            return Promise.resolve({ result: { value: { hit: { covered: false }, disabled: 'disabled attribute' } } });
+          }
+          if (fn.includes('getBoundingClientRect')) {
+            return Promise.resolve({ result: { value: { x: 40, y: 300, w: 120, h: 32, tag: 'BUTTON', text: 'Delete' } } });
+          }
+          return Promise.resolve({ result: { value: true } });
+        }
+        return Promise.resolve({});
+      },
+    };
+    const refs = new Map([[15, 99]]);
+    const rect = await T.resolveRef(cdp, 'sid', refs, '@15', {}, { hitTest: true });
+    expect(rect).toMatchObject({ settled: false, disabled: 'disabled attribute', hit: { covered: false } });
+    const err = await T.clickStr(cdp, 'sid', '@15', refs, {}).catch(e => e);
+    expect(err.message).toBe('<BUTTON> "Delete" (@15) is disabled (disabled attribute); the click was not sent.');
+    expect(calls.some(call => call.method === 'Input.dispatchMouseEvent')).toBe(false);
+  });
+});
+
+describe('#468 click --pointer gives the same Kind: disabled', () => {
+  async function pointerOn(attrs, { matches = 1 } = {}) {
+    const page = fakePage();
+    const button = page.el('button', { text: 'Archive', attrs });
+    button.disabled = Object.hasOwn(attrs, 'disabled');
+    page.context.document.querySelectorAll = () => Array.from({ length: matches }, () => button);
+    const declaration = T.pointerClickFunctionDeclaration(0, '#archive');
+    return runInNewContext(`(${declaration})`, page.context).call(button);
+  }
+
+  it('carries the reason, so an aria-disabled target gets a Next that cannot loop', async () => {
+    const r = await pointerOn({ 'aria-disabled': 'true' });
+    expect(r).toMatchObject({ ok: false, disabled: { tag: 'BUTTON', reason: 'aria-disabled="true"', matches: 1 } });
+    const cdp = {
+      send(method) {
+        if (method === 'DOM.getDocument') return Promise.resolve({ root: { nodeId: 1 } });
+        if (method === 'DOM.querySelector') return Promise.resolve({ nodeId: 7 });
+        if (method === 'DOM.resolveNode') return Promise.resolve({ object: { objectId: 'obj-7' } });
+        if (method === 'Runtime.callFunctionOn') return Promise.resolve({ result: { value: r } });
+        return Promise.resolve({});
+      },
+    };
+    const err = await T.pointerClickStr(cdp, 'sid', '#archive', new Map(), {}).catch(e => e);
+    expect(err.message).toBe('<BUTTON> "Archive" is disabled (aria-disabled="true"); the click was not sent.');
+    const failure = classifyActionFailure(err, { action: 'click', target: { input: '#archive', targetId: TARGET_ID } });
+    expect(failure.kind).toBe('disabled');
+    expect(failure.nextCommand).toBe(`cdp waitfor ${TARGET_ID} '#archive:not(:disabled):not([aria-disabled="true"])'`);
+    expect(failure.hints.join(' ')).toContain(`cdp click ${TARGET_ID} "#archive" --js`);
+  });
+
+  it('reports a native disabled reason and the match count', async () => {
+    expect((await pointerOn({ disabled: '' }, { matches: 3 })).disabled).toMatchObject({ reason: 'disabled attribute', matches: 3 });
+  });
+
+  it('falls back to perceive for the legacy message with no structured reason', () => {
+    const failure = classifyActionFailure(new Error('click --pointer: element is disabled (BUTTON "Save")'), {
+      action: 'click',
+      target: { input: '#save', targetId: TARGET_ID },
+    });
+    expect(failure.nextCommand).toBe(`cdp perceive ${TARGET_ID} -C -d 8`);
+  });
 });
 
 describe('#468 fill and select share the wait and the disabled check', () => {
@@ -321,6 +426,18 @@ describe('#468 fill and select share the wait and the disabled check', () => {
     expect(classifyActionFailure(err, { action: 'select', target: { input: '#country', targetId: TARGET_ID } }).kind).toBe('disabled');
     expect(option.selected).toBe(false);
     expect(select.events).toEqual([]);
+  });
+
+  it('fill and select refuse only native disabled: aria-disabled is not enforced and they have no JS-click escape', async () => {
+    const page = fakePage();
+    page.nodes.set('#note', page.el('input', { type: 'text', attrs: { 'aria-disabled': 'true' } }));
+    const option = { value: 'fr', textContent: 'France', selected: false };
+    page.nodes.set('#country', page.el('select', { attrs: { 'aria-disabled': 'true' }, options: [option] }));
+    const cdp = fakeCdp(page);
+    const started = Date.now();
+    await expect(T.fillStr(cdp, 'sid', '#note', 'hi', new Map(), {})).resolves.toBe('Filled <INPUT> with "hi"');
+    await expect(T.selectStr(cdp, 'sid', '#country', 'fr')).resolves.toBe('Selected "France"');
+    expect(Date.now() - started).toBeLessThan(500);
   });
 
   it('does not require a <select> to be visible', async () => {

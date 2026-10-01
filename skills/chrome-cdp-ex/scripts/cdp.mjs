@@ -11410,11 +11410,17 @@ async function resolveRef(cdp, sid, refMap, ref, refState, { hitTest = false } =
           objectId,
           functionDeclaration: `function() {
             ${clickPointHitFunctionSource()}
+            ${actionabilityFunctionSource()}
             const box = this.getBoundingClientRect();
-            return clickPointHit(this, { x: box.x, y: box.y, w: box.width, h: box.height });
+            return {
+              hit: clickPointHit(this, { x: box.x, y: box.y, w: box.width, h: box.height }),
+              disabled: actionDisabledReason(this),
+            };
           }`,
         });
-        value.hit = probe && typeof probe === 'object' ? probe : null;
+        // #468: the disabled check must not be skipped when the settle timed out.
+        value.hit = probe?.hit && typeof probe.hit === 'object' ? probe.hit : null;
+        value.disabled = typeof probe?.disabled === 'string' ? probe.disabled : '';
       }
       return value;
     }
@@ -15105,7 +15111,7 @@ async function jsClickStr(cdp, sid, selector, refMap, refState, options = {}) {
   try {
     const res = await cdpDomains(cdp).Runtime.callFunctionOn( {
       objectId,
-      functionDeclaration: pointer ? pointerClickFunctionDeclaration() : `function() {
+      functionDeclaration: pointer ? pointerClickFunctionDeclaration(POINTER_CLICK_SETTLE_MS, isRef(selector) ? '' : selector) : `function() {
         this.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
         if (typeof this.click === 'function') this.click();
         else this.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
@@ -15133,6 +15139,7 @@ async function jsClickStr(cdp, sid, selector, refMap, refState, options = {}) {
 const POINTER_CLICK_SETTLE_MS = 1500;
 
 function formatPointerClickReceipt(r, selector) {
+  if (!r.ok && r.disabled) throw actionDisabledError('click', r.disabled, selector);
   if (!r.ok) throw new Error(r.error || 'click --pointer failed');
   const state = [
     r.ariaExpanded != null ? `aria-expanded=${r.ariaExpanded}` : null,
@@ -15153,12 +15160,25 @@ ${state.join(' ')}${verdict ? `
 ${verdict}` : ''}`;
 }
 
-function pointerClickFunctionDeclaration(settleMs = POINTER_CLICK_SETTLE_MS) {
+// `selector` (CSS only) lets a disabled failure say how many elements the selector matches.
+function pointerClickFunctionDeclaration(settleMs = POINTER_CLICK_SETTLE_MS, selector = '') {
   return `async function() {
     const el = this;
     const label = (el.getAttribute('aria-label') || el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim().substring(0, 80);
-    if (el.disabled || el.getAttribute('aria-disabled') === 'true') {
-      return { ok: false, error: 'click --pointer: element is disabled (' + el.tagName + ' "' + label + '")' };
+    const ariaDisabled = el.getAttribute('aria-disabled') === 'true';
+    let nativeDisabled = el.disabled === true;
+    try { nativeDisabled = nativeDisabled || (typeof el.matches === 'function' && el.matches(':disabled')); } catch (e) {}
+    if (nativeDisabled || ariaDisabled) {
+      // #468: the reason travels with the failure so Kind: disabled gets a Next that cannot loop.
+      const reason = el.disabled === true ? 'disabled attribute'
+        : nativeDisabled ? 'inside a disabled <fieldset>' : 'aria-disabled="true"';
+      return {
+        ok: false,
+        error: 'click --pointer: element is disabled (' + el.tagName + ' "' + label + '")',
+        disabled: { tag: el.tagName, text: label, reason, matches: ${selector ? `(function() {
+          try { return document.querySelectorAll(${JSON.stringify(selector)}).length; } catch (e) { return null; }
+        })()` : 'null'} },
+      };
     }
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const rect = el.getBoundingClientRect();
@@ -15212,11 +15232,14 @@ const ACTIONABILITY_WAIT_DEFAULT_MS = 2000;
 const ACTIONABILITY_WAIT_MAX_MS = 30000;
 const ACTIONABILITY_POLL_MS = 50;
 
-// Page-side source: actionDisabledReason(el), actionLabel(el), actionBlockedBy(el, needVisible)
-// and waitForActionable(query, waitMs, needVisible). Interpolated into an async page function.
+// Page-side source: actionDisabledReason(el, aria), actionLabel(el), actionMatchCount(selector),
+// actionBlockedBy(el, needVisible, aria) and waitForActionable(query, waitMs, needVisible, aria).
+// Interpolated into a page function. `aria` (click only) also treats aria-disabled="true" as
+// disabled; fill and select refuse only what the browser itself refuses (:disabled), since
+// aria-disabled is not enforced and they have no JS-click escape.
 function actionabilityFunctionSource() {
   return `
-    const actionDisabledReason = (el) => {
+    const actionDisabledReason = (el, aria = true) => {
       if (!el || el.nodeType !== 1) return '';
       let native = false;
       try { native = typeof el.matches === 'function' && el.matches(':disabled'); } catch (e) { native = false; }
@@ -15225,8 +15248,11 @@ function actionabilityFunctionSource() {
         const fieldset = typeof el.closest === 'function' ? el.closest('fieldset[disabled]') : null;
         return fieldset && fieldset !== el ? 'inside a disabled <fieldset>' : 'disabled';
       }
-      if (typeof el.getAttribute === 'function' && el.getAttribute('aria-disabled') === 'true') return 'aria-disabled="true"';
+      if (aria && typeof el.getAttribute === 'function' && el.getAttribute('aria-disabled') === 'true') return 'aria-disabled="true"';
       return '';
+    };
+    const actionMatchCount = (selector) => {
+      try { return document.querySelectorAll(selector).length; } catch (e) { return null; }
     };
     const actionLabel = (el) => {
       if (!el) return '';
@@ -15240,7 +15266,7 @@ function actionabilityFunctionSource() {
         || '';
       return String(raw).replace(/\\s+/g, ' ').trim().substring(0, 80);
     };
-    const actionBlockedBy = (el, needVisible) => {
+    const actionBlockedBy = (el, needVisible, aria = true) => {
       if (!el) return 'attach';
       if (needVisible) {
         let box = null;
@@ -15250,9 +15276,9 @@ function actionabilityFunctionSource() {
         try { style = getComputedStyle(el); } catch (e) { style = null; }
         if (style && (style.visibility === 'hidden' || style.display === 'none')) return 'visible';
       }
-      return actionDisabledReason(el) ? 'enabled' : '';
+      return actionDisabledReason(el, aria) ? 'enabled' : '';
     };
-    const waitForActionable = (query, waitMs, needVisible) => new Promise((resolve) => {
+    const waitForActionable = (query, waitMs, needVisible, aria = true) => new Promise((resolve) => {
       const started = Date.now();
       const waitedFor = [];
       let waited = false;
@@ -15271,7 +15297,7 @@ function actionabilityFunctionSource() {
         if (done) return;
         let el = null;
         try { el = query(); } catch (e) { el = null; }
-        const blocked = actionBlockedBy(el, needVisible);
+        const blocked = actionBlockedBy(el, needVisible, aria);
         if (!blocked) return finish(el, '');
         if (!(waitMs > 0)) return finish(el, blocked);
         waited = true;
@@ -15351,6 +15377,9 @@ function actionDisabledError(action, info = {}, selector = '') {
     `<${tag}>${label ? ` "${label}"` : ''}${ref} is disabled (${reason})${waited}; ${ACTION_DISABLED_NOT_SENT[action] || 'nothing was dispatched'}.`
   );
   err.actionDisabled = { tag, text: label, reason, selector: String(selector || '') };
+  // How many elements the CSS selector matches; recovery must not offer a `waitfor` that a sibling
+  // could satisfy while the first match (the one acted on) stays disabled.
+  if (Number.isInteger(info.matches)) err.actionDisabled.matches = info.matches;
   return err;
 }
 
@@ -15361,8 +15390,8 @@ async function waitForActionableSelector(cdp, sid, selector, { waitMs = ACTIONAB
     ${actionabilityFunctionSource()}
     try { document.querySelector(${JSON.stringify(selector)}); }
     catch (err) { return { cdpActionability: true, ok: false, invalid: true }; }
-    const r = await waitForActionable(() => document.querySelector(${JSON.stringify(selector)}), ${wait}, ${visible ? 'true' : 'false'});
-    const disabled = r.el ? actionDisabledReason(r.el) : '';
+    const r = await waitForActionable(() => document.querySelector(${JSON.stringify(selector)}), ${wait}, ${visible ? 'true' : 'false'}, false);
+    const disabled = r.el ? actionDisabledReason(r.el, false) : '';
     return {
       cdpActionability: true,
       ok: true,
@@ -15370,7 +15399,7 @@ async function waitForActionableSelector(cdp, sid, selector, { waitMs = ACTIONAB
       waited: r.waited,
       waitedMs: r.waitedMs,
       waitedFor: r.waitedFor,
-      disabled: disabled ? { tag: r.el.tagName, text: actionLabel(r.el), reason: disabled } : null,
+      disabled: disabled ? { tag: r.el.tagName, text: actionLabel(r.el), reason: disabled, matches: actionMatchCount(${JSON.stringify(selector)}) } : null,
     };
   })()`, false, { timeoutMs: TIMEOUT + wait });
   let parsed = null;
@@ -15428,7 +15457,7 @@ async function clickStr(cdp, sid, selector, refMap, refState, opts = {}) {
       el = wait.el;
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)}, ...waitInfo };
       const disabled = actionDisabledReason(el);
-      if (disabled) return { ok: false, disabled: { tag: el.tagName, text: actionLabel(el), reason: disabled }, ...waitInfo };
+      if (disabled) return { ok: false, disabled: { tag: el.tagName, text: actionLabel(el), reason: disabled, matches: actionMatchCount(${JSON.stringify(selector)}) }, ...waitInfo };
       const rect = await (${scrollSettledRectFunctionDeclaration({ hitTest: true })}).call(el);
       return {
         ok: true,
@@ -16647,7 +16676,7 @@ function fillableControlPageProbe(selector, { clear = true, waitMs = 0 } = {}) {
     const probe = ${fillableControlProbeDeclaration()};
     ${actionabilityFunctionSource()}
     document.querySelector(${JSON.stringify(selector)}); // an invalid selector throws here, before any wait
-    const wait = await waitForActionable(() => document.querySelector(${JSON.stringify(selector)}), ${normalizeActionabilityWaitMs(waitMs)}, true);
+    const wait = await waitForActionable(() => document.querySelector(${JSON.stringify(selector)}), ${normalizeActionabilityWaitMs(waitMs)}, true, false);
     const waitInfo = { waited: wait.waited, waitedMs: wait.waitedMs, waitedFor: wait.waitedFor };
     const el = wait.el;
     if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)}, ...waitInfo };
@@ -16659,8 +16688,8 @@ function fillableControlPageProbe(selector, { clear = true, waitMs = 0 } = {}) {
         tag: info.tag,
       };
     }
-    const disabled = actionDisabledReason(el);
-    if (disabled) return { ok: false, disabled: { tag: info.tag, text: actionLabel(el), reason: disabled }, ...waitInfo };
+    const disabled = actionDisabledReason(el, false);
+    if (disabled) return { ok: false, disabled: { tag: info.tag, text: actionLabel(el), reason: disabled, matches: actionMatchCount(${JSON.stringify(selector)}) }, ...waitInfo };
     const before = ${fillControlValueExpression('el')};
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     el.focus();
@@ -16677,7 +16706,7 @@ function fillableRefProbeDeclaration({ clear = true } = {}) {
     if (!info.fillable) return info;
     const el = this;
     ${actionabilityFunctionSource()}
-    const disabled = actionDisabledReason(el);
+    const disabled = actionDisabledReason(el, false);
     if (disabled) return { ...info, disabled: { tag: info.tag, text: actionLabel(el), reason: disabled } };
     info.before = ${fillControlValueExpression('el')};
     this.scrollIntoView({ block: 'center', behavior: 'instant' });
@@ -16891,7 +16920,7 @@ async function fillReactStr(cdp, sid, selector, text, refMap, refState) {
     functionDeclaration: `function() {
       const info = (${fillableControlProbeDeclaration()}).call(this);
       ${actionabilityFunctionSource()}
-      const disabled = info.fillable ? actionDisabledReason(this) : '';
+      const disabled = info.fillable ? actionDisabledReason(this, false) : '';
       if (disabled) info.disabled = { tag: info.tag, text: actionLabel(this), reason: disabled };
       return info;
     }`,
@@ -17072,13 +17101,13 @@ async function selectStr(cdp, sid, selector, value, opts = {}) {
     (async function() {
       ${actionabilityFunctionSource()}
       document.querySelector(${JSON.stringify(selector)}); // an invalid selector throws here, before any wait
-      const wait = await waitForActionable(() => document.querySelector(${JSON.stringify(selector)}), ${waitMs}, false);
+      const wait = await waitForActionable(() => document.querySelector(${JSON.stringify(selector)}), ${waitMs}, false, false);
       const waitInfo = { waited: wait.waited, waitedMs: wait.waitedMs, waitedFor: wait.waitedFor };
       const el = wait.el;
       if (!el) return { ok: false, error: 'Element not found: ' + ${JSON.stringify(selector)}, ...waitInfo };
       if (el.tagName !== 'SELECT') return { ok: false, error: 'Not a <select>: ' + el.tagName };
-      const disabled = actionDisabledReason(el);
-      if (disabled) return { ok: false, disabled: { tag: el.tagName, text: actionLabel(el), reason: disabled }, ...waitInfo };
+      const disabled = actionDisabledReason(el, false);
+      if (disabled) return { ok: false, disabled: { tag: el.tagName, text: actionLabel(el), reason: disabled, matches: actionMatchCount(${JSON.stringify(selector)}) }, ...waitInfo };
       const wanted = ${JSON.stringify(wanted)};
       const match = Array.from(el.options).find(opt => opt.value === wanted || String(opt.textContent || '').trim() === wanted);
       if (!match) return { ok: false, error: 'No option value=' + wanted };

@@ -236,25 +236,37 @@ function classifyNavigationCancelledFailure(err, { base, targetId, input }) {
 // `click --pointer: element is disabled (BUTTON "Save")`.
 const DISABLED_ACTION_MESSAGE_RE = /^(?:<[^>]*>.* is disabled \((?:disabled attribute|aria-disabled="true"|inside a disabled <fieldset>|disabled)\)|click --pointer: element is disabled \()/;
 
-// `:not(:disabled)` / `:not([aria-disabled="true"])` appended to a single CSS selector, so
-// `waitfor` waits for the control to become enabled. null for @refs and selector lists.
-function enabledSelector(selector, reason) {
+// `<sel>:not(:disabled):not([aria-disabled="true"])`, so `waitfor` waits until the control is
+// enabled by either measure (`:not(:disabled)` alone already matches an aria-disabled control, and
+// the retry would fail the same way). Only offered when the selector matched exactly one element:
+// with several matches a sibling could satisfy `waitfor` while the first match, the one the action
+// resolves, stays disabled. null for @refs, selector lists and unknown match counts.
+function enabledSelector(selector, matches) {
   const sel = String(selector || '').trim();
-  if (!sel || isActionRef(sel) || sel.includes(',')) return null;
-  return reason === 'aria-disabled="true"' ? `${sel}:not([aria-disabled="true"])` : `${sel}:not(:disabled)`;
+  if (!sel || isActionRef(sel) || sel.includes(',') || matches !== 1) return null;
+  return `${sel}:not(:disabled):not([aria-disabled="true"])`;
 }
 
 // #468: the target is disabled, so nothing was dispatched. Next waits for that control to be
-// enabled (CSS) or refreshes perception (@ref); a disabled control usually waits on input.
+// enabled (a unique CSS selector) or refreshes perception; a disabled control usually waits on input.
+// aria-disabled is not enforced by browsers, and some design systems keep such controls clickable
+// (to show validation or a tooltip), so the hints name `click --js` as the deliberate escape.
 function classifyDisabledFailure(err, { base, targetId, input, action, perceiveCommand }) {
   const raw = err?.actionDisabled && typeof err.actionDisabled === 'object' ? err.actionDisabled : {};
+  const ariaFromMessage = /\(aria-disabled="true"\)/.test(base.originalMessage);
   const disabled = {
     tag: raw.tag ? String(raw.tag) : null,
     text: raw.text ? String(raw.text) : null,
-    reason: raw.reason ? String(raw.reason) : null,
+    reason: raw.reason ? String(raw.reason) : (ariaFromMessage ? 'aria-disabled="true"' : null),
   };
-  const enabled = enabledSelector(raw.selector || input, disabled.reason);
+  const matches = Number.isInteger(raw.matches) ? raw.matches : null;
+  if (matches != null) disabled.matches = matches;
+  const selector = raw.selector || input;
+  const enabled = enabledSelector(selector, matches);
   const waitfor = enabled ? `cdp waitfor ${targetId} ${recoveryCommandArg(enabled)}` : null;
+  const aria = disabled.reason === 'aria-disabled="true"';
+  const arg = recoveryCommandArg(selector);
+  const jsClick = arg ? `cdp click ${targetId} ${arg} --js` : 'cdp help click';
   return {
     ...base,
     kind: 'disabled',
@@ -264,8 +276,15 @@ function classifyDisabledFailure(err, { base, targetId, input, action, perceiveC
     nextCommand: waitfor || perceiveCommand,
     hints: [
       ...(waitfor ? [`Wait for the control to become enabled with \`${waitfor}\`.`] : []),
+      ...(matches != null && matches > 1
+        ? [`The selector matches ${matches} elements and ${action || 'the action'} uses the first; pick the control by @ref from \`${perceiveCommand}\` so a sibling cannot stand in for it.`]
+        : []),
       `A disabled control usually waits on something else (an empty required field, an unchecked box, a pending request): check the form with \`${perceiveCommand}\`.`,
-      'Do not retry the same action, or a JS click, while the control is disabled: the page ignores it.',
+      ...(aria
+        ? [`aria-disabled="true" is not enforced by the browser, and some design systems keep such controls clickable (to show validation or a tooltip). To trigger it anyway, \`${jsClick}\` clicks without the disabled check.`]
+        : disabled.reason
+          ? ['Do not retry the same action, or a JS click, while the control is disabled: the browser does not deliver it to a disabled form control.']
+          : ['Do not retry the same action unchanged while the control is disabled.']),
     ],
   };
 }
@@ -1116,7 +1135,7 @@ export const RECOVERY_POLICY_REGISTRY = Object.freeze({
       { key: 'next-or-perceive', reason: 'Wait for the control to become enabled.' },
       { key: 'perceive', reason: 'See which input or state the control is waiting on.' },
     ],
-    avoid: ['retrying the same action, or a JS click, while the control is disabled'],
+    avoid: ['retrying the same action unchanged while the control is disabled'],
   },
   'no-input-events': {
     strategy: 'use-jsclick',

@@ -75,13 +75,17 @@
   (no extra round trip when it is ready at once) and re-checks on every DOM change and every 50 ms.
   `--wait-ms N` sets the limit (at most 30000) and `--wait-ms 0` keeps the old fail-fast behaviour. A
   receipt that waited says so: `Clicked <BUTTON> "Save" (waited 640ms for attach)`. `select` does not
-  require the `<select>` to be visible, since custom dropdowns often hide it. A disabled target
-  (`disabled`, a disabled `<fieldset>`, or `aria-disabled="true"`) used to be dispatched anyway: a
-  plain `click` on a disabled button reported `no-change`, and `fill` / `select` wrote the value of a
-  disabled control. It now exits 1 with `Error: <BUTTON> "Submit" is disabled (disabled attribute)…`,
-  the new `Kind: disabled` (`dispatched: false`, recovery strategy `wait-or-inspect`) and Next
-  `waitfor <target> "#submit:not(:disabled)"`; nothing is sent. An `@ref` is checked for disabled
-  without waiting. A selector that still matches nothing fails as `Kind: selector`, as before
+  require the `<select>` to be visible, since custom dropdowns often hide it; a zero-size target can
+  skip the visibility wait with `--wait-ms 0`. A disabled target (`disabled` or a disabled
+  `<fieldset>`; for `click` and `click --pointer` also `aria-disabled="true"`) used to be dispatched
+  anyway: a plain `click` on a disabled button reported `no-change`, and `fill` / `select` wrote the
+  value of a disabled control. It now exits 1 with `Error: <BUTTON> "Submit" is disabled (disabled
+  attribute)…`, the new `Kind: disabled` (`dispatched: false`, recovery strategy `wait-or-inspect`)
+  and Next `waitfor <target> '#submit:not(:disabled):not([aria-disabled="true"])'`, or `perceive` when
+  the selector matches several elements; nothing is sent. Because browsers do not enforce
+  `aria-disabled`, the hints for an ARIA-disabled target name `click <target> <sel> --js` as the way
+  to click it on purpose. An `@ref` is checked for disabled without waiting, also when its scroll
+  settle timed out. A selector that still matches nothing fails as `Kind: selector`, as before
   ([#468](https://github.com/EndeavorYen/chrome-cdp-ex/issues/468)).
 
 ### Bug Fixes

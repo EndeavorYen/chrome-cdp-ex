@@ -1277,18 +1277,31 @@ the page, and custom dropdowns often hide the native control. `--wait-ms N` sets
 `Clicked <BUTTON> "Save" (waited 640ms for attach)`, or `for attach, visible` when it waited for both.
 An element that is still hidden after the wait is acted on as before.
 
-A disabled target is not clicked, filled or selected. Disabled means the `disabled` attribute, a
-disabled `<fieldset>` around the control (`:disabled`), or `aria-disabled="true"` on the element itself.
-It exits 1 with `Error: <BUTTON> "Submit" is disabled (disabled attribute) after waiting 2000ms; the click
-was not sent.`, `Kind: disabled` (`dispatched: false`), and Next
-`cdp waitfor <target> "#submit:not(:disabled)"` (`:not([aria-disabled="true"])` for ARIA), which waits
-for that control to become enabled. A disabled control usually waits on something else (an empty
-required field, an unchecked box), so the hints point at `perceive -C -d 8` too. An `@ref` is checked for
-disabled without waiting; its Next is `perceive`. A selector that matches nothing after the wait still
-fails as `Kind: selector`, with `(waited 2000ms for attach)` in the error. Named / `text=` clicks,
-`click --js` and `click --pointer` do not wait. `--wait-ms` is a flag on these commands, so the
-81-command surface, the public synopsis and the MCP tool schemas are unchanged; MCP `click` and `fill`
-use the 2 s default.
+A disabled target is not acted on. For `click` (including `--pointer`), disabled means the `disabled`
+attribute, a disabled `<fieldset>` around the control (`:disabled`), or `aria-disabled="true"` on the
+element itself. `fill` and `select` refuse only `:disabled`, which the browser itself enforces:
+`aria-disabled` is not enforced by browsers, and they have no JS-click way around it. The failure exits 1
+with `Error: <BUTTON> "Submit" is disabled (disabled attribute) after waiting 2000ms; the click was not
+sent.`, `Kind: disabled` (`dispatched: false`). When the CSS selector matched exactly one element, Next is
+`cdp waitfor <target> '#submit:not(:disabled):not([aria-disabled="true"])'`, which waits for that control
+to become enabled by either measure. When it matched several, Next is `perceive -C -d 8` instead, because a
+sibling could satisfy that `waitfor` while the first match (the one acted on) stays disabled; pick the
+control by `@ref`. A disabled control usually waits on something else (an empty required field, an
+unchecked box), so the hints point at `perceive -C -d 8` too.
+
+`aria-disabled="true"` has no effect in the browser, and some design systems keep such buttons clickable
+on purpose (to show validation or a tooltip). To click one anyway, use `cdp click <target> <sel> --js`:
+the JS click does not check disabled. The `Kind: disabled` hints name that command for an ARIA-disabled
+target. A natively disabled control gets no such hint: the browser does not deliver clicks to it.
+
+An `@ref` is checked for disabled without waiting (also when its scroll settle timed out); its Next is
+`perceive`. The check happens in the same evaluation that scrolls the target into view, so the page may
+have scrolled even though no input was sent. A selector that matches nothing after the wait still fails
+as `Kind: selector`, with `(waited 2000ms for attach)` in the error. Named / `text=` clicks,
+`click --js` and `click --pointer` do not wait. A target with a zero-size box (a collapsed input that
+grows on focus, `display: contents`) waits the full 2 s for visibility before it is acted on as before;
+pass `--wait-ms 0` to skip that. `--wait-ms` is a flag on these commands, so the 81-command surface, the
+public synopsis and the MCP tool schemas are unchanged; MCP `click` and `fill` use the 2 s default.
 
 ### Clearing a field — `fill ""`
 
